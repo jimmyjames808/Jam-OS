@@ -1,4 +1,14 @@
-# Jam OS: handoff (updated 2026-09-29, M4.5 done in QEMU)
+# Jam OS: handoff (updated 2026-09-29, M5 phase 1 running)
+
+**M5 started 2026-09-29** (user: "write the m5 plan and then get agents to start building
+it"). Plan = M5-PLAN.md. Foundation commit 9160daf (headers uentry/usercopy/aspace/syscall/
+startup/bootfs/elf + weak stubs core/m5_weak.c + arch_thread_switch hook + #PF hook). Three
+background worktree agents launched: Track A entry path, Track B address spaces/VMAR,
+Track C userland/ABI generator/bootfs/ELF. When they report: review each branch, merge
+A/B/C into main (expect conflicts in Makefile/limine.conf/sys.h/object.h), rerun all tests
+at 4+8 CPUs, then phase 2 (processes, syscall glue, userboot, jobs, utest). The PC 10-min
+stress of v0.0.6-m4.5 was running when M5 started; result not yet recorded.
+
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
 M4 audit: 6a9d463 (ARCHITECTURE.md rewrite), e179adc (small fixes + tests), 32d2571 (lock
