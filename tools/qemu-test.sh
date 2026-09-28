@@ -12,7 +12,7 @@ mkdir -p "$out"
 
 img="$out/$name.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
-printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n    cmdline: %s\n' \
+printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n    module_path: boot():/boot/bootfs.img\n    cmdline: %s\n' \
     "$cmdline" > "$out/$name.conf"
 mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"

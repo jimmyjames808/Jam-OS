@@ -29,3 +29,6 @@ struct elf_plan {
  * ERR_INVALID_ARGS (with a log line saying why) otherwise. Never reads
  * outside the image. */
 status_t elf_parse(const void *image, uint64_t size, struct elf_plan *out);
+/* The same checks without the log line: *why says what is wrong (NULL on
+ * success). For callers that expect rejections, like the fuzz test. */
+status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const char **why);

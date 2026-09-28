@@ -26,35 +26,14 @@
 #pragma once
 
 #include <stdint.h>
+#include <jam/abi.h>
 #include <jam/list.h>
 #include <jam/object.h>
 #include <jam/status.h>
 #include <jam/sched.h>
 
-enum port_packet_type {
-    PORT_PACKET_SIGNAL = 1,
-    PORT_PACKET_USER = 2,
-    /* M6: PORT_PACKET_INTERRUPT */
-};
-
-struct port_packet {
-    uint64_t key;       /* chosen by whoever bound/queued it */
-    uint32_t type;      /* enum port_packet_type */
-    int32_t  status;    /* OK; ERR_CANCELED is reserved for binding teardown */
-    union {
-        struct {
-            signals_t trigger;    /* the mask it was bound with */
-            signals_t observed;   /* the object's signals at the last edge */
-            uint64_t  count;      /* edges coalesced into this packet (>= 1) */
-        } signal;
-        struct {
-            uint64_t data[4];
-        } user;
-    };
-};
-
-#define PORT_BIND_ONCE       0   /* fire once, then the binding is gone */
-#define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
+/* struct port_packet, the PORT_PACKET_* types and the PORT_BIND_* flags
+ * are in <jam/abi.h> (user code needs them too). */
 
 /* Most user packets a port holds before port_queue_user says
  * ERR_NO_RESOURCES. Signal packets never count: each binding owns one. */

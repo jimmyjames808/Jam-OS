@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <jam/acpi.h>
 #include <jam/boot.h>
+#include <jam/bootfs.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/ioapic.h>
@@ -93,6 +94,7 @@ _Noreturn static void kmain_stage2(void *arg)
     uint64_t total, free;
     pmm_stats(&total, &free);
     kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
+    bootfs_init(boot);   /* only needs the heap; before the tests that use it */
 
     if (cmdline_has("selftest"))
         selftest_run();

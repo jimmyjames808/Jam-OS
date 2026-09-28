@@ -41,3 +41,16 @@ status_t bootfs_data(const char *name, const void **data, uint64_t *size);
 unsigned bootfs_count(void);
 /* Name of entry i (i < bootfs_count()). */
 const char *bootfs_name(unsigned i);
+
+/* A read-only VMO over the whole image (the SR_BOOTFS handle of the
+ * startup message) and the image size in bytes. ERR_NOT_FOUND if there
+ * is no bootfs. */
+status_t bootfs_image(struct vmo **out, uint64_t *size);
+
+/* Check an image in memory (img[0..len), untrusted): header, every entry
+ * (NUL-terminated sane names, no duplicates, page-aligned data inside the
+ * image, no two files sharing a page). OK, or ERR_INVALID_ARGS with *why
+ * saying what is wrong. Never reads outside img[0..len). bootfs_init uses
+ * it on the module; tests use it on corrupted copies. */
+#define BOOTFS_MAX_FILES 256
+status_t bootfs_validate(const void *img, uint64_t len, const char **why);
