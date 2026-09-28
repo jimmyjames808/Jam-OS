@@ -6,8 +6,8 @@ startup/bootfs/elf + weak stubs core/m5_weak.c + arch_thread_switch hook + #PF h
 background worktree agents launched: Track A entry path, Track B address spaces/VMAR,
 Track C userland/ABI generator/bootfs/ELF. When they report: review each branch, merge
 A/B/C into main (expect conflicts in Makefile/limine.conf/sys.h/object.h), rerun all tests
-at 4+8 CPUs, then phase 2 (processes, syscall glue, userboot, jobs, utest). The PC 10-min
-stress of v0.0.6-m4.5 was running when M5 started; result not yet recorded.
+at 4+8 CPUs, then phase 2 (processes, syscall glue, userboot, jobs, utest). **M4.5 CONFIRMED on the PC 2026-09-29: All tests 78/78 and the 10-min stress passed
+(0 failures).**
 
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
