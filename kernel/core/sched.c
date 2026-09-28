@@ -411,6 +411,7 @@ static void thread_put(struct thread *t)
 
 static void reap(struct thread *t)
 {
+    fpu_ustate_free(t);   /* switched out for good: nothing saves into it now */
     stack_put(t->stack_top);
     thread_put(t);   /* the thread's reference to itself */
 }

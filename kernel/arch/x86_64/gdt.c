@@ -6,8 +6,6 @@
 #include <jam/x86.h>
 
 #define IST_STACK_SIZE (16 * 1024)
-#define MSR_GS_BASE        0xc0000101
-#define MSR_KERNEL_GS_BASE 0xc0000102
 
 struct __attribute__((packed)) gdtr {
     uint16_t limit;
@@ -17,7 +15,7 @@ struct __attribute__((packed)) gdtr {
 /* Early BSP tables, used only until gdt_init_cpu runs on the BSP. */
 static uint64_t early_gdt[9];
 static struct tss early_tss;
-static uint8_t early_ist[3][IST_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t early_ist[IST_COUNT][IST_STACK_SIZE] __attribute__((aligned(16)));
 
 #define SEG(access, flags) \
     (0xffffull | (uint64_t)(access) << 40 | (uint64_t)(flags) << 52 | 0xfull << 48)
@@ -63,7 +61,7 @@ static void load(uint64_t *gdt, size_t size)
 void gdt_init_bsp(void)
 {
     memset(&early_tss, 0, sizeof(early_tss));
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < IST_COUNT; i++)
         early_tss.ist[i] = (uint64_t)&early_ist[i][IST_STACK_SIZE];
     build(early_gdt, &early_tss);
     load(early_gdt, sizeof(early_gdt));
@@ -72,7 +70,7 @@ void gdt_init_bsp(void)
 void gdt_init_cpu(struct cpu *c)
 {
     memset(&c->tss, 0, sizeof(c->tss));
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < IST_COUNT; i++)
         c->tss.ist[i] = (uint64_t)kstack_alloc(IST_STACK_SIZE);
     build(c->gdt, &c->tss);
 }
@@ -89,4 +87,5 @@ void percpu_load(struct cpu *c)
     percpu_set_gs(c);
     load(c->gdt, sizeof(c->gdt));
     idt_load();
+    cpu_init_local();
 }

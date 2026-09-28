@@ -171,6 +171,15 @@ static void describe_page_fault(const struct trap_frame *f, uint64_t cr2)
             (e & 32) ? " (protection key)" : "");
     if (cr2 < 0x10000)
         kprintf("  (address is near zero: probably a NULL pointer)\n");
+    /* A kernel-mode protection fault on a lower-half address can only be
+     * SMEP or SMAP: user pages are the only present lower-half pages. */
+    if (!(e & 4) && (e & 1) && cr2 < 0x0000800000000000ull) {
+        if (e & 16)
+            kprintf("  SMEP: the kernel tried to execute a user page\n");
+        else
+            kprintf("  SMAP: the kernel touched a user page outside copy_from_user/"
+                    "copy_to_user\n");
+    }
 }
 
 static void dump_frame(const struct trap_frame *f, uint64_t cr2);

@@ -6,29 +6,60 @@
 #include <jam/panic.h>
 #include <jam/trap.h>
 #include <jam/uentry.h>
+#include <jam/uentry_test.h>
+
+void user_trap_return(struct trap_frame *f);
+
+static const char *const user_fault_names[32] = {
+    [0] = "divide error", [1] = "debug trap", [3] = "breakpoint", [4] = "overflow",
+    [5] = "bound range", [6] = "invalid opcode", [7] = "device not available",
+    [10] = "invalid TSS", [11] = "segment not present", [12] = "stack fault",
+    [13] = "general protection fault", [14] = "page fault", [16] = "x87 FP error",
+    [17] = "alignment check", [19] = "SIMD FP error", [21] = "control protection",
+};
 
 void trap_dispatch(struct trap_frame *f)
 {
+    bool from_user = f->cs & 3;
     if (f->vector >= 32) {
         struct cpu *c = this_cpu();
         c->irq_depth++;
         irq_dispatch(f);
         c->irq_depth--;
         sched_irq_exit(f->rflags);   /* may switch threads before iretq */
+        if (from_user)
+            user_trap_return(f);
         return;
     }
     switch (f->vector) {
     case 2:
+        /* Never schedules or touches the user return path: NMIs stay
+         * blocked until this handler's iretq. */
+#ifndef JAM_NO_KTESTS
+        if (uentry_test_nmi && uentry_test_nmi(f))
+            return;
+#endif
         nmi_handler(f);
         return;
     case 3:   /* int3: log and continue, handy for testing the trap path */
+        if (from_user)
+            break;
         kprintf("trap: breakpoint at %lx\n", f->rip);
         return;
+    case 8:
+    case 18:
+        panic_trap(f);   /* double fault, machine check: fatal wherever they hit */
     case 14:
-        if (trap_page_fault(f))   /* M5: demand paging, user copies, user faults */
+        if (trap_page_fault(f)) {   /* demand paging, user copies, user faults */
+            if (from_user)
+                user_trap_return(f);
             return;
+        }
         panic_trap(f);
-    default:
-        panic_trap(f);   /* M1: every other exception is fatal */
     }
+    if (from_user) {
+        const char *name = user_fault_names[f->vector];
+        user_fault_kill(f, name ? name : "exception");
+    }
+    panic_trap(f);   /* every other exception in the kernel is fatal */
 }

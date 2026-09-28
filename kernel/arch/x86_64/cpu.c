@@ -4,6 +4,9 @@
 #include <jam/x86.h>
 
 struct cpu_features cpu_features;
+/* Read by the entry assembly (STAC_IF_SMAP / CLAC_IF_SMAP): stac and clac
+ * exist only on CPUs with SMAP. */
+uint8_t smap_on;
 
 void cpu_detect(void)
 {
@@ -23,11 +26,17 @@ void cpu_detect(void)
     f->pat    = d & (1u << 16);
     f->x2apic = c & (1u << 21);
     f->tsc_deadline = c & (1u << 24);
+    f->xsave  = c & (1u << 26);
+    f->avx    = f->xsave && (c & (1u << 28));
 
     if (max_leaf >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
         f->hybrid = d & (1u << 15);
+        f->smep   = b & (1u << 7);
+        f->smap   = b & (1u << 20);
+        f->umip   = c & (1u << 2);
     }
+    smap_on = f->smap;
 
     if (max_leaf >= 0x15) {
         cpuid(0x15, 0, &a, &b, &c, &d);
@@ -71,6 +80,30 @@ void cpu_enable_paging_features(void)
         wrmsr(MSR_PAT, 0x0007010500070406ull);
         wbinvd();
     }
+}
+
+void fpu_init_cpu(void);
+void syscall_init_cpu(void);
+
+void cpu_init_local(void)
+{
+    uint64_t cr4 = read_cr4();
+    /* SMEP: the kernel never executes a user page. SMAP: it never touches
+     * one outside the user-copy routines (stac/clac). UMIP: user code can't
+     * read the GDT/IDT/TSS addresses with sgdt and friends. */
+    if (cpu_features.smep)
+        cr4 |= CR4_SMEP;
+    if (cpu_features.smap)
+        cr4 |= CR4_SMAP;
+    if (cpu_features.umip)
+        cr4 |= CR4_UMIP;
+    /* With FSGSBASE user code could set its GS base to a kernel-looking
+     * address and fool the NMI/#MC/#DB entries, which tell the kernel's GS
+     * from the user's by the base's sign. The loader may have left it on. */
+    cr4 &= ~CR4_FSGSBASE;
+    write_cr4(cr4);
+    fpu_init_cpu();
+    syscall_init_cpu();
 }
 
 void cpu_detect_topology(struct cpu *cpu)
