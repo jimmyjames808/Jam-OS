@@ -9,6 +9,14 @@ A/B/C into main (expect conflicts in Makefile/limine.conf/sys.h/object.h), rerun
 at 4+8 CPUs, then phase 2 (processes, syscall glue, userboot, jobs, utest). **M4.5 CONFIRMED on the PC 2026-09-29: All tests 78/78 and the 10-min stress passed
 (0 failures).**
 
+**Track C MERGED 2026-09-29** (userland build, abi/syscalls.def + tools/gensyscalls.py,
+bootfs, elf.c; 83/83 + stress at 4+8 CPUs). Phase-2 notes from C: implement strong sysc_* per
+jam/syscall_impl.h; bootfs VMOs are physical and NOT write-protected, so hand out bootfs
+handles without RIGHT_WRITE and COPY the ELF RW segment (never map it); libos needs
+SR_SELF_VMAR + SR_BOOTFS; startup msg <= 8 KiB / 128 strings. The USB stick now also needs
+build/bootfs.img copied to boot/ (limine.conf has module_path on every entry). Tracks A and
+B still running.
+
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
 M4 audit: 6a9d463 (ARCHITECTURE.md rewrite), e179adc (small fixes + tests), 32d2571 (lock
