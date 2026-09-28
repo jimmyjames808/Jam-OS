@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/abi.h>
 #include <jam/list.h>
 #include <jam/spinlock.h>
 #include <jam/status.h>
@@ -37,14 +38,8 @@ enum obj_type {
     OBJ_TYPE_COUNT,
 };
 
-typedef uint32_t signals_t;
-
-/* Common signal bits. Types document which ones they use. */
-#define SIG_READABLE    (1u << 0)
-#define SIG_WRITABLE    (1u << 1)
-#define SIG_PEER_CLOSED (1u << 2)
-#define SIG_SIGNALED    (1u << 3)   /* events, timers */
-#define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
+/* signals_t and the common SIG_* bits are in <jam/abi.h> (user code needs
+ * them too). Types document which ones they use. */
 
 struct kobject;
 

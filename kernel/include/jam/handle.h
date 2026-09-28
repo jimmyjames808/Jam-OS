@@ -12,27 +12,13 @@
 #pragma once
 
 #include <stdint.h>
+#include <jam/abi.h>
 #include <jam/object.h>
 #include <jam/spinlock.h>
 #include <jam/status.h>
 
-typedef uint32_t handle_t;
-#define HANDLE_INVALID 0u
-
-typedef uint32_t rights_t;
-#define RIGHT_READ      (1u << 0)
-#define RIGHT_WRITE     (1u << 1)
-#define RIGHT_EXEC      (1u << 2)
-#define RIGHT_MAP       (1u << 3)
-#define RIGHT_DUPLICATE (1u << 4)
-#define RIGHT_TRANSFER  (1u << 5)
-#define RIGHT_SIGNAL    (1u << 6)   /* may set/clear user signals */
-#define RIGHT_WAIT      (1u << 7)   /* may wait on it / bind it to a port */
-#define RIGHT_INSPECT   (1u << 8)
-#define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
-
-#define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
-#define RIGHTS_IO    (RIGHT_READ | RIGHT_WRITE)
+/* handle_t, rights_t and the RIGHT_* bits are in <jam/abi.h> (user code
+ * needs them too). */
 
 struct khandle {
     struct kobject *obj;
