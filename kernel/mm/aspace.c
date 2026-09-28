@@ -82,7 +82,15 @@
  *     CPU can be using it (see aspace_unref), so it needs no shootdown.
  *
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
- * stays and works again if the VMO grows back. */
+ * stays and works again if the VMO grows back.
+ *
+ * Known limits: no lazy TLB (switching to a kernel thread reloads the
+ * kernel CR3) and no PCIDs; one decommit batch holds the VMO lock (with
+ * interrupts off) for up to 512 pages times the number of mappings of the
+ * VMO that overlap them, so a VMO mapped thousands of times makes that
+ * latency grow; page-table pages and mapping structs aren't charged to
+ * anyone yet (jobs, phase 2). The region lock must never be held across a
+ * user copy: the copy's fault would take it again. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/cpu.h>
