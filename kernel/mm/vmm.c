@@ -142,6 +142,25 @@ uint64_t vmm_translate(uint64_t pml4, uint64_t va)
     return UINT64_MAX;
 }
 
+const char *vmm_cache_type(uint64_t pml4, uint64_t va)
+{
+    static const char *const names[8] = { "UC", "WC", "?", "?", "WT", "WP", "WB", "UC-" };
+    uint64_t *t = table(pml4);
+    for (int l = 4; l >= 1; l--) {
+        uint64_t e = t[(va >> (12 + 9 * (l - 1))) & 511];
+        if (!(e & PTE_P))
+            return "unmapped";
+        if (l == 1 || (e & PTE_PS)) {
+            bool pat = l == 1 ? (e & PTE_PAT4K) : (e & PTE_PATLG);
+            unsigned idx = (pat ? 4 : 0) | ((e & PTE_PCD) ? 2 : 0) | ((e & PTE_PWT) ? 1 : 0);
+            uint8_t type = (rdmsr(MSR_PAT) >> (idx * 8)) & 7;
+            return names[type];
+        }
+        t = table(e);
+    }
+    return "unmapped";
+}
+
 uint64_t vmm_kernel_pml4(void)
 {
     return kernel_pml4;

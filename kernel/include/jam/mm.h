@@ -94,6 +94,8 @@ void     vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned
 void     vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len);
 /* Physical address for va, or UINT64_MAX if unmapped. */
 uint64_t vmm_translate(uint64_t pml4, uint64_t va);
+/* Effective PAT memory type of a mapping ("WB", "WC", "UC", ...). */
+const char *vmm_cache_type(uint64_t pml4, uint64_t va);
 
 /* Kernel stack in the vmap area with an unmapped guard page below it.
  * Returns the TOP of the stack. */

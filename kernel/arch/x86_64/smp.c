@@ -159,17 +159,24 @@ static const char *type_name(enum core_type t)
 
 bool smp_report(uint64_t window_ms)
 {
-    uint64_t before[MAX_CPUS];
+    /* Snapshot every count before printing anything: printing is slow on
+     * a big framebuffer, and a CPU read after N printed lines would get a
+     * window N lines longer than the others. */
+    static uint64_t before[MAX_CPUS], after[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
         before[i] = cpus[i]->ticks;
+    uint64_t t0 = rdtsc();
     udelay(window_ms * 1000);
+    for (uint32_t i = 0; i < cpu_count; i++)
+        after[i] = cpus[i]->ticks;
+    uint64_t measured_us = (rdtsc() - t0) / (tsc_hz / 1000000);
 
     uint64_t expect = TICK_HZ * window_ms / 1000;
     uint32_t p = 0, e = 0, bad = 0;
     bool smt = false;
     for (uint32_t i = 0; i < cpu_count; i++) {
         struct cpu *c = cpus[i];
-        uint64_t n = c->ticks - before[i];
+        uint64_t n = after[i] - before[i];
         bool ok = n + expect / 10 >= expect && n <= expect + expect / 10;
         if (!ok)
             bad++;
@@ -186,8 +193,9 @@ bool smp_report(uint64_t window_ms)
                 smt ? "ON" : "off");
     else
         kprintf("topology: %u CPUs, SMT %s\n", cpu_count, smt ? "on" : "off");
-    kprintf("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu ms: %s\n",
-            lapic_timer_mode(), TICK_HZ, expect, window_ms, bad ? "MISMATCH" : "all ok");
+    kprintf("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s\n",
+            lapic_timer_mode(), TICK_HZ, expect, measured_us / 1000, measured_us % 1000,
+            bad ? "MISMATCH" : "all ok");
     if (lapic_errors || irq_unexpected)
         kprintf("irq: %lu LAPIC errors (last ESR %x), %lu unexpected (last vector %u)\n",
                 lapic_errors, lapic_last_esr, irq_unexpected, irq_last_unexpected);

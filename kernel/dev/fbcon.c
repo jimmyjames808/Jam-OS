@@ -154,6 +154,18 @@ void fbcon_write(const char *s, size_t len)
     spin_unlock(&lock);
 }
 
+uint64_t fbcon_time_redraw(uint64_t (*now)(void))
+{
+    if (!ready)
+        return 0;
+    spin_lock(&lock);
+    uint64_t t0 = now();
+    redraw_all();
+    uint64_t t1 = now();
+    spin_unlock(&lock);
+    return t1 - t0;
+}
+
 void fbcon_force_unlock(void)
 {
     spin_unlock(&lock);

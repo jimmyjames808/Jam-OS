@@ -25,7 +25,7 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 | Executables | Static ELF64 |
 | IOMMU | Not yet; DMA gated by `dma_cap`, VT-d/AMD-Vi added behind it after M11 |
 | Users/logins | *(open)* |
-| Target PC | i7-14700 (hybrid 8P+12E; 20 CPUs reported, so Hyper-Threading looks off), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
+| Target PC | i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
 | Networking | *(open: board Ethernet port or USB Ethernet adapter; Wi-Fi is not planned)* |
 
 ## The migration rule

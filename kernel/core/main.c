@@ -79,6 +79,10 @@ _Noreturn static void kmain_stage2(void *arg)
     acpi_init(boot->rsdp_phys);
     lapic_init_bsp(boot->x2apic);
     tsc_calibrate_with_loader(boot->tsc_hz_loader);
+    uint64_t redraw_us = fbcon_time_redraw(rdtsc) / (tsc_hz / 1000000);
+    kprintf("fbcon: %ux%u, full-screen redraw takes %lu.%03lu ms, mapped %s\n",
+            boot->fb.width, boot->fb.height, redraw_us / 1000, redraw_us % 1000,
+            vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
     smp_init_bsp(boot);
     ioapic_init();
     lapic_timer_calibrate();
