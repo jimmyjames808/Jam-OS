@@ -111,10 +111,25 @@ void lockdep_print_held(void)
     kprintf("\n");
 }
 
+/* The held-lock list is per CPU and updated in two steps (write the slot,
+ * bump the depth). An interrupt handler in between would push and pop its
+ * own lock through the same slot and leave it behind in ours, so both
+ * directions run with interrupts off. (Found by the real-PC stress test:
+ * "releases a lock it does not hold" after 230 s on 28 CPUs.) */
+static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on);
+
 static void acquire_checks(spinlock_t *l, unsigned subclass)
 {
     if (disabled)
         return;
+    bool irqs_on = irqs_enabled();   /* as the caller had them */
+    uint64_t f = irq_save();
+    acquire_checks_locked(l, subclass, irqs_on);
+    irq_restore(f);
+}
+
+static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on)
+{
     struct cpu *c = this_cpu();
     unsigned cls = class_of(l, subclass);
 
@@ -127,7 +142,7 @@ static void acquire_checks(spinlock_t *l, unsigned subclass)
     /* Interrupt-safety: a class taken inside an interrupt handler must
      * never be taken with interrupts enabled, or the handler can
      * interrupt the holder on the same CPU and spin forever. */
-    bool in_irq = c->irq_depth > 0, irqs_on = irqs_enabled();
+    bool in_irq = c->irq_depth > 0;
     uint64_t f = graph_lock();
     struct lock_class *k = &classes[cls];
     if (in_irq)
@@ -170,6 +185,7 @@ static void release_checks(spinlock_t *l)
 {
     if (disabled)
         return;
+    uint64_t f = irq_save();
     struct cpu *c = this_cpu();
     for (unsigned i = c->held_depth; i-- > 0;) {
         if (c->held[i] != l)
@@ -179,8 +195,10 @@ static void release_checks(spinlock_t *l)
             c->held_cls[j] = c->held_cls[j + 1];
         }
         c->held_depth--;
+        irq_restore(f);
         return;
     }
+    lockdep_print_held();
     panic("lockdep: cpu %u releases \"%s\" which it does not hold", c->index, l->name);
 }
 
