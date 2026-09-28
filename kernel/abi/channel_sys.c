@@ -14,15 +14,24 @@ static status_t get_channel(struct handle_table *t, handle_t h, rights_t need,
     return st;
 }
 
-/* Put taken handles back under their old values, newest first. */
+/* Put taken handles back under their old values, newest first. The slots were
+ * reserved by handle_take, so handle_untake always succeeds and no handle is
+ * lost; the release is a belt-and-braces fallback that should never run. */
 static void untake_all(struct handle_table *t, const handle_t *hs, struct khandle *khs,
                        uint32_t n)
 {
     while (n--) {
         handle_t v;
         if (handle_untake(t, hs[n], &khs[n], &v) != OK)
-            khandle_release(&khs[n]);   /* table full: nowhere to put it */
+            khandle_release(&khs[n]);
     }
+}
+
+/* Release the reserved slots of handles a successful send consumed. */
+static void commit_all(struct handle_table *t, const handle_t *hs, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++)
+        handle_commit(t, hs[i]);
 }
 
 /* Take every handle in hs out of t (each needs RIGHT_TRANSFER), or none. */
@@ -92,6 +101,8 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
         st = channel_write(ch, bytes, nbytes, khs, nhandles);
         if (st != OK)
             untake_all(t, handles, khs, nhandles);
+        else
+            commit_all(t, handles, nhandles);
     }
     kobject_unref((struct kobject *)ch);
     return st;
@@ -137,9 +148,13 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
         uint32_t nh = 0;
         st = channel_call(ch, wbytes, wn, wkhs, whn, rbytes, rcap, ractual, rkhs, cap, &nh,
                           deadline_ns);
-        /* channel_call clears the request's khandles only once it is sent. */
+        /* channel_call clears the request's khandles only once it is sent, so
+         * a non-NULL first obj means the send failed: put them back. Otherwise
+         * the send consumed them and their reserved slots are freed. */
         if (whn && wkhs[0].obj)
             untake_all(t, wh, wkhs, whn);
+        else if (whn)
+            commit_all(t, wh, whn);
         if (rhactual)
             *rhactual = nh;
         if (st == OK)

@@ -4,13 +4,19 @@
 #include <jam/string.h>
 
 struct handle_slot {
-    struct kobject *obj;        /* NULL: free */
+    struct kobject *obj;        /* NULL: free or in transit */
     rights_t        rights;
     uint32_t        gen;
     uint32_t        next_free;  /* slot index + 1, 0 = end */
+    bool            intransit;  /* taken for a send, reserved until commit/untake */
 };
 
-#define GEN_BITS 8
+/* A handle is (slot + 1) << GEN_BITS | generation. HANDLE_TABLE_MAX is 65536,
+ * so slot + 1 needs 17 bits; the remaining 15 bits are the generation. Eight
+ * bits used to wrap after 256 reuses of a slot, letting a stale handle name a
+ * new object; 15 bits plus FIFO slot reuse (below) push that far out of
+ * reach. (O4) */
+#define GEN_BITS 15
 #define GEN_MASK ((1u << GEN_BITS) - 1)
 
 static handle_t encode(uint32_t slot, uint32_t gen)
@@ -18,7 +24,8 @@ static handle_t encode(uint32_t slot, uint32_t gen)
     return (slot + 1) << GEN_BITS | (gen & GEN_MASK);
 }
 
-/* Returns the slot for h if it is live and current, else NULL. */
+/* Returns the slot for h if it is live and current, else NULL. A free or
+ * in-transit slot (obj == NULL) never matches. */
 static struct handle_slot *decode(struct handle_table *t, handle_t h)
 {
     uint32_t idx = h >> GEN_BITS;
@@ -28,6 +35,21 @@ static struct handle_slot *decode(struct handle_table *t, handle_t h)
     if (!s->obj || (s->gen & GEN_MASK) != (h & GEN_MASK))
         return NULL;
     return s;
+}
+
+/* Append slot `idx` to the free list. Reuse is FIFO (append at the tail, hand
+ * out from the head) so a freed slot waits behind every other free slot
+ * before it is reused, maximising the reuse distance and, with the wider
+ * generation, making a stale handle value hitting its old slot with the same
+ * generation practically impossible. (O4) */
+static void freelist_push(struct handle_table *t, uint32_t idx)
+{
+    t->slots[idx].next_free = 0;
+    if (t->free_tail)
+        t->slots[t->free_tail - 1].next_free = idx + 1;
+    else
+        t->free_head = idx + 1;
+    t->free_tail = idx + 1;
 }
 
 struct khandle khandle_from_new(struct kobject *obj, rights_t rights)
@@ -50,21 +72,27 @@ void handle_table_init(struct handle_table *t)
 {
     spin_init(&t->lock, "handle table");
     t->slots = NULL;
-    t->capacity = t->used = t->free_head = 0;
+    t->capacity = t->used = t->free_head = t->free_tail = 0;
 }
 
 void handle_table_destroy(struct handle_table *t)
 {
+    /* Resume scanning from where we left off rather than from slot 0 each
+     * time: releasing a handle drops the lock (it may run on_zero_handles),
+     * but no concurrent insert can happen during teardown, and slots never
+     * move here, so the index stays valid. This is O(n), not O(n^2). (O7) */
+    uint32_t i = 0;
     for (;;) {
         struct khandle kh = { 0 };
         uint64_t f = spin_lock_irqsave(&t->lock);
-        for (uint32_t i = 0; i < t->capacity && !kh.obj; i++) {
-            if (t->slots[i].obj) {
-                kh.obj = t->slots[i].obj;
-                kh.rights = t->slots[i].rights;
-                t->slots[i].obj = NULL;
-                t->used--;
-            }
+        while (i < t->capacity && !t->slots[i].obj)
+            i++;
+        if (i < t->capacity) {
+            kh.obj = t->slots[i].obj;
+            kh.rights = t->slots[i].rights;
+            t->slots[i].obj = NULL;
+            t->used--;
+            i++;
         }
         spin_unlock_irqrestore(&t->lock, f);
         if (!kh.obj)
@@ -73,10 +101,12 @@ void handle_table_destroy(struct handle_table *t)
     }
     kfree(t->slots);
     t->slots = NULL;
-    t->capacity = t->free_head = 0;
+    t->capacity = t->free_head = t->free_tail = 0;
 }
 
-/* With t->lock held: make sure there is a free slot. */
+/* With t->lock held: make sure there is a free slot. Used by the rare paths
+ * (duplicate/replace) that hold a decoded slot; the common insert path grows
+ * outside the lock via grow_table (O6). */
 static status_t ensure_free_locked(struct handle_table *t)
 {
     if (t->free_head)
@@ -96,11 +126,48 @@ static status_t ensure_free_locked(struct handle_table *t)
         slots[i].next_free = i + 1 < cap ? i + 2 : 0;
     kfree(t->slots);
     t->free_head = t->capacity + 1;
+    t->free_tail = cap;
     t->slots = slots;
     t->capacity = cap;
     return OK;
 }
 
+/* Grow the table if it is still `oldcap` and full, allocating the (up to
+ * ~1.5 MiB) new array OUTSIDE the handle lock so a bulk insert doesn't hold
+ * the lock with IRQs off across the allocation and copy. The caller retries.
+ * Returns OK when it either grew or found the situation already changed. (O6) */
+static status_t grow_table(struct handle_table *t, uint32_t oldcap)
+{
+    uint32_t cap = oldcap ? oldcap * 2 : 16;
+    if (cap > HANDLE_TABLE_MAX)
+        cap = HANDLE_TABLE_MAX;
+    if (cap == oldcap)
+        return ERR_NO_RESOURCES;
+    struct handle_slot *slots = kzalloc(sizeof(*slots) * cap);
+    if (!slots)
+        return ERR_NO_MEMORY;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    if (t->capacity != oldcap || t->free_head) {
+        spin_unlock_irqrestore(&t->lock, f);   /* raced another grow/free */
+        kfree(slots);
+        return OK;
+    }
+    if (t->slots)
+        memcpy(slots, t->slots, sizeof(*slots) * oldcap);
+    for (uint32_t i = oldcap; i < cap; i++)
+        slots[i].next_free = i + 1 < cap ? i + 2 : 0;
+    struct handle_slot *old = t->slots;
+    t->slots = slots;
+    t->capacity = cap;
+    t->free_head = oldcap + 1;
+    t->free_tail = cap;
+    spin_unlock_irqrestore(&t->lock, f);
+    kfree(old);
+    return OK;
+}
+
+/* With t->lock held and a free slot guaranteed available (free_head set), or
+ * grows under the lock via ensure_free_locked for the rare-path callers. */
 static status_t insert_locked(struct handle_table *t, struct kobject *obj, rights_t rights,
                               handle_t *out)
 {
@@ -110,22 +177,41 @@ static status_t insert_locked(struct handle_table *t, struct kobject *obj, right
     uint32_t idx = t->free_head - 1;
     struct handle_slot *s = &t->slots[idx];
     t->free_head = s->next_free;
+    if (!t->free_head)
+        t->free_tail = 0;
     s->obj = obj;
     s->rights = rights;
+    s->intransit = false;
     t->used++;
     *out = encode(idx, s->gen);
     return OK;
 }
 
-/* Free the slot; returns what was in it. Bumping the generation makes old
- * copies of this handle value stale. */
-static struct khandle remove_locked(struct handle_table *t, struct handle_slot *s)
+/* Free the slot (append to the FIFO free list); returns what was in it.
+ * Bumping the generation makes old copies of this handle value stale. */
+static struct khandle free_slot_locked(struct handle_table *t, struct handle_slot *s)
 {
     struct khandle kh = { s->obj, s->rights };
     s->obj = NULL;
     s->gen++;
-    s->next_free = t->free_head;
-    t->free_head = (uint32_t)(s - t->slots) + 1;
+    s->intransit = false;
+    freelist_push(t, (uint32_t)(s - t->slots));
+    t->used--;
+    return kh;
+}
+
+/* Reserve the slot for an in-flight send: empty it and bump the generation
+ * (so the old handle value is stale), but do NOT return it to the free list.
+ * It stays reserved until handle_untake restores it (failed send) or
+ * handle_commit frees it (successful send), so a failed send can always put
+ * the handle back and never has to fall back to a fresh insert that could
+ * fail and lose it. (O5) */
+static struct khandle reserve_slot_locked(struct handle_table *t, struct handle_slot *s)
+{
+    struct khandle kh = { s->obj, s->rights };
+    s->obj = NULL;
+    s->gen++;
+    s->intransit = true;
     t->used--;
     return kh;
 }
@@ -134,12 +220,29 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
 {
     if (!kh->obj)
         return ERR_INVALID_ARGS;
-    uint64_t f = spin_lock_irqsave(&t->lock);
-    status_t st = insert_locked(t, kh->obj, kh->rights, out);
-    spin_unlock_irqrestore(&t->lock, f);
-    if (st == OK)
-        kh->obj = NULL;   /* consumed */
-    return st;
+    for (;;) {
+        uint64_t f = spin_lock_irqsave(&t->lock);
+        if (t->free_head) {
+            uint32_t idx = t->free_head - 1;
+            struct handle_slot *s = &t->slots[idx];
+            t->free_head = s->next_free;
+            if (!t->free_head)
+                t->free_tail = 0;
+            s->obj = kh->obj;
+            s->rights = kh->rights;
+            s->intransit = false;
+            t->used++;
+            *out = encode(idx, s->gen);
+            spin_unlock_irqrestore(&t->lock, f);
+            kh->obj = NULL;   /* consumed */
+            return OK;
+        }
+        uint32_t oldcap = t->capacity;
+        spin_unlock_irqrestore(&t->lock, f);
+        status_t st = grow_table(t, oldcap);   /* allocate outside the lock (O6) */
+        if (st != OK)
+            return st;
+    }
 }
 
 static status_t check(struct handle_slot *s, enum obj_type type, rights_t need)
@@ -177,7 +280,7 @@ status_t handle_close(struct handle_table *t, handle_t h)
         spin_unlock_irqrestore(&t->lock, f);
         return ERR_BAD_HANDLE;
     }
-    struct khandle kh = remove_locked(t, s);
+    struct khandle kh = free_slot_locked(t, s);
     spin_unlock_irqrestore(&t->lock, f);
     khandle_release(&kh);
     return OK;
@@ -211,7 +314,7 @@ status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out)
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_TRANSFER);
     if (st == OK)
-        *out = remove_locked(t, s);
+        *out = reserve_slot_locked(t, s);   /* reserved until commit/untake (O5) */
     spin_unlock_irqrestore(&t->lock, f);
     return st;
 }
@@ -226,12 +329,28 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
         if ((r & s->rights) != r) {
             st = ERR_INVALID_ARGS;
         } else {
-            struct khandle kh = remove_locked(t, s);
-            st = insert_locked(t, kh.obj, r, out);   /* reuses the slot just freed */
+            struct khandle kh = free_slot_locked(t, s);
+            st = insert_locked(t, kh.obj, r, out);   /* free_slot left one free */
         }
     }
     spin_unlock_irqrestore(&t->lock, f);
     return st;
+}
+
+/* The reserved slot for an in-transit handle h, if h names one that was taken
+ * and not yet committed or restored. */
+static struct handle_slot *intransit_slot(struct handle_table *t, handle_t h)
+{
+    uint32_t idx = h >> GEN_BITS;
+    if (!idx || idx > t->capacity)
+        return NULL;
+    struct handle_slot *s = &t->slots[idx - 1];
+    /* reserve_slot_locked bumped the generation once and left the slot empty
+     * and reserved; nothing can have reused it (it never went on the free
+     * list). */
+    if (s->intransit && !s->obj && ((s->gen - 1) & GEN_MASK) == (h & GEN_MASK))
+        return s;
+    return NULL;
 }
 
 status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out)
@@ -239,29 +358,37 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
     if (!kh->obj)
         return ERR_INVALID_ARGS;
     uint64_t f = spin_lock_irqsave(&t->lock);
+    struct handle_slot *s = intransit_slot(t, h);
+    /* The slot was reserved by handle_take and held for us, so putting the
+     * handle back is O(1) and can never fail: a failed send never loses a
+     * handle. (O5, O6) */
     status_t st;
-    uint32_t idx = h >> GEN_BITS;
-    struct handle_slot *s = idx && idx <= t->capacity ? &t->slots[idx - 1] : NULL;
-    /* remove_locked bumped the generation once; nothing reused it since. */
-    if (s && !s->obj && ((s->gen - 1) & GEN_MASK) == (h & GEN_MASK)) {
-        uint32_t *link = &t->free_head;
-        while (*link && *link != idx)
-            link = &t->slots[*link - 1].next_free;
-        if (*link == idx) {
-            *link = s->next_free;
-            s->gen--;
-            s->obj = kh->obj;
-            s->rights = kh->rights;
-            t->used++;
-            *out = h;
-            st = OK;
-            goto done;
-        }
-    }
-    st = insert_locked(t, kh->obj, kh->rights, out);
-done:
-    spin_unlock_irqrestore(&t->lock, f);
-    if (st == OK)
+    if (s) {
+        s->gen--;             /* restore the original handle value */
+        s->obj = kh->obj;
+        s->rights = kh->rights;
+        s->intransit = false;
+        t->used++;
+        *out = h;
+        st = OK;
         kh->obj = NULL;
+    } else {
+        st = ERR_INTERNAL;    /* h was not a live in-transit handle */
+    }
+    spin_unlock_irqrestore(&t->lock, f);
+    return st;
+}
+
+status_t handle_commit(struct handle_table *t, handle_t h)
+{
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    struct handle_slot *s = intransit_slot(t, h);
+    status_t st = ERR_INTERNAL;
+    if (s) {
+        s->intransit = false;
+        freelist_push(t, (h >> GEN_BITS) - 1);   /* the send took it for good */
+        st = OK;
+    }
+    spin_unlock_irqrestore(&t->lock, f);
     return st;
 }

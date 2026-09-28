@@ -51,6 +51,7 @@ struct handle_table {
     uint32_t            capacity;
     uint32_t            used;
     uint32_t            free_head;   /* slot index + 1 of first free, 0 = none */
+    uint32_t            free_tail;   /* slot index + 1 of last free (FIFO reuse) */
 };
 
 #define HANDLE_TABLE_MAX 65536
@@ -73,7 +74,10 @@ status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, h
 status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out);
 /* Replace h with a new handle to the same object with fewer rights. */
 status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, handle_t *out);
-/* Undo handle_take: put kh back under its old value h if that slot is
- * still free and unused since, else under a new value. *out gets the value
- * (== h normally); kh is consumed on success. For a send that failed. */
+/* Undo handle_take for a send that FAILED: put kh back under its original
+ * value h. The slot was reserved by handle_take and held, so this is O(1) and
+ * cannot fail (*out == h; kh is consumed). */
 status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out);
+/* Finish handle_take for a send that SUCCEEDED: release the reserved slot so
+ * it can be reused. Call once per handle whose khandle the send consumed. */
+status_t handle_commit(struct handle_table *t, handle_t h);
