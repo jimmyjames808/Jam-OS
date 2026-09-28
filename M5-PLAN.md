@@ -174,6 +174,12 @@ Makefile, `boot/limine.conf` (module line).
   `thread_alloc`, handle-table growth, `kstack_alloc` and the
   `smp_call_others` allocation return errors instead of panicking.
 - `channel_call` wake-affine handoff; user priority cap at 24.
+- Per-CPU page caches for order-0 pages (a small magazine per CPU in front
+  of the buddy lock). The PC benchmark 2026-09-29: page alloc+free is
+  53 ns on one CPU but 19 us with all 28 CPUs allocating at once (one
+  global lock). Processes faulting pages in on every core will hit this.
+  Done when the all-CPU benchmark line is within a few times the one-CPU
+  line. Same idea for kmalloc (114 ns) later if it shows up.
 - `utest`: runs as a process under init and checks the milestone: syscalls
   and rights, bad pointers get `ERR_INVALID_ARGS`, a NULL dereference kills
   only that process, W^X in user space, channel ping-pong between two

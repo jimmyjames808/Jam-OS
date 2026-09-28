@@ -103,26 +103,37 @@ static void result(const char *what, uint64_t *s, unsigned n)
 
 static int cpu_p = -1, cpu_p2 = -1, cpu_ht = -1, cpu_e = -1;
 
+/* P is a P-core thread that is not CPU 0 and whose core is not CPU 0's
+ * core, so its hyperthread sibling can be tested too (the first run on the
+ * PC picked CPU 1, whose sibling is CPU 0, and skipped the HT test). */
 static void pick_cpus(void)
 {
     bool hybrid = false;
     for (uint32_t i = 0; i < cpu_count; i++)
         hybrid |= cpus[i]->type == CORE_EFFICIENCY;
     enum core_type big = hybrid ? CORE_PERFORMANCE : cpus[0]->type;
+    for (uint32_t i = 1; i < cpu_count && cpu_p < 0; i++)
+        if (cpus[i]->type == big && cpus[i]->core_id != cpus[0]->core_id)
+            cpu_p = (int)i;
+    for (uint32_t i = 1; i < cpu_count && cpu_p < 0; i++)
+        if (cpus[i]->type == big)
+            cpu_p = (int)i;   /* no SMT, or only one core */
+    if (cpu_p < 0) {
+        cpu_p = 0;            /* one CPU: the cross-CPU tests are skipped */
+        return;
+    }
     for (uint32_t i = 1; i < cpu_count; i++) {
         struct cpu *c = cpus[i];
-        if (cpu_p < 0 && c->type == big)
-            cpu_p = (int)i;
-        else if (cpu_p >= 0 && cpu_ht < 0 && c->core_id == cpus[cpu_p]->core_id)
+        if ((int)i == cpu_p)
+            continue;
+        if (cpu_ht < 0 && c->core_id == cpus[cpu_p]->core_id)
             cpu_ht = (int)i;
-        else if (cpu_p >= 0 && cpu_p2 < 0 && c->type == big &&
-                 c->core_id != cpus[cpu_p]->core_id)
+        else if (cpu_p2 < 0 && c->type == big && c->core_id != cpus[cpu_p]->core_id &&
+                 c->core_id != cpus[0]->core_id)
             cpu_p2 = (int)i;
         if (hybrid && cpu_e < 0 && c->type == CORE_EFFICIENCY)
             cpu_e = (int)i;
     }
-    if (cpu_p < 0)
-        cpu_p = 0;   /* one CPU: the cross-CPU tests are skipped */
 }
 
 static const char *kind(int cpu)
@@ -278,13 +289,20 @@ static void page_all_cpus(void)
     kfree(all);
 }
 
-/* ---- context switch: two threads yielding on one CPU ---------------------- */
+/* ---- context switch: two threads yielding on one CPU ----------------------
+ * The partner starts first and the timer waits until it runs, and the time
+ * is divided by the switches the scheduler actually counted on that CPU,
+ * not by an assumed number: the first PC run divided by 2 per yield while
+ * the partner hadn't been created yet, and reported a yield that switched
+ * to nobody (28.8 ns). */
 
-static volatile bool yield_done;
+static volatile bool yield_done, partner_running;
+static uint64_t yield_switches;
 
 static void yield_partner(void *arg)
 {
     (void)arg;
+    partner_running = true;
     while (!yield_done)
         thread_yield();
 }
@@ -292,26 +310,40 @@ static void yield_partner(void *arg)
 static void yield_timer(void *arg)
 {
     (void)arg;
+    while (!partner_running)
+        thread_yield();
     uint64_t until;
     warm_until(&until);
     while (uptime_ns() < until)
         thread_yield();
+    struct cpu *c = cpus[cpu_p];
     for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t sw0 = c->switches;
         uint64_t t0 = stamp();
         for (unsigned k = 0; k < BATCH; k++)
-            thread_yield();   /* switch to the partner and back: 2 switches */
-        samples[i] = span_ps(t0, stamp(), 2 * BATCH);
+            thread_yield();
+        uint64_t t1 = stamp();
+        uint64_t sw = c->switches - sw0;
+        yield_switches += sw;
+        samples[i] = sw ? span_ps(t0, t1, sw) : 0;
     }
     yield_done = true;
 }
 
 static void context_switch(void)
 {
-    yield_done = false;
-    struct thread *a = spawn_on(cpu_p, yield_timer, NULL);
+    yield_done = partner_running = false;
+    yield_switches = 0;
     struct thread *b = spawn_on(cpu_p, yield_partner, NULL);
+    struct thread *a = spawn_on(cpu_p, yield_timer, NULL);
     thread_join(a);
     thread_join(b);
+    uint64_t expect = 2ull * SAMPLES * BATCH;
+    if (yield_switches < expect * 9 / 10) {
+        report("bench: context switch: INVALID, only %lu of ~%lu yields switched",
+               yield_switches, expect);
+        return;
+    }
     result("context switch (yield between 2 threads, P)", samples, SAMPLES);
 }
 
@@ -565,12 +597,19 @@ void bench_run(void)
            "median and p99 of %u samples", SAMPLES);
     kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
 
+    /* The orchestrating thread stays on CPU 0, away from every measured CPU,
+     * so it can't be starved by (or compete with) a busy benchmark thread. */
+    cpumask_t zero, all;
+    cpumask_one(&zero, 0);
+    cpumask_all(&all);
+    thread_set_affinity(current_thread(), &zero);
+
     run_on(cpu_p, bench_stamp, NULL);
     result("timestamp cost (subtracted from all below)", samples, SAMPLES);
     uint64_t step_ps = cycles_to_ps(stamp_step);
     if (step_ps > 20000)   /* 20 ns: far coarser than any real TSC */
-        report("bench: WARNING: the TSC only advances every %lu ns here (emulated?); "
-               "single-shot results under ~%lu ns are not meaningful", step_ps / 1000, step_ps / 100);
+        report("bench: WARNING: TSC steps are %lu ns (emulated?): single-shot "
+               "results under ~%lu ns mean nothing", step_ps / 1000, step_ps / 100);
 
     batch("spin_lock + spin_unlock, uncontended (P)", op_lock);
     batch("kmalloc(64) + kfree (P)", op_kmalloc);
@@ -601,5 +640,6 @@ void bench_run(void)
         ksnprintf(what, sizeof(what), "TLB shootdown, 1 page, %u other CPUs", cpu_count - 1);
         result(what, samples, SAMPLES);
     }
+    thread_set_affinity(current_thread(), &all);
     kfree(samples);
 }
