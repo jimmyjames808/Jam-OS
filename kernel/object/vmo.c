@@ -140,7 +140,10 @@ static uint64_t phys_locked(struct vmo *v, uint64_t idx)
 }
 
 /* With the lock held (or from destroy): drop every page at index >= first,
- * and free the table pages that lie wholly past it. */
+ * and free the table pages that lie wholly past it. From vmo_destroy the VMO
+ * has no references, so this runs WITHOUT the lock held and its latency is
+ * harmless; from vmo_set_size it runs under the lock (see the TODO(O8) in
+ * vmo_decommit, which applies equally to shrinking a live VMO). */
 static void drop_from_locked(struct vmo *v, uint64_t first)
 {
     for (uint64_t r = first / MID_PAGES; r < ROOT_ENTRIES; r++) {
@@ -482,6 +485,14 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
         vunlock(v, f);
         return ERR_BAD_STATE;
     }
+    /* TODO(O8): this frees pages one at a time with the VMO lock held and
+     * interrupts off, up to ~16M for a full 64 GiB VMO (in practice bounded by
+     * the pages actually committed, i.e. by RAM). Batching -- dropping the
+     * lock between leaf tables -- is deliberately NOT done here: this is a
+     * live object, so after each window we would have to re-check that no
+     * mapping or pin now overlaps the range and that a racing commit has not
+     * re-populated a slot, which is a redesign out of proportion to a low-
+     * severity latency issue. Left as a documented TODO. */
     for (uint64_t idx = first; idx < end;) {
         uint64_t *s = slot_locked(v, idx, false);
         if (!s) {
