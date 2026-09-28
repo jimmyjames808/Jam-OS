@@ -7,6 +7,7 @@
 #include <jam/sched.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -165,15 +166,15 @@ bool smp_report(uint64_t window_ms)
                 c->lapic_id, type_name(c->type), c->core_id, c->smt_id, n, ok ? "" : "  <-- off");
     }
     if (p || e)
-        kprintf("topology: %u P-cores + %u E-cores, Hyper-Threading %s\n", p, e,
+        report("topology: %u CPUs: %u P-cores + %u E-cores, Hyper-Threading %s", cpu_count, p, e,
                 smt ? "ON" : "off");
     else
-        kprintf("topology: %u CPUs, SMT %s\n", cpu_count, smt ? "on" : "off");
-    kprintf("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s\n",
+        report("topology: %u CPUs, SMT %s", cpu_count, smt ? "on" : "off");
+    report("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s",
             lapic_timer_mode(), TICK_HZ, expect, measured_us / 1000, measured_us % 1000,
             bad ? "MISMATCH" : "all ok");
     if (lapic_errors || irq_unexpected)
-        kprintf("irq: %lu LAPIC errors (last ESR %x), %lu unexpected (last vector %u)\n",
+        report("irq: %lu LAPIC errors (last ESR %x), %lu unexpected (last vector %u)",
                 lapic_errors, lapic_last_esr, irq_unexpected, irq_last_unexpected);
     return bad == 0 && !lapic_errors;
 }

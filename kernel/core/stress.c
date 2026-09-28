@@ -4,6 +4,7 @@
  * Every check failure is counted; any failure fails the run. */
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
@@ -50,7 +51,7 @@ static uint64_t rnd(struct worker *w)
 static void fail(const char *what, struct worker *w)
 {
     if (__atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED) <= 10)
-        kprintf("stress: FAILED %s (thread %s#%u)\n", what, kind_names[w->kind], w->index);
+        report("stress: FAILED %s (thread %s#%u)", what, kind_names[w->kind], w->index);
 }
 
 static void do_counter(struct worker *w)
@@ -245,7 +246,7 @@ bool stress_run(uint64_t seconds)
             thread_sleep_ms(50);
         shootdown_round(va, sec);
         if (shoot_bad) {
-            kprintf("stress: FAILED TLB shootdown: a CPU saw a stale mapping\n");
+            report("stress: FAILED TLB shootdown: a CPU saw a stale mapping");
             failures++;
         }
         /* Starvation: every thread must finish an operation every 10 s.
@@ -257,7 +258,7 @@ bool stress_run(uint64_t seconds)
             for (uint32_t i = 0; i < n; i++) {
                 uint64_t last = ws[i].last_progress_ns;
                 if (last < now && now - last > 10000000000ull) {
-                    kprintf("stress: FAILED thread %s#%u (prio %d) made no progress for %lu s\n",
+                    report("stress: FAILED thread %s#%u (prio %d) made no progress for %lu s",
                             kind_names[ws[i].kind], i, ws[i].thread->base_prio,
                             (now - ws[i].last_progress_ns) / 1000000000);
                     failures++;
@@ -291,7 +292,7 @@ bool stress_run(uint64_t seconds)
     for (uint32_t i = 0; i < n; i++)
         expect += ws[i].local_count;
     if (counter != expect) {
-        kprintf("stress: FAILED mutex: counter %lu but threads counted %lu\n", counter, expect);
+        report("stress: FAILED mutex: counter %lu but threads counted %lu", counter, expect);
         failures++;
     }
     kfree(ws);
@@ -299,7 +300,7 @@ bool stress_run(uint64_t seconds)
     pmm_stats(&total, &free_after);
     kprintf("stress: %lu KiB not returned (thread stacks are kept for reuse)\n",
             (free_before - free_after) * 4);
-    kprintf("stress: %s after %lu s (%lu failures)\n", failures ? "FAILED" : "PASSED",
+    report("stress: %s after %lu s (%lu failures)", failures ? "FAILED" : "PASSED",
             (uptime_ns() - start) / 1000000000, failures);
     return failures == 0;
 }

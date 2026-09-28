@@ -1,4 +1,5 @@
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/sched.h>
@@ -77,7 +78,7 @@ int ktest_run(const char *prefix)
         kprintf("ktest: %-32s ok  %lu.%03lu ms\n", t->name, us / 1000, us % 1000);
         ran++;
     }
-    kprintf("ktest: %d test(s) passed (%u of %u lock classes in use)\n", ran,
+    report("ktest: %d test(s) passed (%u of %u lock classes in use)", ran,
             lockdep_class_count(), LOCKDEP_MAX_CLASSES);
     return ran;
 }

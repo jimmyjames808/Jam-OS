@@ -10,6 +10,7 @@
 #include <jam/channel.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
@@ -220,11 +221,11 @@ KTEST(m4_milestone_service)
     }
     handle_table_destroy(&server_table);
 
-    kprintf("m4: 1 server + %u clients on %u CPUs: %lu calls in %lu ms = %lu calls/s\n",
+    report("m4: 1 server + %u clients on %u CPUs: %lu calls in %lu ms = %lu calls/s",
             n_clients, cpu_count, calls, elapsed / 1000000,
             elapsed ? (uint64_t)(calls * 1000000000ull / elapsed) : (uint64_t)0);
-    kprintf("m4: call latency avg %lu ns, worst %lu us; %lu event handles delivered; "
-            "%lu timer ticks\n", calls ? total_ns / calls : 0, max_ns / 1000, events_ok,
+    report("m4: call latency avg %lu ns, worst %lu us; %lu event handles delivered; "
+           "%lu timer ticks", calls ? total_ns / calls : 0, max_ns / 1000, events_ok,
             timer_ticks);
 
     KT_EQ(bad, 0);

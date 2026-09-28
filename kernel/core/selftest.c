@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
@@ -171,7 +172,7 @@ static void test_smp_alloc(void)
         thread_join(ts[i]);
     pmm_stats(&total, &free_after);
     CHECK(smp_failures == 0);
-    kprintf("selftest: smp alloc ok (%u CPUs, %lu ops, %ld pages still in slabs)\n",
+    report("selftest: smp alloc ok (%u CPUs, %lu ops, %ld pages still in slabs)",
             cpu_count, smp_ops, (long)(free_before - free_after));
 }
 
@@ -320,7 +321,7 @@ void selftest_run_smp(void)
     test_threads_mutex();
     test_smp_alloc();
     test_tlb_shootdown();
-    kprintf("selftest: all passed\n");
+    report("selftest: all passed");
 }
 
 static int has_word(const char *s, const char *w)

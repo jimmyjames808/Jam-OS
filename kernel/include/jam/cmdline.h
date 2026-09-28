@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void cmdline_set(const char *cmdline);
+const char *cmdline_get(void);
 /* True if `word` appears as a whole space-separated word. */
 bool cmdline_has(const char *word);
 /* Value of key=N as a number; `dflt` if the key is absent, `bare` if it

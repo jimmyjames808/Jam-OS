@@ -12,6 +12,7 @@
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
+#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/selftest.h>
@@ -132,7 +133,9 @@ _Noreturn static void kmain_stage2(void *arg)
     selftest_crash_smp();
     sched_print_stats();
 
-    kprintf("\nM4.5 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    report("M4.5 %s", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    report_print(JAMOS_VERSION);
+    kprintf("Idling.\n");
     thread_exit();   /* CPU 0 falls through to its idle thread */
 }
 

@@ -81,6 +81,7 @@ KTEST(ist_stack_guards)
  * at once: the pair's edge is already known, so after the first round the
  * checker should write nothing shared (M4.5 fast path). */
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/time.h>
 
 #define LOCK_ROUNDS 200000
@@ -126,6 +127,6 @@ KTEST(lock_speed_all_cpus)
         if (speed[i].ns > worst)
             worst = speed[i].ns;
     }
-    kprintf("locks: nested lock+unlock pair on %u CPUs at once: avg %lu ns, worst CPU %lu ns\n",
+    report("locks: nested lock+unlock pair on %u CPUs at once: avg %lu ns, worst CPU %lu ns",
             cpu_count, sum / cpu_count / LOCK_ROUNDS, worst / LOCK_ROUNDS);
 }

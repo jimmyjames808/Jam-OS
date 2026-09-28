@@ -8,6 +8,11 @@ void cmdline_set(const char *s)
     cmdline = s ? s : "";
 }
 
+const char *cmdline_get(void)
+{
+    return cmdline;
+}
+
 bool cmdline_has(const char *word)
 {
     size_t wl = strlen(word);

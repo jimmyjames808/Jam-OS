@@ -5,6 +5,7 @@
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/ktest.h>
 #include <jam/port.h>
 #include <jam/sched.h>
@@ -213,6 +214,6 @@ KTEST(cancel_races_wakeup)
             KT_EQ(pkt.key, i);
         }
     }
-    kprintf("cancel: 2000 races, %u woken, %u cancelled\n", ok, canceled);
+    report("cancel: 2000 races, %u woken, %u cancelled", ok, canceled);
     handle_table_destroy(&t);
 }
