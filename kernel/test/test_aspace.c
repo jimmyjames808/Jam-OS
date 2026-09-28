@@ -11,6 +11,7 @@
 #include <jam/aspace_vmo.h>
 #include <jam/cpu.h>
 #include <jam/dbghook.h>
+#include <jam/handle.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -19,8 +20,10 @@
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
+#include <jam/sys.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
+#include <jam/vmar.h>
 #include <jam/vmo.h>
 #include <jam/x86.h>
 
@@ -863,4 +866,134 @@ KTEST(aspace_stress)
     /* Thread stacks may have joined the scheduler's cache; the harness
      * accounts those. Page tables and VMO pages must all be back. */
     KT_ASSERT(base - free_now() <= n * 16 + 4);
+}
+
+/* ---- vmar objects and the handle layer --------------------------------------- */
+
+static struct aspace *as_of(struct handle_table *t, handle_t vh, struct kobject **ref)
+{
+    KT_EQ(handle_get(t, vh, OBJ_VMAR, 0, ref, NULL), OK);
+    return vmar_aspace(vmar_from_kobject(*ref));
+}
+
+/* A new handle to h's VMO with exactly `rights` (which may include rights
+ * sys_vmo_create doesn't give, such as RIGHT_EXEC). */
+static handle_t vmo_handle_with(struct handle_table *t, handle_t h, rights_t rights)
+{
+    struct kobject *obj;
+    KT_EQ(handle_get(t, h, OBJ_VMO, 0, &obj, NULL), OK);
+    struct khandle kh = khandle_from_new(obj, rights);
+    handle_t out;
+    KT_EQ(handle_insert(t, &kh, &out), OK);
+    return out;
+}
+
+KTEST(vmar_sys_rights)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    KT_ASSERT(!strcmp(obj_type_name(OBJ_VMAR), "vmar"));
+    handle_t vh, h;
+    KT_EQ(sys_vmar_create(&t, &vh), OK);
+    rights_t r;
+    struct kobject *obj;
+    KT_EQ(handle_get(&t, vh, OBJ_VMAR, 0, &obj, &r), OK);
+    kobject_unref(obj);
+    KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE);
+    KT_EQ(sys_vmo_create(&t, 4 * PG, 0, HANDLE_INVALID, &h), OK);   /* READ WRITE MAP */
+    struct kobject *vref;
+    KT_EQ(handle_get(&t, h, OBJ_VMO, 0, &vref, NULL), OK);
+    struct vmo *v = vmo_from_kobject(vref);
+
+    /* Full handle: RW works; the kernel-only CAN bits and junk are refused. */
+    uint64_t a = 0;
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, 2 * PG, RW, &a), OK);
+    KT_EQ(a, USER_BASE);
+    uint64_t b = 0;
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, R | ASPACE_CAN_EXEC, &b), ERR_INVALID_ARGS);
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, R | (1u << 20), &b), ERR_INVALID_ARGS);
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, RW | ASPACE_EXEC, &b), ERR_INVALID_ARGS);
+    /* ...but no EXEC without RIGHT_EXEC, now or by protect later. */
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, RX, &b), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vh, a, PG, RX), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vh, a, PG, R), OK);
+    KT_EQ(sys_vmar_protect(&t, vh, a, PG, RW), OK);
+    KT_EQ(sys_vmar_protect(&t, vh, a, PG, RW | (1u << 9)), ERR_INVALID_ARGS);
+    struct kobject *aref;
+    struct aspace *as = as_of(&t, vh, &aref);
+    KT_EQ(aspace_fault(as, a + PG, ASPACE_WRITE), OK);
+
+    /* An EXEC-capable handle without WRITE: RX maps, RW never. */
+    handle_t xh = vmo_handle_with(&t, h, RIGHT_READ | RIGHT_EXEC | RIGHT_MAP);
+    KT_EQ(sys_vmar_map(&t, vh, xh, 0, PG, RX, &b), OK);
+    KT_EQ(sys_vmar_protect(&t, vh, b, PG, RW), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vh, b, PG, R), OK);
+    KT_EQ(sys_vmar_protect(&t, vh, b, PG, RX), OK);
+    KT_EQ(aspace_fault(as, b, ASPACE_EXEC), OK);
+    KT_EQ(sys_vmar_map(&t, vh, xh, 0, PG, RW, &b), ERR_ACCESS_DENIED);
+
+    /* Read-only handle: R only. No MAP right: nothing. */
+    handle_t ro, nomap;
+    KT_EQ(handle_duplicate(&t, h, RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &ro), OK);
+    uint64_t c = 0;
+    KT_EQ(sys_vmar_map(&t, vh, ro, 0, PG, RW, &c), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_map(&t, vh, ro, PG, PG, R, &c), OK);
+    KT_EQ(sys_vmar_protect(&t, vh, c, PG, RW), ERR_ACCESS_DENIED);
+    KT_EQ(aspace_fault(as, c, ASPACE_WRITE), ERR_ACCESS_DENIED);
+    KT_EQ(handle_duplicate(&t, h, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE, &nomap), OK);
+    KT_EQ(sys_vmar_map(&t, vh, nomap, 0, PG, R, &c), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_map(&t, vh, nomap, 0, PG, 0, &c), ERR_ACCESS_DENIED);
+
+    /* A vmar handle without WRITE can't change the address space. */
+    handle_t vro;
+    KT_EQ(handle_duplicate(&t, vh, RIGHTS_BASIC | RIGHT_READ, &vro), OK);
+    KT_EQ(sys_vmar_map(&t, vro, h, 0, PG, R, &c), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_unmap(&t, vro, a, PG), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vro, a, PG, R), ERR_ACCESS_DENIED);
+
+    /* Types and stale values. */
+    KT_EQ(sys_vmar_map(&t, h, h, 0, PG, R, &c), ERR_WRONG_TYPE);
+    KT_EQ(sys_vmar_map(&t, vh, vh, 0, PG, R, &c), ERR_WRONG_TYPE);
+    KT_EQ(sys_vmar_unmap(&t, h, a, PG), ERR_WRONG_TYPE);
+    KT_EQ(sys_vmar_map(&t, HANDLE_INVALID, h, 0, PG, R, &c), ERR_BAD_HANDLE);
+    KT_EQ(sys_vmar_map(&t, vh, HANDLE_INVALID, 0, PG, R, &c), ERR_BAD_HANDLE);
+
+    /* Errors from the address space pass through. */
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, 5 * PG, R, &c), ERR_OUT_OF_RANGE);
+    c = a;
+    KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, R | ASPACE_FIXED, &c), ERR_ALREADY_BOUND);
+    KT_EQ(sys_vmar_unmap(&t, vh, a, PG), OK);
+    KT_EQ(sys_vmar_unmap(&t, vh, a, PG), ERR_NOT_FOUND);
+    KT_EQ(aspace_mapping_count(as), 3);
+    kobject_unref(aref);
+
+    /* Every mapping holds the VMO; closing the vmar handles tears the
+     * address space down and lets go of it. */
+    KT_EQ(vref->refs, 4 + 1 + 3);   /* four handles, our lookup, three mappings */
+    KT_EQ(handle_close(&t, vro), OK);
+    KT_EQ(handle_close(&t, vh), OK);
+    KT_EQ(vref->refs, 4 + 1);
+    kobject_unref(vref);
+    (void)v;
+    handle_table_destroy(&t);
+}
+
+KTEST(vmar_create_for_shares_aspace)
+{
+    struct aspace *as = new_as();
+    struct vmar *v1, *v2;
+    KT_EQ(vmar_create_for(as, &v1), OK);
+    KT_EQ(vmar_create(&v2), OK);
+    KT_ASSERT(vmar_aspace(v1) == as);
+    KT_ASSERT(vmar_aspace(v2) != as);
+    aspace_unref(as);   /* v1 keeps it alive */
+    struct vmo *vmo;
+    KT_EQ(vmo_create(PG, 0, &vmo), OK);
+    uint64_t a = 0;
+    KT_EQ(aspace_map(vmar_aspace(v1), vmo, 0, PG, RW, &a), OK);
+    KT_EQ(aspace_fault(vmar_aspace(v1), a, ASPACE_WRITE), OK);
+    kobject_unref(vmar_kobject(v1));   /* last reference: unmaps and frees */
+    kobject_unref(vmar_kobject(v2));
+    KT_EQ(vmo_kobject(vmo)->refs, 1);
+    kobject_unref(vmo_kobject(vmo));
 }
