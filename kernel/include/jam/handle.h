@@ -73,3 +73,7 @@ status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, h
 status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out);
 /* Replace h with a new handle to the same object with fewer rights. */
 status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, handle_t *out);
+/* Undo handle_take: put kh back under its old value h if that slot is
+ * still free and unused since, else under a new value. *out gets the value
+ * (== h normally); kh is consumed on success. For a send that failed. */
+status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out);
