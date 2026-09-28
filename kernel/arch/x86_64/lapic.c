@@ -94,6 +94,10 @@ void lapic_eoi(void)
 static void send_icr(uint32_t dest, uint32_t low)
 {
     uint64_t f = irq_save();   /* xAPIC: the two ICR writes must not be split */
+    /* Per the SDM the x2APIC ICR WRMSR is not a serialising store barrier, so
+     * fence first: any store the IPI's target reads (e.g. watchdog_target
+     * before an NMI) must be globally visible before the IPI is sent. (C10) */
+    __asm__ volatile("mfence" ::: "memory");
     if (x2) {
         wrmsr(0x830, (uint64_t)dest << 32 | low);
     } else {
