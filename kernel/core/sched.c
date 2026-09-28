@@ -848,12 +848,14 @@ void mutex_init(struct mutex *m, const char *name)
 {
     spin_init(&m->lock, name);
     m->owner = NULL;
+    m->dep_cls = 0;
     waitqueue_init(&m->wq, "mutex waiters");
 }
 
 void mutex_lock(struct mutex *m)
 {
     struct thread *me = current_thread();
+    lockdep_sleep_acquire(m, m->lock.name, &m->dep_cls);
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->owner == me)
         panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
@@ -869,6 +871,7 @@ void mutex_unlock(struct mutex *m)
     if (m->owner != current_thread())
         panic("mutex \"%s\": unlocked by a thread that does not own it", m->lock.name);
     m->owner = NULL;
+    lockdep_sleep_release(m);
     /* Wake a waiter while still holding m->lock. Once ownership is dropped
      * and m->lock released, the woken waiter can take the mutex and free the
      * object it guards, so touching m->wq afterwards is a use-after-free. The

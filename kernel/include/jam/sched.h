@@ -51,6 +51,8 @@ enum thread_state {
     T_DEAD,
 };
 
+#define MAX_HELD_MUTEXES 8
+
 struct waitqueue {
     spinlock_t       lock;
     struct list_node waiters;
@@ -82,6 +84,11 @@ struct thread {
     struct waitqueue  exit_wq;
 
     uint64_t          switches_in;
+
+    /* Lock checker: mutexes this thread holds, innermost last. */
+    uint32_t          sleep_depth;
+    const void       *sleep_held[MAX_HELD_MUTEXES];
+    uint8_t           sleep_cls[MAX_HELD_MUTEXES];
 };
 
 /* Create and start a thread. The caller gets a reference: release it with
@@ -147,6 +154,7 @@ struct mutex {
     spinlock_t       lock;
     struct thread   *owner;
     struct waitqueue wq;
+    uint16_t         dep_cls;   /* lock checker class + 1, 0 until first use */
 };
 void mutex_init(struct mutex *m, const char *name);
 void mutex_lock(struct mutex *m);

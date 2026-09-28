@@ -76,3 +76,51 @@ KTEST(ist_stack_guards)
         }
     }
 }
+
+/* Cost of a nested spin_lock/unlock pair with the checker on, on every CPU
+ * at once: the pair's edge is already known, so after the first round the
+ * checker should write nothing shared (M4.5 fast path). */
+#include <jam/kprintf.h>
+#include <jam/time.h>
+
+#define LOCK_ROUNDS 200000
+
+static spinlock_t speed_outer[MAX_CPUS], speed_inner[MAX_CPUS];
+static volatile uint64_t speed_ns[MAX_CPUS];
+
+static void lock_speed_worker(void *arg)
+{
+    uint32_t i = (uint32_t)(uintptr_t)arg;
+    uint64_t t0 = uptime_ns();
+    for (int r = 0; r < LOCK_ROUNDS; r++) {
+        spin_lock(&speed_outer[i]);
+        spin_lock(&speed_inner[i]);
+        spin_unlock(&speed_inner[i]);
+        spin_unlock(&speed_outer[i]);
+    }
+    speed_ns[i] = uptime_ns() - t0;
+}
+
+KTEST(lock_speed_all_cpus)
+{
+    struct thread *th[MAX_CPUS];
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        spin_init(&speed_outer[i], "speed outer");
+        spin_init(&speed_inner[i], "speed inner");
+    }
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        cpumask_t m;
+        cpumask_one(&m, i);
+        th[i] = thread_create_on("lock-speed", lock_speed_worker, (void *)(uintptr_t)i,
+                                 PRIO_DEFAULT, &m);
+    }
+    uint64_t worst = 0, sum = 0;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        thread_join(th[i]);
+        sum += speed_ns[i];
+        if (speed_ns[i] > worst)
+            worst = speed_ns[i];
+    }
+    kprintf("locks: nested lock+unlock pair on %u CPUs at once: avg %lu ns, worst CPU %lu ns\n",
+            cpu_count, sum / cpu_count / LOCK_ROUNDS, worst / LOCK_ROUNDS);
+}

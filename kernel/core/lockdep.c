@@ -1,30 +1,49 @@
 /* Spinlock implementation and the lock-order checker.
  *
- * Classes are keyed by (name, subclass). The dependency graph is a 64x64
- * bit matrix: deps[a] has bit b set once class b was taken while a was
- * held. Taking B while holding A is an inversion if A is already reachable
- * from B. The checker's own state is guarded by a raw flag, not a
- * spinlock_t, so it cannot recurse into itself. */
+ * Classes are keyed by (name, subclass, sleeping). The dependency graph is
+ * a 256x256 bit matrix: deps[a] has bit b set once class b was taken while
+ * a was held. Taking B while holding A is an inversion if A is already
+ * reachable from B.
+ *
+ * Fast path: dependency bits and a class's interrupt flags are only ever
+ * SET, never cleared, so reading them without a lock is safe: a bit seen
+ * set was validated when it was added. Only an acquisition that needs a
+ * NEW edge (or a new class) takes the graph lock, rechecks, and runs the
+ * cycle search. Once a workload's lock pairs have all been seen, taking a
+ * spinlock writes nothing shared. The graph lock is a raw flag, not a
+ * spinlock_t, so the checker never recurses into itself.
+ *
+ * Sleeping locks (mutexes) are tracked per thread, since a thread holds
+ * them across sleeps and migrations. Only mutex -> mutex edges are
+ * recorded: taking a mutex with a spinlock held is refused outright, so no
+ * spinlock -> mutex edge can exist and no cycle can pass through both. */
 #include <jam/kprintf.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
+#include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define MAX_CLASSES 64
-#define STUCK_SECONDS 5
+#define MAX_CLASSES    LOCKDEP_MAX_CLASSES
+#define WORDS          (MAX_CLASSES / 64)
+#define MAX_SUBCLASSES 8
+#define STUCK_SECONDS  5
+
+#define F_IN_IRQ  1u   /* acquired inside an interrupt handler */
+#define F_IRQS_ON 2u   /* acquired with interrupts enabled */
 
 struct lock_class {
     const char *name;
     uint8_t     subclass;
-    bool        used_in_irq;     /* acquired inside an interrupt handler */
-    bool        used_irqs_on;    /* acquired with interrupts enabled */
+    bool        sleeping;
+    uint8_t     flags;                 /* F_*, set-only */
+    uint16_t    sub[MAX_SUBCLASSES];   /* subclass -> class index + 1 */
 };
 
 static struct lock_class classes[MAX_CLASSES];
-static uint64_t deps[MAX_CLASSES];
+static uint64_t deps[MAX_CLASSES][WORDS];
 static unsigned class_count;
 static volatile bool graph_busy;
 static volatile bool disabled;
@@ -46,9 +65,14 @@ static void graph_unlock(uint64_t f)
     irq_restore(f);
 }
 
+static bool dep_test(unsigned a, unsigned b)
+{
+    return __atomic_load_n(&deps[a][b / 64], __ATOMIC_RELAXED) & (1ull << (b % 64));
+}
+
 unsigned lockdep_class_count(void)
 {
-    return class_count;
+    return __atomic_load_n(&class_count, __ATOMIC_ACQUIRE);
 }
 
 void lockdep_off(void)
@@ -56,43 +80,80 @@ void lockdep_off(void)
     disabled = true;
 }
 
-static unsigned class_of(spinlock_t *l, unsigned subclass)
+/* With the graph lock held: find or add (name, subclass, sleeping). */
+static unsigned find_or_add_locked(const char *name, unsigned subclass, bool sleeping)
 {
-    const char *name = l->name ? l->name : "(unnamed)";
-    if (subclass == 0 && l->cls)
-        return l->cls - 1;
-    uint64_t f = graph_lock();
     unsigned i;
     for (i = 0; i < class_count; i++)
-        if (classes[i].subclass == subclass && !strcmp(classes[i].name, name))
-            break;
-    if (i == class_count) {
-        if (class_count == MAX_CLASSES) {
-            graph_unlock(f);
-            panic("lockdep: more than %d lock classes", MAX_CLASSES);
-        }
-        classes[class_count++] = (struct lock_class){ name, (uint8_t)subclass, false, false };
+        if (classes[i].subclass == subclass && classes[i].sleeping == sleeping &&
+            !strcmp(classes[i].name, name))
+            return i;
+    if (class_count == MAX_CLASSES) {
+        __atomic_clear(&graph_busy, __ATOMIC_RELEASE);
+        panic("lockdep: more than %d lock classes", MAX_CLASSES);
     }
-    graph_unlock(f);
-    if (subclass == 0)
-        l->cls = (uint16_t)(i + 1);
+    classes[i] = (struct lock_class){ .name = name, .subclass = (uint8_t)subclass,
+                                      .sleeping = sleeping };
+    __atomic_store_n(&class_count, i + 1, __ATOMIC_RELEASE);
     return i;
 }
 
+/* The class of a lock whose index + 1 is cached in *cache (0 = not yet). */
+static unsigned base_class(const char *name, uint16_t *cache, bool sleeping)
+{
+    uint16_t c = __atomic_load_n(cache, __ATOMIC_RELAXED);
+    if (c)
+        return c - 1u;
+    uint64_t f = graph_lock();
+    unsigned i = find_or_add_locked(name, 0, sleeping);
+    graph_unlock(f);
+    __atomic_store_n(cache, (uint16_t)(i + 1), __ATOMIC_RELAXED);
+    return i;
+}
+
+static unsigned class_of(spinlock_t *l, unsigned subclass)
+{
+    const char *name = l->name ? l->name : "(unnamed)";
+    unsigned base = base_class(name, &l->cls, false);
+    if (subclass == 0)
+        return base;
+    if (subclass >= MAX_SUBCLASSES)
+        panic("lockdep: subclass %u of \"%s\" (max %d)", subclass, name, MAX_SUBCLASSES - 1);
+    uint16_t c = __atomic_load_n(&classes[base].sub[subclass], __ATOMIC_ACQUIRE);
+    if (c)
+        return c - 1u;
+    uint64_t f = graph_lock();
+    unsigned i = find_or_add_locked(name, subclass, false);
+    __atomic_store_n(&classes[base].sub[subclass], (uint16_t)(i + 1), __ATOMIC_RELEASE);
+    graph_unlock(f);
+    return i;
+}
+
+/* With the graph lock held: can `to` be reached from `from`? */
 static bool reachable(unsigned from, unsigned to)
 {
-    uint64_t seen = 1ull << from, frontier = deps[from];
-    while (frontier & ~seen) {
-        uint64_t next = 0, fresh = frontier & ~seen;
-        seen |= fresh;
-        while (fresh) {
-            unsigned b = __builtin_ctzll(fresh);
-            fresh &= fresh - 1;
-            next |= deps[b];
+    uint64_t seen[WORDS] = { 0 }, frontier[WORDS];
+    seen[from / 64] |= 1ull << (from % 64);
+    memcpy(frontier, deps[from], sizeof(frontier));
+    for (;;) {
+        uint64_t next[WORDS] = { 0 };
+        bool any = false;
+        for (unsigned w = 0; w < WORDS; w++) {
+            uint64_t fresh = frontier[w] & ~seen[w];
+            seen[w] |= fresh;
+            while (fresh) {
+                unsigned b = w * 64 + (unsigned)__builtin_ctzll(fresh);
+                fresh &= fresh - 1;
+                any = true;
+                for (unsigned x = 0; x < WORDS; x++)
+                    next[x] |= deps[b][x];
+            }
         }
-        frontier = next;
+        if (!any)
+            break;
+        memcpy(frontier, next, sizeof(frontier));
     }
-    return seen & (1ull << to);
+    return seen[to / 64] & (1ull << (to % 64));
 }
 
 static const char *cname(unsigned c)
@@ -113,7 +174,51 @@ void lockdep_print_held(void)
     kprintf("  cpu %u holds %u lock(s):", c->index, c->held_depth);
     for (unsigned i = 0; i < c->held_depth; i++)
         kprintf(" %s", c->held[i]->name);
+    struct thread *t = c->current;
+    if (t && t->sleep_depth) {
+        kprintf("; thread \"%s\" holds mutex(es):", t->name);
+        for (unsigned i = 0; i < t->sleep_depth; i++)
+            kprintf(" %s", cname(t->sleep_cls[i]));
+    }
     kprintf("\n");
+}
+
+/* Record held[i] -> cls for every held class, refusing an edge that would
+ * close a cycle. Returns the held class that would, or MAX_CLASSES. */
+static unsigned add_edges(const uint8_t *held, unsigned n, unsigned cls)
+{
+    unsigned i;
+    for (i = 0; i < n; i++)
+        if (!dep_test(held[i], cls))
+            break;
+    if (i == n)
+        return MAX_CLASSES;   /* every edge already known: nothing to write */
+
+    unsigned bad = MAX_CLASSES;
+    uint64_t f = graph_lock();
+    for (; i < n; i++) {
+        unsigned h = held[i];
+        if (dep_test(h, cls))
+            continue;
+        if (h == cls || reachable(cls, h)) {
+            bad = h;
+            break;
+        }
+        __atomic_or_fetch(&deps[h][cls / 64], 1ull << (cls % 64), __ATOMIC_RELAXED);
+    }
+    graph_unlock(f);
+    return bad;
+}
+
+static void inversion(unsigned cls, unsigned bad_from)
+{
+    lockdep_print_held();
+    if (bad_from == cls)
+        panic("lockdep: taking a second \"%s\" while holding one; use "
+              "spin_lock_nested with a subclass for an ordered pair", cname(cls));
+    panic("lockdep: lock order inversion: taking \"%s\" while holding \"%s\", "
+          "but \"%s\" has been taken while holding \"%s\" before (ABBA deadlock)",
+          cname(cls), cname(bad_from), cname(bad_from), cname(cls));
 }
 
 /* The held-lock list is per CPU and updated in two steps (write the slot,
@@ -145,39 +250,20 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
     }
 
     /* Interrupt-safety: a class taken inside an interrupt handler must
-     * never be taken with interrupts enabled, or the handler can
-     * interrupt the holder on the same CPU and spin forever. */
-    bool in_irq = c->irq_depth > 0;
-    uint64_t f = graph_lock();
-    struct lock_class *k = &classes[cls];
-    if (in_irq)
-        k->used_in_irq = true;
-    if (irqs_on)
-        k->used_irqs_on = true;
-    bool irq_bug = k->used_in_irq && k->used_irqs_on;
-
-    /* Ordering: record held -> this, refusing edges that close a cycle. */
-    unsigned bad_from = MAX_CLASSES;
-    for (unsigned i = 0; i < c->held_depth && bad_from == MAX_CLASSES; i++) {
-        unsigned h = c->held_cls[i];
-        if (deps[h] & (1ull << cls))
-            continue;
-        if (h == cls || reachable(cls, h))
-            bad_from = h;
-        else
-            deps[h] |= 1ull << cls;
-    }
-    graph_unlock(f);
-
-    if (irq_bug)
+     * never be taken with interrupts enabled, or the handler can interrupt
+     * the holder on the same CPU and spin forever. Whichever CPU sets the
+     * second flag sees both in its atomic OR's result. */
+    uint8_t want = (c->irq_depth > 0 ? F_IN_IRQ : 0) | (irqs_on ? F_IRQS_ON : 0);
+    uint8_t flags = __atomic_load_n(&classes[cls].flags, __ATOMIC_RELAXED);
+    if ((flags & want) != want)
+        flags = __atomic_or_fetch(&classes[cls].flags, want, __ATOMIC_SEQ_CST);
+    if ((flags & (F_IN_IRQ | F_IRQS_ON)) == (F_IN_IRQ | F_IRQS_ON))
         panic("lockdep: lock \"%s\" is taken both in interrupt handlers and with "
               "interrupts enabled; use spin_lock_irqsave", cname(cls));
-    if (bad_from != MAX_CLASSES) {
-        lockdep_print_held();
-        panic("lockdep: lock order inversion: taking \"%s\" while holding \"%s\", "
-              "but \"%s\" has been taken while holding \"%s\" before (ABBA deadlock)",
-              cname(cls), cname(bad_from), cname(bad_from), cname(cls));
-    }
+
+    unsigned bad = add_edges(c->held_cls, c->held_depth, cls);
+    if (bad != MAX_CLASSES)
+        inversion(cls, bad);
 
     if (c->held_depth == MAX_HELD_LOCKS)
         panic("lockdep: cpu %u holds more than %d locks", c->index, MAX_HELD_LOCKS);
@@ -205,6 +291,55 @@ static void release_checks(spinlock_t *l)
     }
     lockdep_print_held();
     panic("lockdep: cpu %u releases \"%s\" which it does not hold", c->index, l->name);
+}
+
+/* ---- sleeping locks --------------------------------------------------------- */
+
+void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache)
+{
+    if (disabled)
+        return;
+    struct thread *t = current_thread();
+    uint64_t f = irq_save();
+    struct cpu *c = this_cpu();
+    if (c->irq_depth)
+        panic("lockdep: mutex \"%s\" taken in an interrupt handler", name);
+    if (c->held_depth) {
+        lockdep_print_held();
+        panic("lockdep: mutex \"%s\" taken with a spinlock held (it may sleep)", name);
+    }
+    irq_restore(f);
+
+    unsigned cls = base_class(name, cache, true);
+    for (unsigned i = 0; i < t->sleep_depth; i++)
+        if (t->sleep_held[i] == lock)
+            panic("lockdep: thread \"%s\" takes mutex \"%s\" it already holds", t->name, name);
+    unsigned bad = add_edges(t->sleep_cls, t->sleep_depth, cls);
+    if (bad != MAX_CLASSES)
+        inversion(cls, bad);
+    if (t->sleep_depth == MAX_HELD_MUTEXES)
+        panic("lockdep: thread \"%s\" holds more than %d mutexes", t->name, MAX_HELD_MUTEXES);
+    t->sleep_held[t->sleep_depth] = lock;
+    t->sleep_cls[t->sleep_depth] = (uint8_t)cls;
+    t->sleep_depth++;
+}
+
+void lockdep_sleep_release(const void *lock)
+{
+    if (disabled)
+        return;
+    struct thread *t = current_thread();
+    for (unsigned i = t->sleep_depth; i-- > 0;) {
+        if (t->sleep_held[i] != lock)
+            continue;
+        for (unsigned j = i; j + 1 < t->sleep_depth; j++) {
+            t->sleep_held[j] = t->sleep_held[j + 1];
+            t->sleep_cls[j] = t->sleep_cls[j + 1];
+        }
+        t->sleep_depth--;
+        return;
+    }
+    panic("lockdep: thread \"%s\" releases a mutex it does not hold", t->name);
 }
 
 /* ---- the lock itself ---------------------------------------------------- */

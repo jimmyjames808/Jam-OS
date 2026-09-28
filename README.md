@@ -16,7 +16,8 @@ The boot menu has **M4 tests** (`ktest`: every in-kernel test), a
 **10-minute stress test** and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
 crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`,
-`testlockorder`, `teststuck`, `testwatchdog`, `testpanic`; `testbp` must
+`testlockorder`, `testlocknest`, `testlockirq`, `testmutexorder`,
+`testmutexspin`, `teststuck`, `testwatchdog`, `testpanic`; `testbp` must
 continue). To run any kernel command line headless and get the log and a
 screenshot:
 

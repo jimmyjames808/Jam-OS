@@ -5,9 +5,10 @@
  * records "A was held while B was taken" for every pair of classes it sees,
  * and panics the first time an acquisition would complete a cycle (the
  * pattern behind every ABBA deadlock), even if the deadlock itself never
- * happened on this run. It also catches taking the same lock twice, a
- * class used both from interrupt handlers and with interrupts enabled, and
- * a lock that has been spinning for 5 seconds.
+ * happened on this run. It also catches taking the same lock twice, two
+ * locks of one class nested without spin_lock_nested, a class used both
+ * from interrupt handlers and with interrupts enabled, and a lock that has
+ * been spinning for 5 seconds. Mutexes are checked the same way.
  *
  * Holding a spinlock disables preemption on this CPU. */
 #pragma once
@@ -90,7 +91,12 @@ void preempt_enable_no_resched(void);
 
 /* Turn the checker off (the panic path, where rules no longer matter). */
 void lockdep_off(void);
-/* How many lock classes the checker has seen (it holds at most 64). */
+#define LOCKDEP_MAX_CLASSES 256
+/* How many lock classes the checker has seen (at most LOCKDEP_MAX_CLASSES). */
 unsigned lockdep_class_count(void);
+/* Sleeping locks (mutexes): tracked per thread. `cache` holds the lock's
+ * class index + 1 once known (0 before). */
+void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache);
+void lockdep_sleep_release(const void *lock);
 /* Print the locks this CPU holds (for panics and assertions). */
 void lockdep_print_held(void);

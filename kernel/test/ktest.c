@@ -77,7 +77,7 @@ int ktest_run(const char *prefix)
         kprintf("ktest: %-32s ok  %lu.%03lu ms\n", t->name, us / 1000, us % 1000);
         ran++;
     }
-    kprintf("ktest: %d test(s) passed (%u of 64 lock classes in use)\n", ran,
-            lockdep_class_count());
+    kprintf("ktest: %d test(s) passed (%u of %u lock classes in use)\n", ran,
+            lockdep_class_count(), LOCKDEP_MAX_CLASSES);
     return ran;
 }

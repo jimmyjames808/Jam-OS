@@ -350,6 +350,17 @@ static volatile uint64_t *volatile null_ptr;
 
 static spinlock_t lock_a = SPINLOCK_INIT("test lock A");
 static spinlock_t lock_b = SPINLOCK_INIT("test lock B");
+static spinlock_t lock_c = SPINLOCK_INIT("test lock C");
+static spinlock_t pair_1 = SPINLOCK_INIT("test pair");
+static spinlock_t pair_2 = SPINLOCK_INIT("test pair");
+static struct mutex mutex_a, mutex_b;
+
+static void take_c_in_irq(void *arg)
+{
+    (void)arg;
+    spin_lock(&lock_c);   /* runs in the IPI handler */
+    spin_unlock(&lock_c);
+}
 
 static void hold_forever(void *arg)
 {
@@ -378,6 +389,31 @@ void selftest_crash_smp(void)
         spin_unlock(&lock_a);
         spin_lock(&lock_b);
         spin_lock(&lock_a);
+    }
+    if (cmdline_has("testlocknest")) {
+        /* Two locks of one class, nested without spin_lock_nested. */
+        spin_lock(&pair_1);
+        spin_lock(&pair_2);
+    }
+    if (cmdline_has("testlockirq") && cpu_count > 1) {
+        /* Taken in an interrupt handler on CPU 1, then with interrupts on. */
+        smp_call_on(1, take_c_in_irq, NULL);
+        spin_lock(&lock_c);
+    }
+    if (cmdline_has("testmutexorder")) {
+        mutex_init(&mutex_a, "test mutex A");
+        mutex_init(&mutex_b, "test mutex B");
+        mutex_lock(&mutex_a);
+        mutex_lock(&mutex_b);
+        mutex_unlock(&mutex_b);
+        mutex_unlock(&mutex_a);
+        mutex_lock(&mutex_b);
+        mutex_lock(&mutex_a);
+    }
+    if (cmdline_has("testmutexspin")) {
+        mutex_init(&mutex_a, "test mutex A");
+        spin_lock(&lock_a);
+        mutex_lock(&mutex_a);   /* may sleep with a spinlock held */
     }
     if (cmdline_has("teststuck") && cpu_count > 1) {
         spawn_pinned("lock-hog", hold_forever, 1, PRIO_DEFAULT);

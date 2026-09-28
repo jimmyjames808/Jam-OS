@@ -11,7 +11,8 @@ void selftest_run_smp(void);
  * ("testpf", "testro", "testrohhdm", "teststack", "testpanic", "testbp"). */
 void selftest_crash(const char *cmdline);
 /* Deliberate crashes that need the scheduler and all CPUs
- * ("testlockorder", "teststuck", "testwatchdog"). */
+ * ("testlockorder", "testlocknest", "testlockirq", "testmutexorder",
+ * "testmutexspin", "teststuck", "testwatchdog"). */
 void selftest_crash_smp(void);
 /* Stress test for `seconds`; returns true if every check held. */
 bool stress_run(uint64_t seconds);
