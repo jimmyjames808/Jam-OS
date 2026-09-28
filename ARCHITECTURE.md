@@ -6,8 +6,9 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 
 - Runs on a real x86_64 PC, booting via UEFI from a USB stick.
 - Close to daily-drivable, text console first (graphics are not a goal yet).
-- **Monolithic first, microkernel soon after**: drivers and services move to
-  userspace once the system works end to end.
+- **Microkernel one driver at a time**: each driver and service is brought up
+  inside the kernel (where debugging on the real PC is easiest) and moved to
+  userspace in the same milestone, as soon as it is proven working there.
 
 | Decision | Choice |
 |---|---|
@@ -23,7 +24,8 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 | Filesystem | FAT32 only, on USB mass storage |
 | Ported code | Limine, uACPI, lwIP |
 | Executables | Static ELF64 |
-| IOMMU | Not yet; DMA gated by `dma_cap`, VT-d/AMD-Vi added behind it after M11 |
+| IOMMU | Not yet; DMA gated by `dma_cap`, VT-d/AMD-Vi added behind it in M11 |
+| Driver migration | Decided 2026-09-28: move each driver out once proven on the PC, not in one late milestone |
 | Users/logins | *(open)* |
 | Target PC | i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
 | Networking | *(open: board Ethernet port or USB Ethernet adapter; Wi-Fi is not planned)* |
@@ -42,6 +44,14 @@ Every driver and service is written as if it were already a userspace process.
   driver. A build check will enforce this.
 
 Moving a driver to userspace is then a rebuild and a relaunch, not a rewrite.
+
+**When a driver moves:** as soon as it is proven working on the real PC, in
+the same milestone that introduced it. Bring-up happens as a kernel thread
+(full panic screen, direct logging); the milestone is only done once the
+same driver passes the same checks as a userspace process. M6 therefore
+builds the userspace driver support (interrupt objects, MMIO/port resource
+handles, DMA-pinned VMOs mapped into processes, devmgr as a process) along
+with the framework itself.
 
 ## Layers
 
@@ -241,12 +251,12 @@ uACPI stays in the kernel permanently; everything else moves out.
 | **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | real PC 2026-09-28: 10-min stress passed (112 threads, 28 CPUs, lock checking on), after fixing an IRQ race in the checker found by the first run at 230 s |
 | M4 | Objects, handles, channels, ports, VMOs | in-kernel channel ping-pong |
 | M5 | Ring 3, syscalls, ELF loader, bootfs, init | init runs from bootfs |
-| M6 | devmgr, PCIe, MSI, `<jam/driver.h>` | drivers bound through the handle-only API |
-| M7 | xHCI → HID → interactive shell | typing into the shell on the real PC |
-| M8 | USB mass storage → FAT32 | `ls /usb0` |
-| M9 | NIC → lwIP → DHCP/DNS | `ping 1.1.1.1` on the real PC |
-| M10 | uACPI poweroff/reboot/power button | clean shutdown on real hardware |
-| M11 | Migrate drivers to userspace (NIC, then USB storage, then xHCI) | same behaviour; a crashed driver restarts |
-| M12 | S3 sleep, own UEFI loader, POSIX on musl, IOMMU | stretch |
+| M6 | devmgr, PCIe, MSI, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
+| M7 | xHCI → HID → interactive shell (each moved to userspace once working) | typing into the shell on the real PC, with the USB drivers as processes |
+| M8 | USB mass storage → FAT32 (userspace once working) | `ls /usb0`, from a userspace filesystem service |
+| M9 | NIC → lwIP → DHCP/DNS (userspace once working) | `ping 1.1.1.1` on the real PC through a userspace network stack |
+| M10 | uACPI poweroff/reboot/power button (stays in the kernel) | clean shutdown on real hardware |
+| M11 | Driver supervision: restart crashed drivers, IOMMU (VT-d) behind `dma_cap` | killing a driver process mid-use recovers; DMA outside a driver's VMOs is blocked |
+| M12 | S3 sleep, own UEFI loader, POSIX on musl | stretch |
 
 Every milestone is checked on the real PC from M0 on.
