@@ -168,6 +168,23 @@ uint64_t vmm_translate(uint64_t pml4, uint64_t va)
     return UINT64_MAX;
 }
 
+int vmm_access(uint64_t pml4, uint64_t va)
+{
+    uint64_t *t = table(pml4);
+    bool w = true, x = true;
+    for (int l = 4; l >= 1; l--) {
+        uint64_t e = t[(va >> (12 + 9 * (l - 1))) & 511];
+        if (!(e & PTE_P))
+            return -1;
+        w &= !!(e & PTE_W);
+        x &= !(e & PTE_NX);
+        if (l == 1 || (e & PTE_PS))
+            return (w ? VM_WRITE : 0) | (x ? VM_EXEC : 0);
+        t = table(e);
+    }
+    return -1;
+}
+
 const char *vmm_cache_type(uint64_t pml4, uint64_t va)
 {
     static const char *const names[8] = { "UC", "WC", "?", "?", "WT", "WP", "WB", "UC-" };
@@ -260,7 +277,11 @@ void vmm_init(const struct boot_info *bi)
             continue;
         uint64_t base = ALIGN_DOWN(r->base, PAGE_SIZE);
         uint64_t end = ALIGN_UP(r->base + r->length, PAGE_SIZE);
-        vmm_map(kernel_pml4, base + hhdm_offset, base, end - base, VM_WRITE | VM_GLOBAL);
+        /* The kernel image and boot modules are read-only through the HHDM:
+         * otherwise kernel text would be writable through this alias, and
+         * W^X only holds if it holds for every mapping of a page. */
+        unsigned flags = r->type == BOOT_MEM_KERNEL_AND_MODULES ? 0 : VM_WRITE;
+        vmm_map(kernel_pml4, base + hhdm_offset, base, end - base, flags | VM_GLOBAL);
     }
 
     if (bi->fb.virt) {

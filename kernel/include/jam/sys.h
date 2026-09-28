@@ -20,13 +20,17 @@ status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b);
 status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
                            const handle_t *handles, uint32_t nhandles);
 /* Needs RIGHT_READ. Received handles are inserted into t and their values
- * stored in handles[0 .. *actual_handles). */
+ * stored in handles[0 .. *actual_handles). If t has no room for them the
+ * read fails (ERR_NO_RESOURCES) and the message stays queued: no handle is
+ * ever lost on the way in. */
 status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint32_t bytes_cap,
                           uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
                           uint32_t *actual_handles);
 /* Needs RIGHT_READ | RIGHT_WRITE. Request handles as for sys_channel_write
- * (they stay in t if the request could not be sent), reply handles as for
- * sys_channel_read. */
+ * (they stay in t if the request could not be sent). Slots for up to rhcap
+ * reply handles are reserved before the request is sent, so a full table
+ * fails the call up front (ERR_NO_RESOURCES) instead of losing the reply's
+ * handles. */
 status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint32_t wn,
                           const handle_t *wh, uint32_t whn, void *rbytes, uint32_t rcap,
                           uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
@@ -58,6 +62,9 @@ status_t sys_port_queue(struct handle_table *t, handle_t port,
                         const struct port_packet *pkt);                    /* RIGHT_WRITE */
 status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_ns,
                        struct port_packet *out);                           /* RIGHT_READ */
+/* RIGHT_SIGNAL, any type: set/clear the user bits (SIG_USER_ALL only; the
+ * kernel owns the rest). Wakes waiters and ports like any signal change. */
+status_t sys_object_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set);
 /* RIGHT_WAIT, any type. */
 status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
                              uint64_t deadline_ns, signals_t *observed);

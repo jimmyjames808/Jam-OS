@@ -402,6 +402,10 @@ void selftest_crash(const char *cmdline)
         null_ptr[3] = 1;
     if (has_word(cmdline, "testro"))   /* kernel text must be read-only */
         *(volatile uint8_t *)(uintptr_t)&selftest_run = 0xcc;
+    if (has_word(cmdline, "testrohhdm")) {   /* ...through the HHDM alias too */
+        uint64_t pa = vmm_translate(vmm_kernel_pml4(), (uint64_t)(uintptr_t)&selftest_run);
+        *(volatile uint8_t *)phys_to_virt(pa) = 0xcc;
+    }
     if (has_word(cmdline, "teststack"))
         kprintf("%lu\n", recurse_forever(0));
 }

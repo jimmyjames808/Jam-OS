@@ -379,6 +379,37 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
     return st;
 }
 
+status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
+{
+    uint32_t got = 0;
+    while (got < n) {
+        uint64_t f = spin_lock_irqsave(&t->lock);
+        while (got < n && t->free_head) {
+            uint32_t idx = t->free_head - 1;
+            struct handle_slot *s = &t->slots[idx];
+            t->free_head = s->next_free;
+            if (!t->free_head)
+                t->free_tail = 0;
+            /* Looks exactly like a slot handle_take reserved for this value,
+             * so handle_untake fills it and handle_commit frees it. */
+            out[got++] = encode(idx, s->gen);
+            s->gen++;
+            s->intransit = true;
+        }
+        uint32_t oldcap = t->capacity;
+        spin_unlock_irqrestore(&t->lock, f);
+        if (got == n)
+            break;
+        status_t st = grow_table(t, oldcap);   /* free list was empty */
+        if (st != OK) {
+            while (got)
+                handle_commit(t, out[--got]);
+            return st;
+        }
+    }
+    return OK;
+}
+
 status_t handle_commit(struct handle_table *t, handle_t h)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);

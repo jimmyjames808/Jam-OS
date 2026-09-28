@@ -12,15 +12,22 @@ make run        # boot it in QEMU: q35 + OVMF + USB boot over xHCI
 make debug      # same, paused for gdb on :1234
 ```
 
-The boot menu's **Tests** folder runs the memory self-test and deliberate
-crashes (NULL write, write to kernel code, stack overflow, panic). To run one
-headless and get the log and a screenshot:
+The boot menu has **M4 tests** (`ktest`: every in-kernel test), a
+**10-minute stress test** and a **Tests** folder with the self-test, the
+timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
+crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`,
+`testlockorder`, `teststuck`, `testwatchdog`, `testpanic`; `testbp` must
+continue). To run any kernel command line headless and get the log and a
+screenshot:
 
 ```sh
-tools/qemu-test.sh build/test selftest selftest
+tools/qemu-test.sh build/test kt ktest                  # all ktests
+tools/qemu-test.sh build/test chan ktest=chan           # tests starting "chan"
+QEMU_SMP=8 QEMU_TIMEOUT=60 tools/qemu-test.sh build/test st ktest stress=30
 QEMU_SMP=20 tools/qemu-test.sh build/test smp20 selftest   # like the real PC
 ```
-`QEMU_MEM`, `QEMU_SMP` and `QEMU_CPU` (e.g. `max,-x2apic`) change the machine.
+`QEMU_MEM`, `QEMU_SMP`, `QEMU_CPU` (e.g. `max,-x2apic`) change the machine;
+`QEMU_TIMEOUT` (seconds, default 30) is how long to wait for it to finish.
 
 ## Boot on a real PC
 
@@ -38,7 +45,12 @@ the PC from the stick in UEFI mode with Secure Boot off.
 kernel/boot/        loader glue (only place that knows about Limine)
 kernel/arch/x86_64/ entry and CPU-specific code
 kernel/acpi/        static ACPI tables (MADT, FADT, HPET, MCFG)
-kernel/core/        kmain, klog, panic, symbols, self-tests
+kernel/core/        kmain, klog, panic, symbols, scheduler, locks + lock
+                    checker, self-tests, stress test
+kernel/object/      kernel objects, handles, channels, ports, events, timers,
+                    VMOs, dma_cap
+kernel/abi/         handle-level sys_ API (the future system calls)
+kernel/test/        in-kernel tests (KTEST) and race regression tests
 kernel/mm/          physical pages, page tables, heap
 kernel/dev/         framebuffer console, serial, font
 kernel/lib/         string, kprintf

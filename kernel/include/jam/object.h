@@ -44,7 +44,7 @@ typedef uint32_t signals_t;
 #define SIG_WRITABLE    (1u << 1)
 #define SIG_PEER_CLOSED (1u << 2)
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
-#define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (object_signal) */
+#define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
 
 struct kobject;
 

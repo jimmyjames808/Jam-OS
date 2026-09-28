@@ -138,3 +138,16 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
     kobject_unref(obj);
     return st;
 }
+
+status_t sys_object_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set)
+{
+    if ((clear | set) & ~SIG_USER_ALL)
+        return ERR_INVALID_ARGS;
+    struct kobject *obj;
+    status_t st = handle_get(t, h, OBJ_NONE, RIGHT_SIGNAL, &obj, NULL);
+    if (st != OK)
+        return st;
+    kobject_signal(obj, clear, set);
+    kobject_unref(obj);
+    return OK;
+}

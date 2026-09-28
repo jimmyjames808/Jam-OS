@@ -96,6 +96,9 @@ void     vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len);
 uint64_t vmm_translate(uint64_t pml4, uint64_t va);
 /* Effective PAT memory type of a mapping ("WB", "WC", "UC", ...). */
 const char *vmm_cache_type(uint64_t pml4, uint64_t va);
+/* Effective access to va through every level: VM_WRITE and/or VM_EXEC, or
+ * -1 if it is not mapped. */
+int      vmm_access(uint64_t pml4, uint64_t va);
 
 /* Kernel stack in the vmap area with an unmapped guard page below it.
  * Returns the TOP of the stack. */

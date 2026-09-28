@@ -18,14 +18,14 @@ bool cmdline_has(const char *word)
     return false;
 }
 
-uint64_t cmdline_get_u64(const char *key, uint64_t dflt)
+uint64_t cmdline_get_u64(const char *key, uint64_t dflt, uint64_t bare)
 {
     size_t kl = strlen(key);
     for (const char *p = cmdline; *p; p++) {
         if ((p != cmdline && p[-1] != ' ') || memcmp(p, key, kl))
             continue;
         if (p[kl] == ' ' || p[kl] == '\0')
-            return 600;
+            return bare;
         if (p[kl] != '=')
             continue;
         uint64_t v = 0;

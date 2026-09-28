@@ -1,5 +1,6 @@
 /* Handle-level channel calls (system calls from M5). */
 #include <jam/channel.h>
+#include <jam/panic.h>
 #include <jam/sys.h>
 
 #define CHANNEL_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL)
@@ -52,21 +53,16 @@ static status_t take_all(struct handle_table *t, const handle_t *hs, struct khan
     return OK;
 }
 
-/* Insert received khandles into t. If the table is full the message's
- * handles are lost (the ones inserted so far are closed again). */
-static status_t insert_all(struct handle_table *t, struct khandle *khs, handle_t *hs, uint32_t n)
+/* Put received khandles into slots reserved with handle_reserve (which makes
+ * this unable to fail), and give back the reserved slots nobody needed. */
+static void fill_reserved(struct handle_table *t, const handle_t *rsv, uint32_t nrsv,
+                          struct khandle *khs, handle_t *hs, uint32_t n)
 {
-    for (uint32_t i = 0; i < n; i++) {
-        status_t st = handle_insert(t, &khs[i], &hs[i]);
-        if (st != OK) {
-            for (uint32_t j = 0; j < i; j++)
-                handle_close(t, hs[j]);
-            for (uint32_t j = i; j < n; j++)
-                khandle_release(&khs[j]);
-            return st;
-        }
-    }
-    return OK;
+    for (uint32_t i = 0; i < n; i++)
+        if (handle_untake(t, rsv[i], &khs[i], &hs[i]) != OK)
+            panic("channel: reserved handle slot %x vanished", rsv[i]);
+    for (uint32_t i = n; i < nrsv; i++)
+        handle_commit(t, rsv[i]);
 }
 
 status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b)
@@ -119,13 +115,27 @@ status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint3
     if (st != OK)
         return st;
     struct khandle khs[CHANNEL_MAX_HANDLES];
+    handle_t rsv[CHANNEL_MAX_HANDLES];
     uint32_t cap = handles_cap < CHANNEL_MAX_HANDLES ? handles_cap : CHANNEL_MAX_HANDLES;
-    uint32_t nh = 0;
-    st = channel_read(ch, bytes, bytes_cap, actual_bytes, khs, cap, &nh);
+    uint32_t nrsv = 0, nb = 0, nh = 0;
+    /* Only reserve table slots for as many handles as the next message
+     * carries: read with what is reserved; if the message needs more (and
+     * the caller has room for them), reserve the rest and try again. The
+     * message stays queued until its handles are guaranteed a slot. */
+    for (;;) {
+        st = channel_read(ch, bytes, bytes_cap, &nb, khs, nrsv, &nh);
+        if (st != ERR_BUFFER_TOO_SMALL || nb > bytes_cap || nh > cap || nh <= nrsv)
+            break;
+        st = handle_reserve(t, nh - nrsv, &rsv[nrsv]);
+        if (st != OK)
+            break;   /* table full: the message stays queued */
+        nrsv = nh;
+    }
+    if (actual_bytes)
+        *actual_bytes = nb;
     if (actual_handles)
         *actual_handles = nh;
-    if (st == OK)
-        st = insert_all(t, khs, handles, nh);
+    fill_reserved(t, rsv, nrsv, khs, handles, st == OK ? nh : 0);
     kobject_unref((struct kobject *)ch);
     return st;
 }
@@ -142,9 +152,19 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
     if (st != OK)
         return st;
     struct khandle wkhs[CHANNEL_MAX_HANDLES], rkhs[CHANNEL_MAX_HANDLES];
+    handle_t rsv[CHANNEL_MAX_HANDLES];
+    uint32_t cap = rhcap < CHANNEL_MAX_HANDLES ? rhcap : CHANNEL_MAX_HANDLES;
+    /* The reply is ours alone once it arrives, so its handles must have
+     * slots before the request goes out: reserve room for all it may carry. */
+    st = handle_reserve(t, cap, rsv);
+    if (st != OK) {
+        kobject_unref((struct kobject *)ch);
+        return st;
+    }
     st = take_all(t, wh, wkhs, whn);
+    if (st != OK)
+        fill_reserved(t, rsv, cap, rkhs, rh, 0);
     if (st == OK) {
-        uint32_t cap = rhcap < CHANNEL_MAX_HANDLES ? rhcap : CHANNEL_MAX_HANDLES;
         uint32_t nh = 0;
         st = channel_call(ch, wbytes, wn, wkhs, whn, rbytes, rcap, ractual, rkhs, cap, &nh,
                           deadline_ns);
@@ -157,8 +177,7 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
             commit_all(t, wh, whn);
         if (rhactual)
             *rhactual = nh;
-        if (st == OK)
-            st = insert_all(t, rkhs, rh, nh);
+        fill_reserved(t, rsv, cap, rkhs, rh, st == OK ? nh : 0);
     }
     kobject_unref((struct kobject *)ch);
     return st;

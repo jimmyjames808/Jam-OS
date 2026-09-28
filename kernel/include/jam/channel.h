@@ -8,7 +8,9 @@
  *
  * Signals on an endpoint:
  *   SIG_READABLE     its queue is not empty
- *   SIG_WRITABLE     the peer still exists
+ *   SIG_WRITABLE     the peer still exists and its queue has room (below
+ *                    CHANNEL_MAX_QUEUED): after ERR_SHOULD_WAIT from a
+ *                    write, wait for this (or SIG_PEER_CLOSED)
  *   SIG_PEER_CLOSED  the peer's last handle went away, or it was destroyed
  *
  * An endpoint "closes" when its handle count drops to 0 or its last
@@ -37,8 +39,9 @@ status_t channel_create(struct channel **a, struct channel **b);
 
 /* Queue a message on the PEER. On success the khandles are consumed (their
  * .obj set to NULL); on failure they are untouched and still the caller's.
- * Sending this channel's own endpoint or its peer is ERR_NOT_SUPPORTED (it
- * would make a cycle nobody can reach). Peer gone: ERR_PEER_CLOSED. Peer's
+ * Sending this channel's own endpoint or its peer, or any endpoint whose own
+ * queue already holds an endpoint, is ERR_NOT_SUPPORTED: each could close a
+ * reference cycle nobody can reach. Peer gone: ERR_PEER_CLOSED. Peer's
  * queue at CHANNEL_MAX_QUEUED: ERR_SHOULD_WAIT. A message whose txid matches
  * a channel_call waiting on the peer goes to that caller instead of the
  * queue (and does not count against the limit). */

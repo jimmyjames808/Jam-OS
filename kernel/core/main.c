@@ -119,7 +119,7 @@ _Noreturn static void kmain_stage2(void *arg)
         selftest_run_smp();
     if (cmdline_has("ktest") || ktest_prefix())
         ktest_run(ktest_prefix() ? ktest_prefix() : "");
-    uint64_t stress_s = cmdline_get_u64("stress", 0);
+    uint64_t stress_s = cmdline_get_u64("stress", 0, 600);
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();

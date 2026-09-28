@@ -273,6 +273,7 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
 {
     struct chan_pair *pair = ch->pair;
     status_t st = OK;
+    bool filled = false;
     uint64_t f = spin_lock_irqsave(&pair->lock);
     struct channel *peer = pair->ep[!ch->side];
     if (pair->ep[ch->side] != ch) {
@@ -325,10 +326,18 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
         st = ERR_SHOULD_WAIT;
     } else {
         list_add_tail(&peer->queue, &m->node);
-        peer->nqueued++;
+        filled = ++peer->nqueued == CHANNEL_MAX_QUEUED;
         kobject_signal_locked(&peer->base, 0, SIG_READABLE);
     }
     spin_unlock(&peer->base.lock);
+    if (filled) {
+        /* The peer's queue is full: we are not writable until a read makes
+         * room. Still under the pair lock, which orders this against the
+         * reader's refresh_writable. */
+        spin_lock(&ch->base.lock);
+        kobject_signal_locked(&ch->base, SIG_WRITABLE, 0);
+        spin_unlock(&ch->base.lock);
+    }
 out:
     spin_unlock_irqrestore(&pair->lock, f);
     return st;
@@ -353,6 +362,26 @@ status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
 
 /* ---- reading ------------------------------------------------------------------ */
 
+/* A read just made room in ch's full queue: the peer (the writer) may be
+ * writable again. Recomputed from scratch under the pair lock, like the
+ * writer's clear in send_msg, so whichever of the two runs last leaves the
+ * right answer. One "channel" lock at a time, as everywhere. */
+static void refresh_writable(struct channel *ch)
+{
+    struct chan_pair *pair = ch->pair;
+    uint64_t f = spin_lock_irqsave(&pair->lock);
+    struct channel *writer = pair->ep[!ch->side];
+    if (writer && pair->ep[ch->side] == ch) {
+        spin_lock(&ch->base.lock);
+        bool full = ch->nqueued >= CHANNEL_MAX_QUEUED;
+        spin_unlock(&ch->base.lock);
+        spin_lock(&writer->base.lock);
+        kobject_signal_locked(&writer->base, full ? SIG_WRITABLE : 0, full ? 0 : SIG_WRITABLE);
+        spin_unlock(&writer->base.lock);
+    }
+    spin_unlock_irqrestore(&pair->lock, f);
+}
+
 status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint32_t *actual_bytes,
                       struct khandle *handles, uint32_t handles_cap, uint32_t *actual_handles)
 {
@@ -361,6 +390,7 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
     struct chan_msg *m = NULL;
     uint32_t nb = 0, nh = 0;
     status_t st = OK;
+    bool was_full = false;
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     if (ch->closed) {
         st = ERR_BAD_STATE;
@@ -375,6 +405,7 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
             m = NULL;
         } else {
             list_del(&m->node);
+            was_full = ch->nqueued == CHANNEL_MAX_QUEUED;
             if (--ch->nqueued == 0)
                 kobject_signal_locked(&ch->base, SIG_READABLE, 0);
         }
@@ -384,6 +415,8 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
         *actual_bytes = nb;
     if (actual_handles)
         *actual_handles = nh;
+    if (was_full)
+        refresh_writable(ch);
     if (m)
         msg_deliver_to(m, bytes, handles);
     return st;

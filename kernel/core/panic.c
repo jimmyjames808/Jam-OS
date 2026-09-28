@@ -1,6 +1,6 @@
 /* Panic screen: message, registers (for exceptions), a symbolised
- * frame-pointer backtrace and the tail of the kernel log. M3 halts the other
- * CPUs with an IPI first. */
+ * frame-pointer backtrace and the tail of the kernel log. The other CPUs are
+ * halted with an NMI first. */
 #include <stdarg.h>
 #include <stdint.h>
 #include <jam/fbcon.h>

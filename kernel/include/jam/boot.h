@@ -58,7 +58,8 @@ struct boot_module {
 struct boot_cpu {
     uint32_t acpi_uid;
     uint32_t lapic_id;
-    void    *loader_handle;   /* opaque; used by boot_start_cpu */
+    void    *loader_handle;   /* opaque, for boot_start_cpu; points into loader memory,
+                                 * so it dangles once smp_start_aps reclaims that */
 };
 
 /* Everything in boot_info lives in kernel memory (strings are copied), so

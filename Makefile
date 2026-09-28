@@ -29,7 +29,7 @@ C_SRCS := $(shell find kernel -name '*.c')
 S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
-.PHONY: all image run run-panic debug clean font usb
+.PHONY: all image run debug clean font usb
 
 all: $(KERNEL)
 
@@ -92,7 +92,8 @@ QEMU_FLAGS := -M q35 -m 2G -smp 4 -cpu max \
 run: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS)
 
-# Same, but wait for gdb on :1234 (`make gdb` in another terminal).
+# Same, but wait for gdb on :1234 (attach with
+# `x86_64-elf-gdb build/jamos.elf -ex "target remote :1234"`).
 debug: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS) -s -S -d int,cpu_reset -D $(BUILD)/qemu.log
 

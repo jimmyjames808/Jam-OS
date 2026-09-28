@@ -1,8 +1,9 @@
 /* Handles: per-table references to kernel objects, each with rights.
  *
- * A handle value is (slot + 1) << 8 | generation. Closing a slot bumps its
- * generation, so a stale handle value fails with ERR_BAD_HANDLE instead of
- * silently naming whatever object reuses the slot. 0 is never valid.
+ * A handle value is (slot + 1) << 15 | generation (17 + 15 bits; a table has
+ * at most 65,536 slots). Closing a slot bumps its generation and freed slots
+ * are reused FIFO, so a stale handle value fails with ERR_BAD_HANDLE instead
+ * of silently naming whatever object reuses the slot. 0 is never valid.
  *
  * struct khandle is a handle outside any table: one handle count plus one
  * reference on the object, with rights. It is what moves through channel
@@ -81,3 +82,8 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
 /* Finish handle_take for a send that SUCCEEDED: release the reserved slot so
  * it can be reused. Call once per handle whose khandle the send consumed. */
 status_t handle_commit(struct handle_table *t, handle_t h);
+/* Reserve n empty slots (all or none; ERR_NO_RESOURCES if the table can't
+ * hold them) so a receive can't fail halfway and lose handles. Each value in
+ * out[] is filled with handle_untake (which then cannot fail) or given back
+ * unused with handle_commit. */
+status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out);

@@ -462,7 +462,7 @@ struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg,
     t->rsp = (uint64_t)sp;
 
     t->state = T_BLOCKED;
-    t->cpu = this_cpu()->index;
+    t->cpu = percpu_index();   /* placement hint only: "last ran here" */
     thread_wake(t);
     return t;
 }

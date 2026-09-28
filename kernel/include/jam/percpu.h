@@ -84,6 +84,15 @@ static inline struct thread *percpu_current(void)
     return t;
 }
 
+/* This CPU's index in one GS-relative load: safe from preemptible code,
+ * though the answer may be stale by the time it is used. */
+static inline uint32_t percpu_index(void)
+{
+    uint32_t i;
+    __asm__ volatile("movl %%gs:%c1, %0" : "=r"(i) : "i"(PERCPU_OFF(index)));
+    return i;
+}
+
 static inline void percpu_preempt_inc(void)
 {
     __asm__ volatile("incl %%gs:%c0" :: "i"(PERCPU_OFF(preempt_count)) : "memory");
