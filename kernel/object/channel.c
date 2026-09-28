@@ -242,6 +242,24 @@ status_t channel_create(struct channel **a, struct channel **b)
 
 /* ---- writing ------------------------------------------------------------------ */
 
+/* With no lock held on entry: does ep's message queue currently hold any
+ * channel endpoint? Used to break reference cycles (see send_msg). */
+static bool queue_holds_channel(struct channel *ep)
+{
+    bool found = false;
+    uint64_t f = spin_lock_irqsave(&ep->base.lock);
+    for (struct list_node *n = ep->queue.next; n != &ep->queue && !found; n = n->next) {
+        struct chan_msg *qm = container_of(n, struct chan_msg, node);
+        for (uint32_t i = 0; i < qm->nhandles; i++)
+            if (msg_handles(qm)[i].obj->type == OBJ_CHANNEL) {
+                found = true;
+                break;
+            }
+    }
+    spin_unlock_irqrestore(&ep->base.lock, f);
+    return found;
+}
+
 /* Queue m on ch's peer, or hand it to the channel_call there waiting for
  * its txid. On success the message belongs to the peer; on failure it is
  * still the caller's. */
@@ -262,6 +280,20 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     for (uint32_t i = 0; i < m->nhandles; i++) {
         struct kobject *o = msg_handles(m)[i].obj;
         if (o == &ch->base || o == &peer->base) {
+            st = ERR_NOT_SUPPORTED;
+            goto out;
+        }
+        /* Refuse to queue a channel endpoint whose own queue already holds a
+         * channel endpoint. Every reference cycle among channels has to be
+         * closed by an edge that carries such an endpoint (the one whose
+         * queue already holds the previous member of the cycle), so rejecting
+         * exactly these edges makes cycles -- direct or indirect, of any
+         * length -- impossible, while sending an endpoint that only has plain
+         * messages, or non-channel handles, queued still works. (O2)
+         * We take o's object lock here having only pair->lock held ("channel
+         * pair" -> "channel"), and drop it before locking the peer, so no two
+         * "channel" locks are ever held at once. */
+        if (o->type == OBJ_CHANNEL && queue_holds_channel((struct channel *)o)) {
             st = ERR_NOT_SUPPORTED;
             goto out;
         }
