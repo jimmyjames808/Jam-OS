@@ -23,6 +23,8 @@ REQ static volatile struct limine_rsdp_request rsdp_req = {
     .id = LIMINE_RSDP_REQUEST_ID, .revision = 0 };
 REQ static volatile struct limine_module_request module_req = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0 };
+REQ static volatile struct limine_executable_address_request kaddr_req = {
+    .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, .revision = 0 };
 REQ static volatile struct limine_executable_cmdline_request cmdline_req = {
     .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0 };
 /* Asking for MP makes Limine start the APs and park them; M2 wakes them. */
@@ -50,6 +52,15 @@ static enum boot_mem_type convert_mem_type(uint64_t t)
     }
 }
 
+static void copy_str(char *dst, size_t size, const char *src)
+{
+    size_t i = 0;
+    if (src)
+        for (; src[i] && i + 1 < size; i++)
+            dst[i] = src[i];
+    dst[i] = '\0';
+}
+
 static void die(void)
 {
     for (;;)
@@ -59,13 +70,18 @@ static void die(void)
 void limine_entry(void)
 {
     /* Without HHDM we cannot even draw an error, so just stop. */
-    if (!LIMINE_BASE_REVISION_SUPPORTED(base_revision) || !hhdm_req.response)
+    if (!LIMINE_BASE_REVISION_SUPPORTED(base_revision) || !hhdm_req.response ||
+        !kaddr_req.response || !memmap_req.response)
         die();
 
     uint64_t hhdm = hhdm_req.response->offset;
-    bi.hhdm_offset = hhdm;
-    bi.loader_name = info_req.response ? info_req.response->name : "unknown";
-    bi.cmdline     = cmdline_req.response ? cmdline_req.response->cmdline : "";
+    bi.hhdm_offset      = hhdm;
+    bi.kernel_phys_base = kaddr_req.response->physical_base;
+    bi.kernel_virt_base = kaddr_req.response->virtual_base;
+    copy_str(bi.loader_name, sizeof(bi.loader_name),
+             info_req.response ? info_req.response->name : "unknown");
+    copy_str(bi.cmdline, sizeof(bi.cmdline),
+             cmdline_req.response ? cmdline_req.response->cmdline : "");
 
     /* Base revision >= 4 returns the RSDP as an HHDM virtual address. */
     if (rsdp_req.response && rsdp_req.response->address)
@@ -89,22 +105,22 @@ void limine_entry(void)
         };
     }
 
-    if (memmap_req.response) {
-        uint64_t n = memmap_req.response->entry_count;
-        for (uint64_t i = 0; i < n && bi.memmap_count < BOOT_MAX_MEMMAP; i++) {
-            struct limine_memmap_entry *e = memmap_req.response->entries[i];
-            bi.memmap[bi.memmap_count++] = (struct boot_mem_region){
-                .base = e->base, .length = e->length, .type = convert_mem_type(e->type) };
-        }
+    uint64_t n = memmap_req.response->entry_count;
+    for (uint64_t i = 0; i < n && bi.memmap_count < BOOT_MAX_MEMMAP; i++) {
+        struct limine_memmap_entry *e = memmap_req.response->entries[i];
+        bi.memmap[bi.memmap_count++] = (struct boot_mem_region){
+            .base = e->base, .length = e->length, .type = convert_mem_type(e->type) };
     }
 
     if (module_req.response) {
         uint64_t n = module_req.response->module_count;
         for (uint64_t i = 0; i < n && bi.module_count < BOOT_MAX_MODULES; i++) {
             struct limine_file *m = module_req.response->modules[i];
-            bi.modules[bi.module_count++] = (struct boot_module){
-                .phys = (uint64_t)m->address - hhdm, .size = m->size,
-                .path = m->path, .string = m->string };
+            struct boot_module *bm = &bi.modules[bi.module_count++];
+            bm->phys = (uint64_t)m->address - hhdm;
+            bm->size = m->size;
+            copy_str(bm->path, sizeof(bm->path), m->path);
+            copy_str(bm->string, sizeof(bm->string), m->string);
         }
     }
 

@@ -33,8 +33,28 @@ OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
 all: $(KERNEL)
 
-$(KERNEL): $(OBJS) kernel/linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) -o $@
+# Two-pass link: stage 1 has an empty symbol table; its function addresses
+# become the table linked into the final kernel. .ksyms is the last section,
+# so nothing moves between the passes (gensyms.py verify checks this).
+$(BUILD)/ksyms_empty.c: tools/gensyms.py
+	@mkdir -p $(BUILD)
+	: > $(BUILD)/empty.nm
+	python3 tools/gensyms.py gen $(BUILD)/empty.nm $@
+
+$(BUILD)/jamos.stage1.elf: $(OBJS) $(BUILD)/ksyms_empty.o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms_empty.o -o $@
+
+$(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
+	$(CROSS)nm -n --defined-only $< > $(BUILD)/stage1.nm
+	python3 tools/gensyms.py gen $(BUILD)/stage1.nm $@
+
+$(KERNEL): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms.o -o $@
+	$(CROSS)nm -n --defined-only $@ > $(BUILD)/final.nm
+	python3 tools/gensyms.py verify $(BUILD)/stage1.nm $(BUILD)/final.nm
+
+$(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(BUILD)/%.o: $(BUILD)/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)

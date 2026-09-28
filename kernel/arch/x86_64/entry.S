@@ -8,4 +8,16 @@ _start:
     hlt
     jmp 1b
 
+
+/* _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg)
+ * Moves onto a new stack and calls fn(arg) with a fresh frame chain. */
+    .section .text
+    .global stack_switch_call
+stack_switch_call:
+    mov %rdi, %rsp
+    xor %rbp, %rbp
+    mov %rdx, %rdi
+    call *%rsi
+    ud2
+
     .section .note.GNU-stack, "", @progbits

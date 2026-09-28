@@ -22,6 +22,14 @@ enum boot_mem_type {
     BOOT_MEM_FRAMEBUFFER,
 };
 
+/* Types that are real RAM (as opposed to MMIO holes or firmware-reserved). */
+static inline int boot_mem_is_ram(enum boot_mem_type t)
+{
+    return t == BOOT_MEM_USABLE || t == BOOT_MEM_LOADER_RECLAIMABLE ||
+           t == BOOT_MEM_KERNEL_AND_MODULES || t == BOOT_MEM_ACPI_RECLAIMABLE ||
+           t == BOOT_MEM_ACPI_NVS;
+}
+
 struct boot_mem_region {
     uint64_t base;
     uint64_t length;
@@ -37,20 +45,26 @@ struct boot_framebuffer {
     uint8_t  red_shift, green_shift, blue_shift;
 };
 
+#define BOOT_STR_MAX 128
+
 struct boot_module {
-    uint64_t    phys;
-    uint64_t    size;
-    const char *path;
-    const char *string;
+    uint64_t phys;
+    uint64_t size;
+    char     path[BOOT_STR_MAX];
+    char     string[BOOT_STR_MAX];
 };
 
+/* Everything in boot_info lives in kernel memory (strings are copied), so
+ * loader-reclaimable memory can be freed without breaking it. */
 struct boot_info {
-    const char *loader_name;
-    uint64_t    hhdm_offset;     /* virt = phys + hhdm_offset for all RAM */
-    uint64_t    rsdp_phys;       /* 0 if no ACPI */
-    uint32_t    cpu_count;
-    uint32_t    bsp_lapic_id;
-    const char *cmdline;
+    char     loader_name[BOOT_STR_MAX];
+    char     cmdline[BOOT_STR_MAX * 4];
+    uint64_t hhdm_offset;        /* virt = phys + hhdm_offset for all RAM */
+    uint64_t kernel_phys_base;   /* physical address of __kernel_start */
+    uint64_t kernel_virt_base;
+    uint64_t rsdp_phys;          /* 0 if no ACPI */
+    uint32_t cpu_count;
+    uint32_t bsp_lapic_id;
 
     struct boot_framebuffer fb;  /* fb.virt == NULL if none */
 

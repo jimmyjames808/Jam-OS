@@ -1,4 +1,8 @@
-/* Jam OS kernel: higher-half at the top 2 GiB (-mcmodel=kernel). */
+/* Jam OS kernel: higher-half at the top 2 GiB (-mcmodel=kernel).
+ *
+ * .ksyms (the symbol table for backtraces) is deliberately LAST and in its
+ * own segment: the build links twice, and filling in .ksyms on the second
+ * link must not move any other symbol. */
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
@@ -8,6 +12,7 @@ PHDRS
     text            PT_LOAD;
     rodata          PT_LOAD;
     data            PT_LOAD;
+    ksyms           PT_LOAD;
 }
 
 SECTIONS
@@ -22,20 +27,28 @@ SECTIONS
     } :limine_requests
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __text_start = .;
     .text : { *(.text .text.*) } :text
+    __text_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __rodata_start = .;
     .rodata : { *(.rodata .rodata.*) } :rodata
+    __rodata_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __data_start = .;
     .data : { *(.data .data.*) } :data
 
-    /* Keep .bss last in the data segment so it takes no file space. */
     .bss : {
         *(.bss .bss.*)
         *(COMMON)
     } :data
+    __data_end = .;
 
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __ksyms_start = .;
+    .ksyms : { KEEP(*(.ksyms .ksyms.*)) } :ksyms
     __kernel_end = .;
 
     /DISCARD/ : { *(.eh_frame*) *(.note .note.*) *(.comment) }

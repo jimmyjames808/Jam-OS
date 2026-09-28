@@ -25,7 +25,8 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 | Executables | Static ELF64 |
 | IOMMU | Not yet; DMA gated by `dma_cap`, VT-d/AMD-Vi added behind it after M11 |
 | Users/logins | *(open)* |
-| Target PC hardware | *(open: CPU, NIC model, GPU)* |
+| Target PC | i7-14700 (hybrid 8P+12E; 20 CPUs reported, so Hyper-Threading looks off), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
+| Networking | *(open: board Ethernet port or USB Ethernet adapter; Wi-Fi is not planned)* |
 
 ## The migration rule
 
@@ -70,11 +71,24 @@ Moving a driver to userspace is then a rebuild and a relaunch, not a rewrite.
 
 ## Memory
 
-- **PMM**: buddy allocator over the boot memory map, per-CPU page caches,
-  `struct page` array (refcount, flags).
-- **VMM**: 4-level paging, higher-half kernel at `0xffffffff80000000`, HHDM
-  kept. Kernel half (PML4 256-511) shared by every address space.
-- **Heap**: slab allocator plus power-of-two size classes.
+- **PMM**: buddy allocator (orders 0-10, up to 4 MiB) with a DMA32 zone below
+  4 GiB; allocations prefer the normal zone. `struct page` (32 bytes) lives in
+  a **vmemmap** indexed by PFN, backed in 2 MiB chunks; chunks over pure MMIO
+  holes stay unmapped (a buddy block never spans two chunks). Physical page 0
+  is never handed out. An early bump allocator (top-down) builds the first
+  page tables and the vmemmap. Per-CPU page caches arrive with M3.
+- **Loader memory** (Limine's stack, tables, and the code the parked APs spin
+  in) is reclaimed in M2, after the APs have started.
+- **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
+  mapped per section (text RX, rodata R, data RW+NX), HHDM with 1 GiB/2 MiB
+  pages for RAM only (write-back), framebuffer write-combining via PAT index 5.
+  All 256 kernel-half PDPTs are created up front so every address space can
+  share PML4 entries 256-511. Layout:
+  `ffff800000000000` HHDM, `ffffc00000000000` vmemmap,
+  `ffffd00000000000` vmap (kernel stacks with guard pages, MMIO),
+  `ffffffff80000000` kernel image.
+- **Heap**: `kmem_cache` slabs (header on-slab, pages tagged `PG_SLAB`) with
+  kmalloc classes 16-2048; larger requests take whole buddy blocks.
 - **VMO**: pages on demand; pinnable and physically contiguous for DMA;
   shareable by handle.
 - **VMAR**: handle to an address-space region; map VMOs with R/W/X rights.
@@ -155,9 +169,14 @@ uACPI stays in the kernel permanently; everything else moves out.
 
 - Framebuffer klog from the first instruction, 64 KiB ring buffer (later
   readable via `klog_read`). COM1 too when present (QEMU).
-- Panic screen: message, frame-pointer backtrace, log tail. M1 adds registers,
-  CR2/CR3 and symbol names (two-pass link embedding the symbol table); M3 halts
-  the other CPUs first.
+- Panic screen: message, decoded exception (page-fault cause, NULL and stack
+  overflow hints), all registers and control registers, symbolised backtrace
+  with repeated frames collapsed, and the log tail. Symbols come from a
+  two-pass link: `.ksyms` is the last section, so filling it in moves nothing
+  (checked by `tools/gensyms.py verify`). #DF, NMI and #MC run on IST stacks.
+  M3 halts the other CPUs first.
+- `tools/qemu-test.sh` boots any kernel command line headless and saves the
+  serial log and a screenshot; the boot menu has matching test entries.
 - QEMU mirrors the PC: q35, OVMF, xHCI USB boot, e1000e (`make run`), gdb
   stub (`make debug`).
 - Per-CPU watchdog heartbeat: a stuck core turns into a panic screen.
@@ -166,8 +185,8 @@ uACPI stays in the kernel permanently; everything else moves out.
 
 | # | Milestone | Done when |
 |---|---|---|
-| **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | boots in QEMU; *next: boot on the real PC* |
-| M1 | PMM, VMM, heap, full panic screen with symbols | page fault shows a readable symbolised backtrace |
+| **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | booted on the real PC 2026-09-28 |
+| **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | self-tests + crash tests pass in QEMU (2 GB and 6 GB); *next: run on the real PC* |
 | M2 | ACPI tables, LAPIC/IOAPIC, all cores, timers | every core prints and ticks |
 | M3 | Scheduler, kernel threads, locks, IPIs | 10-min stress test with lock checking |
 | M4 | Objects, handles, channels, ports, VMOs | in-kernel channel ping-pong |

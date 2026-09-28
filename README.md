@@ -12,7 +12,13 @@ make run        # boot it in QEMU: q35 + OVMF + USB boot over xHCI
 make debug      # same, paused for gdb on :1234
 ```
 
-The Limine boot menu has a second entry that triggers a test panic.
+The boot menu's **Tests** folder runs the memory self-test and deliberate
+crashes (NULL write, write to kernel code, stack overflow, panic). To run one
+headless and get the log and a screenshot:
+
+```sh
+tools/qemu-test.sh build/test selftest selftest
+```
 
 ## Boot on a real PC
 
@@ -29,7 +35,8 @@ the PC from the stick in UEFI mode with Secure Boot off.
 ```
 kernel/boot/        loader glue (only place that knows about Limine)
 kernel/arch/x86_64/ entry and CPU-specific code
-kernel/core/        kmain, klog, panic
+kernel/core/        kmain, klog, panic, symbols, self-tests
+kernel/mm/          physical pages, page tables, heap
 kernel/dev/         framebuffer console, serial, font
 kernel/lib/         string, kprintf
 kernel/include/jam/ kernel headers

@@ -1,0 +1,50 @@
+#include <stdint.h>
+#include <jam/cpu.h>
+
+struct __attribute__((packed)) idt_entry {
+    uint16_t offset_lo;
+    uint16_t selector;
+    uint8_t  ist;
+    uint8_t  type_attr;
+    uint16_t offset_mid;
+    uint32_t offset_hi;
+    uint32_t zero;
+};
+
+struct __attribute__((packed)) idtr {
+    uint16_t limit;
+    uint64_t base;
+};
+
+extern const uint64_t isr_table[32];
+
+static struct idt_entry idt[256];
+
+static void set_gate(int vec, uint64_t handler, uint8_t ist)
+{
+    idt[vec] = (struct idt_entry){
+        .offset_lo  = handler & 0xffff,
+        .selector   = GDT_KERNEL_CODE,
+        .ist        = ist,
+        .type_attr  = 0x8e,   /* present, DPL0, 64-bit interrupt gate */
+        .offset_mid = (handler >> 16) & 0xffff,
+        .offset_hi  = handler >> 32,
+    };
+}
+
+void idt_init(void)
+{
+    for (int v = 0; v < 32; v++)
+        set_gate(v, isr_table[v], 0);
+    /* These can arrive on a broken stack, so give them known-good ones. */
+    set_gate(2, isr_table[2], IST_NMI);
+    set_gate(8, isr_table[8], IST_DOUBLE_FAULT);
+    set_gate(18, isr_table[18], IST_MACHINE_CHECK);
+    idt_load();
+}
+
+void idt_load(void)
+{
+    struct idtr idtr = { sizeof(idt) - 1, (uint64_t)idt };
+    __asm__ volatile("lidt %0" :: "m"(idtr));
+}
