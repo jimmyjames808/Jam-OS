@@ -1,0 +1,94 @@
+# Jam OS system calls: the one table the numbers, the user wrappers and the
+# kernel dispatch are generated from (tools/gensyscalls.py; `make syscalls`
+# regenerates, and every build fails if the committed output is stale).
+#
+# One call per line:
+#
+#     <nr>  <name>  <return>  <arguments>
+#
+# nr        decimal, unique. Gaps are fine (they group the calls); an unused
+#           number fails with ERR_NOT_SUPPORTED. 0 is never used, so a
+#           zeroed rax can't reach a real call.
+# name      C identifier. User code calls jam_<name>(), the kernel
+#           implements sysc_<name>() (a weak ERR_NOT_SUPPORTED default is
+#           generated until the real one exists).
+# return    status    status_t: OK or a negative ERR_*
+#           i64       a value; negative means an ERR_* code
+#           noreturn  never returns on success (the user wrapper traps
+#                     with ud2 if it ever does)
+# arguments void, or up to six C declarations as user code sees them,
+#           comma-separated ("handle_t h, const void *buf, uint64_t len").
+#           Scalars: handle_t rights_t signals_t uint32_t int32_t uint64_t
+#           int64_t. Anything with a '*' is a user pointer: the kernel side
+#           gets it as a uint64_t and may only touch it through
+#           copy_from_user / copy_to_user.
+#           Or "@<struct>": the call takes one pointer to struct <struct>
+#           (defined in <jam/abi.h>); the dispatcher copies the struct into
+#           the kernel and sysc_<name> gets a const kernel pointer to that
+#           copy. This is how calls with more than six arguments are made.
+#
+# Register convention (jam/syscall.h): number in rax, arguments in rdi rsi
+# rdx r10 r8 r9, result in rax. Arguments narrower than 64 bits are
+# truncated to their type, as in a C call.
+
+# basics --------------------------------------------------------------------
+1   debug_write       status    const char *buf, uint64_t len
+2   process_exit      noreturn  int64_t code
+3   thread_exit       noreturn  void
+4   clock_get         i64       void
+5   nanosleep         status    uint64_t deadline_ns
+
+# handles -------------------------------------------------------------------
+10  handle_close      status    handle_t h
+11  handle_duplicate  status    handle_t h, rights_t rights, handle_t *out
+12  handle_replace    status    handle_t h, rights_t rights, handle_t *out
+
+# waiting and signals -------------------------------------------------------
+16  object_wait_one   status    handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed
+17  object_signal     status    handle_t h, signals_t clear, signals_t set
+
+# channels ------------------------------------------------------------------
+20  channel_create    status    handle_t *a, handle_t *b
+21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
+22  channel_read      status    @channel_read_args
+23  channel_call      status    @channel_call_args
+
+# events and timers ---------------------------------------------------------
+30  event_create      status    handle_t *out
+31  event_signal      status    handle_t h, signals_t clear, signals_t set
+32  timer_create      status    handle_t *out
+33  timer_set         status    handle_t h, uint64_t deadline_ns
+34  timer_cancel      status    handle_t h
+
+# ports ---------------------------------------------------------------------
+40  port_create       status    handle_t *out
+41  port_bind         status    handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags
+42  port_unbind       status    handle_t port, handle_t obj, uint64_t key
+43  port_queue        status    handle_t port, const struct port_packet *pkt
+44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
+
+# VMOs ----------------------------------------------------------------------
+50  vmo_create        status    uint64_t size, uint32_t flags, handle_t dma_cap, handle_t *out
+51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
+52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
+53  vmo_get_size      status    handle_t h, uint64_t *size
+54  vmo_set_size      status    handle_t h, uint64_t size
+55  vmo_commit        status    handle_t h, uint64_t offset, uint64_t len
+56  vmo_decommit      status    handle_t h, uint64_t offset, uint64_t len
+
+# address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
+60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
+61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
+62  vmar_protect      status    handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags
+
+# processes, threads, jobs --------------------------------------------------
+# process_start moves `arg0` (a handle in the caller's table, usually the
+# startup channel) into the new process and starts `thread` there with
+# rdi = its new handle value, rsi = arg1.
+70  process_create    status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
+71  process_start     status    handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
+72  process_kill      status    handle_t proc
+73  thread_create     status    handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out
+74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1
+75  job_create        status    handle_t parent, uint32_t flags, handle_t *out
+76  job_set_limit     status    handle_t job, uint32_t kind, uint64_t value
