@@ -118,6 +118,10 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
 void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 {
     uint64_t start = va, end = va + ALIGN_UP(len, PAGE_SIZE);
+    bool kernel = start >= 0xffff800000000000ull && ipi_ready;
+    if (kernel && !irqs_enabled())
+        panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
+
     uint64_t f = spin_lock_irqsave(&pt_lock);
     for (; va < end; va += PAGE_SIZE) {
         uint64_t *e = walk(pml4, va, 1, false);
@@ -126,17 +130,23 @@ void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
         if (*e & PTE_PS)
             panic("vmm: unmap of a large page at %lx not supported", va);
         *e = 0;
-        invlpg(va);
     }
     spin_unlock_irqrestore(&pt_lock, f);
 
-    /* Kernel mappings are shared by every CPU: flush them everywhere. */
-    if (start >= 0xffff800000000000ull && ipi_ready) {
-        if (!irqs_enabled())
-            panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
+    /* Flush the removed range from every CPU's TLB, INCLUDING this one, with
+     * preemption disabled across the whole decision. Doing the local flush
+     * and then shooting down only the OTHER CPUs (as before) let a migration
+     * in between move us to a CPU that never got flushed, so a use after
+     * unmap silently kept working. Keeping preemption off pins "this CPU" so
+     * the local flush plus the remote shootdown together cover everyone. (C3)
+     * For a non-kernel or pre-SMP unmap only the local flush is needed. */
+    preempt_disable();
+    tlb_flush_local(start, end - start);
+    if (kernel) {
         DBG_HOOK(DBG_UNMAP_PRE_SHOOT, NULL);
         tlb_shootdown(start, end - start);
     }
+    preempt_enable();
 }
 
 uint64_t vmm_translate(uint64_t pml4, uint64_t va)

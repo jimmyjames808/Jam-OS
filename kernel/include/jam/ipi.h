@@ -16,6 +16,8 @@ void smp_call_all(void (*fn)(void *), void *arg);
 
 /* Flush a kernel virtual range from every other CPU's TLB. */
 void tlb_shootdown(uint64_t va, uint64_t len);
+/* Flush a range from the calling CPU's own TLB (preemption off; see ipi.c). */
+void tlb_flush_local(uint64_t va, uint64_t len);
 
 /* Stop every other CPU with an NMI (panic). Returns how many confirmed. */
 uint32_t ipi_halt_others(void);

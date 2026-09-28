@@ -80,8 +80,21 @@ void ipi_init(void)
 
 static void check_callable(void)
 {
-    if (!irqs_enabled() || this_cpu()->irq_depth)
+    /* Read per-CPU state with preemption off: irq_depth read preemptibly can
+     * belong to another CPU after a migration and panic falsely. (C7) A
+     * cross-CPU call while holding a spinlock can deadlock against a CPU
+     * spinning on that lock with interrupts off, which lockdep cannot see, so
+     * refuse it too. (C8) */
+    preempt_disable();
+    struct cpu *c = this_cpu();
+    bool bad_irq = !irqs_enabled() || c->irq_depth;
+    unsigned held = c->held_depth;
+    preempt_enable_no_resched();
+    if (bad_irq)
         panic("smp_call with interrupts disabled or from an interrupt handler");
+    if (held)
+        panic("smp_call while holding %u spinlock(s): a CPU spinning on one with "
+              "interrupts off would deadlock", held);
 }
 
 static void post(uint32_t cpu, struct call_slot *slot, struct call *c)
@@ -175,6 +188,15 @@ void tlb_shootdown(uint64_t va, uint64_t len)
         return;
     struct flush_range r = { va, len };
     smp_call_others(flush_local, &r);
+}
+
+/* Flush a range from the CALLING CPU's TLB. The caller keeps preemption off
+ * around this and tlb_shootdown so the "current" CPU can't change between the
+ * two and escape both flushes. (C3) */
+void tlb_flush_local(uint64_t va, uint64_t len)
+{
+    struct flush_range r = { va, len };
+    flush_local(&r);
 }
 
 /* ---- NMIs: panic halt and watchdog ----------------------------------------- */
