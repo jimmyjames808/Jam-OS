@@ -6,8 +6,7 @@ The USB stick still has the PRE-audit M4 build: copy build/jamos.elf + boot/limi
 "/Volumes/NO NAME" when the user plugs it in, then the user runs "M4 tests" (expect 64 passed)
 and ideally the 10-minute stress on the PC.
 
-Nothing below has been applied yet. The immediate job is step 1 (rewrite ARCHITECTURE.md),
-then M4.5.
+Step 1 (the ARCHITECTURE.md rewrite) is DONE (2026-09-29). Next: M4.5 hardening below.
 
 ## Decisions the user made (2026-09-29)
 - Plan: **M4.5 hardening first, then M5**.
@@ -28,7 +27,7 @@ then M4.5.
   milestone once proven on the PC. No Co-Authored-By trailer on commits. Git author on this
   machine comes from ~/.gitconfig ("paper-audit"); user hasn't asked to change it.
 
-## Step 1: rewrite ARCHITECTURE.md (the user interrupted just before this)
+## Step 1: rewrite ARCHITECTURE.md (DONE 2026-09-29, kept for reference)
 Record the decisions above, add an **M4.5** milestone row, revise M5/M7/M8/M10/M11 rows, and fix
 the drift the conformance reviewer found:
 1. Decisions table: Users/logins decided; Networking "decide later (leaning USB Ethernet)";

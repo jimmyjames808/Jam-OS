@@ -14,7 +14,7 @@ static spinlock_t ring_lock = SPINLOCK_INIT("klog");
 static bool at_line_start = true;
 
 /* One lock across ring, serial and console so lines from different CPUs
- * never interleave. Interrupt handlers must not log (M3 adds irqsave). */
+ * never interleave. */
 static void emit(const char *s, size_t len)
 {
     for (size_t i = 0; i < len; i++)
