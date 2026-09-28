@@ -355,3 +355,48 @@ KTEST(repro_unmap_migrate_stale_tlb)
           "kernel page (value %lx): the caller migrated from cpu 1 to cpu 2 between the "
           "local invlpg and tlb_shootdown, which skips the calling CPU", v);
 }
+
+/* ---- 5. a thread whose slice ran out while alone is never sliced again ---- */
+
+static volatile int rr_stop;
+static volatile uint64_t rr_y_ran_ns;
+
+static void rr_spinner(void *arg)
+{
+    (void)arg;
+    while (!rr_stop)
+        cpu_relax();
+}
+
+static void rr_late(void *arg)
+{
+    (void)arg;
+    rr_y_ran_ns = uptime_ns();
+}
+
+KTEST(repro_slice_not_reset)
+{
+    if (!enabled())
+        return;
+    pin_self(0);
+    rr_stop = 0;
+    rr_y_ran_ns = 0;
+    cpumask_t m;
+    cpumask_one(&m, 1);
+    struct thread *x = thread_create_on("repro-spin", rr_spinner, NULL, PRIO_DEFAULT, &m);
+    thread_sleep_ms(100);   /* x alone on cpu 1: its 20 ms slice ran out long ago */
+    uint64_t t0 = uptime_ns();
+    struct thread *y = thread_create_on("repro-late", rr_late, NULL, PRIO_DEFAULT, &m);
+    while (!rr_y_ran_ns && uptime_ns() - t0 < 5000000000ull)
+        thread_sleep_ms(1);
+    rr_stop = 1;
+    thread_join(x);
+    thread_join(y);
+    uint64_t ms = (rr_y_ran_ns - t0) / 1000000;
+    kprintf("repro: same-priority thread waited %lu ms for a CPU running one spinner "
+            "(slice is %u ticks = %u ms)\n", ms, SLICE_TICKS, SLICE_TICKS * 10);
+    if (ms > 100)
+        panic("REPRO CONFIRMED: a same-priority thread waited %lu ms (until the starvation "
+              "boost) because schedule()'s next == prev path leaves the spinner's slice at 0, "
+              "so sched_tick never asks for a switch again", ms);
+}
