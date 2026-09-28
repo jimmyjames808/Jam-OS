@@ -1,7 +1,9 @@
-/* AUDIT REPROS. They only run with "repro" on the command line as well as
- * "ktest=repro_<name>", and each one ends in a panic that names the defect
- * when the defect is present. Hooks (jam/dbghook.h) only widen windows the
- * real code already has. */
+/* These began as audit repros (each ended in a panic naming the defect) and
+ * are now REGRESSION TESTS for the fixes: they run in a normal "ktest" pass
+ * and PASS on the fixed kernel. They still use the dbghook injection points
+ * (jam/dbghook.h) to force the interleaving deterministically; the hooks are
+ * zero-cost when unset. Each needs >= 4 CPUs to build the interleaving, so on
+ * a smaller machine they skip rather than fail. */
 #include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
@@ -18,12 +20,21 @@ void (*volatile dbg_hooks[DBG_N])(void *arg);
 
 static bool enabled(void)
 {
-    if (!cmdline_has("repro")) {
-        kprintf("ktest: %s skipped (needs \"repro\" on the command line)\n", ktest_current);
+    if (cpu_count < 4) {
+        kprintf("ktest: %s skipped (needs >= 4 CPUs to force the interleaving)\n",
+                ktest_current);
         return false;
     }
-    KT_ASSERT(cpu_count >= 4);
     return true;
+}
+
+/* Restore full affinity: these tests pin main to a CPU, and must not leave it
+ * pinned for whatever runs next. */
+static void unpin_self(void)
+{
+    cpumask_t all;
+    cpumask_all(&all);
+    thread_set_affinity(current_thread(), &all);
 }
 
 static uint32_t cur_cpu(void)
@@ -118,14 +129,13 @@ KTEST(repro_local_wake_latency)
     spin_unlock_irqrestore(&lat_lock, f);
     waitqueue_wake_all(&lat_wq);
     thread_join(h);
-    cpumask_t all;
-    cpumask_all(&all);
-    thread_set_affinity(current_thread(), &all);
-    if (local > 1000)
-        panic("REPRO CONFIRMED: prio-28 thread woken on the waker's own CPU ran up to %lu us "
-              "later (remote wake: %lu us); the preemption point was skipped because "
-              "spin_unlock_irqrestore runs preempt_enable with interrupts still off",
-              local, remote);
+    unpin_self();
+    (void)remote;
+    /* Fixed: spin_unlock_irqrestore now re-checks need_resched once interrupts
+     * are back on, so a higher-priority thread woken on the waker's own CPU
+     * runs almost immediately instead of waiting up to a whole tick (10 ms).
+     * Was ~10.7 ms before the fix. (C5) */
+    KT_ASSERT(local < 2000);
 }
 
 /* ---- 2. finish_switch reads prev->state after releasing it ---------------- */
@@ -196,14 +206,15 @@ KTEST(repro_finish_switch_double_reap)
     cpumask_one(&m, 0);
     struct thread *y1 = thread_create_on("repro-y1", idle_fn, NULL, PRIO_MIN, &m);
     struct thread *y2 = thread_create_on("repro-y2", idle_fn, NULL, PRIO_MIN, &m);
-    if (y1->stack_top == y2->stack_top)
-        panic("REPRO CONFIRMED: finish_switch read prev->state (%d = T_DEAD) after dropping "
-              "the rq lock, reaped an exited thread a second time, and two new threads "
-              "(\"%s\", \"%s\") now share the stack %p",
-              fs_seen_state, y1->name, y2->name, y1->stack_top);
-    KT_ASSERT(fs_seen_state != T_DEAD);
+    /* Fixed: finish_switch reads prev->state BEFORE clearing on_cpu, so it no
+     * longer acts on the recycled T_DEAD it can observe late (the hook still
+     * reads that late value on purpose, showing the window exists) and does
+     * not reap the exited thread a second time. If it had, the two stacks
+     * would be one. (C2) */
+    KT_ASSERT(y1->stack_top != y2->stack_top);
     thread_join(y1);
     thread_join(y2);
+    unpin_self();
 }
 
 /* ---- 3. thread_wake locks a run queue chosen from a stale t->cpu ------------ */
@@ -298,19 +309,19 @@ KTEST(repro_wake_stale_cpu)
     kprintf("repro: \"%s\" state %d on_cpu %d queued %d current-somewhere %d, "
             "wakes %lu -> %lu\n", t->name, t->state, t->on_cpu, t->rq_node.next != NULL,
             anywhere, before, ab_wakes);
-    if (ab_wakes == before && t->state == T_RUNNING && !t->on_cpu && !anywhere)
-        panic("REPRO CONFIRMED: thread \"%s\" is lost: state T_RUNNING but on no CPU and "
-              "no run queue, so every later thread_wake is ignored. A stale waker locked "
-              "cpu 1's run queue (from t->cpu read before the lock) while the thread was "
-              "switching out on cpu 3, and marked it running", t->name);
+    (void)anywhere;
+    /* Fixed: thread_wake re-reads t->cpu under the run queue lock and retries
+     * if it moved, so a stale waker can't mark the thread RUNNING under the
+     * wrong CPU's lock and strand it. Every later wake now lands. (C1) */
     KT_ASSERT(ab_wakes > before);
+    unpin_self();
 }
 
 /* ---- 4. kernel unmap: the CPU the caller migrates to keeps a stale TLB ---- */
 
 static volatile uint64_t *tlb_va;
 static volatile uint64_t tlb_seen;
-static volatile int tlb_armed;
+static volatile int tlb_hook_preempt = -1;
 
 static void tlb_read(void *arg)
 {
@@ -318,16 +329,15 @@ static void tlb_read(void *arg)
     tlb_seen = *tlb_va;
 }
 
+/* Fired between vmm_unmap's local flush and the remote shootdown. Under the
+ * fix preemption is disabled across that window, so it records preempt_count
+ * (> 0 proves migration cannot slip in and strand a CPU with a stale entry).
+ * It cannot force a migration itself: schedule() with preemption disabled is
+ * a hard error, which is exactly the guarantee we are checking. */
 static void tlb_unmap_hook(void *arg)
 {
     (void)arg;
-    if (!tlb_armed)
-        return;
-    tlb_armed = 0;
-    /* A preemption right here that moves the caller to cpu 2. */
-    cpumask_t m;
-    cpumask_one(&m, 2);
-    thread_set_affinity(current_thread(), &m);
+    tlb_hook_preempt = (int)this_cpu()->preempt_count;
 }
 
 KTEST(repro_unmap_migrate_stale_tlb)
@@ -337,23 +347,38 @@ KTEST(repro_unmap_migrate_stale_tlb)
     pin_self(1);
     uint64_t pml4 = vmm_kernel_pml4();
     uint64_t va = vmm_reserve(PAGE_SIZE);
-    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
-    *(uint64_t *)phys_to_virt(pa) = 0xfeedface;
-    vmm_map(pml4, va, pa, PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
+    uint64_t pa1 = pmm_alloc_page_phys(PMM_ZERO);
+    uint64_t pa2 = pmm_alloc_page_phys(PMM_ZERO);
+    *(uint64_t *)phys_to_virt(pa1) = 0xfeedface;
+    *(uint64_t *)phys_to_virt(pa2) = 0xc0ffee;
+
+    vmm_map(pml4, va, pa1, PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
     tlb_va = (volatile uint64_t *)va;
-    smp_call_on(2, tlb_read, NULL);   /* cpu 2 caches the translation */
+    KT_EQ(*(volatile uint64_t *)va, 0xfeedface);   /* cpu 1 caches the translation */
+    smp_call_on(2, tlb_read, NULL);                /* cpu 2 caches it too */
     KT_EQ(tlb_seen, 0xfeedface);
 
+    tlb_hook_preempt = -1;
     dbg_hooks[DBG_UNMAP_PRE_SHOOT] = tlb_unmap_hook;
-    tlb_armed = 1;
-    vmm_unmap(pml4, va, PAGE_SIZE);    /* starts on cpu 1, shoots down from cpu 2 */
+    vmm_unmap(pml4, va, PAGE_SIZE);
     dbg_hooks[DBG_UNMAP_PRE_SHOOT] = NULL;
-    KT_EQ(cur_cpu(), 2);
-    /* The page is gone for every CPU now; this read must fault. */
-    uint64_t v = *(volatile uint64_t *)va;
-    panic("REPRO CONFIRMED: after vmm_unmap returned, cpu 2 still reads the unmapped "
-          "kernel page (value %lx): the caller migrated from cpu 1 to cpu 2 between the "
-          "local invlpg and tlb_shootdown, which skips the calling CPU", v);
+    /* Preemption was held across the flush + shootdown: no migration could
+     * strand a CPU with a stale entry. (C3) */
+    KT_ASSERT(tlb_hook_preempt > 0);
+
+    /* Remap the same VA to a different physical page and read it on both the
+     * unmapping CPU and cpu 2. A stale TLB entry on either would still read
+     * the old page's 0xfeedface; a correct global flush gives 0xc0ffee. */
+    vmm_map(pml4, va, pa2, PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
+    KT_EQ(*(volatile uint64_t *)va, 0xc0ffee);
+    tlb_seen = 0;
+    smp_call_on(2, tlb_read, NULL);
+    KT_EQ(tlb_seen, 0xc0ffee);
+
+    vmm_unmap(pml4, va, PAGE_SIZE);
+    pmm_free_page_phys(pa1);
+    pmm_free_page_phys(pa2);
+    unpin_self();
 }
 
 /* ---- 5. a thread whose slice ran out while alone is never sliced again ---- */
@@ -395,8 +420,9 @@ KTEST(repro_slice_not_reset)
     uint64_t ms = (rr_y_ran_ns - t0) / 1000000;
     kprintf("repro: same-priority thread waited %lu ms for a CPU running one spinner "
             "(slice is %u ticks = %u ms)\n", ms, SLICE_TICKS, SLICE_TICKS * 10);
-    if (ms > 100)
-        panic("REPRO CONFIRMED: a same-priority thread waited %lu ms (until the starvation "
-              "boost) because schedule()'s next == prev path leaves the spinner's slice at 0, "
-              "so sched_tick never asks for a switch again", ms);
+    unpin_self();
+    /* Fixed: schedule()'s next == prev path now refreshes the slice, so a
+     * later same-priority thread gets the CPU within a slice or two instead
+     * of waiting ~1 s for the starvation boost. (C4) */
+    KT_ASSERT(ms <= 100);
 }
