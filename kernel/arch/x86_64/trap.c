@@ -5,6 +5,7 @@
 #include <jam/kprintf.h>
 #include <jam/panic.h>
 #include <jam/trap.h>
+#include <jam/uentry.h>
 
 void trap_dispatch(struct trap_frame *f)
 {
@@ -23,6 +24,10 @@ void trap_dispatch(struct trap_frame *f)
     case 3:   /* int3: log and continue, handy for testing the trap path */
         kprintf("trap: breakpoint at %lx\n", f->rip);
         return;
+    case 14:
+        if (trap_page_fault(f))   /* M5: demand paging, user copies, user faults */
+            return;
+        panic_trap(f);
     default:
         panic_trap(f);   /* M1: every other exception is fatal */
     }

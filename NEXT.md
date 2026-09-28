@@ -16,7 +16,7 @@ plugs it in, copy build/jamos.elf + boot/limine.conf to "/Volumes/NO NAME" (boot
 boot/limine/). Then on the PC: "All tests" (expect `ktest: 78 test(s) passed` and
 `M4.5 complete`) and the 10-minute stress (expect PASSED). Also worth a look on 28 CPUs:
 the `locks:` line from lock_speed_all_cpus and the `m4:` calls/s (was 492,673 on M4).
-After that: mark M4.5 ✅ in ARCHITECTURE.md, update the blueprint artifact, start M5.
+After that: mark M4.5 ✅ in ARCHITECTURE.md, start M5. (User 2026-09-29: ignore the blueprint artifact from now on.)
 
 Note: 4-CPU stress throughput in QEMU is bimodal (switches 4k..6M in 10 s, spawns 20..53k)
 in the OLD build too; CPU-hog threads at 4 vCPUs. Not a regression; don't chase it.
@@ -144,8 +144,3 @@ then the user runs M4 tests + 10-min stress on the PC.
   kernel copy, not the user buffer.
 - channel_call handoff / wake-affine placement before services are built on it.
 - User priority cap (<= 24) unless a capability allows higher.
-
-## Blueprint diagram artifact
-https://claude.ai/artifact/PM9XB3tFC2dUusLApdYQTC (file: scratchpad jamos-blueprint.html in the
-old session). Update after M4.5: M4 boxes -> verified, add audit-fix notes, M4.5, revised
-roadmap. Publishing an update needs the artifact URL passed as `url` from a new session.

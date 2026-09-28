@@ -54,6 +54,9 @@ enum thread_state {
 
 #define MAX_HELD_MUTEXES 8
 
+struct aspace;
+struct process;
+
 struct waitqueue {
     spinlock_t       lock;
     struct list_node waiters;
@@ -85,6 +88,12 @@ struct thread {
     struct waitqueue  exit_wq;
 
     uint64_t          switches_in;
+
+    /* M5 user state. NULL for kernel threads, which run on the kernel's
+     * page tables and never touch the FPU. */
+    struct aspace    *aspace;        /* address space (a reference) */
+    struct process   *process;       /* owning process */
+    void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */

@@ -19,6 +19,7 @@
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
+#include <jam/uentry.h>
 #include <jam/smp.h>
 #include <jam/string.h>
 #include <jam/time.h>
@@ -300,6 +301,7 @@ void schedule(void)
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, prev->state, c->ticks };
+    arch_thread_switch(prev, next);   /* kernel stack, FPU, address space (M5) */
     switch_context(&prev->rsp, next->rsp);
 
     /* Back on prev's stack, possibly much later and on another CPU. */
