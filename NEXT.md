@@ -6,7 +6,12 @@ checker fast path / 256 classes / mutexes), 0948ed9 (cancellable waits), then th
 hygiene + version commit. QEMU: 78/78 ktests at 4 and 8 CPUs, stress 30 s passes, every
 crash test panics with the right message (testbp continues).
 
-**Next for the user (on the PC):** the stick still has the PRE-audit M4 build. When the user
+**PC 2026-09-29, "All tests": PASSED** (78/78; m4 836,077 calls/s vs 492,673 on M4, worst
+37 us vs 67; locks 48 ns avg / 61 worst per nested pair on 28 CPUs; cancel 118/2000 races
+cancelled; TSC-deadline, all 28 CPUs 100 ticks). The stick has v0.0.6-m4.5 + the RESULTS
+box (commit after 86097ff). Remaining: the 10-minute stress on the PC.
+
+**(Older) Next for the user (on the PC):** the stick still has the PRE-audit M4 build. When the user
 plugs it in, copy build/jamos.elf + boot/limine.conf to "/Volumes/NO NAME" (boot/ and
 boot/limine/). Then on the PC: "All tests" (expect `ktest: 78 test(s) passed` and
 `M4.5 complete`) and the 10-minute stress (expect PASSED). Also worth a look on 28 CPUs:
