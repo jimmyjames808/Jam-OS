@@ -3,6 +3,7 @@
  * HHDM (RAM write-back, framebuffer write-combining) and the vmemmap, then
  * switches CR3. */
 #include <jam/cpu.h>
+#include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
@@ -133,6 +134,7 @@ void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
     if (start >= 0xffff800000000000ull && ipi_ready) {
         if (!irqs_enabled())
             panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
+        DBG_HOOK(DBG_UNMAP_PRE_SHOOT, NULL);
         tlb_shootdown(start, end - start);
     }
 }

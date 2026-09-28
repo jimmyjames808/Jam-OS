@@ -10,6 +10,7 @@
  * - Preemption happens on the way out of an interrupt, never while a
  *   spinlock is held (preempt_count > 0).
  */
+#include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
@@ -217,6 +218,7 @@ static void finish_switch(void)
      * seeing on_cpu set then knows prev has not yet reached schedule(). */
     __atomic_store_n(&prev->on_cpu, false, __ATOMIC_RELEASE);
     spin_unlock_no_resched(&rq->lock);
+    DBG_HOOK(DBG_FINISH_SWITCH, prev);
 
     if (prev->state == T_DEAD)
         reap(prev);
@@ -248,6 +250,7 @@ void schedule(void)
             prev->state = T_MIGRATING;   /* moved in finish_switch */
     }
     /* T_BLOCKED / T_DEAD: not queued. T_READY: a waker already queued it. */
+    DBG_HOOK(DBG_SCHED_PREV, prev);
 
     struct thread *next = pick_best(rq);
     if (!next)
@@ -296,6 +299,7 @@ void thread_wake(struct thread *t)
      * until on_cpu clears. */
     if (__atomic_load_n(&t->on_cpu, __ATOMIC_ACQUIRE)) {
         struct runqueue *own = &rqs[t->cpu];
+        DBG_HOOK(DBG_WAKE_ONCPU, t);
         uint64_t f = spin_lock_irqsave(&own->lock);
         bool still_here = t->on_cpu && t->state == T_BLOCKED;
         if (still_here)
