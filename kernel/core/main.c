@@ -21,7 +21,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.4-m3"
+#define JAMOS_VERSION   "0.0.5-m4"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -125,7 +125,7 @@ _Noreturn static void kmain_stage2(void *arg)
     selftest_crash_smp();
     sched_print_stats();
 
-    kprintf("\nM3 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    kprintf("\nM4 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
     thread_exit();   /* CPU 0 falls through to its idle thread */
 }
 
