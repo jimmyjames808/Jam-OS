@@ -82,5 +82,7 @@ void preempt_enable_no_resched(void);
 
 /* Turn the checker off (the panic path, where rules no longer matter). */
 void lockdep_off(void);
+/* How many lock classes the checker has seen (it holds at most 64). */
+unsigned lockdep_class_count(void);
 /* Print the locks this CPU holds (for panics and assertions). */
 void lockdep_print_held(void);

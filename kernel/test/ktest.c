@@ -1,6 +1,7 @@
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
+#include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/time.h>
 
@@ -27,6 +28,7 @@ int ktest_run(const char *prefix)
                 leaked > 32 ? "  (note: pages not returned)" : "");
         ran++;
     }
-    kprintf("ktest: %d test(s) passed\n", ran);
+    kprintf("ktest: %d test(s) passed (%u of 64 lock classes in use)\n", ran,
+            lockdep_class_count());
     return ran;
 }

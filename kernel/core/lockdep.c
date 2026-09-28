@@ -46,6 +46,11 @@ static void graph_unlock(uint64_t f)
     irq_restore(f);
 }
 
+unsigned lockdep_class_count(void)
+{
+    return class_count;
+}
+
 void lockdep_off(void)
 {
     disabled = true;
