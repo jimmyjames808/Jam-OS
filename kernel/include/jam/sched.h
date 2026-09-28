@@ -95,6 +95,13 @@ void thread_join(struct thread *t);
 void thread_detach(struct thread *t);
 void thread_yield(void);
 void thread_sleep_ns(uint64_t ns);
+/* Block until thread_wake() or until uptime_ns() reaches deadline_ns
+ * (DEADLINE_NEVER: no timeout). `lock` guards the caller's wake condition:
+ * it is held on entry, released while blocked, and held again on return.
+ * Wakeups can be early or spurious, so callers loop on their condition and
+ * compare uptime_ns() against the deadline themselves. */
+#define DEADLINE_NEVER UINT64_MAX
+void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
 static inline void thread_sleep_ms(uint64_t ms) { thread_sleep_ns(ms * 1000000); }
 /* Restrict where t may run. For the current thread this takes effect at
  * once (it migrates before returning). */
@@ -128,6 +135,9 @@ void waitqueue_init(struct waitqueue *wq, const char *name);
  * in a loop: wakeups can be early. `lock` (held, may be NULL) is released
  * once the thread is queued, closing the check-then-sleep race. */
 void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags);
+/* Same, giving up at deadline_ns (the caller checks uptime_ns()). */
+void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                          uint64_t deadline_ns);
 void waitqueue_wake_one(struct waitqueue *wq);
 void waitqueue_wake_all(struct waitqueue *wq);
 

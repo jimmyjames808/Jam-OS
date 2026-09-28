@@ -33,7 +33,13 @@ SECTIONS
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     __rodata_start = .;
-    .rodata : { *(.rodata .rodata.*) } :rodata
+    .rodata : {
+        *(.rodata .rodata.*)
+        . = ALIGN(8);
+        __ktests_start = .;
+        KEEP(*(.ktests))
+        __ktests_end = .;
+    } :rodata
     __rodata_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));

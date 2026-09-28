@@ -465,15 +465,42 @@ void thread_set_affinity(struct thread *t, const cpumask_t *mask)
         schedule();   /* switches out as T_MIGRATING, resumes on an allowed CPU */
 }
 
-void thread_sleep_ns(uint64_t ns)
+/* The current thread is already T_BLOCKED (set while the lock that guards
+ * its wake condition was held, so no waker can slip in unnoticed). Arm the
+ * deadline, drop `lock`, switch out, and on return re-take `lock`. */
+static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     struct thread *t = current_thread();
-    uint64_t f = spin_lock_irqsave(&sleep_lock);
-    t->wake_at_ns = uptime_ns() + ns;
-    list_add_tail(&sleepers, &t->sleep_node);
-    t->state = T_BLOCKED;
-    spin_unlock_irqrestore(&sleep_lock, f);
+    if (deadline_ns != DEADLINE_NEVER) {
+        uint64_t f = spin_lock_irqsave(&sleep_lock);
+        t->wake_at_ns = deadline_ns;
+        list_add_tail(&sleepers, &t->sleep_node);
+        spin_unlock_irqrestore(&sleep_lock, f);
+    }
+    if (lock)
+        spin_unlock_irqrestore(lock, *irqflags);
     schedule();
+    if (t->sleep_node.next) {   /* woken early: disarm the deadline */
+        uint64_t f = spin_lock_irqsave(&sleep_lock);
+        if (t->sleep_node.next)
+            list_del(&t->sleep_node);
+        spin_unlock_irqrestore(&sleep_lock, f);
+    }
+    if (lock)
+        *irqflags = spin_lock_irqsave(lock);
+}
+
+void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
+{
+    current_thread()->state = T_BLOCKED;
+    block_prepared(lock, irqflags, deadline_ns);
+}
+
+void thread_sleep_ns(uint64_t ns)
+{
+    uint64_t deadline = uptime_ns() + ns;
+    while (uptime_ns() < deadline)
+        thread_block(NULL, NULL, deadline);
 }
 
 static void wake_sleepers(void)
@@ -698,7 +725,8 @@ void waitqueue_init(struct waitqueue *wq, const char *name)
     list_init(&wq->waiters);
 }
 
-void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags)
+void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                          uint64_t deadline_ns)
 {
     struct thread *t = current_thread();
     bool same = lock == &wq->lock;
@@ -706,14 +734,26 @@ void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags)
     if (!same)
         f = spin_lock_irqsave(&wq->lock);
     list_add_tail(&wq->waiters, &t->wait_node);
-    t->state = T_BLOCKED;
+    t->state = T_BLOCKED;   /* before the wq lock drops: wakers pop under it */
     if (!same)
         spin_unlock_irqrestore(&wq->lock, f);
-    if (lock)
-        spin_unlock_irqrestore(lock, *irqflags);
-    schedule();
-    if (lock)
-        *irqflags = spin_lock_irqsave(lock);
+    block_prepared(lock, irqflags, deadline_ns);
+
+    /* Timed out (or spurious): still queued, so take ourselves off. */
+    if (t->wait_node.next) {
+        uint64_t g = 0;
+        if (!same)
+            g = spin_lock_irqsave(&wq->lock);
+        if (t->wait_node.next)
+            list_del(&t->wait_node);
+        if (!same)
+            spin_unlock_irqrestore(&wq->lock, g);
+    }
+}
+
+void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags)
+{
+    waitqueue_wait_until(wq, lock, irqflags, DEADLINE_NEVER);
 }
 
 static void wake(struct waitqueue *wq, bool all)

@@ -11,6 +11,7 @@
 #include <jam/lapic.h>
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
+#include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/selftest.h>
@@ -67,6 +68,23 @@ static void print_boot_info(const struct boot_info *bi)
 
 static struct boot_info *boot;
 
+/* "ktest=abc" -> "abc" (up to the next space); NULL if absent. */
+static const char *ktest_prefix(void)
+{
+    static char buf[32];
+    const char *p = boot->cmdline;
+    for (; *p; p++) {
+        if ((p == boot->cmdline || p[-1] == ' ') && !memcmp(p, "ktest=", 6)) {
+            size_t n = 0;
+            for (p += 6; *p && *p != ' ' && n + 1 < sizeof(buf); p++)
+                buf[n++] = *p;
+            buf[n] = '\0';
+            return buf;
+        }
+    }
+    return NULL;
+}
+
 /* Runs on the kernel's own stack, with its own page tables. */
 _Noreturn static void kmain_stage2(void *arg)
 {
@@ -99,6 +117,8 @@ _Noreturn static void kmain_stage2(void *arg)
     bool ok = smp_report(1000);
     if (cmdline_has("selftest"))
         selftest_run_smp();
+    if (cmdline_has("ktest") || ktest_prefix())
+        ktest_run(ktest_prefix() ? ktest_prefix() : "");
     uint64_t stress_s = cmdline_get_u64("stress", 0);
     if (stress_s)
         ok &= stress_run(stress_s);
