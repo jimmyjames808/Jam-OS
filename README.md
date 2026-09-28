@@ -7,10 +7,19 @@ Monolithic now, microkernel later. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```sh
 brew install x86_64-elf-gcc qemu mtools
+make            # the kernel, the user programs and build/bootfs.img
 make image      # build/jamos.img: FAT32 USB image with Limine (UEFI)
 make run        # boot it in QEMU: q35 + OVMF + USB boot over xHCI
 make debug      # same, paused for gdb on :1234
+make syscalls   # regenerate the system call glue after editing abi/syscalls.def
 ```
+
+User programs (`user/`) are built with the same cross compiler as static
+ELFs at 0x400000 and packed with `boot/init.cfg` into `build/bootfs.img`,
+which Limine loads as a module (`module_path` on every boot menu entry).
+The system call numbers, the kernel dispatch table and the user wrappers
+are generated from `abi/syscalls.def` by `tools/gensyscalls.py`; the output
+is committed, and every build fails if it doesn't match the `.def`.
 
 The boot menu has **All tests** (`ktest`: every in-kernel test), a
 **10-minute stress test** and a **Tests** folder with the self-test, the
@@ -52,13 +61,18 @@ kernel/core/        kmain, klog, panic, symbols, scheduler, locks + lock
                     checker, self-tests, stress test
 kernel/object/      kernel objects, handles, channels, ports, events, timers,
                     VMOs, dma_cap
-kernel/abi/         handle-level sys_ API (the future system calls)
+kernel/abi/         handle-level sys_ API, the generated syscall table
 kernel/test/        in-kernel tests (KTEST) and race regression tests
 kernel/mm/          physical pages, page tables, heap
 kernel/dev/         framebuffer console, serial, font
 kernel/lib/         string, kprintf
 kernel/include/jam/ kernel headers
+user/               user programs: libos (crt0, syscall wrappers, printf,
+                    heap, startup message, bootfs reader), init, utest
+abi/syscalls.def    the system call table
 boot/limine.conf    boot menu
-tools/              image builder, font converter, USB writer
+boot/init.cfg       what init starts (packed into bootfs)
+tools/              image, bootfs and syscall generators, font converter,
+                    USB writer
 third_party/        Limine (BSD-2), limine.h (0BSD), Spleen font (BSD-2)
 ```

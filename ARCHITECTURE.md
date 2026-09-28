@@ -79,7 +79,10 @@ with the framework itself.
 - `kernel/boot/limine.c` is the only file that includes `limine.h`. It fills
   `struct boot_info` (all physical addresses) and calls `kmain`.
 - Limine modules become **bootfs**, a read-only in-memory FS holding init and
-  the shell, so userspace starts before USB and FAT32 work.
+  the shell, so userspace starts before USB and FAT32 work. One module,
+  `bootfs.img` (`tools/mkbootfs.py`): a header, an entry table, each file on
+  its own pages. The kernel validates it as untrusted input at boot and
+  serves files as physical VMOs over the module's pages, without copying.
 - Order today (`kernel/core/main.c`): early console, PMM/VMM, heap, then on
   the kernel's own stack: ACPI tables (MADT/MCFG/HPET), BSP LAPIC, TSC
   calibration, BSP per-CPU, scheduler (the boot code becomes thread "main"),
