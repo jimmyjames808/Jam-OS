@@ -238,7 +238,7 @@ uACPI stays in the kernel permanently; everything else moves out.
 | **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | booted on the real PC 2026-09-28 |
 | **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | all tests passed on the real PC 2026-09-28 |
 | **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | real PC 2026-09-28: 28 CPUs (16 P-threads + 12 E-cores, HT on), all exactly 100 ticks, TSC-deadline |
-| **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | QEMU: self-tests + stress pass at 4 and 8 CPUs (~4.4M switches / 40 s); 28 emulated CPUs too slow to be useful; *next: 10-min stress on the real PC* |
+| **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | real PC 2026-09-28: 10-min stress passed (112 threads, 28 CPUs, lock checking on), after fixing an IRQ race in the checker found by the first run at 230 s |
 | M4 | Objects, handles, channels, ports, VMOs | in-kernel channel ping-pong |
 | M5 | Ring 3, syscalls, ELF loader, bootfs, init | init runs from bootfs |
 | M6 | devmgr, PCIe, MSI, `<jam/driver.h>` | drivers bound through the handle-only API |
