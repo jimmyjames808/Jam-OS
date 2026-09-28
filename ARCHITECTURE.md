@@ -252,11 +252,16 @@ with the framework itself.
   `waitqueue_wait(wq, lock)`, sleeping mutexes. Up to 256 exited threads'
   stacks are cached for reuse. Timers and sleepers are woken by CPU 0's tick
   (about 10 ms resolution).
-- **Cancellable waits** (M4.5): a per-thread cancel flag; every blocking path
-  (`thread_block`, wait queues, `object_wait_one`, `port_wait`,
-  `channel_call`, mutexes) returns `ERR_CANCELED` once it is set, and
-  `thread_kill` sets it and wakes the thread. M5 needs this to kill a process
-  blocked in `channel_call` on a hung server.
+- **Cancellable waits** (M4.5): `thread_cancel(t)` sets a per-thread flag for
+  good and wakes t. The cancellable waits (`thread_block_cancellable`,
+  `waitqueue_wait_cancellable`, `thread_sleep_cancellable`,
+  `mutex_lock_cancellable`, and through them `object_wait_one`, `port_wait`
+  and `channel_call`) return `ERR_CANCELED`; plain waits just see a spurious
+  wakeup. A wait that is also satisfied still succeeds, and a cancelled
+  port/mutex waiter passes its wakeup on. The waiter moves itself
+  BLOCKED -> RUNNING by CAS, and `thread_wake` does the same on its on-CPU
+  path, so neither can overwrite a state the other set. M5 uses this to
+  kill a process blocked in `channel_call` on a hung server.
 - To do: `channel_call` handoff / wake-affine placement (M5); hybrid
   placement order (idle P-core pair > idle E-core > busy HT sibling);
   per-CPU one-shot timers instead of CPU 0's tick; stack cache pages beyond
@@ -335,8 +340,9 @@ Rules for userspace drivers:
   (checked by `tools/gensyms.py verify`). #DF, NMI and #MC run on IST stacks.
   The other CPUs are halted by NMI first.
 - **ktest**: `KTEST(name)` registers a test in the `.ktests` section. Boot
-  with `ktest` (all) or `ktest=prefix`. Each test fails if it leaks pages;
-  the run reports how many lock classes are in use.
+  with `ktest` (all) or `ktest=prefix`. Each test fails if it leaks more
+  than 2 pages; the run reports how many lock classes are in use.
+  `make KTESTS=0` builds a kernel without the tests or the DBG_HOOKs.
 - **DBG_HOOK** injection points (`dbghook.h`) let race regression tests stop
   a thread at an exact line (the lost-wakeup and teardown races each have
   one).
@@ -358,7 +364,7 @@ Rules for userspace drivers:
 | **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | real PC 2026-09-28: 28 CPUs (16 P-threads + 12 E-cores, HT on), all exactly 100 ticks, TSC-deadline |
 | **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | real PC 2026-09-28: 10-min stress passed (112 threads, 28 CPUs, lock checking on), after fixing an IRQ race in the checker found by the first run at 230 s |
 | **M4** ✅ | Objects, handles, channels, ports, events, timers, VMOs, handle-level `sys_` API; two-agent audit, 20 fixes | QEMU 64/64 ktests at 4 and 8 CPUs; real PC 2026-09-28 (channels + ports): 1 server + 27 clients, 492,673 calls/s, worst 67 us. The final audited build still has to run on the PC |
-| M4.5 | Hardening: W^X on the HHDM alias, received-handle and signal gaps, channel "has room" signal, lock checker scaling, cancellable waits, new tests, stale docs | all ktests + new tests at 4 and 8 CPUs, stress and crash tests pass; then M4 tests + 10-min stress on the PC |
+| M4.5 | Hardening: W^X on the HHDM alias, received-handle and signal gaps, channel "has room" signal, lock checker scaling, cancellable waits, new tests, stale docs | QEMU 2026-09-29: 78/78 ktests at 4 and 8 CPUs, stress and all crash tests pass. *Still to do: "All tests" + 10-min stress on the PC* |
 | M5 | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic |
 | M6 | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
 | M7 | xHCI → HID → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |

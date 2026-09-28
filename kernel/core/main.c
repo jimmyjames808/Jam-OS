@@ -21,7 +21,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.5-m4"
+#define JAMOS_VERSION   "0.0.6-m4.5"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -117,15 +117,22 @@ _Noreturn static void kmain_stage2(void *arg)
     bool ok = smp_report(1000);
     if (cmdline_has("selftest"))
         selftest_run_smp();
+#ifdef JAM_NO_KTESTS
+    if (cmdline_has("ktest") || ktest_prefix()) {
+        kprintf("ktest: this kernel was built without tests (make KTESTS=0)\n");
+        ok = false;
+    }
+#else
     if (cmdline_has("ktest") || ktest_prefix())
         ktest_run(ktest_prefix() ? ktest_prefix() : "");
+#endif
     uint64_t stress_s = cmdline_get_u64("stress", 0, 600);
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
     sched_print_stats();
 
-    kprintf("\nM4 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    kprintf("\nM4.5 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
     thread_exit();   /* CPU 0 falls through to its idle thread */
 }
 

@@ -11,11 +11,11 @@ extern const struct ktest __ktests_start[], __ktests_end[];
 
 const char *ktest_current = "?";
 
-/* A test may leave a slab partially filled (a few pages held until the last
+/* A test may leave a slab partially filled (a page held until the last
  * object on that slab is freed), so allow a small slack before calling it a
- * leak. Real leaks are many pages -- a leaked 64 KiB buffer is 16, an unfreed
- * VMO commit far more. */
-#define LEAK_SLACK_PAGES 8
+ * leak. Measured 2026-09-29 over the whole suite at 4 and 8 CPUs: no test
+ * drifts by more than 1 page. A leaked 64 KiB buffer is 16 pages. */
+#define LEAK_SLACK_PAGES 2
 
 /* Force one-time lazily-created singletons into existence before the baseline,
  * so their allocation isn't charged to whichever test first happens to use

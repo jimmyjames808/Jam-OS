@@ -1,6 +1,7 @@
 #!/bin/sh
 # Boot build/jamos.img headless in QEMU with a given kernel command line,
 # wait until it halts, then save the serial log and a screenshot.
+# QEMU_IMAGE picks another image (e.g. build/noktests/jamos.img).
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -10,7 +11,7 @@ ovmf=$(brew --prefix qemu)/share/qemu
 mkdir -p "$out"
 
 img="$out/$name.img"
-cp build/jamos.img "$img"
+cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n    cmdline: %s\n' \
     "$cmdline" > "$out/$name.conf"
 mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf

@@ -12,7 +12,7 @@ make run        # boot it in QEMU: q35 + OVMF + USB boot over xHCI
 make debug      # same, paused for gdb on :1234
 ```
 
-The boot menu has **M4 tests** (`ktest`: every in-kernel test), a
+The boot menu has **All tests** (`ktest`: every in-kernel test), a
 **10-minute stress test** and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
 crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`,
@@ -28,7 +28,9 @@ QEMU_SMP=8 QEMU_TIMEOUT=60 tools/qemu-test.sh build/test st ktest stress=30
 QEMU_SMP=20 tools/qemu-test.sh build/test smp20 selftest   # like the real PC
 ```
 `QEMU_MEM`, `QEMU_SMP`, `QEMU_CPU` (e.g. `max,-x2apic`) change the machine;
-`QEMU_TIMEOUT` (seconds, default 30) is how long to wait for it to finish.
+`QEMU_TIMEOUT` (seconds, default 30) is how long to wait for it to finish;
+`QEMU_IMAGE` boots another image. `make KTESTS=0 image` builds a kernel
+without the in-kernel tests into `build/noktests/`.
 
 ## Boot on a real PC
 

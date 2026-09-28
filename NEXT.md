@@ -1,12 +1,20 @@
-# Jam OS: handoff for the next step (written 2026-09-29, before a context compact)
+# Jam OS: handoff (updated 2026-09-29, M4.5 done in QEMU)
 
-State: M0-M4 done. Main = 4cae5dc (v0.0.5-m4): M4 objects/handles/channels/ports/events/timers/VMOs
-plus all 20 audit fixes (O8 deferred). QEMU: 64/64 ktests at 4 and 8 CPUs, stress 30 s passes.
-The USB stick still has the PRE-audit M4 build: copy build/jamos.elf + boot/limine.conf to
-"/Volumes/NO NAME" when the user plugs it in, then the user runs "M4 tests" (expect 64 passed)
-and ideally the 10-minute stress on the PC.
+State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
+M4 audit: 6a9d463 (ARCHITECTURE.md rewrite), e179adc (small fixes + tests), 32d2571 (lock
+checker fast path / 256 classes / mutexes), 0948ed9 (cancellable waits), then the test
+hygiene + version commit. QEMU: 78/78 ktests at 4 and 8 CPUs, stress 30 s passes, every
+crash test panics with the right message (testbp continues).
 
-Step 1 (the ARCHITECTURE.md rewrite) is DONE (2026-09-29). Next: M4.5 hardening below.
+**Next for the user (on the PC):** the stick still has the PRE-audit M4 build. When the user
+plugs it in, copy build/jamos.elf + boot/limine.conf to "/Volumes/NO NAME" (boot/ and
+boot/limine/). Then on the PC: "All tests" (expect `ktest: 78 test(s) passed` and
+`M4.5 complete`) and the 10-minute stress (expect PASSED). Also worth a look on 28 CPUs:
+the `locks:` line from lock_speed_all_cpus and the `m4:` calls/s (was 492,673 on M4).
+After that: mark M4.5 ✅ in ARCHITECTURE.md, update the blueprint artifact, start M5.
+
+Note: 4-CPU stress throughput in QEMU is bimodal (switches 4k..6M in 10 s, spawns 20..53k)
+in the OLD build too; CPU-hog threads at 4 vCPUs. Not a regression; don't chase it.
 
 ## Decisions the user made (2026-09-29)
 - Plan: **M4.5 hardening first, then M5**.
@@ -79,7 +87,7 @@ the drift the conformance reviewer found:
     FAT clean-shutdown bit + check on mount, SCSI SYNCHRONIZE CACHE on sync/unmount; 4 GiB file
     limit and no permissions are fine (authority = namespaces).
 
-## M4.5 hardening (after the doc rewrite)
+## M4.5 hardening (DONE in QEMU 2026-09-29; kept for reference)
 Small code fixes (conformance review):
 - **W^X hole**: kernel text/rodata writable through the HHDM alias (vmm.c ~256-264 maps
   KERNEL_AND_MODULES RW+NX). Map that region's HHDM alias read-only (or leave text unmapped in

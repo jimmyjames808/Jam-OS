@@ -6,7 +6,11 @@ CC      := $(CROSS)gcc
 LD      := $(CROSS)ld
 OBJDUMP := $(CROSS)objdump
 
-BUILD   := build
+# `make KTESTS=0` leaves out the in-kernel tests (kernel/test) and compiles
+# the DBG_HOOK injection points away, building into build/noktests. The
+# boot menu's "M4 tests" entry needs the default KTESTS=1.
+KTESTS  ?= 1
+BUILD   := $(if $(filter 0,$(KTESTS)),build/noktests,build)
 KERNEL  := $(BUILD)/jamos.elf
 IMAGE   := $(BUILD)/jamos.img
 IMAGE_MIB := 64
@@ -25,7 +29,12 @@ ASFLAGS := $(CFLAGS)
 LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
            -T kernel/linker.ld
 
+ifeq ($(KTESTS),0)
+CFLAGS += -DJAM_NO_KTESTS
+C_SRCS := $(shell find kernel -name '*.c' -not -path 'kernel/test/*')
+else
 C_SRCS := $(shell find kernel -name '*.c')
+endif
 S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
