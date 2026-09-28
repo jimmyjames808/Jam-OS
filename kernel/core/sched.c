@@ -92,8 +92,23 @@ void preempt_enable(void)
 {
     if (percpu_preempt_dec() != 0 || !irqs_enabled())
         return;
-    /* Preemptible again: check need_resched with interrupts off so the
-     * CPU we look at is the CPU we act on. */
+    preempt_check();
+}
+
+/* Take a pending reschedule if this is a safe point (preemptible, not in an
+ * interrupt, interrupts on). Callers that release a lock with irqsave reach
+ * here only after restoring interrupts: preempt_enable() runs while they are
+ * still off (so its need_resched test is skipped and a thread woken on this
+ * same CPU waits for the next tick), so spin_unlock_irqrestore calls this
+ * again once interrupts are back on. The scheduler itself never routes
+ * through here (it uses the no_resched unlock variants), so this cannot
+ * recurse into schedule(). (C5) */
+void preempt_check(void)
+{
+    if (!irqs_enabled())
+        return;
+    /* Look at need_resched with interrupts off so the CPU we test is the CPU
+     * we act on. */
     uint64_t f = irq_save();
     struct cpu *c = this_cpu();
     bool go = c->need_resched && c->irq_depth == 0 && c->preempt_count == 0 && c->current;
@@ -214,15 +229,21 @@ static void finish_switch(void)
               c->current->cpu, c->current->on_cpu, c->current->state);
     }
     rq->prev = NULL;
+    /* Read prev->state BEFORE the on_cpu release store. While on_cpu is set
+     * and this rq lock is held nobody else can pick prev, so its state is
+     * stable; once on_cpu clears, prev can be woken, run, exit and be reaped
+     * on another CPU, so a later read here could see a recycled state and
+     * reap it a second time. (C2) */
+    int prev_state = prev->state;
     /* Clear on_cpu BEFORE dropping the lock: a waker holding this lock and
      * seeing on_cpu set then knows prev has not yet reached schedule(). */
     __atomic_store_n(&prev->on_cpu, false, __ATOMIC_RELEASE);
     spin_unlock_no_resched(&rq->lock);
     DBG_HOOK(DBG_FINISH_SWITCH, prev);
 
-    if (prev->state == T_DEAD)
+    if (prev_state == T_DEAD)
         reap(prev);
-    else if (prev->state == T_MIGRATING)
+    else if (prev_state == T_MIGRATING)
         thread_wake(prev);
 }
 
@@ -257,6 +278,9 @@ void schedule(void)
         next = rq->idle;
     if (next == prev) {
         prev->state = T_RUNNING;
+        prev->slice = SLICE_TICKS;   /* refresh: a thread that used its slice
+                                      * while alone must be sliced again once
+                                      * a same-priority peer is queued (C4) */
         spin_unlock_no_resched(&rq->lock);
         irq_restore(flags);
         return;
@@ -298,15 +322,30 @@ void thread_wake(struct thread *t)
      * this against schedule(), which holds that lock from reading the state
      * until on_cpu clears. */
     if (__atomic_load_n(&t->on_cpu, __ATOMIC_ACQUIRE)) {
-        struct runqueue *own = &rqs[t->cpu];
         DBG_HOOK(DBG_WAKE_ONCPU, t);
-        uint64_t f = spin_lock_irqsave(&own->lock);
-        bool still_here = t->on_cpu && t->state == T_BLOCKED;
-        if (still_here)
-            t->state = T_RUNNING;
-        spin_unlock_irqrestore(&own->lock, f);
-        if (still_here)
-            return;
+        /* t->cpu can change under us if t migrates while still switching out
+         * (it is woken and re-run elsewhere before its old CPU cleared
+         * on_cpu). Lock the CPU t->cpu names, then re-read t->cpu under that
+         * lock; if it moved, drop the lock and retry with its new CPU. This
+         * is the task_rq_lock pattern: marking T_RUNNING under the wrong run
+         * queue's lock races schedule() on the real CPU and loses the thread
+         * (it ends RUNNING on no CPU and no queue). (C1) */
+        for (;;) {
+            uint32_t c = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
+            struct runqueue *own = &rqs[c];
+            uint64_t f = spin_lock_irqsave(&own->lock);
+            if (__atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE) != c) {
+                spin_unlock_irqrestore(&own->lock, f);
+                continue;   /* migrated: relock its current run queue */
+            }
+            bool still_here = t->on_cpu && t->state == T_BLOCKED;
+            if (still_here)
+                t->state = T_RUNNING;
+            spin_unlock_irqrestore(&own->lock, f);
+            if (still_here)
+                return;
+            break;
+        }
         s = t->state;   /* it switched out meanwhile: wake it normally */
         if (s != T_BLOCKED && s != T_MIGRATING)
             return;
@@ -491,7 +530,13 @@ static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
      * here on is harmless, so preemption can come back on. */
     preempt_enable_no_resched();
     schedule();
-    if (t->sleep_node.next) {   /* woken early: disarm the deadline */
+    /* Always take sleep_lock before touching sleep_node when we may have
+     * been on the sleepers list: wake_sleepers deletes the node and calls
+     * thread_wake(t) while holding sleep_lock, so a lockless check here
+     * could let this thread return (and re-block or exit, freeing itself)
+     * while the waker is still inside thread_wake(t). Serialising on
+     * sleep_lock keeps t alive until the waker is done. (C6) */
+    if (deadline_ns != DEADLINE_NEVER) {
         uint64_t f = spin_lock_irqsave(&sleep_lock);
         if (t->sleep_node.next)
             list_del(&t->sleep_node);
@@ -752,15 +797,19 @@ void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqf
         spin_unlock_irqrestore(&wq->lock, f);
     block_prepared(lock, irqflags, deadline_ns);
 
-    /* Timed out (or spurious): still queued, so take ourselves off. */
-    if (t->wait_node.next) {
-        uint64_t g = 0;
-        if (!same)
-            g = spin_lock_irqsave(&wq->lock);
+    /* Take ourselves off the wait queue if we are still on it (timed out or
+     * spurious). Always hold wq->lock while touching wait_node: wake() pops
+     * the node and calls thread_wake(t) under wq->lock, so a lockless read
+     * could let this thread return and free itself mid-wake. When same, the
+     * caller's lock (already re-held by block_prepared) is wq->lock, so we
+     * are serialised; otherwise take wq->lock explicitly. (C6) */
+    if (!same) {
+        uint64_t g = spin_lock_irqsave(&wq->lock);
         if (t->wait_node.next)
             list_del(&t->wait_node);
-        if (!same)
-            spin_unlock_irqrestore(&wq->lock, g);
+        spin_unlock_irqrestore(&wq->lock, g);
+    } else if (t->wait_node.next) {
+        list_del(&t->wait_node);
     }
 }
 
@@ -810,6 +859,12 @@ void mutex_unlock(struct mutex *m)
     if (m->owner != current_thread())
         panic("mutex \"%s\": unlocked by a thread that does not own it", m->lock.name);
     m->owner = NULL;
-    spin_unlock_irqrestore(&m->lock, f);
+    /* Wake a waiter while still holding m->lock. Once ownership is dropped
+     * and m->lock released, the woken waiter can take the mutex and free the
+     * object it guards, so touching m->wq afterwards is a use-after-free. The
+     * lock order is the same one mutex_lock establishes ("mutex" then "mutex
+     * waiters"), and the woken thread must re-take m->lock before it returns
+     * from waitqueue_wait, so it cannot free the mutex under us. (C9) */
     waitqueue_wake_one(&m->wq);
+    spin_unlock_irqrestore(&m->lock, f);
 }

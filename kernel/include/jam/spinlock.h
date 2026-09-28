@@ -30,6 +30,10 @@ static inline void spin_init(spinlock_t *l, const char *name)
     *l = (spinlock_t)SPINLOCK_INIT(name);
 }
 
+/* Take a pending reschedule if this is a safe point (defined in sched.c);
+ * declared here because spin_unlock_irqrestore (inline below) calls it. */
+void preempt_check(void);
+
 void spin_lock(spinlock_t *l);
 /* For taking two locks of the same class (e.g. two run queues): the
  * second one gets subclass 1 so the checker sees an ordered pair. */
@@ -68,8 +72,12 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *l)
 
 static inline void spin_unlock_irqrestore(spinlock_t *l, uint64_t f)
 {
-    spin_unlock(l);
+    /* Drop the lock and the preemption it held, but defer the reschedule
+     * check until interrupts are actually restored: preempt_enable() runs
+     * with interrupts still off here and would skip it. (C5) */
+    spin_unlock_no_resched(l);
     irq_restore(f);
+    preempt_check();
 }
 
 /* Panic only: make the lock free no matter who holds it. */
