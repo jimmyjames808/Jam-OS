@@ -14,8 +14,15 @@ bootfs, elf.c; 83/83 + stress at 4+8 CPUs). Phase-2 notes from C: implement stro
 jam/syscall_impl.h; bootfs VMOs are physical and NOT write-protected, so hand out bootfs
 handles without RIGHT_WRITE and COPY the ELF RW segment (never map it); libos needs
 SR_SELF_VMAR + SR_BOOTFS; startup msg <= 8 KiB / 128 strings. The USB stick now also needs
-build/bootfs.img copied to boot/ (limine.conf has module_path on every entry). Tracks A and
-B still running.
+build/bootfs.img copied to boot/ (limine.conf has module_path on every entry).
+**Track B MERGED 2026-09-29** (e7fa047: aspace.c, VMO reverse map + gather, O8 batched
+decommit, tlb_shootdown_mask, vmar objects; main now 96/96 + stress at 4+8). Phase-2 notes
+from B: a thread's aspace ref must outlive its last time on a CPU (aspace_unref panics if
+still loaded); arch_thread_switch calls aspace_switch(prev->aspace,next->aspace) irqs off;
+aspace_fault takes the region mutex, so never hold it (or any spinlock) across a user copy;
+#PF err W->ASPACE_WRITE, I/D->ASPACE_EXEC else READ; ERR_OUT_OF_RANGE from aspace_fault =
+kill (bus error); vmar_create_for(as) for SR_SELF_VMAR; userboot passes ASPACE_CAN_* bits.
+Track A still running.
 
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
