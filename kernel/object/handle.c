@@ -233,3 +233,35 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     spin_unlock_irqrestore(&t->lock, f);
     return st;
 }
+
+status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out)
+{
+    if (!kh->obj)
+        return ERR_INVALID_ARGS;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    status_t st;
+    uint32_t idx = h >> GEN_BITS;
+    struct handle_slot *s = idx && idx <= t->capacity ? &t->slots[idx - 1] : NULL;
+    /* remove_locked bumped the generation once; nothing reused it since. */
+    if (s && !s->obj && ((s->gen - 1) & GEN_MASK) == (h & GEN_MASK)) {
+        uint32_t *link = &t->free_head;
+        while (*link && *link != idx)
+            link = &t->slots[*link - 1].next_free;
+        if (*link == idx) {
+            *link = s->next_free;
+            s->gen--;
+            s->obj = kh->obj;
+            s->rights = kh->rights;
+            t->used++;
+            *out = h;
+            st = OK;
+            goto done;
+        }
+    }
+    st = insert_locked(t, kh->obj, kh->rights, out);
+done:
+    spin_unlock_irqrestore(&t->lock, f);
+    if (st == OK)
+        kh->obj = NULL;
+    return st;
+}
