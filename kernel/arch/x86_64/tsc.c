@@ -23,18 +23,23 @@ static inline uint32_t inl(uint16_t port)
 static uint64_t measure_hpet(void)
 {
     volatile uint64_t *h = vmm_map_mmio(acpi.hpet_phys, 1024);
-    uint64_t period_fs = h[0] >> 32;   /* capabilities: counter period */
+    uint64_t caps = h[0];                 /* general capabilities/id */
+    uint64_t period_fs = caps >> 32;      /* counter period */
     if (!period_fs || period_fs > 100000000)
         return 0;
+    /* Capability bit 13 (COUNT_SIZE_CAP): 1 = 64-bit counter, 0 = 32-bit.
+     * A 32-bit counter wraps at 2^32, so mask reads and compute deltas
+     * modulo the width. CAL_MS at a sane period keeps target < 2^32. (C11) */
+    uint64_t mask = (caps & (1ull << 13)) ? ~0ull : 0xffffffffull;
     h[0x10 / 8] |= 1;                  /* general config: enable counter */
 
     uint64_t target = (uint64_t)CAL_MS * 1000000000000ull / period_fs;
-    uint64_t h0 = h[0xf0 / 8], t0 = rdtsc();
+    uint64_t h0 = h[0xf0 / 8] & mask, t0 = rdtsc();
     uint64_t h1;
-    while ((h1 = h[0xf0 / 8]) - h0 < target)
+    while ((((h1 = h[0xf0 / 8] & mask) - h0) & mask) < target)
         __asm__ volatile("pause");
     uint64_t t1 = rdtsc();
-    uint64_t ns = (h1 - h0) * period_fs / 1000000;
+    uint64_t ns = ((h1 - h0) & mask) * period_fs / 1000000;
     return ns ? (t1 - t0) * 1000000000ull / ns : 0;
 }
 
