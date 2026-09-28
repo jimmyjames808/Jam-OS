@@ -65,6 +65,8 @@ void         pmm_early_init(const struct boot_info *bi);
 /* Bump allocator used only while building the first page tables. */
 uint64_t     pmm_early_alloc(uint64_t size, uint64_t align);
 void         pmm_init(void);
+/* Give a RAM range (e.g. loader-reclaimable) to the allocator; returns bytes. */
+uint64_t     pmm_add_range(uint64_t base, uint64_t length);
 struct page *pmm_alloc_pages(unsigned order, unsigned flags);
 void         pmm_free_pages(struct page *p, unsigned order);
 uint64_t     pmm_alloc_page_phys(unsigned flags);   /* 0 on failure */

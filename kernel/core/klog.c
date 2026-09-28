@@ -10,15 +10,21 @@ static char ring[KLOG_SIZE];
 static uint64_t head;           /* total bytes ever written */
 static spinlock_t ring_lock = SPINLOCK_INIT;
 
+/* One lock across ring, serial and console so lines from different CPUs
+ * never interleave. Interrupt handlers must not log (M3 adds irqsave). */
 void klog_write(const char *s, size_t len)
 {
     spin_lock(&ring_lock);
     for (size_t i = 0; i < len; i++)
         ring[head++ & (KLOG_SIZE - 1)] = s[i];
-    spin_unlock(&ring_lock);
-
     serial_write(s, len);
     fbcon_write(s, len);
+    spin_unlock(&ring_lock);
+}
+
+void klog_force_unlock(void)
+{
+    spin_unlock(&ring_lock);
 }
 
 size_t klog_tail(char *buf, size_t size)

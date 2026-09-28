@@ -10,6 +10,7 @@
 
 #define BOOT_MAX_MEMMAP  256
 #define BOOT_MAX_MODULES 32
+#define BOOT_MAX_CPUS    256
 
 enum boot_mem_type {
     BOOT_MEM_USABLE,
@@ -54,6 +55,12 @@ struct boot_module {
     char     string[BOOT_STR_MAX];
 };
 
+struct boot_cpu {
+    uint32_t acpi_uid;
+    uint32_t lapic_id;
+    void    *loader_handle;   /* opaque; used by boot_start_cpu */
+};
+
 /* Everything in boot_info lives in kernel memory (strings are copied), so
  * loader-reclaimable memory can be freed without breaking it. */
 struct boot_info {
@@ -63,8 +70,11 @@ struct boot_info {
     uint64_t kernel_phys_base;   /* physical address of __kernel_start */
     uint64_t kernel_virt_base;
     uint64_t rsdp_phys;          /* 0 if no ACPI */
+    uint64_t tsc_hz_loader;      /* loader's TSC estimate, 0 if unknown */
     uint32_t cpu_count;
     uint32_t bsp_lapic_id;
+    int      x2apic;             /* loader switched the APICs to x2APIC mode */
+    struct boot_cpu cpus[BOOT_MAX_CPUS];
 
     struct boot_framebuffer fb;  /* fb.virt == NULL if none */
 
@@ -74,6 +84,10 @@ struct boot_info {
     size_t             module_count;
     struct boot_module modules[BOOT_MAX_MODULES];
 };
+
+/* Release an application processor parked by the loader: it calls
+ * entry(arg) on a small loader stack, with the loader's page tables. */
+void boot_start_cpu(const struct boot_cpu *cpu, void (*entry)(void *), void *arg);
 
 /* Kernel entry after the loader-specific glue has filled in boot_info. */
 _Noreturn void kmain(struct boot_info *bi);

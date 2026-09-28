@@ -102,8 +102,22 @@ Moving a driver to userspace is then a rebuild and a relaunch, not a rewrite.
 - Ticket spinlocks that save/restore IF, with **lock-order checking** in debug
   builds.
 - IPIs: reschedule, TLB shootdown, panic halt, cross-CPU calls.
-- Timekeeping: TSC calibrated against HPET or the ACPI PM timer; LAPIC in
-  TSC-deadline mode where available; tickless idle.
+- Timekeeping: TSC measured against the HPET (then ACPI PM timer, CPUID 15h,
+  loader estimate; all printed for comparison). LAPIC timer in TSC-deadline
+  mode where available (`nodeadline` forces the periodic fallback, which is
+  calibrated as the median of 5 bracketed runs). 100 Hz tick for now;
+  tickless idle later.
+- APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
+  prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
+  stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
+  Loader-reclaimable memory is freed only once every AP is online.
+- Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
+  CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
+- Interrupt handlers never log (the interrupted code may hold the log lock);
+  they count errors, reported later. `smp_run_on_all` runs a function on
+  every CPU by piggybacking on the tick, a stopgap until M3 has IPIs.
+- ACPI tables can live in firmware-reserved memory the HHDM skips, so they
+  are read through `acpi_map`, which maps pages on demand.
 
 ## Objects and handles
 
@@ -186,8 +200,8 @@ uACPI stays in the kernel permanently; everything else moves out.
 | # | Milestone | Done when |
 |---|---|---|
 | **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | booted on the real PC 2026-09-28 |
-| **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | self-tests + crash tests pass in QEMU (2 GB and 6 GB); *next: run on the real PC* |
-| M2 | ACPI tables, LAPIC/IOAPIC, all cores, timers | every core prints and ticks |
+| **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | all tests passed on the real PC 2026-09-28 |
+| **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | QEMU: 4/8/20 CPUs tick at 100 Hz, 20-CPU allocator stress passes; *next: run on the real PC* |
 | M3 | Scheduler, kernel threads, locks, IPIs | 10-min stress test with lock checking |
 | M4 | Objects, handles, channels, ports, VMOs | in-kernel channel ping-pong |
 | M5 | Ring 3, syscalls, ELF loader, bootfs, init | init runs from bootfs |

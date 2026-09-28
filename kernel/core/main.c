@@ -1,15 +1,23 @@
 #include <stdint.h>
+#include <jam/acpi.h>
 #include <jam/boot.h>
+#include <jam/cmdline.h>
 #include <jam/cpu.h>
+#include <jam/ioapic.h>
+#include <jam/irq.h>
+#include <jam/lapic.h>
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/selftest.h>
 #include <jam/serial.h>
+#include <jam/smp.h>
 #include <jam/string.h>
+#include <jam/time.h>
+#include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.2-m1"
+#define JAMOS_VERSION   "0.0.3-m2"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -29,16 +37,6 @@ static const char *mem_type_name(enum boot_mem_type t)
     return "?";
 }
 
-static int cmdline_has(const char *cmdline, const char *word)
-{
-    size_t wl = strlen(word);
-    for (const char *p = cmdline; *p; p++)
-        if ((p == cmdline || p[-1] == ' ') && !memcmp(p, word, wl) &&
-            (p[wl] == ' ' || p[wl] == '\0'))
-            return 1;
-    return 0;
-}
-
 static void print_boot_info(const struct boot_info *bi)
 {
     kprintf("cpu:         %s (%s)%s\n", cpu_features.brand, cpu_features.vendor,
@@ -52,9 +50,10 @@ static void print_boot_info(const struct boot_info *bi)
                 bi->fb.height, bi->fb.bpp, bi->fb.pitch, bi->fb.phys);
     kprintf("kernel:      phys %lx virt %lx\n", bi->kernel_phys_base, bi->kernel_virt_base);
     kprintf("rsdp:        %lx\n", bi->rsdp_phys);
-    kprintf("cpus:        %u (bsp lapic %u)\n", bi->cpu_count, bi->bsp_lapic_id);
+    kprintf("cpus:        %u from loader (bsp lapic %u, %s)\n", bi->cpu_count,
+            bi->bsp_lapic_id, bi->x2apic ? "x2APIC" : "xAPIC");
 
-    if (cmdline_has(bi->cmdline, "memmap")) {
+    if (cmdline_has("memmap")) {
         for (size_t i = 0; i < bi->memmap_count; i++) {
             const struct boot_mem_region *r = &bi->memmap[i];
             kprintf("  %016lx - %016lx  %-14s %lu KiB\n", r->base, r->base + r->length,
@@ -73,17 +72,34 @@ _Noreturn static void kmain_stage2(void *arg)
     pmm_stats(&total, &free);
     kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
 
-    if (cmdline_has(boot->cmdline, "selftest"))
+    if (cmdline_has("selftest"))
         selftest_run();
     selftest_crash(boot->cmdline);
 
-    kprintf("\nM1 complete: memory management up. Halting.\n");
-    halt_forever();
+    acpi_init(boot->rsdp_phys);
+    lapic_init_bsp(boot->x2apic);
+    tsc_calibrate_with_loader(boot->tsc_hz_loader);
+    smp_init_bsp(boot);
+    ioapic_init();
+    lapic_timer_calibrate();
+    lapic_timer_start(TICK_HZ);
+    smp_start_aps(boot);
+    irq_enable();
+
+    kprintf("measuring ticks on every CPU for 1 s...\n");
+    bool ok = smp_report(1000);
+    if (cmdline_has("selftest"))
+        selftest_run_smp();
+
+    kprintf("\nM2 %s. Idling.\n", ok ? "complete: all CPUs up and ticking" : "FINISHED WITH PROBLEMS");
+    for (;;)
+        hlt();   /* keep taking timer interrupts */
 }
 
 _Noreturn void kmain(struct boot_info *bi)
 {
     boot = bi;
+    cmdline_set(bi->cmdline);
     int has_serial = serial_init();
     fbcon_init(&bi->fb);
 

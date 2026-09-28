@@ -16,7 +16,7 @@ struct __attribute__((packed)) idtr {
     uint64_t base;
 };
 
-extern const uint64_t isr_table[32];
+extern const uint64_t isr_table[256];
 
 static struct idt_entry idt[256];
 
@@ -34,7 +34,7 @@ static void set_gate(int vec, uint64_t handler, uint8_t ist)
 
 void idt_init(void)
 {
-    for (int v = 0; v < 32; v++)
+    for (int v = 0; v < 256; v++)
         set_gate(v, isr_table[v], 0);
     /* These can arrive on a broken stack, so give them known-good ones. */
     set_gate(2, isr_table[2], IST_NMI);

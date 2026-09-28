@@ -18,7 +18,7 @@ cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
 
 log="$out/$name.log" mon="build/.qemu-$name.sock"   # unix socket paths max out at 104 bytes
 rm -f "$log" "$mon"
-qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp 4 -cpu max \
+qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
     -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
     -device qemu-xhci,id=xhci \
@@ -29,7 +29,7 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp 4 -cpu max \
 qpid=$!
 
 i=0
-while [ $i -lt 60 ] && ! grep -qE "Halting|system halted" "$log" 2>/dev/null; do
+while [ $i -lt 60 ] && ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
 done
@@ -40,4 +40,4 @@ kill $qpid 2>/dev/null || true
 wait $qpid 2>/dev/null || true
 python3 -c "from PIL import Image; Image.open('$out/$name.ppm').save('$out/$name.png')" 2>/dev/null || true
 rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon"
-grep -qE "Halting|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }
+grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }

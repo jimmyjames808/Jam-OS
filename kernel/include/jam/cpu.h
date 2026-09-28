@@ -12,6 +12,10 @@ struct cpu_features {
     bool x2apic;
     bool tsc_invariant;
     bool hybrid;          /* Intel P-core/E-core (CPUID 7.EDX[15]) */
+    bool tsc_deadline;    /* LAPIC timer TSC-deadline mode */
+    uint32_t max_leaf;
+    uint32_t crystal_hz;  /* CPUID 0x15, 0 if not reported */
+    uint32_t tsc_ratio_num, tsc_ratio_den;
     char vendor[13];
     char brand[49];
 };
@@ -36,6 +40,13 @@ void cpu_enable_paging_features(void);
 #define IST_NMI           2
 #define IST_MACHINE_CHECK 3
 
+/* Early BSP-only GDT/TSS with static IST stacks, used until the per-CPU
+ * structures exist. */
 void gdt_init_bsp(void);
+struct cpu;
+/* Per-CPU GDT and TSS with guard-paged IST stacks (needs the heap). */
+void gdt_init_cpu(struct cpu *c);
+/* Core type and SMT/core ids, from CPUID on the calling CPU. */
+void cpu_detect_topology(struct cpu *c);
 void idt_init(void);
 void idt_load(void);

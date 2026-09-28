@@ -7,3 +7,5 @@
 void   klog_write(const char *s, size_t len);
 /* Copy up to `size` bytes of the most recent log text into buf. */
 size_t klog_tail(char *buf, size_t size);
+/* Panic only: drop the log lock in case this CPU died holding it. */
+void   klog_force_unlock(void);

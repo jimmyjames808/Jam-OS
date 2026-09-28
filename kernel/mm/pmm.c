@@ -108,6 +108,29 @@ static void free_block_locked(uint64_t pfn, unsigned order)
     list_add(&free_lists[zone][order], &p->node);
 }
 
+/* Hand [pfn, end) to the buddy allocator. Returns the number of pages. */
+static uint64_t seed_range_locked(uint64_t pfn, uint64_t end)
+{
+    uint64_t added = 0;
+    for (uint64_t q = pfn; q < end; q++) {
+        struct page *p = pfn_to_page(q);
+        p->flags = 0;
+        p->zone = zone_of(q);
+    }
+    /* Largest aligned blocks that fit and don't cross 4 GiB. */
+    while (pfn < end) {
+        unsigned order = MAX_ORDER;
+        while (order > 0 &&
+               ((pfn & ((1ull << order) - 1)) || pfn + (1ull << order) > end ||
+                zone_of(pfn) != zone_of(pfn + (1ull << order) - 1)))
+            order--;
+        free_block_locked(pfn, order);
+        pfn += 1ull << order;
+        added += 1ull << order;
+    }
+    return added;
+}
+
 void pmm_init(void)
 {
     for (unsigned z = 0; z < ZONE_COUNT; z++)
@@ -117,27 +140,29 @@ void pmm_init(void)
     /* vmm_init marked every backed struct page PG_RESERVED; only the pages
      * handed to the buddy allocator below become allocatable. */
     early_done = true;
-    for (size_t i = 0; i < early_count; i++) {
-        uint64_t pfn = early[i].base >> PAGE_SHIFT;
-        uint64_t end = early[i].end >> PAGE_SHIFT;
-        for (uint64_t q = pfn; q < end; q++) {
-            struct page *p = pfn_to_page(q);
-            p->flags = 0;
-            p->zone = zone_of(q);
-        }
-        /* Largest aligned blocks that fit and don't cross 4 GiB. */
-        while (pfn < end) {
-            unsigned order = MAX_ORDER;
-            while (order > 0 &&
-                   ((pfn & ((1ull << order) - 1)) || pfn + (1ull << order) > end ||
-                    zone_of(pfn) != zone_of(pfn + (1ull << order) - 1)))
-                order--;
-            free_block_locked(pfn, order);
-            pfn += 1ull << order;
-            total_pages += 1ull << order;
-        }
-    }
+    for (size_t i = 0; i < early_count; i++)
+        total_pages += seed_range_locked(early[i].base >> PAGE_SHIFT,
+                                         early[i].end >> PAGE_SHIFT);
     free_pages = total_pages;
+}
+
+uint64_t pmm_add_range(uint64_t base, uint64_t length)
+{
+    uint64_t pfn = ALIGN_UP(base, PAGE_SIZE) >> PAGE_SHIFT;
+    uint64_t end = ALIGN_DOWN(base + length, PAGE_SIZE) >> PAGE_SHIFT;
+    if (pfn == 0)
+        pfn = 1;   /* page 0 stays reserved */
+    if (end > max_pfn)
+        end = max_pfn;
+    if (pfn >= end)
+        return 0;
+
+    spin_lock(&lock);
+    uint64_t added = seed_range_locked(pfn, end);
+    total_pages += added;
+    free_pages += added;
+    spin_unlock(&lock);
+    return added << PAGE_SHIFT;
 }
 
 struct page *pmm_alloc_pages(unsigned order, unsigned flags)

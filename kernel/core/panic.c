@@ -93,10 +93,13 @@ static void panic_begin(void)
     if (__atomic_exchange_n(&panicking, 1, __ATOMIC_SEQ_CST))
         halt_forever();   /* panic inside panic: stop, don't recurse */
 
+    /* This CPU may have died holding the log lock. */
+    klog_force_unlock();
+    fbcon_force_unlock();
+
     size_t n = klog_tail(tail, TAIL_BYTES);
     tail[n] = '\0';
 
-    fbcon_force_unlock();
     fbcon_set_colors(0xffffff, 0x8b0000);
     fbcon_clear();
     kprintf("\n  *** JAM OS KERNEL PANIC ***\n\n");

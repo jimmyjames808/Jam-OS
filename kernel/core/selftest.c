@@ -2,7 +2,9 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/percpu.h>
 #include <jam/selftest.h>
+#include <jam/smp.h>
 #include <jam/string.h>
 
 #define CHECK(cond)                                                     \
@@ -92,11 +94,77 @@ static void test_vmm(void)
     kprintf("selftest: vmm ok\n");
 }
 
+/* Every CPU allocates and frees at once, checking each block keeps the
+ * pattern it wrote: catches allocator races before the scheduler arrives. */
+static volatile uint64_t smp_failures, smp_ops;
+
+static void smp_alloc_worker(void *arg)
+{
+    (void)arg;
+    uint32_t me = this_cpu()->index;
+    uint64_t seed = 0x2545f4914f6cdd1dull * (me + 1);
+    enum { SLOTS = 64 };
+    uint8_t *ptrs[SLOTS] = { 0 };
+    uint32_t sizes[SLOTS] = { 0 };
+    struct page *pages[SLOTS] = { 0 };
+
+    for (int round = 0; round < 3000; round++) {
+        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        unsigned slot = seed % SLOTS;
+        if (ptrs[slot]) {
+            for (uint32_t b = 0; b < sizes[slot]; b += 61)
+                if (ptrs[slot][b] != (uint8_t)(me * 7 + slot))
+                    __atomic_add_fetch(&smp_failures, 1, __ATOMIC_RELAXED);
+            kfree(ptrs[slot]);
+            ptrs[slot] = NULL;
+        } else {
+            sizes[slot] = 1 + (seed >> 20) % ((seed & 1) ? 3000 : 200);
+            ptrs[slot] = kmalloc(sizes[slot]);
+            if (!ptrs[slot]) {
+                __atomic_add_fetch(&smp_failures, 1, __ATOMIC_RELAXED);
+                continue;
+            }
+            memset(ptrs[slot], (uint8_t)(me * 7 + slot), sizes[slot]);
+        }
+        if (pages[slot]) {
+            if (*(uint64_t *)page_to_virt(pages[slot]) != page_to_phys(pages[slot]))
+                __atomic_add_fetch(&smp_failures, 1, __ATOMIC_RELAXED);
+            pmm_free_pages(pages[slot], 1);
+            pages[slot] = NULL;
+        } else if ((pages[slot] = pmm_alloc_pages(1, 0))) {
+            *(uint64_t *)page_to_virt(pages[slot]) = page_to_phys(pages[slot]);
+        }
+        __atomic_add_fetch(&smp_ops, 1, __ATOMIC_RELAXED);
+    }
+    for (int i = 0; i < SLOTS; i++) {
+        kfree(ptrs[i]);
+        if (pages[i])
+            pmm_free_pages(pages[i], 1);
+    }
+}
+
+static void test_smp_alloc(void)
+{
+    uint64_t total, free_before, free_after;
+    pmm_stats(&total, &free_before);
+    smp_run_on_all(smp_alloc_worker, NULL);
+    pmm_stats(&total, &free_after);
+    CHECK(smp_failures == 0);
+    kprintf("selftest: smp alloc ok (%u CPUs, %lu ops, %ld pages still in slabs)\n",
+            cpu_count, smp_ops, (long)(free_before - free_after));
+}
+
 void selftest_run(void)
 {
     test_pmm();
     test_vmm();
     test_heap();
+    kprintf("selftest: single-CPU tests passed\n");
+}
+
+void selftest_run_smp(void)
+{
+    test_smp_alloc();
     kprintf("selftest: all passed\n");
 }
 

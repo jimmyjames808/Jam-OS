@@ -1,0 +1,23 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct cpu;
+
+/* x2apic: the loader already switched the APICs to x2APIC mode. */
+void     lapic_init_bsp(bool x2apic);
+/* Per-CPU setup: enable, spurious/error vectors, NMI pins from the MADT. */
+void     lapic_init_cpu(struct cpu *c);
+uint32_t lapic_id(void);
+void     lapic_eoi(void);
+bool     lapic_x2apic_mode(void);
+
+/* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and
+ * "nodeadline" is not on the command line), else the APIC's own counter. */
+void     lapic_timer_calibrate(void);   /* BSP, once, after tsc_calibrate */
+void     lapic_timer_start(unsigned hz);
+const char *lapic_timer_mode(void);
+
+extern volatile uint64_t lapic_errors;
+extern volatile uint32_t lapic_last_esr;

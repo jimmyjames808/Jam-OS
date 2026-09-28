@@ -1,4 +1,5 @@
 #include <jam/cpu.h>
+#include <jam/percpu.h>
 #include <jam/string.h>
 #include <jam/x86.h>
 
@@ -11,6 +12,7 @@ void cpu_detect(void)
 
     cpuid(0, 0, &a, &b, &c, &d);
     uint32_t max_leaf = a;
+    f->max_leaf = max_leaf;
     memcpy(f->vendor + 0, &b, 4);
     memcpy(f->vendor + 4, &d, 4);
     memcpy(f->vendor + 8, &c, 4);
@@ -20,10 +22,18 @@ void cpu_detect(void)
     f->pge    = d & (1u << 13);
     f->pat    = d & (1u << 16);
     f->x2apic = c & (1u << 21);
+    f->tsc_deadline = c & (1u << 24);
 
     if (max_leaf >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
         f->hybrid = d & (1u << 15);
+    }
+
+    if (max_leaf >= 0x15) {
+        cpuid(0x15, 0, &a, &b, &c, &d);
+        f->tsc_ratio_den = a;
+        f->tsc_ratio_num = b;
+        f->crystal_hz = c;
     }
 
     cpuid(0x80000000, 0, &a, &b, &c, &d);
@@ -61,4 +71,30 @@ void cpu_enable_paging_features(void)
         wrmsr(MSR_PAT, 0x0007010500070406ull);
         wbinvd();
     }
+}
+
+void cpu_detect_topology(struct cpu *cpu)
+{
+    uint32_t a, b, c, d;
+    cpu->type = CORE_UNKNOWN;
+    if (cpu_features.hybrid && cpu_features.max_leaf >= 0x1a) {
+        cpuid(0x1a, 0, &a, &b, &c, &d);
+        switch (a >> 24) {
+        case 0x40: cpu->type = CORE_PERFORMANCE; break;   /* "Core" */
+        case 0x20: cpu->type = CORE_EFFICIENCY; break;    /* "Atom" */
+        }
+    }
+
+    /* Leaf 0x1F (or 0xB): sub-leaf 0 describes the SMT level. The shift says
+     * how many low x2APIC-id bits pick a thread within a core. */
+    uint32_t leaf = cpu_features.max_leaf >= 0x1f ? 0x1f : 0xb;
+    uint32_t smt_shift = 0, x2id = cpu->lapic_id;
+    if (cpu_features.max_leaf >= 0xb) {
+        cpuid(leaf, 0, &a, &b, &c, &d);
+        x2id = d;
+        if (((c >> 8) & 0xff) == 1)
+            smt_shift = a & 0x1f;
+    }
+    cpu->smt_id = x2id & ((1u << smt_shift) - 1);
+    cpu->core_id = x2id >> smt_shift;
 }

@@ -18,7 +18,9 @@ headless and get the log and a screenshot:
 
 ```sh
 tools/qemu-test.sh build/test selftest selftest
+QEMU_SMP=20 tools/qemu-test.sh build/test smp20 selftest   # like the real PC
 ```
+`QEMU_MEM`, `QEMU_SMP` and `QEMU_CPU` (e.g. `max,-x2apic`) change the machine.
 
 ## Boot on a real PC
 
@@ -35,6 +37,7 @@ the PC from the stick in UEFI mode with Secure Boot off.
 ```
 kernel/boot/        loader glue (only place that knows about Limine)
 kernel/arch/x86_64/ entry and CPU-specific code
+kernel/acpi/        static ACPI tables (MADT, FADT, HPET, MCFG)
 kernel/core/        kmain, klog, panic, symbols, self-tests
 kernel/mm/          physical pages, page tables, heap
 kernel/dev/         framebuffer console, serial, font

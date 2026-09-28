@@ -1,4 +1,4 @@
-/* Exception entry stubs. Each pushes a dummy error code if the CPU did not,
+/* Exception and interrupt entry stubs. Each pushes a dummy error code if the CPU did not,
  * then the vector, then jumps to the common path that saves the GPRs in
  * struct trap_frame order and calls trap_dispatch. */
     .section .text
@@ -51,6 +51,15 @@ ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
 
+/* Vectors 32-255: interrupts, never an error code. */
+.altmacro
+.set vec, 32
+.rept 224
+    ISR_NOERR %vec
+    .set vec, vec + 1
+.endr
+.noaltmacro
+
 isr_common:
     cld
     pushq %rax
@@ -95,8 +104,15 @@ isr_common:
     .section .rodata
     .global isr_table
 isr_table:
-.irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+.macro ISR_ADDR n
     .quad isr\n
+.endm
+.altmacro
+.set vec, 0
+.rept 256
+    ISR_ADDR %vec
+    .set vec, vec + 1
 .endr
+.noaltmacro
 
     .section .note.GNU-stack, "", @progbits

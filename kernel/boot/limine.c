@@ -27,9 +27,12 @@ REQ static volatile struct limine_executable_address_request kaddr_req = {
     .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, .revision = 0 };
 REQ static volatile struct limine_executable_cmdline_request cmdline_req = {
     .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0 };
-/* Asking for MP makes Limine start the APs and park them; M2 wakes them. */
+/* Asking for MP makes Limine start the APs and park them until
+ * boot_start_cpu releases them. x2APIC is enabled where the CPU has it. */
 REQ static volatile struct limine_mp_request mp_req = {
-    .id = LIMINE_MP_REQUEST_ID, .revision = 0, .flags = 0 };
+    .id = LIMINE_MP_REQUEST_ID, .revision = 0, .flags = LIMINE_MP_REQUEST_X86_64_X2APIC };
+REQ static volatile struct limine_tsc_frequency_request tsc_req = {
+    .id = LIMINE_TSC_FREQUENCY_REQUEST_ID, .revision = 0 };
 
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -37,6 +40,31 @@ static volatile uint64_t requests_end[] = LIMINE_REQUESTS_END_MARKER;
 void limine_entry(void);
 
 static struct boot_info bi;
+
+struct ap_start {
+    void (*entry)(void *);
+    void *arg;
+};
+static struct ap_start ap_starts[BOOT_MAX_CPUS];
+
+static void limine_ap_entry(struct limine_mp_info *info)
+{
+    struct ap_start *s = (struct ap_start *)info->extra_argument;
+    s->entry(s->arg);
+    for (;;)
+        __asm__ volatile("cli; hlt");
+}
+
+void boot_start_cpu(const struct boot_cpu *cpu, void (*entry)(void *), void *arg)
+{
+    struct limine_mp_info *info = cpu->loader_handle;
+    struct ap_start *s = &ap_starts[cpu - bi.cpus];
+    s->entry = entry;
+    s->arg = arg;
+    info->extra_argument = (uint64_t)s;
+    /* Release store: the AP must see extra_argument before goto_address. */
+    __atomic_store_n(&info->goto_address, limine_ap_entry, __ATOMIC_SEQ_CST);
+}
 
 static enum boot_mem_type convert_mem_type(uint64_t t)
 {
@@ -87,11 +115,21 @@ void limine_entry(void)
     if (rsdp_req.response && rsdp_req.response->address)
         bi.rsdp_phys = (uint64_t)rsdp_req.response->address - hhdm;
 
+    if (tsc_req.response)
+        bi.tsc_hz_loader = tsc_req.response->frequency;
+
     if (mp_req.response) {
-        bi.cpu_count    = (uint32_t)mp_req.response->cpu_count;
-        bi.bsp_lapic_id = mp_req.response->bsp_lapic_id;
+        struct limine_mp_response *mp = mp_req.response;
+        bi.bsp_lapic_id = mp->bsp_lapic_id;
+        bi.x2apic = (mp->flags & LIMINE_MP_RESPONSE_X86_64_X2APIC) != 0;
+        for (uint64_t i = 0; i < mp->cpu_count && bi.cpu_count < BOOT_MAX_CPUS; i++) {
+            struct limine_mp_info *c = mp->cpus[i];
+            bi.cpus[bi.cpu_count++] = (struct boot_cpu){
+                .acpi_uid = c->processor_id, .lapic_id = c->lapic_id, .loader_handle = c };
+        }
     } else {
         bi.cpu_count = 1;
+        bi.cpus[0].lapic_id = bi.bsp_lapic_id;
     }
 
     if (fb_req.response && fb_req.response->framebuffer_count > 0) {
