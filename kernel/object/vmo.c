@@ -7,10 +7,32 @@
  * first touch; shrink and destroy free them (decommit leaves them).
  *
  * Locking: the kobject's lock (class "vmo", taken with interrupts off like
- * every object lock) guards the size, the table, the committed count and
- * the range list. The buddy allocator ranks after it: table pages are
- * allocated, and decommitted pages freed, with it held. The kernel page
- * table lock is never taken under it, and data is never copied under it.
+ * every object lock) guards the size, the table, the committed count, the
+ * range list and the reverse map. The buddy allocator ranks after it:
+ * table pages are allocated with it held. Address spaces rank around it
+ * (aspace_vmo.h): an address space's region lock (a mutex) is above it,
+ * its page-table lock below it. The kernel page table lock is never taken
+ * under it, and data is never copied under it. vmo_set_size is serialised
+ * by a mutex ("vmo resize") above everything else.
+ *
+ * User mappings (M5): each address-space mapping of a VMO is a struct
+ * vmo_umap on v->umaps and holds a VMO reference. Unlike kernel mappings
+ * and pins, they don't block decommit or shrink: those take the pages out
+ * of the table, clear their page-table entries in every user mapping (under
+ * this lock, so a racing fault either installed the old page first and
+ * sees it zapped, or finds the slot empty and commits a new one), and free
+ * the pages only after the TLB shootdown (a tlb_gather). mm/aspace.c's
+ * header has the full argument.
+ *
+ * Latency (was TODO(O8)): decommit and shrink work one leaf table (2 MiB,
+ * at most 512 pages) per lock hold and flush/free every 512 pages or so,
+ * re-checking under each re-lock: the range is clipped to the current size
+ * (a racing shrink already took the rest), and a pin or kernel mapping that
+ * appeared since the call started fails it with ERR_BAD_STATE, leaving the
+ * pages before it decommitted. A commit racing the decommit of a slot it
+ * already passed simply stays: it is ordered after the decommit. Shrink
+ * lowers the size first, so nothing new can appear past the new end while
+ * it works, and holds "vmo resize" so no grow can reopen that range.
  *
  * Page lifetime: a committed page's struct page refcount is 1 for the
  * table's reference. vmo_read/vmo_write take an extra reference under the
@@ -29,8 +51,11 @@
  * can slip in between; decommit and shrink refuse to touch a page any
  * range covers. A range is `busy` while it is being set up or torn down,
  * and unmap/unpin ignore busy ranges. */
+#include <jam/aspace.h>
+#include <jam/aspace_vmo.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/vmo.h>
@@ -66,7 +91,9 @@ struct vmo {
     uint64_t         phys;        /* contiguous / physical: first byte */
     unsigned         order;       /* contiguous: buddy order it came from */
     uint64_t         next_pin_id;
-    struct list_node ranges;      /* struct vmo_range */
+    struct list_node ranges;      /* struct vmo_range: kernel mappings and pins */
+    struct list_node umaps;       /* struct vmo_umap: user mappings (reverse map) */
+    struct mutex     resize;      /* serialises vmo_set_size */
     uint64_t       **root[ROOT_ENTRIES];   /* paged: root[r][m][l] = phys */
 };
 
@@ -99,11 +126,7 @@ static void page_get(struct page *p)
 
 static void page_put(struct page *p)
 {
-    uint32_t left = __atomic_sub_fetch(&p->refcount, 1, __ATOMIC_ACQ_REL);
-    if (left == UINT32_MAX)
-        panic("vmo: page %lx released too many times", page_to_phys(p));
-    if (left == 0)
-        pmm_free_pages(p, 0);
+    page_unref(p);
 }
 
 static void *table_alloc(void)
@@ -139,11 +162,11 @@ static uint64_t phys_locked(struct vmo *v, uint64_t idx)
     return s ? *s : 0;
 }
 
-/* With the lock held (or from destroy): drop every page at index >= first,
- * and free the table pages that lie wholly past it. From vmo_destroy the VMO
- * has no references, so this runs WITHOUT the lock held and its latency is
- * harmless; from vmo_set_size it runs under the lock (see the TODO(O8) in
- * vmo_decommit, which applies equally to shrinking a live VMO). */
+/* Drop every page at index >= first, and free the table pages that lie
+ * wholly past it, with no TLB care: for vmo_destroy (no references, so no
+ * mappings and no lock needed) and the tail of a shrink (which has already
+ * taken every page past `first` out through a gather, so only tables are
+ * left to free). */
 static void drop_from_locked(struct vmo *v, uint64_t first)
 {
     for (uint64_t r = first / MID_PAGES; r < ROOT_ENTRIES; r++) {
@@ -266,7 +289,7 @@ static void vmo_destroy(struct kobject *obj)
 {
     struct vmo *v = (struct vmo *)obj;
     /* Every mapping and pin holds a reference, so none can be left. */
-    if (!list_empty(&v->ranges))
+    if (!list_empty(&v->ranges) || !list_empty(&v->umaps))
         panic("vmo: koid %lu destroyed while mapped or pinned", obj->koid);
     if (v->kind == VMO_PAGED) {
         drop_from_locked(v, 0);
@@ -292,6 +315,8 @@ static struct vmo *vmo_alloc(enum vmo_kind kind, uint64_t size)
     v->size = size;
     v->next_pin_id = 1;
     list_init(&v->ranges);
+    list_init(&v->umaps);
+    mutex_init(&v->resize, "vmo resize");
     return v;
 }
 
@@ -440,6 +465,85 @@ static bool ranges_overlap_locked(struct vmo *v, uint64_t first, uint64_t end)
     return false;
 }
 
+/* With the lock held: zap pages [first, end) from every user mapping. */
+static void zap_umaps_locked(struct vmo *v, uint64_t first, uint64_t end, struct tlb_gather *g)
+{
+    for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
+        struct vmo_umap *u = container_of(n, struct vmo_umap, node);
+        uint64_t lo = u->first > first ? u->first : first;
+        uint64_t hi = u->end < end ? u->end : end;
+        if (lo < hi)
+            aspace_zap_locked(u->as, u->base + ((lo - u->first) << PAGE_SHIFT),
+                              (hi - lo) << PAGE_SHIFT, g);
+    }
+}
+
+/* With the lock held: take the committed pages in [idx, end), at most up to
+ * the end of idx's leaf, out of the table onto g and out of every user
+ * mapping. Returns where to continue (past a missing leaf or mid table). */
+static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
+{
+    uint64_t **mid = v->root[idx / MID_PAGES];
+    if (!mid) {
+        uint64_t next = ALIGN_UP(idx + 1, MID_PAGES);
+        return next < end ? next : end;
+    }
+    uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES);
+    if (stop > end)
+        stop = end;
+    uint64_t *leaf = mid[(idx / LEAF_PAGES) % TBL_ENTRIES];
+    if (!leaf)
+        return stop;
+    bool any = false;
+    for (uint64_t i = idx; i < stop; i++) {
+        uint64_t *s = &leaf[i % LEAF_PAGES];
+        if (*s) {
+            tlb_gather_page(g, pa_page(*s));   /* the table's reference, released after the flush */
+            *s = 0;
+            v->committed--;
+            any = true;
+        }
+    }
+    /* Entries exist only for committed pages (a fault installs under this
+     * lock what the table holds), so nothing taken means nothing to zap. */
+    if (any)
+        zap_umaps_locked(v, idx, stop, g);
+    return stop;
+}
+
+/* Flush and free once a batch's worth of pages is waiting. */
+static void gather_maybe_finish(struct tlb_gather *g)
+{
+    if (g->npages >= LEAF_PAGES)
+        tlb_gather_finish(g);
+}
+
+/* Shrink from old_end pages to first pages; v->size is already lowered and
+ * v->resize held, so nothing can appear at or past `first` meanwhile. */
+static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    for (uint64_t idx = first; idx < old_end;) {
+        uint64_t f = vlock(v);
+        uint64_t next = take_batch_locked(v, idx, old_end, &g);
+        /* A leaf wholly past the new end goes too (its pages just did). */
+        uint64_t lbase = ALIGN_DOWN(idx, LEAF_PAGES);
+        uint64_t **mid = v->root[idx / MID_PAGES];
+        if (lbase >= first && mid && mid[(idx / LEAF_PAGES) % TBL_ENTRIES]) {
+            table_free(mid[(idx / LEAF_PAGES) % TBL_ENTRIES]);
+            mid[(idx / LEAF_PAGES) % TBL_ENTRIES] = NULL;
+        }
+        vunlock(v, f);
+        gather_maybe_finish(&g);
+        idx = next;
+    }
+    uint64_t f = vlock(v);
+    drop_from_locked(v, first);   /* only mid tables are left to free */
+    vunlock(v, f);
+    tlb_gather_finish(&g);
+}
+
 status_t vmo_set_size(struct vmo *v, uint64_t size)
 {
     if (v->kind != VMO_PAGED)
@@ -447,17 +551,19 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
     if (size > VMO_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
+    mutex_lock(&v->resize);
     uint64_t f = vlock(v);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
-    if (first < end) {
-        if (ranges_overlap_locked(v, first, end)) {
-            vunlock(v, f);
-            return ERR_BAD_STATE;
-        }
-        drop_from_locked(v, first);
+    if (first < end && ranges_overlap_locked(v, first, end)) {
+        vunlock(v, f);
+        mutex_unlock(&v->resize);
+        return ERR_BAD_STATE;
     }
     __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
     vunlock(v, f);
+    if (first < end)
+        shrink_pages(v, first, end);
+    mutex_unlock(&v->resize);
     return OK;
 }
 
@@ -481,33 +587,125 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
     }
     uint64_t first = offset >> PAGE_SHIFT;
     uint64_t end = ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT;
-    if (ranges_overlap_locked(v, first, end)) {
-        vunlock(v, f);
-        return ERR_BAD_STATE;
-    }
-    /* TODO(O8): this frees pages one at a time with the VMO lock held and
-     * interrupts off, up to ~16M for a full 64 GiB VMO (in practice bounded by
-     * the pages actually committed, i.e. by RAM). Batching -- dropping the
-     * lock between leaf tables -- is deliberately NOT done here: this is a
-     * live object, so after each window we would have to re-check that no
-     * mapping or pin now overlaps the range and that a racing commit has not
-     * re-populated a slot, which is a redesign out of proportion to a low-
-     * severity latency issue. Left as a documented TODO. */
-    for (uint64_t idx = first; idx < end;) {
-        uint64_t *s = slot_locked(v, idx, false);
-        if (!s) {
-            idx = ALIGN_UP(idx + 1, LEAF_PAGES);   /* no leaf: skip its 2 MiB */
-            continue;
-        }
-        if (*s) {
-            page_put(pa_page(*s));   /* frees it unless a reader holds it */
-            *s = 0;
-            v->committed--;
-        }
-        idx++;
-    }
+    /* Refuse up front if a pin or kernel mapping covers any of it, so the
+     * common failure changes nothing. */
+    bool busy = ranges_overlap_locked(v, first, end);
     vunlock(v, f);
+    if (busy)
+        return ERR_BAD_STATE;
+
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    status_t st = OK;
+    for (uint64_t idx = first; idx < end;) {
+        f = vlock(v);
+        uint64_t stop = v->size >> PAGE_SHIFT;   /* a racing shrink took the rest */
+        if (stop > end)
+            stop = end;
+        if (idx >= stop) {
+            vunlock(v, f);
+            break;
+        }
+        uint64_t leaf_end = ALIGN_UP(idx + 1, LEAF_PAGES) < stop ? ALIGN_UP(idx + 1, LEAF_PAGES)
+                                                                 : stop;
+        if (ranges_overlap_locked(v, idx, leaf_end)) {   /* pinned since we started */
+            vunlock(v, f);
+            st = ERR_BAD_STATE;
+            break;
+        }
+        idx = take_batch_locked(v, idx, stop, &g);
+        vunlock(v, f);
+        gather_maybe_finish(&g);
+    }
+    tlb_gather_finish(&g);
+    return st;
+}
+
+/* ---- user mappings (reverse map, see aspace_vmo.h) ------------------------ */
+
+status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
+{
+    uint64_t f = vlock(v);
+    if (check && u->end > v->size >> PAGE_SHIFT) {
+        vunlock(v, f);
+        return ERR_OUT_OF_RANGE;
+    }
+    list_add_tail(&v->umaps, &u->node);
+    vunlock(v, f);
+    kobject_ref(&v->base);
     return OK;
+}
+
+void vmo_umap_set(struct vmo *v, struct vmo_umap *u, uint64_t base, uint64_t first, uint64_t end)
+{
+    uint64_t f = vlock(v);
+    u->base = base;
+    u->first = first;
+    u->end = end;
+    vunlock(v, f);
+}
+
+void vmo_umap_remove(struct vmo *v, struct vmo_umap *u)
+{
+    uint64_t f = vlock(v);
+    list_del(&u->node);
+    vunlock(v, f);
+    kobject_unref(&v->base);
+}
+
+status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
+                       unsigned perms)
+{
+    struct page *fresh = NULL;
+    for (;;) {
+        uint64_t f = vlock(v);
+        if (idx >= v->size >> PAGE_SHIFT) {
+            vunlock(v, f);
+            if (fresh)
+                page_put(fresh);
+            return ERR_OUT_OF_RANGE;
+        }
+        uint64_t pa;
+        if (v->kind != VMO_PAGED) {
+            pa = v->phys + (idx << PAGE_SHIFT);
+        } else {
+            uint64_t *s = slot_locked(v, idx, fresh != NULL);
+            if (s && *s) {
+                pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
+            } else if (fresh) {
+                if (!s) {
+                    vunlock(v, f);
+                    page_put(fresh);
+                    return ERR_NO_MEMORY;
+                }
+                pa = *s = page_to_phys(fresh);   /* the table takes our reference */
+                v->committed++;
+                fresh = NULL;
+            } else {
+                vunlock(v, f);
+                fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
+                if (!fresh)
+                    return ERR_NO_MEMORY;
+                continue;
+            }
+        }
+        /* Installed under the VMO lock: a decommit that takes this page
+         * later zaps this entry too (see the file header). */
+        aspace_set_pte_locked(as, va, pa, perms, v->cache);
+        vunlock(v, f);
+        if (fresh)
+            page_put(fresh);
+        return OK;
+    }
+}
+
+uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
+{
+    uint64_t f = vlock(v);
+    uint64_t idx = offset >> PAGE_SHIFT;
+    uint64_t pa = idx < v->size >> PAGE_SHIFT ? phys_locked(v, idx) : 0;
+    vunlock(v, f);
+    return pa;
 }
 
 /* ---- mapping and pinning ranges ----------------------------------------- */

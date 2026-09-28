@@ -14,6 +14,13 @@
 #define ASPACE_WRITE (1u << 1)
 #define ASPACE_EXEC  (1u << 2)   /* never together with ASPACE_WRITE */
 #define ASPACE_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
+/* aspace_map only: permissions a later aspace_protect may grant (on top of
+ * the ones mapped now). sys_vmar_map sets them from the VMO handle's
+ * rights, so a mapping can be made RW, filled, then flipped to RX, but
+ * never gain a permission the handle didn't carry. */
+#define ASPACE_CAN_READ  (1u << 4)
+#define ASPACE_CAN_WRITE (1u << 5)
+#define ASPACE_CAN_EXEC  (1u << 6)
 
 struct aspace;
 struct vmo;
@@ -21,26 +28,35 @@ struct vmo;
 /* A new, empty address space with one reference. */
 status_t aspace_create(struct aspace **out);
 void     aspace_ref(struct aspace *as);
-/* The last reference unmaps everything and frees the page tables. */
+/* The last reference unmaps everything and frees the page tables. It must
+ * not be dropped while a CPU still has the address space loaded (a
+ * thread's reference covers its time on a CPU; checked, panics). It never
+ * sleeps, so it may run from object teardown. */
 void     aspace_unref(struct aspace *as);
 
 /* Map [vmo_off, vmo_off+len) of vmo (page-aligned, len > 0) with flags.
  * *addr: in, the address for ASPACE_FIXED; out, where it was mapped. The
- * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X or a bad range,
+ * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X (or W or X
+ * without R) or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
  * ERR_NO_RESOURCES if it doesn't fit, ERR_ALREADY_BOUND if a FIXED range
- * overlaps an existing mapping. */
+ * overlaps an existing mapping. No permissions at all is allowed (a guard:
+ * every access faults with ERR_ACCESS_DENIED). */
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr);
 /* Remove every mapping page in [addr, addr+len) (splitting mappings as
- * needed) and shoot the range down on the CPUs using this address space. */
+ * needed) and shoot the range down on the CPUs using this address space.
+ * Holes are fine; ERR_NOT_FOUND if nothing at all was mapped there. */
 status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len);
-/* Change permissions of [addr, addr+len), which must be fully mapped. */
+/* Change permissions of [addr, addr+len), which must be fully mapped
+ * (ERR_NOT_FOUND otherwise). ERR_ACCESS_DENIED if a mapping in the range
+ * may not have them (see ASPACE_CAN_*). */
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags);
 
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the
  * access. ERR_NOT_FOUND: nothing mapped there. ERR_ACCESS_DENIED: the
  * mapping doesn't allow that access. ERR_NO_MEMORY: couldn't commit.
+ * ERR_OUT_OF_RANGE: the VMO was shrunk below the mapped page.
  * May sleep (region lock): call with interrupts on and no spinlock held. */
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access);
 

@@ -90,3 +90,23 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset,
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset,
                           uint64_t len);                                    /* RIGHT_WRITE */
 /* end VMOs */
+
+/* VMARs (address spaces) -------------------------------------------------------
+ * (kernel/abi/vmar_sys.c; semantics as in <jam/aspace.h>, <jam/vmar.h>) */
+
+/* New vmar over an empty address space: RIGHTS_BASIC | RIGHT_READ |
+ * RIGHT_WRITE. (For tests; phase 2 creates them with processes.) */
+status_t sys_vmar_create(struct handle_table *t, handle_t *out);
+/* flags: ASPACE_READ/WRITE/EXEC/FIXED only. Needs RIGHT_WRITE on vmar and
+ * RIGHT_MAP on vmo, plus RIGHT_READ / RIGHT_WRITE / RIGHT_EXEC on vmo for
+ * each permission asked for. The VMO handle's READ/WRITE/EXEC rights bound
+ * later protects. *addr as for aspace_map. */
+status_t sys_vmar_map(struct handle_table *t, handle_t vmar, handle_t vmo, uint64_t vmo_off,
+                      uint64_t len, uint32_t flags, uint64_t *addr);
+status_t sys_vmar_unmap(struct handle_table *t, handle_t vmar, uint64_t addr,
+                        uint64_t len);                                      /* RIGHT_WRITE */
+/* RIGHT_WRITE; ERR_ACCESS_DENIED for a permission the mapping's VMO handle
+ * didn't carry. */
+status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, uint64_t len,
+                          uint32_t flags);
+/* end VMARs */

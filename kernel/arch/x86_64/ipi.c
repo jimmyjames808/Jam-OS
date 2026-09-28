@@ -190,6 +190,63 @@ void tlb_shootdown(uint64_t va, uint64_t len)
     smp_call_others(flush_local, &r);
 }
 
+/* Per-CPU count of masked shootdowns handled (for tests: which CPUs an
+ * address-space unmap actually interrupted). */
+static volatile uint64_t mask_flushes[MAX_CPUS];
+
+static void flush_masked(void *arg)
+{
+    flush_local(arg);
+    __atomic_add_fetch(&mask_flushes[this_cpu()->index], 1, __ATOMIC_RELAXED);
+}
+
+/* Flush [va, va+len) on the CPUs in `mask` only (the calling CPU flushes
+ * itself if it is in the mask). Used for user address spaces: a CPU not in
+ * the address space's active mask has loaded another CR3 since it last
+ * used it, which already dropped every non-global entry (and every
+ * paging-structure cache entry) it held, so it has nothing to flush.
+ *
+ * Posts in chunks from an on-stack array so it never allocates (it runs on
+ * paths that must not fail). Preemption stays off from the "which CPU am I"
+ * decision until every chunk has answered, so the local flush and the
+ * remote ones together cover the mask even if the caller would otherwise
+ * migrate in between (the C3 rule of vmm_unmap). */
+void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len)
+{
+    enum { CHUNK = 16 };
+    struct flush_range r = { va, len };
+    if (ipi_ready)
+        check_callable();
+    preempt_disable();
+    uint32_t me = this_cpu()->index;
+    if (cpumask_has(mask, me))
+        flush_masked(&r);
+    if (!ipi_ready) {
+        preempt_enable();
+        return;
+    }
+    struct call_slot slots[CHUNK];
+    uint32_t targets[CHUNK];
+    for (uint32_t next = 0; next < cpu_count;) {
+        uint32_t n = 0;
+        for (; next < cpu_count && n < CHUNK; next++)
+            if (next != me && cpumask_has(mask, next) && cpus[next]->online)
+                targets[n++] = next;
+        if (!n)
+            continue;
+        struct call c = { flush_masked, &r, n };
+        for (uint32_t i = 0; i < n; i++)
+            post(targets[i], &slots[i], &c);
+        wait_done(&c);
+    }
+    preempt_enable();
+}
+
+uint64_t tlb_mask_flush_count(uint32_t cpu)
+{
+    return __atomic_load_n(&mask_flushes[cpu], __ATOMIC_RELAXED);
+}
+
 /* Flush a range from the CALLING CPU's TLB. The caller keeps preemption off
  * around this and tlb_shootdown so the "current" CPU can't change between the
  * two and escape both flushes. (C3) */
