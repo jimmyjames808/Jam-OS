@@ -1,10 +1,12 @@
-/* The handle-level API: what become system calls in M5. Each call names
- * objects by handle values in a handle table and checks the handle's type
- * and rights. Buffers are kernel pointers until M5 adds user copies. */
+/* The handle-level API: what become system calls in M5. Every function
+ * takes the caller's handle table and handle values, checks each handle's
+ * type and rights, and calls the object layer. Pointers are kernel
+ * pointers for now (M5 adds user copies). */
 #pragma once
 
 #include <stdint.h>
 #include <jam/handle.h>
+#include <jam/object.h>
 #include <jam/status.h>
 
 /* channels ------------------------------------------------------------------
@@ -30,3 +32,33 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
                           uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
                           uint64_t deadline_ns);
 /* end channels */
+
+/* ports, events, timers, waiting ---------------------------------------------
+ * (kernel/abi/port_sys.c; semantics as in <jam/port.h>, <jam/event.h>,
+ * <jam/timer.h>) */
+
+struct port_packet;
+
+/* New event: RIGHTS_BASIC | RIGHT_SIGNAL. */
+status_t sys_event_create(struct handle_table *t, handle_t *out);
+/* RIGHT_SIGNAL; only SIG_SIGNALED | SIG_USER_ALL. */
+status_t sys_event_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set);
+/* New timer: RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE. */
+status_t sys_timer_create(struct handle_table *t, handle_t *out);
+status_t sys_timer_set(struct handle_table *t, handle_t h, uint64_t deadline_ns);   /* RIGHT_WRITE */
+status_t sys_timer_cancel(struct handle_table *t, handle_t h);                      /* RIGHT_WRITE */
+/* New port: RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE. */
+status_t sys_port_create(struct handle_table *t, handle_t *out);
+/* Port needs RIGHT_WRITE, the watched object (any type) RIGHT_WAIT. */
+status_t sys_port_bind(struct handle_table *t, handle_t port, handle_t obj, uint64_t key,
+                       signals_t mask, uint32_t flags);
+/* Port needs RIGHT_WRITE; obj only has to be a valid handle. */
+status_t sys_port_unbind(struct handle_table *t, handle_t port, handle_t obj, uint64_t key);
+status_t sys_port_queue(struct handle_table *t, handle_t port,
+                        const struct port_packet *pkt);                    /* RIGHT_WRITE */
+status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_ns,
+                       struct port_packet *out);                           /* RIGHT_READ */
+/* RIGHT_WAIT, any type. */
+status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
+                             uint64_t deadline_ns, signals_t *observed);
+/* end ports, events, timers, waiting */
