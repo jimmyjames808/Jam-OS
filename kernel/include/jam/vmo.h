@@ -13,11 +13,15 @@
  * Offsets and lengths are in bytes. Operations that act on pages (commit,
  * decommit, kernel mappings) cover every page the byte range touches.
  *
- * Kernel mappings and pins are recorded on the VMO. While a page is mapped
- * or pinned it can't be decommitted or cut off by a shrink (ERR_BAD_STATE),
- * so its physical address stays valid for the CPU or the device using it.
- * Each mapping and each pin also holds a reference on the VMO: closing the
- * last handle never frees memory a device may still be writing to. */
+ * Kernel mappings and pins are recorded on the VMO. While a page is kernel-
+ * mapped or pinned it can't be decommitted or cut off by a shrink
+ * (ERR_BAD_STATE), so its physical address stays valid for the CPU or the
+ * device using it. User mappings (address spaces, M5) are recorded too, in
+ * a reverse map, but don't block anything: decommit and shrink unmap the
+ * pages from every address space (and shoot down their TLBs) before
+ * freeing them, and the next access faults in a fresh zero page. Each
+ * mapping of any kind and each pin holds a reference on the VMO: closing
+ * the last handle never frees memory a device may still be writing to. */
 #pragma once
 
 #include <stdint.h>
@@ -56,13 +60,18 @@ uint64_t vmo_size(struct vmo *v);
 /* Bytes of memory the VMO owns right now (committed pages). */
 uint64_t vmo_committed(struct vmo *v);
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the
- * new end; ERR_BAD_STATE if any of them is pinned or kernel-mapped. Paged
- * VMOs only (ERR_NOT_SUPPORTED otherwise). Growing adds zero pages. */
+ * new end, unmapping them from address spaces first; ERR_BAD_STATE if any
+ * of them is pinned or kernel-mapped. Paged VMOs only (ERR_NOT_SUPPORTED
+ * otherwise). Growing adds zero pages. May sleep (interrupts on, no
+ * spinlock held): it shoots down TLBs. */
 status_t vmo_set_size(struct vmo *v, uint64_t size);
 /* Allocate (zeroed) pages now. A no-op for contiguous and physical VMOs. */
 status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len);
-/* Free pages; they read as zeros again. ERR_BAD_STATE if any is pinned or
- * mapped. Paged VMOs only. */
+/* Free pages; they read as zeros again, and are unmapped from address
+ * spaces first. ERR_BAD_STATE if any is pinned or kernel-mapped (checked up
+ * front; a pin that appears while a long decommit runs stops it there, with
+ * the pages before it already decommitted). Paged VMOs only. Interrupts on,
+ * no spinlock held: it shoots down TLBs. */
 status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len);
 
 /* Map the pages holding [offset, offset+len) into the kernel's vmap area,
