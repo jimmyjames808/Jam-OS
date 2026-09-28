@@ -93,6 +93,12 @@ static uint32_t msg_txid(struct chan_msg *m)
 
 /* ---- messages ------------------------------------------------------------- */
 
+/* TODO(M5): handles sitting in queued messages hold kernel objects alive but
+ * count against no per-process limit, so a caller can pin memory by filling a
+ * peer's queue (bounded per channel by CHANNEL_MAX_QUEUED, but not per
+ * process). Charge queued handles to a per-process quota when processes
+ * arrive in M5. (O3c) */
+
 /* Copy bytes and handles into a new message. The handles are copied, not
  * taken: the caller clears its own array once the message is delivered. */
 static status_t msg_new(const void *bytes, uint32_t nbytes, const struct khandle *handles,

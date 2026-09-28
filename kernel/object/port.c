@@ -125,6 +125,7 @@ static bool detach_locked(struct port_binding *b)
         list_del(&b->obs.node);
     spin_unlock(&obj->lock);
     list_del(&b->port_node);
+    b->port->nbindings--;
     return armed;
 }
 
@@ -145,8 +146,10 @@ static void binding_dequeued(struct port *p, struct port_binding *b)
         /* A ONCE binding is spent: retire it unless unbind beat us to it. */
         uint64_t f = spin_lock_irqsave(&p->bindings_lock);
         bool listed = b->port_node.next != NULL;
-        if (listed)
+        if (listed) {
             list_del(&b->port_node);   /* its observer already removed itself */
+            p->nbindings--;
+        }
         spin_unlock_irqrestore(&p->bindings_lock, f);
         if (listed) {
             kobject_unref(b->obj);
@@ -221,6 +224,11 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
     struct port_binding *b = kzalloc(sizeof(*b));
     if (!b)
         return ERR_NO_MEMORY;
+    /* Read-only quick check; the authoritative test is under bindings_lock. */
+    if (__atomic_load_n(&p->nbindings, __ATOMIC_RELAXED) >= PORT_MAX_BINDINGS) {
+        kfree(b);
+        return ERR_NO_RESOURCES;
+    }
     b->obs.mask = mask;
     b->obs.fire = binding_fire;
     b->port = p;
@@ -235,6 +243,14 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
     /* Listed before it can fire, so a spent ONCE packet dequeued right away
      * always finds it on the list to retire. */
     uint64_t f = spin_lock_irqsave(&p->bindings_lock);
+    if (p->nbindings >= PORT_MAX_BINDINGS) {   /* authoritative check (O3a) */
+        spin_unlock_irqrestore(&p->bindings_lock, f);
+        kobject_unref(obj);          /* undo the ref taken above */
+        stat_add(&live_bindings, -1);
+        kfree(b);
+        return ERR_NO_RESOURCES;
+    }
+    p->nbindings++;
     list_add_tail(&p->bindings, &b->port_node);
     kobject_observe(obj, &b->obs);   /* fires now if already matching */
     spin_unlock_irqrestore(&p->bindings_lock, f);

@@ -59,6 +59,9 @@ struct port_packet {
 /* Most user packets a port holds before port_queue_user says
  * ERR_NO_RESOURCES. Signal packets never count: each binding owns one. */
 #define PORT_MAX_USER_PACKETS 4096
+/* Cap on live bindings per port: each is an observer walked with interrupts
+ * off on every signal change, so an unbounded number is a DoS. (O3a) */
+#define PORT_MAX_BINDINGS 4096
 
 struct port {
     struct kobject   base;         /* base.lock ("port") guards the queue */
@@ -66,6 +69,7 @@ struct port {
     uint32_t         user_queued;
     spinlock_t       bindings_lock;   /* "port bindings" */
     struct list_node bindings;        /* struct port_binding */
+    uint32_t         nbindings;       /* live bindings; bindings_lock */
     struct waitqueue waiters;         /* "port waiters" */
 };
 

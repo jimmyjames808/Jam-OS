@@ -20,8 +20,19 @@ static void vmo_put(struct vmo *v)
     kobject_unref(vmo_kobject(v));
 }
 
-status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags, handle_t *out)
+status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
+                        handle_t dma_cap, handle_t *out)
 {
+    /* VMO_CONTIGUOUS / VMO_DMA32 hand out scarce contiguous / sub-4 GiB
+     * memory, so a caller of the sys layer must present a DMA capability to
+     * ask for them. The kernel-internal vmo_create stays unrestricted for
+     * driver use. (O3b) */
+    if (flags & (VMO_CONTIGUOUS | VMO_DMA32)) {
+        struct kobject *cap;
+        if (handle_get(t, dma_cap, OBJ_DMA_CAP, 0, &cap, NULL) != OK)
+            return ERR_ACCESS_DENIED;
+        kobject_unref(cap);
+    }
     struct vmo *v;
     status_t st = vmo_create(size, flags, &v);
     if (st != OK)
