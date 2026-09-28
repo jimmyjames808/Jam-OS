@@ -466,8 +466,12 @@ void thread_set_affinity(struct thread *t, const cpumask_t *mask)
 }
 
 /* The current thread is already T_BLOCKED (set while the lock that guards
- * its wake condition was held, so no waker can slip in unnoticed). Arm the
- * deadline, drop `lock`, switch out, and on return re-take `lock`. */
+ * its wake condition was held, so no waker can slip in unnoticed) AND with
+ * preemption disabled by the caller: a preemption between marking itself
+ * blocked and arming the deadline would switch it out with nothing left to
+ * wake it (found by the VMO agent: "sleeper made no progress" in stress).
+ * Arm the deadline, drop `lock`, re-enable preemption, switch out, and on
+ * return re-take `lock`. */
 static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     struct thread *t = current_thread();
@@ -479,6 +483,9 @@ static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
     }
     if (lock)
         spin_unlock_irqrestore(lock, *irqflags);
+    /* Registered for wakeup (wait queue / deadline): being preempted from
+     * here on is harmless, so preemption can come back on. */
+    preempt_enable_no_resched();
     schedule();
     if (t->sleep_node.next) {   /* woken early: disarm the deadline */
         uint64_t f = spin_lock_irqsave(&sleep_lock);
@@ -492,6 +499,7 @@ static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
 
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
+    preempt_disable();   /* re-enabled in block_prepared */
     current_thread()->state = T_BLOCKED;
     block_prepared(lock, irqflags, deadline_ns);
 }
@@ -731,6 +739,7 @@ void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqf
     struct thread *t = current_thread();
     bool same = lock == &wq->lock;
     uint64_t f = 0;
+    preempt_disable();   /* re-enabled in block_prepared */
     if (!same)
         f = spin_lock_irqsave(&wq->lock);
     list_add_tail(&wq->waiters, &t->wait_node);
