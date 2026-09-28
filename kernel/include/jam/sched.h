@@ -124,6 +124,8 @@ void sched_tick(void);
 void sched_irq_exit(uint64_t interrupted_rflags);
 /* Total anti-starvation boosts so far. */
 uint64_t sched_boost_count(void);
+/* Pages held by the cached (never-unmapped) thread stacks, for leak checks. */
+uint64_t sched_stack_cache_pages(void);
 /* Tell `cpu` to look at its run queue soon (IPI if remote). */
 void sched_kick(uint32_t cpu);
 void sched_print_stats(void);

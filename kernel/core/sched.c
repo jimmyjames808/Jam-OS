@@ -375,6 +375,16 @@ static void *stack_get(void)
     return s ? s : kstack_alloc(STACK_SIZE);
 }
 
+/* Pages held by the cached (reused, never unmapped) thread stacks. Tests use
+ * this so stacks parked in the cache aren't mistaken for leaks. */
+uint64_t sched_stack_cache_pages(void)
+{
+    uint64_t f = spin_lock_irqsave(&stack_lock);
+    uint64_t n = (uint64_t)stack_cache_n * (STACK_SIZE / PAGE_SIZE);
+    spin_unlock_irqrestore(&stack_lock, f);
+    return n;
+}
+
 static void stack_put(void *top)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);

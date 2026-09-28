@@ -250,12 +250,14 @@ static void ab_wake_hook(void *arg)
         cpu_relax();
 }
 
+static volatile int ab_stop;
+
 static void ab_victim(void *arg)
 {
     (void)arg;
     while (!ab_target)
         cpu_relax();
-    for (;;) {
+    while (!ab_stop) {
         uint64_t f = spin_lock_irqsave(&ab_lock);
         thread_block(&ab_lock, &f, DEADLINE_NEVER);   /* callers tolerate spurious wakes */
         ab_wakes++;
@@ -276,6 +278,7 @@ KTEST(repro_wake_stale_cpu)
         return;
     pin_self(0);
     ab_phase = 0;
+    ab_stop = 0;
     ab_target = NULL;
     dbg_hooks[DBG_SCHED_PREV] = ab_sched_hook;
     dbg_hooks[DBG_WAKE_ONCPU] = ab_wake_hook;
@@ -314,6 +317,10 @@ KTEST(repro_wake_stale_cpu)
      * if it moved, so a stale waker can't mark the thread RUNNING under the
      * wrong CPU's lock and strand it. Every later wake now lands. (C1) */
     KT_ASSERT(ab_wakes > before);
+    /* Retire the victim so it doesn't leak its stack for the whole run. */
+    ab_stop = 1;
+    thread_wake(ab_target);
+    thread_join(ab_target);
     unpin_self();
 }
 

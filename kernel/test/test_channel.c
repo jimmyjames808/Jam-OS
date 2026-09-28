@@ -194,6 +194,7 @@ KTEST(channel_own_endpoint_rejected)
     KT_EQ(channel_create(&a, &b), OK);
     struct khandle ka = khandle_from_new(CH(a), RIGHTS_BASIC | RIGHTS_IO);
     struct khandle kb = khandle_from_new(CH(b), RIGHTS_BASIC | RIGHTS_IO);
+    /* Direct: an endpoint may not carry itself or its own peer. */
     KT_EQ(channel_write(a, "abcd", 4, &ka, 1), ERR_NOT_SUPPORTED);
     KT_EQ(channel_write(a, "abcd", 4, &kb, 1), ERR_NOT_SUPPORTED);
     KT_EQ(channel_write(b, "abcd", 4, &kb, 1), ERR_NOT_SUPPORTED);
@@ -201,6 +202,24 @@ KTEST(channel_own_endpoint_rejected)
     KT_ASSERT(!(kobject_signals(CH(b)) & SIG_READABLE));
     khandle_release(&ka);
     khandle_release(&kb);
+
+    /* Indirect: an endpoint whose queue already holds a channel endpoint may
+     * not be sent either -- that is the edge that would close a cycle. (O2) */
+    struct channel *c0, *c1, *z0, *z1;
+    KT_EQ(channel_create(&c0, &c1), OK);
+    KT_EQ(channel_create(&z0, &z1), OK);
+    struct khandle kz1 = khandle_from_new(CH(z1), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(c0, "z", 1, &kz1, 1), OK);   /* z1 now queued on c1 */
+    struct channel *s0, *s1;
+    KT_EQ(channel_create(&s0, &s1), OK);
+    struct khandle kc1 = khandle_from_new(CH(c1), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(s0, "c", 1, &kc1, 1), ERR_NOT_SUPPORTED);   /* c1 holds a channel */
+    KT_ASSERT(kc1.obj == CH(c1));   /* untouched */
+    khandle_release(&kc1);          /* closes c1 -> drops z1 */
+    kobject_unref(CH(c0));
+    kobject_unref(CH(z0));
+    kobject_unref(CH(s0));
+    kobject_unref(CH(s1));
     KT_EQ(channel_live_count(), live);
 }
 

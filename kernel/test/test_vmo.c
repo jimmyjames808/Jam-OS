@@ -589,9 +589,13 @@ KTEST(vmo_concurrent_writers)
 }
 
 /* Readers and writers against a thread that keeps decommitting the same
- * pages: each thread's slot reads back as its latest value or as zero
- * (decommitted since), never as anything else, and no freed page is ever
- * written. */
+ * pages. What this actually checks: each write-then-read of a thread's own
+ * slot reads back that exact value or zero (its page was decommitted in
+ * between), never a torn or foreign value; and the committed page count never
+ * exceeds the VMO size. It does not directly observe writes to freed pages --
+ * the write/read pairing is the proxy: a write that landed on a page freed
+ * under it would, once that page is reused, read back as neither the value
+ * nor zero and trip dc_bad. */
 enum { DC_THREADS = 6, DC_ITERS = 3000 };
 static volatile int dc_done;
 static volatile int dc_bad, dc_decommits;
