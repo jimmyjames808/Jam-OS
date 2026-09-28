@@ -13,7 +13,9 @@ make debug      # same, paused for gdb on :1234
 ```
 
 The boot menu has **All tests** (`ktest`: every in-kernel test), a
-**10-minute stress test** and a **Tests** folder with the self-test, the
+**Benchmark** (`bench`: latency and throughput of the kernel's basic operations,
+median and p99, method explained in `kernel/test/bench.c`), a **10-minute stress test**
+and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
 crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`,
 `testlockorder`, `testlocknest`, `testlockirq`, `testmutexorder`,

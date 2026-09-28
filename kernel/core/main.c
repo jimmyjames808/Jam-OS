@@ -119,13 +119,15 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("selftest"))
         selftest_run_smp();
 #ifdef JAM_NO_KTESTS
-    if (cmdline_has("ktest") || ktest_prefix()) {
-        kprintf("ktest: this kernel was built without tests (make KTESTS=0)\n");
+    if (cmdline_has("ktest") || ktest_prefix() || cmdline_has("bench")) {
+        kprintf("ktest: this kernel was built without tests or benchmarks (make KTESTS=0)\n");
         ok = false;
     }
 #else
     if (cmdline_has("ktest") || ktest_prefix())
         ktest_run(ktest_prefix() ? ktest_prefix() : "");
+    if (cmdline_has("bench"))
+        bench_run();
 #endif
     uint64_t stress_s = cmdline_get_u64("stress", 0, 600);
     if (stress_s)

@@ -4,7 +4,7 @@
 #include <jam/report.h>
 #include <jam/spinlock.h>
 
-#define REPORT_LINES 24
+#define REPORT_LINES 48
 #define REPORT_WIDTH 120
 
 static char lines[REPORT_LINES][REPORT_WIDTH];

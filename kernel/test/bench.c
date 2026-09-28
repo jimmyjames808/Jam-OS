@@ -1,0 +1,605 @@
+/* Benchmarks: "bench" on the kernel command line ("Benchmark" in the boot
+ * menu). Every result goes into the RESULTS box.
+ *
+ * How the numbers are made, so they can be trusted and compared:
+ *   - Time comes from the TSC, fenced with lfence on both sides so rdtsc
+ *     can't run early or late around the code being timed. The TSC ticks at
+ *     a constant rate, so results are wall-clock time whatever the core's
+ *     clock speed was.
+ *   - The cost of taking a timestamp is measured first and subtracted from
+ *     every sample. Operations shorter than a few hundred ns are timed in
+ *     batches of BATCH and divided, so the timestamp cost can't dominate.
+ *   - Each result is the median (typical case) and the 99th percentile
+ *     (tail) of SAMPLES samples, never a mean: one timer interrupt landing
+ *     in a sample would drag a mean around. The tail is kept, not trimmed,
+ *     so interrupts and scheduling show up there honestly.
+ *   - Every benchmark first runs untimed for WARM_NS, which also brings the
+ *     core up to full clock.
+ *   - Threads are pinned. On a hybrid CPU the cross-CPU tests name the core
+ *     types: P = a P-core thread, P2 = a different P-core, HT = the same
+ *     P-core's other hyperthread, E = an E-core. CPU 0 is avoided (it runs
+ *     the boot thread and the sleep/timer tick work).
+ *   - Nothing is printed while measuring.
+ * What these numbers are NOT: everything runs as kernel threads, so there
+ * are no syscalls, no user copies and no address-space switches yet (M5
+ * adds those and will add their own benchmarks). The lock-order checker
+ * is on for every lock, as it always is. Idle CPUs wait in `hlt`, so a
+ * wakeup of an idle CPU includes the hardware's wake-from-halt time. */
+#include <jam/channel.h>
+#include <jam/cpu.h>
+#include <jam/ipi.h>
+#include <jam/kprintf.h>
+#include <jam/mm.h>
+#include <jam/percpu.h>
+#include <jam/report.h>
+#include <jam/sched.h>
+#include <jam/spinlock.h>
+#include <jam/string.h>
+#include <jam/time.h>
+#include <jam/x86.h>
+
+#define SAMPLES   4000
+#define BATCH     64
+#define WARM_NS   20000000ull   /* 20 ms */
+#define PRIO_BENCH 24
+
+/* ---- timing -------------------------------------------------------------- */
+
+static inline uint64_t stamp(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return (uint64_t)hi << 32 | lo;
+}
+
+static uint64_t ps_per_cycle_x1024;   /* picoseconds per TSC cycle, << 10 */
+static uint64_t stamp_cost;           /* cycles, median of a back-to-back pair */
+static uint64_t stamp_step;           /* cycles, smallest nonzero TSC advance seen */
+
+static uint64_t cycles_to_ps(uint64_t c)
+{
+    return c * ps_per_cycle_x1024 >> 10;
+}
+
+/* Picoseconds for one operation out of a timed span of n operations. */
+static uint64_t span_ps(uint64_t t0, uint64_t t1, uint64_t n)
+{
+    uint64_t c = t1 - t0;
+    c = c > stamp_cost ? c - stamp_cost : 0;
+    return cycles_to_ps(c) / n;
+}
+
+static void sort(uint64_t *a, unsigned n)
+{
+    static const unsigned gaps[] = { 701, 301, 132, 57, 23, 10, 4, 1 };
+    for (unsigned g = 0; g < sizeof(gaps) / sizeof(gaps[0]); g++)
+        for (unsigned i = gaps[g]; i < n; i++) {
+            uint64_t v = a[i];
+            unsigned j = i;
+            for (; j >= gaps[g] && a[j - gaps[g]] > v; j -= gaps[g])
+                a[j] = a[j - gaps[g]];
+            a[j] = v;
+        }
+}
+
+static void fmt_ps(char *buf, size_t n, uint64_t ps)
+{
+    if (ps < 10000000)   /* under 10 us: ns with one decimal */
+        ksnprintf(buf, n, "%lu.%lu ns", ps / 1000, ps / 100 % 10);
+    else
+        ksnprintf(buf, n, "%lu us", ps / 1000000);
+}
+
+static void result(const char *what, uint64_t *s, unsigned n)
+{
+    sort(s, n);
+    char med[24], p99[24];
+    fmt_ps(med, sizeof(med), s[(n - 1) / 2]);
+    fmt_ps(p99, sizeof(p99), s[(n - 1) * 99 / 100]);
+    report("bench: %-44s median %-10s p99 %s", what, med, p99);
+}
+
+/* ---- CPUs ------------------------------------------------------------------ */
+
+static int cpu_p = -1, cpu_p2 = -1, cpu_ht = -1, cpu_e = -1;
+
+static void pick_cpus(void)
+{
+    bool hybrid = false;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        hybrid |= cpus[i]->type == CORE_EFFICIENCY;
+    enum core_type big = hybrid ? CORE_PERFORMANCE : cpus[0]->type;
+    for (uint32_t i = 1; i < cpu_count; i++) {
+        struct cpu *c = cpus[i];
+        if (cpu_p < 0 && c->type == big)
+            cpu_p = (int)i;
+        else if (cpu_p >= 0 && cpu_ht < 0 && c->core_id == cpus[cpu_p]->core_id)
+            cpu_ht = (int)i;
+        else if (cpu_p >= 0 && cpu_p2 < 0 && c->type == big &&
+                 c->core_id != cpus[cpu_p]->core_id)
+            cpu_p2 = (int)i;
+        if (hybrid && cpu_e < 0 && c->type == CORE_EFFICIENCY)
+            cpu_e = (int)i;
+    }
+    if (cpu_p < 0)
+        cpu_p = 0;   /* one CPU: the cross-CPU tests are skipped */
+}
+
+static const char *kind(int cpu)
+{
+    if (cpu == cpu_p)
+        return "P";
+    if (cpu == cpu_p2)
+        return "P2";
+    if (cpu == cpu_ht)
+        return "HT";
+    if (cpu == cpu_e)
+        return "E";
+    return "?";
+}
+
+static struct thread *spawn_on(int cpu, void (*fn)(void *), void *arg)
+{
+    cpumask_t m;
+    cpumask_one(&m, (uint32_t)cpu);
+    return thread_create_on("bench", fn, arg, PRIO_BENCH, &m);
+}
+
+/* Run fn(arg) in a thread pinned to cpu and wait for it. */
+static void run_on(int cpu, void (*fn)(void *), void *arg)
+{
+    thread_join(spawn_on(cpu, fn, arg));
+}
+
+static uint64_t *samples;
+
+static void warm_until(uint64_t *deadline)
+{
+    *deadline = uptime_ns() + WARM_NS;
+}
+
+/* ---- single-CPU operations, timed in batches ---------------------------- */
+
+static void bench_stamp(void *arg)
+{
+    (void)arg;
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp(), t1 = stamp();
+        samples[i] = t1 - t0;
+    }
+    sort(samples, SAMPLES);
+    stamp_cost = samples[SAMPLES / 2];
+    /* Resolution: an emulated TSC (QEMU without KVM) may only move in big
+     * steps, which makes anything shorter than a step read as 0. */
+    stamp_step = UINT64_MAX;
+    for (unsigned i = 0; i < 1000; i++) {
+        uint64_t a = stamp(), b;
+        while ((b = stamp()) == a)
+            ;
+        if (b - a < stamp_step)
+            stamp_step = b - a;
+    }
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp(), t1 = stamp();
+        samples[i] = cycles_to_ps(t1 - t0);
+    }
+}
+
+static spinlock_t bench_lock = SPINLOCK_INIT("bench lock");
+
+static void op_lock(void)
+{
+    spin_lock(&bench_lock);
+    spin_unlock(&bench_lock);
+}
+
+static void op_kmalloc(void)
+{
+    kfree(kmalloc(64));
+}
+
+static void op_page(void)
+{
+    pmm_free_page_phys(pmm_alloc_page_phys(0));
+}
+
+static void (*batch_op)(void);
+
+static void bench_batch(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        batch_op();
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        for (unsigned k = 0; k < BATCH; k++)
+            batch_op();
+        samples[i] = span_ps(t0, stamp(), BATCH);
+    }
+}
+
+static void batch(const char *what, void (*op)(void))
+{
+    batch_op = op;
+    run_on(cpu_p, bench_batch, NULL);
+    result(what, samples, SAMPLES);
+}
+
+/* ---- page allocation on every CPU at once --------------------------------- */
+
+#define PAR_SAMPLES 400
+static volatile uint32_t par_ready;
+static volatile bool par_go;
+
+static void bench_page_all(void *arg)
+{
+    uint64_t *mine = arg;
+    __atomic_add_fetch(&par_ready, 1, __ATOMIC_RELEASE);
+    while (!par_go)
+        cpu_relax();
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        op_page();
+    for (unsigned i = 0; i < PAR_SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        for (unsigned k = 0; k < BATCH; k++)
+            op_page();
+        mine[i] = span_ps(t0, stamp(), BATCH);
+    }
+}
+
+static void page_all_cpus(void)
+{
+    unsigned n = cpu_count * PAR_SAMPLES;
+    uint64_t *all = kmalloc(n * sizeof(uint64_t));
+    struct thread **th = kmalloc(cpu_count * sizeof(*th));
+    if (!all || !th) {
+        kprintf("bench: out of memory for the all-CPU test\n");
+        kfree(all);
+        kfree(th);
+        return;
+    }
+    par_ready = 0;
+    par_go = false;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        th[i] = spawn_on((int)i, bench_page_all, all + i * PAR_SAMPLES);
+    while (par_ready < cpu_count)
+        thread_yield();
+    par_go = true;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        thread_join(th[i]);
+    char what[64];
+    ksnprintf(what, sizeof(what), "page alloc+free, all %u CPUs at once", cpu_count);
+    result(what, all, n);
+    kfree(th);
+    kfree(all);
+}
+
+/* ---- context switch: two threads yielding on one CPU ---------------------- */
+
+static volatile bool yield_done;
+
+static void yield_partner(void *arg)
+{
+    (void)arg;
+    while (!yield_done)
+        thread_yield();
+}
+
+static void yield_timer(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        thread_yield();
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        for (unsigned k = 0; k < BATCH; k++)
+            thread_yield();   /* switch to the partner and back: 2 switches */
+        samples[i] = span_ps(t0, stamp(), 2 * BATCH);
+    }
+    yield_done = true;
+}
+
+static void context_switch(void)
+{
+    yield_done = false;
+    struct thread *a = spawn_on(cpu_p, yield_timer, NULL);
+    struct thread *b = spawn_on(cpu_p, yield_partner, NULL);
+    thread_join(a);
+    thread_join(b);
+    result("context switch (yield between 2 threads, P)", samples, SAMPLES);
+}
+
+/* ---- ping-pong: cache line, and block/wake ------------------------------ */
+
+static volatile uint64_t line_flag __attribute__((aligned(64)));
+static volatile bool line_stop;
+
+static void line_responder(void *arg)
+{
+    (void)arg;
+    uint64_t seen = 0;
+    while (!line_stop) {
+        uint64_t v = __atomic_load_n(&line_flag, __ATOMIC_ACQUIRE);
+        if (v != seen && (v & 1)) {
+            seen = v + 1;
+            __atomic_store_n(&line_flag, seen, __ATOMIC_RELEASE);
+        }
+        cpu_relax();
+    }
+}
+
+static void line_initiator(void *arg)
+{
+    (void)arg;
+    uint64_t v = 0, until;
+    warm_until(&until);
+    unsigned n = 0;
+    while (n < SAMPLES) {
+        bool timed = uptime_ns() >= until;
+        uint64_t t0 = stamp();
+        __atomic_store_n(&line_flag, ++v, __ATOMIC_RELEASE);   /* odd: ping */
+        while (__atomic_load_n(&line_flag, __ATOMIC_ACQUIRE) != v + 1)
+            cpu_relax();
+        uint64_t t1 = stamp();
+        v++;                                                   /* even: pong seen */
+        if (timed)
+            samples[n++] = span_ps(t0, t1, 1);
+    }
+    line_stop = true;
+}
+
+static void cache_line(int other)
+{
+    line_flag = 0;
+    line_stop = false;
+    struct thread *r = spawn_on(other, line_responder, NULL);
+    run_on(cpu_p, line_initiator, NULL);
+    thread_join(r);
+    char what[64];
+    ksnprintf(what, sizeof(what), "cache-line round trip P->%s (hardware floor)", kind(other));
+    result(what, samples, SAMPLES);
+}
+
+struct wake_pp {
+    spinlock_t       lock;
+    struct waitqueue wq;
+    volatile int     turn;   /* 0: initiator's move, 1: responder's */
+    volatile bool    stop;
+};
+
+static struct wake_pp wpp;
+
+static void wake_responder(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint64_t f = spin_lock_irqsave(&wpp.lock);
+        while (wpp.turn != 1 && !wpp.stop)
+            waitqueue_wait(&wpp.wq, &wpp.lock, &f);
+        bool stop = wpp.stop;
+        wpp.turn = 0;
+        spin_unlock_irqrestore(&wpp.lock, f);
+        waitqueue_wake_all(&wpp.wq);
+        if (stop)
+            return;
+    }
+}
+
+static void wake_round(void)
+{
+    uint64_t f = spin_lock_irqsave(&wpp.lock);
+    wpp.turn = 1;
+    spin_unlock_irqrestore(&wpp.lock, f);
+    waitqueue_wake_all(&wpp.wq);
+    f = spin_lock_irqsave(&wpp.lock);
+    while (wpp.turn != 0)
+        waitqueue_wait(&wpp.wq, &wpp.lock, &f);
+    spin_unlock_irqrestore(&wpp.lock, f);
+}
+
+static void wake_initiator(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        wake_round();
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        wake_round();
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+    uint64_t f = spin_lock_irqsave(&wpp.lock);
+    wpp.stop = true;
+    spin_unlock_irqrestore(&wpp.lock, f);
+    waitqueue_wake_all(&wpp.wq);
+}
+
+static void wakeup(int other)
+{
+    spin_init(&wpp.lock, "bench pingpong");
+    waitqueue_init(&wpp.wq, "bench pingpong waiters");
+    wpp.turn = 0;
+    wpp.stop = false;
+    struct thread *r = spawn_on(other, wake_responder, NULL);
+    run_on(cpu_p, wake_initiator, NULL);
+    thread_join(r);
+    char what[64];
+    if (other == cpu_p)
+        ksnprintf(what, sizeof(what), "block+wake round trip, same CPU (P)");
+    else
+        ksnprintf(what, sizeof(what), "block+wake round trip P->%s (idle CPU)", kind(other));
+    result(what, samples, SAMPLES);
+}
+
+/* ---- IPI, channel_call, TLB shootdown -------------------------------------- */
+
+static void nothing(void *arg)
+{
+    (void)arg;
+}
+
+static int ipi_target;
+
+static void bench_ipi(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        smp_call_on((uint32_t)ipi_target, nothing, NULL);
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        smp_call_on((uint32_t)ipi_target, nothing, NULL);
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+}
+
+static void ipi(int other)
+{
+    ipi_target = other;
+    run_on(cpu_p, bench_ipi, NULL);
+    char what[64];
+    ksnprintf(what, sizeof(what), "IPI function call round trip P->%s", kind(other));
+    result(what, samples, SAMPLES);
+}
+
+static void chan_server(void *arg)
+{
+    struct channel *ep = arg;
+    for (;;) {
+        signals_t s = 0;
+        object_wait_one((struct kobject *)ep, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
+                        &s);
+        uint64_t m[2];
+        uint32_t nb = 0;
+        status_t st = channel_read(ep, m, sizeof(m), &nb, NULL, 0, NULL);
+        if (st == OK)
+            channel_write(ep, m, nb, NULL, 0);
+        else if (st != ERR_SHOULD_WAIT)
+            return;   /* the client closed its end */
+    }
+}
+
+static struct channel *chan_client_ep;
+
+static void chan_round(void)
+{
+    uint64_t req[2] = { 0, 42 }, rep[2];
+    uint32_t n = 0;
+    channel_call(chan_client_ep, req, sizeof(req), NULL, 0, rep, sizeof(rep), &n, NULL, 0, NULL,
+                 DEADLINE_NEVER);
+}
+
+static void bench_chan(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        chan_round();
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        chan_round();
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+}
+
+static void chan_call(int server_cpu)
+{
+    struct channel *a, *b;
+    if (channel_create(&a, &b) != OK)
+        return;
+    chan_client_ep = a;
+    struct thread *srv = spawn_on(server_cpu, chan_server, b);
+    run_on(cpu_p, bench_chan, NULL);
+    kobject_unref((struct kobject *)a);   /* closes it: the server sees PEER_CLOSED */
+    thread_join(srv);
+    kobject_unref((struct kobject *)b);
+    char what[64];
+    if (server_cpu == cpu_p)
+        ksnprintf(what, sizeof(what), "channel_call round trip, same CPU (P)");
+    else
+        ksnprintf(what, sizeof(what), "channel_call round trip P->%s, 1 client", kind(server_cpu));
+    result(what, samples, SAMPLES);
+}
+
+static void bench_shootdown(void *arg)
+{
+    (void)arg;
+    uint64_t va = (uint64_t)&line_flag & ~(PAGE_SIZE - 1);   /* any kernel page */
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        tlb_shootdown(va, PAGE_SIZE);
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        tlb_shootdown(va, PAGE_SIZE);
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+}
+
+/* ---- driver --------------------------------------------------------------- */
+
+void bench_run(void)
+{
+    samples = kmalloc(SAMPLES * sizeof(uint64_t));
+    if (!samples) {
+        kprintf("bench: out of memory\n");
+        return;
+    }
+    ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
+    pick_cpus();
+    const char *brand = cpu_features.brand;
+    while (*brand == ' ')
+        brand++;
+    report("bench: %s, TSC %lu MHz, %u CPUs; P=cpu%d P2=cpu%d HT=cpu%d E=cpu%d", brand,
+           tsc_hz / 1000000, cpu_count, cpu_p, cpu_p2, cpu_ht, cpu_e);
+    report("bench: kernel threads only (no syscalls yet), lock checker on, "
+           "median and p99 of %u samples", SAMPLES);
+    kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
+
+    run_on(cpu_p, bench_stamp, NULL);
+    result("timestamp cost (subtracted from all below)", samples, SAMPLES);
+    uint64_t step_ps = cycles_to_ps(stamp_step);
+    if (step_ps > 20000)   /* 20 ns: far coarser than any real TSC */
+        report("bench: WARNING: the TSC only advances every %lu ns here (emulated?); "
+               "single-shot results under ~%lu ns are not meaningful", step_ps / 1000, step_ps / 100);
+
+    batch("spin_lock + spin_unlock, uncontended (P)", op_lock);
+    batch("kmalloc(64) + kfree (P)", op_kmalloc);
+    batch("page alloc + free, one CPU (P)", op_page);
+    if (cpu_count > 1)
+        page_all_cpus();
+
+    context_switch();
+    wakeup(cpu_p);
+    chan_call(cpu_p);
+
+    int others[] = { cpu_p2, cpu_ht, cpu_e };
+    for (unsigned i = 0; i < 3; i++)
+        if (others[i] >= 0)
+            cache_line(others[i]);
+    for (unsigned i = 0; i < 3; i++)
+        if (others[i] >= 0)
+            wakeup(others[i]);
+    for (unsigned i = 0; i < 3; i++)
+        if (others[i] >= 0)
+            ipi(others[i]);
+    for (unsigned i = 0; i < 3; i++)
+        if (others[i] >= 0)
+            chan_call(others[i]);
+    if (cpu_count > 1) {
+        run_on(cpu_p, bench_shootdown, NULL);
+        char what[64];
+        ksnprintf(what, sizeof(what), "TLB shootdown, 1 page, %u other CPUs", cpu_count - 1);
+        result(what, samples, SAMPLES);
+    }
+    kfree(samples);
+}

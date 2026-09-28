@@ -43,6 +43,9 @@ extern const char *ktest_current;
                   #a, #b, _a, _b, __FILE__, __LINE__);                           \
     } while (0)
 
+/* Benchmarks ("bench" on the command line); results go to the RESULTS box. */
+void bench_run(void);
+
 /* Run registered tests whose name starts with `prefix` ("" = all).
  * Returns how many ran. */
 int ktest_run(const char *prefix);
