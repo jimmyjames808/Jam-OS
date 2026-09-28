@@ -7,6 +7,8 @@
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
+#include <jam/sched.h>
+#include <jam/spinlock.h>
 #include <jam/time.h>
 #include <jam/trap.h>
 #include <jam/x86.h>
@@ -22,6 +24,8 @@
 #define REG_EOI     0x0b0
 #define REG_SVR     0x0f0
 #define REG_ESR     0x280
+#define REG_ICR_LO  0x300
+#define REG_ICR_HI  0x310
 #define REG_LVT_TMR 0x320
 #define REG_LVT_LINT0 0x350
 #define REG_LVT_LINT1 0x360
@@ -82,6 +86,45 @@ void lapic_eoi(void)
     wr(REG_EOI, 0);
 }
 
+#define ICR_NMI        (4u << 8)
+#define ICR_ASSERT     (1u << 14)
+#define ICR_PENDING    (1u << 12)
+#define ICR_ALL_BUT_ME (3u << 18)
+
+static void send_icr(uint32_t dest, uint32_t low)
+{
+    uint64_t f = irq_save();   /* xAPIC: the two ICR writes must not be split */
+    if (x2) {
+        wrmsr(0x830, (uint64_t)dest << 32 | low);
+    } else {
+        while (rd(REG_ICR_LO) & ICR_PENDING)
+            cpu_relax();
+        wr(REG_ICR_HI, dest << 24);
+        wr(REG_ICR_LO, low);
+    }
+    irq_restore(f);
+}
+
+void lapic_send_ipi(uint32_t apic_id, uint8_t vector)
+{
+    send_icr(apic_id, ICR_ASSERT | vector);
+}
+
+void lapic_send_ipi_others(uint8_t vector)
+{
+    send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | vector);
+}
+
+void lapic_send_nmi(uint32_t apic_id)
+{
+    send_icr(apic_id, ICR_ASSERT | ICR_NMI);
+}
+
+void lapic_send_nmi_others(void)
+{
+    send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_NMI);
+}
+
 static void on_spurious(struct trap_frame *f)
 {
     (void)f;   /* no EOI for spurious interrupts */
@@ -108,6 +151,7 @@ static void on_timer(struct trap_frame *f)
     if (use_deadline)
         wrmsr(MSR_TSC_DEADLINE, rdtsc() + tsc_period);
     lapic_eoi();
+    sched_tick();
 }
 
 void lapic_init_cpu(struct cpu *c)

@@ -4,7 +4,10 @@
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/ioapic.h>
+#include <jam/ipi.h>
 #include <jam/irq.h>
+#include <jam/percpu.h>
+#include <jam/sched.h>
 #include <jam/lapic.h>
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
@@ -17,7 +20,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.3-m2"
+#define JAMOS_VERSION   "0.0.4-m3"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -84,6 +87,8 @@ _Noreturn static void kmain_stage2(void *arg)
             boot->fb.width, boot->fb.height, redraw_us / 1000, redraw_us % 1000,
             vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
     smp_init_bsp(boot);
+    sched_init_bsp();   /* this code is now thread "main" */
+    ipi_init();
     ioapic_init();
     lapic_timer_calibrate();
     lapic_timer_start(TICK_HZ);
@@ -94,14 +99,19 @@ _Noreturn static void kmain_stage2(void *arg)
     bool ok = smp_report(1000);
     if (cmdline_has("selftest"))
         selftest_run_smp();
+    uint64_t stress_s = cmdline_get_u64("stress", 0);
+    if (stress_s)
+        ok &= stress_run(stress_s);
+    selftest_crash_smp();
+    sched_print_stats();
 
-    kprintf("\nM2 %s. Idling.\n", ok ? "complete: all CPUs up and ticking" : "FINISHED WITH PROBLEMS");
-    for (;;)
-        hlt();   /* keep taking timer interrupts */
+    kprintf("\nM3 %s. Idling.\n", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    thread_exit();   /* CPU 0 falls through to its idle thread */
 }
 
 _Noreturn void kmain(struct boot_info *bi)
 {
+    percpu_set_gs(&cpu0);   /* spinlocks need this_cpu() from here on */
     boot = bi;
     cmdline_set(bi->cmdline);
     int has_serial = serial_init();

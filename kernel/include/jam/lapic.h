@@ -11,6 +11,11 @@ void     lapic_init_bsp(bool x2apic);
 void     lapic_init_cpu(struct cpu *c);
 uint32_t lapic_id(void);
 void     lapic_eoi(void);
+/* Fixed-vector IPI to one CPU, or to all CPUs except this one. */
+void     lapic_send_ipi(uint32_t apic_id, uint8_t vector);
+void     lapic_send_ipi_others(uint8_t vector);
+void     lapic_send_nmi(uint32_t apic_id);
+void     lapic_send_nmi_others(void);
 bool     lapic_x2apic_mode(void);
 
 /* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and

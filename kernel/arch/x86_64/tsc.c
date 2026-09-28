@@ -82,12 +82,13 @@ void tsc_calibrate_with_loader(uint64_t loader_hz)
     show("CPUID 15h", cpuid);
     show("loader", loader_hz);
 
-    tsc_hz = hpet ? hpet : pm ? pm : cpuid ? cpuid : loader_hz;
-    if (!tsc_hz)
+    uint64_t hz = hpet ? hpet : pm ? pm : cpuid ? cpuid : loader_hz;
+    if (!hz)
         panic("tsc: no way to measure the TSC frequency");
+    tsc_boot = rdtsc();   /* log timestamps count from here */
+    tsc_hz = hz;
     kprintf("tsc: using %lu.%03lu MHz from %s\n", tsc_hz / 1000000, (tsc_hz / 1000) % 1000,
             hpet ? "HPET" : pm ? "PM timer" : cpuid ? "CPUID 15h" : "loader");
-    tsc_boot = rdtsc();
 }
 
 void tsc_calibrate(void)

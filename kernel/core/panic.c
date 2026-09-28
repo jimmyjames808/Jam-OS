@@ -8,7 +8,11 @@
 #include <jam/kprintf.h>
 #include <jam/ksyms.h>
 #include <jam/mm.h>
+#include <jam/ipi.h>
 #include <jam/panic.h>
+#include <jam/percpu.h>
+#include <jam/sched.h>
+#include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/trap.h>
 #include <jam/x86.h>
@@ -17,7 +21,7 @@
 #define TAIL_BYTES   2048
 #define KERNEL_SPACE 0xffff800000000000ull
 
-static volatile int panicking;
+volatile int panic_in_progress;
 static char tail[TAIL_BYTES + 1];
 
 static const char *const exception_names[32] = {
@@ -90,10 +94,13 @@ static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
 static void panic_begin(void)
 {
     cli();
-    if (__atomic_exchange_n(&panicking, 1, __ATOMIC_SEQ_CST))
-        halt_forever();   /* panic inside panic: stop, don't recurse */
+    if (__atomic_exchange_n(&panic_in_progress, 1, __ATOMIC_SEQ_CST))
+        halt_forever();   /* panic inside panic, or two CPUs at once */
+    lockdep_off();
 
-    /* This CPU may have died holding the log lock. */
+    /* Stop everyone else first so the screen is ours, then drop any log
+     * lock a halted CPU (or this one) was holding. */
+    uint32_t halted = ipi_halt_others();
     klog_force_unlock();
     fbcon_force_unlock();
 
@@ -102,7 +109,12 @@ static void panic_begin(void)
 
     fbcon_set_colors(0xffffff, 0x8b0000);
     fbcon_clear();
-    kprintf("\n  *** JAM OS KERNEL PANIC ***\n\n");
+    kprintf("\n  *** JAM OS KERNEL PANIC *** on cpu %u", this_cpu()->index);
+    if (this_cpu()->current)
+        kprintf(", thread \"%s\"", this_cpu()->current->name);
+    if (ipi_ready)
+        kprintf(" (other CPUs halted: %u)", halted);
+    kprintf("\n\n");
 }
 
 _Noreturn static void panic_end(void)
@@ -116,7 +128,7 @@ _Noreturn static void panic_end(void)
         }
     /* Written directly: the tail is longer than kprintf's line buffer. */
     kprintf("\nlast log lines:\n");
-    klog_write(start, strlen(start));
+    klog_write_raw(start, strlen(start));
     kprintf("\n\nsystem halted.\n");
     halt_forever();
 }
@@ -149,11 +161,28 @@ static void describe_page_fault(const struct trap_frame *f, uint64_t cr2)
         kprintf("  (address is near zero: probably a NULL pointer)\n");
 }
 
+static void dump_frame(const struct trap_frame *f, uint64_t cr2);
+
+_Noreturn void panic_watchdog(const struct trap_frame *f)
+{
+    uint64_t cr2 = read_cr2();
+    panic_begin();
+    kprintf("  watchdog: this CPU stopped taking timer interrupts for 5 s\n");
+    kprintf("  (interrupts disabled too long, or spinning in a loop with IF=0)\n\n");
+    dump_frame(f, cr2);
+    panic_end();
+}
+
 _Noreturn void panic_trap(const struct trap_frame *f)
 {
     uint64_t cr2 = read_cr2();
     panic_begin();
+    dump_frame(f, cr2);
+    panic_end();
+}
 
+static void dump_frame(const struct trap_frame *f, uint64_t cr2)
+{
     const char *name = f->vector < 32 ? exception_names[f->vector] : "interrupt";
     uint64_t off;
     const char *sym = ksym_lookup(f->rip, &off);
@@ -177,5 +206,4 @@ _Noreturn void panic_trap(const struct trap_frame *f)
     kprintf("  CR3 %016lx  CR4 %016lx\n\n", read_cr3(), read_cr4());
 
     backtrace_from(f->rip, f->rbp);
-    panic_end();
 }

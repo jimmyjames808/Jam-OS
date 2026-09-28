@@ -29,7 +29,8 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
 qpid=$!
 
 i=0
-while [ $i -lt 60 ] && ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
+limit=$(( ${QEMU_TIMEOUT:-30} * 2 ))
+while [ $i -lt $limit ] && ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
 done

@@ -100,6 +100,8 @@ const char *vmm_cache_type(uint64_t pml4, uint64_t va);
 /* Kernel stack in the vmap area with an unmapped guard page below it.
  * Returns the TOP of the stack. */
 void    *kstack_alloc(size_t size);
+/* Reserve (but do not map) kernel virtual space in the vmap area. */
+uint64_t vmm_reserve(uint64_t len);
 /* Map a physical MMIO range uncached into the vmap area. */
 void    *vmm_map_mmio(uint64_t pa, uint64_t len);
 

@@ -27,7 +27,7 @@ static bool ready;
 static uint32_t cols, rows, cx, cy;
 static uint32_t cur_fg, cur_bg;
 static struct cell cells[MAX_ROWS][MAX_COLS];
-static spinlock_t lock = SPINLOCK_INIT;
+static spinlock_t lock = SPINLOCK_INIT("fbcon");
 
 static uint32_t native(uint32_t rgb)
 {
@@ -136,37 +136,37 @@ void fbcon_clear(void)
 {
     if (!ready)
         return;
-    spin_lock(&lock);
+    uint64_t f = spin_lock_irqsave(&lock);
     for (uint32_t r = 0; r < rows; r++)
         clear_row(r);
     cx = cy = 0;
     redraw_all();
-    spin_unlock(&lock);
+    spin_unlock_irqrestore(&lock, f);
 }
 
 void fbcon_write(const char *s, size_t len)
 {
     if (!ready)
         return;
-    spin_lock(&lock);
+    uint64_t f = spin_lock_irqsave(&lock);
     for (size_t i = 0; i < len; i++)
         putc_locked(s[i]);
-    spin_unlock(&lock);
+    spin_unlock_irqrestore(&lock, f);
 }
 
 uint64_t fbcon_time_redraw(uint64_t (*now)(void))
 {
     if (!ready)
         return 0;
-    spin_lock(&lock);
+    uint64_t f = spin_lock_irqsave(&lock);
     uint64_t t0 = now();
     redraw_all();
     uint64_t t1 = now();
-    spin_unlock(&lock);
+    spin_unlock_irqrestore(&lock, f);
     return t1 - t0;
 }
 
 void fbcon_force_unlock(void)
 {
-    spin_unlock(&lock);
+    spin_force_unlock(&lock);
 }

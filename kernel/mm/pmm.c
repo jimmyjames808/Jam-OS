@@ -28,7 +28,7 @@ static uint64_t max_pfn;
 
 static struct list_node free_lists[ZONE_COUNT][MAX_ORDER + 1];
 static uint64_t total_pages, free_pages;
-static spinlock_t lock = SPINLOCK_INIT;
+static spinlock_t lock = SPINLOCK_INIT("pmm");
 
 void pmm_early_init(const struct boot_info *bi)
 {

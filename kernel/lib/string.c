@@ -3,35 +3,33 @@
 #include <stdint.h>
 #include <jam/string.h>
 
+/* rep movsb / rep stosb: microcoded fast paths on every CPU since Ivy
+ * Bridge ("ERMS"), and far faster than byte loops without SSE. */
 void *memcpy(void *restrict dst, const void *restrict src, size_t n)
 {
-    uint8_t *d = dst;
-    const uint8_t *s = src;
-    while (n--)
-        *d++ = *s++;
-    return dst;
+    void *ret = dst;
+    __asm__ volatile("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) :: "memory");
+    return ret;
 }
 
 void *memmove(void *dst, const void *src, size_t n)
 {
     uint8_t *d = dst;
     const uint8_t *s = src;
-    if (d < s) {
-        while (n--)
-            *d++ = *s++;
-    } else {
-        while (n--)
-            d[n] = s[n];
-    }
+    if (d <= s || d >= s + n)
+        return memcpy(dst, src, n);
+    /* Overlapping with dst above src: copy backwards. */
+    d += n - 1;
+    s += n - 1;
+    __asm__ volatile("std; rep movsb; cld" : "+D"(d), "+S"(s), "+c"(n) :: "memory");
     return dst;
 }
 
 void *memset(void *dst, int c, size_t n)
 {
-    uint8_t *d = dst;
-    while (n--)
-        *d++ = (uint8_t)c;
-    return dst;
+    void *ret = dst;
+    __asm__ volatile("rep stosb" : "+D"(dst), "+c"(n) : "a"(c) : "memory");
+    return ret;
 }
 
 int memcmp(const void *a, const void *b, size_t n)

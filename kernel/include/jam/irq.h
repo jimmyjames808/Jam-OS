@@ -14,6 +14,8 @@
 
 #define VEC_PIC_BASE    0x20
 #define VEC_TIMER       0xf0
+#define VEC_RESCHEDULE  0xf1
+#define VEC_CALL        0xf2
 #define VEC_LAPIC_ERROR 0xfe
 #define VEC_SPURIOUS    0xff
 

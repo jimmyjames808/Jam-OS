@@ -3,6 +3,7 @@
  * HHDM (RAM write-back, framebuffer write-combining) and the vmemmap, then
  * switches CR3. */
 #include <jam/cpu.h>
+#include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -30,7 +31,8 @@ extern char __kernel_start[], __text_start[], __text_end[], __rodata_start[],
 
 static uint64_t kernel_pml4;
 static bool use_buddy;
-static spinlock_t vmap_lock = SPINLOCK_INIT;
+static spinlock_t vmap_lock = SPINLOCK_INIT("vmap");
+static spinlock_t pt_lock = SPINLOCK_INIT("kernel page tables");
 static uint64_t vmap_next = VMAP_BASE;
 
 static uint64_t alloc_table(void)
@@ -92,6 +94,7 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
 {
     ASSERT(!(va & (PAGE_SIZE - 1)) && !(pa & (PAGE_SIZE - 1)));
     len = ALIGN_UP(len, PAGE_SIZE);
+    uint64_t f = spin_lock_irqsave(&pt_lock);
     while (len) {
         int level = 1;
         uint64_t size = PAGE_SIZE;
@@ -108,18 +111,29 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
         pa += size;
         len -= size;
     }
+    spin_unlock_irqrestore(&pt_lock, f);
 }
 
 void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 {
-    for (uint64_t end = va + ALIGN_UP(len, PAGE_SIZE); va < end; va += PAGE_SIZE) {
+    uint64_t start = va, end = va + ALIGN_UP(len, PAGE_SIZE);
+    uint64_t f = spin_lock_irqsave(&pt_lock);
+    for (; va < end; va += PAGE_SIZE) {
         uint64_t *e = walk(pml4, va, 1, false);
         if (!e)
             continue;
         if (*e & PTE_PS)
             panic("vmm: unmap of a large page at %lx not supported", va);
         *e = 0;
-        invlpg(va);   /* M3: plus a shootdown IPI to other CPUs */
+        invlpg(va);
+    }
+    spin_unlock_irqrestore(&pt_lock, f);
+
+    /* Kernel mappings are shared by every CPU: flush them everywhere. */
+    if (start >= 0xffff800000000000ull && ipi_ready) {
+        if (!irqs_enabled())
+            panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
+        tlb_shootdown(start, end - start);
     }
 }
 
@@ -257,12 +271,19 @@ void vmm_use_buddy(void)
     use_buddy = true;
 }
 
-static uint64_t vmap_reserve(uint64_t len)
+static uint64_t vmap_reserve_raw(uint64_t len);
+
+uint64_t vmm_reserve(uint64_t len)
 {
-    spin_lock(&vmap_lock);
+    return vmap_reserve_raw(ALIGN_UP(len, PAGE_SIZE) + PAGE_SIZE);   /* + guard gap */
+}
+
+static uint64_t vmap_reserve_raw(uint64_t len)
+{
+    uint64_t f = spin_lock_irqsave(&vmap_lock);
     uint64_t va = vmap_next;
     vmap_next += len;
-    spin_unlock(&vmap_lock);
+    spin_unlock_irqrestore(&vmap_lock, f);
     if (vmap_next > VMAP_END)
         panic("vmm: vmap area exhausted");
     return va;
@@ -271,7 +292,7 @@ static uint64_t vmap_reserve(uint64_t len)
 void *kstack_alloc(size_t size)
 {
     size = ALIGN_UP(size, PAGE_SIZE);
-    uint64_t va = vmap_reserve(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
+    uint64_t va = vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
     for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
         uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
         if (!pa)
@@ -285,7 +306,7 @@ void *vmm_map_mmio(uint64_t pa, uint64_t len)
 {
     uint64_t off = pa & (PAGE_SIZE - 1);
     len = ALIGN_UP(len + off, PAGE_SIZE);
-    uint64_t va = vmap_reserve(len + PAGE_SIZE);   /* unmapped gap after */
+    uint64_t va = vmap_reserve_raw(len + PAGE_SIZE);   /* unmapped gap after */
     vmm_map(kernel_pml4, va, pa - off, len, VM_WRITE | VM_UC | VM_GLOBAL | VM_SMALL);
     return (void *)(va + off);
 }

@@ -33,7 +33,7 @@ struct slab {
 
 static struct kmem_cache cache_pool[32];
 static unsigned cache_pool_used;
-static spinlock_t pool_lock = SPINLOCK_INIT;
+static spinlock_t pool_lock = SPINLOCK_INIT("kmem cache pool");
 
 static const size_t kmalloc_sizes[] = { 16, 32, 64, 128, 256, 512, 1024, 2048 };
 #define KMALLOC_CLASSES (sizeof(kmalloc_sizes) / sizeof(kmalloc_sizes[0]))
@@ -62,7 +62,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
     *c = (struct kmem_cache){
         .name = name, .obj_size = size, .order = order,
         .per_slab = (uint32_t)(((PAGE_SIZE << order) - SLAB_HDR) / size),
-        .lock = SPINLOCK_INIT,
+        .lock = SPINLOCK_INIT("kmem_cache"),
     };
     list_init(&c->partial);
     list_init(&c->full);

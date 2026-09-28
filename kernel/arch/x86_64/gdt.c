@@ -53,9 +53,8 @@ static void load(uint64_t *gdt, size_t size)
         "mov %%ax, %%ds\n\t"
         "mov %%ax, %%es\n\t"
         "mov %%ax, %%ss\n\t"
-        "xor %%eax, %%eax\n\t"
-        "mov %%ax, %%fs\n\t"
-        "mov %%ax, %%gs\n\t"   /* may clear GS base: callers set it after */
+        /* FS/GS are left alone: loading a selector can clear the GS base,
+         * and GS already points at this CPU's struct cpu. */
         "ltr %w3\n\t"
         :: "m"(gdtr), "i"(GDT_KERNEL_CODE), "i"(GDT_KERNEL_DATA), "r"(GDT_TSS)
         : "rax", "memory");
@@ -78,11 +77,16 @@ void gdt_init_cpu(struct cpu *c)
     build(c->gdt, &c->tss);
 }
 
-void percpu_load(struct cpu *c)
+void percpu_set_gs(struct cpu *c)
 {
-    load(c->gdt, sizeof(c->gdt));
-    idt_load();
     c->self = c;
     wrmsr(MSR_GS_BASE, (uint64_t)c);
     wrmsr(MSR_KERNEL_GS_BASE, 0);
+}
+
+void percpu_load(struct cpu *c)
+{
+    percpu_set_gs(c);
+    load(c->gdt, sizeof(c->gdt));
+    idt_load();
 }

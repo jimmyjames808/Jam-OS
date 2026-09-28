@@ -3,6 +3,8 @@
  * the kernel's page tables and stack, loads its per-CPU state and starts
  * its timer. */
 #include <jam/cpu.h>
+#include <jam/ipi.h>
+#include <jam/sched.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
@@ -19,6 +21,7 @@
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 
+struct cpu cpu0;
 struct cpu *cpus[MAX_CPUS];
 uint32_t cpu_count;
 static volatile uint32_t online_count;
@@ -26,7 +29,9 @@ static const struct boot_cpu *boot_cpu_of[MAX_CPUS];
 
 static struct cpu *new_cpu(const struct boot_cpu *bc, uint32_t index)
 {
-    struct cpu *c = kzalloc(sizeof(*c));
+    /* The BSP keeps the static cpu0 GS has pointed at since kmain began
+     * (it may hold live lock-checker state). */
+    struct cpu *c = index == 0 ? &cpu0 : kzalloc(sizeof(*c));
     if (!c)
         panic("smp: out of memory");
     c->index = index;
@@ -64,25 +69,6 @@ void smp_init_bsp(const struct boot_info *bi)
     online_count = 1;
 }
 
-/* Stopgap for running code on every CPU until M3 has IPIs and threads:
- * idle APs wake on their timer tick and pick up the current job. */
-static void (*volatile job_fn)(void *);
-static void *volatile job_arg;
-static volatile uint64_t job_gen;
-static volatile uint32_t job_done;
-
-void smp_run_on_all(void (*fn)(void *), void *arg)
-{
-    job_fn = fn;
-    job_arg = arg;
-    __atomic_store_n(&job_done, 0, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&job_gen, 1, __ATOMIC_RELEASE);
-    fn(arg);   /* the BSP takes part too */
-    __atomic_add_fetch(&job_done, 1, __ATOMIC_RELEASE);
-    while (__atomic_load_n(&job_done, __ATOMIC_ACQUIRE) < online_count)
-        cpu_relax();
-}
-
 _Noreturn static void ap_main(void *arg)
 {
     struct cpu *c = arg;
@@ -90,18 +76,7 @@ _Noreturn static void ap_main(void *arg)
     lapic_timer_start(TICK_HZ);
     __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
     __atomic_add_fetch(&online_count, 1, __ATOMIC_RELEASE);
-    irq_enable();
-
-    uint64_t seen = 0;
-    for (;;) {
-        uint64_t gen = __atomic_load_n(&job_gen, __ATOMIC_ACQUIRE);
-        if (gen != seen) {
-            seen = gen;
-            job_fn(job_arg);
-            __atomic_add_fetch(&job_done, 1, __ATOMIC_RELEASE);
-        }
-        hlt();   /* M3: the scheduler's idle loop */
-    }
+    sched_run_ap_idle();   /* this startup context becomes idle/N */
 }
 
 /* Still on the loader's stack and page tables. EFER.NXE must be on before
@@ -133,6 +108,7 @@ void smp_start_aps(const struct boot_info *bi)
 
     uint32_t online = online_count;
     kprintf("smp: %u of %u CPUs online\n", online, cpu_count);
+    ipi_ready = 1;
     if (online != cpu_count) {
         for (uint32_t i = 0; i < cpu_count; i++)
             if (!cpus[i]->online)

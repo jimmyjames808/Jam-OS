@@ -32,3 +32,8 @@ static inline void list_del(struct list_node *n)
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
 #define list_first(h, type, member) container_of((h)->next, type, member)
+
+static inline void list_add_tail(struct list_node *h, struct list_node *n)
+{
+    list_add(h->prev, n);
+}

@@ -99,9 +99,30 @@ Moving a driver to userspace is then a rebuild and a relaunch, not a rewrite.
 
 - Per-CPU block through `GS` (current thread, run queue, timer, IRQ depth);
   careful `swapgs` at every entry point.
-- Ticket spinlocks that save/restore IF, with **lock-order checking** in debug
-  builds.
-- IPIs: reschedule, TLB shootdown, panic halt, cross-CPU calls.
+- **Ticket spinlocks** (`spin_lock_irqsave` where interrupt handlers also
+  take the lock). Holding one disables preemption. A lock's *name* is its
+  class for the lock-order checker (`core/lockdep.c`), which records every
+  "A held while taking B" pair in a 64x64 bit matrix and panics on the first
+  acquisition that closes a cycle (ABBA), on taking a lock twice, on a class
+  used both in interrupt handlers and with interrupts on, and on any lock
+  spinning for 5 s (naming the holder). Always on.
+- IPIs: reschedule, cross-CPU calls (`smp_call_on/others/all`, which refuse
+  to run with interrupts off), TLB shootdown on every kernel unmap, and NMI
+  halt of all other CPUs on panic.
+- **Watchdog**: each CPU checks the next one's tick count once a second; a
+  CPU stuck with interrupts off for 5 s gets an NMI and panics with its own
+  registers and backtrace.
+- Log lines carry `[seconds.micros]` timestamps.
+- **Per-CPU access rule**: `this_cpu()` is two instructions (load the struct
+  pointer, then the field), so from preemptible code a thread can migrate in
+  between and read another CPU's data. Preemptible code uses single
+  GS-relative instructions (`current_thread()`, `preempt_disable/enable`);
+  everything else calls `this_cpu()` only with preemption or interrupts off.
+  (The stress test found this: a thread saw another CPU's current thread and
+  "didn't own" its own mutex.)
+- A wakeup that lands before the thread has switched out just marks it
+  running again (as Linux does); waiting for it to switch out could deadlock
+  when the waker is an interrupt on that thread's own CPU.
 - Timekeeping: TSC measured against the HPET (then ACPI PM timer, CPUID 15h,
   loader estimate; all printed for comparison). LAPIC timer in TSC-deadline
   mode where available (`nodeadline` forces the periodic fallback, which is
@@ -143,11 +164,26 @@ Moving a driver to userspace is then a rebuild and a relaunch, not a rewrite.
 
 ## Scheduler
 
-- Per-CPU run queues, 32 priority levels, round-robin within a level.
-- Work stealing when idle; CPU affinity mask.
-- IPC handoff on `channel_call`.
-- Policy behind `sched_ops` so it can be replaced.
-- Preemptible kernel, except under spinlocks or with IRQs off.
+- Per-CPU run queues, 32 priority levels (31 most urgent), round-robin
+  within a level, 20 ms slices on the 100 Hz tick.
+- Placement: least-loaded allowed CPU; ties go to P-cores, then the thread's
+  last CPU. Idle CPUs steal the best waiting thread from busy ones (two run
+  queue locks, always lower CPU index first). 256-bit affinity masks;
+  `thread_create_on` sets the mask before the thread first runs.
+- **Anti-starvation**: once a second each CPU boosts threads that have waited
+  over 1 s to priority 30 for one slice. Priority 31 is above the boost, so
+  real-time threads can still starve others by design.
+- Preemptible kernel: switches happen on interrupt exit or when the last
+  spinlock is dropped, never with one held (`schedule()` panics if called
+  with preemption disabled).
+- Switch-safety: the run queue lock is held across `switch_context` and
+  released by the next thread; `on_cpu` stays set until a switched-out
+  thread's registers are saved, and whoever picks it waits for that. This
+  covers a thread being woken while it is still switching out.
+- Kernel threads: `thread_create/exit/join/yield/sleep`, wait queues with a
+  condition-variable style `waitqueue_wait(wq, lock)`, sleeping mutexes.
+  Exited threads' stacks are cached for reuse, never unmapped.
+- To do: IPC handoff on `channel_call` (M4), tickless idle, `sched_ops`.
 
 ## Drivers and services
 
@@ -201,8 +237,8 @@ uACPI stays in the kernel permanently; everything else moves out.
 |---|---|---|
 | **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | booted on the real PC 2026-09-28 |
 | **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | all tests passed on the real PC 2026-09-28 |
-| **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | QEMU: 4/8/20 CPUs tick at 100 Hz, 20-CPU allocator stress passes; *next: run on the real PC* |
-| M3 | Scheduler, kernel threads, locks, IPIs | 10-min stress test with lock checking |
+| **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | real PC 2026-09-28: 28 CPUs (16 P-threads + 12 E-cores, HT on), all exactly 100 ticks, TSC-deadline |
+| **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | QEMU: self-tests + stress pass at 4 and 8 CPUs (~4.4M switches / 40 s); 28 emulated CPUs too slow to be useful; *next: 10-min stress on the real PC* |
 | M4 | Objects, handles, channels, ports, VMOs | in-kernel channel ping-pong |
 | M5 | Ring 3, syscalls, ELF loader, bootfs, init | init runs from bootfs |
 | M6 | devmgr, PCIe, MSI, `<jam/driver.h>` | drivers bound through the handle-only API |
