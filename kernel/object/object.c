@@ -6,6 +6,65 @@
 
 static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
 
+/* ---- iterative teardown (O1) ---------------------------------------------
+ *
+ * Closing an endpoint frees its queued messages, which may hold the last
+ * handle to further endpoints, which close in turn: a channel chain, or an
+ * alternating channel<->port chain (a queued channel carries a port; the
+ * port's binding holds the last reference to another channel; ...). Done
+ * recursively that overflows the 64 KiB kernel stack (audit depth 1000).
+ *
+ * Instead, the two lifecycle transitions that trigger such cascades --
+ * handles -> 0 (on_zero_handles) and refs -> 0 (destroy) -- run through
+ * td_run. The FIRST one on a CPU becomes the drainer and loops; any nested
+ * transition it causes only pushes onto that CPU's pending list and returns.
+ * So the depth is bounded by the list, not the stack, and it also bounds the
+ * alternating channel/port chains, since each step is just another push. */
+#define TD_ZERO_HANDLES 1u
+#define TD_DESTROY      2u
+
+static struct td_cpu {
+    unsigned        depth;
+    struct kobject *head;
+} td[MAX_CPUS];
+
+static void td_run(struct kobject *obj, uint8_t what)
+{
+    preempt_disable();                 /* pin this CPU: td[] is per-CPU */
+    uint64_t f = irq_save();           /* an IRQ that dropped a ref would race */
+    struct td_cpu *s = &td[this_cpu()->index];
+    if (obj->td_pending)
+        obj->td_pending |= what;       /* already listed (both events fired) */
+    else {
+        obj->td_pending = what;
+        obj->td_next = s->head;
+        s->head = obj;
+    }
+    if (s->depth) {                    /* a drainer is already running here */
+        irq_restore(f);
+        preempt_enable_no_resched();
+        return;
+    }
+    s->depth = 1;
+    while (s->head) {
+        struct kobject *o = s->head;
+        s->head = o->td_next;
+        uint8_t w = o->td_pending;
+        o->td_next = NULL;
+        o->td_pending = 0;
+        irq_restore(f);                /* run the ops with interrupts on: they
+                                        * take irqsave locks and may thread_wake */
+        if (w & TD_ZERO_HANDLES)
+            o->ops->on_zero_handles(o);
+        if (w & TD_DESTROY)
+            o->ops->destroy(o);
+        f = irq_save();
+    }
+    s->depth = 0;
+    irq_restore(f);
+    preempt_enable();
+}
+
 void kobject_init(struct kobject *obj, enum obj_type type, const struct kobject_ops *ops,
                   const char *lock_name, signals_t initial)
 {
@@ -18,6 +77,8 @@ void kobject_init(struct kobject *obj, enum obj_type type, const struct kobject_
     spin_init(&obj->lock, lock_name);
     list_init(&obj->observers);
     obj->koid = __atomic_fetch_add(&next_koid, 1, __ATOMIC_RELAXED);
+    obj->td_next = NULL;
+    obj->td_pending = 0;
 }
 
 void kobject_ref(struct kobject *obj)
@@ -36,7 +97,7 @@ void kobject_unref(struct kobject *obj)
         if (!list_empty(&obj->observers))
             panic("kobject: %s (koid %lu) destroyed with observers attached",
                   obj->ops->name, obj->koid);
-        obj->ops->destroy(obj);
+        td_run(obj, TD_DESTROY);
     }
 }
 
@@ -51,7 +112,7 @@ void kobject_handle_drop(struct kobject *obj)
     if (left == UINT32_MAX)
         panic("kobject: %s (koid %lu) handle count underflow", obj->ops->name, obj->koid);
     if (left == 0 && obj->ops->on_zero_handles)
-        obj->ops->on_zero_handles(obj);
+        td_run(obj, TD_ZERO_HANDLES);
 }
 
 void kobject_signal_locked(struct kobject *obj, signals_t clear, signals_t set)

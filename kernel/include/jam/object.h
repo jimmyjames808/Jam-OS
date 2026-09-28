@@ -75,6 +75,12 @@ struct kobject {
     spinlock_t        lock;
     struct list_node  observers;
     uint64_t          koid;        /* unique id, never reused */
+    /* Iterative teardown: when the last handle or last reference goes while a
+     * teardown is already running on this CPU, the object is pushed onto a
+     * per-CPU pending list (td_next) with the work still owed (td_pending)
+     * instead of recursing. See kobject_unref / kobject_handle_drop. */
+    struct kobject   *td_next;
+    uint8_t           td_pending;
 };
 
 /* refs = 1 (the creator's reference), handles = 0, signals = initial. */
