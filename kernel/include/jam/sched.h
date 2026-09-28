@@ -12,6 +12,7 @@
 #include <jam/list.h>
 #include <jam/percpu.h>
 #include <jam/spinlock.h>
+#include <jam/status.h>
 
 #define PRIO_MIN     0
 #define PRIO_MAX     31
@@ -85,6 +86,10 @@ struct thread {
 
     uint64_t          switches_in;
 
+    /* Set once by thread_cancel, never cleared: every cancellable wait
+     * returns ERR_CANCELED from then on. */
+    volatile bool     cancel_pending;
+
     /* Lock checker: mutexes this thread holds, innermost last. */
     uint32_t          sleep_depth;
     const void       *sleep_held[MAX_HELD_MUTEXES];
@@ -109,6 +114,17 @@ void thread_sleep_ns(uint64_t ns);
  * compare uptime_ns() against the deadline themselves. */
 #define DEADLINE_NEVER UINT64_MAX
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
+/* Same, but returns ERR_CANCELED (without blocking, or as soon as it is
+ * woken) once thread_cancel has been called on this thread; OK otherwise.
+ * Use for every wait a process could be killed in (M5). */
+status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
+status_t thread_sleep_cancellable(uint64_t ns);
+/* Ask t to stop waiting: set its cancel flag (for good) and wake it. Its
+ * cancellable waits return ERR_CANCELED; plain waits just see a spurious
+ * wakeup and carry on. */
+void thread_cancel(struct thread *t);
+/* Has thread_cancel been called on the current thread? */
+bool thread_cancel_pending(void);
 static inline void thread_sleep_ms(uint64_t ms) { thread_sleep_ns(ms * 1000000); }
 /* Restrict where t may run. For the current thread this takes effect at
  * once (it migrates before returning). */
@@ -147,6 +163,9 @@ void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags);
 /* Same, giving up at deadline_ns (the caller checks uptime_ns()). */
 void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
                           uint64_t deadline_ns);
+/* Cancellable form of waitqueue_wait_until (DEADLINE_NEVER for none). */
+status_t waitqueue_wait_cancellable(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                                    uint64_t deadline_ns);
 void waitqueue_wake_one(struct waitqueue *wq);
 void waitqueue_wake_all(struct waitqueue *wq);
 
@@ -158,4 +177,6 @@ struct mutex {
 };
 void mutex_init(struct mutex *m, const char *name);
 void mutex_lock(struct mutex *m);
+/* ERR_CANCELED if the thread is cancelled while waiting (not taken). */
+status_t mutex_lock_cancellable(struct mutex *m);
 void mutex_unlock(struct mutex *m);

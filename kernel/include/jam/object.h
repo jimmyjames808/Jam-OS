@@ -105,8 +105,9 @@ void kobject_observe(struct kobject *obj, struct observer *o);
 void kobject_unobserve(struct kobject *obj, struct observer *o);
 
 /* Block until (signals & mask) != 0 or uptime_ns() >= deadline_ns
- * (DEADLINE_NEVER from sched.h for no limit). Returns OK or ERR_TIMED_OUT;
- * *observed (if non-NULL) gets the signals at that moment. */
+ * (DEADLINE_NEVER from sched.h for no limit). Returns OK, ERR_TIMED_OUT, or
+ * ERR_CANCELED if the thread is cancelled (thread_cancel) first; *observed
+ * (if non-NULL) gets the signals at that moment. */
 status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_ns,
                          signals_t *observed);
 

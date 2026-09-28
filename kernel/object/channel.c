@@ -477,7 +477,10 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
             st = ERR_TIMED_OUT;
             break;
         }
-        thread_block(&ch->base.lock, &f, deadline_ns);
+        if (thread_block_cancellable(&ch->base.lock, &f, deadline_ns) != OK && !w.reply) {
+            st = ERR_CANCELED;
+            break;
+        }
     }
     if (w.node.next)   /* not answered: still listed */
         list_del(&w.node);

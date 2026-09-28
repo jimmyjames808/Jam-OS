@@ -88,7 +88,8 @@ status_t port_unbind(struct port *p, struct kobject *obj, uint64_t key);
 /* Queue a copy of *pkt with type PORT_PACKET_USER. */
 status_t port_queue_user(struct port *p, const struct port_packet *pkt);
 /* Take the oldest packet, blocking until one arrives or uptime_ns()
- * reaches deadline_ns (ERR_TIMED_OUT; DEADLINE_NEVER waits forever). */
+ * reaches deadline_ns (ERR_TIMED_OUT; DEADLINE_NEVER waits forever), or the
+ * thread is cancelled with nothing queued (ERR_CANCELED). */
 status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out);
 
 /* Live counts across all ports, for leak tests. */

@@ -307,7 +307,11 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
             spin_unlock_irqrestore(&p->base.lock, f);
             return ERR_TIMED_OUT;
         }
-        waitqueue_wait_until(&p->waiters, &p->base.lock, &f, deadline_ns);
+        if (waitqueue_wait_cancellable(&p->waiters, &p->base.lock, &f, deadline_ns) != OK &&
+            list_empty(&p->queue)) {
+            spin_unlock_irqrestore(&p->base.lock, f);
+            return ERR_CANCELED;
+        }
     }
     struct port_qentry *e = list_first(&p->queue, struct port_qentry, node);
     list_del(&e->node);

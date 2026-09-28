@@ -338,9 +338,14 @@ void thread_wake(struct thread *t)
                 spin_unlock_irqrestore(&own->lock, f);
                 continue;   /* migrated: relock its current run queue */
             }
-            bool still_here = t->on_cpu && t->state == T_BLOCKED;
-            if (still_here)
-                t->state = T_RUNNING;
+            /* A CAS, not a check-then-store: a cancellable wait moves its own
+             * thread BLOCKED -> RUNNING without this lock (block_prepared),
+             * and could then run on and exit; a plain store here would turn
+             * its T_DEAD back into T_RUNNING. */
+            int blocked = T_BLOCKED;
+            bool still_here = t->on_cpu &&
+                              __atomic_compare_exchange_n(&t->state, &blocked, T_RUNNING, false,
+                                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
             spin_unlock_irqrestore(&own->lock, f);
             if (still_here)
                 return;
@@ -525,7 +530,14 @@ void thread_set_affinity(struct thread *t, const cpumask_t *mask)
  * wake it (found by the VMO agent: "sleeper made no progress" in stress).
  * Arm the deadline, drop `lock`, re-enable preemption, switch out, and on
  * return re-take `lock`. */
-static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
+static bool cancel_seen(struct thread *t)
+{
+    return __atomic_load_n(&t->cancel_pending, __ATOMIC_ACQUIRE);
+}
+
+/* Returns true if a cancellable wait was cancelled (before or during). */
+static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns,
+                           bool cancellable)
 {
     struct thread *t = current_thread();
     if (deadline_ns != DEADLINE_NEVER) {
@@ -536,10 +548,29 @@ static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
     }
     if (lock)
         spin_unlock_irqrestore(lock, *irqflags);
+    /* Cancellation: our T_BLOCKED store and thread_cancel's flag store are
+     * each followed by a read of the other (the flag here, our state in its
+     * thread_wake), with full fences between, so at least one side sees the
+     * other: either we see the flag and don't sleep, or it sees us blocked
+     * and wakes us. We may only skip the switch by moving BLOCKED -> RUNNING
+     * ourselves: if a waker already made us READY it has also queued us, and
+     * then we must go through schedule() like any thread woken before it
+     * switched out (overwriting READY put a running thread on a run queue;
+     * cancel_races_wakeup caught it as "dead thread was scheduled"). */
+    bool skip = false;
+    if (cancellable) {
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (cancel_seen(t)) {
+            int expect = T_BLOCKED;
+            skip = __atomic_compare_exchange_n(&t->state, &expect, T_RUNNING, false,
+                                               __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        }
+    }
     /* Registered for wakeup (wait queue / deadline): being preempted from
      * here on is harmless, so preemption can come back on. */
     preempt_enable_no_resched();
-    schedule();
+    if (!skip)
+        schedule();
     /* Always take sleep_lock before touching sleep_node when we may have
      * been on the sleepers list: wake_sleepers deletes the node and calls
      * thread_wake(t) while holding sleep_lock, so a lockless check here
@@ -554,13 +585,21 @@ static void block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
     }
     if (lock)
         *irqflags = spin_lock_irqsave(lock);
+    return cancellable && cancel_seen(t);
 }
 
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     preempt_disable();   /* re-enabled in block_prepared */
     current_thread()->state = T_BLOCKED;
-    block_prepared(lock, irqflags, deadline_ns);
+    block_prepared(lock, irqflags, deadline_ns, false);
+}
+
+status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
+{
+    preempt_disable();   /* re-enabled in block_prepared */
+    current_thread()->state = T_BLOCKED;
+    return block_prepared(lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
 }
 
 void thread_sleep_ns(uint64_t ns)
@@ -568,6 +607,27 @@ void thread_sleep_ns(uint64_t ns)
     uint64_t deadline = uptime_ns() + ns;
     while (uptime_ns() < deadline)
         thread_block(NULL, NULL, deadline);
+}
+
+status_t thread_sleep_cancellable(uint64_t ns)
+{
+    uint64_t deadline = uptime_ns() + ns;
+    while (uptime_ns() < deadline)
+        if (thread_block_cancellable(NULL, NULL, deadline) != OK)
+            return ERR_CANCELED;
+    return OK;
+}
+
+void thread_cancel(struct thread *t)
+{
+    __atomic_store_n(&t->cancel_pending, true, __ATOMIC_SEQ_CST);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    thread_wake(t);
+}
+
+bool thread_cancel_pending(void)
+{
+    return cancel_seen(current_thread());
 }
 
 static void wake_sleepers(void)
@@ -792,8 +852,8 @@ void waitqueue_init(struct waitqueue *wq, const char *name)
     list_init(&wq->waiters);
 }
 
-void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
-                          uint64_t deadline_ns)
+static bool wq_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                    uint64_t deadline_ns, bool cancellable)
 {
     struct thread *t = current_thread();
     bool same = lock == &wq->lock;
@@ -805,7 +865,7 @@ void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqf
     t->state = T_BLOCKED;   /* before the wq lock drops: wakers pop under it */
     if (!same)
         spin_unlock_irqrestore(&wq->lock, f);
-    block_prepared(lock, irqflags, deadline_ns);
+    bool cancelled = block_prepared(lock, irqflags, deadline_ns, cancellable);
 
     /* Take ourselves off the wait queue if we are still on it (timed out or
      * spurious). Always hold wq->lock while touching wait_node: wake() pops
@@ -821,11 +881,24 @@ void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqf
     } else if (t->wait_node.next) {
         list_del(&t->wait_node);
     }
+    return cancelled;
+}
+
+void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                          uint64_t deadline_ns)
+{
+    wq_wait(wq, lock, irqflags, deadline_ns, false);
 }
 
 void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags)
 {
-    waitqueue_wait_until(wq, lock, irqflags, DEADLINE_NEVER);
+    wq_wait(wq, lock, irqflags, DEADLINE_NEVER, false);
+}
+
+status_t waitqueue_wait_cancellable(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
+                                    uint64_t deadline_ns)
+{
+    return wq_wait(wq, lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
 }
 
 static void wake(struct waitqueue *wq, bool all)
@@ -863,6 +936,29 @@ void mutex_lock(struct mutex *m)
         waitqueue_wait(&m->wq, &m->lock, &f);
     m->owner = me;
     spin_unlock_irqrestore(&m->lock, f);
+}
+
+status_t mutex_lock_cancellable(struct mutex *m)
+{
+    struct thread *me = current_thread();
+    lockdep_sleep_acquire(m, m->lock.name, &m->dep_cls);
+    uint64_t f = spin_lock_irqsave(&m->lock);
+    if (m->owner == me)
+        panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
+    while (m->owner) {
+        if (waitqueue_wait_cancellable(&m->wq, &m->lock, &f, DEADLINE_NEVER) != OK) {
+            /* mutex_unlock may have picked us as the one waiter to wake:
+             * pass that on so the next waiter doesn't sleep through it. */
+            if (!m->owner)
+                waitqueue_wake_one(&m->wq);
+            spin_unlock_irqrestore(&m->lock, f);
+            lockdep_sleep_release(m);
+            return ERR_CANCELED;
+        }
+    }
+    m->owner = me;
+    spin_unlock_irqrestore(&m->lock, f);
+    return OK;
 }
 
 void mutex_unlock(struct mutex *m)

@@ -58,8 +58,9 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
 /* Synchronous RPC. Overwrites the first 4 bytes of wbytes (wn >= 4) with a
  * fresh txid, writes it (same rules as channel_write: on a failed write the
  * handles stay the caller's), then blocks until the reply with that txid
- * arrives on ch, deadline_ns passes (ERR_TIMED_OUT) or the peer closes
- * (ERR_PEER_CLOSED). The reply goes only to this caller, never to
+ * arrives on ch, deadline_ns passes (ERR_TIMED_OUT), the peer closes
+ * (ERR_PEER_CLOSED), ch itself closes or the thread is cancelled
+ * (ERR_CANCELED). The reply goes only to this caller, never to
  * channel_read. If it doesn't fit rbytes/rh, the call returns
  * ERR_BUFFER_TOO_SMALL with the sizes it needed, and the reply (with its
  * handles) is dropped. A reply that arrives after its caller gave up is

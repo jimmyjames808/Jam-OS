@@ -193,7 +193,10 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
                 st = ERR_TIMED_OUT;
                 break;
             }
-            thread_block(&obj->lock, &f, deadline_ns);
+            if (thread_block_cancellable(&obj->lock, &f, deadline_ns) != OK && !w.hit) {
+                st = ERR_CANCELED;
+                break;
+            }
         }
         list_del(&w.obs.node);
     }
