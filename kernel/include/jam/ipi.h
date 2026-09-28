@@ -2,6 +2,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <jam/sched.h>   /* cpumask_t */
 
 void ipi_init(void);
 void ipi_send(uint32_t cpu, uint8_t vector);
@@ -16,6 +17,12 @@ void smp_call_all(void (*fn)(void *), void *arg);
 
 /* Flush a kernel virtual range from every other CPU's TLB. */
 void tlb_shootdown(uint64_t va, uint64_t len);
+/* Flush a range on the CPUs in mask only (the caller's own CPU included if
+ * it is in the mask): for user address spaces, whose active-CPU masks say
+ * who can hold their entries. Same calling rules as smp_call_on. */
+void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len);
+/* How many masked shootdowns `cpu` has handled (tests). */
+uint64_t tlb_mask_flush_count(uint32_t cpu);
 /* Flush a range from the calling CPU's own TLB (preemption off; see ipi.c). */
 void tlb_flush_local(uint64_t va, uint64_t len);
 
