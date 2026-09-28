@@ -85,7 +85,10 @@ KTEST(handle_basic)
 
 KTEST(handle_stale_generation)
 {
-    /* A freed slot is reused, but the old handle value must not work. */
+    /* A closed handle value must never work again, even once its slot has
+     * been reused. Slot reuse is FIFO now (O4), so the very next insert takes
+     * a different slot; cycling the whole free list brings the slot back with
+     * a bumped generation. Either way the stale value stays invalid. */
     volatile int destroyed = 0;
     struct handle_table tbl;
     handle_table_init(&tbl);
@@ -93,15 +96,22 @@ KTEST(handle_stale_generation)
     handle_t ha;
     KT_EQ(handle_insert(&tbl, &a, &ha), OK);
     KT_EQ(handle_close(&tbl, ha), OK);
-    struct khandle b = khandle_from_new(&tobj_new(&destroyed, NULL)->base, RIGHTS_BASIC);
-    handle_t hb;
-    KT_EQ(handle_insert(&tbl, &b, &hb), OK);
-    KT_ASSERT((ha >> 8) == (hb >> 8));   /* same slot... */
-    KT_ASSERT(ha != hb);                 /* ...different value */
     struct kobject *got;
     KT_EQ(handle_get(&tbl, ha, OBJ_NONE, 0, &got, NULL), ERR_BAD_HANDLE);
+
+    /* Insert and close enough handles to reuse ha's slot at least once, then
+     * confirm ha is still rejected (a matching-generation collision would let
+     * it name the new object). */
+    handle_t last = ha;
+    for (int i = 0; i < 4096; i++) {
+        struct khandle k = khandle_from_new(&tobj_new(&destroyed, NULL)->base, RIGHTS_BASIC);
+        KT_EQ(handle_insert(&tbl, &k, &last), OK);
+        KT_ASSERT(last != ha);
+        KT_EQ(handle_get(&tbl, ha, OBJ_NONE, 0, &got, NULL), ERR_BAD_HANDLE);
+        KT_EQ(handle_close(&tbl, last), OK);
+    }
     handle_table_destroy(&tbl);
-    KT_EQ(destroyed, 2);
+    KT_EQ(destroyed, 4097);   /* a, plus one per loop iteration */
 }
 
 KTEST(handle_take_and_growth)
