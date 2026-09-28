@@ -55,6 +55,16 @@ static void print_addr(int index, uint64_t addr)
 
 /* Walk saved frame pointers from rbp. first_rip, if nonzero, is printed as
  * frame #0 (the faulting instruction). */
+/* Is [addr, addr+15] backed by a mapping? A corrupt rbp pointing at an
+ * unmapped upper-half address would otherwise fault while the backtrace reads
+ * it, nesting a #PF and leaving the panic screen half-drawn. (C12) */
+static bool frame_readable(uint64_t addr)
+{
+    uint64_t pml4 = vmm_kernel_pml4();
+    return vmm_translate(pml4, addr) != UINT64_MAX &&
+           vmm_translate(pml4, addr + 8) != UINT64_MAX;
+}
+
 static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
 {
     kprintf("backtrace:\n");
@@ -68,6 +78,8 @@ static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
     for (int walked = 0; walked < 4096 && i < MAX_FRAMES; walked++) {
         if ((uint64_t)rbp < KERNEL_SPACE || ((uint64_t)rbp & 7))
             break;
+        if (!frame_readable((uint64_t)rbp))
+            break;   /* rbp[0] and rbp[1] are mapped: safe to dereference */
         uint64_t ret = rbp[1];
         if (!ret)
             break;
