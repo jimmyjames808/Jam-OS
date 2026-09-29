@@ -5,8 +5,11 @@
 wait 120 Jam OS shell
 wait jam>
 send run shell
-wait run: bin/shell started
+# The outer shell's "started" line and the inner shell's banner come from
+# two processes, in either order: the banner and the inner prompt in order
+# after the outer prompt, the "started" line anywhere.
 wait Jam OS shell
+seen run: bin/shell started
 wait jam>
 type \x03
 wait 10 ^C: killing bin/shell
