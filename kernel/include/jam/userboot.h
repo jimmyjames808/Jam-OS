@@ -39,5 +39,6 @@ status_t userboot_root_job(struct job **out);
 
 /* Boot: run bin/init under a new root job, wait up to timeout_s seconds
  * for it to exit, and report how it went. Returns true if it exited 0 and
- * left its job with nothing charged. */
-bool userboot_run_init(uint64_t timeout_s);
+ * left its job with nothing charged. arg (may be NULL) becomes init's
+ * argv[1]: a mode (e.g. "xhcitest") that init runs instead of init.cfg. */
+bool userboot_run_init(uint64_t timeout_s, const char *arg);

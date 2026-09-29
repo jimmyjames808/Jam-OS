@@ -37,6 +37,9 @@
 #include <jam/time.h>
 #include <jam/vmo.h>
 
+_Static_assert(DRV_VMO_CONTIGUOUS == VMO_CONTIGUOUS && DRV_VMO_DMA32 == VMO_DMA32,
+               "driver.h's VMO flags are the kernel's");
+
 #define KDRV_MAGIC   0x6b647276u   /* "kdrv" */
 #define HEAP_MAX     (16ull << 20) /* the heap VMO's size: pages commit as chunks map */
 #define HEAP_CHUNK   (64ull << 10) /* mapped at a time (more for a bigger block) */
