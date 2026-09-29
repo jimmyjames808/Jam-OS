@@ -467,5 +467,6 @@ can take over; M11's IOMMU matters most for GPUs.
 | M10 | uACPI poweroff, power button, ACPI reboot (stays in the kernel) | clean shutdown on real hardware |
 | M11 | IOMMU (VT-d) + interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
 | M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
+| M13 | Self-hosting: the build tools rewritten in C (no Python), then make, binutils and GCC ported on top of M12's musl POSIX layer (a "jamos" target); Jam OS builds `jamos.elf` + `bootfs.img` from source on the data partition, and `reboot` kexecs into the result (M8.5). A small compiler (TCC/cproc) may come first for user programs | Jam OS rebuilds itself on the real PC and boots the result, with no Mac involved |
 
 Every milestone is checked on the real PC from M0 on.
