@@ -31,6 +31,7 @@
 #include <jam/pci.h>
 #include <jam/process.h>
 #include <jam/resource.h>
+#include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
@@ -471,35 +472,24 @@ status_t drv_vmo_unmap(void *addr, uint64_t len)
     return st;
 }
 
+/* Pins, interrupts and config space go through the same sys_* functions as
+ * the system calls (rights, unbound-cap refusal, the pin size limit, the
+ * config write filter and its command-register lock): the kernel build
+ * must not be a weaker door than the process build. (Review of M6 phase 1:
+ * it had its own, smaller config filter with no lock.) */
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id)
 {
     ENTER(t);
     if (!addrs || !pin_id)
         return ERR_INVALID_ARGS;
-    struct kobject *vo, *co;
-    status_t st = handle_get(t, vmo, OBJ_VMO, RIGHT_READ | RIGHT_WRITE, &vo, NULL);
-    if (st != OK)
-        return st;
-    st = handle_get(t, dma, OBJ_DMA_CAP, 0, &co, NULL);
-    if (st == OK) {
-        st = vmo_pin(vmo_from_kobject(vo), co, off, len, addrs, len / PAGE_SIZE, pin_id);
-        kobject_unref(co);
-    }
-    kobject_unref(vo);
-    return st;
+    return sys_vmo_pin(t, vmo, dma, off, len, addrs, pin_id);
 }
 
 status_t drv_vmo_unpin(handle_t vmo, uint64_t pin_id)
 {
     ENTER(t);
-    struct kobject *vo;
-    status_t st = handle_get(t, vmo, OBJ_VMO, 0, &vo, NULL);
-    if (st != OK)
-        return st;
-    st = vmo_unpin(vmo_from_kobject(vo), pin_id);
-    kobject_unref(vo);
-    return st;
+    return sys_vmo_unpin(t, vmo, pin_id);
 }
 
 status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
@@ -524,8 +514,11 @@ status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
     uint64_t span = ALIGN_UP(phys + len, PAGE_SIZE) - first;
     if (st == OK)
         st = resource_check_mmio(res, first, span);
-    if (st == OK && pci_phys_protected(first, span))
-        st = ERR_ACCESS_DENIED;   /* an MSI-X table or PBA: the kernel's alone */
+    /* The same rule as vmo_create_physical: no RAM, no MSI-X table or PBA
+     * page, no MMIO the kernel drives (LAPIC/MSI window, I/O APICs, HPET,
+     * ECAM). */
+    if (st == OK)
+        st = resource_phys_mappable(first, span);
     struct vmo *v = NULL;
     if (st == OK)
         st = vmo_create_physical(first, span, vm_cache, &v);
@@ -545,29 +538,7 @@ status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
 status_t drv_interrupt_ack(handle_t irq)
 {
     ENTER(t);
-    struct kobject *o;
-    status_t st = handle_get(t, irq, OBJ_INTERRUPT, 0, &o, NULL);
-    if (st != OK)
-        return st;
-    st = interrupt_ack(o);
-    kobject_unref(o);
-    return st;
-}
-
-static status_t get_pci(struct handle_table *t, handle_t dev, rights_t need, uint32_t off,
-                        uint32_t width, struct kobject **obj, struct pci_dev **d)
-{
-    if ((width != 1 && width != 2 && width != 4) || off >= 4096 || off % width)
-        return ERR_INVALID_ARGS;
-    status_t st = handle_get(t, dev, OBJ_RESOURCE, need, obj, NULL);
-    if (st != OK)
-        return st;
-    *d = resource_pci_dev(*obj);
-    if (!*d) {
-        kobject_unref(*obj);
-        return ERR_WRONG_TYPE;
-    }
-    return OK;
+    return sys_interrupt_ack(t, irq);
 }
 
 status_t drv_pci_config_read(handle_t dev, uint32_t off, uint32_t width, uint32_t *value)
@@ -575,56 +546,13 @@ status_t drv_pci_config_read(handle_t dev, uint32_t off, uint32_t width, uint32_
     ENTER(t);
     if (!value)
         return ERR_INVALID_ARGS;
-    struct kobject *obj;
-    struct pci_dev *d;
-    status_t st = get_pci(t, dev, RIGHT_READ, off, width, &obj, &d);
-    if (st != OK)
-        return st;
-    *value = pci_cfg_read(d, off, width);
-    kobject_unref(obj);
-    return OK;
-}
-
-static bool overlaps(uint32_t off, uint32_t width, uint32_t lo, uint32_t n)
-{
-    return off < lo + n && lo < off + width;
-}
-
-/* The write filter (M6-PLAN "Fixed decisions"): BARs, the expansion ROM,
- * the command register's decode and bus-master bits and the MSI / MSI-X
- * capabilities are the kernel's and devmgr's. TODO(phase 2): share one
- * filter with Track C's pci_config_write syscall. */
-static bool config_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t v)
-{
-    if (overlaps(off, width, 0x10, 0x18) || overlaps(off, width, 0x30, 4))
-        return false;
-    if (d->cap_msi && overlaps(off, width, d->cap_msi, 24))
-        return false;
-    if (d->cap_msix && overlaps(off, width, d->cap_msix, 12))
-        return false;
-    if (overlaps(off, width, 0x04, 1)) {   /* command bits 0-2: I/O, memory, bus master */
-        uint32_t cur = pci_cfg_read(d, 0x04, 1);
-        uint32_t nv = (v >> ((0x04 - off) * 8)) & 0xff;
-        if ((cur ^ nv) & 0x7)
-            return false;
-    }
-    return true;
+    return sys_pci_config_read(t, dev, off, width, value);
 }
 
 status_t drv_pci_config_write(handle_t dev, uint32_t off, uint32_t width, uint32_t value)
 {
     ENTER(t);
-    struct kobject *obj;
-    struct pci_dev *d;
-    status_t st = get_pci(t, dev, RIGHT_WRITE, off, width, &obj, &d);
-    if (st != OK)
-        return st;
-    if (config_write_allowed(d, off, width, value))
-        pci_cfg_write(d, off, width, value);
-    else
-        st = ERR_ACCESS_DENIED;
-    kobject_unref(obj);
-    return st;
+    return sys_pci_config_write(t, dev, off, width, value);
 }
 
 /* ---- kernel processes ------------------------------------------------------------ */

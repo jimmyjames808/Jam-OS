@@ -101,6 +101,7 @@ struct vmo_range {
     struct vmo      *v;           /* pin: the VMO it pins */
     struct list_node cap_node;
     bool             cap_linked;  /* on the cap's list (cap's lock) */
+    struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the VMO's job) */
 };
 
 struct vmo {
@@ -827,6 +828,7 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
         spin_unlock_irqrestore(&r->cap->lock, f);
         kobject_unref(r->cap);
     }
+    job_uncharge(r->charged, JOB_LIMIT_HANDLES, 1);   /* (the VMO still holds the job) */
     kfree(r);
     kobject_unref(&v->base);
 }
@@ -933,15 +935,29 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         return ERR_BAD_STATE;
     struct dma_cap *c = dma_cap_from_kobject(dma_cap);
 
+    /* A pin is a kernel allocation that lives until unpin or the cap's
+     * close: one handle unit of the VMO's job, like any small object (a
+     * driver could otherwise pin one page forever and fill the kernel
+     * heap). Review of M6 phase 1. */
+    uint64_t jf = vlock(v);
+    struct job *job = v->job;
+    vunlock(v, jf);
+    status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);
+    if (st != OK)
+        return st;
     struct vmo_range *r = kzalloc(sizeof(*r));
-    if (!r)
+    if (!r) {
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
+    }
     r->kind = RANGE_PIN;
     r->first = first;
     r->end = end;
     r->v = v;
-    status_t st = range_add(v, r);
+    r->charged = job;
+    st = range_add(v, r);
     if (st != OK) {
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         kfree(r);
         return st;
     }

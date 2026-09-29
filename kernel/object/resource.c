@@ -283,7 +283,9 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
 #define CFG_STATUS        0x06
 #define CFG_CAP_PTR       0x34
 #define STATUS_CAP_LIST   0x10
+#define CAP_ID_PM         0x01
 #define CAP_ID_MSI        0x05
+#define CAP_ID_AF         0x13
 #define CAP_ID_PCIE       0x10
 #define CAP_ID_MSIX       0x11
 #define EXT_ID_SRIOV      0x10
@@ -340,9 +342,12 @@ struct cfg_hole {
  *     other command bits (MWI, parity/SERR# reporting, ...) and the status
  *     register's write-1-to-clear bits are the driver's;
  *   - any byte inside the MSI capability (its size from Message Control)
- *     or the 12-byte MSI-X capability;
- *   - PCIe Device Control with Initiate Function Level Reset (bit 15) set:
- *     a reset would undo what the kernel set up behind its back;
+ *     or the 12-byte MSI-X capability, both where the live list shows them
+ *     and where the kernel found them at boot;
+ *   - PCIe Device Control with Initiate Function Level Reset (bit 15) set,
+ *     Advanced Features Control with Initiate FLR (bit 0) set, and a PM
+ *     PowerState change (D3hot -> D0 resets the function): a reset would
+ *     undo what the kernel set up behind its back;
  *   - the SR-IOV capability (new functions with their own BARs) and the
  *     Resizable BAR / VF Resizable BAR capabilities (BAR sizes).
  * Everything else a function's own driver may write (cache line size,
@@ -356,7 +361,7 @@ status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, 
     if ((d->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY)) || (d->info.header_type & 0x7f))
         return ERR_ACCESS_DENIED;
 
-    struct cfg_hole holes[8];
+    struct cfg_hole holes[12];
     unsigned n = 0;
     holes[n++] = (struct cfg_hole){ 0x0f, 0x28 };   /* BIST (0x0f) through the BARs */
     holes[n++] = (struct cfg_hole){ 0x30, 0x34 };   /* expansion ROM */
@@ -369,6 +374,13 @@ status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, 
     uint32_t msix = std_cap(d, rd, CAP_ID_MSIX);
     if (msix)
         holes[n++] = (struct cfg_hole){ msix, msix + 12 };
+    /* The capabilities the kernel found at boot (and programs) as well: the
+     * live walk trusts pointers a device might let a vendor register
+     * change. The largest MSI layout; MSI-X as above. */
+    if (d->cap_msi && d->cap_msi != msi)
+        holes[n++] = (struct cfg_hole){ d->cap_msi, d->cap_msi + 0x18 };
+    if (d->cap_msix && d->cap_msix != msix)
+        holes[n++] = (struct cfg_hole){ d->cap_msix, d->cap_msix + 12 };
     uint32_t sriov = ext_cap(d, rd, EXT_ID_SRIOV);
     if (sriov)
         holes[n++] = (struct cfg_hole){ sriov, sriov + 0x40 };
@@ -383,6 +395,11 @@ status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, 
         }
     }
     uint32_t pcie = std_cap(d, rd, CAP_ID_PCIE);
+    /* Other ways to reset the function: a PM power-state change (D3hot and
+     * back to D0 resets it unless No_Soft_Reset) and Advanced Features'
+     * Initiate FLR. */
+    uint32_t pm = std_cap(d, rd, CAP_ID_PM);
+    uint32_t af = std_cap(d, rd, CAP_ID_AF);
 
     for (uint32_t i = 0; i < width; i++) {
         uint32_t b = off + i;
@@ -395,6 +412,10 @@ status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, 
         if (b == 0x05 && ((vb ^ rd(d, 0x05, 1)) & 0x04))   /* INTx Disable (bit 10) */
             return ERR_ACCESS_DENIED;
         if (pcie && b == pcie + 9 && (vb & 0x80))          /* Device Control: FLR */
+            return ERR_ACCESS_DENIED;
+        if (pm && b == pm + 4 && ((vb ^ rd(d, pm + 4, 1)) & 0x03))   /* PMCSR PowerState */
+            return ERR_ACCESS_DENIED;
+        if (af && b == af + 4 && (vb & 0x01))              /* AF Control: Initiate FLR */
             return ERR_ACCESS_DENIED;
     }
     return OK;
