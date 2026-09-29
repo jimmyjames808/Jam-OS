@@ -28,10 +28,11 @@
   kernel/abi, m6_weak.c (delete in phase 2). Big code -> independent review after merging.
   First PC check once A merges: the "Devices" entry (compare with Windows Device Manager; tells
   whether xHCI 8086:7A60 has MSI-X or only MSI).
-- **Open item**: "counter#14 (prio 16) made no progress for 10 s" seen twice in 4-CPU QEMU stress
-  (review-fix agent, and M5.5 agent with all switches off under host load; M5.5 fixed a stale-cur_prio
-  bug d3f0824 that may have been it). Kernel mutex has no hand-off to waiters. Watch the PC stress;
-  look at mutex fairness if it recurs.
+- **M5.5 review DONE + fixes on main**: far-future deadline wrap (user-triggerable timer storm) fixed,
+  spin-idle redundant IPI fixed (now 200/200 polled), PCID-0 flush after a run-time off->on flip, bench
+  serial switch drains first, and the open mutex-starvation item FIXED (hand-off to the longest waiter
+  after 1 ms; ktest proves it). QEMU: 145/145 ktests, stress=60 at 4+8, init clean. **Next PC round
+  (M5.5 sign-off): flash, All tests, then the 10-min stress.**
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
