@@ -50,7 +50,7 @@ OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 DRIVERS   := $(sort $(patsubst drivers/%/,%,$(dir $(wildcard drivers/*/*.c))))
 KDRV_OBJS := $(DRIVERS:%=$(BUILD)/kdrv/%.o) $(BUILD)/kdrivers.o
 
-.PHONY: all image run debug clean font usb syscalls idl check FORCE
+.PHONY: all image run debug clean font usb syscalls idl check compdb FORCE
 
 all: $(KERNEL) $(BOOTFS)
 
@@ -318,3 +318,8 @@ clean:
 
 -include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) \
          $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,kdrv,$(d)) $(call DRV_OBJS,udrv,$(d))))
+
+# compile_commands.json for editors (VS Code IntelliSense, clangd): the real
+# build's flags for every file, from a dry run (tools/compdb.py).
+compdb:
+	python3 tools/compdb.py

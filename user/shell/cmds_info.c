@@ -337,10 +337,15 @@ SH_CMD(uptime)
         return 1;
     }
     uint64_t idle = 0;
-    for (uint32_t i = 0; i < n; i++)
-        idle += c[i].idle_ns;
+    uint32_t online = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (c[i].online) {
+            online++;
+            idle += c[i].idle_ns;
+        }
+    }
     free(c);
-    uint64_t total = s.uptime_ns * n;
+    uint64_t total = s.uptime_ns * online;
     unsigned busy = 1000 - permille(idle, total);
     char up[40], now[16] = "";
     fmt_uptime(s.uptime_ns, up, sizeof(up));

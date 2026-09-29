@@ -1,3 +1,4 @@
 build/
 .claude/worktrees/
 .DS_Store
+compile_commands.json
