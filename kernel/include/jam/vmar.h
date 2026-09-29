@@ -1,4 +1,4 @@
-/* VMARs: a handle to an address space (jam/aspace.h). M5 has one flat
+/* VMARs: a handle to an address space (jam/aspace.h). There is one flat
  * address space per process and no nested regions, so a vmar is just the
  * object that carries rights to map into, unmap from and protect it. The
  * vmar holds a reference on its address space. */
@@ -23,7 +23,7 @@ static inline struct vmar *vmar_from_kobject(struct kobject *obj)
  * reference. */
 status_t vmar_create(struct vmar **out);
 /* A vmar over an existing address space (takes its own reference): for
- * handing a process its own address space (phase 2). */
+ * handing a process its own address space. */
 status_t vmar_create_for(struct aspace *as, struct vmar **out);
 /* The address space (no new reference: valid while the vmar is). */
 struct aspace *vmar_aspace(struct vmar *v);

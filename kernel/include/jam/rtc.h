@@ -1,4 +1,4 @@
-/* The CMOS real-time clock (kernel/dev/rtc.c; M7 shell `date`). */
+/* The CMOS real-time clock (kernel/dev/rtc.c; the shell's `date`). */
 #pragma once
 
 #include <stdint.h>

@@ -1,4 +1,4 @@
-/* Cancellable waits (M4.5): thread_cancel makes every cancellable wait
+/* Cancellable waits: thread_cancel makes every cancellable wait
  * return ERR_CANCELED promptly, plain waits only see a spurious wakeup, and
  * a cancel racing a real wakeup never hangs or loses the wakeup. */
 #include <jam/channel.h>

@@ -560,8 +560,8 @@ KTEST(resource_dma_cap_close_frees_pinned_vmo)
 /* A process killed while it holds the only handle to a cap: the kill
  * closes it like any other handle, so the pins made with it go, the VMO
  * they held goes, and the job ends with nothing charged. (The cap is an
- * unbound kernel one pinned from here; phase 2's utest does the same with
- * a real device mid-DMA.) */
+ * unbound kernel one pinned from here; utest's edu_killed_mid_dma does the
+ * same with a real device mid-DMA.) */
 KTEST(resource_kill_releases_pins)
 {
     struct job *j = kt_fresh_job();
@@ -659,7 +659,7 @@ KTEST(resource_pin_close_race)
     handle_table_destroy(&t);
 }
 
-/* ---- with a real function (phase 2: QEMU's edu, qemu-xhci) --------------------------- */
+/* ---- with a real function (QEMU's edu, qemu-xhci) ----------------------------------- */
 
 #define EDU_VENDOR 0x1234
 #define EDU_DEVICE 0x11e8
@@ -710,7 +710,7 @@ KTEST(resource_pin_needs_bus_master)
     kobject_unref(cap);
 }
 
-/* M7 review: a function devmgr opened (RIGHT_MANAGE, from a process's
+/* A function devmgr opened (RIGHT_MANAGE, from a process's
  * table) stays in use by a driver for `ktest` from the shell even when no
  * process holds it any more: while devmgr or the driver restarts,
  * proc_users is 0 for a moment and a test must not grab the device then. */
@@ -761,7 +761,7 @@ KTEST(resource_dma_close_clears_bus_master)
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
     KT_EQ(sys_pci_bus_master(&t, drv, 1), ERR_ACCESS_DENIED);
     KT_EQ(sys_dma_cap_create(&t, drv, &x), ERR_ACCESS_DENIED);
-    /* M7: nor devmgr's: bus mastering goes on only through the dma_cap. */
+    /* Nor devmgr's: bus mastering goes on only through the dma_cap. */
     KT_EQ(sys_pci_bus_master(&t, dev, 1), ERR_ACCESS_DENIED);
 
     KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
@@ -906,7 +906,7 @@ KTEST(m6r_filter_other_resets)
     /* AF Control (0x54) bit 0: Initiate FLR. */
     KT_EQ(pci_cfg_write_allowed(&d, 0x54, 1, 1, fake_read), ERR_ACCESS_DENIED);
     KT_EQ(pci_cfg_write_allowed(&d, 0x54, 1, 0, fake_read), OK);
-    /* M7 (review finding 7): devmgr (RIGHT_MANAGE) may change the power
+    /* devmgr (RIGHT_MANAGE) may change the power
      * state, to wake a function left in D3; still no FLR for anyone. */
     KT_EQ(pci_cfg_write_allowed_as(&d, 0x44, 2, 3, fake_read, true), OK);
     KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 2, 3, fake_read));

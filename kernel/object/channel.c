@@ -101,7 +101,7 @@ static uint32_t msg_txid(struct chan_msg *m)
  * to the SENDER's job (JOB_LIMIT_MSG_BYTES) from creation until it is freed, so a
  * process can't pin kernel memory by filling a peer's queues beyond its
  * job's limit; the charge follows the message, not the queue it sits on.
- * Messages made by kernel threads have no job. (Was TODO(M5)/O3c.) */
+ * Messages made by kernel threads have no job. */
 
 /* Free a message's memory and credit its sender's job. Its handles are
  * the caller's business. No locks held (the job reference may be the last). */
@@ -322,7 +322,7 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
          * queue already holds the previous member of the cycle), so rejecting
          * exactly these edges makes cycles -- direct or indirect, of any
          * length -- impossible, while sending an endpoint that only has plain
-         * messages, or non-channel handles, queued still works. (O2)
+         * messages, or non-channel handles, queued still works.
          * We take o's object lock here having only pair->lock held ("channel
          * pair" -> "channel"), and drop it before locking the peer, so no two
          * "channel" locks are ever held at once. */

@@ -1,8 +1,6 @@
-/* Job quotas: the fixes for the independent review of M5 phase 2 (its
- * regression tests started in test_review.c, failing; each moved here once
- * its finding was fixed). What they check: every piece of kernel memory a
- * process can make the kernel allocate is charged to a job, and a program
- * can't lift the limits its parent put on it. */
+/* Job quotas: every piece of kernel memory a process can make the kernel
+ * allocate is charged to a job, and a program can't lift the limits its
+ * parent put on it. Each test names the attack it stops. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/event.h>
@@ -17,7 +15,7 @@
 #include <jam/vmo.h>
 
 
-/* R4. A program gets its own job (SR_JOB) without RIGHT_MANAGE, so the
+/* A program gets its own job (SR_JOB) without RIGHT_MANAGE, so the
  * limit its parent set is binding: the child mode "raise-own-limit"
  * (user/utest/child.c) tries to lift JOB_LIMIT_PAGES through SR_JOB and
  * commit 1 MiB; it exits 50 when the kernel refuses the raise (0 would be
@@ -42,8 +40,8 @@ KTEST(quota_child_cannot_raise_own_job_limit)
     KT_EQ(ji.limit[JOB_LIMIT_PAGES], 64);
 }
 
-/* R3. A job costs its parent a handle unit and jobs nest at most
- * JOB_MAX_DEPTH deep. The review's attack: job_create(cur) -> close cur ->
+/* A job costs its parent a handle unit and jobs nest at most
+ * JOB_MAX_DEPTH deep. The attack: job_create(cur) -> close cur ->
  * repeat (sysc_job_create + sysc_handle_close), holding one handle to the
  * bottom of an ever longer chain. Now the chain stops at the depth cap, the
  * whole chain is charged to the top job, and a charge at the bottom walks
@@ -95,9 +93,8 @@ KTEST(quota_job_chain_bounded)
     job_unref(j);
 }
 
-/* R1. A VMO's own table pages (mid and leaf) are charged to its job like
- * its pages, and a commit the job refuses builds no table. The review's
- * attack: a job allowed 0 pages asks for one page every 2 MiB of a 64 GiB
+/* A VMO's own table pages (mid and leaf) are charged to its job like
+ * its pages, and a commit the job refuses builds no table. The attack: a job allowed 0 pages asks for one page every 2 MiB of a 64 GiB
  * VMO; each refused commit used to leave a 4 KiB leaf behind (128 MiB of
  * kernel memory per VMO handle, nothing charged). */
 KTEST(quota_vmo_tables_charged)
@@ -160,8 +157,8 @@ static void map_one(struct aspace *as, struct vmo *v, uint64_t addr, status_t wa
           want);
 }
 
-/* R2. A process's address space charges its job for its PML4, every user
- * page-table page and the mapping structs. The review's attack: one
+/* A process's address space charges its job for its PML4, every user
+ * page-table page and the mapping structs. The attack: one
  * committed page mapped at 1 GiB strides costs a PD and a PT page per
  * mapping on the first touch (512 mappings = ~1024 table pages for one
  * charged page; MAX_MAPPINGS is 16384). Now the job pays for them, so a
@@ -247,7 +244,7 @@ KTEST(quota_aspace_tables_charged)
     job_unref(j);
 }
 
-/* R6. The rest of a process's kernel memory: the process object is a
+/* The rest of a process's kernel memory: the process object is a
  * handle unit, and a started thread costs UTHREAD_KMEM_PAGES (its kernel
  * stack and XSAVE area) on top of its THREADS unit. A start the job can't
  * pay for fails cleanly: the process is NEW again, the startup handle is
@@ -283,7 +280,7 @@ KTEST(quota_process_and_thread_charged)
     job_unref(j);
 }
 
-/* R6. The root job's handle and message budgets come out of its page
+/* The root job's handle and message budgets come out of its page
  * budget: everything a job can make the kernel hold fits in free memory
  * next to the kernel's reserve. */
 KTEST(quota_root_job_budget)

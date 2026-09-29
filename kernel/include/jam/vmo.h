@@ -1,6 +1,6 @@
 /* Virtual memory objects: the unit of memory that is shared between
- * processes (mapped through address spaces in M5) and handed to drivers for
- * DMA (M6).
+ * processes (mapped through address spaces) and handed to drivers for
+ * DMA.
  *
  * Three kinds:
  *   - paged (the default): pages are committed on demand, zero-filled, and
@@ -16,7 +16,7 @@
  * Kernel mappings and pins are recorded on the VMO. While a page is kernel-
  * mapped or pinned it can't be decommitted or cut off by a shrink
  * (ERR_BAD_STATE), so its physical address stays valid for the CPU or the
- * device using it. User mappings (address spaces, M5) are recorded too, in
+ * device using it. User mappings (address spaces) are recorded too, in
  * a reverse map, but don't block anything: decommit and shrink unmap the
  * pages from every address space (and shoot down their TLBs) before
  * freeing them, and the next access faults in a fresh zero page. Each
@@ -52,12 +52,12 @@ status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out);
  * Byte access (vmo_read/vmo_write) is ERR_NOT_SUPPORTED: map it instead. */
 status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struct vmo **out);
 
-/* M5: charge the VMO's pages to job (JOB_LIMIT_PAGES; see process.h), now
+/* Charge the VMO's pages to job (JOB_LIMIT_PAGES; see process.h), now
  * and whenever it commits more; a commit or fault the job can't afford
  * fails with ERR_NO_MEMORY. Once, before the VMO is shared: ERR_BAD_STATE
  * if it already has a job, ERR_NO_MEMORY if its current pages (a
  * contiguous VMO) don't fit. A physical VMO owns no pages: only its struct
- * (one JOB_LIMIT_HANDLES unit) is charged (M6). A NULL job is allowed and
+ * (one JOB_LIMIT_HANDLES unit) is charged. A NULL job is allowed and
  * charges nothing. */
 struct job;
 status_t vmo_set_job(struct vmo *v, struct job *job);
@@ -103,8 +103,8 @@ status_t dma_cap_create(struct kobject **out);
  * writes each page's physical address to phys_out[0..len/PAGE_SIZE).
  * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
  * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
- * a function whose Bus Master Enable is off, or that has a newer cap
- * (M7), or its last handle is gone. The pin holds references on the VMO
+ * a function whose Bus Master Enable is off, or that has a newer cap,
+ * or its last handle is gone. The pin holds references on the VMO
  * and the capability until vmo_unpin or until the cap's last handle
  * closes (which releases every pin made with it, or for a cap bound to a
  * function quarantines them: dma_cap.c). */

@@ -1,4 +1,4 @@
-/* The only way the kernel touches user memory (Track A owns these).
+/* The only way the kernel touches user memory (usercopy.S).
  *
  * User addresses are uint64_t in kernel code, never C pointers. Each copy
  * checks the range against [USER_BASE, USER_TOP), runs with SMAP opened

@@ -1,4 +1,4 @@
-/* System calls 110-117 (M7 Track C): what the console and the shell need
+/* System calls 110-117: what the console and the shell need
  * from the kernel. The objects are in <jam/console_svc.h>; the rules every
  * sysc_* follows are in sysc.h.
  *
@@ -148,7 +148,7 @@ status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap,
             break;
     } while (done < cap);
     /* Readable from where the caller's text ends, not from a step past a
-     * gap that was read and thrown away (M7 review). */
+     * gap that was read and thrown away. */
     reader_update(r, start + done);
     *first = start;
     *done_out = done;

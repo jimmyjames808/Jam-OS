@@ -79,8 +79,8 @@ void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
 uint64_t     pmm_max_pfn(void);
 /* Does [base, base + len) touch memory the boot memory map calls RAM
  * (usable, loader/ACPI reclaimable, ACPI NVS, kernel and modules) or bad
- * RAM? Page-granular. M6: MMIO resources and physical VMOs for processes
- * must never cover RAM. */
+ * RAM? Page-granular. MMIO resources and physical VMOs for processes must
+ * never cover RAM. */
 bool         pmm_range_has_ram(uint64_t base, uint64_t len);
 /* Per-CPU page stashes: empty all of them into the buddy lists (returns the
  * pages moved; the allocator does this itself before failing), and the
@@ -146,7 +146,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 void              *kmem_cache_alloc(struct kmem_cache *c);
 void               kmem_cache_free(struct kmem_cache *c, void *obj);
 
-/* Per-CPU magazines (M5.5, heap.c): each CPU keeps up to MAG_MAX free
+/* Per-CPU magazines (heap.c): each CPU keeps up to MAG_MAX free
  * objects per cache, refilled and drained MAG_BATCH at a time. */
 #define MAG_MAX   16
 #define MAG_BATCH 8

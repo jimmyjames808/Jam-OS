@@ -1,4 +1,4 @@
-/* M7 Track D, review of M6 phase 2 finding 7: devmgr (RIGHT_MANAGE on the
+/* PCI power states: devmgr (RIGHT_MANAGE on the
  * function) may change the PM power state, to wake a function it finds in
  * D1-D3 before binding a driver; a driver may not. The system call waits
  * out the transition and puts back what a D3hot -> D0 reset lost. Uses
@@ -71,7 +71,7 @@ KTEST(pci_power_wake_needs_manage)
     kobject_unref(root);
 }
 
-/* M7 review: sys_pci_config_write sleeps out the transition OUTSIDE the
+/* sys_pci_config_write sleeps out the transition OUTSIDE the
  * command lock, so the function's owner may turn Bus Master Enable off
  * meanwhile (devmgr stopping the driver, its dma_cap closing). The restore
  * must not bring the saved BME back: it keeps BME as it is now. Here on

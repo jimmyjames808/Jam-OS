@@ -23,7 +23,7 @@
  * threads may starve others, deliberately. */
 #define STARVE_TICKS 100
 #define PRIO_BOOST   30
-/* Highest priority a user thread may set (M5): its ceiling, see
+/* Highest priority a user thread may set: its ceiling, see
  * thread_set_priority_cap. Kernel threads' ceiling is PRIO_MAX. */
 #define PRIO_USER_MAX 24
 
@@ -96,31 +96,31 @@ struct thread {
     struct waitqueue  exit_wq;
 
     uint64_t          switches_in;
-    /* CPU time (M7 shell): TSC cycles on a CPU up to its last switch out
+    /* CPU time: TSC cycles on a CPU up to its last switch out
      * (written by the CPU running it; thread_cpu_tsc adds the current run). */
     uint64_t          run_tsc;
 
-    /* Wake-affine placement (M5). wake_sync is set by the thread itself
+    /* Wake-affine placement. wake_sync is set by the thread itself
      * while it is about to block waiting for the thread it wakes (see
      * thread_set_wake_sync); affine_wakes counts the times THIS thread was
      * woken onto its waker's CPU or that CPU's idle HT sibling. */
     bool              wake_sync;
     uint64_t          affine_wakes;
-    /* Client/server pairs (M5.5, sched.c): the thread that woke this one
+    /* Client/server pairs (sched.c): the thread that woke this one
      * last (its id) and how many wakes in a row came from it; pair_wakes
      * counts the times this thread was placed on its partner's sibling. */
     uint64_t          partner_id;
     uint32_t          partner_streak;
     uint64_t          pair_wakes;
 
-    /* M5 user state. NULL for kernel threads, which run on the kernel's
+    /* User state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
     struct aspace    *aspace;        /* address space (a reference) */
     struct process   *process;       /* owning process */
     struct uthread   *uthread;       /* its thread object (process.h) */
     void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
     uint32_t          fpu_cpu;       /* CPU whose registers were last loaded
-                                      * from ustate (fpu.c, M5.5) */
+                                      * from ustate (fpu.c) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */
@@ -144,7 +144,7 @@ struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg,
  * mask may be NULL (any CPU). Panics when out of memory. */
 struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
                                     const cpumask_t *mask, int prio_cap);
-/* The fallible forms: NULL when out of memory (M5: threads user code asks
+/* The fallible forms: NULL when out of memory (threads user code asks
  * for, and the timer service). */
 struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                     const cpumask_t *mask);
@@ -168,7 +168,7 @@ void thread_sleep_ns(uint64_t ns);
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
 /* Same, but returns ERR_CANCELED (without blocking, or as soon as it is
  * woken) once thread_cancel has been called on this thread; OK otherwise.
- * Use for every wait a process could be killed in (M5). */
+ * Use for every wait a process could be killed in. */
 status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
 status_t thread_sleep_cancellable(uint64_t ns);
 /* Ask t to stop waiting: set its cancel flag (for good) and wake it. Its
@@ -215,7 +215,7 @@ _Noreturn void sched_run_ap_idle(void);
 void sched_topology_init(void);
 /* Called from the timer interrupt on every CPU, at each scheduler tick. */
 void sched_tick(void);
-/* From every timer interrupt (M5.5): wake this CPU's sleepers that are
+/* From every timer interrupt: wake this CPU's sleepers that are
  * due and re-arm its timer for the next one. True if it woke any. */
 bool sched_timer_expire(void);
 /* From the interrupt exit path: switch if a reschedule is pending. */
@@ -242,16 +242,16 @@ uint64_t sched_stacks_freed(void);
  * in idle). */
 void sched_kick(uint32_t cpu);
 
-/* Spin before idle (M5.5): how long an idle CPU polls for work before it
+/* Spin before idle: how long an idle CPU polls for work before it
  * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The
  * benchmark flips it at run time. */
 #define SCHED_IDLE_SPIN_NS 10000
 extern volatile uint64_t sched_idle_spin_ns;
-/* Hybrid placement order (M5.5): idle whole P-core > idle E-core > idle HT
- * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the M5
- * least-loaded rule. Boot: "noplaceorder". */
+/* Hybrid placement order: idle whole P-core > idle E-core > idle HT
+ * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the
+ * plain least-loaded rule. Boot: "noplaceorder". */
 extern volatile bool sched_place_order;
-/* Client/server pairs on sibling hyperthreads (M5.5): two threads that
+/* Client/server pairs on sibling hyperthreads: two threads that
  * keep waking each other are placed on one core's two hyperthreads when
  * the waker keeps running. Boot: "noaffinepair". */
 extern volatile bool sched_affine_pair;
@@ -264,7 +264,7 @@ uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
 #endif
 void sched_print_stats(void);
 
-/* CPU time (M7 shell: top, ps). Counted in TSC cycles at every switch
+/* CPU time (the shell's top, ps). Counted in TSC cycles at every switch
  * (one rdtsc); reads are lock-free and may be a few cycles stale. */
 /* t's time on a CPU so far, its current run included (t must be held). */
 uint64_t thread_cpu_tsc(struct thread *t);

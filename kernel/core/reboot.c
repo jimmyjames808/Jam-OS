@@ -1,4 +1,4 @@
-/* reboot (M7 Track C): reset the machine, trying in turn
+/* reboot: reset the machine, trying in turn
  *   1. the ACPI FADT reset register (RESET_REG_SUP; I/O, memory (mapped
  *      uncached at boot: acpi.reset_mmio) or PCI
  *      config space), the method firmware says is right for this board;

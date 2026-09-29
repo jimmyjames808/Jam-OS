@@ -1,4 +1,4 @@
-/* Interrupt dispatch, and (M6) the per-CPU device vector allocator.
+/* Interrupt dispatch, and the per-CPU device vector allocator.
  *
  * Device vectors 0x31-0xef are allocated per (cpu, vector): an MSI names
  * one CPU's APIC ID and one vector, so the same vector number can belong

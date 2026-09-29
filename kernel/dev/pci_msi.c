@@ -131,7 +131,7 @@ status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on)
             wr(d, d->cap_msi + 2, 2, msi_ctl & ~MSI_CTL_ENABLE);
             msi_ctl &= ~MSI_CTL_ENABLE;
         }
-        /* INTx Disable stays set (M7; review of M6 phase 2): clearing it
+        /* INTx Disable stays set: clearing it
          * with the last MSI gone could let an INTx the device has pending
          * fire into a line nobody handles, and an unbound function has no
          * business interrupting. */

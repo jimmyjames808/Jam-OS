@@ -4,7 +4,8 @@
  * and restored eagerly by arch_thread_switch whenever a thread that has
  * one switches out or in. No lazy #NM tricks: CR0.TS stays clear.
  *
- * M5.5 (switch fpu_opt, boot "nofpuopt"), both as Linux does them:
+ * Two optimisations (switch fpu_opt, boot "nofpuopt"), both as Linux does
+ * them:
  *   - XSAVEOPT instead of XSAVE where the CPU has it: it skips components
  *     not modified since the last XRSTOR from the same area on this CPU
  *     (and ones in their initial state). Every save follows a restore of

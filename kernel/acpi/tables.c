@@ -136,8 +136,8 @@ static void parse_fadt(const struct acpi_header *h)
     acpi.pm_timer_32bit = flags & (1u << 8);   /* TMR_VAL_EXT */
     if (h->length >= 111)
         acpi.boot_arch_flags = *(const uint16_t *)(f + 109);
-    /* M7: RESET_REG (offset 116, a GAS) and RESET_VALUE (128), valid when
-     * flags.RESET_REG_SUP (bit 10) is set. */
+    /* RESET_REG (offset 116, a GAS) and RESET_VALUE (128), valid when
+     * flags.RESET_REG_SUP (bit 10) is set: reboot.c's first choice. */
     if (h->length >= 129 && (flags & (1u << 10))) {
         acpi.reset_reg = *(const struct acpi_gas *)(f + 116);
         acpi.reset_value = f[128];

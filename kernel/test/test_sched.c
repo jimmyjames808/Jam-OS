@@ -106,9 +106,9 @@ KTEST(spin_idle_skips_ipi)
     sched_idle_spin_ns = keep;
     kprintf("spin-idle: %lu of %d wakeups polled with a 50 ms window, %lu with none\n",
             polled_on, PP_ROUNDS, polled_off);
-    /* With the review fix (the spin leaves idle_polling set for
-     * schedule() to clear) 199-200 of 200 poll on a quiet Mac, 178 with
-     * three QEMUs sharing it (TCG vCPUs stall); before the fix ~1/3. */
+    /* Since the spin leaves idle_polling set for schedule() to clear,
+     * 199-200 of 200 poll on a quiet Mac, 178 with three QEMUs sharing it
+     * (TCG vCPUs stall); clearing it in the spin polled only ~1/3. */
     KT_ASSERT(polled_on >= PP_ROUNDS * 3 / 4);
     KT_EQ(polled_off, 0);
 }
@@ -177,7 +177,7 @@ KTEST(placement_order_fake_topology)
     KT_EQ(f_pick(&two, 20), 3);
     f_load[2] = 1;                   /* now cpu 3 is only half a core */
     KT_EQ(f_pick(&two, 999), 20);
-    /* Switched off: the M5 least-loaded rule fills CPUs in index order. */
+    /* Switched off: the plain least-loaded rule fills CPUs in index order. */
     fake_pc();
     f_load[0] = 1;
     KT_EQ(sched_pick_cpu_fake(&not0, f_sib, f_type, f_load, 999, false), 1);

@@ -575,7 +575,7 @@ KTEST(aspace_decommit_and_shrink_unmap)
     put(v);
 }
 
-/* Big decommits and shrinks go a leaf table at a time (O8): across several
+/* Big decommits and shrinks go a leaf table at a time: across several
  * leaves, sparse and dense, with some of it mapped. */
 KTEST(aspace_large_decommit_batches)
 {

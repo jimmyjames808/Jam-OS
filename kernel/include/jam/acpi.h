@@ -1,4 +1,4 @@
-/* Static ACPI tables (the AML side is uACPI, in M10). */
+/* Static ACPI tables (no AML interpreter yet). */
 #pragma once
 
 #include <stdbool.h>
@@ -53,7 +53,7 @@ struct acpi_info {
     uint32_t pm_timer_port;         /* 0 if absent */
     bool     pm_timer_32bit;
     uint16_t boot_arch_flags;       /* IA-PC boot architecture flags */
-    bool     has_reset_reg;         /* M7: FADT RESET_REG usable (RESET_REG_SUP) */
+    bool     has_reset_reg;         /* FADT RESET_REG usable (RESET_REG_SUP) */
     struct acpi_gas reset_reg;
     uint8_t  reset_value;
     /* The reset register when it is in system memory: mapped UNCACHED at
@@ -64,7 +64,7 @@ struct acpi_info {
     /* HPET */
     uint64_t hpet_phys;             /* 0 if absent */
 
-    /* MCFG (PCIe ECAM), for M6 */
+    /* MCFG (PCIe ECAM), for pci.c */
     uint32_t ecam_count;
     struct { uint64_t phys; uint16_t segment; uint8_t bus_start, bus_end; } ecam[ACPI_MAX_ECAM];
 };

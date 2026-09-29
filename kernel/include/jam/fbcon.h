@@ -20,7 +20,7 @@ uint64_t fbcon_phys(uint64_t *len);
  * takes the screen back from a process that owns it (a panic always draws). */
 void fbcon_force_unlock(void);
 
-/* M7 screen hand-off (framebuffer_take, kernel/abi/sysc_console.c).
+/* Screen hand-off (framebuffer_take, kernel/abi/sysc_console.c).
  * fbcon_geometry: false if fbcon can't draw (no 32-bpp framebuffer).
  * fbcon_take: from now on nothing is drawn (the text is still kept);
  * ERR_BAD_STATE if already taken, ERR_NOT_FOUND without a framebuffer.

@@ -5,7 +5,7 @@
  * its pages is flagged PG_SLAB with private pointing at that header, so
  * kfree can find the owning cache from any object address.
  *
- * Per-CPU magazines (M5.5), in the style of pmm.c's page stashes. Each CPU
+ * Per-CPU magazines, in the style of pmm.c's page stashes. Each CPU
  * keeps up to MAG_MAX free objects of each cache in front of the cache's
  * lock. kmem_cache_alloc/free (and kmalloc/kfree of slab sizes) on that CPU
  * touch only its magazine; an empty one refills, and a full one drains,

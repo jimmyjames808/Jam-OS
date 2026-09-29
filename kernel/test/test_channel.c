@@ -207,7 +207,7 @@ KTEST(channel_own_endpoint_rejected)
     khandle_release(&kb);
 
     /* Indirect: an endpoint whose queue already holds a channel endpoint may
-     * not be sent either -- that is the edge that would close a cycle. (O2) */
+     * not be sent either -- that is the edge that would close a cycle. */
     struct channel *c0, *c1, *z0, *z1;
     KT_EQ(channel_create(&c0, &c1), OK);
     KT_EQ(channel_create(&z0, &z1), OK);

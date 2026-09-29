@@ -1,6 +1,6 @@
 /* Shared helpers for the system call implementations (kernel/abi/sysc_*.c).
  *
- * The rules every sysc_* follows (M5-PLAN.md, "Fixed decisions"):
+ * The rules every sysc_* follows:
  *   - user pointers are uint64_t and are only touched through
  *     copy_from_user / copy_to_user, never under a spinlock or the aspace
  *     region lock (a copy may fault and sleep);

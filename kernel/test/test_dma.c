@@ -316,7 +316,7 @@ KTEST(m6r_pins_are_charged)
     }
     kprintf("ktest %s: %u pins with 64 handle units to spare\n", ktest_current, ok);
     KT_ASSERT(ok <= 64);
-    handle_table_destroy(&t);   /* closes the cap: BME off, every pin quarantined (M7) */
+    handle_table_destroy(&t);   /* closes the cap: BME off, every pin quarantined */
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & 0x04));
     struct dma_quarantine_stats q;
     dma_quarantine_stats(d, &q);
@@ -370,12 +370,12 @@ KTEST(m6r_unpin_by_other_holder)
             "(device still has 0x%lx, BME %s)\n", ktest_current, id, status_str(un0),
             status_str(un), status_str(dc), pa, (pci_cfg_read(d, 0x04, 2) & 0x04) ? "on" : "off");
     handle_table_destroy(&tc);
-    handle_table_destroy(&td);   /* the driver's cap: its pin is quarantined (M7) */
+    handle_table_destroy(&td);   /* the driver's cap: its pin is quarantined */
     dma_quarantine_flush(d);
     kt_job_is_empty(j);
     job_unref(j);
-    /* Only the pin's DMA capability may undo it (fixed in M6 phase 2:
-     * vmo_unpin takes the dma_cap), and the page stays pinned. */
+    /* Only the pin's DMA capability may undo it (vmo_unpin takes the
+     * dma_cap), and the page stays pinned. */
     KT_EQ(un0, ERR_BAD_HANDLE);
     KT_EQ(un, ERR_ACCESS_DENIED);
     KT_EQ(dc, ERR_BAD_STATE);

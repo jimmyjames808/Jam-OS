@@ -607,7 +607,7 @@ bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in)
         lost |= rd(d, CFG_BAR0 + 4 * i, 4) != in->bar[i];
     if (lost) {
         /* Decode off while the BARs go back, then the command register as
-         * it was (INTx Disable set whatever it was: M7). */
+         * it was, but with INTx Disable set (see pci_msi_enable). */
         wr(d, CFG_COMMAND, 2, cmd & ~(CMD_IO | CMD_MEMORY | CMD_MASTER));
         for (uint32_t i = 0; i < bar_count(d); i++)
             wr(d, CFG_BAR0 + 4 * i, 4, in->bar[i]);

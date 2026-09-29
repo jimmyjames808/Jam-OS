@@ -104,7 +104,7 @@ void cpu_init_local(void)
      * address and fool the NMI/#MC/#DB entries, which tell the kernel's GS
      * from the user's by the base's sign. The loader may have left it on. */
     cr4 &= ~CR4_FSGSBASE;
-    /* PCIDs (M5.5, pcid.c). Needs CR3's PCID bits to be 0 when it is set:
+    /* PCIDs (pcid.c). Needs CR3's PCID bits to be 0 when it is set:
      * every CPU is on the kernel's tables here. */
     if (pcid_usable())
         cr4 |= CR4_PCIDE;

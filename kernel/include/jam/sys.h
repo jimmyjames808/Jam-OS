@@ -1,7 +1,8 @@
-/* The handle-level API: what become system calls in M5. Every function
- * takes the caller's handle table and handle values, checks each handle's
- * type and rights, and calls the object layer. Pointers are kernel
- * pointers for now (M5 adds user copies). */
+/* The handle-level API the system calls run on. Every function takes the
+ * caller's handle table and handle values, checks each handle's type and
+ * rights, and calls the object layer. Pointers are kernel pointers: the
+ * system calls (kernel/abi/sysc_*.c) copy user memory in and out around
+ * these, and kernel tests call them directly. */
 #pragma once
 
 #include <stdint.h>
@@ -19,7 +20,7 @@ status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b);
  * still there under the same values. */
 status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
                            const handle_t *handles, uint32_t nhandles);
-/* M7: as sys_channel_write, but handle i arrives with rights[i] (a subset
+/* As sys_channel_write, but handle i arrives with rights[i] (a subset
  * of its rights, else ERR_INVALID_ARGS; RIGHT_SAME: unchanged). How a
  * sender passes a handle the receiver may not pass on (without
  * RIGHT_TRANSFER / RIGHT_DUPLICATE): devmgr's driver handles. */
@@ -102,7 +103,7 @@ status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset,
  * (kernel/abi/vmar_sys.c; semantics as in <jam/aspace.h>, <jam/vmar.h>) */
 
 /* New vmar over an empty address space: RIGHTS_BASIC | RIGHT_READ |
- * RIGHT_WRITE. (For tests; phase 2 creates them with processes.) */
+ * RIGHT_WRITE. (For tests; a process gets its own with process_create.) */
 status_t sys_vmar_create(struct handle_table *t, handle_t *out);
 /* flags: ASPACE_READ/WRITE/EXEC/FIXED only. Needs RIGHT_WRITE on vmar and
  * RIGHT_MAP on vmo, plus RIGHT_READ / RIGHT_WRITE / RIGHT_EXEC on vmo for
@@ -118,7 +119,7 @@ status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, 
                           uint32_t flags);
 /* end VMARs */
 
-/* interrupts (M6) ---------------------------------------------------------------
+/* interrupts --------------------------------------------------------------------
  * (kernel/abi/sysc_interrupt.c; semantics as in <jam/interrupt.h>) */
 
 /* New interrupt object for MSI (flags 0, index 0) or MSI-X (IRQ_MSIX, table

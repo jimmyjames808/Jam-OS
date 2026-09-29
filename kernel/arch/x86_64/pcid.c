@@ -1,4 +1,4 @@
-/* PCIDs (M5.5). Without them every CR3 load drops the whole non-global
+/* PCIDs. Without them every CR3 load drops the whole non-global
  * TLB, so a process->process call refills the TLB twice per round trip and
  * a CPU that goes idle between calls refills it on the way back.
  *
@@ -19,9 +19,9 @@
  * a dead address space just wait in their slot until it is reused, and a
  * CPU never walks or uses entries of a PCID it hasn't loaded.
  *
- * Invalidation (the M5 rule was "a CPU not in the active mask has loaded
- * another CR3 since, which dropped every non-global entry": with PCIDs it
- * didn't). An unmap/decommit/protect clears entries, then (aspace.c,
+ * Invalidation (without PCIDs the rule is "a CPU not in the active mask
+ * has loaded another CR3 since, which dropped every non-global entry": with
+ * PCIDs it didn't). An unmap/decommit/protect clears entries, then (aspace.c,
  * gather_note) increments the address space's generation with a locked,
  * sequentially consistent RMW, then reads the active mask and shoots down
  * exactly those CPUs. A switch-in sets its active bit (a seq_cst RMW),
@@ -62,7 +62,7 @@ struct pcid_cpu {
     /* PCID 0 may hold user entries: a user address space was loaded as
      * PCID 0 (the switch off). The next PCID-0 load with the switch on
      * must flush, or kernel threads would keep translations to user pages
-     * that later unmaps no longer shoot down here (review finding 3). */
+     * that later unmaps no longer shoot down here. */
     bool     zero_dirty;
     uint64_t kept, flushed;   /* statistics */
 } __attribute__((aligned(64)));
@@ -119,7 +119,7 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const volatile
         /* PCID 0. The kernel's tables have no user half, so with the
          * switch on nothing tagged 0 can be stale unless a user address
          * space was loaded as PCID 0 while the switch was off; off, every
-         * load flushes as in M5. */
+         * load flushes, as without PCIDs. */
         if (!sw && id)
             pc->zero_dirty = true;
         *keep = sw && !reset && !pc->zero_dirty;

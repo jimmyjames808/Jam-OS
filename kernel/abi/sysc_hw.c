@@ -1,4 +1,4 @@
-/* System calls: hardware (M6, Track C): resources, PCI config access, MMIO
+/* System calls: hardware: resources, PCI config access, MMIO
  * VMOs and DMA. The rules all sysc_* follow are in sysc.h; the sys_* half
  * works on a handle table with kernel pointers so kernel tests can drive
  * it (<jam/resource_impl.h>).
@@ -12,18 +12,19 @@
  *                          RIGHT_MANAGE too, the PM power state may change)
  *   pci_bar_resource       RIGHT_SLICE on a RES_PCI_DEV
  *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV, and only to turn
- *                          it OFF (M7: on is the current dma_cap's)
+ *                          it OFF (on is the current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
  *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
- *                          current cap (M7)
+ *                          current cap
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
  *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
  *                          the one the pin was made with)
  * A resource made from a handle gets that handle's rights (masked to
  * RES_RIGHTS), so a device handle without RIGHT_MANAGE only yields BAR
  * resources without it; a physical VMO made from a resource handle
- * without RIGHT_DUPLICATE / RIGHT_TRANSFER lacks them too (M7). Every new resource and dma_cap costs the caller's
- * job one JOB_LIMIT_HANDLES unit (on top of the handle slot). */
+ * without RIGHT_DUPLICATE / RIGHT_TRANSFER lacks them too. Every new
+ * resource and dma_cap costs the caller's job one JOB_LIMIT_HANDLES unit
+ * (on top of the handle slot). */
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
@@ -176,7 +177,7 @@ status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off
         pci_cmd_unlock(f);
     }
     if (power) {
-        /* A power-state change (devmgr waking a function, M7): the
+        /* A power-state change (devmgr waking a function): the
          * function may not be touched for 10 ms (PCI PM 1.2, D3hot -> D0
          * recovery; the longest), and D3hot -> D0 resets it unless it has
          * No_Soft_Reset: put back the BARs and command register. Not Bus
@@ -222,7 +223,7 @@ status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enabl
     if (st != OK)
         return st;
     if (enable) {
-        /* M7: only the function's current dma_cap turns it on, once its
+        /* Only the function's current dma_cap turns it on, once its
          * driver has quiesced the device (dma_cap_bus_master). */
         kobject_unref(obj);
         return ERR_ACCESS_DENIED;
@@ -283,9 +284,8 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
         kobject_unref(vmo_kobject(v));
         return st;
     }
-    /* M7: registers from a resource that can't be passed on can't be
-     * passed on as a VMO either (a driver's BAR: review of M6 phase 2,
-     * finding 2). */
+    /* Registers from a resource that can't be passed on can't be passed
+     * on as a VMO either (a driver's BAR). */
     rights_t keep = PHYS_VMO_RIGHTS & ~((RIGHT_DUPLICATE | RIGHT_TRANSFER) & ~rr);
     return insert_new(t, vmo_kobject(v), keep, out);
 }

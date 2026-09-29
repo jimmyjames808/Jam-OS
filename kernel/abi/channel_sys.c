@@ -1,4 +1,4 @@
-/* Handle-level channel calls (system calls from M5). */
+/* Handle-level channel calls (the system calls' sys_* layer). */
 #include <jam/channel.h>
 #include <jam/panic.h>
 #include <jam/sys.h>

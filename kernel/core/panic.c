@@ -58,7 +58,7 @@ static void print_addr(int index, uint64_t addr)
  * frame #0 (the faulting instruction). */
 /* Is [addr, addr+15] backed by a mapping? A corrupt rbp pointing at an
  * unmapped upper-half address would otherwise fault while the backtrace reads
- * it, nesting a #PF and leaving the panic screen half-drawn. (C12) */
+ * it, nesting a #PF and leaving the panic screen half-drawn. */
 static bool frame_readable(uint64_t addr)
 {
     uint64_t pml4 = vmm_kernel_pml4();

@@ -15,7 +15,7 @@
  * under it, and data is never copied under it. vmo_set_size is serialised
  * by a mutex ("vmo resize") above everything else.
  *
- * User mappings (M5): each address-space mapping of a VMO is a struct
+ * User mappings: each address-space mapping of a VMO is a struct
  * vmo_umap on v->umaps and holds a VMO reference. Unlike kernel mappings
  * and pins, they don't block decommit or shrink: those take the pages out
  * of the table, clear their page-table entries in every user mapping (under
@@ -24,7 +24,7 @@
  * the pages only after the TLB shootdown (a tlb_gather). mm/aspace.c's
  * header has the full argument.
  *
- * Latency (was TODO(O8)): decommit and shrink work one leaf table (2 MiB,
+ * Latency: decommit and shrink work one leaf table (2 MiB,
  * at most 512 pages) per lock hold and flush/free every 512 pages or so,
  * re-checking under each re-lock: the range is clipped to the current size
  * (a racing shrink already took the rest), and a pin or kernel mapping that
@@ -40,14 +40,14 @@
  * a page mid-copy: whoever drops the last reference frees it. Contiguous
  * and physical VMOs never give pages up before destroy, so they skip this.
  *
- * Job charges (M5): a VMO made for a process (vmo_set_job) charges one
+ * Job charges: a VMO made for a process (vmo_set_job) charges one
  * JOB_LIMIT_PAGES unit to that job for every page it owns, from the moment
  * the page is published in the table (under the lock, so a failed charge
  * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
  * `committed` and the charge move together. Its own table pages (mid and
  * leaf, `tables`) are charged the same way, one unit each from creation to
- * free (review R1: they used to be free, so a job allowed 0 pages could
- * make the kernel build 128 MiB of leaves for one 64 GiB VMO). The page is
+ * free (were they free, a job allowed 0 pages could make the kernel build
+ * 128 MiB of leaves for one 64 GiB VMO). The page is
  * charged BEFORE any table is made for it, so a refused commit builds
  * nothing; if a table it needs is refused, the page's charge is undone.
  * Tables stay (charged) until shrink or destroy frees them, as before
@@ -96,13 +96,13 @@ struct vmo_range {
     uint64_t         first, end;  /* page indices */
     uint64_t         key;         /* mapping: base va; pin: pin id */
     struct kobject  *cap;         /* pin: the DMA capability (referenced) */
-    /* M6: a pin is also on its cap's list (struct dma_cap.pins, under the
+    /* A pin is also on its cap's list (struct dma_cap.pins, under the
      * cap's lock), so closing the cap can find and release it. */
     struct vmo      *v;           /* pin: the VMO it pins */
     struct list_node cap_node;
     bool             cap_linked;  /* on the cap's list (cap's lock) */
     struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the VMO's job) */
-    /* M7: a pin quarantined by its cap's unclean close (vmo_quarantine_cap_pins)
+    /* A pin quarantined by its cap's unclean close (vmo_quarantine_cap_pins)
      * sits on the quarantine's list through cap_node, busy, with no cap.
      * sums: a checksum per page taken then, to see at release whether the
      * device wrote the pages meanwhile (NULL: not taken). */
@@ -934,9 +934,9 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
     if (!phys_out || phys_cap < end - first)
         return ERR_BUFFER_TOO_SMALL;
-    /* M6: a cap bound to a function pins only while its Bus Master Enable
-     * is on; M7: and while it is the function's current cap (its driver
-     * turned bus mastering on with it: dma_cap_bus_master). */
+    /* A cap bound to a function pins only while its Bus Master Enable is
+     * on, and while it is the function's current cap (its driver turned
+     * bus mastering on with it: dma_cap_bus_master). */
     if (!dma_cap_bus_master_on(dma_cap))
         return ERR_BAD_STATE;
     struct dma_cap *c = dma_cap_from_kobject(dma_cap);
@@ -944,7 +944,7 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     /* A pin is a kernel allocation that lives until unpin or the cap's
      * close: one handle unit of the VMO's job, like any small object (a
      * driver could otherwise pin one page forever and fill the kernel
-     * heap). Review of M6 phase 1. */
+     * heap; test: m6r_pins_are_charged). */
     uint64_t jf = vlock(v);
     struct job *job = v->job;
     vunlock(v, jf);
@@ -1032,7 +1032,7 @@ void vmo_release_cap_pins(struct dma_cap *c)
     }
 }
 
-/* ---- DMA quarantine (M7) ------------------------------------------------------
+/* ---- DMA quarantine -----------------------------------------------------------
  * A bound dma_cap whose last handle closes while pins are still held (its
  * driver died, or quit without unpinning) doesn't give the pages back:
  * the device may still hold their addresses in a queued transfer, and a

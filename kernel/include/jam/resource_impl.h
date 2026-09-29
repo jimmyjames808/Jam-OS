@@ -1,4 +1,4 @@
-/* M6 Track C internals shared by kernel/object/resource.c, dma_cap.c,
+/* Internals shared by kernel/object/resource.c, dma_cap.c,
  * vmo.c and the hardware system calls (kernel/abi/sysc_hw.c). The public
  * contract is <jam/resource.h>; nothing outside those files and the tests
  * should need this header. */
@@ -44,7 +44,7 @@ status_t resource_range(struct kobject *res, uint64_t *base, uint64_t *size);
 typedef uint32_t (*pci_cfg_reader_t)(struct pci_dev *d, uint32_t off, uint32_t width);
 status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
                                pci_cfg_reader_t read);
-/* M7: the same for a writer with RIGHT_MANAGE on the function (`manage`):
+/* The same for a writer with RIGHT_MANAGE on the function (`manage`):
  * it may also change the PM PowerState. */
 status_t pci_cfg_write_allowed_as(struct pci_dev *d, uint32_t off, uint32_t width,
                                   uint32_t value, pci_cfg_reader_t read, bool manage);
@@ -79,7 +79,7 @@ static inline struct dma_cap *dma_cap_from_kobject(struct kobject *o)
  * no spinlock held, may run with preemption off). Pins still being set up
  * or torn down elsewhere finish by themselves. */
 void vmo_release_cap_pins(struct dma_cap *c);
-/* vmo.c, M7: the close path of a BOUND cap. Every pin still made with c
+/* vmo.c: the close path of a BOUND cap. Every pin still made with c
  * goes onto the list `out` (through the range's own list node) instead of
  * being released: its pages stay put, each with a checksum; *pins and
  * *pages count what went on (pins of physical VMOs are released at once:
@@ -102,7 +102,7 @@ status_t dma_cap_set_job(struct kobject *cap, struct job *job);
  * off). */
 bool dma_cap_bus_master_on(struct kobject *cap);
 
-/* ---- DMA ownership and the quarantine (M7, dma_cap.c) ------------------------
+/* ---- DMA ownership and the quarantine (dma_cap.c) ----------------------------
  * Each function has at most one CURRENT dma_cap: the last one made for it
  * (dma_cap_create_for), until it closes. Making one turns the function's
  * Bus Master Enable off; only the current cap turns it on again

@@ -1,4 +1,4 @@
-/* Processes, user threads and jobs (M5 phase 2), from the kernel side:
+/* Processes, user threads and jobs, from the kernel side:
  * job accounting on its own, then real user programs started with
  * userboot_spawn (bin/utest in one of its child modes, see
  * user/utest/child.c): ELF loading, the startup message, exit codes,
@@ -263,7 +263,7 @@ KTEST(proc_never_started)
     job_unref(j);
 }
 
-/* Review R8: job_kill kills everything in a job and the jobs below it,
+/* job_kill kills everything in a job and the jobs below it,
  * including a process whose parent is gone (nobody holds a handle to it),
  * waits until they are all dead, and the killed jobs take nothing new. */
 KTEST(proc_job_kill_tree)
@@ -303,7 +303,7 @@ KTEST(proc_job_kill_tree)
     job_unref(j);
 }
 
-/* M7 review: debug_command's "kill" (job_find_process) never finds a
+/* debug_command's "kill" (job_find_process) never finds a
  * process of the caller's ancestor jobs -- from the shell, `kill init`
  * left the whole system unsupervised (init is in the root job). */
 KTEST(proc_find_spares_ancestor_jobs)
@@ -330,7 +330,7 @@ KTEST(proc_find_spares_ancestor_jobs)
     job_unref(j);
 }
 
-/* Review R7: debug_write prints with no lock held and a process can't
+/* debug_write prints with no lock held and a process can't
  * flood the console: 100 lines at once, then 50 a second, the rest are
  * dropped (and counted in a note). */
 KTEST(proc_debug_write_rate_limited)
@@ -370,7 +370,7 @@ KTEST(proc_debug_write_rate_limited)
     job_unref(j);
 }
 
-/* Review R5: in the window between process_start making the process
+/* In the window between process_start making the process
  * RUNNING and its first thread existing, nobody may start another thread
  * of it (that thread could run and close the startup handle, and a failed
  * first creation then lost it: a panic). The hook forces the window: it

@@ -1,13 +1,13 @@
-/* M3 stress test. Threads of seven kinds hammer the scheduler, locks and
+/* Stress test. Threads of seven kinds hammer the scheduler, locks and
  * allocators at mixed priorities for a set time while the main thread
  * checks TLB shootdowns once a second and prints progress every 10 s.
  * Every check failure is counted; any failure fails the run.
  *
- * M5 added the "process" kind: it starts user programs (bin/utest in a
- * child mode) and kills them at random moments (before they run, while
- * they spin in user mode, while they are blocked in channel_call), then
- * checks that each one's job ends with nothing charged. Without a bootfs
- * holding bin/utest those workers count instead. */
+ * The "process" kind starts user programs (bin/utest in a child mode) and
+ * kills them at random moments (before they run, while they spin in user
+ * mode, while they are blocked in channel_call), then checks that each
+ * one's job ends with nothing charged. Without a bootfs holding bin/utest
+ * those workers count instead. */
 #include <jam/channel.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>

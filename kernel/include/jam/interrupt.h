@@ -1,9 +1,9 @@
-/* Device interrupt vectors and interrupt objects (M6, Track B;
- * kernel/object/interrupt.c, vector allocator in kernel/arch/x86_64/irq.c).
+/* Device interrupt vectors and interrupt objects
+ * (kernel/object/interrupt.c, vector allocator in kernel/arch/x86_64/irq.c).
  *
  * Vectors 0x31-0xef on every CPU are allocated per (cpu, vector) pair; 0x30
  * stays COM1's. An MSI targets one CPU (xAPIC format: APIC ID < 256, no
- * interrupt remapping before M11). The allocator prefers E-cores, then the
+ * interrupt remapping yet). The allocator prefers E-cores, then the
  * CPU with the fewest vectors; CPU 0 only when nothing else is online.
  *
  * An interrupt object owns one vector. When it fires (IRQ context: no

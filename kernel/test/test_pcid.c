@@ -37,7 +37,7 @@ KTEST(pcid_slot_bookkeeping)
     uint32_t again = pcid_test_decide(0, 1000, 2, true);
     KT_EQ(again & KEEP, 0);
     KT_ASSERT(again >= 1 && again <= PCID_SLOTS_PER_CPU);
-    /* Switched off: PCID 0, flushed on every load, as in M5. */
+    /* Switched off: PCID 0, flushed on every load. */
     KT_EQ(pcid_test_decide(2, 1000, 2, false), 0);
     KT_EQ(pcid_test_decide(2, 1000, 2, false), 0);
     KT_EQ(pcid_test_decide(2, 0, 0, false), 0);
@@ -67,7 +67,7 @@ KTEST(pcid_slot_bookkeeping)
  * but when they load the address spaces again they must not use the old
  * translation: with PCIDs the TLB still holds it under their PCIDs, and
  * the generation check has to flush it (on the PC; in QEMU, without PCIDs,
- * every CR3 load flushes and this checks the M5 path). */
+ * every CR3 load flushes and this checks that path). */
 static struct aspace *pc_as[2], *pc_other;
 static uint64_t pc_addr[2], pc_other_addr;
 static volatile int pc_ready, pc_phase;

@@ -1,4 +1,4 @@
-/* M7 shell: system information (syscalls 130-133, kernel/abi/sysc_sysinfo.c)
+/* System information for the shell (syscalls 130-133, kernel/abi/sysc_sysinfo.c)
  * and the CPU-time accounting under it (sched.c account_switch, process.c
  * process_cpu_tsc). The QEMU shell test (tools/shell-tests/cmds.txt) runs
  * the calls for real from the shell. */

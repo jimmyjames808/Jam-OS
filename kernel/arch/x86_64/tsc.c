@@ -29,7 +29,7 @@ static uint64_t measure_hpet(void)
         return 0;
     /* Capability bit 13 (COUNT_SIZE_CAP): 1 = 64-bit counter, 0 = 32-bit.
      * A 32-bit counter wraps at 2^32, so mask reads and compute deltas
-     * modulo the width. CAL_MS at a sane period keeps target < 2^32. (C11) */
+     * modulo the width. CAL_MS at a sane period keeps target < 2^32. */
     uint64_t mask = (caps & (1ull << 13)) ? ~0ull : 0xffffffffull;
     h[0x10 / 8] |= 1;                  /* general config: enable counter */
 

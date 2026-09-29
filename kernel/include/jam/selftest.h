@@ -17,7 +17,7 @@ void selftest_run_smp(void);
  * "testwatchdog", "testsmap", "testsmep"). */
 void selftest_crash(const char *cmdline);
 void selftest_crash_smp(void);
-/* M7: the same tests on a running system (debug_command "crash <name>",
+/* The same tests on a running system (debug_command "crash <name>",
  * from a kernel thread). Run one by name: returns only if it didn't crash
  * (bp: 0), ERR_NOT_FOUND for an unknown name, ERR_NOT_SUPPORTED if it
  * needs 2 CPUs. List them in the log (returns how many). */

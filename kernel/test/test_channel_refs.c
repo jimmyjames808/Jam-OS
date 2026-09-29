@@ -16,7 +16,7 @@
 #define CH(p) ((struct kobject *)(p))
 #define CRIGHTS (RIGHTS_BASIC | RIGHTS_IO)
 
-/* ---- O2: cycles refused, legitimate sends allowed ------------------------ */
+/* ---- cycles refused, legitimate sends allowed ---------------------------- */
 
 /* A1 in B1's queue and B1 in A1's queue would be a 2-cycle nothing can reach.
  * The second send carries B1, whose queue already holds the channel A1, so it
@@ -121,14 +121,13 @@ KTEST(auditC_sys_channel_cycle_refused)
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
-/* ---- O1: iterative teardown --------------------------------------------- */
+/* ---- iterative teardown ------------------------------------------------- */
 
 /* e[i]'s queue holds e[i+1]; releasing e[0] closes the whole chain. This is a
  * legitimate (acyclic) structure, so it is built top-down -- each endpoint is
- * sent while its own queue is still empty, which O2 allows (only cycles are
- * refused). On the audited code channel_close then recursed one stack frame
- * per level and overflowed the 64 KiB kernel stack; now it drains
- * iteratively. */
+ * sent while its own queue is still empty, which is allowed (only cycles
+ * are refused). channel_close used to recurse one stack frame per level
+ * and overflow the 64 KiB kernel stack; now it drains iteratively. */
 enum { AUDIT_DEPTH = 1000 };
 
 KTEST(auditB_channel_deep_close_iterative)
@@ -145,7 +144,7 @@ KTEST(auditB_channel_deep_close_iterative)
         struct khandle ke = khandle_from_new(CH(e), CRIGHTS);
         struct khandle kep = khandle_from_new(CH(ep), CRIGHTS);
         /* Queue e onto the previous endpoint (via its peer). e's queue is
-         * empty here, so O2 permits it; the previous peer then closes. */
+         * empty here, so it may be sent; the previous peer then closes. */
         KT_EQ(channel_write((struct channel *)peer.obj, "n", 1, &ke, 1), OK);
         khandle_release(&peer);
         peer = kep;
@@ -159,8 +158,8 @@ KTEST(auditB_channel_deep_close_iterative)
 /* A deep chain that alternates channel and port: channel head[i]'s queue holds
  * port p[i], and p[i] is bound to head[i+1] (so it holds the only reference to
  * it). Releasing head[0] cascades channel_close -> release port -> port_destroy
- * -> unref next channel -> ... which recursed through BOTH object types on the
- * audited code. It now drains iteratively too. */
+ * -> unref next channel -> ..., which used to recurse through BOTH object
+ * types. It now drains iteratively too. */
 enum { ALT_DEPTH = 500 };
 
 KTEST(auditB2_alternating_channel_port_iterative)

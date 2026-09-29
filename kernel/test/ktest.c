@@ -40,12 +40,12 @@ static void warm_singletons(void)
     timer_set(tm, uptime_ns() + 1000000000ull);
     timer_cancel(tm);
     kobject_unref(&tm->base);
-    /* M6: the per-CPU device vector tables, made on the first vector_alloc. */
+    /* The per-CPU device vector tables, made on the first vector_alloc. */
     uint32_t cpu;
     uint8_t vec;
     if (vector_alloc(warm_vector, NULL, &cpu, &vec) == OK)
         vector_free(cpu, vec);
-    /* M7: the DMA quarantine's thread, started by the first bound dma_cap. */
+    /* The DMA quarantine's thread, started by the first bound dma_cap. */
     dma_quarantine_start();
 }
 
@@ -76,8 +76,8 @@ int ktest_run(const char *prefix)
     for (const struct ktest *t = __ktests_start; t < __ktests_end; t++) {
         if (memcmp(t->name, prefix, pl))
             continue;
-        /* The review's regression tests (test_review.c) fail until their
-         * bugs are fixed: only "ktest=review..." runs them. */
+        /* review_* tests are repros that fail until their bug is fixed
+         * (none is open now): only "ktest=review..." runs them. */
         if (!memcmp(t->name, "review_", 7) && (pl < 6 || memcmp(prefix, "review", 6)))
             continue;
         ktest_current = t->name;

@@ -1,4 +1,4 @@
-/* The kernel's PCI core (M6, Track A; kernel/dev/pci.c). The kernel keeps
+/* The kernel's PCI core (kernel/dev/pci.c, pci_msi.c, pci_report.c). The kernel keeps
  * everything a buggy or hostile driver must not do itself: ECAM access, BAR
  * sizing, MSI/MSI-X programming and Bus Master Enable. devmgr (a process)
  * decides which driver gets which device, through resource handles
@@ -31,10 +31,10 @@ struct pci_dev {
     uint8_t  msix_table_bar, msix_pba_bar;
     uint32_t msix_table_off, msix_pba_off;
     volatile uint32_t *msix_table;  /* kernel UC mapping of the table, or NULL */
-    /* M7: RES_PCI_DEV resources made through system calls (devmgr's, for a
+    /* RES_PCI_DEV resources made through system calls (devmgr's, for a
      * driver) that are alive: the function belongs to a driver process. */
     volatile uint32_t proc_users;
-    /* M7: a process opened it with RIGHT_MANAGE (devmgr binding a driver to
+    /* A process opened it with RIGHT_MANAGE (devmgr binding a driver to
      * it). Sticky for the rest of the boot: while devmgr (or its driver)
      * restarts, proc_users can be 0 for a moment, and a `ktest` from the
      * shell must not grab the function in that gap. */
@@ -49,7 +49,7 @@ void pci_report(void);
 uint32_t pci_count(void);
 struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
 /* The n-th function with this vendor/device (0xffff = any), or NULL.
- * While pci_hide_in_use is set (M7: `ktest` run from the shell, with
+ * While pci_hide_in_use is set (`ktest` run from the shell, with
  * devmgr's drivers running), functions in use by drivers (pci_in_use) are
  * left out, so the kernel tests that drive a device skip it instead of
  * fighting its driver. */
@@ -66,10 +66,11 @@ void pci_cfg_write(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t v);
  * PCIe extended id); 0 if absent. */
 uint16_t pci_find_cap(struct pci_dev *d, uint32_t id);
 
-/* MSI / MSI-X. `index` is the MSI-X table entry, or 0 for MSI (M6 uses a
- * single MSI vector). pci_msi_set writes address/data (entry masked while
- * it changes); pci_msi_enable turns MSI or MSI-X on/off for the function
- * and disables INTx (turning the last one off leaves INTx disabled, M7).
+/* MSI / MSI-X. `index` is the MSI-X table entry, or 0 for MSI (only a
+ * single MSI vector is used). pci_msi_set writes address/data (entry masked
+ * while it changes); pci_msi_enable turns MSI or MSI-X on/off for the
+ * function and disables INTx (turning the last one off leaves INTx
+ * disabled).
  * ERR_NOT_SUPPORTED if the function
  * lacks the capability, ERR_OUT_OF_RANGE for a bad index. */
 status_t pci_msi_set(struct pci_dev *d, bool msix, uint32_t index, uint64_t addr, uint32_t data);
@@ -84,7 +85,7 @@ status_t pci_set_bus_master(struct pci_dev *d, bool on);
 /* Memory decode on (a driver needs its BARs to answer). Same refusals. */
 status_t pci_enable_memory(struct pci_dev *d);
 
-/* M7: around a power-state change (D3hot -> D0 resets a function without
+/* Around a power-state change (D3hot -> D0 resets a function without
  * No_Soft_Reset): save the command register and the BAR registers, then
  * put back whatever the change lost. Restore returns true if the BARs had
  * been lost (the function was reset); INTx Disable ends up set. Bus Master

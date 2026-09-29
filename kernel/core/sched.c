@@ -57,9 +57,9 @@ static struct runqueue rqs[MAX_CPUS];
  * (sched_init_bsp, sched_run_ap_idle, sched_topology_init) and read-only
  * afterwards, so these lines stay shared in every cache. struct cpu's first
  * line, where the core id lives, is written on every syscall and switch
- * (user_rsp, kernel_rsp), so reading it from another CPU is a cache miss;
- * the M5 wake-affine code did that for every CPU on every wake that could
- * not stay on the waker's CPU (see select_cpu_affine). */
+ * (user_rsp, kernel_rsp), so reading it from another CPU is a cache miss,
+ * and wake-affine placement would pay one for every CPU on every wake that
+ * can't stay on the waker's CPU (see select_cpu_affine). */
 struct cpu_topo {
     int16_t sibling;   /* the other hyperthread of this core, or -1 */
     uint8_t type;      /* enum core_type */
@@ -117,7 +117,7 @@ void preempt_enable(void)
  * same CPU waits for the next tick), so spin_unlock_irqrestore calls this
  * again once interrupts are back on. The scheduler itself never routes
  * through here (it uses the no_resched unlock variants), so this cannot
- * recurse into schedule(). (C5) */
+ * recurse into schedule(). (test: repro_local_wake_latency) */
 void preempt_check(void)
 {
     if (!irqs_enabled())
@@ -200,21 +200,21 @@ static bool usable(const struct thread *t, uint32_t cpu)
     return cpumask_has(&t->affinity, cpu) && cpumask_has(&online_mask, cpu);
 }
 
-/* Hybrid placement order (M5.5), best first:
+/* Hybrid placement order, best first:
  *   0  an idle P-core whose HT sibling is idle too (or that has none): a
  *      whole core to itself;
  *   1  an idle E-core (E-cores have no SMT: nothing shares it);
  *   2  the idle HT sibling of a busy P-core (half a core);
  *   3  every CPU busy: the least loaded, ties to P-cores, then the thread's
- *      last CPU (the M5 rule, which is also the whole rule with the order
- *      switched off).
+ *      last CPU (the plain least-loaded rule, which is also the whole rule
+ *      with the order switched off).
  * Within classes 0-2 the thread's last CPU wins (its cache may still be
  * warm), then the lowest index. "Idle" means nothing running and nothing
  * queued. Without hybrid cores every CPU looks like a P-core, so the order
  * is just "whole idle core > idle sibling > busy". The loads are read
- * racily: a wrong guess costs time, not correctness. The M5 rule filled
- * CPUs in index order, i.e. both hyperthreads of a P-core before the next
- * core, and E-cores last. */
+ * racily: a wrong guess costs time, not correctness. The least-loaded rule
+ * alone fills CPUs in index order, i.e. both hyperthreads of a P-core before
+ * the next core, and E-cores last. */
 volatile bool sched_place_order = true;
 
 static inline uint32_t place_key(uint32_t load, int32_t sib_load, uint8_t type, bool last,
@@ -286,12 +286,11 @@ uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
  * loads are racy, like select_cpu's: a wrong guess costs time, never
  * correctness, since thread_wake queues t under the chosen CPU's lock.
  *
- * M5.5: the sibling comes from the topology table. M5 found it by reading
- * every CPU's struct cpu (core_id, online, current), up to cpu_count cache
- * lines on every wake that couldn't stay on the waker's CPU: twice per
- * round trip when client and server are pinned to different cores. That
- * was the 8-11% the pinned cross-CPU channel_call lines lost in M5 (the
- * P->HT line, whose scan stopped at its sibling, cpu 3, lost only 2%). */
+ * The sibling comes from the topology table. Finding it by reading every
+ * CPU's struct cpu (core_id, online, current) cost up to cpu_count cache
+ * misses on every wake that couldn't stay on the waker's CPU, twice per
+ * round trip when client and server are pinned to different cores: 8-11%
+ * on the benchmark's pinned cross-CPU channel_call lines. */
 static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
 {
     if (usable(t, waker) && !rqs[waker].nr_ready) {
@@ -350,7 +349,7 @@ void finish_switch(void)
      * and this rq lock is held nobody else can pick prev, so its state is
      * stable; once on_cpu clears, prev can be woken, run, exit and be reaped
      * on another CPU, so a later read here could see a recycled state and
-     * reap it a second time. (C2) */
+     * reap it a second time. (test: repro_finish_switch_double_reap) */
     int prev_state = prev->state;
     /* Clear on_cpu BEFORE dropping the lock: a waker holding this lock and
      * seeing on_cpu set then knows prev has not yet reached schedule(). */
@@ -443,7 +442,8 @@ void schedule(void)
         rq->cur_prio = prev->is_idle ? -1 : prev->prio;   /* a boost just ended */
         prev->slice = SLICE_TICKS;   /* refresh: a thread that used its slice
                                       * while alone must be sliced again once
-                                      * a same-priority peer is queued (C4) */
+                                      * a same-priority peer is queued
+                                      * (test: repro_slice_not_reset) */
         spin_unlock_no_resched(&rq->lock);
         irq_restore(flags);
         return;
@@ -466,7 +466,7 @@ void schedule(void)
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, prev->state, c->ticks };
-    arch_thread_switch(prev, next);   /* kernel stack, FPU, address space (M5) */
+    arch_thread_switch(prev, next);   /* kernel stack, FPU, address space */
     switch_context(&prev->rsp, next->rsp);
 
     /* Back on prev's stack, possibly much later and on another CPU. */
@@ -505,7 +505,7 @@ static struct waker waker_now(bool consume)
     return w;
 }
 
-/* Client/server pairs on sibling hyperthreads (M5.5). Every wake from
+/* Client/server pairs on sibling hyperthreads. Every wake from
  * thread context records the waker in the wakee (partner_id, and how many
  * wakes in a row came from it). Two threads that each were woken by the
  * other at least PAIR_MIN times running are a pair. When one of them wakes
@@ -587,7 +587,7 @@ static void thread_wake_common(struct thread *t, bool sync)
          * lock; if it moved, drop the lock and retry with its new CPU. This
          * is the task_rq_lock pattern: marking T_RUNNING under the wrong run
          * queue's lock races schedule() on the real CPU and loses the thread
-         * (it ends RUNNING on no CPU and no queue). (C1) */
+         * (it ends RUNNING on no CPU and no queue). (test: repro_wake_stale_cpu) */
         for (;;) {
             uint32_t c = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
             struct runqueue *own = &rqs[c];
@@ -669,7 +669,7 @@ static void try_steal(uint32_t me)
     }
 }
 
-/* Spin before idle (M5.5). An idle CPU first polls its run queue and
+/* Spin before idle. An idle CPU first polls its run queue and
  * need_resched for up to sched_idle_spin_ns, with interrupts on and `pause`
  * between looks, and only then halts. A wakeup that lands within the window
  * is seen at once: no wake-from-halt (most of the ~1.5 us cross-CPU
@@ -692,7 +692,7 @@ static void try_steal(uint32_t me)
  * CPUs it costs at most 100 x the window per second per idle CPU (0.1% at
  * 10 us) plus the window after every wakeup; the gain is for wakeups that
  * come within the window, i.e. tightly coupled threads on different CPUs.
- * Tickless idle (M10) will make the tick part go away. Tunable at boot
+ * A tickless idle would make the tick part go away. Tunable at boot
  * ("idlespin=<us>", "nospinidle" = 0) and at run time (the benchmark). */
 volatile uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
 
@@ -901,7 +901,7 @@ void sched_tick(void)
     struct cpu *c = this_cpu();
     if (c->index == 0) {
         serial_poll();   /* rescues a stalled serial transmitter (serial.c) */
-        klog_poll();     /* M7: wakes kernel log readers (sysc_console.c) */
+        klog_poll();     /* wakes kernel log readers (sysc_console.c) */
     }
     watchdog_check(c);
     boost_starved(c);

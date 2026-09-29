@@ -1,4 +1,4 @@
-/* M7 Track C: the kernel services for the console and the shell
+/* The kernel services for the console and the shell
  * (<jam/console_svc.h>): kernel log readers, the screen hand-off, COM1
  * input and debug_command. The system call halves are thin wrappers
  * (kernel/abi/sysc_console.c); the QEMU shell test drives them for real. */
@@ -87,7 +87,7 @@ KTEST(console_klog_reader)
     kobject_unref(r);
 }
 
-/* M7 review: a read that runs into a gap (the log overwrote the text it
+/* A read that runs into a gap (the log overwrote the text it
  * was about to copy, between two 512-byte steps) returns the text up to
  * the gap, and the reader's SIG_READABLE comes from where THAT ends: more
  * log after it, so readable. The next read resumes at the oldest text

@@ -1,4 +1,4 @@
-/* User address spaces (Track B of M5-PLAN.md owns the implementation).
+/* User address spaces (kernel/mm/aspace.c).
  *
  * One flat address space per process: a PML4 whose kernel half (entries
  * 256-511) is shared with every other address space, plus a set of

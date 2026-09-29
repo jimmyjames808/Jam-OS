@@ -11,7 +11,7 @@
 bool serial_init(void);
 void serial_write(const char *s, size_t len);
 
-/* M5.5: interrupt-driven output (serial.c). serial_start_irq routes COM1's
+/* Interrupt-driven output (serial.c). serial_start_irq routes COM1's
  * IRQ 4 once the I/O APIC is up ("noserialirq": stay synchronous);
  * serial_poll runs from CPU 0's tick; serial_panic makes output
  * synchronous for good, writing out what is queued first (panic path,
@@ -44,7 +44,7 @@ bool     serial_ring_put(struct serial_ring *r, char c);
 int      serial_ring_get(struct serial_ring *r);
 uint32_t serial_ring_used(const struct serial_ring *r);
 
-/* M7: COM1 input (serial.c "Input"). serial_rx_start turns the receive
+/* COM1 input (serial.c "Input"). serial_rx_start turns the receive
  * interrupt on and calls notify(ctx) (interrupts off, under the rx lock)
  * whenever bytes arrived; ERR_BAD_STATE if a reader exists already,
  * ERR_NOT_FOUND without a UART. serial_rx_read takes up to cap bytes and,

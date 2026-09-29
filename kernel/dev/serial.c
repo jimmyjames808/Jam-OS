@@ -1,10 +1,10 @@
 /* COM1, 115200 8N1.
  *
- * Output (M5.5) goes through a transmit ring drained by the UART's own
+ * Output goes through a transmit ring drained by the UART's own
  * transmit-empty interrupt (COM1 = ISA IRQ 4, routed through the I/O APIC
- * to CPU 0). M5 wrote every character synchronously, waiting on the UART
- * with interrupts off under the log lock: about 87 us a character at
- * 115200 baud, ~9 ms for a 100-character line, on every CPU that logged.
+ * to CPU 0). Writing every character synchronously means waiting on the
+ * UART with interrupts off under the log lock: about 87 us a character at
+ * 115200 baud, ~9 ms for a 100-character line, on every CPU that logs.
  *
  *   - serial_write (called by klog under its lock, interrupts off) copies
  *     into the ring under the "serial tx" lock (always taken with
@@ -23,12 +23,12 @@
  *     output goes back to synchronous for good (serial_irq_broken; the
  *     RESULTS box says so).
  *   - Before the interrupt is routed (early boot), with "noserialirq", and
- *     after serial_panic, output is synchronous as in M5. serial_panic
+ *     after serial_panic, output is synchronous. serial_panic
  *     (interrupts off, other CPUs halted) first writes out whatever the
  *     ring still holds, so the panic text follows it in order.
  *   - serial_async is the run-time switch (the benchmark flips it).
  *
- * Input (M7): while someone reads COM1 (serial_rx_start; the serial_open
+ * Input: while someone reads COM1 (serial_rx_start; the serial_open
  * system call), the received-data interrupt is on too (IER bit 0, same IRQ
  * 4) and the handler moves bytes from the UART's FIFO into the rx ring
  * under the "serial rx" lock, then calls the reader's notify callback
@@ -294,8 +294,8 @@ void serial_poll(void)
          * (~0.36 s at 115200 baud, far below the 5 s the lock checker and
          * the watchdog allow); the rest is dropped and counted. This is
          * detected within SERIAL_RESCUES_MAX ticks of the first queued
-         * byte, so little is queued by then. A failure path: M5's
-         * behaviour from here on. */
+         * byte, so little is queued by then. A failure path: synchronous
+         * output from here on. */
         outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
         int c;
@@ -331,7 +331,7 @@ void serial_panic(void)
 /* The run-time switch, for the benchmark. Turning it off first drains the
  * ring synchronously with the lock held and the transmit interrupt off, so
  * synchronous writes that follow can't overtake or interleave with bytes
- * still queued (review finding 4). */
+ * still queued. */
 void serial_set_async(bool on)
 {
     if (!present)
@@ -372,7 +372,7 @@ void serial_test_hold(bool on)
     irq_restore(f);
 }
 
-/* ---- input (M7) ------------------------------------------------------------------ */
+/* ---- input ----------------------------------------------------------------------- */
 
 bool serial_present(void)
 {

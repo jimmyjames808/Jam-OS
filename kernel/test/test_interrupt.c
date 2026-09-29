@@ -1,4 +1,4 @@
-/* M6 Track B: device vectors and interrupt objects.
+/* Device vectors and interrupt objects.
  *
  * No device is needed: virtual interrupt objects own a real (cpu, vector)
  * like an MSI does, so a fixed IPI with that vector to that CPU takes the
@@ -6,8 +6,8 @@
  * port), and interrupt_fire_virtual calls fire directly from any context
  * (threads, IPI handlers on every CPU). The lock checker is on, so every
  * lock the fire path takes is checked for use from interrupt handlers.
- * The MSI path itself needs Track A's PCI core: interrupt_edu_msi (end of
- * file) is the phase-2 test with QEMU's edu device and skips until then. */
+ * The MSI path itself needs a device: interrupt_edu_msi (end of file)
+ * uses QEMU's edu and skips without it. */
 #include <jam/cpu.h>
 #include <jam/event.h>
 #include <jam/handle.h>
@@ -712,7 +712,7 @@ KTEST(interrupt_job_charge)
 }
 
 /* The syscalls' error paths (the success path of interrupt_create_msi
- * needs a real RES_PCI_DEV: phase 2), and the argument checks of
+ * needs a real RES_PCI_DEV: interrupt_edu_msi), and the argument checks of
  * interrupt_create_msi on made-up functions. */
 KTEST(interrupt_syscall_errors)
 {
@@ -759,7 +759,7 @@ KTEST(interrupt_syscall_errors)
     KT_EQ(interrupt_create_msi(&fake, 0, IRQ_MSIX, &o), ERR_ACCESS_DENIED);
     fake.info.flags = 0;
     if (pci_count() == 0) {
-        /* Track A's stubs refuse to program it: the vector is given back. */
+        /* The PCI core refuses to program it: the vector is given back. */
         KT_EQ(interrupt_create_msi(&fake, 0, 0, &o), ERR_NOT_SUPPORTED);
         KT_EQ(interrupt_create_msi(&fake, 3, IRQ_MSIX, &o), ERR_NOT_SUPPORTED);
     }
@@ -768,9 +768,8 @@ KTEST(interrupt_syscall_errors)
         KT_EQ(vector_count(i), counts[i]);
 }
 
-/* TODO(phase 2): the MSI path end to end with QEMU's edu device (1234:11e8,
- * MSI, not maskable). Needs Track A's PCI core; skips while pci_find finds
- * no edu (in Track B's tree the PCI core is weak stubs). edu BAR0: 0x00
+/* The MSI path end to end with QEMU's edu device (1234:11e8, MSI, not
+ * maskable); skips where pci_find finds no edu (the PC). edu BAR0: 0x00
  * identification (low byte 0xed), 0x24 interrupt status, 0x60 raise (ORs
  * the value into the status and sends the MSI), 0x64 acknowledge (clears
  * those status bits). An MSI is a memory write by the device, so Bus

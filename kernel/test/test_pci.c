@@ -1,4 +1,4 @@
-/* Tests for the PCI core (M6 Track A) on QEMU q35 as tools/qemu-test.sh
+/* Tests for the PCI core (kernel/dev/pci*.c) on QEMU q35 as tools/qemu-test.sh
  * starts it: host bridge 8086:29c0, std VGA 1234:1111 (the boot display),
  * qemu-xhci 1b36:000d (MSI-X, the boot stick hangs off it), edu 1234:11e8
  * (MSI). Everything a test changes on a device it puts back. xHCI is never
@@ -298,7 +298,7 @@ KTEST(pci_msi_roundtrip)
 
     KT_EQ(pci_msi_enable(d, false, false), OK);
     KT_ASSERT(!(pci_cfg_read(d, c + 2, 2) & 1));
-    KT_ASSERT(pci_cfg_read(d, CMD, 2) & CMD_INTX_OFF);   /* M7: INTx stays disabled */
+    KT_ASSERT(pci_cfg_read(d, CMD, 2) & CMD_INTX_OFF);   /* INTx stays disabled */
     /* Put it all back. */
     pci_cfg_write(d, c + 4, 4, alo);
     pci_cfg_write(d, c + 8, 4, ahi);

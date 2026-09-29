@@ -13,7 +13,7 @@ void   klog_write_raw(const char *s, size_t len);
 /* Panic only: drop the log lock in case this CPU died holding it. */
 void   klog_force_unlock(void);
 
-/* M7: readers (kernel/abi/sysc_console.c). The log's position is the count
+/* Readers (kernel/abi/sysc_console.c). The log's position is the count
  * of bytes ever written; the ring keeps the last KLOG_SIZE of them.
  * klog_read_at copies up to cap bytes from pos (moved up to the oldest
  * byte still kept, or down to the end), and *first gets where they start.

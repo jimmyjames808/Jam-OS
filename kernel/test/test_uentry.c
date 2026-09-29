@@ -1,7 +1,7 @@
-/* TEST ONLY: ring-3 entry path (Track A of M5). Track B's aspace_map is
- * not available yet, so each test builds its own tiny user address space by
- * hand: a PML4 with the kernel half copied, a code page (machine code
- * written in below), a stack page, and sometimes a data page. A kernel
+/* TEST ONLY: the ring-3 entry path. Each test builds its own tiny user
+ * address space by hand (without aspace.c): a PML4 with the kernel half
+ * copied, a code page (machine code written in below), a stack page, and
+ * sometimes a data page. A kernel
  * thread registers its page tables with the test CR3 hook, points CR3 at
  * them and enters ring 3 with arch_enter_user.
  *
@@ -166,7 +166,7 @@ static bool utest_syscall(struct syscall_frame *f, int64_t *ret)
         /* Stay registered until the joiner unregisters us: the CR3 hook
          * needs our entry to restore the kernel page tables when this CPU
          * switches to the next thread. */
-        thread_exit();   /* phase 2: process exit; here just this thread */
+        thread_exit();   /* just this thread: these tests have no process */
     default:
         return false;
     }
@@ -423,7 +423,7 @@ KTEST(uentry_syscall_smp)
 }
 
 /* A user busy-loop is preempted by the timer and resumes, and thread_cancel
- * stops it at its next return to user mode (the M5 kill mechanism). */
+ * stops it at its next return to user mode (how a process is killed). */
 KTEST(uentry_preempt_and_cancel)
 {
     if (cpu_count < 2)

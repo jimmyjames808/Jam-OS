@@ -7,8 +7,8 @@
  * (intermediate entries P|W|U, so the leaf alone decides access) and a list
  * of mappings sorted by address. A list, not a tree: lookups, first-fit
  * placement and splitting are O(mappings), which is fine for the handful of
- * mappings an M5 process has; MAX_MAPPINGS bounds the worst case until a
- * tree replaces it.
+ * mappings a process has; MAX_MAPPINGS bounds the worst case until a tree
+ * replaces it.
  *
  * Each mapping maps [vmo_off, vmo_off+len) of one VMO at [base, base+len),
  * holds a VMO reference (through its reverse-map entry, struct vmo_umap),
@@ -48,7 +48,7 @@
  * A CPU that switches away after our read is flushed anyway (harmless).
  * Without PCIDs nothing else can hold stale user entries.
  *
- * With PCIDs (M5.5, arch/x86_64/pcid.c) the second point no longer holds:
+ * With PCIDs (arch/x86_64/pcid.c) the second point no longer holds:
  * a CR3 load keeps the entries of the PCID it leaves. So gather_note also
  * bumps the address space's TLB generation (`tlb_gen`) BEFORE it reads the
  * mask, and a CPU loading this address space again flush-loads its PCID
@@ -92,7 +92,7 @@
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
- * Job charges (review R2). An address space made for a process
+ * Job charges. An address space made for a process
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
  * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
  * every user page-table page from pt_prepare (charged BEFORE it is
@@ -171,7 +171,7 @@ struct aspace {
     struct job       *job;        /* charged for all of it (a reference), or NULL */
     volatile uint32_t refs;
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
-    /* PCIDs (M5.5, pcid.h): a never-reused id, and the TLB generation,
+    /* PCIDs (pcid.h): a never-reused id, and the TLB generation,
      * bumped by every change that must reach TLBs (gather_note). */
     uint64_t          pcid_id;
     volatile uint64_t tlb_gen;

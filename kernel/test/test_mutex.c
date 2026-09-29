@@ -6,7 +6,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-/* ---- mutex hand-off (review of M5.5, the "made no progress" stress report) --- */
+/* ---- mutex hand-off (stress saw a waiter "made no progress" without it) ---- */
 
 /* Up to three threads on other CPUs take a mutex back to back (hold 20 us, re-lock
  * at once). A third, alone on its CPU, wants it too: once woken it needs a

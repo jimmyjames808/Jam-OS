@@ -1,4 +1,4 @@
-/* Interrupt objects (OBJ_INTERRUPT, M6 Track B). See <jam/interrupt.h>.
+/* Interrupt objects (OBJ_INTERRUPT). See <jam/interrupt.h>.
  *
  * An interrupt object owns one (cpu, vector) from vector_alloc and, for a
  * device, one MSI or MSI-X vector of a PCI function programmed to deliver
@@ -36,12 +36,12 @@
  * second object for the same vector, MSI together with MSI-X, and to turn
  * MSI-X off when the last of a function's vectors goes.
  *
- * Lock order: "interrupt devices" (dev_lock) -> "pci command" (Track C's
- * pci_cmd_lock, around pci_msi_enable only) -> "pci config" (Track A's
- * leaf); "interrupt" (the object) -> "pci config" (mask in fire/ack) and
- * -> "port" -> "port waiters" -> run queues (observers). The vector
- * allocator's lock is a leaf and is never held with these. Track A's
- * pci_msi_set / pci_msi_enable / pci_msi_mask must therefore not sleep,
+ * Lock order: "interrupt devices" (dev_lock) -> "pci cmd filter"
+ * (resource.c's pci_cmd_lock, around pci_msi_enable only) -> "pci" (pci.c's
+ * leaf); "interrupt" (the object) -> "pci" (mask in fire/ack) and -> "port"
+ * -> "port waiters" -> run queues (observers). The vector allocator's lock
+ * is a leaf and is never held with these. pci_msi.c's pci_msi_set /
+ * pci_msi_enable / pci_msi_mask must therefore not sleep,
  * and pci_msi_mask must be callable from an interrupt handler.
  *
  * Job charge: one JOB_LIMIT_HANDLES unit of the creator's job (like a VMO
@@ -125,7 +125,7 @@ static status_t dev_claim(struct kinterrupt *o)
     st = pci_msi_set(d, msix, o->index, msi_address(o->cpu), msi_data(o->vec));
     if (st == OK && same == 0) {
         /* MSI enable also sets INTx Disable in the command register: take
-         * Track C's command lock, so a driver's filtered config write (a
+         * the command-filter lock, so a driver's filtered config write (a
          * read-modify-write of the same register under that lock) can't
          * undo it. */
         uint64_t cf = pci_cmd_lock();
@@ -323,7 +323,7 @@ status_t interrupt_create_msi(struct pci_dev *d, uint32_t index, uint32_t flags,
     if (!d || (flags & ~IRQ_MSIX))
         return ERR_INVALID_ARGS;
     if (d->info.flags & (PCI_INFO_DISPLAY | PCI_INFO_BRIDGE))
-        return ERR_ACCESS_DENIED;   /* never touched (M6-PLAN.md) */
+        return ERR_ACCESS_DENIED;   /* never touched (pci.c) */
     bool msix = flags & IRQ_MSIX;
     if (msix ? !d->cap_msix : !d->cap_msi)
         return ERR_NOT_SUPPORTED;

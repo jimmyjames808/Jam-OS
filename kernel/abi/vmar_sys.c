@@ -1,4 +1,4 @@
-/* VMAR operations on handles (the M5 system calls). Mapping needs
+/* VMAR operations on handles (the system calls' sys_* layer). Mapping needs
  * RIGHT_WRITE on the vmar and, on the VMO handle, RIGHT_MAP plus the right
  * behind each permission asked for (RIGHT_READ, RIGHT_WRITE, RIGHT_EXEC).
  * The VMO handle's rights are also recorded as the most a later protect

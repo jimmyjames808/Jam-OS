@@ -1,6 +1,6 @@
 /* bootfs: a read-only image of files (init, test programs, init.cfg)
  * loaded by Limine as a module, so userspace starts before USB and FAT32
- * (Track C owns the implementation; tools/mkbootfs.py builds the image).
+ * (kernel/core/bootfs.c; tools/mkbootfs.py builds the image).
  *
  * Image format (little-endian): a header, `count` entries, then file data,
  * each file starting on a 4 KiB boundary. */

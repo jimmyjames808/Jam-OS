@@ -10,11 +10,11 @@
 
 #include "sched_internal.h"
 
-/* Sleeping threads (any wait with a deadline): per-CPU one-shot timers
- * (M5.5). A thread that blocks with a deadline goes on the queue of the CPU
- * it blocks on, sorted by deadline, and that CPU's timer is armed for the
- * queue's head (lapic_timer_set), so it is woken within microseconds of
- * its deadline instead of at CPU 0's next 10 ms tick (M5). Races:
+/* Sleeping threads (any wait with a deadline): per-CPU one-shot timers. A
+ * thread that blocks with a deadline goes on the queue of the CPU it blocks
+ * on, sorted by deadline, and that CPU's timer is armed for the queue's
+ * head (lapic_timer_set), so it is woken within microseconds of its
+ * deadline instead of at the next 10 ms tick. Races:
  *   - Only the owning CPU adds to its queue and arms its timer (the
  *     blocking thread has preemption off; the timer interrupt runs there),
  *     always under the queue lock with interrupts off.
@@ -25,8 +25,7 @@
  *     the armed timer may fire for nothing: harmless (lapic_early_irqs).
  *   - The expiring interrupt calls thread_wake(t) with the lock held, and t
  *     takes the same lock before it returns from its wait, so t can't
- *     return, exit and be freed while its waker is still in thread_wake
- *     (C6, as with the old global list).
+ *     return, exit and be freed while its waker is still in thread_wake.
  * Expiry compares TSC values (uptime_to_tsc rounds up), so a thread woken
  * at its deadline sees uptime_ns() >= the deadline and doesn't re-block.
  * In the periodic timer mode, or with lapic_oneshot off, each CPU's tick
@@ -52,19 +51,19 @@ void sleepq_init(uint32_t cpu)
 
 /* ---- blocking ----------------------------------------------------------- */
 
-/* The current thread is already T_BLOCKED (set while the lock that guards
- * its wake condition was held, so no waker can slip in unnoticed) AND with
- * preemption disabled by the caller: a preemption between marking itself
- * blocked and arming the deadline would switch it out with nothing left to
- * wake it (found by the VMO agent: "sleeper made no progress" in stress).
- * Arm the deadline, drop `lock`, re-enable preemption, switch out, and on
- * return re-take `lock`. */
 static bool cancel_seen(struct thread *t)
 {
     return __atomic_load_n(&t->cancel_pending, __ATOMIC_ACQUIRE);
 }
 
-/* Returns true if a cancellable wait was cancelled (before or during). */
+/* The current thread is already T_BLOCKED (set while the lock that guards
+ * its wake condition was held, so no waker can slip in unnoticed) AND with
+ * preemption disabled by the caller: a preemption between marking itself
+ * blocked and arming the deadline would switch it out with nothing left to
+ * wake it (stress saw it as "sleeper made no progress"). Arm the deadline,
+ * drop `lock`, re-enable preemption, switch out, and on return re-take
+ * `lock`. Returns true if a cancellable wait was cancelled (before or
+ * during). */
 static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns,
                            bool cancellable)
 {
@@ -116,8 +115,8 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
      * calls thread_wake(t) while holding it, so a lockless check here could
      * let this thread return (and re-block or exit, freeing itself) while
      * the waker is still inside thread_wake(t). Serialising on the lock
-     * keeps t alive until the waker is done. (C6) The queue is the one of
-     * the CPU we slept on, not the one we run on now. */
+     * keeps t alive until the waker is done. The queue is the one of the
+     * CPU we slept on, not the one we run on now. */
     if (deadline_ns != DEADLINE_NEVER) {
         struct sleepq *q = &sleepqs[t->sleep_cpu];
         uint64_t f = spin_lock_irqsave(&q->lock);
@@ -219,7 +218,7 @@ static bool wq_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
      * the node and calls thread_wake(t) under wq->lock, so a lockless read
      * could let this thread return and free itself mid-wake. When same, the
      * caller's lock (already re-held by block_prepared) is wq->lock, so we
-     * are serialised; otherwise take wq->lock explicitly. (C6) */
+     * are serialised; otherwise take wq->lock explicitly. */
     if (!same) {
         uint64_t g = spin_lock_irqsave(&wq->lock);
         if (t->wait_node.next)
@@ -360,7 +359,7 @@ void mutex_unlock(struct mutex *m)
      * object it guards, so touching m->wq afterwards is a use-after-free. The
      * lock order is the same one mutex_lock establishes ("mutex" then "mutex
      * waiters"), and the woken thread must re-take m->lock before it returns
-     * from waitqueue_wait, so it cannot free the mutex under us. (C9) */
+     * from waitqueue_wait, so it cannot free the mutex under us. */
     mutex_pass_on(m);
     spin_unlock_irqrestore(&m->lock, f);
 }

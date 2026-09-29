@@ -107,7 +107,7 @@ KTEST(repro_local_wake_latency)
     /* Fixed: spin_unlock_irqrestore now re-checks need_resched once interrupts
      * are back on, so a higher-priority thread woken on the waker's own CPU
      * runs almost immediately instead of waiting up to a whole tick (10 ms).
-     * Was ~10.7 ms before the fix. (C5) */
+     * Was ~10.7 ms before the fix. */
     KT_ASSERT(local < 2000);
 }
 
@@ -183,7 +183,7 @@ KTEST(repro_finish_switch_double_reap)
      * longer acts on the recycled T_DEAD it can observe late (the hook still
      * reads that late value on purpose, showing the window exists) and does
      * not reap the exited thread a second time. If it had, the two stacks
-     * would be one. (C2) */
+     * would be one. */
     KT_ASSERT(y1->stack_top != y2->stack_top);
     thread_join(y1);
     thread_join(y2);
@@ -288,7 +288,7 @@ KTEST(repro_wake_stale_cpu)
     (void)anywhere;
     /* Fixed: thread_wake re-reads t->cpu under the run queue lock and retries
      * if it moved, so a stale waker can't mark the thread RUNNING under the
-     * wrong CPU's lock and strand it. Every later wake now lands. (C1) */
+     * wrong CPU's lock and strand it. Every later wake now lands. */
     KT_ASSERT(ab_wakes > before);
     /* Retire the victim so it doesn't leak its stack for the whole run. */
     ab_stop = 1;
@@ -343,7 +343,7 @@ KTEST(repro_unmap_migrate_stale_tlb)
     vmm_unmap(pml4, va, PAGE_SIZE);
     dbg_hooks[DBG_UNMAP_PRE_SHOOT] = NULL;
     /* Preemption was held across the flush + shootdown: no migration could
-     * strand a CPU with a stale entry. (C3) */
+     * strand a CPU with a stale entry. */
     KT_ASSERT(tlb_hook_preempt > 0);
 
     /* Remap the same VA to a different physical page and read it on both the
@@ -403,6 +403,6 @@ KTEST(repro_slice_not_reset)
     kt_unpin_self();
     /* Fixed: schedule()'s next == prev path now refreshes the slice, so a
      * later same-priority thread gets the CPU within a slice or two instead
-     * of waiting ~1 s for the starvation boost. (C4) */
+     * of waiting ~1 s for the starvation boost. */
     KT_ASSERT(ms <= 100);
 }

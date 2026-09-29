@@ -89,7 +89,7 @@ KTEST(handle_basic)
 KTEST(handle_stale_generation)
 {
     /* A closed handle value must never work again, even once its slot has
-     * been reused. Slot reuse is FIFO now (O4), so the very next insert takes
+     * been reused. Slot reuse is FIFO, so the very next insert takes
      * a different slot; cycling the whole free list brings the slot back with
      * a bumped generation. Either way the stale value stays invalid. */
     volatile int destroyed = 0;
@@ -250,7 +250,7 @@ KTEST(m45_object_signal_user_bits)
     handle_table_destroy(&t);
 }
 
-/* ---- O4: handle generation no longer wraps ------------------------------ */
+/* ---- handle generations don't wrap (they used to after 256 reuses) ---------- */
 
 static void audit_dummy_destroy(struct kobject *o) { kfree(o); }
 static const struct kobject_ops audit_dummy_ops = { .name = "audit dummy",
