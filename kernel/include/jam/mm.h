@@ -40,12 +40,12 @@ static inline uint64_t virt_to_phys(const void *va) { return (uint64_t)va - hhdm
 enum { ZONE_DMA32, ZONE_NORMAL, ZONE_COUNT };   /* DMA32 = below 4 GiB */
 
 struct page {
-    struct list_node node;
-    uint16_t flags;
-    uint8_t  order;
-    uint8_t  zone;
-    uint32_t refcount;
-    uint64_t private;
+    struct list_node node;   /* free lists, slab lists, gathers */
+    uint16_t flags;          /* PG_* */
+    uint8_t  order;          /* block size is 2^order pages (buddy blocks) */
+    uint8_t  zone;           /* ZONE_* */
+    uint32_t refcount;       /* references; the last one frees it (vmo.c) */
+    uint64_t private;        /* owner's word: slab header, next page of a chain, ... */
 };
 _Static_assert(sizeof(struct page) == 32, "struct page should stay 32 bytes");
 

@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 struct list_node {
-    struct list_node *next, *prev;
+    struct list_node *next, *prev;   /* circular; a lone node points at itself */
 };
 
 #define LIST_INIT(name) { &(name), &(name) }

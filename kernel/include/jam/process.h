@@ -93,7 +93,7 @@ void     job_uncharge(struct job *j, uint32_t kind, uint64_t n);
 /* A process's entry on its job's list of live processes (job.c; under the
  * job's lock). */
 struct job_link {
-    struct list_node node;
+    struct list_node node;        /* on the job's process list */
     bool             kill_seen;   /* job_kill has killed it */
 };
 /* List / unlist a process in j. Attach fails with ERR_BAD_STATE once j has
@@ -173,8 +173,8 @@ status_t process_start(struct process *p, struct uthread *ut, uint64_t entry, ui
  * made p RUNNING and before its first thread exists. `fail` makes that
  * thread's creation fail as if the kernel were out of memory. */
 struct dbg_process_start {
-    struct process *p;
-    bool            fail;
+    struct process *p;      /* the process being started */
+    bool            fail;   /* set by the hook: fail the thread creation */
 };
 /* Kill p: every thread is cancelled and leaves; p goes DEAD (with
  * SIG_TERMINATED) once the last one has. `code` becomes the exit code;

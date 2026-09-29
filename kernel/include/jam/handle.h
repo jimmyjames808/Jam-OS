@@ -21,8 +21,8 @@
  * needs them too). */
 
 struct khandle {
-    struct kobject *obj;
-    rights_t        rights;
+    struct kobject *obj;      /* a reference, or NULL */
+    rights_t        rights;   /* what the holder may do with it */
 };
 
 /* Wrap a new object (fresh from its create function, refs = 1) as a
@@ -34,10 +34,10 @@ struct handle_slot;
 struct job;
 
 struct handle_table {
-    spinlock_t          lock;
-    struct handle_slot *slots;
-    uint32_t            capacity;
-    uint32_t            used;
+    spinlock_t          lock;        /* "handle table": guards everything below */
+    struct handle_slot *slots;       /* capacity entries, grown on demand */
+    uint32_t            capacity;    /* entries in slots */
+    uint32_t            used;        /* entries holding an object */
     uint32_t            free_head;   /* slot index + 1 of first free, 0 = none */
     uint32_t            free_tail;   /* slot index + 1 of last free (FIFO reuse) */
     /* The job every slot in use or reserved is charged to (one

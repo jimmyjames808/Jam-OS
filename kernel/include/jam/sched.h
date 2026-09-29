@@ -28,7 +28,7 @@
 #define PRIO_USER_MAX 24
 
 typedef struct {
-    uint64_t bits[MAX_CPUS / 64];
+    uint64_t bits[MAX_CPUS / 64];   /* one bit per CPU index */
 } cpumask_t;
 
 static inline void cpumask_all(cpumask_t *m)
@@ -62,40 +62,40 @@ struct process;
 struct uthread;
 
 struct waitqueue {
-    spinlock_t       lock;
-    struct list_node waiters;
+    spinlock_t       lock;      /* guards waiters */
+    struct list_node waiters;   /* threads waiting, oldest first */
 };
 
 struct thread {
     uint64_t          rsp;           /* saved stack pointer while switched out */
-    uint64_t          id;
-    char              name[24];
-    volatile int      state;
+    uint64_t          id;            /* unique, never reused */
+    char              name[24];      /* for logs and panics, NUL-terminated */
+    volatile int      state;         /* T_* */
     int               prio;          /* effective priority (base or boosted) */
-    int               base_prio;
+    int               base_prio;     /* priority without a boost */
     int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
-    uint64_t          boosts;
+    uint64_t          boosts;        /* starvation boosts it has had */
     volatile bool     on_cpu;        /* its stack is still in use by a CPU */
-    bool              is_idle;
+    bool              is_idle;       /* a CPU's idle thread */
     uint32_t          cpu;           /* CPU it runs on / is queued on */
-    uint32_t          slice;
-    cpumask_t         affinity;
+    uint32_t          slice;         /* ticks left of its time slice */
+    cpumask_t         affinity;      /* CPUs it may run on */
 
     struct list_node  rq_node;       /* run queue */
     struct list_node  wait_node;     /* wait queue */
     uint64_t          mutex_since;   /* waiting for a mutex since (uptime ns), 0 = not */
     struct list_node  sleep_node;    /* a CPU's sleeper queue (sched.c) */
-    uint64_t          wake_at_ns;
+    uint64_t          wake_at_ns;    /* deadline of its sleep (uptime ns) */
     uint64_t          wake_at_tsc;   /* the same deadline as a TSC value */
     uint32_t          sleep_cpu;     /* whose queue sleep_node is on */
 
-    void             *stack_top;
-    volatile uint32_t refs;
-    volatile bool     exited;
-    struct waitqueue  exit_wq;
+    void             *stack_top;     /* top of its kernel stack */
+    volatile uint32_t refs;          /* references: creator's and its own */
+    volatile bool     exited;        /* has run thread_exit; exit_wq.lock */
+    struct waitqueue  exit_wq;       /* thread_join waits here */
 
-    uint64_t          switches_in;
+    uint64_t          switches_in;   /* times it was switched in */
     /* CPU time: TSC cycles on a CPU up to its last switch out
      * (written by the CPU running it; thread_cpu_tsc adds the current run). */
     uint64_t          run_tsc;
@@ -289,9 +289,9 @@ void waitqueue_wake_all(struct waitqueue *wq);
 #define MUTEX_HANDOFF_NS 1000000ull
 extern volatile uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter */
 struct mutex {
-    spinlock_t       lock;
-    struct thread   *owner;
-    struct waitqueue wq;
+    spinlock_t       lock;      /* guards owner and the hand-off */
+    struct thread   *owner;     /* the holder, NULL if free */
+    struct waitqueue wq;        /* threads waiting for it */
     uint16_t         dep_cls;   /* lock checker class + 1, 0 until first use */
 };
 void mutex_init(struct mutex *m, const char *name);

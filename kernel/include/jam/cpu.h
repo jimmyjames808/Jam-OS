@@ -5,22 +5,22 @@
 #include <stdint.h>
 
 struct cpu_features {
-    bool nx;
-    bool pages_1g;
-    bool pat;
-    bool pge;
-    bool x2apic;
-    bool tsc_invariant;
-    bool hybrid;          /* Intel P-core/E-core (CPUID 7.EDX[15]) */
-    bool tsc_deadline;    /* LAPIC timer TSC-deadline mode */
-    bool smep, smap, umip;
-    bool xsave, avx;      /* XSAVE (CPUID 1.ECX[26]); AVX usable with it */
-    bool pcid, invpcid;   /* CPUID 1.ECX[17], 7.EBX[10] */
-    uint32_t max_leaf;
-    uint32_t crystal_hz;  /* CPUID 0x15, 0 if not reported */
-    uint32_t tsc_ratio_num, tsc_ratio_den;
-    char vendor[13];
-    char brand[49];
+    bool nx;                                /* no-execute pages (EFER.NXE) */
+    bool pages_1g;                          /* 1 GiB pages */
+    bool pat;                               /* page attribute table (WC mappings) */
+    bool pge;                               /* global pages */
+    bool x2apic;                            /* x2APIC mode possible */
+    bool tsc_invariant;                     /* TSC runs at a constant rate in every C-state */
+    bool hybrid;                            /* Intel P-core/E-core (CPUID 7.EDX[15]) */
+    bool tsc_deadline;                      /* LAPIC timer TSC-deadline mode */
+    bool smep, smap, umip;                  /* CPUID 7: supervisor-mode protections, UMIP */
+    bool xsave, avx;                        /* XSAVE (CPUID 1.ECX[26]); AVX usable with it */
+    bool pcid, invpcid;                     /* CPUID 1.ECX[17], 7.EBX[10] */
+    uint32_t max_leaf;                      /* highest basic CPUID leaf */
+    uint32_t crystal_hz;                    /* CPUID 0x15, 0 if not reported */
+    uint32_t tsc_ratio_num, tsc_ratio_den;  /* CPUID 0x15: TSC = crystal * num / den */
+    char vendor[13];                        /* "GenuineIntel", NUL-terminated */
+    char brand[49];                         /* CPUID brand string, NUL-terminated */
 };
 
 extern struct cpu_features cpu_features;

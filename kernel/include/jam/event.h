@@ -9,7 +9,7 @@
 #include <jam/status.h>
 
 struct event {
-    struct kobject base;
+    struct kobject base;   /* OBJ_EVENT; the signals are the whole state */
 };
 
 /* New event with no signals set; *out holds the creator's reference. */

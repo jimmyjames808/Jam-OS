@@ -21,7 +21,7 @@ typedef struct spinlock {
     volatile uint16_t owner;   /* ticket now being served */
     volatile uint16_t holder;  /* CPU index + 1 of the holder, 0 if free */
     uint16_t          cls;     /* lock class index + 1, resolved lazily */
-    const char       *name;
+    const char       *name;    /* lock class name */
 } spinlock_t;
 
 #define SPINLOCK_INIT(n) { 0, 0, 0, 0, (n) }

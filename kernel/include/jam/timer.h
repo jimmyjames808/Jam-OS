@@ -18,7 +18,7 @@
 #include <jam/status.h>
 
 struct ktimer {
-    struct kobject   base;
+    struct kobject   base;       /* OBJ_TIMER; SIG_SIGNALED once the deadline passes */
     /* Guarded by the timer service lock. */
     struct list_node node;       /* in the armed list while armed */
     uint64_t         deadline_ns;

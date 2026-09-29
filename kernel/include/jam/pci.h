@@ -95,8 +95,8 @@ status_t pci_enable_memory(struct pci_dev *d);
  * it on. I/O and memory decode come back as saved (the kernel never turns
  * them off after boot, and the BARs they decode were just put back). */
 struct pci_saved_config {
-    uint16_t command;
-    uint32_t bar[6];
+    uint16_t command;   /* command register (bus mastering left off) */
+    uint32_t bar[6];    /* the six BAR registers as read */
 };
 void pci_save_config(struct pci_dev *d, struct pci_saved_config *out);
 bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in);

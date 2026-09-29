@@ -43,13 +43,13 @@
 #define PORT_MAX_BINDINGS 4096
 
 struct port {
-    struct kobject   base;         /* base.lock ("port") guards the queue */
-    struct list_node queue;        /* struct port_qentry, oldest first */
-    uint32_t         user_queued;
-    spinlock_t       bindings_lock;   /* "port bindings" */
-    struct list_node bindings;        /* struct port_binding */
-    uint32_t         nbindings;       /* live bindings; bindings_lock */
-    struct waitqueue waiters;         /* "port waiters" */
+    struct kobject   base;           /* base.lock ("port") guards the queue */
+    struct list_node queue;          /* struct port_qentry, oldest first */
+    uint32_t         user_queued;    /* PORT_PACKET_USER packets queued; base.lock */
+    spinlock_t       bindings_lock;  /* "port bindings" */
+    struct list_node bindings;       /* struct port_binding */
+    uint32_t         nbindings;      /* live bindings; bindings_lock */
+    struct waitqueue waiters;        /* "port waiters" */
 };
 
 status_t port_create(struct port **out);
@@ -73,8 +73,8 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
 
 /* Live counts across all ports, for leak tests. */
 struct port_stats {
-    uint64_t ports;
+    uint64_t ports;          /* live ports */
     uint64_t bindings;       /* binding records, including ones only a queued packet keeps */
-    uint64_t user_packets;
+    uint64_t user_packets;   /* user packets queued */
 };
 void port_get_stats(struct port_stats *s);

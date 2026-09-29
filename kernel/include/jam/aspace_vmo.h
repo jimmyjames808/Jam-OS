@@ -31,7 +31,7 @@ struct tlb_gather {
     uint64_t         lo, hi;    /* user range covering every cleared entry */
     bool             need;      /* something was cleared: flush */
     struct list_node pages;     /* struct page (via page->node): release after the flush */
-    uint64_t         npages;
+    uint64_t         npages;    /* pages on the list */
 };
 
 void tlb_gather_init(struct tlb_gather *g);
@@ -53,10 +53,10 @@ void page_unref(struct page *p);
  * fields change only under the VMO lock (vmo_umap_set), so the VMO side can
  * trust them while it holds that lock. */
 struct vmo_umap {
-    struct list_node node;       /* on the VMO's list (VMO lock) */
-    struct aspace   *as;
-    uint64_t         base;       /* user address of VMO page `first` */
-    uint64_t         first, end; /* VMO page indices [first, end) */
+    struct list_node node;        /* on the VMO's list (VMO lock) */
+    struct aspace   *as;          /* the address space it is in */
+    uint64_t         base;        /* user address of VMO page `first` */
+    uint64_t         first, end;  /* VMO page indices [first, end) */
 };
 
 /* Record u (fields filled in) on v and take a VMO reference for it. With

@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 struct ksym {
-    uint64_t addr;
-    uint32_t name_offset;
+    uint64_t addr;          /* function start */
+    uint32_t name_offset;   /* its name, in ksyms_names */
 };
 
 extern const uint64_t    ksyms_count;

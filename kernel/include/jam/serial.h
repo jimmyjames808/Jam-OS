@@ -43,10 +43,10 @@ void serial_test_hold(bool on);
  * of two; head/tail count bytes ever put/taken; put drops (and counts) when
  * full; get returns -1 when empty. No locking of its own. */
 struct serial_ring {
-    char    *buf;
-    uint32_t size;
-    uint32_t head, tail;
-    uint64_t dropped;
+    char    *buf;          /* size bytes */
+    uint32_t size;         /* a power of two */
+    uint32_t head, tail;   /* bytes ever put / taken */
+    uint64_t dropped;      /* bytes dropped because it was full */
 };
 bool     serial_ring_put(struct serial_ring *r, char c);
 int      serial_ring_get(struct serial_ring *r);

@@ -18,8 +18,8 @@
 #include <jam/panic.h>
 
 struct ktest {
-    const char *name;
-    void (*fn)(void);
+    const char *name;   /* the KTEST name; ktest=<prefix> selects by it */
+    void (*fn)(void);   /* the test body */
 };
 
 #define KTEST(name)                                                              \

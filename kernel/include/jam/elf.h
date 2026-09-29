@@ -11,14 +11,14 @@ struct elf_segment {
     uint64_t vaddr;      /* where the segment's first byte goes */
     uint64_t memsz;      /* bytes in memory (>= filesz; the rest is zero) */
     uint64_t file_off;   /* where its bytes are in the file */
-    uint64_t filesz;
+    uint64_t filesz;     /* bytes in the file */
     unsigned flags;      /* ASPACE_READ / ASPACE_WRITE / ASPACE_EXEC */
 };
 
 struct elf_plan {
-    uint64_t           entry;
-    unsigned           nseg;
-    struct elf_segment seg[ELF_MAX_SEGMENTS];
+    uint64_t           entry;                   /* entry point (user address) */
+    unsigned           nseg;                    /* segments in seg[] */
+    struct elf_segment seg[ELF_MAX_SEGMENTS];   /* the PT_LOAD segments, in file order */
 };
 
 /* Validate image[0..size): ET_EXEC, x86-64, little-endian, 1..ELF_MAX_SEGMENTS
