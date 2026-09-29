@@ -15,8 +15,11 @@
 #include <jam/process.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
+#include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
+#include <jam/startup.h>
+#include <jam/time.h>
 #include <jam/userboot.h>
 #include <jam/vmo.h>
 
@@ -556,6 +559,108 @@ KTEST(resource_dma_cap_close_frees_pinned_vmo)
     kobject_unref(vmo_kobject(v));             /* gone now: nothing left holds it */
     handle_table_destroy(&t);
     kobject_unref(vmo_kobject(keep));
+}
+
+/* A process killed while it holds the only handle to a cap: the kill
+ * closes it like any other handle, so the pins made with it go, the VMO
+ * they held goes, and the job ends with nothing charged. (The cap is an
+ * unbound kernel one pinned from here; phase 2's utest does the same with
+ * a real device mid-DMA.) */
+KTEST(resource_kill_releases_pins)
+{
+    struct job *j = test_job();
+    struct kobject *cap;
+    KT_EQ(dma_cap_create(&cap), OK);
+    KT_EQ(dma_cap_set_job(cap, j), OK);
+    KT_EQ(dma_cap_set_job(cap, j), ERR_BAD_STATE);
+    kobject_ref(cap);   /* ours; the other goes to the child as a handle */
+    struct vmo *v;
+    KT_EQ(vmo_create(8 * PG, VMO_DMA32, &v), OK);
+    KT_EQ(vmo_set_job(v, j), OK);
+
+    const char *argv[] = { "utest", "spin" };
+    struct userboot_handle x = { SR_USER, khandle_from_new(cap, RIGHTS_BASIC) };
+    struct process *p;
+    KT_EQ(userboot_spawn("bin/utest", argv, 2, j, &x, 1, NULL, &p), OK);
+    uint64_t addrs[8], id;
+    KT_EQ(vmo_pin(v, cap, 0, 8 * PG, addrs, 8, &id), OK);
+    KT_EQ(dma_cap_pin_count(cap), 1);
+    KT_ASSERT(job_used(j, JOB_LIMIT_PAGES) >= 8);
+    kobject_unref(vmo_kobject(v));   /* only the pin holds the VMO now */
+
+    process_kill(p, PROCESS_KILLED_CODE, true);
+    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20000000000ull, NULL),
+          OK);
+    kobject_unref(process_kobject(p));
+    KT_EQ(dma_cap_pin_count(cap), 0);
+    kobject_unref(cap);
+    job_clean(j);
+    job_unref(j);
+}
+
+/* Pins racing the close: threads on other CPUs pin and unpin with the cap
+ * until it refuses; the close lands somewhere in the middle. Afterwards no
+ * pin may be left on the cap or the VMOs (every page decommits again). */
+#define RACE_THREADS 3
+
+struct pin_race {
+    struct kobject *cap;
+    struct vmo     *v;
+    volatile bool   go;
+    uint64_t        pins;
+};
+
+static void pin_racer(void *arg)
+{
+    struct pin_race *r = arg;
+    while (!r->go)
+        thread_yield();
+    for (;;) {
+        uint64_t addrs[4], id;
+        status_t st = vmo_pin(r->v, r->cap, 0, 4 * PG, addrs, 4, &id);
+        if (st == ERR_BAD_STATE)
+            break;   /* closed */
+        KT_EQ(st, OK);
+        r->pins++;
+        st = vmo_unpin(r->v, id);
+        KT_ASSERT(st == OK || st == ERR_NOT_FOUND);   /* the close may have taken it */
+    }
+}
+
+KTEST(resource_pin_close_race)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    struct kobject *cap;
+    KT_EQ(dma_cap_create(&cap), OK);
+    kobject_ref(cap);
+    struct khandle kh = khandle_from_new(cap, RIGHTS_BASIC);
+    handle_t ch;
+    KT_EQ(handle_insert(&t, &kh, &ch), OK);
+    static struct pin_race r[RACE_THREADS];
+    struct thread *th[RACE_THREADS];
+    for (unsigned i = 0; i < RACE_THREADS; i++) {
+        r[i] = (struct pin_race){ .cap = cap };
+        KT_EQ(vmo_create(4 * PG, 0, &r[i].v), OK);
+        th[i] = thread_create("pin-racer", pin_racer, &r[i], PRIO_DEFAULT);
+    }
+    for (unsigned i = 0; i < RACE_THREADS; i++)
+        r[i].go = true;
+    thread_sleep_ns(2000000);   /* 2 ms of pinning */
+    KT_EQ(handle_close(&t, ch), OK);
+    uint64_t total = 0;
+    for (unsigned i = 0; i < RACE_THREADS; i++) {
+        thread_join(th[i]);
+        total += r[i].pins;
+    }
+    KT_EQ(dma_cap_pin_count(cap), 0);
+    for (unsigned i = 0; i < RACE_THREADS; i++) {
+        KT_EQ(vmo_decommit(r[i].v, 0, 4 * PG), OK);   /* nothing pinned any more */
+        kobject_unref(vmo_kobject(r[i].v));
+    }
+    kprintf("ktest %s: %lu pins before the close\n", ktest_current, total);
+    kobject_unref(cap);
+    handle_table_destroy(&t);
 }
 
 /* ---- with a real function (phase 2: QEMU's edu, qemu-xhci) --------------------------- */
