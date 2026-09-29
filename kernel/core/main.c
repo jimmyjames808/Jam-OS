@@ -26,7 +26,7 @@
 #include <jam/resource.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.9-m5.5"
+#define JAMOS_VERSION   "0.0.10-m6a"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
