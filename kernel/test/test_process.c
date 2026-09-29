@@ -332,12 +332,27 @@ KTEST(proc_debug_write_rate_limited)
     struct job *j = fresh_job();
     struct process *p;
     KT_EQ(process_create(j, "flood", &p), OK);
+    /* The allowance depends on how long printing takes: 50 lines/s refill
+     * while the burst is being printed. In QEMU the console is instant; on
+     * the real PC every line also goes to the framebuffer and a real COM1
+     * at 115200 baud (~4 ms a line), so the burst alone takes ~0.5 s and
+     * ~25 more lines are legitimately allowed (the first PC run printed
+     * more than a fixed 110 and failed). */
+    uint64_t t0 = uptime_ns();
     size_t printed = process_debug_write(p, buf, len, false);
-    kprintf("proc: %lu of %u lines printed\n", (unsigned long)printed, LINES);
-    KT_ASSERT(printed >= 100 && printed <= 110);   /* the burst, maybe a refill or two */
-    thread_sleep_ms(100);                           /* ~5 more lines' worth */
+    uint64_t t1 = uptime_ns();
+    size_t max1 = 100 + (t1 - t0) * 50 / 1000000000ull + 2;
+    kprintf("proc: %lu of %u lines printed in %lu ms (allowed %lu)\n", (unsigned long)printed,
+            LINES, (t1 - t0) / 1000000, (unsigned long)max1);
+    KT_ASSERT(printed >= 100 && printed <= max1);   /* the burst, plus refills meanwhile */
+    thread_sleep_ms(100);                            /* ~5 more lines' worth */
+    uint64_t t2 = uptime_ns();
     printed = process_debug_write(p, buf, len, false);
-    KT_ASSERT(printed >= 3 && printed <= 15);
+    uint64_t t3 = uptime_ns();
+    size_t max2 = (t3 - t1) * 50 / 1000000000ull + 2;
+    KT_ASSERT(printed >= 3 && printed <= max2);
+    KT_ASSERT(printed < LINES);                      /* still limited: most dropped */
+    (void)t2;
     process_kill(p, PROCESS_KILLED_CODE, true);   /* prints the dropped-lines note */
     kobject_unref(process_kobject(p));
     job_is_empty(j);
