@@ -142,16 +142,20 @@ static void double_item(uint32_t y, uint32_t me, void *arg)
 
 /* ---- the overlay ------------------------------------------------------------- */
 
+/* One console-font glyph g at x0, y0 of the half-resolution frame. */
+static void mono_glyph(int x0, int y0, const uint8_t *g, uint32_t fg)
+{
+    for (int y = 0; y < 16 && y0 + y < half.h; y++)
+        for (int x = 0; x < 8 && x0 + x < half.w; x++)
+            if (g[y] & (0x80 >> x))
+                half.px[(uint64_t)(y0 + y) * half.stride + x0 + x] = fg;
+}
+
 /* Fixed-width text in the console font, on the half-resolution frame. */
 static void mono(int x0, int y0, const char *s, uint32_t fg)
 {
-    for (; *s; s++, x0 += 8) {
-        const uint8_t *g = font_8x16[(uint8_t)*s & 0x7f];
-        for (int y = 0; y < 16 && y0 + y < half.h; y++)
-            for (int x = 0; x < 8 && x0 + x < half.w; x++)
-                if (g[y] & (0x80 >> x))
-                    half.px[(uint64_t)(y0 + y) * half.stride + x0 + x] = fg;
-    }
+    for (; *s; s++, x0 += 8)
+        mono_glyph(x0, y0, font_8x16[(uint8_t)*s & 0x7f], fg);
 }
 
 static void fmt_sci(char *buf, size_t n, double v)   /* 1.2e9 */

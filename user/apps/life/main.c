@@ -102,6 +102,68 @@ static inline uint32_t density_colour(uint32_t alive, uint32_t young, uint32_t c
  * far that the torus repeats on the screen; INT64_MIN: it doesn't). */
 static int64_t org_x, org_y, home_x, home_y;
 
+/* Screen row y (w pixels at row) zoomed in: each cell zpx x zpx pixels,
+ * with grid lines between them from 4 pixels a cell. */
+static void row_zoomed_in(uint32_t *row, int y, int w)
+{
+    int z = zpx, zs = __builtin_ctz((unsigned)z), gap = z >= 4 ? (z >= 16 ? 2 : 1) : 0;
+    int64_t wy = org_y + y;
+    uint32_t cy = (uint32_t)((wy >> zs) & (W - 1));
+    if ((int)(wy & (z - 1)) >= z - gap) {
+        for (int x = 0; x < w; x++)
+            row[x] = GRID;
+        return;
+    }
+    int x = 0;
+    while (x < w) {
+        int64_t wx = org_x + x;
+        int inx = (int)(wx & (z - 1)), run = z - inx;
+        if (run > w - x)
+            run = w - x;
+        uint32_t c = cell_colour(cy, (uint32_t)((wx >> zs) & (W - 1)));
+        int body = z - gap - inx;
+        for (int i = 0; i < run; i++)
+            row[x + i] = i < body ? c : GRID;
+        x += run;
+    }
+}
+
+/* The live and young cells of the k x k block at column cx (in one word:
+ * k <= 16) from row cy down, into *alive and *young. */
+static void block_count(uint32_t cx, uint32_t cy, uint32_t k, uint32_t *alive, uint32_t *young)
+{
+    uint64_t mask = (1ull << k) - 1;
+    uint32_t word = cx / 64, sh = cx % 64;
+    for (uint32_t j = 0; j < k; j++) {
+        uint64_t i = (uint64_t)(cy + j) * WW + word;
+        uint64_t bits = cur[i] >> sh & mask;
+        *alive += popcount64(bits);
+        if (ages && bits)
+            *young += popcount64(bits & ~((age[1][i] | age[2][i]) >> sh));
+    }
+}
+
+/* Screen row y zoomed out: each pixel is k x k cells (k <= 16: in one
+ * word), coloured by how many live; another copy of the torus than the
+ * one the view centre is in is dimmed. */
+static void row_zoomed_out(uint32_t *row, int y, int w)
+{
+    uint32_t k = (uint32_t)kcells;
+    int64_t wy = org_y + y;
+    uint32_t cy = (uint32_t)((wy * k) & (W - 1));
+    bool other_y = home_y != INT64_MIN && (wy * k - home_y < 0 || wy * k - home_y >= W);
+    for (int x = 0; x < w; x++) {
+        int64_t wx = org_x + x;
+        uint32_t cx = (uint32_t)((wx * k) & (W - 1));
+        uint32_t alive = 0, young = 0;
+        block_count(cx, cy, k, &alive, &young);
+        uint32_t c = density_colour(alive, young, k * k);
+        bool other = other_y ||
+                     (home_x != INT64_MIN && (wx * k - home_x < 0 || wx * k - home_x >= W));
+        row[x] = other ? scalec(c, 80) : c;
+    }
+}
+
 static void render_band(uint32_t band, uint32_t me, void *arg)
 {
     (void)me;
@@ -110,51 +172,10 @@ static void render_band(uint32_t band, uint32_t me, void *arg)
     int y0 = (int)band * 16, y1 = y0 + 16 < s->h ? y0 + 16 : s->h;
     for (int y = y0; y < y1; y++) {
         uint32_t *row = s->px + (uint64_t)y * s->stride;
-        if (kcells == 1) {
-            int z = zpx, zs = __builtin_ctz((unsigned)z), gap = z >= 4 ? (z >= 16 ? 2 : 1) : 0;
-            int64_t wy = org_y + y;
-            uint32_t cy = (uint32_t)((wy >> zs) & (W - 1));
-            if ((int)(wy & (z - 1)) >= z - gap) {
-                for (int x = 0; x < s->w; x++)
-                    row[x] = GRID;
-                continue;
-            }
-            int x = 0;
-            while (x < s->w) {
-                int64_t wx = org_x + x;
-                int inx = (int)(wx & (z - 1)), run = z - inx;
-                if (run > s->w - x)
-                    run = s->w - x;
-                uint32_t c = cell_colour(cy, (uint32_t)((wx >> zs) & (W - 1)));
-                int body = z - gap - inx;
-                for (int i = 0; i < run; i++)
-                    row[x + i] = i < body ? c : GRID;
-                x += run;
-            }
-            continue;
-        }
-        /* Zoomed out: each pixel is k x k cells (k <= 16: in one word). */
-        uint32_t k = (uint32_t)kcells;
-        int64_t wy = org_y + y;
-        uint32_t cy = (uint32_t)((wy * k) & (W - 1));
-        bool other_y = home_y != INT64_MIN && (wy * k - home_y < 0 || wy * k - home_y >= W);
-        uint64_t mask = (1ull << k) - 1;
-        for (int x = 0; x < s->w; x++) {
-            int64_t wx = org_x + x;
-            uint32_t cx = (uint32_t)((wx * k) & (W - 1));
-            uint32_t alive = 0, young = 0, word = cx / 64, sh = cx % 64;
-            for (uint32_t j = 0; j < k; j++) {
-                uint64_t i = (uint64_t)(cy + j) * WW + word;
-                uint64_t bits = cur[i] >> sh & mask;
-                alive += popcount64(bits);
-                if (ages && bits)
-                    young += popcount64(bits & ~((age[1][i] | age[2][i]) >> sh));
-            }
-            uint32_t c = density_colour(alive, young, k * k);
-            bool other = other_y ||
-                         (home_x != INT64_MIN && (wx * k - home_x < 0 || wx * k - home_x >= W));
-            row[x] = other ? scalec(c, 80) : c;
-        }
+        if (kcells == 1)
+            row_zoomed_in(row, y, s->w);
+        else
+            row_zoomed_out(row, y, s->w);
     }
 }
 
@@ -163,22 +184,31 @@ static uint32_t *map_px;
 static int map_n;           /* map_n x map_n pixels */
 static uint64_t map_at;
 
+/* The live cells of map row y's k x k block at column cx (every dj-th
+ * row of it). */
+static uint32_t map_block_alive(uint32_t y, uint32_t cx, uint32_t k, uint32_t dj)
+{
+    uint32_t alive = 0;
+    for (uint32_t j = 0; j < k; j += dj) {   /* every other row when big */
+        const uint64_t *r = cur + (uint64_t)(y * k + j) * WW;
+        if (k >= 64) {
+            for (uint32_t w = cx / 64; w < (cx + k) / 64; w++)
+                alive += popcount64(r[w]);
+        } else {
+            alive += popcount64(r[cx / 64] >> (cx % 64) & ((1ull << k) - 1));
+        }
+    }
+    return alive;
+}
+
 static void map_row(uint32_t y, uint32_t me, void *arg)
 {
     (void)me;
     (void)arg;
     uint32_t k = W / (uint32_t)map_n, dj = k >= 16 ? 2 : 1;   /* cells per map pixel */
     for (int x = 0; x < map_n; x++) {
-        uint32_t alive = 0, cx = (uint32_t)x * k;
-        for (uint32_t j = 0; j < k; j += dj) {   /* every other row when big */
-            const uint64_t *r = cur + (uint64_t)(y * k + j) * WW;
-            if (k >= 64) {
-                for (uint32_t w = cx / 64; w < (cx + k) / 64; w++)
-                    alive += popcount64(r[w]);
-            } else {
-                alive += popcount64(r[cx / 64] >> (cx % 64) & ((1ull << k) - 1));
-            }
-        }
+        uint32_t cx = (uint32_t)x * k;
+        uint32_t alive = map_block_alive(y, cx, k, dj);
         map_px[y * (uint32_t)map_n + (uint32_t)x] =
             alive ? density_colour(alive, 0, k * k / dj) : 0x080a14;
     }

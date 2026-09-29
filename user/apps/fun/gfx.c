@@ -106,6 +106,16 @@ static inline bool same_px(const uint32_t *a, const uint32_t *b, int n)
 
 static uint64_t present_bytes[FUN_MAX_THREADS];
 
+/* n 0xRRGGBB pixels from b into a framebuffer with other channel
+ * positions (scr.rs, gs, bs). */
+static void convert_px(uint32_t *f, const uint32_t *b, int n)
+{
+    for (int i = 0; i < n; i++) {
+        uint32_t c = b[i];
+        f[i] = (c >> 16 & 0xff) << scr.rs | (c >> 8 & 0xff) << scr.gs | (c & 0xff) << scr.bs;
+    }
+}
+
 static void present_band(uint32_t band, uint32_t me, void *arg)
 {
     bool all = arg != NULL;
@@ -120,15 +130,10 @@ static void present_band(uint32_t band, uint32_t me, void *arg)
             if (!all && same_px(b + x, s + x, n))
                 continue;
             copy_px(s + x, b + x, n);
-            if (scr.native) {
+            if (scr.native)
                 copy_px(f + x, b + x, n);
-            } else {
-                for (int i = 0; i < n; i++) {
-                    uint32_t c = b[x + i];
-                    f[x + i] = (c >> 16 & 0xff) << scr.rs | (c >> 8 & 0xff) << scr.gs |
-                               (c & 0xff) << scr.bs;
-                }
-            }
+            else
+                convert_px(f + x, b + x, n);
             bytes += (uint64_t)n * 4;
         }
     }

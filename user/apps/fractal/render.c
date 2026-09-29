@@ -268,6 +268,17 @@ static bool is_edge(int px, int py)
     return false;
 }
 
+/* Pixel (px, py)'s ss x ss sample points, as offsets from the centre in
+ * pixels, into ox and oy. */
+static void aa_offsets(int px, int py, int ss, double *ox, double *oy)
+{
+    for (int sy = 0; sy < ss; sy++)
+        for (int sx = 0; sx < ss; sx++) {
+            ox[sy * ss + sx] = px + (sx + 0.5) / ss - PW / 2.0;
+            oy[sy * ss + sx] = py + (sy + 0.5) / ss - PH / 2.0;
+        }
+}
+
 /* The anti-aliasing pass over tile t: ss x ss samples for each pixel on
  * an edge (until aa_pool is full). The iterations. */
 static uint64_t tile_aa(uint32_t t, int x0, int y0, int w, int h)
@@ -285,11 +296,7 @@ static uint64_t tile_aa(uint32_t t, int x0, int y0, int w, int h)
                 aa_full = true;
                 break;
             }
-            for (int sy = 0; sy < ss; sy++)
-                for (int sx = 0; sx < ss; sx++) {
-                    ox[sy * ss + sx] = px + (sx + 0.5) / ss - PW / 2.0;
-                    oy[sy * ss + sx] = py + (sy + 0.5) / ss - PH / 2.0;
-                }
+            aa_offsets(px, py, ss, ox, oy);
             eval_points(&kv, &ref, n, ox, oy, aa_pool + (uint64_t)blk * (uint32_t)n, &it);
             aa_idx[(uint64_t)py * PW + px] = blk + 1;
         }
@@ -528,6 +535,21 @@ void shift(int dx, int dy)
     restart_passes();
 }
 
+/* The middle first: the tiles into order[] by distance from the centre
+ * (a counting sort). How many were placed. */
+static int order_tiles(void)
+{
+    int maxd = TW + TH, n = 0;
+    for (int d = 0; d <= maxd; d++)
+        for (int ty = 0; ty < TH; ty++)
+            for (int tx = 0; tx < TW; tx++) {
+                int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
+                if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
+                    order[n++] = (uint32_t)(ty * TW + tx);
+            }
+    return n;
+}
+
 bool view_alloc(int w, int h)
 {
     PW = w;
@@ -553,16 +575,7 @@ bool view_alloc(int w, int h)
     if (!nu || !nu2 || !aa_idx || !aa_idx2 || !aa_pool || !tlev || !tapprox || !tdirty ||
         !order || !plist || !clist)
         return false;
-    /* The middle first: tiles by distance from the centre (a counting sort). */
-    int maxd = TW + TH, n = 0;
-    for (int d = 0; d <= maxd; d++)
-        for (int ty = 0; ty < TH; ty++)
-            for (int tx = 0; tx < TW; tx++) {
-                int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
-                if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
-                    order[n++] = (uint32_t)(ty * TW + tx);
-            }
-    return n == NT;
+    return order_tiles() == NT;
 }
 
 /* Render the whole view, all passes, on the pool (or one thread). */

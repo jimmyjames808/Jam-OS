@@ -17,17 +17,46 @@ static inline int gbit(uint8_t c, int x, int y)
     return font_8x16[c][y] >> (7 - x) & 1;
 }
 
+/* The columns glyph c's ink spans: *lo..*hi (8, -1 for a blank glyph). */
+static void ink_span(int c, int *lo, int *hi)
+{
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 8; x++)
+            if (gbit((uint8_t)c, x, y)) {
+                *lo = x < *lo ? x : *lo;
+                *hi = x > *hi ? x : *hi;
+            }
+}
+
+/* scale2x: each pixel P becomes 4, a corner taking a neighbour's value
+ * where two neighbours agree (rounds the diagonals). Into big_glyph[c]. */
+static void scale2x(int c)
+{
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 8; x++) {
+            int p = gbit((uint8_t)c, x, y), a = gbit((uint8_t)c, x, y - 1);
+            int b = gbit((uint8_t)c, x + 1, y), l = gbit((uint8_t)c, x - 1, y);
+            int d = gbit((uint8_t)c, x, y + 1);
+            int e0 = p, e1 = p, e2 = p, e3 = p;
+            if (l == a && l != d && a != b)
+                e0 = a;
+            if (a == b && a != l && b != d)
+                e1 = b;
+            if (d == l && d != b && l != a)
+                e2 = l;
+            if (b == d && b != a && d != l)
+                e3 = d;
+            big_glyph[c][2 * y] |= (uint16_t)(e0 << (15 - 2 * x) | e1 << (14 - 2 * x));
+            big_glyph[c][2 * y + 1] |= (uint16_t)(e2 << (15 - 2 * x) | e3 << (14 - 2 * x));
+        }
+}
+
 static void text_init(void)
 {
     int digit_w = 0;
     for (int c = 32; c < 127; c++) {
         int lo = 8, hi = -1;
-        for (int y = 0; y < 16; y++)
-            for (int x = 0; x < 8; x++)
-                if (gbit((uint8_t)c, x, y)) {
-                    lo = x < lo ? x : lo;
-                    hi = x > hi ? x : hi;
-                }
+        ink_span(c, &lo, &hi);
         if (hi < 0) {   /* space */
             gm[c].left = 0;
             gm[c].adv = 4;
@@ -37,25 +66,7 @@ static void text_init(void)
         }
         if (c >= '0' && c <= '9' && hi - lo + 1 > digit_w)
             digit_w = hi - lo + 1;
-        /* scale2x: each pixel P becomes 4, a corner taking a neighbour's
-         * value where two neighbours agree (rounds the diagonals). */
-        for (int y = 0; y < 16; y++)
-            for (int x = 0; x < 8; x++) {
-                int p = gbit((uint8_t)c, x, y), a = gbit((uint8_t)c, x, y - 1);
-                int b = gbit((uint8_t)c, x + 1, y), l = gbit((uint8_t)c, x - 1, y);
-                int d = gbit((uint8_t)c, x, y + 1);
-                int e0 = p, e1 = p, e2 = p, e3 = p;
-                if (l == a && l != d && a != b)
-                    e0 = a;
-                if (a == b && a != l && b != d)
-                    e1 = b;
-                if (d == l && d != b && l != a)
-                    e2 = l;
-                if (b == d && b != a && d != l)
-                    e3 = d;
-                big_glyph[c][2 * y] |= (uint16_t)(e0 << (15 - 2 * x) | e1 << (14 - 2 * x));
-                big_glyph[c][2 * y + 1] |= (uint16_t)(e2 << (15 - 2 * x) | e3 << (14 - 2 * x));
-            }
+        scale2x(c);
     }
     /* Digits: all as wide as the widest, centred (numbers don't wobble). */
     for (int c = '0'; c <= '9'; c++) {
@@ -64,6 +75,14 @@ static void text_init(void)
         gm[c].adv = (uint8_t)(digit_w + 1);
     }
     text_ready = true;
+}
+
+/* A row of a scale-1 glyph: bits (MSB leftmost) at x on row (width w). */
+static void glyph_row1(uint32_t *row, int x, int w, uint8_t bits, uint32_t c)
+{
+    for (int i = 0; bits && i < 8; i++, bits <<= 1)
+        if ((bits & 0x80) && x + i >= 0 && x + i < w)
+            row[x + i] = c;
 }
 
 static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, uint8_t ch)
@@ -75,10 +94,9 @@ static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, uin
             continue;
         uint32_t *row = s->px + (uint64_t)yy * s->stride;
         if (scale == 1) {
-            uint8_t bits = (uint8_t)(left >= 0 ? font_8x16[ch][j] << left : font_8x16[ch][j] >> -left);
-            for (int i = 0; bits && i < 8; i++, bits <<= 1)
-                if ((bits & 0x80) && x + i >= 0 && x + i < s->w)
-                    row[x + i] = c;
+            uint8_t bits = (uint8_t)(left >= 0 ? font_8x16[ch][j] << left
+                                               : font_8x16[ch][j] >> -left);
+            glyph_row1(row, x, s->w, bits, c);
             continue;
         }
         uint16_t bits = big_glyph[ch][j * 2 / scale];
