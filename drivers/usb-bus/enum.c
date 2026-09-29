@@ -28,7 +28,7 @@
 #include "usbbus.h"
 
 struct usbdev *g_devs;
-uint32_t g_generation, g_attached, g_detached, g_failed;
+uint32_t g_generation, g_attached, g_detached, g_failed, g_report_generation;
 uint64_t g_last_change_ns;
 bool g_first_report_done;
 static uint32_t next_id;
@@ -37,7 +37,7 @@ static bool started;
 
 void usb_reset_state(void)
 {
-    g_generation = g_attached = g_detached = g_failed = 0;
+    g_generation = g_attached = g_detached = g_failed = g_report_generation = 0;
     g_last_change_ns = 0;
     g_first_report_done = false;
     next_id = 0;
@@ -938,9 +938,10 @@ void usb_report_summary(const char *when)
                nhid, nhid == 1 ? "" : "s", kbd, mouse, g_failed, g_attached, g_detached);
 }
 
-void usb_report_all(void)
+void usb_report_all(bool at_stop)
 {
     g_first_report_done = true;
+    g_report_generation = g_generation;
     /* Tree order: each root port's device, then what hangs below it. */
     int order[MAX_DEVS], n = 0;
     for (uint32_t p = 1; p <= g_hc.ports; p++) {
@@ -960,12 +961,12 @@ void usb_report_all(void)
     }
     for (int k = 0; k < n; k++) {
         struct usbdev *d = &g_devs[order[k]];
-        if (d->vid || d->pid) {
-            dev_line(d, true, NULL);
+        if ((d->vid || d->pid) && !d->reported) {
+            dev_line(d, true, at_stop ? "new: " : NULL);
             d->reported = true;
         }
     }
-    usb_report_summary("");
+    usb_report_summary(at_stop ? "at stop: " : "");
 }
 
 /* ---- attach ----------------------------------------------------------------------- */
@@ -1438,14 +1439,18 @@ static void hub_port(struct usbdev *hub, uint8_t port)
         hub->port_fail[port]++;
 }
 
+/* One unit of a hub's work: its own status change, or one port. The
+ * main loop serves channels between units, so a class driver's request
+ * never waits behind a whole hub's worth of enumerations. */
 static void hub_work(struct usbdev *hub)
 {
-    uint32_t bits[8];
-    copy(bits, hub->hub_change, sizeof(bits));
-    zero(hub->hub_change, sizeof(hub->hub_change));
-    bool all = hub->hub_scan_all;
-    hub->hub_scan_all = false;
-    if (bits[0] & 1) {
+    if (hub->hub_scan_all) {
+        hub->hub_scan_all = false;
+        for (uint8_t p = 1; p <= hub->hub_ports; p++)
+            hub->hub_change[p / 32] |= 1u << (p % 32);
+    }
+    if (hub->hub_change[0] & 1) {
+        hub->hub_change[0] &= ~1u;
         uint8_t b[4];
         uint32_t n = 0;
         if (usb_control(hub, 0xa0, 0, 0, 0, 4, b, &n, 1000) == CC_SUCCESS && n == 4) {
@@ -1457,10 +1462,15 @@ static void hub_work(struct usbdev *hub)
                 usb_control(hub, 0x20, 1, 1, 0, 0, NULL, &n, 1000);   /* C_HUB_OVER_CURRENT */
             }
         }
+        return;
     }
-    for (uint8_t p = 1; p <= hub->hub_ports && !hub->gone && hub->used; p++)
-        if (all || (bits[p / 32] & (1u << (p % 32))))
-            hub_port(hub, p);
+    for (unsigned p = 1; p < 32 * 8; p++)
+        if (hub->hub_change[p / 32] & (1u << (p % 32))) {
+            hub->hub_change[p / 32] &= ~(1u << (p % 32));
+            if (p <= hub->hub_ports)
+                hub_port(hub, (uint8_t)p);
+            return;
+        }
 }
 
 /* ---- root ports ------------------------------------------------------------------- */
@@ -1628,11 +1638,13 @@ bool usb_work(struct hc *h)
             }
         }
     }
+    /* Then ONE port (a root port, or a hub's): enumerating takes a while,
+     * and the main loop serves requests between ports. */
     for (uint32_t p = 1; p <= h->ports && p < 256 && !h->stopping; p++)
         if (h->port_changed[p / 32] & (1u << (p % 32))) {
             h->port_changed[p / 32] &= ~(1u << (p % 32));
             root_port(h, p);
-            did = true;
+            return true;
         }
     for (int i = 0; i < MAX_DEVS && !h->stopping; i++) {
         struct usbdev *d = &g_devs[i];
@@ -1643,7 +1655,7 @@ bool usb_work(struct hc *h)
             any |= d->hub_change[k] != 0;
         if (any) {
             hub_work(d);
-            did = true;
+            return true;
         }
     }
     return did;

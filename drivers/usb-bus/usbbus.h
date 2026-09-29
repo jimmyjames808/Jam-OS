@@ -403,11 +403,11 @@ void usb_stop_all(struct hc *h);          /* shutdown: every device detached qui
 bool usb_busy(void);                      /* port or hub work pending */
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems);
-void usb_report_all(void);                /* one RESULTS line per device + the summary */
+void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */
 void usb_report_summary(const char *when);
 extern uint32_t g_generation;             /* bumps on every attach and detach */
 extern uint64_t g_last_change_ns;
-extern uint32_t g_attached, g_detached, g_failed;
+extern uint32_t g_attached, g_detached, g_failed, g_report_generation;
 extern bool g_first_report_done;
 
 int  ep_open_intr(struct usbdev *d, struct ep *e, uint8_t owner, int chan);

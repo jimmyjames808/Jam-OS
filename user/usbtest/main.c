@@ -448,7 +448,10 @@ static void run(const char *name, bool (*fn)(void))
 {
     cur = name;
     uint64_t t0 = now();
+    unsigned sk = skipped;
     if (fn()) {
+        if (skipped != sk)
+            return;   /* it said why */
         passed++;
         printf("usbtest: %s ok (%lu ms)\n", name, (unsigned long)((now() - t0) / MS));
     } else {

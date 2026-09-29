@@ -707,7 +707,7 @@ int driver_main(const struct driver_start *s)
     if (r == 0) {
         report_controller(h);
         usb_start(h);
-        uint64_t no_serve_end = drv_clock_ns() + 10000 * MS;
+        uint64_t start = drv_clock_ns(), no_serve_end = start + 10000 * MS;
         for (;;) {
             if (h->serve_pending) {
                 h->serve_pending = false;
@@ -720,8 +720,10 @@ int driver_main(const struct driver_start *s)
                     serve_chan(i);
             bool did = usb_work(h);
             bool st_now = settled();
-            if (st_now && !g_first_report_done)
-                usb_report_all();
+            /* The list: once settled, and not before 2 s (USB 3 links may
+             * still be training after the reset). */
+            if (st_now && !g_first_report_done && drv_clock_ns() - start >= 2000 * MS)
+                usb_report_all(false);
             uint64_t now = drv_clock_ns(), next = now + 1000 * MS;
             for (int i = 0; i < MAX_WAITERS; i++) {
                 if (!waiters[i].used)
@@ -744,8 +746,9 @@ int driver_main(const struct driver_start *s)
                 hc_wait(h, next);
         }
         if (!g_first_report_done)
-            usb_report_all();
-        usb_report_summary("at stop: ");
+            usb_report_all(false);
+        else if (g_generation != g_report_generation)
+            usb_report_all(true);   /* what came since the list, and the counts now */
         h->stopping = true;
         usb_stop_all(h);
     }
