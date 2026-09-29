@@ -141,17 +141,6 @@ static inline struct process *process_from_kobject(struct kobject *o)
  * It costs job one JOB_LIMIT_HANDLES unit until it is torn down
  * (ERR_NO_RESOURCES) and its address space's PML4 (ERR_NO_MEMORY). */
 status_t process_create(struct job *job, const char *name, struct process **out);
-/* A *kernel process* (kernel/drivers/driver_kernel.c runs drivers in
- * them): a process like any other (handle table, job, charges, kill,
- * SIG_TERMINATED) but with no address space of its own; its threads run
- * kernel code (process_start_kernel / uthread_start_kernel) on the
- * kernel's page tables. ctx is its owner's (process_kernel_ctx); fini(ctx)
- * runs exactly once, in process teardown after the handle table is closed
- * and before SIG_TERMINATED, in a context that may sleep. A kernel process
- * that is never started must be process_kill'ed (so fini runs). */
-status_t process_create_kernel(struct job *job, const char *name, void *ctx,
-                               void (*fini)(void *ctx), struct process **out);
-void *process_kernel_ctx(struct process *p);   /* NULL for user processes */
 struct handle_table *process_handles(struct process *p);
 /* The process's address space with a NEW reference (aspace_unref it), or
  * NULL once the process is dead. */
@@ -213,12 +202,6 @@ struct process *uthread_process(struct uthread *u);   /* no new reference */
  * the job refuses UTHREAD_KMEM_PAGES or the kernel thread can't be made. */
 status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint64_t arg0,
                        uint64_t arg1, const cpumask_t *mask);
-/* Kernel processes: start the first thread (p NEW -> RUNNING) / a
- * further one running fn(arg) in the kernel; the thread leaves when fn
- * returns. Same charges and errors as process_start / uthread_start;
- * ERR_INVALID_ARGS for a user process. */
-status_t process_start_kernel(struct process *p, struct uthread *ut, void (*fn)(void *), void *arg);
-status_t uthread_start_kernel(struct uthread *ut, void (*fn)(void *), void *arg);
 /* prio 0..PRIO_MAX (the syscall layer caps user callers). */
 status_t uthread_set_priority(struct uthread *ut, int prio);
 /* The current user thread leaves for good (thread_exit, process_exit, a

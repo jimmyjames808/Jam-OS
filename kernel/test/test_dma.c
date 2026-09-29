@@ -17,12 +17,17 @@
  *   dma_quarantine_phys_and_clean_close
  *       A clean close (nothing pinned) quarantines nothing; pins of a
  *       physical VMO (no RAM) are released at once.
+ *   dma_quarantine_stats_consistent
+ *       A reader of the stats in the middle of a release (forced with the
+ *       DBG_DMA_RELEASED hook) sees the batch either still held or already
+ *       released, never gone from `pages` but not yet in `released`.
  *   m6r_pins_are_charged
  *       Every pin is a kernel allocation, so it is charged: otherwise a
  *       driver pins one page over and over and fills the kernel heap.
  *   m6r_unpin_by_other_holder
  *       Only the pin's own DMA capability may unpin it, not another holder
  *       of the VMO, and the pinned page can't be decommitted. */
+#include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -283,6 +288,63 @@ KTEST(dma_quarantine_phys_and_clean_close)
     kobject_unref(cap);
     kobject_unref(vmo_kobject(phys));
     kobject_unref(vmo_kobject(ram));
+}
+
+/* ---- the stats while a batch is being released ------------------------------ */
+
+static struct pci_dev *mid_dev;
+static struct dma_quarantine_stats mid_seen;
+static volatile int mid_calls;
+
+/* DBG_DMA_RELEASED: the batch's pages are back with their VMO; what does
+ * a reader see now? (Other functions' releases by the reaper pass by.) */
+static void mid_release_hook(void *arg)
+{
+    if (arg != mid_dev)
+        return;
+    dma_quarantine_stats(mid_dev, &mid_seen);
+    mid_calls++;
+}
+
+KTEST(dma_quarantine_stats_consistent)
+{
+    struct pci_dev *d = edu();
+    if (!d)
+        return;
+    dma_quarantine_flush(d);
+    struct dma_quarantine_stats q0, q1, q2;
+    dma_quarantine_stats(d, &q0);
+    struct vmo *v;
+    KT_EQ(vmo_create(2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &v), OK);
+    struct kobject *cap;
+    struct khandle kh = new_cap(d, &cap);
+    KT_EQ(dma_cap_bus_master(cap, true), OK);
+    uint64_t pa[2], id;
+    KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
+    khandle_release(&kh);   /* closed with the pin held: one batch of 2 pages */
+    kobject_unref(cap);
+    dma_quarantine_stats(d, &q1);
+    KT_EQ(q1.pins, q0.pins + 1);
+    KT_EQ(q1.pages, q0.pages + 2);
+
+    mid_dev = d;
+    mid_calls = 0;
+    dbg_hooks[DBG_DMA_RELEASED] = mid_release_hook;
+    dma_quarantine_flush(d);
+    dbg_hooks[DBG_DMA_RELEASED] = NULL;
+    dma_quarantine_stats(d, &q2);
+    kobject_unref(vmo_kobject(v));
+    kprintf("ktest %s: mid-release: %lu pin(s), %lu held + %lu released page(s); before: %lu + "
+            "%lu\n", ktest_current, mid_seen.pins, mid_seen.pages, mid_seen.released, q1.pages,
+            q1.released);
+    KT_EQ(mid_calls, 1);
+    /* Held pages move to `released` in one step: their sum never dips. */
+    KT_EQ(mid_seen.pages + mid_seen.released, q1.pages + q1.released);
+    KT_EQ(mid_seen.pins, q1.pins);   /* still counted: not all released yet */
+    KT_EQ(q2.pins, q0.pins);
+    KT_EQ(q2.pages, q0.pages);
+    KT_EQ(q2.released, q1.released + 2);
+    KT_EQ(q2.changed, q1.changed);
 }
 
 /* ---- pins are charged --------------------------------------------------------- */

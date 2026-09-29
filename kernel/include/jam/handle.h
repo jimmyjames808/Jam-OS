@@ -83,6 +83,10 @@ status_t handle_commit(struct handle_table *t, handle_t h);
  * (up to cap of them into out); returns how many there are. */
 uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_t *out,
                              uint32_t cap);
+/* Tests: a new reference to the object of the first live handle of
+ * `type` in t (another process's table: what it holds right now), or
+ * ERR_NOT_FOUND. */
+status_t handle_table_find(struct handle_table *t, enum obj_type type, struct kobject **out);
 /* Reserve n empty slots (all or none; ERR_NO_RESOURCES if the table can't
  * hold them) so a receive can't fail halfway and lose handles. Each value in
  * out[] is filled with handle_untake (which then cannot fail) or given back

@@ -778,7 +778,8 @@ KTEST(interrupt_edu_msi)
 {
     struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
     if (!d) {
-        kprintf("interrupt_edu_msi: no edu device (PCI core not merged): skipped\n");
+        kprintf("interrupt_edu_msi: no free edu device (QEMU -device edu only; from the "
+                "shell its driver has it): skipped\n");
         return;
     }
     KT_ASSERT(d->cap_msi);

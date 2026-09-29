@@ -124,12 +124,16 @@ status_t dma_cap_bus_master(struct kobject *cap, bool on);
  * it, the ktest runner too, before its leak baseline). */
 void dma_quarantine_start(void);
 struct dma_quarantine_stats {
-    uint64_t pins, pages;     /* held now */
+    uint64_t pins, pages;     /* held now (a batch being released counts until it is) */
     uint64_t released;        /* pages released so far (since boot) */
     uint64_t changed;         /* of those, found changed at release */
 };
+/* One consistent snapshot: a batch leaves pins/pages in the same step it
+ * enters released/changed, so pins at 0 means all of d's pages are back. */
 void dma_quarantine_stats(struct pci_dev *d, struct dma_quarantine_stats *out);
-/* Tests: release d's quarantine now, whatever its deadlines. */
+/* Tests: release d's quarantine now, whatever its deadlines; returns once
+ * nothing of d's is held (it also waits for a batch the release thread is
+ * in the middle of). Interrupts on, no spinlock held. */
 void dma_quarantine_flush(struct pci_dev *d);
 
 /* ---- the handle layer (kernel/abi/sysc_hw.c) -------------------------------

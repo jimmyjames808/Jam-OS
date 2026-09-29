@@ -11,6 +11,8 @@ enum {
     DBG_GATHER_PRE_FREE,   /* tlb_gather_finish, after the shootdown, before freeing (arg: gather) */
     DBG_PROCESS_START,     /* process_start, process RUNNING, before its first thread is made
                               (arg: struct dbg_process_start, process.h) */
+    DBG_DMA_RELEASED,      /* dma_cap.c release_batch, the batch's pages given back, before
+                              the quarantine's counters record it (arg: the pci_dev) */
     DBG_N
 };
 

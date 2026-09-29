@@ -29,7 +29,3 @@ bool     fbcon_geometry(struct boot_framebuffer *out);
 status_t fbcon_take(void);
 void     fbcon_release(void);
 bool     fbcon_is_taken(void);
-/* The visual demo (main.c): stop drawing while bin/demo draws on the
- * framebuffer itself, unmuting redraws everything (the same state as
- * fbcon_take/fbcon_release, without the exclusivity check). */
-void     fbcon_mute(bool on);
