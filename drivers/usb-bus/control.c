@@ -126,16 +126,17 @@ uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, 
     uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
     while (!h->ctl.done && !d->gone && !h->dead && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
+    /* Not busy from here: on a timeout, the events of the transfer that
+     * Stop Endpoint cuts short must not count as a result. */
+    h->ctl.busy = false;
     uint32_t cc;
     if (h->ctl.done) {
         cc = h->ctl.cc;
     } else {
         cc = d->gone || h->dead ? CC_GONE : CC_TIMEOUT;
-        h->ctl.busy = false;
         if (!h->dead)
             ep_stop(d, 1, &d->ep0);
     }
-    h->ctl.busy = false;
     if (cc == CC_SUCCESS) {
         uint32_t n = h->ctl.short_seen ? length - (h->ctl.residual < length ? h->ctl.residual : length)
                                        : length;
