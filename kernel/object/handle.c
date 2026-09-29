@@ -385,6 +385,23 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     return st;
 }
 
+uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_t *out,
+                             uint32_t cap)
+{
+    uint32_t n = 0;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    for (uint32_t i = 0; i < t->capacity; i++) {
+        struct handle_slot *s = &t->slots[i];
+        if (s->obj && s->obj->type == type) {
+            if (n < cap)
+                out[n] = s->rights;
+            n++;
+        }
+    }
+    spin_unlock_irqrestore(&t->lock, f);
+    return n;
+}
+
 /* The reserved slot for an in-transit handle h, if h names one that was taken
  * and not yet committed or restored. */
 static struct handle_slot *intransit_slot(struct handle_table *t, handle_t h)

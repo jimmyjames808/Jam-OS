@@ -143,3 +143,9 @@
 # once it has quiesced its device (reset it, or seen its DMA engine idle),
 # never before. Any rights on the handle. ERR_NOT_SUPPORTED: an unbound cap.
 120 dma_cap_bus_master status   handle_t dma, uint32_t on
+# channel_write, but handle i arrives with rights[i] (a subset of its
+# rights, else ERR_INVALID_ARGS; RIGHT_SAME keeps them): e.g. without
+# RIGHT_TRANSFER / RIGHT_DUPLICATE, so the receiver can't pass it on (devmgr
+# hands drivers their hardware handles this way). Each sent handle still
+# needs RIGHT_TRANSFER.
+121 channel_write_rights status handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, const rights_t *rights, uint32_t nhandles

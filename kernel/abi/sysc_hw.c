@@ -20,7 +20,8 @@
  *                          the one the pin was made with)
  * A resource made from a handle gets that handle's rights (masked to
  * RES_RIGHTS), so a device handle without RIGHT_MANAGE only yields BAR
- * resources without it. Every new resource and dma_cap costs the caller's
+ * resources without it; a physical VMO made from a resource handle
+ * without RIGHT_DUPLICATE / RIGHT_TRANSFER lacks them too (M7). Every new resource and dma_cap costs the caller's
  * job one JOB_LIMIT_HANDLES unit (on top of the handle slot). */
 #include <jam/mm.h>
 #include <jam/pci.h>
@@ -225,7 +226,8 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
     if (size == 0 || ((offset | size) & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
     struct kobject *obj;
-    status_t st = get_res(t, res, RIGHT_MAP, &obj, NULL);
+    rights_t rr;
+    status_t st = get_res(t, res, RIGHT_MAP, &obj, &rr);
     if (st != OK)
         return st;
     uint64_t base, rsize;
@@ -249,7 +251,11 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
         kobject_unref(vmo_kobject(v));
         return st;
     }
-    return insert_new(t, vmo_kobject(v), PHYS_VMO_RIGHTS, out);
+    /* M7: registers from a resource that can't be passed on can't be
+     * passed on as a VMO either (a driver's BAR: review of M6 phase 2,
+     * finding 2). */
+    rights_t keep = PHYS_VMO_RIGHTS & ~((RIGHT_DUPLICATE | RIGHT_TRANSFER) & ~rr);
+    return insert_new(t, vmo_kobject(v), keep, out);
 }
 
 status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)

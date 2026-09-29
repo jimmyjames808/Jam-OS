@@ -1084,6 +1084,27 @@ static bool t_driver_handle_limits(void)
     CHECK_ST(jam_pci_device_open(dev, 0, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_resource_create(dev, RES_PCI, 0, 0, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_pci_bar_resource(dev, tab & 7, &x), ERR_ACCESS_DENIED);
+    /* Nothing to pass on (M7): the function and its BARs can't be
+     * duplicated or sent (DR_SERVE is a channel like this one), nor can
+     * the registers as a VMO. */
+    handle_t ca, cb;
+    CHECK_ST(jam_channel_create(&ca, &cb), OK);
+    CHECK_ST(jam_handle_duplicate(dev, RIGHT_SAME, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_channel_write(ca, "x", 1, &dev, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_duplicate(hs[1], RIGHT_SAME, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_channel_write(ca, "x", 1, &hs[1], 1), ERR_ACCESS_DENIED);
+    /* A register page of the lowest BAR (hs[1]) that isn't the table or
+     * the PBA. */
+    uint32_t low = (uint32_t)__builtin_ctz(mask), pg = 0;
+    while (((tab & 7) == low && (tab & ~0xfffu) == pg) || ((pba & 7) == low && (pba & ~0xfffu) == pg))
+        pg += 4096;
+    if (jam_vmo_create_physical(hs[1], pg, 4096, VMO_CACHE_UC, &x) == OK) {
+        CHECK_ST(jam_handle_duplicate(x, RIGHT_SAME, &v), ERR_ACCESS_DENIED);
+        CHECK_ST(jam_channel_write(ca, "x", 1, &x, 1), ERR_ACCESS_DENIED);
+        CHECK_ST(jam_handle_close(x), OK);
+    }
+    CHECK_ST(jam_handle_close(ca), OK);
+    CHECK_ST(jam_handle_close(cb), OK);
     /* No dma_cap: no DMA memory, no pins. */
     CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, HANDLE_INVALID, &x),
              ERR_ACCESS_DENIED);

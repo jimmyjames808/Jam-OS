@@ -24,8 +24,12 @@
 
 #define S           1000000000ull
 #define RUN_LIMIT_S 30            /* the driver's own waits add up to a few seconds */
-#define IRQ_RIGHTS  (RIGHTS_BASIC | RIGHTS_IO)
-#define DEV_RIGHTS  (RES_RIGHTS & ~RIGHT_MANAGE)
+/* devmgr's (<devmgr.h> DEVMGR_DRV_*_RIGHTS): nothing to pass on or slice. */
+#define KEEP        (RIGHT_WAIT | RIGHT_INSPECT)
+#define DEV_RIGHTS  (KEEP | RIGHT_READ | RIGHT_WRITE)
+#define BAR_RIGHTS  (KEEP | RIGHT_MAP)
+#define IRQ_RIGHTS  (KEEP | RIGHTS_IO)
+#define DMA_RIGHTS  KEEP
 
 struct pci_dev *xhci_find(uint32_t n)
 {
@@ -84,11 +88,11 @@ static status_t build_handles(struct pci_dev *d, uint32_t roles[4], struct khand
     roles[0] = DR_PCIDEV;
     kh[0] = khandle_from_new(dev, DEV_RIGHTS);
     roles[1] = DR_BAR(0);
-    kh[1] = khandle_from_new(bar, DEV_RIGHTS);
+    kh[1] = khandle_from_new(bar, BAR_RIGHTS);
     roles[2] = DR_IRQ(0);
     kh[2] = khandle_from_new(irq, IRQ_RIGHTS);
     roles[3] = DR_DMA;
-    kh[3] = khandle_from_new(cap, DMA_CAP_RIGHTS);
+    kh[3] = khandle_from_new(cap, DMA_RIGHTS);
     return OK;
 }
 

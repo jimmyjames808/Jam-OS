@@ -99,6 +99,10 @@ struct spawn_args {
     handle_t                   job;      /* needs JOB_RIGHTS_OWN */
     const struct spawn_handle *extra;    /* moved into the startup message */
     unsigned                   nextra;
+    /* NULL, or nextra entries: what the child's copy of extra[i] gets (a
+     * subset of its rights, e.g. without RIGHT_TRANSFER, M7); 0 or
+     * RIGHT_SAME: the same as extra[i].h. */
+    const rights_t            *extra_rights;
 };
 
 /* Load a program from bootfs into a new process and start it. Its startup

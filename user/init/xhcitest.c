@@ -5,15 +5,16 @@
  * it, make its BAR 0 resource, its interrupt object (MSI-X entry 0, else
  * MSI) and a dma_cap (bus mastering stays off: the driver turns it on
  * after its reset, M7), and start drv/xhci-noop in a job of its own with
- * those handles (the device without RIGHT_MANAGE).
+ * those handles, with devmgr's rights (the device without RIGHT_MANAGE or
+ * RIGHT_SLICE; none of them transferable).
  * Then it waits for the driver, checks Bus Master Enable went off with the
  * driver's dma_cap and the driver's job is empty, and reports. */
 #include <os.h>
+#include <devmgr.h>
 #include <jam/driver.h>
 
 #define S             1000000000ull
 #define RUN_TIMEOUT_S 30
-#define DRV_RIGHTS    (RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP | RIGHT_SLICE)   /* no MANAGE */
 
 void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
@@ -66,12 +67,12 @@ bool init_xhcitest(void)
     }
     if (st == OK) {
         what = "handle_duplicate (device without RIGHT_MANAGE)";
-        st = jam_handle_duplicate(dev, DRV_RIGHTS, &h[3]);
+        st = jam_handle_duplicate(dev, DEVMGR_DRV_DEV_RIGHTS | RIGHT_TRANSFER, &h[3]);
     }
     if (st == OK) {
         what = "BAR 0 without RIGHT_MANAGE";
         handle_t bar = h[0];
-        st = jam_handle_duplicate(bar, DRV_RIGHTS, &h[0]);
+        st = jam_handle_duplicate(bar, DEVMGR_DRV_BAR_RIGHTS | RIGHT_TRANSFER, &h[0]);
         jam_handle_close(bar);
     }
     if (st == OK) {
@@ -95,10 +96,14 @@ bool init_xhcitest(void)
         { SR_DRIVER(DR_DMA), h[2] },
         { SR_DRIVER(DR_PCIDEV), h[3] },
     };
+    /* devmgr's rights exactly: nothing the driver could slice, duplicate
+     * or pass on. */
+    static const rights_t rights[4] = { DEVMGR_DRV_BAR_RIGHTS, DEVMGR_DRV_IRQ_RIGHTS,
+                                        DEVMGR_DRV_DMA_RIGHTS, DEVMGR_DRV_DEV_RIGHTS };
     static const char *const argv[] = { "xhci-noop (process)" };
     struct spawn_args a = {
         .path = "drv/xhci-noop", .name = "xhci-noop", .argc = 1, .argv = argv, .job = job,
-        .extra = extra, .nextra = 4,
+        .extra = extra, .nextra = 4, .extra_rights = rights,
     };
     uint64_t t0 = (uint64_t)jam_clock_get();
     st = spawn(&a, &proc);   /* the four handles are gone either way */

@@ -70,3 +70,4 @@ int64_t sysc_dma_cap_create(handle_t dev, uint64_t out);
 int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs, uint64_t pin_id);
 int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on);
+int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles, uint64_t rights, uint32_t nhandles);

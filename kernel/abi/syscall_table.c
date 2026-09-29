@@ -319,6 +319,11 @@ static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
     return sysc_dma_cap_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
 }
 
+static int64_t call_channel_write_rights(const struct syscall_frame *f)
+{
+    return sysc_channel_write_rights((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3], f->args[4], (uint32_t)f->args[5]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -380,6 +385,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmo_pin] = call_vmo_pin,
     [SYS_vmo_unpin] = call_vmo_unpin,
     [SYS_dma_cap_bus_master] = call_dma_cap_bus_master,
+    [SYS_channel_write_rights] = call_channel_write_rights,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

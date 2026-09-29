@@ -49,9 +49,18 @@
  * interrupt object and the dma_cap, for tests of what drivers can't do. */
 #define DEVMGR_DRIVER_VIEW  0x00030006u
 
-/* What devmgr gives each driver (and DRIVER_VIEW hands out). */
-#define DEVMGR_DRV_DEV_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
-#define DEVMGR_DRV_BAR_RIGHTS (RIGHTS_BASIC | RIGHT_MAP)
+/* What devmgr gives each driver (and DRIVER_VIEW hands out). None of a
+ * driver's hardware handles can be duplicated or passed on (no
+ * RIGHT_DUPLICATE, no RIGHT_TRANSFER; a physical VMO made from such a BAR
+ * inherits that): a driver can't smuggle its function, registers,
+ * interrupt or dma_cap out through DR_SERVE to outlive it (M7; review of
+ * M6 phase 2, finding 2). devmgr makes them with RIGHT_TRANSFER and hands
+ * them over with channel_write_rights. */
+#define DEVMGR_DRV_KEEP       (RIGHT_WAIT | RIGHT_INSPECT)
+#define DEVMGR_DRV_DEV_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
+#define DEVMGR_DRV_BAR_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_MAP)
+#define DEVMGR_DRV_IRQ_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
+#define DEVMGR_DRV_DMA_RIGHTS DEVMGR_DRV_KEEP
 
 struct devmgr_req {
     uint32_t txid;

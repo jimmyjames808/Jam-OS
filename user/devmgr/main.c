@@ -9,11 +9,11 @@
  * devmgr's job, with limits). The policy is all here; the kernel only
  * enforces rights. A driver gets exactly (roles from <jam/driver.h>):
  *
- *   DR_PCIDEV  its function, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE:
+ *   DR_PCIDEV  its function, RIGHT_READ | RIGHT_WRITE (+ wait, inspect):
  *              filtered config reads/writes, nothing else (no
  *              RIGHT_MANAGE: no bus mastering, dma_caps or interrupt
  *              objects; no RIGHT_SLICE: no BAR resources of its own)
- *   DR_BAR(n)  each memory BAR as a RES_MMIO, RIGHTS_BASIC | RIGHT_MAP
+ *   DR_BAR(n)  each memory BAR as a RES_MMIO, RIGHT_MAP (+ wait, inspect)
  *              (the kernel still refuses the MSI-X table / PBA pages)
  *   DR_IRQ(0)  an interrupt object: MSI-X entry 0 if the function has
  *              MSI-X, else its MSI
@@ -26,6 +26,9 @@
  *              pins still held then are quarantined by the kernel
  *   DR_SERVE   a channel whose other end devmgr keeps (GET_SERVICE hands
  *              out duplicates of it)
+ * The hardware handles (all but DR_SERVE) come without RIGHT_DUPLICATE and
+ * RIGHT_TRANSFER (<devmgr.h> DEVMGR_DRV_*_RIGHTS): the driver can't pass
+ * them on, so nothing of the device outlives the driver's job.
  *
  * devmgr keeps its own handle to each function (with RIGHT_MANAGE, from
  * pci_device_open) and nothing else of the driver's. Each binding is
@@ -139,48 +142,62 @@ static bool is_mem_bar(const struct pci_dev_info *i, unsigned n)
 
 /* ---- binding ------------------------------------------------------------------ */
 
-/* A driver's copy of one of our handles, with fewer rights. */
+/* A driver's copy of one of our handles, with fewer rights, plus
+ * RIGHT_TRANSFER for the one hand-over (channel_write_rights drops it on
+ * the way: the driver's copy has exactly `rights`). */
 static status_t narrowed(handle_t h, rights_t rights, handle_t *out)
 {
-    return jam_handle_duplicate(h, rights, out);
+    return jam_handle_duplicate(h, rights | RIGHT_TRANSFER, out);
 }
 
 /* A BAR resource with a driver's rights (made from our device handle, it
- * starts with ours). */
+ * starts with ours), plus RIGHT_TRANSFER as above. */
 static status_t bar_for_driver(handle_t dev, unsigned n, handle_t *out)
 {
     handle_t bar;
     status_t st = jam_pci_bar_resource(dev, n, &bar);
     if (st != OK)
         return st;
-    st = jam_handle_replace(bar, DEVMGR_DRV_BAR_RIGHTS, out);
+    st = jam_handle_replace(bar, DEVMGR_DRV_BAR_RIGHTS | RIGHT_TRANSFER, out);
     if (st != OK)
         jam_handle_close(bar);
     return st;
 }
 
+/* One more startup handle for a driver: h under driver role `role`,
+ * arriving with `rights`. */
+static void add(struct spawn_handle *x, rights_t *xr, unsigned *n, uint32_t role, handle_t h,
+                rights_t rights)
+{
+    x[*n] = (struct spawn_handle){ SR_DRIVER(role), h };
+    xr[(*n)++] = rights;
+}
+
 static status_t bind(struct binding *b)
 {
     struct spawn_handle x[STARTUP_MAX_HANDLES];
+    rights_t xr[STARTUP_MAX_HANDLES];
     unsigned n = 0;
     handle_t h, job = HANDLE_INVALID, client = HANDLE_INVALID, proc;
     status_t st = OK;
     if (!b->dev)
         st = jam_pci_device_open(pci_res, b->index, &b->dev);
+    /* The driver's hardware handles arrive without RIGHT_DUPLICATE and
+     * RIGHT_TRANSFER (spawn passes each with its xr[] rights). */
     if (st == OK && (st = narrowed(b->dev, DEVMGR_DRV_DEV_RIGHTS, &h)) == OK)
-        x[n++] = (struct spawn_handle){ SR_DRIVER(DR_PCIDEV), h };
+        add(x, xr, &n, DR_PCIDEV, h, DEVMGR_DRV_DEV_RIGHTS);
     for (unsigned i = 0; st == OK && i < 6; i++)
         if (is_mem_bar(&b->info, i) && (st = bar_for_driver(b->dev, i, &h)) == OK)
-            x[n++] = (struct spawn_handle){ SR_DRIVER(DR_BAR(i)), h };
+            add(x, xr, &n, DR_BAR(i), h, DEVMGR_DRV_BAR_RIGHTS);
     if (st == OK && (b->info.msix_vectors || b->info.msi_vectors)) {
         st = jam_interrupt_create_msi(b->dev, 0, b->info.msix_vectors ? IRQ_MSIX : 0, &h);
         if (st == OK)
-            x[n++] = (struct spawn_handle){ SR_DRIVER(DR_IRQ(0)), h };
+            add(x, xr, &n, DR_IRQ(0), h, DEVMGR_DRV_IRQ_RIGHTS);
     }
     if (st == OK && (st = jam_dma_cap_create(b->dev, &h)) == OK)
-        x[n++] = (struct spawn_handle){ SR_DRIVER(DR_DMA), h };
+        add(x, xr, &n, DR_DMA, h, DEVMGR_DRV_DMA_RIGHTS);
     if (st == OK && (st = jam_channel_create(&client, &h)) == OK)
-        x[n++] = (struct spawn_handle){ SR_DRIVER(DR_SERVE), h };
+        add(x, xr, &n, DR_SERVE, h, RIGHT_SAME);
     if (st == OK)
         st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     for (unsigned i = 0; st == OK && i < sizeof(limits) / sizeof(limits[0]); i++)
@@ -189,6 +206,7 @@ static status_t bind(struct binding *b)
         const char *argv[] = { b->path };
         struct spawn_args a = {
             .path = b->path, .argc = 1, .argv = argv, .job = job, .extra = x, .nextra = n,
+            .extra_rights = xr,
         };
         st = spawn(&a, &proc);   /* consumes the extras either way */
         n = 0;
@@ -338,10 +356,14 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
     return NULL;
 }
 
-/* Handle one request; the reply (and *nh handles in hs) to send back. */
-static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
+/* Handle one request; the reply (and *nh handles in hs, each to arrive
+ * with rs[i]) to send back. */
+static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *hs, rights_t *rs,
+                   uint32_t *nh)
 {
     *nh = 0;
+    for (uint32_t i = 0; i < DEVMGR_MAX_HANDLES; i++)
+        rs[i] = RIGHT_SAME;
     r->status = OK;
     if (q->ordinal == DEVMGR_STATUS) {
         r->a = nbound;
@@ -403,12 +425,14 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         r->a = 0;
         if ((r->status = narrowed(dev, DEVMGR_DRV_DEV_RIGHTS, &hs[0])) != OK)
             return;
+        rs[0] = DEVMGR_DRV_DEV_RIGHTS;
         *nh = 1;
         for (unsigned i = 0; i < 6; i++) {
             if (!is_mem_bar(&b->info, i))
                 continue;
             if ((r->status = bar_for_driver(dev, i, &hs[*nh])) != OK)
                 break;
+            rs[*nh] = DEVMGR_DRV_BAR_RIGHTS;
             r->a |= 1u << i;
             (*nh)++;
         }
@@ -462,11 +486,12 @@ static status_t serve(handle_t ch)
             continue;   /* no txid: nobody to answer */
         struct devmgr_rep r = { ((struct devmgr_req *)buf)->txid, ERR_INVALID_ARGS, 0, 0, 0 };
         handle_t hs[DEVMGR_MAX_HANDLES];
+        rights_t rs[DEVMGR_MAX_HANDLES];
         uint32_t nout = 0;
         if (n == sizeof(struct devmgr_req) && !nh)
-            handle((struct devmgr_req *)buf, &r, hs, &nout);
+            handle((struct devmgr_req *)buf, &r, hs, rs, &nout);
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
-        if (jam_channel_write(ch, &r, rn, hs, nout) != OK)
+        if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
             for (uint32_t i = 0; i < nout; i++)
                 jam_handle_close(hs[i]);   /* the client is gone */
     }
