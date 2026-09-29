@@ -70,10 +70,24 @@ static volatile uint64_t next_id = 1;
 static spinlock_t sleep_lock = SPINLOCK_INIT("sleepers");
 static struct list_node sleepers = LIST_INIT(sleepers);
 
-/* Freed thread stacks, reused instead of unmapped (no TLB shootdown). */
+/* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
+ * reused (no TLB shootdown, no page allocation). Stacks over the limit must
+ * be unmapped and freed (kstack_free), but reap() runs in finish_switch with
+ * interrupts off, where the TLB shootdown that has to come first can't be
+ * done. So they wait on `stack_doomed` (linked through each stack's lowest
+ * word: still mapped, and nothing runs on it any more) until the next
+ * sched_stack_trim, which thread creation and thread exit call. An exiting
+ * thread trims the stacks of threads reaped before it, so during a burst of
+ * exits the list holds only the last few (those reaped after the last exit
+ * or creation); they are counted as cached pages meanwhile, so the leak
+ * check stays exact. Freed stacks' virtual ranges are reused by kstack_alloc
+ * (vmm.c). */
 static spinlock_t stack_lock = SPINLOCK_INIT("stack cache");
-static void *stack_cache[256];
-static unsigned stack_cache_n;
+static void *stack_cache[SCHED_STACK_CACHE_MAX];
+static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
+static void *stack_doomed;
+static volatile unsigned stack_doomed_n;
+static volatile uint64_t stacks_freed;
 
 /* ---- preemption ---------------------------------------------------------- */
 
@@ -198,6 +212,34 @@ static uint32_t select_cpu(struct thread *t)
     return best;
 }
 
+/* Wake-affine placement for a wakee whose waker, running on `waker`, is
+ * about to block (thread_wake_sync). On the waker's CPU the wakee runs the
+ * moment the waker blocks, with the data it was just sent still in that
+ * CPU's cache; that is only right if nothing else is queued there (it would
+ * wait behind it) and t may run there. Otherwise the waker's HT sibling, if
+ * it is idle, shares the core's caches. Otherwise the usual choice. All the
+ * loads are racy, like select_cpu's: a wrong guess costs time, never
+ * correctness, since thread_wake queues t under the chosen CPU's lock. */
+static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
+{
+    if (cpus[waker]->online && cpumask_has(&t->affinity, waker) && !rqs[waker].nr_ready) {
+        t->affine_wakes++;   /* we own t's placement: we moved it to READY */
+        return waker;
+    }
+    uint32_t core = cpus[waker]->core_id;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        struct cpu *c = cpus[i];
+        if (i == waker || c->core_id != core || !c->online || !cpumask_has(&t->affinity, i))
+            continue;
+        struct thread *cur = c->current;
+        if (!rqs[i].nr_ready && (!cur || cur->is_idle)) {
+            t->affine_wakes++;
+            return i;
+        }
+    }
+    return select_cpu(t);
+}
+
 void sched_kick(uint32_t cpu)
 {
     struct cpu *c = cpus[cpu];
@@ -311,7 +353,42 @@ void schedule(void)
 
 /* ---- waking and placing ------------------------------------------------------ */
 
+/* The CPU a wake from here may be placed on under wake-affine rules, or -1.
+ * `consume`: this is a plain thread_wake, which honours the current
+ * thread's wake_sync flag and clears it (one wakee per flag). Never from an
+ * interrupt handler: the interrupted thread's flag is not about this wake. */
+static int affine_hint(bool consume)
+{
+    uint64_t f = irq_save();
+    struct cpu *c = this_cpu();
+    struct thread *me = c->current;
+    int cpu = -1;
+    if (!c->irq_depth && me && !me->is_idle && (!consume || me->wake_sync)) {
+        me->wake_sync = false;
+        cpu = (int)c->index;
+    }
+    irq_restore(f);
+    return cpu;
+}
+
+static void thread_wake_common(struct thread *t, bool sync);
+
 void thread_wake(struct thread *t)
+{
+    thread_wake_common(t, false);
+}
+
+void thread_wake_sync(struct thread *t)
+{
+    thread_wake_common(t, true);
+}
+
+void thread_set_wake_sync(bool on)
+{
+    current_thread()->wake_sync = on;   /* only ever written by its own thread */
+}
+
+static void thread_wake_common(struct thread *t, bool sync)
 {
     int s = t->state;
     if (s != T_BLOCKED && s != T_MIGRATING)
@@ -357,11 +434,18 @@ void thread_wake(struct thread *t)
         if (s != T_BLOCKED && s != T_MIGRATING)
             return;
     }
+    /* Only a BLOCKED thread is placed wake-affine: a MIGRATING one is
+     * leaving the waker's CPU because its mask forbids it. The hint is
+     * looked at (and a wake_sync flag used up) only once we know this wake
+     * places t; a wake that finds t still on its CPU or already woken above
+     * leaves the flag for the wake it was meant for. */
+    bool was_blocked = s == T_BLOCKED;
     if (!__atomic_compare_exchange_n(&t->state, &s, T_READY, false, __ATOMIC_ACQ_REL,
                                      __ATOMIC_RELAXED))
         return;   /* someone else woke it */
 
-    uint32_t cpu = select_cpu(t);
+    int hint = was_blocked ? affine_hint(!sync) : -1;
+    uint32_t cpu = hint >= 0 ? select_cpu_affine(t, (uint32_t)hint) : select_cpu(t);
     struct runqueue *rq = &rqs[cpu];
     uint64_t f = spin_lock_irqsave(&rq->lock);
     enqueue(rq, t, cpu);
@@ -374,33 +458,104 @@ void thread_wake(struct thread *t)
 
 /* ---- thread lifecycle ------------------------------------------------------ */
 
+/* May this context free stacks (kstack_free shoots down TLBs, which needs
+ * interrupts on and no spinlock held: see check_callable in ipi.c)? */
+static bool can_trim(void)
+{
+    if (!irqs_enabled())
+        return false;
+    preempt_disable();
+    struct cpu *c = this_cpu();
+    bool ok = !c->irq_depth && !c->held_depth;
+    preempt_enable_no_resched();
+    return ok;
+}
+
+/* Take the doomed list (and, over `limit`, the excess cached stacks too)
+ * under the lock, free them outside it. */
+static void trim_to(unsigned limit)
+{
+    if (!can_trim())
+        return;
+    void *list = NULL;
+    uint64_t f = spin_lock_irqsave(&stack_lock);
+    while (stack_cache_n > limit) {
+        void *top = stack_cache[--stack_cache_n];
+        *(void **)((char *)top - STACK_SIZE) = list;
+        list = top;
+    }
+    if (stack_doomed) {
+        void **tail = &list;
+        while (*tail)
+            tail = (void **)((char *)*tail - STACK_SIZE);
+        *tail = stack_doomed;
+        stack_doomed = NULL;
+        stack_doomed_n = 0;
+    }
+    spin_unlock_irqrestore(&stack_lock, f);
+    while (list) {
+        void *next = *(void **)((char *)list - STACK_SIZE);
+        kstack_free(list, STACK_SIZE);
+        __atomic_add_fetch(&stacks_freed, 1, __ATOMIC_RELAXED);
+        list = next;
+    }
+}
+
+void sched_stack_trim(void)
+{
+    if (__atomic_load_n(&stack_doomed_n, __ATOMIC_RELAXED))
+        trim_to(SCHED_STACK_CACHE_MAX);
+}
+
+unsigned sched_stack_cache_set_limit(unsigned limit)
+{
+    if (limit > SCHED_STACK_CACHE_MAX)
+        limit = SCHED_STACK_CACHE_MAX;
+    uint64_t f = spin_lock_irqsave(&stack_lock);
+    unsigned old = stack_cache_limit;
+    stack_cache_limit = limit;
+    spin_unlock_irqrestore(&stack_lock, f);
+    trim_to(limit);
+    return old;
+}
+
+uint64_t sched_stacks_freed(void)
+{
+    return __atomic_load_n(&stacks_freed, __ATOMIC_RELAXED);
+}
+
+/* NULL when out of memory. */
 static void *stack_get(void)
 {
+    sched_stack_trim();
     uint64_t f = spin_lock_irqsave(&stack_lock);
     void *s = stack_cache_n ? stack_cache[--stack_cache_n] : NULL;
     spin_unlock_irqrestore(&stack_lock, f);
-    return s ? s : kstack_alloc(STACK_SIZE);
+    return s ? s : kstack_alloc_try(STACK_SIZE);
 }
 
-/* Pages held by the cached (reused, never unmapped) thread stacks. Tests use
- * this so stacks parked in the cache aren't mistaken for leaks. */
+/* Pages held by cached thread stacks, and by stacks waiting to be freed.
+ * Tests use this so stacks parked here aren't mistaken for leaks. */
 uint64_t sched_stack_cache_pages(void)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);
-    uint64_t n = (uint64_t)stack_cache_n * (STACK_SIZE / PAGE_SIZE);
+    uint64_t n = (uint64_t)(stack_cache_n + stack_doomed_n) * (STACK_SIZE / PAGE_SIZE);
     spin_unlock_irqrestore(&stack_lock, f);
     return n;
 }
 
+/* From reap, with interrupts off: cache the stack, or queue it for freeing. */
 static void stack_put(void *top)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);
-    bool kept = stack_cache_n < 256;
-    if (kept)
+    if (stack_cache_n < stack_cache_limit) {
         stack_cache[stack_cache_n++] = top;
+    } else {
+        *(void **)((char *)top - STACK_SIZE) = stack_doomed;
+        stack_doomed = top;
+        stack_doomed_n++;
+    }
     spin_unlock_irqrestore(&stack_lock, f);
-    if (!kept)
-        kprintf("sched: stack cache full, leaking a stack\n");   /* M4: vmap free */
 }
 
 static void thread_put(struct thread *t)
@@ -429,6 +584,7 @@ static struct thread *thread_alloc(const char *name, int prio)
     memcpy(t->name, name, n);
     t->prio = prio < PRIO_MIN ? PRIO_MIN : prio > PRIO_MAX ? PRIO_MAX : prio;
     t->base_prio = t->prio;
+    t->prio_cap = PRIO_MAX;
     t->refs = 1;
     cpumask_all(&t->affinity);
     waitqueue_init(&t->exit_wq, "thread exit");
@@ -452,11 +608,21 @@ struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, in
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask)
 {
+    return thread_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
+}
+
+struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask, int prio_cap)
+{
     struct thread *t = thread_alloc(name, prio);
     if (mask)
         t->affinity = *mask;
+    thread_set_priority_cap(t, prio_cap);   /* before it can first run */
+    t->prio = t->base_prio;
     t->refs = 2;   /* the caller's, and the thread's own (dropped by reap) */
     t->stack_top = stack_get();
+    if (!t->stack_top)   /* phase 2 turns this into ERR_NO_MEMORY for callers */
+        panic("sched: out of memory for a thread stack");
 
     /* Frame for switch_context to pop: r15 r14 r13 r12 rbx rbp, ret. */
     uint64_t *sp = (uint64_t *)t->stack_top;
@@ -482,6 +648,7 @@ _Noreturn void thread_exit(void)
     t->exited = true;
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     waitqueue_wake_all(&t->exit_wq);
+    sched_stack_trim();   /* stacks of threads reaped before us (see above) */
     irq_disable();
     t->state = T_DEAD;
     schedule();
@@ -509,8 +676,18 @@ void thread_yield(void)
 
 void thread_set_priority(struct thread *t, int prio)
 {
-    /* Takes effect the next time t is queued or switched out. */
-    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > PRIO_MAX ? PRIO_MAX : prio;
+    /* Takes effect the next time t is queued or switched out. Never touch
+     * t->prio here: while t is queued it names t's run queue list. */
+    int cap = t->prio_cap;
+    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > cap ? cap : prio;
+}
+
+void thread_set_priority_cap(struct thread *t, int cap)
+{
+    cap = cap < PRIO_MIN ? PRIO_MIN : cap > PRIO_MAX ? PRIO_MAX : cap;
+    t->prio_cap = cap;
+    if (t->base_prio > cap)
+        t->base_prio = cap;
 }
 
 void thread_set_affinity(struct thread *t, const cpumask_t *mask)

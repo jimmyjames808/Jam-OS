@@ -23,6 +23,9 @@
  * threads may starve others, deliberately. */
 #define STARVE_TICKS 100
 #define PRIO_BOOST   30
+/* Highest priority a user thread may set (M5): its ceiling, see
+ * thread_set_priority_cap. Kernel threads' ceiling is PRIO_MAX. */
+#define PRIO_USER_MAX 24
 
 typedef struct {
     uint64_t bits[MAX_CPUS / 64];
@@ -69,6 +72,7 @@ struct thread {
     volatile int      state;
     int               prio;          /* effective priority (base or boosted) */
     int               base_prio;
+    int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
     uint64_t          boosts;
     volatile bool     on_cpu;        /* its stack is still in use by a CPU */
@@ -88,6 +92,13 @@ struct thread {
     struct waitqueue  exit_wq;
 
     uint64_t          switches_in;
+
+    /* Wake-affine placement (M5). wake_sync is set by the thread itself
+     * while it is about to block waiting for the thread it wakes (see
+     * thread_set_wake_sync); affine_wakes counts the times THIS thread was
+     * woken onto its waker's CPU or that CPU's idle HT sibling. */
+    bool              wake_sync;
+    uint64_t          affine_wakes;
 
     /* M5 user state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
@@ -111,6 +122,11 @@ struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, in
 /* Same, restricted to `mask` from the start. */
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask);
+/* Same, with a priority ceiling from the start (prio is clamped to it, and
+ * so is every later thread_set_priority): PRIO_USER_MAX for user threads.
+ * mask may be NULL (any CPU). */
+struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask, int prio_cap);
 _Noreturn void thread_exit(void);
 void thread_join(struct thread *t);
 void thread_detach(struct thread *t);
@@ -138,13 +154,30 @@ static inline void thread_sleep_ms(uint64_t ms) { thread_sleep_ns(ms * 1000000);
 /* Restrict where t may run. For the current thread this takes effect at
  * once (it migrates before returning). */
 void thread_set_affinity(struct thread *t, const cpumask_t *mask);
+/* Clamped to [PRIO_MIN, t's ceiling]. Takes effect the next time t is
+ * queued or switched out. */
 void thread_set_priority(struct thread *t, int prio);
+/* Set t's priority ceiling (clamped to [PRIO_MIN, PRIO_MAX]); a base
+ * priority above it comes down to it. Starvation boosts may still lift a
+ * thread above its ceiling for one slice. */
+void thread_set_priority_cap(struct thread *t, int cap);
 
 static inline struct thread *current_thread(void) { return percpu_current(); }
 
 void schedule(void);
 /* Make a BLOCKED thread runnable again. */
 void thread_wake(struct thread *t);
+/* Wake-affine: the same, for a waker that is about to block waiting for t
+ * (a channel_call request, or a reply from a server with nothing else
+ * queued). t is placed on the waker's CPU if it may run there and nothing
+ * else is queued there (it runs as soon as the waker blocks), else on the
+ * waker's idle HT sibling, else as usual. From interrupt handlers it is a
+ * plain thread_wake. */
+void thread_wake_sync(struct thread *t);
+/* While on, the next thread the current thread wakes (from thread context,
+ * e.g. through an object observer) is woken as by thread_wake_sync; that
+ * wake turns it off. channel_call turns it on around sending its request. */
+void thread_set_wake_sync(bool on);
 
 /* Boot: turn the running boot code into thread "main" and give the BSP an
  * idle thread. APs turn their own startup context into their idle thread. */
@@ -156,8 +189,20 @@ void sched_tick(void);
 void sched_irq_exit(uint64_t interrupted_rflags);
 /* Total anti-starvation boosts so far. */
 uint64_t sched_boost_count(void);
-/* Pages held by the cached (never-unmapped) thread stacks, for leak checks. */
+/* Pages held by cached thread stacks, including stacks over the cache limit
+ * that wait to be freed (sched_stack_trim), for leak checks. */
 uint64_t sched_stack_cache_pages(void);
+/* Free the stacks waiting to be freed now, if this context may (interrupts
+ * on, no spinlock held: freeing shoots down TLBs). Thread creation and exit
+ * call it too. */
+void sched_stack_trim(void);
+/* Set how many exited threads' stacks are kept for reuse (at most
+ * SCHED_STACK_CACHE_MAX; tests lower it); stacks over the new limit are
+ * freed at once. Returns the old limit. */
+#define SCHED_STACK_CACHE_MAX 256
+unsigned sched_stack_cache_set_limit(unsigned limit);
+/* Stacks freed (unmapped, pages returned) since boot. */
+uint64_t sched_stacks_freed(void);
 /* Tell `cpu` to look at its run queue soon (IPI if remote). */
 void sched_kick(uint32_t cpu);
 void sched_print_stats(void);

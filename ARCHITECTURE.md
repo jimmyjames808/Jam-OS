@@ -96,8 +96,21 @@ with the framework itself.
   a **vmemmap** indexed by PFN, backed in 2 MiB chunks; chunks over pure MMIO
   holes stay unmapped (a buddy block never spans two chunks). Physical page 0
   is never handed out. An early bump allocator (top-down) builds the first
-  page tables and the vmemmap. Per-CPU page caches come in M5: the PC benchmark
-  showed the global lock collapsing with 28 CPUs allocating at once (BENCH.md).
+  page tables and the vmemmap.
+- **Per-CPU page stashes** (M5): the PC benchmark showed the global buddy lock
+  collapsing with 28 CPUs allocating at once (BENCH.md), so each CPU keeps up
+  to 64 free single pages, refilled and drained 16 at a time under one
+  acquisition of the buddy lock. They hold the normal zone only (DMA32 when
+  there is no memory above 4 GiB); DMA32 and multi-page requests go straight
+  to the buddy lists. Stashed pages count as free in `pmm_stats`. Before an
+  allocation fails, every stash is drained (stolen under its own lock, no
+  IPIs, so it works with spinlocks held); below 8 MiB free the stashes are
+  bypassed. Details and races at the top of `pmm.c`.
+- **Kernel stacks**: `kstack_alloc` (panics) / `kstack_alloc_try` (NULL) map a
+  stack under a guard page in the vmap area; `kstack_free` unmaps it (TLB
+  shootdown), frees the pages and keeps the virtual range for the next stack
+  of the same size, so thread churn neither grows the vmap area nor strands
+  page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
   in) is reclaimed in M2, after the APs have started.
 - **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
@@ -242,8 +255,16 @@ with the framework itself.
   `thread_create_on` sets the mask before the thread first runs.
 - **Anti-starvation**: once a second each CPU boosts threads that have waited
   over 1 s to priority 30 for one slice. Priority 31 is above the boost, so
-  real-time threads can still starve others by design. User threads are
-  capped at priority 24 unless a capability allows more (M5).
+  real-time threads can still starve others by design. Each thread has a
+  priority ceiling (`thread_create_capped`, `thread_set_priority_cap`;
+  `PRIO_MAX` for kernel threads); user threads get `PRIO_USER_MAX` = 24
+  unless a capability allows more (M5).
+- **Wake-affine hand-off** (M5): a waker that is about to block for the
+  thread it wakes (`thread_wake_sync`, or `thread_set_wake_sync` around a
+  send whose wakeup happens inside an observer) places it on its own CPU if
+  allowed and nothing else is queued there, else on its idle HT sibling,
+  else as usual. `channel_call` uses it for the request, and a server's
+  reply uses it when nothing else is queued for the server.
 - Preemptible kernel: switches happen on interrupt exit or when the last
   spinlock is dropped, never with one held (`schedule()` panics if called
   with preemption disabled).
@@ -254,7 +275,9 @@ with the framework itself.
 - Kernel threads: `thread_create/exit/join/yield/sleep`, `thread_block(lock,
   deadline)`, wait queues with a condition-variable style
   `waitqueue_wait(wq, lock)`, sleeping mutexes. Up to 256 exited threads'
-  stacks are cached for reuse. Timers and sleepers are woken by CPU 0's tick
+  stacks are cached for reuse; stacks beyond that are freed (by the next
+  thread creation or exit, since the reaper runs with interrupts off and
+  can't shoot down TLBs). Timers and sleepers are woken by CPU 0's tick
   (about 10 ms resolution).
 - **Cancellable waits** (M4.5): `thread_cancel(t)` sets a per-thread flag for
   good and wakes t. The cancellable waits (`thread_block_cancellable`,
@@ -267,10 +290,9 @@ with the framework itself.
   path, so neither can overwrite a state the other set. M5 uses this to
   kill a process blocked in `channel_call` on a hung server.
 - To do, by milestone (scheduled 2026-09-29):
-  - M5: `channel_call` hand-off / wake-affine placement (the woken server
-    runs on the caller's CPU, or its idle HT sibling); stack cache pages
-    beyond 256 go back to the allocator (part of "no panic on out of
-    memory", since processes create threads).
+  - M5 (done in phase 2): `channel_call` wake-affine placement; stack
+    cache pages beyond 256 go back to the allocator; `kstack_alloc_try`
+    for thread creation that can fail.
   - M5.5: hybrid placement order (idle P-core pair > idle E-core > busy HT
     sibling); keeping busy client/server pairs on sibling hyperthreads;
     a short spin before `hlt`; per-CPU one-shot timers instead of CPU 0's
