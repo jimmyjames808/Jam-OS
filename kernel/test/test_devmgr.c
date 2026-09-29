@@ -20,6 +20,7 @@
  *       before, no interrupt object, Bus Master Enable and MSI off, nothing
  *       quarantined; with the limits gone the device binds again. */
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/interrupt_test.h>
 #include <jam/kprintf.h>
@@ -270,6 +271,20 @@ static void check_nothing_left(struct dm *m, struct pci_dev *d, const struct ref
     KT_EQ(q.pins, ref->quarantined);
 }
 
+static struct job *lift_job;
+static uint32_t lift_kind;
+
+/* DBG_PROCESS_START: the driver's start has paid for everything, its
+ * first thread included, and nothing of it has run. Lift the limit now,
+ * so the driver doesn't go on to die of it (a crash devmgr would report).
+ * Nothing but devmgr's REBIND starts a process while this is installed. */
+static void lift_hook(void *arg)
+{
+    (void)arg;
+    if (lift_job)
+        (void)job_set_limit(lift_job, lift_kind, JOB_NO_LIMIT);   /* can't fail: a real job */
+}
+
 /* Give devmgr's job `headroom` more units of `kind` than it uses without
  * a driver and REBIND, one more unit each round, until a start gets
  * through; every refusal must leave nothing. Returns the rounds refused. */
@@ -279,7 +294,12 @@ static unsigned sweep(struct dm *m, struct pci_dev *d, const struct refusal_ref 
     struct dm_rep r;
     for (uint64_t h = 0; h < 512; h++) {
         KT_EQ(job_set_limit(m->job, kind, ref->used[kind] + h), OK);
+        lift_job = m->job;
+        lift_kind = kind;
+        dbg_hooks[DBG_PROCESS_START] = lift_hook;
         status_t st = dm_call(m, DM_REBIND, &r, NULL, NULL);
+        dbg_hooks[DBG_PROCESS_START] = NULL;
+        lift_job = NULL;
         KT_EQ(job_set_limit(m->job, kind, JOB_NO_LIMIT), OK);
         if (st == OK) {
             wait_driver_up(d);   /* and it works */
@@ -331,7 +351,7 @@ KTEST(devmgr_refused_start_leaves_nothing)
     kprintf("ktest %s: starts refused with 0..%u spare handle units and 0..%u spare pages, "
             "none left anything\n", ktest_current, hnd ? hnd - 1 : 0, pages ? pages - 1 : 0);
     KT_ASSERT(hnd > 0 && pages > 0);
-    (void)dm_stop(&m, d);   /* its exit code: a driver may have died of the limits meanwhile */
+    KT_EQ(dm_stop(&m, d), 0);   /* no driver died: refused starts aren't problems */
     dm_job_empty(&m);
     KT_GLOBAL_EQ(interrupt_live_count(), ref.irqs);
 }
