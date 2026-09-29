@@ -182,8 +182,14 @@ status_t resource_phys_mappable(uint64_t phys, uint64_t len)
 {
     if (len == 0 || phys >= RES_PHYS_LIMIT || len > RES_PHYS_LIMIT - phys)
         return ERR_OUT_OF_RANGE;
-    if (pmm_range_has_ram(phys, len) || kernel_owned(phys, len) || pci_phys_protected(phys, len))
+    const char *why = pmm_range_has_ram(phys, len) ? "RAM"
+                    : kernel_owned(phys, len)       ? "MMIO the kernel drives"
+                    : pci_phys_protected(phys, len) ? "an MSI-X table/PBA page"
+                                                    : NULL;
+    if (why) {
+        kprintf("resource: mapping [%lx, +%lx) refused: %s\n", phys, len, why);
         return ERR_ACCESS_DENIED;
+    }
     return OK;
 }
 
@@ -261,18 +267,36 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
     if (end < phys || end > RES_PHYS_LIMIT)
         return ERR_OUT_OF_RANGE;
     uint64_t lo = ALIGN_DOWN(phys, PAGE_SIZE), hi = ALIGN_UP(end, PAGE_SIZE);
-    if (pmm_range_has_ram(lo, hi - lo))
+    const struct pci_dev_info *me = info;
+    if (pmm_range_has_ram(lo, hi - lo)) {
+        kprintf("resource: %02x:%02x.%u BAR %u [%lx, %lx) refused: overlaps RAM\n", me->bus,
+                me->dev, me->fn, bar, lo, hi);
         return ERR_ACCESS_DENIED;
+    }
     /* A BAR smaller than a page is rounded out to whole pages; refuse it if
-     * that would reach another function's registers. */
+     * the added slack ([lo, phys) or [end, hi)) would reach another
+     * function's registers. Only functions with memory decode on claim
+     * addresses: a disabled one can hold a stale or unassigned BAR value
+     * (the PC's first run refused the xHCI's page-aligned 64 KiB BAR). */
+    struct { uint64_t a, len; } slack[2] = { { lo, phys - lo }, { end, hi - end } };
     for (uint32_t i = 0; i < pci_count(); i++) {
         struct pci_dev *o = pci_get(i);
-        if (!o || o == p->dev)
+        if (!o || o == p->dev || !(pci_cfg_read(o, 0x04, 2) & 0x2))
             continue;
         for (unsigned b = 0; b < 6; b++) {
             const typeof(o->info.bar[0]) *ob = &o->info.bar[b];
-            if ((ob->flags & PCI_BAR_MMIO) && ob->size && overlaps(lo, hi - lo, ob->phys, ob->size))
-                return ERR_ACCESS_DENIED;
+            if (!(ob->flags & PCI_BAR_MMIO))
+                continue;
+            /* An unsized BAR (display, bridges) covers at least its page. */
+            uint64_t olen = ob->size ? ob->size : PAGE_SIZE;
+            for (int k = 0; k < 2; k++) {
+                if (slack[k].len && overlaps(slack[k].a, slack[k].len, ob->phys, olen)) {
+                    kprintf("resource: %02x:%02x.%u BAR %u [%lx, %lx) refused: its page reaches "
+                            "%02x:%02x.%u BAR %u [%lx, +%lx)\n", me->bus, me->dev, me->fn, bar,
+                            lo, hi, o->info.bus, o->info.dev, o->info.fn, b, ob->phys, olen);
+                    return ERR_ACCESS_DENIED;
+                }
+            }
         }
     }
     return res_new(RES_MMIO, lo, hi - lo, NULL, out);
