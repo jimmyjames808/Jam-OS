@@ -565,6 +565,51 @@ KTEST(oneshot_timer_early_wake_leaves_queue)
         KT_ASSERT(sleep_err[1] < (int64_t)ONESHOT_BOUND);
 }
 
+/* Review repro: a far-future deadline (anything whose TSC value overflows
+ * 64 bits: INT64_MAX on a >2 GHz TSC, UINT64_MAX-1 even at 1 GHz) must not
+ * wrap to the past. User code reaches this through nanosleep, object/port
+ * waits and timer_set (which parks the prio-28 timer service on it). */
+static volatile uint64_t far_blocks;
+static uint64_t far_deadline;
+
+static void far_sleeper(void *arg)
+{
+    (void)arg;
+    const uint64_t deadline = far_deadline;   /* as sysc_nanosleep would loop */
+    while (uptime_ns() < deadline) {
+        __atomic_add_fetch(&far_blocks, 1, __ATOMIC_RELAXED);
+        if (thread_block_cancellable(NULL, NULL, deadline) != OK)
+            break;
+    }
+}
+
+KTEST(oneshot_far_deadline_does_not_wrap)
+{
+    uint64_t now = rdtsc();
+    kprintf("far-deadline: uptime_to_tsc(UINT64_MAX-1) = %lx, rdtsc = %lx\n",
+            uptime_to_tsc(UINT64_MAX - 1), now);
+    /* Pick a deadline ~2^64 ns out whose TSC value wraps to about one
+     * second ago (the wrapped value moves down 1:1 with the deadline). */
+    uint64_t w = uptime_to_tsc(UINT64_MAX - 1);
+    far_deadline = UINT64_MAX - 1;
+    if (w > now)
+        far_deadline -= (w - now) / tsc_hz * 1000000000ull + 1000000000ull;
+    kprintf("far-deadline: deadline %lx ns -> tsc %lx\n", far_deadline,
+            uptime_to_tsc(far_deadline));
+    uint32_t cpu = cpu_count > 1 ? 1 : 0;
+    cpumask_t m;
+    cpumask_one(&m, cpu);
+    far_blocks = 0;
+    struct thread *t = thread_create_on("m55-far", far_sleeper, NULL, PRIO_DEFAULT, &m);
+    thread_sleep_ms(100);
+    uint64_t n = __atomic_load_n(&far_blocks, __ATOMIC_RELAXED);
+    thread_cancel(t);
+    thread_join(t);
+    kprintf("far-deadline: sleeper blocked %lu times in 100 ms\n", n);
+    KT_ASSERT(uptime_to_tsc(far_deadline) > now);
+    KT_ASSERT(n <= 2);
+}
+
 /* ---- serial transmit ring ------------------------------------------------------ */
 
 /* The ring drops (and counts) what doesn't fit, never overwrites, and keeps
