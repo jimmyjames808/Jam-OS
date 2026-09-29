@@ -15,7 +15,7 @@ make debug      # same, paused for gdb on :1234
 The boot menu has **All tests** (`ktest`: every in-kernel test), a
 **10-minute stress test** and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
-crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`,
+crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`, `testsmap`, `testsmep`,
 `testlockorder`, `testlocknest`, `testlockirq`, `testmutexorder`,
 `testmutexspin`, `teststuck`, `testwatchdog`, `testpanic`; `testbp` must
 continue). To run any kernel command line headless and get the log and a

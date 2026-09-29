@@ -299,15 +299,15 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
         fpu_restore(next->ustate);
     aspace_switch(prev->aspace, next->aspace);
 #ifndef JAM_NO_KTESTS
+    /* The test hook returns the CR3 to load for `next` (its own test tables,
+     * or the kernel's when this CPU is leaving a test thread), or 0 to leave
+     * CR3 alone. It tracks the per-CPU state itself, so the choice never
+     * depends on prev, which a joiner may already be tearing down. */
     uint64_t (*h)(struct thread *) = uentry_test_cr3;
     if (h) {
         uint64_t want = h(next);
-        if (want) {
-            if (read_cr3() != want)
-                write_cr3(want);
-        } else if (!next->aspace && h(prev)) {
-            write_cr3(vmm_kernel_pml4());
-        }
+        if (want && read_cr3() != want)
+            write_cr3(want);
     }
 #endif
 }
