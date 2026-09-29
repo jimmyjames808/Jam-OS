@@ -881,3 +881,54 @@ KTEST(mutex_handoff_prevents_starvation)
      * on the PC); 10 ms leaves room for TCG stalls. */
     KT_ASSERT(worst < 10 * MS);
 }
+
+/* ---- starvation boost (the stress runs on the PC always show 0 boosts) ---- */
+
+/* A CPU-bound thread and a lower-priority one, both pinned to one CPU so no
+ * other CPU can steal the low one: it only ever runs when the scheduler's
+ * once-a-second starvation boost lifts it. So within ~3 s it must have run,
+ * and the boost counter must have moved. On the PC this runs in the
+ * TSC-deadline tick mode QEMU can't emulate. */
+static volatile bool sb_stop;
+static volatile uint64_t sb_low_runs;
+
+static void sb_hog(void *arg)
+{
+    (void)arg;
+    while (!sb_stop)
+        cpu_relax();
+}
+
+static void sb_low(void *arg)
+{
+    (void)arg;
+    while (!sb_stop)
+        sb_low_runs++;
+}
+
+KTEST(starvation_boost_rescues_low_priority)
+{
+    if (cpu_count < 2)
+        return;
+    uint32_t cpu = cpu_count - 1;
+    cpumask_t m;
+    cpumask_one(&m, cpu);
+    sb_stop = false;
+    sb_low_runs = 0;
+    uint64_t boosts0 = sched_boost_count();
+    struct thread *hog = thread_create_on("m55-hog", sb_hog, NULL, PRIO_DEFAULT + 4, &m);
+    thread_sleep_ms(20);   /* the hog owns the CPU before the low one arrives */
+    struct thread *low = thread_create_on("m55-low", sb_low, NULL, PRIO_DEFAULT - 4, &m);
+    uint64_t t0 = uptime_ns();
+    while (!sb_low_runs && uptime_ns() - t0 < 4000 * MS)
+        thread_sleep_ms(10);
+    uint64_t waited = uptime_ns() - t0, runs = sb_low_runs, boosts = sched_boost_count() - boosts0;
+    sb_stop = true;
+    thread_join(hog);
+    thread_join(low);
+    kprintf("starvation boost: low-priority thread first ran after %lu ms, %lu boost(s)\n",
+            (unsigned long)(waited / MS), (unsigned long)boosts);
+    KT_ASSERT(runs > 0);
+    KT_ASSERT(boosts > 0);
+    KT_ASSERT(waited < 3500 * MS);   /* a boost comes within ~1-2 s (checks run once a second) */
+}
