@@ -6,6 +6,7 @@
 #include <jam/fbcon.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
+#include <jam/serial.h>
 #include <jam/ksyms.h>
 #include <jam/mm.h>
 #include <jam/ipi.h>
@@ -115,6 +116,7 @@ static void panic_begin(void)
     uint32_t halted = ipi_halt_others();
     klog_force_unlock();
     fbcon_force_unlock();
+    serial_panic();   /* queued output first, then everything synchronous */
 
     size_t n = klog_tail(tail, TAIL_BYTES);
     tail[n] = '\0';

@@ -20,6 +20,7 @@
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
+#include <jam/serial.h>
 #include <jam/aspace.h>
 #include <jam/uentry.h>
 #include <jam/smp.h>
@@ -1319,6 +1320,8 @@ static void boost_starved(struct cpu *c)
 void sched_tick(void)
 {
     struct cpu *c = this_cpu();
+    if (c->index == 0)
+        serial_poll();   /* rescues a stalled serial transmitter (serial.c) */
     watchdog_check(c);
     boost_starved(c);
 

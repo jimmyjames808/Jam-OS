@@ -50,6 +50,7 @@
 #include <jam/report.h>
 #include <jam/process.h>
 #include <jam/sched.h>
+#include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/startup.h>
 #include <jam/string.h>
@@ -211,9 +212,11 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). */
-enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_COUNT };
+enum sw {
+    SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_COUNT
+};
 static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair",
-                                               "kmcache", "oneshot" };
+                                               "kmcache", "oneshot", "serialirq" };
 static uint64_t sw_boot[SW_COUNT];
 
 static uint64_t sw_get(enum sw s)
@@ -224,6 +227,7 @@ static uint64_t sw_get(enum sw s)
     case SW_AFFINEPAIR: return sched_affine_pair;
     case SW_KMCACHE:    return heap_percpu;
     case SW_ONESHOT:    return lapic_oneshot;
+    case SW_SERIALIRQ:  return serial_async;
     case SW_COUNT:      break;
     }
     return 0;
@@ -237,11 +241,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_AFFINEPAIR: sched_affine_pair = v; break;
     case SW_KMCACHE:    heap_percpu = v; break;
     case SW_ONESHOT:    lapic_oneshot = v; break;
+    case SW_SERIALIRQ:  serial_async = v; break;
     case SW_COUNT:      break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -811,6 +816,51 @@ static void sleep_accuracy(int us)
     off_on(SW_ONESHOT, what, sleep_measure, us, TIMER_SAMPLES);
 }
 
+/* ---- serial output (M5.5) -------------------------------------------------
+ * What a 100-character line costs the CPU that writes it to COM1 (the
+ * serial part of every klog line): off, M5's synchronous output, which
+ * waits for the UART character by character (~87 us each at 115200 baud
+ * on real hardware); on, a copy into the transmit ring that the UART's
+ * interrupt drains. Each sample starts with the ring empty (waited for,
+ * untimed). The lines appear on the serial log only. */
+
+#define SERIAL_SAMPLES 32
+static const char serial_line[] =
+    "bench: serial timing line, 100 characters long, sent 64 times; ignore it ..........................\n";
+_Static_assert(sizeof(serial_line) == 101, "100 characters and the NUL");
+
+static void bench_serial(void *arg)
+{
+    (void)arg;
+    for (unsigned i = 0; i < SERIAL_SAMPLES; i++) {
+        uint64_t until = uptime_ns() + 100000000ull;
+        while (serial_pending() && uptime_ns() < until)
+            thread_sleep_ns(100000);
+        uint64_t t0 = stamp();
+        serial_write(serial_line, sizeof(serial_line) - 1);
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+}
+
+static void serial_measure(int unused)
+{
+    (void)unused;
+    run_on(cpu_p, bench_serial, NULL);
+}
+
+static void serial_output(void)
+{
+    if (!serial_is_async()) {
+        report("bench: serial: no COM1, or its interrupt is off/not working: line skipped");
+        return;
+    }
+    uint64_t drop0 = serial_dropped;
+    off_on(SW_SERIALIRQ, "serial_write of a 100-character line (P)", serial_measure, 0,
+           SERIAL_SAMPLES);
+    if (serial_dropped != drop0)
+        report("bench: serial: %lu characters dropped meanwhile", serial_dropped - drop0);
+}
+
 /* ---- placement of busy threads (M5.5) --------------------------------------
  * Where the scheduler puts CPU-bound threads when there is room: one per
  * core except CPU 0's (which runs this thread), all unpinned but kept off
@@ -1133,6 +1183,7 @@ void bench_run(void)
         chan_call_placed();
     if (cpu_count > 2)
         placement();
+    serial_output();
     if (lapic_timer_has_oneshot()) {
         sleep_accuracy(100);
         sleep_accuracy(1000);

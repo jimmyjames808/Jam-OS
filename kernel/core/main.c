@@ -112,6 +112,7 @@ _Noreturn static void kmain_stage2(void *arg)
     sched_init_bsp();   /* this code is now thread "main" */
     ipi_init();
     ioapic_init();
+    serial_start_irq();   /* M5.5: COM1 output from its transmit interrupt */
     lapic_timer_calibrate();
     lapic_timer_start(TICK_HZ);
     smp_start_aps(boot);
@@ -141,6 +142,9 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("init") || !boot->cmdline[0])
         ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300));
     sched_print_stats();
+    if (serial_dropped || serial_irq_broken())
+        report("serial: %lu characters dropped (ring full)%s", serial_dropped,
+               serial_irq_broken() ? "; no transmit interrupt, output synchronous" : "");
 
     report("run %s", ok ? "complete: no problems" : "FINISHED WITH PROBLEMS");
     report_print(JAMOS_VERSION);
