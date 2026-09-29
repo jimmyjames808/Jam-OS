@@ -176,6 +176,10 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     if (console) {
         if (closed(console))
             return ERR_SHOULD_WAIT;   /* the console is restarting: wait for the new one */
+        /* A connect_input that timed out earlier may have been answered
+         * late: its source channel sits in our queue, holding one of the
+         * console's MAX_SOURCES slots until we take it off (and close it). */
+        drain(console);
         handle_t src;
         status_t st = console_connect_input_until(console, (uint64_t)jam_clock_get() + CONNECT_WAIT,
                                                   &src);
@@ -276,8 +280,18 @@ static void attached(struct binding *bus, const struct usbbus_interface_attached
         bind_interface(slot, path);
 }
 
+/* Only a usb-bus reports interfaces: any other driver writing
+ * interface_attached on its DR_SERVE would get a class driver started on a
+ * channel it serves itself -- with a console input source (review of M7:
+ * a compromised driver could type into the shell). */
+static bool is_usb_bus(const struct binding *b)
+{
+    return b->kind == BIND_PCI && b->path && strcmp(b->path, "drv/usb-bus") == 0;
+}
+
 void usb_driver_events(struct binding *b)
 {
+    bool bus = is_usb_bus(b);
     for (int guard = 0; guard < 1024 && b->client; guard++) {
         _Alignas(8) uint8_t buf[sizeof(struct usbbus_interface_attached_req)];
         handle_t hs[4];
@@ -295,7 +309,7 @@ void usb_driver_events(struct binding *b)
         if (st != OK)
             return;
         const struct usbbus_interface_attached_req *m = (const void *)buf;
-        if (n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
+        if (!bus || n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
             for (uint32_t i = 0; i < nh; i++)
                 jam_handle_close(hs[i]);
             continue;
