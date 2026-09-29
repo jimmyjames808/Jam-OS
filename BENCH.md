@@ -23,6 +23,7 @@ sibling), E = cpu16.
 | block+wake round trip (idle CPU) P->HT / P->P2 / P->E | 1081.7 / 1127.6, 1525.3 / 1596.8, 1904.5 / 2855.1 ns |
 | IPI function call round trip P->HT / P->P2 / P->E | 347.0 / 575.6, 699.7 / 776.8, 1205.3 / 2242.0 ns |
 | channel_call round trip, 1 client, P->HT / P->P2 / P->E | 1267.8 / 1324.6, 2003.4 / 2069.2, 2333.4 / 3727.1 ns |
+| channel_call round trip, P client, server unpinned / server not on P | (new in M5: placement decides; wake-affine should bring these to about the same-CPU and P->HT lines) |
 | TLB shootdown, 1 page, 27 other CPUs | 5646.8 / 6359.8 ns (old all-CPU path) |
 
 Other PC numbers from the same build ("All tests"): 1 server + 27 clients,
@@ -36,3 +37,11 @@ Notes
   divides by the switches the scheduler actually counted.
 - Cross-CPU wakeups go to an idle CPU waiting in `hlt`, so they include
   its wake-from-halt time.
+- QEMU (TCG on the Mac) can't show the all-CPU page line's contention. Its
+  numbers are dominated by an emulator artifact: stores to some physical
+  pages reclaimed from the loader/firmware (probably ones QEMU once
+  translated code from) cost 200-700 ns each, 100-400x a normal page, and
+  which pages a benchmark lands on moves every page-related line (kmalloc,
+  channel_call, the M4 calls/s) by up to 30x between builds. With loader
+  reclaim switched off, the old global-lock allocator also measured the same
+  on 8 vCPUs as on one. Page-allocator scaling has to be measured on the PC.
