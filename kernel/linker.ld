@@ -39,6 +39,11 @@ SECTIONS
         __ktests_start = .;
         KEEP(*(.ktests))
         __ktests_end = .;
+        /* User-copy fixups: (faulting instruction, resume address) pairs. */
+        . = ALIGN(8);
+        __ex_table_start = .;
+        KEEP(*(__ex_table))
+        __ex_table_end = .;
     } :rodata
     __rodata_end = .;
 

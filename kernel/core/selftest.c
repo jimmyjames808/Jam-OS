@@ -425,6 +425,22 @@ void selftest_crash_smp(void)
         spawn_pinned("irqs-off", irqs_off_forever, 1, PRIO_DEFAULT);
         thread_sleep_ms(20000);   /* the watchdog should fire within ~6 s */
     }
+    /* SMEP/SMAP: map one page as user (present, DPL 3) in the running kernel
+     * tables, then have the kernel touch it without stac/clac. Both must be
+     * enabled by now (cpu_init_local ran on every CPU). */
+    if (cmdline_has("testsmap") || cmdline_has("testsmep")) {
+        uint64_t va = 0x2000;   /* a user-range address, page 0 stays unmapped */
+        uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+        unsigned flags = VM_USER | VM_SMALL | (cmdline_has("testsmep") ? VM_EXEC : VM_WRITE);
+        vmm_map(vmm_kernel_pml4(), va, pa, PAGE_SIZE, flags);
+        if (cmdline_has("testsmep")) {
+            *(volatile uint8_t *)phys_to_virt(pa) = 0xc3;   /* ret */
+            ((void (*)(void))va)();   /* kernel fetch from a user page: #PF */
+        } else {
+            volatile uint8_t x = *(volatile uint8_t *)va;   /* kernel read: #PF */
+            kprintf("selftest: SMAP did not fault, read %u\n", x);
+        }
+    }
 }
 
 void selftest_crash(const char *cmdline)

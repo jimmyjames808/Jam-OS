@@ -19,6 +19,9 @@ struct syscall_frame {
     uint64_t user_rip;                /* rcx */
     uint64_t user_rflags;             /* r11 */
     uint64_t user_rsp;
+    /* Track A: the callee-saved registers, so the frame holds the whole
+     * user register state (restored on sysret; rcx/r11 are clobbered). */
+    uint64_t rbx, rbp, r12, r13, r14, r15;
 };
 
 /* Runs with interrupts on. The return value goes back to user rax. */

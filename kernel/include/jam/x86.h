@@ -40,8 +40,46 @@ DEFINE_CR(4)
 static inline void invlpg(uint64_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
 static inline void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
 
-#define MSR_EFER 0xc0000080
-#define MSR_PAT  0x00000277
+#define MSR_EFER           0xc0000080
+#define MSR_STAR           0xc0000081
+#define MSR_LSTAR          0xc0000082
+#define MSR_CSTAR          0xc0000083
+#define MSR_SFMASK         0xc0000084
+#define MSR_FS_BASE        0xc0000100
+#define MSR_GS_BASE        0xc0000101
+#define MSR_KERNEL_GS_BASE 0xc0000102
+#define MSR_SYSENTER_CS    0x00000174
+#define MSR_PAT            0x00000277
+#define EFER_SCE (1ull << 0)
 #define EFER_NXE (1ull << 11)
+#define CR0_MP   (1ull << 1)
+#define CR0_EM   (1ull << 2)
+#define CR0_TS   (1ull << 3)
+#define CR0_NE   (1ull << 5)
 #define CR0_WP   (1ull << 16)
-#define CR4_PGE  (1ull << 7)
+#define CR4_PGE        (1ull << 7)
+#define CR4_OSFXSR     (1ull << 9)
+#define CR4_OSXMMEXCPT (1ull << 10)
+#define CR4_UMIP       (1ull << 11)
+#define CR4_FSGSBASE   (1ull << 16)
+#define CR4_OSXSAVE    (1ull << 18)
+#define CR4_SMEP       (1ull << 20)
+#define CR4_SMAP       (1ull << 21)
+
+#define RFLAGS_CF (1ull << 0)
+#define RFLAGS_PF (1ull << 2)
+#define RFLAGS_AF (1ull << 4)
+#define RFLAGS_ZF (1ull << 6)
+#define RFLAGS_SF (1ull << 7)
+#define RFLAGS_TF (1ull << 8)
+#define RFLAGS_IF (1ull << 9)
+#define RFLAGS_DF (1ull << 10)
+#define RFLAGS_OF (1ull << 11)
+#define RFLAGS_NT (1ull << 14)
+#define RFLAGS_AC (1ull << 18)
+#define RFLAGS_ID (1ull << 21)
+
+static inline void xsetbv(uint32_t reg, uint64_t v)
+{
+    __asm__ volatile("xsetbv" :: "c"(reg), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)));
+}

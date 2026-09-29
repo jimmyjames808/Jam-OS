@@ -40,6 +40,10 @@ void idt_init(void)
     set_gate(2, isr_table[2], IST_NMI);
     set_gate(8, isr_table[8], IST_DOUBLE_FAULT);
     set_gate(18, isr_table[18], IST_MACHINE_CHECK);
+    /* #DB too: it can arrive on the first kernel instruction after a
+     * user-controlled entry (the mov ss / pop ss trick), before the stack
+     * is the kernel's. */
+    set_gate(1, isr_table[1], IST_DEBUG);
     idt_load();
 }
 

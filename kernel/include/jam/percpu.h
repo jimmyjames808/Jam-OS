@@ -1,5 +1,8 @@
 /* Per-CPU state, reached through GS: gs:0 holds a pointer to the struct.
- * M5 adds swapgs on user entry; until then GS is always the kernel's. */
+ * In the kernel GS is always this CPU's struct; ring 3 runs with the
+ * user's GS base, and every entry from ring 3 swaps it back (swapgs).
+ * NMI, #MC and #DB can land in the swapgs window, so they check the GS
+ * base MSR instead of trusting the saved CS (arch/x86_64/isr.S). */
 #pragma once
 
 #include <stdbool.h>
@@ -25,6 +28,10 @@ struct __attribute__((packed)) tss {
 
 struct cpu {
     struct cpu    *self;          /* must stay first: this_cpu() reads gs:0 */
+    /* The syscall entry reads these two before it has a stack or a free
+     * register, at fixed offsets (jam/entry_asm.h). */
+    uint64_t       user_rsp;      /* user RSP while the syscall frame is built */
+    uint64_t       kernel_rsp;    /* current thread's kernel stack top (= TSS rsp0) */
     uint32_t       index;         /* 0 = BSP, dense */
     uint32_t       lapic_id;
     uint32_t       acpi_uid;

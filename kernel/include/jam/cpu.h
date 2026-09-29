@@ -13,6 +13,8 @@ struct cpu_features {
     bool tsc_invariant;
     bool hybrid;          /* Intel P-core/E-core (CPUID 7.EDX[15]) */
     bool tsc_deadline;    /* LAPIC timer TSC-deadline mode */
+    bool smep, smap, umip;
+    bool xsave, avx;      /* XSAVE (CPUID 1.ECX[26]); AVX usable with it */
     uint32_t max_leaf;
     uint32_t crystal_hz;  /* CPUID 0x15, 0 if not reported */
     uint32_t tsc_ratio_num, tsc_ratio_den;
@@ -21,10 +23,15 @@ struct cpu_features {
 };
 
 extern struct cpu_features cpu_features;
+extern uint8_t smap_on;   /* stac/clac usable (entry_asm.h) */
 
 void cpu_detect(void);
 /* EFER.NXE, CR0.WP, CR4.PGE and the PAT layout used by the VMM. */
 void cpu_enable_paging_features(void);
+/* Per-CPU setup for ring 3, run by every CPU once it is on the kernel's
+ * page tables and its own GDT (percpu_load): SMEP, SMAP, UMIP, FSGSBASE
+ * off, the FPU/XSAVE state (fpu.c) and the syscall MSRs (uentry.c). */
+void cpu_init_local(void);
 
 /* Segment selectors. The user selectors are laid out for SYSRET:
  * STAR[63:48] = GDT_USER_BASE, so SS = +8 and CS = +16. */
@@ -39,6 +46,8 @@ void cpu_enable_paging_features(void);
 #define IST_DOUBLE_FAULT  1
 #define IST_NMI           2
 #define IST_MACHINE_CHECK 3
+#define IST_DEBUG         4
+#define IST_COUNT         4
 
 /* Early BSP-only GDT/TSS with static IST stacks, used until the per-CPU
  * structures exist. */
