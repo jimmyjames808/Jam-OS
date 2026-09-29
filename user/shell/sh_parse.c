@@ -177,13 +177,15 @@ int sh_segments(char *line, struct sh_seg *segs)
     bool word_start = true;
     for (;;) {
         char c = *p;
-        if (q) {
+        /* Inside quotes, up to the closing one. An unclosed quote reaches
+         * the NUL and ends the line like any other end, so its segment
+         * counts against SH_MAX_SEGS; sh_split_words reports the missing
+         * quote. */
+        if (q && c) {
             if (c == '\\' && q == '"' && p[1]) {
                 p += 2;
                 continue;
             }
-            if (!c)
-                break;   /* sh_split_words reports the missing quote */
             if (c == q)
                 q = 0;
             p++;
@@ -227,11 +229,6 @@ int sh_segments(char *line, struct sh_seg *segs)
         p += op == SH_OP_AND || op == SH_OP_OR ? 2 : 1;
         start = p;
         word_start = true;
-    }
-    if (q) {
-        segs[n].text = start;
-        segs[n].op = SH_OP_END;
-        n++;
     }
     return missing_command(segs, n) ? -1 : n;
 }

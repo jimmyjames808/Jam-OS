@@ -1,0 +1,53 @@
+# The segment limit of sh_segments (SH_MAX_SEGS = 32): n separators make
+# n + 1 segments. 31 and 32 segments run; 33 is refused. A line whose last
+# segment has an unclosed quote counts that segment like any other: at 32
+# it is the quote's error, at 33 the limit's (a 33rd segment stored anyway
+# would land one past the end of the caller's array, and the quote's error
+# would show instead). The text waited for is built from $T = x, so it
+# never appears in the typed line. QEMU_INPUT=this file, command line
+# "shell".
+wait 120 Jam OS shell
+wait jam>
+send T=x
+wait jam>
+
+# 31 segments: 30 empty ones, then the echo
+send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg31$T
+wait seg31x
+wait jam>
+# 32 segments: the most a line may have
+send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg32$T
+wait seg32x
+wait jam>
+# 33 segments: refused, nothing runs
+send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg33$T
+wait 10 sh: too many commands on one line
+wait jam>
+send echo status$?$T
+wait status2x
+wait jam>
+
+# 32 segments, the last with an unclosed quote: the quote's error
+send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo "open32$T
+wait 10 sh: no closing "
+wait jam>
+send echo status$?$T
+wait status2x
+wait jam>
+# 33 segments, the last with an unclosed quote: the limit's error
+send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo "open33$T
+wait 10 sh: too many commands on one line
+wait jam>
+send echo status$?$T
+wait status2x
+wait jam>
+# a lone unclosed quote still says so (the one-segment case)
+send echo 'single$T
+wait 10 sh: no closing '
+wait jam>
+# and the shell is still fine
+send echo alive$T
+wait alivex
+wait jam>
+send reboot
+wait reboot: resetting
