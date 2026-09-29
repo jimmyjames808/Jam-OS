@@ -103,7 +103,10 @@ struct port_packet {
  * ERR_NO_RESOURCES for handles and threads). So a child job can never use
  * more than its parent has left, whatever its own limit says. */
 
-#define JOB_LIMIT_PAGES     1   /* committed VMO pages (charged to the VMO creator's job) */
+/* JOB_LIMIT_PAGES: memory in 4 KiB pages. A VMO's committed pages and its
+ * own table pages (charged to the VMO creator's job); a process's address
+ * space: PML4, page tables, a page per 16 mappings (the process's job). */
+#define JOB_LIMIT_PAGES     1
 #define JOB_LIMIT_HANDLES   2   /* handle-table slots in use, plus one per child job */
 #define JOB_LIMIT_THREADS   3   /* live threads */
 #define JOB_LIMIT_MSG_BYTES 4   /* bytes of queued channel messages, charged to the sender */

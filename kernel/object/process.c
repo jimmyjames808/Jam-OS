@@ -153,7 +153,7 @@ status_t process_create(struct job *job, const char *name, struct process **out)
     struct process *p = kzalloc(sizeof(*p));
     if (!p)
         return ERR_NO_MEMORY;
-    status_t st = aspace_create(&p->as);
+    status_t st = aspace_create_charged(job, &p->as);
     if (st != OK) {
         kfree(p);
         return st;

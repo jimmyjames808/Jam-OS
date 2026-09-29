@@ -165,3 +165,99 @@ KTEST(quota_vmo_tables_charged)
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
     job_unref(j);
 }
+
+static void map_one(struct aspace *as, struct vmo *v, uint64_t addr, status_t want)
+{
+    KT_EQ(aspace_map(as, v, 0, PAGE_SIZE,
+                     ASPACE_READ | ASPACE_WRITE | ASPACE_CAN_READ | ASPACE_CAN_WRITE |
+                         ASPACE_FIXED,
+                     &addr),
+          want);
+}
+
+/* R2. A process's address space charges its job for its PML4, every user
+ * page-table page and the mapping structs. The review's attack: one
+ * committed page mapped at 1 GiB strides costs a PD and a PT page per
+ * mapping on the first touch (512 mappings = ~1024 table pages for one
+ * charged page; MAX_MAPPINGS is 16384). Now the job pays for them, so a
+ * job with room for 64 pages stops the attack at 64 pages of kernel
+ * memory, and everything is credited back when the address space goes. */
+KTEST(quota_aspace_tables_charged)
+{
+    enum { N = 512, LIMIT = 64 };
+    struct job *j = quota_job();
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, LIMIT), OK);
+    struct process *p;
+    KT_EQ(process_create(j, "quota-pt", &p), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1);   /* the PML4 */
+    struct aspace *as = process_aspace(p);
+    struct vmo *v;
+    KT_EQ(vmo_create(PAGE_SIZE, 0, &v), OK);
+    KT_EQ(vmo_set_job(v, j), OK);
+
+    /* The exact costs: a mapping (a page per 16 of them), a first touch
+     * (its page + mid + leaf in the VMO; PDPT + PD + PT here), and unmap
+     * gives the tables back. */
+    uint64_t base = 1ull << 32;
+    map_one(as, v, base, OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2);
+    KT_EQ(aspace_fault(as, base, ASPACE_WRITE), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2 + 3 + 3);
+    KT_EQ(aspace_unmap(as, base, PAGE_SIZE), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1 + 3);   /* the VMO keeps its page */
+
+    uint64_t before = free_now(), charged0 = job_used(j, JOB_LIMIT_PAGES);
+    unsigned i;
+    status_t st = OK;
+    for (i = 0; i < N; i++) {
+        uint64_t addr = base + i * (1ull << 30);   /* 1 GiB apart */
+        st = aspace_map(as, v, 0, PAGE_SIZE,
+                        ASPACE_READ | ASPACE_WRITE | ASPACE_CAN_READ | ASPACE_CAN_WRITE |
+                            ASPACE_FIXED,
+                        &addr);
+        if (st == OK)
+            st = aspace_fault(as, addr, ASPACE_WRITE);   /* what the user's touch does */
+        if (st != OK)
+            break;
+    }
+    uint64_t used = before - free_now();
+    uint64_t charged = job_used(j, JOB_LIMIT_PAGES);
+    kprintf("quota: stopped after %u of %u mappings (%s), job charged %lu page(s), kernel "
+            "spent %lu pages (%lu page-table pages)\n", i, N, status_str(st), charged, used,
+            aspace_pt_pages(as));
+    KT_EQ(st, ERR_NO_MEMORY);
+    KT_ASSERT(i < N / 8);
+    KT_ASSERT(charged <= LIMIT);
+    KT_ASSERT(used <= charged - charged0 + 16);   /* nothing big left uncharged */
+
+    /* A split the job can't pay for fails before changing anything. */
+    uint64_t big = 1ull << 44;
+    struct vmo *v2;
+    KT_EQ(vmo_create(64 * PAGE_SIZE, 0, &v2), OK);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    uint64_t addr = big;
+    KT_EQ(aspace_map(as, v2, 0, 64 * PAGE_SIZE, ASPACE_READ | ASPACE_CAN_READ | ASPACE_FIXED,
+                     &addr),
+          OK);
+    uint32_t n = aspace_mapping_count(as);
+    for (big += 64 * PAGE_SIZE; n % ASPACE_MAPPINGS_PER_PAGE; n++, big += PAGE_SIZE)
+        map_one(as, v2, big, OK);   /* fill the last charged page of mappings */
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, job_used(j, JOB_LIMIT_PAGES)), OK);
+    map_one(as, v2, big, ERR_NO_MEMORY);
+    KT_EQ(aspace_unmap(as, addr + PAGE_SIZE, PAGE_SIZE), ERR_NO_MEMORY);      /* a hole */
+    KT_EQ(aspace_protect(as, addr + PAGE_SIZE, PAGE_SIZE, 0), ERR_NO_MEMORY);  /* 2 splits */
+    KT_EQ(aspace_mapping_count(as), n);   /* nothing changed */
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, job_used(j, JOB_LIMIT_PAGES) + 1), OK);
+    KT_EQ(aspace_protect(as, addr + PAGE_SIZE, PAGE_SIZE, 0), OK);
+    KT_EQ(aspace_mapping_count(as), n + 2);
+    KT_EQ(aspace_unmap(as, addr, 64 * PAGE_SIZE), OK);   /* back down: credited */
+    KT_EQ(aspace_mapping_count(as), n - 1);
+    kobject_unref(vmo_kobject(v2));
+
+    kobject_unref(vmo_kobject(v));
+    aspace_unref(as);
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
+    kobject_unref(process_kobject(p));
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    job_unref(j);
+}

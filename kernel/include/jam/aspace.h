@@ -23,10 +23,19 @@
 #define ASPACE_CAN_EXEC  (1u << 6)
 
 struct aspace;
+struct job;
 struct vmo;
 
-/* A new, empty address space with one reference. */
+/* A new, empty address space with one reference, charged to nobody. */
 status_t aspace_create(struct aspace **out);
+/* The same, charged to job (JOB_LIMIT_PAGES; NULL = nobody) for as long as
+ * it exists: its PML4 now, and later every page table it makes and a page
+ * per ASPACE_MAPPINGS_PER_PAGE mappings. The address space holds a job
+ * reference. ERR_NO_MEMORY if the job refuses the PML4. With a job, map,
+ * unmap and protect fail with ERR_NO_MEMORY, and faults with ERR_NO_MEMORY,
+ * when the job refuses what they need. */
+status_t aspace_create_charged(struct job *job, struct aspace **out);
+#define ASPACE_MAPPINGS_PER_PAGE 16   /* charged: one page per this many mappings */
 void     aspace_ref(struct aspace *as);
 /* The last reference unmaps everything and frees the page tables. It must
  * not be dropped while a CPU still has the address space loaded (a
