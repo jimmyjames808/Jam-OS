@@ -36,7 +36,15 @@
 - **M6 Track A MERGED (fd61839; v0.0.10-m6a = 5c64c9e)**: PCI core, 157/157 ktests, Devices entry works in
   QEMU. On the PC run **Devices first** (pci_init now runs on EVERY boot; BAR sizing of Intel PCH
   functions with decode briefly off is new on real hardware - if a boot hangs, the last `pci:` line
-  names the function). fbcon gained fbcon_phys() for display detection. Tracks B, C, D still running.
+  names the function). fbcon gained fbcon_phys() for display detection.
+- **Tracks B + C MERGED** (a9cc0b6, 27a612b; v0.0.11-m6abc): per-CPU vectors + interrupt objects (edu MSI ->
+  port packet works in QEMU, ~10-100 us under TCG), resources, physical VMOs, bound dma_caps, config
+  filter, all syscalls 90-102; userboot passes the root resource (SR_RESOURCE) and init checks it.
+  186/186 ktests at 4 and 8. Pre-existing object.c race fixed (a89dc4d: deferred on_zero_handles now holds
+  a ref). Open notes for phase 2: pci_msi_enable's INTx-disable write should take Track C's
+  pci_cmd_lock; devmgr's RES_PCI_DEV needs RIGHT_MANAGE; MSI needs BME on even for IRQ-only devices;
+  object_wait_one on an interrupt can miss a fire (use the PERSISTENT port binding) - say so in driver.h.
+  Track D still running.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
