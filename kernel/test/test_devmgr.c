@@ -49,15 +49,15 @@
 #define DM_MAX_HANDLES 8u
 
 struct dm_req {
-    uint32_t txid, ordinal;
-    uint16_t vendor, device;
-    uint32_t instance;
+    uint32_t txid, ordinal;    /* channel txid; DM_* request */
+    uint16_t vendor, device;   /* the device's PCI ids */
+    uint32_t instance;         /* which instance of it */
 } __attribute__((packed));
 
 struct dm_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t a, b, c, d, e;
+    uint32_t txid;            /* the request's txid */
+    int32_t  status;          /* OK or ERR_* */
+    uint32_t a, b, c, d, e;   /* the reply's values, by request */
 } __attribute__((packed));
 
 /* A devmgr of our own. */

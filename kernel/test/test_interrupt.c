@@ -213,8 +213,8 @@ KTEST(interrupt_vector_alloc_fill_and_free)
 }
 
 struct hit {
-    volatile uint32_t cpu;
-    volatile uint64_t n;
+    volatile uint32_t cpu;   /* the CPU the handler ran on */
+    volatile uint64_t n;     /* times it ran */
 };
 
 static void record(void *ctx)
@@ -394,10 +394,10 @@ KTEST(interrupt_masked_until_ack)
 
 /* The consumer: reads packets and acks until told to stop. */
 struct consumer {
-    struct port      *port;
-    struct kobject   *irq;
-    volatile uint64_t sum, packets;
-    volatile bool     stop;
+    struct port      *port;           /* where the packets arrive */
+    struct kobject   *irq;            /* the interrupt it acks */
+    volatile uint64_t sum, packets;   /* packet counts added up; packets read */
+    volatile bool     stop;           /* set by the test to end it */
 };
 
 static void consume(void *arg)
@@ -453,9 +453,9 @@ KTEST(interrupt_concurrent_fires_all_counted)
 
 /* The real vector path wakes a thread blocked in port_wait. */
 struct waiter {
-    struct port     *port;
-    volatile uint64_t got;
-    struct port_packet pkt;
+    struct port     *port;    /* the port it blocks on */
+    volatile uint64_t got;    /* packets received */
+    struct port_packet pkt;   /* the last one */
 };
 
 static void port_waiter(void *arg)
@@ -486,9 +486,9 @@ KTEST(interrupt_vector_wakes_port_waiter)
 }
 
 struct firer {
-    struct kobject   *irq;
-    volatile bool    *stop;
-    volatile uint64_t n;
+    struct kobject   *irq;    /* the interrupt it fires */
+    volatile bool    *stop;   /* set by the test to end it */
+    volatile uint64_t n;      /* fires made */
 };
 
 static void fire_loop(void *arg)

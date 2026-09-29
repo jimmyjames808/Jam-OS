@@ -14,10 +14,10 @@
 
 
 struct waiter {
-    struct handle_table *t;
-    handle_t             h;
-    volatile status_t    st;
-    volatile bool        started;
+    struct handle_table *t;         /* the waiter's handle table */
+    handle_t             h;         /* the handle it waits on */
+    volatile status_t    st;        /* what its wait returned */
+    volatile bool        started;   /* it is about to wait */
 };
 
 static void wait_event(void *arg)

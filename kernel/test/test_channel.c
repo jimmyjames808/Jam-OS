@@ -19,8 +19,8 @@
 /* A test-only object that counts its destruction, to check that handles
  * inside messages are released exactly once. */
 struct cobj {
-    struct kobject base;
-    volatile int *destroyed;
+    struct kobject base;       /* a real object, so it can travel in messages */
+    volatile int *destroyed;   /* incremented by destroy */
 };
 
 static void cobj_destroy(struct kobject *o)
@@ -567,10 +567,10 @@ KTEST(channel_pingpong)
 enum { CALLERS = 8, CALLS_EACH = 500 };
 
 struct call_req {
-    uint32_t txid, caller, seq;
+    uint32_t txid, caller, seq;   /* channel_call's txid; who asked; the caller's call number */
 };
 struct call_reply {
-    uint32_t txid, caller, seq, check;
+    uint32_t txid, caller, seq, check;   /* as the request, plus a check value */
 };
 
 static struct channel *call_a, *call_b;
@@ -866,10 +866,10 @@ KTEST(m45_call_with_full_table_fails_before_send)
 }
 
 struct writable_waiter {
-    struct handle_table *t;
-    handle_t             h;
-    status_t             st;
-    signals_t            seen;
+    struct handle_table *t;      /* the waiter's handle table */
+    handle_t             h;      /* the endpoint it waits on */
+    status_t             st;     /* what its wait returned */
+    signals_t            seen;   /* the signals it saw */
 };
 
 static void wait_writable(void *arg)
@@ -917,9 +917,9 @@ KTEST(m45_writable_tracks_queue_room)
 }
 
 struct caller {
-    struct handle_table *t;
-    handle_t             h;
-    status_t             st;
+    struct handle_table *t;    /* the caller's handle table */
+    handle_t             h;    /* the endpoint it calls on */
+    status_t             st;   /* what the call returned */
 };
 
 static void call_forever(void *arg)

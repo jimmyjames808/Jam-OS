@@ -578,10 +578,10 @@ static void cache_line(int other)
 }
 
 struct wake_pp {
-    spinlock_t       lock;
-    struct waitqueue wq;
+    spinlock_t       lock;   /* guards turn */
+    struct waitqueue wq;     /* each side waits here for its move */
     volatile int     turn;   /* 0: initiator's move, 1: responder's */
-    volatile bool    stop;
+    volatile bool    stop;   /* set by the initiator when done */
 };
 
 static struct wake_pp wpp;
@@ -1137,8 +1137,8 @@ static void as_switch(void)
 #define USAMPLES 4000   /* user/tests/utest/bench.c SAMPLES */
 
 struct ubench_result {
-    uint32_t txid, n, batch, reserved;
-    uint64_t cycles[USAMPLES];
+    uint32_t txid, n, batch, reserved;   /* txid, samples (USAMPLES), calls per sample, 0 */
+    uint64_t cycles[USAMPLES];           /* one timing per sample, TSC cycles */
 };
 
 static struct process *uspawn(struct job *j, const char *what, int cpu,
@@ -1232,9 +1232,9 @@ static void user_bench(const char *what, int cpu, int server_cpu, const char *la
 
 /* The same, measured with switch s off and then on. */
 static struct {
-    const char *what, *label;
-    int cpu, server_cpu;
-    bool ok;
+    const char *what, *label;   /* the result line's name and the switch's label */
+    int cpu, server_cpu;        /* client and server CPUs */
+    bool ok;                    /* every run so far succeeded */
 } ub;
 
 static void user_bench_measure(int unused)

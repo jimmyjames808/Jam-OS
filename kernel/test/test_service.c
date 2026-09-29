@@ -28,16 +28,17 @@ enum { OP_HELLO = 1, OP_DOUBLE = 2 };
 
 struct msg {
     uint32_t txid;   /* channel_call's transaction id */
-    uint32_t op;
-    uint64_t value;
+    uint32_t op;     /* OP_* */
+    uint64_t value;  /* argument, then result */
 };
 
 struct client {
-    uint32_t            index;
-    struct handle_table table;
-    handle_t            chan;
+    uint32_t            index;                          /* which client */
+    struct handle_table table;                          /* its own handle table */
+    handle_t            chan;                           /* its channel to the server */
+    /* results: calls made, wrong replies, latency */
     volatile uint64_t   calls, bad, max_ns, total_ns;
-    volatile bool       event_ok;
+    volatile bool       event_ok;                       /* the timer event arrived */
 };
 
 static struct handle_table server_table;

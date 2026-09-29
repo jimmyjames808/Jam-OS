@@ -17,10 +17,10 @@
 #define PP_ROUNDS 200
 
 static struct {
-    spinlock_t       lock;
-    struct waitqueue wq;
+    spinlock_t       lock;   /* guards turn */
+    struct waitqueue wq;     /* each side waits here for its move */
     volatile int     turn;   /* 0: pinger's move, 1: ponger's */
-    volatile bool    stop;
+    volatile bool    stop;   /* set when the rounds are done */
 } pp;
 
 static volatile uint32_t pp_ran_on[MAX_CPUS];

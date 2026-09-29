@@ -15,8 +15,8 @@
 
 /* A watched object that counts its own destruction. */
 struct pobj {
-    struct kobject base;
-    volatile int *destroyed;
+    struct kobject base;       /* a real object a port can watch */
+    volatile int *destroyed;   /* incremented by destroy */
 };
 
 static void pobj_destroy(struct kobject *o)
@@ -649,9 +649,10 @@ KTEST(port_sys_rights)
 enum { SP_PRODUCERS = 8, SP_ROUNDS = 2000, SP_TOGGLES = 3, SP_PERS_KEY = 100 };
 
 struct sp_producer {
+    /* ONCE-bound, PERSISTENT-bound, and the consumer's ack */
     struct event     *once, *pers, *ack;
-    volatile uint64_t sent;
-    volatile bool     failed;
+    volatile uint64_t sent;                /* rising edges made */
+    volatile bool     failed;              /* a check failed */
 };
 
 static struct sp_producer sp[SP_PRODUCERS];

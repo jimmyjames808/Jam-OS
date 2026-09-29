@@ -46,22 +46,22 @@
 #define PTE_ADDR 0x000ffffffffff000ull
 
 struct uspace {
-    uint64_t pml4;          /* physical */
-    uint64_t code_phys, stack_phys, data_phys;
-    void    *code, *stack, *data;   /* HHDM views */
+    uint64_t pml4;                              /* physical */
+    uint64_t code_phys, stack_phys, data_phys;  /* physical pages */
+    void    *code, *stack, *data;               /* HHDM views */
 };
 
 struct uprog {
-    volatile uint64_t report[8];
-    volatile unsigned reported;
+    volatile uint64_t report[8];   /* values the program reported */
+    volatile unsigned reported;    /* how many */
 };
 
 /* thread -> (page tables, program) so the CR3 hook and the syscall handlers
  * can find them from current_thread(). */
 static struct {
-    struct thread *t;
-    uint64_t       pml4;
-    struct uprog  *prog;
+    struct thread *t;      /* the thread */
+    uint64_t       pml4;   /* its page tables */
+    struct uprog  *prog;   /* its program's report area */
 } regs[MAX_CPUS];
 static spinlock_t reg_lock = SPINLOCK_INIT("utest regs");
 
@@ -267,6 +267,7 @@ static void uspace_destroy(struct uspace *u)
 
 /* ---- a tiny x86-64 emitter for the user programs -------------------------- */
 
+/* Machine-code writer: the next byte goes at p, never past end. */
 struct emit { uint8_t *p, *end; };
 static void eb(struct emit *e, uint8_t b)
 {
@@ -310,9 +311,9 @@ static void e_movd_to_xmm(struct emit *e, unsigned x)
 /* ---- running a user thread ------------------------------------------------- */
 
 struct urun {
-    struct uspace *u;
-    struct uprog  *prog;
-    uint64_t       entry, arg0, arg1;
+    struct uspace *u;                   /* the address space */
+    struct uprog  *prog;                /* where the program reports */
+    uint64_t       entry, arg0, arg1;   /* where it starts and its two arguments */
 };
 
 static void user_thread(void *arg)
@@ -553,11 +554,12 @@ KTEST(uentry_bad_return)
  * borrow a user address space by pointing this kernel thread's CR3 at it
  * (registered with the hook) without ever entering ring 3. */
 struct copyctx {
-    struct uspace *u;
+    struct uspace *u;                                    /* the address space borrowed */
+    /* what each copy returned */
     volatile status_t r_good, r_unmapped, r_kernel, r_noncanon, r_crosstop, r_tostack;
-    volatile bool     data_ok;
-    volatile status_t r_str_ok, r_str_nonul, r_str_bad;
-    volatile bool     str_ok;
+    volatile bool     data_ok;                           /* the bytes copied in were right */
+    volatile status_t r_str_ok, r_str_nonul, r_str_bad;  /* what each string copy returned */
+    volatile bool     str_ok;                            /* the strings were right */
 };
 
 static void copy_thread(void *arg)

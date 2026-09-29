@@ -600,10 +600,10 @@ KTEST(resource_kill_releases_pins)
 #define RACE_THREADS 3
 
 struct pin_race {
-    struct kobject *cap;
-    struct vmo     *v;
-    volatile bool   go;
-    uint64_t        pins;
+    struct kobject *cap;    /* the DMA capability pinned through */
+    struct vmo     *v;      /* the VMO pinned */
+    volatile bool   go;     /* start line for the racing threads */
+    uint64_t        pins;   /* pins made */
 };
 
 static void pin_racer(void *arg)

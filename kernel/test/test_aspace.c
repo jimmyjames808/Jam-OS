@@ -650,8 +650,8 @@ static volatile uint64_t st_ops[ST_MAX_THREADS];
 static volatile int st_bad;
 
 struct st_map {
-    struct aspace *as;
-    uint64_t       addr, off, len;
+    struct aspace *as;               /* the address space all workers share */
+    uint64_t       addr, off, len;   /* a mapping: where, VMO offset, bytes */
 };
 static struct st_map st_maps[ST_MAX_THREADS][ST_SLOTS];
 

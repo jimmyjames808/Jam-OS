@@ -94,8 +94,8 @@ KTEST(console_klog_reader)
  * kept, and reading to the end clears it. The sink writes more than the
  * whole ring (KLOG_SIZE) after the first step. */
 struct gap_sink {
-    char    *buf;
-    unsigned calls;
+    char    *buf;     /* where the sink copies text to */
+    unsigned calls;   /* times the sink was called */
 };
 
 static status_t flood_sink(void *ctx, uint64_t off, const char *text, size_t n)

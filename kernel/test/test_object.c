@@ -9,9 +9,9 @@
 #include <jam/time.h>
 
 struct tobj {
-    struct kobject base;
-    volatile int *destroyed;
-    volatile int *zero_handles;
+    struct kobject base;          /* a real object for the handle layer */
+    volatile int *destroyed;      /* incremented by destroy */
+    volatile int *zero_handles;   /* incremented by on_zero_handles */
 };
 
 static void tobj_destroy(struct kobject *o)

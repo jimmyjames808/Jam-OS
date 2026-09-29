@@ -106,8 +106,8 @@ static uint64_t rng(void) { return kt_rng(&rng_state); }
  * against the end, so a read one byte past the image faults (and panics
  * the kernel) instead of silently reading neighbouring memory. */
 struct fuzzbuf {
-    struct vmo *v;
-    uint8_t    *base;
+    struct vmo *v;     /* the VMO backing the buffer */
+    uint8_t    *base;  /* its kernel mapping */
     uint64_t    cap;   /* mapped bytes */
 };
 
