@@ -1,4 +1,4 @@
-# edu: QEMU's `edu` test device, as its driver (drivers/edu) serves it.
+# edu: QEMU's `edu` test device, as its driver (drivers/test/edu) serves it.
 # Format: see tools/genidl.py.
 #
 # Reconnect (M7 supervision, user/include/devmgr.h): devmgr restarts the

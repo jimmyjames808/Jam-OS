@@ -130,7 +130,7 @@
 #define DEVMGR_SUP_FINISHED   4u   /* exited 0 by itself (a one-shot driver) */
 
 /* The software device of the crash-test driver, and its protocol (a
- * request is u32 txid, u32 ordinal; drivers/crasher/crasher.c has the
+ * request is u32 txid, u32 ordinal; drivers/test/crasher/crasher.c has the
  * same numbers). PING -> u32 txid, i32 status, u64 started_ns (when this
  * instance of the driver started); CRASH and EXIT(u32 code) get no reply:
  * the driver faults, or exits with the code. */

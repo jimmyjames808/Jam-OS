@@ -1,6 +1,5 @@
-# null: the M6 test protocol (an echo server). drivers/null serves it; the
-# drvtest driver (run by a ktest and by utest) calls it through the
-# generated client. Format: see tools/genidl.py.
+# null: the test protocol (an echo server). drivers/test/null serves it;
+# the drvtest driver (run by utest) calls it through the generated client. Format: see tools/genidl.py.
 #
 # Reconnect (M7): whoever runs a null server and restarts it (devmgr's
 # supervision does this for the drivers it binds, user/include/devmgr.h)

@@ -16,7 +16,6 @@
 #include <os.h>
 #include <devmgr.h>
 
-bool init_xhcitest(void);   /* xhcitest.c */
 bool init_shell(bool nousb);   /* shell.c: M7, never returns */
 
 #define MAX_WORDS     16
@@ -262,42 +261,6 @@ static bool run_config(const char *cfg, uint64_t len)
     return ok;
 }
 
-/* The "Visual demo" boot entry: bin/demo with the root resource (it maps
- * the framebuffer itself) and the kernel's description of the screen. */
-static bool run_demo(const char *spec)
-{
-    handle_t job, proc, res;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
-    if (st == OK)
-        st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHT_SAME, &res);
-    if (st != OK) {
-        init_say("init: demo: can't set it up (%s)", status_str(st));
-        return false;
-    }
-    const char *av[] = { "bin/demo", spec };
-    struct spawn_handle x = { SR_RESOURCE, res };
-    struct spawn_args a = { .path = "bin/demo", .argc = 2, .argv = av, .job = job,
-                            .extra = &x, .nextra = 1 };
-    if ((st = spawn(&a, &proc)) != OK) {
-        init_say("init: demo: could not start (%s)", status_str(st));
-        jam_handle_close(job);
-        return false;
-    }
-    struct process_info info;
-    st = spawn_wait(proc, 170000000000ull, &info);
-    if (st == ERR_TIMED_OUT) {
-        jam_job_kill(job);
-        st = spawn_wait(proc, 10000000000ull, &info);
-    }
-    bool ok = st == OK && !info.killed && info.exit_code == 0;
-    if (!ok)
-        init_say("init: demo ended badly (%s, code %ld)", status_str(st),
-                 st == OK ? (long)info.exit_code : -1L);
-    jam_handle_close(proc);
-    jam_handle_close(job);
-    return ok;
-}
-
 /* M7 "USB keyboard test" boot entry: devmgr (usb-bus, a hid per HID
  * interface, no console: each hid logs every key DOWN), KEYTEST_S seconds
  * to type on the PC, then everything stops; each hid puts its count of
@@ -333,8 +296,6 @@ int main(int argc, char **argv)
     if (!check_root_resource())
         return 1;
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
-    if (argc > 1 && !strcmp(argv[1], "xhcitest"))
-        return init_xhcitest() ? 0 : 1;
     /* M7: a plain boot: the console, devmgr (connected to it), serial
      * input and the shell; the safe mode entry: the same without USB. */
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
@@ -344,8 +305,6 @@ int main(int argc, char **argv)
 
     if (argc > 1 && !strcmp(argv[1], "keytest"))
         return run_keytest() ? 0 : 1;
-    if (argc > 1 && !strncmp(argv[1], "demo:", 5))
-        return run_demo(argv[1]) ? 0 : 1;
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);

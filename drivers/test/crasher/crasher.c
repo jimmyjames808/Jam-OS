@@ -1,4 +1,4 @@
-/* crasher: a driver that dies on command (M7 Track D), for the
+/* crasher: a driver that dies on command, for the
  * supervision tests. devmgr starts it on request (DEVMGR_TEST_DRIVER) as a
  * supervised driver of a software device: it gets only DR_SERVE. utest
  * crashes it and checks that devmgr restarts it with the right backoff,

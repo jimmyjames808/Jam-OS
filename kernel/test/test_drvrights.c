@@ -1,29 +1,18 @@
-/* M7 Track D: a driver can't pass its hardware handles on (review of M6
- * phase 2, finding 2). devmgr hands them over with channel_write_rights
- * (syscall 121) minus RIGHT_DUPLICATE and RIGHT_TRANSFER; a physical VMO
- * made from such a BAR inherits that; kdevmgr gives kernel-process drivers
- * the same rights.
+/* A driver can't pass its hardware handles on. devmgr hands them over with channel_write_rights (syscall 121) minus RIGHT_DUPLICATE and
+ * RIGHT_TRANSFER, and a physical VMO made from such a BAR inherits that.
  *
  *   chan_write_rights            the system call's rules
- *   phys_vmo_keeps_no_transfer   vmo_create_physical inherits the limits
- *   kdev_driver_handles_stay     edu's handles (kernel-process driver) */
+ *   phys_vmo_keeps_no_transfer   vmo_create_physical inherits the limits */
 #include <jam/channel.h>
-#include <jam/driver.h>
 #include <jam/handle.h>
-#include <jam/kdevmgr.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
-#include <jam/process.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sys.h>
-#include <jam/time.h>
-#include <jam/userboot.h>
-#include <idl/edu.h>
 
-#define S        1000000000ull
 #define PASS_ON  (RIGHT_DUPLICATE | RIGHT_TRANSFER)
 #define KEEP     (RIGHT_WAIT | RIGHT_INSPECT)
 
@@ -109,38 +98,4 @@ KTEST(phys_vmo_keeps_no_transfer)
     kobject_unref(dev);
     kobject_unref(pci);
     kobject_unref(root);
-}
-
-KTEST(kdev_driver_handles_stay)
-{
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
-        return;
-    }
-    struct job *root;
-    KT_EQ(userboot_root_job(&root), OK);
-    struct kdev_binding b;
-    KT_EQ(kdev_bind(d, "edu", root, &b), OK);
-    /* Once it answers, it has set up (and holds all it was given). */
-    struct edu_factorial_req q = { 0, EDU_FACTORIAL, 5 };
-    struct edu_factorial_rep rep;
-    uint32_t n = 0;
-    KT_EQ(channel_call((struct channel *)b.client.obj, &q, sizeof(q), NULL, 0, &rep, sizeof(rep),
-                       &n, NULL, 0, NULL, uptime_ns() + 10 * S),
-          OK);
-    struct handle_table *t = process_handles(b.proc);
-    static const struct { enum obj_type type; const char *what; } kinds[] = {
-        { OBJ_DMA_CAP, "dma_cap" }, { OBJ_INTERRUPT, "interrupt" }, { OBJ_RESOURCE, "resource" },
-    };
-    for (unsigned k = 0; k < 3; k++) {
-        rights_t r[8];
-        uint32_t cnt = handle_table_rights(t, kinds[k].type, r, 8);
-        kprintf("ktest %s: %u %s handle(s)\n", ktest_current, cnt, kinds[k].what);
-        KT_ASSERT(cnt >= 1 && cnt <= 8);
-        for (uint32_t i = 0; i < cnt; i++)
-            KT_EQ(r[i] & PASS_ON, 0);
-    }
-    KT_ASSERT(kdev_unbind(&b, 10 * S));
-    job_unref(root);
 }

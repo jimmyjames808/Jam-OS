@@ -1,6 +1,6 @@
-/* Must be REJECTED: a user-copy fixup entry in __ex_table makes a kernel
- * page fault at the driver's own instruction resume instead of panicking
- * (a probe for arbitrary kernel memory). */
+/* Must be REJECTED: a user-copy fixup entry in __ex_table (in the kernel,
+ * it would make a page fault at the driver's own instruction resume
+ * instead of panicking: a probe for arbitrary kernel memory). */
 #include <stdint.h>
 #include <jam/driver.h>
 

@@ -12,7 +12,6 @@
 #include <jam/lapic.h>
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
-#include <jam/kdevmgr.h>
 #include <jam/ktest.h>
 #include <jam/report.h>
 #include <jam/mm.h>
@@ -23,7 +22,6 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
-#include <jam/xhci_launch.h>
 #include <jam/pci.h>
 #include <jam/resource.h>
 #include <jam/x86.h>
@@ -120,7 +118,7 @@ _Noreturn static void kmain_stage2(void *arg)
     sched_init_bsp();   /* this code is now thread "main" */
     ipi_init();
     ioapic_init();
-    serial_start_irq();   /* M5.5: COM1 output from its transmit interrupt */
+    serial_start_irq();   /* COM1 output from its transmit interrupt */
     lapic_timer_calibrate();
     lapic_timer_start(TICK_HZ);
     smp_start_aps(boot);
@@ -128,7 +126,7 @@ _Noreturn static void kmain_stage2(void *arg)
 
     kprintf("measuring ticks on every CPU for 1 s...\n");
     bool ok = smp_report(1000);
-    /* M6: PCI enumeration and the resource tree, once every CPU is online
+    /* PCI enumeration and the resource tree, once every CPU is online
      * (the vector allocator spreads MSIs over them). */
     pci_init();
     resource_init();
@@ -151,12 +149,8 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
-    /* M6: `drivers=kernel` binds the drivers as kernel processes (the
-     * edu check on QEMU), before user space starts its own devmgr. */
-    if (cmdline_has("drivers=kernel"))
-        ok &= kdev_run_kernel_mode();
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
-     * or, M7, on "shell" or a plain boot (empty command line): devmgr, the
+     * or on "shell" or a plain boot (empty command line): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
      * RESULTS box only comes if init ever ends). "nousb" (the safe mode
      * entry) is shell mode with devmgr leaving USB controllers alone. Test,
@@ -166,44 +160,10 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 shell ? (nousb ? "shell-nousb" : "shell") : NULL);
-
-    /* M6 done test ("USB controller test" boot entry): xhci-noop on the
-     * xHCI as a kernel process (handles built in the kernel), then as a
-     * process that init starts with handles it makes through the M6
-     * system calls (devmgr's job, until devmgr exists). */
-    if (cmdline_has("xhcitest")) {
-        struct pci_dev *xhc = xhci_find(0);
-        if (!xhc) {
-            report("xhcitest: no xHCI controller (PCI class 0c0330)");
-            ok = false;
-        } else {
-            ok &= xhci_launch(xhc, false);
-            ok &= userboot_run_init(60, "xhcitest");
-        }
-    }
-    /* M7 "USB keyboard test" boot entry: init starts devmgr alone (usb-bus,
-     * a hid per HID interface, keys to the log) for 30 s. */
+    /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
+     * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest");
-    /* "Visual demo" boot entry: init starts bin/demo, which draws on the
-     * framebuffer itself (a WC physical VMO from the root resource) with
-     * every CPU. The text console stops drawing meanwhile and redraws when
-     * it's over, so the RESULTS box shows. */
-    if (cmdline_has("demo")) {
-        const struct boot_framebuffer *f = &boot->fb;
-        if (!f->virt || f->bpp != 32) {
-            report("demo: needs a 32-bit framebuffer");
-            ok = false;
-        } else {
-            char arg[160];
-            ksnprintf(arg, sizeof(arg), "demo:%lx:%u:%u:%u:%u:%u:%u:%u", f->phys, f->width,
-                      f->height, f->pitch, f->red_shift, f->green_shift, f->blue_shift,
-                      cpu_count);
-            fbcon_mute(true);
-            ok &= userboot_run_init(180, arg);
-            fbcon_mute(false);
-        }
-    }
     sched_print_stats();
     if (serial_dropped || serial_irq_broken())
         report("serial: %lu characters dropped (ring full)%s", serial_dropped,
@@ -242,6 +202,7 @@ _Noreturn void kmain(struct boot_info *bi)
     heap_init();
 
     /* Loader-reclaimable memory (Limine's stack, page tables, and the code
-     * the parked APs are spinning in) is freed in M2, after the APs start. */
+     * the parked APs are spinning in) is freed once the APs have started
+     * (smp_start_aps). */
     stack_switch_call(kstack_alloc(KERNEL_STACK_SZ), kmain_stage2, NULL);
 }

@@ -1,19 +1,16 @@
-/* <jam/driver.h>: the ONLY header a driver includes (M6, Track D).
+/* <jam/driver.h>: the ONLY header a driver includes.
  *
- * Every driver is written as if it were already a process: it touches the
- * world only through handles. Two implementations of this file's functions:
- *   - kernel build (kernel/drivers/driver_kernel.c): the driver runs as a
- *     kernel thread inside a *kernel process* (a struct process on the
- *     kernel address space, with its own handle table and job), and each
- *     call is the handle-level kernel function;
- *   - process build (user/lib/driver_user.c): each call is a syscall.
- * Moving a driver out of the kernel is a rebuild and a relaunch.
+ * A driver is a process (drv/<name> in bootfs, started by devmgr) that
+ * touches the world only through the handles it was given. Each function
+ * here is a system call or libos (heap, threads, formatting); the
+ * implementation is user/lib/driver_user.c, and user/lib/driver_crt.c
+ * turns the startup message into the struct driver_start.
  *
  * Drivers are compiled with only this header (plus <jam/abi.h>,
- * <jam/status.h> and the compiler's freestanding headers) on the include
- * path, and tools/checkdriver.py fails the build if a driver object uses a
- * symbol not declared here. No kmalloc, no kernel structs, no other
- * driver. */
+ * <jam/status.h>, the generated protocol headers and the compiler's freestanding
+ * headers) on the include path, and tools/checkdriver.py fails the build
+ * if a driver object uses a symbol not declared here. No libos, no kernel
+ * structs, no other driver. */
 #pragma once
 
 #include <stdarg.h>
@@ -33,8 +30,8 @@
 #define DR_SERVE     2            /* channel it serves its own protocol on */
 #define DR_DMA       3            /* dma_cap bound to its function (bus master OFF: see
                                    * drv_dma_bus_master) */
-#define DR_USB       4            /* M7: a `usb` interface channel (usb-bus serves it) */
-#define DR_INPUT     5            /* M7: an `input` channel to the console (it serves it) */
+#define DR_USB       4            /* a `usb` interface channel (usb-bus serves it) */
+#define DR_INPUT     5            /* an `input` channel to the console (it serves it) */
 #define DR_BAR(n)    (0x10 + (n)) /* RES_MMIO for BAR n (0..5) */
 #define DR_IRQ(n)    (0x20 + (n)) /* interrupt object n (MSI 0, or MSI-X n) */
 
@@ -57,11 +54,19 @@ void     drv_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 uint64_t drv_clock_ns(void);                    /* uptime, ns */
 status_t drv_sleep_until(uint64_t deadline_ns);
 _Noreturn void drv_exit(int code);
-/* A driver thread in the same driver (process or kernel process). */
+/* Another thread in the driver's process. Its 64 KiB stack stays allocated
+ * after it exits, so start threads once, not per request. */
 status_t drv_thread_start(const char *name, void (*fn)(void *), void *arg);
-/* The driver's own heap (never the kernel's). */
+/* The driver's own heap. */
 void    *drv_malloc(size_t n);
 void     drv_free(void *p);
+/* Formatting into a buffer, as C's snprintf / vsnprintf (the same
+ * conversions as drv_log): at most size - 1 characters and a NUL; returns
+ * the length the whole result would have had. */
+int      drv_snprintf(char *buf, size_t size, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+int      drv_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
+    __attribute__((format(printf, 3, 0)));
 
 /* ---- handles, channels, ports, waiting --------------------------------------
  * Same meaning as the syscalls of the same name (abi/syscalls.def). */
@@ -77,7 +82,7 @@ status_t drv_channel_call(handle_t h, void *wbytes, uint32_t wn, void *rbytes, u
                           uint32_t *ractual, uint64_t deadline_ns);
 /* The same, also receiving up to rhcap handles with the reply (slots for
  * them are reserved before the request is sent, so a full handle table
- * fails the call up front). M7: generated clients of methods that return
+ * fails the call up front). Generated clients of methods that return
  * handles use this. */
 status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes, uint32_t rcap,
                             uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
@@ -108,7 +113,7 @@ status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uin
                      uint64_t *pin_id);
 /* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
-/* Bus Master Enable of the DR_DMA cap's function (M7). A driver starts
+/* Bus Master Enable of the DR_DMA cap's function. A driver starts
  * with it OFF: no DMA, no MSI/MSI-X delivery (an MSI is a memory write),
  * no pins (drv_vmo_pin fails ERR_BAD_STATE). Turn it on ONLY once the
  * device is quiet: whatever a previous driver (killed, crashed) left

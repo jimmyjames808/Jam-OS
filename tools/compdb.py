@@ -37,7 +37,7 @@ for line in out.stdout.splitlines():
         # Absolute compiler path: VS Code started from the Dock has no
         # /opt/homebrew/bin on its PATH.
         args[0] = shutil.which(args[0]) or args[0]
-        # A driver is compiled twice (kernel and user builds); keep the first.
+        # One entry per file: the first command that compiles it.
         entries.setdefault(src, {"directory": root, "arguments": args, "file": src})
 
 with open(os.path.join(root, "compile_commands.json"), "w") as f:

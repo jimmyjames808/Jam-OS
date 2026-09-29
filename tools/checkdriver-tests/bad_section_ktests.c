@@ -1,7 +1,6 @@
-/* Must be REJECTED: an entry placed in the kernel's .ktests table (or
- * __ex_table, .limine_requests, ...) is KEEP()'d by kernel/linker.ld even
- * though objcopy localises the symbol, so the kernel would run or obey it
- * outside the driver's process. */
+/* Must be REJECTED: an entry for the kernel's .ktests table (or
+ * __ex_table, .limine_requests, ...): a table only the kernel's linker
+ * script reads has no business in a driver object. */
 #include <stdint.h>
 #include <jam/driver.h>
 

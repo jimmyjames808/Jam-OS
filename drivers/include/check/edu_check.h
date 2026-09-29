@@ -1,10 +1,8 @@
-/* The edu client check (M6 phase 2): what a client of the edu driver
- * verifies, the same code in both modes. kernel/drivers/kdevmgr.c runs it
- * in a kernel process against the edu driver as a kernel process
- * (`drivers=kernel`, ktest driver_kernel_edu); utest runs it against the
- * edu driver process devmgr started. Only <jam/driver.h> and the generated
- * <idl/edu.h> client: it works wherever drv_* do (a driver in either build,
- * or any program linked with libos). Failures are logged with drv_log. */
+/* The edu client check: what a client of the edu driver verifies. utest
+ * runs it against the edu driver process devmgr started. Only
+ * <jam/driver.h> and the generated <idl/edu.h> client: it works wherever
+ * drv_* do (a driver, or any program linked with libos). Failures are
+ * logged with drv_log. */
 #pragma once
 
 #include <jam/driver.h>
