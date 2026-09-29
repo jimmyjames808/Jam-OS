@@ -52,6 +52,7 @@
 #include <jam/pci.h>
 #include <jam/process.h>
 #include <jam/spinlock.h>
+#include <jam/x86.h>
 
 #define IRQ_MAGIC      0x49525131u   /* "IRQ1" */
 #define IRQ_MAGIC_DEAD 0xdead1a1au
@@ -66,7 +67,7 @@ struct kinterrupt {
     bool              masked;
     bool              pending;    /* virtual maskable: fired while masked (a PBA bit) */
     bool              dead;       /* teardown started: fires are ignored */
-    volatile bool     torn;       /* teardown claimed (once) */
+    volatile uint8_t  torn;       /* TORN_*: teardown runs once */
     bool              listed;     /* on dev_irqs (dev_lock) */
     uint8_t           vec;
     uint32_t          cpu;
@@ -223,10 +224,22 @@ uint64_t interrupt_fire_count(struct kobject *irq)
 
 /* ---- lifetime --------------------------------------------------------------- */
 
-static void teardown(struct kinterrupt *o)
+enum { TORN_NO, TORN_BUSY, TORN_DONE };
+
+/* Once, from whichever of on_zero_handles / destroy comes first. They can
+ * run at the same time on two CPUs (object.c td_run: a zero-handles run
+ * deferred on a CPU that is draining a cascade, while another CPU drops
+ * the last reference), so destroy waits for a teardown in progress
+ * elsewhere before it frees the memory (wait = true). */
+static void teardown(struct kinterrupt *o, bool wait)
 {
-    if (__atomic_exchange_n(&o->torn, true, __ATOMIC_ACQ_REL))
+    uint8_t st = TORN_NO;
+    if (!__atomic_compare_exchange_n(&o->torn, &st, TORN_BUSY, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE)) {
+        while (wait && __atomic_load_n(&o->torn, __ATOMIC_ACQUIRE) != TORN_DONE)
+            cpu_relax();
         return;
+    }
     uint64_t f = spin_lock_irqsave(&o->base.lock);
     o->dead = true;
     o->masked = false;
@@ -235,17 +248,18 @@ static void teardown(struct kinterrupt *o)
     if (o->kind != IK_VIRTUAL)
         dev_release(o);
     vector_free(o->cpu, o->vec);   /* no CPU is in fire() for it after this */
+    __atomic_store_n(&o->torn, TORN_DONE, __ATOMIC_RELEASE);
 }
 
 static void interrupt_zero_handles(struct kobject *obj)
 {
-    teardown(container_of(obj, struct kinterrupt, base));   /* nobody can ack it any more */
+    teardown(container_of(obj, struct kinterrupt, base), false);   /* nobody can ack it now */
 }
 
 static void interrupt_destroy(struct kobject *obj)
 {
     struct kinterrupt *o = container_of(obj, struct kinterrupt, base);
-    teardown(o);
+    teardown(o, true);
     o->magic = IRQ_MAGIC_DEAD;
     job_uncharge(o->job, JOB_LIMIT_HANDLES, 1);
     job_unref(o->job);
@@ -336,7 +350,7 @@ status_t interrupt_create_virtual(struct kobject **out)
 bool interrupt_vector_of(struct kobject *irq, uint32_t *cpu, uint8_t *vec)
 {
     struct kinterrupt *o = to_irq(irq);
-    if (!o || __atomic_load_n(&o->torn, __ATOMIC_ACQUIRE))
+    if (!o || __atomic_load_n(&o->torn, __ATOMIC_ACQUIRE) != TORN_NO)
         return false;
     *cpu = o->cpu;
     *vec = o->vec;
