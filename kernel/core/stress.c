@@ -1,20 +1,32 @@
-/* M3 stress test. Threads of six kinds hammer the scheduler, locks and
+/* M3 stress test. Threads of seven kinds hammer the scheduler, locks and
  * allocators at mixed priorities for a set time while the main thread
  * checks TLB shootdowns once a second and prints progress every 10 s.
- * Every check failure is counted; any failure fails the run. */
+ * Every check failure is counted; any failure fails the run.
+ *
+ * M5 added the "process" kind: it starts user programs (bin/utest in a
+ * child mode) and kills them at random moments (before they run, while
+ * they spin in user mode, while they are blocked in channel_call), then
+ * checks that each one's job ends with nothing charged. Without a bootfs
+ * holding bin/utest those workers count instead. */
+#include <jam/channel.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
+#include <jam/bootfs.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/selftest.h>
+#include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/userboot.h>
 
-enum kind { K_COUNTER, K_ALLOC, K_SLEEPER, K_MIGRATOR, K_PINGPONG, K_SPAWNER, K_KINDS };
+enum kind { K_COUNTER, K_ALLOC, K_SLEEPER, K_MIGRATOR, K_PINGPONG, K_SPAWNER, K_PROCESS,
+            K_KINDS };
 static const char *const kind_names[K_KINDS] = {
-    "counter", "alloc", "sleeper", "migrator", "pingpong", "spawner",
+    "counter", "alloc", "sleeper", "migrator", "pingpong", "spawner", "process",
 };
 
 struct pingpong {
@@ -148,6 +160,65 @@ static void do_spawner(struct worker *w)
         fail("short-lived thread did not run exactly once", w);
 }
 
+static bool have_utest;
+static struct job *stress_job;
+
+/* One user program from start to death, killed at a random moment (or
+ * left to exit), then its job must be empty. */
+static void do_process(struct worker *w)
+{
+    static const char *const modes[] = { "exit7", "spin", "caller", "main-exits", "spin" };
+    const char *mode = modes[rnd(w) % 5];
+    struct job *j;
+    if (job_create(stress_job, &j) != OK) {
+        fail("job_create", w);
+        return;
+    }
+    struct channel *mine = NULL, *theirs;
+    struct userboot_handle x = { SR_USER, { NULL, 0 } };
+    bool call = !strcmp(mode, "caller");
+    if (call) {
+        if (channel_create(&mine, &theirs) != OK) {
+            fail("channel_create", w);
+            job_unref(j);
+            return;
+        }
+        x.kh = khandle_from_new((struct kobject *)theirs, RIGHTS_BASIC | RIGHTS_IO);
+    }
+    const char *argv[] = { "utest", mode };
+    struct process *p;
+    status_t st = userboot_spawn("bin/utest", argv, 2, j, call ? &x : NULL, call ? 1 : 0, NULL,
+                                 &p);
+    if (st != OK) {
+        fail("userboot_spawn", w);
+    } else {
+        bool kill = !strcmp(mode, "spin") || call;
+        if (call && rnd(w) % 2)   /* sometimes wait until it is blocked in the call */
+            object_wait_one((struct kobject *)mine, SIG_READABLE, uptime_ns() + 5000000000ull,
+                            NULL);
+        else if (kill && rnd(w) % 4)
+            thread_sleep_ns(rnd(w) % 3000000);
+        if (kill)
+            process_kill(p, PROCESS_KILLED_CODE, true);
+        if (object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 30000000000ull,
+                            NULL) != OK) {
+            fail("user process did not die", w);
+        } else {
+            struct process_info info;
+            process_get_info(p, &info);
+            if (!kill && (info.killed || info.exit_code != (mode[0] == 'e' ? 7 : 11)))
+                fail("user process exited with the wrong code", w);
+        }
+        kobject_unref(process_kobject(p));
+    }
+    if (mine)
+        kobject_unref((struct kobject *)mine);   /* drops any queued request too */
+    for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
+        if (job_used(j, k))
+            fail("a dead process left something charged to its job", w);
+    job_unref(j);
+}
+
 static void worker_main(void *arg)
 {
     struct worker *w = arg;
@@ -159,6 +230,7 @@ static void worker_main(void *arg)
         case K_MIGRATOR: do_migrator(w); break;
         case K_PINGPONG: do_pingpong(w); break;
         case K_SPAWNER:  do_spawner(w);  break;
+        case K_PROCESS:  do_process(w);  break;
         default: break;
         }
         __atomic_add_fetch(&ops[w->kind], 1, __ATOMIC_RELAXED);
@@ -230,6 +302,13 @@ bool stress_run(uint64_t seconds)
     }
     if (waiting)
         waiting->kind = K_COUNTER;
+    const void *img;
+    uint64_t isz;
+    have_utest = bootfs_data("bin/utest", &img, &isz) == OK &&
+                 userboot_root_job(&stress_job) == OK;
+    for (uint32_t i = 0; i < n; i++)
+        if (ws[i].kind == K_PROCESS && !have_utest)
+            ws[i].kind = K_COUNTER;
 
     for (uint32_t i = 0; i < n; i++) {
         ws[i].last_progress_ns = uptime_ns();
@@ -273,11 +352,11 @@ bool stress_run(uint64_t seconds)
             }
             pmm_stats(&t, &fr);
             kprintf("stress: %4lu s  switches %lu  steals %lu  counter %lu  allocs %lu  "
-                    "sleeps %lu  migrations %lu  pingpongs %lu  spawns %lu  boosts %lu  "
-                    "free %lu MiB\n",
+                    "sleeps %lu  migrations %lu  pingpongs %lu  spawns %lu  processes %lu  "
+                    "boosts %lu  free %lu MiB\n",
                     sec, sw, st, ops[K_COUNTER], ops[K_ALLOC], ops[K_SLEEPER],
-                    ops[K_MIGRATOR], ops[K_PINGPONG], ops[K_SPAWNER], sched_boost_count(),
-                    fr >> 8);
+                    ops[K_MIGRATOR], ops[K_PINGPONG], ops[K_SPAWNER], ops[K_PROCESS],
+                    sched_boost_count(), fr >> 8);
         }
     }
 
@@ -297,6 +376,16 @@ bool stress_run(uint64_t seconds)
     }
     kfree(ws);
     kfree(pps);
+    if (stress_job) {
+        for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
+            if (job_used(stress_job, k)) {
+                report("stress: FAILED user processes left %lu units of job kind %u",
+                       job_used(stress_job, k), k);
+                failures++;
+            }
+        job_unref(stress_job);
+        stress_job = NULL;
+    }
     pmm_stats(&total, &free_after);
     kprintf("stress: %lu KiB not returned (thread stacks are kept for reuse)\n",
             (free_before - free_after) * 4);
