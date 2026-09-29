@@ -33,6 +33,10 @@
   serial switch drains first, and the open mutex-starvation item FIXED (hand-off to the longest waiter
   after 1 ms; ktest proves it). QEMU: 145/145 ktests, stress=60 at 4+8, init clean. **Next PC round
   (M5.5 sign-off): flash, All tests, then the 10-min stress.**
+- **M6 Track A MERGED (fd61839; v0.0.10-m6a = 5c64c9e)**: PCI core, 157/157 ktests, Devices entry works in
+  QEMU. On the PC run **Devices first** (pci_init now runs on EVERY boot; BAR sizing of Intel PCH
+  functions with decode briefly off is new on real hardware - if a boot hangs, the last `pci:` line
+  names the function). fbcon gained fbcon_phys() for display detection. Tracks B, C, D still running.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
