@@ -271,20 +271,9 @@ static void shootdown_round(uint64_t va, uint64_t round)
     pmm_free_page_phys(pa);
 }
 
-bool stress_run(uint64_t seconds)
+/* Give each of the n workers its kind, its pingpong partner and its seed. */
+static void assign_kinds(struct worker *ws, struct pingpong *pps, uint32_t n)
 {
-    uint32_t n = cpu_count * 4;
-    kprintf("stress: %u threads on %u CPUs for %lu s, lock checking on\n", n, cpu_count,
-            seconds);
-    mutex_init(&counter_mutex, "stress counter");
-    counter = 0;
-    __atomic_store_n(&stop, false, __ATOMIC_RELAXED);
-
-    uint64_t total, free_before, free_after;
-    pmm_stats(&total, &free_before);
-
-    struct worker *ws = kzalloc(sizeof(*ws) * n);
-    struct pingpong *pps = kzalloc(sizeof(*pps) * (n / 2 + 1));
     for (uint32_t i = 0; i < n; i++) {
         struct worker *w = &ws[i];
         w->kind = (enum kind)(i % K_KINDS);
@@ -319,17 +308,59 @@ bool stress_run(uint64_t seconds)
     for (uint32_t i = 0; i < n; i++)
         if (ws[i].kind == K_PROCESS && !have_utest)
             ws[i].kind = K_COUNTER;
+}
 
+static void start_workers(struct worker *ws, uint32_t n)
+{
     for (uint32_t i = 0; i < n; i++) {
         __atomic_store_n(&ws[i].last_progress_ns, uptime_ns(), __ATOMIC_RELAXED);
         char name[24];
         ksnprintf(name, sizeof(name), "%s#%u", kind_names[ws[i].kind], i);
         ws[i].thread = thread_create(name, worker_main, &ws[i], 8 + (int)(ws[i].seed % 17));
     }
+}
 
-    uint64_t va = vmm_reserve(PAGE_SIZE);
-    shoot_va = (volatile uint64_t *)va;
-    uint64_t start = uptime_ns();
+/* Starvation: every thread must finish an operation every 10 s.
+ * Low-priority threads behind CPU-bound higher ones only run when
+ * boosted (about once a second), and a spawner waits on four such
+ * children, so a few seconds is legitimate; forever is not. */
+static void check_progress(const struct worker *ws, uint32_t n)
+{
+    uint64_t now = uptime_ns();
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t last = __atomic_load_n(&ws[i].last_progress_ns, __ATOMIC_RELAXED);
+        if (last >= now || now - last <= 10000000000ull)
+            continue;
+        report("stress: FAILED thread %s#%u (prio %d) made no progress for %lu s",
+                kind_names[ws[i].kind], i, ws[i].thread->base_prio,
+                (now - __atomic_load_n(&ws[i].last_progress_ns, __ATOMIC_RELAXED)) /
+                    1000000000);
+        __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
+    }
+}
+
+static void print_progress(uint64_t sec)
+{
+    uint64_t sw = 0, steals = 0, t, fr;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        sw += cpus[i]->switches;
+        steals += cpus[i]->steals;
+    }
+    pmm_stats(&t, &fr);
+    kprintf("stress: %4lu s  switches %lu  steals %lu  counter %lu  allocs %lu  "
+            "sleeps %lu  migrations %lu  pingpongs %lu  spawns %lu  processes %lu  "
+            "boosts %lu  free %lu MiB\n",
+            sec, sw, steals, op_count(K_COUNTER), op_count(K_ALLOC),
+            op_count(K_SLEEPER), op_count(K_MIGRATOR), op_count(K_PINGPONG),
+            op_count(K_SPAWNER), op_count(K_PROCESS),
+            sched_boost_count(), fr >> 8);
+}
+
+/* The run itself: once a second a TLB shootdown round and the checks,
+ * every 10 s a progress line; stops early at the first failure. */
+static void run_seconds(const struct worker *ws, uint32_t n, uint64_t seconds, uint64_t va,
+                        uint64_t start)
+{
     for (uint64_t sec = 1; sec <= seconds && !__atomic_load_n(&failures, __ATOMIC_RELAXED); sec++) {
         while (uptime_ns() - start < sec * 1000000000ull)
             thread_sleep_ms(50);
@@ -338,47 +369,26 @@ bool stress_run(uint64_t seconds)
             report("stress: FAILED TLB shootdown: a CPU saw a stale mapping");
             __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
         }
-        /* Starvation: every thread must finish an operation every 10 s.
-         * Low-priority threads behind CPU-bound higher ones only run when
-         * boosted (about once a second), and a spawner waits on four such
-         * children, so a few seconds is legitimate; forever is not. */
-        if (sec >= 10) {
-            uint64_t now = uptime_ns();
-            for (uint32_t i = 0; i < n; i++) {
-                uint64_t last = __atomic_load_n(&ws[i].last_progress_ns, __ATOMIC_RELAXED);
-                if (last < now && now - last > 10000000000ull) {
-                    report("stress: FAILED thread %s#%u (prio %d) made no progress for %lu s",
-                            kind_names[ws[i].kind], i, ws[i].thread->base_prio,
-                            (now - __atomic_load_n(&ws[i].last_progress_ns, __ATOMIC_RELAXED)) /
-                                1000000000);
-                    __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
-                }
-            }
-        }
-        if (sec % 10 == 0 || sec == seconds) {
-            uint64_t sw = 0, steals = 0, t, fr;
-            for (uint32_t i = 0; i < cpu_count; i++) {
-                sw += cpus[i]->switches;
-                steals += cpus[i]->steals;
-            }
-            pmm_stats(&t, &fr);
-            kprintf("stress: %4lu s  switches %lu  steals %lu  counter %lu  allocs %lu  "
-                    "sleeps %lu  migrations %lu  pingpongs %lu  spawns %lu  processes %lu  "
-                    "boosts %lu  free %lu MiB\n",
-                    sec, sw, steals, op_count(K_COUNTER), op_count(K_ALLOC),
-                    op_count(K_SLEEPER), op_count(K_MIGRATOR), op_count(K_PINGPONG),
-                    op_count(K_SPAWNER), op_count(K_PROCESS),
-                    sched_boost_count(), fr >> 8);
-        }
+        if (sec >= 10)
+            check_progress(ws, n);
+        if (sec % 10 == 0 || sec == seconds)
+            print_progress(sec);
     }
+}
 
+static void stop_workers(struct worker *ws, struct pingpong *pps, uint32_t n)
+{
     __atomic_store_n(&stop, true, __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < n / 2 + 1; i++)
         if (pps[i].lock.name)
             waitqueue_wake_all(&pps[i].wq);
     for (uint32_t i = 0; i < n; i++)
         thread_join(ws[i].thread);
+}
 
+/* The mutex check: the shared counter equals what the threads counted. */
+static void check_counter(const struct worker *ws, uint32_t n)
+{
     uint64_t expect = 0;
     for (uint32_t i = 0; i < n; i++)
         expect += ws[i].local_count;
@@ -386,8 +396,11 @@ bool stress_run(uint64_t seconds)
         report("stress: FAILED mutex: counter %lu but threads counted %lu", counter, expect);
         __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
     }
-    kfree(ws);
-    kfree(pps);
+}
+
+/* The user processes' job must be empty once they are all gone. */
+static void check_job_empty(void)
+{
     if (stress_job) {
         for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
             if (job_used(stress_job, k)) {
@@ -398,6 +411,35 @@ bool stress_run(uint64_t seconds)
         job_unref(stress_job);
         stress_job = NULL;
     }
+}
+
+bool stress_run(uint64_t seconds)
+{
+    uint32_t n = cpu_count * 4;
+    kprintf("stress: %u threads on %u CPUs for %lu s, lock checking on\n", n, cpu_count,
+            seconds);
+    mutex_init(&counter_mutex, "stress counter");
+    counter = 0;
+    __atomic_store_n(&stop, false, __ATOMIC_RELAXED);
+
+    uint64_t total, free_before, free_after;
+    pmm_stats(&total, &free_before);
+
+    struct worker *ws = kzalloc(sizeof(*ws) * n);
+    struct pingpong *pps = kzalloc(sizeof(*pps) * (n / 2 + 1));
+    assign_kinds(ws, pps, n);
+    start_workers(ws, n);
+
+    uint64_t va = vmm_reserve(PAGE_SIZE);
+    shoot_va = (volatile uint64_t *)va;
+    uint64_t start = uptime_ns();
+    run_seconds(ws, n, seconds, va, start);
+    stop_workers(ws, pps, n);
+
+    check_counter(ws, n);
+    kfree(ws);
+    kfree(pps);
+    check_job_empty();
     pmm_stats(&total, &free_after);
     kprintf("stress: %lu KiB not returned (thread stacks are kept for reuse)\n",
             (free_before - free_after) * 4);
