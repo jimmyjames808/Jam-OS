@@ -5,6 +5,7 @@
  * one switches out or in. No lazy #NM tricks: CR0.TS stays clear. */
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
+#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
@@ -52,7 +53,7 @@ void fpu_init_cpu(void)
             area_size = FXSAVE_SIZE;
         }
         area_cache = kmem_cache_create("fpu state", area_size, 64);
-        kprintf("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d\n",
+        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d",
                 cpu_features.xsave ? "XSAVE" : "FXSAVE", xcr0, area_size, cpu_features.smep,
                 cpu_features.smap, cpu_features.umip);
         return;
