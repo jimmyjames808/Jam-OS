@@ -97,6 +97,7 @@
   happens on the PC today), non-transferable driver handles, D-state changes for devmgr.
   QEMU: 201/201 ktests at 4+8, utest 19/19 clean, stress=30, xhcitest PASS. **Next: PC final round on
   0.0.17-m6 = All tests + 2-min + 10-min (signs off M5.5 + M6); M7 agents start when the 10-min run starts.**
+  PC 0.0.17-m6: All tests 201/201, no problems.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
   console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional
