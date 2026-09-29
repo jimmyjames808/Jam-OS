@@ -328,6 +328,28 @@ Rules for userspace drivers:
   reboot; rebooting is only for loading a new kernel from the stick.
 - **Executables**: static ELF64; no `fork`.
 
+## Graphics (future track, after M12)
+
+Not a goal yet ("text console first"); decided 2026-09-29 so earlier
+milestones don't close doors. The monitor is on the RTX 4080 SUPER.
+- **G1: compositor on the firmware framebuffer.** The GOP framebuffer the
+  RTX gives at boot (fixed mode, no vsync) is the display. A compositor
+  process owns the framebuffer VMO; apps draw into their own surface VMOs
+  and send damage rectangles over a channel; input from the M7 HID driver
+  goes to the compositor, which routes it to the focused client. All
+  rendering is software (28 cores + AVX are plenty for 2D at 2560x1440).
+- **G2: toolkit, fonts, GUI apps** (TrueType rasterizer, small UI toolkit).
+- **G3: mode setting / vsync only through the Intel iGPU** (UHD 770 in the
+  i7-14700, documented by Intel), which needs a monitor on the
+  motherboard's output and the iGPU enabled in the BIOS. The RTX (NVIDIA
+  GSP firmware, no practical open path) stays a plain framebuffer.
+- **G4: 3D** only as a stretch: a multi-core software rasterizer, or
+  virtio-gpu under QEMU.
+Constraints on earlier milestones: the kernel always takes the framebuffer
+back on a panic, even from a compositor; M7's HID driver handles a mouse
+as well as a keyboard and sends events through a protocol a compositor
+can take over; M11's IOMMU matters most for GPUs.
+
 ## Storage
 
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
@@ -380,7 +402,7 @@ Rules for userspace drivers:
 | M5 | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic |
 | M5.5 | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass |
 | M6 | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
-| M7 | xHCI → HID → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |
+| M7 | xHCI → HID (keyboard + mouse) → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |
 | M8 | USB mass storage → FAT32 (userspace once working), read-only ESP + writable data partition | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test |
 | M9 | NIC (decide: likely USB CDC-NCM/ECM) → lwIP → DHCP/DNS (userspace once working) | `ping 1.1.1.1` on the real PC through a userspace network stack |
 | M10 | uACPI poweroff, power button, ACPI reboot (stays in the kernel) | clean shutdown on real hardware |
