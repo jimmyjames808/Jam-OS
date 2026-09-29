@@ -438,8 +438,8 @@ static const struct sh_cmd cmds[] = {
     C(sleep, C_SHELL, "sleep <seconds>", "wait (Ctrl+C stops it; 0.5 works)"),
     C(repeat, C_SHELL, "repeat <n> <command...>", "run a command n times (Ctrl+C stops)"),
     C(watch, C_SHELL, "watch [-n seconds] <command...>",
-      "run a command every n seconds (default 2) until Ctrl+C; quote pipes:\n"
-      "  watch -n 1 'ps | grep hid'"),
+      "run a command every n seconds (default 2) until Ctrl+C\n"
+      "  (quote a pipe: watch -n 1 'ps | grep hid')"),
     C(true, C_SHELL, "true", "status 0"),
     C(false, C_SHELL, "false", "status 1"),
 };
@@ -493,6 +493,7 @@ SH_CMD(help)
         }
         return 0;
     }
+    sh_say("Commands: by category (help <command> for its usage)\n");
     for (int k = 0; k < C_COUNT; k++) {
         sh_say("\033[1m%s\033[0m\n", cat_names[k]);
         for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
