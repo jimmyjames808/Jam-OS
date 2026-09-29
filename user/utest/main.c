@@ -913,16 +913,26 @@ static bool t_edu_process(void)
     return true;
 }
 
-/* Killing the edu driver process while its DMA runs: Bus Master Enable
- * goes off, the pinned buffer and everything else charged to its job are
- * gone, its MSI vector is free (devmgr can make a new interrupt object for
- * the function: a live one would be ERR_ALREADY_BOUND), and a fresh driver
- * works. */
+/* devmgr's supervision view of a device. */
+static bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_rep *r)
+{
+    CHECK_ST(dm_call(dm, DEVMGR_SUPERVISION, vendor, device, r, NULL, NULL), OK);
+    return true;
+}
+
+/* Killing the edu driver process while its DMA runs (M6), and supervision
+ * bringing it back (M7): Bus Master Enable goes off, its pinned buffer is
+ * quarantined (still charged to its job), its MSI vector is free; devmgr
+ * restarts it at once (a KILL is a death like a crash) with a new vector
+ * and dma_cap; the client reconnects through GET_SERVICE and factorial and
+ * DMA work; once the new driver has turned bus mastering on, the
+ * quarantine lets go (a grace period later) with no page written while it
+ * held them, and the dead driver's job is empty. */
 static bool t_edu_killed_mid_dma(void)
 {
     handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES];
     uint32_t nh = 0;
-    struct devmgr_rep r;
+    struct devmgr_rep r, sup;
     if (!dm)
         return true;
     status_t st = dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh);
@@ -935,6 +945,10 @@ static bool t_edu_killed_mid_dma(void)
     CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
     CHECK_EQ(nh, 3);
     handle_t proc = hs[0], job = hs[1], dev = hs[2];
+    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+        return false;
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    uint32_t restarts0 = sup.b, changed0 = sup.e;
 
     uint64_t addr = 0;
     uint32_t cmd = 0, f = 0;
@@ -953,9 +967,11 @@ static bool t_edu_killed_mid_dma(void)
     CHECK_ST(jam_process_get_info(proc, &info), OK);
     CHECK_EQ(info.state, PROCESS_DEAD);
     CHECK(info.killed);
-    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
-    CHECK(!(cmd & CMD_BME));                                  /* bus mastering off */
-    /* Its pinned buffer is quarantined (M7), still charged to the job. */
+    /* Its pinned buffer is quarantined (M7), still charged to its job. */
+    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+        return false;
+    CHECK(sup.a == DEVMGR_SUP_RESTARTING || sup.a == DEVMGR_SUP_RUNNING);
+    CHECK(sup.d >= 2);
     CHECK_ST(info_of(job, &ji), OK);
     CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
     CHECK_ST(edu_factorial_until(ch, now() + 5 * S, 3, &f), ERR_PEER_CLOSED);
@@ -964,26 +980,244 @@ static bool t_edu_killed_mid_dma(void)
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
 
-    /* A new driver: new vector, new dma_cap (bus mastering back on once
-     * it has seen the device idle), works. */
-    CHECK_ST(dm_call(dm, DEVMGR_REBIND, EDU_VENDOR, EDU_DEVICE, &r, NULL, NULL), OK);
+    /* The reconnect rule: ask devmgr again; the call waits for the restart. */
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
     CHECK_ST(edu_factorial_until(hs[0], now() + 10 * S, 10, &f), OK);
     CHECK_EQ(f, 3628800);
+    printf("utest: %s: restarted and answering %lu ms after the kill\n", cur,
+           (unsigned long)((now() - t0) / MS));
     CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * S, 4096), OK);
     CHECK_ST(jam_handle_close(hs[0]), OK);
     CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
     CHECK(cmd & CMD_BME);
     /* The quarantine lets the dead driver's pages go a grace period (1 s)
      * after the new driver turned bus mastering on: then its job is empty
-     * (pins, VMOs, threads: gone). */
+     * (pins, VMOs, threads: gone), and nothing wrote them meanwhile. */
     uint64_t until = now() + 10 * S;
     while (info_of(job, &ji) == OK && ji.used[JOB_LIMIT_PAGES] && now() < until)
         jam_nanosleep(now() + 20 * MS);
     if (!job_is_empty(job))
         return false;
+    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+        return false;
+    printf("utest: %s: restarts %u, quarantine %u page(s) left, %u stale page(s)\n", cur,
+           sup.b - restarts0, sup.d, sup.e - changed0);
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    CHECK_EQ(sup.b, restarts0 + 1);
+    CHECK_EQ(sup.d, 0);
+    CHECK_EQ(sup.e, changed0);   /* 0 stale bytes */
     CHECK_ST(jam_handle_close(job), OK);
     CHECK_ST(jam_handle_close(dev), OK);
+    return true;
+}
+
+/* ---- supervision with the crash-test driver (M7) ------------------------------------ */
+
+#define TV DEVMGR_TEST_VENDOR
+#define TD DEVMGR_TEST_DEVICE
+
+/* PING: when this instance of the crash-test driver started. */
+static status_t crasher_ping(handle_t ch, uint64_t deadline, uint64_t *started)
+{
+    uint32_t q[2] = { 0, CRASHER_PING };
+    struct {
+        uint32_t txid;
+        int32_t  status;
+        uint64_t started;
+    } __attribute__((packed)) rep;
+    uint32_t n = 0;
+    struct channel_call_args a = {
+        .h = ch, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)q, .rcap = sizeof(rep),
+        .rbytes = (uint64_t)(uintptr_t)&rep, .ractual = (uint64_t)(uintptr_t)&n,
+        .deadline_ns = deadline,
+    };
+    status_t st = jam_channel_call(&a);
+    if (st != OK)
+        return st;
+    if (n < 8 || (rep.status == OK && n < sizeof(rep)))
+        return ERR_INTERNAL;
+    *started = rep.started;
+    return rep.status;
+}
+
+/* The crash-test driver's channel and process, or false (with a skip or a
+ * failure line). */
+static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
+{
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    *skip = false;
+    status_t st = dm_call(dm, DEVMGR_TEST_DRIVER, 0, 0, &r, NULL, NULL);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no drv/crasher: skipped\n", cur);
+        *skip = true;
+        return false;
+    }
+    CHECK_ST(st, OK);
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
+    *ch = hs[0];
+    uint64_t started = 0;
+    CHECK_ST(crasher_ping(*ch, now() + 10 * S, &started), OK);   /* up, whenever it started */
+    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
+    CHECK_EQ(nh, 2);   /* process and job: no hardware */
+    *proc = hs[0];
+    CHECK_ST(jam_handle_close(hs[1]), OK);
+    return true;
+}
+
+/* Crash it through ch (it answers nothing), and see it die. *t: when the
+ * crash was asked for. */
+static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
+{
+    uint32_t q[2] = { 0x77, CRASHER_CRASH };
+    *t = now();
+    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 10 * S, &info), OK);
+    CHECK(info.killed);   /* a crash: the kernel killed it */
+    uint64_t started;
+    CHECK_ST(crasher_ping(ch, now() + 5 * S, &started), ERR_PEER_CLOSED);
+    return true;
+}
+
+/* Crash once, reconnect: *delay_ms from the crash to the new instance's
+ * start (the backoff, and a start). */
+static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint64_t *delay_ms)
+{
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    uint64_t t = 0, started = 0;
+    if (!crash_it(*ch, *proc, &t))
+        return false;
+    CHECK_ST(jam_handle_close(*ch), OK);
+    CHECK_ST(jam_handle_close(*proc), OK);
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);   /* the new channel */
+    *ch = hs[0];
+    CHECK_ST(crasher_ping(*ch, now() + 15 * S, &started), OK);   /* waits for the restart */
+    CHECK(started > t);
+    *delay_ms = (started - t) / MS;
+    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
+    *proc = hs[0];
+    CHECK_ST(jam_handle_close(hs[1]), OK);
+    return true;
+}
+
+static uint32_t sup_restarts0;   /* the crash-test driver's restarts before these tests */
+
+/* A driver that crashes comes back by itself; its clients reconnect. */
+static bool t_supervised_restart(void)
+{
+    handle_t dm = devmgr(), ch, proc;
+    struct devmgr_rep sup;
+    bool skip;
+    if (!dm)
+        return true;
+    if (!crasher(dm, &ch, &proc, &skip))
+        return skip;
+    if (!supervision(dm, TV, TD, &sup))
+        return false;
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    sup_restarts0 = sup.b;
+    uint64_t ms = 0;
+    if (!crash_and_reconnect(dm, &ch, &proc, &ms))
+        return false;
+    printf("utest: %s: crashed, restarted and answering %lu ms later\n", cur, (unsigned long)ms);
+    CHECK(ms >= 100 && ms < 3000);   /* the first backoff is 100 ms */
+    if (!supervision(dm, TV, TD, &sup))
+        return false;
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    CHECK_EQ(sup.b, sup_restarts0 + 1);
+    CHECK_EQ(sup.c, 100);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
+    return true;
+}
+
+/* Each restart within a minute doubles the backoff: 200, 400, 800, 1600 ms. */
+static bool t_supervised_backoff(void)
+{
+    handle_t dm = devmgr(), ch, proc;
+    struct devmgr_rep sup;
+    bool skip;
+    if (!dm)
+        return true;
+    if (!crasher(dm, &ch, &proc, &skip))
+        return skip;
+    for (uint32_t k = 1; k <= 4; k++) {
+        uint64_t ms = 0, want = 100ull << k;
+        if (!crash_and_reconnect(dm, &ch, &proc, &ms))
+            return false;
+        if (!supervision(dm, TV, TD, &sup))
+            return false;
+        printf("utest: %s: restart %u after %lu ms (backoff %u ms)\n", cur, k + 1,
+               (unsigned long)ms, sup.c);
+        CHECK_EQ(sup.c, want);
+        CHECK(ms >= want && ms < want + 3000);
+        CHECK_EQ(sup.b, sup_restarts0 + 1 + k);
+    }
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
+    return true;
+}
+
+/* The 6th death within a minute: devmgr gives up (GET_SERVICE says
+ * ERR_BAD_STATE); TEST_DRIVER starts it afresh; a driver that exits 0 by
+ * itself is finished, not restarted. */
+static bool t_supervised_give_up(void)
+{
+    handle_t dm = devmgr(), ch, proc, hs[DEVMGR_MAX_HANDLES];
+    struct devmgr_rep sup, r;
+    uint32_t nh = 0;
+    bool skip;
+    if (!dm)
+        return true;
+    if (!crasher(dm, &ch, &proc, &skip))
+        return skip;
+    uint64_t t = 0;
+    if (!crash_it(ch, proc, &t))
+        return false;
+    uint64_t until = now() + 5 * S;
+    for (;;) {
+        if (!supervision(dm, TV, TD, &sup))
+            return false;
+        if (sup.a == DEVMGR_SUP_GAVE_UP || now() > until)
+            break;
+        jam_nanosleep(now() + 10 * MS);
+    }
+    printf("utest: %s: after %u restarts: state %u (3 = gave up)\n", cur,
+           sup.b - sup_restarts0, sup.a);
+    CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
+    CHECK_EQ(sup.b, sup_restarts0 + 5);
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
+    jam_nanosleep(now() + 300 * MS);   /* no restart comes */
+    if (!supervision(dm, TV, TD, &sup))
+        return false;
+    CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
+
+    /* Started again on request, with a fresh history; exit 0 = finished. */
+    if (!crasher(dm, &ch, &proc, &skip))
+        return false;
+    uint32_t q[3] = { 0x78, CRASHER_EXIT, 0 };
+    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 10 * S, &info), OK);
+    CHECK(!info.killed && info.exit_code == 0);
+    until = now() + 5 * S;
+    for (;;) {
+        if (!supervision(dm, TV, TD, &sup))
+            return false;
+        if (sup.a == DEVMGR_SUP_FINISHED || now() > until)
+            break;
+        jam_nanosleep(now() + 10 * MS);
+    }
+    CHECK_EQ(sup.a, DEVMGR_SUP_FINISHED);
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
     return true;
 }
 
@@ -1142,6 +1376,9 @@ static const struct {
     { "edu_process", t_edu_process },
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
+    { "supervised_restart", t_supervised_restart },
+    { "supervised_backoff", t_supervised_backoff },
+    { "supervised_give_up", t_supervised_give_up },
 };
 
 int main(int argc, char **argv)
