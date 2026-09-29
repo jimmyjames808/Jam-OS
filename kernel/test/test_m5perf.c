@@ -242,3 +242,43 @@ KTEST(stack_cache_limit_frees)
     KT_ASSERT(accounted1 + 2 >= accounted0);   /* slot bookkeeping: a page or two */
     sched_stack_cache_set_limit(old);
 }
+
+/* ---- priority ceiling -------------------------------------------------------- */
+
+static volatile bool prio_release;
+
+static void prio_holder(void *arg)
+{
+    (void)arg;
+    while (!prio_release)
+        thread_sleep_ms(1);
+}
+
+KTEST(priority_cap)
+{
+    prio_release = false;
+    struct thread *t = thread_create_capped("prio-cap", prio_holder, NULL, PRIO_MAX, NULL,
+                                            PRIO_USER_MAX);
+    KT_EQ(t->prio_cap, PRIO_USER_MAX);
+    KT_EQ(t->base_prio, PRIO_USER_MAX);   /* clamped at creation */
+    thread_set_priority(t, PRIO_MAX);
+    KT_EQ(t->base_prio, PRIO_USER_MAX);
+    thread_set_priority(t, 5);
+    KT_EQ(t->base_prio, 5);
+    thread_set_priority(t, PRIO_MIN - 3);
+    KT_EQ(t->base_prio, PRIO_MIN);
+    thread_set_priority(t, 20);
+    thread_set_priority_cap(t, 10);   /* lowering the ceiling lowers the priority */
+    KT_EQ(t->base_prio, 10);
+    thread_set_priority_cap(t, PRIO_MAX + 7);
+    KT_EQ(t->prio_cap, PRIO_MAX);
+    KT_EQ(t->base_prio, 10);
+    prio_release = true;
+    thread_join(t);
+
+    /* Kernel threads default to no ceiling below PRIO_MAX. */
+    prio_release = true;
+    struct thread *k = thread_create("prio-kernel", prio_holder, NULL, PRIO_MAX);
+    KT_EQ(k->prio_cap, PRIO_MAX);
+    thread_join(k);
+}

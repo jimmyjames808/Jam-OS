@@ -23,6 +23,9 @@
  * threads may starve others, deliberately. */
 #define STARVE_TICKS 100
 #define PRIO_BOOST   30
+/* Highest priority a user thread may set (M5): its ceiling, see
+ * thread_set_priority_cap. Kernel threads' ceiling is PRIO_MAX. */
+#define PRIO_USER_MAX 24
 
 typedef struct {
     uint64_t bits[MAX_CPUS / 64];
@@ -69,6 +72,7 @@ struct thread {
     volatile int      state;
     int               prio;          /* effective priority (base or boosted) */
     int               base_prio;
+    int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
     uint64_t          boosts;
     volatile bool     on_cpu;        /* its stack is still in use by a CPU */
@@ -111,6 +115,11 @@ struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, in
 /* Same, restricted to `mask` from the start. */
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask);
+/* Same, with a priority ceiling from the start (prio is clamped to it, and
+ * so is every later thread_set_priority): PRIO_USER_MAX for user threads.
+ * mask may be NULL (any CPU). */
+struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask, int prio_cap);
 _Noreturn void thread_exit(void);
 void thread_join(struct thread *t);
 void thread_detach(struct thread *t);
@@ -138,7 +147,13 @@ static inline void thread_sleep_ms(uint64_t ms) { thread_sleep_ns(ms * 1000000);
 /* Restrict where t may run. For the current thread this takes effect at
  * once (it migrates before returning). */
 void thread_set_affinity(struct thread *t, const cpumask_t *mask);
+/* Clamped to [PRIO_MIN, t's ceiling]. Takes effect the next time t is
+ * queued or switched out. */
 void thread_set_priority(struct thread *t, int prio);
+/* Set t's priority ceiling (clamped to [PRIO_MIN, PRIO_MAX]); a base
+ * priority above it comes down to it. Starvation boosts may still lift a
+ * thread above its ceiling for one slice. */
+void thread_set_priority_cap(struct thread *t, int cap);
 
 static inline struct thread *current_thread(void) { return percpu_current(); }
 

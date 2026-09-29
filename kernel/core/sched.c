@@ -514,6 +514,7 @@ static struct thread *thread_alloc(const char *name, int prio)
     memcpy(t->name, name, n);
     t->prio = prio < PRIO_MIN ? PRIO_MIN : prio > PRIO_MAX ? PRIO_MAX : prio;
     t->base_prio = t->prio;
+    t->prio_cap = PRIO_MAX;
     t->refs = 1;
     cpumask_all(&t->affinity);
     waitqueue_init(&t->exit_wq, "thread exit");
@@ -537,9 +538,17 @@ struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, in
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask)
 {
+    return thread_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
+}
+
+struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask, int prio_cap)
+{
     struct thread *t = thread_alloc(name, prio);
     if (mask)
         t->affinity = *mask;
+    thread_set_priority_cap(t, prio_cap);   /* before it can first run */
+    t->prio = t->base_prio;
     t->refs = 2;   /* the caller's, and the thread's own (dropped by reap) */
     t->stack_top = stack_get();
     if (!t->stack_top)   /* phase 2 turns this into ERR_NO_MEMORY for callers */
@@ -597,8 +606,18 @@ void thread_yield(void)
 
 void thread_set_priority(struct thread *t, int prio)
 {
-    /* Takes effect the next time t is queued or switched out. */
-    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > PRIO_MAX ? PRIO_MAX : prio;
+    /* Takes effect the next time t is queued or switched out. Never touch
+     * t->prio here: while t is queued it names t's run queue list. */
+    int cap = t->prio_cap;
+    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > cap ? cap : prio;
+}
+
+void thread_set_priority_cap(struct thread *t, int cap)
+{
+    cap = cap < PRIO_MIN ? PRIO_MIN : cap > PRIO_MAX ? PRIO_MAX : cap;
+    t->prio_cap = cap;
+    if (t->base_prio > cap)
+        t->base_prio = cap;
 }
 
 void thread_set_affinity(struct thread *t, const cpumask_t *mask)
