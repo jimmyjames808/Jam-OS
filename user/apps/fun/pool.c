@@ -3,6 +3,13 @@
 
 /* ---- CPUs and the thread pool ---------------------------------------------------------- */
 
+/* The pool's shared words are touched only with __atomic builtins. A batch
+ * is published by pool_run's SEQ_CST bump of phase (after it stores fn,
+ * arg, items, next and done), which the workers' ACQUIRE load of phase
+ * pairs with; the RELEASE add to done pairs with pool_run's ACQUIRE load of
+ * it. sleeping[] and the second load of phase are SEQ_CST so that a worker
+ * about to sleep and pool_run about to signal can't both miss each other. */
+
 uint32_t fun_cpu_count(void)
 {
     uint32_t r[4], n = 0;
@@ -64,9 +71,9 @@ bool fun_is_tcg(void)
 static struct {
     uint32_t n;                            /* threads, the caller's included */
     handle_t ev[FUN_MAX_THREADS];          /* worker i sleeps on ev[i] */
-    volatile uint32_t sleeping[FUN_MAX_THREADS];   /* worker i sleeps (or is about to) */
-    volatile uint32_t phase;               /* bumped by pool_run: a new batch */
-    volatile uint32_t next, done, items;   /* the next item to take; threads done; items */
+    uint32_t sleeping[FUN_MAX_THREADS];    /* worker i sleeps (or is about to) */
+    uint32_t phase;                        /* bumped by pool_run: a new batch */
+    uint32_t next, done, items;            /* the next item to take; threads done; items */
     void (*fn)(uint32_t, uint32_t, void *);   /* the batch's work: fn(item, thread, arg) */
     void *arg;                             /* its argument */
 } pool = { .n = 1 };
@@ -75,7 +82,8 @@ uint32_t pool_items_by[FUN_MAX_THREADS];
 static void pool_work(uint32_t me)
 {
     uint32_t i, did = 0;
-    while ((i = __atomic_fetch_add(&pool.next, 1, __ATOMIC_RELAXED)) < pool.items) {
+    while ((i = __atomic_fetch_add(&pool.next, 1, __ATOMIC_RELAXED)) <
+           __atomic_load_n(&pool.items, __ATOMIC_RELAXED)) {
         pool.fn(i, me, pool.arg);
         did++;
     }
@@ -135,10 +143,10 @@ void pool_run(void (*fn)(uint32_t, uint32_t, void *), void *arg, uint32_t items)
 {
     pool.fn = fn;
     pool.arg = arg;
-    pool.items = items;
-    pool.next = 0;
-    pool.done = 0;
-    __atomic_add_fetch(&pool.phase, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&pool.items, items, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool.next, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool.done, 0, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&pool.phase, 1, __ATOMIC_SEQ_CST);   /* publishes the batch */
     for (uint32_t i = 1; i < pool.n; i++)
         if (__atomic_load_n(&pool.sleeping[i], __ATOMIC_SEQ_CST))
             jam_event_signal(pool.ev[i], 0, SIG_SIGNALED);

@@ -17,38 +17,15 @@
  * driver dies). Each test starts the driver in a job of its own and ends
  * with the driver exited 0 by itself, every one of our channel ends seeing
  * PEER_CLOSED (the driver closed everything), and its job empty. */
-#include <os.h>
+#define CHECK_PROG "utest"
+#define CHECK_CUR  hcur
+#include <check.h>
 #include <idl/input.h>
 #include <idl/usb.h>
+#include <os.h>
 #include "utest.h"
 
-
-static const char *hcur;
-
-#define FAIL(...)                                                   \
-    do {                                                            \
-        printf("utest: %s: FAILED at line %d: ", hcur, __LINE__);   \
-        printf(__VA_ARGS__);                                        \
-        printf("\n");                                               \
-        return false;                                               \
-    } while (0)
-#define CHECK(c)                                                    \
-    do {                                                            \
-        if (!(c))                                                   \
-            FAIL("%s", #c);                                         \
-    } while (0)
-#define CHECK_ST(expr, want)                                        \
-    do {                                                            \
-        status_t _s = (expr), _w = (want);                          \
-        if (_s != _w)                                               \
-            FAIL("%s is %s, want %s", #expr, status_str(_s), status_str(_w)); \
-    } while (0)
-#define CHECK_EQ(a, b)                                              \
-    do {                                                            \
-        int64_t _a = (int64_t)(a), _b = (int64_t)(b);               \
-        if (_a != _b)                                               \
-            FAIL("%s == %s: %ld vs %ld", #a, #b, (long)_a, (long)_b); \
-    } while (0)
+static const char *hcur;   /* the test running */
 
 /* ---- recorded devices ------------------------------------------------------ */
 

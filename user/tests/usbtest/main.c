@@ -37,35 +37,19 @@
  * The marker lines ("usbtest: ready for keys", ...) are what the QEMU
  * monitor script waits for. Exit 0 if nothing failed; the summary goes to
  * the RESULTS box. */
-#include <os.h>
+#define CHECK_PROG "usbtest"
+#define CHECK_CUR  cur
+#include <check.h>
 #include <devmgr.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
+#include <os.h>
 
 #define MAX_DEV 48
 
-static const char *cur;
-static unsigned passed, failed, skipped;
-static handle_t bus;
-
-#define FAIL(...)                                                   \
-    do {                                                            \
-        printf("usbtest: %s: FAILED at line %d: ", cur, __LINE__);  \
-        printf(__VA_ARGS__);                                        \
-        printf("\n");                                               \
-        return false;                                               \
-    } while (0)
-#define CHECK(c)                                                    \
-    do {                                                            \
-        if (!(c))                                                   \
-            FAIL("%s", #c);                                         \
-    } while (0)
-#define CHECK_ST(expr, want)                                        \
-    do {                                                            \
-        status_t _s = (expr), _w = (want);                          \
-        if (_s != _w)                                               \
-            FAIL("%s is %s, want %s", #expr, status_str(_s), status_str(_w)); \
-    } while (0)
+static const char *cur;                    /* the test running */
+static unsigned passed, failed, skipped;    /* tests so far */
+static handle_t bus;                        /* usb-bus's DR_SERVE (usbbus), from devmgr */
 
 static uint64_t in(uint64_t ns) { return now() + ns; }
 static uint64_t soon(void) { return in(5 * NS_PER_S); }   /* a usb-bus or usb call's deadline */

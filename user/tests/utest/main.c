@@ -20,39 +20,16 @@
  * see child.c), each in a job of its own so its usage can be read exactly.
  * One line per test ("utest: <name> ok"); the summary also goes into the
  * kernel's RESULTS box. Exit code 0 when everything passed. */
-#include <os.h>
+#define CHECK_PROG "utest"
+#define CHECK_CUR  cur
+#include <check.h>
 #include <devmgr.h>
 #include <idl/null.h>
+#include <os.h>
 #include "edu_check.h"
 #include "utest.h"
 
-
-static const char *cur;
-
-#define FAIL(...)                                                   \
-    do {                                                            \
-        printf("utest: %s: FAILED at line %d: ", cur, __LINE__);    \
-        printf(__VA_ARGS__);                                        \
-        printf("\n");                                               \
-        return false;                                               \
-    } while (0)
-#define CHECK(c)                                                    \
-    do {                                                            \
-        if (!(c))                                                   \
-            FAIL("%s", #c);                                         \
-    } while (0)
-#define CHECK_ST(expr, want)                                        \
-    do {                                                            \
-        status_t _s = (expr), _w = (want);                          \
-        if (_s != _w)                                               \
-            FAIL("%s is %s, want %s", #expr, status_str(_s), status_str(_w)); \
-    } while (0)
-#define CHECK_EQ(a, b)                                              \
-    do {                                                            \
-        int64_t _a = (int64_t)(a), _b = (int64_t)(b);               \
-        if (_a != _b)                                               \
-            FAIL("%s == %s: %ld vs %ld", #a, #b, (long)_a, (long)_b); \
-    } while (0)
+static const char *cur;   /* the test running */
 
 /* ---- helpers ------------------------------------------------------------------ */
 
@@ -529,7 +506,8 @@ static bool t_kernel_objects_are_charged(void)
 #define FPU_SPINS   4000000
 
 static bool have_avx;
-static volatile uint32_t fpu_errors, fpu_rounds, fpu_preempted;
+/* Counted by the workers (RELAXED adds), read once they have all ended. */
+static uint32_t fpu_errors, fpu_rounds, fpu_preempted;
 
 static bool avx_usable(void)
 {
@@ -641,18 +619,19 @@ static bool t_fpu_state_survives_preemption(void)
     if (!wait_threads(th, FPU_THREADS))
         return false;
     printf("utest: fpu: %u threads, %u rounds (%u preempted mid-round), %s, %u mismatches\n",
-           FPU_THREADS, fpu_rounds, fpu_preempted, have_avx ? "SSE + AVX" : "SSE only",
-           fpu_errors);
-    CHECK(fpu_rounds >= FPU_THREADS);
-    CHECK(fpu_preempted > 0);   /* else the test proved nothing */
-    CHECK_EQ(fpu_errors, 0);
+           FPU_THREADS, __atomic_load_n(&fpu_rounds, __ATOMIC_RELAXED),
+           __atomic_load_n(&fpu_preempted, __ATOMIC_RELAXED),
+           have_avx ? "SSE + AVX" : "SSE only", __atomic_load_n(&fpu_errors, __ATOMIC_RELAXED));
+    CHECK(__atomic_load_n(&fpu_rounds, __ATOMIC_RELAXED) >= FPU_THREADS);
+    CHECK(__atomic_load_n(&fpu_preempted, __ATOMIC_RELAXED) > 0);   /* else it proved nothing */
+    CHECK_EQ(__atomic_load_n(&fpu_errors, __ATOMIC_RELAXED), 0);
     return true;
 }
 
 /* ---- many threads ------------------------------------------------------------ */
 
 #define MANY 64
-static volatile uint32_t many_count;
+static uint32_t many_count;   /* the workers' RELAXED adds; read once they have ended */
 
 static void many_worker(void *arg)
 {
@@ -665,14 +644,14 @@ static bool t_many_threads(void)
     static uint8_t stacks[MANY][8192] __attribute__((aligned(64)));
     handle_t th[MANY];
     for (unsigned round = 0; round < 3; round++) {
-        many_count = 0;
+        __atomic_store_n(&many_count, 0, __ATOMIC_RELAXED);
         for (unsigned i = 0; i < MANY; i++)
             CHECK_ST(thread_spawn("many", many_worker, NULL, stacks[i], sizeof(stacks[i]),
                                   &th[i]),
                      OK);
         if (!wait_threads(th, MANY))
             return false;
-        CHECK_EQ(many_count, MANY);
+        CHECK_EQ(__atomic_load_n(&many_count, __ATOMIC_RELAXED), MANY);
         struct job_info ji;
         CHECK_ST(info_of(own_job(), &ji), OK);
         CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 1);   /* just us again */
