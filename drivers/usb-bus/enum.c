@@ -502,7 +502,9 @@ static void get_string(struct usbdev *d, uint8_t index, uint16_t lang, char *out
         return;
     uint8_t b[128];
     uint32_t n = 0;
-    if (get_desc(d, 3, index, lang, b, sizeof(b), &n) != CC_SUCCESS || n < 2 || b[1] != 3)
+    /* One short try: strings are only for the log. */
+    if (usb_control(d, 0x80, 6, (uint16_t)(3 << 8 | index), lang, sizeof(b), b, &n, 500) !=
+            CC_SUCCESS || n < 2 || b[1] != 3)
         return;
     if (b[0] < n)
         n = b[0];
@@ -776,8 +778,10 @@ static const char *iface_kind(const struct iface *f)
     return NULL;
 }
 
-/* One line: "3.2 258a:0033 FS TT(s2 p2) a5 mps8 cfg1/1 i0:03/01/01 kbd ... "Name"".
- * Returns the length; a second line takes what doesn't fit. */
+/* One line: port 3.2 258a:0033 FS TT(slot 2 port 2) a5 mps8 cfg1/1 if0 03/01/01 kbd
+ * if1 03/00/00 hid "Name" (a5: USB address 5; mps8: EP0 max packet; cfg1/1: the
+ * configuration set / how many the device has; ifN class/subclass/protocol).
+ * What doesn't fit goes on a second line. */
 static void dev_line(struct usbdev *d, bool report_it, const char *prefix)
 {
     char a[160], b[160];
@@ -785,6 +789,7 @@ static void dev_line(struct usbdev *d, bool report_it, const char *prefix)
     a[0] = b[0] = 0;
     if (prefix)
         sb_s(&s, prefix);
+    sb_s(&s, "port ");
     sb_s(&s, d->path);
     sb_c(&s, ' ');
     sb_x(&s, d->vid, 4);
@@ -793,9 +798,9 @@ static void dev_line(struct usbdev *d, bool report_it, const char *prefix)
     sb_c(&s, ' ');
     sb_s(&s, speed_str(d->speed));
     if (d->tt_slot) {
-        sb_s(&s, " TT(s");
+        sb_s(&s, " TT(slot ");
         sb_u(&s, d->tt_slot);
-        sb_s(&s, " p");
+        sb_s(&s, " port ");
         sb_u(&s, d->tt_port);
         if (d->tt_mtt)
             sb_s(&s, " mtt");
@@ -828,9 +833,9 @@ static void dev_line(struct usbdev *d, bool report_it, const char *prefix)
         char t[48];
         struct sb ts = { t, 0, sizeof(t) };
         t[0] = 0;
-        sb_s(&ts, " i");
+        sb_s(&ts, " if");
         sb_u(&ts, f->number);
-        sb_c(&ts, ':');
+        sb_c(&ts, ' ');
         sb_x(&ts, f->cls, 2);
         sb_c(&ts, '/');
         sb_x(&ts, f->sub, 2);
@@ -843,7 +848,7 @@ static void dev_line(struct usbdev *d, bool report_it, const char *prefix)
         }
         if (o == &s && s.n + ts.n + 1 >= s.cap) {
             o = &s2;
-            sb_s(&s2, "  ");
+            sb_s(&s2, "  port ");
             sb_s(&s2, d->path);
             sb_s(&s2, " (cont.):");
         }
@@ -1209,7 +1214,8 @@ static bool enumerate(int parent, uint8_t port, uint8_t speed)
 
     /* Strings: the first language, the product and the serial number. */
     uint8_t langs[8];
-    if (get_desc(d, 3, 0, 0, langs, sizeof(langs), &n) == CC_SUCCESS && n >= 4 && langs[1] == 3) {
+    if (usb_control(d, 0x80, 6, 3 << 8, 0, sizeof(langs), langs, &n, 500) == CC_SUCCESS &&
+        n >= 4 && langs[1] == 3) {
         uint16_t lang = le16(langs + 2);
         get_string(d, iproduct, lang, d->product, sizeof(d->product));
         get_string(d, d->iserial, lang, d->serial, sizeof(d->serial));
