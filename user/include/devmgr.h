@@ -31,7 +31,12 @@
 #define DEVMGR_STATUS       0x00030001u
 /* (dev) -> 1 handle: a channel to the driver's DR_SERVE end (a duplicate
  * of devmgr's client end). ERR_NOT_FOUND: no such device, or no driver
- * bound to it (ERR_BAD_STATE: bound, but the driver is gone). */
+ * bound to it (ERR_BAD_STATE: bound, but the driver is gone). M7: vendor
+ * and device 0xffff name the instance-th function that has a driver bound,
+ * whatever it is (a client asks each in turn which protocol it serves:
+ * tests find usb-bus this way on QEMU and on the PC). Don't read from the
+ * channel: messages a driver writes by itself are devmgr's (usb-bus's
+ * interface_attached); only channel_call it. */
 #define DEVMGR_GET_SERVICE  0x00030002u
 /* (dev) -> 3 handles, read-only views of a bound driver: its process
  * (RIGHTS_BASIC: wait, info), its job (RIGHTS_BASIC: wait, job_get_info)

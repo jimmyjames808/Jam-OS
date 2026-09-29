@@ -1,0 +1,39 @@
+# usbbus: the bus side of usb-bus (drivers/usb-bus), served on its
+# DR_SERVE channel: devmgr holds the other end and hands duplicates out
+# (DEVMGR_GET_SERVICE), so whoever holds it is trusted (tests, the shell's
+# `usb` command). Class drivers never see it: they get one `usb`
+# interface channel each (usb.idl). Format: see tools/genidl.py.
+#
+# Devices are named by `id`, unique for the driver's run (a device
+# unplugged and plugged back gets a new one). speed as in usb.idl: 1 full,
+# 2 low, 3 high, 4 super, 5 super+. path: the root port, then the hub port
+# at each tier ("3", "3.2", "3.2.1"), NUL-terminated.
+
+protocol usbbus 13
+
+# Counts over the configured devices (hubs included). settled 1: no port
+# or hub work pending and nothing attached or detached for 500 ms.
+# problems: devices that failed to enumerate or configure.
+1  status        () -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled)
+# The same, answered once the bus has settled or after timeout_ms
+# (settled 0 then). The only method whose reply can come later.
+2  wait_settled  (u32 timeout_ms) -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled)
+# The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
+# 0: on a root port. tt_slot / tt_port: the Transaction Translator a
+# full/low-speed device behind a high-speed hub uses (0: none).
+3  device        (u32 index) -> (u32 id, u32 parent_id, u16 vendor, u16 product, u16 bcd_usb, u8 speed, u8 address, u8 slot, u8 root_port, u8 port, u8 level, u32 route, u8 tt_slot, u8 tt_port, u8 class_code, u8 subclass, u8 protocol, u8 num_configs, u8 configuration, u8 num_interfaces, u16 max_packet0, u8 hub_ports, u8[24] path, u8[40] product_name, u8[24] serial)
+# Interface `index` (0 .. num_interfaces - 1) of device `id`, as it is
+# now (its current alternate setting). endpoints: addresses, num_endpoints
+# of them.
+4  interface     (u32 id, u8 index) -> (u8 number, u8 alt_setting, u8 num_alt_settings, u8 class_code, u8 subclass, u8 protocol, u8 num_endpoints, u8[8] endpoints)
+# A new `usb` channel to interface `interface_number` of device `id` (the
+# same thing devmgr is handed; for tests and administration).
+5  open_interface (u32 id, u8 interface_number) -> (handle channel)
+
+# NOT a call: the message usb-bus WRITES on DR_SERVE (txid 0, so it is
+# queued on devmgr's end rather than answering anyone) when a configured
+# device's interface appears, with ONE handle: that interface's `usb`
+# channel. devmgr starts a class driver with it (role DR_USB) or keeps it.
+# When the device goes away usb-bus closes its end (PEER_CLOSED); there is
+# no detach message. usb-bus answers a call of it ERR_NOT_SUPPORTED.
+100 interface_attached (u32 id, u16 vendor, u16 product, u8 interface_number, u8 class_code, u8 subclass, u8 protocol, u8 speed, u8[24] path) -> ()
