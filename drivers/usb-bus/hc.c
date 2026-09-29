@@ -1,9 +1,10 @@
-/* usb-bus: the xHCI host controller. The bring-up is xhci-noop's, proven
- * on the PC's Intel 8086:7A60 and QEMU's qemu-xhci: USB Legacy Support
- * handoff, halt, HCRST, bus mastering on (M7: only now), DCBAA + scratchpads, command ring, one event ring
- * on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Added
- * here: the Supported Protocol capabilities (which root ports are USB 2
- * and which USB 3), port power, a DMA page pool for contexts, rings and
+/* usb-bus: the xHCI host controller. The bring-up, proven on the PC's
+ * Intel 8086:7A60 and QEMU's qemu-xhci: USB Legacy Support handoff, halt,
+ * HCRST, bus mastering on (only now, so nothing a previous driver left
+ * queued can reach memory), DCBAA + scratchpads, command ring, one event
+ * ring on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Then
+ * the Supported Protocol capabilities (which root ports are USB 2 and
+ * which USB 3), port power, a DMA page pool for contexts, rings and
  * buffers, commands with a timeout (and Command Abort), and the event loop
  * that every wait goes through: events are drained on each interrupt and
  * also polled at least every 50 ms, so a lost MSI costs latency, never a
@@ -190,9 +191,9 @@ static int check_pci(struct hc *x)
     uint32_t cmd = cfg(x, 0x04, 2);
     if (!(cmd & (1u << 1)))
         return fail(x, "PCI config", "memory decode is off (command %04x)", cmd);
-    /* Bus mastering is off (M7 safe rebind): hc_bring_up turns it on
-     * through DR_DMA once the controller is halted and reset, so nothing a
-     * previous driver left queued reaches memory. */
+    /* Bus mastering is off (devmgr binds a driver with it off):
+     * hc_bring_up turns it on through DR_DMA once the controller is halted
+     * and reset, so nothing a previous driver left queued reaches memory. */
     /* Power state: devmgr wakes a function found in D1-D3 before it binds
      * a driver (drivers may not change it). */
     uint32_t pm = pci_cap(x, 0x01);
@@ -685,7 +686,7 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
     }
     /* An HSE comes through the platform (SERR#), not necessarily as an
      * interrupt, and an HCE may come with none: without one, USBSTS is
-     * checked here too, at least every 200 ms in the idle loop (M7 review). */
+     * checked here too, at least every 200 ms in the idle loop. */
     if (!fired && h->running)
         check_status(h, op_rd(h, OP_USBSTS));
     poll_events(h, fired);

@@ -1,4 +1,4 @@
-/* hid: the keyboard layer (M7 Track B). A boot keyboard report is 8 bytes:
+/* hid: the keyboard layer. A boot keyboard report is 8 bytes:
  * the modifier byte (INPUT_MOD_*), a reserved byte, and up to six usages of
  * the Keyboard/Keypad page (0x07) that are down, 0 in the empty slots.
  * Events come from diffing each report against the keys held before it:

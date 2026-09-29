@@ -1,4 +1,4 @@
-/* usb-bus: the xHCI + USB core driver process (M7 Track A, M7-PLAN.md).
+/* usb-bus: the xHCI + USB core driver process.
  *
  * One thread, one port. Everything it waits for arrives on that port:
  * the controller's interrupt (MSI / MSI-X entry 0 -> interrupter 0), its
@@ -527,7 +527,8 @@ static status_t b_open_interface(void *ctx, uint32_t id, uint8_t num, handle_t *
     if (!d || !d->configured)
         return ERR_NOT_FOUND;
     /* A hub is usb-bus's own: a client's set_interface or endpoint calls
-     * would take its status-change endpoint away (M7 review). */
+     * would take its status-change endpoint away, and usb-bus would stop
+     * seeing its ports change. */
     struct iface *f = usb_iface(d, num);
     if (d->is_hub || (f && f->cls == 9))
         return ERR_ACCESS_DENIED;
