@@ -103,6 +103,9 @@ struct spawn_args {
      * subset of its rights, e.g. without RIGHT_TRANSFER, M7); 0 or
      * RIGHT_SAME: the same as extra[i].h. */
     const rights_t            *extra_rights;
+    /* NULL, or a NULL-terminated list of "KEY=value" strings: the child's
+     * environment (environ). */
+    const char *const         *envp;
 };
 
 /* Load a program from bootfs into a new process and start it. Its startup

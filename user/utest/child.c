@@ -281,6 +281,18 @@ static int raise_own_limit(void)
     return st == OK ? 0 : 51;
 }
 
+/* The shell's test (tools/shell-tests/cmds.txt): print the environment
+ * and the arguments, which `run` passes (and, in a pipe, through the
+ * SR_STDOUT channel). */
+static int print_env(int argc, char **argv)
+{
+    for (char **e = environ; *e; e++)
+        printf("env: %s\n", *e);
+    for (int i = 2; i < argc; i++)
+        printf("arg: %s\n", argv[i]);
+    return 0;
+}
+
 int child_main(int argc, char **argv)
 {
     const char *m = argv[1];
@@ -299,6 +311,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
+    if (!strcmp(m, "env"))        return print_env(argc, argv);
     if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);

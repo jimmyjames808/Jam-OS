@@ -1,7 +1,12 @@
 /* printf over the debug_write system call. Each printf call is formatted
  * into one buffer and written with one system call, so lines from
  * different threads or processes don't interleave mid-line (up to the
- * buffer size). */
+ * buffer size).
+ *
+ * With an SR_STDOUT channel in the startup message (the shell gives one to
+ * a program whose output goes into a pipe: `run prog | grep x`), the
+ * bytes go there instead, one message per printf; if the reader has gone,
+ * back to debug_write. */
 #include <stdbool.h>
 #include <os.h>
 
@@ -180,6 +185,33 @@ int snprintf(char *buf, size_t size, const char *fmt, ...)
     return n;
 }
 
+static void emit(const char *s, uint64_t n)
+{
+    static int have = -1;   /* SR_STDOUT: -1 not looked yet, 0 none/gone, 1 yes */
+    static handle_t out;
+    if (have < 0) {
+        out = startup_handle(SR_STDOUT);
+        have = out != HANDLE_INVALID;
+    }
+    while (have > 0 && n) {
+        uint32_t k = n > 4096 ? 4096 : (uint32_t)n;
+        status_t st = jam_channel_write(out, s, k, NULL, 0);
+        if (st == ERR_SHOULD_WAIT) {   /* the reader is behind: wait for room */
+            signals_t seen;
+            jam_object_wait_one(out, SIG_WRITABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen);
+            continue;
+        }
+        if (st != OK) {
+            have = 0;   /* gone: the log from now on */
+            break;
+        }
+        s += k;
+        n -= k;
+    }
+    if (n)
+        jam_debug_write(s, n);
+}
+
 int vprintf(const char *fmt, va_list ap)
 {
     char buf[PRINTF_BUF];
@@ -191,17 +223,17 @@ int vprintf(const char *fmt, va_list ap)
         return n;
     }
     if ((size_t)n < sizeof(buf)) {
-        jam_debug_write(buf, (uint64_t)n);
+        emit(buf, (uint64_t)n);
     } else {
         /* Too long for the stack buffer: format again into the heap, or
          * print the truncated line if even that fails. */
         char *big = malloc((size_t)n + 1);
         if (big) {
             vsnprintf(big, (size_t)n + 1, fmt, ap2);
-            jam_debug_write(big, (uint64_t)n);
+            emit(big, (uint64_t)n);
             free(big);
         } else {
-            jam_debug_write(buf, sizeof(buf) - 1);
+            emit(buf, sizeof(buf) - 1);
         }
     }
     va_end(ap2);

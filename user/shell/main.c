@@ -25,6 +25,7 @@
 #include <devmgr.h>
 #include <idl/console.h>
 #include <idl/usbbus.h>
+#include "sh.h"
 
 #define LINE_MAX  240
 #define HIST      32
@@ -52,6 +53,8 @@ static void flush(void)
 
 static void put(const char *s, size_t n)
 {
+    if (sh_capture(s, n))
+        return;   /* into a pipe (sh_exec.c) */
     while (n) {
         uint32_t k = sizeof(obuf) - on < n ? sizeof(obuf) - on : (uint32_t)n;
         memcpy(obuf + on, s, k);
@@ -209,6 +212,8 @@ static void read_line(char *buf)
                 memcpy(line, src, len);
                 redo = true;
             }
+        } else if (u == U_TAB || (!u && cp == '\t')) {
+            redo = sh_complete(line, &len, &pos, LINE_MAX);
         } else if (cp >= 0x20 && cp < 0x7f && !(ev.mods & (INPUT_MOD_CTRL | INPUT_MOD_ALT))) {
             if (len < LINE_MAX) {
                 memmove(line + pos + 1, line + pos, len - pos);
@@ -615,7 +620,7 @@ static void run_command(char *line)
         status_t st = jam_reboot(root);
         say("reboot: %s\n", status_str(st));
     } else {
-        say("%s: unknown command (try help)\n", c);
+        sh_unknown(argc, argv);   /* a program in /boot/bin, or unknown */
     }
 }
 
@@ -636,12 +641,29 @@ int main(int argc, char **argv)
         printf("shell: console.open_keys: %s\n", status_str(st));
         return st == ERR_PEER_CLOSED ? 2 : 1;
     }
+    sh_init();
     say("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     for (;;) {
         char line[LINE_MAX + 1];
         read_line(line);
         remember(line);
-        run_command(line);
+        sh_line(line);   /* sh_exec.c: variables, aliases, ; && || and pipes */
         flush();
     }
 }
+
+/* ---- glue for the command layer (sh.h) ------------------------------------------ */
+
+void sh_put_raw(const char *s, size_t n) { put(s, n); }
+void sh_flush(void) { flush(); }
+bool sh_get_key(struct input_key_event *ev, uint64_t deadline) { return get_key(ev, deadline); }
+bool sh_is_ctrl(const struct input_key_event *ev, char letter) { return is_ctrl(ev, letter); }
+void sh_main_command(char *line) { run_command(line); }
+unsigned sh_history_count(void) { return nhist; }
+const char *sh_history_at(unsigned i)
+{
+    return i < nhist && nhist - i <= HIST ? hist[i % HIST] : NULL;
+}
+handle_t sh_console(void) { return con; }
+handle_t sh_root(void) { return root; }
+handle_t sh_devmgr(void) { return devmgr; }
