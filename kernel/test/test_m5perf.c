@@ -123,6 +123,12 @@ KTEST(pcp_cross_cpu_free)
     cpumask_t m;
     cpumask_one(&m, other);
     thread_join(thread_create_on("pcp-cross", cross_free, NULL, PRIO_DEFAULT, &m));
+    /* thread_join returns once the thread has marked itself exited, but it
+     * is reaped on its CPU's next switch, a moment later, and that can free
+     * the slab page its struct lived in. Let that happen before counting:
+     * on the real PC it landed between the two counts below and the free
+     * count rose by one (a real free, not a drain bug). */
+    thread_sleep_ms(20);
     KT_ASSERT(pmm_stash_count(other) >= 1);
     /* Creating the thread may have taken a slab page for its struct. */
     KT_ASSERT(free_now() + 1 >= free0);
@@ -153,6 +159,7 @@ KTEST(pcp_oom_drains_stashes)
         cpumask_one(&m, c);
         thread_join(thread_create_on("pcp-stash", stash_some, NULL, PRIO_DEFAULT, &m));
     }
+    thread_sleep_ms(20);   /* let the helpers be reaped first (see pcp_cross_cpu_free) */
     uint64_t parked = pmm_stash_pages();
     KT_ASSERT(parked >= cpu_count);
     uint64_t drains0 = pmm_stash_drains();
