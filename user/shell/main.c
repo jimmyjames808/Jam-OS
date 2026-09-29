@@ -137,6 +137,10 @@ static bool is_ctrl(const struct input_key_event *ev, char letter)
 
 static char hist[HIST][LINE_MAX + 1];
 static unsigned nhist;   /* entries ever added */
+/* The console's current line is one screen row and the redraw goes back
+ * with \r: a line that wraps can't be redrawn (each redraw would commit
+ * another copy of its first row). So a line fits the row (main). */
+static unsigned line_max = LINE_MAX;
 
 static void redraw(const char *line, unsigned len, unsigned pos)
 {
@@ -221,7 +225,7 @@ static void read_line(char *buf)
                 redo = true;
             }
         } else if (cp >= 0x20 && cp < 0x7f && !(ev.mods & (INPUT_MOD_CTRL | INPUT_MOD_ALT))) {
-            if (len < LINE_MAX) {
+            if (len < line_max) {
                 memmove(line + pos + 1, line + pos, len - pos);
                 line[pos++] = (char)cp;
                 len++;
@@ -779,6 +783,13 @@ static void run_command(char *line)
     } else if (!strcmp(c, "kill")) {
         if (argc != 2) {
             say("usage: kill <name>\n");
+        } else if (!strcmp(argv[1], "init")) {
+            /* The kernel's kill reaches the whole job tree. Nobody restarts
+             * init: it supervises everything else (killed, the kernel prints
+             * its RESULTS box while the rest runs on unsupervised). devmgr
+             * may go: init starts it again, with its drivers. */
+            say("kill: %s is not restarted by anyone: not killing it\n", argv[1]);
+
         } else {
             char cmd[64];
             snprintf(cmd, sizeof(cmd), "kill %s", argv[1]);
@@ -822,6 +833,10 @@ int main(int argc, char **argv)
         printf("shell: console.open_keys: %s\n", status_str(st));
         return st == ERR_PEER_CLOSED ? 2 : 1;
     }
+    uint16_t cols = 0, rows = 0;
+    if (console_size(con, &cols, &rows) == OK && cols > PROMPT_W + 1 &&
+        cols - PROMPT_W - 1 < LINE_MAX)
+        line_max = cols - PROMPT_W - 1;
     say("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     for (;;) {
         char line[LINE_MAX + 1];

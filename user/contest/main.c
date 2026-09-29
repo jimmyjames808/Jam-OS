@@ -11,6 +11,7 @@
 #include <os.h>
 #include <idl/console.h>
 #include <idl/input.h>
+#include <devmgr.h>
 
 #define MS 1000000ull
 
@@ -68,13 +69,125 @@ static bool empty(handle_t k)
     return !(seen & SIG_READABLE);
 }
 
+/* ---- review probe `run contest steal`: devmgr takes DEVMGR_SET_CONSOLE from
+ * any client of its channel (the shell hands every `run` program one). This
+ * program poses as the console: USB class drivers devmgr (re)starts after
+ * that connect their keys to it. */
+static handle_t steal_src;
+
+static status_t st_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+{
+    (void)ctx;
+    if (state == INPUT_KEY_DOWN)
+        printf("contest: steal: got key usage %#x mods %#x cp %u\n", usage, mods, cp);
+    return OK;
+}
+static status_t st_mouse(void *ctx, int16_t dx, int16_t dy, int8_t w, uint8_t b)
+{
+    (void)ctx, (void)dx, (void)dy, (void)w, (void)b;
+    return OK;
+}
+static status_t st_text(void *ctx, uint16_t n, const uint8_t bytes[64])
+{
+    (void)ctx, (void)n, (void)bytes;
+    return OK;
+}
+static const struct input_ops st_input = { st_key, st_mouse, st_text };
+
+static status_t sc_write(void *ctx, uint16_t n, const uint8_t t[2048])
+{
+    (void)ctx, (void)n, (void)t;
+    return OK;
+}
+static status_t sc_size(void *ctx, uint16_t *c, uint16_t *r)
+{
+    (void)ctx;
+    *c = 80;
+    *r = 25;
+    return OK;
+}
+static status_t sc_clear(void *ctx)
+{
+    (void)ctx;
+    return OK;
+}
+static status_t sc_open_keys(void *ctx, handle_t *out)
+{
+    (void)ctx, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+static status_t sc_connect_input(void *ctx, handle_t *out)
+{
+    (void)ctx;
+    handle_t theirs;
+    status_t st = jam_channel_create(&steal_src, &theirs);
+    if (st == OK) {
+        printf("contest: steal: a driver connected its input to us\n");
+        *out = theirs;
+    }
+    return st;
+}
+static status_t sc_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *p, uint8_t *rs,
+                               uint8_t *gs, uint8_t *bs, uint64_t *size, handle_t *screen,
+                               handle_t *lease)
+{
+    (void)ctx, (void)w, (void)h, (void)p, (void)rs, (void)gs, (void)bs, (void)size;
+    (void)screen, (void)lease;
+    return ERR_NOT_SUPPORTED;
+}
+static const struct console_ops st_console = { sc_write, sc_size, sc_clear, sc_open_keys,
+                                               sc_connect_input, sc_lend_screen };
+
+
+static int steal(void)
+{
+    handle_t dm = startup_handle(SR_DEVMGR), mine, theirs;
+    if (!dm || jam_channel_create(&mine, &theirs) != OK)
+        return 1;
+    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
+    struct devmgr_rep r;
+    uint32_t n = 0, got = 0;
+    struct channel_call_args a = {
+        .h = dm, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
+        .wh = (uint64_t)(uintptr_t)&theirs, .whn = 1, .rcap = sizeof(r),
+        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .rhactual = (uint64_t)(uintptr_t)&got,
+        .deadline_ns = (uint64_t)jam_clock_get() + 5000 * MS,
+    };
+    status_t st = jam_channel_call(&a);
+    printf("contest: steal: DEVMGR_SET_CONSOLE: %s, reply %d\n", status_str(st),
+           n >= DEVMGR_REP_HDR ? r.status : -1);
+    uint64_t end = (uint64_t)jam_clock_get() + 40000 * MS;
+    while ((uint64_t)jam_clock_get() < end) {
+        while (console_serve_one(mine, &st_console, NULL) == OK)
+            ;
+        while (steal_src && input_serve_one(steal_src, &st_input, NULL) == OK)
+            ;
+        jam_nanosleep((uint64_t)jam_clock_get() + 20 * MS);
+    }
+    printf("contest: steal: done\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && !strcmp(argv[1], "steal"))
+        return steal();
     handle_t con = startup_handle(SR_CONSOLE), k, k2, src, src2;
     if (!con) {
         printf("contest: no console channel (SR_CONSOLE)\n");
+        return 1;
+    }
+    /* Review probe (`run contest cad`): a program with no root resource,
+     * only the console channel the shell hands it, plays a keyboard and
+     * sends Ctrl+Alt+Del. */
+    if (argc > 1 && !strcmp(argv[1], "cad")) {
+        CHECK(console_connect_input(con, &src) == OK);
+        CHECK(!startup_handle(SR_RESOURCE));
+        printf("contest: cad: sending Ctrl+Alt+Del as an input source\n");
+        CHECK(input_key(src, 0x4c, INPUT_KEY_DOWN, INPUT_MOD_LCTRL | INPUT_MOD_LALT, 0) == OK);
+        jam_nanosleep((uint64_t)jam_clock_get() + 2000 * MS);
+        printf("contest: cad: still here\n");
         return 1;
     }
     uint16_t cols = 0, rows = 0;

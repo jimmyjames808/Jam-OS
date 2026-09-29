@@ -1,0 +1,10 @@
+# Review repro: any holder of the console channel (here a program the
+# shell starts with `run`, which gets SR_CONSOLE but no root resource) can
+# connect an input source and send Ctrl+Alt+Del; the console reboots the
+# machine with its own RIGHT_MANAGE.
+wait 120 Jam OS shell
+wait jam>
+send run contest cad
+wait contest: cad: sending Ctrl+Alt+Del
+wait 10 console: Ctrl+Alt+Del: rebooting
+wait 10 reboot: asked by console

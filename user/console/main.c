@@ -207,6 +207,8 @@ static void csi(char final)
     }
     if (any || esc_len)
         np++;
+    if (np > 4)
+        np = 4;   /* ESC [ ; ; ; ; m: the 5th and later are dropped (not read past params) */
     uint32_t n = params[0] ? params[0] : 1;
     switch (final) {
     case 'm':

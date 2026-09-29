@@ -593,13 +593,21 @@ static void serve_bus(struct hc *h)
         if (!rn || drv_channel_write(h->serve, r, rn, rhs, rhn) != OK)
             idl_close_all(rhs, rhn);
     }
+    /* 64 taken and maybe more queued: the binding is edge-triggered and the
+     * channel stays readable, so no packet will say so. Come back. */
+    h->serve_pending = true;
 }
 
 static void serve_chan(int i)
 {
     struct chan *c = &chans[i];
     c->pending = false;
-    for (int guard = 0; guard < 64 && c->h; guard++) {
+    /* A time budget as well as a count: one request can take a second (a
+     * device that NAKs a control transfer until the timeout), and 64 of
+     * them from one client would hold the loop -- hot-plug, the other
+     * class drivers, error recovery -- for a minute. */
+    uint64_t t0 = drv_clock_ns();
+    for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * MS; guard++) {
         status_t st;
         if (c->kind == CHAN_IFACE) {
             st = usb_serve_one(c->h, &usb_ops, c);
@@ -754,7 +762,7 @@ int driver_main(const struct driver_start *s)
                 next = now + 100 * MS;
             if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
                 break;
-            if (did || usb_busy())
+            if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */
                 next = now;
             bool any = h->serve_pending;
             for (int i = 0; i < MAX_CHANS && !any; i++)

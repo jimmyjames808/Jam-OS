@@ -118,8 +118,10 @@ void job_unref(struct job *j);   /* NULL is a no-op */
  * NULL out). */
 void job_print_tree(struct job *j, unsigned depth);
 struct job *job_root_of(struct job *j);
-/* The first live process called `name` in j's tree (a reference), or NULL. */
-struct process *job_find_process(struct job *j, const char *name);
+/* The first live process called `name` in j's tree (a reference), or NULL.
+ * Processes directly in a strict ancestor job of `spare` (may be NULL) are
+ * skipped: debug_command's "kill" never reaches the caller's supervisors. */
+struct process *job_find_process(struct job *j, const char *name, struct job *spare);
 
 /* ---- processes ------------------------------------------------------------- */
 

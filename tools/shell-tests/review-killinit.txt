@@ -1,0 +1,22 @@
+# Review: the shell's `kill` reaches every process in the system
+# (debug_command's scope is the ROOT of the caller's job tree). Before the
+# fix `kill init` ended init (the kernel printed its RESULTS box, "root job
+# ... LEAKED", while the console and shell ran on with nobody to restart
+# them) and `kill devmgr` stopped every driver for good (the USB keyboard
+# too). The shell now refuses both; the restartable services still go.
+wait 120 Jam OS shell
+wait jam>
+send kill init
+wait 10 not killing it
+wait jam>
+send kill devmgr
+wait 10 not killing it
+wait jam>
+send kill serialin
+wait bin/serialin was killed
+sleep 1
+send help
+wait Commands:
+wait jam>
+send reboot
+wait reboot: resetting

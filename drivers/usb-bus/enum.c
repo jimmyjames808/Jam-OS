@@ -255,6 +255,13 @@ static void ep_stop(struct usbdev *d, uint8_t dci, struct ring *r)
 {
     uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_STOP_EP) | ((uint32_t)dci << 16) |
                              ((uint32_t)d->slot << 24), NULL, 1000);
+    if (cc == CC_CONTEXT_STATE && d->out_page >= 0 && (out_ctx(d, dci)[0] & 7) == 2) {
+        /* Halted (an error the main loop hasn't recovered yet, or one it
+         * gave up on): Stop can't touch it and Set TR Dequeue would fail
+         * the same way, leaving it halted for the next open. Reset it. */
+        ep_reset(d, dci, r);
+        return;
+    }
     if (cc != CC_SUCCESS && cc != CC_CONTEXT_STATE && !d->gone)
         drv_log("usb %s: Stop Endpoint (ep %u): %s", d->path, dci, cc_str(cc));
     ep_set_deq(d, dci, r);
@@ -590,6 +597,14 @@ static void parse_config(struct usbdev *d)
         } else if (type == 5 && len >= 7 && cur) {   /* endpoint of an active interface */
             uint8_t addr = p[2], attr = p[3];
             uint8_t dci = (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
+            /* Endpoint 0, or one another interface already lists: not this
+             * interface's (its class driver may only reach its own). */
+            if (dci < 2 || (d->eps[dci].dci && d->eps[dci].ifnum != cur->number)) {
+                drv_log("usb %s: if%u lists endpoint %02x, not its own: ignored", d->path,
+                        cur->number, addr);
+                p += len;
+                continue;
+            }
             if (cur->nep < MAX_EPS_IF)
                 cur->ep_addr[cur->nep++] = addr;
             if (dci >= 2 && dci < 32) {
@@ -692,7 +707,7 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     /* Find the alternate setting's endpoints. */
     const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
     bool in_alt = false, found = false;
-    uint8_t nep = 0, addrs[MAX_EPS_IF];
+    uint8_t nep = 0, nacc = 0, addrs[MAX_EPS_IF];
     struct ep neweps[MAX_EPS_IF];
     uint8_t cls = f->cls, sub = f->sub, proto = f->proto;
     while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
@@ -719,7 +734,7 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
             e->esit = (uint16_t)(e->mps * (e->burst + 1));
             e->interval = ep_interval(d->speed, attr & 3, p[6]);
             e->type = ((attr & 3) == 3 && (addr & 0x80)) ? EPT_INTR_IN : 0;
-            addrs[nep++] = addr;
+            nep++;
         }
         p += p[0];
     }
@@ -730,9 +745,10 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
         if (n->dci < 2 || n->dci >= 32)
             continue;
         struct ep *e = &d->eps[n->dci];
-        bool was = e->configured && !(drop & (1u << n->dci));
-        if (was)
-            continue;   /* another interface's; leave it */
+        bool others = e->dci && e->ifnum != f->number;
+        if (others || (e->configured && !(drop & (1u << n->dci))))
+            continue;   /* another interface's; leave it (and don't list it) */
+        addrs[nacc++] = n->addr;
         int kb = e->buf_page;
         if (drop & (1u << n->dci))
             ring_free(&g_hc, &e->ring);   /* a new ring: the context starts at its first TRB */
@@ -759,8 +775,8 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     f->cls = cls;
     f->sub = sub;
     f->proto = proto;
-    f->nep = nep;
-    for (int i = 0; i < nep; i++)
+    f->nep = nacc;
+    for (int i = 0; i < nacc; i++)
         f->ep_addr[i] = addrs[i];
     return CC_SUCCESS;
 }
@@ -984,8 +1000,19 @@ void usb_report_all(bool at_stop)
 
 /* ---- attach ----------------------------------------------------------------------- */
 
-static void dev_free(struct usbdev *d)
+static void dev_free(struct usbdev *d, bool slot_disabled)
 {
+    if (!slot_disabled && !g_hc.dead) {
+        /* Disable Slot failed: the controller may still own the slot and
+         * run its endpoints (queued TRBs into our buffers), so none of its
+         * DMA pages can go back to the pool. Leaked, like a quarantine. */
+        drv_log("usb %s: slot %u not disabled: keeping its DMA pages", d->path, d->slot);
+        if (d->cfg)
+            drv_free(d->cfg);
+        d->cfg = NULL;
+        d->used = false;
+        return;
+    }
     for (int k = 2; k < 32; k++) {
         struct ep *e = &d->eps[k];
         e->chan = -1;   /* closed by serve_iface_gone() */
@@ -1009,14 +1036,16 @@ static void dev_free(struct usbdev *d)
     d->used = false;
 }
 
-static void disable_slot(struct usbdev *d)
+/* True once the controller has let go of d's slot (or never had one). */
+static bool disable_slot(struct usbdev *d)
 {
     if (!d->slot)
-        return;
+        return true;
     uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_DISABLE_SLOT) | ((uint32_t)d->slot << 24),
                              NULL, 1000);
     if (cc != CC_SUCCESS)
         drv_log("usb %s: Disable Slot %u: %s", d->path, d->slot, cc_str(cc));
+    return cc == CC_SUCCESS || cc == 11;   /* 11: Slot Not Enabled */
 }
 
 static void detach(struct usbdev *d, const char *why, bool quiet)
@@ -1031,8 +1060,8 @@ static void detach(struct usbdev *d, const char *why, bool quiet)
         drv_log("usb %s: %04x:%04x detached (%s)", d->path, d->vid, d->pid, why);
     if (d->vid && g_first_report_done && !quiet)
         g_detached++;
-    disable_slot(d);
-    dev_free(d);
+    bool off = disable_slot(d);
+    dev_free(d, off);
     g_generation++;
     g_last_change_ns = drv_clock_ns();
 }
@@ -1052,8 +1081,8 @@ static void attach_failed(struct usbdev *d, const char *step, uint32_t cc)
                 d->path, d->tt_slot, d->tt_port, d->tt_mtt, d->route);
     d->gone = true;
     serve_iface_gone(d->id);
-    disable_slot(d);
-    dev_free(d);
+    bool off = disable_slot(d);
+    dev_free(d, off);
     g_last_change_ns = drv_clock_ns();
 }
 
