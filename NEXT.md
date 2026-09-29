@@ -98,7 +98,7 @@
   QEMU: 201/201 ktests at 4+8, utest 19/19 clean, stress=30, xhcitest PASS. **Next: PC final round on
   0.0.17-m6 = All tests + 2-min + 10-min (signs off M5.5 + M6); M7 agents start when the 10-min run starts.**
   PC 0.0.17-m6: All tests 201/201, no problems.
-  User runs the 10-min stress directly (no 2-min first before a sign-off) - RUNNING (M5.5 + M6 sign-off).
+  **10-min stress PASSED, 0 failures -> M5.5 ✅ and M6 ✅ (2026-09-29).**
 - **M7 STARTED 2026-09-29** (M7-PLAN.md). Agents running in worktrees: A usb-bus (xHCI + hubs + TT, serves
   usb.idl; devmgr 0c0330 -> drv/usb-bus), C console + shell + kernel services (syscalls 110-119: klog read,
   framebuffer hand-off, debug_command, reboot, COM1 RX), D supervision + safe rebind (syscalls 120-129:
