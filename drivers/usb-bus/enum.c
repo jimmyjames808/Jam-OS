@@ -1280,6 +1280,7 @@ static bool enumerate(int parent, uint8_t port, uint8_t speed)
 #define HUB_C_LINK_STATE    25
 #define HUB_C_CONFIG_ERROR  26
 #define HUB_C_BH_RESET      29
+#define HUB_BH_PORT_RESET   28
 
 static uint32_t hub_feature(struct usbdev *d, bool set, uint16_t feature, uint16_t port)
 {
@@ -1395,19 +1396,25 @@ static void hub_port(struct usbdev *hub, uint8_t port)
     hc_sleep(h, 100);
     if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS || !(st & 1))
         return;
-    cc = hub_feature(hub, true, HUB_PORT_RESET, port);
+    /* A SuperSpeed port whose link is stuck (SS.Inactive, Compliance)
+     * needs a warm reset (BH_PORT_RESET); the rest a (hot) PORT_RESET. */
+    uint32_t link = (st >> 5) & 0xf;
+    bool warm = hub->ss_hub && (link == PLS_INACTIVE || link == PLS_COMPLIANCE);
+    cc = hub_feature(hub, true, warm ? HUB_BH_PORT_RESET : HUB_PORT_RESET, port);
     if (cc != CC_SUCCESS) {
         hub->port_fail[port]++;
-        drv_log("usb %s: port %u: SET_FEATURE(PORT_RESET): %s", hub->path, port, cc_str(cc));
+        drv_log("usb %s: port %u: SET_FEATURE(%s): %s", hub->path, port,
+                warm ? "BH_PORT_RESET" : "PORT_RESET", cc_str(cc));
         return;
     }
     uint64_t end = drv_clock_ns() + 800 * MS;
     bool done = false;
+    uint16_t reset_chg = warm ? (1u << 5) | (1u << 4) : (1u << 4);
     while (drv_clock_ns() < end && !hub->gone && !h->stopping) {
         hc_sleep(h, 10);
         if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS)
             continue;
-        if ((chg & (1u << 4)) && !(st & (1u << 4))) {
+        if ((chg & reset_chg) && !(st & (1u << 4))) {
             done = true;
             break;
         }
