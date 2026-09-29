@@ -141,8 +141,9 @@ KTEST(spin_idle_skips_ipi)
     kprintf("spin-idle: %lu of %d wakeups polled with a 50 ms window, %lu with none\n",
             polled_on, PP_ROUNDS, polled_off);
     /* With the review fix (the spin leaves idle_polling set for
-     * schedule() to clear) 199-200 of 200 poll even with the Mac busy. */
-    KT_ASSERT(polled_on >= PP_ROUNDS * 9 / 10);
+     * schedule() to clear) 199-200 of 200 poll on a quiet Mac, 178 with
+     * three QEMUs sharing it (TCG vCPUs stall); before the fix ~1/3. */
+    KT_ASSERT(polled_on >= PP_ROUNDS * 3 / 4);
     KT_EQ(polled_off, 0);
 }
 

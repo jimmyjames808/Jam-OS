@@ -34,7 +34,9 @@ static void td_run(struct kobject *obj, uint8_t what)
     uint64_t f = irq_save();           /* an IRQ that dropped a ref would race */
     struct td_cpu *s = &td[this_cpu()->index];
     if (obj->td_pending)
-        obj->td_pending |= what;       /* already listed (both events fired) */
+        obj->td_pending |= what;       /* already listed (the same CPU: a
+                                        * ZERO_HANDLES event holds a ref, so
+                                        * DESTROY can't meet it elsewhere) */
     else {
         obj->td_pending = what;
         obj->td_next = s->head;
@@ -54,10 +56,15 @@ static void td_run(struct kobject *obj, uint8_t what)
         o->td_pending = 0;
         irq_restore(f);                /* run the ops with interrupts on: they
                                         * take irqsave locks and may thread_wake */
-        if (w & TD_ZERO_HANDLES)
+        if (w & TD_ZERO_HANDLES) {
+            /* The event holds a reference (kobject_handle_drop), so no CPU
+             * can destroy o while on_zero_handles runs, and DESTROY can't be
+             * pending with it: dropping that reference may queue it now. */
             o->ops->on_zero_handles(o);
-        if (w & TD_DESTROY)
+            kobject_unref(o);
+        } else if (w & TD_DESTROY) {
             o->ops->destroy(o);
+        }
         f = irq_save();
     }
     s->depth = 0;
@@ -122,8 +129,16 @@ void kobject_handle_drop(struct kobject *obj)
     uint32_t left = __atomic_sub_fetch(&obj->handles, 1, __ATOMIC_ACQ_REL);
     if (left == UINT32_MAX)
         panic("kobject: %s (koid %lu) handle count underflow", obj->ops->name, obj->koid);
-    if (left == 0 && obj->ops->on_zero_handles)
+    if (left == 0 && obj->ops->on_zero_handles) {
+        /* Keep obj alive until on_zero_handles has run. The event may be
+         * deferred (a drainer is running on this CPU), and meanwhile
+         * another CPU could drop the last reference: without this it would
+         * destroy obj before, or while, on_zero_handles touches it. The
+         * caller still holds the handle's reference, so this can't revive
+         * a dead object. (Track B review of M6.) */
+        kobject_ref(obj);
         td_run(obj, TD_ZERO_HANDLES);
+    }
 }
 
 void kobject_signal_locked(struct kobject *obj, signals_t clear, signals_t set)
