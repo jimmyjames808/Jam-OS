@@ -219,37 +219,87 @@ static inline uint64_t usable_word(const struct thread *t, unsigned w)
     return t->affinity.bits[w] & __atomic_load_n(&online_mask.bits[w], __ATOMIC_RELAXED);
 }
 
-/* Every CPU t may run on, in index order, without touching any other. */
-#define for_each_usable(t, i)                                                    \
-    for (unsigned _w = 0; _w < MAX_CPUS / 64; _w++)                              \
-        for (uint64_t _b = usable_word(t, _w); _b; _b &= _b - 1)                 \
-            if (((i) = _w * 64 + (uint32_t)__builtin_ctzll(_b)), 1)
-
 static bool usable(const struct thread *t, uint32_t cpu)
 {
     return cpumask_has(&t->affinity, cpu) && cpumask_has(&online_mask, cpu);
 }
 
-/* Least-loaded allowed CPU; ties prefer P-cores, then the thread's last CPU.
- * Only CPUs t may use are looked at: a pinned thread reads one run queue. */
-static uint32_t select_cpu(struct thread *t)
+/* Hybrid placement order (M5.5), best first:
+ *   0  an idle P-core whose HT sibling is idle too (or that has none): a
+ *      whole core to itself;
+ *   1  an idle E-core (E-cores have no SMT: nothing shares it);
+ *   2  the idle HT sibling of a busy P-core (half a core);
+ *   3  every CPU busy: the least loaded, ties to P-cores, then the thread's
+ *      last CPU (the M5 rule, which is also the whole rule with the order
+ *      switched off).
+ * Within classes 0-2 the thread's last CPU wins (its cache may still be
+ * warm), then the lowest index. "Idle" means nothing running and nothing
+ * queued. Without hybrid cores every CPU looks like a P-core, so the order
+ * is just "whole idle core > idle sibling > busy". The loads are read
+ * racily: a wrong guess costs time, not correctness. The M5 rule filled
+ * CPUs in index order, i.e. both hyperthreads of a P-core before the next
+ * core, and E-cores last. */
+volatile bool sched_place_order = true;
+
+static inline uint32_t place_key(uint32_t load, int32_t sib_load, uint8_t type, bool last,
+                                 bool order)
 {
-    uint32_t best = UINT32_MAX, best_load = UINT32_MAX, i;
-    for_each_usable(t, i) {
-        uint32_t l = load_of(i) * 4;
-        if (topo[i].type == CORE_EFFICIENCY)
-            l += 1;
-        if (i == t->cpu)
+    if (!order || load) {
+        uint32_t l = load * 4 + (type == CORE_EFFICIENCY);
+        if (last)
             l = l ? l - 1 : 0;
-        if (l < best_load) {
-            best_load = l;
-            best = i;
+        return (order ? 3u << 24 : 0) | l;
+    }
+    uint32_t cls = type == CORE_EFFICIENCY ? 1 : sib_load <= 0 ? 0 : 2;
+    return cls << 24 | !last;
+}
+
+/* The best CPU in `cand` for a thread that last ran on `last`. `fake_load`
+ * (tests only) replaces the run queues' loads. UINT32_MAX if cand is empty. */
+static uint32_t pick_cpu(const cpumask_t *cand, const struct cpu_topo *tp,
+                         const uint32_t *fake_load, uint32_t last, bool order)
+{
+    uint32_t best = UINT32_MAX, best_key = UINT32_MAX;
+    for (unsigned w = 0; w < MAX_CPUS / 64; w++) {
+        for (uint64_t b = cand->bits[w]; b; b &= b - 1) {
+            uint32_t i = w * 64 + (uint32_t)__builtin_ctzll(b);
+            uint32_t l = fake_load ? fake_load[i] : load_of(i);
+            int32_t sl = -1;
+            int sib = tp[i].sibling;
+            if (order && !l && sib >= 0)
+                sl = (int32_t)(fake_load ? fake_load[sib] : load_of((uint32_t)sib));
+            uint32_t key = place_key(l, sl, tp[i].type, i == last, order);
+            if (key < best_key) {
+                best_key = key;
+                best = i;
+            }
         }
     }
+    return best;
+}
+
+static uint32_t select_cpu(struct thread *t)
+{
+    cpumask_t cand;
+    for (unsigned w = 0; w < MAX_CPUS / 64; w++)
+        cand.bits[w] = usable_word(t, w);
+    uint32_t best = pick_cpu(&cand, topo, NULL, t->cpu, sched_place_order);
     if (best == UINT32_MAX)
         panic("sched: thread \"%s\" has no online CPU in its affinity mask", t->name);
     return best;
 }
+
+#ifndef JAM_NO_KTESTS
+uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
+                             const uint8_t *type, const uint32_t *load, uint32_t last,
+                             bool order)
+{
+    static struct cpu_topo fake[MAX_CPUS];
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        fake[i] = (struct cpu_topo){ sibling[i], type[i], 0 };
+    return pick_cpu(cand, fake, load, last, order);
+}
+#endif
 
 /* Wake-affine placement for a wakee whose waker, running on `waker`, is
  * about to block (thread_wake_sync). On the waker's CPU the wakee runs the
@@ -1043,6 +1093,7 @@ void sched_init_bsp(void)
         init_rq(i);
     sched_idle_spin_ns = cmdline_has("nospinidle")
                              ? 0 : cmdline_get_u64("idlespin", SCHED_IDLE_SPIN_NS / 1000, 0) * 1000;
+    sched_place_order = !cmdline_has("noplaceorder");
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);

@@ -224,6 +224,17 @@ void sched_kick(uint32_t cpu);
  * benchmark flips it at run time. */
 #define SCHED_IDLE_SPIN_NS 10000
 extern volatile uint64_t sched_idle_spin_ns;
+/* Hybrid placement order (M5.5): idle whole P-core > idle E-core > idle HT
+ * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the M5
+ * least-loaded rule. Boot: "noplaceorder". */
+extern volatile bool sched_place_order;
+#ifndef JAM_NO_KTESTS
+/* Tests: run the placement rule on a made-up topology (arrays indexed by
+ * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */
+uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
+                             const uint8_t *type, const uint32_t *load, uint32_t last,
+                             bool order);
+#endif
 void sched_print_stats(void);
 
 /* ---- wait queues and mutexes --------------------------------------------- */

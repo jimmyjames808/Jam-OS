@@ -209,33 +209,46 @@ static uint64_t *samples, *samples_off, *samples_on;
 
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
- * default if the boot turned it off). */
-enum sw { SW_SPINIDLE, SW_COUNT };
-static const char *const sw_name[SW_COUNT] = { "spinidle" };
+ * default if the boot turned the feature off). */
+enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_COUNT };
+static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder" };
 static uint64_t sw_boot[SW_COUNT];
+
+static uint64_t sw_get(enum sw s)
+{
+    switch (s) {
+    case SW_SPINIDLE:   return sched_idle_spin_ns;
+    case SW_PLACEORDER: return sched_place_order;
+    case SW_COUNT:      break;
+    }
+    return 0;
+}
+
+static void sw_put(enum sw s, uint64_t v)
+{
+    switch (s) {
+    case SW_SPINIDLE:   sched_idle_spin_ns = v; break;
+    case SW_PLACEORDER: sched_place_order = v; break;
+    case SW_COUNT:      break;
+    }
+}
+
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1 };
 
 static void sw_save(void)
 {
-    sw_boot[SW_SPINIDLE] = sched_idle_spin_ns;
+    for (unsigned s = 0; s < SW_COUNT; s++)
+        sw_boot[s] = sw_get((enum sw)s);
 }
 
 static void sw_set(enum sw s, bool on)
 {
-    switch (s) {
-    case SW_SPINIDLE:
-        sched_idle_spin_ns = on ? (sw_boot[s] ? sw_boot[s] : SCHED_IDLE_SPIN_NS) : 0;
-        break;
-    case SW_COUNT:
-        break;
-    }
+    sw_put(s, on ? (sw_boot[s] ? sw_boot[s] : sw_default_on[s]) : 0);
 }
 
 static void sw_restore(enum sw s)
 {
-    switch (s) {
-    case SW_SPINIDLE: sched_idle_spin_ns = sw_boot[s]; break;
-    case SW_COUNT: break;
-    }
+    sw_put(s, sw_boot[s]);
 }
 
 /* Run `measure` (which fills `samples`) with switch s off, then on, and
@@ -698,6 +711,82 @@ static void chan_call_placed(void)
     chan_call_mask(&m, "channel_call round trip, P client, server not on P");
 }
 
+/* ---- placement of busy threads (M5.5) --------------------------------------
+ * Where the scheduler puts CPU-bound threads when there is room: one per
+ * core except CPU 0's (which runs this thread), all unpinned but kept off
+ * CPU 0. Not a time: the line counts how many landed on a core another
+ * busy thread (or CPU 0) already uses, and how many on E-cores. With the
+ * hybrid order that is "none shared" while whole cores are idle. */
+
+#define PLACE_MAX 64
+static volatile bool place_release;
+static volatile uint32_t place_started;
+
+static void place_spinner(void *arg)
+{
+    (void)arg;
+    __atomic_add_fetch(&place_started, 1, __ATOMIC_RELAXED);
+    while (!place_release)
+        cpu_relax();
+}
+
+static uint32_t count_cores(void)
+{
+    uint32_t cores = 0;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        bool first = true;
+        for (uint32_t j = 0; j < i; j++)
+            first &= cpus[j]->core_id != cpus[i]->core_id;
+        cores += first;
+    }
+    return cores;
+}
+
+/* Place n spinners; *shared = how many share a core, *on_e = on E-cores. */
+static void place_busy(uint32_t n, uint32_t *shared, uint32_t *on_e)
+{
+    struct thread *th[PLACE_MAX];
+    uint32_t where[PLACE_MAX];
+    cpumask_t m;
+    cpumask_all(&m);
+    m.bits[0] &= ~1ull;
+    place_release = false;
+    place_started = 0;
+    for (uint32_t k = 0; k < n; k++)
+        th[k] = thread_create_on("bench", place_spinner, NULL, PRIO_BENCH, &m);
+    while (place_started < n)
+        thread_yield();
+    for (uint32_t k = 0; k < n; k++)
+        where[k] = th[k]->cpu;
+    place_release = true;
+    for (uint32_t k = 0; k < n; k++)
+        thread_join(th[k]);
+    *shared = *on_e = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        bool share = cpus[where[k]]->core_id == cpus[0]->core_id;
+        for (uint32_t j = 0; j < n; j++)
+            share |= j != k && cpus[where[j]]->core_id == cpus[where[k]]->core_id;
+        *shared += share;
+        *on_e += cpus[where[k]]->type == CORE_EFFICIENCY;
+    }
+}
+
+static void placement(void)
+{
+    uint32_t n = count_cores() - 1;
+    if (n < 2)
+        return;
+    if (n > PLACE_MAX)
+        n = PLACE_MAX;
+    uint32_t s0, e0, s1, e1;
+    sw_set(SW_PLACEORDER, false);
+    place_busy(n, &s0, &e0);
+    sw_set(SW_PLACEORDER, true);
+    place_busy(n, &s1, &e1);
+    sw_restore(SW_PLACEORDER);
+    report("bench: placement of %u busy threads (1 per core but cpu0's) placeorder off %u share a "
+           "core, %u on E; on %u, %u", n, s0, e0, s1, e1);
+}
 static void bench_shootdown(void *arg)
 {
     (void)arg;
@@ -932,6 +1021,8 @@ void bench_run(void)
             chan_call(others[i]);
     if (cpu_count > 2)
         chan_call_placed();
+    if (cpu_count > 2)
+        placement();
     if (cpu_count > 1) {
         run_on(cpu_p, bench_shootdown, NULL);
         char what[64];
