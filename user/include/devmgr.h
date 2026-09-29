@@ -88,6 +88,17 @@
  * with a fresh restart history. Its deaths and give-up are expected (not
  * problems). ERR_NOT_FOUND: no drv/crasher in bootfs. */
 #define DEVMGR_TEST_DRIVER  0x00030008u
+/* (1 handle: a client end of the console's channel) -> (): the console to
+ * connect class drivers to (M7). init sends it after it restarted the
+ * console (the first one comes as SR_CONSOLE); the class drivers that
+ * ended because the old console went away start again connected to it. */
+#define DEVMGR_SET_CONSOLE  0x00030009u
+
+/* USB class drivers (M7) are named by DEVMGR_USB_IFACE as the vendor, the
+ * interface number as the device and usb-bus's device id (usbbus.device's
+ * `id`) as the instance, for GET_DRIVER, KILL, REBIND and SUPERVISION.
+ * Such a binding exists from the interface's attach until it is gone. */
+#define DEVMGR_USB_IFACE    0xfffeu
 
 #define DEVMGR_SUP_NONE       0u   /* no driver started (yet) */
 #define DEVMGR_SUP_RUNNING    1u
@@ -118,6 +129,8 @@
 #define DEVMGR_DRV_BAR_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_MAP)
 #define DEVMGR_DRV_IRQ_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 #define DEVMGR_DRV_DMA_RIGHTS DEVMGR_DRV_KEEP
+/* A class driver's channels (M7: DR_USB, DR_INPUT). */
+#define DEVMGR_DRV_CHAN_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 
 struct devmgr_req {
     uint32_t txid;

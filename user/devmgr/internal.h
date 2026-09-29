@@ -11,7 +11,7 @@
 
 #define MS        1000000ull
 #define S         1000000000ull
-#define MAX_DEVS  64
+#define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
 #define STOP_WAIT (15 * S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
 
 /* Supervision (supervise.c). */
@@ -39,12 +39,14 @@
 enum bind_kind {
     BIND_PCI,    /* a PCI function (pci_enum) */
     BIND_SOFT,   /* no hardware: the crash-test driver */
+    BIND_USB,    /* a USB interface usb-bus reported (M7, usb.c); path NULL: a free slot */
 };
 
 struct binding {
     enum bind_kind      kind;
     uint32_t            index;      /* BIND_PCI: pci_enum's */
-    struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT: vendor/device only */
+    struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT, BIND_USB: vendor/device
+                                     * only (BIND_USB: the USB ids) */
     const char         *path;       /* the driver; NULL: none for it */
     bool                test;       /* its deaths and giving up are expected (not problems) */
     handle_t            dev;        /* BIND_PCI: ours, with RIGHT_MANAGE (0 until started once) */
@@ -62,6 +64,14 @@ struct binding {
     uint64_t            restarted[SUP_RESTART_LIMIT];   /* when the last restarts were (ring) */
     uint32_t            restarts;   /* since boot */
     uint32_t            backoff_ms; /* the last backoff */
+    /* BIND_USB (usb.c). */
+    int32_t             usb_if;     /* its usb_ifs slot; -1: the interface is gone */
+    uint32_t            usb_id;     /* usb-bus's device id */
+    uint8_t             usb_ifnum;  /* the interface number */
+    bool                console_wait; /* its restart waits for a (new) console */
+    uint32_t            input_gen;  /* its current run got DR_INPUT from console number
+                                     * input_gen (0: none) */
+    char                name[32];   /* its process name, "hid-<path>:<if>" */
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -100,14 +110,31 @@ unsigned mem_bars(const struct binding *b);
 /* Close b's client end (and stop watching it). */
 void close_client(struct binding *b);
 
-/* usb.c (M7): the interfaces usb-bus reports on its DR_SERVE channel. */
+/* usb.c (M7): the interfaces usb-bus reports on its DR_SERVE channel, and
+ * their class drivers. */
 #define MAX_USB_IFS 64
 /* b's driver wrote on its channel by itself (KEY_EVENTS). */
 void usb_driver_events(struct binding *b);
 /* A kept interface channel's KEY_USBIF packet. */
 void usb_if_closed(uint64_t key);
-/* b's driver (a usb-bus) is gone: forget the interfaces it reported. */
+/* b's driver (a usb-bus) is gone: forget the interfaces it reported (their
+ * class drivers see their channels close and end by themselves). */
 void usb_bus_gone(struct binding *b);
+/* A BIND_USB binding's handles for its driver: DR_USB (a duplicate of the
+ * kept channel) and, with a console, DR_INPUT. ERR_PEER_CLOSED: the
+ * interface is gone; ERR_SHOULD_WAIT: the console is restarting. */
+status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* b is a BIND_USB binding that won't run again: free its slot. */
+void usb_retire(struct binding *b, const char *why);
+/* Is b's interface gone? */
+bool usb_gone(const struct binding *b);
+/* The console (M7): devmgr's client end of it (0: none), from SR_CONSOLE
+ * or DEVMGR_SET_CONSOLE. A new one restarts the class drivers waiting for
+ * it. */
+extern handle_t console;
+void usb_new_console(handle_t ch);
+/* Could b's driver have ended because the console went away? */
+bool usb_console_gone(const struct binding *b);
 
 /* supervise.c. */
 /* b's driver process (start generation `gen`) terminated. */

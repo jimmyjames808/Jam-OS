@@ -42,6 +42,10 @@
  * RIGHT_MANAGE, from pci_device_open) and nothing else of the driver's.
  * Each binding is logged, with one RESULTS line per bound driver.
  *
+ * M7: USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
+ * drv/hid, each in a job of its own, supervised the same way), connected
+ * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
+ *
  * It runs until every client end of its channel is gone (init closes its
  * own at the end of the boot): then it closes each driver's client end,
  * waits for the drivers to return, kills any that don't, and exits 0 if
@@ -91,7 +95,11 @@ void say(bool report_it, const char *fmt, ...)
 
 const char *bdf(const struct binding *b)
 {
-    static char s[16];
+    static char s[40];
+    if (b->kind == BIND_USB) {
+        snprintf(s, sizeof(s), "usb %s", b->name + 4);   /* "hid-6.1:0" -> "usb 6.1:0" */
+        return s;
+    }
     if (b->kind != BIND_PCI)
         return "test";
     snprintf(s, sizeof(s), "%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
@@ -157,8 +165,16 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
      * running (M7: tests find usb-bus this way). */
     bool any_bound = q->ordinal == DEVMGR_GET_SERVICE && q->vendor == 0xffff &&
                      q->device == 0xffff;
+    bool usb = q->vendor == DEVMGR_USB_IFACE;
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
+        if (usb || b->kind == BIND_USB) {
+            /* USB class drivers only by DEVMGR_USB_IFACE (id, interface) */
+            if (usb && b->kind == BIND_USB && b->path && b->usb_id == q->instance &&
+                b->usb_ifnum == q->device)
+                return b;
+            continue;
+        }
         bool hit = any_bound ? b->kind == BIND_PCI && b->proc != HANDLE_INVALID
                    : msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
                        ? b->kind == BIND_PCI && b->info.msix_vectors &&
@@ -336,17 +352,24 @@ static status_t serve(handle_t ch)
         }
         if (st != OK)
             return st;
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(in[i]);   /* no request carries handles */
+        /* Only SET_CONSOLE carries a handle (one). */
+        const struct devmgr_req *q = (const struct devmgr_req *)buf;
+        bool set_console = n == sizeof(*q) && q->ordinal == DEVMGR_SET_CONSOLE && nh == 1;
+        if (!set_console)
+            for (uint32_t i = 0; i < nh; i++)
+                jam_handle_close(in[i]);
         if (n < 4)
             continue;   /* no txid: nobody to answer */
-        struct devmgr_rep r = { .txid = ((struct devmgr_req *)buf)->txid,
-                                .status = ERR_INVALID_ARGS };
+        struct devmgr_rep r = { .txid = q->txid, .status = ERR_INVALID_ARGS };
         handle_t hs[DEVMGR_MAX_HANDLES];
         rights_t rs[DEVMGR_MAX_HANDLES];
         uint32_t nout = 0;
-        if (n == sizeof(struct devmgr_req) && !nh)
-            handle((struct devmgr_req *)buf, &r, hs, rs, &nout);
+        if (set_console) {
+            usb_new_console(in[0]);
+            r.status = OK;
+        } else if (n == sizeof(struct devmgr_req) && !nh) {
+            handle(q, &r, hs, rs, &nout);
+        }
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
         if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
             for (uint32_t i = 0; i < nout; i++)
@@ -370,6 +393,9 @@ int main(int argc, char **argv)
         say(true, "devmgr: no port (%s)", status_str(st));
         return 1;
     }
+    /* M7: with a console, class drivers send their input to it. */
+    if (startup_handle(SR_CONSOLE))
+        usb_new_console(startup_handle(SR_CONSOLE));
     for (uint32_t i = 0; ndevs < MAX_DEVS; i++) {
         struct binding *b = &devs[ndevs];
         st = jam_pci_enum(pci_res, i, &b->info);

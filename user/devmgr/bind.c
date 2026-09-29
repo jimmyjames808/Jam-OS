@@ -125,17 +125,19 @@ status_t start_driver(struct binding *b)
     rights_t xr[STARTUP_MAX_HANDLES];
     unsigned n = 0;
     handle_t job = HANDLE_INVALID, proc = HANDLE_INVALID;
-    status_t st = b->kind == BIND_PCI ? pci_handles(b, x, xr, &n) : OK;
+    status_t st = b->kind == BIND_PCI   ? pci_handles(b, x, xr, &n)
+                  : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
+                                        : OK;
     /* DR_SERVE: the end a restart kept (clients may have queued calls on
-     * it already), else a new channel. */
-    if (st == OK && !b->serve) {
+     * it already), else a new channel. A USB class driver serves nobody. */
+    if (st == OK && !b->serve && b->kind != BIND_USB) {
         handle_t client;
         if ((st = jam_channel_create(&client, &b->serve)) == OK) {
             close_client(b);
             b->client = client;
         }
     }
-    if (st == OK) {
+    if (st == OK && b->kind != BIND_USB) {
         add(x, xr, &n, DR_SERVE, b->serve, RIGHT_SAME);
         b->serve = HANDLE_INVALID;
     }
@@ -144,10 +146,13 @@ status_t start_driver(struct binding *b)
     for (unsigned i = 0; st == OK && i < sizeof(limits) / sizeof(limits[0]); i++)
         st = jam_job_set_limit(job, limits[i].kind, limits[i].value);
     if (st == OK) {
-        const char *argv[] = { b->path };
+        /* A USB class driver is named after its interface ("hid-6.1:0"):
+         * in the log, in `ps`, for the shell's `kill`. */
+        const char *name = b->kind == BIND_USB ? b->name : NULL;
+        const char *argv[] = { name ? name : b->path };
         struct spawn_args a = {
-            .path = b->path, .argc = 1, .argv = argv, .job = job, .extra = x, .nextra = n,
-            .extra_rights = xr,
+            .path = b->path, .name = name, .argc = 1, .argv = argv, .job = job, .extra = x,
+            .nextra = n, .extra_rights = xr,
         };
         st = spawn(&a, &proc);   /* consumes the extras either way */
         n = 0;

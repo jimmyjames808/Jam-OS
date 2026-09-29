@@ -63,7 +63,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
     /* The channel the restart will serve, handed out from now on. (If this
      * fails, start_driver makes one and GET_SERVICE says ERR_BAD_STATE
      * meanwhile.) */
-    if (jam_channel_create(&b->client, &b->serve) != OK)
+    if (b->kind != BIND_USB && jam_channel_create(&b->client, &b->serve) != OK)
         b->client = b->serve = HANDLE_INVALID;
     say(!expected, "devmgr: %s %s %s: restart %u in %u ms", bdf(b), b->path, why, n + 1,
         b->backoff_ms);
@@ -76,6 +76,26 @@ void sup_died(struct binding *b, uint32_t gen)
         jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         return;   /* a stale packet, or it was handled already */
     kill_driver(b);   /* whatever else its job started */
+    if (b->kind == BIND_USB) {
+        /* A USB class driver (usb.c): its interface gone = the end of it,
+         * however it ended; exit 0 because the console went = reconnect. */
+        if (usb_gone(b)) {
+            bool clean = job_empty(b->job, b->path);
+            forget_driver(b);
+            problems += !clean;
+            usb_retire(b, clean ? "ended, device gone" : "device gone, did not end cleanly");
+            return;
+        }
+        if (!info.killed && info.exit_code == 0 && !b->killed && usb_console_gone(b)) {
+            forget_driver(b);
+            b->state = DEVMGR_SUP_RESTARTING;
+            b->console_wait = true;
+            b->restart_at = console && usb_console_gone(b) ? DEADLINE_NEVER : now();
+            b->input_gen = 0;
+            say(false, "devmgr: %s %s: its console went away: reconnecting", bdf(b), b->path);
+            return;
+        }
+    }
     if (!info.killed && info.exit_code == 0 && !b->killed) {
         bool clean = job_empty(b->job, b->path);
         forget_driver(b);
@@ -116,14 +136,31 @@ void sup_run_due(void)
         uint64_t t = now();
         if (b->state != DEVMGR_SUP_RESTARTING || b->restart_at > t)
             continue;
-        b->restarted[b->restarts % SUP_RESTART_LIMIT] = t;
-        b->restarts++;
+        bool reconnect = b->console_wait;   /* not a restart: the console came back */
+        if (!reconnect) {
+            b->restarted[b->restarts % SUP_RESTART_LIMIT] = t;
+            b->restarts++;
+        }
         b->last = start_driver(b);
         if (b->last == OK) {
-            say(false, "devmgr: %s %s restarted (restart %u since boot)", bdf(b), b->path,
-                b->restarts);
+            b->console_wait = false;
+            if (reconnect)
+                say(false, "devmgr: %s %s started again (the console is back)", bdf(b), b->path);
+            else
+                say(false, "devmgr: %s %s restarted (restart %u since boot)", bdf(b), b->path,
+                    b->restarts);
             continue;
         }
+        if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
+            b->console_wait = true;   /* the console is restarting: DEVMGR_SET_CONSOLE */
+            b->restart_at = DEADLINE_NEVER;
+            continue;
+        }
+        if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
+            usb_retire(b, "device gone before its restart");
+            continue;
+        }
+        b->console_wait = false;
         char why[48];
         snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(b->last));
         if (!b->test)

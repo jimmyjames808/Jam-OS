@@ -103,6 +103,7 @@ struct usb_endpoint_stats_rep {
     uint64_t reports;
     uint64_t dropped;
     uint64_t errors;
+    uint8_t open;
 } __attribute__((packed));
 struct usb_set_interface_req {
     uint32_t txid;
@@ -289,7 +290,9 @@ static inline status_t usb_open_interrupt_in(handle_t ch, uint8_t endpoint, hand
     return usb_open_interrupt_in_until(ch, DEADLINE_NEVER, endpoint, out_reports, out_max_packet, out_interval_ms);
 }
 
-static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors)
+/* Counts since the device was configured; open 1 while a report channel
+ * is attached to the endpoint (someone -- the class driver -- polls it). */
+static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
 {
     struct usb_endpoint_stats_req idl_q;
     struct usb_endpoint_stats_rep idl_r;
@@ -307,11 +310,13 @@ static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_n
         *out_dropped = idl_r.dropped;
     if (idl_st == OK && out_errors)
         *out_errors = idl_r.errors;
+    if (idl_st == OK && out_open)
+        *out_open = idl_r.open;
     return idl_st;
 }
-static inline status_t usb_endpoint_stats(handle_t ch, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors)
+static inline status_t usb_endpoint_stats(handle_t ch, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
 {
-    return usb_endpoint_stats_until(ch, DEADLINE_NEVER, endpoint, out_reports, out_dropped, out_errors);
+    return usb_endpoint_stats_until(ch, DEADLINE_NEVER, endpoint, out_reports, out_dropped, out_errors, out_open);
 }
 
 /* SET_INTERFACE: select an alternate setting of this interface (closes its
@@ -345,7 +350,7 @@ struct usb_ops {
     status_t (*control_in)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024]);
     status_t (*control_out)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64]);
     status_t (*open_interrupt_in)(void *ctx, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms);
-    status_t (*endpoint_stats)(void *ctx, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors);
+    status_t (*endpoint_stats)(void *ctx, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open);
     status_t (*set_interface)(void *ctx, uint8_t alt_setting);
 };
 
@@ -495,19 +500,21 @@ static inline uint32_t usb_dispatch(const struct usb_ops *ops, void *ctx, const 
         uint64_t out_reports = 0;
         uint64_t out_dropped = 0;
         uint64_t out_errors = 0;
+        uint8_t out_open = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->endpoint_stats) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->endpoint_stats(ctx, idl_q->endpoint, &out_reports, &out_dropped, &out_errors);
+        status_t idl_st = ops->endpoint_stats(ctx, idl_q->endpoint, &out_reports, &out_dropped, &out_errors, &out_open);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->reports = out_reports;
         idl_r->dropped = out_dropped;
         idl_r->errors = out_errors;
+        idl_r->open = out_open;
         return sizeof(*idl_r);
     }
     case USB_SET_INTERFACE: {
