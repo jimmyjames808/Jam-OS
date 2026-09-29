@@ -15,6 +15,7 @@ int64_t sysc_process_exit(int64_t code);
 int64_t sysc_thread_exit(void);
 int64_t sysc_clock_get(void);
 int64_t sysc_nanosleep(uint64_t deadline_ns);
+int64_t sysc_debug_report(uint64_t buf, uint64_t len);
 int64_t sysc_handle_close(handle_t h);
 int64_t sysc_handle_duplicate(handle_t h, rights_t rights, uint64_t out);
 int64_t sysc_handle_replace(handle_t h, rights_t rights, uint64_t out);
@@ -51,3 +52,6 @@ int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint
 int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1);
 int64_t sysc_job_create(handle_t parent, uint32_t flags, uint64_t out);
 int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
+int64_t sysc_job_get_info(handle_t job, uint64_t out);
+int64_t sysc_process_get_info(handle_t proc, uint64_t out);
+int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);

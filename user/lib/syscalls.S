@@ -47,6 +47,14 @@ jam_nanosleep:
     ret
     .size jam_nanosleep, . - jam_nanosleep
 
+    .globl jam_debug_report
+    .type jam_debug_report, @function
+jam_debug_report:
+    mov $SYS_debug_report, %eax
+    syscall
+    ret
+    .size jam_debug_report, . - jam_debug_report
+
     .globl jam_handle_close
     .type jam_handle_close, @function
 jam_handle_close:
@@ -346,5 +354,29 @@ jam_job_set_limit:
     syscall
     ret
     .size jam_job_set_limit, . - jam_job_set_limit
+
+    .globl jam_job_get_info
+    .type jam_job_get_info, @function
+jam_job_get_info:
+    mov $SYS_job_get_info, %eax
+    syscall
+    ret
+    .size jam_job_get_info, . - jam_job_get_info
+
+    .globl jam_process_get_info
+    .type jam_process_get_info, @function
+jam_process_get_info:
+    mov $SYS_process_get_info, %eax
+    syscall
+    ret
+    .size jam_process_get_info, . - jam_process_get_info
+
+    .globl jam_thread_set_priority
+    .type jam_thread_set_priority, @function
+jam_thread_set_priority:
+    mov $SYS_thread_set_priority, %eax
+    syscall
+    ret
+    .size jam_thread_set_priority, . - jam_thread_set_priority
 
     .section .note.GNU-stack, "", @progbits
