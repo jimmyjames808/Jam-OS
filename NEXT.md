@@ -16,13 +16,18 @@
   Independent review agent RUNNING (worktree, read-only on main). **Next PC round**: flash, then All
   tests, Benchmark (-> M5.5 column of BENCH.md; expected moves listed under "M5.5 (expected)"),
   2-min stress; 10-min stress = M5.5 sign-off after the review's fixes land.
-- **After M5.5: start M6.** Decided: M6 sample driver = QEMU `edu` device for development + the PC's
-  xHCI (Intel 8086:7A60) "no-op command" MSI-X interrupt as the done test (in kernel, then as a
-  process); HPET-FSB MSI only as an optional quick check; uACPI deferred to M10. M6 = PCIe
-  enumeration (ECAM from MCFG), devmgr (owns MSI-X, per-CPU vector allocator, 8-bit APIC ID limit),
-  interrupt objects (IRQs as port packets, ack to unmask), resource handles, dma_cap bound to a BDF
-  (device addresses; closing clears Bus Master Enable), <jam/driver.h> in both builds, IDL generator.
-  Write an M6-PLAN.md like M5-PLAN.md (foundation headers + parallel tracks) before launching agents.
+- **M6 STARTED 2026-09-29.** Plan = M6-PLAN.md. Foundation 71aa223 (pci.h, interrupt.h, resource.h,
+  drivers/include/jam/driver.h, syscalls 90-102, M6 ABI in abi.h, kernel/core/m6_weak.c, main.c calls
+  pci_init/resource_init after smp_report and pci_report on `pcilist`, boot entry "Devices", QEMU `edu`).
+  Four phase-1 agents RUNNING in worktrees: A PCI core, B vectors + interrupt objects, C resources +
+  MMIO VMOs + bound dma_cap + the other syscalls, D driver.h both builds + IDL + build check + null
+  driver. Then phase 2: devmgr process, edu driver, xhci-noop (the PC done test). Design choices:
+  interrupts = SIG_INTERRUPT + PERSISTENT port binding (no new packet type); drivers get filtered
+  config syscalls on their own RES_PCI_DEV (no pcidev protocol); bus master needs RIGHT_MANAGE
+  (devmgr only). Merge order suggestion: A, then C and B, then D; expect conflicts in Makefile,
+  kernel/abi, m6_weak.c (delete in phase 2). Big code -> independent review after merging.
+  First PC check once A merges: the "Devices" entry (compare with Windows Device Manager; tells
+  whether xHCI 8086:7A60 has MSI-X or only MSI).
 - **Open item**: "counter#14 (prio 16) made no progress for 10 s" seen twice in 4-CPU QEMU stress
   (review-fix agent, and M5.5 agent with all switches off under host load; M5.5 fixed a stale-cur_prio
   bug d3f0824 that may have been it). Kernel mutex has no hand-off to waiters. Watch the PC stress;
