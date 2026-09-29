@@ -60,7 +60,7 @@ KTEST(driver_kernel_edu)
     struct kdev_binding b;
     KT_EQ(kdev_bind(d, "edu", root, &b), OK);
     KT_ASSERT(b.irq && b.dma_cap);
-    KT_EQ(interrupt_live_count(), irqs + 1);
+    KT_GLOBAL_EQ(interrupt_live_count(), irqs + 1);
     KT_EQ(kdev_edu_check(&b, "edu (kernel)"), OK);
     KT_ASSERT(bus_master_on(d));   /* the driver turned it on (M7), once the device was idle */
     struct kobject *irq = b.irq, *cap = b.dma_cap;
@@ -74,8 +74,8 @@ KTEST(driver_kernel_edu)
     KT_ASSERT(!interrupt_vector_of(irq, &cpu, &vec));
     kobject_unref(irq);
     kobject_unref(cap);
-    KT_EQ(interrupt_live_count(), irqs);
-    KT_EQ(channel_live_count(), chans);
+    KT_GLOBAL_EQ(interrupt_live_count(), irqs);
+    KT_GLOBAL_EQ(channel_live_count(), chans);
     job_unref(root);
 }
 
@@ -125,7 +125,7 @@ KTEST(driver_kernel_edu_killed_mid_dma)
     job_ref(dead);
     KT_ASSERT(job_used(dead, JOB_LIMIT_PAGES) >= 2);
     KT_ASSERT(!kdev_unbind(&b, S));   /* it was killed: not a clean exit */
-    KT_EQ(interrupt_live_count(), irqs);   /* our extra reference was the last */
+    KT_GLOBAL_EQ(interrupt_live_count(), irqs);   /* our extra reference was the last */
 
     /* The device's transfer ends by itself (with Bus Master Enable off it
      * reaches no memory); the device is free for a new driver, whose
@@ -140,7 +140,7 @@ KTEST(driver_kernel_edu_killed_mid_dma)
     KT_EQ(fr.result, 3628800);
     KT_ASSERT(bus_master_on(d));
     KT_ASSERT(kdev_unbind(&b, 10 * S));
-    KT_EQ(interrupt_live_count(), irqs);
+    KT_GLOBAL_EQ(interrupt_live_count(), irqs);
     /* The reaper lets the quarantine go a grace period after the new
      * driver turned bus mastering on; nothing had written the pages. */
     uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS + 5 * S;

@@ -202,6 +202,6 @@ KTEST(hid_kernel_process_keyboard)
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         if (job_used(j, k))
             panic("ktest %s: job kind %u still has %lu units", ktest_current, k, job_used(j, k));
-    KT_EQ(channel_live_count(), chans);
+    KT_GLOBAL_EQ(channel_live_count(), chans);
     job_unref(j);
 }

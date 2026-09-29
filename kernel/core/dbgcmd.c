@@ -6,9 +6,11 @@
  * The output is ordinary kernel log text, which the console follows with a
  * klog reader; the result comes back as the call's value.
  *
- *   ktest [prefix]   ktest_run(prefix): the tests run (a failure panics, as
- *                    from the boot menu); PCI functions a driver process
- *                    holds are hidden from the tests (pci_hide_in_use)
+ *   ktest [prefix]   ktest_run(prefix) with ktest_live set: a failure panics,
+ *                    as from the boot menu, but checks on system-wide counts
+ *                    (user space allocates meanwhile) are not made and the
+ *                    per-test leak check only logs (ktest.h); PCI functions
+ *                    a driver holds are hidden from the tests (pci_hide_in_use)
  *   bench            bench_run(): 0
  *   stress <s>       stress_run(s), 1..600 s: 0 if every check held, else 1
  *   devices          pci_report(): the number of PCI functions
@@ -126,7 +128,11 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
         for (uint32_t i = 0; i < pci_count(); i++)
             busy += pci_get(i)->proc_users != 0;
         kprintf("ktest: from the shell: %u PCI function(s) in use by drivers are skipped\n", busy);
+        /* User space runs meanwhile: global counts are not checked
+         * (ktest.h: KT_GLOBAL_EQ, KT_SKIP_LIVE, the leak check logs). */
+        ktest_live = true;
         int r = ktest_run(rest);
+        ktest_live = false;
         pci_hide_in_use = false;
         return r;
     }

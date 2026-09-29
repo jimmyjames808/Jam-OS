@@ -91,7 +91,7 @@ KTEST(vmo_rw_basic)
     put(bad);
 
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 }
 
 KTEST(vmo_uncommitted_reads_zero)
@@ -105,7 +105,7 @@ KTEST(vmo_uncommitted_reads_zero)
     KT_ASSERT(all_zero(buf, sizeof(buf)));
     KT_EQ(vmo_read(v, (1 << 20) - 1, buf, 1), OK);
     KT_EQ(buf[0], 0);
-    KT_EQ(free_now(), before);   /* no pages, not even tables */
+    KT_GLOBAL_EQ(free_now(), before);   /* no pages, not even tables */
     KT_EQ(vmo_committed(v), 0);
     put(v);
 }
@@ -116,7 +116,7 @@ KTEST(vmo_sparse_16g)
     uint64_t base = free_now();
     struct vmo *v;
     KT_EQ(vmo_create(16ull << 30, 0, &v), OK);
-    KT_EQ(free_now(), base);   /* creating it costs no pages */
+    KT_GLOBAL_EQ(free_now(), base);   /* creating it costs no pages */
 
     static const uint64_t offs[] = { 0, (5ull << 30) + 123, (10ull << 30) + 7,
                                      (16ull << 30) - 1 };
@@ -126,7 +126,7 @@ KTEST(vmo_sparse_16g)
     }
     /* Four data pages, each in its own 1 GiB: a mid table and a leaf each. */
     KT_EQ(vmo_committed(v), 4 * PG);
-    KT_EQ(base - free_now(), 4 + 4 + 4);
+    KT_GLOBAL_EQ(base - free_now(), 4 + 4 + 4);
     for (unsigned i = 0; i < 4; i++) {
         uint8_t b = 0;
         KT_EQ(vmo_read(v, offs[i], &b, 1), OK);
@@ -135,10 +135,10 @@ KTEST(vmo_sparse_16g)
     uint8_t z = 1;
     KT_EQ(vmo_read(v, 7ull << 30, &z, 1), OK);
     KT_EQ(z, 0);
-    KT_EQ(base - free_now(), 12);
+    KT_GLOBAL_EQ(base - free_now(), 12);
 
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
     put(keep);
 }
 
@@ -152,22 +152,22 @@ KTEST(vmo_commit_accounting)
     /* 100 pages straddling the first 2 MiB boundary: 1 mid + 2 leaves. */
     uint64_t off = (2 << 20) - 50 * PG;
     KT_EQ(vmo_commit(v, off, 100 * PG), OK);
-    KT_EQ(created - free_now(), 100 + 3);
+    KT_GLOBAL_EQ(created - free_now(), 100 + 3);
     KT_EQ(vmo_committed(v), 100 * PG);
     KT_EQ(vmo_commit(v, off, 100 * PG), OK);   /* again: nothing new */
-    KT_EQ(created - free_now(), 100 + 3);
+    KT_GLOBAL_EQ(created - free_now(), 100 + 3);
 
     /* Byte ranges cover every page they touch. */
     KT_EQ(vmo_commit(v, 1, 1), OK);
     KT_EQ(vmo_committed(v), 101 * PG);
-    KT_EQ(created - free_now(), 101 + 3);
+    KT_GLOBAL_EQ(created - free_now(), 101 + 3);
 
     KT_EQ(vmo_decommit(v, off, 40 * PG), OK);
     KT_EQ(vmo_committed(v), 61 * PG);
-    KT_EQ(created - free_now(), 61 + 3);
+    KT_GLOBAL_EQ(created - free_now(), 61 + 3);
     KT_EQ(vmo_decommit(v, 0, 8 << 20), OK);   /* all of it; tables stay */
     KT_EQ(vmo_committed(v), 0);
-    KT_EQ(created - free_now(), 3);
+    KT_GLOBAL_EQ(created - free_now(), 3);
     KT_EQ(vmo_decommit(v, 0, (8 << 20) + 1), ERR_OUT_OF_RANGE);
 
     /* Decommitted pages read as zero again. */
@@ -178,9 +178,9 @@ KTEST(vmo_commit_accounting)
     KT_EQ(b, 0);
 
     KT_EQ(vmo_commit(v, 0, 8 << 20), OK);
-    KT_EQ(created - free_now(), 2048 + 1 + 4);
+    KT_GLOBAL_EQ(created - free_now(), 2048 + 1 + 4);
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 }
 
 KTEST(vmo_contiguous)
@@ -197,7 +197,7 @@ KTEST(vmo_contiguous)
     KT_EQ(vmo_create(3 * (1 << 20) + 1, VMO_CONTIGUOUS, &v), OK);
     KT_EQ(vmo_size(v), PAGES * PG);
     KT_EQ(vmo_committed(v), PAGES * PG);
-    KT_EQ(base - free_now(), PAGES);
+    KT_GLOBAL_EQ(base - free_now(), PAGES);
 
     uint64_t pin;
     KT_EQ(vmo_pin(v, cap, 0, PAGES * PG, phys, PAGES, &pin), OK);
@@ -218,13 +218,13 @@ KTEST(vmo_contiguous)
     KT_EQ(vmo_commit(v, 0, PG), OK);
     KT_EQ(vmo_unpin(v, cap, pin), OK);
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 
     /* Small ones too: 5 pages from an order-3 block. */
     KT_EQ(vmo_create(5 * PG, VMO_CONTIGUOUS, &v), OK);
-    KT_EQ(base - free_now(), 5);
+    KT_GLOBAL_EQ(base - free_now(), 5);
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 
     kfree(phys);
     kobject_unref(cap);
@@ -333,7 +333,7 @@ KTEST(vmo_map_kernel)
     put(v);
     /* The vmap area never reuses addresses, but page-table pages created
      * for it stay: allow those. */
-    KT_ASSERT(base - free_now() <= 4);
+    KT_GLOBAL_ASSERT(base - free_now() <= 4);
 }
 
 KTEST(vmo_pin)
@@ -402,7 +402,7 @@ KTEST(vmo_pin)
     KT_EQ(((uint64_t *)phys_to_virt(phys[0]))[0], 0);   /* still ours, still zero */
     KT_EQ(vmo_unpin(v, cap, pin), OK);   /* last reference: v is gone */
     KT_EQ(cap->refs, 1);
-    KT_ASSERT(base - free_now() <= 4);   /* vmap page tables may remain */
+    KT_GLOBAL_ASSERT(base - free_now() <= 4);   /* vmap page tables may remain */
 
     kobject_unref(cap);
     put(keep);
@@ -418,13 +418,13 @@ KTEST(vmo_set_size)
     fill(buf, sizeof(buf), 11);
     KT_EQ(vmo_write(v, 0, buf, sizeof(buf)), OK);
     KT_EQ(vmo_committed(v), 8 * PG);
-    KT_EQ(created - free_now(), 8 + 2);
+    KT_GLOBAL_EQ(created - free_now(), 8 + 2);
 
     /* Shrink to 3 pages + 1 byte = 4 pages: frees 4 (the leaf stays). */
     KT_EQ(vmo_set_size(v, 3 * PG + 1), OK);
     KT_EQ(vmo_size(v), 4 * PG);
     KT_EQ(vmo_committed(v), 4 * PG);
-    KT_EQ(created - free_now(), 4 + 2);
+    KT_GLOBAL_EQ(created - free_now(), 4 + 2);
     uint8_t b;
     KT_EQ(vmo_read(v, 4 * PG, &b, 1), ERR_OUT_OF_RANGE);
     KT_EQ(vmo_write(v, 4 * PG, &b, 1), ERR_OUT_OF_RANGE);
@@ -439,18 +439,18 @@ KTEST(vmo_set_size)
     /* Shrink to nothing: every page and table goes. */
     KT_EQ(vmo_set_size(v, 0), OK);
     KT_EQ(vmo_committed(v), 0);
-    KT_EQ(free_now(), created);
+    KT_GLOBAL_EQ(free_now(), created);
 
     /* Grow far and touch the end; shrinking frees its tables too. */
     KT_EQ(vmo_set_size(v, VMO_MAX_SIZE), OK);
     KT_EQ(vmo_set_size(v, VMO_MAX_SIZE + 1), ERR_OUT_OF_RANGE);
     b = 0x42;
     KT_EQ(vmo_write(v, VMO_MAX_SIZE - 1, &b, 1), OK);
-    KT_EQ(created - free_now(), 3);
+    KT_GLOBAL_EQ(created - free_now(), 3);
     KT_EQ(vmo_set_size(v, 1ull << 30), OK);
-    KT_EQ(free_now(), created);
+    KT_GLOBAL_EQ(free_now(), created);
     put(v);
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 }
 
 KTEST(vmo_physical)
@@ -501,8 +501,8 @@ KTEST(vmo_physical)
      * still ours. (base only bounds vmap page tables made by the mapping.) */
     uint64_t before_destroy = free_now();
     put(v);
-    KT_EQ(free_now(), before_destroy);
-    KT_ASSERT(base - free_now() <= 4);
+    KT_GLOBAL_EQ(free_now(), before_destroy);
+    KT_GLOBAL_ASSERT(base - free_now() <= 4);
     KT_EQ(direct[2 * PG + 5], 0x99);
     pmm_free_pages(pg, 2);
     kobject_unref(cap);
@@ -589,7 +589,7 @@ KTEST(vmo_concurrent_writers)
         if (round == 0)
             warm = free_now();
         else
-            KT_EQ(free_now(), warm);
+            KT_GLOBAL_EQ(free_now(), warm);
     }
 }
 
@@ -659,7 +659,7 @@ KTEST(vmo_concurrent_decommit)
     dc_round();
     uint64_t warm = free_now();   /* thread stacks are cached now */
     dc_round();
-    KT_EQ(free_now(), warm);      /* pages freed by whoever let go last */
+    KT_GLOBAL_EQ(free_now(), warm);      /* pages freed by whoever let go last */
 }
 
 /* ---- handle layer ---------------------------------------------------------- */
@@ -733,5 +733,5 @@ KTEST(vmo_sys_rights)
     KT_EQ(sys_vmo_write(&t, wo, 0, in, 1), ERR_BAD_HANDLE);
 
     handle_table_destroy(&t);   /* closes the rest: the VMO goes with it */
-    KT_EQ(free_now(), base);
+    KT_GLOBAL_EQ(free_now(), base);
 }

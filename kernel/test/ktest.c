@@ -13,6 +13,9 @@
 extern const struct ktest __ktests_start[], __ktests_end[];
 
 const char *ktest_current = "?";
+bool ktest_live;
+unsigned ktest_relaxed;
+const char *ktest_skip_reason;
 
 /* A test may leave a slab partially filled (a page held until the last
  * object on that slab is freed), so allow a small slack before calling it a
@@ -66,7 +69,8 @@ static void settle(void)
 int ktest_run(const char *prefix)
 {
     size_t pl = strlen(prefix);
-    int ran = 0;
+    int ran = 0, skipped = 0, drifted = 0, relaxed_tests = 0;
+    unsigned relaxed = 0;
     uint64_t total;
     warm_singletons();
     for (const struct ktest *t = __ktests_start; t < __ktests_end; t++) {
@@ -77,6 +81,8 @@ int ktest_run(const char *prefix)
         if (!memcmp(t->name, "review_", 7) && (pl < 6 || memcmp(prefix, "review", 6)))
             continue;
         ktest_current = t->name;
+        ktest_relaxed = 0;
+        ktest_skip_reason = NULL;
         /* Account pages held by the reusable thread stack cache alongside free
          * pages: a stack just moves between the two, so free + cached is
          * conserved unless a test allocates a fresh stack (charged once) or
@@ -87,16 +93,39 @@ int ktest_run(const char *prefix)
         uint64_t t0 = uptime_ns();
         t->fn();
         uint64_t us = (uptime_ns() - t0) / 1000;
+        if (ktest_skip_reason) {
+            kprintf("ktest: %-32s skipped (live system: %s)\n", t->name, ktest_skip_reason);
+            skipped++;
+            continue;
+        }
         settle();
         uint64_t accounted_after = free_pages_now(&total) + sched_stack_cache_pages();
         long leaked = (long)(accounted_before - accounted_after);
-        if (leaked > LEAK_SLACK_PAGES)
-            panic("ktest %s: leaked %ld pages (accounted %lu -> %lu)", t->name, leaked,
-                  accounted_before, accounted_after);
-        kprintf("ktest: %-32s ok  %lu.%03lu ms\n", t->name, us / 1000, us % 1000);
+        if (leaked > LEAK_SLACK_PAGES) {
+            if (!ktest_live)
+                panic("ktest %s: leaked %ld pages (accounted %lu -> %lu)", t->name, leaked,
+                      accounted_before, accounted_after);
+            /* Live, user space allocated at the same time: not a verdict. */
+            kprintf("ktest: %s: %ld fewer free pages after it (live system: not checked)\n",
+                    t->name, leaked);
+            drifted++;
+        }
+        if (ktest_relaxed) {
+            kprintf("ktest: %-32s ok  %lu.%03lu ms (%u global-count check(s) not made live)\n",
+                    t->name, us / 1000, us % 1000, ktest_relaxed);
+            relaxed += ktest_relaxed;
+            relaxed_tests++;
+        } else {
+            kprintf("ktest: %-32s ok  %lu.%03lu ms\n", t->name, us / 1000, us % 1000);
+        }
         ran++;
     }
-    report("ktest: %d test(s) passed (%u of %u lock classes in use)", ran,
-            lockdep_class_count(), LOCKDEP_MAX_CLASSES);
+    ktest_current = "?";
+    if (ktest_live)
+        report("ktest (live system): %d passed, %d skipped; not checked: %u global counts "
+               "(%d tests), %d page drifts", ran, skipped, relaxed, relaxed_tests, drifted);
+    else
+        report("ktest: %d test(s) passed (%u of %u lock classes in use)", ran,
+               lockdep_class_count(), LOCKDEP_MAX_CLASSES);
     return ran;
 }

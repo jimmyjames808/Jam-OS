@@ -41,7 +41,7 @@ KTEST(auditA_channel_indirect_cycle_refused)
     khandle_release(&kb0);
     khandle_release(&kb1);
     kprintf("auditA: cycle refused; live endpoints %lu -> %lu\n", live, channel_live_count());
-    KT_EQ(channel_live_count(), live);   /* no leak */
+    KT_GLOBAL_EQ(channel_live_count(), live);   /* no leak */
 }
 
 /* A 3-cycle (A1->B1q, B1->C1q, C1->A1q) is refused as soon as an edge would
@@ -68,7 +68,7 @@ KTEST(auditA3_channel_three_cycle_refused)
     khandle_release(&kc0);
     khandle_release(&kc1);
     kprintf("auditA3: 3-cycle refused; live endpoints %lu -> %lu\n", live, channel_live_count());
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* Legitimate: sending an endpoint whose queue holds only plain messages, or
@@ -105,7 +105,7 @@ KTEST(auditA_legit_sends_allowed)
     /* Tear it all down; nothing should leak. */
     khandle_release(&kc0);
     khandle_release(&kc1);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* The 2-cycle again, through the handle-level API a process uses. */
@@ -121,7 +121,7 @@ KTEST(auditC_sys_channel_cycle_refused)
     KT_EQ(sys_channel_write(&t, a0, "bbbb", 4, &b1, 1), ERR_NOT_SUPPORTED);
     handle_table_destroy(&t);
     kprintf("auditC: cycle refused; live endpoints %lu -> %lu\n", live, channel_live_count());
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* ---- O1: iterative teardown --------------------------------------------- */
@@ -156,7 +156,7 @@ KTEST(auditB_channel_deep_close_iterative)
     khandle_release(&peer);
     khandle_release(&head);   /* was a kernel stack overflow at this depth */
     kprintf("auditB: chain of %d endpoints torn down iteratively\n", AUDIT_DEPTH);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* A deep chain that alternates channel and port: channel head[i]'s queue holds
@@ -199,7 +199,7 @@ KTEST(auditB2_alternating_channel_port_iterative)
 
     struct port_stats ps1;
     port_get_stats(&ps1);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
     KT_EQ(ps1.ports, ps0.ports);
     KT_EQ(ps1.bindings, ps0.bindings);
 }
