@@ -156,8 +156,20 @@ void sched_tick(void);
 void sched_irq_exit(uint64_t interrupted_rflags);
 /* Total anti-starvation boosts so far. */
 uint64_t sched_boost_count(void);
-/* Pages held by the cached (never-unmapped) thread stacks, for leak checks. */
+/* Pages held by cached thread stacks, including stacks over the cache limit
+ * that wait to be freed (sched_stack_trim), for leak checks. */
 uint64_t sched_stack_cache_pages(void);
+/* Free the stacks waiting to be freed now, if this context may (interrupts
+ * on, no spinlock held: freeing shoots down TLBs). Thread creation and exit
+ * call it too. */
+void sched_stack_trim(void);
+/* Set how many exited threads' stacks are kept for reuse (at most
+ * SCHED_STACK_CACHE_MAX; tests lower it); stacks over the new limit are
+ * freed at once. Returns the old limit. */
+#define SCHED_STACK_CACHE_MAX 256
+unsigned sched_stack_cache_set_limit(unsigned limit);
+/* Stacks freed (unmapped, pages returned) since boot. */
+uint64_t sched_stacks_freed(void);
 /* Tell `cpu` to look at its run queue soon (IPI if remote). */
 void sched_kick(uint32_t cpu);
 void sched_print_stats(void);

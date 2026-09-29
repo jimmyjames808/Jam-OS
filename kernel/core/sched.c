@@ -70,10 +70,24 @@ static volatile uint64_t next_id = 1;
 static spinlock_t sleep_lock = SPINLOCK_INIT("sleepers");
 static struct list_node sleepers = LIST_INIT(sleepers);
 
-/* Freed thread stacks, reused instead of unmapped (no TLB shootdown). */
+/* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
+ * reused (no TLB shootdown, no page allocation). Stacks over the limit must
+ * be unmapped and freed (kstack_free), but reap() runs in finish_switch with
+ * interrupts off, where the TLB shootdown that has to come first can't be
+ * done. So they wait on `stack_doomed` (linked through each stack's lowest
+ * word: still mapped, and nothing runs on it any more) until the next
+ * sched_stack_trim, which thread creation and thread exit call. An exiting
+ * thread trims the stacks of threads reaped before it, so during a burst of
+ * exits the list holds only the last few (those reaped after the last exit
+ * or creation); they are counted as cached pages meanwhile, so the leak
+ * check stays exact. Freed stacks' virtual ranges are reused by kstack_alloc
+ * (vmm.c). */
 static spinlock_t stack_lock = SPINLOCK_INIT("stack cache");
-static void *stack_cache[256];
-static unsigned stack_cache_n;
+static void *stack_cache[SCHED_STACK_CACHE_MAX];
+static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
+static void *stack_doomed;
+static volatile unsigned stack_doomed_n;
+static volatile uint64_t stacks_freed;
 
 /* ---- preemption ---------------------------------------------------------- */
 
@@ -374,33 +388,104 @@ void thread_wake(struct thread *t)
 
 /* ---- thread lifecycle ------------------------------------------------------ */
 
+/* May this context free stacks (kstack_free shoots down TLBs, which needs
+ * interrupts on and no spinlock held: see check_callable in ipi.c)? */
+static bool can_trim(void)
+{
+    if (!irqs_enabled())
+        return false;
+    preempt_disable();
+    struct cpu *c = this_cpu();
+    bool ok = !c->irq_depth && !c->held_depth;
+    preempt_enable_no_resched();
+    return ok;
+}
+
+/* Take the doomed list (and, over `limit`, the excess cached stacks too)
+ * under the lock, free them outside it. */
+static void trim_to(unsigned limit)
+{
+    if (!can_trim())
+        return;
+    void *list = NULL;
+    uint64_t f = spin_lock_irqsave(&stack_lock);
+    while (stack_cache_n > limit) {
+        void *top = stack_cache[--stack_cache_n];
+        *(void **)((char *)top - STACK_SIZE) = list;
+        list = top;
+    }
+    if (stack_doomed) {
+        void **tail = &list;
+        while (*tail)
+            tail = (void **)((char *)*tail - STACK_SIZE);
+        *tail = stack_doomed;
+        stack_doomed = NULL;
+        stack_doomed_n = 0;
+    }
+    spin_unlock_irqrestore(&stack_lock, f);
+    while (list) {
+        void *next = *(void **)((char *)list - STACK_SIZE);
+        kstack_free(list, STACK_SIZE);
+        __atomic_add_fetch(&stacks_freed, 1, __ATOMIC_RELAXED);
+        list = next;
+    }
+}
+
+void sched_stack_trim(void)
+{
+    if (__atomic_load_n(&stack_doomed_n, __ATOMIC_RELAXED))
+        trim_to(SCHED_STACK_CACHE_MAX);
+}
+
+unsigned sched_stack_cache_set_limit(unsigned limit)
+{
+    if (limit > SCHED_STACK_CACHE_MAX)
+        limit = SCHED_STACK_CACHE_MAX;
+    uint64_t f = spin_lock_irqsave(&stack_lock);
+    unsigned old = stack_cache_limit;
+    stack_cache_limit = limit;
+    spin_unlock_irqrestore(&stack_lock, f);
+    trim_to(limit);
+    return old;
+}
+
+uint64_t sched_stacks_freed(void)
+{
+    return __atomic_load_n(&stacks_freed, __ATOMIC_RELAXED);
+}
+
+/* NULL when out of memory. */
 static void *stack_get(void)
 {
+    sched_stack_trim();
     uint64_t f = spin_lock_irqsave(&stack_lock);
     void *s = stack_cache_n ? stack_cache[--stack_cache_n] : NULL;
     spin_unlock_irqrestore(&stack_lock, f);
-    return s ? s : kstack_alloc(STACK_SIZE);
+    return s ? s : kstack_alloc_try(STACK_SIZE);
 }
 
-/* Pages held by the cached (reused, never unmapped) thread stacks. Tests use
- * this so stacks parked in the cache aren't mistaken for leaks. */
+/* Pages held by cached thread stacks, and by stacks waiting to be freed.
+ * Tests use this so stacks parked here aren't mistaken for leaks. */
 uint64_t sched_stack_cache_pages(void)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);
-    uint64_t n = (uint64_t)stack_cache_n * (STACK_SIZE / PAGE_SIZE);
+    uint64_t n = (uint64_t)(stack_cache_n + stack_doomed_n) * (STACK_SIZE / PAGE_SIZE);
     spin_unlock_irqrestore(&stack_lock, f);
     return n;
 }
 
+/* From reap, with interrupts off: cache the stack, or queue it for freeing. */
 static void stack_put(void *top)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);
-    bool kept = stack_cache_n < 256;
-    if (kept)
+    if (stack_cache_n < stack_cache_limit) {
         stack_cache[stack_cache_n++] = top;
+    } else {
+        *(void **)((char *)top - STACK_SIZE) = stack_doomed;
+        stack_doomed = top;
+        stack_doomed_n++;
+    }
     spin_unlock_irqrestore(&stack_lock, f);
-    if (!kept)
-        kprintf("sched: stack cache full, leaking a stack\n");   /* M4: vmap free */
 }
 
 static void thread_put(struct thread *t)
@@ -457,6 +542,8 @@ struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg,
         t->affinity = *mask;
     t->refs = 2;   /* the caller's, and the thread's own (dropped by reap) */
     t->stack_top = stack_get();
+    if (!t->stack_top)   /* phase 2 turns this into ERR_NO_MEMORY for callers */
+        panic("sched: out of memory for a thread stack");
 
     /* Frame for switch_context to pop: r15 r14 r13 r12 rbx rbp, ret. */
     uint64_t *sp = (uint64_t *)t->stack_top;
@@ -482,6 +569,7 @@ _Noreturn void thread_exit(void)
     t->exited = true;
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     waitqueue_wake_all(&t->exit_wq);
+    sched_stack_trim();   /* stacks of threads reaped before us (see above) */
     irq_disable();
     t->state = T_DEAD;
     schedule();

@@ -112,8 +112,16 @@ const char *vmm_cache_type(uint64_t pml4, uint64_t va);
 int      vmm_access(uint64_t pml4, uint64_t va);
 
 /* Kernel stack in the vmap area with an unmapped guard page below it.
- * Returns the TOP of the stack. */
+ * Returns the TOP of the stack. Panics when out of memory (boot-time and
+ * per-CPU stacks, which can't do without). */
 void    *kstack_alloc(size_t size);
+/* The same, but returns NULL when out of memory (nothing is left behind). */
+void    *kstack_alloc_try(size_t size);
+/* Unmap and free a stack from kstack_alloc*: the pages go back to the
+ * allocator after a TLB shootdown, and the virtual range is kept for the next
+ * stack of the same size. Needs interrupts on and no spinlock held (the
+ * shootdown waits for other CPUs); nothing may still run on the stack. */
+void     kstack_free(void *top, size_t size);
 /* Reserve (but do not map) kernel virtual space in the vmap area. */
 uint64_t vmm_reserve(uint64_t len);
 /* Map a physical MMIO range uncached into the vmap area. */

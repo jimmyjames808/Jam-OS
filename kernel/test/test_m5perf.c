@@ -185,3 +185,60 @@ KTEST(pcp_oom_drains_stashes)
     KT_ASSERT(drains >= 1);
     KT_EQ(free_now(), free0);
 }
+
+/* ---- thread stacks ---------------------------------------------------------- */
+
+/* A freed stack's pages go back, and its virtual range is reused. */
+KTEST(kstack_free_reuses_range)
+{
+    uint64_t free0 = free_now();
+    void *a = kstack_alloc_try(64 * 1024);
+    KT_ASSERT(a);
+    ((volatile uint64_t *)a)[-1] = 1;   /* mapped and writable */
+    KT_ASSERT(free_now() <= free0 - 16);
+    kstack_free(a, 64 * 1024);
+    KT_EQ(vmm_translate(vmm_kernel_pml4(), (uint64_t)a - 8), UINT64_MAX);
+    void *b = kstack_alloc_try(64 * 1024);
+    KT_ASSERT(b == a);   /* same range: no new vmap space, no new page tables */
+    kstack_free(b, 64 * 1024);
+    KT_ASSERT(free_now() + 1 >= free0);   /* a slab page for the slot at most */
+}
+
+static volatile bool stack_release;
+
+static void stack_holder(void *arg)
+{
+    (void)arg;
+    while (!stack_release)
+        thread_sleep_ms(1);
+}
+
+/* Stacks over the cache limit are freed, not kept (nor leaked). */
+KTEST(stack_cache_limit_frees)
+{
+    enum { LIMIT = 2, THREADS = 6 };
+    unsigned old = sched_stack_cache_set_limit(LIMIT);
+    KT_ASSERT(sched_stack_cache_pages() <= LIMIT * 16);
+    uint64_t accounted0 = free_now() + sched_stack_cache_pages();
+    uint64_t freed0 = sched_stacks_freed();
+
+    stack_release = false;
+    struct thread *t[THREADS];
+    for (int i = 0; i < THREADS; i++)
+        t[i] = thread_create("stack-holder", stack_holder, NULL, PRIO_DEFAULT);
+    stack_release = true;
+    for (int i = 0; i < THREADS; i++)
+        thread_join(t[i]);
+    /* Reaps happen at each CPU's next switch; let them, then trim. */
+    for (int i = 0; i < 4; i++) {
+        thread_sleep_ms(2);
+        thread_yield();
+    }
+    sched_stack_trim();
+
+    KT_ASSERT(sched_stack_cache_pages() <= LIMIT * 16);
+    KT_ASSERT(sched_stacks_freed() - freed0 >= THREADS - LIMIT);
+    uint64_t accounted1 = free_now() + sched_stack_cache_pages();
+    KT_ASSERT(accounted1 + 2 >= accounted0);   /* slot bookkeeping: a page or two */
+    sched_stack_cache_set_limit(old);
+}

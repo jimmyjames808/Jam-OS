@@ -36,14 +36,20 @@ static spinlock_t vmap_lock = SPINLOCK_INIT("vmap");
 static spinlock_t pt_lock = SPINLOCK_INIT("kernel page tables");
 static uint64_t vmap_next = VMAP_BASE;
 
-static uint64_t alloc_table(void)
+/* 0 only when `may_fail` and the allocator is out of memory. */
+static uint64_t alloc_table_mode(bool may_fail)
 {
     if (!use_buddy)
         return pmm_early_alloc(PAGE_SIZE, PAGE_SIZE);
     uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
-    if (!pa)
+    if (!pa && !may_fail)
         panic("vmm: out of memory for page tables");
     return pa;
+}
+
+static uint64_t alloc_table(void)
+{
+    return alloc_table_mode(false);
 }
 
 static uint64_t *table(uint64_t pa)
@@ -70,19 +76,26 @@ static uint64_t leaf_bits(unsigned flags, bool large)
 }
 
 /* Walk to the entry for va at `level` (1 = PT ... 4 = PML4), creating
- * intermediate tables. */
-static uint64_t *walk(uint64_t pml4, uint64_t va, int level, bool create)
+ * intermediate tables. WALK_TRY returns NULL instead of panicking when a
+ * table can't be allocated (tables created before that stay: harmless, and
+ * reused by the next walk). */
+enum { WALK_LOOKUP, WALK_CREATE, WALK_TRY };
+
+static uint64_t *walk(uint64_t pml4, uint64_t va, int level, int create)
 {
     uint64_t *t = table(pml4);
     for (int l = 4; l > level; l--) {
         uint64_t *e = &t[(va >> (12 + 9 * (l - 1))) & 511];
         if (!(*e & PTE_P)) {
-            if (!create)
+            if (create == WALK_LOOKUP)
+                return NULL;
+            uint64_t pa = alloc_table_mode(create == WALK_TRY);
+            if (!pa)
                 return NULL;
             /* Intermediate entries are permissive; leaves decide access. */
-            *e = alloc_table() | PTE_P | PTE_W | PTE_U;
+            *e = pa | PTE_P | PTE_W | PTE_U;
         } else if (*e & PTE_PS) {
-            if (!create)
+            if (create == WALK_LOOKUP)
                 return e;   /* caller sees a large leaf */
             panic("vmm: remapping inside a large page at %lx", va);
         }
@@ -105,7 +118,7 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
             else if (!((va | pa) & (SIZE_2M - 1)) && len >= SIZE_2M)
                 level = 2, size = SIZE_2M;
         }
-        uint64_t *e = walk(pml4, va, level, true);
+        uint64_t *e = walk(pml4, va, level, WALK_CREATE);
         *e = pa | leaf_bits(flags, level > 1) | (level > 1 ? PTE_PS : 0);
         invlpg(va);
         va += size;
@@ -124,7 +137,7 @@ void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 
     uint64_t f = spin_lock_irqsave(&pt_lock);
     for (; va < end; va += PAGE_SIZE) {
-        uint64_t *e = walk(pml4, va, 1, false);
+        uint64_t *e = walk(pml4, va, 1, WALK_LOOKUP);
         if (!e)
             continue;
         if (*e & PTE_PS)
@@ -322,17 +335,152 @@ static uint64_t vmap_reserve_raw(uint64_t len)
     return va;
 }
 
-void *kstack_alloc(size_t size)
+/* ---- kernel stacks ----------------------------------------------------------
+ *
+ * The vmap area is a bump allocator, so a freed stack's virtual range is kept
+ * on this list and handed to the next stack of the same size: without that,
+ * thread churn beyond the scheduler's stack cache would walk the bump pointer
+ * forward for ever and strand a page table per 2 MiB of it. A range on the
+ * list is unmapped (its TLB entries were shot down when it was freed) but its
+ * page tables stay, so reusing it needs no new tables. Guarded by vmap_lock. */
+struct vslot {
+    struct vslot *next;
+    uint64_t      va;     /* lowest mapped byte (the guard page is below) */
+    uint64_t      size;
+};
+static struct vslot *free_slots;
+
+/* A free range of exactly `size` bytes (plus its guard page), or NULL. */
+static struct vslot *slot_take(uint64_t size)
+{
+    uint64_t f = spin_lock_irqsave(&vmap_lock);
+    struct vslot **pp = &free_slots;
+    while (*pp && (*pp)->size != size)
+        pp = &(*pp)->next;
+    struct vslot *s = *pp;
+    if (s)
+        *pp = s->next;
+    spin_unlock_irqrestore(&vmap_lock, f);
+    return s;
+}
+
+static void slot_put(struct vslot *s)
+{
+    uint64_t f = spin_lock_irqsave(&vmap_lock);
+    s->next = free_slots;
+    free_slots = s;
+    spin_unlock_irqrestore(&vmap_lock, f);
+}
+
+/* Map the chain of pages (linked through page->private, `n` of them) at va.
+ * Every page table is created BEFORE any leaf is written, so a failure
+ * leaves no mapping behind to undo (and nothing another CPU could have
+ * cached). */
+static bool map_stack_pages(uint64_t va, struct page *chain, uint64_t n, bool may_fail)
+{
+    uint64_t f = spin_lock_irqsave(&pt_lock);
+    for (uint64_t i = 0; i < n; i++)
+        if (!walk(kernel_pml4, va + i * PAGE_SIZE, 1, may_fail ? WALK_TRY : WALK_CREATE)) {
+            spin_unlock_irqrestore(&pt_lock, f);
+            return false;
+        }
+    uint64_t bits = leaf_bits(VM_WRITE | VM_GLOBAL, false);
+    for (uint64_t i = 0; i < n; i++, chain = (struct page *)chain->private) {
+        uint64_t a = va + i * PAGE_SIZE;
+        *walk(kernel_pml4, a, 1, WALK_LOOKUP) = page_to_phys(chain) | bits;
+        invlpg(a);
+    }
+    spin_unlock_irqrestore(&pt_lock, f);
+    return true;
+}
+
+static void free_chain(struct page *chain)
+{
+    while (chain) {
+        struct page *next = (struct page *)chain->private;
+        pmm_free_pages(chain, 0);
+        chain = next;
+    }
+}
+
+static void *stack_alloc(size_t size, bool may_fail)
 {
     size = ALIGN_UP(size, PAGE_SIZE);
-    uint64_t va = vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
-    for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
-        uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
-        if (!pa)
-            panic("vmm: out of memory for kernel stack");
-        vmm_map(kernel_pml4, va + off, pa, PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
+    uint64_t n = size / PAGE_SIZE;
+    /* Pages first: that is where running out of memory is likely, and
+     * nothing is mapped yet to undo. */
+    struct page *chain = NULL;
+    for (uint64_t i = 0; i < n; i++) {
+        struct page *p = pmm_alloc_pages(0, PMM_ZERO);
+        if (!p) {
+            if (!may_fail)
+                panic("vmm: out of memory for kernel stack");
+            free_chain(chain);
+            return NULL;
+        }
+        p->private = (uint64_t)chain;
+        chain = p;
     }
+    struct vslot *slot = slot_take(size);
+    uint64_t va = slot ? slot->va : vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;
+    if (!map_stack_pages(va, chain, n, may_fail)) {
+        free_chain(chain);
+        if (!slot)
+            slot = kmalloc(sizeof(*slot));   /* keep the range; if this fails
+                                              * too, the range is just lost */
+        if (slot) {
+            slot->va = va;
+            slot->size = size;
+            slot_put(slot);
+        }
+        return NULL;
+    }
+    for (struct page *p = chain; p;) {   /* the pages are ours: clear the links */
+        struct page *next = (struct page *)p->private;
+        p->private = 0;
+        p = next;
+    }
+    kfree(slot);
     return (void *)(va + size);
+}
+
+void *kstack_alloc(size_t size)
+{
+    return stack_alloc(size, false);
+}
+
+void *kstack_alloc_try(size_t size)
+{
+    return stack_alloc(size, true);
+}
+
+void kstack_free(void *top, size_t size)
+{
+    size = ALIGN_UP(size, PAGE_SIZE);
+    uint64_t va = (uint64_t)top - size;
+    /* The node first: if it can't be had, the range is lost but the pages
+     * still go back. */
+    struct vslot *slot = kmalloc(sizeof(*slot));
+    /* Read the physical pages before the unmap, free them only after it:
+     * vmm_unmap has shot the range down on every CPU by then, so no stale
+     * TLB entry can reach a page that is being reused. Chunks keep the
+     * list on this stack small. */
+    enum { CHUNK = 32 };
+    for (uint64_t off = 0; off < size; off += CHUNK * PAGE_SIZE) {
+        uint64_t pas[CHUNK], len = size - off < CHUNK * PAGE_SIZE ? size - off : CHUNK * PAGE_SIZE;
+        for (uint64_t i = 0; i < len / PAGE_SIZE; i++) {
+            pas[i] = vmm_translate(kernel_pml4, va + off + i * PAGE_SIZE);
+            ASSERT(pas[i] != UINT64_MAX);
+        }
+        vmm_unmap(kernel_pml4, va + off, len);
+        for (uint64_t i = 0; i < len / PAGE_SIZE; i++)
+            pmm_free_page_phys(pas[i]);
+    }
+    if (slot) {
+        slot->va = va;
+        slot->size = size;
+        slot_put(slot);
+    }
 }
 
 void *vmm_map_mmio(uint64_t pa, uint64_t len)
