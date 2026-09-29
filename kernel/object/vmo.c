@@ -40,6 +40,14 @@
  * a page mid-copy: whoever drops the last reference frees it. Contiguous
  * and physical VMOs never give pages up before destroy, so they skip this.
  *
+ * Job charges (M5): a VMO made for a process (vmo_set_job) charges one
+ * JOB_LIMIT_PAGES unit to that job for every page it owns, from the moment
+ * the page is published in the table (under the lock, so a failed charge
+ * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
+ * `committed` and the charge move together. Contiguous VMOs are charged
+ * whole when the job is set. Kernel VMOs have no job. Physical VMOs own no
+ * memory and are never charged.
+ *
  * Commit: a zeroed page is allocated with the lock dropped, then published
  * under the lock if its slot is still empty (the loser of a race frees its
  * page). The zeroing happens before the publishing unlock and every lookup
@@ -55,6 +63,7 @@
 #include <jam/aspace_vmo.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -88,6 +97,7 @@ struct vmo {
     unsigned         cache;       /* physical: VM_UC / VM_WC / 0 */
     uint64_t         size;        /* bytes, a page multiple */
     uint64_t         committed;   /* pages owned right now */
+    struct job      *job;         /* charged for them (a reference), or NULL */
     uint64_t         phys;        /* contiguous / physical: first byte */
     unsigned         order;       /* contiguous: buddy order it came from */
     uint64_t         next_pin_id;
@@ -183,6 +193,7 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
                     page_put(pa_page(leaf[l]));
                     leaf[l] = 0;
                     v->committed--;
+                    job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
                 }
             }
             if (base >= first) {
@@ -222,7 +233,7 @@ static status_t get_page(struct vmo *v, uint64_t idx, bool commit, struct page *
             return OK;
         }
         if (fresh) {
-            if (!s) {
+            if (!s || job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK) {
                 vunlock(v, f);
                 page_put(fresh);
                 return ERR_NO_MEMORY;
@@ -296,7 +307,10 @@ static void vmo_destroy(struct kobject *obj)
         ASSERT(v->committed == 0);
     } else if (v->kind == VMO_CONTIG) {
         contig_free_head(v->phys >> PAGE_SHIFT, v->size >> PAGE_SHIFT);
+        if (v->job)
+            job_uncharge(v->job, JOB_LIMIT_PAGES, v->committed);
     }
+    job_unref(v->job);
     kfree(v);
 }
 
@@ -384,6 +398,23 @@ status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struc
 uint64_t vmo_size(struct vmo *v)
 {
     return __atomic_load_n(&v->size, __ATOMIC_RELAXED);
+}
+
+status_t vmo_set_job(struct vmo *v, struct job *job)
+{
+    uint64_t f = vlock(v);
+    status_t st = OK;
+    if (v->job || v->kind == VMO_PHYS) {
+        st = ERR_BAD_STATE;
+    } else {
+        st = job_charge(job, JOB_LIMIT_PAGES, v->committed);   /* contiguous: all of it */
+        if (st == OK) {
+            job_ref(job);
+            v->job = job;
+        }
+    }
+    vunlock(v, f);
+    return st;
 }
 
 uint64_t vmo_committed(struct vmo *v)
@@ -494,16 +525,18 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     uint64_t *leaf = mid[(idx / LEAF_PAGES) % TBL_ENTRIES];
     if (!leaf)
         return stop;
-    bool any = false;
+    uint64_t taken = 0;
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
         if (*s) {
             tlb_gather_page(g, pa_page(*s));   /* the table's reference, released after the flush */
             *s = 0;
             v->committed--;
-            any = true;
+            taken++;
         }
     }
+    job_uncharge(v->job, JOB_LIMIT_PAGES, taken);
+    bool any = taken != 0;
     /* Entries exist only for committed pages (a fault installs under this
      * lock what the table holds), so nothing taken means nothing to zap. */
     if (any)
@@ -673,7 +706,7 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             if (s && *s) {
                 pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
             } else if (fresh) {
-                if (!s) {
+                if (!s || job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK) {
                     vunlock(v, f);
                     page_put(fresh);
                     return ERR_NO_MEMORY;

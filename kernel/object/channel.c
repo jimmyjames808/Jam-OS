@@ -17,6 +17,7 @@
 #include <jam/channel.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/time.h>
@@ -32,6 +33,8 @@ struct chan_msg {
     struct list_node node;
     uint32_t         nbytes;
     uint32_t         nhandles;
+    struct job      *job;      /* the sender's job, charged `charge` bytes (a reference) */
+    uint64_t         charge;
 };
 
 static inline struct khandle *msg_handles(struct chan_msg *m)
@@ -93,11 +96,20 @@ static uint32_t msg_txid(struct chan_msg *m)
 
 /* ---- messages ------------------------------------------------------------- */
 
-/* TODO(M5): handles sitting in queued messages hold kernel objects alive but
- * count against no per-process limit, so a caller can pin memory by filling a
- * peer's queue (bounded per channel by CHANNEL_MAX_QUEUED, but not per
- * process). Charge queued handles to a per-process quota when processes
- * arrive in M5. (O3c) */
+/* Every message (its whole allocation, handles included) is charged to the
+ * SENDER's job (JOB_LIMIT_MSG_BYTES) from creation until it is freed, so a
+ * process can't pin kernel memory by filling a peer's queues beyond its
+ * job's limit; the charge follows the message, not the queue it sits on.
+ * Messages made by kernel threads have no job. (Was TODO(M5)/O3c.) */
+
+/* Free a message's memory and credit its sender's job. Its handles are
+ * the caller's business. No locks held (the job reference may be the last). */
+static void msg_free(struct chan_msg *m)
+{
+    job_uncharge(m->job, JOB_LIMIT_MSG_BYTES, m->charge);
+    job_unref(m->job);
+    kfree(m);
+}
 
 /* Copy bytes and handles into a new message. The handles are copied, not
  * taken: the caller clears its own array once the message is delivered. */
@@ -111,9 +123,19 @@ static status_t msg_new(const void *bytes, uint32_t nbytes, const struct khandle
     for (uint32_t i = 0; i < nhandles; i++)
         if (!handles[i].obj)
             return ERR_INVALID_ARGS;
-    struct chan_msg *m = kmalloc(sizeof(*m) + nhandles * sizeof(struct khandle) + nbytes);
-    if (!m)
+    uint64_t size = sizeof(struct chan_msg) + nhandles * sizeof(struct khandle) + nbytes;
+    struct job *job = job_current();
+    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, size);
+    if (st != OK)
+        return st;
+    struct chan_msg *m = kmalloc(size);
+    if (!m) {
+        job_uncharge(job, JOB_LIMIT_MSG_BYTES, size);
         return ERR_NO_MEMORY;
+    }
+    job_ref(job);
+    m->job = job;
+    m->charge = size;
     m->node.next = m->node.prev = NULL;
     m->nbytes = nbytes;
     m->nhandles = nhandles;
@@ -130,7 +152,7 @@ static void msg_drop(struct chan_msg *m)
 {
     for (uint32_t i = 0; i < m->nhandles; i++)
         khandle_release(&msg_handles(m)[i]);
-    kfree(m);
+    msg_free(m);
 }
 
 /* Hand a message's contents to a reader, which now owns the handles. */
@@ -140,7 +162,7 @@ static void msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *hand
         memcpy(bytes, msg_bytes(m), m->nbytes);
     if (m->nhandles)
         memcpy(handles, msg_handles(m), m->nhandles * sizeof(struct khandle));
-    kfree(m);
+    msg_free(m);
 }
 
 /* ---- closing ---------------------------------------------------------------- */
@@ -352,7 +374,7 @@ status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
         return st;
     st = send_msg(ch, m);
     if (st != OK) {
-        kfree(m);   /* its handle copies were never the message's */
+        msg_free(m);   /* its handle copies were never the message's */
         return st;
     }
     for (uint32_t i = 0; i < nhandles; i++)
@@ -443,7 +465,7 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     if (ch->closed) {
         spin_unlock_irqrestore(&ch->base.lock, f);
-        kfree(m);
+        msg_free(m);
         return ERR_BAD_STATE;
     }
     list_add_tail(&ch->callers, &w.node);
@@ -455,7 +477,7 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
         if (w.node.next)
             list_del(&w.node);
         spin_unlock_irqrestore(&ch->base.lock, f);
-        kfree(m);
+        msg_free(m);
         if (w.reply)   /* the peer guessed our txid before we even sent */
             msg_drop(w.reply);
         return st;

@@ -1,6 +1,14 @@
+/* Handle tables (handle.h).
+ *
+ * Job charges (M5): every slot that is in use or reserved (in transit, or
+ * reserved for a receive) costs its table's job one JOB_LIMIT_HANDLES unit.
+ * Charges are taken before a slot is filled and credited when it goes back
+ * on the free list; t->charged (under the lock) says how many are out, so
+ * destroying the table credits exactly those. */
 #include <jam/handle.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/process.h>
 #include <jam/string.h>
 
 struct handle_slot {
@@ -73,6 +81,21 @@ void handle_table_init(struct handle_table *t)
     spin_init(&t->lock, "handle table");
     t->slots = NULL;
     t->capacity = t->used = t->free_head = t->free_tail = 0;
+    t->job = NULL;
+    t->charged = 0;
+}
+
+/* Charge n handle units to t's job (no lock needed: job counters are
+ * atomic). The caller adds n to t->charged under the lock once the slots
+ * are really taken, or uncharges them again. */
+static status_t charge(struct handle_table *t, uint32_t n)
+{
+    return job_charge(t->job, JOB_LIMIT_HANDLES, n);
+}
+
+static void uncharge(struct handle_table *t, uint32_t n)
+{
+    job_uncharge(t->job, JOB_LIMIT_HANDLES, n);
 }
 
 void handle_table_destroy(struct handle_table *t)
@@ -102,6 +125,8 @@ void handle_table_destroy(struct handle_table *t)
     kfree(t->slots);
     t->slots = NULL;
     t->capacity = t->free_head = t->free_tail = 0;
+    uncharge(t, t->charged);   /* the closed slots (and any reservation) */
+    t->charged = 0;
 }
 
 /* With t->lock held: make sure there is a free slot. Used by the rare paths
@@ -220,6 +245,9 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
 {
     if (!kh->obj)
         return ERR_INVALID_ARGS;
+    status_t cst = charge(t, 1);
+    if (cst != OK)
+        return cst;
     for (;;) {
         uint64_t f = spin_lock_irqsave(&t->lock);
         if (t->free_head) {
@@ -232,6 +260,7 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
             s->rights = kh->rights;
             s->intransit = false;
             t->used++;
+            t->charged++;
             *out = encode(idx, s->gen);
             spin_unlock_irqrestore(&t->lock, f);
             kh->obj = NULL;   /* consumed */
@@ -240,8 +269,10 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
         uint32_t oldcap = t->capacity;
         spin_unlock_irqrestore(&t->lock, f);
         status_t st = grow_table(t, oldcap);   /* allocate outside the lock (O6) */
-        if (st != OK)
+        if (st != OK) {
+            uncharge(t, 1);
             return st;
+        }
     }
 }
 
@@ -272,7 +303,7 @@ status_t handle_get(struct handle_table *t, handle_t h, enum obj_type type, righ
     return st;
 }
 
-status_t handle_close(struct handle_table *t, handle_t h)
+status_t handle_remove(struct handle_table *t, handle_t h, struct khandle *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
     struct handle_slot *s = decode(t, h);
@@ -280,10 +311,20 @@ status_t handle_close(struct handle_table *t, handle_t h)
         spin_unlock_irqrestore(&t->lock, f);
         return ERR_BAD_HANDLE;
     }
-    struct khandle kh = free_slot_locked(t, s);
+    *out = free_slot_locked(t, s);
+    t->charged--;
+    uncharge(t, 1);
     spin_unlock_irqrestore(&t->lock, f);
-    khandle_release(&kh);
     return OK;
+}
+
+status_t handle_close(struct handle_table *t, handle_t h)
+{
+    struct khandle kh;
+    status_t st = handle_remove(t, h, &kh);
+    if (st == OK)
+        khandle_release(&kh);   /* outside the lock: may run on_zero_handles */
+    return st;
 }
 
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out)
@@ -297,10 +338,16 @@ status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, h
             st = ERR_INVALID_ARGS;   /* can't gain rights */
         } else {
             struct kobject *obj = s->obj;
-            st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
+            st = charge(t, 1);
             if (st == OK) {
-                kobject_ref(obj);
-                kobject_handle_gain(obj);
+                st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
+                if (st == OK) {
+                    t->charged++;
+                    kobject_ref(obj);
+                    kobject_handle_gain(obj);
+                } else {
+                    uncharge(t, 1);
+                }
             }
         }
     }
@@ -329,6 +376,7 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
         if ((r & s->rights) != r) {
             st = ERR_INVALID_ARGS;
         } else {
+            /* One slot out, one in: the charge stays as it is. */
             struct khandle kh = free_slot_locked(t, s);
             st = insert_locked(t, kh.obj, r, out);   /* free_slot left one free */
         }
@@ -382,6 +430,9 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
 status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
 {
     uint32_t got = 0;
+    status_t cst = charge(t, n);   /* each reserved slot costs a unit until committed */
+    if (cst != OK)
+        return cst;
     while (got < n) {
         uint64_t f = spin_lock_irqsave(&t->lock);
         while (got < n && t->free_head) {
@@ -395,6 +446,7 @@ status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
             out[got++] = encode(idx, s->gen);
             s->gen++;
             s->intransit = true;
+            t->charged++;
         }
         uint32_t oldcap = t->capacity;
         spin_unlock_irqrestore(&t->lock, f);
@@ -402,8 +454,9 @@ status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
             break;
         status_t st = grow_table(t, oldcap);   /* free list was empty */
         if (st != OK) {
+            uncharge(t, n - got);   /* the ones never reserved */
             while (got)
-                handle_commit(t, out[--got]);
+                handle_commit(t, out[--got]);   /* credits one each */
             return st;
         }
     }
@@ -418,6 +471,8 @@ status_t handle_commit(struct handle_table *t, handle_t h)
     if (s) {
         s->intransit = false;
         freelist_push(t, (h >> GEN_BITS) - 1);   /* the send took it for good */
+        t->charged--;
+        uncharge(t, 1);
         st = OK;
     }
     spin_unlock_irqrestore(&t->lock, f);

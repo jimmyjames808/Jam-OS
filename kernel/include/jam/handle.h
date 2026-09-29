@@ -31,6 +31,7 @@ struct khandle khandle_from_new(struct kobject *obj, rights_t rights);
 void khandle_release(struct khandle *kh);
 
 struct handle_slot;
+struct job;
 
 struct handle_table {
     spinlock_t          lock;
@@ -39,6 +40,13 @@ struct handle_table {
     uint32_t            used;
     uint32_t            free_head;   /* slot index + 1 of first free, 0 = none */
     uint32_t            free_tail;   /* slot index + 1 of last free (FIFO reuse) */
+    /* M5: the job every slot in use or reserved is charged to (one
+     * JOB_LIMIT_HANDLES unit each; NULL for kernel tables), and how many
+     * units are charged now (lock). A full job fails an insert with
+     * ERR_NO_RESOURCES, like a full table. The owner (the process) holds
+     * the job reference. */
+    struct job         *job;
+    uint32_t            charged;
 };
 
 #define HANDLE_TABLE_MAX 65536
@@ -54,6 +62,9 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
 status_t handle_get(struct handle_table *t, handle_t h, enum obj_type type, rights_t need,
                     struct kobject **obj, rights_t *rights);
 status_t handle_close(struct handle_table *t, handle_t h);
+/* Take h out of the table as a khandle, whatever its rights (kernel use:
+ * undoing an insert the kernel made itself). */
+status_t handle_remove(struct handle_table *t, handle_t h, struct khandle *out);
 /* New handle to the same object with rights that are a subset (or
  * RIGHT_SAME). Needs RIGHT_DUPLICATE. */
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out);
