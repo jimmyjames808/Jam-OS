@@ -1,4 +1,4 @@
-# The M7 shell over COM1: tools/qemu-test.sh with QEMU_INPUT=this file and
+# The shell over COM1: tools/qemu-test.sh with QEMU_INPUT=this file and
 # the command line "shell" (what a plain boot does). Types through the
 # serial port -> serialin -> console -> shell path and checks what the shell
 # writes back (the console mirrors program output to COM1).

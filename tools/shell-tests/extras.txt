@@ -1,4 +1,4 @@
-# More of the M7 shell (QEMU_INPUT=this file, command line "shell"): the
+# More of the shell (QEMU_INPUT=this file, command line "shell"): the
 # benchmark and a short stress run from the shell, scrollback, clear, and
 # last a panic, whose screen must show over the console (qemu-test.sh saves
 # the screen as <name>.png when the kernel halts).

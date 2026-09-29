@@ -1,4 +1,4 @@
-# Review finding, fixed (M7 cleanup): a program the shell starts with `run`
+# Review finding, fixed: a program the shell starts with `run`
 # (no root resource) gets a PROGRAM-level console channel, which can't
 # connect an input source, so it can't send Ctrl+Alt+Del (or any key).
 wait 120 Jam OS shell

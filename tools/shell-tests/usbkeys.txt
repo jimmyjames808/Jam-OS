@@ -1,4 +1,4 @@
-# Typing into the shell on a USB keyboard (M7 integration): QEMU's keys go
+# Typing into the shell on a USB keyboard: QEMU's keys go
 # usb-bus -> drv/hid -> console -> shell, the output is checked on COM1.
 # Run by tools/usbkeys-test.sh: QEMU_USB = a usb-hub on xhci port 2 with a
 # usb-kbd behind it (usb path 6.1: hid-6.1:0) and a usb-mouse on port 3;
@@ -29,7 +29,7 @@ sleep 1
 usbkeys help\r
 wait 10 Commands:
 wait jam>
-# devmgr dies (M7 cleanup): init kills its job (usb-bus and every hid go
+# devmgr dies: init kills its job (usb-bus and every hid go
 # with it) and starts it again; the new usb-bus resets the controller and
 # enumerates, a new hid binds and the keyboard types again; the shell's
 # usb command talks to the new devmgr
