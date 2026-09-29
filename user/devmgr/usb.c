@@ -1,4 +1,4 @@
-/* devmgr: USB interfaces and their class drivers (M7).
+/* devmgr: USB interfaces and their class drivers.
  *
  * usb-bus writes `usbbus.interface_attached` (abi/idl/usbbus.idl) on its
  * DR_SERVE channel, txid 0, by itself, for each interface of a device it
@@ -32,7 +32,7 @@
 #include <idl/console.h>
 #include <idl/usbbus.h>
 
-#define CONNECT_WAIT (2 * S)   /* console.connect_input */
+#define CONNECT_WAIT (2 * NS_PER_S)   /* console.connect_input */
 
 struct usb_if {
     handle_t ch;        /* our end of the interface's `usb` channel; 0: a free slot */
@@ -181,7 +181,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
          * console's MAX_SOURCES slots until we take it off (and close it). */
         drain(console);
         handle_t src;
-        status_t st = console_connect_input_until(console, (uint64_t)jam_clock_get() + CONNECT_WAIT,
+        status_t st = console_connect_input_until(console, now() + CONNECT_WAIT,
                                                   &src);
         if (st == ERR_PEER_CLOSED)
             return ERR_SHOULD_WAIT;
@@ -282,8 +282,8 @@ static void attached(struct binding *bus, const struct usbbus_interface_attached
 
 /* Only a usb-bus reports interfaces: any other driver writing
  * interface_attached on its DR_SERVE would get a class driver started on a
- * channel it serves itself -- with a console input source (review of M7:
- * a compromised driver could type into the shell). */
+ * channel it serves itself -- with a console input source (a compromised
+ * driver could type into the shell). */
 static bool is_usb_bus(const struct binding *b)
 {
     return b->kind == BIND_PCI && b->path && strcmp(b->path, "drv/usb-bus") == 0;
@@ -362,7 +362,7 @@ void usb_new_console(handle_t ch)
         struct binding *b = &devs[i];
         if (b->kind == BIND_USB && b->path && b->state == DEVMGR_SUP_RESTARTING &&
             b->console_wait) {
-            b->restart_at = (uint64_t)jam_clock_get();
+            b->restart_at = now();
             waiting++;
         }
     }

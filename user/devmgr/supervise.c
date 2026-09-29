@@ -1,4 +1,4 @@
-/* devmgr: driver supervision (M7). When a driver's process terminates:
+/* devmgr: driver supervision. When a driver's process terminates:
  *
  *   - exit code 0 by itself (not killed): the driver is finished (a
  *     one-shot driver like xhci-noop). Not restarted; its job must be
@@ -20,11 +20,6 @@
  * once and their calls wait in the channel until the new driver reads
  * them (the reconnect rule, <devmgr.h>). */
 #include "internal.h"
-
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
 
 /* Restarts within the window. */
 static unsigned recent(const struct binding *b, uint64_t t)
@@ -48,7 +43,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
     if (n >= SUP_RESTART_LIMIT) {
         b->state = DEVMGR_SUP_GAVE_UP;
         say(true, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s", bdf(b), b->path,
-            why, n, (unsigned long)(SUP_WINDOW / S),
+            why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
             b->test ? " (the crash-test driver: expected)" : "");
         if (!b->test)
             problems++;
@@ -57,7 +52,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
     uint64_t delay = SUP_BACKOFF_FIRST << n;
     if (delay > SUP_BACKOFF_MAX)
         delay = SUP_BACKOFF_MAX;
-    b->backoff_ms = (uint32_t)(delay / MS);
+    b->backoff_ms = (uint32_t)(delay / NS_PER_MS);
     b->restart_at = t + delay;
     b->state = DEVMGR_SUP_RESTARTING;
     /* The channel the restart will serve, handed out from now on. (If this

@@ -21,6 +21,19 @@
 
 int main(int argc, char **argv);
 
+/* time ------------------------------------------------------------------------ */
+
+#define NS_PER_US 1000ull
+#define NS_PER_MS 1000000ull
+#define NS_PER_S  1000000000ull
+
+/* Nanoseconds since boot: the clock deadlines (jam_object_wait_one,
+ * jam_port_wait, jam_nanosleep, ...) are measured on. */
+static inline uint64_t now(void)
+{
+    return (uint64_t)jam_clock_get();
+}
+
 /* startup message ----------------------------------------------------------- */
 
 /* The channel the startup message came on (still open). */
@@ -100,7 +113,7 @@ struct spawn_args {
     const struct spawn_handle *extra;    /* moved into the startup message */
     unsigned                   nextra;
     /* NULL, or nextra entries: what the child's copy of extra[i] gets (a
-     * subset of its rights, e.g. without RIGHT_TRANSFER, M7); 0 or
+     * subset of its rights, e.g. without RIGHT_TRANSFER); 0 or
      * RIGHT_SAME: the same as extra[i].h. */
     const rights_t            *extra_rights;
     /* NULL, or a NULL-terminated list of "KEY=value" strings: the child's
@@ -114,7 +127,7 @@ struct spawn_args {
  * BOOTFS (a duplicate of ours) and the extras, which are
  * consumed whatever happens. *proc gets the process handle. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
-/* Drivers (M6): the startup role that hands a driver process a handle with
+/* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
  * these into the driver's struct driver_start. */
 #define SR_DRIVER(r) (SR_USER + (r))

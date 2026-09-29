@@ -1,4 +1,4 @@
-/* usbtest: checks usb-bus from user space (M7 Track A). init runs it after
+/* usbtest: checks usb-bus from user space. init runs it after
  * utest (boot/init.cfg), on QEMU and on the PC.
  *
  * It finds usb-bus among devmgr's drivers (GET_SERVICE 0xffff/0xffff: the
@@ -21,7 +21,7 @@
  *                  closes) and adds it back; it opens and polls again
  * and, when a keyboard with serial "jamos-keys" is attached (the
  * tools/usb-test.sh scenario, which types through the QEMU monitor), through
- * the real chain usb-bus -> devmgr -> drv/hid (M7 integration; hid owns the
+ * the real chain usb-bus -> devmgr -> drv/hid (hid owns the
  * endpoint, usbtest watches its counters and hid's supervision):
  *   keys           devmgr started hid for it and hid polls the endpoint;
  *                  `sendkey a` reaches hid (press + release)
@@ -42,8 +42,6 @@
 #include <idl/usb.h>
 #include <idl/usbbus.h>
 
-#define MS 1000000ull
-#define S  1000000000ull
 #define MAX_DEV 48
 
 static const char *cur;
@@ -69,8 +67,8 @@ static handle_t bus;
             FAIL("%s is %s, want %s", #expr, status_str(_s), status_str(_w)); \
     } while (0)
 
-static uint64_t now(void) { return (uint64_t)jam_clock_get(); }
 static uint64_t in(uint64_t ns) { return now() + ns; }
+static uint64_t soon(void) { return in(5 * NS_PER_S); }   /* a usb-bus or usb call's deadline */
 
 struct dev {
     uint32_t id, parent;
@@ -91,13 +89,13 @@ struct bus_status {
 
 static status_t get_status(struct bus_status *b)
 {
-    return usbbus_status_until(bus, in(5 * S), &b->devices, &b->hubs, &b->ifaces, &b->hid,
+    return usbbus_status_until(bus, soon(), &b->devices, &b->hubs, &b->ifaces, &b->hid,
                                &b->problems, &b->generation, &b->settled);
 }
 
 static status_t wait_settled(uint32_t ms, struct bus_status *b)
 {
-    return usbbus_wait_settled_until(bus, in((ms + 5000) * MS), ms, &b->devices, &b->hubs,
+    return usbbus_wait_settled_until(bus, in((ms + 5000) * NS_PER_MS), ms, &b->devices, &b->hubs,
                                      &b->ifaces, &b->hid, &b->problems, &b->generation,
                                      &b->settled);
 }
@@ -108,7 +106,7 @@ static status_t load(void)
     for (uint32_t i = 0; i < MAX_DEV; i++) {
         struct dev *d = &devs[ndevs];
         uint8_t path[24], name[40], serial[24];
-        status_t st = usbbus_device_until(bus, in(5 * S), i, &d->id, &d->parent, &d->vid, &d->pid,
+        status_t st = usbbus_device_until(bus, soon(), i, &d->id, &d->parent, &d->vid, &d->pid,
                                           &d->bcd, &d->speed, &d->address, &d->slot,
                                           &d->root_port, &d->port, &d->level, &d->route,
                                           &d->tt_slot, &d->tt_port, &d->cls, &d->sub, &d->proto,
@@ -208,23 +206,23 @@ static bool t_interfaces(void)
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
             uint8_t num = 0, alt = 0, nalts = 0, cls = 0, sub = 0, proto = 0, nep = 0, eps[8];
-            CHECK_ST(usbbus_interface_until(bus, in(5 * S), d->id, k, &num, &alt, &nalts, &cls,
+            CHECK_ST(usbbus_interface_until(bus, soon(), d->id, k, &num, &alt, &nalts, &cls,
                                             &sub, &proto, &nep, eps), OK);
             CHECK(nep <= 8 && nalts >= 1);
             handle_t ch;
             if (cls == 9 || d->hub_ports) {   /* hubs are usb-bus's own: refused */
-                CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch),
+                CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch),
                          ERR_ACCESS_DENIED);
                 continue;
             }
-            CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch), OK);
+            CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch), OK);
             uint16_t v = 0, p = 0;
             uint8_t sp = 0, n2 = 0, c2 = 0, s2 = 0, p2 = 0, e2 = 0, a2 = 0, ad = 0;
-            status_t st = usb_info_until(ch, in(5 * S), &v, &p, &sp, &n2, &c2, &s2, &p2, &e2,
+            status_t st = usb_info_until(ch, soon(), &v, &p, &sp, &n2, &c2, &s2, &p2, &e2,
                                          &a2, &ad);
             uint16_t actual = 0;
             static uint8_t buf[1024];
-            status_t st2 = usb_get_descriptor_until(ch, in(5 * S), 1, 0, 0, 18, 0, &actual, buf);
+            status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
             jam_handle_close(ch);
             CHECK_ST(st, OK);
             CHECK(v == d->vid && p == d->pid && sp == d->speed && n2 == num && c2 == cls &&
@@ -245,10 +243,10 @@ static bool first_iface(const struct dev **dd, uint8_t *num, handle_t *ch, bool 
         if (!d->config || d->hub_ports || (qemu_only && d->vid != 0x0627))
             continue;
         uint8_t n = 0, alt, nalts, cls, sub, proto, nep, eps[8];
-        if (usbbus_interface_until(bus, in(5 * S), d->id, 0, &n, &alt, &nalts, &cls, &sub,
+        if (usbbus_interface_until(bus, soon(), d->id, 0, &n, &alt, &nalts, &cls, &sub,
                                    &proto, &nep, eps) != OK)
             continue;
-        if (usbbus_open_interface_until(bus, in(5 * S), d->id, n, ch) != OK)
+        if (usbbus_open_interface_until(bus, soon(), d->id, n, ch) != OK)
             continue;
         *dd = d;
         *num = n;
@@ -271,19 +269,19 @@ static bool t_access(void)
     uint16_t actual;
     uint8_t out[64] = { 0 };
     /* device recipient: GET_STATUS(device) */
-    status_t a = usb_control_in_until(ch, in(5 * S), 0x80, 0, 0, 0, 2, &actual, buf);
+    status_t a = usb_control_in_until(ch, soon(), 0x80, 0, 0, 0, 2, &actual, buf);
     /* another interface's wIndex */
-    status_t b = usb_control_in_until(ch, in(5 * S), 0xa1, 1, 0x0100, (uint16_t)(num + 1), 8,
+    status_t b = usb_control_in_until(ch, soon(), 0xa1, 1, 0x0100, (uint16_t)(num + 1), 8,
                                       &actual, buf);
     /* SET_CONFIGURATION (standard, device) and SET_INTERFACE by hand */
-    status_t c = usb_control_out_until(ch, in(5 * S), 0x00, 9, 1, 0, 0, out);
-    status_t e = usb_control_out_until(ch, in(5 * S), 0x01, 11, 0, num, 0, out);
+    status_t c = usb_control_out_until(ch, soon(), 0x00, 9, 1, 0, 0, out);
+    status_t e = usb_control_out_until(ch, soon(), 0x01, 11, 0, num, 0, out);
     /* an OUT endpoint address, and one that isn't the interface's */
     handle_t rep;
     uint16_t mp;
     uint8_t iv;
-    status_t f = usb_open_interrupt_in_until(ch, in(5 * S), 0x0f, &rep, &mp, &iv);
-    status_t g = usb_control_in_until(ch, in(5 * S), 0x80, 6, 0x0100, 0, 2000, &actual, buf);
+    status_t f = usb_open_interrupt_in_until(ch, soon(), 0x0f, &rep, &mp, &iv);
+    status_t g = usb_control_in_until(ch, soon(), 0x80, 6, 0x0100, 0, 2000, &actual, buf);
     jam_handle_close(ch);
     CHECK_ST(a, ERR_ACCESS_DENIED);
     CHECK_ST(b, ERR_ACCESS_DENIED);
@@ -308,8 +306,8 @@ static bool t_stall_recovered(void)
     for (int round = 0; round < 3; round++) {
         uint16_t actual = 0;
         /* class request 0x55 to the interface: nobody implements it */
-        status_t st = usb_control_in_until(ch, in(5 * S), 0xa1, 0x55, 0, num, 8, &actual, buf);
-        status_t st2 = usb_get_descriptor_until(ch, in(5 * S), 1, 0, 0, 18, 0, &actual, buf);
+        status_t st = usb_control_in_until(ch, soon(), 0xa1, 0x55, 0, num, 8, &actual, buf);
+        status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
         if (st != ERR_NOT_SUPPORTED || st2 != OK || actual != 18) {
             jam_handle_close(ch);
             FAIL("round %d: unknown request %s (want ERR_NOT_SUPPORTED), then GET_DESCRIPTOR %s "
@@ -337,26 +335,26 @@ static bool t_set_interface(void)
         return true;
     }
     uint8_t num = 0, alt, nalts, cls, sub, proto, nep = 0, eps[8];
-    CHECK_ST(usbbus_interface_until(bus, in(5 * S), d->id, 0, &num, &alt, &nalts, &cls, &sub,
+    CHECK_ST(usbbus_interface_until(bus, soon(), d->id, 0, &num, &alt, &nalts, &cls, &sub,
                                     &proto, &nep, eps), OK);
     handle_t ch, rep = HANDLE_INVALID;
-    CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch), OK);
+    CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch), OK);
     uint16_t mp;
     uint8_t iv, ep = 0;
     for (uint8_t i = 0; i < nep && !ep; i++)
-        if ((eps[i] & 0x80) && usb_open_interrupt_in_until(ch, in(5 * S), eps[i], &rep, &mp,
+        if ((eps[i] & 0x80) && usb_open_interrupt_in_until(ch, soon(), eps[i], &rep, &mp,
                                                             &iv) == OK)
             ep = eps[i];
-    status_t st = ep ? usb_set_interface_until(ch, in(5 * S), 0) : ERR_NOT_FOUND;
-    bool closed = ep && jam_object_wait_one(rep, SIG_PEER_CLOSED, in(5 * S), NULL) == OK;
+    status_t st = ep ? usb_set_interface_until(ch, soon(), 0) : ERR_NOT_FOUND;
+    bool closed = ep && jam_object_wait_one(rep, SIG_PEER_CLOSED, soon(), NULL) == OK;
     if (rep != HANDLE_INVALID)
         jam_handle_close(rep);
     rep = HANDLE_INVALID;
-    status_t again = ep ? usb_open_interrupt_in_until(ch, in(5 * S), ep, &rep, &mp, &iv)
+    status_t again = ep ? usb_open_interrupt_in_until(ch, soon(), ep, &rep, &mp, &iv)
                         : ERR_NOT_FOUND;
     uint64_t reports = 0, dropped = 0, errors = 0;
     uint8_t open = 0;
-    status_t sst = ep ? usb_endpoint_stats_until(ch, in(5 * S), ep, &reports, &dropped, &errors,
+    status_t sst = ep ? usb_endpoint_stats_until(ch, soon(), ep, &reports, &dropped, &errors,
                                                  &open) : ERR_NOT_FOUND;
     if (rep != HANDLE_INVALID)
         jam_handle_close(rep);
@@ -388,7 +386,7 @@ static bool t_serve_backlog(void)
 
 /* ---- the interactive part (QEMU monitor) ----------------------------------------------- */
 
-/* M7 integration: devmgr binds drv/hid to the test keyboard (it owns the
+/* devmgr binds drv/hid to the test keyboard (it owns the
  * interrupt endpoint), so usbtest watches through a channel of its own:
  * the endpoint's counters (usb.endpoint_stats: reports taken by hid, and
  * whether a reader is attached) and hid's supervision state in devmgr.
@@ -406,13 +404,13 @@ struct kbd {
 static status_t hid_sup(uint32_t id, struct devmgr_rep *r)
 {
     return devmgr_call(dm, DEVMGR_SUPERVISION, DEVMGR_USB_IFACE, 0, id, r, NULL, 0, NULL,
-                       in(5 * S));
+                       soon());
 }
 
 static status_t ep_stats(struct kbd *k, uint64_t *reports, uint64_t *dropped, uint8_t *open)
 {
     uint64_t errors = 0;
-    return usb_endpoint_stats_until(k->ch, in(5 * S), 0x81, reports, dropped, &errors, open);
+    return usb_endpoint_stats_until(k->ch, soon(), 0x81, reports, dropped, &errors, open);
 }
 
 static bool open_keys(struct kbd *k)
@@ -421,7 +419,7 @@ static bool open_keys(struct kbd *k)
     CHECK(d != NULL);
     k->id = d->id;
     snprintf(k->name, sizeof(k->name), "hid-%s:0", d->path);
-    CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, 0, &k->ch), OK);
+    CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, 0, &k->ch), OK);
     return true;
 }
 
@@ -429,7 +427,7 @@ static bool open_keys(struct kbd *k)
  * since its binding) and polls the endpoint; *reports: the count then. */
 static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
 {
-    uint64_t end = in(20 * S);
+    uint64_t end = in(20 * NS_PER_S);
     struct devmgr_rep r = { 0 };
     status_t st = ERR_TIMED_OUT;
     uint8_t open = 0;
@@ -439,7 +437,7 @@ static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
         if (st == OK && r.a == DEVMGR_SUP_RUNNING && r.b >= restarts &&
             ep_stats(k, reports, &dropped, &open) == OK && open)
             return true;
-        jam_nanosleep(in(20 * MS));
+        jam_nanosleep(in(20 * NS_PER_MS));
     }
     FAIL("%s not polling the keyboard after 20 s (supervision %s, state %u, restarts %u, open %u)",
          k->name, status_str(st), r.a, r.b, open);
@@ -448,7 +446,7 @@ static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
 /* Until hid has taken `n` more reports than `base`. */
 static bool hid_got(struct kbd *k, uint64_t base, uint64_t n)
 {
-    uint64_t end = in(15 * S), reports = 0, dropped = 0;
+    uint64_t end = in(15 * NS_PER_S), reports = 0, dropped = 0;
     uint8_t open = 0;
     while (now() < end) {
         CHECK_ST(ep_stats(k, &reports, &dropped, &open), OK);
@@ -456,7 +454,7 @@ static bool hid_got(struct kbd *k, uint64_t base, uint64_t n)
             CHECK(dropped == 0);
             return true;
         }
-        jam_nanosleep(in(10 * MS));
+        jam_nanosleep(in(10 * NS_PER_MS));
     }
     FAIL("%s took %lu report(s) in 15 s, want %lu", k->name, (unsigned long)(reports - base),
          (unsigned long)n);
@@ -471,11 +469,11 @@ static bool gone(handle_t h, uint64_t deadline)
 /* Until devmgr has let go of hid's binding for device `id`. */
 static bool hid_unbound(uint32_t id)
 {
-    uint64_t end = in(10 * S);
+    uint64_t end = in(10 * NS_PER_S);
     struct devmgr_rep r;
     status_t st = OK;
     while (now() < end && (st = hid_sup(id, &r)) != ERR_NOT_FOUND)
-        jam_nanosleep(in(20 * MS));
+        jam_nanosleep(in(20 * NS_PER_MS));
     CHECK_ST(st, ERR_NOT_FOUND);
     return true;
 }
@@ -510,11 +508,11 @@ static bool t_kill_hid(void)
         return false;
     uint64_t t0 = now();
     CHECK_ST(devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, 0, kb.id, &r, NULL, 0, NULL,
-                         in(20 * S)), OK);
+                         in(20 * NS_PER_S)), OK);
     if (!hid_ready(&kb, restarts + 1, &base))
         return false;
     printf("usbtest: %s restarted and polling again %lu ms after the kill; ready for keys after "
-           "the restart\n", kb.name, (unsigned long)((now() - t0) / MS));
+           "the restart\n", kb.name, (unsigned long)((now() - t0) / NS_PER_MS));
     if (!hid_got(&kb, base, 2))   /* `sendkey d` */
         return false;
     CHECK_ST(hid_sup(kb.id, &r), OK);
@@ -527,7 +525,7 @@ static bool t_unplug(void)
     struct bus_status before, after;
     CHECK_ST(get_status(&before), OK);
     printf("usbtest: unplug the test keyboard now\n");
-    bool g = gone(kb.ch, in(15 * S));
+    bool g = gone(kb.ch, in(15 * NS_PER_S));
     jam_handle_close(kb.ch);
     CHECK(g);
     /* hid saw its channel close too and ended; devmgr freed the binding */
@@ -543,7 +541,7 @@ static bool t_unplug(void)
 static bool t_replug(void)
 {
     printf("usbtest: plug the test keyboard back now\n");
-    uint64_t end = in(20 * S);
+    uint64_t end = in(20 * NS_PER_S);
     struct dev *d = NULL;
     while (now() < end) {
         struct bus_status b;
@@ -582,7 +580,7 @@ static bool t_unplug_hub(void)
     struct bus_status before, after;
     CHECK_ST(get_status(&before), OK);
     printf("usbtest: unplug the hub now\n");
-    bool g = gone(kb.ch, in(15 * S));
+    bool g = gone(kb.ch, in(15 * NS_PER_S));
     jam_handle_close(kb.ch);
     kb.ch = HANDLE_INVALID;
     CHECK(g);
@@ -600,7 +598,7 @@ static bool t_unplug_hub(void)
 
 static bool find_bus(void)
 {
-    dm = startup_handle(SR_DEVMGR_CTL);   /* M7: it kills hid (control) */
+    dm = startup_handle(SR_DEVMGR_CTL);   /* control: it kills hid */
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {
@@ -608,7 +606,7 @@ static bool find_bus(void)
         handle_t hs[1];
         uint32_t nh = 0;
         status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, hs, 1, &nh,
-                                  in(5 * S));
+                                  soon());
         if (st == ERR_NOT_FOUND)
             break;
         if (st != OK || nh != 1)
@@ -632,7 +630,7 @@ static void run(const char *name, bool (*fn)(void))
         if (skipped != sk)
             return;   /* it said why */
         passed++;
-        printf("usbtest: %s ok (%lu ms)\n", name, (unsigned long)((now() - t0) / MS));
+        printf("usbtest: %s ok (%lu ms)\n", name, (unsigned long)((now() - t0) / NS_PER_MS));
     } else {
         failed++;
     }

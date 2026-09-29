@@ -1,4 +1,4 @@
-/* serialin: COM1 as an input source for the console (M7 Track C).
+/* serialin: COM1 as an input source for the console.
  *
  * Reads what arrives on the serial port (the kernel's serial_open object,
  * interrupt-driven) and passes it on as `input.text` calls (abi/idl/

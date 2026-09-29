@@ -14,7 +14,7 @@
  *                committing a zeroed page, installing it, returning
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
  *   bench-echo   the server: read, write the same bytes back
- *   bench-tcall  (M5.5) channel_call to an echo THREAD of this process on a
+ *   bench-tcall  channel_call to an echo THREAD of this process on a
  *                channel of its own: the same work as bench-call without
  *                the address-space switches (both threads share our CR3),
  *                for the process->process breakdown in BENCH.md */
@@ -41,11 +41,6 @@ static inline uint64_t stamp(void)
     uint32_t lo, hi;
     __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
     return (uint64_t)hi << 32 | lo;
-}
-
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
 }
 
 static int64_t null_syscall(void)

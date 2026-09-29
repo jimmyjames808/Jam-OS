@@ -6,7 +6,7 @@
  *   - a new dma_cap: the function's new current cap, which turns Bus
  *     Master Enable off; the new driver turns it on only once it has
  *     quiesced the device, and whatever the dead driver still had pinned
- *     stays quarantined by the kernel until then (M7);
+ *     stays quarantined by the kernel until then;
  *   - a new interrupt object (the dead driver's vector went with it) and
  *     new BAR resources.
  * The hardware handles are handed over without RIGHT_DUPLICATE and
@@ -68,8 +68,8 @@ static uint32_t find_cap(handle_t dev, uint32_t id)
 }
 
 /* A function left in D1-D3 (by firmware, or a power-down) is woken to D0
- * before a driver gets it (review of M6 phase 2, finding 7): only we may
- * change its power state (RIGHT_MANAGE). The kernel waits out the
+ * before a driver gets it (a driver can't use a sleeping device, and only
+ * we may change its power state: RIGHT_MANAGE). The kernel waits out the
  * transition (10 ms) and puts back the BARs and command register a
  * D3hot -> D0 reset loses. */
 static status_t wake(struct binding *b)
@@ -218,7 +218,8 @@ bool job_empty(handle_t job, const char *who)
 /* Its whole job: killing only the process would leave anything it started
  * holding its dma_cap, interrupt object and BARs. Then Bus Master Enable
  * off through our own handle (the dma_cap's close has done it already;
- * this is belt and braces). Review of M6 phase 2. */
+ * this is belt and braces, so no path leaves a dead driver's device
+ * mastering the bus). */
 void kill_driver(struct binding *b)
 {
     if (b->job)
@@ -248,11 +249,11 @@ bool stop_driver(struct binding *b, bool kill, bool excused)
     if (kill)
         kill_driver(b);
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
-                                      (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
+                                      now() + STOP_WAIT, &seen);
     bool ok = st == OK;
     if (st != OK) {
         say(true, "devmgr: %s %s did not stop in %lu s: killing its job", bdf(b), b->path,
-            (unsigned long)(STOP_WAIT / S));
+            (unsigned long)(STOP_WAIT / NS_PER_S));
         kill_driver(b);
     }
     struct process_info info;

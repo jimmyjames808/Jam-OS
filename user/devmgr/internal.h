@@ -1,4 +1,4 @@
-/* devmgr's own pieces (M7): main.c (startup, the protocol, the event
+/* devmgr's own pieces: main.c (startup, the protocol, the event
  * loop), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
  * give up), usb.c (the USB interfaces usb-bus reports). The protocol is in
@@ -9,15 +9,13 @@
 #include <devmgr.h>
 #include <jam/driver.h>
 
-#define MS        1000000ull
-#define S         1000000000ull
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
-#define STOP_WAIT (15 * S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
+#define STOP_WAIT (15 * NS_PER_S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
 
 /* Supervision (supervise.c). */
-#define SUP_BACKOFF_FIRST (100 * MS)
-#define SUP_BACKOFF_MAX   (5 * S)
-#define SUP_WINDOW        (60 * S)
+#define SUP_BACKOFF_FIRST (100 * NS_PER_MS)
+#define SUP_BACKOFF_MAX   (5 * NS_PER_S)
+#define SUP_WINDOW        (60 * NS_PER_S)
 #define SUP_RESTART_LIMIT 5   /* restarts within SUP_WINDOW; the next death gives up */
 
 /* Port keys: devmgr's channel, and a driver process's SIG_TERMINATED
@@ -40,7 +38,7 @@
 enum bind_kind {
     BIND_PCI,    /* a PCI function (pci_enum) */
     BIND_SOFT,   /* no hardware: the crash-test driver */
-    BIND_USB,    /* a USB interface usb-bus reported (M7, usb.c); path NULL: a free slot */
+    BIND_USB,    /* a USB interface usb-bus reported (usb.c); path NULL: a free slot */
 };
 
 struct binding {
@@ -111,7 +109,7 @@ unsigned mem_bars(const struct binding *b);
 /* Close b's client end (and stop watching it). */
 void close_client(struct binding *b);
 
-/* usb.c (M7): the interfaces usb-bus reports on its DR_SERVE channel, and
+/* usb.c: the interfaces usb-bus reports on its DR_SERVE channel, and
  * their class drivers. */
 #define MAX_USB_IFS 64
 /* b's driver wrote on its channel by itself (KEY_EVENTS). */
@@ -129,7 +127,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
 void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
 bool usb_gone(const struct binding *b);
-/* The console (M7): devmgr's client end of it (0: none), from SR_CONSOLE
+/* The console: devmgr's client end of it (0: none), from SR_CONSOLE
  * or DEVMGR_SET_CONSOLE. A new one restarts the class drivers waiting for
  * it. */
 extern handle_t console;

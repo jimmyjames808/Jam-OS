@@ -229,7 +229,7 @@ static int orphan(void)
 static void finisher(void *arg)
 {
     (void)arg;
-    jam_nanosleep((uint64_t)jam_clock_get() + 20000000ull);
+    jam_nanosleep(now() + 20000000ull);
     jam_process_exit(11);
 }
 
@@ -267,8 +267,8 @@ static int startup(int argc, char **argv)
 /* Try to lift our own job's page limit through SR_JOB, then commit 1 MiB
  * (kernel/test/test_quota.c, quota_child_cannot_raise_own_job_limit). 50
  * if the kernel refused the raise (right: SR_JOB has no RIGHT_MANAGE), 0 if
- * both worked (the review's R4 bug), 51 if the raise "worked" but the
- * commit was still refused. */
+ * both worked (a job that could raise its own limit), 51 if the raise
+ * "worked" but the commit was still refused. */
 static int raise_own_limit(void)
 {
     if (jam_job_set_limit(startup_handle(SR_JOB), JOB_LIMIT_PAGES, JOB_NO_LIMIT) != OK)

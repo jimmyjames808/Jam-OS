@@ -1,5 +1,5 @@
-/* devmgr: binds drivers to PCI functions (M6 phase 2) and keeps them
- * running (M7 supervision). A process in bootfs (bin/devmgr) that init
+/* devmgr: binds drivers to PCI functions and keeps them running
+ * (supervise.c). A process in bootfs (bin/devmgr) that init
  * starts with a RES_PCI resource (SR_RESOURCE) sliced from the root, and
  * the server end of its channel (SR_DEVMGR; the protocol, and the
  * reconnect rule its clients follow, are in <devmgr.h>).
@@ -23,7 +23,7 @@
  *              current cap, which turns Bus Master Enable OFF. The driver
  *              turns it on (drv_dma_bus_master; DMA and MSI both need it)
  *              once it has quiesced the device, so nothing a previous
- *              driver left queued reaches memory (M7). Closing the cap --
+ *              driver left queued reaches memory. Closing the cap --
  *              the driver exiting or being killed -- turns it off again;
  *              pins still held then are quarantined by the kernel
  *   DR_SERVE   a channel whose other end devmgr keeps (GET_SERVICE hands
@@ -32,7 +32,7 @@
  * RIGHT_TRANSFER (<devmgr.h> DEVMGR_DRV_*_RIGHTS): the driver can't pass
  * them on, so nothing of the device outlives the driver's job.
  *
- * M7: a driver may also WRITE on DR_SERVE by itself (txid 0): usb-bus
+ * A driver may also WRITE on DR_SERVE by itself (txid 0): usb-bus
  * sends `usbbus.interface_attached` (abi/idl/usbbus.idl) with the
  * interface's `usb` channel for each interface of a new device. devmgr
  * watches each driver's channel for these and keeps the channels (usb.c).
@@ -46,7 +46,7 @@
  * leaves USB host controllers (class 0c03xx) without a driver: no USB at
  * all, the console's input is the serial port alone.
  *
- * M7: USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
+ * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
  *
@@ -69,7 +69,7 @@ static const struct {
     const char *path;
 } matches[] = {
     { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },        /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller (M7) */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller */
 };
 
 #define TEST_DRIVER_PATH "drv/crasher"
@@ -172,7 +172,7 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
 {
     uint32_t seen = 0;
     /* GET_SERVICE 0xffff/0xffff: the instance-th function with a driver
-     * running (M7: tests find usb-bus this way). */
+     * running (tests find usb-bus this way). */
     bool any_bound = q->ordinal == DEVMGR_GET_SERVICE && q->vendor == 0xffff &&
                      q->device == 0xffff;
     bool usb = q->vendor == DEVMGR_USB_IFACE;
@@ -217,7 +217,7 @@ static status_t kill_request(struct binding *b)
     kill_driver(b);
     signals_t seen;
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
-                                      (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
+                                      now() + STOP_WAIT, &seen);
     b->killed = true;
     sup_died(b, b->gen);   /* a death like any other: the restart is scheduled now */
     return st;
@@ -438,7 +438,7 @@ int main(int argc, char **argv)
         say(true, "devmgr: no port (%s)", status_str(st));
         return 1;
     }
-    /* M7: with a console, class drivers send their input to it. */
+    /* With a console, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
         usb_new_console(startup_handle(SR_CONSOLE));
     for (uint32_t i = 0; ndevs < MAX_DEVS; i++) {

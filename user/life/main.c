@@ -29,348 +29,7 @@
  * faster / slower, r a new random soup, c clear, g a Gosper glider gun and
  * p an R-pentomino at the centre of the view, a ages on / off, m the map,
  * h the help line, q or Esc quits. */
-#include "../fun/fun.h"
-
-#define BAND 8   /* rows per work item */
-
-static uint32_t W, WW;        /* world size (cells) and words per row */
-static uint64_t *cur, *old;   /* this generation and the one before */
-static uint64_t *age[3];      /* the age counter's bits (see above) */
-static bool ages = true;
-static uint64_t gen;
-static uint64_t pop_by[FUN_MAX_THREADS];
-
-/* ---- the engine ------------------------------------------------------------------ */
-
-/* One band of rows of the next generation: src -> dst. */
-static void step_band(const uint64_t *src, uint64_t *dst, uint32_t band, uint32_t me)
-{
-    uint64_t pop = 0;
-    uint32_t y0 = band * BAND, y1 = y0 + BAND < W ? y0 + BAND : W;
-    for (uint32_t y = y0; y < y1; y++) {
-        const uint64_t *ra = src + (uint64_t)((y - 1) & (W - 1)) * WW;
-        const uint64_t *rb = src + (uint64_t)y * WW;
-        const uint64_t *rc = src + (uint64_t)((y + 1) & (W - 1)) * WW;
-        uint64_t *out = dst + (uint64_t)y * WW;
-        uint64_t *a0 = age[0] + (uint64_t)y * WW, *a1 = age[1] + (uint64_t)y * WW;
-        uint64_t *a2 = age[2] + (uint64_t)y * WW;
-        for (uint32_t w = 0; w < WW; w++) {
-            uint32_t wl = (w - 1) & (WW - 1), wr = (w + 1) & (WW - 1);
-            uint64_t a = ra[w], b = rb[w], c = rc[w];
-            uint64_t v[8] = {
-                a << 1 | ra[wl] >> 63, a, a >> 1 | ra[wr] << 63,
-                b << 1 | rb[wl] >> 63,    b >> 1 | rb[wr] << 63,
-                c << 1 | rc[wl] >> 63, c, c >> 1 | rc[wr] << 63,
-            };
-            /* Count the neighbours per bit: s0 s1 the low bits, s2 "4 or more". */
-            uint64_t s0 = 0, s1 = 0, s2 = 0;
-            for (int k = 0; k < 8; k++) {
-                uint64_t c0 = s0 & v[k];
-                s0 ^= v[k];
-                s2 |= s1 & c0;
-                s1 ^= c0;
-            }
-            uint64_t n = s1 & ~s2 & (s0 | b);   /* 3, or 2 and alive */
-            out[w] = n;
-            pop += popcount64(n);
-            if (ages) {
-                /* +1 where not already 7, then 0 where the cell changed. */
-                uint64_t x0 = a0[w], x1 = a1[w], x2 = a2[w];
-                uint64_t inc = ~(x0 & x1 & x2), changed = n ^ b;
-                uint64_t c1 = x0 & inc, c2 = x1 & c1;
-                a0[w] = (x0 ^ inc) & ~changed;
-                a1[w] = (x1 ^ c1) & ~changed;
-                a2[w] = (x2 ^ c2) & ~changed;
-            }
-        }
-    }
-    pop_by[me] += pop;
-}
-
-struct step_job { const uint64_t *src; uint64_t *dst; };
-
-static void step_item(uint32_t item, uint32_t me, void *arg)
-{
-    struct step_job *j = arg;
-    step_band(j->src, j->dst, item, me);
-}
-
-/* One generation on the pool (threads > 1) or on this thread alone.
- * Returns the population. */
-static uint64_t step(bool parallel)
-{
-    struct step_job j = { cur, old };
-    for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
-        pop_by[i] = 0;
-    uint32_t bands = (W + BAND - 1) / BAND;
-    if (parallel) {
-        pool_run(step_item, &j, bands);
-    } else {
-        for (uint32_t b = 0; b < bands; b++)
-            step_band(j.src, j.dst, b, 0);
-    }
-    uint64_t *t = cur;
-    cur = old;
-    old = t;
-    gen++;
-    uint64_t pop = 0;
-    for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
-        pop += pop_by[i];
-    return pop;
-}
-
-static inline bool get(const uint64_t *g, uint32_t x, uint32_t y)
-{
-    x &= W - 1;
-    y &= W - 1;
-    return g[(uint64_t)y * WW + x / 64] >> (x % 64) & 1;
-}
-
-static inline void set(uint64_t *g, uint32_t x, uint32_t y, bool on)
-{
-    x &= W - 1;
-    y &= W - 1;
-    uint64_t *p = &g[(uint64_t)y * WW + x / 64], m = 1ull << (x % 64);
-    *p = on ? *p | m : *p & ~m;
-}
-
-static inline uint32_t age_of(uint32_t x, uint32_t y)
-{
-    return (uint32_t)get(age[0], x, y) | (uint32_t)get(age[1], x, y) << 1 |
-           (uint32_t)get(age[2], x, y) << 2;
-}
-
-static uint64_t population(const uint64_t *g)
-{
-    uint64_t n = 0;
-    for (uint64_t i = 0; i < (uint64_t)W * WW; i++)
-        n += popcount64(g[i]);
-    return n;
-}
-
-/* A pattern in rows of '.' and 'O', its top-left corner at (x, y): newborn
- * cells, in a cleared space (margin cells all round) so it gets a start. */
-static void stamp(const char *const *rows, uint32_t nrows, uint32_t x, uint32_t y, uint32_t margin)
-{
-    uint32_t w = (uint32_t)strlen(rows[0]);
-    for (uint32_t j = 0; j < nrows + 2 * margin; j++)
-        for (uint32_t i = 0; i < w + 2 * margin; i++) {
-            set(cur, x + i - margin, y + j - margin, false);
-            set(old, x + i - margin, y + j - margin, false);
-            for (int k = 0; k < 3; k++)
-                set(age[k], x + i - margin, y + j - margin, true);
-        }
-    for (uint32_t j = 0; j < nrows; j++)
-        for (uint32_t i = 0; rows[j][i]; i++)
-            if (rows[j][i] == 'O') {
-                set(cur, x + i, y + j, true);
-                set(old, x + i, y + j, false);
-                for (int k = 0; k < 3; k++)
-                    set(age[k], x + i, y + j, false);
-            }
-}
-
-static const char *const glider[] = { ".O.", "..O", "OOO" };
-static const char *const rpent[] = { ".OO", "OO.", ".O." };
-static const char *const gun[] = {
-    "........................O...........",
-    "......................O.O...........",
-    "............OO......OO............OO",
-    "...........O...O....OO............OO",
-    "OO........O.....O...OO..............",
-    "OO........O...O.OO....O.O...........",
-    "..........O.....O.......O...........",
-    "...........O...O....................",
-    "............OO......................",
-};
-
-static uint64_t soup_seed = 0x5eed11fe;
-
-static void soup_item(uint32_t item, uint32_t me, void *arg)
-{
-    (void)me;
-    (void)arg;
-    uint64_t s = soup_seed ^ ((uint64_t)item * 0x9e3779b97f4a7c15ull) ^ 1;
-    uint32_t y0 = item * BAND;
-    for (uint32_t y = y0; y < y0 + BAND && y < W; y++)
-        for (uint32_t w = 0; w < WW; w++) {
-            uint64_t a = rng_next(&s), b = rng_next(&s), c = rng_next(&s), i = (uint64_t)y * WW + w;
-            cur[i] = a & (b | c);   /* 37.5% alive */
-            old[i] = 0;
-            /* the living newborn (age 0), the dead long dead (age 7) */
-            age[0][i] = age[1][i] = age[2][i] = ~cur[i];
-        }
-}
-
-static void soup(void)
-{
-    soup_seed = rng_next(&soup_seed);
-    pool_run(soup_item, NULL, (W + BAND - 1) / BAND);
-    gen = 0;
-}
-
-static bool world_alloc(uint32_t size)
-{
-    W = size;
-    WW = size / 64;
-    uint64_t bytes = (uint64_t)W * WW * 8;
-    cur = big_alloc(bytes);
-    old = big_alloc(bytes);
-    for (int k = 0; k < 3; k++)
-        age[k] = big_alloc(bytes);
-    gen = 0;
-    return cur && old && age[0] && age[1] && age[2];
-}
-
-static void world_clear(void)
-{
-    uint64_t bytes = (uint64_t)W * WW * 8;
-    memset(cur, 0, bytes);
-    memset(old, 0, bytes);
-    for (int k = 0; k < 3; k++)
-        memset(age[k], 0xff, bytes);
-    gen = 0;
-}
-
-/* ---- the self-test ---------------------------------------------------------------- */
-
-static int failures;
-
-static void check(bool ok, const char *what)
-{
-    say("life: selftest: %-58s %s\n", what, ok ? "ok" : "FAILED");
-    if (!ok)
-        failures++;
-}
-
-static int selftest(void)
-{
-    uint32_t n = pool_start(0);
-    say("life: selftest on %u threads (%u CPUs by CPUID)\n", n, fun_cpu_count());
-    char what[96];
-
-    /* A glider moves one cell down and right every 4 generations. */
-    world_alloc(256);
-    world_clear();
-    stamp(glider, 3, 10, 10, 0);
-    uint64_t pop = 0;
-    for (int i = 0; i < 4; i++)
-        pop = step(true);
-    bool same = pop == 5;
-    for (uint32_t j = 0; j < 3; j++)
-        for (uint32_t i = 0; i < 3; i++)
-            same &= get(cur, 11 + i, 11 + j) == (glider[j][i] == 'O');
-    check(same, "glider: 4 generations = moved by (+1, +1), 5 cells");
-    /* ... and wraps round the torus: after 4 * 256 generations it is back. */
-    for (int i = 0; i < 4 * 256 - 4; i++)
-        step(true);
-    same = population(cur) == 5;
-    for (uint32_t j = 0; j < 3; j++)
-        for (uint32_t i = 0; i < 3; i++)
-            same &= get(cur, 10 + i, 10 + j) == (glider[j][i] == 'O');
-    check(same, "glider: 1024 generations on a 256-torus = back home");
-
-    /* A blinker at the left/right word seam (x = 63, 64, 65). */
-    world_clear();
-    set(cur, 63, 50, true), set(cur, 64, 50, true), set(cur, 65, 50, true);
-    step(true);
-    bool ok = get(cur, 64, 49) && get(cur, 64, 50) && get(cur, 64, 51) && population(cur) == 3;
-    step(true);
-    ok &= get(cur, 63, 50) && get(cur, 64, 50) && get(cur, 65, 50) && population(cur) == 3;
-    check(ok, "blinker across a word boundary: period 2");
-    /* Ages: its middle never changes (7 for good after 7 generations); its
-     * ends change every generation (0); a cell far away stays 7. */
-    for (int i = 0; i < 8; i++)
-        step(true);
-    ok = age_of(64, 50) == 7 && age_of(63, 50) == 0 && age_of(64, 49) == 0 &&
-         age_of(200, 200) == 7 && get(cur, 63, 50);
-    step(true);
-    ok &= age_of(64, 50) == 7 && age_of(63, 50) == 0 && !get(cur, 63, 50) && get(cur, 64, 49);
-    check(ok, "ages: a blinker's middle is 7, its ends are always 0");
-    world_clear();
-    stamp(glider, 3, 100, 100, 0);
-    for (int i = 0; i < 3; i++)
-        step(true);
-    ok = true;
-    for (uint32_t y = 90; y < 120; y++)
-        for (uint32_t x = 90; x < 120; x++)
-            if (get(cur, x, y))
-                ok &= age_of(x, y) <= 3;   /* a glider has no cell older than its period */
-    check(ok && population(cur) == 5, "ages: a glider's cells are all young");
-
-    /* The R-pentomino settles at generation 1103 with 116 cells. */
-    world_alloc(1024);
-    world_clear();
-    stamp(rpent, 3, 512, 512, 0);
-    /* It settles into 116 cells (6 of them gliders flying off) at generation
-     * 1103: find the last generation whose population differs from gen 1500's. */
-    uint64_t t0 = now_ns(), last_change = 0, last_pop = 0;
-    while (gen < 1500) {
-        pop = step(true);
-        if (pop != last_pop)
-            last_change = gen;
-        last_pop = pop;
-    }
-    uint64_t ms = (now_ns() - t0) / 1000000;
-    snprintf(what, sizeof(what), "R-pentomino: 116 cells for good from gen %lu (1103-ish)",
-             (unsigned long)last_change);
-    check(pop == 116 && last_change >= 1100 && last_change <= 1106, what);
-    say("life: selftest: 1500 generations of 1024x1024 in %lu ms\n", (unsigned long)ms);
-
-    /* Every CPU together computes exactly what one CPU does alone (ages too). */
-    world_alloc(512);
-    soup_seed = 12345;
-    soup();
-    uint64_t bytes = (uint64_t)W * WW * 8, words = bytes / 8;
-    uint64_t *copy = big_alloc(bytes * 4);
-    memcpy(copy, cur, bytes);
-    for (int k = 0; k < 3; k++)
-        memcpy(copy + (k + 1) * words, age[k], bytes);
-    for (int i = 0; i < 64; i++)
-        step(true);
-    uint64_t *par = big_alloc(bytes * 4);
-    memcpy(par, cur, bytes);
-    for (int k = 0; k < 3; k++)
-        memcpy(par + (k + 1) * words, age[k], bytes);
-    memcpy(cur, copy, bytes);
-    memset(old, 0, bytes);
-    for (int k = 0; k < 3; k++)
-        memcpy(age[k], copy + (k + 1) * words, bytes);
-    for (int i = 0; i < 64; i++)
-        step(false);
-    ok = !memcmp(par, cur, bytes) && population(cur) > 1000;
-    for (int k = 0; k < 3; k++)
-        ok &= !memcmp(par + (k + 1) * words, age[k], bytes);
-    check(ok, "random soup 512x512, 64 generations: all CPUs == one CPU");
-
-    /* How much faster all CPUs are on a big world (information only). */
-    world_alloc(4096);
-    soup();
-    t0 = now_ns();
-    for (int i = 0; i < 4; i++)
-        step(false);
-    uint64_t one = now_ns() - t0;
-    t0 = now_ns();
-    for (int i = 0; i < 4; i++)
-        step(true);
-    uint64_t all = now_ns() - t0;
-    ages = false;
-    t0 = now_ns();
-    for (int i = 0; i < 4; i++)
-        step(true);
-    uint64_t noage = now_ns() - t0;
-    ages = true;
-    uint64_t x10 = all ? one * 10 / all : 0;
-    say("life: selftest: 4096x4096: %lu ms/gen on 1 CPU, %lu.%lu ms/gen on %u threads (%lu.%lux); "
-        "%lu.%lu ms/gen without ages\n",
-        (unsigned long)(one / 4000000), (unsigned long)(all / 4000000),
-        (unsigned long)(all / 400000 % 10), n, (unsigned long)(x10 / 10),
-        (unsigned long)(x10 % 10), (unsigned long)(noage / 4000000),
-        (unsigned long)(noage / 400000 % 10));
-
-    say("life: selftest %s (%d failure(s))\n", failures ? "FAILED" : "PASSED", failures);
-    return failures ? 1 : 0;
-}
+#include "life.h"
 
 /* ---- drawing ---------------------------------------------------------------------- */
 
@@ -644,7 +303,24 @@ static void hud(uint64_t pop, uint32_t gps, uint64_t gen_us, uint32_t speed, boo
     }
 }
 
-static int play(int argc, char **argv)
+#define FRAME_NS 16666667ull
+
+/* The game between frames. */
+static struct {
+    uint32_t si;                  /* speeds[si] */
+    bool     paused, quit, dirty; /* dirty: draw a new frame */
+    uint64_t pop;                 /* the population now */
+    double   owed;                /* generations due (fractions carry over) */
+    uint64_t gens, compute_ns;    /* generations computed, and their time (the summary) */
+    uint64_t gen_us;              /* one generation's time, smoothed (the HUD) */
+    uint64_t win_t, win_gen;      /* generations a second, counted over a second */
+    uint32_t gps;
+    struct fps fps;
+} game = { .si = 3, .dirty = true };   /* 60 generations a second */
+
+/* The world, the screen, the colours, the map and the view. Returns 0, or
+ * the exit code when something is missing. */
+static int start(int argc, char **argv)
 {
     uint32_t size = (uint32_t)arg_num(argc, argv, "size", 8192);
     if (size < 64 || size > 32768 || (size & (size - 1))) {
@@ -671,130 +347,159 @@ static int play(int argc, char **argv)
     vy = ty = W / 2.0;
     zl = scr.ui > 1 ? 2 : 1;
     set_zoom();
-    uint32_t si = 3;   /* 60 generations a second */
-    bool paused = false, quit = false, dirty = true;
-    uint64_t pop = population(cur), gens_total = 0, compute_ns = 0;
-    uint64_t win_t = now_ns(), win_gen = 0, gen_us = 0, last = now_ns();
-    uint32_t gps = 0;
-    double owed = 0;   /* generations due (fractions carry over) */
-    struct fps fps = { 0 };
-    const uint64_t frame_ns = 16666667;
-    while (!quit) {
-        uint64_t t0 = now_ns();
+    game.pop = population(cur);
+    return 0;
+}
+
+/* The generations due since the last frame at the chosen speed, but no
+ * more than fit in 60% of a frame (t0: when the frame began). */
+static void advance(uint64_t t0, double dt)
+{
+    if (!game.paused) {
+        uint32_t n = ~0u;
+        if (speeds[game.si]) {
+            game.owed += speeds[game.si] * dt;
+            n = (uint32_t)game.owed;
+            game.owed -= n;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            uint64_t s0 = now();
+            game.pop = step(pool_threads() > 1);
+            uint64_t d = now() - s0;
+            game.compute_ns += d;
+            game.gens++;
+            game.gen_us = game.gen_us ? (game.gen_us * 7 + d / 1000) / 8 : d / 1000;
+            game.dirty = true;
+            if (now() - t0 > FRAME_NS * 6 / 10) {   /* keep the frame rate */
+                game.owed = 0;
+                break;
+            }
+        }
+    }
+    if (now() - game.win_t >= NS_PER_S) {
+        game.gps = (uint32_t)((gen - game.win_gen) * NS_PER_S / (now() - game.win_t));
+        game.win_t = now();
+        game.win_gen = gen;
+    }
+}
+
+/* The view glides to where the arrows sent it: most of the way in a few frames. */
+static void glide(double dt)
+{
+    if (vx == tx && vy == ty)
+        return;
+    double f = 1 - exp2d(-dt * 16);
+    vx += (tx - vx) * f;
+    vy += (ty - vy) * f;
+    double px = zl >= 0 ? 1.0 / zpx : kcells;   /* a pixel, in cells */
+    if ((tx - vx) * (tx - vx) + (ty - vy) * (ty - vy) < px * px / 16) {
+        vx = tx;
+        vy = ty;
+    }
+    game.dirty = true;
+}
+
+static void redraw(uint64_t t0)
+{
+    render();
+    if (show_map) {
+        if (t0 - map_at > 250000000ull || !map_at) {
+            pool_run(map_row, NULL, (uint32_t)map_n);
+            map_at = t0;
+        }
+        draw_map();
+    }
+    fps_frame(&game.fps);
+    hud(game.pop, game.paused ? 0 : game.gps, game.gen_us, speeds[game.si], game.paused,
+        game.fps.x10);
+    gfx_present();
+    game.dirty = false;
+}
+
+static void handle_key(int k)
+{
+    double spanx = zl >= 0 ? (double)scr.w / zpx : (double)scr.w * kcells;
+    double spany = zl >= 0 ? (double)scr.h / zpx : (double)scr.h * kcells;
+    uint32_t cx = (uint32_t)(int64_t)floord(vx), cy = (uint32_t)(int64_t)floord(vy);
+    game.dirty = true;
+    switch (k) {
+    case KEY_QUIT: case 'q': case 'Q': game.quit = true; break;
+    case KEY_LEFT:  tx -= spanx / 4; break;
+    case KEY_RIGHT: tx += spanx / 4; break;
+    case KEY_UP:    ty -= spany / 4; break;
+    case KEY_DOWN:  ty += spany / 4; break;
+    case '+': case '=': case KEY_PGUP: if (zl < 5) zl++; break;
+    case '-': case '_': case KEY_PGDN: if (zl > max_out()) zl--; break;
+    case ' ': game.paused = !game.paused; break;
+    case 'n': if (game.paused) game.pop = step(pool_threads() > 1); break;
+    case 'f': if (game.si + 1 < NSPEEDS) game.si++; break;
+    case 's': if (game.si) game.si--; break;
+    case 'r': soup(); game.pop = population(cur); map_at = 0; break;
+    case 'c': world_clear(); game.pop = 0; map_at = 0; break;
+    case 'g': stamp(gun, 9, cx - 18, cy - 4, 24); game.pop = population(cur); break;
+    case 'p': stamp(rpent, 3, cx - 1, cy - 1, 24); game.pop = population(cur); break;
+    case 'a':
+        ages = !ages;
+        if (ages)   /* everything starts old: what is born from now on is new */
+            for (int j = 0; j < 3; j++)
+                memset(age[j], 0xff, (uint64_t)W * WW * 8);
+        break;
+    case 'm': show_map = !show_map; break;
+    case 'h': show_help = !show_help; break;
+    default: game.dirty = false;
+    }
+    set_zoom();
+}
+
+/* Keep the view's centre near the world (it wraps). */
+static void wrap_view(void)
+{
+    double wrap = floord(vx / W) * W;
+    vx -= wrap;
+    tx -= wrap;
+    wrap = floord(vy / W) * W;
+    vy -= wrap;
+    ty -= wrap;
+}
+
+static int play(int argc, char **argv)
+{
+    int r = start(argc, argv);
+    if (r)
+        return r;
+    uint64_t last = now();
+    game.win_t = last;
+    while (!game.quit) {
+        uint64_t t0 = now();
         double dt = (double)(t0 - last) / 1e9;
         last = t0;
         if (dt > 0.25)
             dt = 0.25;
-        if (!paused) {
-            uint32_t n = ~0u;
-            if (speeds[si]) {
-                owed += speeds[si] * dt;
-                n = (uint32_t)owed;
-                owed -= n;
-            }
-            for (uint32_t i = 0; i < n; i++) {
-                uint64_t s0 = now_ns();
-                pop = step(pool_threads() > 1);
-                uint64_t d = now_ns() - s0;
-                compute_ns += d;
-                gens_total++;
-                gen_us = gen_us ? (gen_us * 7 + d / 1000) / 8 : d / 1000;
-                dirty = true;
-                if (now_ns() - t0 > frame_ns * 6 / 10) {   /* keep the frame rate */
-                    owed = 0;
-                    break;
-                }
-            }
-        }
-        if (now_ns() - win_t >= 1000000000ull) {
-            gps = (uint32_t)((gen - win_gen) * 1000000000ull / (now_ns() - win_t));
-            win_t = now_ns();
-            win_gen = gen;
-        }
-        /* The glide: most of the way in a few frames. */
-        if (vx != tx || vy != ty) {
-            double f = 1 - exp2d(-dt * 16);
-            vx += (tx - vx) * f;
-            vy += (ty - vy) * f;
-            double px = zl >= 0 ? 1.0 / zpx : kcells;   /* a pixel, in cells */
-            if ((tx - vx) * (tx - vx) + (ty - vy) * (ty - vy) < px * px / 16) {
-                vx = tx;
-                vy = ty;
-            }
-            dirty = true;
-        }
-        if (dirty) {
-            render();
-            if (show_map) {
-                if (t0 - map_at > 250000000ull || !map_at) {
-                    pool_run(map_row, NULL, (uint32_t)map_n);
-                    map_at = t0;
-                }
-                draw_map();
-            }
-            fps_frame(&fps);
-            hud(pop, paused ? 0 : gps, gen_us, speeds[si], paused, fps.x10);
-            gfx_present();
-            dirty = false;
-        }
+        advance(t0, dt);
+        glide(dt);
+        if (game.dirty)
+            redraw(t0);
         /* Keys until the next frame (or until a key when nothing moves). */
-        bool moving = !paused || vx != tx || vy != ty;
-        int k = gfx_key(moving ? t0 + frame_ns : DEADLINE_NEVER);
-        for (; k != KEY_NONE && !quit; k = gfx_key(0)) {
-            double spanx = zl >= 0 ? (double)scr.w / zpx : (double)scr.w * kcells;
-            double spany = zl >= 0 ? (double)scr.h / zpx : (double)scr.h * kcells;
-            uint32_t cx = (uint32_t)(int64_t)floord(vx), cy = (uint32_t)(int64_t)floord(vy);
-            dirty = true;
-            switch (k) {
-            case KEY_QUIT: case 'q': case 'Q': quit = true; break;
-            case KEY_LEFT:  tx -= spanx / 4; break;
-            case KEY_RIGHT: tx += spanx / 4; break;
-            case KEY_UP:    ty -= spany / 4; break;
-            case KEY_DOWN:  ty += spany / 4; break;
-            case '+': case '=': case KEY_PGUP: if (zl < 5) zl++; break;
-            case '-': case '_': case KEY_PGDN: if (zl > max_out()) zl--; break;
-            case ' ': paused = !paused; break;
-            case 'n': if (paused) pop = step(pool_threads() > 1); break;
-            case 'f': if (si + 1 < NSPEEDS) si++; break;
-            case 's': if (si) si--; break;
-            case 'r': soup(); pop = population(cur); map_at = 0; break;
-            case 'c': world_clear(); pop = 0; map_at = 0; break;
-            case 'g': stamp(gun, 9, cx - 18, cy - 4, 24); pop = population(cur); break;
-            case 'p': stamp(rpent, 3, cx - 1, cy - 1, 24); pop = population(cur); break;
-            case 'a':
-                ages = !ages;
-                if (ages)   /* everything starts old: what is born from now on is new */
-                    for (int j = 0; j < 3; j++)
-                        memset(age[j], 0xff, (uint64_t)W * WW * 8);
-                break;
-            case 'm': show_map = !show_map; break;
-            case 'h': show_help = !show_help; break;
-            default: dirty = false;
-            }
-            set_zoom();
-        }
-        /* Keep the view's centre near the world (it wraps). */
-        double wrap = floord(vx / W) * W;
-        vx -= wrap;
-        tx -= wrap;
-        wrap = floord(vy / W) * W;
-        vy -= wrap;
-        ty -= wrap;
+        bool moving = !game.paused || vx != tx || vy != ty;
+        int k = gfx_key(moving ? t0 + FRAME_NS : DEADLINE_NEVER);
+        for (; k != KEY_NONE && !game.quit; k = gfx_key(0))
+            handle_key(k);
+        wrap_view();
     }
     gfx_close();
     char a[32], b[32];
-    uint64_t avg_us = gens_total ? compute_ns / gens_total / 1000 : 0;
+    uint64_t avg_us = game.gens ? game.compute_ns / game.gens / 1000 : 0;
     say("life: %s generations of a %ux%u world (%s cells) on %u threads, %lu.%02lu ms/gen, "
         "%u.%u fps\n",
-        commas(a, sizeof(a), gens_total), W, W, commas(b, sizeof(b), (uint64_t)W * W),
+        commas(a, sizeof(a), game.gens), W, W, commas(b, sizeof(b), (uint64_t)W * W),
         pool_threads(), (unsigned long)(avg_us / 1000), (unsigned long)(avg_us % 1000 / 10),
-        fps.x10 / 10, fps.x10 % 10);
+        game.fps.x10 / 10, game.fps.x10 % 10);
     return 0;
 }
 
 int main(int argc, char **argv)
 {
     if (has_arg(argc, argv, "--selftest"))
-        return selftest();
+        return life_selftest();
     return play(argc, argv);
 }
