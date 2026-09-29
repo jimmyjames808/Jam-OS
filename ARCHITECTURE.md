@@ -462,7 +462,7 @@ can take over; M11's IOMMU matters most for GPUs.
 | M6 | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
 | M7 | xHCI → HID (keyboard + mouse) → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |
 | M8 | USB mass storage → FAT32 (userspace once working), read-only ESP + writable data partition | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test |
-| M9 | NIC (decide: likely USB CDC-NCM/ECM) → lwIP → DHCP/DNS (userspace once working) | `ping 1.1.1.1` on the real PC through a userspace network stack |
+| M9 | NIC (decide: likely USB CDC-NCM/ECM) → lwIP → DHCP/DNS (userspace once working); netlog: klog streamed over UDP to a listener on the Mac | `ping 1.1.1.1` on the real PC through a userspace network stack; a PC run's full log arrives on the Mac |
 | M10 | uACPI poweroff, power button, ACPI reboot (stays in the kernel) | clean shutdown on real hardware |
 | M11 | IOMMU (VT-d) + interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
 | M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
