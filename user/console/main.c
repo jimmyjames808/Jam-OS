@@ -7,8 +7,9 @@
  * out (a HID driver, the serial source).
  *
  * Startup handles:
- *   SR_RESOURCE     the root resource with RIGHT_READ (klog_open) and
- *                   RIGHT_WRITE (framebuffer_take, serial_write)
+ *   SR_RESOURCE     the root resource with RIGHT_READ (klog_open),
+ *                   RIGHT_WRITE (framebuffer_take, serial_write) and
+ *                   RIGHT_MANAGE (reboot, on Ctrl+Alt+Del)
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
  *
@@ -390,8 +391,18 @@ static void send_key(const struct input_key_event *ev)
         pending[npending++] = *ev;
 }
 
+static handle_t root;
+
 static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal)
 {
+    /* Ctrl+Alt+Del (a keyboard's: usage 0x4c with CTRL and ALT) reboots. */
+    if (usage == 0x4c && state == INPUT_KEY_DOWN && (mods & INPUT_MOD_CTRL) &&
+        (mods & INPUT_MOD_ALT)) {
+        printf("console: Ctrl+Alt+Del: rebooting\n");
+        status_t st = jam_reboot(root);
+        printf("console: reboot: %s\n", status_str(st));
+        return;
+    }
     /* Scrollback: Shift+PageUp/Down on a keyboard, PageUp/Down on a terminal. */
     bool page = usage == 0x4b || usage == 0x4e;
     if (page && (terminal || (mods & INPUT_MOD_SHIFT))) {
@@ -489,7 +500,7 @@ static void term_escape(struct source *s, char final)
         switch (n) {
         case 1: case 7: term_key(0x4a, 0); return;
         case 4: case 8: term_key(0x4d, 0); return;
-        case 3: term_key(0x4c, 0x7f); return;   /* delete */
+        case 3: term_key(0x4c, 0); return;      /* delete */
         case 5: term_key(0x4b, 0); return;      /* page up */
         case 6: term_key(0x4e, 0); return;      /* page down */
         }
@@ -586,7 +597,6 @@ static void source_event(unsigned i)
 /* ---- console clients ------------------------------------------------------------ */
 
 static handle_t clients[MAX_CLIENTS];
-static handle_t root;
 static void klog_event(void);
 
 static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
@@ -721,8 +731,11 @@ int main(int argc, char **argv)
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
     }
+    unsigned nclients = 0;
+    for (unsigned i = 0; i < MAX_CLIENTS; i++)
+        nclients += clients[i] != HANDLE_INVALID;
     printf("console: %ux%u cells%s, %u client channel(s)\n", cols, rows,
-           screen ? "" : " (no screen)", MAX_CLIENTS);
+           screen ? "" : " (no screen)", nclients);
     render();
 
     uint64_t last = 0;

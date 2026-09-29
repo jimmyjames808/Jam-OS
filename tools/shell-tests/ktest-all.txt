@@ -1,0 +1,10 @@
+# All kernel tests from the shell (M7 done test: ktest runs from the shell),
+# with devmgr, its drivers, the console, serialin and the shell running.
+wait 120 Jam OS shell
+wait jam>
+send ktest
+wait 600 shell: ktest:
+wait passed
+wait jam>
+send reboot
+wait reboot: resetting

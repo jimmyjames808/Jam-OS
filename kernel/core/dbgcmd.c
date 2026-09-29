@@ -7,7 +7,8 @@
  * klog reader; the result comes back as the call's value.
  *
  *   ktest [prefix]   ktest_run(prefix): the tests run (a failure panics, as
- *                    from the boot menu)
+ *                    from the boot menu); PCI functions a driver process
+ *                    holds are hidden from the tests (pci_hide_in_use)
  *   bench            bench_run(): 0
  *   stress <s>       stress_run(s), 1..600 s: 0 if every check held, else 1
  *   devices          pci_report(): the number of PCI functions
@@ -112,8 +113,17 @@ static int64_t exec(const char *cmd, struct job *scope)
     const char *rest;
     size_t n = word(cmd, &rest);
 #ifndef JAM_NO_KTESTS
-    if (is(cmd, n, "ktest"))
-        return ktest_run(rest);
+    if (is(cmd, n, "ktest")) {
+        /* Devices devmgr gave to drivers are theirs: the tests skip them. */
+        pci_hide_in_use = true;
+        uint32_t busy = 0;
+        for (uint32_t i = 0; i < pci_count(); i++)
+            busy += pci_get(i)->proc_users != 0;
+        kprintf("ktest: from the shell: %u PCI function(s) in use by drivers are skipped\n", busy);
+        int r = ktest_run(rest);
+        pci_hide_in_use = false;
+        return r;
+    }
     if (is(cmd, n, "bench")) {
         bench_run();
         return 0;

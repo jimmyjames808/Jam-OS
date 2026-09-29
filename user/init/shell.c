@@ -3,8 +3,9 @@
  *
  * After devmgr (main.c), init starts and then supervises three services,
  * each in a job of its own under init's:
- *   console   bin/console: root with READ | WRITE (klog, the screen, serial
- *             output), the server end of a console channel (SR_USER + 0);
+ *   console   bin/console: root with READ | WRITE | MANAGE (klog, the screen,
+ *             serial output; reboot on Ctrl+Alt+Del), the server end of a
+ *             console channel (SR_USER + 0);
  *             init keeps the client end
  *   serialin  bin/serialin: root with READ (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
@@ -102,7 +103,8 @@ static status_t start_console(void)
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE) }, { SR_USER + 0, b },
+        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE) },
+        { SR_USER + 0, b },
     };
     st = start(CONSOLE, x, 2);
     if (st != OK) {

@@ -3,7 +3,7 @@
  * sysc_* follows are in sysc.h.
  *
  * Rights, all on a RES_ROOT handle (init hands the console root with
- * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE, and the shell root with
+ * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE, and the shell root with
  * RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE; neither can map or slice):
  *   klog_open         RIGHT_READ
  *   framebuffer_take  RIGHT_WRITE

@@ -97,7 +97,7 @@ int main(int argc, char **argv)
     CHECK(text(src, "\r\n\033[") == OK);
     CHECK(text(src, "3~") == OK);
     CHECK(expect(k, 0x28, INPUT_KEY_DOWN, 0, '\n'));
-    CHECK(expect(k, 0x4c, INPUT_KEY_DOWN, 0, 0x7f));
+    CHECK(expect(k, 0x4c, INPUT_KEY_DOWN, 0, 0));
     CHECK(empty(k));
     /* A keyboard: events pass through as they are (key-ups too). */
     CHECK(input_key(src, 0x04, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 'A') == OK);

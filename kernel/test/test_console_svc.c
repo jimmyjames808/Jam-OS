@@ -100,6 +100,12 @@ KTEST(console_screen_take_release)
     struct fb_info info;
     struct vmo *v, *v2;
     struct kobject *owner, *owner2;
+    if (fbcon_is_taken()) {
+        /* `ktest` from the shell: the console owns the screen. */
+        KT_EQ(screen_take(NULL, &info, &v, &owner), ERR_BAD_STATE);
+        kprintf("console_screen_take_release: the console owns the screen: only that checked\n");
+        return;
+    }
     KT_EQ(screen_take(NULL, &info, &v, &owner), OK);
     KT_ASSERT(fbcon_is_taken());
     KT_EQ(info.width, fb.width);
@@ -144,6 +150,11 @@ KTEST(console_serial_rx_ring)
         kprintf("console_serial_rx_ring: no UART: skipped\n");
         return;
     }
+    if (st == ERR_BAD_STATE) {
+        /* `ktest` from the shell: serialin reads COM1 (one reader at a time). */
+        kprintf("console_serial_rx_ring: COM1 has a reader (serialin): only that checked\n");
+        return;
+    }
     KT_EQ(st, OK);
     KT_EQ(serial_in_create(NULL, &in2), ERR_BAD_STATE);
     struct khandle kh = khandle_from_new(in, RIGHTS_BASIC);
@@ -179,7 +190,8 @@ KTEST(console_serial_rx_ring)
     khandle_release(&kh2);
 }
 
-/* debug_command: the parse, a real run in the kernel thread, busy. */
+/* debug_command: the parse, a real run in the kernel thread; run from the
+ * shell (inside a debug_command), a second one is refused. */
 KTEST(console_debug_command)
 {
     KT_EQ(dbgcmd_check("ktest", 5), OK);
@@ -199,7 +211,11 @@ KTEST(console_debug_command)
     KT_EQ(dbgcmd_check("reboot", 6), ERR_NOT_SUPPORTED);
     KT_EQ(dbgcmd_check("", 0), ERR_INVALID_ARGS);
     KT_EQ(dbgcmd_run("rm -rf", 6, NULL), ERR_NOT_SUPPORTED);
-    KT_ASSERT(!dbgcmd_busy());
+    if (dbgcmd_busy()) {
+        /* This is `ktest` from the shell: one command at a time. */
+        KT_EQ(dbgcmd_run("devices", 7, NULL), ERR_BAD_STATE);
+        return;
+    }
     KT_EQ(dbgcmd_run("devices", 7, NULL), (int64_t)pci_count());
     KT_EQ(dbgcmd_run("ps", 2, NULL), 0);
     /* A job tree to list. */
