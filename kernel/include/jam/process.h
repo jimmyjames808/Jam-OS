@@ -90,6 +90,24 @@ uint64_t job_used(struct job *j, uint32_t kind);
  * objects) is never charged. Lock-free: callable under any lock. */
 status_t job_charge(struct job *j, uint32_t kind, uint64_t n);
 void     job_uncharge(struct job *j, uint32_t kind, uint64_t n);
+/* A process's entry on its job's list of live processes (job.c; under the
+ * job's lock). */
+struct job_link {
+    struct list_node node;
+    bool             kill_seen;   /* job_kill has killed it */
+};
+/* List / unlist a process in j. Attach fails with ERR_BAD_STATE once j has
+ * been killed. */
+status_t job_attach_process(struct job *j, struct job_link *l);
+void     job_detach_process(struct job *j, struct job_link *l);
+struct process *process_from_job_link(struct job_link *l);   /* process.c */
+/* Kill every process in j and in every job below it, and mark them all
+ * killed: from now on they take no new processes or child jobs
+ * (ERR_BAD_STATE). Returns once every one of those processes is dead
+ * (SIG_TERMINATED); *killed (may be NULL) gets how many it killed. Needs a
+ * context that may sleep; ERR_CANCELED if the calling thread is killed
+ * meanwhile (e.g. it was in j: everything was still killed). */
+status_t job_kill(struct job *j, unsigned *killed);
 /* The current thread's process's job (no new reference: valid while the
  * thread runs), NULL for kernel threads. */
 struct job *job_current(void);

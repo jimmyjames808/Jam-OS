@@ -279,6 +279,46 @@ KTEST(proc_never_started)
     job_unref(j);
 }
 
+/* Review R8: job_kill kills everything in a job and the jobs below it,
+ * including a process whose parent is gone (nobody holds a handle to it),
+ * waits until they are all dead, and the killed jobs take nothing new. */
+KTEST(proc_job_kill_tree)
+{
+    struct job *j = fresh_job(), *sub, *subsub;
+    KT_EQ(job_create(j, &sub), OK);
+    KT_EQ(job_create(sub, &subsub), OK);
+    struct process *a = start(j, "spin", NULL, NULL);
+    struct process *b = start(sub, "spin", NULL, NULL);
+    struct process *c = start(subsub, "spin", NULL, NULL);
+    struct process *idle;
+    KT_EQ(process_create(subsub, "idle", &idle), OK);   /* never started */
+    kobject_unref(process_kobject(c));   /* an orphan: nobody has it now */
+    thread_sleep_ms(20);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 3);
+    unsigned killed = 0;
+    KT_EQ(job_kill(j, &killed), OK);
+    KT_EQ(killed, 4);
+    /* Returned only once everything was dead: nothing is left running. */
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    struct process_info info;
+    process_get_info(idle, &info);
+    KT_EQ(info.state, PROCESS_DEAD);
+    KT_ASSERT(finish(a).killed);
+    KT_ASSERT(finish(b).killed);
+    kobject_unref(process_kobject(idle));
+    /* Killed jobs take no new processes or jobs. */
+    struct process *p;
+    struct job *x;
+    KT_EQ(process_create(subsub, "late", &p), ERR_BAD_STATE);
+    KT_EQ(job_create(sub, &x), ERR_BAD_STATE);
+    KT_EQ(job_kill(j, &killed), OK);   /* again: nothing to do */
+    KT_EQ(killed, 0);
+    job_unref(subsub);
+    job_unref(sub);
+    job_is_empty(j);
+    job_unref(j);
+}
+
 /* Review R7: debug_write prints with no lock held and a process can't
  * flood the console: 100 lines at once, then 50 a second, the rest are
  * dropped (and counted in a note). */

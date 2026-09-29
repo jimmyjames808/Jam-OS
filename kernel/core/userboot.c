@@ -183,6 +183,8 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
         return st;
     }
     struct aspace *as = process_aspace(p);
+    if (!as)
+        st = ERR_BAD_STATE;   /* its job was killed already */
     for (unsigned i = 0; st == OK && i < plan.nseg; i++)
         st = map_segment(as, job, file, img, &plan.seg[i]);
     kobject_unref(vmo_kobject(file));
@@ -241,7 +243,8 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
 
     if (u)
         kobject_unref(uthread_kobject(u));
-    aspace_unref(as);
+    if (as)
+        aspace_unref(as);
     if (st != OK) {
         process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
         kobject_unref(process_kobject(p));
@@ -305,8 +308,9 @@ bool userboot_run_init(uint64_t timeout_s)
                          t0 + timeout_s * 1000000000ull, NULL);
     bool ok = false;
     if (st != OK) {
-        report("init: still running after %lu s: killed", timeout_s);
-        process_kill(p, PROCESS_KILLED_CODE, true);
+        report("init: still running after %lu s: killed (with everything it started)",
+               timeout_s);
+        job_kill(root, NULL);   /* init's job is the root: every user process */
         object_wait_one(process_kobject(p), SIG_TERMINATED, DEADLINE_NEVER, NULL);
     } else {
         struct process_info info;

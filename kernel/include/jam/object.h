@@ -85,6 +85,10 @@ void kobject_init(struct kobject *obj, enum obj_type type, const struct kobject_
                   const char *lock_name, signals_t initial);
 void kobject_ref(struct kobject *obj);
 void kobject_unref(struct kobject *obj);
+/* A new reference unless the last one is already gone (the object is being
+ * destroyed): for lists that hold objects without a reference and unlist
+ * them in destroy. Returns whether it took one. */
+bool kobject_tryref(struct kobject *obj);
 
 /* Handle-count bookkeeping, used by the handle layer (handle.c). */
 void kobject_handle_gain(struct kobject *obj);

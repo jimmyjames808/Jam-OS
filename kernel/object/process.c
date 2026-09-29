@@ -71,6 +71,8 @@ struct process {
     bool                finished;    /* (L) teardown done */
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     bool                starting;    /* (L) process_start is making the first thread */
+    bool                listed;      /* on job's list (job_link); cleared at teardown */
+    struct job_link     job_link;    /* (the job's lock) */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
@@ -142,7 +144,9 @@ static void process_destroy(struct kobject *obj)
     handle_table_destroy(&p->handles);
     if (p->as)
         aspace_unref(p->as);
-    if (p->obj_charged)   /* never torn down (never started) */
+    if (p->listed)        /* never torn down (never started) */
+        job_detach_process(p->job, &p->job_link);
+    if (p->obj_charged)
         job_uncharge(p->job, JOB_LIMIT_HANDLES, 1);
     job_unref(p->job);
     kfree(p);
@@ -193,13 +197,27 @@ status_t process_create(struct job *job, const char *name, struct process **out)
     spin_init(&p->out_lock, "process output");
     p->out_tokens = OUT_BURST;
     p->out_refill_ns = uptime_ns();
-    job_ref(job);
-    p->job = job;
     p->state = PROCESS_NEW;
     list_init(&p->threads);
     copy_name(p->name, sizeof(p->name), name);
+    job_ref(job);
+    p->job = job;
+    p->listed = job != NULL;
+    /* Listed last, fully made: from here on job_kill can find and kill it. */
+    if (job && (st = job_attach_process(job, &p->job_link)) != OK) {   /* a killed job */
+        aspace_unref(p->as);
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
+        job_unref(job);
+        kfree(p);   /* nobody else has seen it */
+        return st;
+    }
     *out = p;
     return OK;
+}
+
+struct process *process_from_job_link(struct job_link *l)
+{
+    return container_of(l, struct process, job_link);
 }
 
 struct handle_table *process_handles(struct process *p)
@@ -373,14 +391,17 @@ static void process_finish(struct process *p)
     uint64_t f = plock(p);
     struct aspace *as = p->as;
     struct job *job = p->job;
-    bool charged = p->obj_charged;
+    bool charged = p->obj_charged, listed = p->listed;
     p->as = NULL;
     p->job = NULL;
     p->handles.job = NULL;
     p->obj_charged = false;
+    p->listed = false;
     p->state = PROCESS_DEAD;
     p->finished = true;
     punlock(p, f);
+    if (listed)    /* before SIG_TERMINATED: job_kill waits for exactly this */
+        job_detach_process(job, &p->job_link);
     if (charged)   /* what's left of p is small and handle-bound now */
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
     /* Every thread dropped its own reference before it counted itself out,

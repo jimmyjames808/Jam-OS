@@ -722,6 +722,34 @@ static bool t_kill_spinning_and_unstarted(void)
     return true;
 }
 
+/* A child that leaves a grandchild behind (spinning, in a job of its own,
+ * with no handle to it anywhere): job_kill on the child's job reaps it,
+ * returns only once it is dead, and the job is empty and closed to new
+ * processes and jobs afterwards. */
+static bool t_job_kill_reaps_orphans(void)
+{
+    handle_t job, proc, p2, v2, j2;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(child("orphan", NULL, job, HANDLE_INVALID, &proc), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 1);   /* the orphan, still spinning */
+    CHECK_ST(jam_job_kill(own_job()), ERR_ACCESS_DENIED);   /* no RIGHT_MANAGE on our own */
+    CHECK_ST(jam_job_kill(job), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        CHECK_EQ(ji.used[k], 0);
+    CHECK_ST(jam_process_create(job, "late", 4, 0, &p2, &v2), ERR_BAD_STATE);
+    CHECK_ST(jam_job_create(job, 0, &j2), ERR_BAD_STATE);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
 static bool t_startup_message(void)
 {
     handle_t job, proc;
@@ -751,6 +779,7 @@ static const struct {
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
+    { "job_kill_reaps_orphans", t_job_kill_reaps_orphans },
     { "fpu_state_survives_preemption", t_fpu_state_survives_preemption },
     { "many_threads", t_many_threads },
 };

@@ -207,6 +207,23 @@ static int ports(void)
     return n > 0 && b > 0 ? 47 : 45;
 }
 
+/* Start a spinning grandchild in a job of its own under ours and exit at
+ * once, leaving it an orphan nobody holds a handle to: only killing our
+ * job (job_kill) can get rid of it. */
+static int orphan(void)
+{
+    handle_t sub, proc;
+    if (jam_job_create(startup_handle(SR_JOB), 0, &sub) != OK)
+        return 60;
+    const char *argv[] = { "utest", "spin" };
+    struct spawn_args a = {
+        .path = "bin/utest", .name = "utest-orphaned", .argc = 2, .argv = argv, .job = sub,
+    };
+    if (spawn(&a, &proc) != OK)
+        return 61;
+    return 0;   /* our handles (proc, sub) close as we go */
+}
+
 /* The main thread leaves; the process lives on in its second thread,
  * which exits the process with 11. */
 static void finisher(void *arg)
@@ -278,6 +295,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "handles"))    return handles();
     if (!strcmp(m, "msgs"))       return msgs();
     if (!strcmp(m, "ports"))      return ports();
+    if (!strcmp(m, "orphan"))     return orphan();
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;

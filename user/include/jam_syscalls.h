@@ -55,3 +55,4 @@ status_t jam_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 status_t jam_job_get_info(handle_t job, struct job_info *out);
 status_t jam_process_get_info(handle_t proc, struct process_info *out);
 status_t jam_thread_set_priority(handle_t thread, int32_t prio);
+status_t jam_job_kill(handle_t job);
