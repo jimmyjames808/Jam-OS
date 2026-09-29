@@ -592,7 +592,7 @@ KTEST(oneshot_far_deadline_does_not_wrap)
      * second ago (the wrapped value moves down 1:1 with the deadline). */
     uint64_t w = uptime_to_tsc(UINT64_MAX - 1);
     far_deadline = UINT64_MAX - 1;
-    if (w > now)
+    if (w != UINT64_MAX && w > now)   /* wrapped: aim the wrap into the past */
         far_deadline -= (w - now) / tsc_hz * 1000000000ull + 1000000000ull;
     kprintf("far-deadline: deadline %lx ns -> tsc %lx\n", far_deadline,
             uptime_to_tsc(far_deadline));

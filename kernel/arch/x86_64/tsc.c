@@ -120,5 +120,11 @@ uint64_t uptime_to_tsc(uint64_t ns)
         return UINT64_MAX;
     /* Rounded up: at the returned TSC value uptime_ns() is already >= ns. */
     uint64_t q = ns / 1000000000ull, r = ns % 1000000000ull;
-    return tsc_boot + q * tsc_hz + (r * tsc_hz + 999999999ull) / 1000000000ull;
+    /* Saturate: a deadline ~2^64 TSC cycles out (INT64_MAX ns on a >2 GHz
+     * TSC) must not wrap into the past and fire at once, forever. */
+    uint64_t frac = (r * tsc_hz + 999999999ull) / 1000000000ull;
+    uint64_t room = UINT64_MAX - tsc_boot - tsc_hz;   /* frac <= tsc_hz */
+    if (q > room / tsc_hz)
+        return UINT64_MAX;
+    return tsc_boot + q * tsc_hz + frac;
 }
