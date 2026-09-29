@@ -35,6 +35,7 @@ static inline uint64_t virt_to_phys(const void *va) { return (uint64_t)va - hhdm
 #define PG_FREE     (1u << 1)   /* head of a free buddy block */
 #define PG_SLAB     (1u << 2)   /* part of a slab; private = slab header */
 #define PG_LARGE    (1u << 3)   /* head of a kmalloc multi-page block */
+#define PG_PCP      (1u << 4)   /* free, parked in a per-CPU page stash */
 
 enum { ZONE_DMA32, ZONE_NORMAL, ZONE_COUNT };   /* DMA32 = below 4 GiB */
 
@@ -71,8 +72,18 @@ struct page *pmm_alloc_pages(unsigned order, unsigned flags);
 void         pmm_free_pages(struct page *p, unsigned order);
 uint64_t     pmm_alloc_page_phys(unsigned flags);   /* 0 on failure */
 void         pmm_free_page_phys(uint64_t pa);
+/* Free pages include those parked in the per-CPU stashes (see pmm.c). */
 void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
 uint64_t     pmm_max_pfn(void);
+/* Per-CPU page stashes: empty all of them into the buddy lists (returns the
+ * pages moved; the allocator does this itself before failing), and the
+ * number of pages parked in them / whole-machine drains so far (tests). */
+#define PMM_PCP_MAX   64   /* pages one CPU's stash holds at most */
+#define PMM_PCP_BATCH 16   /* pages moved per refill / drain */
+uint64_t     pmm_drain_stashes(void);
+uint64_t     pmm_stash_pages(void);
+uint32_t     pmm_stash_count(uint32_t cpu);
+uint64_t     pmm_stash_drains(void);
 
 /* ---- page tables ------------------------------------------------------- */
 
