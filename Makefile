@@ -23,7 +23,11 @@ IMAGE_MIB := 64
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
 
-CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror \
+# -Wvla: no variable-length arrays (CODING-GUIDE.md "Recursion and the
+# stack"). -Wframe-larger-than: a kernel thread has a 64 KiB stack; the
+# largest frame today is sys_channel_call's, about 2.4 KiB (its message
+# buffer), so 3 KiB lets nothing grow much past it unnoticed.
+CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wframe-larger-than=3072 \
           -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-PIC -fno-pie -fno-omit-frame-pointer -fno-lto \
           -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
@@ -126,7 +130,7 @@ $(BUILD)/%.S.o: %.S
 # 0x400000 (user/linker.ld). SSE is fine here; the red zone too. User code
 # sees only the kernel headers in UINC_HDRS, copied into their own include
 # directory, so kernel internals are not on its include path at all.
-USER_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror \
+USER_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla \
                -ffreestanding -fno-stack-protector -fno-stack-check \
                -fno-PIC -fno-pie -fno-omit-frame-pointer -fno-lto \
                -fno-asynchronous-unwind-tables -m64 -march=x86-64 -mcmodel=small \
