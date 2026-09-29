@@ -20,8 +20,10 @@ struct idl_rep_hdr {
 } __attribute__((packed));
 
 /* Handles a server reads with a request (all of them are closed: no
- * method takes handles yet). */
+ * method takes handle arguments). */
 #define IDL_READ_HANDLES 8
+/* Handles one reply can carry (methods' handle results). */
+#define IDL_REP_HANDLES 8
 
 /* Client: the status of a reply of n bytes to a call that wants `want`
  * bytes back on success. A server that breaks the format (a positive

@@ -8,3 +8,7 @@ protocol null 1
 2  add      (u32 a, u32 b)  -> (u32 sum)
 # A fixed-size byte array each way: the reply is the request reversed.
 3  reverse  (u8[16] data)   -> (u8[16] data)
+# A handle result (M7): a new VMO of `size` bytes (1..65536) whose first
+# byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
+# and no handle.
+4  make_vmo (u32 size, u8 fill) -> (handle vmo, u64 size_back)

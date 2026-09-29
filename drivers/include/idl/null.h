@@ -13,6 +13,7 @@
 #define NULL_PING             0x00010001u
 #define NULL_ADD              0x00010002u
 #define NULL_REVERSE          0x00010003u
+#define NULL_MAKE_VMO         0x00010004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct null_ping_req {
@@ -45,6 +46,17 @@ struct null_reverse_rep {
     uint32_t txid;
     int32_t  status;
     uint8_t data[16];
+} __attribute__((packed));
+struct null_make_vmo_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t size;
+    uint8_t fill;
+} __attribute__((packed));
+struct null_make_vmo_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t size_back;
 } __attribute__((packed));
 
 #define NULL_REQ_MAX 24u   /* bytes: the biggest request */
@@ -118,6 +130,43 @@ static inline status_t null_reverse(handle_t ch, const uint8_t data[16], uint8_t
     return null_reverse_until(ch, DEADLINE_NEVER, data, out_data);
 }
 
+/* A handle result (M7): a new VMO of `size` bytes (1..65536) whose first
+ * byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
+ * and no handle. */
+static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
+{
+    struct null_make_vmo_req idl_q;
+    struct null_make_vmo_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NULL_MAKE_VMO;
+    idl_q.size = size;
+    idl_q.fill = fill;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_vmo)
+            *out_vmo = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK && out_size_back)
+        *out_size_back = idl_r.size_back;
+    return idl_st;
+}
+static inline status_t null_make_vmo(handle_t ch, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
+{
+    return null_make_vmo_until(ch, DEADLINE_NEVER, size, fill, out_vmo, out_size_back);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -126,15 +175,20 @@ struct null_ops {
     status_t (*ping)(void *ctx, uint64_t value, uint64_t *out_value);
     status_t (*add)(void *ctx, uint32_t a, uint32_t b, uint32_t *out_sum);
     status_t (*reverse)(void *ctx, const uint8_t data[16], uint8_t out_data[16]);
+    status_t (*make_vmo)(void *ctx, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (NULL_REP_MAX bytes). Returns the reply's length: 0 means no
- * reply (the request has no txid). No I/O. */
+ * into rep (NULL_REP_MAX bytes) and the handles it carries into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
+ * means no reply (the request has no txid). No I/O; the caller sends the
+ * reply with the handles, or closes them if it can't. */
 static inline uint32_t null_dispatch(const struct null_ops *ops, void *ctx, const void *req, uint32_t n,
-                                     void *rep)
+                                     void *rep, handle_t *rhs, uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -196,6 +250,31 @@ static inline uint32_t null_dispatch(const struct null_ops *ops, void *ctx, cons
             idl_r->data[idl_i] = out_data[idl_i];
         return sizeof(*idl_r);
     }
+    case NULL_MAKE_VMO: {
+        const struct null_make_vmo_req *idl_q = (const struct null_make_vmo_req *)req;
+        struct null_make_vmo_rep *idl_r = (struct null_make_vmo_rep *)rep;
+        handle_t out_vmo = HANDLE_INVALID;
+        uint64_t out_size_back = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->make_vmo) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->make_vmo(ctx, idl_q->size, idl_q->fill, &out_vmo, &out_size_back);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_vmo != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_vmo != HANDLE_INVALID)
+                drv_handle_close(out_vmo);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_vmo;
+        *rhn = 1;
+        idl_r->size_back = out_size_back;
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
@@ -222,9 +301,11 @@ static inline status_t null_serve_one(handle_t ch, const struct null_ops *ops, v
         idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
         return OK;
     }
-    uint32_t idl_rn = null_dispatch(ops, ctx, idl_q, idl_n, idl_r);
-    if (idl_rn)
-        drv_channel_write(ch, idl_r, idl_rn, NULL, 0);
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = null_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
+        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;
 }
 

@@ -1,5 +1,5 @@
 /* null: the M6 test driver. It serves the `null` protocol
- * (abi/idl/null.idl: ping, add, reverse) on its DR_SERVE channel until the
+ * (abi/idl/null.idl: ping, add, reverse, make_vmo) on its DR_SERVE channel until the
  * client closes it, then exits 0. Built both ways like every driver: into
  * the kernel (a kernel process) and as drv/null in bootfs (a process). */
 #include <jam/driver.h>
@@ -31,10 +31,30 @@ static status_t do_reverse(void *ctx, const uint8_t data[16], uint8_t out_data[1
     return OK;
 }
 
+static status_t do_make_vmo(void *ctx, uint32_t size, uint8_t fill, handle_t *out_vmo,
+                            uint64_t *out_size_back)
+{
+    ((struct null_state *)ctx)->calls++;
+    if (size == 0 || size > 65536)
+        return ERR_INVALID_ARGS;
+    handle_t v;
+    status_t st = drv_vmo_create(size, 0, &v);
+    if (st != OK)
+        return st;
+    if ((st = drv_vmo_write(v, 0, &fill, 1)) != OK) {
+        drv_handle_close(v);
+        return st;
+    }
+    *out_vmo = v;
+    *out_size_back = size;
+    return OK;
+}
+
 static const struct null_ops ops = {
     .ping = do_ping,
     .add = do_add,
     .reverse = do_reverse,
+    .make_vmo = do_make_vmo,
 };
 
 int driver_main(const struct driver_start *s)

@@ -72,6 +72,13 @@ status_t drv_channel_read(handle_t h, void *bytes, uint32_t cap, uint32_t *actua
                           uint32_t hcap, uint32_t *hactual);
 status_t drv_channel_call(handle_t h, void *wbytes, uint32_t wn, void *rbytes, uint32_t rcap,
                           uint32_t *ractual, uint64_t deadline_ns);
+/* The same, also receiving up to rhcap handles with the reply (slots for
+ * them are reserved before the request is sent, so a full handle table
+ * fails the call up front). M7: generated clients of methods that return
+ * handles use this. */
+status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes, uint32_t rcap,
+                            uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
+                            uint64_t deadline_ns);
 status_t drv_port_create(handle_t *out);
 status_t drv_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags);
 status_t drv_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out);

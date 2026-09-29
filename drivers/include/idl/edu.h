@@ -162,12 +162,16 @@ struct edu_ops {
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (EDU_REP_MAX bytes). Returns the reply's length: 0 means no
- * reply (the request has no txid). No I/O. */
+ * into rep (EDU_REP_MAX bytes) and the handles it carries into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
+ * means no reply (the request has no txid). No I/O; the caller sends the
+ * reply with the handles, or closes them if it can't. */
 static inline uint32_t edu_dispatch(const struct edu_ops *ops, void *ctx, const void *req, uint32_t n,
-                                    void *rep)
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -268,9 +272,11 @@ static inline status_t edu_serve_one(handle_t ch, const struct edu_ops *ops, voi
         idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
         return OK;
     }
-    uint32_t idl_rn = edu_dispatch(ops, ctx, idl_q, idl_n, idl_r);
-    if (idl_rn)
-        drv_channel_write(ch, idl_r, idl_rn, NULL, 0);
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = edu_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
+        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;
 }
 

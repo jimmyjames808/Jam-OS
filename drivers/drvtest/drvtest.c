@@ -258,6 +258,27 @@ static void t_null_protocol(handle_t ch)
         all &= null_ping(ch, i, &v) == OK && v == i;
     CHECK(all);
 
+    /* A handle result (M7 IDL): the VMO arrives, readable, with its size;
+     * an error carries no handle; a NULL out-pointer gets it closed. */
+    handle_t vmo = HANDLE_INVALID;
+    uint64_t got_size = 0;
+    uint8_t first = 0;
+    CHECK_ST(null_make_vmo(ch, 8192, 0x5a, &vmo, &got_size), OK);
+    CHECK(vmo != HANDLE_INVALID && got_size == 8192);
+    CHECK_ST(drv_vmo_read(vmo, 0, &first, 1), OK);
+    CHECK(first == 0x5a);
+    CHECK_ST(drv_handle_close(vmo), OK);
+    vmo = HANDLE_INVALID;
+    CHECK_ST(null_make_vmo(ch, 0, 1, &vmo, &got_size), ERR_INVALID_ARGS);
+    CHECK(vmo == HANDLE_INVALID);
+    CHECK_ST(null_make_vmo(ch, 4096, 1, NULL, NULL), OK);
+    bool vmos_ok = true;
+    for (int i = 0; i < 50; i++) {   /* no handle leaks on either side */
+        vmos_ok &= null_make_vmo(ch, 4096, (uint8_t)i, &vmo, NULL) == OK;
+        vmos_ok &= drv_handle_close(vmo) == OK;
+    }
+    CHECK(vmos_ok);
+
     /* What the server must refuse. */
     uint32_t edu_result = 0;
     CHECK_ST(edu_factorial(ch, 5, &edu_result), ERR_NOT_SUPPORTED);   /* another protocol */

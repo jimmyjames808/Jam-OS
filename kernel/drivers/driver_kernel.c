@@ -350,6 +350,15 @@ status_t drv_channel_call(handle_t h, void *wbytes, uint32_t wn, void *rbytes, u
                                    NULL, deadline_ns));
 }
 
+status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes, uint32_t rcap,
+                            uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
+                            uint64_t deadline_ns)
+{
+    ENTER(t);
+    return waited(sys_channel_call(t, h, wbytes, wn, NULL, 0, rbytes, rcap, ractual, rh, rhcap,
+                                   rhactual, deadline_ns));
+}
+
 status_t drv_port_create(handle_t *out)
 {
     ENTER(t);
