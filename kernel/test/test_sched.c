@@ -1,4 +1,4 @@
-/* Scheduler placement and fairness (kernel/core/sched.c): spin before
+/* Scheduler placement and fairness (kernel/sched/sched.c): spin before
  * idle, the hybrid placement order, client/server pairs on sibling
  * hyperthreads, wake-affine channel_call and the starvation boost. The
  * races in the switch and wake paths are test_sched_races.c. */

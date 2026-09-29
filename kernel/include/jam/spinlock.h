@@ -1,7 +1,7 @@
 /* Ticket spinlocks with lock-order checking.
  *
  * Every lock has a NAME, and the name is its lock class: all locks that
- * share a name are treated as one kind of lock. The checker (core/lockdep.c)
+ * share a name are treated as one kind of lock. The checker (debug/lockdep.c)
  * records "A was held while B was taken" for every pair of classes it sees,
  * and panics the first time an acquisition would complete a cycle (the
  * pattern behind every ABBA deadlock), even if the deadlock itself never

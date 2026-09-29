@@ -1,5 +1,5 @@
 /* Starting programs: libos's ELF loader (the user-space counterpart of the
- * kernel's userboot, see kernel/core/userboot.c for the same rules).
+ * kernel's userboot, see kernel/proc/userboot.c for the same rules).
  *
  * The program comes from bootfs (the SR_BOOTFS VMO, mapped once by
  * bootfs_default). The steps are all ordinary system

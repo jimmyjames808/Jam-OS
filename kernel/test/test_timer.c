@@ -1,4 +1,4 @@
-/* Sleeping with a deadline (kernel/core/wait.c, per-CPU one-shot timers):
+/* Sleeping with a deadline (kernel/sched/wait.c, per-CPU one-shot timers):
  * sleepers wake in deadline order and on time, one that leaves its queue
  * early leaves it working, and a far-future deadline doesn't wrap. */
 #include <jam/kprintf.h>

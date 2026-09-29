@@ -1,4 +1,4 @@
-/* Mutexes (kernel/core/wait.c): the hand-off to a waiter that has waited
+/* Mutexes (kernel/sched/wait.c): the hand-off to a waiter that has waited
  * too long. */
 #include <jam/kprintf.h>
 #include <jam/ktest.h>

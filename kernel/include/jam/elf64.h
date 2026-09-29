@@ -1,4 +1,4 @@
-/* The ELF64 on-disk structures and constants the ELF parser (core/elf.c)
+/* The ELF64 on-disk structures and constants the ELF parser (proc/elf.c)
  * and its tests need. Only what static x86-64 executables use. */
 #pragma once
 

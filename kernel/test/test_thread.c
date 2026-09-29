@@ -1,4 +1,4 @@
-/* Threads (kernel/core/thread.c): kernel stacks and the stack cache, and
+/* Threads (kernel/sched/thread.c): kernel stacks and the stack cache, and
  * the priority ceiling. */
 #include <jam/ktest.h>
 #include <jam/mm.h>
