@@ -218,6 +218,10 @@ static status_t rebind(struct binding *b)
 {
     if (b->proc)
         stop_driver(b, true, true);
+    /* Nothing runs now: a start that fails below must not leave it RUNNING
+     * with no process (no restart would ever come, KILL would fail). */
+    if (b->state == DEVMGR_SUP_RUNNING)
+        b->state = DEVMGR_SUP_NONE;
     sup_reset(b);
     close_client(b);
     b->last = start_driver(b);
