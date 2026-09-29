@@ -7,6 +7,8 @@
  * kernel's RESULTS box. init exits 0 if every program exited 0. */
 #include <os.h>
 
+bool init_xhcitest(void);   /* xhcitest.c */
+
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
 
@@ -28,8 +30,8 @@ static int split(char *line, char **words)
     return n;
 }
 
-static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void say(const char *fmt, ...)
+void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void init_say(const char *fmt, ...)
 {
     char buf[160];
     va_list ap;
@@ -45,7 +47,7 @@ static bool run(int argc, char **argv)
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
-        say("init: %s: no job (%s)", argv[0], status_str(st));
+        init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
     struct spawn_args a = {
@@ -54,7 +56,7 @@ static bool run(int argc, char **argv)
     uint64_t t0 = (uint64_t)jam_clock_get();
     st = spawn(&a, &proc);
     if (st != OK) {
-        say("init: %s: could not start (%s)", argv[0], status_str(st));
+        init_say("init: %s: could not start (%s)", argv[0], status_str(st));
         jam_handle_close(job);
         return false;
     }
@@ -63,7 +65,7 @@ static bool run(int argc, char **argv)
     if (st == ERR_TIMED_OUT) {
         /* Its whole job: whatever it started (even orphans) goes too, and
          * job_kill returns once all of it is dead. */
-        say("init: %s: still running after %d s, killing its job", argv[0], RUN_TIMEOUT_S);
+        init_say("init: %s: still running after %d s, killing its job", argv[0], RUN_TIMEOUT_S);
         if (jam_job_kill(job) != OK)
             jam_process_kill(proc);
         st = spawn_wait(proc, 10000000000ull, &info);
@@ -71,11 +73,11 @@ static bool run(int argc, char **argv)
     uint64_t ms = ((uint64_t)jam_clock_get() - t0) / 1000000;
     bool ok = false;
     if (st != OK)
-        say("init: %s: lost track of it (%s)", argv[0], status_str(st));
+        init_say("init: %s: lost track of it (%s)", argv[0], status_str(st));
     else if (info.killed)
-        say("init: %s was killed after %lu ms", argv[0], (unsigned long)ms);
+        init_say("init: %s was killed after %lu ms", argv[0], (unsigned long)ms);
     else {
-        say("init: %s exited with code %ld after %lu ms", argv[0], (long)info.exit_code,
+        init_say("init: %s exited with code %ld after %lu ms", argv[0], (long)info.exit_code,
             (unsigned long)ms);
         ok = info.exit_code == 0;
     }
@@ -91,18 +93,18 @@ static bool check_root_resource(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), pci, bad;
     if (root == HANDLE_INVALID) {
-        say("init: no root resource (SR_RESOURCE) in the startup message");
+        init_say("init: no root resource (SR_RESOURCE) in the startup message");
         return false;
     }
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st != OK) {
-        say("init: can't slice RES_PCI from the root resource (%s)", status_str(st));
+        init_say("init: can't slice RES_PCI from the root resource (%s)", status_str(st));
         return false;
     }
     jam_handle_close(pci);
     st = jam_resource_create(root, RES_MMIO, 0x100000000ull, 0, &bad);
     if (st != ERR_INVALID_ARGS) {
-        say("init: a zero-sized MMIO slice gave %s, want ERR_INVALID_ARGS", status_str(st));
+        init_say("init: a zero-sized MMIO slice gave %s, want ERR_INVALID_ARGS", status_str(st));
         if (st == OK)
             jam_handle_close(bad);
         return false;
@@ -116,7 +118,7 @@ static bool run_config(const char *cfg, uint64_t len)
 {
     char *text = malloc(len + 1);
     if (!text) {
-        say("init: no memory for init.cfg");
+        init_say("init: no memory for init.cfg");
         return false;
     }
     memcpy(text, cfg, len);
@@ -132,7 +134,7 @@ static bool run_config(const char *cfg, uint64_t len)
         char *words[MAX_WORDS + 1];
         int n = line[0] == '#' ? 0 : split(line, words);
         if (n < 0) {
-            say("init: init.cfg:%d: more than %d words", lineno, MAX_WORDS);
+            init_say("init: init.cfg:%d: more than %d words", lineno, MAX_WORDS);
             ok = false;
         } else if (n > 0) {
             words[n] = NULL;
@@ -158,18 +160,21 @@ int main(int argc, char **argv)
 
     if (!check_root_resource())
         return 1;
+    /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
+    if (argc > 1 && !strcmp(argv[1], "xhcitest"))
+        return init_xhcitest() ? 0 : 1;
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);
     if (st != OK) {
-        say("init: can't map bootfs (%s)", status_str(st));
+        init_say("init: can't map bootfs (%s)", status_str(st));
         return 1;
     }
     const void *cfg;
     uint64_t len;
     st = bootfs_lookup(fs, "init.cfg", &cfg, &len);
     if (st != OK) {
-        say("init: no init.cfg in bootfs (%s)", status_str(st));
+        init_say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
     }
     return run_config(cfg, len) ? 0 : 1;

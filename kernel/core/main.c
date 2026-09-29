@@ -22,6 +22,7 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
+#include <jam/xhci_launch.h>
 #include <jam/pci.h>
 #include <jam/resource.h>
 #include <jam/x86.h>
@@ -148,7 +149,21 @@ _Noreturn static void kmain_stage2(void *arg)
     /* User space: init from bootfs, on "init" or on a plain boot (empty
      * command line). Test, benchmark and crash entries don't start it. */
     if (cmdline_has("init") || !boot->cmdline[0])
-        ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300));
+        ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300), NULL);
+    /* M6 done test ("USB controller test" boot entry): xhci-noop on the
+     * xHCI as a kernel process (handles built in the kernel), then as a
+     * process that init starts with handles it makes through the M6
+     * system calls (devmgr's job, until devmgr exists). */
+    if (cmdline_has("xhcitest")) {
+        struct pci_dev *xhc = xhci_find(0);
+        if (!xhc) {
+            report("xhcitest: no xHCI controller (PCI class 0c0330)");
+            ok = false;
+        } else {
+            ok &= xhci_launch(xhc, false);
+            ok &= userboot_run_init(60, "xhcitest");
+        }
+    }
     sched_print_stats();
     if (serial_dropped || serial_irq_broken())
         report("serial: %lu characters dropped (ring full)%s", serial_dropped,
