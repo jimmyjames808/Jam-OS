@@ -23,7 +23,7 @@
 #include <os.h>
 #include <devmgr.h>
 #include <idl/null.h>
-#include <check/edu_check.h>
+#include "edu_check.h"
 #include "utest.h"
 
 
