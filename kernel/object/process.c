@@ -28,10 +28,20 @@
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
+ *   - process_start vs uthread_start (review R5): start_thread makes p
+ *     RUNNING with `starting` set and creates the first thread with the
+ *     lock dropped; while `starting`, uthread_start refuses (ERR_BAD_STATE).
+ *     So no thread of p runs before the first one exists: if its creation
+ *     fails, p goes back to NEW with nothing of it run, the startup handle
+ *     still in its table untouched, and process_start takes it back. (It
+ *     used to be possible to start a second thread in that window, which
+ *     could close the startup handle before the first creation failed; the
+ *     give-back then panicked.)
  *   - A NEW process whose last handle closes can never be started: it is
  *     marked dying under the lock (on_zero_handles can't sleep, so it can't
  *     tear down); what it owns is freed when its last reference goes. */
 #include <jam/aspace.h>
+#include <jam/dbghook.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
@@ -39,29 +49,41 @@
 #include <jam/process.h>
 #include <jam/report.h>
 #include <jam/string.h>
+#include <jam/time.h>
 #include <jam/uentry.h>
 
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
 
 #define OUT_LINE        200   /* debug_write lines longer than this are split */
 #define USER_REPORT_MAX 24    /* debug_report lines kept, all processes together */
+#define OUT_BURST       100   /* debug_write lines a process may print at once... */
+#define OUT_PER_S       50    /* ...and then per second (the rest are dropped, counted) */
 
 struct process {
     struct kobject      base;        /* OBJ_PROCESS */
     struct handle_table handles;
     struct mutex        setup;       /* process_start's insert vs. teardown */
-    struct job         *job;         /* a reference */
+    struct job         *job;         /* a reference; NULL once torn down (cleared under L;
+                                        read unlocked only by p's own live threads) */
     struct aspace      *as;          /* (L) a reference; NULL once torn down */
     int                 state;       /* (L) PROCESS_* */
     bool                killed;      /* (L) */
     bool                finished;    /* (L) teardown done */
+    bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
+    bool                starting;    /* (L) process_start is making the first thread */
+    bool                listed;      /* on job's list (job_link); cleared at teardown */
+    struct job_link     job_link;    /* (the job's lock) */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX];
-    /* debug_write: the current, unfinished output line ("process output") */
+    /* debug_write ("process output" lock): the current, unfinished line and
+     * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;
     uint32_t            out_len;
+    uint32_t            out_tokens;    /* lines that may be printed now */
+    uint32_t            out_dropped;   /* lines dropped since the last one printed */
+    uint64_t            out_refill_ns; /* when out_tokens was last topped up */
     char                out[OUT_LINE];
 };
 
@@ -122,6 +144,10 @@ static void process_destroy(struct kobject *obj)
     handle_table_destroy(&p->handles);
     if (p->as)
         aspace_unref(p->as);
+    if (p->listed)        /* never torn down (never started) */
+        job_detach_process(p->job, &p->job_link);
+    if (p->obj_charged)
+        job_uncharge(p->job, JOB_LIMIT_HANDLES, 1);
     job_unref(p->job);
     kfree(p);
 }
@@ -149,26 +175,49 @@ static const struct kobject_ops process_ops = {
 
 status_t process_create(struct job *job, const char *name, struct process **out)
 {
+    status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);   /* this object */
+    if (st != OK)
+        return st;
     struct process *p = kzalloc(sizeof(*p));
-    if (!p)
+    if (!p) {
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
-    status_t st = aspace_create(&p->as);
+    }
+    st = aspace_create_charged(job, &p->as);
     if (st != OK) {
         kfree(p);
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return st;
     }
+    p->obj_charged = true;
     kobject_init(&p->base, OBJ_PROCESS, &process_ops, "process", 0);
     handle_table_init(&p->handles);
     p->handles.job = job;
     mutex_init(&p->setup, "process setup");
     spin_init(&p->out_lock, "process output");
-    job_ref(job);
-    p->job = job;
+    p->out_tokens = OUT_BURST;
+    p->out_refill_ns = uptime_ns();
     p->state = PROCESS_NEW;
     list_init(&p->threads);
     copy_name(p->name, sizeof(p->name), name);
+    job_ref(job);
+    p->job = job;
+    p->listed = job != NULL;
+    /* Listed last, fully made: from here on job_kill can find and kill it. */
+    if (job && (st = job_attach_process(job, &p->job_link)) != OK) {   /* a killed job */
+        aspace_unref(p->as);
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
+        job_unref(job);
+        kfree(p);   /* nobody else has seen it */
+        return st;
+    }
     *out = p;
     return OK;
+}
+
+struct process *process_from_job_link(struct job_link *l)
+{
+    return container_of(l, struct process, job_link);
 }
 
 struct handle_table *process_handles(struct process *p)
@@ -210,40 +259,112 @@ void process_get_info(struct process *p, struct process_info *out)
 
 /* ---- debug output ---------------------------------------------------------- */
 
-/* With out_lock held: print the buffered line with the process name. */
-static void out_flush_locked(struct process *p, bool report_it)
+/* Lines are assembled under out_lock (a spinlock: interrupts off) but
+ * printed with it dropped (review R7): kprintf may redraw the framebuffer
+ * console synchronously, far too long to keep interrupts off or the
+ * process's other writers spinning. klog serialises whole lines, so a line
+ * is never torn; two threads of one process writing at once may see their
+ * lines come out in either order. Each process may print OUT_BURST lines
+ * at once and OUT_PER_S a second after that (a token bucket under
+ * out_lock); the rest are dropped and counted, and the count is printed
+ * before the next line that gets through. debug_report lines are exempt
+ * (USER_REPORT_MAX caps them for everyone together). */
+
+enum out_kind { OUT_NONE, OUT_PRINT, OUT_REPORT };
+
+/* out_lock held: move the buffered line into line[] (NUL-terminated). */
+static void out_take_locked(struct process *p, char *line)
 {
-    p->out[p->out_len] = '\0';
-    if (report_it)
-        report("%s", p->out);   /* prints it too */
-    else
-        kprintf("[%s] %s\n", p->name, p->out);
+    memcpy(line, p->out, p->out_len);
+    line[p->out_len] = '\0';
     p->out_len = 0;
 }
 
-void process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
+/* out_lock held: may one more plain line be printed now? If so, *dropped
+ * gets (and clears) the count of lines dropped before it. */
+static bool out_allow_locked(struct process *p, uint32_t *dropped)
+{
+    uint64_t now = uptime_ns();
+    uint64_t add = (now - p->out_refill_ns) * OUT_PER_S / 1000000000ull;
+    if (add) {
+        p->out_tokens = p->out_tokens + add > OUT_BURST ? OUT_BURST
+                                                        : p->out_tokens + (uint32_t)add;
+        p->out_refill_ns = now;
+    }
+    if (!p->out_tokens) {
+        p->out_dropped++;
+        return false;
+    }
+    p->out_tokens--;
+    *dropped = p->out_dropped;
+    p->out_dropped = 0;
+    return true;
+}
+
+/* No lock held. */
+static void out_print(struct process *p, const char *line, enum out_kind kind,
+                      uint32_t dropped)
+{
+    if (dropped)
+        kprintf("[%s] (%u lines dropped: too much output)\n", p->name, dropped);
+    if (kind == OUT_REPORT)
+        report("%s", line);   /* prints it too */
+    else if (kind == OUT_PRINT)
+        kprintf("[%s] %s\n", p->name, line);
+}
+
+size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
 {
     static volatile uint32_t reports;
     if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX)
         report_it = false;   /* the RESULTS box is for a few lines */
-    uint64_t f = spin_lock_irqsave(&p->out_lock);
-    if (report_it && p->out_len)
-        out_flush_locked(p, false);   /* someone's unfinished line first */
-    for (size_t i = 0; i < n; i++) {
-        char c = buf[i];
-        if (c == '\n') {
-            out_flush_locked(p, report_it);
-            continue;
+    enum out_kind mine = report_it ? OUT_REPORT : OUT_PRINT;
+    char line[OUT_LINE];
+    size_t i = 0, printed = 0;
+    bool others = report_it;   /* someone's unfinished line goes out first */
+    for (;;) {
+        enum out_kind kind = OUT_NONE;
+        uint32_t dropped = 0;
+        uint64_t f = spin_lock_irqsave(&p->out_lock);
+        if (others) {
+            others = false;
+            if (p->out_len) {
+                out_take_locked(p, line);
+                kind = OUT_PRINT;
+            }
         }
-        if ((c < 0x20 && c != '\t') || c >= 0x7f)
-            c = '?';   /* no escape sequences on the console */
-        p->out[p->out_len++] = c;
-        if (p->out_len == OUT_LINE - 1)
-            out_flush_locked(p, report_it);
+        if (kind == OUT_NONE) {
+            for (; i < n && kind == OUT_NONE; i++) {
+                char c = buf[i];
+                if (c == '\n') {
+                    kind = mine;
+                    break;
+                }
+                if ((c < 0x20 && c != '\t') || c >= 0x7f)
+                    c = '?';   /* no escape sequences on the console */
+                p->out[p->out_len++] = c;
+                if (p->out_len == OUT_LINE - 1)
+                    kind = mine;   /* too long: split (the loop's i++ steps past c) */
+            }
+            if (kind != OUT_NONE && i < n && buf[i] == '\n')
+                i++;
+            if (kind == OUT_NONE && report_it && p->out_len)
+                kind = OUT_REPORT;   /* a report is always a whole line */
+            if (kind != OUT_NONE)
+                out_take_locked(p, line);
+        }
+        bool took = kind != OUT_NONE;
+        if (kind == OUT_PRINT && !out_allow_locked(p, &dropped))
+            kind = OUT_NONE;   /* over the rate: dropped (and counted) */
+        spin_unlock_irqrestore(&p->out_lock, f);
+        if (!took)
+            break;
+        if (kind != OUT_NONE) {
+            out_print(p, line, kind, dropped);
+            printed++;
+        }
     }
-    if (report_it && p->out_len)
-        out_flush_locked(p, true);   /* a report is always a whole line */
-    spin_unlock_irqrestore(&p->out_lock, f);
+    return printed;
 }
 
 /* Close the handle table and drop the address space: the process is dead.
@@ -254,22 +375,44 @@ static void process_finish(struct process *p)
     mutex_lock(&p->setup);
     handle_table_destroy(&p->handles);   /* credits the job for every slot */
     mutex_unlock(&p->setup);
+    /* Its last words, even without a newline, and how many lines it lost. */
+    char line[OUT_LINE] = "";
+    enum out_kind kind = OUT_NONE;
     uint64_t of = spin_lock_irqsave(&p->out_lock);
-    if (p->out_len)
-        out_flush_locked(p, false);   /* its last words, even without a newline */
+    if (p->out_len) {
+        out_take_locked(p, line);
+        kind = OUT_PRINT;
+    }
+    uint32_t dropped = p->out_dropped;
+    p->out_dropped = 0;
     spin_unlock_irqrestore(&p->out_lock, of);
+    out_print(p, line, kind, dropped);
 
     uint64_t f = plock(p);
     struct aspace *as = p->as;
+    struct job *job = p->job;
+    bool charged = p->obj_charged, listed = p->listed;
     p->as = NULL;
+    p->job = NULL;
+    p->handles.job = NULL;
+    p->obj_charged = false;
+    p->listed = false;
     p->state = PROCESS_DEAD;
     p->finished = true;
     punlock(p, f);
+    if (listed)    /* before SIG_TERMINATED: job_kill waits for exactly this */
+        job_detach_process(job, &p->job_link);
+    if (charged)   /* what's left of p is small and handle-bound now */
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
     /* Every thread dropped its own reference before it counted itself out,
      * so this is the last one unless another process holds a vmar handle:
      * the address space, its mappings and their pages go now. */
     if (as)
         aspace_unref(as);
+    /* And the job: nothing of a dead process needs it (no thread is left
+     * to charge anything), so whoever sees SIG_TERMINATED can close the
+     * job and have it go (and credit its own parent) at once. */
+    job_unref(job);
     kobject_signal(&p->base, 0, SIG_TERMINATED);
 }
 
@@ -361,16 +504,18 @@ status_t uthread_set_priority(struct uthread *u, int prio)
  * true if the caller must run the teardown. */
 static bool thread_left(struct process *p)
 {
+    /* Credit the job while we still count, BEFORE counting ourselves out:
+     * the thread that brings nthreads to 0 tears p down (dropping p->job)
+     * and signals SIG_TERMINATED, and whoever sees that must see every
+     * thread's credit. Crediting after the count (as first written) let the
+     * last thread finish while another was still between its count and its
+     * credit; the PC stress test caught it at 14 s ("a dead process left
+     * something charged to its job"). */
+    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
+    job_uncharge(p->job, JOB_LIMIT_PAGES, UTHREAD_KMEM_PAGES);
     uint64_t f = plock(p);
     if (p->nthreads == 0)
         panic("process \"%s\": thread count underflow", p->name);
-    /* Credit the job BEFORE counting ourselves out, under the lock: the
-     * thread that brings nthreads to 0 signals SIG_TERMINATED, and whoever
-     * sees that must see every thread's credit. Crediting after the unlock
-     * (as first written) let the last thread finish while another was
-     * still between its count and its credit; the PC stress test caught
-     * it at 14 s ("a dead process left something charged to its job"). */
-    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     bool finish = false;
     if (--p->nthreads == 0) {
         if (p->state == PROCESS_RUNNING) {   /* the last thread left: exit 0 */
@@ -457,12 +602,14 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     *finish = false;
     uint64_t f = plock(p);
     status_t st = OK;
-    if (u->state != UT_NEW)
+    if (u->state != UT_NEW || p->starting)
         st = ERR_BAD_STATE;
     else if (p->state != (from_new ? PROCESS_NEW : PROCESS_RUNNING))
         st = ERR_BAD_STATE;
     else
         st = job_charge(p->job, JOB_LIMIT_THREADS, 1);
+    if (st == OK && (st = job_charge(p->job, JOB_LIMIT_PAGES, UTHREAD_KMEM_PAGES)) != OK)
+        job_uncharge(p->job, JOB_LIMIT_THREADS, 1);   /* its stack and XSAVE area: refused */
     if (st == OK) {
         u->state = UT_STARTING;
         u->entry = entry;
@@ -470,8 +617,10 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         u->arg0 = arg0;
         u->arg1 = arg1;
         p->nthreads++;
-        if (from_new)
+        if (from_new) {
             p->state = PROCESS_RUNNING;
+            p->starting = true;
+        }
         kobject_ref(&u->base);   /* the running thread's own; dropped as it leaves */
     }
     int prio = u->prio;
@@ -479,13 +628,20 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     if (st != OK)
         return st;
 
-    struct thread *t = thread_try_create_capped(u->name, uthread_main, u, prio, mask,
-                                                PRIO_USER_MAX);
+    struct dbg_process_start hk = { p, false };
+    if (from_new)
+        DBG_HOOK(DBG_PROCESS_START, &hk);
+    struct thread *t = hk.fail ? NULL
+                               : thread_try_create_capped(u->name, uthread_main, u, prio, mask,
+                                                          PRIO_USER_MAX);
     if (!t) {
         f = plock(p);
         u->state = UT_NEW;
-        if (from_new && p->state == PROCESS_RUNNING && p->nthreads == 1)
-            p->state = PROCESS_NEW;   /* as if the start never happened */
+        if (from_new) {
+            p->starting = false;
+            if (p->state == PROCESS_RUNNING)
+                p->state = PROCESS_NEW;   /* as if the start never happened (nthreads is 1) */
+        }
         punlock(p, f);
         *finish = thread_left(p);
         kobject_unref(&u->base);
@@ -493,6 +649,8 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     }
     f = plock(p);
     u->t = t;
+    if (from_new)
+        p->starting = false;
     bool dying = p->state >= PROCESS_DYING;
     punlock(p, f);
     if (dying)
@@ -525,10 +683,12 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
         st = handle_insert(&p->handles, arg0, &hv);
     if (st == OK)
         st = start_thread(u, entry, stack, hv, arg1, mask, true, &finish);
-    if (st != OK && hv != HANDLE_INVALID) {
-        /* Give arg0 back: nothing in the child can have seen it. */
-        if (handle_remove(&p->handles, hv, arg0) != OK)
-            panic("process_start: lost the startup handle");
+    if (st != OK && hv != HANDLE_INVALID && handle_remove(&p->handles, hv, arg0) != OK) {
+        /* Give arg0 back: no thread of the child ran (see `starting`), so
+         * it is where we put it. If it somehow isn't, it is the child's
+         * now and dies with it; the caller sees arg0 empty. Never panic. */
+        kprintf("process_start: \"%s\" lost its startup handle\n", p->name);
+        arg0->obj = NULL;
     }
     mutex_unlock(&p->setup);
     if (finish)

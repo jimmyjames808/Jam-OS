@@ -13,9 +13,37 @@
  * racing it may fail when it would have fit. That is the price of being
  * lock-free, and only matters right at a limit.
  *
- * Lifetime: a job holds a reference to its parent. Processes, charged VMOs
- * and queued channel messages hold references to the job they charged, so
- * a charge can always be credited back. */
+ * Lifetime: a job holds a reference to its parent. Charged VMOs, queued
+ * channel messages and address spaces hold references to the job they
+ * charged, so a charge can always be credited back; a process holds one
+ * until it is torn down (process_finish), so once SIG_TERMINATED is seen a
+ * dead process no longer keeps its job alive.
+ *
+ * What a job costs (review R3): a job is charged to its PARENT as one
+ * JOB_LIMIT_HANDLES unit (a small kernel object, like the ones handle slots
+ * name) from creation until it is destroyed, and jobs nest at most
+ * JOB_MAX_DEPTH deep. So a process can't hold an unbounded chain of jobs
+ * behind one handle, and a charge walks at most JOB_MAX_DEPTH levels.
+ *
+ * The tree (review R8, for job_kill). A job lists its child jobs and its
+ * live processes, under its object lock (class "job", interrupts off; only
+ * list edits and the `killed` flag happen under it, and no other job's lock
+ * is ever taken inside it). A child job is listed from job_create until it
+ * is destroyed (it holds a reference on its parent, so the parent outlives
+ * the listing); a process from process_create until it is torn down or
+ * destroyed (job_attach_process / job_detach_process), before it drops its
+ * job reference. Once `killed`, a job takes no new processes or child jobs
+ * (ERR_BAD_STATE).
+ *
+ * job_kill never holds a job lock while it kills or waits: it picks one
+ * listed object at a time and takes a reference with kobject_tryref (an
+ * object whose last reference is already gone is being destroyed and
+ * unlists itself). Processes are marked `kill_seen` (under the job lock)
+ * so each is killed once; the kill pass over the whole subtree comes first
+ * and the wait pass second, so a caller inside the job (killing its own
+ * job) still kills everything before its own wait is cancelled. A child
+ * job it holds a reference on stays listed, so the walk continues from its
+ * list node. */
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
@@ -24,9 +52,24 @@
 struct job {
     struct kobject    base;
     struct job       *parent;
+    uint32_t          depth;      /* a root job is 0 */
+    bool              killed;     /* (L) no new processes or child jobs */
+    struct list_node  children;   /* (L) struct job, by child_node */
+    struct list_node  child_node; /* on parent->children (the parent's lock) */
+    struct list_node  procs;      /* (L) struct job_link of each live process */
     volatile uint64_t used[JOB_LIMIT_COUNT];
     volatile uint64_t limit[JOB_LIMIT_COUNT];
 };
+
+static uint64_t jlock(struct job *j)
+{
+    return spin_lock_irqsave(&j->base.lock);
+}
+
+static void junlock(struct job *j, uint64_t f)
+{
+    spin_unlock_irqrestore(&j->base.lock, f);
+}
 
 static void job_destroy(struct kobject *obj)
 {
@@ -35,6 +78,15 @@ static void job_destroy(struct kobject *obj)
         if (j->used[k])
             panic("job koid %lu destroyed with %lu units of kind %u still charged", obj->koid,
                   j->used[k], k);
+    /* Children and processes hold references, so both lists are empty. */
+    if (!list_empty(&j->children) || !list_empty(&j->procs))
+        panic("job koid %lu destroyed with children or processes listed", obj->koid);
+    if (j->parent) {
+        uint64_t f = jlock(j->parent);
+        list_del(&j->child_node);
+        junlock(j->parent, f);
+    }
+    job_uncharge(j->parent, JOB_LIMIT_HANDLES, 1);   /* this job itself */
     job_unref(j->parent);
     kfree(j);
 }
@@ -46,16 +98,149 @@ static const struct kobject_ops job_ops = {
 
 status_t job_create(struct job *parent, struct job **out)
 {
+    if (parent && parent->depth + 1 >= JOB_MAX_DEPTH)
+        return ERR_OUT_OF_RANGE;
+    status_t st = job_charge(parent, JOB_LIMIT_HANDLES, 1);
+    if (st != OK)
+        return st;
     struct job *j = kzalloc(sizeof(*j));
-    if (!j)
+    if (!j) {
+        job_uncharge(parent, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
+    }
     kobject_init(&j->base, OBJ_JOB, &job_ops, "job", 0);
     for (unsigned k = 0; k < JOB_LIMIT_COUNT; k++)
         j->limit[k] = JOB_NO_LIMIT;
-    job_ref(parent);
+    list_init(&j->children);
+    list_init(&j->procs);
+    j->depth = parent ? parent->depth + 1 : 0;
+    if (parent) {
+        uint64_t f = jlock(parent);
+        bool killed = parent->killed;
+        if (!killed)
+            list_add_tail(&parent->children, &j->child_node);
+        junlock(parent, f);
+        if (killed) {
+            kfree(j);
+            job_uncharge(parent, JOB_LIMIT_HANDLES, 1);
+            return ERR_BAD_STATE;
+        }
+        job_ref(parent);
+    }
     j->parent = parent;
     *out = j;
     return OK;
+}
+
+status_t job_attach_process(struct job *j, struct job_link *l)
+{
+    l->kill_seen = false;
+    uint64_t f = jlock(j);
+    bool killed = j->killed;
+    if (!killed)
+        list_add_tail(&j->procs, &l->node);
+    junlock(j, f);
+    return killed ? ERR_BAD_STATE : OK;
+}
+
+void job_detach_process(struct job *j, struct job_link *l)
+{
+    uint64_t f = jlock(j);
+    list_del(&l->node);
+    junlock(j, f);
+}
+
+/* ---- job_kill ------------------------------------------------------------- */
+
+/* A referenced process of j: the first one not yet killed (kill pass) or
+ * the first one at all (wait pass: it is still listed, so still alive).
+ * NULL if there is none. */
+static struct process *pick_process(struct job *j, bool to_kill)
+{
+    struct process *p = NULL;
+    uint64_t f = jlock(j);
+    for (struct list_node *n = j->procs.next; n != &j->procs; n = n->next) {
+        struct job_link *l = container_of(n, struct job_link, node);
+        if (to_kill && l->kill_seen)
+            continue;
+        struct process *q = process_from_job_link(l);
+        if (kobject_tryref(process_kobject(q))) {
+            if (to_kill)
+                l->kill_seen = true;
+            p = q;
+            break;
+        }
+    }
+    junlock(j, f);
+    return p;
+}
+
+/* A referenced child of j listed after `after` (NULL: the first), or NULL.
+ * `after` must be referenced (so it is still listed). */
+static struct job *next_child(struct job *j, struct job *after)
+{
+    struct job *c = NULL;
+    uint64_t f = jlock(j);
+    for (struct list_node *n = after ? after->child_node.next : j->children.next;
+         n != &j->children; n = n->next) {
+        struct job *cand = container_of(n, struct job, child_node);
+        if (kobject_tryref(&cand->base)) {
+            c = cand;
+            break;
+        }
+    }
+    junlock(j, f);
+    return c;
+}
+
+/* Mark the subtree killed and kill every process in it (no waiting). The
+ * recursion is at most JOB_MAX_DEPTH deep. */
+static unsigned kill_tree(struct job *j)
+{
+    uint64_t f = jlock(j);
+    j->killed = true;
+    junlock(j, f);
+    unsigned killed = 0;
+    struct process *p;
+    while ((p = pick_process(j, true))) {
+        process_kill(p, PROCESS_KILLED_CODE, true);
+        kobject_unref(process_kobject(p));
+        killed++;
+    }
+    for (struct job *c = next_child(j, NULL), *next; c; c = next) {
+        killed += kill_tree(c);
+        next = next_child(j, c);
+        job_unref(c);   /* outside j's lock: c's destroy takes it */
+    }
+    return killed;
+}
+
+/* Wait until no process is left in the subtree. */
+static status_t wait_tree(struct job *j)
+{
+    struct process *p;
+    while ((p = pick_process(j, false))) {
+        status_t st = object_wait_one(process_kobject(p), SIG_TERMINATED, DEADLINE_NEVER, NULL);
+        kobject_unref(process_kobject(p));
+        if (st != OK)
+            return st;   /* ERR_CANCELED: the caller itself was killed */
+    }
+    for (struct job *c = next_child(j, NULL), *next; c; c = next) {
+        status_t st = wait_tree(c);
+        next = st == OK ? next_child(j, c) : NULL;
+        job_unref(c);
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
+status_t job_kill(struct job *j, unsigned *killed)
+{
+    unsigned n = kill_tree(j);
+    if (killed)
+        *killed = n;
+    return wait_tree(j);
 }
 
 void job_ref(struct job *j)

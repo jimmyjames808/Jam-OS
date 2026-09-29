@@ -44,9 +44,16 @@
  * JOB_LIMIT_PAGES unit to that job for every page it owns, from the moment
  * the page is published in the table (under the lock, so a failed charge
  * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
- * `committed` and the charge move together. Contiguous VMOs are charged
- * whole when the job is set. Kernel VMOs have no job. Physical VMOs own no
- * memory and are never charged.
+ * `committed` and the charge move together. Its own table pages (mid and
+ * leaf, `tables`) are charged the same way, one unit each from creation to
+ * free (review R1: they used to be free, so a job allowed 0 pages could
+ * make the kernel build 128 MiB of leaves for one 64 GiB VMO). The page is
+ * charged BEFORE any table is made for it, so a refused commit builds
+ * nothing; if a table it needs is refused, the page's charge is undone.
+ * Tables stay (charged) until shrink or destroy frees them, as before
+ * (decommit leaves them). Contiguous VMOs are charged whole when the job is
+ * set. Kernel VMOs have no job. Physical VMOs own no memory and are never
+ * charged.
  *
  * Commit: a zeroed page is allocated with the lock dropped, then published
  * under the lock if its slot is still empty (the loser of a race frees its
@@ -97,6 +104,7 @@ struct vmo {
     unsigned         cache;       /* physical: VM_UC / VM_WC / 0 */
     uint64_t         size;        /* bytes, a page multiple */
     uint64_t         committed;   /* pages owned right now */
+    uint64_t         tables;      /* paged: table pages (mid + leaf), charged like pages */
     struct job      *job;         /* charged for them (a reference), or NULL */
     uint64_t         phys;        /* contiguous / physical: first byte */
     unsigned         order;       /* contiguous: buddy order it came from */
@@ -139,28 +147,58 @@ static void page_put(struct page *p)
     page_unref(p);
 }
 
-static void *table_alloc(void)
+/* With the lock held: a zeroed table page, charged to v's job. NULL if the
+ * job refuses it or there is no memory. */
+static void *table_alloc_locked(struct vmo *v)
 {
+    if (job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK)
+        return NULL;
     struct page *p = pmm_alloc_pages(0, PMM_ZERO);
-    return p ? page_to_virt(p) : NULL;
+    if (!p) {
+        job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+        return NULL;
+    }
+    v->tables++;
+    return page_to_virt(p);
 }
 
-static void table_free(void *t)
+/* With the lock held (or no references left): free a table page and credit
+ * v's job for it. */
+static void table_free_locked(struct vmo *v, void *t)
 {
     pmm_free_pages(virt_to_page(t), 0);
+    v->tables--;
+    job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
 }
 
 /* With the lock held: the table slot for page idx. NULL if its tables don't
- * exist and `create` is false, or creating them failed. */
+ * exist and `create` is false, or creating them failed (the job refused a
+ * table page, or no memory; any table made before the failure stays, and
+ * stays charged). */
 static uint64_t *slot_locked(struct vmo *v, uint64_t idx, bool create)
 {
     uint64_t ***mid = &v->root[idx / MID_PAGES];
-    if (!*mid && (!create || !(*mid = table_alloc())))
+    if (!*mid && (!create || !(*mid = table_alloc_locked(v))))
         return NULL;
     uint64_t **leaf = &(*mid)[(idx / LEAF_PAGES) % TBL_ENTRIES];
-    if (!*leaf && (!create || !(*leaf = table_alloc())))
+    if (!*leaf && (!create || !(*leaf = table_alloc_locked(v))))
         return NULL;
     return &(*leaf)[idx % LEAF_PAGES];
+}
+
+/* With the lock held and page idx not committed (*s is its slot if its
+ * tables exist, else NULL): charge the page to v's job, then make its
+ * tables if needed. Returns the slot to publish the page in, or NULL with
+ * nothing charged for the page (ERR_NO_MEMORY). */
+static uint64_t *charge_slot_locked(struct vmo *v, uint64_t idx, uint64_t *s)
+{
+    if (job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK)
+        return NULL;   /* refused: no table gets built for it */
+    if (!s && !(s = slot_locked(v, idx, true))) {
+        job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+        return NULL;
+    }
+    return s;
 }
 
 /* With the lock held: physical address of page idx, 0 if not committed. */
@@ -197,12 +235,12 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
                 }
             }
             if (base >= first) {
-                table_free(leaf);
+                table_free_locked(v, leaf);
                 mid[m] = NULL;
             }
         }
         if (r * MID_PAGES >= first) {
-            table_free(mid);
+            table_free_locked(v, mid);
             v->root[r] = NULL;
         }
     }
@@ -222,7 +260,7 @@ static status_t get_page(struct vmo *v, uint64_t idx, bool commit, struct page *
                 page_put(fresh);
             return ERR_OUT_OF_RANGE;
         }
-        uint64_t *s = slot_locked(v, idx, fresh != NULL);
+        uint64_t *s = slot_locked(v, idx, false);
         if (s && *s) {
             struct page *p = pa_page(*s);
             page_get(p);
@@ -233,7 +271,7 @@ static status_t get_page(struct vmo *v, uint64_t idx, bool commit, struct page *
             return OK;
         }
         if (fresh) {
-            if (!s || job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK) {
+            if (!(s = charge_slot_locked(v, idx, s))) {
                 vunlock(v, f);
                 page_put(fresh);
                 return ERR_NO_MEMORY;
@@ -304,12 +342,13 @@ static void vmo_destroy(struct kobject *obj)
         panic("vmo: koid %lu destroyed while mapped or pinned", obj->koid);
     if (v->kind == VMO_PAGED) {
         drop_from_locked(v, 0);
-        ASSERT(v->committed == 0);
+        ASSERT(v->committed == 0 && v->tables == 0);
     } else if (v->kind == VMO_CONTIG) {
         contig_free_head(v->phys >> PAGE_SHIFT, v->size >> PAGE_SHIFT);
         if (v->job)
             job_uncharge(v->job, JOB_LIMIT_PAGES, v->committed);
     }
+    job_uncharge(v->job, JOB_LIMIT_HANDLES, 1);   /* the struct (see vmo_set_job) */
     job_unref(v->job);
     kfree(v);
 }
@@ -407,7 +446,12 @@ status_t vmo_set_job(struct vmo *v, struct job *job)
     if (v->job || v->kind == VMO_PHYS) {
         st = ERR_BAD_STATE;
     } else {
-        st = job_charge(job, JOB_LIMIT_PAGES, v->committed);   /* contiguous: all of it */
+        /* The struct itself is one handle unit (a mapping or a message can
+         * keep it alive after its last handle closes); its pages: all of a
+         * contiguous one, what a paged one has so far, tables too. */
+        st = job_charge(job, JOB_LIMIT_HANDLES, 1);
+        if (st == OK && (st = job_charge(job, JOB_LIMIT_PAGES, v->committed + v->tables)) != OK)
+            job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         if (st == OK) {
             job_ref(job);
             v->job = job;
@@ -564,7 +608,7 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
         uint64_t lbase = ALIGN_DOWN(idx, LEAF_PAGES);
         uint64_t **mid = v->root[idx / MID_PAGES];
         if (lbase >= first && mid && mid[(idx / LEAF_PAGES) % TBL_ENTRIES]) {
-            table_free(mid[(idx / LEAF_PAGES) % TBL_ENTRIES]);
+            table_free_locked(v, mid[(idx / LEAF_PAGES) % TBL_ENTRIES]);
             mid[(idx / LEAF_PAGES) % TBL_ENTRIES] = NULL;
         }
         vunlock(v, f);
@@ -702,11 +746,11 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         if (v->kind != VMO_PAGED) {
             pa = v->phys + (idx << PAGE_SHIFT);
         } else {
-            uint64_t *s = slot_locked(v, idx, fresh != NULL);
+            uint64_t *s = slot_locked(v, idx, false);
             if (s && *s) {
                 pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
             } else if (fresh) {
-                if (!s || job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK) {
+                if (!(s = charge_slot_locked(v, idx, s))) {
                     vunlock(v, f);
                     page_put(fresh);
                     return ERR_NO_MEMORY;

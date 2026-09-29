@@ -26,7 +26,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define STACK_SIZE  (64 * 1024)
+#define STACK_SIZE  THREAD_STACK_SIZE
 #define WATCHDOG_S  5
 
 void switch_context(uint64_t *save_rsp, uint64_t load_rsp);

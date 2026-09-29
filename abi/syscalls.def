@@ -98,3 +98,7 @@
 77  job_get_info      status    handle_t job, struct job_info *out
 78  process_get_info  status    handle_t proc, struct process_info *out
 79  thread_set_priority status  handle_t thread, int32_t prio
+# Kill every process in the job and in all jobs below it (needs
+# RIGHT_MANAGE); returns once they are all dead. The jobs take no new
+# processes or child jobs afterwards.
+80  job_kill          status    handle_t job

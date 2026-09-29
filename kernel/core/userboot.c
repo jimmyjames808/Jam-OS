@@ -183,6 +183,8 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
         return st;
     }
     struct aspace *as = process_aspace(p);
+    if (!as)
+        st = ERR_BAD_STATE;   /* its job was killed already */
     for (unsigned i = 0; st == OK && i < plan.nseg; i++)
         st = map_segment(as, job, file, img, &plan.seg[i]);
     kobject_unref(vmo_kobject(file));
@@ -213,7 +215,7 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
         roles[n] = SR_SELF_THREAD;
         khs[n++] = kh_ref(uthread_kobject(u), THREAD_RIGHTS);
         roles[n] = SR_JOB;
-        khs[n++] = kh_ref(job_kobject(job), JOB_RIGHTS);
+        khs[n++] = kh_ref(job_kobject(job), JOB_RIGHTS_OWN);   /* no RIGHT_MANAGE */
         if (bootfs_image(&image, &isz) == OK) {
             roles[n] = SR_BOOTFS;
             khs[n++] = khandle_from_new(vmo_kobject(image), BOOTFS_RIGHTS);
@@ -241,7 +243,8 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
 
     if (u)
         kobject_unref(uthread_kobject(u));
-    aspace_unref(as);
+    if (as)
+        aspace_unref(as);
     if (st != OK) {
         process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
         kobject_unref(process_kobject(p));
@@ -258,14 +261,23 @@ status_t userboot_root_job(struct job **out)
     if (st != OK)
         return st;
     /* Leave the kernel 32 MiB (or a quarter, if memory is small) that user
-     * code can never take, so running out is a job's problem first. */
+     * code can never take, so running out is a job's problem first. The
+     * rest is split so the three memory-like limits can't add up to more
+     * than it (review R6): a handle unit stands for at most
+     * JOB_OBJECT_BYTES of kernel memory and a message byte for one byte, so
+     * those budgets (1/16 and 1/8 of it, capped at 16 MiB and 64 MiB) come
+     * off the page limit. Threads are charged pages for their stacks, so
+     * their limit is only a sanity cap. */
     uint64_t total, free;
     pmm_stats(&total, &free);
     uint64_t keep = free / 4 < 8192 ? free / 4 : 8192;
-    job_set_limit(j, JOB_LIMIT_PAGES, free - keep);
-    job_set_limit(j, JOB_LIMIT_HANDLES, 1u << 20);
+    uint64_t budget = free - keep;
+    uint64_t handle_pages = budget / 16 < 4096 ? budget / 16 : 4096;
+    uint64_t msg_pages = budget / 8 < 16384 ? budget / 8 : 16384;
+    job_set_limit(j, JOB_LIMIT_PAGES, budget - handle_pages - msg_pages);
+    job_set_limit(j, JOB_LIMIT_HANDLES, handle_pages * (PAGE_SIZE / JOB_OBJECT_BYTES));
     job_set_limit(j, JOB_LIMIT_THREADS, 4096);
-    job_set_limit(j, JOB_LIMIT_MSG_BYTES, 64ull << 20);
+    job_set_limit(j, JOB_LIMIT_MSG_BYTES, msg_pages * PAGE_SIZE);
     *out = j;
     return OK;
 }
@@ -296,8 +308,9 @@ bool userboot_run_init(uint64_t timeout_s)
                          t0 + timeout_s * 1000000000ull, NULL);
     bool ok = false;
     if (st != OK) {
-        report("init: still running after %lu s: killed", timeout_s);
-        process_kill(p, PROCESS_KILLED_CODE, true);
+        report("init: still running after %lu s: killed (with everything it started)",
+               timeout_s);
+        job_kill(root, NULL);   /* init's job is the root: every user process */
         object_wait_one(process_kobject(p), SIG_TERMINATED, DEADLINE_NEVER, NULL);
     } else {
         struct process_info info;

@@ -61,8 +61,11 @@ static bool run(int argc, char **argv)
     struct process_info info;
     st = spawn_wait(proc, RUN_TIMEOUT_S * 1000000000ull, &info);
     if (st == ERR_TIMED_OUT) {
-        say("init: %s: still running after %d s, killing it", argv[0], RUN_TIMEOUT_S);
-        jam_process_kill(proc);
+        /* Its whole job: whatever it started (even orphans) goes too, and
+         * job_kill returns once all of it is dead. */
+        say("init: %s: still running after %d s, killing its job", argv[0], RUN_TIMEOUT_S);
+        if (jam_job_kill(job) != OK)
+            jam_process_kill(proc);
         st = spawn_wait(proc, 10000000000ull, &info);
     }
     uint64_t ms = ((uint64_t)jam_clock_get() - t0) / 1000000;

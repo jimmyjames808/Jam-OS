@@ -84,13 +84,24 @@
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
+ * Job charges (review R2). An address space made for a process
+ * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
+ * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
+ * every user page-table page from pt_prepare (charged BEFORE it is
+ * allocated, so a refused one is never made) until it is detached or
+ * freed, and 1 per ASPACE_MAPPINGS_PER_PAGE mapping structs (`map_pages`,
+ * settled under the region lock whenever nmaps changes; a split the job
+ * can't pay for fails the unmap/protect up front, before anything
+ * changed). The charges move with pt_pages / nmaps under the same locks
+ * and destroy credits whatever is left, so the job is exact. Charges are
+ * lock-free atomics, fine under pt_lock.
+ *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
  * kernel CR3) and no PCIDs; one decommit batch holds the VMO lock (with
  * interrupts off) for up to 512 pages times the number of mappings of the
  * VMO that overlap them, so a VMO mapped thousands of times makes that
- * latency grow; page-table pages and mapping structs aren't charged to
- * anyone yet (jobs, phase 2). The region lock must never be held across a
- * user copy: the copy's fault would take it again. */
+ * latency grow. The region lock must never be held across a user copy:
+ * the copy's fault would take it again. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/cpu.h>
@@ -98,6 +109,7 @@
 #include <jam/ipi.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -145,7 +157,9 @@ struct aspace {
     uint64_t         *pml4v;
     struct list_node  maps;       /* struct mapping */
     uint32_t          nmaps;
-    uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock) */
+    uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
+    uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
+    struct job       *job;        /* charged for all of it (a reference), or NULL */
     volatile uint32_t refs;
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
 };
@@ -273,7 +287,8 @@ static uint64_t *pte_find(struct aspace *as, uint64_t va)
     return &t[ix(va, 1)];
 }
 
-/* Region lock held: create the tables down to va's page table. */
+/* Region lock held: create the tables down to va's page table, each one
+ * charged to the job before it is allocated. */
 static status_t pt_prepare(struct aspace *as, uint64_t va)
 {
     uint64_t f = spin_lock_irqsave(&as->pt_lock);
@@ -281,7 +296,10 @@ static status_t pt_prepare(struct aspace *as, uint64_t va)
     for (int l = 4; l > 1; l--) {
         uint64_t *e = &t[ix(va, l)];
         if (!(*e & PTE_P)) {
-            uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+            uint64_t pa = 0;
+            if (job_charge(as->job, JOB_LIMIT_PAGES, 1) == OK &&
+                !(pa = pmm_alloc_page_phys(PMM_ZERO)))
+                job_uncharge(as->job, JOB_LIMIT_PAGES, 1);
             if (!pa) {
                 spin_unlock_irqrestore(&as->pt_lock, f);
                 return ERR_NO_MEMORY;   /* tables made so far are freed by unmap/destroy */
@@ -300,6 +318,7 @@ static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct t
 {
     *entry = 0;
     as->pt_pages--;
+    job_uncharge(as->job, JOB_LIMIT_PAGES, 1);   /* freed once g is finished */
     tlb_gather_page(g, virt_to_page(t));
 }
 
@@ -417,16 +436,46 @@ static uint64_t free_tables(struct aspace *as)
 
 /* ---- lifetime ----------------------------------------------------------- */
 
+static uint64_t map_pages_for(uint32_t nmaps)
+{
+    return (nmaps + ASPACE_MAPPINGS_PER_PAGE - 1) / ASPACE_MAPPINGS_PER_PAGE;
+}
+
+/* Region lock held: make the charge for mapping structs cover n mappings.
+ * Only growing can fail (ERR_NO_MEMORY, nothing changed). */
+static status_t maps_account(struct aspace *as, uint32_t n)
+{
+    uint64_t want = map_pages_for(n);
+    if (want > as->map_pages) {
+        status_t st = job_charge(as->job, JOB_LIMIT_PAGES, want - as->map_pages);
+        if (st != OK)
+            return st;
+    } else if (want < as->map_pages) {
+        job_uncharge(as->job, JOB_LIMIT_PAGES, as->map_pages - want);
+    }
+    as->map_pages = want;
+    return OK;
+}
+
 status_t aspace_create(struct aspace **out)
 {
+    return aspace_create_charged(NULL, out);
+}
+
+status_t aspace_create_charged(struct job *job, struct aspace **out)
+{
+    status_t st = job_charge(job, JOB_LIMIT_PAGES, 1);   /* the PML4 */
+    if (st != OK)
+        return st;
     struct aspace *as = kzalloc(sizeof(*as));
-    if (!as)
-        return ERR_NO_MEMORY;
-    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+    uint64_t pa = as ? pmm_alloc_page_phys(PMM_ZERO) : 0;
     if (!pa) {
         kfree(as);
+        job_uncharge(job, JOB_LIMIT_PAGES, 1);
         return ERR_NO_MEMORY;
     }
+    job_ref(job);
+    as->job = job;
     as->pml4 = pa;
     as->pml4v = phys_to_virt(pa);
     /* The kernel half is shared: its PDPTs all exist from vmm_init on. */
@@ -468,6 +517,9 @@ static void aspace_destroy(struct aspace *as)
     if (freed != as->pt_pages)
         panic("aspace: freed %lu table pages, owned %lu", freed, as->pt_pages);
     pmm_free_page_phys(as->pml4);
+    /* Tables, mapping structs and the PML4 (the mappings are gone). */
+    job_uncharge(as->job, JOB_LIMIT_PAGES, freed + as->map_pages + 1);
+    job_unref(as->job);
     kfree(as);
 }
 
@@ -591,10 +643,14 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         if (USER_TOP - base < len)
             st = ERR_NO_RESOURCES;
     }
+    if (st == OK)
+        st = maps_account(as, as->nmaps + 1);
     if (st == OK) {
         m->base = base;
         umap_fill(as, m);
         st = vmo_umap_add(vmo, &m->umap, true);   /* bounds against the VMO size */
+        if (st != OK)
+            maps_account(as, as->nmaps);   /* give the charge back */
     }
     if (st == OK) {
         list_add(pos, &m->node);
@@ -630,9 +686,15 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
     }
     struct mapping *spare = NULL;
     if (first->base < addr && mend(first) > end) {   /* a hole in the middle */
-        if (as->nmaps >= MAX_MAPPINGS || !(spare = kzalloc(sizeof(*spare)))) {
+        status_t st = as->nmaps >= MAX_MAPPINGS ? ERR_NO_RESOURCES
+                                                : maps_account(as, as->nmaps + 1);
+        if (st == OK && !(spare = kzalloc(sizeof(*spare)))) {
+            maps_account(as, as->nmaps);
+            st = ERR_NO_MEMORY;
+        }
+        if (st != OK) {
             mutex_unlock(&as->lock);
-            return as->nmaps >= MAX_MAPPINGS ? ERR_NO_RESOURCES : ERR_NO_MEMORY;
+            return st;
         }
     }
 
@@ -668,6 +730,7 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
             umap_sync(m);
         }
     }
+    maps_account(as, as->nmaps);   /* only ever down here: can't fail */
     mutex_unlock(&as->lock);
     return OK;
 }
@@ -700,9 +763,13 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
         unsigned need = (first->base < addr) + (mend(last) > end);
         if (as->nmaps + need > MAX_MAPPINGS)
             st = ERR_NO_RESOURCES;
+        else
+            st = maps_account(as, as->nmaps + need);
         for (unsigned i = 0; i < need && st == OK; i++)
             if (!(spare[i] = kzalloc(sizeof(struct mapping))))
                 st = ERR_NO_MEMORY;
+        if (st == ERR_NO_MEMORY)
+            maps_account(as, as->nmaps);   /* back to what we have */
     }
     if (st != OK) {
         mutex_unlock(&as->lock);

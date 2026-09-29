@@ -1,5 +1,21 @@
 # Jam OS: handoff (updated 2026-09-29, M5 phase 2 built on its branch)
 
+**2026-09-29 review fix pass (fix agent's branch, on top of the review merge 0d196db)**: all 8
+findings fixed, one commit each, every review test moved into the default run as `quota_*`
+(kernel/test/test_quota.c; test_review.c is gone, the `review_` skip rule stays for future
+reviews). R1 VMO table pages charged (page charged before any table is built); R2 user page
+tables + PML4 + a page per 16 mappings charged to the process's job; R3 jobs max 32 deep and
+cost their parent a handle unit; R4 new RIGHT_MANAGE (set_limit, job_kill), SR_JOB comes
+without it (JOB_RIGHTS_OWN); R5 `starting` flag: no thread_start while process_start makes the
+first thread, no panic; R6 threads cost 17 pages, process/VMO objects a handle unit, port
+packets/bindings + message handles msg bytes, root job carves handle/msg budgets out of pages;
+R7 debug_write prints outside its lock, 100 lines then 50/s per process; R8 job_kill syscall
+(80) + job tree lists, init kills a timed-out program's job, userboot kills the root job if init
+times out. QEMU 4+8 CPUs: 131/131 ktests, utest 14/14 under init with the root job clean,
+stress=20, all crash tests. Seen once in 9 stress runs (4 CPUs): "counter#14 made no progress
+for 10 s" (kernel counter threads on the barging counter mutex; code this pass didn't touch;
+not reproduced after). Next: merge, then the PC run.
+
 **2026-09-29 latest: M5 phase 2 MERGED (ee670aa, v0.0.8-m5).** Main: 122/122 ktests + stress at 4+8,
 init + utest 12/12 at 4+8 with the root job clean afterwards (0 pages/handles/threads/msg bytes), all
 15 crash tests OK. An INDEPENDENT REVIEW agent (user's rule: big agent code gets a separate reviewer)

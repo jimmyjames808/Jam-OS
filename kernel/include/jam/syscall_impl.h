@@ -55,3 +55,4 @@ int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 int64_t sysc_job_get_info(handle_t job, uint64_t out);
 int64_t sysc_process_get_info(handle_t proc, uint64_t out);
 int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);
+int64_t sysc_job_kill(handle_t job);

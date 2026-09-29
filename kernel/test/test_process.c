@@ -10,7 +10,9 @@
 #include <jam/aspace_vmo.h>
 #include <jam/bootfs.h>
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/elf.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/process.h>
@@ -98,9 +100,10 @@ KTEST(proc_job_hierarchy_limits)
     job_uncharge(child, JOB_LIMIT_THREADS, 1);
     job_uncharge(child, JOB_LIMIT_PAGES, 8);
     job_uncharge(parent, JOB_LIMIT_PAGES, 2);
-    job_is_empty(parent);
+    KT_EQ(job_used(parent, JOB_LIMIT_HANDLES), 1);   /* the child job itself */
     KT_EQ(job_charge(NULL, JOB_LIMIT_PAGES, 1000), OK);   /* kernel objects: never charged */
     job_unref(child);
+    job_is_empty(parent);
     job_unref(parent);
 }
 
@@ -272,6 +275,123 @@ KTEST(proc_never_started)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, 0x400000, 0, &none, 0, NULL), ERR_BAD_STATE);
     kobject_unref(uthread_kobject(u));   /* its reference on p was the last */
+    job_is_empty(j);
+    job_unref(j);
+}
+
+/* Review R8: job_kill kills everything in a job and the jobs below it,
+ * including a process whose parent is gone (nobody holds a handle to it),
+ * waits until they are all dead, and the killed jobs take nothing new. */
+KTEST(proc_job_kill_tree)
+{
+    struct job *j = fresh_job(), *sub, *subsub;
+    KT_EQ(job_create(j, &sub), OK);
+    KT_EQ(job_create(sub, &subsub), OK);
+    struct process *a = start(j, "spin", NULL, NULL);
+    struct process *b = start(sub, "spin", NULL, NULL);
+    struct process *c = start(subsub, "spin", NULL, NULL);
+    struct process *idle;
+    KT_EQ(process_create(subsub, "idle", &idle), OK);   /* never started */
+    kobject_unref(process_kobject(c));   /* an orphan: nobody has it now */
+    thread_sleep_ms(20);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 3);
+    unsigned killed = 0;
+    KT_EQ(job_kill(j, &killed), OK);
+    KT_EQ(killed, 4);
+    /* Returned only once everything was dead: nothing is left running. */
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    struct process_info info;
+    process_get_info(idle, &info);
+    KT_EQ(info.state, PROCESS_DEAD);
+    KT_ASSERT(finish(a).killed);
+    KT_ASSERT(finish(b).killed);
+    kobject_unref(process_kobject(idle));
+    /* Killed jobs take no new processes or jobs. */
+    struct process *p;
+    struct job *x;
+    KT_EQ(process_create(subsub, "late", &p), ERR_BAD_STATE);
+    KT_EQ(job_create(sub, &x), ERR_BAD_STATE);
+    KT_EQ(job_kill(j, &killed), OK);   /* again: nothing to do */
+    KT_EQ(killed, 0);
+    job_unref(subsub);
+    job_unref(sub);
+    job_is_empty(j);
+    job_unref(j);
+}
+
+/* Review R7: debug_write prints with no lock held and a process can't
+ * flood the console: 100 lines at once, then 50 a second, the rest are
+ * dropped (and counted in a note). */
+KTEST(proc_debug_write_rate_limited)
+{
+    enum { LINES = 300 };
+    static char buf[LINES * 16];
+    size_t len = 0;
+    for (unsigned i = 0; i < LINES; i++)
+        len += ksnprintf(buf + len, sizeof(buf) - len, "flood %u\n", i);
+    struct job *j = fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "flood", &p), OK);
+    size_t printed = process_debug_write(p, buf, len, false);
+    kprintf("proc: %lu of %u lines printed\n", (unsigned long)printed, LINES);
+    KT_ASSERT(printed >= 100 && printed <= 110);   /* the burst, maybe a refill or two */
+    thread_sleep_ms(100);                           /* ~5 more lines' worth */
+    printed = process_debug_write(p, buf, len, false);
+    KT_ASSERT(printed >= 3 && printed <= 15);
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* prints the dropped-lines note */
+    kobject_unref(process_kobject(p));
+    job_is_empty(j);
+    job_unref(j);
+}
+
+/* Review R5: in the window between process_start making the process
+ * RUNNING and its first thread existing, nobody may start another thread
+ * of it (that thread could run and close the startup handle, and a failed
+ * first creation then lost it: a panic). The hook forces the window: it
+ * tries to start a second thread there, then makes the first creation
+ * fail as if out of memory. */
+static struct uthread *window_u2;
+static status_t window_st;
+
+static void window_hook(void *arg)
+{
+    struct dbg_process_start *h = arg;
+    window_st = uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL);
+    h->fail = true;
+}
+
+KTEST(proc_start_window_refuses_other_threads)
+{
+    struct job *j = fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "window", &p), OK);
+    struct uthread *u1;
+    KT_EQ(uthread_create(p, "first", &u1), OK);
+    KT_EQ(uthread_create(p, "second", &window_u2), OK);
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    kobject_unref((struct kobject *)a);
+    struct khandle arg0 = khandle_from_new((struct kobject *)b, RIGHTS_BASIC | RIGHTS_IO);
+
+    window_st = OK;
+    dbg_hooks[DBG_PROCESS_START] = window_hook;
+    status_t st = process_start(p, u1, 0x400000, 0x800000, &arg0, 0, NULL);
+    dbg_hooks[DBG_PROCESS_START] = NULL;
+    KT_EQ(window_st, ERR_BAD_STATE);   /* the second start was refused */
+    KT_EQ(st, ERR_NO_MEMORY);          /* the first failed "for lack of memory"... */
+    KT_ASSERT(arg0.obj == (struct kobject *)b);   /* ...and gave the handle back */
+    struct process_info info;
+    process_get_info(p, &info);
+    KT_EQ(info.state, PROCESS_NEW);     /* as if never started */
+    KT_EQ(info.threads, 0);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    KT_EQ(uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL), ERR_BAD_STATE);
+
+    khandle_release(&arg0);
+    kobject_unref(uthread_kobject(u1));
+    kobject_unref(uthread_kobject(window_u2));
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
+    kobject_unref(process_kobject(p));
     job_is_empty(j);
     job_unref(j);
 }

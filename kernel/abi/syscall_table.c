@@ -244,6 +244,11 @@ static int64_t call_thread_set_priority(const struct syscall_frame *f)
     return sysc_thread_set_priority((handle_t)f->args[0], (int32_t)f->args[1]);
 }
 
+static int64_t call_job_kill(const struct syscall_frame *f)
+{
+    return sysc_job_kill((handle_t)f->args[0]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -290,6 +295,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_job_get_info] = call_job_get_info,
     [SYS_process_get_info] = call_process_get_info,
     [SYS_thread_set_priority] = call_thread_set_priority,
+    [SYS_job_kill] = call_job_kill,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

@@ -379,4 +379,12 @@ jam_thread_set_priority:
     ret
     .size jam_thread_set_priority, . - jam_thread_set_priority
 
+    .globl jam_job_kill
+    .type jam_job_kill, @function
+jam_job_kill:
+    mov $SYS_job_kill, %eax
+    syscall
+    ret
+    .size jam_job_kill, . - jam_job_kill
+
     .section .note.GNU-stack, "", @progbits

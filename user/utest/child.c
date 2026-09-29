@@ -180,6 +180,50 @@ static int msgs(void)
     return 41;
 }
 
+/* With a small job message-byte limit: port packets, then port bindings,
+ * are charged to us too, so our job (not the port's per-port caps of 4096
+ * each) stops us with ERR_NO_MEMORY. 47 if both were refused that way,
+ * well below the port's caps. */
+static int ports(void)
+{
+    handle_t port, ev;
+    if (jam_port_create(&port) != OK || jam_event_create(&ev) != OK)
+        return 2;
+    struct port_packet pk = { .key = 1, .type = PORT_PACKET_USER }, out;
+    unsigned n = 0, b = 0;
+    status_t st;
+    while ((st = jam_port_queue(port, &pk)) == OK)
+        if (++n >= 4096)
+            return 41;
+    if (st != ERR_NO_MEMORY)
+        return 43;
+    while (jam_port_wait(port, 0, &out) == OK)
+        ;   /* give the budget back for the bindings */
+    while ((st = jam_port_bind(port, ev, b, SIG_SIGNALED, PORT_BIND_PERSISTENT)) == OK)
+        if (++b >= 4096)
+            return 42;
+    if (st != ERR_NO_MEMORY)
+        return 44;
+    return n > 0 && b > 0 ? 47 : 45;
+}
+
+/* Start a spinning grandchild in a job of its own under ours and exit at
+ * once, leaving it an orphan nobody holds a handle to: only killing our
+ * job (job_kill) can get rid of it. */
+static int orphan(void)
+{
+    handle_t sub, proc;
+    if (jam_job_create(startup_handle(SR_JOB), 0, &sub) != OK)
+        return 60;
+    const char *argv[] = { "utest", "spin" };
+    struct spawn_args a = {
+        .path = "bin/utest", .name = "utest-orphaned", .argc = 2, .argv = argv, .job = sub,
+    };
+    if (spawn(&a, &proc) != OK)
+        return 61;
+    return 0;   /* our handles (proc, sub) close as we go */
+}
+
 /* The main thread leaves; the process lives on in its second thread,
  * which exits the process with 11. */
 static void finisher(void *arg)
@@ -220,11 +264,12 @@ static int startup(int argc, char **argv)
     return 0;
 }
 
-/* Review regression (kernel/test/test_review.c, review_child_raises_own_job_limit):
- * lift our own job's page limit through SR_JOB, then commit 1 MiB. 0 if
- * both worked (the bug), 50 if the kernel refused the raise, 51 if the
- * raise "worked" but the commit was still refused. */
-static int review_raise(void)
+/* Try to lift our own job's page limit through SR_JOB, then commit 1 MiB
+ * (kernel/test/test_quota.c, quota_child_cannot_raise_own_job_limit). 50
+ * if the kernel refused the raise (right: SR_JOB has no RIGHT_MANAGE), 0 if
+ * both worked (the review's R4 bug), 51 if the raise "worked" but the
+ * commit was still refused. */
+static int raise_own_limit(void)
 {
     if (jam_job_set_limit(startup_handle(SR_JOB), JOB_LIMIT_PAGES, JOB_NO_LIMIT) != OK)
         return 50;
@@ -249,10 +294,12 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "threads2"))   return threads2();
     if (!strcmp(m, "handles"))    return handles();
     if (!strcmp(m, "msgs"))       return msgs();
+    if (!strcmp(m, "ports"))      return ports();
+    if (!strcmp(m, "orphan"))     return orphan();
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
-    if (!strcmp(m, "review-raise")) return review_raise();
+    if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);
     return 127;

@@ -276,3 +276,9 @@ WEAK int64_t sysc_thread_set_priority(handle_t thread, int32_t prio)
     (void)thread, (void)prio;
     return ERR_NOT_SUPPORTED;
 }
+
+WEAK int64_t sysc_job_kill(handle_t job)
+{
+    (void)job;
+    return ERR_NOT_SUPPORTED;
+}

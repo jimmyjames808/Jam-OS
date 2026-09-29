@@ -183,6 +183,17 @@ static bool t_rights(void)
     CHECK_ST(jam_job_create(jro, 0, &j2), ERR_ACCESS_DENIED);
     CHECK_ST(jam_process_create(jro, "x", 1, 0, &p, &pv), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(jro), OK);
+    /* our own job comes without RIGHT_MANAGE: its limits are our parent's */
+    CHECK_ST(jam_job_set_limit(own_job(), JOB_LIMIT_PAGES, JOB_NO_LIMIT), ERR_ACCESS_DENIED);
+    handle_t jm;
+    CHECK_ST(jam_handle_duplicate(own_job(), JOB_RIGHTS, &jm), ERR_INVALID_ARGS);
+    /* a job we make is ours to manage */
+    CHECK_ST(new_job(&j2), OK);
+    CHECK_ST(jam_job_set_limit(j2, JOB_LIMIT_PAGES, 16), OK);
+    CHECK_ST(jam_handle_duplicate(j2, JOB_RIGHTS_OWN, &jm), OK);
+    CHECK_ST(jam_job_set_limit(jm, JOB_LIMIT_PAGES, 32), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(jm), OK);
+    CHECK_ST(jam_handle_close(j2), OK);
 
     CHECK_ST(jam_handle_close(ro2), OK);
     CHECK_ST(jam_handle_close(v), OK);
@@ -410,6 +421,96 @@ static bool t_runaway_hits_job_limits(void)
     if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 4096, &info))
         return false;
     CHECK_EQ(info.exit_code, 46);
+    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 4096, &info))
+        return false;
+    CHECK_EQ(info.exit_code, 47);   /* port packets and bindings are charged too */
+    return true;
+}
+
+static bool wait_threads(handle_t *th, unsigned n);
+
+static void waiter(void *arg)
+{
+    signals_t seen;
+    jam_object_wait_one((handle_t)(uintptr_t)arg, SIG_SIGNALED, DEADLINE_NEVER, &seen);
+}
+
+/* Kernel memory a program makes the kernel hold is charged to its job
+ * (the review's R6): a VMO's struct and a process are handle units, a
+ * thread's kernel stack is pages, port packets and bindings and each
+ * handle a message carries are message bytes, and all of it comes back. */
+static bool t_kernel_objects_are_charged(void)
+{
+    struct job_info a, b;
+    CHECK_ST(info_of(own_job(), &a), OK);
+#define USED(k) (info_of(own_job(), &b) == OK ? b.used[k] - a.used[k] : 999999)
+
+    handle_t v;
+    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_EQ(USED(JOB_LIMIT_HANDLES), 2);   /* its slot and the VMO itself */
+    CHECK_ST(jam_handle_close(v), OK);
+    CHECK_EQ(USED(JOB_LIMIT_HANDLES), 0);
+
+    handle_t port, ev, x, y;
+    CHECK_ST(jam_port_create(&port), OK);
+    CHECK_ST(jam_event_create(&ev), OK);
+    struct port_packet pk = { .key = 3, .type = PORT_PACKET_USER }, out;
+    CHECK_ST(jam_port_queue(port, &pk), OK);
+    CHECK(USED(JOB_LIMIT_MSG_BYTES) > 0);
+    CHECK_ST(jam_port_wait(port, 0, &out), OK);
+    CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
+    CHECK_ST(jam_port_bind(port, ev, 4, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
+    CHECK(USED(JOB_LIMIT_MSG_BYTES) > 1024);   /* the binding keeps ev alive */
+    CHECK_ST(jam_port_unbind(port, ev, 4), OK);
+    CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
+
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(jam_channel_write(x, "hi", 2, &ev, 1), OK);   /* ev moves into the message */
+    CHECK(USED(JOB_LIMIT_MSG_BYTES) > 1024);
+    uint8_t buf[8];
+    uint32_t nb = 0, nh = 0;
+    struct channel_read_args r = {
+        .h = y, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
+        .actual_bytes = (uint64_t)(uintptr_t)&nb, .handles = (uint64_t)(uintptr_t)&ev,
+        .handles_cap = 1, .actual_handles = (uint64_t)(uintptr_t)&nh,
+    };
+    CHECK_ST(jam_channel_read(&r), OK);
+    CHECK_EQ(nh, 1);
+    CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
+
+    /* a thread: its kernel stack (64 KiB) and more, while it runs */
+    static uint8_t stack[8192] __attribute__((aligned(16)));
+    handle_t th;
+    CHECK_ST(thread_spawn("waiter", waiter, (void *)(uintptr_t)ev, stack, sizeof(stack), &th),
+             OK);
+    CHECK(USED(JOB_LIMIT_PAGES) >= 16);
+    CHECK_ST(jam_event_signal(ev, 0, SIG_SIGNALED), OK);
+    if (!wait_threads(&th, 1))
+        return false;
+    CHECK_EQ(USED(JOB_LIMIT_PAGES), 0);
+
+    /* a process (never started): a handle unit and its PML4, in its job */
+    handle_t job, p, pv;
+    struct job_info ji;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_process_create(job, "idle", 4, 0, &p, &pv), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_HANDLES], 1);
+    CHECK_EQ(ji.used[JOB_LIMIT_PAGES], 1);
+    CHECK_ST(jam_handle_close(pv), OK);
+    CHECK_ST(jam_handle_close(p), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        CHECK_EQ(ji.used[k], 0);
+    CHECK_ST(jam_handle_close(job), OK);
+
+    CHECK_ST(jam_handle_close(y), OK);
+    CHECK_ST(jam_handle_close(x), OK);
+    CHECK_ST(jam_handle_close(ev), OK);
+    CHECK_ST(jam_handle_close(port), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        CHECK_EQ(USED(k), 0);
+#undef USED
     return true;
 }
 
@@ -621,6 +722,34 @@ static bool t_kill_spinning_and_unstarted(void)
     return true;
 }
 
+/* A child that leaves a grandchild behind (spinning, in a job of its own,
+ * with no handle to it anywhere): job_kill on the child's job reaps it,
+ * returns only once it is dead, and the job is empty and closed to new
+ * processes and jobs afterwards. */
+static bool t_job_kill_reaps_orphans(void)
+{
+    handle_t job, proc, p2, v2, j2;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(child("orphan", NULL, job, HANDLE_INVALID, &proc), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 1);   /* the orphan, still spinning */
+    CHECK_ST(jam_job_kill(own_job()), ERR_ACCESS_DENIED);   /* no RIGHT_MANAGE on our own */
+    CHECK_ST(jam_job_kill(job), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        CHECK_EQ(ji.used[k], 0);
+    CHECK_ST(jam_process_create(job, "late", 4, 0, &p2, &v2), ERR_BAD_STATE);
+    CHECK_ST(jam_job_create(job, 0, &j2), ERR_BAD_STATE);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
 static bool t_startup_message(void)
 {
     handle_t job, proc;
@@ -648,7 +777,9 @@ static const struct {
     { "ping_pong", t_ping_pong },
     { "kill_in_channel_call", t_kill_in_channel_call },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
+    { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
+    { "job_kill_reaps_orphans", t_job_kill_reaps_orphans },
     { "fpu_state_survives_preemption", t_fpu_state_survives_preemption },
     { "many_threads", t_many_threads },
 };

@@ -47,6 +47,7 @@
 #define SYS_job_get_info         77
 #define SYS_process_get_info     78
 #define SYS_thread_set_priority  79
+#define SYS_job_kill             80
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 80
+#define SYSCALL_COUNT 81

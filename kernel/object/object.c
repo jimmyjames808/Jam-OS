@@ -88,6 +88,17 @@ void kobject_ref(struct kobject *obj)
         panic("kobject: ref of a dead %s (koid %lu)", obj->ops->name, obj->koid);
 }
 
+bool kobject_tryref(struct kobject *obj)
+{
+    uint32_t old = __atomic_load_n(&obj->refs, __ATOMIC_RELAXED);
+    do {
+        if (old == 0)
+            return false;
+    } while (!__atomic_compare_exchange_n(&obj->refs, &old, old + 1, true, __ATOMIC_ACQUIRE,
+                                          __ATOMIC_RELAXED));
+    return true;
+}
+
 void kobject_unref(struct kobject *obj)
 {
     uint32_t left = __atomic_sub_fetch(&obj->refs, 1, __ATOMIC_ACQ_REL);

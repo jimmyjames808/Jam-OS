@@ -11,10 +11,19 @@
  *   - the queue (one reference while its entry is queued), dropped by
  *     whoever dequeues or drains it.
  * The observer registration needs no reference of its own: it is always
- * removed, under the object's lock, before the list's reference drops. */
+ * removed, under the object's lock, before the list's reference drops.
+ *
+ * Job charges (review R6): a user packet and a binding are kernel memory
+ * a process makes the port hold (up to PORT_MAX_* each), so they are
+ * charged as JOB_LIMIT_MSG_BYTES to the job of whoever queued / bound them
+ * (job_current(); kernel callers are never charged), like a channel
+ * message, from creation until they are freed. A binding also pays
+ * JOB_OBJECT_BYTES for the object it watches: it holds a reference, so it
+ * may be what keeps that object alive. Each keeps a job reference. */
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/port.h>
+#include <jam/process.h>
 #include <jam/time.h>
 
 struct port_binding;
@@ -22,8 +31,12 @@ struct port_binding;
 struct port_qentry {
     struct list_node     node;      /* in port->queue */
     struct port_binding *binding;   /* NULL: a user packet, freed when dequeued */
+    struct job          *job;       /* user packet: charged USER_PACKET_CHARGE (a reference) */
     struct port_packet   pkt;
 };
+
+#define USER_PACKET_CHARGE sizeof(struct port_qentry)
+#define BINDING_CHARGE     (sizeof(struct port_binding) + JOB_OBJECT_BYTES)
 
 struct port_binding {
     struct observer    obs;         /* on obj; guarded by obj->lock */
@@ -36,6 +49,7 @@ struct port_binding {
     bool               queued;      /* entry is in port->queue; port lock */
     struct list_node   port_node;   /* in port->bindings; bindings_lock */
     struct list_node   reap_node;   /* private list of whoever removed it */
+    struct job        *job;         /* charged BINDING_CHARGE (a reference) */
     struct port_qentry entry;
 };
 
@@ -53,12 +67,40 @@ void port_get_stats(struct port_stats *s)
     s->user_packets = __atomic_load_n(&live_user_packets, __ATOMIC_RELAXED);
 }
 
+/* Credit and release a charge taken by charge_current. */
+static void uncharge_job(struct job *job, uint64_t n)
+{
+    job_uncharge(job, JOB_LIMIT_MSG_BYTES, n);
+    job_unref(job);
+}
+
+/* Charge n message bytes to the current thread's job; *out gets it (with
+ * a reference) for uncharge_job, NULL for kernel threads. */
+static status_t charge_current(uint64_t n, struct job **out)
+{
+    struct job *job = job_current();
+    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, n);
+    if (st != OK)
+        return st;
+    job_ref(job);
+    *out = job;
+    return OK;
+}
+
 static void binding_put(struct port_binding *b)
 {
     if (__atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+        uncharge_job(b->job, BINDING_CHARGE);
         kfree(b);
         stat_add(&live_bindings, -1);
     }
+}
+
+static void user_packet_free(struct port_qentry *e)
+{
+    uncharge_job(e->job, USER_PACKET_CHARGE);
+    kfree(e);
+    stat_add(&live_user_packets, -1);
 }
 
 /* With the port lock held: append e and tell waiters. */
@@ -186,8 +228,7 @@ static void port_destroy(struct kobject *obj)
             e->binding->queued = false;
             binding_put(e->binding);
         } else {
-            kfree(e);
-            stat_add(&live_user_packets, -1);
+            user_packet_free(e);
         }
     }
     kfree(p);
@@ -221,14 +262,19 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
         return ERR_NOT_SUPPORTED;   /* "port" would nest inside "port" */
     if (!mask || (flags != PORT_BIND_ONCE && flags != PORT_BIND_PERSISTENT))
         return ERR_INVALID_ARGS;
-    struct port_binding *b = kzalloc(sizeof(*b));
-    if (!b)
-        return ERR_NO_MEMORY;
     /* Read-only quick check; the authoritative test is under bindings_lock. */
-    if (__atomic_load_n(&p->nbindings, __ATOMIC_RELAXED) >= PORT_MAX_BINDINGS) {
-        kfree(b);
+    if (__atomic_load_n(&p->nbindings, __ATOMIC_RELAXED) >= PORT_MAX_BINDINGS)
         return ERR_NO_RESOURCES;
+    struct job *job;
+    status_t st = charge_current(BINDING_CHARGE, &job);
+    if (st != OK)
+        return st;
+    struct port_binding *b = kzalloc(sizeof(*b));
+    if (!b) {
+        uncharge_job(job, BINDING_CHARGE);
+        return ERR_NO_MEMORY;
     }
+    b->job = job;
     b->obs.mask = mask;
     b->obs.fire = binding_fire;
     b->port = p;
@@ -246,8 +292,7 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
     if (p->nbindings >= PORT_MAX_BINDINGS) {   /* authoritative check (O3a) */
         spin_unlock_irqrestore(&p->bindings_lock, f);
         kobject_unref(obj);          /* undo the ref taken above */
-        stat_add(&live_bindings, -1);
-        kfree(b);
+        binding_put(b);              /* the only reference: frees and credits it */
         return ERR_NO_RESOURCES;
     }
     p->nbindings++;
@@ -278,20 +323,27 @@ status_t port_unbind(struct port *p, struct kobject *obj, uint64_t key)
 
 status_t port_queue_user(struct port *p, const struct port_packet *pkt)
 {
+    struct job *job;
+    status_t st = charge_current(USER_PACKET_CHARGE, &job);
+    if (st != OK)
+        return st;
     struct port_qentry *e = kmalloc(sizeof(*e));
-    if (!e)
+    if (!e) {
+        uncharge_job(job, USER_PACKET_CHARGE);
         return ERR_NO_MEMORY;
+    }
     e->binding = NULL;
+    e->job = job;
     e->pkt = *pkt;
     e->pkt.type = PORT_PACKET_USER;
+    stat_add(&live_user_packets, 1);
     uint64_t f = spin_lock_irqsave(&p->base.lock);
     if (p->user_queued >= PORT_MAX_USER_PACKETS) {
         spin_unlock_irqrestore(&p->base.lock, f);
-        kfree(e);
+        user_packet_free(e);
         return ERR_NO_RESOURCES;
     }
     p->user_queued++;
-    stat_add(&live_user_packets, 1);
     enqueue_locked(p, e);
     spin_unlock_irqrestore(&p->base.lock, f);
     return OK;
@@ -327,11 +379,9 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
         waitqueue_wake_one(&p->waiters);   /* more to take: pass it on */
     spin_unlock_irqrestore(&p->base.lock, f);
 
-    if (b) {
+    if (b)
         binding_dequeued(p, b);
-    } else {
-        kfree(e);
-        stat_add(&live_user_packets, -1);
-    }
+    else
+        user_packet_free(e);
     return OK;
 }

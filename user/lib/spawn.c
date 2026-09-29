@@ -185,12 +185,14 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
      * on failure. */
     handle_t hs[STARTUP_MAX_HANDLES];
     unsigned n = 0;
-    const struct { uint32_t role; handle_t h; } dup[] = {
-        { SR_SELF_PROCESS, proc }, { SR_SELF_THREAD, thread }, { SR_JOB, a->job },
-        { SR_BOOTFS, bootfs_vmo },
+    /* The child's own job goes without RIGHT_MANAGE (JOB_RIGHTS_OWN): the
+     * limits we set on it are ours to change, not the child's. */
+    const struct { uint32_t role; handle_t h; rights_t rights; } dup[] = {
+        { SR_SELF_PROCESS, proc, RIGHT_SAME }, { SR_SELF_THREAD, thread, RIGHT_SAME },
+        { SR_JOB, a->job, JOB_RIGHTS_OWN }, { SR_BOOTFS, bootfs_vmo, RIGHT_SAME },
     };
     for (unsigned i = 0; st == OK && i < sizeof(dup) / sizeof(dup[0]); i++) {
-        st = jam_handle_duplicate(dup[i].h, RIGHT_SAME, &hs[n]);
+        st = jam_handle_duplicate(dup[i].h, dup[i].rights, &hs[n]);
         if (st == OK)
             m->roles[n++] = dup[i].role;
     }

@@ -29,10 +29,18 @@ typedef uint32_t rights_t;
 #define RIGHT_SIGNAL    (1u << 6)   /* may set/clear user signals */
 #define RIGHT_WAIT      (1u << 7)   /* may wait on it / bind it to a port */
 #define RIGHT_INSPECT   (1u << 8)
+#define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
 #define RIGHTS_IO    (RIGHT_READ | RIGHT_WRITE)
+
+/* Job handles. job_create gives JOB_RIGHTS (the creator manages the new
+ * job); a program is handed its OWN job (SR_JOB) with JOB_RIGHTS_OWN only,
+ * so it can start processes and child jobs in it but can't lift the limits
+ * its parent set on it (or kill it). */
+#define JOB_RIGHTS_OWN (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
+#define JOB_RIGHTS     (JOB_RIGHTS_OWN | RIGHT_MANAGE)
 
 /* signals ------------------------------------------------------------------ */
 
@@ -95,12 +103,26 @@ struct port_packet {
  * ERR_NO_RESOURCES for handles and threads). So a child job can never use
  * more than its parent has left, whatever its own limit says. */
 
-#define JOB_LIMIT_PAGES     1   /* committed VMO pages (charged to the VMO creator's job) */
-#define JOB_LIMIT_HANDLES   2   /* handle-table slots in use */
-#define JOB_LIMIT_THREADS   3   /* live threads */
-#define JOB_LIMIT_MSG_BYTES 4   /* bytes of queued channel messages, charged to the sender */
+/* What each kind counts (the kernel's process.h has the details):
+ *   PAGES      memory in 4 KiB pages: a VMO's committed pages and its own
+ *              table pages (the VMO creator's job); a process's address
+ *              space: PML4, page tables, a page per 16 mappings; 17 pages
+ *              per running thread for its kernel stack and FPU state;
+ *   HANDLES    handle-table slots in use, plus one unit per job (charged
+ *              to its parent), process and VMO object;
+ *   THREADS    live threads;
+ *   MSG_BYTES  queued channel messages (1 KiB more per handle carried),
+ *              port packets and port bindings, charged to the sender. */
+#define JOB_LIMIT_PAGES     1
+#define JOB_LIMIT_HANDLES   2
+#define JOB_LIMIT_THREADS   3
+#define JOB_LIMIT_MSG_BYTES 4
 #define JOB_LIMIT_COUNT     5   /* kinds are 1 .. JOB_LIMIT_COUNT - 1 */
 #define JOB_NO_LIMIT        UINT64_MAX
+/* Jobs nest at most this deep: a root job is depth 0, and job_create fails
+ * with ERR_OUT_OF_RANGE for a job that would be at depth JOB_MAX_DEPTH. A
+ * job counts as one JOB_LIMIT_HANDLES unit of its parent while it exists. */
+#define JOB_MAX_DEPTH       32
 
 /* job_get_info. Arrays are indexed by JOB_LIMIT_*; index 0 is unused. */
 struct job_info {
