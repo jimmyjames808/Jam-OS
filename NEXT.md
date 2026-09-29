@@ -133,7 +133,16 @@
   `kill hid-10:0` while typing, `reboot`, Ctrl+Alt+Del; keytest entry as fallback. Independent M7 review
   RUNNING. **PC 2026-09-29 (0.0.20-m7): user reports ALL WORKED: typing into the shell with the real
   keyboard, usb/devices/ps, `kill hid-10:0` recovers, ktest m4, reboot.** GAP found: init doesn't restart
-  devmgr (killing devmgr loses USB until reset) -> add to the cleanup step. Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
+  devmgr (killing devmgr loses USB until reset) -> add to the cleanup step.
+- **M7 review DONE + its fixes MERGED** (4 branches: kernel kill never reaches ancestor jobs; usb-bus serve
+  backlog, safe Command Abort, halted-endpoint reset, per-pass time budget, DMA pages of undisabled slots
+  kept, no shared endpoints; devmgr hid reconnect race, only usb-bus may report interfaces, DRIVER_VIEW
+  PCI-only, late connect_input replies, REBIND failure state; console csi params bound; shell line cap).
+  QEMU: 217/217, utest 29, usbtest 5 passed, usbkeys PASS. OPEN, assigned: authority (run children get
+  devmgr + full console channels: keyboard hijack, Ctrl+Alt+Del reboot, keylogging) -> the cleanup agent;
+  `ktest` from the shell panics on a busy system (global-count asserts) + small kernel/driver leftovers ->
+  a leftovers agent. Also running: fun-apps agent (3 apps), shell-commands agent (coreutils-style cmds,
+  pipes, top, date). Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
