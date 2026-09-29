@@ -16,7 +16,10 @@ memory, R7 debug_write IRQs-off printing, R8 no job_kill. Review tests merged in
 is working on R1-R8. **PC 2026-09-29, 0.0.8-m5: "Jam OS (init + utest)" PASSED on the real PC**: utest 12 passed,
 utest exited 0 after 743 ms, init exited 0 after 779 ms, root job clean (0 pages/handles/threads/
 msg bytes). First real user processes on the PC. "All tests" first panicked in pcp_cross_cpu_free (a test race with lazy
-thread reaping, +1 free page; fixed fc78454), then PASSED 122/122 on the PC. The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
+thread reaping, +1 free page; fixed fc78454), then PASSED 122/122 on the PC. Benchmark recorded (BENCH.md M5 column). The 10-min stress first FAILED at
+14 s ("a dead process left something charged to its job": thread_left credited the job after
+the unlock; fixed d010dc4), then PASSED with 0 failures on the PC. **Every M5 check has passed
+on the PC. Remaining for M5 ✅: merge the review-fix agent's work (R1-R8) and rerun on the PC.** The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
 Benchmark for BENCH.md M5 column, stress).
 
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
