@@ -2,6 +2,7 @@
  * (<jam/console_svc.h>): kernel log readers, the screen hand-off, COM1
  * input and debug_command. The system call halves are thin wrappers
  * (kernel/abi/sysc_console.c); the QEMU shell test drives them for real. */
+#include <jam/acpi.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
 #include <jam/handle.h>
@@ -308,4 +309,12 @@ KTEST(console_reboot_describe)
     reboot_describe(buf, sizeof(buf));
     kprintf("console_reboot_describe: %s\n", buf);
     KT_ASSERT(contains(buf, strlen(buf), "0xCF9"));
+    /* A reset register in memory is written through an uncached mapping. */
+    if (acpi.has_reset_reg && acpi.reset_reg.space == 0) {
+        KT_ASSERT(acpi.reset_mmio);
+        KT_EQ(vmm_translate(vmm_kernel_pml4(), (uint64_t)acpi.reset_mmio), acpi.reset_reg.address);
+        KT_ASSERT(!memcmp(vmm_cache_type(vmm_kernel_pml4(), (uint64_t)acpi.reset_mmio), "UC", 2));
+    } else {
+        KT_ASSERT(!acpi.reset_mmio);
+    }
 }

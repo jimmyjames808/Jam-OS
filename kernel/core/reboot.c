@@ -1,5 +1,6 @@
 /* reboot (M7 Track C): reset the machine, trying in turn
- *   1. the ACPI FADT reset register (RESET_REG_SUP; I/O, memory or PCI
+ *   1. the ACPI FADT reset register (RESET_REG_SUP; I/O, memory (mapped
+ *      uncached at boot: acpi.reset_mmio) or PCI
  *      config space), the method firmware says is right for this board;
  *   2. port 0xCF9 (the PCH's Reset Control Register): 0x02 then 0x06, a
  *      hard reset (Intel chipsets, and QEMU's q35);
@@ -33,11 +34,10 @@ static void acpi_reset(void)
     const struct acpi_gas *g = &acpi.reset_reg;
     uint8_t v = acpi.reset_value;
     switch (g->space) {
-    case 0: {   /* system memory */
-        volatile uint8_t *p = acpi_map(g->address, 1);
-        *p = v;
+    case 0:     /* system memory: mapped uncached at boot (acpi.h) */
+        if (acpi.reset_mmio)
+            *acpi.reset_mmio = v;
         break;
-    }
     case 1:     /* system I/O */
         outb((uint16_t)g->address, v);
         break;

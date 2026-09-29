@@ -142,6 +142,8 @@ static void parse_fadt(const struct acpi_header *h)
         acpi.reset_reg = *(const struct acpi_gas *)(f + 116);
         acpi.reset_value = f[128];
         acpi.has_reset_reg = acpi.reset_reg.address != 0;
+        if (acpi.has_reset_reg && acpi.reset_reg.space == 0)
+            acpi.reset_mmio = vmm_map_mmio(acpi.reset_reg.address, 1);
     }
     /* ACPI 2.0+: X_PM_TMR_BLK wins when it is an I/O port. */
     if (h->length >= 208 + 12) {

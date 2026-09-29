@@ -56,6 +56,10 @@ struct acpi_info {
     bool     has_reset_reg;         /* M7: FADT RESET_REG usable (RESET_REG_SUP) */
     struct acpi_gas reset_reg;
     uint8_t  reset_value;
+    /* The reset register when it is in system memory: mapped UNCACHED at
+     * boot (a write through the cacheable HHDM could sit in the cache with
+     * interrupts off and never reach the chipset). NULL otherwise. */
+    volatile uint8_t *reset_mmio;
 
     /* HPET */
     uint64_t hpet_phys;             /* 0 if absent */
