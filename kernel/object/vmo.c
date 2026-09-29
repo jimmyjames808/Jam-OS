@@ -348,6 +348,7 @@ static void vmo_destroy(struct kobject *obj)
         if (v->job)
             job_uncharge(v->job, JOB_LIMIT_PAGES, v->committed);
     }
+    job_uncharge(v->job, JOB_LIMIT_HANDLES, 1);   /* the struct (see vmo_set_job) */
     job_unref(v->job);
     kfree(v);
 }
@@ -445,8 +446,12 @@ status_t vmo_set_job(struct vmo *v, struct job *job)
     if (v->job || v->kind == VMO_PHYS) {
         st = ERR_BAD_STATE;
     } else {
-        /* contiguous: all of it; paged: what it has so far, tables too */
-        st = job_charge(job, JOB_LIMIT_PAGES, v->committed + v->tables);
+        /* The struct itself is one handle unit (a mapping or a message can
+         * keep it alive after its last handle closes); its pages: all of a
+         * contiguous one, what a paged one has so far, tables too. */
+        st = job_charge(job, JOB_LIMIT_HANDLES, 1);
+        if (st == OK && (st = job_charge(job, JOB_LIMIT_PAGES, v->committed + v->tables)) != OK)
+            job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         if (st == OK) {
             job_ref(job);
             v->job = job;

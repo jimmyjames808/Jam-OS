@@ -96,8 +96,9 @@ static uint32_t msg_txid(struct chan_msg *m)
 
 /* ---- messages ------------------------------------------------------------- */
 
-/* Every message (its whole allocation, handles included) is charged to the
- * SENDER's job (JOB_LIMIT_MSG_BYTES) from creation until it is freed, so a
+/* Every message (its whole allocation, handles included, plus
+ * JOB_OBJECT_BYTES per handle for the object it may keep alive) is charged
+ * to the SENDER's job (JOB_LIMIT_MSG_BYTES) from creation until it is freed, so a
  * process can't pin kernel memory by filling a peer's queues beyond its
  * job's limit; the charge follows the message, not the queue it sits on.
  * Messages made by kernel threads have no job. (Was TODO(M5)/O3c.) */
@@ -124,18 +125,21 @@ static status_t msg_new(const void *bytes, uint32_t nbytes, const struct khandle
         if (!handles[i].obj)
             return ERR_INVALID_ARGS;
     uint64_t size = sizeof(struct chan_msg) + nhandles * sizeof(struct khandle) + nbytes;
+    /* Each handle also pays for the object it names: once the sender closes
+     * its own handles, the message may be all that keeps it alive. */
+    uint64_t charge = size + (uint64_t)nhandles * JOB_OBJECT_BYTES;
     struct job *job = job_current();
-    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, size);
+    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, charge);
     if (st != OK)
         return st;
     struct chan_msg *m = kmalloc(size);
     if (!m) {
-        job_uncharge(job, JOB_LIMIT_MSG_BYTES, size);
+        job_uncharge(job, JOB_LIMIT_MSG_BYTES, charge);
         return ERR_NO_MEMORY;
     }
     job_ref(job);
     m->job = job;
-    m->charge = size;
+    m->charge = charge;
     m->node.next = m->node.prev = NULL;
     m->nbytes = nbytes;
     m->nhandles = nhandles;

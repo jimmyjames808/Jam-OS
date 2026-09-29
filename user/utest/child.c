@@ -180,6 +180,33 @@ static int msgs(void)
     return 41;
 }
 
+/* With a small job message-byte limit: port packets, then port bindings,
+ * are charged to us too, so our job (not the port's per-port caps of 4096
+ * each) stops us with ERR_NO_MEMORY. 47 if both were refused that way,
+ * well below the port's caps. */
+static int ports(void)
+{
+    handle_t port, ev;
+    if (jam_port_create(&port) != OK || jam_event_create(&ev) != OK)
+        return 2;
+    struct port_packet pk = { .key = 1, .type = PORT_PACKET_USER }, out;
+    unsigned n = 0, b = 0;
+    status_t st;
+    while ((st = jam_port_queue(port, &pk)) == OK)
+        if (++n >= 4096)
+            return 41;
+    if (st != ERR_NO_MEMORY)
+        return 43;
+    while (jam_port_wait(port, 0, &out) == OK)
+        ;   /* give the budget back for the bindings */
+    while ((st = jam_port_bind(port, ev, b, SIG_SIGNALED, PORT_BIND_PERSISTENT)) == OK)
+        if (++b >= 4096)
+            return 42;
+    if (st != ERR_NO_MEMORY)
+        return 44;
+    return n > 0 && b > 0 ? 47 : 45;
+}
+
 /* The main thread leaves; the process lives on in its second thread,
  * which exits the process with 11. */
 static void finisher(void *arg)
@@ -250,6 +277,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "threads2"))   return threads2();
     if (!strcmp(m, "handles"))    return handles();
     if (!strcmp(m, "msgs"))       return msgs();
+    if (!strcmp(m, "ports"))      return ports();
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;

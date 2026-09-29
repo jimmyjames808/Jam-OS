@@ -5,6 +5,7 @@
  * can't lift the limits its parent put on it. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
+#include <jam/event.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -260,4 +261,62 @@ KTEST(quota_aspace_tables_charged)
     kobject_unref(process_kobject(p));
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
     job_unref(j);
+}
+
+/* R6. The rest of a process's kernel memory: the process object is a
+ * handle unit, and a started thread costs UTHREAD_KMEM_PAGES (its kernel
+ * stack and XSAVE area) on top of its THREADS unit. A start the job can't
+ * pay for fails cleanly: the process is NEW again, the startup handle is
+ * the caller's again, nothing stays charged. */
+KTEST(quota_process_and_thread_charged)
+{
+    struct job *j = quota_job();
+    struct process *p;
+    KT_EQ(process_create(j, "quota-thread", &p), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 1);   /* the process */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1);     /* its PML4 */
+    struct uthread *u;
+    KT_EQ(uthread_create(p, "t", &u), OK);
+    struct event *e;
+    KT_EQ(event_create(&e), OK);
+    struct khandle arg0 = khandle_from_new(&e->base, RIGHTS_BASIC);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 1 + UTHREAD_KMEM_PAGES - 1), OK);
+    KT_EQ(process_start(p, u, 0x400000, 0x800000, &arg0, 0, NULL), ERR_NO_MEMORY);
+    KT_ASSERT(arg0.obj == &e->base);   /* given back */
+    struct process_info info;
+    process_get_info(p, &info);
+    KT_EQ(info.state, PROCESS_NEW);
+    KT_EQ(info.threads, 0);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1);
+    KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 1);   /* the slot it had went back */
+    khandle_release(&arg0);
+    kobject_unref(uthread_kobject(u));
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
+    KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 0);   /* at teardown, not at the last reference */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    kobject_unref(process_kobject(p));
+    job_unref(j);
+}
+
+/* R6. The root job's handle and message budgets come out of its page
+ * budget: everything a job can make the kernel hold fits in free memory
+ * next to the kernel's reserve. */
+KTEST(quota_root_job_budget)
+{
+    uint64_t total, free;
+    pmm_stats(&total, &free);
+    struct job *r;
+    KT_EQ(userboot_root_job(&r), OK);
+    struct job_info ji;
+    job_get_info(r, &ji);
+    job_unref(r);
+    uint64_t worst = ji.limit[JOB_LIMIT_PAGES] +
+                     ji.limit[JOB_LIMIT_HANDLES] * JOB_OBJECT_BYTES / PAGE_SIZE +
+                     ji.limit[JOB_LIMIT_MSG_BYTES] / PAGE_SIZE;
+    kprintf("quota: root job: %lu pages + %lu handle units + %lu message bytes = %lu of %lu "
+            "free pages\n", ji.limit[JOB_LIMIT_PAGES], ji.limit[JOB_LIMIT_HANDLES],
+            ji.limit[JOB_LIMIT_MSG_BYTES], worst, free);
+    KT_ASSERT(ji.limit[JOB_LIMIT_HANDLES] >= 4096);
+    KT_ASSERT(worst + (free / 4 < 8192 ? free / 4 : 8192) <= free + 64);   /* +: pmm noise */
 }

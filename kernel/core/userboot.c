@@ -258,14 +258,23 @@ status_t userboot_root_job(struct job **out)
     if (st != OK)
         return st;
     /* Leave the kernel 32 MiB (or a quarter, if memory is small) that user
-     * code can never take, so running out is a job's problem first. */
+     * code can never take, so running out is a job's problem first. The
+     * rest is split so the three memory-like limits can't add up to more
+     * than it (review R6): a handle unit stands for at most
+     * JOB_OBJECT_BYTES of kernel memory and a message byte for one byte, so
+     * those budgets (1/16 and 1/8 of it, capped at 16 MiB and 64 MiB) come
+     * off the page limit. Threads are charged pages for their stacks, so
+     * their limit is only a sanity cap. */
     uint64_t total, free;
     pmm_stats(&total, &free);
     uint64_t keep = free / 4 < 8192 ? free / 4 : 8192;
-    job_set_limit(j, JOB_LIMIT_PAGES, free - keep);
-    job_set_limit(j, JOB_LIMIT_HANDLES, 1u << 20);
+    uint64_t budget = free - keep;
+    uint64_t handle_pages = budget / 16 < 4096 ? budget / 16 : 4096;
+    uint64_t msg_pages = budget / 8 < 16384 ? budget / 8 : 16384;
+    job_set_limit(j, JOB_LIMIT_PAGES, budget - handle_pages - msg_pages);
+    job_set_limit(j, JOB_LIMIT_HANDLES, handle_pages * (PAGE_SIZE / JOB_OBJECT_BYTES));
     job_set_limit(j, JOB_LIMIT_THREADS, 4096);
-    job_set_limit(j, JOB_LIMIT_MSG_BYTES, 64ull << 20);
+    job_set_limit(j, JOB_LIMIT_MSG_BYTES, msg_pages * PAGE_SIZE);
     *out = j;
     return OK;
 }

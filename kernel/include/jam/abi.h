@@ -103,13 +103,20 @@ struct port_packet {
  * ERR_NO_RESOURCES for handles and threads). So a child job can never use
  * more than its parent has left, whatever its own limit says. */
 
-/* JOB_LIMIT_PAGES: memory in 4 KiB pages. A VMO's committed pages and its
- * own table pages (charged to the VMO creator's job); a process's address
- * space: PML4, page tables, a page per 16 mappings (the process's job). */
+/* What each kind counts (the kernel's process.h has the details):
+ *   PAGES      memory in 4 KiB pages: a VMO's committed pages and its own
+ *              table pages (the VMO creator's job); a process's address
+ *              space: PML4, page tables, a page per 16 mappings; 17 pages
+ *              per running thread for its kernel stack and FPU state;
+ *   HANDLES    handle-table slots in use, plus one unit per job (charged
+ *              to its parent), process and VMO object;
+ *   THREADS    live threads;
+ *   MSG_BYTES  queued channel messages (1 KiB more per handle carried),
+ *              port packets and port bindings, charged to the sender. */
 #define JOB_LIMIT_PAGES     1
-#define JOB_LIMIT_HANDLES   2   /* handle-table slots in use, plus one per child job */
-#define JOB_LIMIT_THREADS   3   /* live threads */
-#define JOB_LIMIT_MSG_BYTES 4   /* bytes of queued channel messages, charged to the sender */
+#define JOB_LIMIT_HANDLES   2
+#define JOB_LIMIT_THREADS   3
+#define JOB_LIMIT_MSG_BYTES 4
 #define JOB_LIMIT_COUNT     5   /* kinds are 1 .. JOB_LIMIT_COUNT - 1 */
 #define JOB_NO_LIMIT        UINT64_MAX
 /* Jobs nest at most this deep: a root job is depth 0, and job_create fails

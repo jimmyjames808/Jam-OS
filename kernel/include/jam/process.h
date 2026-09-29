@@ -52,6 +52,23 @@ struct uthread;
 
 /* ---- jobs ------------------------------------------------------------------ */
 
+/* What the kernel memory a job pays for is charged as (review R6):
+ *   JOB_LIMIT_PAGES      VMO pages and tables, a process's PML4, page tables
+ *                        and mapping structs, and UTHREAD_KMEM_PAGES for every
+ *                        running user thread (its kernel stack and XSAVE area);
+ *   JOB_LIMIT_HANDLES    handle slots, and one unit for each small object that
+ *                        can outlive the handles to it: every job (charged to
+ *                        its parent), process and VMO. So a unit stands for at
+ *                        most JOB_OBJECT_BYTES of kernel memory;
+ *   JOB_LIMIT_MSG_BYTES  channel messages and port packets and bindings (the
+ *                        sender's / binder's job), plus JOB_OBJECT_BYTES for
+ *                        each handle a message carries or object a binding
+ *                        watches, since that may be what keeps it alive.
+ * userboot_root_job sizes the handle and message limits so that everything
+ * fits in memory next to the page limit and the kernel's reserve. */
+#define JOB_OBJECT_BYTES   1024
+#define UTHREAD_KMEM_PAGES (THREAD_STACK_SIZE / 4096 + 1)
+
 /* A new job under parent (NULL: a root job) with no limits of its own and
  * one reference for the caller. It costs parent one JOB_LIMIT_HANDLES unit
  * until it is destroyed (ERR_NO_RESOURCES over the limit); ERR_OUT_OF_RANGE
@@ -88,7 +105,9 @@ static inline struct process *process_from_kobject(struct kobject *o)
 }
 
 /* A NEW process in job with an empty address space and handle table; the
- * caller gets the only reference. name is truncated to PROCESS_NAME_MAX-1. */
+ * caller gets the only reference. name is truncated to PROCESS_NAME_MAX-1.
+ * It costs job one JOB_LIMIT_HANDLES unit until it is torn down
+ * (ERR_NO_RESOURCES) and its address space's PML4 (ERR_NO_MEMORY). */
 status_t process_create(struct job *job, const char *name, struct process **out);
 struct handle_table *process_handles(struct process *p);
 /* The process's address space with a NEW reference (aspace_unref it), or
@@ -134,7 +153,7 @@ struct process *uthread_process(struct uthread *u);   /* no new reference */
 /* Start ut (its process must be RUNNING) at entry with stack, rdi = arg0,
  * rsi = arg1. ERR_BAD_STATE if ut was started before or the process isn't
  * running, ERR_NO_RESOURCES over the job's thread limit, ERR_NO_MEMORY if
- * the kernel thread can't be made. */
+ * the job refuses UTHREAD_KMEM_PAGES or the kernel thread can't be made. */
 status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint64_t arg0,
                        uint64_t arg1, const cpumask_t *mask);
 /* prio 0..PRIO_MAX (the syscall layer caps user callers). */

@@ -209,6 +209,8 @@ void sched_stack_trim(void);
  * SCHED_STACK_CACHE_MAX; tests lower it); stacks over the new limit are
  * freed at once. Returns the old limit. */
 #define SCHED_STACK_CACHE_MAX 256
+/* Every thread's kernel stack (user threads are charged for it, process.c). */
+#define THREAD_STACK_SIZE (64 * 1024)
 unsigned sched_stack_cache_set_limit(unsigned limit);
 /* Stacks freed (unmapped, pages returned) since boot. */
 uint64_t sched_stacks_freed(void);

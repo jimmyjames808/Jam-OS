@@ -56,6 +56,7 @@ struct process {
     int                 state;       /* (L) PROCESS_* */
     bool                killed;      /* (L) */
     bool                finished;    /* (L) teardown done */
+    bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
@@ -123,6 +124,8 @@ static void process_destroy(struct kobject *obj)
     handle_table_destroy(&p->handles);
     if (p->as)
         aspace_unref(p->as);
+    if (p->obj_charged)   /* never torn down (never started) */
+        job_uncharge(p->job, JOB_LIMIT_HANDLES, 1);
     job_unref(p->job);
     kfree(p);
 }
@@ -150,14 +153,21 @@ static const struct kobject_ops process_ops = {
 
 status_t process_create(struct job *job, const char *name, struct process **out)
 {
+    status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);   /* this object */
+    if (st != OK)
+        return st;
     struct process *p = kzalloc(sizeof(*p));
-    if (!p)
+    if (!p) {
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
-    status_t st = aspace_create_charged(job, &p->as);
+    }
+    st = aspace_create_charged(job, &p->as);
     if (st != OK) {
         kfree(p);
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return st;
     }
+    p->obj_charged = true;
     kobject_init(&p->base, OBJ_PROCESS, &process_ops, "process", 0);
     handle_table_init(&p->handles);
     p->handles.job = job;
@@ -263,12 +273,16 @@ static void process_finish(struct process *p)
     uint64_t f = plock(p);
     struct aspace *as = p->as;
     struct job *job = p->job;
+    bool charged = p->obj_charged;
     p->as = NULL;
     p->job = NULL;
     p->handles.job = NULL;
+    p->obj_charged = false;
     p->state = PROCESS_DEAD;
     p->finished = true;
     punlock(p, f);
+    if (charged)   /* what's left of p is small and handle-bound now */
+        job_uncharge(job, JOB_LIMIT_HANDLES, 1);
     /* Every thread dropped its own reference before it counted itself out,
      * so this is the last one unless another process holds a vmar handle:
      * the address space, its mappings and their pages go now. */
@@ -372,6 +386,7 @@ static bool thread_left(struct process *p)
     /* Credit the job while we still count: once nthreads drops, the last
      * thread may tear p down and drop p->job. */
     job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
+    job_uncharge(p->job, JOB_LIMIT_PAGES, UTHREAD_KMEM_PAGES);
     uint64_t f = plock(p);
     if (p->nthreads == 0)
         panic("process \"%s\": thread count underflow", p->name);
@@ -467,6 +482,8 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         st = ERR_BAD_STATE;
     else
         st = job_charge(p->job, JOB_LIMIT_THREADS, 1);
+    if (st == OK && (st = job_charge(p->job, JOB_LIMIT_PAGES, UTHREAD_KMEM_PAGES)) != OK)
+        job_uncharge(p->job, JOB_LIMIT_THREADS, 1);   /* its stack and XSAVE area: refused */
     if (st == OK) {
         u->state = UT_STARTING;
         u->entry = entry;
