@@ -1,6 +1,6 @@
 /* date: the date and time from the real-time clock in $TZ (sh_time.c);
  * -u UTC, -r the raw clock reading, -d @secs a given Unix time. */
-#include "../sh.h"
+#include "sh.h"
 
 static bool rtc_keeps_utc(const char *rtc)
 {

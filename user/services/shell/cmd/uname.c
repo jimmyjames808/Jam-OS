@@ -1,5 +1,5 @@
 /* uname: the system's name; -r its version, -a with the machine and CPU. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(uname)
 {

@@ -1,7 +1,7 @@
 /* Processes, user threads and jobs, from the kernel side:
  * job accounting on its own, then real user programs started with
  * userboot_spawn (bin/utest in one of its child modes, see
- * user/utest/child.c): ELF loading, the startup message, exit codes,
+ * user/tests/utest/child.c): ELF loading, the startup message, exit codes,
  * fault kills, a kill in the middle of channel_call, job limits. Each
  * program runs in a job of its own, which must be back to zero on every
  * count once the program is dead (and the ktest harness checks no page

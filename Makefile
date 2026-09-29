@@ -135,18 +135,28 @@ USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack -T user
 LIBGCC      := $(shell $(CC) -print-libgcc-file-name)
 UINC_HDRS   := abi.h bootfs.h startup.h status.h syscall_nums.h
 UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
-USER_PROGS  := init utest devmgr usbtest demo console shell serialin contest \
-               life tetris fractal
 UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
-# A program's sources: user/<prog>/*.c and one level of subdirectories
-# (user/shell/cmd/*.c).
-prog_srcs    = $(wildcard user/$(1)/*.c user/$(1)/*/*.c)
-USER_OBJS   := $(LIBOS_OBJS) $(patsubst %,$(UOBJ)/%.o,$(wildcard user/fun/*.c)) \
+# The programs, by role: user/services/<name> (init, console, devmgr, ...),
+# user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
+# directory there with a .c file is the program bin/<name> in bootfs, except
+# user/apps/fun, which is the apps library. A program's sources are its
+# *.c and one level of subdirectories (user/services/shell/cmd/*.c).
+LIBFUN_DIR  := user/apps/fun
+USER_DIRS   := $(filter-out $(LIBFUN_DIR),$(patsubst %/,%,$(sort $(dir \
+                   $(wildcard user/services/*/*.c user/apps/*/*.c user/tests/*/*.c)))))
+USER_PROGS  := $(notdir $(USER_DIRS))
+ifneq ($(words $(sort $(USER_PROGS))),$(words $(USER_DIRS)))
+$(error two user program directories share a name: $(USER_DIRS))
+endif
+prog_dir     = $(filter %/$(1),$(USER_DIRS))
+prog_srcs    = $(wildcard $(call prog_dir,$(1))/*.c $(call prog_dir,$(1))/*/*.c)
+prog_objs    = $(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(1)))
+USER_OBJS   := $(LIBOS_OBJS) $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c)) \
                $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
-               $(foreach p,$(USER_PROGS),$(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(p))))
+               $(foreach p,$(USER_PROGS),$(call prog_objs,$(p)))
 
 .SECONDARY: $(UINC)
 $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
@@ -155,7 +165,7 @@ $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
 
 $(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) -c $< -o $@
+	$(CC) $(USER_CFLAGS) $(PROG_CFLAGS) -c $< -o $@
 
 $(UOBJ)/%.S.o: %.S | $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
@@ -165,10 +175,10 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-# libfun (user/fun, fun.h): the screen, drawing, text, keys and thread pool
-# of the programs in FUN_PROGS, which link it before libos.
-FUN_PROGS   := life tetris fractal demo
-LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard user/fun/*.c))
+# libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
+# thread pool of the apps, which link it before libos.
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS)))
+LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 	rm -f $@
@@ -176,12 +186,16 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
+# PROG_CFLAGS: the program's own directory on the "..." include path (so
+# "sh.h" works from shell/cmd/), and for an app the apps library's <fun.h>.
 define USER_PROG
-$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(1))) \
+$(call prog_objs,$(1)): PROG_CFLAGS := -iquote $(call prog_dir,$(1)) \
+                                       $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR))
+
+$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
                     $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a user/linker.ld
 	@mkdir -p $$(dir $$@)
-	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o \
-	    $(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(1))) \
+	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
 	    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a $(LIBGCC) -o $$@
 
 $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)

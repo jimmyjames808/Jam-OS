@@ -1,6 +1,6 @@
 /* watch: run a command every n seconds (default 2) on a cleared screen
  * until Ctrl+C. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(watch)
 {

@@ -1,7 +1,7 @@
 /* demo: bin/demo, fractals with a thread per CPU on the screen it borrows
  * from the console (console.lend_screen) until it ends (default 76 s) or a
  * key is pressed. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(demo)
 {

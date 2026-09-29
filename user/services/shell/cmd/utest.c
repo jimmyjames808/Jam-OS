@@ -1,6 +1,6 @@
 /* utest: the user-space test suite (bin/utest, with devmgr's channels) and
  * its result line; with arguments, one of utest's child modes. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(utest)
 {

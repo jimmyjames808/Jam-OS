@@ -1,6 +1,6 @@
 /* lscpu: the CPU's model, cores by type (P and E on a hybrid part) and
  * threads; -e one line per CPU. */
-#include "../sh.h"
+#include "sh.h"
 
 struct core_count {
     uint32_t cores[3], threads[3];   /* by CPU_TYPE_* */

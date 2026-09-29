@@ -1,5 +1,5 @@
 /* env (printenv): the exported variables, a program's environment. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(env)
 {

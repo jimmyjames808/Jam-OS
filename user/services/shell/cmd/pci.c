@@ -1,5 +1,5 @@
 /* pci: the kernel's PCI report (BARs, MSI/MSI-X), into the kernel log. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(pci)
 {

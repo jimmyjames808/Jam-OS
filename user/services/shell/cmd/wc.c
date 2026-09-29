@@ -1,6 +1,6 @@
 /* wc: count lines, words and bytes of a file or the pipe (-l -w -c: only
  * those). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(wc)
 {

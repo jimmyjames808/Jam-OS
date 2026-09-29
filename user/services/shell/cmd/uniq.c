@@ -1,6 +1,6 @@
 /* uniq: a file's or the pipe's lines with adjacent repeats dropped; -c
  * with how many there were. */
-#include "../sh.h"
+#include "sh.h"
 
 static void emit(const char *line, size_t len, uint64_t run, bool count)
 {

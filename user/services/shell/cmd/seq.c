@@ -1,6 +1,6 @@
 /* seq: the numbers first..last (first defaults to 1), one a line; at most
  * a million. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(seq)
 {

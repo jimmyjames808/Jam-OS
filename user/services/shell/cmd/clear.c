@@ -1,6 +1,6 @@
 /* clear: clear the screen (the console's; Ctrl+L does the same). */
 #include <idl/console.h>
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(clear)
 {

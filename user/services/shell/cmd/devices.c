@@ -1,7 +1,7 @@
 /* devices (lspci): every PCI function, and whether devmgr runs a driver
  * for it; then devmgr's counts. */
 #include <devmgr.h>
-#include "../sh.h"
+#include "sh.h"
 
 /* devmgr names a device by ids and instance: the n-th with these ids. */
 static uint32_t instance(handle_t pci, uint32_t i, const struct pci_dev_info *info)

@@ -1,5 +1,5 @@
 /* history: the last 32 lines typed, numbered (up/down recall them). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(history)
 {

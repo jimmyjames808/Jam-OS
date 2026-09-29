@@ -1,7 +1,7 @@
 /* crash: the kernel's crash tests (debug_command "crash"). Alone, the
  * list; each one stops the machine with a panic screen (bp excepted), so a
  * name must be confirmed: crash <name> yes. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(crash)
 {

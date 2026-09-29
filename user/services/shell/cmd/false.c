@@ -1,5 +1,5 @@
 /* false: status 1. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(false)
 {

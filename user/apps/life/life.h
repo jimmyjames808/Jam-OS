@@ -1,7 +1,7 @@
 /* life: the engine (engine.c) that the game (main.c) and the self-test
  * (selftest.c) share: the world, one bit a cell, and the generation step. */
 #pragma once
-#include "../fun/fun.h"
+#include <fun.h>
 
 #define BAND 8   /* rows per work item */
 

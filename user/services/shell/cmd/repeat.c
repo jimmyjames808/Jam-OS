@@ -1,5 +1,5 @@
 /* repeat: run a command n times (Ctrl+C stops); the last one's status. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(repeat)
 {

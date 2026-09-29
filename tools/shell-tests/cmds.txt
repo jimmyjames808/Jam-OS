@@ -1,4 +1,4 @@
-# The shell's everyday commands (user/shell/cmd/*.c, sh_exec.c, sh_vfs.c):
+# The shell's everyday commands (user/services/shell/cmd/*.c, sh_exec.c, sh_vfs.c):
 #   QEMU_INPUT=tools/shell-tests/cmds.txt \
 #   QEMU_EXTRA="-rtc base=2026-01-15T01:02:03" tools/qemu-test.sh <dir> cmds shell
 # (the date checks need that RTC; QEMU_SMP=4). Most checks print a marker

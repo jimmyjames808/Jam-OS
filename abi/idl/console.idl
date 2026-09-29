@@ -1,4 +1,4 @@
-# console: the console process (user/console) serves this to programs (the
+# console: the console process (user/services/console) serves this to programs (the
 # shell), devmgr and init. It owns the screen after boot (M7-PLAN.md
 # "Screen ownership"). If the channel's peer closes (the console
 # restarted), clients ask devmgr/init for the new one. Format: see

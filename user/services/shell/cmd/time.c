@@ -1,5 +1,5 @@
 /* time: run a command and say how long it took (on the screen). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(time)
 {

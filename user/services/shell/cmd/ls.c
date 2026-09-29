@@ -1,6 +1,6 @@
 /* ls: list directories (in columns on the screen, one a line in a pipe);
  * -l with sizes. -a and -1 are accepted and change nothing. */
-#include "../sh.h"
+#include "sh.h"
 
 /* Columns, as wide as the widest name. */
 static void columns(struct sh_dirent *e, int n)

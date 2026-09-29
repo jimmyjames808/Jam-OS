@@ -1,5 +1,5 @@
 /* version: the Jam OS version, and whether the kernel tests are built in. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(version)
 {

@@ -1,6 +1,6 @@
 /* alias: list the aliases, show some (alias name), or define them
  * (alias ll='ls -l'). */
-#include "../sh.h"
+#include "sh.h"
 
 static void list(void)
 {

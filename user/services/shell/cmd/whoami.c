@@ -1,5 +1,5 @@
 /* whoami: $USER (there is one user: jam). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(whoami)
 {

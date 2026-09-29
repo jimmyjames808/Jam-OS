@@ -1,7 +1,7 @@
 /* tetris: what the rules (game.c), the picture (draw.c), the game loop
  * (main.c) and the self-test (selftest.c) share. */
 #pragma once
-#include "../fun/fun.h"
+#include <fun.h>
 
 #define BW 10
 #define BH 22        /* rows 0 and 1 are hidden above the well */

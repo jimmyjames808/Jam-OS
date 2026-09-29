@@ -1,5 +1,5 @@
 /* sleep: wait some seconds ("0.5" works); Ctrl+C stops it. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(sleep)
 {

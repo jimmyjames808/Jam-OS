@@ -1,5 +1,5 @@
 /* stress: the kernel's stress test for 1..600 seconds. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(stress)
 {

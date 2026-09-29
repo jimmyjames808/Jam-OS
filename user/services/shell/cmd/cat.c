@@ -1,5 +1,5 @@
 /* cat: print files, or the pipe. A binary file is refused (hexdump it). */
-#include "../sh.h"
+#include "sh.h"
 
 static bool binary(const char *d, size_t n)
 {

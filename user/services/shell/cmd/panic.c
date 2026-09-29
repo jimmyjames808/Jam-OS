@@ -1,5 +1,5 @@
 /* panic: panic the kernel (a test: its screen must show over the console). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(panic)
 {

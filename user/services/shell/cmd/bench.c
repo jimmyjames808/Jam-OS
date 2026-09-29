@@ -1,5 +1,5 @@
 /* bench: the kernel benchmark; its results go to the kernel log. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(bench)
 {

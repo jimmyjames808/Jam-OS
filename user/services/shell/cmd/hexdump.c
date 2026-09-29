@@ -1,6 +1,6 @@
 /* hexdump (hd): hex and ASCII, 16 bytes a line, of a file or the pipe;
  * -s offset, -n bytes (-C, the format it always uses, is accepted). */
-#include "../sh.h"
+#include "sh.h"
 
 static void hex_line(const char *d, uint64_t off, uint64_t end)
 {

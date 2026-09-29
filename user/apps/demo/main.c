@@ -15,8 +15,8 @@
  *   2. a Julia set whose constant walks round a circle
  *   3. the Mandelbrot set with every row tinted by the thread that drew it,
  *      so you can watch the work spread over the CPUs */
-#include "../fun/fun.h"
 #include <font.h>
+#include <fun.h>
 
 #define PALETTE 1024
 #define CHUNK   8     /* rows per work item: visible bands in scene 3 */

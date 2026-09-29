@@ -1,6 +1,6 @@
 /* help (?): the commands by category from the table (sh_table.c), or one
  * command's usage and whole help. */
-#include "../sh.h"
+#include "sh.h"
 
 static int help_on(int argc, char **argv)
 {

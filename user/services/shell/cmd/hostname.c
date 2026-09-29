@@ -1,5 +1,5 @@
 /* hostname: $HOSTNAME. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(hostname)
 {

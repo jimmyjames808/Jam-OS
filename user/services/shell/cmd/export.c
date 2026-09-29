@@ -1,6 +1,6 @@
 /* export: mark variables (or NAME=value, set and marked) as given to the
  * programs `run` starts; no arguments: list them, as env. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(export)
 {

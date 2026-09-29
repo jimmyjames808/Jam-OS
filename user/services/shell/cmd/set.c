@@ -1,6 +1,6 @@
 /* set: list the shell variables, or set some (set NAME value, or
  * set NAME=value ...). */
-#include "../sh.h"
+#include "sh.h"
 
 static void list(void)
 {

@@ -1,6 +1,6 @@
 /* mem: physical memory from the kernel (its report goes to the log), and
  * what the shell's job uses. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(mem)
 {

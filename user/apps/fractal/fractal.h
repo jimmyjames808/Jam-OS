@@ -20,7 +20,7 @@
  *     double-double. ~10x slower than double, same limit.
  * The self-test checks each against another where both are valid. */
 #pragma once
-#include "../fun/fun.h"
+#include <fun.h>
 
 /* ---- double-double: hi + lo, |lo| <= ulp(hi) / 2 ----------------------------------- */
 

@@ -1,4 +1,4 @@
-# The fun apps (user/life, user/tetris, user/fractal) from the shell:
+# The fun apps (user/apps/life, user/apps/tetris, user/apps/fractal) from the shell:
 # QEMU_INPUT=this file, command line "shell" (or tools/fun-test.sh). Each
 # app's self-test, then each one played for a while through the serial
 # terminal (arrows arrive as ESC [ A..D, letters as themselves), with

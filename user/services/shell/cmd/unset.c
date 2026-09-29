@@ -1,5 +1,5 @@
 /* unset: remove shell variables. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(unset)
 {

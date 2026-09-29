@@ -1,6 +1,6 @@
 /* ps: every process with its job, threads, state, CPU time and job memory,
  * indented by job; -k the kernel's own listing, into the kernel log. */
-#include "../sh.h"
+#include "sh.h"
 
 static const char *state_name(uint32_t s)
 {

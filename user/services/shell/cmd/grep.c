@@ -1,7 +1,7 @@
 /* grep: the lines of a file or the pipe that match a pattern: text with
  * ^ $ . * (Pike's matcher); -i any case, -v the others, -c count, -n line
  * numbers. Status 1 if nothing matched. */
-#include "../sh.h"
+#include "sh.h"
 
 static bool icase;
 

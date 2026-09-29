@@ -21,7 +21,7 @@
  *     the boot thread and the sleep/timer tick work).
  *   - Nothing is printed while measuring.
  *   - Lines starting "user:" are measured in ring 3 by bin/utest
- *     (user/utest/bench.c), started with userboot pinned to the named CPUs
+ *     (user/tests/utest/bench.c), started with userboot pinned to the named CPUs
  *     at priority 24 like the kernel's benchmark threads: same TSC method,
  *     same warm-up, raw cycle counts sent back over a channel and turned
  *     into these lines here (the kernel's timestamp cost is subtracted).
@@ -1133,7 +1133,7 @@ static void as_switch(void)
 
 /* ---- user space ----------------------------------------------------------- */
 
-#define USAMPLES 4000   /* user/utest/bench.c SAMPLES */
+#define USAMPLES 4000   /* user/tests/utest/bench.c SAMPLES */
 
 struct ubench_result {
     uint32_t txid, n, batch, reserved;

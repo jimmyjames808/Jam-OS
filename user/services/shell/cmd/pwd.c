@@ -1,5 +1,5 @@
 /* pwd: the current directory. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(pwd)
 {

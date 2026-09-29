@@ -2,7 +2,7 @@
  * the hubs they are behind. */
 #include <devmgr.h>
 #include <idl/usbbus.h>
-#include "../sh.h"
+#include "sh.h"
 
 #define MAX_SEEN 64
 

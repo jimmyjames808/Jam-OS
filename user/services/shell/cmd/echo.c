@@ -1,6 +1,6 @@
 /* echo: the words, separated by spaces; -n no newline, -e \n \t \e
  * escapes. */
-#include "../sh.h"
+#include "sh.h"
 
 /* -n / -e words at the start: the index of the first word to print. */
 static int options(int argc, char **argv, bool *newline, bool *esc)

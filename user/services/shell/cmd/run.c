@@ -1,5 +1,5 @@
 /* run: start a program from /boot (sh_program.c), wait, say how it ended. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(run)
 {

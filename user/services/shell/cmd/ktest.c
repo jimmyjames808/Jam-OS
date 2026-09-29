@@ -1,6 +1,6 @@
 /* ktest: the kernel tests (all, or those whose names start with a prefix)
  * on the live system; they report into the kernel log. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(ktest)
 {

@@ -1,4 +1,4 @@
-/* libfun: the fun apps' shared code (user/fun).
+/* libfun: the fun apps' shared code (user/apps/fun).
  *
  * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
  * bin/fractal, bin/demo), one object per job: gfx.c (the screen and

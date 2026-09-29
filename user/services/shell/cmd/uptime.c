@@ -1,6 +1,6 @@
 /* uptime: the time, how long since boot, and how busy the online CPUs
  * were since then. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(uptime)
 {

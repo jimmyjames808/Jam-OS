@@ -1,5 +1,5 @@
 /* log: the last lines of the kernel log (default 20, at most 1000), grey. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(log)
 {

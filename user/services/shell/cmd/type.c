@@ -1,6 +1,6 @@
 /* type (which): what each name is: an alias, a builtin, or a program in
  * /boot/bin. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(type)
 {

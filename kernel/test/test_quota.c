@@ -17,7 +17,7 @@
 
 /* A program gets its own job (SR_JOB) without RIGHT_MANAGE, so the
  * limit its parent set is binding: the child mode "raise-own-limit"
- * (user/utest/child.c) tries to lift JOB_LIMIT_PAGES through SR_JOB and
+ * (user/tests/utest/child.c) tries to lift JOB_LIMIT_PAGES through SR_JOB and
  * commit 1 MiB; it exits 50 when the kernel refuses the raise (0 would be
  * the bug: it escaped its limit). */
 KTEST(quota_child_cannot_raise_own_job_limit)

@@ -1,5 +1,5 @@
 /* cd: change directory (no argument: $HOME, else /). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(cd)
 {

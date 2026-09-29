@@ -1,6 +1,6 @@
 /* sort: the lines of a file or the pipe, sorted (a stable merge sort);
  * -r reverse, -n by the number each starts with, -u drop repeats. */
-#include "../sh.h"
+#include "sh.h"
 
 struct line_ref {
     const char *s;

@@ -1,7 +1,7 @@
 /* top: live CPU use per CPU and per process, and memory, a frame every
  * -d seconds (default 1) until q or Ctrl+C (or -n frames). In a pipe the
  * frames follow each other without colours or clearing the screen. */
-#include "../sh.h"
+#include "sh.h"
 
 struct sample {
     uint64_t          t;

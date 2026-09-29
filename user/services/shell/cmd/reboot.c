@@ -1,5 +1,5 @@
 /* reboot: restart the machine. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(reboot)
 {

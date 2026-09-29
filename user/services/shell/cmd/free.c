@@ -1,5 +1,5 @@
 /* free: memory total, used and free (from sys_info). */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(free)
 {

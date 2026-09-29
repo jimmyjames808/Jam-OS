@@ -1,4 +1,4 @@
-# The System and Tests commands (user/shell/cmd/: devices usb pci memmap
+# The System and Tests commands (user/services/shell/cmd/: devices usb pci memmap
 # log mem kill clear ktest stress utest crash ...) through the command
 # table like every other command: their argv arrives as typed, with quotes
 # kept ("a b" is one word), their status is $?, their output goes down a

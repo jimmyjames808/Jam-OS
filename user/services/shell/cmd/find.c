@@ -1,6 +1,6 @@
 /* find: every file and directory below a directory, or those whose names
  * contain -name's text. */
-#include "../sh.h"
+#include "sh.h"
 
 static bool name_has(const char *name, const char *part)
 {

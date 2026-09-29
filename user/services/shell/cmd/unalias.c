@@ -1,5 +1,5 @@
 /* unalias: remove aliases. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(unalias)
 {

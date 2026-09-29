@@ -1,6 +1,6 @@
 /* kill: kill the first process with that name (the kernel's kill reaches
  * the whole job tree), except init. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(kill)
 {

@@ -1,5 +1,5 @@
 /* head: the first N lines (default 10) of a file or the pipe. */
-#include "../sh.h"
+#include "sh.h"
 
 SH_CMD(head)
 {
