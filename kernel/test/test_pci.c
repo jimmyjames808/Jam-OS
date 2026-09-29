@@ -7,6 +7,7 @@
 #include <jam/fbcon.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
+#include <jam/kprintf.h>
 #include <jam/pci.h>
 #include <jam/string.h>
 
@@ -22,13 +23,18 @@ uint64_t pci_msix_pba_phys(struct pci_dev *d);
 #define CMD_MASTER   (1u << 2)
 #define CMD_INTX_OFF (1u << 10)
 
-static struct pci_dev *need(uint16_t vendor, uint16_t device)
-{
-    struct pci_dev *d = pci_find(vendor, device, 0);
-    if (!d)
-        panic("ktest %s: PCI %04x:%04x not found (QEMU flags?)", ktest_current, vendor, device);
-    return d;
-}
+/* The QEMU q35 device this test checks, or skip the test (return from it)
+ * on hardware that doesn't have it, such as the real PC. A GNU statement
+ * expression, so `return` leaves the KTEST function. */
+#define need(vendor, device) ({                                                   \
+    struct pci_dev *need_d_ = pci_find((vendor), (device), 0);                   \
+    if (!need_d_) {                                                              \
+        kprintf("ktest %s: no PCI %04x:%04x (a QEMU device), skipped\n",         \
+                ktest_current, (unsigned)(vendor), (unsigned)(device));           \
+        return;                                                                  \
+    }                                                                            \
+    need_d_;                                                                     \
+})
 
 static uint64_t bdf_key(const struct pci_dev *d)
 {
