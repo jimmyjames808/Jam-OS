@@ -1,0 +1,63 @@
+# The tests-as-commands of the M7 cleanup (QEMU_INPUT=this file, command
+# line "shell"): utest and usbtest with their result lines, pci, memmap,
+# the crash list and its confirmation, the demo on a borrowed screen and
+# back to the prompt, devmgr killed and restarted by init (the shell's
+# devices/usb reconnect), and last a real crash test from the shell (it
+# ends the run: qemu-test.sh sees "system halted").
+wait 120 Jam OS shell
+wait jam>
+send utest
+wait 300 utest:
+wait passed
+wait jam>
+send usbtest
+wait 120 usbtest:
+wait passed
+wait jam>
+send pci
+wait pci list:
+wait jam>
+send memmap
+wait usable
+wait jam>
+send crash
+wait crash tests
+wait smep
+wait usage: crash <name> yes
+wait jam>
+send crash pf
+wait type "crash pf yes" to go ahead
+wait jam>
+send crash nosuchtest yes
+wait no test called nosuchtest
+wait jam>
+send crash bp yes
+wait came back, as a breakpoint must
+wait jam>
+# the demo borrows the screen from the console, and gives it back
+send demo 6
+wait console: the screen is lent out
+sleep 3
+shot demo
+wait 60 run: bin/demo exited with code 0
+seen console: the screen is back
+seen demo: who drew what
+wait jam>
+sleep 0.5
+shot after-demo
+# devmgr dies: init takes its job (usb-bus, the hids) down and starts it again
+send kill devmgr
+wait shell: killed process
+wait 30 init: devmgr and its drivers are gone
+wait 60 init: devmgr:
+send devices
+wait devmgr:
+wait bound
+wait jam>
+send usb
+wait problem(s)
+wait jam>
+send crash pf yes
+wait crash pf: page fault
+wait 30 KERNEL PANIC
+wait system halted

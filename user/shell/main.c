@@ -15,9 +15,20 @@
  *                 (ktest, bench, stress, ps, mem through debug_command;
  *                 reboot); no RIGHT_MAP / RIGHT_SLICE
  *   SR_USER + 1   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
- *   SR_DEVMGR     a client end of devmgr's channel (`devices`)
+ *   SR_DEVMGR     a client end of devmgr's channel (`devices`, `usb`)
+ *   SR_USER + 2   a channel from init: when devmgr dies, init starts it
+ *                 again (with its drivers) and sends the new client end
+ *                 here (INIT_SHELL_DEVMGR, <devmgr.h>); every command that
+ *                 talks to devmgr takes the newest first
  * The programs `run` starts get copies of SR_DEVMGR (as init's programs
  * do) and SR_CONSOLE.
+ *
+ * Tests as commands (M7 cleanup; the boot menu keeps only what must run
+ * without a keyboard): `utest` and `usbtest` run those programs and show
+ * their result lines; `crash <name> yes` runs one of the kernel's crash
+ * tests (debug_command "crash"); `demo` runs bin/demo, which borrows the
+ * screen from the console (console.lend_screen) until it ends or a key is
+ * pressed; `pci` and `memmap` are the old Devices and memory map entries.
  *
  * Exits 2 when the console goes away (init restarts the console, then the
  * shell with the new console's channel). */
@@ -33,7 +44,7 @@
 #define PROMPT    "\033[93mjam>\033[0m "
 #define PROMPT_W  5
 
-static handle_t con, keys, root, pci, devmgr;
+static handle_t con, keys, root, pci, devmgr, from_init;
 
 /* ---- output ------------------------------------------------------------------- */
 
@@ -240,6 +251,40 @@ static void remember(const char *line)
     nhist++;
 }
 
+/* ---- devmgr: the newest client end ------------------------------------------ */
+
+/* init restarts devmgr if it dies (with every driver it ran) and sends us
+ * the new client end: take the newest, and forget a dead one. 0 while
+ * there is none (a restart in progress, or no devmgr at all). */
+static handle_t devmgr_now(void)
+{
+    while (from_init) {
+        uint32_t kind = 0, n = 0, nh = 0;
+        handle_t h = HANDLE_INVALID;
+        struct channel_read_args a = {
+            .h = from_init, .bytes_cap = sizeof(kind), .bytes = (uint64_t)(uintptr_t)&kind,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)&h,
+            .handles_cap = 1, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        };
+        if (jam_channel_read(&a) != OK)
+            break;   /* nothing new (or init's end is gone) */
+        if (n == sizeof(kind) && kind == INIT_SHELL_DEVMGR && nh == 1) {
+            if (devmgr)
+                jam_handle_close(devmgr);
+            devmgr = h;
+        } else if (nh) {
+            jam_handle_close(h);
+        }
+    }
+    signals_t seen = 0;
+    if (devmgr && jam_object_wait_one(devmgr, SIG_PEER_CLOSED, 0, &seen) == OK &&
+        (seen & SIG_PEER_CLOSED)) {
+        jam_handle_close(devmgr);
+        devmgr = HANDLE_INVALID;
+    }
+    return devmgr;
+}
+
 /* ---- commands ------------------------------------------------------------------ */
 
 #define MAX_ARGS 16
@@ -264,17 +309,23 @@ static void cmd_help(void)
     say("Commands:\n"
         "  help                 this list\n"
         "  devices              PCI functions and the drivers devmgr bound\n"
+        "  pci                  the kernel's PCI report (BARs, MSI/MSI-X)\n"
         "  usb                  USB devices (from usb-bus)\n"
         "  ps                   jobs and processes\n"
         "  run <prog> [args]    start bin/<prog> (or a bootfs path), wait, show how it ended\n"
         "  ktest [prefix]       kernel tests (as the boot menu's All tests)\n"
+        "  utest                the user-space tests (bin/utest)\n"
+        "  usbtest              the USB checks (bin/usbtest)\n"
         "  bench                kernel benchmark\n"
         "  stress <seconds>     stress test (1..600)\n"
+        "  demo [seconds]       the visual demo on every CPU (any key stops it)\n"
         "  log [lines]          the last lines of the kernel log (default 20)\n"
         "  mem                  memory\n"
+        "  memmap               the loader's memory map\n"
         "  kill <name>          kill the first process with that name (see ps)\n"
         "  clear                clear the screen\n"
         "  reboot               restart the machine\n"
+        "  crash [name]         the kernel's crash tests (each panics the machine)\n"
         "  panic                test: panic the kernel (its screen must show)\n"
         "Keys: left/right/home/end, backspace/delete, up/down history, Ctrl+C cancel,\n"
         "Ctrl+L clear, Shift+PageUp/PageDown scroll back.\n");
@@ -307,7 +358,7 @@ static void cmd_devices(void)
                 o.device == info.device)
                 inst++;
         const char *drv = "";
-        if (devmgr) {
+        if (devmgr_now()) {
             struct devmgr_rep rep;
             handle_t hs[DEVMGR_MAX_HANDLES];
             uint32_t nh = 0;
@@ -324,6 +375,8 @@ static void cmd_devices(void)
             info.flags & PCI_INFO_DISPLAY ? " display" : "", drv);
     }
     say("%u PCI function%s\n", i, i == 1 ? "" : "s");
+    if (!devmgr_now())
+        say("devmgr: not running (restarting?)\n");
     if (devmgr) {
         struct devmgr_rep rep;
         status_t st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &rep, NULL, 0, NULL,
@@ -338,7 +391,7 @@ static void cmd_devices(void)
 /* usb-bus: the bound driver that answers usbbus.status (as usbtest finds it). */
 static handle_t find_usb_bus(void)
 {
-    for (uint32_t n = 0; devmgr && n < 16; n++) {
+    for (uint32_t n = 0; devmgr_now() && n < 16; n++) {
         struct devmgr_rep r;
         handle_t hs[1];
         uint32_t nh = 0;
@@ -421,40 +474,38 @@ static void cmd_usb(void)
     jam_handle_close(bus);
 }
 
-static void cmd_run(int argc, char **argv)
+/* Start argv[0] (bin/<name>, or a bootfs path) with argv, wait for it
+ * (Ctrl+C kills it) and say how it ended. True if it exited 0. */
+static bool run_prog(int argc, char **argv)
 {
-    if (argc < 2) {
-        say("usage: run <prog> [args]\n");
-        return;
-    }
     char path[128];
-    if (strchr(argv[1], '/'))
-        snprintf(path, sizeof(path), "%s", argv[1]);
+    if (strchr(argv[0], '/'))
+        snprintf(path, sizeof(path), "%s", argv[0]);
     else
-        snprintf(path, sizeof(path), "bin/%s", argv[1]);
+        snprintf(path, sizeof(path), "bin/%s", argv[0]);
     const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
     if (bootfs_default(&fs) != OK || bootfs_lookup(fs, path, &data, &size) != OK) {
         say("run: no %s in bootfs\n", path);
-        return;
+        return false;
     }
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
         say("run: no job (%s)\n", status_str(st));
-        return;
+        return false;
     }
     struct spawn_handle x[2];
     unsigned nx = 0;
     handle_t h;
-    if (devmgr && jam_handle_duplicate(devmgr, RIGHT_SAME, &h) == OK)
+    if (devmgr_now() && jam_handle_duplicate(devmgr, RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
     if (jam_handle_duplicate(con, RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
-    argv[1] = path;
+    argv[0] = path;
     struct spawn_args a = {
-        .path = path, .argc = argc - 1, .argv = (const char *const *)argv + 1, .job = job,
+        .path = path, .argc = argc, .argv = (const char *const *)argv, .job = job,
         .extra = x, .nextra = nx,
     };
     uint64_t t0 = (uint64_t)jam_clock_get();
@@ -462,7 +513,7 @@ static void cmd_run(int argc, char **argv)
     if (st != OK) {
         say("run: can't start %s (%s)\n", path, status_str(st));
         jam_handle_close(job);
-        return;
+        return false;
     }
     say("run: %s started (Ctrl+C kills it)\n", path);
     flush();
@@ -479,13 +530,16 @@ static void cmd_run(int argc, char **argv)
             }
     }
     uint64_t ms = ((uint64_t)jam_clock_get() - t0) / MS;
+    bool ok = false;
     if (st != OK)
         say("run: lost track of %s (%s)\n", path, status_str(st));
     else if (info.killed)
         say("run: %s was killed after %lu ms\n", path, (unsigned long)ms);
-    else
+    else {
         say("run: %s exited with code %ld after %lu ms\n", path, (long)info.exit_code,
             (unsigned long)ms);
+        ok = info.exit_code == 0;
+    }
     struct job_info ji;
     if (jam_job_get_info(job, &ji) == OK) {
         bool clean = true;
@@ -498,6 +552,126 @@ static void cmd_run(int argc, char **argv)
     }
     jam_handle_close(proc);
     jam_handle_close(job);
+    return ok;
+}
+
+static void cmd_run(int argc, char **argv)
+{
+    if (argc < 2) {
+        say("usage: run <prog> [args]\n");
+        return;
+    }
+    run_prog(argc - 1, argv + 1);
+}
+
+/* The kernel log from position `from` on (up to 64 KiB); *got: bytes. */
+static char *log_since(uint64_t from, size_t *got)
+{
+    handle_t r;
+    *got = 0;
+    if (jam_klog_open(root, &r) != OK)
+        return NULL;
+    size_t cap = 64 * 1024;
+    char *buf = malloc(cap);
+    uint64_t pos = from, first = 0;
+    int64_t n;
+    while (buf && *got < cap && (n = jam_klog_read(r, pos, buf + *got, cap - *got, &first)) > 0) {
+        *got += (size_t)n;
+        pos = first + (uint64_t)n;
+    }
+    jam_handle_close(r);
+    return buf;
+}
+
+/* Where the kernel log ends now. */
+static uint64_t log_end(void)
+{
+    handle_t r;
+    uint64_t first = 0;
+    char c;
+    if (jam_klog_open(root, &r) != OK)
+        return 0;
+    jam_klog_read(r, UINT64_MAX, &c, 1, &first);   /* past the end: 0 bytes, first = the end */
+    jam_handle_close(r);
+    return first;
+}
+
+/* A test program (utest, usbtest): run it, then show its result lines
+ * ("<name>: N passed ...", which it also puts in the RESULTS box) from what
+ * it logged. */
+static void cmd_test_prog(const char *name)
+{
+    uint64_t from = log_end();
+    char prog[32];
+    snprintf(prog, sizeof(prog), "%s", name);
+    char *argv[] = { prog, NULL };
+    bool ok = run_prog(1, argv);
+    size_t got;
+    char *log = log_since(from, &got);
+    char pat[40];
+    int pl = snprintf(pat, sizeof(pat), "%s: ", name);
+    unsigned shown = 0;
+    for (size_t i = 0; log && i < got;) {
+        size_t e = i;
+        while (e < got && log[e] != '\n')
+            e++;
+        for (size_t k = i; k + (size_t)pl < e; k++) {
+            if (memcmp(log + k, pat, (size_t)pl) || log[k + pl] < '0' || log[k + pl] > '9')
+                continue;
+            bool passed_line = false;
+            for (size_t j = k + (size_t)pl; j + 7 <= e && !passed_line; j++)
+                passed_line = !memcmp(log + j, " passed", 7);
+            if (!passed_line)
+                break;
+            say("\033[1m%s%.*s\033[0m\n", ok ? "" : "\033[91m", (int)(e - k), log + k);
+            shown++;
+            break;
+        }
+        i = e + 1;
+    }
+    free(log);
+    if (!shown)
+        say("%s: no result line in the log\n", name);
+}
+
+/* The kernel's crash tests. Each stops the machine with a panic screen
+ * (bp excepted), so a name must be confirmed with "yes". */
+static void cmd_crash(int argc, char **argv)
+{
+    if (argc == 1) {
+        kcmd("crash");
+        say("usage: crash <name> yes   (each one panics the kernel on purpose, bp excepted)\n");
+        return;
+    }
+    if (argc != 3 || strcmp(argv[2], "yes")) {
+        say("crash %s: this stops the machine on purpose; type \"crash %s yes\" to go ahead\n",
+            argv[1], argv[1]);
+        return;
+    }
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "crash %s", argv[1]);
+    say("crash %s: here goes\n", argv[1]);
+    int64_t r = kcmd(cmd);
+    if (r == 0)
+        say("crash %s: came back%s\n", argv[1],
+            strcmp(argv[1], "bp") ? " (it should have panicked!)" : ", as a breakpoint must");
+    else if (r == ERR_NOT_FOUND)
+        say("crash: no test called %s (try crash alone)\n", argv[1]);
+}
+
+/* The visual demo: bin/demo with a thread per CPU; it borrows the screen
+ * from the console and gives it back at the end. */
+static void cmd_demo(int argc, char **argv)
+{
+    int64_t cpus = jam_debug_command(root, "cpus", 4);
+    char c[24], s[24], d[16];
+    snprintf(c, sizeof(c), "cpus=%ld", (long)(cpus > 0 ? cpus : 1));
+    snprintf(s, sizeof(s), "seconds=%s", argc > 1 ? argv[1] : "76");
+    snprintf(d, sizeof(d), "demo");
+    char *av[] = { d, c, s, NULL };
+    say("demo: fractals on %ld CPUs for %s s; any key stops it\n", (long)(cpus > 0 ? cpus : 1),
+        argc > 1 ? argv[1] : "76");
+    run_prog(3, av);
 }
 
 static void cmd_log(int argc, char **argv)
@@ -569,6 +743,16 @@ static void run_command(char *line)
         cmd_help();
     } else if (!strcmp(c, "devices")) {
         cmd_devices();
+    } else if (!strcmp(c, "pci")) {
+        kcmd("devices");
+    } else if (!strcmp(c, "memmap")) {
+        kcmd("memmap");
+    } else if (!strcmp(c, "utest") || !strcmp(c, "usbtest")) {
+        cmd_test_prog(c);
+    } else if (!strcmp(c, "crash")) {
+        cmd_crash(argc, argv);
+    } else if (!strcmp(c, "demo")) {
+        cmd_demo(argc, argv);
     } else if (!strcmp(c, "usb")) {
         cmd_usb();
     } else if (!strcmp(c, "ps")) {
@@ -627,6 +811,8 @@ int main(int argc, char **argv)
     root = startup_handle(SR_RESOURCE);
     pci = startup_handle(SR_USER + 1);
     devmgr = startup_handle(SR_DEVMGR);
+    from_init = startup_handle(SR_USER + 2);
+
     if (!con) {
         printf("shell: no console channel\n");
         return 1;

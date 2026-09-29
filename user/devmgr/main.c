@@ -42,6 +42,10 @@
  * RIGHT_MANAGE, from pci_device_open) and nothing else of the driver's.
  * Each binding is logged, with one RESULTS line per bound driver.
  *
+ * The argument "nousb" (init passes it on for the safe mode boot entry)
+ * leaves USB host controllers (class 0c03xx) without a driver: no USB at
+ * all, the console's input is the serial port alone.
+ *
  * M7: USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
@@ -74,6 +78,7 @@ struct binding devs[MAX_DEVS];
 unsigned ndevs, problems;
 handle_t pci_res, port;
 static unsigned nbound, nfailed, nskipped;
+static bool nousb;
 
 void say(bool report_it, const char *fmt, ...)
 {
@@ -111,6 +116,11 @@ static const char *match(const struct pci_dev_info *i)
     if (i->flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return NULL;   /* never a driver's */
     uint32_t cls = (uint32_t)i->class_code << 16 | (uint32_t)i->subclass << 8 | i->prog_if;
+    if (nousb && (cls >> 8) == 0x0c03) {
+        say(false, "devmgr: %02x:%02x.%x %04x:%04x: a USB controller, left alone (nousb)",
+            i->bus, i->dev, i->fn, i->vendor, i->device);
+        return NULL;
+    }
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
         if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
             (matches[k].device == 0xffff || matches[k].device == i->device) &&
@@ -388,9 +398,10 @@ static status_t serve(handle_t ch)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    for (int i = 1; i < argc; i++)
+        nousb |= !strcmp(argv[i], "nousb");
     handle_t ch = startup_handle(SR_DEVMGR);
+
     pci_res = startup_handle(SR_RESOURCE);
     if (!ch || !pci_res) {
         say(true, "devmgr: no %s in the startup message", ch ? "PCI resource" : "channel");

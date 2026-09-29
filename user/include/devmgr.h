@@ -39,10 +39,24 @@
  * will serve; calls on it wait (bounded by the caller's deadline) until
  * the new driver reads them. ERR_BAD_STATE: devmgr gave up on it (or it
  * finished). A driver keeps no state across a restart: whatever a client
- * had set up through the old channel must be set up again. */
+ * had set up through the old channel must be set up again.
+ *
+ * devmgr itself (M7 cleanup): in shell mode init restarts it when it dies,
+ * with its whole job (every driver it ran), so every devmgr client end
+ * sees ERR_PEER_CLOSED. The new devmgr binds everything again from
+ * scratch. A client that needs devmgr for good gets the new client end
+ * from whoever gave it the old one: init sends the shell each new one on
+ * the shell's SR_USER + 2 channel (a message of one u32
+ * INIT_SHELL_DEVMGR carrying the handle); the programs the shell runs get
+ * the current one when they start. */
 #pragma once
 
 #include <os.h>
+
+/* init -> shell, on the shell's SR_USER + 2 channel: a new devmgr client
+ * end (the one handle of the message). */
+#define INIT_SHELL_DEVMGR   1u
+
 
 #define DEVMGR_PROTOCOL_ID  3u   /* next to the IDL's null (1) and edu (2) */
 /* -> u32 bound, failed, skipped. Answered once the first binding pass is

@@ -1,30 +1,44 @@
 /* init's shell mode (M7 Track C): a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises three services, each in a job of its
- * own under init's, and starts devmgr (main.c) after the console's first
- * start (before the shell's) with a console client end (SR_CONSOLE), so its HID drivers
- * type into the console (M7 integration). After every later console
- * start init hands devmgr the new channel (DEVMGR_SET_CONSOLE): the HID
- * drivers, which end when their console goes, come back connected to it.
- * The services:
+ * init starts and then supervises four services, each in a job of its own
+ * under init's:
  *   console   bin/console: root with READ | WRITE | MANAGE (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
  *             console channel (SR_USER + 0);
  *             init keeps the client end
  *   serialin  bin/serialin: root with READ (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
+ *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
+ *             server end of its channel (SR_DEVMGR; init keeps a client
+ *             end) and a console client end (SR_CONSOLE), so its HID
+ *             drivers type into the console (M7 integration). init waits
+ *             for its first binding pass (up to 30 s). "nousb" (the safe
+ *             mode boot entry) is passed on: no USB controller driver
  *   shell     bin/shell: a copy of the console client end (SR_CONSOLE),
  *             root with READ | MANAGE, RES_PCI with RIGHTS_BASIC
- *             (SR_USER + 1), a devmgr client end (SR_DEVMGR)
- * None of them gets RIGHT_MAP or RIGHT_SLICE on the root: they can't reach
- * hardware beyond the calls made for them.
+ *             (SR_USER + 1), a devmgr client end (SR_DEVMGR) and a channel
+ *             from init (SR_USER + 2) on which init sends it each new
+ *             devmgr client end (INIT_SHELL_DEVMGR, <devmgr.h>)
+ * None of the console, serialin and the shell gets RIGHT_MAP or
+ * RIGHT_SLICE on the root: they can't reach hardware beyond the calls made
+ * for them.
  *
- * A service that ends is started again, console first: a new console gets
- * a new channel, so serialin and the shell (whose channel then closes)
- * exit and come back connected to it. Restarts back off from 100 ms to
- * 5 s; one that ends more than 10 times in a minute is given up on (a line
- * in the log and the RESULTS box). init itself never returns in this mode. */
+ * A service that ends is started again (in the order above, each waiting
+ * for the console):
+ *   - a new console gets a new channel, so serialin and the shell (whose
+ *     channel then closes) exit and come back connected to it, and devmgr
+ *     gets the new channel (DEVMGR_SET_CONSOLE): its HID drivers, which
+ *     end when their console goes, come back connected to it.
+ *   - devmgr dying (M7 cleanup: killed, or a crash) takes its whole job
+ *     with it: every driver it started (usb-bus, each hid). A new devmgr
+ *     binds them again from scratch (the kernel's safe rebind: a new
+ *     dma_cap with Bus Master Enable off until usb-bus has reset the
+ *     controller; the dead one's DMA pages stay quarantined until then),
+ *     connected to the console. The shell gets the new devmgr channel.
+ * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
+ * in a minute is given up on (a line in the log and the RESULTS box). init
+ * itself never returns in this mode. */
 #include <os.h>
 #include <devmgr.h>
 #include <idl/console.h>
@@ -36,7 +50,7 @@
 
 void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-enum { CONSOLE, SERIALIN, SHELL, NSVC };
+enum { CONSOLE, SERIALIN, DEVMGR, SHELL, NSVC };
 
 struct svc {
     const char *path;
@@ -50,13 +64,14 @@ struct svc {
 };
 
 static struct svc svcs[NSVC] = {
-    [CONSOLE] = { "bin/console" }, [SERIALIN] = { "bin/serialin" }, [SHELL] = { "bin/shell" },
+    [CONSOLE] = { "bin/console" }, [SERIALIN] = { "bin/serialin" },
+    [DEVMGR] = { "bin/devmgr" }, [SHELL] = { "bin/shell" },
 };
-static handle_t root, devmgr, cons;   /* cons: the console client end (0: none) */
-static bool devmgr_started;
-handle_t init_devmgr(handle_t console);   /* main.c */
-static void tell_devmgr(void);
-static handle_t port;
+static handle_t root, port;
+static handle_t cons;       /* the console client end (0: none) */
+static handle_t devmgr;     /* a devmgr client end (0: none running) */
+static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
+static bool nousb;
 
 static uint64_t now(void)
 {
@@ -71,8 +86,9 @@ static handle_t root_with(rights_t rights)
     return h;
 }
 
-/* Start svc i with these extra handles (consumed). */
-static status_t start(unsigned i, struct spawn_handle *x, unsigned nx)
+/* Start svc i with these arguments and extra handles (consumed). */
+static status_t start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
+                      unsigned nx)
 {
     struct svc *s = &svcs[i];
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
@@ -82,9 +98,8 @@ static status_t start(unsigned i, struct spawn_handle *x, unsigned nx)
                 jam_handle_close(x[k].h);
         return st;
     }
-    const char *argv[] = { s->path };
     struct spawn_args a = {
-        .path = s->path, .argc = 1, .argv = argv, .job = s->job, .extra = x, .nextra = nx,
+        .path = s->path, .argc = argc, .argv = argv, .job = s->job, .extra = x, .nextra = nx,
     };
     st = spawn(&a, &s->proc);
     if (st == OK)
@@ -104,48 +119,19 @@ static status_t start(unsigned i, struct spawn_handle *x, unsigned nx)
     return OK;
 }
 
-static status_t start_console(void)
+static status_t start1(unsigned i, struct spawn_handle *x, unsigned nx)
 {
-    handle_t a, b;
-    status_t st = jam_channel_create(&a, &b);
-    if (st != OK)
-        return st;
-    struct spawn_handle x[] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE) },
-        { SR_USER + 0, b },
-    };
-    st = start(CONSOLE, x, 2);
-    if (st != OK) {
-        jam_handle_close(a);
-        return st;
-    }
-    if (cons)
-        jam_handle_close(cons);
-    cons = a;
-    if (devmgr_started)
-        tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
-    return OK;
+    const char *argv[] = { svcs[i].path };
+    return start(i, 1, argv, x, nx);
 }
 
-/* devmgr gets a client end of the console: the first time as its
- * SR_CONSOLE when init starts it (just before the first shell: serialin
- * gets going meanwhile), after a console restart DEVMGR_SET_CONSOLE. */
+/* devmgr takes a new console (after the console restarted): its HID
+ * drivers come back connected to it. */
 static void tell_devmgr(void)
 {
     handle_t c = HANDLE_INVALID;
-    if (jam_handle_duplicate(cons, RIGHT_SAME, &c) != OK) {
-        printf("init: no console channel for devmgr\n");
+    if (!devmgr || jam_handle_duplicate(cons, RIGHT_SAME, &c) != OK)
         return;
-    }
-    if (!devmgr_started) {
-        devmgr_started = true;
-        devmgr = init_devmgr(c);   /* consumes c */
-        return;
-    }
-    if (!devmgr) {
-        jam_handle_close(c);
-        return;
-    }
     struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
     struct devmgr_rep r;
     uint32_t n = 0, got = 0;
@@ -161,6 +147,39 @@ static void tell_devmgr(void)
                status_str(st != OK ? st : r.status));
 }
 
+/* The shell gets each new devmgr client end on its init channel. */
+static void tell_shell(void)
+{
+    handle_t d = HANDLE_INVALID;
+    if (!to_shell || !devmgr || jam_handle_duplicate(devmgr, RIGHT_SAME, &d) != OK)
+        return;
+    uint32_t kind = INIT_SHELL_DEVMGR;
+    if (jam_channel_write(to_shell, &kind, sizeof(kind), &d, 1) != OK)
+        jam_handle_close(d);   /* the shell is gone: it gets one when it restarts */
+}
+
+static status_t start_console(void)
+{
+    handle_t a, b;
+    status_t st = jam_channel_create(&a, &b);
+    if (st != OK)
+        return st;
+    struct spawn_handle x[] = {
+        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE) },
+        { SR_USER + 0, b },
+    };
+    st = start1(CONSOLE, x, 2);
+    if (st != OK) {
+        jam_handle_close(a);
+        return st;
+    }
+    if (cons)
+        jam_handle_close(cons);
+    cons = a;
+    tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
+    return OK;
+}
+
 static status_t start_serialin(void)
 {
     handle_t src;
@@ -170,14 +189,58 @@ static status_t start_serialin(void)
     struct spawn_handle x[] = {
         { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) }, { SR_USER + 0, src },
     };
-    return start(SERIALIN, x, 2);
+    return start1(SERIALIN, x, 2);
+}
+
+static status_t start_devmgr(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "bin/devmgr", &data, &size) != OK) {
+        printf("init: no bin/devmgr in bootfs: no drivers\n");
+        svcs[DEVMGR].given_up = true;
+        return OK;
+    }
+    handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
+    status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
+    if (st == OK)
+        st = jam_channel_create(&a, &b);
+    if (st == OK)
+        st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
+    if (st != OK) {
+        if (pci)
+            jam_handle_close(pci);
+        if (a) {
+            jam_handle_close(a);
+            jam_handle_close(b);
+        }
+        return st;
+    }
+    const char *argv[] = { "bin/devmgr", "nousb" };
+    struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b }, { SR_CONSOLE, c } };
+    st = start(DEVMGR, nousb ? 2 : 1, argv, x, 3);   /* consumes pci, b and c */
+    if (st != OK) {
+        jam_handle_close(a);
+        return st;
+    }
+    devmgr = a;
+    /* Its first binding pass (usb-bus on the PC's controller). */
+    struct devmgr_rep r;
+    st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * S);
+    if (st != OK)
+        init_say("init: devmgr doesn't answer (%s)", status_str(st));
+    else
+        printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped%s\n", r.a, r.b, r.c,
+               nousb ? " (nousb: no USB drivers)" : "");
+    tell_shell();
+    return OK;
 }
 
 static status_t start_shell(void)
 {
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
-    if (!devmgr_started)
-        tell_devmgr();
+    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
     status_t st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK)
         return st;
@@ -186,19 +249,31 @@ static status_t start_shell(void)
     if (jam_resource_create(root, RES_PCI, 0, 0, &pci) == OK &&
         jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
         p2 = HANDLE_INVALID;
+    if (jam_channel_create(&mine, &theirs) != OK)
+        mine = theirs = HANDLE_INVALID;
     struct spawn_handle x[] = {
         { SR_CONSOLE, c },
         { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE) },
         { SR_USER + 1, p2 },
         { SR_DEVMGR, d },
+        { SR_USER + 2, theirs },
     };
     /* Leave out the ones we don't have. */
-    struct spawn_handle y[4];
+    struct spawn_handle y[5];
     unsigned n = 0;
-    for (unsigned k = 0; k < 4; k++)
+    for (unsigned k = 0; k < 5; k++)
         if (x[k].h)
             y[n++] = x[k];
-    return start(SHELL, y, n);
+    st = start1(SHELL, y, n);
+    if (st != OK) {
+        if (mine)
+            jam_handle_close(mine);
+        return st;
+    }
+    if (to_shell)
+        jam_handle_close(to_shell);
+    to_shell = mine;
+    return OK;
 }
 
 /* Svc i ended: say how, clean up, schedule the restart. */
@@ -209,7 +284,7 @@ static void ended(unsigned i)
     if (jam_process_get_info(s->proc, &info) == OK)
         printf("init: %s %s %ld\n", s->path, info.killed ? "was killed, code" : "exited with code",
                (long)info.exit_code);
-    jam_job_kill(s->job);   /* anything it started */
+    jam_job_kill(s->job);   /* anything it started (devmgr: every driver) */
     jam_handle_close(s->proc);
     jam_handle_close(s->job);
     s->proc = s->job = HANDLE_INVALID;
@@ -218,6 +293,19 @@ static void ended(unsigned i)
     if (t - s->window_start > GIVE_UP_WINDOW) {
         s->window_start = t;
         s->ends = 0;
+    }
+    if (i == CONSOLE && cons) {
+        jam_handle_close(cons);   /* the shell and serialin see PEER_CLOSED */
+        cons = HANDLE_INVALID;
+    }
+    if (i == DEVMGR && devmgr) {
+        jam_handle_close(devmgr);   /* the shell's copy sees PEER_CLOSED */
+        devmgr = HANDLE_INVALID;
+        printf("init: devmgr and its drivers are gone: starting them again\n");
+    }
+    if (i == SHELL && to_shell) {
+        jam_handle_close(to_shell);
+        to_shell = HANDLE_INVALID;
     }
     if (++s->ends > GIVE_UP_COUNT) {
         s->given_up = true;
@@ -229,21 +317,19 @@ static void ended(unsigned i)
     if (s->backoff > 5 * S)
         s->backoff = 5 * S;
     s->next_try = t + s->backoff;
-    if (i == CONSOLE && cons) {
-        jam_handle_close(cons);   /* the shell and serialin see PEER_CLOSED */
-        cons = HANDLE_INVALID;
-    }
 }
 
-bool init_shell(void)
+bool init_shell(bool no_usb)
 {
     root = startup_handle(SR_RESOURCE);
+    nousb = no_usb;
     status_t st = jam_port_create(&port);
     if (st != OK) {
         init_say("init: shell mode: no port (%s)", status_str(st));
         return false;
     }
-    printf("init: shell mode: starting the console, the serial input and the shell\n");
+    printf("init: shell mode%s: starting the console, the serial input, devmgr and the shell\n",
+           nousb ? " (safe mode: nousb)" : "");
     for (;;) {
         uint64_t t = now(), deadline = DEADLINE_NEVER;
         for (unsigned i = 0; i < NSVC; i++) {
@@ -256,7 +342,10 @@ bool init_shell(void)
                 deadline = s->next_try < deadline ? s->next_try : deadline;
                 continue;
             }
-            st = i == CONSOLE ? start_console() : i == SERIALIN ? start_serialin() : start_shell();
+            st = i == CONSOLE    ? start_console()
+                 : i == SERIALIN ? start_serialin()
+                 : i == DEVMGR   ? start_devmgr()
+                                 : start_shell();
             if (st != OK) {
                 printf("init: can't start %s (%s)\n", s->path, status_str(st));
                 s->backoff = s->backoff ? s->backoff * 2 : 100 * MS;
