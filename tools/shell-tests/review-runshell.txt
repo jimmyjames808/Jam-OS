@@ -1,0 +1,22 @@
+# Review repro: a program started with `run` that calls console.open_keys
+# (here a second shell) takes the keys from the shell for good: the shell's
+# Ctrl+C never reaches it, and the inner shell has no root resource (no
+# kill, no reboot) and no exit command. From the serial side nothing gets
+# back to the outer shell.
+wait 120 Jam OS shell
+wait jam>
+send run shell
+wait run: bin/shell started
+wait Jam OS shell
+wait jam>
+# Ctrl+C: the outer shell should kill bin/shell ("^C: killing"); the inner one eats it
+type \x03
+wait 5 ^C
+sleep 1
+send help
+wait Commands:
+wait jam>
+send kill shell
+wait 5 kill shell:
+# the outer shell's "^C: killing bin/shell" never comes
+seen 5 ^C: killing
