@@ -1,0 +1,74 @@
+# The System and Tests commands (user/shell/cmd/: devices usb pci memmap
+# log mem kill clear ktest stress utest crash ...) through the command
+# table like every other command: their argv arrives as typed, with quotes
+# kept ("a b" is one word), their status is $?, their output goes down a
+# pipe, aliases and Tab find them. QEMU_INPUT=this file, command line
+# "shell". As in cmds.txt, the text waited for is built from $T = x, so it
+# never appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+send T=x
+wait jam>
+
+# ---- argv as typed: a quoted word stays one word ---------------------------------------
+send utest env "q $T" 'r s'
+wait 30 arg: q x
+wait arg: r s
+wait run: bin/utest exited with code 0
+wait jam>
+send kill "a $T"
+wait kill a x: ERR_INVALID_ARGS
+wait jam>
+send crash "pf yes"
+wait type "crash pf yes yes" to go ahead
+wait jam>
+send ktest "zz-$T"
+wait 60 ktest zz-x
+wait jam>
+
+# ---- status ------------------------------------------------------------------------------
+send kill nosuch-$T && echo ok-$T-kill
+wait kill: no process called "nosuch-x"
+wait ok-x-kill
+send kill; echo st-$T=$?
+wait usage: kill <name>
+wait st-x=0
+send stress; echo st2-$T=$?
+wait stress : ERR_INVALID_ARGS
+wait st2-x=0
+send time memmap
+wait usable
+wait (status 0)
+wait jam>
+
+# ---- output down a pipe --------------------------------------------------------------------
+send mem | grep "shell's job" | grep -c pages | grep ^1$ && echo ok-$T-mem
+wait ok-x-mem
+send devices | grep -c "PCI function" | grep ^1$ && echo ok-$T-dev
+wait ok-x-dev
+send usb | grep -c "problem(s)" | grep ^1$ && echo ok-$T-usb
+wait ok-x-usb
+send log 3 | wc -l | grep -v ^0$ && echo ok-$T-log
+wait ok-x-log
+send crash pf | grep -c "to go ahead" | grep ^1$ && echo ok-$T-crash
+wait ok-x-crash
+
+# ---- the table: help, type, aliases, Tab ------------------------------------------------
+send help kill | grep -c "kill the first process" | grep ^1$ && echo ok-$T-help
+wait ok-x-help
+send ? stress | grep -c "stress test" | grep ^1$ && echo ok-$T-q
+wait ok-x-q
+send type reboot clear
+wait reboot is a shell builtin
+wait clear is a shell builtin
+send alias m$T=mem
+wait jam>
+send mx | grep -c "MiB free" | grep ^1$ && echo ok-$T-alias
+wait ok-x-alias
+type memm\t\r
+wait usable
+wait jam>
+send clear
+wait jam>
+send reboot
+wait reboot: resetting

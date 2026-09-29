@@ -1,4 +1,4 @@
-# Review finding, fixed (M7 cleanup). Run as tools/usbkeys-test.sh does
+# Review finding, fixed. Run as tools/usbkeys-test.sh does
 # (QEMU_USB with a hub on port 2, usb-kbd id=keys at 2.1). A program started
 # with `run` used to get devmgr's channel and send DEVMGR_SET_CONSOLE: the
 # next keyboard connected to it. Now `run` programs get nothing of devmgr's

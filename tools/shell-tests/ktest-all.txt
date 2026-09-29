@@ -1,4 +1,4 @@
-# All kernel tests from the shell (M7 done test: ktest runs from the shell),
+# All kernel tests from the shell (`ktest`, no prefix),
 # with devmgr, its drivers, the console, serialin and the shell running.
 # ktest goes in at the first prompt, while usb-bus is still enumerating: no
 # waiting for user space to settle. Live, checks on system-wide counts are

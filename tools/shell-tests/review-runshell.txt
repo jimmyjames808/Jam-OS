@@ -1,4 +1,4 @@
-# Review finding, fixed (M7 cleanup): a program started with `run` that
+# Review finding, fixed: a program started with `run` that
 # calls console.open_keys (here a second shell) takes the keys, but Ctrl+C
 # still reaches the outer shell (the console sends it to the SHELL-level
 # focus below a PROGRAM's), which kills it and gets the keys back.

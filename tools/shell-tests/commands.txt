@@ -1,4 +1,4 @@
-# The tests-as-commands of the M7 cleanup (QEMU_INPUT=this file, command
+# The tests as shell commands (QEMU_INPUT=this file, command
 # line "shell"): utest and usbtest with their result lines, pci, memmap,
 # the crash list and its confirmation, the demo on a borrowed screen and
 # back to the prompt, Ctrl+C reaching the shell past a program holding the

@@ -141,8 +141,11 @@ UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
+# A program's sources: user/<prog>/*.c and one level of subdirectories
+# (user/shell/cmd/*.c).
+prog_srcs    = $(wildcard user/$(1)/*.c user/$(1)/*/*.c)
 USER_OBJS   := $(LIBOS_OBJS) $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
-               $(foreach p,$(USER_PROGS),$(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(p)/*.c)))
+               $(foreach p,$(USER_PROGS),$(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(p))))
 
 .SECONDARY: $(UINC)
 $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
@@ -164,11 +167,11 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
 define USER_PROG
-$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(1)/*.c)) \
+$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(1))) \
                     $(UOBJ)/libos.a user/linker.ld
 	@mkdir -p $$(dir $$@)
 	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o \
-	    $(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(1)/*.c)) $(UOBJ)/libos.a $(LIBGCC) -o $$@
+	    $(patsubst %,$(UOBJ)/%.o,$(call prog_srcs,$(1))) $(UOBJ)/libos.a $(LIBGCC) -o $$@
 
 $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)
 	$(STRIP) --strip-debug $$< -o $$@

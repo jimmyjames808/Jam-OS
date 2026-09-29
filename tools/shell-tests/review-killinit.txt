@@ -1,17 +1,18 @@
 # Review: the shell's `kill` reaches every process in the system
-# (debug_command's scope is the ROOT of the caller's job tree). Before the
-# fix `kill init` ended init (the kernel printed its RESULTS box, "root job
-# ... LEAKED", while the console and shell ran on with nobody to restart
-# them) and `kill devmgr` stopped every driver for good (the USB keyboard
-# too). The shell now refuses both; the restartable services still go.
+# (debug_command's scope is the ROOT of the caller's job tree). Killing
+# init would end it for good (the kernel prints its RESULTS box, "root job
+# ... LEAKED", while the console and shell run on with nobody to restart
+# them), so the shell refuses it. The services init supervises may go:
+# serialin comes back, and devmgr comes back with its drivers.
 wait 120 Jam OS shell
 wait jam>
 send kill init
 wait 10 not killing it
 wait jam>
 send kill devmgr
-wait 10 not killing it
-wait jam>
+wait 10 shell: killed process
+wait 30 init: devmgr and its drivers are gone
+wait 60 init: devmgr:
 send kill serialin
 wait bin/serialin was killed
 sleep 1

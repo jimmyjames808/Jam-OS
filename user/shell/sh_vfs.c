@@ -2,7 +2,7 @@
  *
  * One tree: "/" holds mount points, each a small set of operations. Today
  * there is one, /boot = the bootfs image (bin/..., drv/..., init.cfg; files
- * only, read-only, directories implied by the '/' in the names). M8's
+ * only, read-only, directories implied by the '/' in the names). A disk's
  * filesystem mounts /data beside it: a new entry in `mounts` with the same
  * three operations (stat, readdir, read) over its channel protocol. */
 #include <jam/bootfs.h>
