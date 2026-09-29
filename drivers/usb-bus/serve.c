@@ -668,43 +668,6 @@ static void serve_chan(int i)
 
 /* ---- main --------------------------------------------------------------------------- */
 
-static void report_controller(struct hc *h)
-{
-    char r2[48] = "", r3[48] = "";
-    unsigned n2 = 0, n3 = 0;
-    for (unsigned i = 0; i < h->nproto; i++) {
-        char *o = h->proto[i].major >= 3 ? r3 : r2;
-        unsigned *k = h->proto[i].major >= 3 ? &n3 : &n2;
-        unsigned first = h->proto[i].first, last = first + h->proto[i].count - 1;
-        /* "a-b" appended by hand: no snprintf in drivers */
-        char t[16];
-        unsigned tn = 0;
-        if (*k)
-            t[tn++] = ',';
-        unsigned v[2] = { first, last };
-        for (int j = 0; j < (first == last ? 1 : 2); j++) {
-            if (j)
-                t[tn++] = '-';
-            char dg[4];
-            int nd = 0;
-            unsigned x = v[j];
-            do {
-                dg[nd++] = (char)('0' + x % 10);
-                x /= 10;
-            } while (x && nd < 3);
-            while (nd)
-                t[tn++] = dg[--nd];
-        }
-        for (unsigned j = 0; j < tn && *k + 1 < sizeof(r2); j++)
-            o[(*k)++] = t[j];
-        o[*k] = 0;
-    }
-    drv_report("xHCI %04x:%04x rev %02x: %u ports (USB 2: %s, USB 3: %s), %u slots, %u-byte "
-               "contexts, %s, BIOS handoff %s", h->vendor, h->device, h->revision, h->ports,
-               n2 ? r2 : "-", n3 ? r3 : "-", h->max_slots_en, h->csz,
-               h->msix ? "MSI-X" : "MSI", h->handoff);
-}
-
 int driver_main(const struct driver_start *s)
 {
     struct hc *h = &g_hc;

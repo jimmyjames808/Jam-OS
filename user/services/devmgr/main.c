@@ -369,18 +369,7 @@ static status_t serve(handle_t ch, bool control)
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {
-            /* Nothing of ours is that big: take it off the queue unanswered. */
-            uint8_t *big = malloc(n ? n : 1);
-            handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));
-            a.bytes = (uint64_t)(uintptr_t)big;
-            a.bytes_cap = n;
-            a.handles = (uint64_t)(uintptr_t)bh;
-            a.handles_cap = nh;
-            if (big && bh && jam_channel_read(&a) == OK)
-                for (uint32_t i = 0; i < nh; i++)
-                    jam_handle_close(bh[i]);
-            free(big);
-            free(bh);
+            discard(ch, n, nh);   /* nothing of ours is that big */
             continue;
         }
         if (st != OK)

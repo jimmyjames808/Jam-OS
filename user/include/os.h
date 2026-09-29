@@ -142,3 +142,36 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
  * exits when fn returns. *out gets its thread handle. */
 status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
                       size_t stack_size, handle_t *out);
+
+/* devices ------------------------------------------------------------------------ */
+
+/* The config-space offset of PCI capability `id` of the function dev (a
+ * RES_PCI_DEV handle with RIGHT_READ), or 0 if it has none. The list is
+ * walked at most 48 steps, inside the standard config space. */
+uint32_t pci_find_cap(handle_t dev, uint32_t id);
+
+/* the CPU ------------------------------------------------------------------------ */
+
+/* CPUID leaf `leaf`, subleaf `sub`: r = eax, ebx, ecx, edx. */
+static inline void cpu_cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4])
+{
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3])
+                     : "a"(leaf), "c"(sub));
+}
+
+/* XCR0: the register state the kernel saves for us (bit 1 SSE, bit 2 AVX).
+ * Only where CPUID.1:ECX.OSXSAVE (bit 27) is set. */
+static inline uint64_t cpu_xcr0(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return (uint64_t)hi << 32 | lo;
+}
+
+/* The TSC, fenced on both sides so nothing moves across the read. */
+static inline uint64_t cpu_tsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return (uint64_t)hi << 32 | lo;
+}

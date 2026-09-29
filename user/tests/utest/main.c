@@ -531,27 +531,13 @@ static bool t_kernel_objects_are_charged(void)
 static bool have_avx;
 static volatile uint32_t fpu_errors, fpu_rounds, fpu_preempted;
 
-static inline uint64_t tsc(void)
-{
-    uint32_t lo, hi;
-    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
-    return (uint64_t)hi << 32 | lo;
-}
-
-static void cpuid(uint32_t leaf, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
-{
-    __asm__ volatile("cpuid" : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d) : "a"(leaf), "c"(0));
-}
-
 static bool avx_usable(void)
 {
-    uint32_t a, b, c, d;
-    cpuid(1, &a, &b, &c, &d);
-    if (!(c & (1u << 27)) || !(c & (1u << 28)))   /* OSXSAVE, AVX */
+    uint32_t r[4];
+    cpu_cpuid(1, 0, r);
+    if (!(r[2] & (1u << 27)) || !(r[2] & (1u << 28)))   /* OSXSAVE, AVX */
         return false;
-    uint32_t lo, hi;
-    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-    return (lo & 6) == 6;   /* the kernel saves SSE and AVX state */
+    return (cpu_xcr0() & 6) == 6;   /* the kernel saves SSE and AVX state */
 }
 
 /* Load 16 registers from pat, spin (preemption happens here), store them
@@ -615,12 +601,12 @@ static void fpu_worker(void *arg)
     while (now() < end) {
         size_t n = have_avx && (seed & 1) ? 512 : 256;   /* a mix of SSE and AVX threads */
         memset(got, 0, n);
-        uint64_t t0 = tsc();
+        uint64_t t0 = cpu_tsc();
         if (n == 512)
             avx_round(pat, got, FPU_SPINS);
         else
             sse_round(pat, got, FPU_SPINS);
-        uint64_t t = tsc() - t0;
+        uint64_t t = cpu_tsc() - t0;
         if (t < fastest)
             fastest = t;
         took[rounds++ % 64] = t;
@@ -1268,23 +1254,6 @@ static bool t_supervised_give_up(void)
     return true;
 }
 
-/* A capability's config offset (the standard list), or 0. */
-static uint32_t find_cap(handle_t dev, uint32_t id)
-{
-    uint32_t p = 0, v = 0;
-    if (jam_pci_config_read(dev, 0x34, 1, &p) != OK)
-        return 0;
-    for (int guard = 0; p >= 0x40 && guard < 48; guard++) {
-        p &= ~3u;
-        if (jam_pci_config_read(dev, p, 2, &v) != OK)
-            return 0;
-        if ((v & 0xff) == id)
-            return p;
-        p = v >> 8;
-    }
-    return 0;
-}
-
 /* What a driver's handles can't do, with a function that has MSI-X (the
  * same handles devmgr gives its driver, minus the interrupt and the
  * dma_cap): map its MSI-X table or PBA page, turn on bus mastering, make a
@@ -1310,7 +1279,7 @@ static bool t_driver_handle_limits(void)
         if (st == ERR_NOT_FOUND)
             break;
         uint32_t t = 0, p = 0;
-        if (st == OK && nh >= 2 && (cap = find_cap(hs[0], 0x11)) &&
+        if (st == OK && nh >= 2 && (cap = pci_find_cap(hs[0], 0x11)) &&
             jam_pci_config_read(hs[0], cap + 4, 4, &t) == OK &&
             jam_pci_config_read(hs[0], cap + 8, 4, &p) == OK &&
             (r.a & (1u << (t & 7))) && (r.a & (1u << (p & 7))))

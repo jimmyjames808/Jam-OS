@@ -62,8 +62,7 @@ static void drop(struct usb_if *u)
     u->bind = -1;
 }
 
-/* One message is queued on h that doesn't fit: take it off anyway. */
-static void discard(handle_t h, uint32_t n, uint32_t nh)
+void discard(handle_t h, uint32_t n, uint32_t nh)
 {
     uint8_t *big = malloc(n ? n : 1);
     handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));

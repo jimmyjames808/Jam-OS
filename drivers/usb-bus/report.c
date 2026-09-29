@@ -1,6 +1,7 @@
-/* usb-bus: what it says about devices: the one-line summary of each
- * (dev_line, in the log and in RESULTS), the detailed log lines, the
- * device paths ("9.1": root port 9, hub port 1) and the RESULTS summary.
+/* usb-bus: what it says about the controller (its RESULTS line) and about
+ * devices: the one-line summary of each (dev_line, in the log and in
+ * RESULTS), the detailed log lines, the device paths ("9.1": root port 9,
+ * hub port 1) and the RESULTS summary.
  *
  * RESULTS gets one line per device once enumeration first settles, in
  * tree order, and a summary; usb_report_all is called again when the
@@ -26,6 +27,28 @@ static unsigned append(char *buf, unsigned n, unsigned cap, const char *fmt, ...
     if (r < 0)
         return n;
     return n + (unsigned)r < cap ? n + (unsigned)r : cap - 1;
+}
+
+/* ---- the controller ---------------------------------------------------------- */
+
+void report_controller(const struct hc *h)
+{
+    char r2[48] = "", r3[48] = "";   /* "1-4,9": the USB 2 and USB 3 root ports */
+    unsigned n2 = 0, n3 = 0;
+    for (unsigned i = 0; i < h->nproto; i++) {
+        bool usb3 = h->proto[i].major >= 3;
+        char *o = usb3 ? r3 : r2;
+        unsigned *k = usb3 ? &n3 : &n2;
+        unsigned first = h->proto[i].first, last = first + h->proto[i].count - 1;
+        if (first == last)
+            *k = append(o, *k, sizeof(r2), "%s%u", *k ? "," : "", first);
+        else
+            *k = append(o, *k, sizeof(r2), "%s%u-%u", *k ? "," : "", first, last);
+    }
+    drv_report("xHCI %04x:%04x rev %02x: %u ports (USB 2: %s, USB 3: %s), %u slots, %u-byte "
+               "contexts, %s, BIOS handoff %s", h->vendor, h->device, h->revision, h->ports,
+               n2 ? r2 : "-", n3 ? r3 : "-", h->max_slots_en, h->csz,
+               h->msix ? "MSI-X" : "MSI", h->handoff);
 }
 
 /* ---- names ------------------------------------------------------------------ */

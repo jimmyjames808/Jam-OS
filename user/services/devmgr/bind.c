@@ -49,24 +49,6 @@ static status_t bar_for_driver(handle_t dev, unsigned n, handle_t *out)
     return st;
 }
 
-/* A capability's config offset (the standard list, bounded), or 0. */
-static uint32_t find_cap(handle_t dev, uint32_t id)
-{
-    uint32_t st = 0, p = 0, v = 0;
-    if (jam_pci_config_read(dev, 0x06, 2, &st) != OK || !(st & 0x10) ||
-        jam_pci_config_read(dev, 0x34, 1, &p) != OK)
-        return 0;
-    for (int guard = 0; p >= 0x40 && p < 0x100 && guard < 48; guard++) {
-        p &= ~3u;
-        if (jam_pci_config_read(dev, p, 2, &v) != OK)
-            return 0;
-        if ((v & 0xff) == id)
-            return p;
-        p = v >> 8;
-    }
-    return 0;
-}
-
 /* A function left in D1-D3 (by firmware, or a power-down) is woken to D0
  * before a driver gets it (a driver can't use a sleeping device, and only
  * we may change its power state: RIGHT_MANAGE). The kernel waits out the
@@ -74,7 +56,7 @@ static uint32_t find_cap(handle_t dev, uint32_t id)
  * D3hot -> D0 reset loses. */
 static status_t wake(struct binding *b)
 {
-    uint32_t pm = find_cap(b->dev, 0x01), pmcsr = 0;
+    uint32_t pm = pci_find_cap(b->dev, 0x01), pmcsr = 0;
     if (!pm || jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) != OK || !(pmcsr & 3))
         return OK;
     uint32_t was = pmcsr & 3;

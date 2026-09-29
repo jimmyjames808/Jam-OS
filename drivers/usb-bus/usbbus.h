@@ -497,6 +497,10 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
 
 /* ---- report.c -------------------------------------------------------------- */
 
+/* The controller's RESULTS line: ids, which root ports are USB 2 and USB 3,
+ * slots, context size, MSI or MSI-X, the BIOS handoff. */
+void report_controller(const struct hc *h);
+
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems);
 void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */

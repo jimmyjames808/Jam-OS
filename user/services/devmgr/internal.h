@@ -112,6 +112,10 @@ unsigned mem_bars(const struct binding *b);
 
 /* Close b's client end (and stop watching it). */
 void close_client(struct binding *b);
+/* The next message on h didn't fit (ERR_BUFFER_TOO_SMALL: n bytes, nh
+ * handles): take it off the queue anyway, unanswered, and close its
+ * handles. (usb.c) */
+void discard(handle_t h, uint32_t n, uint32_t nh);
 
 /* usb.c: the interfaces usb-bus reports on its DR_SERVE channel, and
  * their class drivers. */

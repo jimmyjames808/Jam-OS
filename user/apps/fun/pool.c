@@ -3,15 +3,10 @@
 
 /* ---- CPUs and the thread pool ---------------------------------------------------------- */
 
-static void cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4])
-{
-    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
-}
-
 uint32_t fun_cpu_count(void)
 {
     uint32_t r[4], n = 0;
-    cpuid(0, 0, r);
+    cpu_cpuid(0, 0, r);
     uint32_t max = r[0];
     /* V2 extended topology (0x1F) or extended topology (0xB): the last level
      * before "invalid" counts every logical CPU in the package. */
@@ -19,7 +14,7 @@ uint32_t fun_cpu_count(void)
         if (max < leaf)
             continue;
         for (uint32_t sub = 0; sub < 8; sub++) {
-            cpuid(leaf, sub, r);
+            cpu_cpuid(leaf, sub, r);
             if (((r[2] >> 8) & 0xff) == 0)
                 break;
             if (r[1] & 0xffff)
@@ -27,7 +22,7 @@ uint32_t fun_cpu_count(void)
         }
     }
     if (!n) {
-        cpuid(1, 0, r);
+        cpu_cpuid(1, 0, r);
         n = (r[1] >> 16) & 0xff;
     }
     if (n < 1)
@@ -40,28 +35,26 @@ uint32_t fun_cpu_count(void)
 bool fun_has_avx2(void)
 {
     uint32_t r[4];
-    cpuid(0, 0, r);
+    cpu_cpuid(0, 0, r);
     if (r[0] < 7)
         return false;
-    cpuid(1, 0, r);
+    cpu_cpuid(1, 0, r);
     bool fma = r[2] >> 12 & 1, osxsave = r[2] >> 27 & 1, avx = r[2] >> 28 & 1;
     if (!fma || !osxsave || !avx)
         return false;
-    uint32_t lo, hi;
-    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-    if ((lo & 6) != 6)   /* the OS saves SSE and AVX state */
+    if ((cpu_xcr0() & 6) != 6)   /* the OS saves SSE and AVX state */
         return false;
-    cpuid(7, 0, r);
+    cpu_cpuid(7, 0, r);
     return r[1] >> 5 & 1;
 }
 
 bool fun_is_tcg(void)
 {
     uint32_t r[4];
-    cpuid(1, 0, r);
+    cpu_cpuid(1, 0, r);
     if (!(r[2] >> 31 & 1))   /* no hypervisor */
         return false;
-    cpuid(0x40000000, 0, r);
+    cpu_cpuid(0x40000000, 0, r);
     return r[1] == 0x54474354 && r[2] == 0x43544743 && r[3] == 0x47435447;   /* "TCGTCGTCGTCG" */
 }
 
