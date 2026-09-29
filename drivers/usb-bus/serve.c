@@ -378,7 +378,7 @@ static status_t u_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *repor
 }
 
 static status_t u_endpoint_stats(void *ctx, uint8_t endpoint, uint64_t *reports,
-                                 uint64_t *dropped, uint64_t *errors)
+                                 uint64_t *dropped, uint64_t *errors, uint8_t *open)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
@@ -390,6 +390,14 @@ static status_t u_endpoint_stats(void *ctx, uint8_t endpoint, uint64_t *reports,
     *reports = e->reports;
     *dropped = e->dropped;
     *errors = e->errors;
+    /* Open for a reader that is still there (a dead class driver's report
+     * channel may not be reaped yet). */
+    *open = 0;
+    if (e->open) {
+        signals_t seen = 0;
+        handle_t c = chan_handle(e->chan);
+        *open = c && drv_object_wait_one(c, SIG_PEER_CLOSED, 0, &seen) != OK;
+    }
     return OK;
 }
 

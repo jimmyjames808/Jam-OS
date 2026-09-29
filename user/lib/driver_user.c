@@ -268,6 +268,11 @@ status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
     return jam_vmo_unpin(vmo, dma, pin_id);
 }
 
+status_t drv_dma_bus_master(handle_t dma, uint32_t on)
+{
+    return jam_dma_cap_bus_master(dma, on);
+}
+
 status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
                       volatile void **addr)
 {

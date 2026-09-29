@@ -8,21 +8,28 @@
  *   pci_enum               RIGHT_INSPECT on a RES_PCI
  *   pci_device_open        RIGHT_SLICE on a RES_PCI
  *   pci_config_read        RIGHT_READ on a RES_PCI_DEV
- *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter)
+ *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter; with
+ *                          RIGHT_MANAGE too, the PM power state may change)
  *   pci_bar_resource       RIGHT_SLICE on a RES_PCI_DEV
- *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV
+ *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV, and only to turn
+ *                          it OFF (M7: on is the current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
+ *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
+ *                          current cap (M7)
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
  *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
  *                          the one the pin was made with)
  * A resource made from a handle gets that handle's rights (masked to
  * RES_RIGHTS), so a device handle without RIGHT_MANAGE only yields BAR
- * resources without it. Every new resource and dma_cap costs the caller's
+ * resources without it; a physical VMO made from a resource handle
+ * without RIGHT_DUPLICATE / RIGHT_TRANSFER lacks them too (M7). Every new resource and dma_cap costs the caller's
  * job one JOB_LIMIT_HANDLES unit (on top of the handle slot). */
+#include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
+#include <jam/sched.h>
 #include <jam/syscall_impl.h>
 #include <jam/vmo.h>
 #include "sysc.h"
@@ -98,8 +105,13 @@ status_t sys_pci_enum(struct handle_table *t, handle_t pci, uint32_t index,
         st = ERR_WRONG_TYPE;
     else if (index >= pci_count() || !(d = pci_get(index)))
         st = ERR_OUT_OF_RANGE;
-    else
+    else {
         *out = d->info;
+        struct dma_quarantine_stats q;
+        dma_quarantine_stats(d, &q);
+        out->dma_quarantined = (uint32_t)q.pages;
+        out->dma_changed = (uint32_t)q.changed;
+    }
     kobject_unref(p);
     return st;
 }
@@ -136,17 +148,39 @@ status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off
 {
     struct kobject *obj;
     struct pci_dev *d;
-    status_t st = get_dev(t, dev, RIGHT_WRITE, &obj, &d);
+    rights_t r;
+    status_t st = get_res(t, dev, RIGHT_WRITE, &obj, &r);
     if (st != OK)
         return st;
+    if (!(d = resource_pci_dev(obj))) {
+        kobject_unref(obj);
+        return ERR_WRONG_TYPE;
+    }
+    bool manage = r & RIGHT_MANAGE, power = false;
+    struct pci_saved_config saved;
     st = pci_cfg_access_ok(off, width);
     if (st == OK) {
         /* Check and write under the command lock: the command register's
          * kernel bits can't change between the two. */
         uint64_t f = pci_cmd_lock();
-        st = pci_cfg_write_allowed(d, off, width, value, pci_cfg_read);
+        st = pci_cfg_write_allowed_as(d, off, width, value, pci_cfg_read, manage);
+        if (st == OK && manage &&
+            (power = pci_cfg_write_changes_power(d, off, width, value, pci_cfg_read)))
+            pci_save_config(d, &saved);
         if (st == OK)
             pci_cfg_write(d, off, width, value);
+        pci_cmd_unlock(f);
+    }
+    if (power) {
+        /* A power-state change (devmgr waking a function, M7): the
+         * function may not be touched for 10 ms (PCI PM 1.2, D3hot -> D0
+         * recovery; the longest), and D3hot -> D0 resets it unless it has
+         * No_Soft_Reset: put back the BARs and command register. */
+        thread_sleep_ms(10);
+        uint64_t f = pci_cmd_lock();
+        if (pci_restore_config(d, &saved))
+            kprintf("pci: %02x:%02x.%x: reset by its power-state change; BARs and command "
+                    "register restored\n", d->info.bus, d->info.dev, d->info.fn);
         pci_cmd_unlock(f);
     }
     kobject_unref(obj);
@@ -180,10 +214,27 @@ status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enabl
     status_t st = get_dev(t, dev, RIGHT_MANAGE, &obj, &d);
     if (st != OK)
         return st;
+    if (enable) {
+        /* M7: only the function's current dma_cap turns it on, once its
+         * driver has quiesced the device (dma_cap_bus_master). */
+        kobject_unref(obj);
+        return ERR_ACCESS_DENIED;
+    }
     uint64_t f = pci_cmd_lock();
-    st = pci_set_bus_master(d, enable != 0);
+    st = pci_set_bus_master(d, false);
     pci_cmd_unlock(f);
     kobject_unref(obj);
+    return st;
+}
+
+status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on)
+{
+    struct kobject *cap;
+    status_t st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
+    if (st != OK)
+        return st;
+    st = dma_cap_bus_master(cap, on != 0);
+    kobject_unref(cap);
     return st;
 }
 
@@ -200,7 +251,8 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
     if (size == 0 || ((offset | size) & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
     struct kobject *obj;
-    status_t st = get_res(t, res, RIGHT_MAP, &obj, NULL);
+    rights_t rr;
+    status_t st = get_res(t, res, RIGHT_MAP, &obj, &rr);
     if (st != OK)
         return st;
     uint64_t base, rsize;
@@ -224,7 +276,11 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
         kobject_unref(vmo_kobject(v));
         return st;
     }
-    return insert_new(t, vmo_kobject(v), PHYS_VMO_RIGHTS, out);
+    /* M7: registers from a resource that can't be passed on can't be
+     * passed on as a VMO either (a driver's BAR: review of M6 phase 2,
+     * finding 2). */
+    rights_t keep = PHYS_VMO_RIGHTS & ~((RIGHT_DUPLICATE | RIGHT_TRANSFER) & ~rr);
+    return insert_new(t, vmo_kobject(v), keep, out);
 }
 
 status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)
@@ -358,6 +414,12 @@ int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable)
 {
     SYSC_TABLE(t);
     return sys_pci_bus_master(t, dev, enable);
+}
+
+int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)
+{
+    SYSC_TABLE(t);
+    return sys_dma_cap_bus_master(t, dma, on);
 }
 
 int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache,

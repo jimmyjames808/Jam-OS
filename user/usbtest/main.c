@@ -15,12 +15,17 @@
  *   stall_recovered an unknown class request STALLs (ERR_NOT_SUPPORTED)
  *                  and the next request on endpoint 0 works
  * and, when a keyboard with serial "jamos-keys" is attached (the
- * qemu-test.sh USB scenario, which types through the QEMU monitor):
- *   keys           reports arrive on an interrupt-IN report channel after
- *                  `sendkey a` (press then release)
- *   unplug         device_del: the interface and report channels see
- *                  PEER_CLOSED, the device leaves the list
- *   replug         device_add: it comes back (new id), keys work again
+ * tools/usb-test.sh scenario, which types through the QEMU monitor), through
+ * the real chain usb-bus -> devmgr -> drv/hid (M7 integration; hid owns the
+ * endpoint, usbtest watches its counters and hid's supervision):
+ *   keys           devmgr started hid for it and hid polls the endpoint;
+ *                  `sendkey a` reaches hid (press + release)
+ *   kill_hid       DEVMGR_KILL of that hid while `c` is down: restarted,
+ *                  polling again, and `sendkey d` reaches the new one
+ *   unplug         device_del: the interface channels see PEER_CLOSED, the
+ *                  device leaves the list, hid ends and devmgr frees it
+ *   replug         device_add: it comes back (new id), a new hid binds and
+ *                  `sendkey b` reaches it
  *   unplug_hub     device_del of its hub: the hub and everything behind it
  *                  go (recursive detach), the keyboard's channel closes
  *
@@ -309,55 +314,78 @@ static bool t_stall_recovered(void)
 
 /* ---- the interactive part (QEMU monitor) ----------------------------------------------- */
 
+/* M7 integration: devmgr binds drv/hid to the test keyboard (it owns the
+ * interrupt endpoint), so usbtest watches through a channel of its own:
+ * the endpoint's counters (usb.endpoint_stats: reports taken by hid, and
+ * whether a reader is attached) and hid's supervision state in devmgr.
+ * The keys themselves show up in the log as hid's "key 0x.. down" lines,
+ * which tools/usb-test.sh checks. */
+
+static handle_t dm;   /* devmgr */
+
 struct kbd {
-    handle_t ch, reports;
+    handle_t ch;      /* ours, to the test keyboard's interface 0 */
     uint32_t id;
+    char     name[32];   /* hid's process name, "hid-6.1:0" */
 };
+
+static status_t hid_sup(uint32_t id, struct devmgr_rep *r)
+{
+    return devmgr_call(dm, DEVMGR_SUPERVISION, DEVMGR_USB_IFACE, 0, id, r, NULL, 0, NULL,
+                       in(5 * S));
+}
+
+static status_t ep_stats(struct kbd *k, uint64_t *reports, uint64_t *dropped, uint8_t *open)
+{
+    uint64_t errors = 0;
+    return usb_endpoint_stats_until(k->ch, in(5 * S), 0x81, reports, dropped, &errors, open);
+}
 
 static bool open_keys(struct kbd *k)
 {
     struct dev *d = by_serial("jamos-keys");
     CHECK(d != NULL);
     k->id = d->id;
+    snprintf(k->name, sizeof(k->name), "hid-%s:0", d->path);
     CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, 0, &k->ch), OK);
-    uint8_t none[64] = { 0 };
-    /* SET_PROTOCOL(boot), SET_IDLE(0): what the HID driver will do */
-    CHECK_ST(usb_control_out_until(k->ch, in(5 * S), 0x21, 0x0b, 0, 0, 0, none), OK);
-    CHECK_ST(usb_control_out_until(k->ch, in(5 * S), 0x21, 0x0a, 0, 0, 0, none), OK);
-    uint16_t mp = 0;
-    uint8_t iv = 0;
-    CHECK_ST(usb_open_interrupt_in_until(k->ch, in(5 * S), 0x81, &k->reports, &mp, &iv), OK);
-    CHECK(mp == 8 && iv >= 1);
-    handle_t again;
-    CHECK_ST(usb_open_interrupt_in_until(k->ch, in(5 * S), 0x81, &again, &mp, &iv),
-             ERR_ALREADY_BOUND);
     return true;
 }
 
-/* Wait for `usage` pressed then everything released. */
-static bool read_key(struct kbd *k, uint8_t usage)
+/* Until hid runs for the test keyboard (at least `restarts` restarts
+ * since its binding) and polls the endpoint; *reports: the count then. */
+static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
 {
-    bool down = false;
-    uint64_t end = in(15 * S);
+    uint64_t end = in(20 * S);
+    struct devmgr_rep r = { 0 };
+    status_t st = ERR_TIMED_OUT;
+    uint8_t open = 0;
     while (now() < end) {
-        uint8_t r[64];
-        uint32_t n = 0, nh = 0;
-        status_t st = drv_channel_read(k->reports, r, sizeof(r), &n, NULL, 0, &nh);
-        if (st == ERR_SHOULD_WAIT) {
-            signals_t seen;
-            jam_object_wait_one(k->reports, SIG_READABLE | SIG_PEER_CLOSED, end, &seen);
-            continue;
-        }
-        CHECK_ST(st, OK);
-        CHECK(n == 8);
-        printf("usbtest: report %02x %02x %02x %02x %02x %02x %02x %02x\n", r[0], r[1], r[2],
-               r[3], r[4], r[5], r[6], r[7]);
-        if (r[2] == usage)
-            down = true;
-        else if (down && r[2] == 0)
+        uint64_t dropped = 0;
+        st = hid_sup(k->id, &r);
+        if (st == OK && r.a == DEVMGR_SUP_RUNNING && r.b >= restarts &&
+            ep_stats(k, reports, &dropped, &open) == OK && open)
             return true;
+        jam_nanosleep(in(20 * MS));
     }
-    FAIL("no press + release of usage %02x in 15 s (pressed: %s)", usage, down ? "yes" : "no");
+    FAIL("%s not polling the keyboard after 20 s (supervision %s, state %u, restarts %u, open %u)",
+         k->name, status_str(st), r.a, r.b, open);
+}
+
+/* Until hid has taken `n` more reports than `base`. */
+static bool hid_got(struct kbd *k, uint64_t base, uint64_t n)
+{
+    uint64_t end = in(15 * S), reports = 0, dropped = 0;
+    uint8_t open = 0;
+    while (now() < end) {
+        CHECK_ST(ep_stats(k, &reports, &dropped, &open), OK);
+        if (reports >= base + n) {
+            CHECK(dropped == 0);
+            return true;
+        }
+        jam_nanosleep(in(10 * MS));
+    }
+    FAIL("%s took %lu report(s) in 15 s, want %lu", k->name, (unsigned long)(reports - base),
+         (unsigned long)n);
 }
 
 static bool gone(handle_t h, uint64_t deadline)
@@ -366,18 +394,57 @@ static bool gone(handle_t h, uint64_t deadline)
     return jam_object_wait_one(h, SIG_PEER_CLOSED, deadline, &seen) == OK;
 }
 
+/* Until devmgr has let go of hid's binding for device `id`. */
+static bool hid_unbound(uint32_t id)
+{
+    uint64_t end = in(10 * S);
+    struct devmgr_rep r;
+    status_t st = OK;
+    while (now() < end && (st = hid_sup(id, &r)) != ERR_NOT_FOUND)
+        jam_nanosleep(in(20 * MS));
+    CHECK_ST(st, ERR_NOT_FOUND);
+    return true;
+}
+
 static struct kbd kb;
 
 static bool t_keys(void)
 {
     if (!open_keys(&kb))
         return false;
-    printf("usbtest: ready for keys\n");
-    if (!read_key(&kb, 0x04))
+    uint64_t base = 0;
+    if (!hid_ready(&kb, 0, &base))
         return false;
-    uint64_t reports = 0, dropped = 0, errors = 0;
-    CHECK_ST(usb_endpoint_stats_until(kb.ch, in(5 * S), 0x81, &reports, &dropped, &errors), OK);
-    CHECK(reports >= 2 && dropped == 0);
+    printf("usbtest: %s polls the test keyboard; ready for keys\n", kb.name);
+    if (!hid_got(&kb, base, 2))   /* `sendkey a`: press, release */
+        return false;
+    return true;
+}
+
+/* DEVMGR_KILL hid while a key is down: devmgr restarts it with a duplicate
+ * of the interface channel, and the next key works. */
+static bool t_kill_hid(void)
+{
+    struct devmgr_rep r;
+    CHECK_ST(hid_sup(kb.id, &r), OK);
+    uint32_t restarts = r.b;
+    uint64_t base = 0, dropped = 0;
+    uint8_t open = 0;
+    CHECK_ST(ep_stats(&kb, &base, &dropped, &open), OK);
+    printf("usbtest: type c now (%s is killed while it is down)\n", kb.name);
+    if (!hid_got(&kb, base, 1))   /* the press */
+        return false;
+    uint64_t t0 = now();
+    CHECK_ST(devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, 0, kb.id, &r, NULL, 0, NULL,
+                         in(20 * S)), OK);
+    if (!hid_ready(&kb, restarts + 1, &base))
+        return false;
+    printf("usbtest: %s restarted and polling again %lu ms after the kill; ready for keys after "
+           "the restart\n", kb.name, (unsigned long)((now() - t0) / MS));
+    if (!hid_got(&kb, base, 2))   /* `sendkey d` */
+        return false;
+    CHECK_ST(hid_sup(kb.id, &r), OK);
+    CHECK(r.a == DEVMGR_SUP_RUNNING && r.b == restarts + 1);
     return true;
 }
 
@@ -386,11 +453,12 @@ static bool t_unplug(void)
     struct bus_status before, after;
     CHECK_ST(get_status(&before), OK);
     printf("usbtest: unplug the test keyboard now\n");
-    uint64_t end = in(15 * S);
-    bool g1 = gone(kb.reports, end), g2 = gone(kb.ch, end);
-    jam_handle_close(kb.reports);
+    bool g = gone(kb.ch, in(15 * S));
     jam_handle_close(kb.ch);
-    CHECK(g1 && g2);
+    CHECK(g);
+    /* hid saw its channel close too and ended; devmgr freed the binding */
+    if (!hid_unbound(kb.id))
+        return false;
     CHECK_ST(wait_settled(10000, &after), OK);
     CHECK(after.devices == before.devices - 1);
     CHECK_ST(load(), OK);
@@ -412,15 +480,15 @@ static bool t_replug(void)
     CHECK(d->id != kb.id);
     if (!open_keys(&kb))
         return false;
-    printf("usbtest: ready for keys again\n");
-    bool ok = read_key(&kb, 0x05);
-    jam_handle_close(kb.reports);
-    jam_handle_close(kb.ch);
-    return ok;
+    uint64_t base = 0;
+    if (!hid_ready(&kb, 0, &base))
+        return false;
+    printf("usbtest: a new %s polls it; ready for keys again\n", kb.name);
+    return hid_got(&kb, base, 2);   /* `sendkey b` */
 }
 
 /* The hub the test keyboard hangs on goes: it and everything behind it
- * leave the list, and the keyboard's channel closes. */
+ * leave the list, the keyboard's channel closes and its hid goes. */
 static bool t_unplug_hub(void)
 {
     CHECK_ST(load(), OK);
@@ -428,7 +496,7 @@ static bool t_unplug_hub(void)
     CHECK(k != NULL && k->parent);
     struct dev *hub = by_id(k->parent);
     CHECK(hub != NULL && hub->hub_ports);
-    uint32_t hub_id = hub->id;
+    uint32_t hub_id = hub->id, kid = k->id;
     unsigned below = 0;
     for (unsigned i = 0; i < ndevs; i++)
         for (struct dev *p = by_id(devs[i].parent); p; p = by_id(p->parent))
@@ -437,14 +505,15 @@ static bool t_unplug_hub(void)
                 break;
             }
     CHECK(below >= 1);
-    handle_t ch;
-    CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), k->id, 0, &ch), OK);
     struct bus_status before, after;
     CHECK_ST(get_status(&before), OK);
     printf("usbtest: unplug the hub now\n");
-    bool g = gone(ch, in(15 * S));
-    jam_handle_close(ch);
+    bool g = gone(kb.ch, in(15 * S));
+    jam_handle_close(kb.ch);
+    kb.ch = HANDLE_INVALID;
     CHECK(g);
+    if (!hid_unbound(kid))
+        return false;
     CHECK_ST(wait_settled(10000, &after), OK);
     CHECK(after.devices == before.devices - 1 - below);
     CHECK(after.hubs == before.hubs - 1);
@@ -457,7 +526,7 @@ static bool t_unplug_hub(void)
 
 static bool find_bus(void)
 {
-    handle_t dm = startup_handle(SR_DEVMGR);
+    dm = startup_handle(SR_DEVMGR);
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {
@@ -514,13 +583,14 @@ int main(int argc, char **argv)
     bool interactive = load() == OK && by_serial("jamos-keys");
     if (interactive) {
         run("keys", t_keys);
+        run("kill_hid", t_kill_hid);
         run("unplug", t_unplug);
         run("replug", t_replug);
         run("unplug_hub", t_unplug_hub);
     } else {
-        printf("usbtest: keys, unplug, replug, unplug_hub: no keyboard with serial jamos-keys (the QEMU USB "
+        printf("usbtest: keys, kill_hid, unplug, replug, unplug_hub: no keyboard with serial jamos-keys (the QEMU USB "
                "scenario): skipped\n");
-        skipped += 4;
+        skipped += 5;
     }
     jam_handle_close(bus);
     int n = failed ? snprintf(line, sizeof(line), "usbtest: %u passed, %u FAILED, %u skipped",

@@ -69,6 +69,8 @@
 #define SYS_serial_open          115
 #define SYS_serial_read          116
 #define SYS_serial_write         117
+#define SYS_dma_cap_bus_master   120
+#define SYS_channel_write_rights 121
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 118
+#define SYSCALL_COUNT 122

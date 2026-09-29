@@ -408,3 +408,15 @@ WEAK int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
     (void)root, (void)buf, (void)len;
     return ERR_NOT_SUPPORTED;
 }
+
+WEAK int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)
+{
+    (void)dma, (void)on;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles, uint64_t rights, uint32_t nhandles)
+{
+    (void)h, (void)bytes, (void)nbytes, (void)handles, (void)rights, (void)nhandles;
+    return ERR_NOT_SUPPORTED;
+}

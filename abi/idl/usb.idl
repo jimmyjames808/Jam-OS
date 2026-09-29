@@ -33,7 +33,9 @@ protocol usb 10
 # in the next `endpoint_stats`). Closing `reports` stops the endpoint;
 # usb-bus closes it when the device goes away.
 5  open_interrupt_in  (u8 endpoint) -> (handle reports, u16 max_packet, u8 interval_ms)
-6  endpoint_stats  (u8 endpoint) -> (u64 reports, u64 dropped, u64 errors)
+# Counts since the device was configured; open 1 while a report channel
+# is attached to the endpoint (someone -- the class driver -- polls it).
+6  endpoint_stats  (u8 endpoint) -> (u64 reports, u64 dropped, u64 errors, u8 open)
 # SET_INTERFACE: select an alternate setting of this interface (closes its
 # open endpoints first).
 7  set_interface  (u8 alt_setting) -> ()

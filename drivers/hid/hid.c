@@ -76,6 +76,19 @@
 
 #define BUF_SIZE 1024
 
+/* The "ready" and final lines go to the RESULTS box when devmgr started
+ * us for a real interface: it names each hid after it ("hid-10:0"); utest's
+ * mock runs are plain "hid" and stay in the log. */
+static bool to_results;
+
+#define say_result(...)                 \
+    do {                                \
+        if (to_results)                 \
+            drv_report(__VA_ARGS__);    \
+        else                            \
+            drv_log(__VA_ARGS__);       \
+    } while (0)
+
 static bool gone(struct hid *h, status_t st)
 {
     if (st != ERR_PEER_CLOSED)
@@ -114,6 +127,8 @@ void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_
 {
     if (h->stop)
         return;
+    if (state == INPUT_KEY_DOWN)
+        h->keys_down++;
     if (h->input == HANDLE_INVALID) {
         if (state == INPUT_KEY_DOWN)
             drv_log("hid %04x:%04x if %u: key 0x%02x down, mods 0x%02x, codepoint 0x%x", h->vendor,
@@ -412,10 +427,13 @@ static int setup(struct hid *h)
         if (h->stop)
             return 0;
     }
-    drv_log("hid %04x:%04x if %u: boot %s ready: endpoint 0x%x, %u-byte packets every %u ms, "
-            "report descriptor %u bytes (%s)%s", h->vendor, h->product, h->iface, what, h->ep_in,
-            h->max_packet, h->interval_ms, h->report_desc_len, coll[0] ? coll : "-",
-            h->input == HANDLE_INVALID ? "; no DR_INPUT: events go to the log" : "");
+    /* In the RESULTS box too: which keyboards and mice are live. */
+    drv_log("hid %04x:%04x if %u: boot %s: endpoint 0x%x, %u-byte packets every %u ms, "
+            "report descriptor %u bytes (%s)", h->vendor, h->product, h->iface, what, h->ep_in,
+            h->max_packet, h->interval_ms, h->report_desc_len, coll[0] ? coll : "-");
+    /* Short: the RESULTS box is 120 columns. */
+    say_result("hid %04x:%04x if %u: boot %s ready%s", h->vendor, h->product, h->iface, what,
+               h->input == HANDLE_INVALID ? " (no console: keys go to the log)" : "");
     return -1;
 }
 
@@ -514,6 +532,8 @@ int driver_main(const struct driver_start *s)
     }
     *h = (struct hid){ 0 };
     h->buf = buf;
+    to_results = s->name && s->name[0] == 'h' && s->name[1] == 'i' && s->name[2] == 'd' &&
+                 s->name[3] == '-';
     h->usb = drv_handle(s, DR_USB);
     h->input = drv_handle(s, DR_INPUT);
     h->reports = h->port = HANDLE_INVALID;
@@ -524,13 +544,25 @@ int driver_main(const struct driver_start *s)
     int r = setup(h);
     if (r < 0)
         r = run(h);
-    if (h->kind && r == 0)
+    /* How it went, into the RESULTS box (the keytest boot entry counts
+     * keys this way). */
+    if (h->kind && r == 0) {
         drv_log("hid %04x:%04x if %u: %s after %lu report(s), %lu event(s) (%lu phantom, "
                 "%lu short, %lu input error(s))", h->vendor, h->product, h->iface,
                 h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone",
                 (unsigned long)h->nreports, (unsigned long)h->events,
                 (unsigned long)h->kbd.rollover, (unsigned long)h->kbd.short_reports,
                 (unsigned long)h->input_errors);
+        const char *why =
+            h->stop == STOP_CONSOLE_GONE ? "console gone" : "unplugged or usb-bus stopped";
+        if (h->kind == HID_KEYBOARD)
+            say_result("hid %04x:%04x if %u: boot keyboard: %lu key(s) down, %lu report(s) (%s)",
+                       h->vendor, h->product, h->iface, (unsigned long)h->keys_down,
+                       (unsigned long)h->nreports, why);
+        else
+            say_result("hid %04x:%04x if %u: boot mouse: %lu report(s) (%s)", h->vendor,
+                       h->product, h->iface, (unsigned long)h->nreports, why);
+    }
     if (h->port != HANDLE_INVALID)
         drv_handle_close(h->port);
     if (h->reports != HANDLE_INVALID)

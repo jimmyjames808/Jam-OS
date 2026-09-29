@@ -449,11 +449,34 @@ Rules for userspace drivers:
   its BAR mapping never includes the MSI-X table page.
 - A `dma_cap` is bound to one device (PCI bus/device/function). `vmo_pin`
   returns *device addresses* (physical today, IOMMU addresses after M11).
-  Closing a `dma_cap` clears the device's Bus Master Enable, then releases
-  its pins.
+- **Safe rebind (M7)**: the newest `dma_cap` of a function is its *current*
+  one; making it turns Bus Master Enable off, and only it turns it back on
+  (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
+  after quiescing its device (reset it, or see its DMA engine idle), so a
+  transfer a dead driver left queued never runs with the new driver's bus
+  mastering. Nobody else turns it on (`pci_bus_master` only turns it off).
+  Closing the current cap clears Bus Master Enable (an older cap's close
+  leaves it alone); pins still held then are *quarantined*, not freed
+  (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
+  until 1 s after the function's next driver turned bus mastering on, or
+  30 s if none does; a page the device wrote meanwhile is logged.
 - MSI/MSI-X and MMIO only: no port I/O for userspace drivers.
-- **Supervision from M7**: devmgr restarts a crashed driver process, and
-  clients reconnect on `PEER_CLOSED` as their protocol defines.
+- **Supervision (M7)**: devmgr restarts a driver process that dies
+  unexpectedly (crash, kill, error exit; an exit 0 by itself means the
+  driver is finished): backoff 100 ms, doubling per restart within the
+  last 60 s up to 5 s; the 6th death within 60 s gives up (log + RESULTS
+  line). A restart is a bind from scratch, i.e. the safe-rebind path: the
+  function woken to D0, a new `dma_cap` (bus mastering off until the new
+  driver has quiesced the device; the dead driver's pins stay quarantined
+  meanwhile), a new interrupt object. A driver's hardware handles are not
+  transferable (no `RIGHT_DUPLICATE`/`RIGHT_TRANSFER`, handed over with
+  `channel_write_rights`), so nothing of the device outlives its job.
+- **Reconnect rule**: a client whose call fails with `PEER_CLOSED` asks
+  devmgr for the service again (`GET_SERVICE`) and retries; from the
+  moment the driver died devmgr hands out the channel its restart will
+  serve, and calls on it wait for the new driver. Drivers keep no state
+  across a restart; each protocol's IDL says what a client must set up
+  again (`input` and `console` define theirs).
 
 ## Userland
 

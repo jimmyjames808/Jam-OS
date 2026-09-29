@@ -31,8 +31,11 @@ status_t resource_pci_device(struct kobject *pci, uint32_t index, struct kobject
 status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **out);
 
 /* DMA capabilities bound to a function (the M4 dma_cap_create makes an
- * unbound one, for kernel tests). Closing the last handle to a bound cap
- * clears the function's Bus Master Enable, reads config back, then drops
- * its pins. */
+ * unbound one, for kernel tests). A new cap becomes the function's current
+ * one and turns its Bus Master Enable off; the driver turns it on with
+ * dma_cap_bus_master (<jam/resource_impl.h>) once its device is quiet.
+ * Closing the last handle to the current cap clears Bus Master Enable and
+ * reads config back; pins still held then are quarantined, not dropped
+ * (M7; see kernel/object/dma_cap.c). */
 status_t dma_cap_create_for(struct pci_dev *d, struct kobject **out);
 struct pci_dev *dma_cap_device(struct kobject *cap);   /* NULL if unbound */

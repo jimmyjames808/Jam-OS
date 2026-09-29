@@ -28,10 +28,13 @@
 
 #define S              1000000000ull
 #define CH_RIGHTS      (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL)
-#define DRV_DEV_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
-#define DRV_BAR_RIGHTS (RIGHTS_BASIC | RIGHT_MAP)
-#define DRV_IRQ_RIGHTS (RIGHTS_BASIC | RIGHTS_IO)
-#define DRV_DMA_RIGHTS RIGHTS_BASIC
+/* A driver's hardware handles can't be duplicated or passed on (M7, as
+ * user/devmgr's DEVMGR_DRV_*_RIGHTS): nothing of the device outlives it. */
+#define DRV_KEEP       (RIGHT_WAIT | RIGHT_INSPECT)
+#define DRV_DEV_RIGHTS (DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
+#define DRV_BAR_RIGHTS (DRV_KEEP | RIGHT_MAP)
+#define DRV_IRQ_RIGHTS (DRV_KEEP | RIGHTS_IO)
+#define DRV_DMA_RIGHTS DRV_KEEP
 #define EDU_CHECK_ROLE 0x40   /* the check's role for its channel to the edu server */
 
 /* Per-driver job limits (a driver that runs away hits these, not the
@@ -131,13 +134,6 @@ status_t kdev_bind(struct pci_dev *d, const char *driver, struct job *parent,
         kobject_ref(obj);
         out->dma_cap = obj;
         st = add(hs, &n, DR_DMA, obj, DRV_DMA_RIGHTS);
-    }
-    if (st == OK) {
-        /* For DMA and for MSI (a memory write by the device). The dma_cap's
-         * close turns it off again. */
-        uint64_t cf = pci_cmd_lock();
-        st = pci_set_bus_master(d, true);
-        pci_cmd_unlock(cf);
     }
     if (st == OK) {
         st = add(hs, &n, DR_PCIDEV, dev, DRV_DEV_RIGHTS);

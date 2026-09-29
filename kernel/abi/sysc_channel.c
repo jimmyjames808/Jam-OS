@@ -75,6 +75,28 @@ int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t
     return st;
 }
 
+int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
+                                  uint64_t rights, uint32_t nhandles)
+{
+    SYSC_TABLE(t);
+    if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
+        return ERR_OUT_OF_RANGE;
+    handle_t hs[CHANNEL_MAX_HANDLES];
+    rights_t rs[CHANNEL_MAX_HANDLES];
+    if (copy_in(hs, handles, nhandles * sizeof(handle_t)) != OK ||
+        copy_in(rs, rights, nhandles * sizeof(rights_t)) != OK)
+        return ERR_INVALID_ARGS;
+    uint8_t small[SMALL];
+    void *kb = buf_get(small, nbytes);
+    if (!kb)
+        return ERR_NO_MEMORY;
+    status_t st = copy_in(kb, bytes, nbytes);
+    if (st == OK)
+        st = sys_channel_write_rights(t, h, kb, nbytes, hs, rs, nhandles);
+    buf_put(small, kb);
+    return st;
+}
+
 int64_t sysc_channel_read(const struct channel_read_args *a)
 {
     SYSC_TABLE(t);

@@ -19,6 +19,13 @@ status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b);
  * still there under the same values. */
 status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
                            const handle_t *handles, uint32_t nhandles);
+/* M7: as sys_channel_write, but handle i arrives with rights[i] (a subset
+ * of its rights, else ERR_INVALID_ARGS; RIGHT_SAME: unchanged). How a
+ * sender passes a handle the receiver may not pass on (without
+ * RIGHT_TRANSFER / RIGHT_DUPLICATE): devmgr's driver handles. */
+status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
+                                  uint32_t nbytes, const handle_t *handles,
+                                  const rights_t *rights, uint32_t nhandles);
 /* Needs RIGHT_READ. Received handles are inserted into t and their values
  * stored in handles[0 .. *actual_handles). If t has no room for them the
  * read fails (ERR_NO_RESOURCES) and the message stays queued: no handle is

@@ -50,6 +50,7 @@ struct hid {
     enum hid_kind kind;
     enum hid_stop stop;
     uint64_t nreports, events, input_errors, led_errors;
+    uint64_t keys_down;      /* key DOWN events (for the RESULTS line at the end) */
     uint8_t  mouse_buttons;
     struct kbd kbd;
     uint8_t *buf;            /* 1024 bytes: descriptors, reports */

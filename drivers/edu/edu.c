@@ -5,7 +5,8 @@
  * Handles (roles from <jam/driver.h>):
  *   DR_BAR(0)   its registers (1 MiB of MMIO; the first page is all we use)
  *   DR_IRQ(0)   its MSI, bound to a port PERSISTENT for SIG_INTERRUPT
- *   DR_DMA      its dma_cap (Bus Master Enable is on while it lives)
+ *   DR_DMA      its dma_cap (Bus Master Enable starts off; setup turns it
+ *               on once the device's DMA engine is idle)
  *   DR_PCIDEV   its function (config reads; no RIGHT_MANAGE)
  *   DR_SERVE    the channel it serves abi/idl/edu.idl on
  *
@@ -315,10 +316,13 @@ static int setup(const struct driver_start *s, struct edu *e)
         drv_log("factorial(12) by polling: %u (%s)", f, status_str(st));
         return 4;
     }
-    /* A driver before us may have died in the middle of a transfer: the
-     * device finishes it by itself (reaching no memory: Bus Master Enable
-     * went off with that driver's dma_cap). Wait for it, then clear any
-     * stale interrupt status, which would look like a completion. */
+    /* Quiesce before bus mastering goes on (M7). A driver before us may
+     * have died in the middle of a transfer: the device finishes it by
+     * itself, reaching no memory while Bus Master Enable is off (it went
+     * off with that driver's dma_cap, and our new cap starts with it off).
+     * Wait for it, clear any stale interrupt status (it would look like a
+     * completion), and only then turn bus mastering on: with it on, that
+     * transfer would have written into the dead driver's pages. */
     uint64_t deadline = drv_clock_ns() + OP_TIMEOUT;
     while (rd(e, R_DMA_CMD) & DMA_RUN) {
         if (drv_clock_ns() > deadline) {
@@ -328,6 +332,11 @@ static int setup(const struct driver_start *s, struct edu *e)
         drv_sleep_until(drv_clock_ns() + MS);
     }
     wr(e, R_IRQ_ACK, 0xffffffffu);
+    st = drv_dma_bus_master(e->dma, 1);   /* DMA, and MSI delivery */
+    if (st != OK) {
+        drv_log("can't turn bus mastering on (%s)", status_str(st));
+        return 4;
+    }
 
     st = drv_port_create(&e->port);
     if (st == OK)

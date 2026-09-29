@@ -31,7 +31,8 @@
 
 #define DR_PCIDEV    1            /* RES_PCI_DEV: its own function (no RIGHT_MANAGE) */
 #define DR_SERVE     2            /* channel it serves its own protocol on */
-#define DR_DMA       3            /* dma_cap bound to its function (bus master is on) */
+#define DR_DMA       3            /* dma_cap bound to its function (bus master OFF: see
+                                   * drv_dma_bus_master) */
 #define DR_USB       4            /* M7: a `usb` interface channel (usb-bus serves it) */
 #define DR_INPUT     5            /* M7: an `input` channel to the console (it serves it) */
 #define DR_BAR(n)    (0x10 + (n)) /* RES_MMIO for BAR n (0..5) */
@@ -107,6 +108,20 @@ status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uin
                      uint64_t *pin_id);
 /* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
+/* Bus Master Enable of the DR_DMA cap's function (M7). A driver starts
+ * with it OFF: no DMA, no MSI/MSI-X delivery (an MSI is a memory write),
+ * no pins (drv_vmo_pin fails ERR_BAD_STATE). Turn it on ONLY once the
+ * device is quiet: whatever a previous driver (killed, crashed) left
+ * queued must not run with the new driver's bus mastering -- reset the
+ * device (xHCI: BIOS handoff, halt, HCRST) or wait until its DMA engine is
+ * idle and ack stale interrupt status. Pins a dead driver still held are
+ * quarantined by the kernel (not freed) until a grace period after this
+ * call, but a device that DMAs later than that writes into free memory.
+ * Before exiting cleanly, stop the device and unpin everything (the
+ * dma_cap's close turns bus mastering off and quarantines what is still
+ * pinned). ERR_BAD_STATE: the cap isn't the function's current one any
+ * more (a newer driver was bound). */
+status_t drv_dma_bus_master(handle_t dma, uint32_t on);
 /* Registers: map [off, off + len) of a BAR resource uncached (VMO_CACHE_*
  * for others); page-granular inside, the pointer is to `off` itself. */
 status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,

@@ -268,10 +268,11 @@ static status_t m_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *out_r
 }
 
 static status_t m_endpoint_stats(void *ctx, uint8_t endpoint, uint64_t *reports,
-                                 uint64_t *dropped, uint64_t *errors)
+                                 uint64_t *dropped, uint64_t *errors, uint8_t *open)
 {
     (void)ctx, (void)endpoint;
     *reports = *dropped = *errors = 0;
+    *open = 0;
     return OK;
 }
 

@@ -11,8 +11,10 @@
  *
  * Handles: DR_PCIDEV (its function, for config reads), DR_BAR(0) (the
  * registers), DR_IRQ(0) (MSI, or MSI-X entry 0 = interrupter 0), DR_DMA
- * (bus master on). Every wait is bounded; any failure is reported with the
- * step and the registers, and the controller is left halted.
+ * (bus master off until the controller is halted and reset: M7, a
+ * controller a dead driver left running must not reach memory again).
+ * Every wait is bounded; any failure is reported with the step and the
+ * registers, and the controller is left halted.
  *
  * Exit codes: 0 all three No-Ops completed via interrupt; 1 a step failed;
  * 2 a handle is missing. */
@@ -269,21 +271,13 @@ static int check_pci(struct xhc *x)
     uint32_t cmd = cfg(x, 0x04, 2);
     if (!(cmd & (1u << 1)))
         return fail(x, "PCI config", "memory decode is off (command %04x)", cmd);
-    if (!(cmd & (1u << 2)))
-        return fail(x, "PCI config", "bus master is off (command %04x): no DMA, no MSI", cmd);
+    /* Bus mastering is turned on (drv_dma_bus_master) after the reset. */
 
-    /* Power state: firmware leaves it D0, but check (PM capability). */
+    /* Power state: devmgr wakes a function found in D1-D3 before it binds
+     * a driver (the power state is the kernel's and devmgr's to change). */
     uint32_t pm = pci_cap(x, 0x01);
-    if (pm) {
-        uint32_t pmcsr = cfg(x, pm + 4, 2);
-        if (pmcsr & 3) {
-            drv_log("function was in D%u; moving it to D0", pmcsr & 3);
-            drv_pci_config_write(x->dev, pm + 4, 2, pmcsr & ~3u);
-            drv_sleep_until(drv_clock_ns() + 10 * MS);
-            if (cfg(x, pm + 4, 2) & 3)
-                return fail(x, "PCI power", "still in D%u after a write of D0", cfg(x, pm + 4, 2) & 3);
-        }
-    }
+    if (pm && (cfg(x, pm + 4, 2) & 3))
+        return fail(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
 
     /* Which interrupt we were given: the enabled one of MSI-X / MSI. */
     uint32_t msix = pci_cap(x, 0x11), msi = pci_cap(x, 0x05);
@@ -695,7 +689,14 @@ static int bring_up(struct xhc *x)
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &sts))
         return fail(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
-    if ((r = stop(x, "halt")) || (r = reset(x, "reset")) || (r = setup_memory(x)))
+    if ((r = stop(x, "halt")) || (r = reset(x, "reset")))
+        return r;
+    /* Quiet now (halted and reset: it holds no DMA pointer of anyone's):
+     * bus mastering on, for our DMA and the MSI. */
+    status_t bm = drv_dma_bus_master(x->dma, 1);
+    if (bm != OK)
+        return fail(x, "bus master", "can't turn it on (%s)", status_str(bm));
+    if ((r = setup_memory(x)))
         return r;
     status_t st = drv_port_create(&x->port);
     if (st == OK)

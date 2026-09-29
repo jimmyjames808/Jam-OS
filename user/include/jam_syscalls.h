@@ -77,3 +77,5 @@ status_t jam_reboot(handle_t root);
 status_t jam_serial_open(handle_t root, handle_t *out);
 int64_t jam_serial_read(handle_t h, void *buf, uint64_t cap);
 status_t jam_serial_write(handle_t root, const void *buf, uint64_t len);
+status_t jam_dma_cap_bus_master(handle_t dma, uint32_t on);
+status_t jam_channel_write_rights(handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, const rights_t *rights, uint32_t nhandles);

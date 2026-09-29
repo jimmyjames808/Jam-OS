@@ -3,20 +3,23 @@
  * process with system calls; this is the `drivers=kernel` boot word and
  * the ktests. Both give a driver exactly the same handles:
  *
- *   DR_PCIDEV  its function, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE
+ *   DR_PCIDEV  its function, RIGHT_READ | RIGHT_WRITE (+ wait, inspect)
  *              (filtered config access; no RIGHT_MANAGE: no bus mastering,
  *              no dma_cap, no interrupt objects; no RIGHT_SLICE / MAP)
- *   DR_BAR(n)  each memory BAR as a RES_MMIO, RIGHTS_BASIC | RIGHT_MAP
+ *   DR_BAR(n)  each memory BAR as a RES_MMIO, RIGHT_MAP (+ wait, inspect)
  *   DR_IRQ(0)  an interrupt object: MSI-X entry 0 if the function has
  *              MSI-X, else MSI (none if it has neither)
- *   DR_DMA     a dma_cap bound to the function; Bus Master Enable is on
- *              (MSI needs it too) until the cap's last handle goes
+ *   DR_DMA     a dma_cap bound to the function, which makes Bus Master
+ *              Enable OFF: the driver turns it on (drv_dma_bus_master; MSI
+ *              needs it too) once its device is quiet (M7); the cap's last
+ *              handle turns it off again
  *   DR_SERVE   a channel; the binder keeps the other end (the client end)
+ * None but DR_SERVE has RIGHT_DUPLICATE or RIGHT_TRANSFER (M7).
  *
  * The driver runs in a job of its own below the caller's job, with limits.
  * Killing it (process_kill, job_kill) closes its handles: the dma_cap turns
- * Bus Master Enable off and releases its pins, the interrupt object frees
- * its vector. */
+ * Bus Master Enable off and quarantines the pins still held, the interrupt
+ * object frees its vector. */
 #pragma once
 
 #include <stdbool.h>

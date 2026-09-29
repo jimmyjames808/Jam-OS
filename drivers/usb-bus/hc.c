@@ -1,6 +1,6 @@
 /* usb-bus: the xHCI host controller. The bring-up is xhci-noop's, proven
  * on the PC's Intel 8086:7A60 and QEMU's qemu-xhci: USB Legacy Support
- * handoff, halt, HCRST, DCBAA + scratchpads, command ring, one event ring
+ * handoff, halt, HCRST, bus mastering on (M7: only now), DCBAA + scratchpads, command ring, one event ring
  * on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Added
  * here: the Supported Protocol capabilities (which root ports are USB 2
  * and which USB 3), port power, a DMA page pool for contexts, rings and
@@ -190,19 +190,14 @@ static int check_pci(struct hc *x)
     uint32_t cmd = cfg(x, 0x04, 2);
     if (!(cmd & (1u << 1)))
         return fail(x, "PCI config", "memory decode is off (command %04x)", cmd);
-    if (!(cmd & (1u << 2)))
-        return fail(x, "PCI config", "bus master is off (command %04x): no DMA, no MSI", cmd);
+    /* Bus mastering is off (M7 safe rebind): hc_bring_up turns it on
+     * through DR_DMA once the controller is halted and reset, so nothing a
+     * previous driver left queued reaches memory. */
+    /* Power state: devmgr wakes a function found in D1-D3 before it binds
+     * a driver (drivers may not change it). */
     uint32_t pm = pci_cap(x, 0x01);
-    if (pm) {
-        uint32_t pmcsr = cfg(x, pm + 4, 2);
-        if (pmcsr & 3) {
-            drv_log("function was in D%u; moving it to D0", pmcsr & 3);
-            drv_pci_config_write(x->dev, pm + 4, 2, pmcsr & ~3u);
-            drv_sleep_until(drv_clock_ns() + 10 * MS);
-            if (cfg(x, pm + 4, 2) & 3)
-                return fail(x, "PCI power", "still in D%u after a write of D0", cfg(x, pm + 4, 2) & 3);
-        }
-    }
+    if (pm && (cfg(x, pm + 4, 2) & 3))
+        return fail(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
     uint32_t msix = pci_cap(x, 0x11), msi = pci_cap(x, 0x05);
     uint32_t mc_x = msix ? cfg(x, msix + 2, 2) : 0, mc = msi ? cfg(x, msi + 2, 2) : 0;
     if (mc_x & (1u << 15)) {
@@ -774,8 +769,15 @@ int hc_bring_up(struct hc *x)
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &sts))
         return fail(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
-    if ((r = stop(x, "halt")) || (r = reset(x, "reset")) || (r = setup_memory(x)) ||
-        (r = pool_setup(x)))
+    if ((r = stop(x, "halt")) || (r = reset(x, "reset")))
+        return r;
+    /* Quiet now (halted and reset: it holds no DMA pointer of anyone's):
+     * bus mastering on, for our DMA and the MSI, before anything is pinned
+     * (drv_vmo_pin refuses until then) or DCBAAP/CRCR/ERST are written. */
+    status_t bm = drv_dma_bus_master(x->dma, 1);
+    if (bm != OK)
+        return fail(x, "bus master", "can't turn it on (%s)", status_str(bm));
+    if ((r = setup_memory(x)) || (r = pool_setup(x)))
         return r;
     x->ctl_page = pool_alloc(x);
     if (x->ctl_page < 0)

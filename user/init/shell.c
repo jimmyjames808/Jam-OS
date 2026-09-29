@@ -1,8 +1,13 @@
 /* init's shell mode (M7 Track C): a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * After devmgr (main.c), init starts and then supervises three services,
- * each in a job of its own under init's:
+ * init starts and then supervises three services, each in a job of its
+ * own under init's, and starts devmgr (main.c) after the console's first
+ * start (before the shell's) with a console client end (SR_CONSOLE), so its HID drivers
+ * type into the console (M7 integration). After every later console
+ * start init hands devmgr the new channel (DEVMGR_SET_CONSOLE): the HID
+ * drivers, which end when their console goes, come back connected to it.
+ * The services:
  *   console   bin/console: root with READ | WRITE | MANAGE (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
  *             console channel (SR_USER + 0);
@@ -48,6 +53,9 @@ static struct svc svcs[NSVC] = {
     [CONSOLE] = { "bin/console" }, [SERIALIN] = { "bin/serialin" }, [SHELL] = { "bin/shell" },
 };
 static handle_t root, devmgr, cons;   /* cons: the console client end (0: none) */
+static bool devmgr_started;
+handle_t init_devmgr(handle_t console);   /* main.c */
+static void tell_devmgr(void);
 static handle_t port;
 
 static uint64_t now(void)
@@ -114,7 +122,43 @@ static status_t start_console(void)
     if (cons)
         jam_handle_close(cons);
     cons = a;
+    if (devmgr_started)
+        tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
     return OK;
+}
+
+/* devmgr gets a client end of the console: the first time as its
+ * SR_CONSOLE when init starts it (just before the first shell: serialin
+ * gets going meanwhile), after a console restart DEVMGR_SET_CONSOLE. */
+static void tell_devmgr(void)
+{
+    handle_t c = HANDLE_INVALID;
+    if (jam_handle_duplicate(cons, RIGHT_SAME, &c) != OK) {
+        printf("init: no console channel for devmgr\n");
+        return;
+    }
+    if (!devmgr_started) {
+        devmgr_started = true;
+        devmgr = init_devmgr(c);   /* consumes c */
+        return;
+    }
+    if (!devmgr) {
+        jam_handle_close(c);
+        return;
+    }
+    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
+    struct devmgr_rep r;
+    uint32_t n = 0, got = 0;
+    struct channel_call_args a = {
+        .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
+        .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
+        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * S,
+    };
+    status_t st = jam_channel_call(&a);   /* c goes with the request either way */
+    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
+        printf("init: devmgr didn't take the new console (%s)\n",
+               status_str(st != OK ? st : r.status));
 }
 
 static status_t start_serialin(void)
@@ -132,6 +176,8 @@ static status_t start_serialin(void)
 static status_t start_shell(void)
 {
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
+    if (!devmgr_started)
+        tell_devmgr();
     status_t st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK)
         return st;
@@ -189,10 +235,9 @@ static void ended(unsigned i)
     }
 }
 
-bool init_shell(handle_t devmgr_ch)
+bool init_shell(void)
 {
     root = startup_handle(SR_RESOURCE);
-    devmgr = devmgr_ch;
     status_t st = jam_port_create(&port);
     if (st != OK) {
         init_say("init: shell mode: no port (%s)", status_str(st));
