@@ -142,7 +142,12 @@
   devmgr + full console channels: keyboard hijack, Ctrl+Alt+Del reboot, keylogging) -> the cleanup agent;
   `ktest` from the shell panics on a busy system (global-count asserts) + small kernel/driver leftovers ->
   a leftovers agent. Also running: fun-apps agent (3 apps), shell-commands agent (coreutils-style cmds,
-  pipes, top, date). Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
+  pipes, top, date). **Shell commands MERGED (v0.0.21-m7)**: info (uname uptime date[RTC, TZ Sydney]
+  lscpu free ps top whoami hostname dmesg history lspci lsusb), files over /boot (pwd cd ls find cat
+  hexdump; sh_vfs mount table ready for M8 /data), text (wc head tail sort uniq seq grep), shell
+  (echo set unset export env alias type time sleep repeat watch true false; ; && || | $VAR quotes;
+  Tab completion; Ctrl+C), syscalls 130-133 (sys_info cpu_stat proc_list rtc_read, RIGHT_READ on root),
+  CPU-time accounting in schedule(). 223/223 ktests, tools/shell-tests/cmds.txt passes. Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
