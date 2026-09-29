@@ -9,11 +9,14 @@ Outputs, all committed so they can be read and grepped like any source:
     kernel/include/jam/syscall_nums.h  SYS_<name> numbers (shared with user code)
     kernel/include/jam/syscall_impl.h  sysc_<name> prototypes for the kernel
     kernel/abi/syscall_table.c         syscall_dispatch and the table
-    kernel/abi/syscall_weak.c          weak ERR_NOT_SUPPORTED sysc_<name>s
     user/lib/syscalls.S                jam_<name> wrappers
     user/include/jam_syscalls.h        jam_<name> prototypes
 
+There are no default implementations: the kernel must define every
+sysc_<name> in the .def, or it doesn't link.
+
 Run from the repository root (the Makefile does)."""
+import os
 import re
 import sys
 
@@ -142,26 +145,6 @@ def gen_impl(calls):
     return "\n".join(out)
 
 
-def gen_weak(calls):
-    out = [f"/* {BANNER}",
-           " *",
-           " * A weak ERR_NOT_SUPPORTED default for every sysc_<name>, so the kernel",
-           " * links before each call is implemented; the real (strong) definition",
-           " * replaces it. */",
-           "#include <jam/status.h>", "#include <jam/syscall_impl.h>", "",
-           "#define WEAK __attribute__((weak))", ""]
-    for c in calls:
-        names = ["args"] if c.struct else [a.name for a in c.args]
-        out.append(f"WEAK int64_t sysc_{c.name}({kernel_params(c)})")
-        out.append("{")
-        if names:
-            out.append("    " + ", ".join(f"(void){n}" for n in names) + ";")
-        out.append("    return ERR_NOT_SUPPORTED;")
-        out.append("}")
-        out.append("")
-    return "\n".join(out)
-
-
 def gen_table(calls):
     out = [f"/* {BANNER}",
            " *",
@@ -251,10 +234,14 @@ OUTPUTS = {
     "kernel/include/jam/syscall_nums.h": gen_nums,
     "kernel/include/jam/syscall_impl.h": gen_impl,
     "kernel/abi/syscall_table.c": gen_table,
-    "kernel/abi/syscall_weak.c": gen_weak,
     "user/lib/syscalls.S": gen_wrappers,
     "user/include/jam_syscalls.h": gen_user_header,
 }
+
+# Files this script used to write. The build compiles every kernel/**/*.c,
+# so a stale copy (a merge bringing one back) would quietly supply weak
+# ERR_NOT_SUPPORTED system calls again: `check` fails on it, `gen` deletes it.
+OBSOLETE = ["kernel/abi/syscall_weak.c"]
 
 
 def main():
@@ -273,6 +260,14 @@ def main():
         if sys.argv[1] == "gen":
             open(path, "w").write(text)
             print(f"gensyscalls: wrote {path}")
+        else:
+            stale.append(path)
+    for path in OBSOLETE:
+        if not os.path.exists(path):
+            continue
+        if sys.argv[1] == "gen":
+            os.remove(path)
+            print(f"gensyscalls: deleted {path} (no longer generated)")
         else:
             stale.append(path)
     if stale:

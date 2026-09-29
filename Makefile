@@ -58,8 +58,7 @@ all: $(KERNEL) $(BOOTFS)
 # first checks that it matches the .def, so a table change can't be half
 # applied. `make syscalls` regenerates it.
 SYSCALL_GEN := kernel/include/jam/syscall_nums.h kernel/include/jam/syscall_impl.h \
-               kernel/abi/syscall_table.c kernel/abi/syscall_weak.c \
-               user/lib/syscalls.S user/include/jam_syscalls.h
+               kernel/abi/syscall_table.c user/lib/syscalls.S user/include/jam_syscalls.h
 SYSCALLS_OK := $(BUILD)/syscalls.ok
 
 $(SYSCALLS_OK): abi/syscalls.def tools/gensyscalls.py kernel/include/jam/abi.h $(SYSCALL_GEN)
