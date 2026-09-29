@@ -499,108 +499,15 @@ static void cmd_usb(void)
     jam_handle_close(bus);
 }
 
-/* Start argv[0] (bin/<name>, or a bootfs path) with argv, wait for it
- * (Ctrl+C kills it) and say how it ended; then kill its job (anything it
- * started ends with it). True if it exited 0.
- * What it gets: a PROGRAM-level console channel (console.new_client:
- * write, keys while it runs, the screen; no input sources) and, only if
- * `test` (the utest and usbtest commands: test suites that kill and rebind
- * drivers), devmgr's query and control channels. A program `run` starts
- * gets nothing of devmgr's. */
-static bool run_prog(int argc, char **argv, bool test)
-{
-    char path[128];
-    if (strchr(argv[0], '/'))
-        snprintf(path, sizeof(path), "%s", argv[0]);
-    else
-        snprintf(path, sizeof(path), "bin/%s", argv[0]);
-    const struct bootfs_view *fs;
-    const void *data;
-    uint64_t size;
-    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, path, &data, &size) != OK) {
-        say("run: no %s in bootfs\n", path);
-        return false;
-    }
-    handle_t job, proc;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
-    if (st != OK) {
-        say("run: no job (%s)\n", status_str(st));
-        return false;
-    }
-    struct spawn_handle x[3];
-    unsigned nx = 0;
-    handle_t h;
-    if (test && devmgr_now() && jam_handle_duplicate(devmgr, RIGHT_SAME, &h) == OK)
-        x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
-    if (test && devmgr_ctl && jam_handle_duplicate(devmgr_ctl, RIGHT_SAME, &h) == OK)
-        x[nx++] = (struct spawn_handle){ SR_DEVMGR_CTL, h };
-    if (console_new_client_until(con, (uint64_t)jam_clock_get() + 5 * S, 2, &h) == OK)
-        x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
-    argv[0] = path;
-    struct spawn_args a = {
-        .path = path, .argc = argc, .argv = (const char *const *)argv, .job = job,
-        .extra = x, .nextra = nx,
-    };
-    uint64_t t0 = (uint64_t)jam_clock_get();
-    st = spawn(&a, &proc);
-    if (st != OK) {
-        say("run: can't start %s (%s)\n", path, status_str(st));
-        jam_handle_close(job);
-        return false;
-    }
-    say("run: %s started (Ctrl+C kills it)\n", path);
-    flush();
-    struct process_info info;
-    bool killed = false;
-    while ((st = spawn_wait(proc, 50 * MS, &info)) == ERR_TIMED_OUT) {
-        struct input_key_event ev;
-        while (get_key(&ev, 0))
-            if (is_ctrl(&ev, 'c') && !killed) {
-                say("^C: killing %s\n", path);
-                flush();
-                jam_job_kill(job);
-                killed = true;
-            }
-    }
-    uint64_t ms = ((uint64_t)jam_clock_get() - t0) / MS;
-    bool ok = false;
-    if (st != OK)
-        say("run: lost track of %s (%s)\n", path, status_str(st));
-    else if (info.killed)
-        say("run: %s was killed after %lu ms\n", path, (unsigned long)ms);
-    else {
-        say("run: %s exited with code %ld after %lu ms\n", path, (long)info.exit_code,
-            (unsigned long)ms);
-        ok = info.exit_code == 0;
-    }
-    /* Whatever it started (and left running) goes with it: its console
-     * channel and keys must not outlive the foreground program. */
-    struct job_info ji;
-    if (jam_job_get_info(job, &ji) != OK || ji.used[JOB_LIMIT_THREADS]) {
-        say("run: killing what %s left running\n", path);
-        jam_job_kill(job);
-    }
-    if (jam_job_get_info(job, &ji) == OK) {
-        bool clean = true;
-        for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
-            clean &= ji.used[k] == 0;
-        if (!clean)
-            say("run: its job still holds %lu pages, %lu handles, %lu threads\n",
-                (unsigned long)ji.used[JOB_LIMIT_PAGES], (unsigned long)ji.used[JOB_LIMIT_HANDLES],
-                (unsigned long)ji.used[JOB_LIMIT_THREADS]);
-    }
-    jam_handle_close(proc);
-    jam_handle_close(job);
-    return ok;
-}
-
+/* (`run` itself is the command layer's: cmds_shell.c sh_run_program, where
+ * the rules for what a program gets are.) */
 static void cmd_run(int argc, char **argv)
 {
     if (argc < 2) {
         say("usage: run <prog> [args]\n");
         return;
     }
-    run_prog(argc - 1, argv + 1, false);
+    sh_set_status(sh_run_program(argc - 1, argv + 1));
 }
 
 /* The kernel log from position `from` on (up to 64 KiB); *got: bytes. */
@@ -638,13 +545,15 @@ static uint64_t log_end(void)
 /* A test program (utest, usbtest): run it, then show its result lines
  * ("<name>: N passed ...", which it also puts in the RESULTS box) from what
  * it logged. */
-static void cmd_test_prog(const char *name)
+static void cmd_test_prog(int argc, char **argv)
 {
+    const char *name = argv[0];
     uint64_t from = log_end();
-    char prog[32];
-    snprintf(prog, sizeof(prog), "%s", name);
-    char *argv[] = { prog, NULL };
-    bool ok = run_prog(1, argv, true);
+    int code = sh_run_program_ex(argc, argv, true);
+    sh_set_status(code);   /* `utest exit7; echo $?` as for any program */
+    if (argc > 1)
+        return;   /* a child mode (utest's own), not the suite: no result line */
+    bool ok = code == 0;
     size_t got;
     char *log = log_since(from, &got);
     char pat[40];
@@ -702,15 +611,15 @@ static void cmd_crash(int argc, char **argv)
  * from the console and gives it back at the end. */
 static void cmd_demo(int argc, char **argv)
 {
-    int64_t cpus = jam_debug_command(root, "cpus", 4);
+    struct sys_info si;
+    uint32_t cpus = jam_sys_info(root, &si) == OK && si.cpu_count ? si.cpu_count : 1;
     char c[24], s[24], d[16];
-    snprintf(c, sizeof(c), "cpus=%ld", (long)(cpus > 0 ? cpus : 1));
+    snprintf(c, sizeof(c), "cpus=%u", cpus);
     snprintf(s, sizeof(s), "seconds=%s", argc > 1 ? argv[1] : "76");
     snprintf(d, sizeof(d), "demo");
     char *av[] = { d, c, s, NULL };
-    say("demo: fractals on %ld CPUs for %s s; any key stops it\n", (long)(cpus > 0 ? cpus : 1),
-        argc > 1 ? argv[1] : "76");
-    run_prog(3, av, false);
+    say("demo: fractals on %u CPUs for %s s; any key stops it\n", cpus, argc > 1 ? argv[1] : "76");
+    sh_set_status(sh_run_program(3, av));
 }
 
 static void cmd_log(int argc, char **argv)
@@ -787,7 +696,8 @@ static void run_command(char *line)
     } else if (!strcmp(c, "memmap")) {
         kcmd("memmap");
     } else if (!strcmp(c, "utest") || !strcmp(c, "usbtest")) {
-        cmd_test_prog(c);
+        cmd_test_prog(argc, argv);
+
     } else if (!strcmp(c, "crash")) {
         cmd_crash(argc, argv);
     } else if (!strcmp(c, "demo")) {
@@ -898,4 +808,5 @@ const char *sh_history_at(unsigned i)
 }
 handle_t sh_console(void) { return con; }
 handle_t sh_root(void) { return root; }
-handle_t sh_devmgr(void) { return devmgr; }
+handle_t sh_devmgr(void) { return devmgr_now(); }
+handle_t sh_devmgr_ctl(void) { devmgr_now(); return devmgr_ctl; }

@@ -27,8 +27,6 @@
  *                    ran them; the ones needing a second CPU use CPU 1).
  *                    Each panics on purpose, except bp, which returns 0
  *   memmap           the loader's memory map (the "memmap" boot word)
- *   cpus             the number of CPUs online (the result; the shell's
- *                    `demo` starts a thread per CPU)
 
  *
  * The boot menu entries still call the same functions from thread "main";
@@ -127,7 +125,7 @@ status_t dbgcmd_check(const char *cmd, size_t len)
         return !k || selftest_crash_known(rest, k) ? OK : ERR_NOT_FOUND;
     }
     if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic") ||
-        is(cmd, n, "memmap") || is(cmd, n, "cpus"))
+        is(cmd, n, "memmap"))
         return *rest ? ERR_INVALID_ARGS : OK;
     return ERR_NOT_SUPPORTED;
 }
@@ -164,8 +162,6 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
     }
     if (is(cmd, n, "crash"))
         return *rest ? selftest_crash_run(rest) : selftest_crash_list();
-    if (is(cmd, n, "cpus"))
-        return cpu_count;
     if (is(cmd, n, "memmap")) {
 
         kmain_print_memmap();

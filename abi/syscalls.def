@@ -162,11 +162,11 @@
 # "ps", "mem", "kill <name>" (the first process of that name in the
 # caller's job tree; for restart tests), "panic" (a test), "crash [name]"
 # (list the crash tests, or run one: each panics on purpose but "bp";
-# ERR_NOT_FOUND for an unknown name), "memmap", "cpus". Output goes to the
+# ERR_NOT_FOUND for an unknown name), "memmap". Output goes to the
 # kernel log (follow it with a klog reader).
 # Blocks until done; returns the result (ktest: tests run; stress: 0 if it
-# passed, else 1; devices: PCI functions; crash: how many tests / 0; cpus:
-# CPUs online), ERR_NOT_SUPPORTED for an unknown command (or a kernel
+# passed, else 1; devices: PCI functions; crash: how many tests / 0),
+# ERR_NOT_SUPPORTED for an unknown command (or a kernel
 # without tests), ERR_BAD_STATE while one runs.
 
 113 debug_command     i64       handle_t root, const char *cmd, uint64_t len

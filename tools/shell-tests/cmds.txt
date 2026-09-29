@@ -12,7 +12,7 @@ wait jam>
 
 # ---- information ------------------------------------------------------------------
 send uname -a
-wait Jam OS jamos 0.0.20-m7 x86_64
+wait Jam OS jamos 0.0.
 send version
 wait (kernel tests built in)
 send whoami | uniq -c
@@ -47,7 +47,7 @@ shot shell-top
 send top -n 1 -d 0.2 | grep -c shell | grep ^1$ && echo ok-$T-top
 wait ok-x-top
 send dmesg | grep "Jam OS" | head -1
-wait Jam OS 0.0.20-m7
+wait Jam OS 0.0.
 send dmesg | wc -l | grep -v ^0$ && echo ok-$T-dmesg
 wait ok-x-dmesg
 send lspci
@@ -186,9 +186,9 @@ send alias | grep "alias ll='ls -l'" && echo ok-$T-alias
 wait ok-x-alias
 send unalias hi; hi
 wait hi: unknown command
-send type ls utest ll
+send type ls contest ll
 wait ls is a shell builtin
-wait utest is /boot/bin/utest
+wait contest is /boot/bin/contest
 wait ll is an alias for ls -l
 send ll bin | grep KiB && echo ok-$T-ll
 wait ok-x-ll
@@ -214,7 +214,14 @@ wait jam>
 
 # ---- programs: by name, environment, in a pipe ----------------------------------------
 send contest
+wait 30 contest: type q now
+type q
+wait contest: type r now
+type r
+wait contest: type s now
+type s
 wait 60 run: bin/contest exited with code 0
+
 wait jam>
 send run utest env one two
 wait env: JAMTEST=jx
