@@ -109,7 +109,7 @@ static status_t dm_call(const struct dm *m, uint32_t op, struct dm_rep *r, struc
  * channel), and wait for its first binding pass: edu bound. */
 static void dm_start(struct dm *m, const struct pci_dev *d)
 {
-    m->was_managed = d->driver_managed;
+    m->was_managed = __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
     m->job = kt_fresh_job();
     struct kobject *root = resource_root(), *pci;
     KT_EQ(resource_create(root, RES_PCI, 0, 0, &pci), OK);
@@ -165,7 +165,8 @@ static int64_t dm_stop(struct dm *m, struct pci_dev *d)
     struct process_info info;
     process_get_info(m->proc, &info);
     kobject_unref(process_kobject(m->proc));
-    d->driver_managed = m->was_managed;   /* devmgr made it sticky */
+    /* devmgr made it sticky */
+    __atomic_store_n(&d->driver_managed, m->was_managed, __ATOMIC_RELAXED);
     return info.exit_code;
 }
 

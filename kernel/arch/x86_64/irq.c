@@ -36,10 +36,10 @@
 #include <jam/x86.h>
 
 static irq_handler_t handlers[256];
-volatile uint64_t irq_unexpected;
-volatile uint8_t irq_last_unexpected;
-volatile uint64_t irq_device_unowned;
-volatile uint8_t irq_device_last_unowned;
+uint64_t irq_unexpected;
+uint8_t irq_last_unexpected;
+uint64_t irq_device_unowned;
+uint8_t irq_device_last_unowned;
 
 _Static_assert(VEC_DEVICE_FIRST == VEC_COM1 + 1, "device vectors start after COM1");
 _Static_assert(VEC_DEVICE_LAST < VEC_TIMER, "device vectors end below the timer");
@@ -90,7 +90,7 @@ void irq_dispatch(struct trap_frame *f)
     }
     if (v >= VEC_DEVICE_FIRST && v <= VEC_DEVICE_LAST) {
         if (!device_dispatch(v)) {
-            irq_device_last_unowned = v;
+            __atomic_store_n(&irq_device_last_unowned, v, __ATOMIC_RELAXED);
             __atomic_add_fetch(&irq_device_unowned, 1, __ATOMIC_RELAXED);
         }
         lapic_eoi();
@@ -98,7 +98,8 @@ void irq_dispatch(struct trap_frame *f)
     }
     if (v >= VEC_PIC_BASE && v < VEC_PIC_BASE + 16)
         return;   /* spurious 8259 interrupt: no EOI */
-    irq_last_unexpected = v;   /* counted, not logged: see lapic.c */
+    /* Counted, not logged: see lapic.c. */
+    __atomic_store_n(&irq_last_unexpected, v, __ATOMIC_RELAXED);
     __atomic_add_fetch(&irq_unexpected, 1, __ATOMIC_RELAXED);
     lapic_eoi();
 }

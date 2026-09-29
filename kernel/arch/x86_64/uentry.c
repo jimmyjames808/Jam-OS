@@ -57,7 +57,7 @@ bool (*volatile uentry_test_nmi)(struct trap_frame *f);
 #define USER_RFLAGS_OK (RFLAGS_CF | RFLAGS_PF | RFLAGS_AF | RFLAGS_ZF | RFLAGS_SF | \
                         RFLAGS_TF | RFLAGS_DF | RFLAGS_OF | RFLAGS_AC | RFLAGS_ID)
 
-volatile uint64_t user_faults;   /* user threads killed for a fault */
+uint64_t user_faults;   /* user threads killed for a fault (atomic) */
 
 void syscall_init_cpu(void)
 {

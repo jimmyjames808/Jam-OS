@@ -14,7 +14,8 @@
 /* KLOG_SIZE (klog.h): a power of two */
 
 static char ring[KLOG_SIZE];
-static volatile uint64_t head;  /* total bytes ever written */
+static uint64_t head;           /* total bytes ever written; ring_lock (klog_head reads it
+                                   without, so it is stored atomically) */
 static spinlock_t ring_lock = SPINLOCK_INIT("klog");
 static bool at_line_start = true;
 
@@ -25,7 +26,7 @@ static void emit(const char *s, size_t len)
     uint64_t h = head;
     for (size_t i = 0; i < len; i++)
         ring[h++ & (KLOG_SIZE - 1)] = s[i];
-    head = h;
+    __atomic_store_n(&head, h, __ATOMIC_RELAXED);
     serial_write(s, len);
     fbcon_write(s, len);
 }
@@ -87,7 +88,7 @@ size_t klog_tail(char *buf, size_t size)
 
 uint64_t klog_head(void)
 {
-    return head;
+    return __atomic_load_n(&head, __ATOMIC_RELAXED);
 }
 
 size_t klog_ring_copy(const char *r, uint64_t size, uint64_t h, uint64_t pos, char *buf,

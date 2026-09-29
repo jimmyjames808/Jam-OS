@@ -25,7 +25,7 @@ _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 struct cpu cpu0;
 struct cpu *cpus[MAX_CPUS];
 uint32_t cpu_count;
-static volatile uint32_t online_count;
+static uint32_t online_count;   /* CPUs up; the APs add themselves (release) */
 static const struct boot_cpu *boot_cpu_of[MAX_CPUS];
 
 static struct cpu *new_cpu(const struct boot_cpu *bc, uint32_t index)
@@ -107,9 +107,9 @@ void smp_start_aps(const struct boot_info *bi)
            rdtsc() - start < tsc_hz / 1000000 * AP_TIMEOUT_US)
         cpu_relax();
 
-    uint32_t online = online_count;
+    uint32_t online = __atomic_load_n(&online_count, __ATOMIC_ACQUIRE);
     kprintf("smp: %u of %u CPUs online\n", online, cpu_count);
-    ipi_ready = 1;
+    __atomic_store_n(&ipi_ready, 1, __ATOMIC_RELEASE);
     sched_topology_init();
     heap_percpu_init();
     if (online != cpu_count) {
@@ -175,8 +175,11 @@ bool smp_report(uint64_t window_ms)
     report("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s",
             lapic_timer_mode(), TICK_HZ, expect, measured_us / 1000, measured_us % 1000,
             bad ? "MISMATCH" : "all ok");
-    if (lapic_errors || irq_unexpected)
+    uint64_t errors = __atomic_load_n(&lapic_errors, __ATOMIC_RELAXED);
+    uint64_t unexpected = __atomic_load_n(&irq_unexpected, __ATOMIC_RELAXED);
+    if (errors || unexpected)
         report("irq: %lu LAPIC errors (last ESR %x), %lu unexpected (last vector %u)",
-                lapic_errors, lapic_last_esr, irq_unexpected, irq_last_unexpected);
-    return bad == 0 && !lapic_errors;
+               errors, __atomic_load_n(&lapic_last_esr, __ATOMIC_RELAXED), unexpected,
+               __atomic_load_n(&irq_last_unexpected, __ATOMIC_RELAXED));
+    return bad == 0 && !errors;
 }

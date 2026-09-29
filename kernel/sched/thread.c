@@ -35,7 +35,8 @@ static spinlock_t stack_lock = SPINLOCK_INIT("stack cache");
 static void *stack_cache[SCHED_STACK_CACHE_MAX];
 static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
 static void *stack_doomed;
-static volatile unsigned stack_doomed_n;
+static unsigned stack_doomed_n;   /* stacks on stack_doomed; stack_lock (stored atomically:
+                                     sched_stack_trim reads it without) */
 static uint64_t stacks_freed;
 
 /* May this context free stacks (kstack_free shoots down TLBs, which needs
@@ -70,7 +71,7 @@ static void trim_to(unsigned limit)
             tail = (void **)((char *)*tail - STACK_SIZE);
         *tail = stack_doomed;
         stack_doomed = NULL;
-        stack_doomed_n = 0;
+        __atomic_store_n(&stack_doomed_n, 0, __ATOMIC_RELAXED);
     }
     spin_unlock_irqrestore(&stack_lock, f);
     while (list) {
@@ -134,7 +135,7 @@ static void stack_put(void *top)
     } else {
         *(void **)((char *)top - STACK_SIZE) = stack_doomed;
         stack_doomed = top;
-        stack_doomed_n++;
+        __atomic_store_n(&stack_doomed_n, stack_doomed_n + 1, __ATOMIC_RELAXED);
     }
     spin_unlock_irqrestore(&stack_lock, f);
 }

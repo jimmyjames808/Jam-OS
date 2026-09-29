@@ -268,7 +268,7 @@ void waitqueue_wake_all(struct waitqueue *wq) { wake(wq, true); }
  * owner before waking it, so nobody can take the mutex in between.
  * Waiters that are still on the queue have mutex_since set (they set it
  * under m->lock before queueing and clear it after leaving). */
-volatile uint64_t mutex_handoffs;   /* statistics */
+uint64_t mutex_handoffs;   /* statistics */
 
 static void mutex_pass_on(struct mutex *m)
 {
@@ -283,7 +283,7 @@ static void mutex_pass_on(struct mutex *m)
     if (oldest && uptime_ns() - oldest->mutex_since >= MUTEX_HANDOFF_NS) {
         list_del(&oldest->wait_node);
         m->owner = oldest;
-        mutex_handoffs++;
+        __atomic_add_fetch(&mutex_handoffs, 1, __ATOMIC_RELAXED);
         thread_wake(oldest);
     } else if (!list_empty(&wq->waiters)) {
         struct thread *t = list_first(&wq->waiters, struct thread, wait_node);

@@ -45,8 +45,8 @@ struct lock_class {
 static struct lock_class classes[MAX_CLASSES];
 static uint64_t deps[MAX_CLASSES][WORDS];
 static unsigned class_count;
-static volatile bool graph_busy;
-static volatile bool disabled;
+static bool graph_busy;   /* the graph lock: __atomic_test_and_set / __atomic_clear */
+static bool disabled;     /* lockdep_off: the panic path, no more checks */
 
 /* Interrupts must be off while the graph flag is held: an interrupt
  * handler that takes any spinlock re-enters the checker, and would spin on
@@ -77,7 +77,7 @@ unsigned lockdep_class_count(void)
 
 void lockdep_off(void)
 {
-    disabled = true;
+    __atomic_store_n(&disabled, true, __ATOMIC_RELAXED);
 }
 
 /* With the graph lock held: find or add (name, subclass, sleeping). */
@@ -230,7 +230,7 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
 
 static void acquire_checks(spinlock_t *l, unsigned subclass)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     bool irqs_on = irqs_enabled();   /* as the caller had them */
     uint64_t f = irq_save();
@@ -274,7 +274,7 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
 
 static void release_checks(const spinlock_t *l)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     uint64_t f = irq_save();
     struct cpu *c = this_cpu();
@@ -297,7 +297,7 @@ static void release_checks(const spinlock_t *l)
 
 void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     struct thread *t = current_thread();
     uint64_t f = irq_save();
@@ -326,7 +326,7 @@ void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache)
 
 void lockdep_sleep_release(const void *lock)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     struct thread *t = current_thread();
     for (unsigned i = t->sleep_depth; i-- > 0;) {
@@ -351,7 +351,7 @@ static void wait_turn(const spinlock_t *l, uint16_t ticket)
         if (__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE) == ticket)
             return;
         cpu_relax();
-        if ((spins & 0xffff) == 0 && tsc_hz && !disabled) {
+        if ((spins & 0xffff) == 0 && tsc_hz && !__atomic_load_n(&disabled, __ATOMIC_RELAXED)) {
             if (!start)
                 start = rdtsc();
             else if (rdtsc() - start > tsc_hz * STUCK_SECONDS) {

@@ -56,7 +56,7 @@ struct run {
     struct job    *caller;        /* a reference, or NULL: "kill" spares its ancestors */
     struct event  *done;          /* SIG_SIGNALED when result is set */
     int64_t        result;        /* exec's return value */
-    volatile int   refs;          /* the thread and the caller */
+    int            refs;          /* the thread and the caller (atomic once it runs) */
 };
 
 static spinlock_t busy_lock = SPINLOCK_INIT("dbgcmd");

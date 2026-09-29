@@ -69,8 +69,8 @@ struct observer {
 struct kobject {
     const struct kobject_ops *ops;  /* destroy / on_zero_handles */
     enum obj_type     type;         /* OBJ_* */
-    volatile uint32_t refs;         /* kernel references; the last destroys it */
-    volatile uint32_t handles;      /* handles to it; the last calls on_zero_handles */
+    uint32_t          refs;         /* kernel references; the last destroys it */
+    uint32_t          handles;      /* handles to it; the last calls on_zero_handles */
     signals_t         signals;      /* SIG_* now; lock */
     spinlock_t        lock;         /* guards signals and observers */
     struct list_node  observers;    /* struct observer */

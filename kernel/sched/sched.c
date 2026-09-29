@@ -864,11 +864,11 @@ static void watchdog_check(struct cpu *c)
     }
 }
 
-static volatile uint64_t boost_total;
+static uint64_t boost_total;   /* starvation boosts on every CPU (atomic) */
 
 uint64_t sched_boost_count(void)
 {
-    return boost_total;
+    return __atomic_load_n(&boost_total, __ATOMIC_RELAXED);
 }
 
 /* Once a second: boost threads that have waited too long on this CPU. */
@@ -888,7 +888,7 @@ static void boost_starved(struct cpu *c)
             dequeue(rq, t);
             t->prio = PRIO_BOOST;
             t->boosts++;
-            boost_total++;
+            __atomic_add_fetch(&boost_total, 1, __ATOMIC_RELAXED);
             list_add_tail(&rq->queues[PRIO_BOOST], &t->rq_node);
             rq->bitmap |= 1u << PRIO_BOOST;
             rq->nr_ready++;
@@ -937,5 +937,5 @@ void sched_print_stats(void)
         steals += cpus[i]->steals;
     }
     kprintf("sched: %lu context switches, %lu steals, %lu starvation boosts across %u CPUs\n",
-            sw, steals, boost_total, cpu_count);
+            sw, steals, sched_boost_count(), cpu_count);
 }

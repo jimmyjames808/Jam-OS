@@ -91,7 +91,7 @@ struct thread {
     uint32_t          sleep_cpu;     /* whose queue sleep_node is on */
 
     void             *stack_top;     /* top of its kernel stack */
-    volatile uint32_t refs;          /* references: creator's and its own */
+    uint32_t          refs;          /* references: creator's and its own */
     volatile bool     exited;        /* has run thread_exit; exit_wq.lock */
     struct waitqueue  exit_wq;       /* thread_join waits here */
 
@@ -287,7 +287,7 @@ void waitqueue_wake_all(struct waitqueue *wq);
  * mutex_unlock hands the mutex straight to the longest waiter instead, so
  * no thread can be starved by others barging in ahead of it. */
 #define MUTEX_HANDOFF_NS 1000000ull
-extern volatile uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter */
+extern uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter (atomic) */
 struct mutex {
     spinlock_t       lock;      /* guards owner and the hand-off */
     struct thread   *owner;     /* the holder, NULL if free */

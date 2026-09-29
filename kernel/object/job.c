@@ -60,9 +60,9 @@ struct job {
     struct list_node  child_node;  /* on parent->children (the parent's lock) */
     struct list_node  procs;       /* (L) struct job_link of each live process */
     /* by JOB_LIMIT_*: this job and its descendants, now */
-    volatile uint64_t used[JOB_LIMIT_COUNT];
+    uint64_t          used[JOB_LIMIT_COUNT];
     /* by JOB_LIMIT_*: this job's own limit (JOB_NO_LIMIT) */
-    volatile uint64_t limit[JOB_LIMIT_COUNT];
+    uint64_t          limit[JOB_LIMIT_COUNT];
 };
 
 static uint64_t jlock(struct job *j)

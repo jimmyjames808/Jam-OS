@@ -37,7 +37,7 @@ static struct cell cells[MAX_ROWS][MAX_COLS];
 static spinlock_t lock = SPINLOCK_INIT("fbcon");
 /* A process owns the screen (the console, through framebuffer_take): keep
  * the cells, draw nothing. */
-static volatile bool taken;
+static bool taken;   /* fbcon_take: a process owns the screen, draw nothing */
 
 static uint32_t native(uint32_t rgb)
 {
@@ -48,7 +48,7 @@ static uint32_t native(uint32_t rgb)
 
 static void draw_cell(uint32_t col, uint32_t row)
 {
-    if (taken)
+    if (__atomic_load_n(&taken, __ATOMIC_RELAXED))
         return;
     const struct cell *c = &cells[row][col];
     const uint8_t *glyph = font_8x16[(uint8_t)c->ch & 0x7f];
@@ -64,7 +64,7 @@ static void draw_cell(uint32_t col, uint32_t row)
 
 static void redraw_all(void)
 {
-    if (taken)
+    if (__atomic_load_n(&taken, __ATOMIC_RELAXED))
         return;
     for (uint32_t r = 0; r < rows; r++)
         for (uint32_t c = 0; c < cols; c++)
@@ -198,7 +198,7 @@ uint64_t fbcon_time_redraw(uint64_t (*now)(void))
 void fbcon_force_unlock(void)
 {
     spin_force_unlock(&lock);
-    taken = false;   /* a panic always draws */
+    __atomic_store_n(&taken, false, __ATOMIC_RELAXED);   /* a panic always draws */
 }
 
 bool fbcon_geometry(struct boot_framebuffer *out)
@@ -214,8 +214,8 @@ status_t fbcon_take(void)
     if (!ready)
         return ERR_NOT_FOUND;
     uint64_t f = spin_lock_irqsave(&lock);
-    status_t st = taken ? ERR_BAD_STATE : OK;
-    taken = true;
+    status_t st = __atomic_load_n(&taken, __ATOMIC_RELAXED) ? ERR_BAD_STATE : OK;
+    __atomic_store_n(&taken, true, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&lock, f);
     return st;
 }
@@ -225,12 +225,12 @@ void fbcon_release(void)
     if (!ready)
         return;
     uint64_t f = spin_lock_irqsave(&lock);
-    taken = false;
+    __atomic_store_n(&taken, false, __ATOMIC_RELAXED);
     redraw_all();
     spin_unlock_irqrestore(&lock, f);
 }
 
 bool fbcon_is_taken(void)
 {
-    return taken;
+    return __atomic_load_n(&taken, __ATOMIC_RELAXED);
 }

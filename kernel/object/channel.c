@@ -25,7 +25,7 @@
 struct chan_pair {
     spinlock_t        lock;    /* "channel pair": guards both endpoints' queues and state */
     struct channel   *ep[2];   /* NULL once that endpoint has closed */
-    volatile uint32_t refs;    /* one per endpoint not yet destroyed */
+    uint32_t          refs;    /* one per endpoint not yet destroyed */
 };
 
 /* One queued message. The khandles follow the header, then the bytes. */

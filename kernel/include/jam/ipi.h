@@ -34,4 +34,6 @@ void watchdog_fire(uint32_t cpu);
 struct trap_frame;
 void nmi_handler(struct trap_frame *f);
 
-extern volatile int ipi_ready;   /* set once every CPU can take IPIs */
+/* Set (a release store) once every CPU can take IPIs; read it with
+ * __atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE). */
+extern int ipi_ready;

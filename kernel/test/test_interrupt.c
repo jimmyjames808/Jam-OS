@@ -242,11 +242,11 @@ KTEST(interrupt_vector_ipi_delivery_and_unowned)
     for (uint32_t k = 0; k < 8; k++)
         KT_EQ(hits[k].n, 1);   /* nobody else's IPI landed on it */
     /* Unowned: free one, then send its vector. */
-    uint64_t before = irq_device_unowned;
+    uint64_t before = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
     vector_free(cpus_used[0], vecs[0]);
     ipi_send(cpus_used[0], vecs[0]);
     KT_ASSERT(wait_at_least(&irq_device_unowned, before + 1, 1000));
-    KT_EQ(irq_device_last_unowned, vecs[0]);
+    KT_EQ(__atomic_load_n(&irq_device_last_unowned, __ATOMIC_RELAXED), vecs[0]);
     KT_EQ(hits[0].n, 1);
     /* The CPU still takes interrupts after it (the EOI was sent). */
     ipi_send(cpus_used[1], vecs[1]);
@@ -588,7 +588,7 @@ KTEST(interrupt_destroy_under_vector_storm)
     if (cpu_count < 3)
         return;
     uint64_t live = interrupt_live_count();
-    uint64_t unowned = irq_device_unowned;
+    uint64_t unowned = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
     uint64_t ticks[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
         ticks[i] = cpus[i]->ticks;
@@ -625,13 +625,14 @@ KTEST(interrupt_destroy_under_vector_storm)
     }
     storm_stop = true;
     thread_join(s);
-    KT_ASSERT(irq_device_unowned > unowned);
+    uint64_t unowned_now = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
+    KT_ASSERT(unowned_now > unowned);
     /* No CPU was lost: every one still ticks. */
     thread_sleep_ns(50 * NS_PER_MS);
     for (uint32_t i = 0; i < cpu_count; i++)
         KT_ASSERT(cpus[i]->ticks > ticks[i]);
     kprintf("interrupt: storm sent %lu vectors, %lu unowned after teardown\n", storm_sent,
-            irq_device_unowned - unowned);
+            unowned_now - unowned);
     kt_unpin_self();
 }
 

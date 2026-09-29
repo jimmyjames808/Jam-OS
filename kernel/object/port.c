@@ -44,7 +44,7 @@ struct port_binding {
     struct kobject    *obj;         /* the watched object (a reference) */
     uint64_t           key;         /* goes into the packet */
     uint32_t           flags;       /* PORT_BIND_* */
-    volatile uint32_t  refs;        /* the list's and, while queued, the queue's */
+    uint32_t           refs;        /* the list's and, while queued, the queue's */
     bool               matched;     /* PERSISTENT: last seen state; obj->lock */
     bool               queued;      /* entry is in port->queue; port lock */
     struct list_node   port_node;   /* in port->bindings; bindings_lock */
@@ -53,9 +53,9 @@ struct port_binding {
     struct port_qentry entry;       /* its one packet, queued when it fires */
 };
 
-static volatile uint64_t live_ports, live_bindings, live_user_packets;
+static uint64_t live_ports, live_bindings, live_user_packets;   /* statistics (atomic) */
 
-static void stat_add(volatile uint64_t *c, int64_t d)
+static void stat_add(uint64_t *c, int64_t d)
 {
     __atomic_add_fetch(c, (uint64_t)d, __ATOMIC_RELAXED);
 }

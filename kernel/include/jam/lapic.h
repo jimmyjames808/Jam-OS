@@ -37,5 +37,5 @@ void     lapic_timer_set(uint64_t when_tsc);
 bool     lapic_timer_has_oneshot(void);
 extern bool lapic_oneshot;
 
-extern volatile uint64_t lapic_errors;
-extern volatile uint32_t lapic_last_esr;
+extern uint64_t lapic_errors;
+extern uint32_t lapic_last_esr;

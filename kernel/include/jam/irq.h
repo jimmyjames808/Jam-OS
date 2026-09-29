@@ -26,8 +26,8 @@ struct trap_frame;
 typedef void (*irq_handler_t)(struct trap_frame *f);
 
 void irq_register(uint8_t vector, irq_handler_t fn);
-extern volatile uint64_t irq_unexpected;
-extern volatile uint8_t  irq_last_unexpected;
+extern uint64_t irq_unexpected;
+extern uint8_t  irq_last_unexpected;
 void irq_dispatch(struct trap_frame *f);
 
 /* Device vectors: 0x31-0xef on every CPU, allocated per (cpu, vector)
@@ -35,8 +35,8 @@ void irq_dispatch(struct trap_frame *f);
  * arrives with no owner (a message still in flight after its owner freed
  * it, a stray IPI) is EOI'd and counted here, never a panic. */
 #define VEC_DEVICE_COUNT (0xef - 0x31 + 1)
-extern volatile uint64_t irq_device_unowned;
-extern volatile uint8_t  irq_device_last_unowned;
+extern uint64_t irq_device_unowned;
+extern uint8_t  irq_device_last_unowned;
 /* Vectors allocated on `cpu` right now (tests, reports). */
 uint32_t vector_count(uint32_t cpu);
 

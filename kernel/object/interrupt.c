@@ -63,7 +63,7 @@ enum irq_kind { IK_VIRTUAL, IK_MSI, IK_MSIX };
 
 struct kinterrupt {
     struct kobject    base;       /* base.lock ("interrupt") guards the flags below */
-    volatile uint32_t magic;      /* IRQ_MAGIC while alive: catches a fire after free */
+    uint32_t          magic;      /* IRQ_MAGIC while alive: catches a fire after free */
     uint8_t           kind;       /* enum irq_kind */
     bool              maskable;   /* masked at the device from fire to ack */
     bool              masked;     /* masked now (fire to ack) */
@@ -77,8 +77,8 @@ struct kinterrupt {
     uint32_t          index;      /* MSI-X table entry, 0 for MSI */
     struct list_node  dev_node;   /* on dev_irqs (dev_lock) */
     struct job       *job;        /* charged one JOB_LIMIT_HANDLES unit (a reference) */
-    volatile uint64_t fires;      /* times delivered (statistics) */
-    volatile uint64_t late;       /* fires after teardown began (ignored) */
+    uint64_t          fires;      /* times delivered (statistics); base.lock */
+    uint64_t          late;       /* fires after teardown began (ignored); base.lock */
 };
 
 static spinlock_t dev_lock = SPINLOCK_INIT("interrupt devices");
@@ -173,7 +173,8 @@ static void dev_release(struct kinterrupt *o)
 /* Lock held: count it, mask it, and give the observers one edge. */
 static void deliver_locked(struct kinterrupt *o)
 {
-    o->fires++;
+    /* The lock makes us the only writer; interrupt_fires reads it without. */
+    __atomic_store_n(&o->fires, o->fires + 1, __ATOMIC_RELAXED);
     if (o->maskable && !o->masked) {
         o->masked = true;
         dev_mask(o, true);
@@ -186,11 +187,12 @@ static void deliver_locked(struct kinterrupt *o)
 static void fire(void *ctx)
 {
     struct kinterrupt *o = ctx;
-    if (o->magic != IRQ_MAGIC)
-        panic("interrupt: fired on a freed object (%p, magic %x)", o, o->magic);
+    uint32_t magic = __atomic_load_n(&o->magic, __ATOMIC_RELAXED);
+    if (magic != IRQ_MAGIC)
+        panic("interrupt: fired on a freed object (%p, magic %x)", o, magic);
     uint64_t f = spin_lock_irqsave(&o->base.lock);
     if (o->dead)
-        o->late++;
+        __atomic_store_n(&o->late, o->late + 1, __ATOMIC_RELAXED);
     else if (o->masked && o->kind == IK_VIRTUAL)
         o->pending = true;   /* what a masked MSI-X vector's pending bit does */
     else
@@ -272,7 +274,7 @@ static void interrupt_destroy(struct kobject *obj)
 {
     struct kinterrupt *o = container_of(obj, struct kinterrupt, base);
     teardown(o, true);
-    o->magic = IRQ_MAGIC_DEAD;
+    __atomic_store_n(&o->magic, IRQ_MAGIC_DEAD, __ATOMIC_RELAXED);
     job_uncharge(o->job, JOB_LIMIT_HANDLES, 1);
     job_unref(o->job);
     kfree(o);
@@ -299,7 +301,7 @@ static status_t create(struct job *job, enum irq_kind kind, bool maskable, struc
         return ERR_NO_MEMORY;
     }
     kobject_init(&o->base, OBJ_INTERRUPT, &interrupt_ops, "interrupt", 0);
-    o->magic = IRQ_MAGIC;
+    __atomic_store_n(&o->magic, IRQ_MAGIC, __ATOMIC_RELAXED);
     o->kind = (uint8_t)kind;
     o->maskable = maskable;
     o->dev = d;

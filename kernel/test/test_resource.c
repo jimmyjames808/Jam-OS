@@ -720,21 +720,21 @@ KTEST(resource_managed_function_stays_in_use)
     struct pci_dev *d = edu();   /* live: devmgr's edu driver has it, so skipped */
     if (!d)
         return;
-    bool was = d->driver_managed;
-    d->driver_managed = false;
+    bool was = __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
+    __atomic_store_n(&d->driver_managed, false, __ATOMIC_RELAXED);
     struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
     handle_t dev, drv;
     KT_ASSERT(open_edu(&t, &dev));
-    KT_ASSERT(d->driver_managed);
-    KT_ASSERT(d->proc_users);
+    KT_ASSERT(__atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED));
+    KT_ASSERT(__atomic_load_n(&d->proc_users, __ATOMIC_RELAXED));
     /* A narrowed copy (a driver's) is not a binding by itself. */
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
     handle_table_destroy(&t);
     job_unref(j);
-    KT_EQ(d->proc_users, 0);
+    KT_EQ(__atomic_load_n(&d->proc_users, __ATOMIC_RELAXED), 0);
     KT_ASSERT(pci_in_use(d));   /* nobody holds it: still the drivers' */
     bool hide = __atomic_load_n(&pci_hide_in_use, __ATOMIC_RELAXED);
     __atomic_store_n(&pci_hide_in_use, true, __ATOMIC_RELAXED);
@@ -742,7 +742,7 @@ KTEST(resource_managed_function_stays_in_use)
     __atomic_store_n(&pci_hide_in_use, false, __ATOMIC_RELAXED);
     KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) == d);   /* the boot menu's tests see it */
     __atomic_store_n(&pci_hide_in_use, hide, __ATOMIC_RELAXED);
-    d->driver_managed = was;
+    __atomic_store_n(&d->driver_managed, was, __ATOMIC_RELAXED);
 }
 
 KTEST(resource_dma_close_clears_bus_master)

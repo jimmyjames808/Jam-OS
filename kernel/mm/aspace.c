@@ -170,12 +170,12 @@ struct aspace {
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
-    volatile uint32_t refs;       /* references */
+    uint32_t          refs;       /* references (atomic once published) */
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
     /* PCIDs (pcid.h): a never-reused id, and the TLB generation,
      * bumped by every change that must reach TLBs (gather_note). */
     uint64_t          pcid_id;
-    volatile uint64_t tlb_gen;
+    uint64_t          tlb_gen;
 };
 
 static uint64_t mend(const struct mapping *m)

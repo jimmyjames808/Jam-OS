@@ -95,18 +95,25 @@ static struct list_node free_lists[ZONE_COUNT][MAX_ORDER + 1];
  * the stashes); zone_free is the same per zone, read racily by pcp_free. */
 static uint64_t total_pages, free_pages;
 static uint64_t zone_total[ZONE_COUNT];
-static volatile uint64_t zone_free[ZONE_COUNT];
+static uint64_t zone_free[ZONE_COUNT];
+
+/* Zone lock held (the only writer): zone_free[z] += pages. pcp_free reads
+ * it without the lock, so the store is atomic. */
+static void zone_free_add(unsigned z, uint64_t pages)
+{
+    __atomic_store_n(&zone_free[z], zone_free[z] + pages, __ATOMIC_RELAXED);
+}
 static spinlock_t lock = SPINLOCK_INIT("pmm");
 
 struct pcp {
     uint32_t          busy;             /* the stash lock (see the top) */
-    volatile uint32_t n;                /* pages[0..n) stashed; written with
+    uint32_t          n;                /* pages[0..n) stashed; written with
                                          * busy held, read racily by stats */
     struct page      *pages[PCP_MAX];   /* LIFO: pages[n-1] is the hottest */
 } __attribute__((aligned(64)));
 
 static struct pcp pcps[MAX_CPUS];
-static volatile unsigned pcp_zone = ZONE_DMA32;
+static unsigned pcp_zone = ZONE_DMA32;
 static uint64_t pcp_drains;
 
 void pmm_early_init(const struct boot_info *bi)
@@ -220,13 +227,14 @@ static uint64_t seed_range_locked(uint64_t pfn, uint64_t end)
             order--;
         free_block_locked(pfn, order);
         zone_total[zone_of(pfn)] += 1ull << order;
-        zone_free[zone_of(pfn)] += 1ull << order;
+        zone_free_add(zone_of(pfn), 1ull << order);
         pfn += 1ull << order;
         added += 1ull << order;
     }
     /* Stash the normal zone once there is one (see the top). Pages of the
      * old zone already stashed are fine: they drain back in time. */
-    pcp_zone = zone_total[ZONE_NORMAL] ? ZONE_NORMAL : ZONE_DMA32;
+    __atomic_store_n(&pcp_zone, zone_total[ZONE_NORMAL] ? ZONE_NORMAL : ZONE_DMA32,
+                     __ATOMIC_RELAXED);
     return added;
 }
 
@@ -285,7 +293,7 @@ static struct page *buddy_take_locked(unsigned order, unsigned z)
             list_add(&free_lists[z][o], &half->node);
         }
         free_pages -= 1ull << order;
-        zone_free[z] -= 1ull << order;
+        zone_free_add(z, -(1ull << order));
         return p;
     }
     return NULL;
@@ -298,7 +306,7 @@ static void buddy_put_locked(struct page *p, unsigned order)
         p[i].flags = 0;
     free_block_locked(page_to_pfn(p), order);
     free_pages += 1ull << order;
-    zone_free[z] += 1ull << order;
+    zone_free_add(z, 1ull << order);
 }
 
 static struct page *buddy_alloc(unsigned order, unsigned flags)
@@ -350,9 +358,9 @@ static uint32_t pcp_drain_locked(struct pcp *s, uint32_t count)
 static void pcp_refill_locked(struct pcp *s)
 {
     spin_lock(&lock);
-    unsigned z = pcp_zone;
+    unsigned z = __atomic_load_n(&pcp_zone, __ATOMIC_RELAXED);
     uint32_t n = 0;
-    if (zone_free[z] >= PCP_LOW + PCP_BATCH) {
+    if (zone_free[z] >= PCP_LOW + PCP_BATCH) {   /* lock held: a plain read */
         for (; n < PCP_BATCH; n++) {
             struct page *p = buddy_take_locked(0, z);
             if (!p)
@@ -387,8 +395,8 @@ static struct page *pcp_alloc(void)
 /* False if the page must go to the buddy lists instead. */
 static bool pcp_free(struct page *p)
 {
-    unsigned z = pcp_zone;
-    if (p->zone != z || zone_free[z] < PCP_LOW)
+    unsigned z = __atomic_load_n(&pcp_zone, __ATOMIC_RELAXED);
+    if (p->zone != z || __atomic_load_n(&zone_free[z], __ATOMIC_RELAXED) < PCP_LOW)
         return false;
     uint64_t f = irq_save();
     struct pcp *s = &pcps[percpu_index()];

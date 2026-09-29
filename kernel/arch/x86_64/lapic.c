@@ -72,7 +72,7 @@ static int timer_mode = TMR_MODE_PERIODIC;
 static uint32_t apic_ticks_per_sec;   /* with divide-by-16 */
 static uint64_t tsc_period;           /* TSC cycles per tick */
 bool lapic_oneshot = true;
-static volatile uint64_t lapic_early_irqs;   /* one-shot interrupts that found nothing due */
+static uint64_t lapic_early_irqs;            /* one-shot interrupts that found nothing due */
 
 static uint32_t rd(uint32_t reg)
 {
@@ -163,14 +163,14 @@ static void on_spurious(struct trap_frame *f)
 
 /* Handlers can't log (the interrupted code may hold the log lock), so
  * errors are counted and reported later. */
-volatile uint64_t lapic_errors;
-volatile uint32_t lapic_last_esr;
+uint64_t lapic_errors;
+uint32_t lapic_last_esr;
 
 static void on_error(struct trap_frame *f)
 {
     (void)f;
     wr(REG_ESR, 0);
-    lapic_last_esr = rd(REG_ESR);
+    __atomic_store_n(&lapic_last_esr, rd(REG_ESR), __ATOMIC_RELAXED);
     __atomic_add_fetch(&lapic_errors, 1, __ATOMIC_RELAXED);
     lapic_eoi();
 }
@@ -226,7 +226,8 @@ static void on_timer(struct trap_frame *f)
     }
     lapic_eoi();
     if (!sched_timer_expire() && !tick)
-        lapic_early_irqs++;   /* e.g. the APIC count rounded short: re-armed below */
+        /* e.g. the APIC count rounded short: re-armed below */
+        __atomic_add_fetch(&lapic_early_irqs, 1, __ATOMIC_RELAXED);
     if (tick)
         sched_tick();
     timer_program(c);

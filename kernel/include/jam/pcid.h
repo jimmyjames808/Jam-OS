@@ -20,7 +20,7 @@ uint64_t pcid_new_id(void);
 /* Interrupts off. Load CR3 for an address space: its PML4, its id (0 for
  * the kernel's own tables) and its generation, read here AFTER the caller
  * has published this CPU in the address space's active mask. */
-void     pcid_load(uint64_t pml4, uint64_t id, const volatile uint64_t *gen);
+void     pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen);
 /* The run-time switch (boot "nopcid" = never enabled). Off: every address
  * space runs as PCID 0 and each load flushes it. Changing it
  * makes every CPU forget its slots. */

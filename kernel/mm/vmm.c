@@ -131,7 +131,7 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
 void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 {
     uint64_t start = va, end = va + ALIGN_UP(len, PAGE_SIZE);
-    bool kernel = start >= 0xffff800000000000ull && ipi_ready;
+    bool kernel = start >= 0xffff800000000000ull && __atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE);
     if (kernel && !irqs_enabled())
         panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
 
