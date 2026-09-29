@@ -265,21 +265,25 @@ KTEST(m6r_unpin_by_other_holder)
     KT_EQ(handle_insert(&td, &kv, &vd), OK);   /* "sent" to the driver */
     uint64_t pa, id;
     KT_EQ(sys_vmo_pin(&td, vd, cap, 0, PG, &pa, &id), OK);
-    status_t un = sys_vmo_unpin(&tc, vc, id);        /* the client, with a guessed id */
+    /* The client, with a guessed id: without a cap, and with a cap of its
+     * own (bound to the same function, so it's a valid one). */
+    handle_t ccap, dev2;
+    struct khandle kd = khandle_from_new(pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&tc, &kd, &dev2), OK);
+    KT_EQ(sys_dma_cap_create(&tc, dev2, &ccap), OK);
+    status_t un0 = sys_vmo_unpin(&tc, vc, HANDLE_INVALID, id);
+    status_t un = sys_vmo_unpin(&tc, vc, ccap, id);
     status_t dc = sys_vmo_decommit(&tc, vc, 0, PG);
-    kprintf("ktest %s: client unpin of the driver's pin %lu: %s, then decommit: %s "
-            "(device still has 0x%lx, BME %s)\n", ktest_current, id, status_str(un),
-            status_str(dc), pa, (pci_cfg_read(d, 0x04, 2) & 0x04) ? "on" : "off");
+    kprintf("ktest %s: client unpin of the driver's pin %lu: %s / %s, then decommit: %s "
+            "(device still has 0x%lx, BME %s)\n", ktest_current, id, status_str(un0),
+            status_str(un), status_str(dc), pa, (pci_cfg_read(d, 0x04, 2) & 0x04) ? "on" : "off");
     handle_table_destroy(&tc);
     handle_table_destroy(&td);
     job_is_empty(j);
     job_unref(j);
-    /* Only the pin's DMA capability should undo it. OPEN: needs an ABI
-     * change (vmo_unpin takes the dma_cap), so this repro only asserts
-     * with -DM6R_STRICT; it logs the result otherwise. */
-#ifdef M6R_STRICT
+    /* Only the pin's DMA capability may undo it (fixed in M6 phase 2:
+     * vmo_unpin takes the dma_cap), and the page stays pinned. */
+    KT_EQ(un0, ERR_BAD_HANDLE);
     KT_EQ(un, ERR_ACCESS_DENIED);
-#else
-    (void)un;
-#endif
+    KT_EQ(dc, ERR_BAD_STATE);
 }

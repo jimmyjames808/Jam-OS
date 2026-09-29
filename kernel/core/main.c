@@ -12,6 +12,7 @@
 #include <jam/lapic.h>
 #include <jam/fbcon.h>
 #include <jam/kprintf.h>
+#include <jam/kdevmgr.h>
 #include <jam/ktest.h>
 #include <jam/report.h>
 #include <jam/mm.h>
@@ -146,6 +147,10 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
+    /* M6: `drivers=kernel` binds the drivers as kernel processes (the
+     * edu check on QEMU), before user space starts its own devmgr. */
+    if (cmdline_has("drivers=kernel"))
+        ok &= kdev_run_kernel_mode();
     /* User space: init from bootfs, on "init" or on a plain boot (empty
      * command line). Test, benchmark and crash entries don't start it. */
     if (cmdline_has("init") || !boot->cmdline[0])

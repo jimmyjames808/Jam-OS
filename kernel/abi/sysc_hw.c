@@ -13,7 +13,8 @@
  *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
- *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap
+ *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
+ *                          the one the pin was made with)
  * A resource made from a handle gets that handle's rights (masked to
  * RES_RIGHTS), so a device handle without RIGHT_MANAGE only yields BAR
  * resources without it. Every new resource and dma_cap costs the caller's
@@ -245,10 +246,12 @@ status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)
     return insert_new(t, cap, DMA_CAP_RIGHTS, out);
 }
 
-/* vmo_pin on handles; on success *keep (if non-NULL) holds a reference on
- * the VMO, so the pin can be undone even if the handle goes meanwhile. */
+/* vmo_pin on handles; on success *keep / *keep_cap (if keep is non-NULL)
+ * hold references on the VMO and the cap, so the pin can be undone even if
+ * the handles go meanwhile. */
 static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
-                    uint64_t len, uint64_t *addrs, uint64_t *pin_id, struct vmo **keep)
+                    uint64_t len, uint64_t *addrs, uint64_t *pin_id, struct vmo **keep,
+                    struct kobject **keep_cap)
 {
     if (len == 0 || (len & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
@@ -267,27 +270,33 @@ static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t
         st = ERR_ACCESS_DENIED;   /* unbound caps are for kernel tests only */
     else
         st = vmo_pin(vmo_from_kobject(vo), cap, offset, len, addrs, len >> PAGE_SHIFT, pin_id);
-    kobject_unref(cap);
-    if (st == OK && keep)
+    if (st == OK && keep) {
         *keep = vmo_from_kobject(vo);
-    else
+        *keep_cap = cap;
+    } else {
         kobject_unref(vo);
+        kobject_unref(cap);
+    }
     return st;
 }
 
 status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
                      uint64_t len, uint64_t *addrs, uint64_t *pin_id)
 {
-    return pin(t, vmo, dma, offset, len, addrs, pin_id, NULL);
+    return pin(t, vmo, dma, offset, len, addrs, pin_id, NULL, NULL);
 }
 
-status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, uint64_t pin_id)
+status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t pin_id)
 {
-    struct kobject *vo;
+    struct kobject *vo, *cap;
     status_t st = handle_get(t, vmo, OBJ_VMO, VMO_HANDLE_RIGHTS_PIN, &vo, NULL);
     if (st != OK)
         return st;
-    st = vmo_unpin(vmo_from_kobject(vo), pin_id);
+    st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
+    if (st == OK) {
+        st = vmo_unpin(vmo_from_kobject(vo), cap, pin_id);
+        kobject_unref(cap);
+    }
     kobject_unref(vo);
     return st;
 }
@@ -382,23 +391,25 @@ int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, 
         return ERR_NO_MEMORY;
     uint64_t id = 0;
     struct vmo *v = NULL;
-    status_t st = pin(t, vmo, dma, offset, len, buf, &id, &v);
+    struct kobject *cap = NULL;
+    status_t st = pin(t, vmo, dma, offset, len, buf, &id, &v, &cap);
     if (st == OK) {
-        /* Nobody learned the pin if a copy fails: undo it (on the VMO
-         * itself, whatever happened to the handle meanwhile). */
+        /* Nobody learned the pin if a copy fails: undo it (on the objects
+         * themselves, whatever happened to the handles meanwhile). */
         if (copy_to_user(addrs, buf, n * sizeof(uint64_t)) != OK ||
             copy_to_user(pin_id, &id, sizeof(id)) != OK) {
-            vmo_unpin(v, id);
+            vmo_unpin(v, cap, id);
             st = ERR_INVALID_ARGS;
         }
         kobject_unref(vmo_kobject(v));
+        kobject_unref(cap);
     }
     kfree(buf);
     return st;
 }
 
-int64_t sysc_vmo_unpin(handle_t vmo, uint64_t pin_id)
+int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
 {
     SYSC_TABLE(t);
-    return sys_vmo_unpin(t, vmo, pin_id);
+    return sys_vmo_unpin(t, vmo, dma, pin_id);
 }

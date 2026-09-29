@@ -244,9 +244,9 @@ status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uin
     return jam_vmo_pin(vmo, dma, off, len, addrs, pin_id);
 }
 
-status_t drv_vmo_unpin(handle_t vmo, uint64_t pin_id)
+status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
 {
-    return jam_vmo_unpin(vmo, pin_id);
+    return jam_vmo_unpin(vmo, dma, pin_id);
 }
 
 status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,

@@ -13,6 +13,7 @@
 #define EDU_FACTORIAL        0x00020001u
 #define EDU_DMA_ROUNDTRIP    0x00020002u
 #define EDU_RAISE_IRQ        0x00020003u
+#define EDU_DMA_START        0x00020004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct edu_factorial_req {
@@ -43,13 +44,24 @@ struct edu_raise_irq_rep {
     int32_t  status;
     uint64_t latency_ns;
 } __attribute__((packed));
+struct edu_dma_start_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t len;
+} __attribute__((packed));
+struct edu_dma_start_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t device_addr;
+} __attribute__((packed));
 
 #define EDU_REQ_MAX 12u   /* bytes: the biggest request */
 #define EDU_REP_MAX 16u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
-/* n! computed by the device (32 bits, wrapping like the device does). */
+/* n! computed by the device (32 bits, wrapping like the device does),
+ * waiting for its completion interrupt. */
 static inline status_t edu_factorial_until(handle_t ch, uint64_t deadline_ns, uint32_t n, uint32_t *out_result)
 {
     struct edu_factorial_req idl_q;
@@ -71,8 +83,8 @@ static inline status_t edu_factorial(handle_t ch, uint32_t n, uint32_t *out_resu
     return edu_factorial_until(ch, DEADLINE_NEVER, n, out_result);
 }
 
-/* RAM -> device -> RAM through a pinned DMA32 VMO, len bytes: the call's
- * status says whether the data came back intact. */
+/* RAM -> device -> RAM through a pinned DMA32 VMO, len bytes (1..4096):
+ * the call's status says whether the data came back intact. */
 static inline status_t edu_dma_roundtrip_until(handle_t ch, uint64_t deadline_ns, uint32_t len)
 {
     struct edu_dma_roundtrip_req idl_q;
@@ -114,6 +126,30 @@ static inline status_t edu_raise_irq(handle_t ch, uint64_t *out_latency_ns)
     return edu_raise_irq_until(ch, DEADLINE_NEVER, out_latency_ns);
 }
 
+/* Pin a buffer and start a RAM -> device DMA of len bytes, then answer at
+ * once: the transfer is still running (QEMU's edu takes ~100 ms) and the
+ * pin is held until the driver's next call. For the kill-mid-DMA tests. */
+static inline status_t edu_dma_start_until(handle_t ch, uint64_t deadline_ns, uint32_t len, uint64_t *out_device_addr)
+{
+    struct edu_dma_start_req idl_q;
+    struct edu_dma_start_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = EDU_DMA_START;
+    idl_q.len = len;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_device_addr)
+        *out_device_addr = idl_r.device_addr;
+    return idl_st;
+}
+static inline status_t edu_dma_start(handle_t ch, uint32_t len, uint64_t *out_device_addr)
+{
+    return edu_dma_start_until(ch, DEADLINE_NEVER, len, out_device_addr);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -122,6 +158,7 @@ struct edu_ops {
     status_t (*factorial)(void *ctx, uint32_t n, uint32_t *out_result);
     status_t (*dma_roundtrip)(void *ctx, uint32_t len);
     status_t (*raise_irq)(void *ctx, uint64_t *out_latency_ns);
+    status_t (*dma_start)(void *ctx, uint32_t len, uint64_t *out_device_addr);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -186,6 +223,23 @@ static inline uint32_t edu_dispatch(const struct edu_ops *ops, void *ctx, const 
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->latency_ns = out_latency_ns;
+        return sizeof(*idl_r);
+    }
+    case EDU_DMA_START: {
+        const struct edu_dma_start_req *idl_q = (const struct edu_dma_start_req *)req;
+        struct edu_dma_start_rep *idl_r = (struct edu_dma_start_rep *)rep;
+        uint64_t out_device_addr = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->dma_start) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->dma_start(ctx, idl_q->len, &out_device_addr);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->device_addr = out_device_addr;
         return sizeof(*idl_r);
     }
     }

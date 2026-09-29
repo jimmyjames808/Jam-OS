@@ -355,8 +355,8 @@ WEAK int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t 
     return ERR_NOT_SUPPORTED;
 }
 
-WEAK int64_t sysc_vmo_unpin(handle_t vmo, uint64_t pin_id)
+WEAK int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
 {
-    (void)vmo, (void)pin_id;
+    (void)vmo, (void)dma, (void)pin_id;
     return ERR_NOT_SUPPORTED;
 }

@@ -216,7 +216,7 @@ KTEST(vmo_contiguous)
     KT_EQ(vmo_decommit(v, 0, PG), ERR_NOT_SUPPORTED);
     KT_EQ(vmo_set_size(v, PG), ERR_NOT_SUPPORTED);
     KT_EQ(vmo_commit(v, 0, PG), OK);
-    KT_EQ(vmo_unpin(v, pin), OK);
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
     put(v);
     KT_EQ(free_now(), base);
 
@@ -249,20 +249,20 @@ KTEST(vmo_dma32)
         above += phys[i] >= FOUR_GIB;
     if (high_mem)
         KT_EQ(above, PAGES);
-    KT_EQ(vmo_unpin(v, pin), OK);
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
     put(v);
 
     KT_EQ(vmo_create(PAGES * PG, VMO_DMA32, &v), OK);
     KT_EQ(vmo_pin(v, cap, 0, PAGES * PG, phys, PAGES, &pin), OK);
     for (unsigned i = 0; i < PAGES; i++)
         KT_ASSERT(phys[i] + PG <= FOUR_GIB);
-    KT_EQ(vmo_unpin(v, pin), OK);
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
     put(v);
 
     KT_EQ(vmo_create(PAGES * PG, VMO_DMA32 | VMO_CONTIGUOUS, &v), OK);
     KT_EQ(vmo_pin(v, cap, 0, PAGES * PG, phys, PAGES, &pin), OK);
     KT_ASSERT(phys[PAGES - 1] + PG <= FOUR_GIB);
-    KT_EQ(vmo_unpin(v, pin), OK);
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
     put(v);
 
     kprintf("ktest: vmo_dma32: memory above 4 GiB %s (%u/%u plain pages above)\n",
@@ -385,9 +385,14 @@ KTEST(vmo_pin)
     KT_EQ(vmo_set_size(v, 12 * PG), OK);
     KT_EQ(vmo_committed(v), 8 * PG);
 
-    KT_EQ(vmo_unpin(v, pin2), OK);
-    KT_EQ(vmo_unpin(v, pin2), ERR_NOT_FOUND);
-    KT_EQ(vmo_unpin(v, 12345), ERR_NOT_FOUND);
+    struct kobject *other;   /* only the pin's own cap may undo it */
+    KT_EQ(dma_cap_create(&other), OK);
+    KT_EQ(vmo_unpin(v, other, pin2), ERR_ACCESS_DENIED);
+    KT_EQ(vmo_unpin(v, NULL, pin2), ERR_ACCESS_DENIED);
+    kobject_unref(other);
+    KT_EQ(vmo_unpin(v, cap, pin2), OK);
+    KT_EQ(vmo_unpin(v, cap, pin2), ERR_NOT_FOUND);
+    KT_EQ(vmo_unpin(v, cap, 12345), ERR_NOT_FOUND);
     KT_EQ(vmo_decommit(v, 11 * PG, PG), ERR_BAD_STATE);   /* the first pin remains */
 
     /* The pin keeps the VMO (and its pages) alive after its creator lets go;
@@ -395,7 +400,7 @@ KTEST(vmo_pin)
     put(v);
     KT_EQ(vmo_kobject(v)->refs, 1);
     KT_EQ(((uint64_t *)phys_to_virt(phys[0]))[0], 0);   /* still ours, still zero */
-    KT_EQ(vmo_unpin(v, pin), OK);   /* last reference: v is gone */
+    KT_EQ(vmo_unpin(v, cap, pin), OK);   /* last reference: v is gone */
     KT_EQ(cap->refs, 1);
     KT_ASSERT(base - free_now() <= 4);   /* vmap page tables may remain */
 
@@ -489,7 +494,7 @@ KTEST(vmo_physical)
     KT_EQ(vmo_pin(v, cap, PG, 3 * PG, phys, 4, &pin), OK);
     for (unsigned i = 0; i < 3; i++)
         KT_EQ(phys[i], pa + (i + 1) * PG);
-    KT_EQ(vmo_unpin(v, pin), OK);
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
     KT_EQ(vmo_unmap_kernel(v, va), OK);
 
     /* Destroying it gives nothing back to the allocator: the pages are

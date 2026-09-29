@@ -96,7 +96,8 @@ status_t drv_vmo_unmap(void *addr, uint64_t len);
 /* DMA: one device address per page into addrs[len / 4096]. */
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id);
-status_t drv_vmo_unpin(handle_t vmo, uint64_t pin_id);
+/* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */
+status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 /* Registers: map [off, off + len) of a BAR resource uncached (VMO_CACHE_*
  * for others); page-granular inside, the pointer is to `off` itself. */
 status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,

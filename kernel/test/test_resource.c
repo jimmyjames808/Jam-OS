@@ -293,7 +293,8 @@ KTEST(resource_sys_rights_and_charges)
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, PG + 1, addrs, &pin), ERR_INVALID_ARGS);
     KT_EQ(sys_vmo_pin(&t, rv, rv, 0, PG, addrs, &pin), ERR_WRONG_TYPE);
     KT_EQ(sys_vmo_pin(&t, caph, caph, 0, PG, addrs, &pin), ERR_WRONG_TYPE);
-    KT_EQ(sys_vmo_unpin(&t, rv, 12345), ERR_NOT_FOUND);
+    KT_EQ(sys_vmo_unpin(&t, rv, caph, 12345), ERR_NOT_FOUND);
+    KT_EQ(sys_vmo_unpin(&t, rv, HANDLE_INVALID, 12345), ERR_BAD_HANDLE);
 
     handle_table_destroy(&t);   /* closes everything */
     job_clean(j);
@@ -516,14 +517,14 @@ KTEST(resource_dma_cap_close_releases_pins)
         KT_EQ(pb[i], pb[0] + i * PG);          /* contiguous */
     KT_ASSERT(pb[3] < (4ull << 30));
     KT_EQ(dma_cap_pin_count(cap), 3);
-    KT_EQ(vmo_unpin(a, ida2), OK);             /* an unpin takes it off the cap too */
+    KT_EQ(vmo_unpin(a, cap, ida2), OK);             /* an unpin takes it off the cap too */
     KT_EQ(dma_cap_pin_count(cap), 2);
     KT_EQ(vmo_decommit(a, 0, PG), ERR_BAD_STATE);   /* still pinned */
 
     KT_EQ(handle_close(&t, ch), OK);           /* the last handle: the close path */
     KT_EQ(dma_cap_pin_count(cap), 0);
-    KT_EQ(vmo_unpin(a, ida), ERR_NOT_FOUND);   /* already released */
-    KT_EQ(vmo_unpin(b, idb), ERR_NOT_FOUND);
+    KT_EQ(vmo_unpin(a, cap, ida), ERR_NOT_FOUND);   /* already released */
+    KT_EQ(vmo_unpin(b, cap, idb), ERR_NOT_FOUND);
     KT_EQ(vmo_decommit(a, 0, 8 * PG), OK);
     KT_EQ(vmo_pin(a, cap, 0, PG, pa, 8, &ida), ERR_BAD_STATE);   /* closed: no new pins */
     KT_EQ(dma_cap_pin_count(cap), 0);
@@ -622,7 +623,7 @@ static void pin_racer(void *arg)
             break;   /* closed */
         KT_EQ(st, OK);
         r->pins++;
-        st = vmo_unpin(r->v, id);
+        st = vmo_unpin(r->v, r->cap, id);
         KT_ASSERT(st == OK || st == ERR_NOT_FOUND);   /* the close may have taken it */
     }
 }
@@ -708,7 +709,7 @@ KTEST(resource_pin_needs_bus_master)
     KT_EQ(pci_set_bus_master(d, true), OK);
     KT_EQ(vmo_pin(v, cap, 0, PG, &pa, 1, &id), OK);
     KT_ASSERT(pa < (4ull << 30));
-    KT_EQ(vmo_unpin(v, id), OK);
+    KT_EQ(vmo_unpin(v, cap, id), OK);
     KT_EQ(pci_set_bus_master(d, false), OK);
     kobject_unref(vmo_kobject(v));
     kobject_unref(cap);
@@ -753,8 +754,12 @@ KTEST(resource_dma_close_clears_bus_master)
     KT_EQ(handle_close(&t, cap), OK);           /* last handle: BME off, then unpin */
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));
     KT_EQ(dma_cap_pin_count(capobj), 0);
+    KT_EQ(sys_vmo_unpin(&t, vh, cap, id), ERR_BAD_HANDLE);   /* the cap's handle is gone */
+    struct kobject *vo;
+    KT_EQ(handle_get(&t, vh, OBJ_VMO, 0, &vo, NULL), OK);
+    KT_EQ(vmo_unpin(vmo_from_kobject(vo), capobj, id), ERR_NOT_FOUND);   /* and so is the pin */
+    kobject_unref(vo);
     kobject_unref(capobj);
-    KT_EQ(sys_vmo_unpin(&t, vh, id), ERR_NOT_FOUND);
     KT_EQ(sys_pci_config_write(&t, drv, 0x04, 2, cmd), ERR_ACCESS_DENIED);   /* stale RMW */
 
     handle_table_destroy(&t);

@@ -665,9 +665,9 @@ static int shutdown(struct xhc *x)
 static void release(struct xhc *x, bool quiet)
 {
     if (x->ctx_pinned && quiet)
-        drv_vmo_unpin(x->ctx_vmo, x->ctx_pin);
+        drv_vmo_unpin(x->ctx_vmo, x->dma, x->ctx_pin);
     if (x->sp_pinned && quiet)
-        drv_vmo_unpin(x->sp_vmo, x->sp_pin);
+        drv_vmo_unpin(x->sp_vmo, x->dma, x->sp_pin);
     if (x->ctx)
         drv_vmo_unmap(x->ctx, (uint64_t)x->ctx_pages * PAGE);
     if (x->ctx_vmo != HANDLE_INVALID)

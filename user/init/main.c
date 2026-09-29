@@ -1,16 +1,25 @@
 /* init: the first user process, started by the kernel's userboot with the
- * root job and the bootfs image.
+ * root job, the root resource and the bootfs image.
  *
- * It runs the programs listed in init.cfg one after another, each as a
- * real child process in a job of its own (a child of init's job), waits
- * for each to finish and reports how it ended: the lines go into the
- * kernel's RESULTS box. init exits 0 if every program exited 0. */
+ * M6: it first starts devmgr (bin/devmgr, if bootfs has it) in a job of
+ * its own with a RES_PCI resource sliced from the root, and waits until
+ * devmgr has bound its drivers. Then it runs the programs listed in
+ * init.cfg one after another, each as a real child process in a job of
+ * its own (a child of init's job) with a client end of devmgr's channel
+ * (SR_DEVMGR), waits for each to finish and reports how it ended: the
+ * lines go into the kernel's RESULTS box. At the end it closes its end of
+ * devmgr's channel, which stops devmgr and its drivers, and waits for
+ * that. init exits 0 if every program (and devmgr) exited 0. */
 #include <os.h>
+#include <devmgr.h>
 
 bool init_xhcitest(void);   /* xhcitest.c */
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
+#define S             1000000000ull
+
+static handle_t devmgr_ch, devmgr_proc, devmgr_job;   /* 0: no devmgr */
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -50,8 +59,15 @@ static bool run(int argc, char **argv)
         init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
+    struct spawn_handle x = { SR_DEVMGR, HANDLE_INVALID };
+    if (devmgr_ch && (st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x.h)) != OK) {
+        init_say("init: %s: no devmgr channel for it (%s)", argv[0], status_str(st));
+        jam_handle_close(job);
+        return false;
+    }
     struct spawn_args a = {
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
+        .extra = x.h ? &x : NULL, .nextra = x.h ? 1 : 0,
     };
     uint64_t t0 = (uint64_t)jam_clock_get();
     st = spawn(&a, &proc);
@@ -110,6 +126,87 @@ static bool check_root_resource(void)
         return false;
     }
     return true;
+}
+
+/* devmgr: started before the programs, stopped after them. */
+static bool start_devmgr(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "bin/devmgr", &data, &size) != OK) {
+        printf("init: no bin/devmgr in bootfs: no drivers\n");
+        return true;
+    }
+    handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID;
+    status_t st = jam_resource_create(startup_handle(SR_RESOURCE), RES_PCI, 0, 0, &pci);
+    if (st == OK)
+        st = jam_job_create(startup_handle(SR_JOB), 0, &devmgr_job);
+    if (st == OK)
+        st = jam_channel_create(&a, &b);
+    if (st == OK) {
+        const char *argv[] = { "bin/devmgr" };
+        struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b } };
+        struct spawn_args sa = {
+            .path = "bin/devmgr", .argc = 1, .argv = argv, .job = devmgr_job, .extra = x,
+            .nextra = 2,
+        };
+        st = spawn(&sa, &devmgr_proc);   /* consumes pci and b */
+        pci = b = HANDLE_INVALID;
+    }
+    if (st != OK) {
+        init_say("init: can't start devmgr (%s)", status_str(st));
+        if (pci)
+            jam_handle_close(pci);
+        if (a)
+            jam_handle_close(a);
+        if (b)
+            jam_handle_close(b);
+        return false;
+    }
+    devmgr_ch = a;
+    /* Wait for its first binding pass. */
+    struct devmgr_rep r;
+    st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
+                     (uint64_t)jam_clock_get() + 30 * S);
+    if (st != OK) {
+        init_say("init: devmgr doesn't answer (%s)", status_str(st));
+        return false;
+    }
+    printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    return r.b == 0;
+}
+
+static bool stop_devmgr(void)
+{
+    if (!devmgr_proc)
+        return true;
+    jam_handle_close(devmgr_ch);   /* its last client: it stops its drivers and exits */
+    devmgr_ch = HANDLE_INVALID;
+    uint64_t t0 = (uint64_t)jam_clock_get();
+    struct process_info info;
+    status_t st = spawn_wait(devmgr_proc, 30 * S, &info);
+    if (st == ERR_TIMED_OUT) {
+        init_say("init: devmgr still running 30 s after its channel closed: killing its job");
+        jam_job_kill(devmgr_job);
+        st = spawn_wait(devmgr_proc, 10 * S, &info);
+    }
+    bool ok = st == OK && !info.killed && info.exit_code == 0;
+    if (st == OK)
+        init_say("init: devmgr %s %ld after %lu ms", info.killed ? "was killed, code" : "exited with code",
+            (long)info.exit_code, (unsigned long)(((uint64_t)jam_clock_get() - t0) / 1000000));
+    struct job_info ji;
+    if (jam_job_get_info(devmgr_job, &ji) == OK)
+        for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+            if (ji.used[k]) {
+                init_say("init: devmgr's job still has %lu units of kind %u",
+                    (unsigned long)ji.used[k], k);
+                ok = false;
+            }
+    jam_handle_close(devmgr_proc);
+    jam_handle_close(devmgr_job);
+    devmgr_proc = devmgr_job = HANDLE_INVALID;
+    return ok;
 }
 
 /* init.cfg: one program per line, "<path in bootfs> [args...]"; blank lines
@@ -177,5 +274,8 @@ int main(int argc, char **argv)
         init_say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
     }
-    return run_config(cfg, len) ? 0 : 1;
+    bool ok = start_devmgr();
+    ok &= run_config(cfg, len);
+    ok &= stop_devmgr();
+    return ok ? 0 : 1;
 }
