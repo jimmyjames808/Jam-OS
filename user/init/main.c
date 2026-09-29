@@ -16,7 +16,8 @@
 #include <devmgr.h>
 
 bool init_xhcitest(void);   /* xhcitest.c */
-bool init_shell(handle_t devmgr_ch);   /* shell.c: M7, never returns */
+bool init_shell(void);   /* shell.c: M7, never returns */
+handle_t init_devmgr(handle_t console);   /* for shell.c: start devmgr, its channel */
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
@@ -131,14 +132,17 @@ static bool check_root_resource(void)
     return true;
 }
 
-/* devmgr: started before the programs, stopped after them. */
-static bool start_devmgr(void)
+/* devmgr: started before the programs, stopped after them. M7: with a
+ * console client end (consumed) for its class drivers' input. */
+static bool start_devmgr(handle_t console)
 {
     const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
     if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "bin/devmgr", &data, &size) != OK) {
         printf("init: no bin/devmgr in bootfs: no drivers\n");
+        if (console)
+            jam_handle_close(console);
         return true;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID;
@@ -149,14 +153,17 @@ static bool start_devmgr(void)
         st = jam_channel_create(&a, &b);
     if (st == OK) {
         const char *argv[] = { "bin/devmgr" };
-        struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b } };
+        struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b },
+                                    { SR_CONSOLE, console } };
         struct spawn_args sa = {
             .path = "bin/devmgr", .argc = 1, .argv = argv, .job = devmgr_job, .extra = x,
-            .nextra = 2,
+            .nextra = console ? 3 : 2,
         };
-        st = spawn(&sa, &devmgr_proc);   /* consumes pci and b */
-        pci = b = HANDLE_INVALID;
+        st = spawn(&sa, &devmgr_proc);   /* consumes pci, b and console */
+        pci = b = console = HANDLE_INVALID;
     }
+    if (console)
+        jam_handle_close(console);
     if (st != OK) {
         init_say("init: can't start devmgr (%s)", status_str(st));
         if (pci)
@@ -282,6 +289,32 @@ static bool run_demo(const char *spec)
     return ok;
 }
 
+handle_t init_devmgr(handle_t console)
+{
+    start_devmgr(console);
+    return devmgr_ch;
+}
+
+/* M7 "USB keyboard test" boot entry: devmgr (usb-bus, a hid per HID
+ * interface, no console: each hid logs every key DOWN), KEYTEST_S seconds
+ * to type on the PC, then everything stops; each hid puts its count of
+ * keys into the RESULTS box. */
+#define KEYTEST_S 30
+static bool run_keytest(void)
+{
+    bool ok = start_devmgr(HANDLE_INVALID);
+    init_say("keytest: type on the USB keyboard now: %d s; each key DOWN is logged by its hid "
+             "(hid-<port>:<interface>)", KEYTEST_S);
+    for (int left = KEYTEST_S; left > 0; left -= 10) {
+        jam_nanosleep((uint64_t)jam_clock_get() + (uint64_t)(left < 10 ? left : 10) * S);
+        if (left > 10)
+            printf("init: keytest: %d s left\n", left - 10);
+    }
+    printf("init: keytest: time is up; stopping the drivers\n");
+    ok &= stop_devmgr();
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     printf("init: hello from ring 3 (%d arg%s:", argc, argc == 1 ? "" : "s");
@@ -299,12 +332,14 @@ int main(int argc, char **argv)
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
     if (argc > 1 && !strcmp(argv[1], "xhcitest"))
         return init_xhcitest() ? 0 : 1;
-    /* M7: a plain boot: devmgr, then the console, serial input and shell. */
+    /* M7: a plain boot: the console, devmgr (connected to it), serial
+     * input and the shell. */
     if (argc > 1 && !strcmp(argv[1], "shell")) {
-        start_devmgr();
-        init_shell(devmgr_ch);
+        init_shell();
         return 1;
     }
+    if (argc > 1 && !strcmp(argv[1], "keytest"))
+        return run_keytest() ? 0 : 1;
     if (argc > 1 && !strncmp(argv[1], "demo:", 5))
         return run_demo(argv[1]) ? 0 : 1;
 
@@ -321,7 +356,7 @@ int main(int argc, char **argv)
         init_say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
     }
-    bool ok = start_devmgr();
+    bool ok = start_devmgr(HANDLE_INVALID);
     ok &= run_config(cfg, len);
     ok &= stop_devmgr();
     return ok ? 0 : 1;

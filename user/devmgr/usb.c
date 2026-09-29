@@ -242,7 +242,7 @@ static void bind_interface(unsigned slot, const char *path)
         return;
     }
     say(true, "devmgr: usb %04x:%04x if%u -> %s (%s, port %s)%s", m->vendor, m->product,
-        m->interface_number, path, what(m), if_path(u), b->input_gen ? "" : ", keys to the log");
+        m->interface_number, path, what(m), if_path(u), b->input_gen ? "" : ", no console: to the log");
 }
 
 static void attached(struct binding *bus, const struct usbbus_interface_attached_req *m,

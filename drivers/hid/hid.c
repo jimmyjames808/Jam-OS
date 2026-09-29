@@ -553,15 +553,15 @@ int driver_main(const struct driver_start *s)
                 (unsigned long)h->nreports, (unsigned long)h->events,
                 (unsigned long)h->kbd.rollover, (unsigned long)h->kbd.short_reports,
                 (unsigned long)h->input_errors);
+        const char *why =
+            h->stop == STOP_CONSOLE_GONE ? "console gone" : "unplugged or usb-bus stopped";
         if (h->kind == HID_KEYBOARD)
             say_result("hid %04x:%04x if %u: boot keyboard: %lu key(s) down, %lu report(s) (%s)",
                        h->vendor, h->product, h->iface, (unsigned long)h->keys_down,
-                       (unsigned long)h->nreports,
-                       h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone");
+                       (unsigned long)h->nreports, why);
         else
             say_result("hid %04x:%04x if %u: boot mouse: %lu report(s) (%s)", h->vendor,
-                       h->product, h->iface, (unsigned long)h->nreports,
-                       h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone");
+                       h->product, h->iface, (unsigned long)h->nreports, why);
     }
     if (h->port != HANDLE_INVALID)
         drv_handle_close(h->port);

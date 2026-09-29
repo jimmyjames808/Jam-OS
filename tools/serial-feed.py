@@ -10,11 +10,20 @@ the script, one command per line:
 
     wait [<seconds>] <text>   until <text> appears in the output after the
                               point the last wait matched (default 60 s)
+    seen [<seconds>] <text>   the same, but anywhere in the output so far
+                              (for lines whose order against the last wait
+                              isn't fixed); doesn't move that point
     send <text>               <text> and Enter (CR), one byte at a time
     type <text>               <text> without Enter; \\e \\r \\n \\t \\xNN escapes
     sleep <seconds>
     shot <name>               a screenshot: <name>.png next to the log
                               (through QEMU's monitor, $QEMU_MON / $SHOT_DIR)
+    monitor <command>         a QEMU monitor command ($QEMU_MON), e.g.
+                              `monitor device_del kbd1`
+    usbkeys <text>            <text> typed on QEMU's keyboards (monitor
+                              `sendkey`, one key at a time: the USB keyboard
+                              path, M7); \r (or \n) is Enter; a-z 0-9 space
+                              - . / and : only
     # comment, blank lines ignored
 
 After the script it keeps reading until QEMU closes the socket (a `reboot`
@@ -68,6 +77,42 @@ def unescape(t):
     return t.encode().decode("unicode_escape").replace("\\e", "\x1b").encode("latin-1")
 
 
+mon_sock = None
+
+
+def monitor(command):
+    """One QEMU monitor command, on a connection kept for the whole script
+    (the monitor serves one client at a time; closed before we drain)."""
+    global mon_sock
+    import os
+    if mon_sock is None:
+        path = os.environ.get("QEMU_MON")
+        if not path:
+            sys.exit("serial-feed: monitor/usbkeys need $QEMU_MON")
+        mon_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        mon_sock.connect(path)
+        mon_sock.settimeout(0.05)
+    mon_sock.sendall(command.encode() + b"\n")
+    try:   # the monitor's echo and prompt: not needed, just not piled up
+        while mon_sock.recv(4096):
+            pass
+    except OSError:
+        pass
+
+
+KEYNAMES = {" ": "spc", "\r": "ret", "\n": "ret", "-": "minus", ".": "dot", "/": "slash",
+            ":": "shift-semicolon"}
+
+
+def usbkeys(text):
+    for ch in text.replace("\\r", "\r").replace("\\n", "\n"):
+        name = KEYNAMES.get(ch, ch if ch.isalnum() and ch.isascii() else None)
+        if name is None:
+            sys.exit(f"serial-feed: usbkeys: no key for {ch!r}")
+        monitor(f"sendkey {name.lower() if len(name) == 1 else name}")
+        time.sleep(0.2)   # sendkey holds each key 100 ms
+
+
 def send(data):
     for b in data:
         s.sendall(bytes([b]))
@@ -81,7 +126,7 @@ for lineno, raw in enumerate(open(script), 1):
     if not line.strip() or line.lstrip().startswith("#"):
         continue
     cmd, _, arg = line.partition(" ")
-    if cmd == "wait":
+    if cmd in ("wait", "seen"):
         timeout = 60.0
         first, _, rest = arg.partition(" ")
         try:
@@ -93,9 +138,10 @@ for lineno, raw in enumerate(open(script), 1):
         end = time.time() + timeout
         with lock:
             while True:
-                i = buf.find(needle, mark)
+                i = buf.find(needle, mark if cmd == "wait" else 0)
                 if i >= 0:
-                    mark = i + len(needle)
+                    if cmd == "wait":
+                        mark = i + len(needle)
                     break
                 left = end - time.time()
                 if left <= 0 or closed:
@@ -118,20 +164,23 @@ for lineno, raw in enumerate(open(script), 1):
         mon, d = os.environ.get("QEMU_MON"), os.environ.get("SHOT_DIR")
         if mon and d:
             ppm = os.path.join(d, arg + ".ppm")
-            m = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                m.connect(mon)
-                m.sendall(f"screendump {ppm}\n".encode())
+                monitor(f"screendump {ppm}")
                 time.sleep(1.0)
-                m.close()
                 from PIL import Image
                 Image.open(ppm).save(os.path.join(d, arg + ".png"))
                 os.remove(ppm)
             except Exception as e:
                 print(f"serial-feed: shot {arg}: {e}", file=sys.stderr)
+    elif cmd == "monitor":
+        monitor(arg)
+    elif cmd == "usbkeys":
+        usbkeys(arg)
     else:
         sys.exit(f"serial-feed: {script}:{lineno}: unknown command '{cmd}'")
 
+if mon_sock is not None:
+    mon_sock.close()   # qemu-test.sh's screendump needs the monitor
 with lock:
     while not closed:
         lock.wait(1)

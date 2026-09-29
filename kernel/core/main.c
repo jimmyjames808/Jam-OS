@@ -174,6 +174,10 @@ _Noreturn static void kmain_stage2(void *arg)
             ok &= userboot_run_init(60, "xhcitest");
         }
     }
+    /* M7 "USB keyboard test" boot entry: init starts devmgr alone (usb-bus,
+     * a hid per HID interface, keys to the log) for 30 s. */
+    if (cmdline_has("keytest"))
+        ok &= userboot_run_init(90, "keytest");
     /* "Visual demo" boot entry: init starts bin/demo, which draws on the
      * framebuffer itself (a WC physical VMO from the root resource) with
      * every CPU. The text console stops drawing meanwhile and redraws when
