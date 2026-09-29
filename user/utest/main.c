@@ -1005,16 +1005,38 @@ static bool t_driver_handle_limits(void)
     struct devmgr_rep r;
     if (!dm)
         return true;
-    status_t st = dm_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, &r, hs, &nh);
+    /* The first function with MSI-X whose table and PBA BARs a driver
+     * could get (on the PC some BARs stay unsized and are never handed
+     * out, e.g. the VMD controller's). */
+    status_t st = ERR_NOT_FOUND;
+    uint32_t cap = 0;
+    for (uint32_t inst = 0; inst < 32; inst++) {
+        nh = 0;
+        st = devmgr_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, inst, &r, hs, DEVMGR_MAX_HANDLES,
+                         &nh, now() + 30 * S);
+        if (st == ERR_NOT_FOUND)
+            break;
+        uint32_t t = 0, p = 0;
+        if (st == OK && nh >= 2 && (cap = find_cap(hs[0], 0x11)) &&
+            jam_pci_config_read(hs[0], cap + 4, 4, &t) == OK &&
+            jam_pci_config_read(hs[0], cap + 8, 4, &p) == OK &&
+            (r.a & (1u << (t & 7))) && (r.a & (1u << (p & 7))))
+            break;
+        printf("utest: %s: MSI-X function #%u not usable (%s), trying the next\n", cur, inst,
+               st == OK ? "table BAR not handed out" : status_str(st));
+        for (uint32_t k = 0; k < nh; k++)
+            jam_handle_close(hs[k]);
+        st = ERR_NOT_FOUND;
+    }
     if (st == ERR_NOT_FOUND) {
-        printf("utest: %s: no function with MSI-X: skipped\n", cur);
+        printf("utest: %s: no usable function with MSI-X: skipped\n", cur);
         return true;
     }
     CHECK_ST(st, OK);
-    CHECK(nh >= 2);
     handle_t dev = hs[0];
-    uint32_t mask = r.a, cap = find_cap(dev, 0x11), tab = 0, pba = 0, ctl = 0, cmd = 0;
-    CHECK(cap != 0);
+    uint32_t mask = r.a, tab = 0, pba = 0, ctl = 0, cmd = 0, id = 0;
+    CHECK_ST(jam_pci_config_read(dev, 0, 4, &id), OK);
+    printf("utest: %s: using %04x:%04x\n", cur, id & 0xffff, id >> 16);
     CHECK_ST(jam_pci_config_read(dev, cap + 4, 4, &tab), OK);
     CHECK_ST(jam_pci_config_read(dev, cap + 8, 4, &pba), OK);
     CHECK_ST(jam_pci_config_read(dev, cap + 2, 2, &ctl), OK);

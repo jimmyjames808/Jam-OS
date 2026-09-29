@@ -81,6 +81,13 @@
   QEMU: 200/200 ktests at 4+8, utest 19/19 clean, devmgr exits 0. Next: independent review of phase 2,
   then PC: "Jam OS (init + utest)", "Drivers as kernel processes", All tests, 2-min, then the 10-min
   sign-off of M5.5 + M6.
+- **PC init+utest on 0.0.15-m6 (IMG_0070)**: devmgr bound 00:14.0 8086:7a60 -> drv/xhci-noop as a process, 3
+  No-Ops via MSI (9/13/47 us), drvtest 405 ok, root job clean; ONE failure: driver_handle_limits got
+  ERR_OUT_OF_RANGE from devmgr's DRIVER_VIEW on the first MSI-X function = the VMD controller 00:0e.0.
+  Cause: pci_size_bars treated a 64-bit BAR's hard-wired-zero upper half as size bits (size ~2^64).
+  Fixed in 0.0.16-m6: upper half 0 -> size from the low half; implausible sizes (not a power of two,
+  > 1 TiB, wrapping, misaligned) are logged and left UNSIZED; the utest tries each MSI-X function until
+  one's table BAR can be handed out and prints which it used.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770

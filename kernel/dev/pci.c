@@ -418,8 +418,13 @@ status_t pci_size_bars(struct pci_dev *d, uint64_t sizes[6])
         }
         uint64_t a = m & ~0xfu;
         if (((orig[i] >> 1) & 3) == 2 && i + 1 < n) {
-            a |= (uint64_t)lo_mask[i + 1] << 32;
-            sizes[i] = a ? ~a + 1 : 0;
+            /* An upper half that reads back 0 is hard-wired: the BAR can
+             * only sit below 4 GiB, and the size comes from the low half
+             * alone (the PC's VMD controller; read as size bits it gave
+             * ~2^64). */
+            uint32_t hi = lo_mask[i + 1];
+            a |= hi ? (uint64_t)hi << 32 : 0xffffffff00000000ull;
+            sizes[i] = a != 0xffffffff00000000ull ? ~a + 1 : 0;
             i++;
         } else {
             a |= 0xffffffff00000000ull;
@@ -468,9 +473,18 @@ static void size_or_mark(struct pci_dev *d)
         uint32_t fl = d->info.bar[b].flags;
         if (!fl)
             continue;
+        uint64_t phys = d->info.bar[b].phys;
         if (!sizes[b]) {   /* read non-zero but does not size: not a BAR */
             d->info.bar[b].flags = 0;
             d->info.bar[b].phys = 0;
+        } else if ((sizes[b] & (sizes[b] - 1)) || sizes[b] > (1ull << 40) ||
+                   phys + sizes[b] < phys || (phys & (sizes[b] - 1))) {
+            /* Not a power of two, absurdly large, wrapping, or not aligned
+             * to its size: the answer can't be right, so treat the BAR
+             * like the display's (never handed out). */
+            kprintf("pci: %02x:%02x.%u bar%d at %lx sizes to %lx: implausible, left unsized\n",
+                    d->info.bus, d->info.dev, d->info.fn, b, phys, sizes[b]);
+            d->info.bar[b].flags |= PCI_BAR_UNSIZED;
         } else {
             d->info.bar[b].size = sizes[b];
         }
