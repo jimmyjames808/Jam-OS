@@ -1,0 +1,24 @@
+# Review repro (USB keyboard, as tools/usbkeys-test.sh: QEMU_USB with a hub
+# on port 2, usb-kbd id=keys at 2.1): a program started with `run` (no root
+# resource) sends DEVMGR_SET_CONSOLE on the devmgr channel the shell hands
+# it. The keyboard plugged in next connects to that program instead of the
+# console; after the program ends devmgr waits for "the new console" for
+# good and the keyboard never types again.
+wait 120 Jam OS shell
+wait jam>
+seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
+send run contest steal
+wait 10 DEVMGR_SET_CONSOLE: OK
+monitor device_del keys
+sleep 2
+monitor device_add usb-kbd,id=keys2,bus=xhci.0,port=2.1
+wait 20 a driver connected its input to us
+sleep 1
+usbkeys abc
+wait 10 steal: got key usage 0x4
+wait 60 run: bin/contest exited with code 0
+wait jam>
+sleep 1
+usbkeys help\r
+# expected to time out: the keyboard's hid is connected to nothing
+wait 10 Commands:
