@@ -28,7 +28,14 @@
  *
  * Program output (console.write) is also written to COM1 as it is (the
  * kernel log goes there by itself), so a serial terminal, and the QEMU
- * tests, see the same session. */
+ * tests, see the same session.
+ *
+ * console.lend_screen lends the framebuffer to a program that draws on it
+ * itself (the shell's `demo`): it gets the VMO (without RIGHT_DUPLICATE)
+ * and the geometry, and a lease channel. Meanwhile nothing is drawn (the
+ * text model, the kernel log and the serial mirror keep going); when the
+ * lease's other end closes (the program closed it or died), the whole
+ * screen is redrawn. */
 #include <os.h>
 #include <idl/console.h>
 #include <idl/input.h>
@@ -277,6 +284,8 @@ static void out_char(uint8_t ch)
 
 static volatile uint32_t *fbp;
 static struct fb_info fbi;
+static handle_t fb_vmo;            /* kept for lend_screen */
+static handle_t lease;             /* while the screen is lent: our end */
 static uint32_t native[16];
 static struct cell *shadow;        /* rows * cols: what each screen cell shows */
 static uint8_t *shadow_cursor;     /* rows * cols: drawn inverted */
@@ -301,8 +310,8 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 static void render(void)
 {
     dirty = false;
-    if (!fbp)
-        return;
+    if (!fbp || lease)
+        return;   /* no screen, or lent: drawn in full when it comes back */
     struct cell empty = { ' ', A_OUT };
     uint64_t first;   /* the committed line on screen row 0 */
     uint32_t shown = view_back ? rows : rows - 1;
@@ -343,13 +352,14 @@ static bool screen_init(handle_t root)
     uint64_t addr = 0;
     st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, fbi.size, VMAR_READ | VMAR_WRITE,
                       &addr);
-    jam_handle_close(vmo);   /* the mapping keeps it; `owner` stays open for good */
-    if (st != OK) {
+    if (st != OK) {   /* else `vmo` is kept for lend_screen; `owner` stays open for good */
         printf("console: can't map the framebuffer (%s)\n", status_str(st));
+        jam_handle_close(vmo);
         jam_handle_close(owner);
         return false;
     }
     fbp = (volatile uint32_t *)(uintptr_t)addr;
+    fb_vmo = vmo;
     for (int i = 0; i < 16; i++)
         native[i] = ((rgb[i] >> 16 & 0xff) << fbi.red_shift) |
                     ((rgb[i] >> 8 & 0xff) << fbi.green_shift) | ((rgb[i] & 0xff) << fbi.blue_shift);
@@ -364,7 +374,7 @@ static struct input_key_event pending[PENDING_KEYS];
 static unsigned npending;
 static handle_t port;
 
-enum { K_KLOG = 1, K_CLIENT, K_SOURCE };
+enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_LEASE };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* A focus channel whose client is gone is noticed when a key is sent to it
@@ -630,8 +640,62 @@ static status_t op_clear(void *ctx)
     return OK;
 }
 
+#define LENT_VMO_RIGHTS (RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER | RIGHT_WAIT | \
+                         RIGHT_INSPECT)
+
+static status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, uint8_t *rs,
+                               uint8_t *gs, uint8_t *bs, uint64_t *size, handle_t *screen,
+                               handle_t *out_lease)
+{
+    (void)ctx;
+    if (!fbp || !fb_vmo)
+        return ERR_NOT_FOUND;
+    if (lease)
+        return ERR_BAD_STATE;
+    handle_t v, mine, theirs;
+    status_t st = jam_handle_duplicate(fb_vmo, LENT_VMO_RIGHTS, &v);
+    if (st != OK)
+        return st;
+    if ((st = jam_channel_create(&mine, &theirs)) != OK) {
+        jam_handle_close(v);
+        return st;
+    }
+    if ((st = jam_port_bind(port, mine, KEY(K_LEASE, 0), SIG_PEER_CLOSED, PORT_BIND_ONCE)) != OK) {
+        jam_handle_close(v);
+        jam_handle_close(mine);
+        jam_handle_close(theirs);
+        return st;
+    }
+    lease = mine;
+    *w = fbi.width;
+    *h = fbi.height;
+    *pitch = fbi.pitch;
+    *rs = fbi.red_shift;
+    *gs = fbi.green_shift;
+    *bs = fbi.blue_shift;
+    *size = fbi.size;
+    *screen = v;
+    *out_lease = theirs;
+    printf("console: the screen is lent out\n");
+    return OK;
+}
+
+/* The lease's other end closed: the screen is ours again, all of it
+ * redrawn (the shadow grid forgets what it showed). */
+static void lease_ended(void)
+{
+    if (!lease)
+        return;
+    jam_handle_close(lease);
+    lease = HANDLE_INVALID;
+    memset(shadow, 0, (size_t)rows * cols * sizeof(struct cell));
+    memset(shadow_cursor, 0, (size_t)rows * cols);
+    dirty = true;
+    printf("console: the screen is back\n");
+}
+
 static const struct console_ops console_ops = {
-    op_write, op_size, op_clear, op_open_keys, op_connect_input,
+    op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen,
 };
 
 static void client_event(unsigned i)
@@ -756,6 +820,9 @@ int main(int argc, char **argv)
             case K_SOURCE:
                 if (i < MAX_SOURCES)
                     source_event(i);
+                break;
+            case K_LEASE:
+                lease_ended();
                 break;
             }
         } else if (st != ERR_TIMED_OUT) {

@@ -15,6 +15,7 @@
 #define CONSOLE_CLEAR            0x000c0003u
 #define CONSOLE_OPEN_KEYS        0x000c0004u
 #define CONSOLE_CONNECT_INPUT    0x000c0005u
+#define CONSOLE_LEND_SCREEN      0x000c0006u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct console_write_req {
@@ -61,9 +62,24 @@ struct console_connect_input_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct console_lend_screen_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct console_lend_screen_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint8_t red_shift;
+    uint8_t green_shift;
+    uint8_t blue_shift;
+    uint64_t size;
+} __attribute__((packed));
 
 #define CONSOLE_REQ_MAX 2058u   /* bytes: the biggest request */
-#define CONSOLE_REP_MAX 12u   /* bytes: the biggest reply */
+#define CONSOLE_REP_MAX 31u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -196,6 +212,63 @@ static inline status_t console_connect_input(handle_t ch, handle_t *out_source)
     return console_connect_input_until(ch, DEADLINE_NEVER, out_source);
 }
 
+/* Lend the screen to a program that draws on it itself (the shell's `demo`):
+ * the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
+ * duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
+ * a lease channel. The console stops drawing (it keeps its text, the kernel
+ * log and the serial mirror going) until the lease's peer closes: the
+ * borrower closing it, or dying; then it redraws the whole screen. One
+ * lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen. */
+static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+{
+    struct console_lend_screen_req idl_q;
+    struct console_lend_screen_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_LEND_SCREEN;
+    handle_t idl_rh[2];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 2, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 2)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_screen)
+            *out_screen = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        if (out_lease)
+            *out_lease = idl_rh[1];
+        else
+            drv_handle_close(idl_rh[1]);
+    }
+    if (idl_st == OK && out_width)
+        *out_width = idl_r.width;
+    if (idl_st == OK && out_height)
+        *out_height = idl_r.height;
+    if (idl_st == OK && out_pitch)
+        *out_pitch = idl_r.pitch;
+    if (idl_st == OK && out_red_shift)
+        *out_red_shift = idl_r.red_shift;
+    if (idl_st == OK && out_green_shift)
+        *out_green_shift = idl_r.green_shift;
+    if (idl_st == OK && out_blue_shift)
+        *out_blue_shift = idl_r.blue_shift;
+    if (idl_st == OK && out_size)
+        *out_size = idl_r.size;
+    return idl_st;
+}
+static inline status_t console_lend_screen(handle_t ch, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+{
+    return console_lend_screen_until(ch, DEADLINE_NEVER, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -206,6 +279,7 @@ struct console_ops {
     status_t (*clear)(void *ctx);
     status_t (*open_keys)(void *ctx, handle_t *out_keys);
     status_t (*connect_input)(void *ctx, handle_t *out_source);
+    status_t (*lend_screen)(void *ctx, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -321,6 +395,47 @@ static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx
         }
         rhs[0] = out_source;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_LEND_SCREEN: {
+        const struct console_lend_screen_req *idl_q = (const struct console_lend_screen_req *)req;
+        struct console_lend_screen_rep *idl_r = (struct console_lend_screen_rep *)rep;
+        uint32_t out_width = 0;
+        uint32_t out_height = 0;
+        uint32_t out_pitch = 0;
+        uint8_t out_red_shift = 0;
+        uint8_t out_green_shift = 0;
+        uint8_t out_blue_shift = 0;
+        uint64_t out_size = 0;
+        handle_t out_screen = HANDLE_INVALID;
+        handle_t out_lease = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->lend_screen) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->lend_screen(ctx, &out_width, &out_height, &out_pitch, &out_red_shift, &out_green_shift, &out_blue_shift, &out_size, &out_screen, &out_lease);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_screen != HANDLE_INVALID && out_lease != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_screen != HANDLE_INVALID)
+                drv_handle_close(out_screen);
+            if (out_lease != HANDLE_INVALID)
+                drv_handle_close(out_lease);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_screen;
+        rhs[1] = out_lease;
+        *rhn = 2;
+        idl_r->width = out_width;
+        idl_r->height = out_height;
+        idl_r->pitch = out_pitch;
+        idl_r->red_shift = out_red_shift;
+        idl_r->green_shift = out_green_shift;
+        idl_r->blue_shift = out_blue_shift;
+        idl_r->size = out_size;
         return sizeof(*idl_r);
     }
     }

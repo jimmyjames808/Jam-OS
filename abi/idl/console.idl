@@ -19,3 +19,11 @@ protocol console 12
 # the caller (devmgr, for a HID driver; or the serial source) gets the
 # other end and hands it to the source, which calls `input` on it.
 5  connect_input  () -> (handle source)
+# Lend the screen to a program that draws on it itself (the shell's `demo`):
+# the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
+# duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
+# a lease channel. The console stops drawing (it keeps its text, the kernel
+# log and the serial mirror going) until the lease's peer closes: the
+# borrower closing it, or dying; then it redraws the whole screen. One
+# lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen.
+6  lend_screen    () -> (u32 width, u32 height, u32 pitch, u8 red_shift, u8 green_shift, u8 blue_shift, u64 size, handle screen, handle lease)

@@ -1,9 +1,19 @@
-/* The "Visual demo" boot entry: fractals drawn by every CPU at once.
+/* The visual demo: fractals drawn by every CPU at once.
  *
- * A normal user process. The kernel describes the screen in argv[1]
- * ("demo:<phys hex>:<width>:<height>:<pitch>:<r>:<g>:<b shift>:<cpus>"),
- * init hands us the root resource, and we map the framebuffer ourselves as
- * a write-combining physical VMO. One thread per CPU (this one included)
+ * A normal user process, started two ways:
+ *   - the shell's `demo [seconds]` (M7): argv "cpus=<n>" "seconds=<s>"
+ *     (both optional; the shell asks the kernel for the CPU count). It
+ *     borrows the screen from the console (console.lend_screen through
+ *     SR_CONSOLE: a WC VMO of the framebuffer + its geometry + a lease;
+ *     the console redraws when the lease closes, at the end or if we die)
+ *     and stops early on any key (console.open_keys: we have the focus
+ *     while it runs).
+ *   - the `demo` boot word (a hidden option, no console): the kernel
+ *     describes the screen in argv[1] ("demo:<phys hex>:<width>:<height>:
+ *     <pitch>:<r>:<g>:<b shift>:<cpus>"), init hands us the root resource,
+ *     and we map the framebuffer ourselves as a write-combining physical
+ *     VMO; the results go to the RESULTS box.
+ * One thread per CPU (this one included)
  * renders a half-resolution frame into a RAM back buffer, rows handed out
  * one at a time through an atomic counter (so fast rows and slow rows even
  * out); then this thread draws the overlay and all of them copy the frame
@@ -18,6 +28,7 @@
  * plenty for colours and camera paths. */
 #include <os.h>
 #include <jam_syscalls.h>
+#include <idl/console.h>
 
 extern const uint8_t font_8x16[128][16];
 
@@ -51,6 +62,8 @@ static volatile uint32_t phase;        /* bumped to start a render (odd) or copy
 static volatile uint32_t next_row;
 static volatile uint32_t done;
 static volatile bool     stop;
+static handle_t keys;                  /* borrowed mode: any key ends the demo */
+static bool quit;                      /* a key was pressed */
 static uint32_t nthreads;
 static uint32_t rows_by[MAX_THREADS];
 
@@ -307,12 +320,32 @@ struct result { const char *name; uint32_t frames; uint64_t ns; };
 
 static double now_s(uint64_t t0) { return (double)((uint64_t)jam_clock_get() - t0) / 1e9; }
 
+/* Any key down (or the console going away) ends the demo. */
+static bool key_pressed(void)
+{
+    if (!keys || quit)
+        return quit;
+    for (;;) {
+        struct input_key_event ev;
+        uint32_t n = 0;
+        struct channel_read_args a = {
+            .h = keys, .bytes_cap = sizeof(ev), .bytes = (uint64_t)(uintptr_t)&ev,
+            .actual_bytes = (uint64_t)(uintptr_t)&n,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_SHOULD_WAIT)
+            return false;
+        if (st != OK || (n == sizeof(ev) && ev.state != INPUT_KEY_UP))
+            return quit = true;
+    }
+}
+
 static struct result scene(const char *name, double seconds, int which)
 {
     uint64_t t0 = (uint64_t)jam_clock_get(), last = t0;
     uint32_t frames = 0;
     double fps = 0, zoom = 1;
-    while (now_s(t0) < seconds) {
+    while (now_s(t0) < seconds && !key_pressed()) {
         double t = now_s(t0);
         for (uint32_t i = 0; i < nthreads; i++)
             rows_by[i] = 0;
@@ -400,40 +433,105 @@ static status_t map(handle_t vmo, uint64_t len, void **out)
     return st;
 }
 
-static void report_line(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void report_line(const char *fmt, ...)
+/* A result line: to the RESULTS box when started by the boot word (its
+ * only output), else to the log like any program's (the shell shows it). */
+static bool boot_mode;
+
+static void out(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void out(const char *fmt, ...)
 {
     char buf[160];
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    jam_debug_report(buf, n > 0 ? (uint64_t)n : 0);
+    if (n > (int)sizeof(buf) - 1)
+        n = sizeof(buf) - 1;
+    if (boot_mode)
+        jam_debug_report(buf, n > 0 ? (uint64_t)n : 0);
+    else
+        printf("%s\n", buf);
+}
+
+/* "key=<number>" among the arguments, else dflt. */
+static uint32_t arg_u32(int argc, char **argv, const char *key, uint32_t dflt)
+{
+    size_t kl = strlen(key);
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], key, kl) || argv[i][kl] != '=')
+            continue;
+        uint32_t v = 0;
+        for (const char *p = argv[i] + kl + 1; *p >= '0' && *p <= '9' && v < 100000; p++)
+            v = v * 10 + (uint32_t)(*p - '0');
+        return v ? v : dflt;
+    }
+    return dflt;
+}
+
+/* The shell's `demo`: the screen from the console. */
+static status_t borrow_screen(handle_t *fbv, uint64_t *fblen, handle_t *lease)
+{
+    handle_t con = startup_handle(SR_CONSOLE);
+    if (!con)
+        return ERR_NOT_FOUND;
+    uint32_t w, h, pitch;
+    uint8_t rs, gs, bs;
+    uint64_t size;
+    status_t st = console_lend_screen(con, &w, &h, &pitch, &rs, &gs, &bs, &size, fbv, lease);
+    if (st != OK)
+        return st;
+    scr.w = w;
+    scr.h = h;
+    scr.pitch = pitch;
+    scr.rs = rs;
+    scr.gs = gs;
+    scr.bs = bs;
+    *fblen = size;
+    if (w < 64 || h < 64 || pitch < w * 4 || size < (uint64_t)pitch * h)
+        return ERR_NOT_SUPPORTED;
+    if (console_open_keys(con, &keys) != OK)
+        keys = HANDLE_INVALID;   /* no key to stop it early: it runs its time */
+    return OK;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc < 2 || !parse(argv[1])) {
-        report_line("demo: bad screen description");
-        return 2;
+    bool boot = boot_mode = argc >= 2 && !strncmp(argv[1], "demo:", 5);
+    uint32_t seconds = 76;   /* the three scenes: 40 + 22 + 14 */
+    handle_t fbv, bv, lease = HANDLE_INVALID;
+    uint64_t fblen;
+    status_t st;
+    if (boot) {
+        if (!parse(argv[1])) {
+            out("demo: bad screen description");
+            return 2;
+        }
+        fblen = ((uint64_t)scr.pitch * scr.h + 4095) & ~4095ull;
+        st = jam_vmo_create_physical(startup_handle(SR_RESOURCE), scr.phys, fblen, VMO_CACHE_WC,
+                                     &fbv);
+    } else {
+        scr.ncpu = arg_u32(argc, argv, "cpus", 1);
+        seconds = arg_u32(argc, argv, "seconds", seconds);
+        st = borrow_screen(&fbv, &fblen, &lease);
+        if (st != OK && lease) {
+            jam_handle_close(lease);
+            lease = HANDLE_INVALID;
+        }
     }
     W = scr.w / 2;
     H = scr.h / 2;
-    uint64_t fblen = ((uint64_t)scr.pitch * scr.h + 4095) & ~4095ull, blen = (uint64_t)W * H * 4;
-    handle_t fbv, bv;
-    status_t st = jam_vmo_create_physical(startup_handle(SR_RESOURCE), scr.phys, fblen,
-                                          VMO_CACHE_WC, &fbv);
+    uint64_t blen = (uint64_t)W * H * 4;
     void *p;
     if (st == OK)
         st = map(fbv, fblen, &p);
     if (st != OK) {
-        report_line("demo: can't map the framebuffer (%s)", status_str(st));
+        out("demo: can't %s the screen (%s)", boot ? "map" : "borrow", status_str(st));
         return 1;
     }
     fbmem = p;
     if ((st = jam_vmo_create((blen + 4095) & ~4095ull, 0, HANDLE_INVALID, &bv)) != OK ||
         (st = map(bv, (blen + 4095) & ~4095ull, &p)) != OK) {
-        report_line("demo: no back buffer (%s)", status_str(st));
+        out("demo: no back buffer (%s)", status_str(st));
         return 1;
     }
     back = p;
@@ -451,17 +549,19 @@ int main(int argc, char **argv)
     }
 
     struct result r[3];
-    r[0] = scene("Mandelbrot deep zoom", 40, 1);
-    r[1] = scene("Julia set", 22, 2);
-    r[2] = scene("who drew what", 14, 3);
+    r[0] = scene("Mandelbrot deep zoom", seconds * 40.0 / 76, 1);
+    r[1] = scene("Julia set", seconds * 22.0 / 76, 2);
+    r[2] = scene("who drew what", seconds * 14.0 / 76, 3);
     stop = true;
+    if (lease)
+        jam_handle_close(lease);   /* the console redraws its screen */
 
-    report_line("demo: %ux%u screen, %ux%u rendered, %u threads on %u CPUs", scr.w, scr.h, W, H,
-                nthreads, scr.ncpu);
+    out("demo: %ux%u screen, %ux%u rendered, %u threads on %u CPUs%s", scr.w, scr.h, W, H,
+        nthreads, scr.ncpu, quit ? " (stopped by a key)" : "");
     for (int i = 0; i < 3; i++) {
         uint64_t f10 = r[i].ns ? (uint64_t)r[i].frames * 10000000000ull / r[i].ns : 0;
-        report_line("demo: %-20s %u frames, %lu.%lu fps", r[i].name, r[i].frames,
-                    (unsigned long)(f10 / 10), (unsigned long)(f10 % 10));
+        out("demo: %-20s %u frames, %lu.%lu fps", r[i].name, r[i].frames,
+            (unsigned long)(f10 / 10), (unsigned long)(f10 % 10));
     }
     return 0;
 }
