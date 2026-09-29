@@ -107,6 +107,22 @@
   usb/input/console .idl, input ABI, DR_USB/DR_INPUT. Merge order suggestion: D (devmgr/driver.h), C, A,
   B; then phase 2 wiring (devmgr match HID interfaces -> drv/hid with DR_USB + DR_INPUT via
   console.connect_input) and QEMU end-to-end (sendkey -> shell), then PC: USB device list first.
+- **Track B (hid) MERGED; Track A (usb-bus) MERGED (v0.0.18-m7a); Visual demo boot entry added (bin/demo:
+  Mandelbrot deep zoom / Julia / per-thread tint, all CPUs, WC framebuffer VMO; fbcon_mute).**
+- **PC 2026-09-29 usb-bus (IMG_0071, 0.0.18-m7a): ALL 8 devices enumerated, 0 failed, run complete: no
+  problems.** xHCI 8086:7a60: 25 ports (USB 2: 1-16, USB 3: 17-25), 48 slots, **32-byte contexts**, MSI,
+  BIOS handoff ok. port 2 0b05:19af FS AURA LED Controller (vendor + hid 03/00/00); port 7 2516:01c9 FS
+  "ARGB GEN-2" (3x hid 03/00/00); port 8 2516:01c1 FS "HAF700" (hid + vendor ff/42/01); port 9 174c:2074
+  HS hub 4p TTT1 "ASM107x"; **port 9.1 058f:6387 HS Mass Storage = THE BOOT STICK, behind the hub**;
+  **port 10 0c45:652f FS "USB DEVICE" = the KEYBOARD (if0 kbd 03/01/01, if1 mouse 03/01/02) on a root
+  port**; **port 11 258a:0033 FS "Wired Gaming Mouse" (if0 mouse, if1 kbd)**; port 24 174c:3074 SS hub.
+  9 HID interfaces (2 boot kbd, 2 boot mouse). So NO device needs the TT path today (the keyboard is not
+  behind the hub); M8's USB storage will talk to the stick THROUGH the HS hub. usbtest 4 passed 5 skipped.
+- **Track D (supervision) DONE on its branch** (worktree-agent-ac24155121f0e5018): dma_cap_bus_master
+  (syscall 120), channel_write_rights (121), quarantine, devmgr split into main/bind/supervise/internal,
+  restart with backoff. Merge conflicts with Track A's devmgr attach code -> delegated to a merge+wiring
+  agent (also: usb-bus must call drv_dma_bus_master after halt+HCRST; devmgr binds class 3 interfaces
+  -> drv/hid with DR_USB; DR_INPUT once the console lands).
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
   console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional
