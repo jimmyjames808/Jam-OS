@@ -1,14 +1,23 @@
-/* usb-bus internals: the xHCI host controller (hc.c), the USB device and
- * hub model with enumeration (enum.c), and the servers plus the main loop
- * (serve.c). See serve.c for the overview. Only <jam/driver.h> and the
- * generated IDL headers are included, like every driver. */
+/* usb-bus internals, shared by its files: the xHCI host controller
+ * (hc.c), the USB device model (devices.c: the device table and contexts;
+ * control.c: control transfers and descriptors; intr.c: interrupt-IN
+ * endpoints; config.c: configurations and interfaces; report.c: log and
+ * RESULTS lines), enumeration (attach.c), hubs (hub.c), root ports
+ * (rootport.c), the port work the main loop drives (work.c), and the
+ * servers plus the main loop (serve.c). See serve.c for the overview.
+ * Only <jam/driver.h> and the generated IDL headers are included, like
+ * every driver. */
 #pragma once
 
 #include <jam/driver.h>
 
-#define US   1000ull
-#define MS   1000000ull
-#define PAGE 4096u
+#define NS_PER_US 1000ull
+#define NS_PER_MS 1000000ull
+#define PAGE      4096u
+
+static inline void zero(void *p, uint64_t n) { __builtin_memset(p, 0, n); }
+static inline void copy(void *d, const void *s, uint64_t n) { __builtin_memcpy(d, s, n); }
+static inline uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 
 /* ---- limits ---------------------------------------------------------------- */
 
@@ -206,7 +215,7 @@ struct hc {
     struct { uint8_t major, minor, first, count, slot_type, psic; } proto[MAX_PROTOS];
     unsigned nproto;
 
-    /* the fixed DMA area (xhci-noop's layout) */
+    /* the fixed DMA area: DCBAA, ERST, command and event rings, scratchpad array */
     handle_t ctx_vmo, sp_vmo;
     uint8_t *ctx;
     uint64_t ctx_dev;
@@ -389,35 +398,99 @@ void hc_set_dcbaa(struct hc *h, uint32_t slot, uint64_t addr);
 #define KEY_SERVE 0x5e7e
 #define KEY_CHAN  (1ull << 40)   /* | gen << 8 (16 bits) | index (8 bits) */
 
-/* ---- enum.c ---------------------------------------------------------------- */
+/* ---- devices.c ------------------------------------------------------------- */
 
+extern uint32_t g_generation;             /* bumps on every attach and detach */
+extern uint64_t g_last_change_ns;
+extern uint32_t g_attached, g_detached, g_failed, g_report_generation;
+extern bool g_first_report_done;
+void devices_reset(void);                 /* the counters and ids, for a fresh start */
 struct usbdev *dev_by_slot(uint8_t slot);
 int  dev_index(const struct usbdev *d);
+struct usbdev *child_at(int parent, uint8_t port);   /* parent -1: a root port */
+struct usbdev *dev_alloc(void);           /* a cleared entry, NULL if all are used */
+/* Give d's entry back. slot_disabled false: the controller may still own
+ * the slot, so its DMA pages are kept (leaked) rather than reused. */
+void dev_free(struct usbdev *d, bool slot_disabled);
+bool disable_slot(struct usbdev *d);      /* true once the controller let go of the slot */
+volatile uint32_t *in_ctx(struct usbdev *d, unsigned index);    /* 0 control, 1 slot, dci+1 */
+volatile uint32_t *out_ctx(struct usbdev *d, unsigned index);   /* 0 slot, dci */
+void in_reset(struct usbdev *d);          /* input context: cleared, slot copied from output */
+uint64_t in_dev(struct usbdev *d);        /* the input context's device address */
+
+/* ---- control.c ------------------------------------------------------------- */
+
 /* A control transfer on d's endpoint 0. *actual gets the bytes moved.
  * Returns a completion code: CC_SUCCESS (short packets included),
  * CC_STALL (recovered), CC_TIMEOUT, CC_GONE or another error. */
 uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
                      uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms);
+void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
+/* Endpoint recovery: Reset Endpoint (tsp: keep the data toggle), or Stop
+ * Endpoint; then the dequeue pointer moves past what was queued. */
+void ep_reset_tsp(struct usbdev *d, uint8_t dci, struct ring *r, bool tsp);
+void ep_stop(struct usbdev *d, uint8_t dci, struct ring *r);
+/* GET_DESCRIPTOR, tried up to three times. */
+uint32_t get_desc(struct usbdev *d, uint8_t type, uint8_t index, uint16_t lang, void *buf,
+                  uint16_t len, uint32_t *actual);
+void get_string(struct usbdev *d, uint8_t index, uint16_t lang, char *out, unsigned cap);
+
+/* ---- intr.c ---------------------------------------------------------------- */
+
+int  ep_open_intr(struct usbdev *d, struct ep *e, uint8_t owner, int chan);
+void ep_close(struct usbdev *d, struct ep *e);
 void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc,
                         uint32_t residual);
+bool intr_upkeep(struct hc *h);           /* halted and dropped endpoints; true if any */
+
+/* ---- config.c -------------------------------------------------------------- */
+
+void parse_config(struct usbdev *d);
+struct iface *usb_iface(struct usbdev *d, uint8_t number);
+/* Configure Endpoint: add / drop the interrupt-IN endpoints in the DCI
+ * bitmaps, with the slot's Context Entries and hub fields. */
+uint32_t configure_eps(struct usbdev *d, uint32_t add, uint32_t drop);
+uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
+
+/* ---- report.c -------------------------------------------------------------- */
+
+void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
+                uint32_t *problems);
+void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */
+void usb_report_summary(const char *when);
+void dev_line(struct usbdev *d, bool report_it, const char *prefix);   /* report_it: RESULTS */
+void dev_log_detail(struct usbdev *d);
+void dev_set_path(struct usbdev *d, const struct usbdev *parent, uint8_t port);   /* "9.1" */
+const char *speed_long(uint8_t speed);
+
+/* ---- attach.c -------------------------------------------------------------- */
+
+/* Enumerate the device just reset on `port` of hub `parent` (-1: a root
+ * port). True if it ended configured. */
+bool enumerate(int parent, uint8_t port, uint8_t speed);
+void detach(struct usbdev *d, const char *why, bool quiet);   /* and everything below it */
+
+/* ---- hub.c, rootport.c ----------------------------------------------------- */
+
+/* Over-current: the port's power went off (the hub or the controller cut
+ * it). After a 100 ms cool-down it is powered again if the condition has
+ * cleared, at most OC_RESTORES times per port per boot, so a device that
+ * keeps shorting stays off instead of cycling. Each step is logged; the
+ * device reconnects by itself and is enumerated as usual. */
+#define OC_RESTORES 3
+
+bool hub_setup(struct usbdev *d);         /* after SET_CONFIGURATION; false: not used as a hub */
+void hub_work(struct usbdev *hub);        /* one unit: the hub's own change, or one port */
+void root_port(struct hc *h, uint32_t p);
+void root_ports_reset(void);
+
+/* ---- work.c ---------------------------------------------------------------- */
+
 bool usb_work(struct hc *h);              /* pending port and hub work; true if any was done */
 void usb_reset_state(void);
 void usb_start(struct hc *h);             /* the first scan of every root port */
 void usb_stop_all(struct hc *h);          /* shutdown: every device detached quietly */
 bool usb_busy(void);                      /* port or hub work pending */
-void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
-                uint32_t *problems);
-void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */
-void usb_report_summary(const char *when);
-extern uint32_t g_generation;             /* bumps on every attach and detach */
-extern uint64_t g_last_change_ns;
-extern uint32_t g_attached, g_detached, g_failed, g_report_generation;
-extern bool g_first_report_done;
-
-int  ep_open_intr(struct usbdev *d, struct ep *e, uint8_t owner, int chan);
-void ep_close(struct usbdev *d, struct ep *e);
-uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
-struct iface *usb_iface(struct usbdev *d, uint8_t number);
 
 /* ---- serve.c --------------------------------------------------------------- */
 

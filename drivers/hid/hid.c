@@ -1,4 +1,4 @@
-/* hid: the USB HID class driver (M7 Track B). One process per HID
+/* hid: the USB HID class driver. One process per HID
  * interface: devmgr starts it when usb-bus reports an interface of class 3,
  * so each interface of a composite device (a keyboard with a media-key
  * interface, a keyboard+mouse receiver) gets a hid process of its own.
@@ -27,10 +27,10 @@
  *   - anything else (subclass 0: consumer control, system control, a
  *     vendor interface, an NKRO keyboard in report protocol): logged as
  *     "not a boot keyboard/mouse: skipped" with its collections, exit 0.
- *     Report-protocol parsing is out of M7's scope. Keyboards that have
- *     such a second interface still type through their boot interface
- *     (every one the PC has is boot capable: the firmware uses them), so
- *     no report-descriptor parsing is attempted even when the second
+ *     Report protocol isn't parsed: keyboards that have such a second
+ *     interface still type through their boot interface (every one the
+ *     PC has is boot capable: the firmware uses them), so no
+ *     report-descriptor parsing is attempted even when the second
  *     interface's report looks like a plain keyboard's.
  *
  * Reports arrive as one message each on the channel open_interrupt_in
