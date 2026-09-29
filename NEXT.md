@@ -147,7 +147,15 @@
   hexdump; sh_vfs mount table ready for M8 /data), text (wc head tail sort uniq seq grep), shell
   (echo set unset export env alias type time sleep repeat watch true false; ; && || | $VAR quotes;
   Tab completion; Ctrl+C), syscalls 130-133 (sys_info cpu_stat proc_list rtc_read, RIGHT_READ on root),
-  CPU-time accounting in schedule(). 223/223 ktests, tools/shell-tests/cmds.txt passes. Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
+  CPU-time accounting in schedule(). 223/223 ktests, tools/shell-tests/cmds.txt passes.
+  **Review leftovers MERGED** (live ktest from the shell: KT_GLOBAL_*/KT_SKIP_LIVE, "ktest (live system)"
+  summary; BME never restored by power-state restore; klog readable state exact; ACPI MMIO reset uncached;
+  hid exit 5 = restart when only reports close; usb-bus refuses hub interfaces, set_interface in sync,
+  HSE polled, CLEAR_TT_BUFFER, over-current power restore; sticky pci driver_managed). **Fun apps MERGED**
+  (user/fun + life/tetris/fractal: text-mode half-block graphics via new console escapes: alt screen,
+  cursor positioning, synchronized frames; console bright-colour bug fixed). v0.0.22-m7: 226/226 ktests,
+  live ktest 221+5 skipped, fun-test PASS, usbkeys PASS. Still running: cleanup (menu, demo/utest/crash
+  commands, init restarts devmgr, run-child authority). Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
