@@ -37,6 +37,8 @@ static struct {
     volatile bool    stop;
 } pp;
 
+static volatile uint32_t pp_ran_on[MAX_CPUS];
+
 static void ponger(void *arg)
 {
     (void)arg;
@@ -46,6 +48,7 @@ static void ponger(void *arg)
             waitqueue_wait(&pp.wq, &pp.lock, &f);
         if (pp.stop)
             break;
+        pp_ran_on[this_cpu()->index]++;   /* interrupts are off: this CPU */
         pp.turn = 0;
         waitqueue_wake_all(&pp.wq);
     }
@@ -53,18 +56,18 @@ static void ponger(void *arg)
 }
 
 /* PP_ROUNDS block+wake round trips between this thread (on cpu a) and one
- * on cpu b; returns the polled wakeups cpu b saw meanwhile. */
-static uint64_t pingpong(uint32_t a, uint32_t b)
+ * allowed on `mb`; pp_ran_on counts where the other one ran. Returns the
+ * other thread's pair placements. */
+static uint64_t pingpong_mask(uint32_t a, const cpumask_t *mb)
 {
     pin_self(a);
     spin_init(&pp.lock, "m55 pingpong");
     waitqueue_init(&pp.wq, "m55 pingpong waiters");
     pp.turn = 0;
     pp.stop = false;
-    cpumask_t m;
-    cpumask_one(&m, b);
-    uint64_t polled0 = cpus[b]->polled_wakes;
-    struct thread *t = thread_create_on("m55-pong", ponger, NULL, PRIO_DEFAULT + 2, &m);
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        pp_ran_on[i] = 0;
+    struct thread *t = thread_create_on("m55-pong", ponger, NULL, PRIO_DEFAULT + 2, mb);
     uint64_t f = spin_lock_irqsave(&pp.lock);
     for (int i = 0; i < PP_ROUNDS; i++) {
         pp.turn = 1;
@@ -75,10 +78,21 @@ static uint64_t pingpong(uint32_t a, uint32_t b)
     pp.stop = true;
     waitqueue_wake_all(&pp.wq);
     spin_unlock_irqrestore(&pp.lock, f);
+    uint64_t pairs = t->pair_wakes;   /* we still hold a reference */
     thread_join(t);
-    uint64_t polled = cpus[b]->polled_wakes - polled0;
     unpin_self();
-    return polled;
+    return pairs;
+}
+
+/* The same with the other thread pinned to cpu b; returns the polled
+ * wakeups cpu b saw meanwhile. */
+static uint64_t pingpong(uint32_t a, uint32_t b)
+{
+    cpumask_t m;
+    cpumask_one(&m, b);
+    uint64_t polled0 = cpus[b]->polled_wakes;
+    pingpong_mask(a, &m);
+    return cpus[b]->polled_wakes - polled0;
 }
 
 /* With a long spin window, the ponger's CPU is polling whenever it is woken:
@@ -229,4 +243,48 @@ KTEST(placement_spreads_over_cores)
         for (uint32_t j = 0; j < k; j++)
             KT_ASSERT(cpus[where[j]]->core_id != cpus[where[k]]->core_id);
     }
+}
+
+/* ---- client/server pairs on sibling hyperthreads ------------------------- */
+
+/* A thread pinned to cpu a and an unpinned partner (kept off cpu 0 and a)
+ * wake each other in turn. As a pair, the partner is placed on a's idle HT
+ * sibling; switched off, the hybrid order gives it a whole idle core. */
+KTEST(affine_pair_uses_sibling)
+{
+    if (cpu_count < 4)
+        return;
+    uint32_t a = 0;
+    int sib = -1;
+    for (uint32_t i = 1; i < cpu_count && sib < 0; i++)
+        for (uint32_t j = 1; j < cpu_count; j++)
+            if (j != i && cpus[j]->core_id == cpus[i]->core_id) {
+                a = i;
+                sib = (int)j;
+                break;
+            }
+    if (sib < 0) {
+        kprintf("affine-pair: no HT siblings (QEMU needs -smp N,threads=2): not tested\n");
+        return;
+    }
+    cpumask_t m;
+    cpumask_all(&m);
+    m.bits[0] &= ~1ull;
+    m.bits[a / 64] &= ~(1ull << (a % 64));
+    bool keep = sched_affine_pair;
+    sched_affine_pair = true;
+    uint64_t pairs_on = pingpong_mask(a, &m);
+    uint32_t on_sib_on = pp_ran_on[sib];
+    sched_affine_pair = false;
+    uint64_t pairs_off = pingpong_mask(a, &m);
+    uint32_t on_sib_off = pp_ran_on[sib];
+    sched_affine_pair = keep;
+    kprintf("affine-pair: partner of cpu %u ran on its sibling cpu %d for %u of %d rounds "
+            "(%lu pair placements); switched off: %u rounds, %lu\n", a, sib, on_sib_on,
+            PP_ROUNDS, pairs_on, on_sib_off, pairs_off);
+    KT_ASSERT(pairs_on >= PP_ROUNDS / 2);
+    KT_ASSERT(on_sib_on >= PP_ROUNDS / 2);
+    KT_EQ(pairs_off, 0);
+    if (sched_place_order)
+        KT_ASSERT(on_sib_off <= PP_ROUNDS / 4);   /* whole idle cores come first */
 }

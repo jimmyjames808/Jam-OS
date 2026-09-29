@@ -100,6 +100,12 @@ struct thread {
      * woken onto its waker's CPU or that CPU's idle HT sibling. */
     bool              wake_sync;
     uint64_t          affine_wakes;
+    /* Client/server pairs (M5.5, sched.c): the thread that woke this one
+     * last (its id) and how many wakes in a row came from it; pair_wakes
+     * counts the times this thread was placed on its partner's sibling. */
+    uint64_t          partner_id;
+    uint32_t          partner_streak;
+    uint64_t          pair_wakes;
 
     /* M5 user state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
@@ -228,6 +234,10 @@ extern volatile uint64_t sched_idle_spin_ns;
  * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the M5
  * least-loaded rule. Boot: "noplaceorder". */
 extern volatile bool sched_place_order;
+/* Client/server pairs on sibling hyperthreads (M5.5): two threads that
+ * keep waking each other are placed on one core's two hyperthreads when
+ * the waker keeps running. Boot: "noaffinepair". */
+extern volatile bool sched_affine_pair;
 #ifndef JAM_NO_KTESTS
 /* Tests: run the placement rule on a made-up topology (arrays indexed by
  * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */

@@ -210,8 +210,8 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). */
-enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_COUNT };
-static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder" };
+enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_COUNT };
+static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair" };
 static uint64_t sw_boot[SW_COUNT];
 
 static uint64_t sw_get(enum sw s)
@@ -219,6 +219,7 @@ static uint64_t sw_get(enum sw s)
     switch (s) {
     case SW_SPINIDLE:   return sched_idle_spin_ns;
     case SW_PLACEORDER: return sched_place_order;
+    case SW_AFFINEPAIR: return sched_affine_pair;
     case SW_COUNT:      break;
     }
     return 0;
@@ -229,11 +230,12 @@ static void sw_put(enum sw s, uint64_t v)
     switch (s) {
     case SW_SPINIDLE:   sched_idle_spin_ns = v; break;
     case SW_PLACEORDER: sched_place_order = v; break;
+    case SW_AFFINEPAIR: sched_affine_pair = v; break;
     case SW_COUNT:      break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1 };
 
 static void sw_save(void)
 {
@@ -562,9 +564,27 @@ static void wakeup_measure(int other)
     waitqueue_init(&wpp.wq, "bench pingpong waiters");
     wpp.turn = 0;
     wpp.stop = false;
-    struct thread *r = spawn_on(other, wake_responder, NULL);
+    struct thread *r;
+    if (other >= 0) {
+        r = spawn_on(other, wake_responder, NULL);
+    } else {   /* unpinned, but kept off CPU 0 and P */
+        cpumask_t m;
+        cpumask_all(&m);
+        m.bits[0] &= ~1ull;
+        m.bits[cpu_p / 64] &= ~(1ull << (cpu_p % 64));
+        r = thread_create_on("bench", wake_responder, NULL, PRIO_BENCH, &m);
+    }
     run_on(cpu_p, wake_initiator, NULL);
     thread_join(r);
+}
+
+/* A pair that wakes each other with plain wakes (no wake-affine hint):
+ * the responder may run anywhere but CPU 0 and P. As a pair (M5.5) it runs
+ * on P's HT sibling; without, the hybrid order gives it a whole idle core. */
+static void wakeup_pair(void)
+{
+    off_on(SW_AFFINEPAIR, "block+wake round trip P->unpinned partner", wakeup_measure, -1,
+           SAMPLES);
 }
 
 /* Across CPUs the responder's CPU is idle between rounds: halted (spin
@@ -1013,6 +1033,8 @@ void bench_run(void)
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
             wakeup(others[i]);
+    if (cpu_ht >= 0)
+        wakeup_pair();
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
             ipi(others[i]);

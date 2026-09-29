@@ -459,22 +459,78 @@ void schedule(void)
 
 /* ---- waking and placing ------------------------------------------------------ */
 
-/* The CPU a wake from here may be placed on under wake-affine rules, or -1.
- * `consume`: this is a plain thread_wake, which honours the current
- * thread's wake_sync flag and clears it (one wakee per flag). Never from an
- * interrupt handler: the interrupted thread's flag is not about this wake. */
-static int affine_hint(bool consume)
+/* Who is waking: the current thread and its CPU, when the wake comes from
+ * thread context (never from an interrupt handler: the interrupted thread
+ * has nothing to do with the wakee, and its wake_sync flag is not about
+ * this wake). `sync`: place wake-affine. A plain thread_wake (`consume`)
+ * honours the current thread's wake_sync flag and clears it (one wakee per
+ * flag); thread_wake_sync always places wake-affine. */
+struct waker {
+    struct thread *me;   /* NULL: interrupt handler or the idle thread */
+    uint32_t       cpu;
+    bool           sync;
+};
+
+static struct waker waker_now(bool consume)
 {
+    struct waker w = { NULL, 0, false };
     uint64_t f = irq_save();
     struct cpu *c = this_cpu();
     struct thread *me = c->current;
-    int cpu = -1;
-    if (!c->irq_depth && me && !me->is_idle && (!consume || me->wake_sync)) {
-        me->wake_sync = false;
-        cpu = (int)c->index;
+    if (!c->irq_depth && me && !me->is_idle) {
+        w.me = me;
+        w.cpu = c->index;
+        w.sync = !consume || me->wake_sync;
+        if (w.sync)
+            me->wake_sync = false;
     }
     irq_restore(f);
-    return cpu;
+    return w;
+}
+
+/* Client/server pairs on sibling hyperthreads (M5.5). Every wake from
+ * thread context records the waker in the wakee (partner_id, and how many
+ * wakes in a row came from it). Two threads that each were woken by the
+ * other at least PAIR_MIN times running are a pair. When one of them wakes
+ * the other and does NOT block right after (a plain wake: the sync case is
+ * select_cpu_affine's), the wakee goes to the waker's idle HT sibling:
+ * both halves of the pair then share the core's L1/L2, and the next wake is
+ * the cheapest cross-CPU one (BENCH.md: block+wake P->HT 1.1 us, P->P2
+ * 1.5 us). Without it the hybrid order would give the wakee a whole idle
+ * core, which is right for independent work and wrong for a pair. E-cores
+ * have no sibling (topo[].sibling = -1), so a pair on an E-core is placed
+ * as usual. Only the waker that moved t to READY writes t's partner fields
+ * (after the CAS), so they have one writer at a time; the waker's own
+ * fields were written by whoever woke it last and are read racily. A
+ * wrong guess costs time, not correctness. */
+#define PAIR_MIN 2
+volatile bool sched_affine_pair = true;
+
+static void note_waker(struct thread *t, const struct thread *me)
+{
+    if (t->partner_id == me->id) {
+        if (t->partner_streak < UINT32_MAX)
+            t->partner_streak++;
+    } else {
+        t->partner_id = me->id;
+        t->partner_streak = 1;
+    }
+}
+
+static bool is_pair(const struct thread *t, const struct thread *me)
+{
+    return t->partner_id == me->id && t->partner_streak >= PAIR_MIN &&
+           me->partner_id == t->id && me->partner_streak >= PAIR_MIN;
+}
+
+static uint32_t select_cpu_pair(struct thread *t, uint32_t waker)
+{
+    int sib = topo[waker].sibling;
+    if (sib >= 0 && usable(t, (uint32_t)sib) && !load_of((uint32_t)sib)) {
+        t->pair_wakes++;
+        return (uint32_t)sib;
+    }
+    return select_cpu(t);
 }
 
 static void thread_wake_common(struct thread *t, bool sync);
@@ -550,8 +606,18 @@ static void thread_wake_common(struct thread *t, bool sync)
                                      __ATOMIC_RELAXED))
         return;   /* someone else woke it */
 
-    int hint = was_blocked ? affine_hint(!sync) : -1;
-    uint32_t cpu = hint >= 0 ? select_cpu_affine(t, (uint32_t)hint) : select_cpu(t);
+    uint32_t cpu;
+    struct waker w = { NULL, 0, false };
+    if (was_blocked)
+        w = waker_now(!sync);
+    if (w.me)
+        note_waker(t, w.me);
+    if (w.me && w.sync)
+        cpu = select_cpu_affine(t, w.cpu);
+    else if (w.me && sched_affine_pair && is_pair(t, w.me))
+        cpu = select_cpu_pair(t, w.cpu);
+    else
+        cpu = select_cpu(t);
     struct runqueue *rq = &rqs[cpu];
     uint64_t f = spin_lock_irqsave(&rq->lock);
     enqueue(rq, t, cpu);
@@ -1094,6 +1160,7 @@ void sched_init_bsp(void)
     sched_idle_spin_ns = cmdline_has("nospinidle")
                              ? 0 : cmdline_get_u64("idlespin", SCHED_IDLE_SPIN_NS / 1000, 0) * 1000;
     sched_place_order = !cmdline_has("noplaceorder");
+    sched_affine_pair = !cmdline_has("noaffinepair");
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);
