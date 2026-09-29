@@ -71,6 +71,7 @@
   Left for M6: merge the devmgr + edu agent (running; it also changes vmo_unpin to take the dma_cap and
   adds devmgr's 0c0330 -> drv/xhci-noop entry), independent review of phase 2, then PC: All tests,
   2-min stress, and ONE 10-min stress that signs off M5.5 and M6 together (user: 2-min until then).
+  PC: All tests on 0.0.14-m6 -> run complete: no problems (incl. the xhci ktests on the real controller).
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
