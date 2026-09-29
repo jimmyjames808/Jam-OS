@@ -543,23 +543,47 @@ static void bench_chan(void *arg)
     }
 }
 
-static void chan_call(int server_cpu)
+/* Client pinned to P, server allowed on `mask`. */
+static void chan_call_mask(const cpumask_t *mask, const char *what)
 {
     struct channel *a, *b;
     if (channel_create(&a, &b) != OK)
         return;
     chan_client_ep = a;
-    struct thread *srv = spawn_on(server_cpu, chan_server, b);
+    struct thread *srv = thread_create_on("bench", chan_server, b, PRIO_BENCH, mask);
     run_on(cpu_p, bench_chan, NULL);
     kobject_unref((struct kobject *)a);   /* closes it: the server sees PEER_CLOSED */
     thread_join(srv);
     kobject_unref((struct kobject *)b);
+    result(what, samples, SAMPLES);
+}
+
+static void chan_call(int server_cpu)
+{
+    cpumask_t m;
+    cpumask_one(&m, (uint32_t)server_cpu);
     char what[64];
     if (server_cpu == cpu_p)
         ksnprintf(what, sizeof(what), "channel_call round trip, same CPU (P)");
     else
         ksnprintf(what, sizeof(what), "channel_call round trip P->%s, 1 client", kind(server_cpu));
-    result(what, samples, SAMPLES);
+    chan_call_mask(&m, what);
+}
+
+/* The server may run anywhere but CPU 0 (the orchestrator's), so placement
+ * decides where it runs. Wake-affine (M5) puts it on the caller's CPU, as
+ * the caller blocks right after sending; kept off P as well, on P's idle HT
+ * sibling. */
+static void chan_call_placed(void)
+{
+    cpumask_t m;
+    cpumask_all(&m);
+    m.bits[0] &= ~1ull;
+    chan_call_mask(&m, "channel_call round trip, P client, server unpinned");
+    if (cpu_ht < 0)
+        return;
+    m.bits[cpu_p / 64] &= ~(1ull << (cpu_p % 64));
+    chan_call_mask(&m, "channel_call round trip, P client, server not on P");
 }
 
 static void bench_shootdown(void *arg)
@@ -634,6 +658,8 @@ void bench_run(void)
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
             chan_call(others[i]);
+    if (cpu_count > 2)
+        chan_call_placed();
     if (cpu_count > 1) {
         run_on(cpu_p, bench_shootdown, NULL);
         char what[64];

@@ -243,6 +243,123 @@ KTEST(stack_cache_limit_frees)
     sched_stack_cache_set_limit(old);
 }
 
+/* ---- wake-affine channel_call ---------------------------------------------------- */
+
+#define AFF_CALLS 200
+
+static struct channel *aff_client_ep;
+static volatile uint32_t aff_ran_on[MAX_CPUS];
+
+static void aff_server(void *arg)
+{
+    struct channel *ep = arg;
+    for (;;) {
+        signals_t s = 0;
+        object_wait_one((struct kobject *)ep, SIG_READABLE | SIG_PEER_CLOSED, uptime_ns() + 10 * SECOND,
+                        &s);
+        uint64_t m[2];
+        uint32_t nb = 0;
+        status_t st = channel_read(ep, m, sizeof(m), &nb, NULL, 0, NULL);
+        if (st == OK) {
+            preempt_disable();
+            aff_ran_on[this_cpu()->index]++;
+            preempt_enable();
+            channel_write(ep, m, nb, NULL, 0);
+        } else if (st != ERR_SHOULD_WAIT) {
+            return;
+        }
+    }
+}
+
+static volatile uint32_t aff_bad;
+
+static void aff_client(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < AFF_CALLS; i++) {
+        uint64_t req[2] = { 0, (uint64_t)i }, rep[2];
+        uint32_t n = 0;
+        if (channel_call(aff_client_ep, req, sizeof(req), NULL, 0, rep, sizeof(rep), &n, NULL, 0,
+                         NULL, uptime_ns() + 10 * SECOND) != OK || rep[1] != (uint64_t)i)
+            aff_bad++;
+    }
+}
+
+/* One ping-pong: client pinned to `ccpu`, server allowed on `smask`.
+ * Returns the server's affine wake count; aff_ran_on says where it ran. */
+static uint64_t aff_round(uint32_t ccpu, const cpumask_t *smask, uint64_t *client_affine)
+{
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    aff_client_ep = a;
+    aff_bad = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        aff_ran_on[i] = 0;
+    struct thread *srv = thread_create_on("aff-server", aff_server, b, PRIO_DEFAULT, smask);
+    cpumask_t cm;
+    cpumask_one(&cm, ccpu);
+    struct thread *cl = thread_create_on("aff-client", aff_client, NULL, PRIO_DEFAULT, &cm);
+    /* Read the counters before join drops our references. */
+    while (!cl->exited)
+        thread_sleep_ms(1);
+    *client_affine = cl->affine_wakes;
+    thread_join(cl);
+    kobject_unref((struct kobject *)a);   /* the server sees PEER_CLOSED */
+    while (!srv->exited)
+        thread_sleep_ms(1);
+    uint64_t sa = srv->affine_wakes;
+    thread_join(srv);
+    kobject_unref((struct kobject *)b);
+    KT_EQ(aff_bad, 0);
+    return sa;
+}
+
+KTEST(wake_affine_channel_call)
+{
+    if (cpu_count < 2)
+        return;
+    pin_self(0);   /* keep the test thread off the client's CPU */
+    /* The client's CPU: one with an HT sibling other than CPU 0 if any. */
+    uint32_t c = 1;
+    int sib = -1;
+    for (uint32_t i = 1; i < cpu_count && sib < 0; i++)
+        for (uint32_t j = 1; j < cpu_count; j++)
+            if (j != i && cpus[j]->core_id == cpus[i]->core_id) {
+                c = i;
+                sib = (int)j;
+                break;
+            }
+    cpumask_t any;
+    cpumask_all(&any);
+    uint64_t client_aff;
+    uint64_t server_aff = aff_round(c, &any, &client_aff);
+    kprintf("wake-affine: server placed affine %lu times, ran on cpu %u for %u of %d calls; "
+            "client placed affine %lu times\n", server_aff, c, aff_ran_on[c], AFF_CALLS,
+            client_aff);
+    /* The request wakes the server onto the caller's CPU, and the reply
+     * wakes the caller back onto it: nearly every call stays on one CPU. */
+    KT_ASSERT(server_aff >= AFF_CALLS / 2);
+    KT_ASSERT(aff_ran_on[c] >= AFF_CALLS / 2);
+    KT_ASSERT(client_aff >= AFF_CALLS / 2);
+
+    /* Server not allowed on the caller's CPU: it goes to the caller's idle
+     * HT sibling when there is one (QEMU needs -smp N,threads=2). */
+    cpumask_t not_c = any;
+    not_c.bits[c / 64] &= ~(1ull << (c % 64));
+    not_c.bits[0] &= ~1ull;   /* nor CPU 0, where this thread waits */
+    server_aff = aff_round(c, &not_c, &client_aff);
+    if (sib >= 0) {
+        kprintf("wake-affine: server kept off cpu %u ran on its sibling cpu %d for %u of %d "
+                "calls (%lu affine wakes)\n", c, sib, aff_ran_on[sib], AFF_CALLS, server_aff);
+        KT_ASSERT(server_aff >= AFF_CALLS / 2);
+        KT_ASSERT(aff_ran_on[sib] >= AFF_CALLS / 2);
+    } else {
+        kprintf("wake-affine: no HT sibling for cpu %u, sibling placement not tested\n", c);
+        KT_EQ(server_aff, 0);
+    }
+    unpin_self();
+}
+
 /* ---- priority ceiling -------------------------------------------------------- */
 
 static volatile bool prio_release;

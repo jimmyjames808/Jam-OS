@@ -212,6 +212,34 @@ static uint32_t select_cpu(struct thread *t)
     return best;
 }
 
+/* Wake-affine placement for a wakee whose waker, running on `waker`, is
+ * about to block (thread_wake_sync). On the waker's CPU the wakee runs the
+ * moment the waker blocks, with the data it was just sent still in that
+ * CPU's cache; that is only right if nothing else is queued there (it would
+ * wait behind it) and t may run there. Otherwise the waker's HT sibling, if
+ * it is idle, shares the core's caches. Otherwise the usual choice. All the
+ * loads are racy, like select_cpu's: a wrong guess costs time, never
+ * correctness, since thread_wake queues t under the chosen CPU's lock. */
+static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
+{
+    if (cpus[waker]->online && cpumask_has(&t->affinity, waker) && !rqs[waker].nr_ready) {
+        t->affine_wakes++;   /* we own t's placement: we moved it to READY */
+        return waker;
+    }
+    uint32_t core = cpus[waker]->core_id;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        struct cpu *c = cpus[i];
+        if (i == waker || c->core_id != core || !c->online || !cpumask_has(&t->affinity, i))
+            continue;
+        struct thread *cur = c->current;
+        if (!rqs[i].nr_ready && (!cur || cur->is_idle)) {
+            t->affine_wakes++;
+            return i;
+        }
+    }
+    return select_cpu(t);
+}
+
 void sched_kick(uint32_t cpu)
 {
     struct cpu *c = cpus[cpu];
@@ -325,7 +353,42 @@ void schedule(void)
 
 /* ---- waking and placing ------------------------------------------------------ */
 
+/* The CPU a wake from here may be placed on under wake-affine rules, or -1.
+ * `consume`: this is a plain thread_wake, which honours the current
+ * thread's wake_sync flag and clears it (one wakee per flag). Never from an
+ * interrupt handler: the interrupted thread's flag is not about this wake. */
+static int affine_hint(bool consume)
+{
+    uint64_t f = irq_save();
+    struct cpu *c = this_cpu();
+    struct thread *me = c->current;
+    int cpu = -1;
+    if (!c->irq_depth && me && !me->is_idle && (!consume || me->wake_sync)) {
+        me->wake_sync = false;
+        cpu = (int)c->index;
+    }
+    irq_restore(f);
+    return cpu;
+}
+
+static void thread_wake_common(struct thread *t, bool sync);
+
 void thread_wake(struct thread *t)
+{
+    thread_wake_common(t, false);
+}
+
+void thread_wake_sync(struct thread *t)
+{
+    thread_wake_common(t, true);
+}
+
+void thread_set_wake_sync(bool on)
+{
+    current_thread()->wake_sync = on;   /* only ever written by its own thread */
+}
+
+static void thread_wake_common(struct thread *t, bool sync)
 {
     int s = t->state;
     if (s != T_BLOCKED && s != T_MIGRATING)
@@ -371,11 +434,18 @@ void thread_wake(struct thread *t)
         if (s != T_BLOCKED && s != T_MIGRATING)
             return;
     }
+    /* Only a BLOCKED thread is placed wake-affine: a MIGRATING one is
+     * leaving the waker's CPU because its mask forbids it. The hint is
+     * looked at (and a wake_sync flag used up) only once we know this wake
+     * places t; a wake that finds t still on its CPU or already woken above
+     * leaves the flag for the wake it was meant for. */
+    bool was_blocked = s == T_BLOCKED;
     if (!__atomic_compare_exchange_n(&t->state, &s, T_READY, false, __ATOMIC_ACQ_REL,
                                      __ATOMIC_RELAXED))
         return;   /* someone else woke it */
 
-    uint32_t cpu = select_cpu(t);
+    int hint = was_blocked ? affine_hint(!sync) : -1;
+    uint32_t cpu = hint >= 0 ? select_cpu_affine(t, (uint32_t)hint) : select_cpu(t);
     struct runqueue *rq = &rqs[cpu];
     uint64_t f = spin_lock_irqsave(&rq->lock);
     enqueue(rq, t, cpu);

@@ -321,7 +321,16 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     if (w) {
         w->reply = m;
         list_del(&w->node);
-        thread_wake(w->thread);
+        /* A reply to a channel_call. If no other request is queued for us,
+         * we (the server) are most likely about to block for the next one,
+         * so the caller may take our CPU (wake-affine; a guess: a server
+         * that goes on to other work instead just delays it until the next
+         * tick or steal). Our queue count is read without our lock: a stale
+         * answer only changes the placement. */
+        if (!__atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED))
+            thread_wake_sync(w->thread);
+        else
+            thread_wake(w->thread);
     } else if (peer->nqueued >= CHANNEL_MAX_QUEUED) {
         st = ERR_SHOULD_WAIT;
     } else {
@@ -449,7 +458,11 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
     list_add_tail(&ch->callers, &w.node);
     spin_unlock_irqrestore(&ch->base.lock, f);
 
+    /* We block for the reply right after sending, so the server this wakes
+     * (through whatever observer it waits with) may run on our CPU. */
+    thread_set_wake_sync(true);
     st = send_msg(ch, m);
+    thread_set_wake_sync(false);
     if (st != OK) {
         f = spin_lock_irqsave(&ch->base.lock);
         if (w.node.next)

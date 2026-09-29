@@ -93,6 +93,13 @@ struct thread {
 
     uint64_t          switches_in;
 
+    /* Wake-affine placement (M5). wake_sync is set by the thread itself
+     * while it is about to block waiting for the thread it wakes (see
+     * thread_set_wake_sync); affine_wakes counts the times THIS thread was
+     * woken onto its waker's CPU or that CPU's idle HT sibling. */
+    bool              wake_sync;
+    uint64_t          affine_wakes;
+
     /* M5 user state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
     struct aspace    *aspace;        /* address space (a reference) */
@@ -160,6 +167,17 @@ static inline struct thread *current_thread(void) { return percpu_current(); }
 void schedule(void);
 /* Make a BLOCKED thread runnable again. */
 void thread_wake(struct thread *t);
+/* Wake-affine: the same, for a waker that is about to block waiting for t
+ * (a channel_call request, or a reply from a server with nothing else
+ * queued). t is placed on the waker's CPU if it may run there and nothing
+ * else is queued there (it runs as soon as the waker blocks), else on the
+ * waker's idle HT sibling, else as usual. From interrupt handlers it is a
+ * plain thread_wake. */
+void thread_wake_sync(struct thread *t);
+/* While on, the next thread the current thread wakes (from thread context,
+ * e.g. through an object observer) is woken as by thread_wake_sync; that
+ * wake turns it off. channel_call turns it on around sending its request. */
+void thread_set_wake_sync(bool on);
 
 /* Boot: turn the running boot code into thread "main" and give the BSP an
  * idle thread. APs turn their own startup context into their idle thread. */
