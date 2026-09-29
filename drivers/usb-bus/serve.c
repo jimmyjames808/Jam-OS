@@ -602,7 +602,12 @@ static void serve_chan(int i)
 {
     struct chan *c = &chans[i];
     c->pending = false;
-    for (int guard = 0; guard < 64 && c->h; guard++) {
+    /* A time budget as well as a count: one request can take a second (a
+     * device that NAKs a control transfer until the timeout), and 64 of
+     * them from one client would hold the loop -- hot-plug, the other
+     * class drivers, error recovery -- for a minute. */
+    uint64_t t0 = drv_clock_ns();
+    for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * MS; guard++) {
         status_t st;
         if (c->kind == CHAN_IFACE) {
             st = usb_serve_one(c->h, &usb_ops, c);

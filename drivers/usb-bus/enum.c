@@ -991,8 +991,19 @@ void usb_report_all(bool at_stop)
 
 /* ---- attach ----------------------------------------------------------------------- */
 
-static void dev_free(struct usbdev *d)
+static void dev_free(struct usbdev *d, bool slot_disabled)
 {
+    if (!slot_disabled && !g_hc.dead) {
+        /* Disable Slot failed: the controller may still own the slot and
+         * run its endpoints (queued TRBs into our buffers), so none of its
+         * DMA pages can go back to the pool. Leaked, like a quarantine. */
+        drv_log("usb %s: slot %u not disabled: keeping its DMA pages", d->path, d->slot);
+        if (d->cfg)
+            drv_free(d->cfg);
+        d->cfg = NULL;
+        d->used = false;
+        return;
+    }
     for (int k = 2; k < 32; k++) {
         struct ep *e = &d->eps[k];
         e->chan = -1;   /* closed by serve_iface_gone() */
@@ -1016,14 +1027,16 @@ static void dev_free(struct usbdev *d)
     d->used = false;
 }
 
-static void disable_slot(struct usbdev *d)
+/* True once the controller has let go of d's slot (or never had one). */
+static bool disable_slot(struct usbdev *d)
 {
     if (!d->slot)
-        return;
+        return true;
     uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_DISABLE_SLOT) | ((uint32_t)d->slot << 24),
                              NULL, 1000);
     if (cc != CC_SUCCESS)
         drv_log("usb %s: Disable Slot %u: %s", d->path, d->slot, cc_str(cc));
+    return cc == CC_SUCCESS || cc == 11;   /* 11: Slot Not Enabled */
 }
 
 static void detach(struct usbdev *d, const char *why, bool quiet)
@@ -1038,8 +1051,8 @@ static void detach(struct usbdev *d, const char *why, bool quiet)
         drv_log("usb %s: %04x:%04x detached (%s)", d->path, d->vid, d->pid, why);
     if (d->vid && g_first_report_done && !quiet)
         g_detached++;
-    disable_slot(d);
-    dev_free(d);
+    bool off = disable_slot(d);
+    dev_free(d, off);
     g_generation++;
     g_last_change_ns = drv_clock_ns();
 }
@@ -1059,8 +1072,8 @@ static void attach_failed(struct usbdev *d, const char *step, uint32_t cc)
                 d->path, d->tt_slot, d->tt_port, d->tt_mtt, d->route);
     d->gone = true;
     serve_iface_gone(d->id);
-    disable_slot(d);
-    dev_free(d);
+    bool off = disable_slot(d);
+    dev_free(d, off);
     g_last_change_ns = drv_clock_ns();
 }
 
