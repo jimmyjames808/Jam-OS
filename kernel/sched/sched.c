@@ -305,7 +305,9 @@ static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
     return select_cpu(t);
 }
 
-void sched_kick(uint32_t cpu)
+/* Tell `cpu` to look at its run queue soon (IPI if remote and not polling
+ * in idle). */
+static void sched_kick(uint32_t cpu)
 {
     struct cpu *c = cpus[cpu];
     c->need_resched = true;
@@ -927,11 +929,11 @@ void sched_irq_exit(uint64_t interrupted_rflags)
 
 void sched_print_stats(void)
 {
-    uint64_t sw = 0, st = 0;
+    uint64_t sw = 0, steals = 0;
     for (uint32_t i = 0; i < cpu_count; i++) {
         sw += cpus[i]->switches;
-        st += cpus[i]->steals;
+        steals += cpus[i]->steals;
     }
     kprintf("sched: %lu context switches, %lu steals, %lu starvation boosts across %u CPUs\n",
-            sw, st, boost_total, cpu_count);
+            sw, steals, boost_total, cpu_count);
 }

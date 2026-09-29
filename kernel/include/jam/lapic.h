@@ -36,7 +36,6 @@ const char *lapic_timer_mode(void);
 void     lapic_timer_set(uint64_t when_tsc);
 bool     lapic_timer_has_oneshot(void);
 extern volatile bool lapic_oneshot;
-extern volatile uint64_t lapic_early_irqs;
 
 extern volatile uint64_t lapic_errors;
 extern volatile uint32_t lapic_last_esr;

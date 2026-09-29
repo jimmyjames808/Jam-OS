@@ -245,8 +245,8 @@ enum { TORN_NO, TORN_BUSY, TORN_DONE };
  * elsewhere before it frees the memory (wait = true). */
 static void teardown(struct kinterrupt *o, bool wait)
 {
-    uint8_t st = TORN_NO;
-    if (!__atomic_compare_exchange_n(&o->torn, &st, TORN_BUSY, false, __ATOMIC_ACQ_REL,
+    uint8_t torn = TORN_NO;
+    if (!__atomic_compare_exchange_n(&o->torn, &torn, TORN_BUSY, false, __ATOMIC_ACQ_REL,
                                      __ATOMIC_ACQUIRE)) {
         while (wait && __atomic_load_n(&o->torn, __ATOMIC_ACQUIRE) != TORN_DONE)
             cpu_relax();

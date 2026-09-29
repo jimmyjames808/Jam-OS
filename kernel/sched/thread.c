@@ -193,6 +193,18 @@ _Noreturn void thread_entry(void (*fn)(void *), void *arg)
     thread_exit();
 }
 
+/* The fallible form every other create goes through: NULL when out of
+ * memory, else the thread, already runnable. */
+static struct thread *thread_try_create_capped(const char *name, void (*fn)(void *),
+                                               void *arg, int prio, const cpumask_t *mask,
+                                               int prio_cap)
+{
+    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
+    if (t)
+        thread_wake(t);
+    return t;
+}
+
 struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, int prio)
 {
     return thread_create_on(name, fn, arg, prio, NULL);
@@ -220,15 +232,6 @@ struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *
                                     const cpumask_t *mask)
 {
     return thread_try_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
-}
-
-struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
-                                        int prio, const cpumask_t *mask, int prio_cap)
-{
-    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
-    if (t)
-        thread_wake(t);
-    return t;
 }
 
 struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,

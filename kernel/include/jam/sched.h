@@ -148,8 +148,6 @@ struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *
  * for, and the timer service). */
 struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                     const cpumask_t *mask);
-struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
-                                        int prio, const cpumask_t *mask, int prio_cap);
 /* Same, but the thread doesn't run until the caller thread_wake()s it: for
  * callers that must publish the thread somewhere first (process_start). */
 struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
@@ -238,9 +236,6 @@ void sched_stack_trim(void);
 unsigned sched_stack_cache_set_limit(unsigned limit);
 /* Stacks freed (unmapped, pages returned) since boot. */
 uint64_t sched_stacks_freed(void);
-/* Tell `cpu` to look at its run queue soon (IPI if remote and not polling
- * in idle). */
-void sched_kick(uint32_t cpu);
 
 /* Spin before idle: how long an idle CPU polls for work before it
  * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The

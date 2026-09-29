@@ -349,16 +349,16 @@ bool stress_run(uint64_t seconds)
             }
         }
         if (sec % 10 == 0 || sec == seconds) {
-            uint64_t sw = 0, st = 0, t, fr;
+            uint64_t sw = 0, steals = 0, t, fr;
             for (uint32_t i = 0; i < cpu_count; i++) {
                 sw += cpus[i]->switches;
-                st += cpus[i]->steals;
+                steals += cpus[i]->steals;
             }
             pmm_stats(&t, &fr);
             kprintf("stress: %4lu s  switches %lu  steals %lu  counter %lu  allocs %lu  "
                     "sleeps %lu  migrations %lu  pingpongs %lu  spawns %lu  processes %lu  "
                     "boosts %lu  free %lu MiB\n",
-                    sec, sw, st, ops[K_COUNTER], ops[K_ALLOC], ops[K_SLEEPER],
+                    sec, sw, steals, ops[K_COUNTER], ops[K_ALLOC], ops[K_SLEEPER],
                     ops[K_MIGRATOR], ops[K_PINGPONG], ops[K_SPAWNER], ops[K_PROCESS],
                     sched_boost_count(), fr >> 8);
         }

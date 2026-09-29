@@ -72,7 +72,7 @@ static int timer_mode = TMR_MODE_PERIODIC;
 static uint32_t apic_ticks_per_sec;   /* with divide-by-16 */
 static uint64_t tsc_period;           /* TSC cycles per tick */
 volatile bool lapic_oneshot = true;
-volatile uint64_t lapic_early_irqs;   /* one-shot interrupts that found nothing due */
+static volatile uint64_t lapic_early_irqs;   /* one-shot interrupts that found nothing due */
 
 static uint32_t rd(uint32_t reg)
 {
