@@ -30,8 +30,10 @@ mkdir -p "$out"
 
 img="$out/$name.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
-printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n    module_path: boot():/boot/bootfs.img\n    cmdline: %s\n' \
-    "$cmdline" > "$out/$name.conf"
+{
+    printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n'
+    printf '    module_path: boot():/boot/bootfs.img\n    cmdline: %s\n' "$cmdline"
+} > "$out/$name.conf"
 mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
 
@@ -95,7 +97,8 @@ if [ -n "${mpid:-}" ]; then
     kill $mpid 2>/dev/null || true
     wait $mpid 2>/dev/null || true
 fi
-python3 -c "from PIL import Image; Image.open('$out/$name.ppm').save('$out/$name.png')" 2>/dev/null || true
+python3 -c "from PIL import Image; Image.open('$out/$name.ppm').save('$out/$name.png')" \
+    2>/dev/null || true
 rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon" "$ser"
 if [ -n "$fpid" ]; then
     fst=0

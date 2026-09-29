@@ -10,7 +10,9 @@
 set -u
 out=$1
 shift
-names=${*:-"bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog smap smep"}
+all="bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog
+     smap smep"
+names=${*:-$all}
 mkdir -p "$out"
 fails=0
 for n in $names; do
@@ -32,7 +34,8 @@ for n in $names; do
     } > "$s"
     if QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_INPUT="$s" \
         tools/qemu-test.sh "$out" "crash-$n" shell > "$out/crash-$n.out" 2>&1; then
-        why=$(grep -m1 -A2 "KERNEL PANIC" "$out/crash-$n.log" | tail -1 | sed "s/^\[[ 0-9.]*\] *//" | cut -c1-90)
+        why=$(grep -m1 -A2 "KERNEL PANIC" "$out/crash-$n.log" | tail -1 |
+              sed "s/^\[[ 0-9.]*\] *//" | cut -c1-90)
         echo "crash $n: OK${why:+ ($why)}"
     else
         echo "crash $n: FAILED (see $out/crash-$n.log)"

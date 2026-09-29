@@ -211,8 +211,9 @@ static bool stop_devmgr(void)
     }
     bool ok = st == OK && !info.killed && info.exit_code == 0;
     if (st == OK)
-        init_say("init: devmgr %s %ld after %lu ms", info.killed ? "was killed, code" : "exited with code",
-            (long)info.exit_code, (unsigned long)(((uint64_t)jam_clock_get() - t0) / 1000000));
+        init_say("init: devmgr %s %ld after %lu ms",
+                 info.killed ? "was killed, code" : "exited with code", (long)info.exit_code,
+                 (unsigned long)(((uint64_t)jam_clock_get() - t0) / 1000000));
     struct job_info ji;
     if (jam_job_get_info(devmgr_job, &ji) == OK)
         for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)

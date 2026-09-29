@@ -44,7 +44,8 @@ expect usbtest: unplug the hub now
 send device_del hub1
 EOF
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_MONITOR="$mon" \
-QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2,port-power=on -device usb-mouse,bus=xhci.0,port=3 \
+QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2,port-power=on \
+-device usb-mouse,bus=xhci.0,port=3 \
 -device usb-kbd,bus=xhci.0,port=4 -device usb-ccid,bus=xhci.0,port=2.2 -device $kbd" \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"

@@ -272,7 +272,8 @@ static void test_priority(void)
     thread_join(mid);
     thread_join(hi);
     if (!(order_of[2] < order_of[1] && order_of[1] < order_of[0]))
-        panic("priority: ran low #%u cpu %u t=%lu, mid #%u cpu %u t=%lu, high #%u cpu %u t=%lu; hog ended %lu (want high, mid, low on cpu %u)",
+        panic("priority: ran low #%u cpu %u t=%lu, mid #%u cpu %u t=%lu, "
+              "high #%u cpu %u t=%lu; hog ended %lu (want high, mid, low on cpu %u)",
               order_of[0], order_cpu[0], order_t[0], order_of[1], order_cpu[1], order_t[1],
               order_of[2], order_cpu[2], order_t[2], hog_end, cpu);
     kprintf("selftest: priority ok\n");

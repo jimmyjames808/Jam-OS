@@ -193,7 +193,8 @@ $(call prog_objs,$(1)): PROG_CFLAGS := -iquote $(call prog_dir,$(1)) \
                                        $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR))
 
 $(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
-                    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a user/linker.ld
+                    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a \
+                    user/linker.ld
 	@mkdir -p $$(dir $$@)
 	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
 	    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a $(LIBGCC) -o $$@

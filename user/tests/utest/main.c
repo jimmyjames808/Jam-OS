@@ -1377,7 +1377,8 @@ static bool t_driver_handle_limits(void)
     /* A register page of the lowest BAR (hs[1]) that isn't the table or
      * the PBA. */
     uint32_t low = (uint32_t)__builtin_ctz(mask), pg = 0;
-    while (((tab & 7) == low && (tab & ~0xfffu) == pg) || ((pba & 7) == low && (pba & ~0xfffu) == pg))
+    while (((tab & 7) == low && (tab & ~0xfffu) == pg) ||
+           ((pba & 7) == low && (pba & ~0xfffu) == pg))
         pg += 4096;
     if (jam_vmo_create_physical(hs[1], pg, 4096, VMO_CACHE_UC, &x) == OK) {
         CHECK_ST(jam_handle_duplicate(x, RIGHT_SAME, &v), ERR_ACCESS_DENIED);

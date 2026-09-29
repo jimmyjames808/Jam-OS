@@ -904,7 +904,8 @@ static void sleep_accuracy(int us)
 
 #define SERIAL_SAMPLES 32
 static const char serial_line[] =
-    "bench: serial timing line, 100 characters long, sent 64 times; ignore it ..........................\n";
+    "bench: serial timing line, 100 characters long, sent 64 times; ignore it "
+    "..........................\n";
 _Static_assert(sizeof(serial_line) == 101, "100 characters and the NUL");
 
 static void bench_serial(void *arg)
@@ -1288,7 +1289,8 @@ static void user_benches(void)
                           "user: process->process channel_call, same CPU (P)");
     else
         user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
-    user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1, "user: thread->thread channel_call, 1 process (P)");
+    user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
+                      "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };
     for (unsigned i = 0; i < 3; i++) {
         if (others[i] < 0)

@@ -277,7 +277,8 @@ def gen_common():
         "/* Server: answer the request whose first n bytes are at req with a bare",
         " * status. No txid (n < 4): no reply. A reply that can't be written",
         " * (the client is gone, or its queue is full) is dropped. */",
-        "static inline void idl_reply_status(handle_t ch, const void *req, uint32_t n, status_t st)",
+        "static inline void idl_reply_status(handle_t ch, const void *req, uint32_t n, "
+        "status_t st)",
         "{",
         "    if (n < sizeof(uint32_t))",
         "        return;",
@@ -368,8 +369,8 @@ def gen_protocol(p):
         if hres:
             out.append(f"    handle_t idl_rh[{len(hres)}];")
             out.append("    uint32_t idl_rhn = 0;")
-            out.append("    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, "
-                       "sizeof(idl_r), &idl_n,")
+            out.append("    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), "
+                       "&idl_r, sizeof(idl_r), &idl_n,")
             out.append(f"                                         idl_rh, {len(hres)}, &idl_rhn, "
                        "deadline_ns);")
             out.append("    if (idl_st == OK)")
@@ -403,7 +404,8 @@ def gen_protocol(p):
                 out.append(f"        *out_{f.name} = idl_r.{f.name};")
         out.append("    return idl_st;")
         out.append("}")
-        plain = ["handle_t ch"] + [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+        plain = (["handle_t ch"] + [f.in_param() for f in m.args] +
+                 [f.out_param() for f in m.results])
         names = ["ch", "DEADLINE_NEVER"] + [f.name for f in m.args] + \
                 [f"out_{f.name}" for f in m.results]
         out.append(f"static inline status_t {P}_{m.name}({', '.join(plain)})")
@@ -431,7 +433,8 @@ def gen_protocol(p):
         " * reply with the handles, or closes them if it can't. */",
         f"static inline uint32_t {P}_dispatch(const struct {P}_ops *ops, void *ctx, "
         "const void *req, uint32_t n,",
-        " " * len(f"static inline uint32_t {P}_dispatch(") + "void *rep, handle_t *rhs, uint32_t *rhn)",
+        " " * len(f"static inline uint32_t {P}_dispatch(") +
+        "void *rep, handle_t *rhs, uint32_t *rhn)",
         "{",
         "    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;",
         "    *rhn = 0;",
@@ -474,7 +477,8 @@ def gen_protocol(p):
         if hres:
             ok = " && ".join(f"out_{f.name} != HANDLE_INVALID" for f in hres)
             out.append(f"        if (idl_h->status == OK && !({ok}))")
-            out.append("            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */")
+            out.append("            idl_h->status = ERR_INTERNAL;   "
+                       "/* a handle result left unset */")
             out.append("        if (idl_h->status != OK) {")
             for f in hres:
                 out.append(f"            if (out_{f.name} != HANDLE_INVALID)")

@@ -39,6 +39,7 @@ SH_CMD(help)
     sh_say("Programs in /boot/bin run by name (utest, contest, ...). Aliases: lspci lsusb ll.\n"
            "Lines: a ; b   a && b   a || b   a | b | c   NAME=value   $NAME   'quotes'  # comment\n"
            "Keys: Tab completes, left/right/home/end, backspace/delete, up/down history,\n"
-           "Ctrl+C cancel, Ctrl+L clear, Shift+PageUp/PageDown scroll back. help <cmd>: details.\n");
+           "Ctrl+C cancel, Ctrl+L clear, Shift+PageUp/PageDown scroll back. "
+           "help <cmd>: details.\n");
     return 0;
 }

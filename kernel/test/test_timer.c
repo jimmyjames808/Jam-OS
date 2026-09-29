@@ -149,7 +149,8 @@ KTEST(oneshot_far_deadline_does_not_wrap)
     /* The unsaturated conversion, exactly (128-bit) and as the old code
      * computed it (wrapping mod 2^64). */
     uint64_t ns = UINT64_MAX - 1;
-    unsigned __int128 exact = (unsigned __int128)(ns / 1000000000ull) * tsc_hz + uptime_to_tsc(0);   /* = boot TSC */
+    /* uptime_to_tsc(0) = the boot TSC */
+    unsigned __int128 exact = (unsigned __int128)(ns / 1000000000ull) * tsc_hz + uptime_to_tsc(0);
     far_deadline = ns;
     if (exact > UINT64_MAX) {
         /* This TSC is fast enough to wrap: pick a deadline whose wrapped
