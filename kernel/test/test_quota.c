@@ -109,3 +109,59 @@ KTEST(quota_job_chain_bounded)
     KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 0);
     job_unref(j);
 }
+
+/* R1. A VMO's own table pages (mid and leaf) are charged to its job like
+ * its pages, and a commit the job refuses builds no table. The review's
+ * attack: a job allowed 0 pages asks for one page every 2 MiB of a 64 GiB
+ * VMO; each refused commit used to leave a 4 KiB leaf behind (128 MiB of
+ * kernel memory per VMO handle, nothing charged). */
+KTEST(quota_vmo_tables_charged)
+{
+    struct job *j = quota_job();
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 0), OK);
+    struct vmo *v;
+    KT_EQ(vmo_create(VMO_MAX_SIZE, 0, &v), OK);
+    KT_EQ(vmo_set_job(v, j), OK);
+    uint64_t before = free_now();
+    unsigned refused = 0;
+    for (uint64_t off = 0; off < VMO_MAX_SIZE; off += 2ull << 20)
+        if (vmo_commit(v, off, PAGE_SIZE) == ERR_NO_MEMORY)
+            refused++;
+    uint64_t used = before - free_now();
+    kprintf("quota: %u commits refused, job charged %lu pages, kernel spent %lu pages\n",
+            refused, job_used(j, JOB_LIMIT_PAGES), used);
+    KT_EQ(refused, VMO_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    kobject_unref(vmo_kobject(v));
+    KT_ASSERT(used <= 16);          /* ...so the kernel didn't spend them either */
+
+    /* The first page of a VMO costs 3 (itself, a mid table, a leaf); the
+     * next one in the same 2 MiB costs 1; one in a new 2 MiB costs 2. With
+     * room for 4, that one is refused and leaves nothing behind. */
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 4), OK);
+    KT_EQ(vmo_create(8ull << 20, 0, &v), OK);
+    KT_EQ(vmo_set_job(v, j), OK);
+    KT_EQ(vmo_commit(v, 0, PAGE_SIZE), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 3);
+    KT_EQ(vmo_commit(v, PAGE_SIZE, PAGE_SIZE), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 4);
+    KT_EQ(vmo_commit(v, 4ull << 20, PAGE_SIZE), ERR_NO_MEMORY);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 4);
+    KT_EQ(vmo_decommit(v, 0, 2 * PAGE_SIZE), OK);   /* the pages go, the tables stay */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2);
+    KT_EQ(vmo_commit(v, 4ull << 20, PAGE_SIZE), OK);   /* page + leaf: 4 again */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 4);
+    KT_EQ(vmo_set_size(v, 2ull << 20), OK);   /* the leaf past the end goes with its page */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2);
+    kobject_unref(vmo_kobject(v));
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    /* Tables made before the job was set are charged when it is. */
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    KT_EQ(vmo_create(PAGE_SIZE, 0, &v), OK);
+    KT_EQ(vmo_commit(v, 0, PAGE_SIZE), OK);
+    KT_EQ(vmo_set_job(v, j), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 3);
+    kobject_unref(vmo_kobject(v));
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
+    job_unref(j);
+}

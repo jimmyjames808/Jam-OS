@@ -40,37 +40,6 @@ static struct job *review_job(void)
     return j;
 }
 
-/* R1. A VMO's own page-table pages (root/mid/leaf, kernel memory) are not
- * charged to any job, and slot_locked() creates them BEFORE the page charge
- * is tried, so they stay even when the charge fails. A process whose job
- * may commit 0 pages makes a 64 GiB VMO and asks for one page every 2 MiB:
- * every commit fails with ERR_NO_MEMORY, yet each leaves a 4 KiB leaf table
- * behind: 128 MiB of kernel memory per VMO handle, with nothing charged.
- * (sysc_vmo_create -> vmo_set_job(t->job), sysc_vmo_commit -> vmo_commit do
- * exactly what this test does.) */
-KTEST(review_vmo_tables_uncharged)
-{
-    struct job *j = review_job();
-    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 0), OK);
-    struct vmo *v;
-    KT_EQ(vmo_create(VMO_MAX_SIZE, 0, &v), OK);
-    KT_EQ(vmo_set_job(v, j), OK);
-    uint64_t before = free_now();
-    unsigned refused = 0;
-    for (uint64_t off = 0; off < VMO_MAX_SIZE; off += 2ull << 20)
-        if (vmo_commit(v, off, PAGE_SIZE) == ERR_NO_MEMORY)
-            refused++;
-    uint64_t used = before - free_now();
-    kprintf("review: %u commits refused, job charged %lu pages, kernel spent %lu pages\n",
-            refused, job_used(j, JOB_LIMIT_PAGES), used);
-    KT_EQ(refused, VMO_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
-    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
-    uint64_t spent = used;
-    kobject_unref(vmo_kobject(v));   /* frees the tables: no leak for the harness */
-    job_unref(j);
-    KT_ASSERT(spent <= 16);          /* ...so the kernel must not have spent them either */
-}
-
 /* R2. User page tables (aspace.c pt_prepare: PT/PD/PDPT pages) are not
  * charged to anyone either. One committed (charged) page, mapped at 1 GiB
  * strides, costs a PD and a PT page per mapping on the first touch: here
