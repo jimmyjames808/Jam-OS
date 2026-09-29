@@ -322,6 +322,34 @@ static uint64_t vmap_reserve_raw(uint64_t len)
     return va;
 }
 
+/* Create the kernel page tables down to the page table for every page of
+ * [va, va+len) in the vmap area, returning false instead of panicking when
+ * memory runs out, so the vmm_map that follows never has to allocate.
+ * Tables made before a failure stay (kernel tables are never freed; the
+ * next stack there uses them). */
+static bool prepare_tables(uint64_t va, uint64_t len)
+{
+    bool ok = true;
+    uint64_t f = spin_lock_irqsave(&pt_lock);
+    for (uint64_t a = ALIGN_DOWN(va, SIZE_2M); ok && a < va + len; a += SIZE_2M) {
+        uint64_t *t = table(kernel_pml4);
+        for (int l = 4; l > 1; l--) {
+            uint64_t *e = &t[(a >> (12 + 9 * (l - 1))) & 511];
+            if (!(*e & PTE_P)) {
+                uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+                if (!pa) {
+                    ok = false;
+                    break;
+                }
+                *e = pa | PTE_P | PTE_W | PTE_U;   /* as walk() makes them */
+            }
+            t = table(*e);
+        }
+    }
+    spin_unlock_irqrestore(&pt_lock, f);
+    return ok;
+}
+
 void *kstack_try_alloc(size_t size)
 {
     /* Every page first, so running out (M5: user code creates threads)
@@ -341,6 +369,11 @@ void *kstack_try_alloc(size_t size)
         }
     }
     uint64_t va = vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
+    if (!prepare_tables(va, size)) {
+        for (uint64_t i = 0; i < n; i++)
+            pmm_free_page_phys(pas[i]);
+        return NULL;   /* the reserved address range is simply never used */
+    }
     for (uint64_t i = 0; i < n; i++)
         vmm_map(kernel_pml4, va + i * PAGE_SIZE, pas[i], PAGE_SIZE,
                 VM_WRITE | VM_GLOBAL | VM_SMALL);

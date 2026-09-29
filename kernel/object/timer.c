@@ -56,13 +56,23 @@ static void service_main(void *arg)
     }
 }
 
-static void service_start(void)
+/* M5: user code can make the first timer, so running out of memory for
+ * the service thread is an error (and the next timer_create tries again),
+ * not a panic. */
+static status_t service_start(void)
 {
     if (__atomic_load_n(&service_started, __ATOMIC_ACQUIRE) ||
         __atomic_exchange_n(&service_started, true, __ATOMIC_ACQ_REL))
-        return;
+        return OK;
     /* Timers armed before the thread reaches its loop are found there. */
-    thread_detach(thread_create("timer service", service_main, NULL, SERVICE_PRIO));
+    struct thread *t = thread_try_create_on("timer service", service_main, NULL, SERVICE_PRIO,
+                                            NULL);
+    if (!t) {
+        __atomic_store_n(&service_started, false, __ATOMIC_RELEASE);
+        return ERR_NO_MEMORY;
+    }
+    thread_detach(t);
+    return OK;
 }
 
 static void timer_destroy(struct kobject *obj)
@@ -84,8 +94,12 @@ status_t timer_create(struct ktimer **out)
     struct ktimer *t = kzalloc(sizeof(*t));
     if (!t)
         return ERR_NO_MEMORY;
+    status_t st = service_start();
+    if (st != OK) {
+        kfree(t);
+        return st;
+    }
     kobject_init(&t->base, OBJ_TIMER, &timer_ops, "timer", 0);
-    service_start();
     *out = t;
     return OK;
 }
