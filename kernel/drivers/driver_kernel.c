@@ -73,14 +73,6 @@ struct kdrv {
     struct hblock      *free_list;    /* (lock) */
 };
 
-/* Weak until Track C provides it (see driver_kernel.h). */
-__attribute__((weak)) status_t resource_mmio_range(struct kobject *res, uint64_t *base,
-                                                   uint64_t *size)
-{
-    (void)res; (void)base; (void)size;
-    return ERR_NOT_SUPPORTED;
-}
-
 /* ---- the current driver -------------------------------------------------------- */
 
 static struct kdrv *self(void)
