@@ -8,7 +8,8 @@
  *   pci_enum               RIGHT_INSPECT on a RES_PCI
  *   pci_device_open        RIGHT_SLICE on a RES_PCI
  *   pci_config_read        RIGHT_READ on a RES_PCI_DEV
- *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter)
+ *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter; with
+ *                          RIGHT_MANAGE too, the PM power state may change)
  *   pci_bar_resource       RIGHT_SLICE on a RES_PCI_DEV
  *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV, and only to turn
  *                          it OFF (M7: on is the current dma_cap's)
@@ -23,10 +24,12 @@
  * resources without it; a physical VMO made from a resource handle
  * without RIGHT_DUPLICATE / RIGHT_TRANSFER lacks them too (M7). Every new resource and dma_cap costs the caller's
  * job one JOB_LIMIT_HANDLES unit (on top of the handle slot). */
+#include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
+#include <jam/sched.h>
 #include <jam/syscall_impl.h>
 #include <jam/vmo.h>
 #include "sysc.h"
@@ -145,17 +148,39 @@ status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off
 {
     struct kobject *obj;
     struct pci_dev *d;
-    status_t st = get_dev(t, dev, RIGHT_WRITE, &obj, &d);
+    rights_t r;
+    status_t st = get_res(t, dev, RIGHT_WRITE, &obj, &r);
     if (st != OK)
         return st;
+    if (!(d = resource_pci_dev(obj))) {
+        kobject_unref(obj);
+        return ERR_WRONG_TYPE;
+    }
+    bool manage = r & RIGHT_MANAGE, power = false;
+    struct pci_saved_config saved;
     st = pci_cfg_access_ok(off, width);
     if (st == OK) {
         /* Check and write under the command lock: the command register's
          * kernel bits can't change between the two. */
         uint64_t f = pci_cmd_lock();
-        st = pci_cfg_write_allowed(d, off, width, value, pci_cfg_read);
+        st = pci_cfg_write_allowed_as(d, off, width, value, pci_cfg_read, manage);
+        if (st == OK && manage &&
+            (power = pci_cfg_write_changes_power(d, off, width, value, pci_cfg_read)))
+            pci_save_config(d, &saved);
         if (st == OK)
             pci_cfg_write(d, off, width, value);
+        pci_cmd_unlock(f);
+    }
+    if (power) {
+        /* A power-state change (devmgr waking a function, M7): the
+         * function may not be touched for 10 ms (PCI PM 1.2, D3hot -> D0
+         * recovery; the longest), and D3hot -> D0 resets it unless it has
+         * No_Soft_Reset: put back the BARs and command register. */
+        thread_sleep_ms(10);
+        uint64_t f = pci_cmd_lock();
+        if (pci_restore_config(d, &saved))
+            kprintf("pci: %02x:%02x.%x: reset by its power-state change; BARs and command "
+                    "register restored\n", d->info.bus, d->info.dev, d->info.fn);
         pci_cmd_unlock(f);
     }
     kobject_unref(obj);

@@ -44,6 +44,13 @@ status_t resource_range(struct kobject *res, uint64_t *base, uint64_t *size);
 typedef uint32_t (*pci_cfg_reader_t)(struct pci_dev *d, uint32_t off, uint32_t width);
 status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
                                pci_cfg_reader_t read);
+/* M7: the same for a writer with RIGHT_MANAGE on the function (`manage`):
+ * it may also change the PM PowerState. */
+status_t pci_cfg_write_allowed_as(struct pci_dev *d, uint32_t off, uint32_t width,
+                                  uint32_t value, pci_cfg_reader_t read, bool manage);
+/* Does this write change the function's PM PowerState? */
+bool pci_cfg_write_changes_power(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
+                                 pci_cfg_reader_t read);
 /* Width 1, 2 or 4, offset aligned to it and < 4096: else ERR_INVALID_ARGS. */
 status_t pci_cfg_access_ok(uint32_t off, uint32_t width);
 /* Serialises every change of a command register made on a process's

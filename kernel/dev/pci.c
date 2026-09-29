@@ -929,8 +929,11 @@ status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on)
             wr(d, d->cap_msi + 2, 2, msi_ctl & ~MSI_CTL_ENABLE);
             msi_ctl &= ~MSI_CTL_ENABLE;
         }
-        if (!(msi_ctl & MSI_CTL_ENABLE) && !(msix_ctl & MSIX_CTL_ENABLE))
-            wr(d, CFG_COMMAND, 2, cmd & ~CMD_INTX_OFF);
+        /* INTx Disable stays set (M7; review of M6 phase 2): clearing it
+         * with the last MSI gone could let an INTx the device has pending
+         * fire into a line nobody handles, and an unbound function has no
+         * business interrupting. */
+        (void)cmd;
     }
     (void)rd(d, CFG_COMMAND, 2);
     spin_unlock_irqrestore(&pci_lock, f);
@@ -976,6 +979,38 @@ static status_t set_cmd_bit(struct pci_dev *d, uint16_t bit, bool on)
     uint16_t back = rd(d, CFG_COMMAND, 2);   /* flushes the posted write */
     spin_unlock_irqrestore(&pci_lock, f);
     return !!(back & bit) == on ? OK : ERR_BAD_STATE;
+}
+
+void pci_save_config(struct pci_dev *d, struct pci_saved_config *out)
+{
+    uint64_t f = spin_lock_irqsave(&pci_lock);
+    out->command = (uint16_t)rd(d, CFG_COMMAND, 2);
+    for (uint32_t i = 0; i < 6; i++)
+        out->bar[i] = i < bar_count(d) ? rd(d, CFG_BAR0 + 4 * i, 4) : 0;
+    spin_unlock_irqrestore(&pci_lock, f);
+}
+
+bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in)
+{
+    if (untouchable(d))
+        return false;
+    bool lost = false;
+    uint64_t f = spin_lock_irqsave(&pci_lock);
+    uint16_t cmd = (uint16_t)rd(d, CFG_COMMAND, 2);
+    for (uint32_t i = 0; i < bar_count(d); i++)
+        lost |= rd(d, CFG_BAR0 + 4 * i, 4) != in->bar[i];
+    if (lost) {
+        /* Decode off while the BARs go back, then the command register as
+         * it was (INTx Disable set whatever it was: M7). */
+        wr(d, CFG_COMMAND, 2, cmd & ~(CMD_IO | CMD_MEMORY));
+        for (uint32_t i = 0; i < bar_count(d); i++)
+            wr(d, CFG_BAR0 + 4 * i, 4, in->bar[i]);
+    }
+    if (lost || cmd != (in->command | CMD_INTX_OFF))
+        wr(d, CFG_COMMAND, 2, in->command | CMD_INTX_OFF);
+    (void)rd(d, CFG_COMMAND, 2);
+    spin_unlock_irqrestore(&pci_lock, f);
+    return lost;
 }
 
 status_t pci_set_bus_master(struct pci_dev *d, bool on)

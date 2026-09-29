@@ -298,7 +298,7 @@ KTEST(pci_msi_roundtrip)
 
     KT_EQ(pci_msi_enable(d, false, false), OK);
     KT_ASSERT(!(pci_cfg_read(d, c + 2, 2) & 1));
-    KT_ASSERT(!(pci_cfg_read(d, CMD, 2) & CMD_INTX_OFF));
+    KT_ASSERT(pci_cfg_read(d, CMD, 2) & CMD_INTX_OFF);   /* M7: INTx stays disabled */
     /* Put it all back. */
     pci_cfg_write(d, c + 4, 4, alo);
     pci_cfg_write(d, c + 8, 4, ahi);

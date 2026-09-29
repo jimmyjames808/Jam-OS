@@ -4,9 +4,10 @@
  * (SR_DEVMGR; the protocol is in <devmgr.h>).
  *
  * It enumerates every function (pci_enum), matches each against the table
- * below and, for every match whose driver ELF is in bootfs, makes the
- * driver's handles and starts drv/<name> in a job of its own (a child of
- * devmgr's job, with limits). The policy is all here; the kernel only
+ * below and, for every match whose driver ELF is in bootfs, wakes the
+ * function to D0 if it was left in D1-D3, makes the driver's handles and
+ * starts drv/<name> in a job of its own (a child of devmgr's job, with
+ * limits). The policy is all here; the kernel only
  * enforces rights. A driver gets exactly (roles from <jam/driver.h>):
  *
  *   DR_PCIDEV  its function, RIGHT_READ | RIGHT_WRITE (+ wait, inspect):
@@ -164,6 +165,43 @@ static status_t bar_for_driver(handle_t dev, unsigned n, handle_t *out)
     return st;
 }
 
+/* A capability's config offset (the standard list, bounded), or 0. */
+static uint32_t find_cap(handle_t dev, uint32_t id)
+{
+    uint32_t st = 0, p = 0, v = 0;
+    if (jam_pci_config_read(dev, 0x06, 2, &st) != OK || !(st & 0x10) ||
+        jam_pci_config_read(dev, 0x34, 1, &p) != OK)
+        return 0;
+    for (int guard = 0; p >= 0x40 && p < 0x100 && guard < 48; guard++) {
+        p &= ~3u;
+        if (jam_pci_config_read(dev, p, 2, &v) != OK)
+            return 0;
+        if ((v & 0xff) == id)
+            return p;
+        p = v >> 8;
+    }
+    return 0;
+}
+
+/* A function left in D1-D3 (by firmware, or a power-down) is woken to D0
+ * before a driver gets it (review of M6 phase 2, finding 7): only we may
+ * change its power state (RIGHT_MANAGE). The kernel waits out the
+ * transition (10 ms) and puts back the BARs and command register a
+ * D3hot -> D0 reset loses. */
+static status_t wake(struct binding *b)
+{
+    uint32_t pm = find_cap(b->dev, 0x01), pmcsr = 0;
+    if (!pm || jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) != OK || !(pmcsr & 3))
+        return OK;
+    uint32_t was = pmcsr & 3;
+    status_t st = jam_pci_config_write(b->dev, pm + 4, 2, pmcsr & ~0x8003u);   /* (15: PME status, W1C) */
+    if (st == OK && jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) == OK && (pmcsr & 3))
+        st = ERR_TIMED_OUT;
+    say(true, "devmgr: %s %04x:%04x was in D%u: %s", bdf(b), b->info.vendor, b->info.device, was,
+        st == OK ? "woken to D0" : "can't wake it");
+    return st;
+}
+
 /* One more startup handle for a driver: h under driver role `role`,
  * arriving with `rights`. */
 static void add(struct spawn_handle *x, rights_t *xr, unsigned *n, uint32_t role, handle_t h,
@@ -182,6 +220,8 @@ static status_t bind(struct binding *b)
     status_t st = OK;
     if (!b->dev)
         st = jam_pci_device_open(pci_res, b->index, &b->dev);
+    if (st == OK)
+        st = wake(b);
     /* The driver's hardware handles arrive without RIGHT_DUPLICATE and
      * RIGHT_TRANSFER (spawn passes each with its xr[] rights). */
     if (st == OK && (st = narrowed(b->dev, DEVMGR_DRV_DEV_RIGHTS, &h)) == OK)
