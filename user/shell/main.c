@@ -15,13 +15,18 @@
  *                 (ktest, bench, stress, ps, mem through debug_command;
  *                 reboot); no RIGHT_MAP / RIGHT_SLICE
  *   SR_USER + 1   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
- *   SR_DEVMGR     a client end of devmgr's channel (`devices`, `usb`)
+ *   SR_DEVMGR     devmgr's query channel, a client end (`devices`, `usb`)
+ *   SR_DEVMGR_CTL devmgr's control channel, a client end: only handed on to
+ *                 the test programs of `utest` and `usbtest`
  *   SR_USER + 2   a channel from init: when devmgr dies, init starts it
  *                 again (with its drivers) and sends the new client end
  *                 here (INIT_SHELL_DEVMGR, <devmgr.h>); every command that
  *                 talks to devmgr takes the newest first
- * The programs `run` starts get copies of SR_DEVMGR (as init's programs
- * do) and SR_CONSOLE.
+ * The programs `run` starts get a PROGRAM-level console channel of their
+ * own (console.new_client: no input sources) and nothing of devmgr's; the
+ * shell kills a program's job when it ends. Ctrl+C reaches the shell even
+ * while the program holds the keys (the console sees to that).
+
  *
  * Tests as commands (M7 cleanup; the boot menu keeps only what must run
  * without a keyboard): `utest` and `usbtest` run those programs and show
@@ -44,7 +49,7 @@
 #define PROMPT    "\033[93mjam>\033[0m "
 #define PROMPT_W  5
 
-static handle_t con, keys, root, pci, devmgr, from_init;
+static handle_t con, keys, root, pci, devmgr, devmgr_ctl, from_init;
 
 /* ---- output ------------------------------------------------------------------- */
 
@@ -257,34 +262,45 @@ static void remember(const char *line)
 
 /* ---- devmgr: the newest client end ------------------------------------------ */
 
+static void drop(handle_t *h)
+{
+    if (*h)
+        jam_handle_close(*h);
+    *h = HANDLE_INVALID;
+}
+
 /* init restarts devmgr if it dies (with every driver it ran) and sends us
- * the new client end: take the newest, and forget a dead one. 0 while
- * there is none (a restart in progress, or no devmgr at all). */
+ * the new query and control client ends: take the newest, and forget dead
+ * ones. Returns the query end, 0 while there is none (a restart in
+ * progress, or no devmgr at all). */
 static handle_t devmgr_now(void)
 {
     while (from_init) {
         uint32_t kind = 0, n = 0, nh = 0;
-        handle_t h = HANDLE_INVALID;
+        handle_t h[2] = { HANDLE_INVALID, HANDLE_INVALID };
         struct channel_read_args a = {
             .h = from_init, .bytes_cap = sizeof(kind), .bytes = (uint64_t)(uintptr_t)&kind,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)&h,
-            .handles_cap = 1, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)h,
+            .handles_cap = 2, .actual_handles = (uint64_t)(uintptr_t)&nh,
         };
         if (jam_channel_read(&a) != OK)
             break;   /* nothing new (or init's end is gone) */
-        if (n == sizeof(kind) && kind == INIT_SHELL_DEVMGR && nh == 1) {
-            if (devmgr)
-                jam_handle_close(devmgr);
-            devmgr = h;
-        } else if (nh) {
-            jam_handle_close(h);
+        if (n == sizeof(kind) && kind == INIT_SHELL_DEVMGR && nh == 2) {
+            drop(&devmgr);
+            drop(&devmgr_ctl);
+            devmgr = h[0];
+            devmgr_ctl = h[1];
+        } else {
+            for (uint32_t i = 0; i < nh; i++)
+                jam_handle_close(h[i]);
         }
     }
-    signals_t seen = 0;
-    if (devmgr && jam_object_wait_one(devmgr, SIG_PEER_CLOSED, 0, &seen) == OK &&
-        (seen & SIG_PEER_CLOSED)) {
-        jam_handle_close(devmgr);
-        devmgr = HANDLE_INVALID;
+    handle_t *ends[2] = { &devmgr, &devmgr_ctl };
+    for (unsigned i = 0; i < 2; i++) {
+        signals_t seen = 0;
+        if (*ends[i] && jam_object_wait_one(*ends[i], SIG_PEER_CLOSED, 0, &seen) == OK &&
+            (seen & SIG_PEER_CLOSED))
+            drop(ends[i]);
     }
     return devmgr;
 }
@@ -479,8 +495,14 @@ static void cmd_usb(void)
 }
 
 /* Start argv[0] (bin/<name>, or a bootfs path) with argv, wait for it
- * (Ctrl+C kills it) and say how it ended. True if it exited 0. */
-static bool run_prog(int argc, char **argv)
+ * (Ctrl+C kills it) and say how it ended; then kill its job (anything it
+ * started ends with it). True if it exited 0.
+ * What it gets: a PROGRAM-level console channel (console.new_client:
+ * write, keys while it runs, the screen; no input sources) and, only if
+ * `test` (the utest and usbtest commands: test suites that kill and rebind
+ * drivers), devmgr's query and control channels. A program `run` starts
+ * gets nothing of devmgr's. */
+static bool run_prog(int argc, char **argv, bool test)
 {
     char path[128];
     if (strchr(argv[0], '/'))
@@ -500,12 +522,14 @@ static bool run_prog(int argc, char **argv)
         say("run: no job (%s)\n", status_str(st));
         return false;
     }
-    struct spawn_handle x[2];
+    struct spawn_handle x[3];
     unsigned nx = 0;
     handle_t h;
-    if (devmgr_now() && jam_handle_duplicate(devmgr, RIGHT_SAME, &h) == OK)
+    if (test && devmgr_now() && jam_handle_duplicate(devmgr, RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
-    if (jam_handle_duplicate(con, RIGHT_SAME, &h) == OK)
+    if (test && devmgr_ctl && jam_handle_duplicate(devmgr_ctl, RIGHT_SAME, &h) == OK)
+        x[nx++] = (struct spawn_handle){ SR_DEVMGR_CTL, h };
+    if (console_new_client_until(con, (uint64_t)jam_clock_get() + 5 * S, 2, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     argv[0] = path;
     struct spawn_args a = {
@@ -544,7 +568,13 @@ static bool run_prog(int argc, char **argv)
             (unsigned long)ms);
         ok = info.exit_code == 0;
     }
+    /* Whatever it started (and left running) goes with it: its console
+     * channel and keys must not outlive the foreground program. */
     struct job_info ji;
+    if (jam_job_get_info(job, &ji) != OK || ji.used[JOB_LIMIT_THREADS]) {
+        say("run: killing what %s left running\n", path);
+        jam_job_kill(job);
+    }
     if (jam_job_get_info(job, &ji) == OK) {
         bool clean = true;
         for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
@@ -565,7 +595,7 @@ static void cmd_run(int argc, char **argv)
         say("usage: run <prog> [args]\n");
         return;
     }
-    run_prog(argc - 1, argv + 1);
+    run_prog(argc - 1, argv + 1, false);
 }
 
 /* The kernel log from position `from` on (up to 64 KiB); *got: bytes. */
@@ -609,7 +639,7 @@ static void cmd_test_prog(const char *name)
     char prog[32];
     snprintf(prog, sizeof(prog), "%s", name);
     char *argv[] = { prog, NULL };
-    bool ok = run_prog(1, argv);
+    bool ok = run_prog(1, argv, true);
     size_t got;
     char *log = log_since(from, &got);
     char pat[40];
@@ -675,7 +705,7 @@ static void cmd_demo(int argc, char **argv)
     char *av[] = { d, c, s, NULL };
     say("demo: fractals on %ld CPUs for %s s; any key stops it\n", (long)(cpus > 0 ? cpus : 1),
         argc > 1 ? argv[1] : "76");
-    run_prog(3, av);
+    run_prog(3, av, false);
 }
 
 static void cmd_log(int argc, char **argv)
@@ -822,6 +852,7 @@ int main(int argc, char **argv)
     root = startup_handle(SR_RESOURCE);
     pci = startup_handle(SR_USER + 1);
     devmgr = startup_handle(SR_DEVMGR);
+    devmgr_ctl = startup_handle(SR_DEVMGR_CTL);
     from_init = startup_handle(SR_USER + 2);
 
     if (!con) {

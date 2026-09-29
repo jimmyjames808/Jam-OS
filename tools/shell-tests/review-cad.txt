@@ -1,10 +1,11 @@
-# Review repro: any holder of the console channel (here a program the
-# shell starts with `run`, which gets SR_CONSOLE but no root resource) can
-# connect an input source and send Ctrl+Alt+Del; the console reboots the
-# machine with its own RIGHT_MANAGE.
+# Review finding, fixed (M7 cleanup): a program the shell starts with `run`
+# (no root resource) gets a PROGRAM-level console channel, which can't
+# connect an input source, so it can't send Ctrl+Alt+Del (or any key).
 wait 120 Jam OS shell
 wait jam>
 send run contest cad
-wait contest: cad: sending Ctrl+Alt+Del
-wait 10 console: Ctrl+Alt+Del: rebooting
-wait 10 reboot: asked by console
+wait 10 contest: cad: connect_input: ERR_ACCESS_DENIED
+wait 10 run: bin/contest exited with code 0
+wait jam>
+send reboot
+wait reboot: resetting

@@ -17,10 +17,20 @@
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
  * function with MSI-X that isn't a bridge or the boot display".
  *
- * Trust: whoever holds the channel is trusted (init and what init starts).
- * GET_DRIVER, KILL, REBIND, DRIVER_VIEW, SUPERVISION and TEST_DRIVER are
- * for tests and administration; a later milestone splits them onto a
- * channel of their own.
+ * Trust (M7): devmgr serves two channels. The QUERY channel (startup role
+ * SR_DEVMGR) answers STATUS, GET_SERVICE, GET_DRIVER (read-only views) and
+ * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
+ * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND,
+ * DRIVER_VIEW (a driver's hardware handles) and TEST_DRIVER too. devmgr
+ * runs until every client end of its control channel is gone.
+ * Who holds what: init both (it hands devmgr new consoles); the programs
+ * init runs from init.cfg (the test suites utest and usbtest) both; in
+ * shell mode the shell both, but it passes CONTROL only to the test
+ * programs its `utest` and `usbtest` commands start, and nothing of
+ * devmgr's to what `run` starts (a program that needs it gets it by
+ * name, as those two do). GET_SERVICE's channels reach drivers (usb-bus
+ * hands out USB interfaces), so even QUERY is for trusted programs only.
+
  *
  * Supervision (M7): devmgr restarts a driver that dies unexpectedly
  * (crashes, is killed by anyone, KILL included, or exits with an error;
@@ -45,18 +55,17 @@
  * with its whole job (every driver it ran), so every devmgr client end
  * sees ERR_PEER_CLOSED. The new devmgr binds everything again from
  * scratch. A client that needs devmgr for good gets the new client end
- * from whoever gave it the old one: init sends the shell each new one on
+ * from whoever gave it the old ones: init sends the shell each new pair on
  * the shell's SR_USER + 2 channel (a message of one u32
- * INIT_SHELL_DEVMGR carrying the handle); the programs the shell runs get
- * the current one when they start. */
+ * INIT_SHELL_DEVMGR carrying two handles: query, then control); the test
+ * programs the shell runs get the current ones when they start. */
 #pragma once
 
 #include <os.h>
 
-/* init -> shell, on the shell's SR_USER + 2 channel: a new devmgr client
- * end (the one handle of the message). */
+/* init -> shell, on the shell's SR_USER + 2 channel: a new devmgr's
+ * client ends (the message's two handles: query, control). */
 #define INIT_SHELL_DEVMGR   1u
-
 
 #define DEVMGR_PROTOCOL_ID  3u   /* next to the IDL's null (1) and edu (2) */
 /* -> u32 bound, failed, skipped. Answered once the first binding pass is

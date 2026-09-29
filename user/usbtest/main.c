@@ -545,7 +545,7 @@ static bool t_unplug_hub(void)
 
 static bool find_bus(void)
 {
-    dm = startup_handle(SR_DEVMGR);
+    dm = startup_handle(SR_DEVMGR_CTL);   /* M7: it kills hid (control) */
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {

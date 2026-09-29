@@ -17,7 +17,8 @@ protocol console 12
 4  open_keys      () -> (handle keys)
 # A new input source: the console serves the `input` protocol on its end;
 # the caller (devmgr, for a HID driver; or the serial source) gets the
-# other end and hands it to the source, which calls `input` on it.
+# other end and hands it to the source, which calls `input` on it. ADMIN
+# channels only (see new_client).
 5  connect_input  () -> (handle source)
 # Lend the screen to a program that draws on it itself (the shell's `demo`):
 # the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
@@ -27,3 +28,15 @@ protocol console 12
 # borrower closing it, or dying; then it redraws the whole screen. One
 # lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen.
 6  lend_screen    () -> (u32 width, u32 height, u32 pitch, u8 red_shift, u8 green_shift, u8 blue_shift, u64 size, handle screen, handle lease)
+# A new client channel with less authority (M7 cleanup). Levels: 0 ADMIN
+# (the channels init hands the console at start: init's, and devmgr's
+# copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
+# open_keys, lend_screen: what the shell gives a program it runs; the
+# shell kills the program's job when it ends, so the channel lives only
+# while the program is in the foreground). A caller may only make a level
+# above its own: ERR_ACCESS_DENIED otherwise, ERR_INVALID_ARGS for a level
+# > 2. connect_input needs ADMIN (every input source is devmgr's or
+# init's, so Ctrl+Alt+Del only comes from real input). While a PROGRAM
+# client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
+# below it (the shell that ran it kills it): a program can't trap the keys.
+7  new_client     (u8 level) -> (handle client)

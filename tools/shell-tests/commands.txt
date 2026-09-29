@@ -1,9 +1,11 @@
 # The tests-as-commands of the M7 cleanup (QEMU_INPUT=this file, command
 # line "shell"): utest and usbtest with their result lines, pci, memmap,
 # the crash list and its confirmation, the demo on a borrowed screen and
-# back to the prompt, devmgr killed and restarted by init (the shell's
-# devices/usb reconnect), and last a real crash test from the shell (it
-# ends the run: qemu-test.sh sees "system halted").
+# back to the prompt, Ctrl+C reaching the shell past a program holding the
+# keys, a program's orphans killed with its job, devmgr killed and
+# restarted by init (the shell's devices/usb reconnect), and last a real
+# crash test from the shell (it ends the run: qemu-test.sh sees "system
+# halted").
 wait 120 Jam OS shell
 wait jam>
 send utest
@@ -45,6 +47,20 @@ seen demo: who drew what
 wait jam>
 sleep 0.5
 shot after-demo
+# a program holding the keys can't keep Ctrl+C from the shell
+send run contest trap
+wait contest: trap: holding the keys
+type x
+wait contest: trap: got key
+type \x03
+wait 10 ^C: killing bin/contest
+wait 10 run: bin/contest was killed
+wait jam>
+# what a program leaves running is killed with its job when it ends
+send run utest orphan
+wait run: bin/utest exited with code 0
+wait run: killing what bin/utest left running
+wait jam>
 # devmgr dies: init takes its job (usb-bus, the hids) down and starts it again
 send kill devmgr
 wait shell: killed process

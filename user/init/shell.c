@@ -10,16 +10,20 @@
  *   serialin  bin/serialin: root with READ (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
- *             server end of its channel (SR_DEVMGR; init keeps a client
- *             end) and a console client end (SR_CONSOLE), so its HID
+ *             server ends of its control and query channels (SR_DEVMGR_CTL,
+ *             SR_DEVMGR; init keeps a client end of each) and a copy of
+ *             init's (ADMIN) console client end (SR_CONSOLE), so its HID
+
  *             drivers type into the console (M7 integration). init waits
  *             for its first binding pass (up to 30 s). "nousb" (the safe
  *             mode boot entry) is passed on: no USB controller driver
- *   shell     bin/shell: a copy of the console client end (SR_CONSOLE),
- *             root with READ | MANAGE, RES_PCI with RIGHTS_BASIC
- *             (SR_USER + 1), a devmgr client end (SR_DEVMGR) and a channel
- *             from init (SR_USER + 2) on which init sends it each new
- *             devmgr client end (INIT_SHELL_DEVMGR, <devmgr.h>)
+ *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
+ *             console.new_client; no connect_input), root with READ |
+ *             MANAGE, RES_PCI with RIGHTS_BASIC (SR_USER + 1), devmgr's
+ *             query and control client ends (SR_DEVMGR, SR_DEVMGR_CTL: it
+ *             passes control only to its utest/usbtest commands) and a
+ *             channel from init (SR_USER + 2) on which init sends it each
+ *             new devmgr's pair (INIT_SHELL_DEVMGR, <devmgr.h>)
  * None of the console, serialin and the shell gets RIGHT_MAP or
  * RIGHT_SLICE on the root: they can't reach hardware beyond the calls made
  * for them.
@@ -69,7 +73,8 @@ static struct svc svcs[NSVC] = {
 };
 static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
-static handle_t devmgr;     /* a devmgr client end (0: none running) */
+static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
+static handle_t devmgr_q;   /* its query channel, client end */
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static bool nousb;
 
@@ -150,12 +155,18 @@ static void tell_devmgr(void)
 /* The shell gets each new devmgr client end on its init channel. */
 static void tell_shell(void)
 {
-    handle_t d = HANDLE_INVALID;
-    if (!to_shell || !devmgr || jam_handle_duplicate(devmgr, RIGHT_SAME, &d) != OK)
+    handle_t d[2] = { HANDLE_INVALID, HANDLE_INVALID };
+    if (!to_shell || !devmgr || jam_handle_duplicate(devmgr_q, RIGHT_SAME, &d[0]) != OK)
         return;
+    if (jam_handle_duplicate(devmgr, RIGHT_SAME, &d[1]) != OK) {
+        jam_handle_close(d[0]);
+        return;
+    }
     uint32_t kind = INIT_SHELL_DEVMGR;
-    if (jam_channel_write(to_shell, &kind, sizeof(kind), &d, 1) != OK)
-        jam_handle_close(d);   /* the shell is gone: it gets one when it restarts */
+    if (jam_channel_write(to_shell, &kind, sizeof(kind), d, 2) != OK) {
+        jam_handle_close(d[0]);   /* the shell is gone: it gets them when it restarts */
+        jam_handle_close(d[1]);
+    }
 }
 
 static status_t start_console(void)
@@ -203,28 +214,32 @@ static status_t start_devmgr(void)
         return OK;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_channel_create(&a, &b);
     if (st == OK)
+        st = jam_channel_create(&qa, &qb);
+    if (st == OK)
         st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK) {
-        if (pci)
-            jam_handle_close(pci);
-        if (a) {
-            jam_handle_close(a);
-            jam_handle_close(b);
-        }
+        handle_t left[] = { pci, a, b, qa, qb };
+        for (unsigned k = 0; k < 5; k++)
+            if (left[k])
+                jam_handle_close(left[k]);
         return st;
     }
     const char *argv[] = { "bin/devmgr", "nousb" };
-    struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b }, { SR_CONSOLE, c } };
-    st = start(DEVMGR, nousb ? 2 : 1, argv, x, 3);   /* consumes pci, b and c */
+    struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
+                                { SR_CONSOLE, c } };
+    st = start(DEVMGR, nousb ? 2 : 1, argv, x, 4);   /* consumes pci, b, qb and c */
     if (st != OK) {
         jam_handle_close(a);
+        jam_handle_close(qa);
         return st;
     }
     devmgr = a;
+    devmgr_q = qa;
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
     st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * S);
@@ -239,13 +254,16 @@ static status_t start_devmgr(void)
 
 static status_t start_shell(void)
 {
-    handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
-    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
-    status_t st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
+    handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
+    handle_t p2 = HANDLE_INVALID, mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
+    /* A SHELL-level console channel: no input sources of its own. */
+    status_t st = console_new_client_until(cons, now() + 5 * S, 1, &c);
     if (st != OK)
         return st;
-    if (devmgr)
-        jam_handle_duplicate(devmgr, RIGHT_SAME, &d);
+    if (devmgr) {
+        jam_handle_duplicate(devmgr_q, RIGHT_SAME, &d);
+        jam_handle_duplicate(devmgr, RIGHT_SAME, &dc);
+    }
     if (jam_resource_create(root, RES_PCI, 0, 0, &pci) == OK &&
         jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
         p2 = HANDLE_INVALID;
@@ -256,12 +274,13 @@ static status_t start_shell(void)
         { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE) },
         { SR_USER + 1, p2 },
         { SR_DEVMGR, d },
+        { SR_DEVMGR_CTL, dc },
         { SR_USER + 2, theirs },
     };
     /* Leave out the ones we don't have. */
-    struct spawn_handle y[5];
+    struct spawn_handle y[6];
     unsigned n = 0;
-    for (unsigned k = 0; k < 5; k++)
+    for (unsigned k = 0; k < 6; k++)
         if (x[k].h)
             y[n++] = x[k];
     st = start1(SHELL, y, n);
@@ -299,8 +318,10 @@ static void ended(unsigned i)
         cons = HANDLE_INVALID;
     }
     if (i == DEVMGR && devmgr) {
-        jam_handle_close(devmgr);   /* the shell's copy sees PEER_CLOSED */
-        devmgr = HANDLE_INVALID;
+        jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
+        jam_handle_close(devmgr_q);
+        devmgr = devmgr_q = HANDLE_INVALID;
+
         printf("init: devmgr and its drivers are gone: starting them again\n");
     }
     if (i == SHELL && to_shell) {

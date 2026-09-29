@@ -1,0 +1,15 @@
+# The safe mode boot entry (command line "nousb"): shell mode, but devmgr
+# leaves the USB controller without a driver; the shell is typed into over
+# the serial port.
+wait 120 Jam OS shell
+seen 30 a USB controller, left alone (nousb)
+seen 30 (nousb: no USB drivers)
+wait jam>
+send usb
+wait usb: no USB bus driver bound
+wait jam>
+send devices
+wait devmgr:
+wait jam>
+send reboot
+wait reboot: resetting

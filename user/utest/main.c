@@ -8,7 +8,7 @@
  * ERR_NO_MEMORY / ERR_NO_RESOURCES (no panic), FPU/SSE/AVX state survives
  * preemption, and many threads come and go. M6: the null and drvtest
  * drivers (drivers/) run as processes and talk through <idl/null.h>;
- * with devmgr (init hands us its channel, SR_DEVMGR): the edu driver
+ * with devmgr (init hands us its control channel, SR_DEVMGR_CTL): the edu driver
  * process it bound, called through <idl/edu.h>, killed in the middle of a
  * DMA, and what a driver's handles can't do. The devmgr tests skip
  * themselves without devmgr or the device (edu is QEMU's). M7: the hid
@@ -865,12 +865,15 @@ static bool t_startup_message(void)
 #define EDU_DEVICE 0x11e8
 #define CMD_BME    0x04
 
-/* devmgr's channel, or 0 (with a line saying the test is skipped). */
+/* devmgr's control channel (M7: the tests kill, rebind and look at
+ * drivers' handles; init and the shell's `utest` hand it to us), or 0
+ * (with a line saying the test is skipped). */
 static handle_t devmgr(void)
 {
-    handle_t dm = startup_handle(SR_DEVMGR);
+    handle_t dm = startup_handle(SR_DEVMGR_CTL);
     if (!dm)
-        printf("utest: %s: no devmgr channel (not started by init?): skipped\n", cur);
+        printf("utest: %s: no devmgr control channel (not started by init or the shell's "
+               "utest?): skipped\n", cur);
     return dm;
 }
 
@@ -911,6 +914,44 @@ static bool t_edu_process(void)
     CHECK_ST(dm_call(dm, 0x00030063u, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), ERR_NOT_SUPPORTED);
     CHECK_ST(dm_call(dm, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
     CHECK(r.a >= 1);   /* edu at least */
+    return true;
+}
+
+/* M7 cleanup: devmgr's query channel (SR_DEVMGR) answers the queries and
+ * refuses everything that changes something or hands out hardware. */
+static bool t_devmgr_query_channel(void)
+{
+    handle_t q = startup_handle(SR_DEVMGR);
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    if (!q || !devmgr())
+        return true;
+    CHECK_ST(dm_call(q, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    static const uint32_t refused[] = { DEVMGR_KILL, DEVMGR_REBIND, DEVMGR_DRIVER_VIEW,
+                                        DEVMGR_TEST_DRIVER, DEVMGR_SET_CONSOLE, 0x00030063u };
+    for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        nh = 0;
+        CHECK_ST(dm_call(q, refused[i], 0xffff, 0xffff, &r, hs, &nh), ERR_ACCESS_DENIED);
+        CHECK_EQ(nh, 0);
+    }
+    /* SET_CONSOLE with its handle: refused, the handle closed. */
+    handle_t a, b;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    struct devmgr_req qr = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
+    uint32_t n = 0, got = 0;
+    struct channel_call_args ca = {
+        .h = q, .wn = sizeof(qr), .wbytes = (uint64_t)(uintptr_t)&qr,
+        .wh = (uint64_t)(uintptr_t)&b, .whn = 1, .rcap = sizeof(r),
+        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * S,
+    };
+    CHECK_ST(jam_channel_call(&ca), OK);
+    CHECK(n >= DEVMGR_REP_HDR);
+    CHECK_ST(r.status, ERR_ACCESS_DENIED);
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_PEER_CLOSED, now() + 5 * S, &seen), OK);
+    jam_handle_close(a);
     return true;
 }
 
@@ -1379,6 +1420,8 @@ static const struct {
     { "driver_processes", t_driver_processes },
     { "driver_killed", t_driver_killed },
     { "edu_process", t_edu_process },
+    { "devmgr_query_channel", t_devmgr_query_channel },
+
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
     { "hid_typing", t_hid_typing },

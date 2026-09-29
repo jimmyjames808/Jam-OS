@@ -30,6 +30,15 @@
  * kernel log goes there by itself), so a serial terminal, and the QEMU
  * tests, see the same session.
  *
+ * Authority (M7 cleanup): each client channel has a level (console.idl
+ * new_client): ADMIN (init's, and the copy devmgr gets), SHELL (the
+ * shell's: no connect_input), PROGRAM (what the shell hands a program it
+ * runs: write, size, clear, open_keys, lend_screen). Only ADMIN connects
+ * input sources, so Ctrl+Alt+Del and every key come from devmgr's drivers
+ * or init's serial source. A focus a PROGRAM opened can't hold the keys
+ * hostage: Ctrl+C goes to it and to the SHELL/ADMIN focus below it (the
+ * shell that ran it kills it).
+ *
  * console.lend_screen lends the framebuffer to a program that draws on it
  * itself (the shell's `demo`): it gets the VMO (without RIGHT_DUPLICATE)
  * and the geometry, and a lease channel. Meanwhile nothing is drawn (the
@@ -45,7 +54,8 @@
 #define MAX_COLS   480
 #define MAX_ROWS   180
 #define SCROLLBACK 4000         /* committed lines kept */
-#define MAX_CLIENTS 8
+#define MAX_CLIENTS 32          /* SR_USER + 0..7 at start (ADMIN), then new_client's */
+#define START_CLIENTS 8
 #define MAX_SOURCES 16
 #define MAX_FOCUS   8
 #define PENDING_KEYS 128
@@ -370,7 +380,13 @@ static bool screen_init(handle_t root)
 
 /* ---- keys: the focus stack of open_keys channels ------------------------------ */
 
+enum { L_ADMIN, L_SHELL, L_PROGRAM };
+struct client {
+    uint8_t level;
+};
+
 static handle_t focus[MAX_FOCUS];
+static uint8_t focus_level[MAX_FOCUS];   /* the level of the client that opened it */
 static unsigned nfocus;
 static struct input_key_event pending[PENDING_KEYS];
 static unsigned npending;
@@ -384,23 +400,49 @@ enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_LEASE };
 static void focus_drop(unsigned i)
 {
     jam_handle_close(focus[i]);
-    for (unsigned j = i; j + 1 < nfocus; j++)
+    for (unsigned j = i; j + 1 < nfocus; j++) {
         focus[j] = focus[j + 1];
+        focus_level[j] = focus_level[j + 1];
+    }
     nfocus--;
+}
+
+static bool is_ctrl_c(const struct input_key_event *ev)
+{
+    return ev->state != INPUT_KEY_UP &&
+           (ev->codepoint == 3 ||
+            ((ev->mods & INPUT_MOD_CTRL) && (ev->usage == 0x06 || ev->codepoint == 'c')));
+}
+
+/* The key to the newest focus with a level <= max (dropping the ones whose
+ * client is gone on the way). *at: its index; false if none took it. */
+static bool send_below(const struct input_key_event *ev, unsigned from, uint8_t max, unsigned *at)
+{
+    for (unsigned i = from; i-- > 0;) {
+        if (focus_level[i] > max)
+            continue;
+        status_t st = jam_channel_write(focus[i], ev, sizeof(*ev), NULL, 0);
+        if (st == ERR_PEER_CLOSED) {
+            focus_drop(i);
+            continue;
+        }
+        *at = i;
+        return st == OK;   /* else full (the client isn't reading): dropped */
+    }
+    return false;
 }
 
 static void send_key(const struct input_key_event *ev)
 {
-    while (nfocus) {
-        status_t st = jam_channel_write(focus[nfocus - 1], ev, sizeof(*ev), NULL, 0);
-        if (st == OK)
-            return;
-        if (st != ERR_PEER_CLOSED)
-            return;   /* full (the client isn't reading): dropped */
-        focus_drop(nfocus - 1);
+    unsigned at = 0;
+    if (!send_below(ev, nfocus, L_PROGRAM, &at) && !nfocus) {
+        if (npending < PENDING_KEYS)
+            pending[npending++] = *ev;
+        return;
     }
-    if (npending < PENDING_KEYS)
-        pending[npending++] = *ev;
+    /* A program's focus: Ctrl+C reaches the shell below it too. */
+    if (nfocus && at < nfocus && focus_level[at] == L_PROGRAM && is_ctrl_c(ev))
+        send_below(ev, at, L_SHELL, &at);
 }
 
 static handle_t root;
@@ -440,13 +482,17 @@ static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, 
 
 static status_t op_open_keys(void *ctx, handle_t *out)
 {
-    (void)ctx;
-    if (nfocus == MAX_FOCUS)
+    const struct client *c = ctx;
+    if (nfocus == MAX_FOCUS) {
+        if (c->level == L_PROGRAM)
+            return ERR_NO_RESOURCES;   /* a program can't push the shell's focus out */
         focus_drop(0);   /* the oldest loses its place */
+    }
     handle_t mine, theirs;
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
         return st;
+    focus_level[nfocus] = c->level;
     focus[nfocus++] = mine;
     *out = theirs;
     /* Keys typed before anyone listened. */
@@ -568,7 +614,9 @@ static const struct input_ops input_ops = { op_key, op_mouse, op_text };
 
 static status_t op_connect_input(void *ctx, handle_t *out)
 {
-    (void)ctx;
+    const struct client *c = ctx;
+    if (c->level != L_ADMIN)
+        return ERR_ACCESS_DENIED;   /* input sources are devmgr's and init's */
     unsigned i;
     for (i = 0; i < MAX_SOURCES && sources[i].ch; i++)
         ;
@@ -609,6 +657,7 @@ static void source_event(unsigned i)
 /* ---- console clients ------------------------------------------------------------ */
 
 static handle_t clients[MAX_CLIENTS];
+static struct client client_info[MAX_CLIENTS];
 static void klog_event(void);
 
 static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
@@ -696,14 +745,43 @@ static void lease_ended(void)
     printf("console: the screen is back\n");
 }
 
+static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
+{
+    const struct client *c = ctx;
+    if (level > L_PROGRAM)
+        return ERR_INVALID_ARGS;
+    if (level <= c->level)
+        return ERR_ACCESS_DENIED;
+    unsigned i;
+    for (i = START_CLIENTS; i < MAX_CLIENTS && clients[i]; i++)
+        ;
+    if (i == MAX_CLIENTS)
+        return ERR_NO_RESOURCES;
+    handle_t mine, theirs;
+    status_t st = jam_channel_create(&mine, &theirs);
+    if (st != OK)
+        return st;
+    st = jam_port_bind(port, mine, KEY(K_CLIENT, i), SIG_READABLE | SIG_PEER_CLOSED,
+                       PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        jam_handle_close(mine);
+        jam_handle_close(theirs);
+        return st;
+    }
+    clients[i] = mine;
+    client_info[i].level = level;
+    *out = theirs;
+    return OK;
+}
+
 static const struct console_ops console_ops = {
-    op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen,
+    op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen, op_new_client,
 };
 
 static void client_event(unsigned i)
 {
     status_t st;
-    while ((st = console_serve_one(clients[i], &console_ops, NULL)) == OK)
+    while ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) == OK)
         ;
     if (st != ERR_SHOULD_WAIT) {   /* ERR_PEER_CLOSED: that client end is gone */
         jam_port_unbind(port, clients[i], KEY(K_CLIENT, i));
@@ -758,7 +836,8 @@ int main(int argc, char **argv)
     status_t st = jam_port_create(&port);
     if (st != OK)
         return 1;
-    for (unsigned i = 0; i < MAX_CLIENTS; i++) {
+    for (unsigned i = 0; i < START_CLIENTS; i++) {
+        client_info[i].level = L_ADMIN;
         clients[i] = startup_handle(SR_USER + i);
         if (clients[i])
             jam_port_bind(port, clients[i], KEY(K_CLIENT, i), SIG_READABLE | SIG_PEER_CLOSED,

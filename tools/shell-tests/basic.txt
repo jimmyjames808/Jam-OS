@@ -38,8 +38,15 @@ send mem
 wait MiB free
 send log 5
 wait jam>
-# the console's protocols (a fake input source, focus, a source going away)
+# the console's protocols from a program's (PROGRAM-level) channel: no
+# input sources or new channels; the focus stack with keys typed here
 send run contest
+wait 30 contest: type q now
+type q
+wait contest: type r now
+type r
+wait contest: type s now
+type s
 wait 60 run: bin/contest exited with code 0
 wait jam>
 send run bin/utest

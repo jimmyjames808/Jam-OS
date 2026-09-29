@@ -23,7 +23,9 @@ bool init_shell(bool nousb);   /* shell.c: M7, never returns */
 #define RUN_TIMEOUT_S 240   /* per program */
 #define S             1000000000ull
 
-static handle_t devmgr_ch, devmgr_proc, devmgr_job;   /* 0: no devmgr */
+/* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
+ * "Trust"); the programs init runs are the test suites: they get both. */
+static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -63,15 +65,18 @@ static bool run(int argc, char **argv)
         init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
-    struct spawn_handle x = { SR_DEVMGR, HANDLE_INVALID };
-    if (devmgr_ch && (st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x.h)) != OK) {
+    struct spawn_handle x[2] = { { SR_DEVMGR_CTL, HANDLE_INVALID }, { SR_DEVMGR, HANDLE_INVALID } };
+    if (devmgr_ch && ((st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x[0].h)) != OK ||
+                      (st = jam_handle_duplicate(devmgr_q, RIGHT_SAME, &x[1].h)) != OK)) {
         init_say("init: %s: no devmgr channel for it (%s)", argv[0], status_str(st));
+        if (x[0].h)
+            jam_handle_close(x[0].h);
         jam_handle_close(job);
         return false;
     }
     struct spawn_args a = {
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
-        .extra = x.h ? &x : NULL, .nextra = x.h ? 1 : 0,
+        .extra = x[0].h ? x : NULL, .nextra = x[0].h ? 2 : 0,
     };
     uint64_t t0 = (uint64_t)jam_clock_get();
     st = spawn(&a, &proc);
@@ -146,35 +151,37 @@ static bool start_devmgr(handle_t console)
         return true;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
     status_t st = jam_resource_create(startup_handle(SR_RESOURCE), RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_job_create(startup_handle(SR_JOB), 0, &devmgr_job);
     if (st == OK)
         st = jam_channel_create(&a, &b);
+    if (st == OK)
+        st = jam_channel_create(&qa, &qb);
     if (st == OK) {
         const char *argv[] = { "bin/devmgr" };
-        struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR, b },
-                                    { SR_CONSOLE, console } };
+        struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
+                                    { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
             .path = "bin/devmgr", .argc = 1, .argv = argv, .job = devmgr_job, .extra = x,
-            .nextra = console ? 3 : 2,
+            .nextra = console ? 4 : 3,
         };
-        st = spawn(&sa, &devmgr_proc);   /* consumes pci, b and console */
-        pci = b = console = HANDLE_INVALID;
+        st = spawn(&sa, &devmgr_proc);   /* consumes pci, b, qb and console */
+        pci = b = qb = console = HANDLE_INVALID;
     }
     if (console)
         jam_handle_close(console);
     if (st != OK) {
         init_say("init: can't start devmgr (%s)", status_str(st));
-        if (pci)
-            jam_handle_close(pci);
-        if (a)
-            jam_handle_close(a);
-        if (b)
-            jam_handle_close(b);
+        handle_t left[] = { pci, a, b, qa, qb };
+        for (unsigned k = 0; k < 5; k++)
+            if (left[k])
+                jam_handle_close(left[k]);
         return false;
     }
     devmgr_ch = a;
+    devmgr_q = qa;
     /* Wait for its first binding pass. */
     struct devmgr_rep r;
     st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
@@ -191,8 +198,10 @@ static bool stop_devmgr(void)
 {
     if (!devmgr_proc)
         return true;
-    jam_handle_close(devmgr_ch);   /* its last client: it stops its drivers and exits */
-    devmgr_ch = HANDLE_INVALID;
+    jam_handle_close(devmgr_q);
+    jam_handle_close(devmgr_ch);   /* its last control client: it stops its drivers, exits */
+    devmgr_ch = devmgr_q = HANDLE_INVALID;
+
     uint64_t t0 = (uint64_t)jam_clock_get();
     struct process_info info;
     status_t st = spawn_wait(devmgr_proc, 30 * S, &info);
@@ -288,7 +297,6 @@ static bool run_demo(const char *spec)
     jam_handle_close(job);
     return ok;
 }
-
 
 /* M7 "USB keyboard test" boot entry: devmgr (usb-bus, a hid per HID
  * interface, no console: each hid logs every key DOWN), KEYTEST_S seconds
