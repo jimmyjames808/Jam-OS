@@ -35,10 +35,10 @@
  *     outside p can be refused (none of p's code has run yet), and no
  *     thread of p runs before the first one exists: if its creation
  *     fails, p goes back to NEW with nothing of it run, the startup handle
- *     still in its table untouched, and process_start takes it back. (It
- *     used to be possible to start a second thread in that window, which
- *     could close the startup handle before the first creation failed; the
- *     give-back then panicked.)
+ *     still in its table untouched, and process_start takes it back.
+ *     (Without the flag a second thread could start in that window and
+ *     close the startup handle before the first creation failed; giving it
+ *     back would then panic.)
  *   - A NEW process whose last handle closes can never be started: it is
  *     marked dying under the lock (on_zero_handles can't sleep, so it can't
  *     tear down); what it owns is freed when its last reference goes. */

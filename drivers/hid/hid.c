@@ -547,8 +547,8 @@ int driver_main(const struct driver_start *s)
                 "still there: exit 5 (devmgr restarts hid)", h->vendor, h->product, h->iface);
         r = 5;
     }
-    /* How it went, into the RESULTS box (the keytest boot entry counts
-     * keys this way). */
+    /* How it went, into the RESULTS box (the hidden keytest boot word
+     * counts keys this way). */
     if (h->kind && r == 0) {
         drv_log("hid %04x:%04x if %u: %s after %lu report(s), %lu event(s) (%lu phantom, "
                 "%lu short, %lu input error(s))", h->vendor, h->product, h->iface,

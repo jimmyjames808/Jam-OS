@@ -289,7 +289,7 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
     /* Listed before it can fire, so a spent ONCE packet dequeued right away
      * always finds it on the list to retire. */
     uint64_t f = spin_lock_irqsave(&p->bindings_lock);
-    if (p->nbindings >= PORT_MAX_BINDINGS) {   /* authoritative check (O3a) */
+    if (p->nbindings >= PORT_MAX_BINDINGS) {   /* the authoritative check, under the lock */
         spin_unlock_irqrestore(&p->bindings_lock, f);
         kobject_unref(obj);          /* undo the ref taken above */
         binding_put(b);              /* the only reference: frees and credits it */

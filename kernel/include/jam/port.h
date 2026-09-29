@@ -39,7 +39,7 @@
  * ERR_NO_RESOURCES. Signal packets never count: each binding owns one. */
 #define PORT_MAX_USER_PACKETS 4096
 /* Cap on live bindings per port: each is an observer walked with interrupts
- * off on every signal change, so an unbounded number is a DoS. (O3a) */
+ * off on every signal change, so an unbounded number is a DoS. */
 #define PORT_MAX_BINDINGS 4096
 
 struct port {

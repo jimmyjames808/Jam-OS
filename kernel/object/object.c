@@ -12,7 +12,8 @@ static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
  * handle to further endpoints, which close in turn: a channel chain, or an
  * alternating channel<->port chain (a queued channel carries a port; the
  * port's binding holds the last reference to another channel; ...). Done
- * recursively that overflows the 64 KiB kernel stack (audit depth 1000).
+ * recursively that overflows the 64 KiB kernel stack (the tests build
+ * chains 1000 deep).
  *
  * Instead, the two lifecycle transitions that trigger such cascades --
  * handles -> 0 (on_zero_handles) and refs -> 0 (destroy) -- run through

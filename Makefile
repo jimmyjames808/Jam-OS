@@ -12,7 +12,7 @@ OBJDUMP := $(CROSS)objdump
 
 # `make KTESTS=0` leaves out the in-kernel tests (kernel/test) and compiles
 # the DBG_HOOK injection points away, building into build/noktests. The
-# boot menu's "M4 tests" entry needs the default KTESTS=1.
+# boot menu's "All tests" and "Benchmark" entries need the default KTESTS=1.
 KTESTS  ?= 1
 BUILD   := $(if $(filter 0,$(KTESTS)),build/noktests,build)
 KERNEL  := $(BUILD)/jamos.elf
@@ -73,7 +73,7 @@ $(SYSCALLS_OK): abi/syscalls.def tools/gensyscalls.py kernel/include/jam/abi.h $
 syscalls:
 	python3 tools/gensyscalls.py gen
 
-# Protocols (M6). tools/genidl.py turns abi/idl/<name>.idl into the header
+# Protocols. tools/genidl.py turns abi/idl/<name>.idl into the header
 # drivers/include/idl/<name>.h (message structs, client stubs, server
 # dispatch; all static inline over <jam/driver.h>). Committed and checked
 # like the syscall glue; `make idl` regenerates.

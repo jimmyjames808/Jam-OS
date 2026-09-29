@@ -1,5 +1,5 @@
 #!/bin/sh
-# The QEMU USB scenario (M7): a plain init boot (devmgr binds drv/usb-bus to
+# The QEMU USB scenario: a plain init boot (devmgr binds drv/usb-bus to
 # qemu-xhci and drv/hid to each HID interface; init runs utest, then
 # usbtest) with
 #   xhci port 1   the boot stick (usb-storage, SuperSpeed)

@@ -1,6 +1,7 @@
-# console: the console process (user/services/console) serves this to programs (the
-# shell), devmgr and init. It owns the screen after boot (M7-PLAN.md
-# "Screen ownership"). If the channel's peer closes (the console
+# console: the console process (user/services/console) serves this to
+# programs (the shell), devmgr and init. It owns the screen after boot (the
+# kernel draws until the console takes the framebuffer, and again while it
+# is gone; a panic always draws). If the channel's peer closes (the console
 # restarted), clients ask devmgr/init for the new one. Format: see
 # tools/genidl.py.
 
@@ -28,7 +29,7 @@ protocol console 12
 # borrower closing it, or dying; then it redraws the whole screen. One
 # lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen.
 6  lend_screen    () -> (u32 width, u32 height, u32 pitch, u8 red_shift, u8 green_shift, u8 blue_shift, u64 size, handle screen, handle lease)
-# A new client channel with less authority (M7 cleanup). Levels: 0 ADMIN
+# A new client channel with less authority. Levels: 0 ADMIN
 # (the channels init hands the console at start: init's, and devmgr's
 # copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
 # open_keys, lend_screen: what the shell gives a program it runs; the

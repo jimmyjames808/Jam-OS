@@ -103,7 +103,7 @@
 # processes or child jobs afterwards.
 80  job_kill          status    handle_t job
 
-# hardware (M6: M6-PLAN.md) -------------------------------------------------
+# hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,
 # which needs RIGHT_SLICE.
 90  resource_create   status    handle_t parent, uint32_t kind, uint64_t base, uint64_t size, handle_t *out
@@ -119,7 +119,7 @@
 # Bus Master Enable OFF (enable = 0) needs RIGHT_MANAGE on the device
 # (devmgr has it, drivers don't). Turning it on is refused
 # (ERR_ACCESS_DENIED): only the function's current dma_cap does that
-# (dma_cap_bus_master, M7).
+# (dma_cap_bus_master).
 96  pci_bus_master    status    handle_t dev, uint32_t enable
 # Interrupt objects: MSI or MSI-X (flags IRQ_MSIX) vector `index` of the
 # function; bind to a port PERSISTENT for SIG_INTERRUPT; ack re-arms.
@@ -136,7 +136,7 @@
 101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
 
-# console services (M7 Track C) ----------------------------------------------
+# console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle (init hands the console and the shell
 # copies of the root with only the rights they need; RIGHT_MAP and
 # RIGHT_SLICE, which reach the hardware, are not among them).
@@ -185,7 +185,7 @@
 # shows (needs RIGHT_WRITE on the root). At most 4096 bytes per call.
 117 serial_write      status    handle_t root, const void *buf, uint64_t len
 
-# driver supervision and safe rebind (M7 Track D) ---------------------------
+# driver supervision and safe rebind ----------------------------------------
 # Bus Master Enable of the dma_cap's function, on (1) or off (0). Only the
 # function's CURRENT cap may (the last one made for it: making one turns
 # bus mastering off, ERR_BAD_STATE for an older one); a driver turns it on

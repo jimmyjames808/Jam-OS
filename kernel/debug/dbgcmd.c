@@ -1,4 +1,4 @@
-/* debug_command (M7 Track C): the kernel's test entry points as shell
+/* debug_command: the kernel's test entry points as shell
  * commands. One command at a time runs in a kernel thread of its own
  * ("dbgcmd", the priority the boot's main thread has); the caller waits
  * for it on an event, cancellably, so a killed shell stops waiting at once
@@ -24,7 +24,7 @@
  *                    (init: nothing would supervise the caller any more);
  *                    tests of restarts (the console, serialin, the HID
  *                    drivers, devmgr); the result is its koid
- *   crash [name]     the boot menu's old crash tests (selftest.c): alone,
+ *   crash [name]     the crash tests (selftest.c; boot words test<name>): alone,
  *                    list them (the result: how many); with a name, run it
  *                    in a thread pinned to CPU 0 (as the boot's main thread
  *                    ran them; the ones needing a second CPU use CPU 1).

@@ -167,7 +167,7 @@ KTEST(proc_fault_kills_the_process)
     job_unref(j);
 }
 
-/* The milestone check: a process blocked in channel_call on a server that
+/* Fault containment: a process blocked in channel_call on a server that
  * never answers is killed, and every page, handle and thread comes back. */
 KTEST(proc_kill_in_channel_call_cleans_up)
 {

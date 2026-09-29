@@ -1,5 +1,5 @@
 # usb: one USB interface, as usb-bus (drivers/usb-bus) serves it to the
-# class driver bound to that interface (M7-PLAN.md). The class driver can
+# class driver devmgr bound to that interface. The class driver can
 # only reach its own interface through this channel. When the device is
 # unplugged (or usb-bus restarts) the channel's peer closes: the class
 # driver exits 0, and devmgr binds a new one when the interface comes back.

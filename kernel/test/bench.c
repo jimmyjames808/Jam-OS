@@ -217,7 +217,7 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* The switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). SW_ALL flips every one of
- * them at once ("m55", the milestone that added them: none against all). */
+ * them at once (the word "m55": none of them against all of them). */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
     SW_PCID, SW_COUNT, SW_ALL = SW_COUNT

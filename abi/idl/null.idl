@@ -1,7 +1,8 @@
 # null: the test protocol (an echo server). drivers/test/null serves it;
-# the drvtest driver (run by utest) calls it through the generated client. Format: see tools/genidl.py.
+# the drvtest driver (run by utest) calls it through the generated client.
+# Format: see tools/genidl.py.
 #
-# Reconnect (M7): whoever runs a null server and restarts it (devmgr's
+# Reconnect: whoever runs a null server and restarts it (devmgr's
 # supervision does this for the drivers it binds, user/include/devmgr.h)
 # hands out a new channel; a client whose call fails with ERR_PEER_CLOSED
 # gets the new channel from there and retries. null keeps no state, so a
@@ -13,7 +14,7 @@ protocol null 1
 2  add      (u32 a, u32 b)  -> (u32 sum)
 # A fixed-size byte array each way: the reply is the request reversed.
 3  reverse  (u8[16] data)   -> (u8[16] data)
-# A handle result (M7): a new VMO of `size` bytes (1..65536) whose first
+# A handle result: a new VMO of `size` bytes (1..65536) whose first
 # byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
 # and no handle.
 4  make_vmo (u32 size, u8 fill) -> (handle vmo, u64 size_back)

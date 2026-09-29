@@ -1,3 +1,8 @@
+/* The kernel log. Every line gets an uptime stamp and goes, under one
+ * lock, to the ring (KLOG_SIZE bytes), COM1 and the framebuffer console, so
+ * lines from different CPUs never interleave. The ring is what the panic
+ * screen shows (klog_tail) and what the console process follows through the
+ * klog read syscall (klog_read_at). */
 #include <stdint.h>
 #include <jam/fbcon.h>
 #include <jam/klog.h>

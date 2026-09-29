@@ -1,3 +1,11 @@
+/* The boot sequence. kmain runs on Limine's stack: early console, CPU
+ * features, GDT/IDT, the physical and virtual memory managers and the heap,
+ * then switches to a kernel stack for kmain_stage2: bootfs, ACPI, the local
+ * APIC and TSC, the scheduler (this code becomes thread "main"), IPIs,
+ * the I/O APIC, the timer, the other CPUs, PCI and resources. What runs
+ * after that depends on the command line (boot/limine.conf): the tests,
+ * the benchmark, the stress test, a crash test, or user space (init). The
+ * RESULTS box at the end repeats every report() line. */
 #include <stdint.h>
 #include <jam/acpi.h>
 #include <jam/boot.h>

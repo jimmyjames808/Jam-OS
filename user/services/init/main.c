@@ -16,7 +16,7 @@
 #include <os.h>
 #include <devmgr.h>
 
-bool init_shell(bool nousb);   /* shell.c: M7, never returns */
+bool init_shell(bool nousb);   /* shell.c: never returns */
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
@@ -261,7 +261,7 @@ static bool run_config(const char *cfg, uint64_t len)
     return ok;
 }
 
-/* M7 "USB keyboard test" boot entry: devmgr (usb-bus, a hid per HID
+/* The hidden `keytest` boot word: devmgr (usb-bus, a hid per HID
  * interface, no console: each hid logs every key DOWN), KEYTEST_S seconds
  * to type on the PC, then everything stops; each hid puts its count of
  * keys into the RESULTS box. */
@@ -296,7 +296,7 @@ int main(int argc, char **argv)
     if (!check_root_resource())
         return 1;
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
-    /* M7: a plain boot: the console, devmgr (connected to it), serial
+    /* A plain boot: the console, devmgr (connected to it), serial
      * input and the shell; the safe mode entry: the same without USB. */
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"));

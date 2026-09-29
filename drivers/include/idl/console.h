@@ -280,7 +280,7 @@ static inline status_t console_lend_screen(handle_t ch, uint32_t *out_width, uin
     return console_lend_screen_until(ch, DEADLINE_NEVER, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
 }
 
-/* A new client channel with less authority (M7 cleanup). Levels: 0 ADMIN
+/* A new client channel with less authority. Levels: 0 ADMIN
  * (the channels init hands the console at start: init's, and devmgr's
  * copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
  * open_keys, lend_screen: what the shell gives a program it runs; the

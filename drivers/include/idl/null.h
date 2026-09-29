@@ -130,7 +130,7 @@ static inline status_t null_reverse(handle_t ch, const uint8_t data[16], uint8_t
     return null_reverse_until(ch, DEADLINE_NEVER, data, out_data);
 }
 
-/* A handle result (M7): a new VMO of `size` bytes (1..65536) whose first
+/* A handle result: a new VMO of `size` bytes (1..65536) whose first
  * byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
  * and no handle. */
 static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)

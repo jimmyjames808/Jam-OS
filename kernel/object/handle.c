@@ -20,10 +20,10 @@ struct handle_slot {
 };
 
 /* A handle is (slot + 1) << GEN_BITS | generation. HANDLE_TABLE_MAX is 65536,
- * so slot + 1 needs 17 bits; the remaining 15 bits are the generation. Eight
- * bits used to wrap after 256 reuses of a slot, letting a stale handle name a
- * new object; 15 bits plus FIFO slot reuse (below) push that far out of
- * reach (test: auditD_handle_generation_no_wrap). */
+ * so slot + 1 needs 17 bits; the remaining 15 bits are the generation.
+ * Eight bits would wrap after 256 reuses of a slot, letting a stale handle
+ * name a new object; 15 bits plus FIFO slot reuse (below) push that far out
+ * of reach (test: auditD_handle_generation_no_wrap). */
 #define GEN_BITS 15
 #define GEN_MASK ((1u << GEN_BITS) - 1)
 

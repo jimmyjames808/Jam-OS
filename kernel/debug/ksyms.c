@@ -1,3 +1,5 @@
+/* Kernel symbols for backtraces: the address -> name table the two-pass
+ * link builds (tools/gensyms.py) and a binary search over it. */
 #include <stddef.h>
 #include <jam/ksyms.h>
 

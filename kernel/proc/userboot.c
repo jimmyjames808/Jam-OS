@@ -265,7 +265,8 @@ status_t userboot_root_job(struct job **out)
     /* Leave the kernel 32 MiB (or a quarter, if memory is small) that user
      * code can never take, so running out is a job's problem first. The
      * rest is split so the three memory-like limits can't add up to more
-     * than it (review R6): a handle unit stands for at most
+     * than it (kernel objects and queued messages are memory too): a
+     * handle unit stands for at most
      * JOB_OBJECT_BYTES of kernel memory and a message byte for one byte, so
      * those budgets (1/16 and 1/8 of it, capped at 16 MiB and 64 MiB) come
      * off the page limit. Threads are charged pages for their stacks, so
@@ -298,8 +299,8 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg)
         return false;
     }
     const char *const argv[] = { "init", arg };
-    /* M6: init holds the root of hardware authority (SR_RESOURCE) and
-     * slices it for devmgr. */
+    /* init holds the root of hardware authority (SR_RESOURCE) and slices
+     * it for devmgr. */
     struct userboot_handle extra[1];
     unsigned nextra = 0;
     struct kobject *res = resource_root();

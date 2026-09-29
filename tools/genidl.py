@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate protocol code from abi/idl/*.idl (M6: ARCHITECTURE.md "IPC").
+"""Generate protocol code from abi/idl/*.idl (ARCHITECTURE.md "IPC").
 
     genidl.py gen     write the generated headers
     genidl.py check   exit 1 (and name them) if any is missing, stale or
@@ -11,10 +11,9 @@ Outputs, committed like the syscall glue (so they can be read and grepped):
                                     client stubs, server dispatch
 
 Everything is `static inline` in the headers, over <jam/driver.h>'s
-drv_channel_* calls only, so the same header works in a driver (either
-build: drivers see nothing but driver.h and these), in an ordinary user
-program (libos implements drv_*) and in kernel code running in a kernel
-process.
+drv_channel_* calls only, so the same header works in a driver (drivers
+see nothing but driver.h and these) and in an ordinary user program (libos
+implements drv_*).
 
 The language, one statement per line, `#` starts a comment (comment lines
 right above a method are copied into the header):
@@ -31,7 +30,7 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
 
 Either list may be empty: `()`.
 
-Handles (M7) travel only server -> client, in replies: the server's
+Handles travel only server -> client, in replies: the server's
 handler fills `handle_t *out_x` and the reply moves the handles to the
 client (drv_channel_call_h reserves their slots before the request goes
 out, so a full handle table fails the call up front). A reply with the

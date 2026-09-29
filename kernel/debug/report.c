@@ -1,3 +1,5 @@
+/* The RESULTS box (report.h): result lines kept as they are printed and
+ * repeated in one box at the end of the boot. */
 #include <stdarg.h>
 #include <jam/cmdline.h>
 #include <jam/kprintf.h>

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Typing into the shell with a USB keyboard behind a hub (M7 integration):
+# Typing into the shell with a USB keyboard behind a hub:
 # a plain boot ("shell": the console, devmgr connected to it, serialin, the
 # shell) with a usb-hub on xhci port 2, a usb-kbd behind it and a
 # usb-mouse on port 3. tools/shell-tests/usbkeys.txt types through QEMU's

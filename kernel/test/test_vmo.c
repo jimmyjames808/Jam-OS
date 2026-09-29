@@ -666,7 +666,8 @@ KTEST(vmo_sys_rights)
     KT_EQ(sys_vmo_create(&t, 3 * PG, 1u << 9, HANDLE_INVALID, &h), ERR_INVALID_ARGS);
     KT_EQ(sys_vmo_create(&t, 3 * PG, 0, HANDLE_INVALID, &h), OK);
 
-    /* VMO_CONTIGUOUS / VMO_DMA32 need a DMA capability at the sys layer. (O3b) */
+    /* VMO_CONTIGUOUS / VMO_DMA32 need a DMA capability at the sys layer:
+     * contiguous and sub-4 GiB memory is scarce. */
     handle_t dch;
     KT_EQ(sys_vmo_create(&t, PG, VMO_CONTIGUOUS, HANDLE_INVALID, &dch), ERR_ACCESS_DENIED);
     struct kobject *dcap;

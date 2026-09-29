@@ -2,8 +2,8 @@
  * cycles (direct, 2-cycle, 3-cycle) are refused while the legitimate sends
  * that look similar still work, and a deep chain of channels, or of
  * channels and ports alternating, is torn down iteratively instead of
- * overflowing the kernel stack. Each began as a repro that leaked or
- * overflowed; the audit* names are theirs. */
+ * overflowing the kernel stack. The audit* test names stay as they are:
+ * tests are run by name. */
 #include <jam/channel.h>
 #include <jam/event.h>
 #include <jam/handle.h>

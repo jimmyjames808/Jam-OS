@@ -1,6 +1,6 @@
 #!/bin/sh
-# The kernel's crash tests from the shell (M7 cleanup: they left the boot
-# menu for `crash <name> yes`). Each one boots a plain "shell" system, runs
+# The kernel's crash tests from the shell (`crash <name> yes`; they are not
+# in the boot menu). Each one boots a plain "shell" system, runs
 # the crash test from the shell, and must end on the panic screen (bp must
 # come back to the prompt instead). The boot words (testpf, ...) still run
 # them at boot: tools/qemu-test.sh <outdir> <name> testpf.

@@ -4,7 +4,7 @@
 # QEMU_IMAGE picks another image (e.g. build/noktests/jamos.img).
 # QEMU_XHCI adds qemu-xhci properties (e.g. "msi=on,msix=off": an MSI-only
 # xHCI like many Intel PCH controllers).
-# QEMU_INPUT=<script> types into the serial port (M7: the shell tests): the
+# QEMU_INPUT=<script> types into the serial port (the shell tests): the
 # serial port becomes a socket chardev (still logged to <name>.log) that
 # tools/serial-feed.py drives with the script (its format is in that file).
 # The run ends when QEMU does (e.g. the script's `reboot`: -no-reboot) or

@@ -25,8 +25,8 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
 {
     /* VMO_CONTIGUOUS / VMO_DMA32 hand out scarce contiguous / sub-4 GiB
      * memory, so a caller of the sys layer must present a DMA capability to
-     * ask for them. The kernel-internal vmo_create stays unrestricted for
-     * driver use. (O3b) */
+     * ask for them. The kernel-internal vmo_create stays unrestricted:
+     * kernel code is trusted to ask only for what it needs. */
     if (flags & (VMO_CONTIGUOUS | VMO_DMA32)) {
         struct kobject *cap;
         if (handle_get(t, dma_cap, OBJ_DMA_CAP, 0, &cap, NULL) != OK)

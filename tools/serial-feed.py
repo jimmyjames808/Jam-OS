@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Type into a QEMU guest's serial port (M7: the shell tests).
+"""Type into a QEMU guest's serial port (the shell tests).
 
     serial-feed.py <unix socket> <script>
 
@@ -22,7 +22,7 @@ the script, one command per line:
                               `monitor device_del kbd1`
     usbkeys <text>            <text> typed on QEMU's keyboards (monitor
                               `sendkey`, one key at a time: the USB keyboard
-                              path, M7); \r (or \n) is Enter; a-z 0-9 space
+                              path); \r (or \n) is Enter; a-z 0-9 space
                               - . / and : only
     # comment, blank lines ignored
 

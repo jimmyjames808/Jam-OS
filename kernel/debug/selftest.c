@@ -1,3 +1,11 @@
+/* Boot-time checks that ship in every kernel (KTESTS=0 too), unlike the
+ * ktests in kernel/test/:
+ *   - the self-test (boot word `selftest`): the page allocator, VMM and heap
+ *     on one CPU, then sleeping, priorities, mutexes, allocation on every
+ *     CPU and TLB shootdowns;
+ *   - the crash tests (boot words test<name>, the shell's `crash <name>`),
+ *     each of which must end on the panic screen with the right message
+ *     (bp must come back instead). */
 #include <stdint.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
