@@ -110,6 +110,7 @@ void smp_start_aps(const struct boot_info *bi)
     uint32_t online = online_count;
     kprintf("smp: %u of %u CPUs online\n", online, cpu_count);
     ipi_ready = 1;
+    sched_topology_init();
     if (online != cpu_count) {
         for (uint32_t i = 0; i < cpu_count; i++)
             if (!cpus[i]->online)

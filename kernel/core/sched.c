@@ -37,11 +37,33 @@ struct runqueue {
     struct list_node queues[PRIO_MAX + 1];
     uint32_t         bitmap;      /* bit p set: queues[p] non-empty */
     volatile uint32_t nr_ready;
+    /* What placement reads about this CPU, kept on the run queue's own
+     * lines (written under the lock by schedule()), so a waker on another
+     * CPU never has to touch this CPU's struct cpu or its current thread:
+     * busy = a non-idle thread is running, cur_prio = its priority (-1
+     * when idle). Read racily, like nr_ready. */
+    volatile uint32_t busy;
+    volatile int     cur_prio;
     struct thread   *idle;
     struct thread   *prev;        /* handed from schedule to finish_switch */
 };
 
 static struct runqueue rqs[MAX_CPUS];
+
+/* Topology as placement sees it, written once per CPU at bring-up
+ * (sched_init_bsp, sched_run_ap_idle, sched_topology_init) and read-only
+ * afterwards, so these lines stay shared in every cache. struct cpu's first
+ * line, where the core id lives, is written on every syscall and switch
+ * (user_rsp, kernel_rsp), so reading it from another CPU is a cache miss;
+ * the M5 wake-affine code did that for every CPU on every wake that could
+ * not stay on the waker's CPU (see select_cpu_affine). */
+struct cpu_topo {
+    int16_t sibling;   /* the other hyperthread of this core, or -1 */
+    uint8_t type;      /* enum core_type */
+    uint8_t pad;
+};
+static struct cpu_topo topo[MAX_CPUS];
+static cpumask_t online_mask;   /* CPUs whose run queue is in service (atomic bits) */
 
 /* Debug trace: each CPU's last few switches. */
 #define TRACE_N 8
@@ -187,19 +209,34 @@ static struct thread *pick_stealable(struct runqueue *rq, uint32_t cpu)
 
 static uint32_t load_of(uint32_t cpu)
 {
-    struct cpu *c = cpus[cpu];
-    return rqs[cpu].nr_ready + (c->current && !c->current->is_idle ? 1 : 0);
+    return rqs[cpu].nr_ready + rqs[cpu].busy;
 }
 
-/* Least-loaded allowed CPU; ties prefer P-cores, then the thread's last CPU. */
+/* Word w of the CPUs t may run on that are in service. */
+static inline uint64_t usable_word(const struct thread *t, unsigned w)
+{
+    return t->affinity.bits[w] & __atomic_load_n(&online_mask.bits[w], __ATOMIC_RELAXED);
+}
+
+/* Every CPU t may run on, in index order, without touching any other. */
+#define for_each_usable(t, i)                                                    \
+    for (unsigned _w = 0; _w < MAX_CPUS / 64; _w++)                              \
+        for (uint64_t _b = usable_word(t, _w); _b; _b &= _b - 1)                 \
+            if (((i) = _w * 64 + (uint32_t)__builtin_ctzll(_b)), 1)
+
+static bool usable(const struct thread *t, uint32_t cpu)
+{
+    return cpumask_has(&t->affinity, cpu) && cpumask_has(&online_mask, cpu);
+}
+
+/* Least-loaded allowed CPU; ties prefer P-cores, then the thread's last CPU.
+ * Only CPUs t may use are looked at: a pinned thread reads one run queue. */
 static uint32_t select_cpu(struct thread *t)
 {
-    uint32_t best = UINT32_MAX, best_load = UINT32_MAX;
-    for (uint32_t i = 0; i < cpu_count; i++) {
-        if (!cpus[i]->online || !cpumask_has(&t->affinity, i))
-            continue;
+    uint32_t best = UINT32_MAX, best_load = UINT32_MAX, i;
+    for_each_usable(t, i) {
         uint32_t l = load_of(i) * 4;
-        if (cpus[i]->type == CORE_EFFICIENCY)
+        if (topo[i].type == CORE_EFFICIENCY)
             l += 1;
         if (i == t->cpu)
             l = l ? l - 1 : 0;
@@ -220,23 +257,24 @@ static uint32_t select_cpu(struct thread *t)
  * wait behind it) and t may run there. Otherwise the waker's HT sibling, if
  * it is idle, shares the core's caches. Otherwise the usual choice. All the
  * loads are racy, like select_cpu's: a wrong guess costs time, never
- * correctness, since thread_wake queues t under the chosen CPU's lock. */
+ * correctness, since thread_wake queues t under the chosen CPU's lock.
+ *
+ * M5.5: the sibling comes from the topology table. M5 found it by reading
+ * every CPU's struct cpu (core_id, online, current), up to cpu_count cache
+ * lines on every wake that couldn't stay on the waker's CPU: twice per
+ * round trip when client and server are pinned to different cores. That
+ * was the 8-11% the pinned cross-CPU channel_call lines lost in M5 (the
+ * P->HT line, whose scan stopped at its sibling, cpu 3, lost only 2%). */
 static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
 {
-    if (cpus[waker]->online && cpumask_has(&t->affinity, waker) && !rqs[waker].nr_ready) {
+    if (usable(t, waker) && !rqs[waker].nr_ready) {
         t->affine_wakes++;   /* we own t's placement: we moved it to READY */
         return waker;
     }
-    uint32_t core = cpus[waker]->core_id;
-    for (uint32_t i = 0; i < cpu_count; i++) {
-        struct cpu *c = cpus[i];
-        if (i == waker || c->core_id != core || !c->online || !cpumask_has(&t->affinity, i))
-            continue;
-        struct thread *cur = c->current;
-        if (!rqs[i].nr_ready && (!cur || cur->is_idle)) {
-            t->affine_wakes++;
-            return i;
-        }
+    int sib = topo[waker].sibling;
+    if (sib >= 0 && usable(t, (uint32_t)sib) && !load_of((uint32_t)sib)) {
+        t->affine_wakes++;
+        return (uint32_t)sib;
     }
     return select_cpu(t);
 }
@@ -340,6 +378,8 @@ void schedule(void)
     next->slice = SLICE_TICKS;
     next->switches_in++;
     c->current = next;
+    rq->busy = !next->is_idle;
+    rq->cur_prio = next->is_idle ? -1 : next->prio;
     c->switches++;
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
@@ -450,8 +490,7 @@ static void thread_wake_common(struct thread *t, bool sync)
     struct runqueue *rq = &rqs[cpu];
     uint64_t f = spin_lock_irqsave(&rq->lock);
     enqueue(rq, t, cpu);
-    struct thread *cur = cpus[cpu]->current;
-    bool kick = !cur || cur->is_idle || t->prio > cur->prio;
+    bool kick = t->prio > rq->cur_prio;   /* -1 when idle: see struct runqueue */
     spin_unlock_irqrestore(&rq->lock, f);
     if (kick)
         sched_kick(cpu);
@@ -863,8 +902,7 @@ static void try_steal(uint32_t me)
 {
     for (uint32_t k = 1; k < cpu_count; k++) {
         uint32_t v = (me + k) % cpu_count;
-        struct cpu *vc = cpus[v];
-        if (!vc->online || !rqs[v].nr_ready || !vc->current || vc->current->is_idle)
+        if (!cpumask_has(&online_mask, v) || !rqs[v].nr_ready || !rqs[v].busy)
             continue;
         struct runqueue *a = &rqs[me < v ? me : v], *b = &rqs[me < v ? v : me];
         spin_lock(&a->lock);
@@ -909,6 +947,16 @@ static void init_rq(uint32_t cpu)
     spin_init(&rq->lock, "runqueue");
     for (int p = 0; p <= PRIO_MAX; p++)
         list_init(&rq->queues[p]);
+    rq->cur_prio = -1;
+    topo[cpu].sibling = -1;
+}
+
+/* This CPU's run queue is ready: placement may use it from now on. */
+static void rq_online(struct cpu *c)
+{
+    topo[c->index].type = (uint8_t)c->type;
+    __atomic_fetch_or(&online_mask.bits[c->index / 64], 1ull << (c->index % 64),
+                      __ATOMIC_RELEASE);
 }
 
 static struct thread *make_idle(uint32_t cpu)
@@ -940,6 +988,8 @@ void sched_init_bsp(void)
     main->cpu = 0;
     main->refs = 2;   /* never joined; keep it alive */
     this_cpu()->current = main;
+    rqs[0].busy = 1;
+    rqs[0].cur_prio = main->prio;
 
     /* BSP idle thread: a real thread with its own stack, first run when
      * main blocks. */
@@ -955,6 +1005,7 @@ void sched_init_bsp(void)
     *--sp = 0; *--sp = 0;
     idle->rsp = (uint64_t)sp;
     rqs[0].idle = idle;
+    rq_online(this_cpu());
 }
 
 _Noreturn void sched_run_ap_idle(void)
@@ -965,7 +1016,18 @@ _Noreturn void sched_run_ap_idle(void)
     idle->stack_top = c->kstack_top;
     rqs[c->index].idle = idle;
     c->current = idle;
+    rq_online(c);
     idle_loop();
+}
+
+void sched_topology_init(void)
+{
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        topo[i].sibling = -1;
+        for (uint32_t j = 0; j < cpu_count; j++)
+            if (j != i && cpus[j]->online && cpus[j]->core_id == cpus[i]->core_id)
+                topo[i].sibling = (int16_t)j;   /* at most one: 2-way SMT */
+    }
 }
 
 /* ---- tick, watchdog, irq exit ----------------------------------------------- */

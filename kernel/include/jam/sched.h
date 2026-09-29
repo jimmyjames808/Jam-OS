@@ -192,6 +192,9 @@ void thread_set_wake_sync(bool on);
  * idle thread. APs turn their own startup context into their idle thread. */
 void sched_init_bsp(void);
 _Noreturn void sched_run_ap_idle(void);
+/* Once every AP that will start has started: record each CPU's HT sibling
+ * for placement (until then placement knows no siblings). */
+void sched_topology_init(void);
 /* Called from the timer interrupt on every CPU. */
 void sched_tick(void);
 /* From the interrupt exit path: switch if a reschedule is pending. */
