@@ -55,6 +55,7 @@
 #include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/uentry.h>
 #include <jam/userboot.h>
 #include <jam/x86.h>
 
@@ -211,12 +212,15 @@ static uint64_t *samples, *samples_off, *samples_on;
 
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
- * default if the boot turned the feature off). */
+ * default if the boot turned the feature off). SW_ALL flips every one of
+ * them at once ("m55": the M5 behaviour against all of M5.5). */
 enum sw {
-    SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_COUNT
+    SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
+    SW_COUNT, SW_ALL = SW_COUNT
 };
-static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair",
-                                               "kmcache", "oneshot", "serialirq" };
+static const char *const sw_name[SW_COUNT + 1] = {
+    "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "m55"
+};
 static uint64_t sw_boot[SW_COUNT];
 
 static uint64_t sw_get(enum sw s)
@@ -228,7 +232,8 @@ static uint64_t sw_get(enum sw s)
     case SW_KMCACHE:    return heap_percpu;
     case SW_ONESHOT:    return lapic_oneshot;
     case SW_SERIALIRQ:  return serial_async;
-    case SW_COUNT:      break;
+    case SW_FPUOPT:     return fpu_opt;
+    default:            break;
     }
     return 0;
 }
@@ -242,11 +247,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_KMCACHE:    heap_percpu = v; break;
     case SW_ONESHOT:    lapic_oneshot = v; break;
     case SW_SERIALIRQ:  serial_async = v; break;
-    case SW_COUNT:      break;
+    case SW_FPUOPT:     fpu_opt = v; break;
+    default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -256,11 +262,21 @@ static void sw_save(void)
 
 static void sw_set(enum sw s, bool on)
 {
+    if (s == SW_ALL) {
+        for (unsigned i = 0; i < SW_COUNT; i++)
+            sw_set((enum sw)i, on);
+        return;
+    }
     sw_put(s, on ? (sw_boot[s] ? sw_boot[s] : sw_default_on[s]) : 0);
 }
 
 static void sw_restore(enum sw s)
 {
+    if (s == SW_ALL) {
+        for (unsigned i = 0; i < SW_COUNT; i++)
+            sw_restore((enum sw)i);
+        return;
+    }
     sw_put(s, sw_boot[s]);
 }
 
@@ -952,6 +968,54 @@ static void bench_shootdown(void *arg)
     }
 }
 
+/* ---- user FPU state save + restore (M5.5 breakdown) ----------------------------
+ * One save and one restore of a user FPU area, as arch_thread_switch does
+ * for a user thread going out and one coming in, timed in batches with
+ * interrupts off (the registers are ours meanwhile; fpu_clobbered tells
+ * the lazy-restore bookkeeping afterwards). The area is in its initial
+ * state, as for a thread that hasn't used AVX: fpuopt off is XSAVE, on is
+ * XSAVEOPT, which skips components that are unmodified or in init state. */
+
+static void bench_fpu(void *arg)
+{
+    (void)arg;
+    struct thread *me = current_thread();
+    if (fpu_ustate_alloc(me) != OK) {
+        for (unsigned i = 0; i < SAMPLES; i++)
+            samples[i] = 0;
+        return;
+    }
+    void *area = me->ustate;
+    uint64_t until;
+    warm_until(&until);
+    for (unsigned i = 0; i < SAMPLES;) {
+        uint64_t f = irq_save();
+        uint64_t t0 = stamp();
+        for (unsigned k = 0; k < BATCH; k++) {
+            fpu_restore(area);
+            fpu_save(area);
+        }
+        uint64_t t1 = stamp();
+        fpu_clobbered();
+        irq_restore(f);
+        if (uptime_ns() >= until)
+            samples[i++] = span_ps(t0, t1, BATCH);
+    }
+    fpu_ustate_free(me);
+}
+
+static void fpu_measure(int unused)
+{
+    (void)unused;
+    run_on(cpu_p, bench_fpu, NULL);
+}
+
+static void fpu_state(void)
+{
+    char what[64];
+    ksnprintf(what, sizeof(what), "XRSTOR + XSAVE of user FPU state (%u B, P)", fpu_area_size());
+    off_on(SW_FPUOPT, what, fpu_measure, 0, SAMPLES);
+}
 /* ---- address-space switch --------------------------------------------------- */
 
 static struct aspace *as_a, *as_b;
@@ -1030,20 +1094,21 @@ static void ureap(struct process *p)
 }
 
 /* Run "utest bench-<what>" on cpu (with a bench-echo server on server_cpu
- * for "call"), collect its samples and report them as `label`. */
-static void user_bench(const char *what, int cpu, int server_cpu, const char *label)
+ * for "call"), and collect its samples into `samples`. False (after
+ * reporting why under `label`) if there was no result. */
+static bool user_bench_run(const char *what, int cpu, int server_cpu, const char *label)
 {
     struct job *j;
     struct ubench_result *r = kmalloc(sizeof(*r));
     if (!r || userboot_root_job(&j) != OK) {
         kfree(r);
-        return;
+        return false;
     }
     struct channel *res_k, *res_u, *call_c = NULL, *call_s = NULL;
     if (channel_create(&res_k, &res_u) != OK) {
         kfree(r);
         job_unref(j);
-        return;
+        return false;
     }
     struct userboot_handle ex[2] = {
         { SR_USER, khandle_from_new((struct kobject *)res_u, RIGHTS_BASIC | RIGHTS_IO) },
@@ -1069,10 +1134,10 @@ static void user_bench(const char *what, int cpu, int server_cpu, const char *la
                                   uptime_ns() + 30000000000ull, NULL);
     if (st == OK)
         st = channel_read(res_k, r, sizeof(*r), &nb, NULL, 0, NULL);
-    if (st == OK && nb == sizeof(*r) && r->n == USAMPLES && r->batch) {
+    bool ok = st == OK && nb == sizeof(*r) && r->n == USAMPLES && r->batch;
+    if (ok) {
         for (unsigned i = 0; i < USAMPLES; i++)
             samples[i] = span_ps(0, r->cycles[i], r->batch);
-        result(label, samples, USAMPLES);
     } else {
         report("bench: %s: no result from the user program (%s)", label, status_str(st));
     }
@@ -1081,8 +1146,58 @@ static void user_bench(const char *what, int cpu, int server_cpu, const char *la
     ureap(server);
     kfree(r);
     job_unref(j);
+    return ok;
 }
 
+static void user_bench(const char *what, int cpu, int server_cpu, const char *label)
+{
+    if (user_bench_run(what, cpu, server_cpu, label))
+        result(label, samples, USAMPLES);
+}
+
+/* The same, measured with switch s off and then on. */
+static struct {
+    const char *what, *label;
+    int cpu, server_cpu;
+    bool ok;
+} ub;
+
+static void user_bench_measure(int unused)
+{
+    (void)unused;
+    ub.ok &= user_bench_run(ub.what, ub.cpu, ub.server_cpu, ub.label);
+}
+
+static void user_bench_off_on(enum sw s, const char *what, int cpu, int server_cpu,
+                              const char *label)
+{
+    ub.what = what;
+    ub.label = label;
+    ub.cpu = cpu;
+    ub.server_cpu = server_cpu;
+    ub.ok = true;
+    uint64_t *keep = samples;
+    sw_set(s, false);
+    samples = samples_off;
+    user_bench_measure(0);
+    sw_set(s, true);
+    samples = samples_on;
+    user_bench_measure(0);
+    sw_restore(s);
+    samples = keep;
+    if (ub.ok)
+        result2(label, sw_name[s], samples_off, samples_on, USAMPLES);
+}
+
+/* Breakdown of process->process channel_call against the kernel-thread
+ * version (BENCH.md, investigation (a) of M5.5):
+ *   - "thread->thread, same process" does the same calls without the two
+ *     address-space switches per round trip (both threads share a CR3);
+ *   - "XSAVE + XRSTOR" is one save and one restore of a user FPU state,
+ *     of which a same-CPU round trip does two of each.
+ * The rest is syscall entry/exit (5 syscalls per round trip: the client's
+ * call, the echo server's read, wait, read and write; the "syscall round
+ * trip" line is one of them), user copies and handle lookups. */
 static void user_benches(void)
 {
     const void *img;
@@ -1095,6 +1210,7 @@ static void user_benches(void)
     user_bench("clock", cpu_p, -1, "user: clock_get syscall (P)");
     user_bench("fault", cpu_p, -1, "user: page fault, fresh zero page (P)");
     user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
+    user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1, "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };
     for (unsigned i = 0; i < 3; i++) {
         if (others[i] < 0)
@@ -1102,7 +1218,7 @@ static void user_benches(void)
         char what[64];
         ksnprintf(what, sizeof(what), "user: process->process channel_call P->%s",
                   kind(others[i]));
-        user_bench("call", cpu_p, others[i], what);
+        user_bench_off_on(SW_ALL, "call", cpu_p, others[i], what);
     }
 }
 
@@ -1197,6 +1313,7 @@ void bench_run(void)
         result(what, samples, SAMPLES);
     }
     as_switch();
+    fpu_state();
     user_benches();
     thread_set_affinity(current_thread(), &all);
     kfree(samples);

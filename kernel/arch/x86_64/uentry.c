@@ -40,8 +40,6 @@ _Noreturn void enter_user_iret(uint64_t entry, uint64_t stack, uint64_t arg0, ui
 size_t copy_user_raw(void *dst, const void *src, size_t n);
 long copy_str_user_raw(char *dst, const char *usrc, size_t n);
 void fpu_save(void *area);
-void fpu_restore(const void *area);
-void fpu_reset_and_load(void *area);
 
 #ifndef JAM_NO_KTESTS
 bool (*volatile uentry_test_syscall)(struct syscall_frame *f, int64_t *ret);
@@ -319,7 +317,7 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
     if (prev->ustate && prev->state != T_DEAD)
         fpu_save(prev->ustate);
     if (next->ustate)
-        fpu_restore(next->ustate);
+        fpu_load(next);   /* skipped if this CPU still holds its state (fpu.c) */
     aspace_switch(prev->aspace, next->aspace);
 #ifndef JAM_NO_KTESTS
     /* The test hook returns the CR3 to load for `next` (its own test tables,
@@ -348,7 +346,7 @@ _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, ui
     struct cpu *c = this_cpu();
     c->tss.rsp[0] = (uint64_t)t->stack_top;
     c->kernel_rsp = (uint64_t)t->stack_top;
-    fpu_reset_and_load(t->ustate);
+    fpu_reset_and_load(t);
     /* No TLS yet (phase 2 saves FS per thread). The user GS base sits in
      * KERNEL_GS_BASE until the swapgs; keep both zero. */
     wrmsr(MSR_FS_BASE, 0);

@@ -115,6 +115,8 @@ struct thread {
     struct process   *process;       /* owning process */
     struct uthread   *uthread;       /* its thread object (process.h) */
     void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
+    uint32_t          fpu_cpu;       /* CPU whose registers were last loaded
+                                      * from ustate (fpu.c, M5.5) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */

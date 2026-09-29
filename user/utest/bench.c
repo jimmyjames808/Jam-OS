@@ -13,7 +13,11 @@
  *   bench-fault  a write to a fresh page of a mapped VMO: the page fault,
  *                committing a zeroed page, installing it, returning
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
- *   bench-echo   the server: read, write the same bytes back */
+ *   bench-echo   the server: read, write the same bytes back
+ *   bench-tcall  (M5.5) channel_call to an echo THREAD of this process on a
+ *                channel of its own: the same work as bench-call without
+ *                the address-space switches (both threads share our CR3),
+ *                for the process->process breakdown in BENCH.md */
 #include <os.h>
 #include "utest.h"
 
@@ -133,9 +137,8 @@ static int b_call(void)
 }
 
 /* Like child.c's echo, with a small buffer (the kernel's fast path). */
-static int b_echo(void)
+static int echo_on(handle_t ch)
 {
-    handle_t ch = startup_handle(SR_USER);
     uint8_t buf[256];
     for (;;) {
         uint32_t nb = 0;
@@ -157,6 +160,40 @@ static int b_echo(void)
     }
 }
 
+static int b_echo(void)
+{
+    return echo_on(startup_handle(SR_USER));
+}
+
+static uint8_t echo_stack[16384] __attribute__((aligned(16)));
+
+static void echo_thread(void *arg)
+{
+    echo_on((handle_t)(uintptr_t)arg);
+}
+
+static int b_tcall(void)
+{
+    handle_t mine, theirs, t;
+    if (jam_channel_create(&mine, &theirs) != OK)
+        return 3;
+    if (thread_spawn("bench-echo", echo_thread, (void *)(uintptr_t)theirs, echo_stack,
+                     sizeof(echo_stack), &t) != OK)
+        return 3;
+    jam_thread_set_priority(t, THREAD_PRIO_USER_MAX);
+    if (call_once(mine) != OK)
+        return 3;
+    for (uint64_t end = now() + WARM_NS; now() < end;)
+        call_once(mine);
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        call_once(mine);
+        res.cycles[i] = stamp() - t0;
+    }
+    jam_handle_close(mine);   /* the echo thread sees PEER_CLOSED and returns */
+    return send(1);
+}
+
 int bench_child(int argc, char **argv)
 {
     (void)argc;
@@ -168,5 +205,6 @@ int bench_child(int argc, char **argv)
     if (!strcmp(w, "fault")) return b_fault();
     if (!strcmp(w, "call"))  return b_call();
     if (!strcmp(w, "echo"))  return b_echo();
+    if (!strcmp(w, "tcall")) return b_tcall();
     return 127;
 }
