@@ -178,6 +178,18 @@ struct trb {
 #define SPEED_SUPER 4
 #define SPEED_SUPERPLUS 5
 
+/* Descriptor types (USB 3.2 table 9-6) */
+#define DESC_INTERFACE    4
+#define DESC_ENDPOINT     5
+#define DESC_SS_COMPANION 0x30   /* SuperSpeed Endpoint Companion */
+
+/* An endpoint address's Device Context Index (xHCI 4.5.1): twice the
+ * endpoint number, plus one for IN. */
+static inline uint8_t ep_dci(uint8_t addr)
+{
+    return (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
+}
+
 /* endpoint context types */
 #define EPT_CONTROL  4
 #define EPT_INTR_IN  7

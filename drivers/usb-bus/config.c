@@ -6,7 +6,10 @@
  * one's endpoints, keyed by DCI. usb-bus configures only interrupt-IN
  * endpoints in the controller (Configure Endpoint, configure_eps); class
  * drivers ask for other alternate settings with dev_set_interface, which
- * keeps the controller and usb-bus in agreement whatever fails. */
+ * keeps the controller and usb-bus in agreement whatever fails. Both read
+ * an alternate setting through read_alt, so an endpoint gets the same
+ * Interval, Max Burst and Max ESIT Payload (SuperSpeed companions
+ * included) whichever path installs it. */
 #include "usbbus.h"
 
 /* Interval field (xHCI 6.2.3.6): 2^n x 125 us. */
@@ -38,77 +41,170 @@ static uint8_t ep_interval(uint8_t speed, uint8_t xfer, uint8_t b)
     return 0;
 }
 
+/* ---- reading the configuration descriptor ------------------------------------ */
+
+/* An endpoint as its descriptors give it: the fields parse_config and
+ * dev_set_interface install into d->eps, so both derive them one way. */
+struct ep_desc {
+    uint8_t  dci, addr, attr, type, binterval;
+    uint8_t  interval;   /* xHCI Interval field */
+    uint8_t  burst;      /* xHCI Max Burst Size */
+    uint16_t mps;        /* wMaxPacketSize bits 10:0 */
+    uint16_t esit;       /* xHCI Max ESIT Payload, bytes */
+};
+
+/* One alternate setting of an interface, as the configuration lists it. */
+struct alt_desc {
+    uint8_t        cls, sub, proto;
+    uint8_t        nep;
+    struct ep_desc eps[MAX_EPS_IF];
+};
+
+/* The endpoint descriptor at p (7 bytes or more) of a device at `speed`.
+ * A high-speed periodic endpoint's Max Burst is its additional
+ * transactions per microframe, wMaxPacketSize bits 12:11 (xHCI 6.2.3.4);
+ * a SuperSpeed one's comes with its companion (ep_companion). */
+static void ep_from_desc(struct ep_desc *e, uint8_t speed, const uint8_t *p)
+{
+    uint8_t addr = p[2], attr = p[3], xfer = attr & 3;
+    uint16_t w = le16(p + 4);
+    bool periodic = xfer == 1 || xfer == 3;   /* isochronous or interrupt */
+    zero(e, sizeof(*e));
+    e->dci = ep_dci(addr);
+    e->addr = addr;
+    e->attr = attr;
+    e->binterval = p[6];
+    e->mps = w & 0x7ff;
+    e->burst = speed == SPEED_HIGH && periodic ? (uint8_t)((w >> 11) & 3) : 0;
+    e->esit = (uint16_t)(e->mps * (e->burst + 1));
+    e->interval = ep_interval(speed, xfer, p[6]);
+    /* usb-bus configures interrupt IN endpoints only */
+    e->type = xfer == 3 && (addr & 0x80) ? EPT_INTR_IN : 0;
+}
+
+/* The SuperSpeed Endpoint Companion at p (6 bytes or more) of endpoint e
+ * (USB 3.2 9.6.7): bMaxBurst, and wBytesPerInterval as the Max ESIT
+ * Payload (xHCI 4.14.2). */
+static void ep_companion(struct ep_desc *e, const uint8_t *p)
+{
+    e->burst = p[2];
+    uint16_t bpi = le16(p + 4);
+    if (bpi)
+        e->esit = bpi;
+}
+
+/* Interface `number`'s alternate setting `alt` in d's configuration: its
+ * class and its first MAX_EPS_IF endpoints, each with its companion. Only
+ * the first descriptor of that setting counts. false if there is none. */
+static bool read_alt(const struct usbdev *d, uint8_t number, uint8_t alt, struct alt_desc *out)
+{
+    const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
+    bool in_alt = false;
+    struct ep_desc *last = NULL;   /* the endpoint a companion belongs to */
+    out->nep = 0;
+    for (; p + 2 <= end && p[0] >= 2 && p + p[0] <= end; p += p[0]) {
+        uint8_t len = p[0], type = p[1];
+        if (type == DESC_INTERFACE && len >= 9) {
+            if (in_alt)
+                return true;   /* the setting ends at the next interface */
+            in_alt = p[2] == number && p[3] == alt;
+            if (in_alt) {
+                out->cls = p[5];
+                out->sub = p[6];
+                out->proto = p[7];
+            }
+        } else if (in_alt && type == DESC_ENDPOINT && len >= 7) {
+            last = out->nep < MAX_EPS_IF ? &out->eps[out->nep++] : NULL;
+            if (last)
+                ep_from_desc(last, d->speed, p);
+        } else if (in_alt && type == DESC_SS_COMPANION && len >= 6 && last) {
+            ep_companion(last, p);
+        }
+    }
+    return in_alt;
+}
+
+/* e takes the descriptor's fields and a clean state; its ring and buffer
+ * page stay (after a drop there is no ring: one comes with the add). */
+static void ep_install(struct ep *e, uint8_t ifnum, const struct ep_desc *s)
+{
+    int kb = e->buf_page;
+    struct ring keep = e->ring;
+    zero(e, sizeof(*e));
+    e->ring = keep;
+    e->buf_page = kb;
+    e->buf = kb >= 0 ? pool_va(&g_hc, kb) : NULL;
+    e->buf_dev = kb >= 0 ? pool_dev(&g_hc, kb) : 0;
+    e->chan = -1;
+    e->dci = s->dci;
+    e->addr = s->addr;
+    e->attr = s->attr;
+    e->type = s->type;
+    e->ifnum = ifnum;
+    e->binterval = s->binterval;
+    e->mps = s->mps;
+    e->burst = s->burst;
+    e->esit = s->esit;
+    e->interval = s->interval;
+}
+
+/* Install setting a's endpoints as interface `ifnum`'s and list their
+ * addresses in addrs; how many. Endpoint 0, or one another interface has
+ * (or that is still configured), is not this interface's: its class
+ * driver may only reach its own. */
+static uint8_t install_eps(struct usbdev *d, uint8_t ifnum, const struct alt_desc *a,
+                           uint8_t *addrs)
+{
+    uint8_t n = 0;
+    for (int i = 0; i < a->nep; i++) {
+        const struct ep_desc *s = &a->eps[i];
+        struct ep *e = &d->eps[s->dci];
+        if (s->dci < 2 || (e->dci && e->ifnum != ifnum) || e->configured) {
+            drv_log("usb %s: if%u lists endpoint %02x, not its own: ignored", d->path, ifnum,
+                    s->addr);
+            continue;
+        }
+        ep_install(e, ifnum, s);
+        addrs[n++] = s->addr;
+    }
+    return n;
+}
+
+/* One entry per interface number, from its first alternate setting 0 (the
+ * active one after SET_CONFIGURATION); the other settings are counted. */
+static void find_interfaces(struct usbdev *d)
+{
+    const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
+    d->nifs = 0;
+    for (; p + 2 <= end && p[0] >= 2 && p + p[0] <= end; p += p[0]) {
+        if (p[1] != DESC_INTERFACE || p[0] < 9)
+            continue;
+        struct iface *f = usb_iface(d, p[2]);
+        if (f) {
+            f->num_alts++;
+        } else if (p[3] == 0 && d->nifs < MAX_IFS) {
+            f = &d->ifs[d->nifs++];
+            f->number = p[2];
+            f->alt = 0;
+            f->cls = p[5];
+            f->sub = p[6];
+            f->proto = p[7];
+            f->num_alts = 1;
+            f->nep = 0;
+            f->devmgr_chan = -1;
+        }
+    }
+}
+
 /* Parse the configuration descriptor: interfaces (alternate setting 0 is
  * the active one; the others are counted) and the endpoints of each. */
 void parse_config(struct usbdev *d)
 {
-    const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
-    struct iface *cur = NULL;
-    struct ep *last_ep = NULL;
-    d->nifs = 0;
-    while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
-        uint8_t len = p[0], type = p[1];
-        if (type == 4 && len >= 9) {   /* interface */
-            last_ep = NULL;
-            cur = NULL;
-            uint8_t num = p[2], alt = p[3];
-            struct iface *f = NULL;
-            for (int i = 0; i < d->nifs; i++)
-                if (d->ifs[i].number == num)
-                    f = &d->ifs[i];
-            if (f) {
-                f->num_alts++;
-            } else if (alt == 0 && d->nifs < MAX_IFS) {
-                f = &d->ifs[d->nifs++];
-                f->number = num;
-                f->alt = 0;
-                f->cls = p[5];
-                f->sub = p[6];
-                f->proto = p[7];
-                f->num_alts = 1;
-                f->nep = 0;
-                f->devmgr_chan = -1;
-                cur = f;
-            }
-        } else if (type == 5 && len >= 7 && cur) {   /* endpoint of an active interface */
-            uint8_t addr = p[2], attr = p[3];
-            uint8_t dci = (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
-            /* Endpoint 0, or one another interface already lists: not this
-             * interface's (its class driver may only reach its own). */
-            if (dci < 2 || (d->eps[dci].dci && d->eps[dci].ifnum != cur->number)) {
-                drv_log("usb %s: if%u lists endpoint %02x, not its own: ignored", d->path,
-                        cur->number, addr);
-                p += len;
-                continue;
-            }
-            if (cur->nep < MAX_EPS_IF)
-                cur->ep_addr[cur->nep++] = addr;
-            if (dci >= 2 && dci < 32) {
-                struct ep *e = &d->eps[dci];
-                uint16_t w = le16(p + 4);
-                e->dci = dci;
-                e->addr = addr;
-                e->attr = attr;
-                e->ifnum = cur->number;
-                e->binterval = p[6];
-                e->mps = w & 0x7ff;
-                e->burst = (d->speed == SPEED_HIGH && (attr & 3) >= 1 && (attr & 3) != 2)
-                               ? (uint8_t)((w >> 11) & 3) : 0;
-                e->esit = (uint16_t)(e->mps * (e->burst + 1));
-                e->interval = ep_interval(d->speed, attr & 3, p[6]);
-                if ((attr & 3) == 3 && (addr & 0x80))
-                    e->type = EPT_INTR_IN;
-                else
-                    e->type = 0;   /* usb-bus configures interrupt IN endpoints only */
-                last_ep = e;
-            }
-        } else if (type == 0x30 && len >= 6 && last_ep) {   /* SuperSpeed companion */
-            last_ep->burst = p[2];
-            uint16_t bpi = le16(p + 4);
-            if (bpi)
-                last_ep->esit = bpi;
-        }
-        p += len;
+    find_interfaces(d);
+    for (int i = 0; i < d->nifs; i++) {
+        struct iface *f = &d->ifs[i];
+        struct alt_desc a;
+        f->nep = read_alt(d, f->number, 0, &a) ? install_eps(d, f->number, &a, f->ep_addr) : 0;
     }
 }
 
@@ -204,55 +300,12 @@ uint32_t configure_eps(struct usbdev *d, uint32_t add, uint32_t drop)
 
 /* ---- SET_INTERFACE -------------------------------------------------------------- */
 
-/* SET_INTERFACE. The controller and usb-bus must agree on every endpoint
- * whatever fails: the old endpoints are dropped by a Configure Endpoint of
- * their own first (refused: nothing changed on either side, every old
- * endpoint still configured with its ring), and only then do the new ones
- * get rings and an add (refused: configure_eps frees their rings, none is
- * configured). A ring is never freed while the controller's context still
- * points at it. */
-uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
+/* Close interface f's endpoints and drop the configured ones in a
+ * Configure Endpoint of their own. Refused: nothing changed on either
+ * side, every old endpoint still configured with its ring. */
+static uint32_t drop_iface_eps(struct usbdev *d, const struct iface *f, uint8_t alt)
 {
-    if (alt >= f->num_alts)
-        return CC_PARAMETER;
-    /* Find the alternate setting's endpoints. */
-    const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
-    bool in_alt = false, found = false;
-    uint8_t nep = 0, nacc = 0, addrs[MAX_EPS_IF];
-    struct ep neweps[MAX_EPS_IF];
-    uint8_t cls = f->cls, sub = f->sub, proto = f->proto;
-    while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
-        if (p[1] == 4 && p[0] >= 9) {
-            in_alt = p[2] == f->number && p[3] == alt;
-            if (in_alt) {
-                found = true;
-                cls = p[5];
-                sub = p[6];
-                proto = p[7];
-            }
-        } else if (p[1] == 5 && p[0] >= 7 && in_alt && nep < MAX_EPS_IF) {
-            struct ep *e = &neweps[nep];
-            zero(e, sizeof(*e));
-            uint8_t addr = p[2], attr = p[3];
-            uint16_t w = le16(p + 4);
-            e->dci = (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
-            e->addr = addr;
-            e->attr = attr;
-            e->ifnum = f->number;
-            e->binterval = p[6];
-            e->mps = w & 0x7ff;
-            e->burst = d->speed == SPEED_HIGH && (attr & 3) == 3 ? (uint8_t)((w >> 11) & 3) : 0;
-            e->esit = (uint16_t)(e->mps * (e->burst + 1));
-            e->interval = ep_interval(d->speed, attr & 3, p[6]);
-            e->type = ((attr & 3) == 3 && (addr & 0x80)) ? EPT_INTR_IN : 0;
-            nep++;
-        }
-        p += p[0];
-    }
-    if (!found)
-        return CC_PARAMETER;
-    /* Close this interface's endpoints, then drop them. */
-    uint32_t drop = 0, add = 0, cc;
+    uint32_t drop = 0;
     for (int k = 2; k < 32; k++) {
         struct ep *e = &d->eps[k];
         if (e->dci && e->ifnum == f->number) {
@@ -261,45 +314,57 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
                 drop |= 1u << k;
         }
     }
-    if (drop && (cc = configure_eps(d, 0, drop)) != CC_SUCCESS) {
+    uint32_t cc = drop ? configure_eps(d, 0, drop) : CC_SUCCESS;
+    if (cc != CC_SUCCESS)
         drv_log("usb %s: if%u: dropping its endpoints for alt %u: %s (unchanged)", d->path,
                 f->number, alt, cc_str(cc));
-        return cc;
-    }
-    for (int i = 0; i < nep; i++) {
-        struct ep *n = &neweps[i];
-        if (n->dci < 2 || n->dci >= 32)
-            continue;
-        struct ep *e = &d->eps[n->dci];
-        if ((e->dci && e->ifnum != f->number) || e->configured)
-            continue;   /* another interface's; leave it (and don't list it) */
-        addrs[nacc++] = n->addr;
-        int kb = e->buf_page;
-        struct ring keep = e->ring;   /* none after the drop: a new one comes with the add */
-        *e = *n;
-        e->ring = keep;
-        e->buf_page = kb;
-        e->buf = kb >= 0 ? pool_va(&g_hc, kb) : NULL;
-        e->buf_dev = kb >= 0 ? pool_dev(&g_hc, kb) : 0;
-        e->chan = -1;
-        if (e->type == EPT_INTR_IN)
-            add |= 1u << n->dci;
-    }
-    if (add && (cc = configure_eps(d, add, 0)) != CC_SUCCESS) {
+    return cc;
+}
+
+/* Add the interrupt-IN endpoints among addrs (n of them, installed), each
+ * with a ring of its own. Refused: configure_eps frees those rings and
+ * none is configured. */
+static uint32_t add_iface_eps(struct usbdev *d, const struct iface *f, uint8_t alt,
+                              const uint8_t *addrs, uint8_t n)
+{
+    uint32_t add = 0;
+    for (int i = 0; i < n; i++)
+        if (d->eps[ep_dci(addrs[i])].type == EPT_INTR_IN)
+            add |= 1u << ep_dci(addrs[i]);
+    uint32_t cc = add ? configure_eps(d, add, 0) : CC_SUCCESS;
+    if (cc != CC_SUCCESS)
         drv_log("usb %s: if%u: adding the endpoints of alt %u: %s (none configured)", d->path,
                 f->number, alt, cc_str(cc));
+    return cc;
+}
+
+/* SET_INTERFACE. The controller and usb-bus must agree on every endpoint
+ * whatever fails: the old endpoints are dropped first, and only then do
+ * the new ones get rings and an add. A ring is never freed while the
+ * controller's context still points at it. The new endpoints come from
+ * the same reading of the descriptors as parse_config's. */
+uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
+{
+    struct alt_desc a;
+    if (alt >= f->num_alts || !read_alt(d, f->number, alt, &a))
+        return CC_PARAMETER;
+    uint32_t cc = drop_iface_eps(d, f, alt);
+    if (cc != CC_SUCCESS)
         return cc;
-    }
-    uint32_t n = 0;
-    cc = usb_control(d, 0x01, 11, alt, f->number, 0, NULL, &n, 1000);
+    uint8_t addrs[MAX_EPS_IF];
+    uint8_t n = install_eps(d, f->number, &a, addrs);
+    cc = add_iface_eps(d, f, alt, addrs, n);
+    if (cc != CC_SUCCESS)
+        return cc;
+    uint32_t got = 0;
+    cc = usb_control(d, 0x01, 11, alt, f->number, 0, NULL, &got, 1000);
     if (cc != CC_SUCCESS && !(cc == CC_STALL && alt == 0 && f->num_alts == 1))
         return cc;
     f->alt = alt;
-    f->cls = cls;
-    f->sub = sub;
-    f->proto = proto;
-    f->nep = nacc;
-    for (int i = 0; i < nacc; i++)
-        f->ep_addr[i] = addrs[i];
+    f->cls = a.cls;
+    f->sub = a.sub;
+    f->proto = a.proto;
+    f->nep = n;
+    copy(f->ep_addr, addrs, n);
     return CC_SUCCESS;
 }
