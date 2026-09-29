@@ -1,4 +1,62 @@
-# Jam OS: handoff (updated 2026-09-29, M5 phase 2 built on its branch)
+# Jam OS: handoff (updated 2026-09-29, before a context compact)
+
+## CURRENT STATE (read this first)
+- **Main = 662c15c** (v0.0.8-m5). M0-M4.5 done + confirmed on the PC. **M5 is one step from done**:
+  on the PC the review-fixed build passed init+utest (14/14, root job clean) and All tests 131/131;
+  the 2 stress fixes since then (f86cb64: process_start creates the first thread SUSPENDED and wakes it
+  after clearing `starting`; the R5 fix had let a process's own first thread be refused by
+  thread_start -> "user process exited with the wrong code" at 1 s) are on the stick, and the
+  **10-min stress sign-off was RUNNING on the PC** when this was written. If it passes: mark M5 ✅ in
+  ARCHITECTURE.md (M5 row) and record it here. If it fails: the stress failure lines now print the
+  exit code; fix, flash, rerun the **2-minute** stress, then the 10-min once.
+- **M5.5 agent is RUNNING** in a background worktree (launched from base 3259578; branch name
+  `worktree-agent-<id>` shows in `git worktree list` / `git branch`, newest one). Scope: spin-before-idle,
+  hybrid P/E placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers,
+  interrupt-driven serial (PC has a real COM1), PCIDs (last), and investigate the two M5 bench
+  regressions (process->process call ~870 ns over kernel-thread version; pinned cross-CPU
+  channel_call +8-11%). Every optimisation has a runtime switch + cmdline word (`nopcid`,
+  `nospinidle`, ...) and `bench` prints off|on in one run. When it reports: review, merge (expect
+  conflicts: sched.c thread creation now has thread_try_create_suspended (f86cb64); aspace.c got
+  page-table charging from the review fixes; process.c), run 4+8 CPU ktest/init/stress, flash, PC:
+  All tests, Benchmark (-> M5.5 column of BENCH.md, photo is fine), 2-min stress, then 10-min.
+  Big agent code -> also launch an independent review agent after merging (user rule).
+- **After M5.5: start M6.** Decided: M6 sample driver = QEMU `edu` device for development + the PC's
+  xHCI (Intel 8086:7A60) "no-op command" MSI-X interrupt as the done test (in kernel, then as a
+  process); HPET-FSB MSI only as an optional quick check; uACPI deferred to M10. M6 = PCIe
+  enumeration (ECAM from MCFG), devmgr (owns MSI-X, per-CPU vector allocator, 8-bit APIC ID limit),
+  interrupt objects (IRQs as port packets, ack to unmask), resource handles, dma_cap bound to a BDF
+  (device addresses; closing clears Bus Master Enable), <jam/driver.h> in both builds, IDL generator.
+  Write an M6-PLAN.md like M5-PLAN.md (foundation headers + parallel tracks) before launching agents.
+- **Open item**: the review-fix agent once saw "counter#14 made no progress for 10 s" in a 4-CPU
+  stress (kernel mutex has no hand-off to waiters, a waiter can starve). Look at mutex fairness after
+  M5.5 merges (M5.5 owns sched.c now).
+
+## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
+28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
+present (unused). One USB controller: Intel xHCI 8086:7A60 rev 0x11 (keyboard, mouse, stick), an
+ASMedia USB 3 hub (174C:2074/3074; keyboard probably behind it -> M7 hub driver), composite HID
+devices (Cooler Master 2516:01C9/01C1, Sino Wealth 258A:0033, Microdia 0C45:652F), ASUS AURA
+0B05:19AF. Ethernet: Realtek RTL8125 2.5GbE (M9 native driver). Wi-Fi AX201 (not planned). Working
+COM1 UART (no cable/parts; user prefers logs via stick in M8 / network in M9). XSAVE xcr0=7 (832 B).
+
+## How we work with the user (see memory too)
+- Stick: flash immediately when the user says it's in (build, copy jamos.elf + bootfs.img +
+  limine.conf to "/Volumes/NO NAME", cmp, eject; wait for the mount if /boot isn't there yet).
+  Don't add long QEMU pre-checks before flashing.
+- PC checks: 2-min stress after each fix round, 10-min only as milestone sign-off. The kernel
+  prints a RESULTS box at the end; the user reads lines or sends a phone photo (HEIC in ~/Downloads;
+  convert with `sips -s format png`).
+- Ask only for the specific lines needed; tell the user exactly which boot entry to pick.
+- No Co-Authored-By trailer on commits. Big agent-written code gets an independent review agent.
+- The user said to ignore the old blueprint artifact.
+
+## Roadmap additions made 2026-09-29 (all in ARCHITECTURE.md)
+M5.5 perf pass (row); M7 = xHCI -> hub -> HID (kb+mouse) -> console -> shell; M8 saves every boot's log
+to /data/logs; M8.5 crash kernel (kdump-style kexec) + kexec fast reboot with own AP startup; M9 =
+RTL8125 + lwIP + netlog + `update` (fetch kernel from the Mac, kexec); M13 self-hosting; graphics
+track G1-G4 after M12 (compositor on the GOP framebuffer; mode setting only via the Intel iGPU).
+
+## History (older notes, newest first)
 
 **2026-09-29 review fix pass (fix agent's branch, on top of the review merge 0d196db)**: all 8
 findings fixed, one commit each, every review test moved into the default run as `quota_*`
