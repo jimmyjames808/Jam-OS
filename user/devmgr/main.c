@@ -73,6 +73,7 @@ struct binding {
     handle_t            dev;        /* ours, with RIGHT_MANAGE (0 until bound once) */
     handle_t            job, proc, client;   /* while bound */
     bool                running;
+    bool                killed;     /* by DEVMGR_KILL: its end needn't be clean */
     status_t            last;       /* the last bind's status */
 };
 
@@ -212,6 +213,7 @@ static status_t bind(struct binding *b)
     b->proc = proc;
     b->client = client;
     b->running = true;
+    b->killed = false;
     return OK;
 }
 
@@ -238,7 +240,8 @@ static void reaped(struct binding *b)
         info.state != PROCESS_DEAD)
         return;
     b->running = false;
-    say(false, "devmgr: %s %s %s", bdf(b), b->path,
+    bool bad = !b->killed && (info.killed || info.exit_code);   /* KILL: expected */
+    say(bad, "devmgr: %s %s %s", bdf(b), b->path,
         info.killed ? "was killed" : info.exit_code ? "exited with an error" : "exited");
 }
 
@@ -253,9 +256,9 @@ static void kill_driver(struct binding *b)
 }
 
 /* Stop b's driver (kill = don't wait for it to return by itself) and
- * forget it. True if it ended cleanly (exit 0 when not killed) and its job
- * is empty. */
-static bool unbind(struct binding *b, bool kill)
+ * forget it. True if it ended cleanly (exit 0, unless `excused`: a KILL or
+ * a REBIND ended it) and its job is empty. */
+static bool unbind(struct binding *b, bool kill, bool excused)
 {
     if (!b->proc)
         return true;
@@ -275,7 +278,7 @@ static bool unbind(struct binding *b, bool kill)
     struct process_info info;
     if (jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         ok = false;
-    else if (!kill && (info.killed || info.exit_code))
+    else if (!excused && (info.killed || info.exit_code))
         ok = false;
     ok &= job_empty(b->job, b->path);
     jam_port_unbind(port, b->proc, KEY_DRIVER + (uint64_t)(b - devs));
@@ -375,6 +378,7 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
             signals_t seen;
             r->status = jam_object_wait_one(b->proc, SIG_TERMINATED,
                                             (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
+            b->killed = true;
             reaped(b);
         }
         return;
@@ -383,7 +387,7 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
             r->status = ERR_NOT_FOUND;
             return;
         }
-        unbind(b, true);
+        unbind(b, true, true);
         r->status = b->last = bind(b);
         say(false, "devmgr: %s %s bound again (%s)", bdf(b), b->path, status_str(r->status));
         return;
@@ -532,8 +536,11 @@ int main(int argc, char **argv)
         struct binding *b = &devs[i];
         if (!b->proc)
             continue;
-        /* One a test killed (and didn't rebind) only has to be clean. */
-        if (!unbind(b, !b->running)) {
+        /* One a test killed (and didn't rebind) only has to be clean; one
+         * that exited or crashed by itself before now must have exited 0
+         * (review of M6 phase 2: an xhci-noop failure on a plain boot used
+         * to end in "no problems"). */
+        if (!unbind(b, !b->running, b->killed)) {
             say(true, "devmgr: %s %s did not end cleanly", bdf(b), b->path);
             ok = false;
         }
