@@ -415,11 +415,22 @@ static bool t_runaway_hits_job_limits(void)
 
 /* ---- FPU state across preemption ---------------------------------------------- */
 
-#define FPU_THREADS 12
+/* More threads than the PC has CPUs (28), so they must take turns: a
+ * round that takes far longer than the fastest one was preempted (or
+ * interrupted) with the registers loaded, which is the case under test. */
+#define FPU_THREADS 48
 #define FPU_RUN_NS  (400 * MS)
+#define FPU_SPINS   4000000
 
 static bool have_avx;
-static volatile uint32_t fpu_errors, fpu_rounds;
+static volatile uint32_t fpu_errors, fpu_rounds, fpu_preempted;
+
+static inline uint64_t tsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return (uint64_t)hi << 32 | lo;
+}
 
 static void cpuid(uint32_t leaf, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
 {
@@ -492,18 +503,28 @@ static void fpu_worker(void *arg)
     _Alignas(32) uint8_t pat[512], got[512];
     for (unsigned k = 0; k < sizeof(pat); k++)
         pat[k] = (uint8_t)(seed * 131 + k * 7 + (k >> 5));
-    uint64_t end = now() + FPU_RUN_NS;
+    uint64_t end = now() + FPU_RUN_NS, fastest = UINT64_MAX;
+    uint64_t took[64];
+    unsigned rounds = 0;
     while (now() < end) {
         size_t n = have_avx && (seed & 1) ? 512 : 256;   /* a mix of SSE and AVX threads */
         memset(got, 0, n);
+        uint64_t t0 = tsc();
         if (n == 512)
-            avx_round(pat, got, 2000000);
+            avx_round(pat, got, FPU_SPINS);
         else
-            sse_round(pat, got, 2000000);
+            sse_round(pat, got, FPU_SPINS);
+        uint64_t t = tsc() - t0;
+        if (t < fastest)
+            fastest = t;
+        took[rounds++ % 64] = t;
         if (memcmp(pat, got, n))
             __atomic_add_fetch(&fpu_errors, 1, __ATOMIC_RELAXED);
         __atomic_add_fetch(&fpu_rounds, 1, __ATOMIC_RELAXED);
     }
+    for (unsigned i = 0; i < rounds && i < 64; i++)
+        if (took[i] > 3 * fastest)
+            __atomic_add_fetch(&fpu_preempted, 1, __ATOMIC_RELAXED);
 }
 
 static bool wait_threads(handle_t *th, unsigned n)
@@ -527,9 +548,11 @@ static bool t_fpu_state_survives_preemption(void)
                  OK);
     if (!wait_threads(th, FPU_THREADS))
         return false;
-    printf("utest: fpu: %u threads, %u rounds, %s, %u mismatches\n", FPU_THREADS, fpu_rounds,
-           have_avx ? "SSE + AVX" : "SSE only", fpu_errors);
+    printf("utest: fpu: %u threads, %u rounds (%u preempted mid-round), %s, %u mismatches\n",
+           FPU_THREADS, fpu_rounds, fpu_preempted, have_avx ? "SSE + AVX" : "SSE only",
+           fpu_errors);
     CHECK(fpu_rounds >= FPU_THREADS);
+    CHECK(fpu_preempted > 0);   /* else the test proved nothing */
     CHECK_EQ(fpu_errors, 0);
     return true;
 }
