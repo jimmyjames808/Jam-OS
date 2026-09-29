@@ -1,4 +1,5 @@
-/* fractal: what the renderer (main.c) and the iteration kernels (iter.c) share.
+/* fractal: what the iteration kernels (iter.c), the view and its render
+ * (render.c), exploring it (main.c) and the self-test (selftest.c) share.
  *
  * Three ways to iterate z -> z^2 + c, picked per view:
  *   - double: the plain loop (and a 4-lane AVX2 version of exactly the
@@ -140,3 +141,75 @@ void  it_double4(const double *cr, const double *ci, bool julia, double jr, doub
                  float *out, uint64_t *iters);   /* AVX2: only if fun_has_avx2() */
 float it_dd(dd cr, dd ci, bool julia, double jr, double ji, int maxit, uint64_t *iters);
 float it_perturb(const struct ref *r, double dcr, double dci, int maxit, uint64_t *iters);
+
+/* ---- the view and its render (render.c) ---------------------------------------------------- */
+
+#define TS        16             /* tile size */
+#define MAXSS     4              /* anti-aliasing: up to MAXSS x MAXSS samples */
+#define DEEP_ZOOM 1e12           /* past this: perturbation or double-double */
+#define MAX_ZOOM  1e28
+
+struct view {
+    bool   julia;
+    dd     cx, cy;               /* the centre */
+    double zoom;                 /* 1: the whole set */
+    double jr, ji;               /* the Julia constant */
+    int    maxit;                /* 0: automatic */
+    int    ss;                   /* samples per pixel on edges: ss x ss (1: off) */
+};
+extern struct view view;         /* where we are */
+extern struct kview kv;          /* what the kernels see of it (apply_view) */
+extern struct ref ref;
+extern uint64_t iters_by[FUN_MAX_THREADS];   /* iterations per pool thread (work, benchmark) */
+
+extern int PW, PH, NT;           /* the picture: pixels, and tiles of TS x TS */
+extern float *nu;                /* per pixel: smooth count, < 0 inside, -2 unknown */
+extern uint32_t aa_used;         /* anti-aliased pixels (blocks of samples) */
+/* The level being computed: 16..1, 0 anti-aliasing, -1 done. */
+extern int pass_target;
+extern uint64_t view_t0, view_ns, view_iters;   /* this view's start, time and iterations */
+
+/* Colours: the palette (pal_names[pal_kind]), the colour density
+ * (dens_v[dens_i]), the colour cycling shift, and the smallest count in
+ * view (nu_min) and the one the colours are measured from (nu_min_shown). */
+#define NPALS 8
+extern const char *const pal_names[NPALS];
+extern int pal_kind, dens_i;
+extern const float dens_v[4];
+extern double pal_shift;
+extern float nu_min, nu_min_shown;
+void make_palette(int kind);
+/* Colour every tile (all) or the ones marked, into scr.s. */
+void colour_tiles(bool all);
+/* Mark the tiles under a rectangle to be coloured again. */
+void dirty_rect(int x, int y, int w, int h);
+
+/* Allocate the picture for w x h pixels; false: out of memory. */
+bool view_alloc(int w, int h);
+/* The view is past DEEP_ZOOM. */
+bool deep(void);
+/* kv from `view` (and the reference orbit, deep). */
+void apply_view(void);
+/* Start the view again (a new place, a new kind of view); keep_picture:
+ * show the old picture until the passes replace it (same place). */
+void reset_tiles(bool keep_picture);
+/* The view was zoomed by f about its centre: the old picture stretched is
+ * the first guess. */
+void reproject(double f);
+/* The view moved by (dx, dy) pixels (whole tiles): keep what is still on screen. */
+void shift(int dx, int dy);
+/* a: the next anti-aliasing setting (off, 2x2, 3x3, 4x4). */
+void aa_next(void);
+/* Work on the passes until `until` (ns; at least one slice) or until
+ * everything is done. */
+void work(uint64_t until);
+/* How far the passes are, 0..1. */
+double progress(void);
+/* The whole view, all passes, on the pool (or one thread); the iterations. */
+uint64_t render_all(bool parallel);
+
+/* ---- main.c, selftest.c ---- */
+
+/* The tour's target, a Misiurewicz point (main.c). */
+extern const dd tour_x, tour_y;
+int fractal_selftest(void);
