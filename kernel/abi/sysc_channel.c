@@ -82,13 +82,27 @@ int64_t sysc_channel_read(const struct channel_read_args *a)
         return ERR_INVALID_ARGS;
     uint32_t bcap = a->bytes_cap < CHANNEL_MAX_BYTES ? a->bytes_cap : CHANNEL_MAX_BYTES;
     uint32_t hcap = a->handles_cap < CHANNEL_MAX_HANDLES ? a->handles_cap : CHANNEL_MAX_HANDLES;
+    /* Try with the stack buffer first, whatever the caller's capacity: most
+     * messages are small, and a reader with a big buffer shouldn't pay for
+     * a big allocation per message. A message that only failed to fit our
+     * try stays queued; allocate its size and read again (another reader
+     * may take it meanwhile, so loop). */
     uint8_t small[SMALL];
-    void *kb = buf_get(small, bcap);
-    if (!kb)
-        return ERR_NO_MEMORY;
+    void *kb = small;
+    uint32_t try_cap = bcap < SMALL ? bcap : SMALL;
     handle_t hs[CHANNEL_MAX_HANDLES];
     uint32_t nb = 0, nh = 0;
-    status_t st = sys_channel_read(t, a->h, kb, bcap, &nb, hs, hcap, &nh);
+    status_t st;
+    for (;;) {
+        st = sys_channel_read(t, a->h, kb, try_cap, &nb, hs, hcap, &nh);
+        if (st != ERR_BUFFER_TOO_SMALL || nb <= try_cap || nb > bcap || nh > hcap)
+            break;
+        buf_put(small, kb);
+        kb = kmalloc(nb);
+        try_cap = nb;
+        if (!kb)
+            return ERR_NO_MEMORY;
+    }
     if (st == OK) {
         if (copy_out(a->bytes, kb, nb) != OK ||
             copy_out(a->handles, hs, nh * sizeof(handle_t)) != OK ||
