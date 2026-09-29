@@ -215,7 +215,7 @@ const char *obj_type_name(enum obj_type t)
         [OBJ_CHANNEL] = "channel", [OBJ_PORT] = "port", [OBJ_VMO] = "vmo",
         [OBJ_DMA_CAP] = "dma_cap", [OBJ_PROCESS] = "process", [OBJ_THREAD] = "thread",
         [OBJ_INTERRUPT] = "interrupt", [OBJ_RESOURCE] = "resource",
-        [OBJ_VMAR] = "vmar",
+        [OBJ_VMAR] = "vmar", [OBJ_JOB] = "job",
     };
     return (unsigned)t < OBJ_TYPE_COUNT && names[t] ? names[t] : "?";
 }

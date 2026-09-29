@@ -37,6 +37,13 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
     status_t st = vmo_create(size, flags, &v);
     if (st != OK)
         return st;
+    /* Its pages are charged to the creating table's job (M5; none for a
+     * kernel table). */
+    st = vmo_set_job(v, t->job);
+    if (st != OK) {
+        kobject_unref(vmo_kobject(v));
+        return st;
+    }
     struct khandle kh = khandle_from_new(vmo_kobject(v), VMO_RIGHTS);
     st = handle_insert(t, &kh, out);
     if (st != OK)

@@ -208,23 +208,45 @@ with the framework itself.
 - Sending handles uses **in-transit slots**: `handle_take` reserves the slot,
   then `handle_commit` (sent) or `handle_untake` (put back under the same
   value). A failed send never loses a handle.
-- Types today: `channel port event timer vmo dma_cap`. M5 adds
-  `vmar process thread job`; M6 adds `interrupt resource`.
+- Types today: `channel port event timer vmo dma_cap vmar process thread
+  job`; M6 adds `interrupt resource`.
+- **Processes** (M5, `object/process.c`): a handle table, an address space,
+  a job and user threads (`thread` objects wrapping scheduler threads).
+  NEW (the parent maps the program, makes a thread) → RUNNING
+  (`process_start` moves the startup channel into the child) → DYING →
+  DEAD (`SIG_TERMINATED`). **Kill** (`process_kill`, `process_exit`, a
+  fatal fault, or the last thread leaving): every thread is cancelled
+  (`thread_cancel`); one in a cancellable wait gets `ERR_CANCELED`, one in
+  user mode stops at its next kernel entry. Each thread drops its own
+  address-space reference on the way out; the last one closes the handle
+  table, drops the process's address space and only then signals
+  `SIG_TERMINATED`, so a waiter sees everything already given back. A
+  fatal fault logs `process "x" killed: <why> at rip ..., address ...`.
 - `resource` is the root of hardware authority (MMIO ranges, IRQs). init
   holds the root, passes slices to devmgr, which gives each driver only its
   own BARs and IRQ.
-- **Jobs** (M5): every process belongs to a job with limits on committed
-  pages, handles and threads, inherited by child jobs. Queued channel
-  messages are charged to the sender's job. Any allocation a syscall can
-  reach returns `ERR_NO_MEMORY` instead of panicking.
+- **Jobs** (M5, `object/job.c`): every process belongs to a job; jobs form
+  a tree. Four counters, each with an optional limit: committed VMO pages
+  (charged to the job of the process that created the VMO, from commit or
+  fault until decommit/free), handle-table slots in use, live threads, and
+  bytes of channel messages (charged to the SENDER's job for as long as the
+  message exists). A charge adds to the job and every ancestor or to none
+  (lock-free), so a child job can never use more than its parent has left.
+  Over the limit: `ERR_NO_MEMORY` (pages, message bytes) or
+  `ERR_NO_RESOURCES` (handles, threads); a page fault that can't be paid
+  for kills the process. init's root job gets most of free memory (the
+  kernel keeps 32 MiB). Any allocation a syscall can reach returns an
+  error instead of panicking (thread structs and stacks, handle tables,
+  page tables for kernel stacks, the timer service, `smp_call_others`).
 
 ## IPC
 
 - **Channel**: bidirectional endpoint pair; message = up to 64 KiB of bytes +
   up to 64 handles; sending a handle moves it. At most 1024 messages queue on
-  one endpoint (then `ERR_SHOULD_WAIT`). Cycle rule: you can't send an
-  endpoint of the channel you are writing to, its peer, or an endpoint whose
-  own queue already holds an endpoint.
+  one endpoint (then `ERR_SHOULD_WAIT`), and every message's memory is
+  charged to its sender's job until it is read or dropped. Cycle rule: you
+  can't send an endpoint of the channel you are writing to, its peer, or an
+  endpoint whose own queue already holds an endpoint.
 - **`channel_call`**: write + wait for the reply whose first 4 bytes (the
   txid) match. The kernel stamps the txid; only the calling thread gets the
   reply; a reply arriving after a timeout stays queued as a normal message;
@@ -257,8 +279,9 @@ with the framework itself.
   over 1 s to priority 30 for one slice. Priority 31 is above the boost, so
   real-time threads can still starve others by design. Each thread has a
   priority ceiling (`thread_create_capped`, `thread_set_priority_cap`;
-  `PRIO_MAX` for kernel threads); user threads get `PRIO_USER_MAX` = 24
-  unless a capability allows more (M5).
+  `PRIO_MAX` for kernel threads); user threads start at 16
+  with ceiling `PRIO_USER_MAX` = 24; `thread_set_priority` above it fails
+  with `ERR_ACCESS_DENIED` (a capability may allow more later) (M5).
 - **Wake-affine hand-off** (M5): a waker that is about to block for the
   thread it wakes (`thread_wake_sync`, or `thread_set_wake_sync` around a
   send whose wakeup happens inside an observer) places it on its own CPU if
@@ -333,12 +356,21 @@ Rules for userspace drivers:
 
 - **libos**: startup, syscall wrappers, malloc, printf, channel/port helpers,
   IDL stubs, the ELF loader.
-- **userboot**: a tiny ELF loader in the kernel starts init from bootfs.
-  Everything after that is loaded by libos; the kernel only provides "create
-  process, map, start at entry with stack".
+- **userboot** (`core/userboot.c`): a tiny ELF loader in the kernel starts
+  init from bootfs (on a plain boot or `init` on the command line) under a
+  root job, waits for it and reports its exit code and whether the root job
+  ended with nothing charged. Everything after that is loaded by libos
+  (`spawn()`, the same rules through ordinary syscalls); the kernel only
+  provides "create process, map, start at entry with stack". Text and
+  rodata map the bootfs pages directly (never writable: those pages are not
+  write-protected); writable data is copied into a fresh VMO, bss is zero;
+  the stack has a no-access guard page below it.
 - **Startup message**: every process starts with one channel message holding
-  argv, environment, namespace entries, stdin/stdout/stderr, and handles to
-  itself and its address space.
+  argv, environment, and handles by role: SELF_PROCESS, SELF_VMAR,
+  SELF_THREAD, JOB, BOOTFS (read/map/exec, never write) and program-specific
+  ones (SR_USER + n); later namespace entries and stdio. M5 programs print
+  with the `debug_write` syscall (lines prefixed `[process-name]` in the
+  kernel log); `debug_report` also puts a line into the RESULTS box.
 - **Namespace**: each process gets a table of path → channel handle (`/boot`,
   `/data`, `/svc/net`, `/dev/console`). No global kernel VFS. A future POSIX
   `open()` is built on this. Namespaces are the only permission system.
@@ -421,7 +453,7 @@ can take over; M11's IOMMU matters most for GPUs.
 | **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | real PC 2026-09-28: 10-min stress passed (112 threads, 28 CPUs, lock checking on), after fixing an IRQ race in the checker found by the first run at 230 s |
 | **M4** ✅ | Objects, handles, channels, ports, events, timers, VMOs, handle-level `sys_` API; two-agent audit, 20 fixes | QEMU 64/64 ktests at 4 and 8 CPUs; real PC 2026-09-28 (channels + ports): 1 server + 27 clients, 492,673 calls/s, worst 67 us; the final audited build passed on the PC as part of the M4.5 run |
 | **M4.5** ✅ | Hardening: W^X on the HHDM alias, received-handle and signal gaps, channel "has room" signal, lock checker scaling, cancellable waits, new tests, stale docs | QEMU 2026-09-29: 78/78 ktests at 4 and 8 CPUs, stress and all crash tests pass. Real PC 2026-09-29: 78/78, 1 server + 27 clients 836,077 calls/s (M4: 492,673), worst 37 us (M4: 67), nested lock pair 48 ns on 28 CPUs at once; 10-min stress passed, 0 failures |
-| M5 | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic |
+| M5 | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic. **QEMU 2026-09-29 (phase 2 branch): all three, 115/115 ktests, utest 12/12 under init, stress with user processes, crash tests, at 4 and 8 CPUs; the PC run is next** |
 | M5.5 | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass |
 | M6 | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
 | M7 | xHCI → HID (keyboard + mouse) → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |

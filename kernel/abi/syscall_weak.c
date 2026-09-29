@@ -37,6 +37,12 @@ WEAK int64_t sysc_nanosleep(uint64_t deadline_ns)
     return ERR_NOT_SUPPORTED;
 }
 
+WEAK int64_t sysc_debug_report(uint64_t buf, uint64_t len)
+{
+    (void)buf, (void)len;
+    return ERR_NOT_SUPPORTED;
+}
+
 WEAK int64_t sysc_handle_close(handle_t h)
 {
     (void)h;
@@ -250,5 +256,23 @@ WEAK int64_t sysc_job_create(handle_t parent, uint32_t flags, uint64_t out)
 WEAK int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value)
 {
     (void)job, (void)kind, (void)value;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_job_get_info(handle_t job, uint64_t out)
+{
+    (void)job, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_process_get_info(handle_t proc, uint64_t out)
+{
+    (void)proc, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_thread_set_priority(handle_t thread, int32_t prio)
+{
+    (void)thread, (void)prio;
     return ERR_NOT_SUPPORTED;
 }

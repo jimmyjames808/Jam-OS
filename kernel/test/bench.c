@@ -20,11 +20,21 @@
  *     P-core's other hyperthread, E = an E-core. CPU 0 is avoided (it runs
  *     the boot thread and the sleep/timer tick work).
  *   - Nothing is printed while measuring.
- * What these numbers are NOT: everything runs as kernel threads, so there
- * are no syscalls, no user copies and no address-space switches yet (M5
- * adds those and will add their own benchmarks). The lock-order checker
- * is on for every lock, as it always is. Idle CPUs wait in `hlt`, so a
- * wakeup of an idle CPU includes the hardware's wake-from-halt time. */
+ *   - Lines starting "user:" (M5) are measured in ring 3 by bin/utest
+ *     (user/utest/bench.c), started with userboot pinned to the named CPUs
+ *     at priority 24 like the kernel's benchmark threads: same TSC method,
+ *     same warm-up, raw cycle counts sent back over a channel and turned
+ *     into these lines here (the kernel's timestamp cost is subtracted).
+ *     They include everything a program pays: syscall entry and exit, user
+ *     copies, handle lookups, address-space switches between processes.
+ *     The address-space switch line is the kernel alone: two CR3 loads
+ *     (and their active-CPU mask updates) timed with interrupts off.
+ * The other lines are kernel threads. The lock-order checker is on for
+ * every lock, as it always is. Idle CPUs wait in `hlt`, so a wakeup of an
+ * idle CPU includes the hardware's wake-from-halt time. */
+#include <jam/aspace.h>
+#include <jam/bootfs.h>
+#include <jam/irq.h>
 #include <jam/channel.h>
 #include <jam/cpu.h>
 #include <jam/ipi.h>
@@ -32,10 +42,13 @@
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
+#include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/userboot.h>
 #include <jam/x86.h>
 
 #define SAMPLES   4000
@@ -601,6 +614,160 @@ static void bench_shootdown(void *arg)
     }
 }
 
+/* ---- address-space switch --------------------------------------------------- */
+
+static struct aspace *as_a, *as_b;
+
+static void bench_as_switch(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    uint64_t f = irq_save();   /* this thread has no address space: restore before any switch */
+    aspace_switch(NULL, as_a);
+    while (uptime_ns() < until) {
+        aspace_switch(as_a, as_b);
+        aspace_switch(as_b, as_a);
+    }
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        for (unsigned k = 0; k < BATCH / 2; k++) {
+            aspace_switch(as_a, as_b);
+            aspace_switch(as_b, as_a);
+        }
+        samples[i] = span_ps(t0, stamp(), BATCH);
+    }
+    aspace_switch(as_a, NULL);
+    irq_restore(f);
+}
+
+static void as_switch(void)
+{
+    if (aspace_create(&as_a) != OK)
+        return;
+    if (aspace_create(&as_b) != OK) {
+        aspace_unref(as_a);
+        return;
+    }
+    run_on(cpu_p, bench_as_switch, NULL);
+    result("address-space switch (CR3 load + masks, P)", samples, SAMPLES);
+    aspace_unref(as_b);
+    aspace_unref(as_a);
+}
+
+/* ---- user space (M5) ------------------------------------------------------ */
+
+#define USAMPLES 4000   /* user/utest/bench.c SAMPLES */
+
+struct ubench_result {
+    uint32_t txid, n, batch, reserved;
+    uint64_t cycles[USAMPLES];
+};
+
+static struct process *uspawn(struct job *j, const char *what, int cpu,
+                              struct userboot_handle *extra, unsigned nextra)
+{
+    const char *argv[] = { "utest", what };
+    cpumask_t m;
+    cpumask_one(&m, (uint32_t)cpu);
+    struct process *p;
+    status_t st = userboot_spawn("bin/utest", argv, 2, j, extra, nextra, &m, &p);
+    if (st != OK) {
+        kprintf("bench: can't start utest %s (%s)\n", what, status_str(st));
+        return NULL;
+    }
+    return p;
+}
+
+static void ureap(struct process *p)
+{
+    if (!p)
+        return;
+    if (object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 10000000000ull,
+                        NULL) != OK) {
+        process_kill(p, PROCESS_KILLED_CODE, true);
+        object_wait_one(process_kobject(p), SIG_TERMINATED, DEADLINE_NEVER, NULL);
+    }
+    kobject_unref(process_kobject(p));
+}
+
+/* Run "utest bench-<what>" on cpu (with a bench-echo server on server_cpu
+ * for "call"), collect its samples and report them as `label`. */
+static void user_bench(const char *what, int cpu, int server_cpu, const char *label)
+{
+    struct job *j;
+    struct ubench_result *r = kmalloc(sizeof(*r));
+    if (!r || userboot_root_job(&j) != OK) {
+        kfree(r);
+        return;
+    }
+    struct channel *res_k, *res_u, *call_c = NULL, *call_s = NULL;
+    if (channel_create(&res_k, &res_u) != OK) {
+        kfree(r);
+        job_unref(j);
+        return;
+    }
+    struct userboot_handle ex[2] = {
+        { SR_USER, khandle_from_new((struct kobject *)res_u, RIGHTS_BASIC | RIGHTS_IO) },
+    };
+    unsigned nex = 1;
+    struct process *server = NULL;
+    if (server_cpu >= 0 && channel_create(&call_c, &call_s) == OK) {
+        struct userboot_handle sx = {
+            SR_USER, khandle_from_new((struct kobject *)call_s, RIGHTS_BASIC | RIGHTS_IO)
+        };
+        server = uspawn(j, "bench-echo", server_cpu, &sx, 1);
+        ex[1] = (struct userboot_handle){
+            SR_USER + 1, khandle_from_new((struct kobject *)call_c, RIGHTS_BASIC | RIGHTS_IO)
+        };
+        nex = 2;
+    }
+    char mode[24];
+    ksnprintf(mode, sizeof(mode), "bench-%s", what);
+    struct process *client = uspawn(j, mode, cpu, ex, nex);
+
+    uint32_t nb = 0;
+    status_t st = object_wait_one((struct kobject *)res_k, SIG_READABLE | SIG_PEER_CLOSED,
+                                  uptime_ns() + 30000000000ull, NULL);
+    if (st == OK)
+        st = channel_read(res_k, r, sizeof(*r), &nb, NULL, 0, NULL);
+    if (st == OK && nb == sizeof(*r) && r->n == USAMPLES && r->batch) {
+        for (unsigned i = 0; i < USAMPLES; i++)
+            samples[i] = span_ps(0, r->cycles[i], r->batch);
+        result(label, samples, USAMPLES);
+    } else {
+        report("bench: %s: no result from the user program (%s)", label, status_str(st));
+    }
+    kobject_unref((struct kobject *)res_k);
+    ureap(client);   /* its end of the call channel closes: the server exits */
+    ureap(server);
+    kfree(r);
+    job_unref(j);
+}
+
+static void user_benches(void)
+{
+    const void *img;
+    uint64_t size;
+    if (bootfs_data("bin/utest", &img, &size) != OK) {
+        report("bench: no bin/utest in bootfs: user-space lines skipped");
+        return;
+    }
+    user_bench("null", cpu_p, -1, "user: syscall round trip (unused number, P)");
+    user_bench("clock", cpu_p, -1, "user: clock_get syscall (P)");
+    user_bench("fault", cpu_p, -1, "user: page fault, fresh zero page (P)");
+    user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
+    int others[] = { cpu_p2, cpu_ht, cpu_e };
+    for (unsigned i = 0; i < 3; i++) {
+        if (others[i] < 0)
+            continue;
+        char what[64];
+        ksnprintf(what, sizeof(what), "user: process->process channel_call P->%s",
+                  kind(others[i]));
+        user_bench("call", cpu_p, others[i], what);
+    }
+}
+
 /* ---- driver --------------------------------------------------------------- */
 
 void bench_run(void)
@@ -617,7 +784,7 @@ void bench_run(void)
         brand++;
     report("bench: %s, TSC %lu MHz, %u CPUs; P=cpu%d P2=cpu%d HT=cpu%d E=cpu%d", brand,
            tsc_hz / 1000000, cpu_count, cpu_p, cpu_p2, cpu_ht, cpu_e);
-    report("bench: kernel threads only (no syscalls yet), lock checker on, "
+    report("bench: kernel threads, then ring 3 ('user:' lines, bin/utest), lock checker on, "
            "median and p99 of %u samples", SAMPLES);
     kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
 
@@ -666,6 +833,8 @@ void bench_run(void)
         ksnprintf(what, sizeof(what), "TLB shootdown, 1 page, %u other CPUs", cpu_count - 1);
         result(what, samples, SAMPLES);
     }
+    as_switch();
+    user_benches();
     thread_set_affinity(current_thread(), &all);
     kfree(samples);
 }

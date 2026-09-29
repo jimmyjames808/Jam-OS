@@ -52,6 +52,15 @@ status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out);
  * Byte access (vmo_read/vmo_write) is ERR_NOT_SUPPORTED: map it instead. */
 status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struct vmo **out);
 
+/* M5: charge the VMO's pages to job (JOB_LIMIT_PAGES; see process.h), now
+ * and whenever it commits more; a commit or fault the job can't afford
+ * fails with ERR_NO_MEMORY. Once, before the VMO is shared: ERR_BAD_STATE
+ * if it already has a job or is physical, ERR_NO_MEMORY if its current
+ * pages (a contiguous VMO) don't fit. A NULL job is allowed and charges
+ * nothing. */
+struct job;
+status_t vmo_set_job(struct vmo *v, struct job *job);
+
 /* Uncommitted pages read as zeros and stay uncommitted. */
 status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len);
 /* Commits pages as needed. */

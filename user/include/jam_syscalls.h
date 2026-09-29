@@ -15,6 +15,7 @@ _Noreturn void jam_process_exit(int64_t code);
 _Noreturn void jam_thread_exit(void);
 int64_t jam_clock_get(void);
 status_t jam_nanosleep(uint64_t deadline_ns);
+status_t jam_debug_report(const char *buf, uint64_t len);
 status_t jam_handle_close(handle_t h);
 status_t jam_handle_duplicate(handle_t h, rights_t rights, handle_t *out);
 status_t jam_handle_replace(handle_t h, rights_t rights, handle_t *out);
@@ -51,3 +52,6 @@ status_t jam_thread_create(handle_t proc, const char *name, uint64_t name_len, u
 status_t jam_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1);
 status_t jam_job_create(handle_t parent, uint32_t flags, handle_t *out);
 status_t jam_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
+status_t jam_job_get_info(handle_t job, struct job_info *out);
+status_t jam_process_get_info(handle_t proc, struct process_info *out);
+status_t jam_thread_set_priority(handle_t thread, int32_t prio);

@@ -35,6 +35,19 @@ status_t bootfs_open(handle_t vmo, struct bootfs_view *out)
     return OK;
 }
 
+status_t bootfs_default(const struct bootfs_view **out)
+{
+    static struct bootfs_view view;
+    static int state;   /* 0 not tried, 1 mapped, -1 failed */
+    static status_t why;
+    if (!state) {
+        why = bootfs_open(startup_handle(SR_BOOTFS), &view);
+        state = why == OK ? 1 : -1;
+    }
+    *out = &view;
+    return state > 0 ? OK : why;
+}
+
 status_t bootfs_lookup(const struct bootfs_view *fs, const char *name, const void **data,
                        uint64_t *size)
 {

@@ -21,9 +21,18 @@ The system call numbers, the kernel dispatch table and the user wrappers
 are generated from `abi/syscalls.def` by `tools/gensyscalls.py`; the output
 is committed, and every build fails if it doesn't match the `.def`.
 
-The boot menu has **All tests** (`ktest`: every in-kernel test), a
+The plain **Jam OS** entry (empty command line) and **Jam OS (init + utest)**
+(`init`) start user space: the kernel's userboot loads `bin/init` from bootfs,
+init runs each program in `boot/init.cfg` as a child process (today
+`bin/utest`, the M5 test suite in ring 3), and the RESULTS box shows
+`utest: N passed`, init's exit code and whether its root job ended with
+nothing charged. The boot menu also has **All tests** (`ktest`: every
+in-kernel test), a
 **Benchmark** (`bench`: latency and throughput of the kernel's basic operations,
-median and p99, method explained in `kernel/test/bench.c`), a **10-minute stress test**
+then the same measured from ring 3 (`user:` lines: syscalls, page faults,
+process-to-process calls); median and p99, method explained in
+`kernel/test/bench.c`), a **10-minute stress test** (kernel threads plus user
+processes started and killed at random moments)
 and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
 crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`, `testsmap`, `testsmep`,
@@ -60,17 +69,21 @@ kernel/boot/        loader glue (only place that knows about Limine)
 kernel/arch/x86_64/ entry and CPU-specific code
 kernel/acpi/        static ACPI tables (MADT, FADT, HPET, MCFG)
 kernel/core/        kmain, klog, panic, symbols, scheduler, locks + lock
-                    checker, self-tests, stress test
+                    checker, self-tests, stress test, bootfs, ELF parser,
+                    userboot (starts init)
 kernel/object/      kernel objects, handles, channels, ports, events, timers,
-                    VMOs, dma_cap
-kernel/abi/         handle-level sys_ API, the generated syscall table
+                    VMOs, dma_cap, vmars, processes + threads, jobs
+kernel/abi/         handle-level sys_ API, the syscalls (sysc_*.c), the
+                    generated syscall table
 kernel/test/        in-kernel tests (KTEST) and race regression tests
 kernel/mm/          physical pages, page tables, heap
 kernel/dev/         framebuffer console, serial, font
 kernel/lib/         string, kprintf
 kernel/include/jam/ kernel headers
 user/               user programs: libos (crt0, syscall wrappers, printf,
-                    heap, startup message, bootfs reader), init, utest
+                    heap, startup message, bootfs reader, ELF loader
+                    spawn(), threads), init, utest (the M5 suite; its
+                    child and benchmark modes are in user/utest/)
 abi/syscalls.def    the system call table
 boot/limine.conf    boot menu
 boot/init.cfg       what init starts (packed into bootfs)

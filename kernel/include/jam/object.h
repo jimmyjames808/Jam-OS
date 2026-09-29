@@ -36,6 +36,7 @@ enum obj_type {
     OBJ_INTERRUPT,      /* M6 */
     OBJ_RESOURCE,       /* M6 */
     OBJ_VMAR,           /* M5: a handle to an address space */
+    OBJ_JOB,            /* M5: resource limits for a group of processes */
     OBJ_TYPE_COUNT,
 };
 

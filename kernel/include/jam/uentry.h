@@ -37,8 +37,10 @@ void arch_thread_switch(struct thread *prev, struct thread *next);
  * killed), false for a genuine kernel fault. */
 bool trap_page_fault(struct trap_frame *f);
 
-/* A user thread did something fatal (unresolvable fault, #GP, #UD...).
- * Phase 2 kills its process; until then the thread is logged and exits. */
+/* A user thread did something fatal (unresolvable fault, #GP, #UD...):
+ * its process is killed (logged; process_kill) and the thread leaves. A
+ * ring-3 thread with no process (the kernel's own entry-path tests) just
+ * exits. */
 _Noreturn void user_fault_kill(struct trap_frame *f, const char *why);
 
 /* Per-thread user FPU/SSE/AVX state (XSAVE area). 0 on success. */

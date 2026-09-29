@@ -38,6 +38,11 @@ static int64_t call_nanosleep(const struct syscall_frame *f)
     return sysc_nanosleep(f->args[0]);
 }
 
+static int64_t call_debug_report(const struct syscall_frame *f)
+{
+    return sysc_debug_report(f->args[0], f->args[1]);
+}
+
 static int64_t call_handle_close(const struct syscall_frame *f)
 {
     return sysc_handle_close((handle_t)f->args[0]);
@@ -224,12 +229,28 @@ static int64_t call_job_set_limit(const struct syscall_frame *f)
     return sysc_job_set_limit((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_job_get_info(const struct syscall_frame *f)
+{
+    return sysc_job_get_info((handle_t)f->args[0], f->args[1]);
+}
+
+static int64_t call_process_get_info(const struct syscall_frame *f)
+{
+    return sysc_process_get_info((handle_t)f->args[0], f->args[1]);
+}
+
+static int64_t call_thread_set_priority(const struct syscall_frame *f)
+{
+    return sysc_thread_set_priority((handle_t)f->args[0], (int32_t)f->args[1]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
     [SYS_thread_exit] = call_thread_exit,
     [SYS_clock_get] = call_clock_get,
     [SYS_nanosleep] = call_nanosleep,
+    [SYS_debug_report] = call_debug_report,
     [SYS_handle_close] = call_handle_close,
     [SYS_handle_duplicate] = call_handle_duplicate,
     [SYS_handle_replace] = call_handle_replace,
@@ -266,6 +287,9 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_thread_start] = call_thread_start,
     [SYS_job_create] = call_job_create,
     [SYS_job_set_limit] = call_job_set_limit,
+    [SYS_job_get_info] = call_job_get_info,
+    [SYS_process_get_info] = call_process_get_info,
+    [SYS_thread_set_priority] = call_thread_set_priority,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

@@ -37,6 +37,9 @@
 3   thread_exit       noreturn  void
 4   clock_get         i64       void
 5   nanosleep         status    uint64_t deadline_ns
+# debug_write, and the line also goes into the RESULTS box at the end of the
+# boot (at most a few dozen lines from all processes together).
+6   debug_report      status    const char *buf, uint64_t len
 
 # handles -------------------------------------------------------------------
 10  handle_close      status    handle_t h
@@ -92,3 +95,6 @@
 74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1
 75  job_create        status    handle_t parent, uint32_t flags, handle_t *out
 76  job_set_limit     status    handle_t job, uint32_t kind, uint64_t value
+77  job_get_info      status    handle_t job, struct job_info *out
+78  process_get_info  status    handle_t proc, struct process_info *out
+79  thread_set_priority status  handle_t thread, int32_t prio

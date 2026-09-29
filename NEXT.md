@@ -1,4 +1,20 @@
-# Jam OS: handoff (updated 2026-09-29, M5 phase 1 running)
+# Jam OS: handoff (updated 2026-09-29, M5 phase 2 built on its branch)
+
+**M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
+objects (object/process.c, object/job.c), every sysc_* (abi/sysc_*.c), kill = cancel all
+threads + last one out tears down, job charges (VMO pages, handle slots, threads, message
+bytes to the sender), userboot (core/userboot.c) runs bin/init on a plain boot or `init`,
+init runs init.cfg lines as child processes, utest = 12 ring-3 tests, libos spawn()/
+thread_spawn(), stress has a user-process worker, bench has `user:` lines + address-space
+switch, m5_weak.c deleted, version 0.0.7-m5. QEMU at 4+8 CPUs: 115/115 ktests, utest 12/12,
+root job clean after init, stress=20 with ~1600 processes killed at random, all crash
+tests. Merge notes: a parallel agent touched pmm.c / stack cache / channel_call placement;
+this branch touched sched.c (thread_try_create_on, reap drops leftover aspace, PRIO_USER_MAX,
+struct thread `uthread`) and channel.c (msg_free + job charge in msg_new, kfree(m) ->
+msg_free(m) at 5 sites). **For the PC**: copy build/jamos.elf + build/bootfs.img to boot/
+and boot/limine.conf to boot/limine/ on the stick; run "Jam OS (init + utest)" (expect
+`utest: 12 passed`, init exit 0, root job clean), "All tests" (expect 115), the Benchmark
+(new `user:` lines -> BENCH.md M5 column), and the 10-minute stress.
 
 **M5 started 2026-09-29** (user: "write the m5 plan and then get agents to start building
 it"). Plan = M5-PLAN.md. Foundation commit 9160daf (headers uentry/usercopy/aspace/syscall/

@@ -7,6 +7,7 @@
 #define SYS_thread_exit          3
 #define SYS_clock_get            4
 #define SYS_nanosleep            5
+#define SYS_debug_report         6
 #define SYS_handle_close         10
 #define SYS_handle_duplicate     11
 #define SYS_handle_replace       12
@@ -43,6 +44,9 @@
 #define SYS_thread_start         74
 #define SYS_job_create           75
 #define SYS_job_set_limit        76
+#define SYS_job_get_info         77
+#define SYS_process_get_info     78
+#define SYS_thread_set_priority  79
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 77
+#define SYSCALL_COUNT 80

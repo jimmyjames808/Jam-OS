@@ -43,6 +43,7 @@ typedef uint32_t signals_t;
 #define SIG_WRITABLE    (1u << 1)
 #define SIG_PEER_CLOSED (1u << 2)
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
+#define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good (M5) */
 #define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
 
 /* Deadlines are absolute nanoseconds of uptime. Also defined (identically)
@@ -87,11 +88,52 @@ struct port_packet {
 #define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
 
 /* jobs ---------------------------------------------------------------------
- * job_set_limit kinds (semantics are phase 2's; see M5-PLAN.md "Jobs"). */
+ * Every process belongs to a job. A job has a limit on each resource below
+ * and counts what its processes (and, through them, its child jobs) use
+ * right now; a charge that would take the job or any of its ancestors past
+ * its limit fails (ERR_NO_MEMORY for pages and message bytes,
+ * ERR_NO_RESOURCES for handles and threads). So a child job can never use
+ * more than its parent has left, whatever its own limit says. */
 
-#define JOB_LIMIT_PAGES   1   /* committed pages, charged to the job and its children */
-#define JOB_LIMIT_HANDLES 2
-#define JOB_LIMIT_THREADS 3
+#define JOB_LIMIT_PAGES     1   /* committed VMO pages (charged to the VMO creator's job) */
+#define JOB_LIMIT_HANDLES   2   /* handle-table slots in use */
+#define JOB_LIMIT_THREADS   3   /* live threads */
+#define JOB_LIMIT_MSG_BYTES 4   /* bytes of queued channel messages, charged to the sender */
+#define JOB_LIMIT_COUNT     5   /* kinds are 1 .. JOB_LIMIT_COUNT - 1 */
+#define JOB_NO_LIMIT        UINT64_MAX
+
+/* job_get_info. Arrays are indexed by JOB_LIMIT_*; index 0 is unused. */
+struct job_info {
+    uint64_t used[JOB_LIMIT_COUNT];    /* this job and its descendants, now */
+    uint64_t limit[JOB_LIMIT_COUNT];   /* this job's own limit (JOB_NO_LIMIT: none) */
+    uint64_t koid;
+};
+
+/* processes and threads ------------------------------------------------------ */
+
+#define PROCESS_NEW     0   /* created, not started */
+#define PROCESS_RUNNING 1
+#define PROCESS_DYING   2   /* killed or exiting: its threads are leaving */
+#define PROCESS_DEAD    3   /* every thread gone, handles closed (SIG_TERMINATED) */
+
+/* The exit code of a process that was killed (process_kill, a fatal fault,
+ * or its last handle closed before it started) rather than exiting. */
+#define PROCESS_KILLED_CODE (-1)
+
+struct process_info {
+    int64_t  exit_code;   /* once DEAD: process_exit's code, or PROCESS_KILLED_CODE */
+    uint32_t state;       /* PROCESS_* */
+    uint32_t killed;      /* 1 if it was killed rather than exiting */
+    uint32_t threads;     /* live threads */
+    uint32_t reserved;
+    uint64_t koid;
+};
+
+/* Thread priorities: 0 (lowest) .. 31. User threads start at
+ * THREAD_PRIO_DEFAULT and may be set up to THREAD_PRIO_USER_MAX; the levels
+ * above are the kernel's (and, later, a capability's). */
+#define THREAD_PRIO_DEFAULT  16
+#define THREAD_PRIO_USER_MAX 24
 
 /* argument structs -----------------------------------------------------------
  * Calls with more than six arguments take a pointer to one of these. The
