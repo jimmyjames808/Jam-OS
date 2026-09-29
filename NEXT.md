@@ -6,7 +6,8 @@ init + utest 12/12 at 4+8 with the root job clean afterwards (0 pages/handles/th
 is reviewing the processes code (range 5a2ae4e..worktree-agent-ab062027be2f4bc40) and will commit
 failing regression tests only, no fixes. After its report: fix pass with tests, then the PC run
 ("Jam OS (init + utest)", All tests 122+, Benchmark -> M5 column of BENCH.md, 10-min stress).
-The PC's 10-min stress of the phase-1 build (0.0.7-m5-phase1) was running; result not yet recorded.
+PC: the phase-1 build (0.0.7-m5-phase1) also PASSED the 10-min stress (no problems), so the rewritten
+interrupt/syscall entry path is confirmed on real hardware.
 
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
 objects (object/process.c, object/job.c), every sysc_* (abi/sysc_*.c), kill = cancel all
@@ -56,7 +57,7 @@ uentry.c currently thread_exit() -> replace with process kill; test CR3 hooks
 zeroed at entry (no TLS yet); aspace teardown must wait until no CPU has it loaded.
 **PC 2026-09-29, build 0.0.7-m5-phase1 (4b4db91):** All tests passed (107, first real ring-3
 code on the PC), fpu XSAVE xcr0 7 / 832-byte state, smep=smap=umip=1; testsmap and testsmep
-panic with the right messages. 10-min stress: running.
+panic with the right messages. 10-min stress: PASSED.
 **Phase 1 complete. Phase 2 started 2026-09-29 with two worktree agents:** (1) processes/
 threads/jobs, all sysc_* glue, kill, quotas + no-panic OOM, userboot, init spawning utest,
 utest suite, user-path bench lines, delete m5_weak.c; (2) per-CPU page caches, stack cache
