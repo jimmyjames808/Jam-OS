@@ -292,9 +292,9 @@ static void page_all_cpus(void)
 /* ---- context switch: two threads yielding on one CPU ----------------------
  * The partner starts first and the timer waits until it runs, and the time
  * is divided by the switches the scheduler actually counted on that CPU,
- * not by an assumed number: the first PC run divided by 2 per yield while
- * the partner hadn't been created yet, and reported a yield that switched
- * to nobody (28.8 ns). */
+ * not by an assumed number, so a yield that finds nobody to switch to can
+ * never pass for a switch (INVALID is reported instead). On the PC this
+ * confirmed the first run's 28.8 ns was a real switch. */
 
 static volatile bool yield_done, partner_running;
 static uint64_t yield_switches;
