@@ -333,8 +333,8 @@ static struct ep *iface_ep(struct usbdev *d, struct iface *f, uint8_t addr)
 {
     for (int i = 0; i < f->nep; i++)
         if (f->ep_addr[i] == addr) {
-            uint8_t dci = (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
-            if (dci >= 2 && dci < 32 && d->eps[dci].dci == dci)
+            uint8_t dci = ep_dci(addr);
+            if (dci >= 2 && d->eps[dci].dci == dci)
                 return &d->eps[dci];
         }
     return NULL;

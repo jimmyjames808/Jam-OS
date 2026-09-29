@@ -163,10 +163,7 @@ void dev_log_detail(struct usbdev *d)
         struct iface *f = &d->ifs[i];
         for (int k = 0; k < f->nep; k++) {
             uint8_t a = f->ep_addr[k];
-            uint8_t dci = (uint8_t)((a & 0xf) * 2 + ((a & 0x80) ? 1 : 0));
-            struct ep *e = dci < 32 ? &d->eps[dci] : NULL;
-            if (!e)
-                continue;
+            const struct ep *e = &d->eps[ep_dci(a)];
             drv_log("usb %s:   if%u alt %u ep %02x %s max packet %u interval %u (%u us)%s",
                     d->path, f->number, f->alt, a,
                     (e->attr & 3) == 3 ? "interrupt" : (e->attr & 3) == 2 ? "bulk" : "isoch",
