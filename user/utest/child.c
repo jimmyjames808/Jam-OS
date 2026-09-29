@@ -220,11 +220,12 @@ static int startup(int argc, char **argv)
     return 0;
 }
 
-/* Review regression (kernel/test/test_review.c, review_child_raises_own_job_limit):
- * lift our own job's page limit through SR_JOB, then commit 1 MiB. 0 if
- * both worked (the bug), 50 if the kernel refused the raise, 51 if the
- * raise "worked" but the commit was still refused. */
-static int review_raise(void)
+/* Try to lift our own job's page limit through SR_JOB, then commit 1 MiB
+ * (kernel/test/test_quota.c, quota_child_cannot_raise_own_job_limit). 50
+ * if the kernel refused the raise (right: SR_JOB has no RIGHT_MANAGE), 0 if
+ * both worked (the review's R4 bug), 51 if the raise "worked" but the
+ * commit was still refused. */
+static int raise_own_limit(void)
 {
     if (jam_job_set_limit(startup_handle(SR_JOB), JOB_LIMIT_PAGES, JOB_NO_LIMIT) != OK)
         return 50;
@@ -252,7 +253,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
-    if (!strcmp(m, "review-raise")) return review_raise();
+    if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);
     return 127;

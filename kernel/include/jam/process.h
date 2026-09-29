@@ -48,7 +48,7 @@ struct uthread;
 
 #define PROCESS_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 #define THREAD_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
-#define JOB_RIGHTS     (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
+/* JOB_RIGHTS / JOB_RIGHTS_OWN: <jam/abi.h> */
 
 /* ---- jobs ------------------------------------------------------------------ */
 

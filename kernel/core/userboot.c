@@ -213,7 +213,7 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
         roles[n] = SR_SELF_THREAD;
         khs[n++] = kh_ref(uthread_kobject(u), THREAD_RIGHTS);
         roles[n] = SR_JOB;
-        khs[n++] = kh_ref(job_kobject(job), JOB_RIGHTS);
+        khs[n++] = kh_ref(job_kobject(job), JOB_RIGHTS_OWN);   /* no RIGHT_MANAGE */
         if (bootfs_image(&image, &isz) == OK) {
             roles[n] = SR_BOOTFS;
             khs[n++] = khandle_from_new(vmo_kobject(image), BOOTFS_RIGHTS);

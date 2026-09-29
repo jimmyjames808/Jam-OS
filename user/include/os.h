@@ -96,14 +96,15 @@ struct spawn_args {
     const char                *name;     /* process name; NULL: the path's last part */
     int                        argc;
     const char *const         *argv;
-    handle_t                   job;      /* needs RIGHT_WRITE */
+    handle_t                   job;      /* needs JOB_RIGHTS_OWN */
     const struct spawn_handle *extra;    /* moved into the startup message */
     unsigned                   nextra;
 };
 
 /* Load a program from bootfs into a new process and start it. Its startup
  * message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a duplicate
- * of a->job), BOOTFS (a duplicate of ours) and the extras, which are
+ * of a->job with JOB_RIGHTS_OWN: the child can't change its own limits),
+ * BOOTFS (a duplicate of ours) and the extras, which are
  * consumed whatever happens. *proc gets the process handle. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
 /* Wait up to timeout_ns for proc to die (SIG_TERMINATED), then fill *info

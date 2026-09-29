@@ -146,32 +146,3 @@ KTEST(review_job_chain_uncharged)
      * bounds the depth. */
     KT_ASSERT(used <= 16);
 }
-
-/* R4. A process can raise its own job's limits. userboot (and libos spawn,
- * which duplicates the caller's job handle with RIGHT_SAME) hands every
- * program its own job as SR_JOB with RIGHT_WRITE, and job_set_limit needs
- * only RIGHT_WRITE, so the job limit a parent sets is advisory: the child
- * lifts it and allocates past it (up to the ancestors' limits; init holds
- * the ROOT job this way and can remove the kernel's reserve). The child
- * mode "review-raise" (user/utest/child.c) raises JOB_LIMIT_PAGES on
- * SR_JOB and commits 1 MiB; it exits 0 if both worked. */
-KTEST(review_child_raises_own_job_limit)
-{
-    struct job *j = review_job();
-    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 64), OK);   /* a 256 KiB budget */
-    const char *argv[] = { "utest", "review-raise" };
-    struct process *p;
-    KT_EQ(userboot_spawn("bin/utest", argv, 2, j, NULL, 0, NULL, &p), OK);
-    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20 * S, NULL), OK);
-    struct process_info info;
-    process_get_info(p, &info);
-    kobject_unref(process_kobject(p));
-    struct job_info ji;
-    job_get_info(j, &ji);
-    job_unref(j);
-    kprintf("review: child exit %ld (0 = raised its own limit and used 256 pages), "
-            "job limit now %lx\n", info.exit_code, ji.limit[JOB_LIMIT_PAGES]);
-    KT_ASSERT(!info.killed);
-    KT_ASSERT(info.exit_code != 0);             /* fails: the child escaped its limit */
-    KT_EQ(ji.limit[JOB_LIMIT_PAGES], 64);
-}

@@ -183,6 +183,17 @@ static bool t_rights(void)
     CHECK_ST(jam_job_create(jro, 0, &j2), ERR_ACCESS_DENIED);
     CHECK_ST(jam_process_create(jro, "x", 1, 0, &p, &pv), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(jro), OK);
+    /* our own job comes without RIGHT_MANAGE: its limits are our parent's */
+    CHECK_ST(jam_job_set_limit(own_job(), JOB_LIMIT_PAGES, JOB_NO_LIMIT), ERR_ACCESS_DENIED);
+    handle_t jm;
+    CHECK_ST(jam_handle_duplicate(own_job(), JOB_RIGHTS, &jm), ERR_INVALID_ARGS);
+    /* a job we make is ours to manage */
+    CHECK_ST(new_job(&j2), OK);
+    CHECK_ST(jam_job_set_limit(j2, JOB_LIMIT_PAGES, 16), OK);
+    CHECK_ST(jam_handle_duplicate(j2, JOB_RIGHTS_OWN, &jm), OK);
+    CHECK_ST(jam_job_set_limit(jm, JOB_LIMIT_PAGES, 32), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(jm), OK);
+    CHECK_ST(jam_handle_close(j2), OK);
 
     CHECK_ST(jam_handle_close(ro2), OK);
     CHECK_ST(jam_handle_close(v), OK);

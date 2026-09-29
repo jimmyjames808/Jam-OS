@@ -4,7 +4,10 @@
  * Rights: creating a process in a job, or a child job, needs RIGHT_WRITE on
  * the job; starting, killing and making threads in a process needs
  * RIGHT_WRITE on it; starting a thread or changing its priority needs
- * RIGHT_WRITE on the thread; reading info needs RIGHT_INSPECT. */
+ * RIGHT_WRITE on the thread; reading info needs RIGHT_INSPECT. Changing a
+ * job's limits needs RIGHT_MANAGE, which only the job's creator gets
+ * (JOB_RIGHTS from job_create); the processes IN a job see it through
+ * JOB_RIGHTS_OWN, without it, so a program can't lift its own limits. */
 #include <jam/aspace.h>
 #include <jam/kprintf.h>
 #include <jam/sched.h>
@@ -205,7 +208,7 @@ int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value)
 {
     SYSC_TABLE(t);
     struct kobject *jo;
-    status_t st = handle_get(t, job, OBJ_JOB, RIGHT_WRITE, &jo, NULL);
+    status_t st = handle_get(t, job, OBJ_JOB, RIGHT_MANAGE, &jo, NULL);
     if (st != OK)
         return st;
     st = job_set_limit(job_from_kobject(jo), kind, value);

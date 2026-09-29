@@ -29,10 +29,18 @@ typedef uint32_t rights_t;
 #define RIGHT_SIGNAL    (1u << 6)   /* may set/clear user signals */
 #define RIGHT_WAIT      (1u << 7)   /* may wait on it / bind it to a port */
 #define RIGHT_INSPECT   (1u << 8)
+#define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
 #define RIGHTS_IO    (RIGHT_READ | RIGHT_WRITE)
+
+/* Job handles. job_create gives JOB_RIGHTS (the creator manages the new
+ * job); a program is handed its OWN job (SR_JOB) with JOB_RIGHTS_OWN only,
+ * so it can start processes and child jobs in it but can't lift the limits
+ * its parent set on it (or kill it). */
+#define JOB_RIGHTS_OWN (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
+#define JOB_RIGHTS     (JOB_RIGHTS_OWN | RIGHT_MANAGE)
 
 /* signals ------------------------------------------------------------------ */
 
