@@ -360,3 +360,9 @@ WEAK int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
     (void)vmo, (void)dma, (void)pin_id;
     return ERR_NOT_SUPPORTED;
 }
+
+WEAK int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)
+{
+    (void)dma, (void)on;
+    return ERR_NOT_SUPPORTED;
+}

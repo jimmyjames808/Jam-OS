@@ -61,6 +61,7 @@
 #define SYS_dma_cap_create       100
 #define SYS_vmo_pin              101
 #define SYS_vmo_unpin            102
+#define SYS_dma_cap_bus_master   120
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 103
+#define SYSCALL_COUNT 121

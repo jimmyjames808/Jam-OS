@@ -2,8 +2,9 @@
  * test's kernel side. The handles are built here the way devmgr builds
  * them (M6-PLAN.md "Phase 2"): the driver gets its function without
  * RIGHT_MANAGE, BAR 0, one interrupt object (MSI-X entry 0 if the
- * function has MSI-X, else MSI) and a bound dma_cap, with Bus Master
- * Enable turned on here (MSI needs it too). Everything the driver holds
+ * function has MSI-X, else MSI) and a bound dma_cap, which leaves Bus
+ * Master Enable off until the driver has reset the controller and turns
+ * it on itself (M7). Everything the driver holds
  * goes when it exits: the dma_cap's close turns Bus Master Enable off,
  * the interrupt object's disables MSI / MSI-X; both are checked. */
 #include <jam/abi.h>
@@ -65,12 +66,6 @@ static status_t build_handles(struct pci_dev *d, uint32_t roles[4], struct khand
     if (st == OK) {
         *what = "dma_cap";
         st = dma_cap_create_for(d, &cap);
-    }
-    if (st == OK) {
-        *what = "bus master";
-        uint64_t f = pci_cmd_lock();
-        st = pci_set_bus_master(d, true);
-        pci_cmd_unlock(f);
     }
     if (root)
         kobject_unref(root);

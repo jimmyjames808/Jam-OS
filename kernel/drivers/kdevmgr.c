@@ -133,13 +133,6 @@ status_t kdev_bind(struct pci_dev *d, const char *driver, struct job *parent,
         st = add(hs, &n, DR_DMA, obj, DRV_DMA_RIGHTS);
     }
     if (st == OK) {
-        /* For DMA and for MSI (a memory write by the device). The dma_cap's
-         * close turns it off again. */
-        uint64_t cf = pci_cmd_lock();
-        st = pci_set_bus_master(d, true);
-        pci_cmd_unlock(cf);
-    }
-    if (st == OK) {
         st = add(hs, &n, DR_PCIDEV, dev, DRV_DEV_RIGHTS);
         dev = NULL;
     }

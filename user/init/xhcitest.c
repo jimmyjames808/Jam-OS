@@ -3,8 +3,9 @@
  * will do for one device, through the M6 system calls only: slice RES_PCI
  * from the root resource, find the xHCI (class 0c0330) with pci_enum, open
  * it, make its BAR 0 resource, its interrupt object (MSI-X entry 0, else
- * MSI), a dma_cap, turn Bus Master Enable on, and start drv/xhci-noop in a
- * job of its own with those handles (the device without RIGHT_MANAGE).
+ * MSI) and a dma_cap (bus mastering stays off: the driver turns it on
+ * after its reset, M7), and start drv/xhci-noop in a job of its own with
+ * those handles (the device without RIGHT_MANAGE).
  * Then it waits for the driver, checks Bus Master Enable went off with the
  * driver's dma_cap and the driver's job is empty, and reports. */
 #include <os.h>
@@ -62,10 +63,6 @@ bool init_xhcitest(void)
     if (st == OK) {
         what = "dma_cap_create";
         st = jam_dma_cap_create(dev, &h[2]);
-    }
-    if (st == OK) {
-        what = "pci_bus_master";
-        st = jam_pci_bus_master(dev, 1);
     }
     if (st == OK) {
         what = "handle_duplicate (device without RIGHT_MANAGE)";

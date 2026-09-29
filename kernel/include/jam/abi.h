@@ -234,6 +234,10 @@ struct pci_dev_info {
         uint32_t flags;       /* PCI_BAR_* */
         uint32_t reserved;
     } bar[6];                 /* a 64-bit BAR fills bar[i]; bar[i + 1] is empty */
+    /* M7: the function's DMA quarantine (pins a dma_cap still held when it
+     * closed; see abi/syscalls.def dma_cap_bus_master), in pages. */
+    uint32_t dma_quarantined; /* held right now */
+    uint32_t dma_changed;     /* since boot: released pages found written while held */
 };
 
 /* interrupt_create_msi flags */

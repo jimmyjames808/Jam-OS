@@ -221,6 +221,8 @@ static void t_device_refusals(void)
     CHECK_ST(drv_vmo_create(PAGE, 0, &v), OK);
     CHECK(drv_vmo_pin(v, HANDLE_INVALID, 0, PAGE, addrs, &pin) != OK);
     CHECK(drv_vmo_unpin(v, HANDLE_INVALID, 12345) != OK);
+    CHECK_ST(drv_dma_bus_master(HANDLE_INVALID, 1), ERR_BAD_HANDLE);
+    CHECK_ST(drv_dma_bus_master(v, 1), ERR_WRONG_TYPE);   /* a VMO isn't a dma_cap */
     CHECK(drv_mmio_map(v, 0, PAGE, VMO_CACHE_UC, &mm) != OK);   /* a VMO isn't a BAR */
     CHECK(drv_pci_config_read(v, 0, 4, &val) != OK);
     CHECK_ST(drv_handle_close(v), OK);

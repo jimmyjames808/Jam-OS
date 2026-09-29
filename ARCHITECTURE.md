@@ -449,8 +449,17 @@ Rules for userspace drivers:
   its BAR mapping never includes the MSI-X table page.
 - A `dma_cap` is bound to one device (PCI bus/device/function). `vmo_pin`
   returns *device addresses* (physical today, IOMMU addresses after M11).
-  Closing a `dma_cap` clears the device's Bus Master Enable, then releases
-  its pins.
+- **Safe rebind (M7)**: the newest `dma_cap` of a function is its *current*
+  one; making it turns Bus Master Enable off, and only it turns it back on
+  (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
+  after quiescing its device (reset it, or see its DMA engine idle), so a
+  transfer a dead driver left queued never runs with the new driver's bus
+  mastering. Nobody else turns it on (`pci_bus_master` only turns it off).
+  Closing the current cap clears Bus Master Enable (an older cap's close
+  leaves it alone); pins still held then are *quarantined*, not freed
+  (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
+  until 1 s after the function's next driver turned bus mastering on, or
+  30 s if none does; a page the device wrote meanwhile is logged.
 - MSI/MSI-X and MMIO only: no port I/O for userspace drivers.
 - **Supervision from M7**: devmgr restarts a crashed driver process, and
   clients reconnect on `PEER_CLOSED` as their protocol defines.

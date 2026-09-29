@@ -732,14 +732,19 @@ KTEST(resource_dma_close_clears_bus_master)
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
     KT_EQ(sys_pci_bus_master(&t, drv, 1), ERR_ACCESS_DENIED);
     KT_EQ(sys_dma_cap_create(&t, drv, &x), ERR_ACCESS_DENIED);
+    /* M7: nor devmgr's: bus mastering goes on only through the dma_cap. */
+    KT_EQ(sys_pci_bus_master(&t, dev, 1), ERR_ACCESS_DENIED);
 
     KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));   /* a new cap starts with it off */
     KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, cap, &vh), OK);
     uint64_t addrs[2], id;
-    KT_EQ(sys_pci_bus_master(&t, dev, 0), OK);
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), ERR_BAD_STATE);   /* BME off */
-    KT_EQ(sys_pci_bus_master(&t, dev, 1), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     KT_ASSERT(pci_cfg_read(d, 0x04, 2) & CMD_BME);
+    KT_EQ(sys_pci_bus_master(&t, dev, 0), OK);   /* devmgr may still turn it off */
+    KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), ERR_BAD_STATE);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), OK);
     KT_EQ(addrs[1], addrs[0] + PG);
     /* The driver can't turn BME off (or back on) through config space. */
@@ -751,9 +756,13 @@ KTEST(resource_dma_close_clears_bus_master)
     struct kobject *capobj;
     KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
     KT_EQ(dma_cap_pin_count(capobj), 1);
-    KT_EQ(handle_close(&t, cap), OK);           /* last handle: BME off, then unpin */
+    KT_EQ(handle_close(&t, cap), OK);           /* last handle: BME off, then quarantine */
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));
     KT_EQ(dma_cap_pin_count(capobj), 0);
+    struct dma_quarantine_stats q;
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.pins, 1);
+    KT_EQ(q.pages, 2);
     KT_EQ(sys_vmo_unpin(&t, vh, cap, id), ERR_BAD_HANDLE);   /* the cap's handle is gone */
     struct kobject *vo;
     KT_EQ(handle_get(&t, vh, OBJ_VMO, 0, &vo, NULL), OK);
@@ -763,6 +772,9 @@ KTEST(resource_dma_close_clears_bus_master)
     KT_EQ(sys_pci_config_write(&t, drv, 0x04, 2, cmd), ERR_ACCESS_DENIED);   /* stale RMW */
 
     handle_table_destroy(&t);
+    dma_quarantine_flush(d);   /* the pages are still charged to j until released */
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.pins, 0);
     job_clean(j);
     job_unref(j);
 }

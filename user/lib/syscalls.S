@@ -497,4 +497,12 @@ jam_vmo_unpin:
     ret
     .size jam_vmo_unpin, . - jam_vmo_unpin
 
+    .globl jam_dma_cap_bus_master
+    .type jam_dma_cap_bus_master, @function
+jam_dma_cap_bus_master:
+    mov $SYS_dma_cap_bus_master, %eax
+    syscall
+    ret
+    .size jam_dma_cap_bus_master, . - jam_dma_cap_bus_master
+
     .section .note.GNU-stack, "", @progbits

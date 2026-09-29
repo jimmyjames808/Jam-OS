@@ -10,8 +10,11 @@
  *   pci_config_read        RIGHT_READ on a RES_PCI_DEV
  *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter)
  *   pci_bar_resource       RIGHT_SLICE on a RES_PCI_DEV
- *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV
+ *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV, and only to turn
+ *                          it OFF (M7: on is the current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
+ *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
+ *                          current cap (M7)
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
  *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
  *                          the one the pin was made with)
@@ -98,8 +101,13 @@ status_t sys_pci_enum(struct handle_table *t, handle_t pci, uint32_t index,
         st = ERR_WRONG_TYPE;
     else if (index >= pci_count() || !(d = pci_get(index)))
         st = ERR_OUT_OF_RANGE;
-    else
+    else {
         *out = d->info;
+        struct dma_quarantine_stats q;
+        dma_quarantine_stats(d, &q);
+        out->dma_quarantined = (uint32_t)q.pages;
+        out->dma_changed = (uint32_t)q.changed;
+    }
     kobject_unref(p);
     return st;
 }
@@ -180,10 +188,27 @@ status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enabl
     status_t st = get_dev(t, dev, RIGHT_MANAGE, &obj, &d);
     if (st != OK)
         return st;
+    if (enable) {
+        /* M7: only the function's current dma_cap turns it on, once its
+         * driver has quiesced the device (dma_cap_bus_master). */
+        kobject_unref(obj);
+        return ERR_ACCESS_DENIED;
+    }
     uint64_t f = pci_cmd_lock();
-    st = pci_set_bus_master(d, enable != 0);
+    st = pci_set_bus_master(d, false);
     pci_cmd_unlock(f);
     kobject_unref(obj);
+    return st;
+}
+
+status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on)
+{
+    struct kobject *cap;
+    status_t st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
+    if (st != OK)
+        return st;
+    st = dma_cap_bus_master(cap, on != 0);
+    kobject_unref(cap);
     return st;
 }
 
@@ -358,6 +383,12 @@ int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable)
 {
     SYSC_TABLE(t);
     return sys_pci_bus_master(t, dev, enable);
+}
+
+int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)
+{
+    SYSC_TABLE(t);
+    return sys_dma_cap_bus_master(t, dma, on);
 }
 
 int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache,

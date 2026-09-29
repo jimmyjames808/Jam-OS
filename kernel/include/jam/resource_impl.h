@@ -72,13 +72,58 @@ static inline struct dma_cap *dma_cap_from_kobject(struct kobject *o)
  * no spinlock held, may run with preemption off). Pins still being set up
  * or torn down elsewhere finish by themselves. */
 void vmo_release_cap_pins(struct dma_cap *c);
+/* vmo.c, M7: the close path of a BOUND cap. Every pin still made with c
+ * goes onto the list `out` (through the range's own list node) instead of
+ * being released: its pages stay put, each with a checksum; *pins and
+ * *pages count what went on (pins of physical VMOs are released at once:
+ * no RAM behind them). Same context rules as vmo_release_cap_pins. */
+void vmo_quarantine_cap_pins(struct dma_cap *c, struct list_node *out, uint64_t *pins,
+                             uint64_t *pages);
+/* Release every pin on such a list (emptied): the pages may go back to
+ * their VMO. *pages += how many; *changed += how many no longer match the
+ * checksum taken when they were quarantined (something -- the device, if
+ * the VMO had no other writer -- wrote them in between). Interrupts on,
+ * no spinlock held. */
+void vmo_release_quarantined(struct list_node *list, uint64_t *pages, uint64_t *changed);
 /* Pins currently recorded on the cap (tests). */
 uint64_t dma_cap_pin_count(struct kobject *cap);
 /* As resource_set_job, for a dma_cap. */
 status_t dma_cap_set_job(struct kobject *cap, struct job *job);
-/* May the cap pin right now? Unbound: always; bound: its function's Bus
- * Master Enable is on (read from config space; all-ones counts as off). */
+/* May the cap pin right now? Unbound: always; bound: it is its function's
+ * current cap (the last one made for it, not closed) and the function's
+ * Bus Master Enable is on (read from config space; all-ones counts as
+ * off). */
 bool dma_cap_bus_master_on(struct kobject *cap);
+
+/* ---- DMA ownership and the quarantine (M7, dma_cap.c) ------------------------
+ * Each function has at most one CURRENT dma_cap: the last one made for it
+ * (dma_cap_create_for), until it closes. Making one turns the function's
+ * Bus Master Enable off; only the current cap turns it on again
+ * (dma_cap_bus_master), which its driver does once it has quiesced the
+ * device; the current cap's close turns it off, an older cap's close
+ * doesn't touch it. A bound cap closing with pins still held quarantines
+ * them (see vmo_quarantine_cap_pins): they are released
+ * DMA_QUARANTINE_GRACE_NS after the function's current cap next turns bus
+ * mastering on, or DMA_QUARANTINE_TIMEOUT_NS after the close if nobody
+ * does. A kernel thread ("dma quarantine") releases them. */
+#define DMA_QUARANTINE_GRACE_NS   1000000000ull    /* 1 s */
+#define DMA_QUARANTINE_TIMEOUT_NS 30000000000ull   /* 30 s */
+
+/* Bus Master Enable on or off through the function's current cap.
+ * ERR_WRONG_TYPE: not a dma_cap; ERR_NOT_SUPPORTED: unbound;
+ * ERR_BAD_STATE: not (or no longer) the function's current cap. */
+status_t dma_cap_bus_master(struct kobject *cap, bool on);
+/* Start the release thread (idempotent; the first dma_cap_create_for does
+ * it, the ktest runner too, before its leak baseline). */
+void dma_quarantine_start(void);
+struct dma_quarantine_stats {
+    uint64_t pins, pages;     /* held now */
+    uint64_t released;        /* pages released so far (since boot) */
+    uint64_t changed;         /* of those, found changed at release */
+};
+void dma_quarantine_stats(struct pci_dev *d, struct dma_quarantine_stats *out);
+/* Tests: release d's quarantine now, whatever its deadlines. */
+void dma_quarantine_flush(struct pci_dev *d);
 
 /* ---- the handle layer (kernel/abi/sysc_hw.c) -------------------------------
  * Same rules as <jam/sys.h>: kernel pointers, the caller's table. */
@@ -101,6 +146,7 @@ status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enabl
 status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t offset,
                                  uint64_t size, uint32_t cache, handle_t *out);
 status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out);
+status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on);
 /* addrs: kernel array of at least len / PAGE_SIZE entries. */
 status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
                      uint64_t len, uint64_t *addrs, uint64_t *pin_id);

@@ -314,6 +314,11 @@ static int64_t call_vmo_unpin(const struct syscall_frame *f)
     return sysc_vmo_unpin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
+{
+    return sysc_dma_cap_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -374,6 +379,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_dma_cap_create] = call_dma_cap_create,
     [SYS_vmo_pin] = call_vmo_pin,
     [SYS_vmo_unpin] = call_vmo_unpin,
+    [SYS_dma_cap_bus_master] = call_dma_cap_bus_master,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

@@ -955,23 +955,35 @@ static bool t_edu_killed_mid_dma(void)
     CHECK(info.killed);
     CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
     CHECK(!(cmd & CMD_BME));                                  /* bus mastering off */
-    if (!job_is_empty(job))                                   /* pins, VMOs, threads: gone */
-        return false;
+    /* Its pinned buffer is quarantined (M7), still charged to the job. */
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
     CHECK_ST(edu_factorial_until(ch, now() + 5 * S, 3, &f), ERR_PEER_CLOSED);
     CHECK_ST(jam_pci_config_write(dev, 0x3c, 1, 0), ERR_ACCESS_DENIED);   /* a read-only view */
     CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
-    CHECK_ST(jam_handle_close(job), OK);
-    CHECK_ST(jam_handle_close(dev), OK);
 
-    /* A new driver: new vector, new dma_cap (bus mastering back on), works. */
+    /* A new driver: new vector, new dma_cap (bus mastering back on once
+     * it has seen the device idle), works. */
     CHECK_ST(dm_call(dm, DEVMGR_REBIND, EDU_VENDOR, EDU_DEVICE, &r, NULL, NULL), OK);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
     CHECK_ST(edu_factorial_until(hs[0], now() + 10 * S, 10, &f), OK);
     CHECK_EQ(f, 3628800);
     CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * S, 4096), OK);
     CHECK_ST(jam_handle_close(hs[0]), OK);
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    CHECK(cmd & CMD_BME);
+    /* The quarantine lets the dead driver's pages go a grace period (1 s)
+     * after the new driver turned bus mastering on: then its job is empty
+     * (pins, VMOs, threads: gone). */
+    uint64_t until = now() + 10 * S;
+    while (info_of(job, &ji) == OK && ji.used[JOB_LIMIT_PAGES] && now() < until)
+        jam_nanosleep(now() + 20 * MS);
+    if (!job_is_empty(job))
+        return false;
+    CHECK_ST(jam_handle_close(job), OK);
+    CHECK_ST(jam_handle_close(dev), OK);
     return true;
 }
 

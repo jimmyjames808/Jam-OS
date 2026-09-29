@@ -102,6 +102,11 @@ struct vmo_range {
     struct list_node cap_node;
     bool             cap_linked;  /* on the cap's list (cap's lock) */
     struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the VMO's job) */
+    /* M7: a pin quarantined by its cap's unclean close (vmo_quarantine_cap_pins)
+     * sits on the quarantine's list through cap_node, busy, with no cap.
+     * sums: a checksum per page taken then, to see at release whether the
+     * device wrote the pages meanwhile (NULL: not taken). */
+    uint64_t        *sums;
 };
 
 struct vmo {
@@ -930,7 +935,8 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     if (!phys_out || phys_cap < end - first)
         return ERR_BUFFER_TOO_SMALL;
     /* M6: a cap bound to a function pins only while its Bus Master Enable
-     * is on (devmgr turns it on with pci_bus_master). */
+     * is on; M7: and while it is the function's current cap (its driver
+     * turned bus mastering on with it: dma_cap_bus_master). */
     if (!dma_cap_bus_master_on(dma_cap))
         return ERR_BAD_STATE;
     struct dma_cap *c = dma_cap_from_kobject(dma_cap);
@@ -1023,6 +1029,95 @@ void vmo_release_cap_pins(struct dma_cap *c)
         if (!r)
             break;
         range_remove(r->v, r);
+    }
+}
+
+/* ---- DMA quarantine (M7) ------------------------------------------------------
+ * A bound dma_cap whose last handle closes while pins are still held (its
+ * driver died, or quit without unpinning) doesn't give the pages back:
+ * the device may still hold their addresses in a queued transfer, and a
+ * later owner turning Bus Master Enable on would let it write into pages
+ * that belong to someone else by then. dma_cap.c keeps them on the
+ * function's quarantine (Fuchsia's BTI quarantine) and releases them once
+ * the next owner has turned bus mastering on and a grace period passed,
+ * or after a timeout. The pages stay charged to their VMO's job until
+ * then: they are not free. */
+
+#define SUM_PAGES_MAX 1024   /* pages checksummed per quarantined pin (4 MiB) */
+
+static uint64_t page_sum(uint64_t pa)
+{
+    const uint64_t *w = phys_to_virt(pa);
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (unsigned i = 0; i < PAGE_SIZE / 8; i++)
+        h = (h ^ w[i]) * 0x100000001b3ull;
+    return h;
+}
+
+void vmo_quarantine_cap_pins(struct dma_cap *c, struct list_node *out, uint64_t *pins,
+                             uint64_t *pages)
+{
+    for (;;) {
+        struct vmo_range *r = NULL;
+        uint64_t cf = spin_lock_irqsave(&c->base.lock);
+        for (struct list_node *n = c->pins.next; n != &c->pins && !r; n = n->next) {
+            struct vmo_range *x = container_of(n, struct vmo_range, cap_node);
+            uint64_t f = vlock(x->v);
+            if (!x->busy) {
+                x->busy = true;   /* ours now: vmo_unpin can't find it */
+                r = x;
+            }
+            vunlock(x->v, f);
+        }
+        if (r) {
+            list_del(&r->cap_node);
+            r->cap_linked = false;
+        }
+        spin_unlock_irqrestore(&c->base.lock, cf);
+        if (!r)
+            break;
+        struct vmo *v = r->v;
+        if (v->kind == VMO_PHYS) {
+            range_remove(v, r);   /* no RAM behind it: nothing to protect */
+            continue;
+        }
+        /* The cap may go now (its destroy is queued behind us, see
+         * vmo_release_cap_pins); the range needs nothing more of it. */
+        kobject_unref(r->cap);
+        r->cap = NULL;
+        uint64_t n = r->end - r->first;
+        if (n <= SUM_PAGES_MAX && (r->sums = kmalloc(n * sizeof(uint64_t))))
+            for (uint64_t i = 0; i < n; i++) {
+                uint64_t f = vlock(v);
+                uint64_t pa = phys_locked(v, r->first + i);
+                vunlock(v, f);
+                r->sums[i] = page_sum(pa);   /* pinned: the page can't move */
+            }
+        list_add_tail(out, &r->cap_node);
+        (*pins)++;
+        *pages += n;
+    }
+}
+
+void vmo_release_quarantined(struct list_node *list, uint64_t *pages, uint64_t *changed)
+{
+    while (!list_empty(list)) {
+        struct vmo_range *r = container_of(list->next, struct vmo_range, cap_node);
+        list_del(&r->cap_node);
+        struct vmo *v = r->v;
+        uint64_t n = r->end - r->first;
+        if (r->sums) {
+            for (uint64_t i = 0; i < n; i++) {
+                uint64_t f = vlock(v);
+                uint64_t pa = phys_locked(v, r->first + i);
+                vunlock(v, f);
+                *changed += page_sum(pa) != r->sums[i];
+            }
+            kfree(r->sums);
+            r->sums = NULL;
+        }
+        *pages += n;
+        range_remove(v, r);   /* like an unpin: the pages may go back now */
     }
 }
 

@@ -166,7 +166,7 @@ KTEST(m6r_pins_are_charged)
     KT_EQ(handle_insert(&t, &kh, &dev), OK);
     KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
     KT_EQ(sys_vmo_create(&t, PG, 0, HANDLE_INVALID, &vh), OK);
-    KT_EQ(sys_pci_bus_master(&t, dev, 1), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     uint64_t used = job_used(j, JOB_LIMIT_HANDLES);
     KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, used + 64), OK);
     /* The same page, again and again: each pin is a kmalloc'd range. */
@@ -179,8 +179,12 @@ KTEST(m6r_pins_are_charged)
     }
     kprintf("ktest %s: %u pins with 64 handle units to spare\n", ktest_current, ok);
     KT_ASSERT(ok <= 64);
-    handle_table_destroy(&t);   /* closes the cap: BME off, every pin released */
+    handle_table_destroy(&t);   /* closes the cap: BME off, every pin quarantined (M7) */
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & 0x04));
+    struct dma_quarantine_stats q;
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.pins, ok);
+    dma_quarantine_flush(d);   /* ... still charged until released */
     job_is_empty(j);
     job_unref(j);
 }
@@ -257,7 +261,7 @@ KTEST(m6r_unpin_by_other_holder)
     struct khandle kh = khandle_from_new(pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&td, &kh, &dev), OK);
     KT_EQ(sys_dma_cap_create(&td, dev, &cap), OK);
-    KT_EQ(sys_pci_bus_master(&td, dev, 1), OK);
+    KT_EQ(sys_dma_cap_bus_master(&td, cap, 1), OK);
     KT_EQ(sys_vmo_create(&tc, PG, 0, HANDLE_INVALID, &vc), OK);
     struct kobject *vo;
     KT_EQ(handle_get(&tc, vc, OBJ_VMO, 0, &vo, NULL), OK);
@@ -278,7 +282,8 @@ KTEST(m6r_unpin_by_other_holder)
             "(device still has 0x%lx, BME %s)\n", ktest_current, id, status_str(un0),
             status_str(un), status_str(dc), pa, (pci_cfg_read(d, 0x04, 2) & 0x04) ? "on" : "off");
     handle_table_destroy(&tc);
-    handle_table_destroy(&td);
+    handle_table_destroy(&td);   /* the driver's cap: its pin is quarantined (M7) */
+    dma_quarantine_flush(d);
     job_is_empty(j);
     job_unref(j);
     /* Only the pin's DMA capability may undo it (fixed in M6 phase 2:

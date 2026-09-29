@@ -17,10 +17,13 @@
  *              (the kernel still refuses the MSI-X table / PBA pages)
  *   DR_IRQ(0)  an interrupt object: MSI-X entry 0 if the function has
  *              MSI-X, else its MSI
- *   DR_DMA     a dma_cap bound to the function; devmgr turns Bus Master
- *              Enable on (DMA and MSI both need it); closing the cap -- the
- *              driver exiting or being killed -- turns it off and releases
- *              every pin
+ *   DR_DMA     a dma_cap bound to the function: the function's new
+ *              current cap, which turns Bus Master Enable OFF. The driver
+ *              turns it on (drv_dma_bus_master; DMA and MSI both need it)
+ *              once it has quiesced the device, so nothing a previous
+ *              driver left queued reaches memory (M7). Closing the cap --
+ *              the driver exiting or being killed -- turns it off again;
+ *              pins still held then are quarantined by the kernel
  *   DR_SERVE   a channel whose other end devmgr keeps (GET_SERVICE hands
  *              out duplicates of it)
  *
@@ -176,8 +179,6 @@ static status_t bind(struct binding *b)
     }
     if (st == OK && (st = jam_dma_cap_create(b->dev, &h)) == OK)
         x[n++] = (struct spawn_handle){ SR_DRIVER(DR_DMA), h };
-    if (st == OK)
-        st = jam_pci_bus_master(b->dev, 1);   /* off again when the dma_cap goes */
     if (st == OK && (st = jam_channel_create(&client, &h)) == OK)
         x[n++] = (struct spawn_handle){ SR_DRIVER(DR_SERVE), h };
     if (st == OK)

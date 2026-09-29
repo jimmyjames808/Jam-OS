@@ -2,8 +2,9 @@
  * QEMU's devices. The edu driver as a kernel process with exactly the
  * handles devmgr gives a process (<jam/kdevmgr.h>), called through the
  * generated edu client; killed in the middle of a DMA (Bus Master Enable
- * off, pins released, vector freed, its job clean, the device bindable
- * again); and a driver's limits with qemu-xhci's handles (no MSI-X page,
+ * off, pins quarantined until the next driver quiesced the device and
+ * turned bus mastering on, vector freed, its job clean, the device
+ * bindable again); and a driver's limits with qemu-xhci's handles (no MSI-X page,
  * no pin or DMA memory without a dma_cap, no bus mastering through config
  * space). Each test skips itself when QEMU's device isn't there (the PC). */
 #include <jam/channel.h>
@@ -59,9 +60,9 @@ KTEST(driver_kernel_edu)
     struct kdev_binding b;
     KT_EQ(kdev_bind(d, "edu", root, &b), OK);
     KT_ASSERT(b.irq && b.dma_cap);
-    KT_ASSERT(bus_master_on(d));
     KT_EQ(interrupt_live_count(), irqs + 1);
     KT_EQ(kdev_edu_check(&b, "edu (kernel)"), OK);
+    KT_ASSERT(bus_master_on(d));   /* the driver turned it on (M7), once the device was idle */
     struct kobject *irq = b.irq, *cap = b.dma_cap;
     kobject_ref(irq);
     kobject_ref(cap);
@@ -89,6 +90,8 @@ KTEST(driver_kernel_edu_killed_mid_dma)
     uint64_t irqs = interrupt_live_count();
     struct kdev_binding b;
     KT_EQ(kdev_bind(d, "edu", root, &b), OK);
+    struct dma_quarantine_stats qs0, qs;
+    dma_quarantine_stats(d, &qs0);
     struct edu_dma_start_req q = { 0, EDU_DMA_START, 4096 };
     struct edu_dma_start_rep r;
     uint32_t n = 0;
@@ -112,14 +115,21 @@ KTEST(driver_kernel_edu_killed_mid_dma)
     KT_ASSERT(!bus_master_on(d));
     KT_EQ(dma_cap_pin_count(b.dma_cap), 0);
     KT_ASSERT(!interrupt_vector_of(b.irq, &cpu, &vec));   /* vector freed */
-    for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
-        KT_EQ(job_used(b.job, k), 0);
+    /* M7: its pin (2 pages) is quarantined, not freed: still charged to
+     * the dead driver's job until the next driver has turned bus
+     * mastering on and the grace period passed. */
+    dma_quarantine_stats(d, &qs);
+    KT_EQ(qs.pins, qs0.pins + 1);
+    KT_EQ(qs.pages, qs0.pages + 2);
+    struct job *dead = b.job;
+    job_ref(dead);
+    KT_ASSERT(job_used(dead, JOB_LIMIT_PAGES) >= 2);
     KT_ASSERT(!kdev_unbind(&b, S));   /* it was killed: not a clean exit */
     KT_EQ(interrupt_live_count(), irqs);   /* our extra reference was the last */
 
     /* The device's transfer ends by itself (with Bus Master Enable off it
      * reaches no memory); the device is free for a new driver, whose
-     * setup waits for it. */
+     * setup waits for it before it turns bus mastering on. */
     KT_EQ(kdev_bind(d, "edu", root, &b), OK);
     struct edu_factorial_req fq = { 0, EDU_FACTORIAL, 10 };
     struct edu_factorial_rep fr;
@@ -128,8 +138,24 @@ KTEST(driver_kernel_edu_killed_mid_dma)
           OK);
     KT_EQ(idl_rep_status(&fr, n, sizeof(fr)), OK);
     KT_EQ(fr.result, 3628800);
+    KT_ASSERT(bus_master_on(d));
     KT_ASSERT(kdev_unbind(&b, 10 * S));
     KT_EQ(interrupt_live_count(), irqs);
+    /* The reaper lets the quarantine go a grace period after the new
+     * driver turned bus mastering on; nothing had written the pages. */
+    uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS + 5 * S;
+    do {
+        thread_sleep_ms(20);
+        dma_quarantine_stats(d, &qs);
+    } while (qs.pins > qs0.pins && uptime_ns() < until);
+    kprintf("ktest %s: quarantine: %lu pin(s) left, %lu page(s) released, %lu changed\n",
+            ktest_current, qs.pins, qs.released - qs0.released, qs.changed - qs0.changed);
+    KT_EQ(qs.pins, qs0.pins);
+    KT_EQ(qs.released, qs0.released + 2);
+    KT_EQ(qs.changed, qs0.changed);   /* the stale transfer reached nothing */
+    for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
+        KT_EQ(job_used(dead, k), 0);
+    job_unref(dead);
     job_unref(root);
 }
 

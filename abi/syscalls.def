@@ -116,8 +116,10 @@
 93  pci_config_read   status    handle_t dev, uint32_t offset, uint32_t width, uint32_t *value
 94  pci_config_write  status    handle_t dev, uint32_t offset, uint32_t width, uint32_t value
 95  pci_bar_resource  status    handle_t dev, uint32_t bar, handle_t *out
-# Bus Master Enable needs RIGHT_MANAGE on the device (devmgr has it,
-# drivers don't: devmgr turns it on when it hands out a dma_cap).
+# Bus Master Enable OFF (enable = 0) needs RIGHT_MANAGE on the device
+# (devmgr has it, drivers don't). Turning it on is refused
+# (ERR_ACCESS_DENIED): only the function's current dma_cap does that
+# (dma_cap_bus_master, M7).
 96  pci_bus_master    status    handle_t dev, uint32_t enable
 # Interrupt objects: MSI or MSI-X (flags IRQ_MSIX) vector `index` of the
 # function; bind to a port PERSISTENT for SIG_INTERRUPT; ack re-arms.
@@ -133,3 +135,11 @@
 100 dma_cap_create    status    handle_t dev, handle_t *out
 101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
+
+# driver supervision and safe rebind (M7 Track D) ---------------------------
+# Bus Master Enable of the dma_cap's function, on (1) or off (0). Only the
+# function's CURRENT cap may (the last one made for it: making one turns
+# bus mastering off, ERR_BAD_STATE for an older one); a driver turns it on
+# once it has quiesced its device (reset it, or seen its DMA engine idle),
+# never before. Any rights on the handle. ERR_NOT_SUPPORTED: an unbound cap.
+120 dma_cap_bus_master status   handle_t dma, uint32_t on
