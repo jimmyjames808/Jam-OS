@@ -87,6 +87,76 @@ KTEST(console_klog_reader)
     kobject_unref(r);
 }
 
+/* M7 review: a read that runs into a gap (the log overwrote the text it
+ * was about to copy, between two 512-byte steps) returns the text up to
+ * the gap, and the reader's SIG_READABLE comes from where THAT ends: more
+ * log after it, so readable. The next read resumes at the oldest text
+ * kept, and reading to the end clears it. The sink writes more than the
+ * whole ring (KLOG_SIZE) after the first step. */
+struct gap_sink {
+    char    *buf;
+    unsigned calls;
+};
+
+static status_t flood_sink(void *ctx, uint64_t off, const char *text, size_t n)
+{
+    struct gap_sink *g = ctx;
+    memcpy(g->buf + off, text, n);
+    if (g->calls++ == 0) {
+        uint64_t h0 = klog_head();
+        for (unsigned i = 0; klog_head() - h0 < KLOG_SIZE + 4096; i++)
+            kprintf("console_klog_read_after_gap: filler line %4u "
+                    "................................................................\n", i);
+    }
+    return OK;
+}
+
+static status_t null_sink(void *ctx, uint64_t off, const char *text, size_t n)
+{
+    (void)ctx, (void)off, (void)text, (void)n;
+    return OK;
+}
+
+KTEST(console_klog_read_after_gap)
+{
+    struct kobject *r;
+    KT_EQ(klog_reader_create(NULL, &r), OK);
+    uint64_t pos = klog_head();
+    for (int i = 0; i < 8; i++)   /* > 512 bytes: the first step is full */
+        kprintf("console_klog_read_after_gap: before the gap, line %d ..................\n", i);
+    char *buf = kmalloc(4096);
+    KT_ASSERT(buf);
+    struct gap_sink g = { buf, 0 };
+    uint64_t first, done;
+    KT_EQ(klog_reader_read_to(r, pos, 4096, flood_sink, &g, &first, &done), OK);
+    KT_EQ(first, pos);
+    KT_EQ(done, 512);   /* one step, then the gap */
+    KT_ASSERT(contains(buf, done, "before the gap, line 0"));
+    KT_ASSERT(first + done < klog_head());
+    KT_ASSERT(kobject_signals(r) & SIG_READABLE);   /* text remains: readable */
+
+    /* Resume: past the gap (at the oldest byte kept), then to the end. */
+    uint64_t at = first + done, f2;
+    KT_EQ(klog_reader_read_to(r, at, 4096, null_sink, NULL, &f2, &done), OK);
+    KT_ASSERT(f2 > at);
+    KT_EQ(done, 4096);
+    KT_ASSERT(kobject_signals(r) & SIG_READABLE);
+    at = f2 + done;
+    for (int i = 0; i < 64; i++) {
+        KT_EQ(klog_reader_read_to(r, at, 64 * 1024, null_sink, NULL, &f2, &done), OK);
+        KT_EQ(f2, at);
+        at = f2 + done;
+        if (at == klog_head())
+            break;
+    }
+    /* At the end: not readable, unless something else logged meanwhile
+     * (live: user space; the tick raises it again then). */
+    if (klog_head() == at)
+        KT_EQ(kobject_signals(r) & SIG_READABLE, 0);
+    kfree(buf);
+    kobject_unref(r);
+}
+
 /* Take the screen, fail a second take, give it back by closing the
  * owner's last handle, and again by tearing down a handle table that holds
  * it (what a dying owner's process does). */

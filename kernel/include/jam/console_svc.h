@@ -27,6 +27,16 @@ status_t klog_reader_create(struct job *job, struct kobject **out);
  * klog_read_at. Updates the reader's SIG_READABLE. */
 size_t   klog_reader_read(struct kobject *reader, uint64_t pos, char *buf, size_t cap,
                           uint64_t *first);
+/* sys_klog_read's loop: up to cap bytes from pos, handed to sink in steps
+ * (at most 512 bytes each, `off` bytes into the read), stopping at a gap
+ * (text overwritten between two steps) or at the end of the log. *first is
+ * where the text starts (as klog_read_at), *done how much went to the sink.
+ * The reader's SIG_READABLE is updated ONCE, from where the delivered text
+ * ends (*first + *done): set iff the log has more after it. A sink error
+ * stops the read and is returned. */
+typedef status_t (*klog_sink_t)(void *ctx, uint64_t off, const char *text, size_t n);
+status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap, klog_sink_t sink,
+                             void *ctx, uint64_t *first, uint64_t *done);
 
 /* COM1 input. ERR_NOT_FOUND: no UART; ERR_BAD_STATE: someone reads it. */
 status_t serial_in_create(struct job *job, struct kobject **out);
