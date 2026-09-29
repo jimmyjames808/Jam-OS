@@ -67,6 +67,11 @@ struct cpu {
     /* Statistics. */
     volatile uint64_t switches, steals, ipis;
     volatile uint64_t polled_wakes;   /* wakeups that found this CPU polling: no IPI */
+    /* CPU time (M7 shell, sched.c): the TSC at the last switch (0 until
+     * the run queue is online), the idle thread's cycles up to then, and
+     * whether the idle thread runs now. Written by this CPU only. */
+    volatile uint64_t switch_tsc, idle_tsc;
+    volatile bool     idle_now;
 
     uint64_t       gdt[9] __attribute__((aligned(16)));
     struct tss     tss;

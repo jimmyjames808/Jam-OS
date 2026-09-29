@@ -1,0 +1,253 @@
+# The shell's everyday commands (user/shell/cmds_*.c, sh_exec.c, sh_vfs.c):
+#   QEMU_INPUT=tools/shell-tests/cmds.txt \
+#   QEMU_EXTRA="-rtc base=2026-01-15T01:02:03" tools/qemu-test.sh <dir> cmds shell
+# (the date checks need that RTC; QEMU_SMP=4). Most checks print a marker
+# built from a variable ($T = x), so the text waited for ("ok-x-3") never
+# appears in the typed line ("ok-$T-3") and only shows when the command
+# before && succeeded.
+wait 120 Jam OS shell
+wait jam>
+send T=x
+wait jam>
+
+# ---- information ------------------------------------------------------------------
+send uname -a
+wait Jam OS jamos 0.0.20-m7 x86_64
+send version
+wait (kernel tests built in)
+send whoami | uniq -c
+wait       1 jam
+send hostname | uniq -c
+wait       1 jamos
+send uptime
+wait busy since boot
+send lscpu
+wait CPUs:       4 online
+wait TSC:
+send lscpu -e
+wait CPU  APIC  TYPE  CORE  SMT
+send free
+wait total        used        free
+wait Mem:
+send ps
+wait   PID   JOB  THR  STATE    CPU TIME  JOB MEM  NAME
+wait processes
+send ps | grep serialin && echo ok-$T-ps1
+wait ok-x-ps1
+send ps | grep nosuchprocess || echo ok-$T-ps2
+wait ok-x-ps2
+send top -n 2 -d 0.5
+wait top - up
+wait CPU%    CPU TIME
+wait q or Ctrl+C: quit
+wait top - up
+wait jam>
+sleep 0.5
+shot shell-top
+send top -n 1 -d 0.2 | grep -c shell | grep ^1$ && echo ok-$T-top
+wait ok-x-top
+send dmesg | grep "Jam OS" | head -1
+wait Jam OS 0.0.20-m7
+send dmesg | wc -l | grep -v ^0$ && echo ok-$T-dmesg
+wait ok-x-dmesg
+send lspci
+wait PCI function
+send lsusb
+wait usb:
+wait jam>
+
+# ---- date and time zones (the RTC starts at 2026-01-15 01:02:03) ----------------------
+send date -d @1791043199
+wait Sun 4 Oct 2026 01:59:59 AEST (UTC+10:00)
+send date -d @1791043200
+wait Sun 4 Oct 2026 03:00:00 AEDT (UTC+11:00)
+send date -d @1775318399
+wait Sun 5 Apr 2026 02:59:59 AEDT (UTC+11:00)
+send date -d @1775318400
+wait Sun 5 Apr 2026 02:00:00 AEST (UTC+10:00)
+send date -d @1782864000
+wait Wed 1 Jul 2026 10:00:00 AEST
+send date -u -d @946684800
+wait Sat 1 Jan 2000 00:00:00 UTC (UTC+00:00)
+send TZ=+5:30 date -d @1790685296
+wait Tue 29 Sep 2026 18:04:56 UTC+05:30 (UTC+05:30)
+send TZ=bogus date -d @0
+wait TZ=bogus not understood
+send date
+wait Thu 15 Jan 2026 01:0
+send RTC=utc date
+wait Thu 15 Jan 2026 12:0
+wait AEDT (UTC+11:00)
+send RTC=utc date -u
+wait Thu 15 Jan 2026 01:0
+send RTC=utc TZ=-5 date
+wait Wed 14 Jan 2026 20:0
+send date -r
+wait RTC 2026-01-15 01:0
+wait read as Sydney time
+wait jam>
+
+# ---- files ---------------------------------------------------------------------------
+send pwd
+wait /boot
+send ls
+wait init.cfg
+send ls /
+wait boot/
+send ls -l bin
+wait KiB  init
+send ls nosuch
+wait ls: nosuch: no such file or directory
+send cd bin && pwd | grep ^/boot/bin$ && echo ok-$T-cd1
+wait ok-x-cd1
+send cd ../drv; pwd | grep ^/boot/drv$ && echo ok-$T-cd2
+wait ok-x-cd2
+send cd; pwd | grep ^/boot$ && echo ok-$T-cd3
+wait ok-x-cd3
+send cd /nowhere
+wait cd: /nowhere: no such directory
+send find / -name hid
+wait /boot/drv/hid
+send cat init.cfg | grep ^bin/utest$ && echo ok-$T-cat
+wait ok-x-cat
+send cat bin/init
+wait a binary file
+send hexdump -n 16 bin/init
+wait 60 00000000  7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  |.ELF............|
+wait 60 00000010
+send head -n 2 init.cfg | tail -1
+wait #     <path in bootfs> [arguments...]
+send wc init.cfg | grep init.cfg && echo ok-$T-wc
+wait ok-x-wc
+wait jam>
+
+# ---- pipes and text ------------------------------------------------------------------
+send seq 5 | sort -rn | head -2 | tail -1 | grep ^4$ && echo ok-$T-p1
+wait ok-x-p1
+send seq 10 | wc -l | grep ^10$ && echo ok-$T-p2
+wait ok-x-p2
+send seq 12 | sort | head -3 | tail -1 | grep ^11$ && echo ok-$T-p3
+wait ok-x-p3
+send echo -e "b\na\nb\nb" | sort | uniq -c | grep "3 b" && echo ok-$T-p4
+wait ok-x-p4
+send echo -e "Apple\nbanana\ncherry" | grep -i ^a && echo ok-$T-p5
+wait ok-x-p5
+send echo -e "one\ntwo\nthree" | grep -v o | grep ^three$ && echo ok-$T-p6
+wait ok-x-p6
+send echo -e "bad\nbd\nbread" | grep -c ^b.*d$ | grep ^3$ && echo ok-$T-p7
+wait ok-x-p7
+send seq 3 | grep -n 2 | grep ^2:2$ && echo ok-$T-p8
+wait ok-x-p8
+send echo -e "x\ny" | sort -r | head -1 | grep ^y$ && echo ok-$T-p9
+wait ok-x-p9
+send seq 4 | tail -n 2 | head -1 | grep ^3$ && echo ok-$T-p10
+wait ok-x-p10
+send grep zzz init.cfg || echo ok-$T-p11
+wait ok-x-p11
+send | grep a
+wait a command is missing
+send echo a & echo b
+wait not supported
+send echo "abc
+wait no closing
+wait jam>
+
+# ---- variables, lists, aliases --------------------------------------------------------
+send set A hello; echo "[$A]"
+wait [hello]
+send B=world; echo ${B}s
+wait worlds
+send unset A; echo "<$A>"
+wait <>
+send echo 'q$B'q
+wait q$Bq
+send false; echo st=$?
+wait st=1
+send true && echo ok-$T-and
+wait ok-x-and
+send false || echo ok-$T-or
+wait ok-x-or
+send false && echo never || echo ok-$T-andor
+wait ok-x-andor
+send echo c-$T; echo d-$T # e-$T
+wait c-x
+wait d-x
+send export JAMTEST=j$T
+wait jam>
+send env | grep ^JAMTEST=jx$ && echo ok-$T-env
+wait ok-x-env
+send set | grep "export JAMTEST=jx" && echo ok-$T-set
+wait ok-x-set
+send alias hi='echo hi-there-$T'
+wait jam>
+send hi
+wait hi-there-x
+send alias | grep "alias ll='ls -l'" && echo ok-$T-alias
+wait ok-x-alias
+send unalias hi; hi
+wait hi: unknown command
+send type ls utest ll
+wait ls is a shell builtin
+wait utest is /boot/bin/utest
+wait ll is an alias for ls -l
+send ll bin | grep KiB && echo ok-$T-ll
+wait ok-x-ll
+send repeat 3 echo r-$T
+wait r-x
+wait r-x
+wait r-x
+send time sleep 0.3
+wait time: 0.3
+wait (status 0)
+send history | tail -2 | head -1 | grep "time sleep 0.3" && echo ok-$T-hist
+wait ok-x-hist
+send help
+wait Information
+wait Text (read a file or a pipe)
+wait restart the machine
+wait jam>
+sleep 0.5
+shot shell-help
+send help grep
+wait usage: grep [-i] [-v] [-c] [-n] <pattern> [file]
+wait jam>
+
+# ---- programs: by name, environment, in a pipe ----------------------------------------
+send contest
+wait 60 run: bin/contest exited with code 0
+wait jam>
+send run utest env one two
+wait env: JAMTEST=jx
+wait arg: two
+wait run: bin/utest exited with code 0
+send run utest env | grep ^env:.USER=jam$ && echo ok-$T-pipe
+wait ok-x-pipe
+send utest exit7; echo code=$?
+wait code=7
+wait jam>
+
+# ---- keys: Tab completion, Ctrl+C -------------------------------------------------------
+type hexd\t-n 4 bin/ini\t\r
+wait 60 00000000  7f 45 4c 46
+wait jam>
+type ls /bo\t\r
+wait init.cfg
+wait jam>
+send sleep 30
+sleep 1
+type \x03
+wait ^C
+wait jam>
+send echo st=$?
+wait st=130
+send watch -n 0.5 echo w-$T
+wait Every 0.5s
+wait w-x
+wait w-x
+type \x03
+wait ^C
+wait jam>
+sleep 0.5
+shot shell-cmds
+send reboot
+wait reboot: resetting

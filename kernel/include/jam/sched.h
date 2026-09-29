@@ -96,6 +96,9 @@ struct thread {
     struct waitqueue  exit_wq;
 
     uint64_t          switches_in;
+    /* CPU time (M7 shell): TSC cycles on a CPU up to its last switch out
+     * (written by the CPU running it; thread_cpu_tsc adds the current run). */
+    uint64_t          run_tsc;
 
     /* Wake-affine placement (M5). wake_sync is set by the thread itself
      * while it is about to block waiting for the thread it wakes (see
@@ -260,6 +263,13 @@ uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
                              bool order);
 #endif
 void sched_print_stats(void);
+
+/* CPU time (M7 shell: top, ps). Counted in TSC cycles at every switch
+ * (one rdtsc); reads are lock-free and may be a few cycles stale. */
+/* t's time on a CPU so far, its current run included (t must be held). */
+uint64_t thread_cpu_tsc(struct thread *t);
+/* How long CPU i's idle thread has run so far, the current run included. */
+uint64_t sched_cpu_idle_tsc(uint32_t i);
 
 /* ---- wait queues and mutexes --------------------------------------------- */
 

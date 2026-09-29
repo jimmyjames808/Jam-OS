@@ -198,3 +198,16 @@
 # hands drivers their hardware handles this way). Each sent handle still
 # needs RIGHT_TRANSFER.
 121 channel_write_rights status handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, const rights_t *rights, uint32_t nhandles
+
+# system information for the shell (uname, free, lscpu, top, ps, date) -------
+# All four need RIGHT_READ on a RES_ROOT handle and only read. Structs in
+# <jam/abi.h>.
+130 sys_info          status    handle_t root, struct sys_info *out
+# CPUs first.. (by index): fills up to cap entries, returns how many.
+131 cpu_stat          i64       handle_t root, uint32_t first, struct cpu_stat *out, uint32_t cap
+# The processes of the caller's job tree (from its root job, depth first):
+# fills up to cap entries (cap <= 1024), returns how many (more may exist:
+# ask again with a bigger buffer).
+132 proc_list         i64       handle_t root, struct proc_stat *out, uint32_t cap
+# The CMOS real-time clock (waits out an update in progress, at most ~10 ms).
+133 rtc_read          status    handle_t root, struct rtc_time *out

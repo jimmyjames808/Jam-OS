@@ -28,10 +28,12 @@
 #include <jam/resource.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.20-m7"
+#define JAMOS_VERSION   "0.0.21-m7"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
+
+const char jamos_version[] = JAMOS_VERSION;   /* sys_info (sysc_sysinfo.c) */
 
 static const char *mem_type_name(enum boot_mem_type t)
 {

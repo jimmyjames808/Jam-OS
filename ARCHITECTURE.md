@@ -503,7 +503,16 @@ Rules for userspace drivers:
 - **init**: holds root capabilities, reads `/boot/init.cfg`, starts services
   with only the handles they need.
 - **Shell**: processes, pipes over channels; built-ins `ls cat cp rm mkdir ps
-  kill mem ifconfig ping reboot poweroff`. From M7 the kernel tests are shell
+  kill mem ifconfig ping reboot poweroff`. **Today (M7, user/shell/):** main.c
+  is the console I/O + line editor + the first commands; sh_exec.c does
+  variables ($NAME, export -> the environment of `run`), aliases, `; && ||`,
+  pipes (stages run in turn, each one's output captured in memory as the
+  next one's input; a program in a pipe gets an SR_STDOUT channel that libos
+  printf writes to), help and Tab completion; sh_vfs.c is a mount table with
+  /boot = bootfs (M8 adds /data there); cmds_*.c hold ~50 everyday commands
+  (uname date lscpu free ps top dmesg ls cat grep sort ...). System info comes
+  from syscalls 130-133 (sys_info, cpu_stat, proc_list, rtc_read; RIGHT_READ
+  on the root); CPU time is counted per thread/CPU at every switch. From M7 the kernel tests are shell
   commands too (`ktest`, `stress 600`), so a test run no longer needs a
   reboot; rebooting is only for loading a new kernel from the stick.
 - **Executables**: static ELF64; no `fork`.
