@@ -13,7 +13,9 @@ table pages uncharged, R2 user page tables uncharged, R3 unbounded free job chai
 raise its own job limit) with failing tests in kernel/test/test_review.c (run: ktest=review_...;
 skipped by plain ktest), plus R5 process_start OOM race panic (plausible), R6 other uncharged kernel
 memory, R7 debug_write IRQs-off printing, R8 no job_kill. Review tests merged into main. A FIX agent
-is working on R1-R8. The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
+is working on R1-R8. **PC 2026-09-29, 0.0.8-m5: "Jam OS (init + utest)" PASSED on the real PC**: utest 12 passed,
+utest exited 0 after 743 ms, init exited 0 after 779 ms, root job clean (0 pages/handles/threads/
+msg bytes). First real user processes on the PC. The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
 Benchmark for BENCH.md M5 column, stress).
 
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
