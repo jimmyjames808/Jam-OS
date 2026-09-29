@@ -1,13 +1,23 @@
-# Jam OS: handoff (updated 2026-09-29, before a context compact)
+# Jam OS: handoff (updated 2026-09-30)
 
-## CURRENT STATE (read this first) -- written 2026-09-29 before a context compact
+## CURRENT STATE (read this first) -- updated 2026-09-30 after the M7.5 cleanup
 
-- **Main = v0.0.24-m7 (ab4e106 + NEXT.md), flashed on the stick. M0-M7 ALL DONE + confirmed on the PC.**
-  M7 signed off 2026-09-29 by `stress 600` from the shell (0 failures, whole user space running).
+- **M0-M7 ALL DONE + confirmed on the PC** (v0.0.24-m7 = ab4e106 is what the stick has). M7 signed off
+  2026-09-29 by `stress 600` from the shell (0 failures, whole user space running).
+- **M7.5 cleanup (CLEANUP-PLAN.md) DONE in QEMU 2026-09-30**: tracks A-E, a round of bug fixes and the
+  after-the-merge step (directory moves, comment sweep, -Wvla/-Wframe-larger-than, docs); no behaviour
+  change (same boot menu, commands, output, ktest names, bootfs paths, syscalls, IDL; version string still
+  0.0.24-m7). QEMU: 219 ktests at 4 and 8 CPUs, utest 30, usbtest 12, every tools/shell-tests script,
+  usb/usbkeys/fun/crash scripts, stress=60 at 4. **Next: the independent review of the after-the-merge
+  step, then the PC round (flash; All tests; 2-min stress), then M8.** Results: end of CLEANUP-PLAN.md.
+- **Where things live** (README.md "Where things live"): kernel/main.c; kernel/{arch,mm,sched,object,
+  abi,proc,dev,debug,test,lib}; drivers/{usb-bus,hid} + drivers/test/{null,drvtest,edu,crasher};
+  user/services/{init,console,devmgr,serialin,shell}, user/apps/{fractal,life,tetris,demo,fun=libfun},
+  user/tests/{utest,usbtest,contest}, user/lib (libos). Rules for code: CODING-GUIDE.md.
 - **What Jam OS is now:** capability microkernel-ish OS; 28 CPUs; per-CPU scheduler (M5.5 perf pass,
   mutex hand-off); ring-3 processes/jobs/quotas; PCI core + MSI/MSI-X + interrupt objects + resources +
   dma_cap (safe rebind: the driver turns BME on via dma_cap_bus_master after quiescing; DMA quarantine);
-  drivers are PROCESSES from the start (kernel build optional: `drivers=kernel`); devmgr (supervision:
+  drivers are PROCESSES (one build; the kernel build of drivers went in M7.5); devmgr (supervision:
   restart/backoff/give-up; query vs control channels); usb-bus (xHCI + hubs + TT; found all 8 PC
   devices) -> hid (boot kbd/mouse, US layout) -> console (owns the framebuffer; lend_screen; client
   levels ADMIN/SHELL/PROGRAM) -> shell (coreutils-ish builtins, pipes, vars, aliases, tab, top, date,
@@ -15,9 +25,9 @@
   devmgr, shell. Apps: `run fractal` (AVX2, deep zoom to 1e28 via double-double perturbation), `run
   life`, `run tetris`, `demo` -- real pixels through console.lend_screen.
 - **Boot menu:** Jam OS / Jam OS (safe mode: nousb) / Tests (All tests, stress 2 + 10 min, Benchmark,
-  init+utest+usbtest, timer fallback). Old entries are hidden cmdline words (pcilist, xhcitest, keytest,
-  drivers=kernel, demo, memmap, test<name>).
-- **Tests:** 227 ktests (boot strict; from the shell "live": KT_GLOBAL_* relaxed, 5 skipped), utest 30,
+  init+utest+usbtest, timer fallback). Hidden cmdline words: pcilist, keytest, memmap, selftest,
+  test<name> (a crash test).
+- **Tests:** 219 ktests (boot strict; from the shell "live": KT_GLOBAL_* relaxed, 8 skipped), utest 30,
   tools/shell-tests/*.txt via QEMU_INPUT (serial typing), tools/usb-test.sh, tools/usbkeys-test.sh
   (USB typing via QEMU monitor sendkey), tools/fun-test.sh (FUN_HD=1 for 2560x1440), tools/crash-test.sh,
   `make check`. QEMU runs: tools/qemu-test.sh <outdir> <name> <cmdline> (QEMU_SMP, QEMU_USB, QEMU_XHCI,
@@ -36,7 +46,10 @@
 - **Known gaps / follow-ups:** usb-bus re-examines a failed port only on a port status change (no timed
   retry; 3 tries per port, reset on unplug) -- offered, not requested; README/ARCHITECTURE docs updated
   for the new boot menu; devmgr's protocol is hand-written (not IDL); console.write always sends a
-  2048-byte array (variable-length IDL arrays would help).
+  2048-byte array (variable-length IDL arrays would help). Flaky ktest (seen once in ~14 runs at 8
+  CPUs, 2026-09-30, not in 12 runs of `ktest=devmgr` alone): devmgr_refused_start_leaves_nothing
+  checks devmgr's job usage right after a refused REBIND ("a start refused at job kind 1 + 6 left kind 4
+  at 1216 (was 1216)"): a message-byte charge still settling; the panic re-reads the settled value.
 - **Worktrees:** many finished agent worktrees exist under .claude/worktrees (all merged); safe to leave.
 
 ### Log of today's later work (newest first, detail for reference)

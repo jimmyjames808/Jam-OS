@@ -1,5 +1,11 @@
 # Cleanup (M7.5): readability and structure, no behaviour change
 
+**Status: DONE in QEMU (2026-09-30).** Tracks A-E, a round of bug fixes and
+the after-the-merge step are merged; the PC round (All tests, 2-minute
+stress) and the independent review of the after-the-merge step are next.
+Results are at the end of this file. The track descriptions below are the
+plan as written; paths in them are the old ones.
+
 Two read-only reviews (architecture; readability) found the core design
 sound and the overgrowth mostly milestone scaffolding. This milestone does
 their groups 1 (delete what's dead) and 2 (reorganise). Group 3 (a system
@@ -131,3 +137,55 @@ owner is back).
   touch ~/jamos (main), never write to any USB disk.
 - Report: what moved where, line counts before/after, anything you could
   not do, any bugs noticed (not fixed).
+
+## Results
+
+**Tracks.** A: the kernel build of drivers removed (kernel/drivers,
+`drivers=kernel`, kdevmgr, the kernel-process machinery, xhci-noop and
+`xhcitest`, the `demo:<framebuffer>` boot path and fbcon_mute, the weak
+stubs m6_weak.c and syscall_weak.c: a missing `sysc_*` is a link error);
+driver.h has one implementation plus `drv_snprintf`; test drivers in
+drivers/test/. B: the shell has one command table (sh_table.c) and one
+file per command (58 in cmd/), split by job into sh_parse / sh_vars /
+sh_exec / sh_io / sh_complete / sh_vfs / ...; main.c 812 -> 312 lines,
+sh_exec.c 1218 -> 225. C: usb-bus's enum.c (1834) split into attach,
+config, control, devices, hub, intr, report, rootport and work;
+`enumerate()` is a list of steps; log lines through `drv_snprintf`. D:
+sched.c (1593) -> sched.c 937 + thread.c 327 + wait.c 365; pci.c (1039) ->
+pci.c 636 + pci_msi.c 166 + pci_report.c 187; the milestone test files
+(test_m4, test_m45, test_m55, test_m5perf, test_m6_review, test_m6p2_review,
+test_repro, test_audit_obj) redistributed by subject, helpers in
+ktest_util.c, NS_PER_* in jam/time.h. E: libfun.a, one user font object,
+`now()` and NS_PER_* in libos, demo rebuilt on libfun, the console split by
+job (main.c 1146 -> 137), fractal/life/tetris split into engine, drawing and
+selftest files.
+
+**After the merge.** kernel/core split: `kernel/main.c`; `kernel/sched/`
+(sched, thread, wait); `kernel/proc/` (bootfs, elf, userboot);
+`kernel/debug/` (klog, panic, ksyms, lockdep, report, dbgcmd, and
+selftest/stress, which ship in every kernel, KTESTS=0 too, so they are not
+in kernel/test/); reboot.c to `kernel/dev/`. User programs by role:
+`user/services/`, `user/apps/` (with libfun in apps/fun), `user/tests/`;
+the Makefile finds them by directory, a program's own directory is on its
+quote include path (no `"../"` includes left); edu_check.h moved next to
+utest, its only user. Milestone tags and audit ids swept from comments;
+`-Wvla` everywhere and `-Wframe-larger-than=3072` in the kernel (largest
+frame: sys_channel_call, 2464 bytes). The sb_* -> drv_snprintf swap had
+already landed with Track C's fixes.
+
+**Line counts** (hand-written .c/.h/.S under kernel/, drivers/, user/;
+generated code excluded): 66,065 lines in 237 files before, 64,094 in 326
+after. Files over 800 lines: 20 -> 13 (what is left: utest/main.c,
+bench.c, vmo.c, test files, usb-bus hc.c/serve.c, aspace.c, sched.c).
+ktests: 227 -> 219 (the tests of the kernel build went with it; new ones
+for devmgr with a real driver process and the quarantine counters).
+
+**Bugs fixed in the round after the tracks** (each its own commit): the
+shell wrote one past its segment array for 32 segments ending in an
+unclosed quote (6fe292b); usb-bus left a slot enabled when Enable Slot
+handed out an out-of-range id (85c6abf), parsed a non-zero alternate
+setting without its SuperSpeed Endpoint Companion (c17d078), and now
+clamps a companion's bMaxBurst to 15 (350bd79); dma_cap's quarantine
+counters could be read between a batch leaving one count and entering the
+other (94e8dd7, an 8-CPU ktest failure); Tab completion ignored the
+shell's screen-width line cap (350bd79).

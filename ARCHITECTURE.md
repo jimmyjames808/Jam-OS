@@ -29,7 +29,7 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 | Executables | Static ELF64 |
 | Program output | Every program gets a stdout channel handle in its startup message; M5 backs it with a `debug_write` syscall, the M7 console service replaces that |
 | IOMMU | Not yet; DMA gated by `dma_cap`, VT-d added behind it in M11 |
-| Driver migration | Decided 2026-09-29 (replaces 2026-09-28's bring-up in kernel, move out once proven): drivers and services are processes from the start; the kernel build of a driver is an optional tool (see The migration rule) |
+| Driver migration | Decided 2026-09-29 (replaces 2026-09-28's bring-up in kernel, move out once proven): drivers and services are processes from the start (see The migration rule); the optional kernel build of drivers was removed in the M7.5 cleanup |
 | Users/logins | Decided 2026-09-29: single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 cannot store owners anyway) |
 | Target PC | ASUS TUF GAMING B760-PLUS WIFI, i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port; one USB controller: Intel B760 xHCI 1.2, PCI 8086:7A60 rev 0x11 (keyboard, mouse and the stick all on it), with an ASMedia USB 3 hub (174C:2074/3074) and composite HID devices (Cooler Master 2516, Sino Wealth 258A, Microdia 0C45) plus the ASUS AURA RGB controller (0B05:19AF) |
 | Networking | Decided 2026-09-29: the board's own Realtek RTL8125 2.5 GbE (ASUS TUF GAMING B760-PLUS WIFI), a PCIe device with MSI-X, driven natively (references: Linux `r8169`, FreeBSD `re`; check whether this revision needs Realtek's PHY firmware patch). No USB adapter. Wi-Fi (Intel AX201) is not planned. **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21, and nothing is ever sent untagged or on another VLAN** (the user's network must not see Jam OS traffic elsewhere): the VLAN is set in one place (boot word `vlan=`, default 21), added to every outgoing frame (ARP and DHCP included) below the IP stack, incoming frames for other VLANs or untagged are dropped, and with no VLAN configured the NIC stays down (fail closed). This applies to every path that can transmit: the M9 driver, netlog, `update`, and the M8.5 crash kernel if it ever gets networking |
@@ -51,13 +51,11 @@ drivers in kernel then switching to userspace?").
   needed a review pass to match them); a stuck process can always be
   killed. On the PC the M6 xHCI driver behaved identically both ways, so
   kernel-first bought nothing.
-- **The kernel build stays as an optional tool**, not a milestone
-  requirement: `<jam/driver.h>` still has a second implementation where
-  the driver runs as a *kernel process* (its own handle table and job, the
-  same `sys_*` checks; `kernel/drivers/driver_kernel.c`, boot word
-  `drivers=kernel`), and every driver still builds that way (the build
-  keeps the discipline honest). Use it to measure what process isolation
-  costs, or for a driver that must run where no processes exist yet.
+- **One build.** `<jam/driver.h>` has one implementation, over system
+  calls (`user/lib/driver_user.c`), and every driver is a process that
+  devmgr starts and supervises. (A second build that ran a driver as a
+  *kernel process* was kept as an optional tool until the M7.5 cleanup
+  removed it: nothing used it once devmgr ran every driver as a process.)
 - What stays in the kernel **on purpose** is enforcement, not drivers:
   the PCI core (ECAM, BAR sizing, MSI/MSI-X programming, Bus Master
   Enable), vector allocation and interrupt objects, resources, DMA pins and
@@ -90,7 +88,7 @@ drivers in kernel then switching to userspace?").
   `bootfs.img` (`tools/mkbootfs.py`): a header, an entry table, each file on
   its own pages. The kernel validates it as untrusted input at boot and
   serves files as physical VMOs over the module's pages, without copying.
-- Order today (`kernel/core/main.c`): early console, PMM/VMM, heap, then on
+- Order today (`kernel/main.c`): early console, PMM/VMM, heap, then on
   the kernel's own stack: ACPI tables (MADT/MCFG/HPET), BSP LAPIC, TSC
   calibration, BSP per-CPU, scheduler (the boot code becomes thread "main"),
   IPIs, IOAPIC, LAPIC timer, AP startup, interrupts on. Later: uACPI, devmgr,
@@ -180,14 +178,14 @@ drivers in kernel then switching to userspace?").
   the `swapgs` window.
 - **Ticket spinlocks** (`spin_lock_irqsave` where interrupt handlers also
   take the lock). Holding one disables preemption. A lock's *name* is its
-  class for the lock-order checker (`core/lockdep.c`), which records every
-  "A held while taking B" pair in a 64x64 bit matrix and panics on the first
+  class for the lock-order checker (`kernel/debug/lockdep.c`), which records every
+  "A held while taking B" pair in a 256x256 bit matrix and panics on the first
   acquisition that closes a cycle (ABBA), on taking a lock twice, on nesting
   two locks of the same class (unless taken with `spin_lock_nested(subclass)`),
   on a class used both in interrupt handlers and with interrupts on, and on
-  any lock spinning for 5 s (naming the holder). Always on. M4.5 gives it a
+  any lock spinning for 5 s (naming the holder). Always on, with a
   lockless fast path (edges and IRQ flags only ever get set, so only a new
-  edge takes the graph lock), 256 classes, and sleeping-mutex tracking.
+  edge takes the graph lock); it tracks sleeping mutexes too.
 - IPIs: reschedule, cross-CPU calls (`smp_call_on/others/all`, which refuse
   to run with interrupts off), TLB shootdown on every kernel unmap, and NMI
   halt of all other CPUs on panic.
@@ -482,7 +480,7 @@ Rules for userspace drivers:
 
 - **libos**: startup, syscall wrappers, malloc, printf, channel/port helpers,
   IDL stubs, the ELF loader.
-- **userboot** (`core/userboot.c`): a tiny ELF loader in the kernel starts
+- **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel starts
   init from bootfs (on a plain boot or `init` on the command line) under a
   root job, waits for it and reports its exit code and whether the root job
   ended with nothing charged. Everything after that is loaded by libos
@@ -503,14 +501,17 @@ Rules for userspace drivers:
 - **init**: holds root capabilities, reads `/boot/init.cfg`, starts services
   with only the handles they need.
 - **Shell**: processes, pipes over channels; built-ins `ls cat cp rm mkdir ps
-  kill mem ifconfig ping reboot poweroff`. **Today (M7, user/shell/):** main.c
-  is the console I/O + line editor + the first commands; sh_exec.c does
-  variables ($NAME, export -> the environment of `run`), aliases, `; && ||`,
-  pipes (stages run in turn, each one's output captured in memory as the
-  next one's input; a program in a pipe gets an SR_STDOUT channel that libos
-  printf writes to), help and Tab completion; sh_vfs.c is a mount table with
-  /boot = bootfs (M8 adds /data there); cmds_*.c hold ~50 everyday commands
-  (uname date lscpu free ps top dmesg ls cat grep sort ...). System info comes
+  kill mem ifconfig ping reboot poweroff`. **Today (`user/services/shell/`):**
+  main.c is the console I/O, the line editor and history; sh_parse.c
+  splits a line (`; && || |`, quotes), sh_vars.c holds variables ($NAME,
+  export -> the environment of `run`) and aliases, sh_exec.c runs a line
+  (pipes: stages run in turn, each one's output captured in memory as the
+  next one's input, by sh_io.c; a program in a pipe gets an SR_STDOUT
+  channel that libos printf writes to), sh_table.c is the one command table
+  (with help), sh_complete.c Tab completion, sh_vfs.c a mount table with
+  /boot = bootfs (M8 adds /data there); `cmd/<name>.c` is one file per
+  command, ~60 of them (uname date lscpu free ps top dmesg ls cat grep sort
+  ...), with shared helpers in named sh_*.c files. System info comes
   from syscalls 130-133 (sys_info, cpu_stat, proc_list, rtc_read; RIGHT_READ
   on the root); CPU time is counted per thread/CPU at every switch. From M7 the kernel tests are shell
   commands too (`ktest`, `stress 600`), so a test run no longer needs a
@@ -597,14 +598,14 @@ right after M8 (so A2's WAV playback from /data works straight away).
 - `tools/qemu-test.sh` boots any kernel command line headless
   (`QEMU_SMP`, `QEMU_MEM`, `QEMU_CPU`, `QEMU_TIMEOUT`) and saves the serial
   log and a screenshot (`QEMU_INPUT` types a script into the shell over
-  serial, `QEMU_USB`/`QEMU_MONITOR` add USB devices and send keys). Since
-  the M7 cleanup the boot menu is just **Jam OS**, **safe mode** (`nousb`)
+  serial, `QEMU_USB`/`QEMU_MONITOR` add USB devices and send keys). The
+  boot menu is just **Jam OS**, **safe mode** (`nousb`)
   and a **Tests** folder (All tests, 2- and 10-minute stress, Benchmark,
   init + utest + usbtest, timer fallback); everything else is a shell
   command (`ktest`, `bench`, `stress`, `utest`, `usbtest`, `pci`, `memmap`,
   `demo`, and the crash tests that must panic as `crash <name> yes`) or a
-  hidden boot word (`pcilist`, `xhcitest`, `keytest`, `drivers=kernel`,
-  `demo`, `memmap`, `test<name>`).
+  hidden boot word (`pcilist`, `keytest`, `memmap`, `selftest`,
+  `test<name>`).
 - QEMU mirrors the PC: q35, OVMF, xHCI USB boot, e1000e (`make run`), gdb
   stub (`make debug`).
 - Per-CPU watchdog heartbeat: a stuck core turns into a panic screen.
@@ -623,6 +624,7 @@ right after M8 (so A2's WAV playback from /data works straight away).
 | **M5.5** ✅ | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers, interrupt-driven serial output; investigate the two things the M5 PC benchmark flagged (process->process channel_call costs ~870 ns more than the kernel-thread version; pinned cross-CPU channel_call got 8-11% slower) | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass. **QEMU 2026-09-29 (M5.5 branch): all items built with run-time switches (bench measures off/on in one run); the regression was the wake-affine sibling scan (fixed); XSAVEOPT + skipped restores added; 134/134 ktests, init+utest, stress=20, all crash tests at 4 and 8 CPUs and with each switch off. PCIDs and TSC-deadline one-shots only run on the PC (TCG has neither): PC run next** PC 2026-09-29: All tests 143 (first real PCID run), benchmark (BENCH.md M5.5: cross-CPU wakeups 2-2.4x faster, kmalloc 4.3x / ~800x on 28 CPUs, timers 350 ns late instead of up to 10 ms, the M5 cross-CPU regression gone; PCIDs only 2%), 2-min stress; review fixes (deadline wrap, spin-idle IPI, mutex hand-off after 1 ms); signed off by the M6 10-min stress, 0 failures |
 | **M6** ✅ | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process **PC 2026-09-29: Devices lists all 24 functions (RTX untouched); the done test passed: the Intel xHCI 8086:7a60 (MSI-only) completed No-Op commands via a real MSI, as a kernel process and as a user process (median 46 us, IMOD 40 us); devmgr binds it as a process on every boot; All tests 201/201, utest 19/19, drivers=kernel; 10-min stress sign-off 0 failures. PC-only bugs fixed on the way: QEMU-only test devices, a BAR neighbour check, the VMD's 64-bit BAR with a hard-wired upper half (sized to ~2^64). Two independent reviews; stale DMA after a rebind moved to M7 Track D** |
 | **M7** ✅ | xHCI (8086:7A60) → hub driver (the PC has an ASMedia USB 3 hub) → HID (keyboard + mouse; composite devices: find the boot interfaces) → console → interactive shell (each a process from the start); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell **PC 2026-09-29: usb-bus enumerated all 8 devices (keyboard 0c45:652f, mouse 258a:0033, ASMedia hub, the boot stick behind it, RGB controllers) first time; typing into the shell with the real keyboard; `kill hid-10:0` recovers; `kill devmgr` recovers (init supervises it); hot-plug; reboot + Ctrl+Alt+Del; everyday shell commands with pipes; apps (fractal, tetris, life) and `demo` borrowing the screen; 10-min stress (from the shell, with the whole user space running) passed, 0 failures. Every driver and service is a process. Two reviews (M7, and phase 2) plus an authority pass (devmgr query/control channels, console client levels)** |
+| M7.5 | Cleanup, no behaviour change (CLEANUP-PLAN.md): the kernel build of drivers and its scaffolding removed; the shell's one command table, one file per command; usb-bus's enumeration split into files and steps; the kernel split by subsystem (sched, proc, debug), tests named by subject; user programs by role (services, apps, tests) on libos + libfun; CODING-GUIDE.md; `-Wvla`, `-Wframe-larger-than` | same commands, output, boot menu, ktest names, syscalls and IDL; every QEMU test passes (2026-09-30); PC round pending (All tests, 2-min stress) |
 | M8 | USB mass storage → FAT32 (processes), read-only ESP + writable data partition; every boot's log saved as `/data/logs/boot-NNNN.txt` | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test; a PC run's log can be read on the Mac from the stick |
 | M8.5 | Crash kernel (the Linux kdump approach): at boot reserve a slice of RAM and load a second Jam OS into it; on a panic, after the panic screen and halting the other CPUs, jump into it (kexec: its own `struct boot_info` saying only that slice is RAM, no firmware reset). It boots on one CPU with the normal drivers, resets each controller before use, reads the crashed kernel's log ring from memory, saves it as `/data/logs/boot-NNNN-crash.txt`, and reboots. The same kexec gives `reboot` a fast path: load the new `jamos.elf` + `bootfs.img` from the stick, stop the other CPUs, reset devices (stop DMA and interrupts), jump; this needs the kernel's own AP startup (INIT-SIPI-SIPI + trampoline, also needed for M12's own loader) so all 28 CPUs come back without Limine. pstore (log ring in RAM kept across a warm reset) only as an optional fallback for panics before the crash kernel is loaded | a deliberate panic on the real PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
 | M9 | RTL8125 NIC driver → lwIP → DHCP/DNS (processes), all traffic on VLAN 21 only (see Networking); netlog: klog streamed over UDP to a listener on the Mac; `update`: fetch a new kernel + bootfs from a small server on the Mac and kexec into it | `ping 1.1.1.1` on the real PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |

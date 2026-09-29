@@ -8,8 +8,8 @@ in a separate cleanup commit.
 
 House style comes from the files the reviews called good:
 `kernel/object/port.c` (+ `port.h`), `kernel/mm/pmm.c`,
-`drivers/hid/keyboard.c`, `user/devmgr/` (split by job) and
-`user/shell/sh.h`. When this guide doesn't cover something, copy them.
+`drivers/hid/keyboard.c`, `user/services/devmgr/` (split by job) and
+`user/services/shell/sh.h`. When this guide doesn't cover something, copy them.
 
 The owner learns OS development by reading this code. Write it to be read.
 
@@ -76,20 +76,20 @@ syscall path returns an error.
 
 | Code | Place |
 |---|---|
-| Kernel, by subsystem | `kernel/<subsystem>/` (object, mm, abi, arch, dev, core; after the cleanup also sched, proc, debug) |
-| Kernel headers | `kernel/include/jam/<name>.h` |
+| Boot sequence | `kernel/main.c` |
+| Kernel, by subsystem | `kernel/<subsystem>/`: `arch/x86_64` (CPU, interrupts, entry), `mm` (memory), `sched` (scheduler, threads, waits, mutexes), `object` (kernel objects and handles), `abi` (syscalls), `proc` (bootfs, ELF, userboot), `dev` (the kernel's own devices, PCI core, reboot), `debug` (klog, panic, symbols, lock checker, RESULTS box, debug commands, self-, crash and stress tests), `acpi`, `boot`, `lib` |
+| Kernel headers | `kernel/include/jam/<name>.h`; a subsystem's internal header next to its code (`sched/sched_internal.h`, `dev/pci_internal.h`) |
 | Syscall glue (`sysc_*`, `sys_*`) | `kernel/abi/` |
-| Kernel tests | `kernel/test/test_<subject>.c` |
-| Drivers | `drivers/<name>/` (test drivers in `drivers/test/`) |
-| System services (console, devmgr, init, serialin, shell) | `user/services/<name>/` after the cleanup (`user/<name>/` before it) |
-| Apps (fractal, life, tetris, demo) | `user/apps/<name>/` |
-| Test programs (utest, usbtest) | `user/tests/<name>/` |
-| Shared user code | `user/lib/` (libos), the apps library (libfun) |
+| Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |
+| Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
+| System services (console, devmgr, init, serialin, shell) | `user/services/<name>/` |
+| Apps (fractal, life, tetris, demo) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
+| Test programs (utest, usbtest, contest) | `user/tests/<name>/` |
+| Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
 | ABI sources | `abi/syscalls.def`, `abi/idl/*.idl` |
-| Build tools and test scripts | `tools/` |
+| Build tools and test scripts | `tools/` (QEMU shell scripts in `tools/shell-tests/`) |
 
-If the cleanup's directory moves have not landed yet, use the path the
-code is at now and match its neighbours.
+The Makefile finds programs and drivers by directory: no list to edit.
 
 ### Files and functions
 
@@ -120,8 +120,10 @@ code is at now and match its neighbours.
   declaration: what it does, which errors it returns, what context it needs
   ("interrupts on, no spinlock held").
 - **Internal** headers live next to the code and are included with quotes:
-  `user/devmgr/internal.h`, `drivers/hid/hid.h`, `kernel/abi/sysc.h`. Use one
-  when several files of one component share declarations.
+  `user/services/devmgr/internal.h`, `drivers/hid/hid.h`, `kernel/abi/sysc.h`.
+  Use one when several files of one component share declarations. A user
+  program's own directory is on its quote include path, so files in a
+  subdirectory write `"sh.h"`, not `"../sh.h"`.
 - **The user-visible ABI** is only the headers the Makefile copies for user
   code (`UINC_HDRS`: abi.h, bootfs.h, startup.h, status.h, syscall_nums.h).
   User code never includes other kernel headers.
@@ -147,8 +149,8 @@ code is at now and match its neighbours.
 
 ## 3. C rules
 
-The build is `-std=gnu17 -Wall -Wextra -Werror`, freestanding. A warning is
-a build failure; never silence one with a cast or a pragma without a
+The build is `-std=gnu17 -Wall -Wextra -Werror -Wvla`, freestanding, and
+the kernel adds `-Wframe-larger-than=3072`. A warning is a build failure; never silence one with a cast or a pragma without a
 comment saying why it is safe.
 
 ### Types
@@ -324,7 +326,9 @@ fractions. User programs may use floating point and SIMD freely.
   full of channels never recurses).
 - A kernel thread has a 64 KiB stack. Keep a function's locals under ~1 KiB;
   bigger buffers come from `kmalloc` or a static/per-CPU buffer. No VLAs
-  or `alloca` anywhere.
+  or `alloca` anywhere. The compiler enforces the outer limits: `-Wvla`
+  everywhere, and a kernel frame over 3 KiB fails the build (the largest
+  today, `sys_channel_call`'s, is about 2.4 KiB).
 
 ---
 
@@ -417,11 +421,11 @@ fractions. User programs may use floating point and SIMD freely.
 4. `make idl`; commit `drivers/include/idl/<name>.h`. Never edit it.
 5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`.
    Client: `<name>_<method>` or `_until` with a deadline.
-6. Test both ends (a utest with a mock peer, as `user/utest/hid.c` does).
+6. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c` does).
 
 ### Add a shell command
 
-1. `user/shell/cmd/<name>.c` with `SH_CMD(name) { ... }`, declared in
+1. `user/services/shell/cmd/<name>.c` with `SH_CMD(name) { ... }`, declared in
    `sh.h`.
 2. A row in the command table (`sh_table.c`): category, usage, help.
 3. Output with `sh_say` (goes into a pipe when piped); usage and errors
@@ -470,8 +474,8 @@ fractions. User programs may use floating point and SIMD freely.
 
 ### Add a user program
 
-1. `user/<services|apps|tests>/<name>/`, add it to `USER_PROGS`; it
-   becomes `bin/<name>` in bootfs.
+1. `user/<services|apps|tests>/<name>/`: the Makefile finds it there and
+   it becomes `bin/<name>` in bootfs (an app also links libfun).
 2. `int main(int argc, char **argv)` on libos. Take handles from the
    startup message by role (`startup_handle(SR_*)`); the program has no
    other authority.
