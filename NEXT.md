@@ -89,6 +89,11 @@
   > 1 TiB, wrapping, misaligned) are logged and left UNSIZED; the utest tries each MSI-X function until
   one's table BAR can be handed out and prints which it used.
 
+- **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
+  console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional
+  tool (`drivers=kernel`, still built so the discipline holds), not a milestone requirement. ARCHITECTURE.md
+  "The migration rule" rewritten.
+
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
 present (unused). One USB controller: Intel xHCI 8086:7A60 rev 0x11 (keyboard, mouse, stick), an
