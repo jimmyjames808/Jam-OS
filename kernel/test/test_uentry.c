@@ -10,6 +10,7 @@
  * the real syscall_dispatch). Everything here compiles out with KTESTS=0. */
 #include <jam/cpu.h>
 #include <jam/ktest.h>
+#include <jam/lapic.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -30,6 +31,7 @@
 #define TSN_YIELD  0x7003   /* reschedule, then return 0 */
 #define TSN_EXIT   0x7004   /* leave ring 3 for good (thread_exit) */
 #define TSN_GETCPU 0x7005   /* return this CPU's index */
+#define TSN_BADRET 0x7006   /* set the return RIP >= USER_TOP, then return */
 
 /* ---- a hand-built user address space -------------------------------------- */
 
@@ -153,6 +155,12 @@ static bool utest_syscall(struct syscall_frame *f, int64_t *ret)
         return true;
     case TSN_GETCPU:
         *ret = percpu_index();
+        return true;
+    case TSN_BADRET:
+        /* Corrupt the return RIP. The syscall exit guard must kill the
+         * thread rather than let sysret fault in ring 0 on the user stack. */
+        f->user_rip = USER_TOP + 0x1000;
+        *ret = 0;
         return true;
     case TSN_EXIT:
         /* Stay registered until the joiner unregisters us: the CR3 hook
@@ -616,5 +624,71 @@ KTEST(uentry_user_copies)
     KT_ASSERT(c.str_ok);
     KT_EQ(c.r_str_nonul, ERR_OUT_OF_RANGE);
     KT_EQ(c.r_str_bad, ERR_INVALID_ARGS);
+    uspace_destroy(&u);
+}
+
+/* A syscall whose return RIP has been set >= USER_TOP must kill the thread,
+ * not sysret to a bad address (which would #GP in ring 0 on the user stack
+ * and panic the kernel). If the guard failed, this test would panic. */
+KTEST(uentry_sysret_guard)
+{
+    struct uspace u;
+    uspace_create(&u);
+    struct uprog prog = { 0 };
+    struct emit e = { u.code, (uint8_t *)u.code + PAGE_SIZE };
+    e_call_nr(&e, TSN_BADRET);   /* the handler corrupts the return RIP */
+    e_call_nr(&e, TSN_EXIT);     /* never reached: the guard kills us first */
+    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct thread *t = user_spawn(&r, 1 % cpu_count);
+    user_join(t);
+    uspace_destroy(&u);
+}
+
+/* An NMI arriving while a thread runs in ring 3 must be handled (GS found
+ * correctly by the IST entry) and the thread must keep running. */
+static volatile unsigned nmi_seen;
+static bool count_nmi(struct trap_frame *f)
+{
+    (void)f;
+    __atomic_add_fetch(&nmi_seen, 1, __ATOMIC_RELAXED);
+    return true;   /* swallow it: nothing is actually wrong */
+}
+
+KTEST(uentry_nmi_in_user)
+{
+    if (cpu_count < 2)
+        return;
+    struct uspace u;
+    uspace_create(&u);
+    struct uprog prog = { 0 };
+    /* mov rcx, &counter ; L: inc [rcx] ; jmp L */
+    struct emit e = { u.code, (uint8_t *)u.code + PAGE_SIZE };
+    mov_imm(&e, R_RCX, UDATA);
+    uint8_t *loop = e.p;
+    eb(&e, 0x48); eb(&e, 0xff); eb(&e, 0x01);
+    eb(&e, 0xeb); eb(&e, (uint8_t)(loop - (e.p + 1)));
+
+    volatile uint64_t *counter = u.data;
+    *counter = 0;
+    nmi_seen = 0;
+    uentry_test_nmi = count_nmi;
+
+    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct thread *t = user_spawn(&r, 1);
+    while (*counter == 0)
+        thread_yield();   /* wait until it is looping in ring 3 */
+
+    for (int i = 0; i < 5; i++) {
+        lapic_send_nmi(cpus[1]->lapic_id);
+        thread_sleep_ms(2);
+    }
+    uint64_t a = *counter;
+    thread_sleep_ms(10);
+    KT_ASSERT(nmi_seen > 0);      /* the NMIs were delivered and handled */
+    KT_ASSERT(*counter > a);      /* and the user thread survived them */
+
+    thread_cancel(t);
+    user_join(t);
+    uentry_test_nmi = NULL;
     uspace_destroy(&u);
 }
