@@ -21,25 +21,21 @@ The system call numbers, the kernel dispatch table and the user wrappers
 are generated from `abi/syscalls.def` by `tools/gensyscalls.py`; the output
 is committed, and every build fails if it doesn't match the `.def`.
 
-The plain **Jam OS** entry (empty command line) and **Jam OS (init + utest)**
-(`init`) start user space: the kernel's userboot loads `bin/init` from bootfs,
-init runs each program in `boot/init.cfg` as a child process (today
-`bin/utest`, the M5 test suite in ring 3), and the RESULTS box shows
-`utest: N passed`, init's exit code and whether its root job ended with
-nothing charged. The boot menu also has **All tests** (`ktest`: every
-in-kernel test), a
-**Benchmark** (`bench`: latency and throughput of the kernel's basic operations,
-then the same measured from ring 3 (`user:` lines: syscalls, page faults,
-process-to-process calls); median and p99, method explained in
-`kernel/test/bench.c`), a **2-minute stress test** (after each fix) and a **10-minute** one (milestone sign-off) (kernel threads plus user
-processes started and killed at random moments)
-and a **Tests** folder with the self-test, the
-timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
-crashes that must panic (`testpf`, `testro`, `testrohhdm`, `teststack`, `testsmap`, `testsmep`,
-`testlockorder`, `testlocknest`, `testlockirq`, `testmutexorder`,
-`testmutexspin`, `teststuck`, `testwatchdog`, `testpanic`; `testbp` must
-continue). To run any kernel command line headless and get the log and a
-screenshot:
+The boot menu (M7 cleanup) has **Jam OS** (a plain boot: init starts the
+console, devmgr with the USB drivers and the shell: you type at the `jam>`
+prompt with a real USB keyboard; `help` lists the commands), **Jam OS (safe
+mode)** (`nousb`: no USB drivers, serial input only) and a **Tests** folder
+with what must run without a keyboard: **All tests** (`ktest`: every
+in-kernel test), the **2-minute** (after each fix) and **10-minute**
+(milestone sign-off) stress tests, the **Benchmark** (`bench`), **init +
+utest + usbtest** (the user-space regression run, RESULTS box with `utest: N
+passed` and whether init's root job ended clean) and the timer fallback
+(`nodeadline selftest`). Everything else is a shell command: `ktest`,
+`bench`, `stress`, `utest`, `usbtest`, `devices`/`lspci`, `usb`/`lsusb`,
+`pci`, `memmap`, `demo`, `crash <name> yes` (the deliberate panics), `top`,
+`ps`, `date`, the text tools with pipes, and the apps `run fractal`,
+`run tetris`, `run life`. The old entries' words still work as hidden
+command-line options for the QEMU tests.
 
 ```sh
 tools/qemu-test.sh build/test kt ktest                  # all ktests

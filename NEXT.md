@@ -155,7 +155,15 @@
   (user/fun + life/tetris/fractal: text-mode half-block graphics via new console escapes: alt screen,
   cursor positioning, synchronized frames; console bright-colour bug fixed). v0.0.22-m7: 226/226 ktests,
   live ktest 221+5 skipped, fun-test PASS, usbkeys PASS. Still running: cleanup (menu, demo/utest/crash
-  commands, init restarts devmgr, run-child authority). Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
+  commands, init restarts devmgr, run-child authority). **Cleanup MERGED (v0.0.23-m7 = M7 sign-off
+  candidate)**: menu = Jam OS / safe mode (nousb) / Tests (All tests, stress 2+10, Benchmark, init+utest+
+  usbtest, timer fallback); shell utest usbtest pci memmap demo crash; console.lend_screen (demo borrows
+  the screen); init supervises devmgr (kill devmgr -> USB back in ~0.6 s); authority: devmgr query vs
+  control channels (SR_DEVMGR_CTL), console client levels ADMIN/SHELL/PROGRAM (new_client), run kills its
+  job. QEMU: 226/226 + live ktest, utest 30, all shell scripts incl. review repros, fun-test, usbkeys PASS.
+  **Next: PC sign-off round (quick check of menu/commands/apps/demo/kill devmgr) + 10-min stress = M7 done.**
+  User wants next: the fractal (and life) at full 2560x1440 through console.lend_screen (asked about
+  deeper zoom via double-double: awaiting answer). (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,

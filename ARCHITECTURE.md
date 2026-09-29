@@ -596,9 +596,15 @@ right after M8 (so A2's WAV playback from /data works straight away).
   one).
 - `tools/qemu-test.sh` boots any kernel command line headless
   (`QEMU_SMP`, `QEMU_MEM`, `QEMU_CPU`, `QEMU_TIMEOUT`) and saves the serial
-  log and a screenshot; the boot menu has matching test entries, including
-  crash tests that must panic (`testpf`, `testro`, `teststack`,
-  `testlockorder`, `testwatchdog`, `testpanic`).
+  log and a screenshot (`QEMU_INPUT` types a script into the shell over
+  serial, `QEMU_USB`/`QEMU_MONITOR` add USB devices and send keys). Since
+  the M7 cleanup the boot menu is just **Jam OS**, **safe mode** (`nousb`)
+  and a **Tests** folder (All tests, 2- and 10-minute stress, Benchmark,
+  init + utest + usbtest, timer fallback); everything else is a shell
+  command (`ktest`, `bench`, `stress`, `utest`, `usbtest`, `pci`, `memmap`,
+  `demo`, and the crash tests that must panic as `crash <name> yes`) or a
+  hidden boot word (`pcilist`, `xhcitest`, `keytest`, `drivers=kernel`,
+  `demo`, `memmap`, `test<name>`).
 - QEMU mirrors the PC: q35, OVMF, xHCI USB boot, e1000e (`make run`), gdb
   stub (`make debug`).
 - Per-CPU watchdog heartbeat: a stuck core turns into a panic screen.
