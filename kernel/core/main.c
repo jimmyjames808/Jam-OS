@@ -64,16 +64,18 @@ static void print_boot_info(const struct boot_info *bi)
     kprintf("cpus:        %u from loader (bsp lapic %u, %s)\n", bi->cpu_count,
             bi->bsp_lapic_id, bi->x2apic ? "x2APIC" : "xAPIC");
 
-    if (cmdline_has("memmap")) {
-        for (size_t i = 0; i < bi->memmap_count; i++) {
-            const struct boot_mem_region *r = &bi->memmap[i];
-            kprintf("  %016lx - %016lx  %-14s %lu KiB\n", r->base, r->base + r->length,
-                    mem_type_name(r->type), r->length / 1024);
-        }
-    }
 }
 
 static struct boot_info *boot;
+
+void kmain_print_memmap(void)
+{
+    for (size_t i = 0; i < boot->memmap_count; i++) {
+        const struct boot_mem_region *r = &boot->memmap[i];
+        kprintf("  %016lx - %016lx  %-14s %lu KiB\n", r->base, r->base + r->length,
+                mem_type_name(r->type), r->length / 1024);
+    }
+}
 
 /* "ktest=abc" -> "abc" (up to the next space); NULL if absent. */
 static const char *ktest_prefix(void)
@@ -154,12 +156,15 @@ _Noreturn static void kmain_stage2(void *arg)
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
      * or, M7, on "shell" or a plain boot (empty command line): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
-     * RESULTS box only comes if init ever ends). Test, benchmark and crash
-     * entries don't start it. */
-    bool shell = cmdline_has("shell") || !boot->cmdline[0];
+     * RESULTS box only comes if init ever ends). "nousb" (the safe mode
+     * entry) is shell mode with devmgr leaving USB controllers alone. Test,
+     * benchmark and crash entries don't start it. */
+    bool nousb = cmdline_has("nousb");
+    bool shell = cmdline_has("shell") || nousb || !boot->cmdline[0];
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
-                                shell ? "shell" : NULL);
+                                shell ? (nousb ? "shell-nousb" : "shell") : NULL);
+
     /* M6 done test ("USB controller test" boot entry): xhci-noop on the
      * xHCI as a kernel process (handles built in the kernel), then as a
      * process that init starts with handles it makes through the M6
@@ -225,6 +230,8 @@ _Noreturn void kmain(struct boot_info *bi)
     gdt_init_bsp();
     idt_init();
     print_boot_info(bi);
+    if (cmdline_has("memmap"))
+        kmain_print_memmap();
 
     pmm_early_init(bi);
     vmm_init(bi);

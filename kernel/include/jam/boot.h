@@ -92,3 +92,7 @@ void boot_start_cpu(const struct boot_cpu *cpu, void (*entry)(void *), void *arg
 
 /* Kernel entry after the loader-specific glue has filled in boot_info. */
 _Noreturn void kmain(struct boot_info *bi);
+
+/* The loader's memory map, as the "memmap" boot word prints it (main.c;
+ * the shell's `memmap` through debug_command). */
+void kmain_print_memmap(void);
