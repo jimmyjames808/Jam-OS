@@ -26,6 +26,7 @@
 #include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -78,9 +79,10 @@ void fpu_init_cpu(void)
         }
         area_cache = kmem_cache_create("fpu state", area_size, 64);
         fpu_opt = !cmdline_has("nofpuopt");
-        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d",
-                cpu_features.xsave ? "XSAVE" : "FXSAVE", xcr0, area_size, cpu_features.smep,
-                cpu_features.smap, cpu_features.umip);
+        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d pcid=%d/%d "
+               "invpcid=%d", cpu_features.xsave ? (has_xsaveopt ? "XSAVEOPT" : "XSAVE") : "FXSAVE",
+               xcr0, area_size, cpu_features.smep, cpu_features.smap, cpu_features.umip,
+               cpu_features.pcid, pcid_is_on(), cpu_features.invpcid);
         return;
     }
     if (cpu_features.xsave)

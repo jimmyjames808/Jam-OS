@@ -46,6 +46,7 @@
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
+#include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
 #include <jam/process.h>
@@ -216,10 +217,11 @@ static uint64_t *samples, *samples_off, *samples_on;
  * them at once ("m55": the M5 behaviour against all of M5.5). */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
-    SW_COUNT, SW_ALL = SW_COUNT
+    SW_PCID, SW_COUNT, SW_ALL = SW_COUNT
 };
 static const char *const sw_name[SW_COUNT + 1] = {
-    "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "m55"
+    "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "pcid",
+    "m55"
 };
 static uint64_t sw_boot[SW_COUNT];
 
@@ -233,6 +235,7 @@ static uint64_t sw_get(enum sw s)
     case SW_ONESHOT:    return lapic_oneshot;
     case SW_SERIALIRQ:  return serial_async;
     case SW_FPUOPT:     return fpu_opt;
+    case SW_PCID:       return pcid_is_on();
     default:            break;
     }
     return 0;
@@ -248,11 +251,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_ONESHOT:    lapic_oneshot = v; break;
     case SW_SERIALIRQ:  serial_async = v; break;
     case SW_FPUOPT:     fpu_opt = v; break;
+    case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -1043,6 +1047,12 @@ static void bench_as_switch(void *arg)
     irq_restore(f);
 }
 
+static void as_switch_measure(int unused)
+{
+    (void)unused;
+    run_on(cpu_p, bench_as_switch, NULL);
+}
+
 static void as_switch(void)
 {
     if (aspace_create(&as_a) != OK)
@@ -1051,8 +1061,14 @@ static void as_switch(void)
         aspace_unref(as_a);
         return;
     }
-    run_on(cpu_p, bench_as_switch, NULL);
-    result("address-space switch (CR3 load + masks, P)", samples, SAMPLES);
+    /* Without PCIDs (see the fpu line) there is nothing to switch. */
+    if (pcid_usable()) {
+        off_on(SW_PCID, "address-space switch (CR3 load + masks, P)", as_switch_measure, 0,
+               SAMPLES);
+    } else {
+        as_switch_measure(0);
+        result("address-space switch (CR3 load + masks, P)", samples, SAMPLES);
+    }
     aspace_unref(as_b);
     aspace_unref(as_a);
 }
@@ -1209,7 +1225,11 @@ static void user_benches(void)
     user_bench("null", cpu_p, -1, "user: syscall round trip (unused number, P)");
     user_bench("clock", cpu_p, -1, "user: clock_get syscall (P)");
     user_bench("fault", cpu_p, -1, "user: page fault, fresh zero page (P)");
-    user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
+    if (pcid_usable())
+        user_bench_off_on(SW_PCID, "call", cpu_p, cpu_p,
+                          "user: process->process channel_call, same CPU (P)");
+    else
+        user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1, "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };
     for (unsigned i = 0; i < 3; i++) {
