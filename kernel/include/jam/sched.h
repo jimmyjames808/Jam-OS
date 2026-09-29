@@ -136,6 +136,10 @@ struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *
                                     const cpumask_t *mask);
 struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
                                         int prio, const cpumask_t *mask, int prio_cap);
+/* Same, but the thread doesn't run until the caller thread_wake()s it: for
+ * callers that must publish the thread somewhere first (process_start). */
+struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
+                                           int prio, const cpumask_t *mask, int prio_cap);
 _Noreturn void thread_exit(void);
 void thread_join(struct thread *t);
 void thread_detach(struct thread *t);

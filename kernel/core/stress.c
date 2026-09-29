@@ -206,8 +206,12 @@ static void do_process(struct worker *w)
         } else {
             struct process_info info;
             process_get_info(p, &info);
-            if (!kill && (info.killed || info.exit_code != (mode[0] == 'e' ? 7 : 11)))
+            if (!kill && (info.killed || info.exit_code != (mode[0] == 'e' ? 7 : 11))) {
+                report("stress: user process \"%s\" exited with code %ld%s (expected %d)",
+                       mode, (long)info.exit_code, info.killed ? ", killed" : "",
+                       mode[0] == 'e' ? 7 : 11);
                 fail("user process exited with the wrong code", w);
+            }
         }
         kobject_unref(process_kobject(p));
     }

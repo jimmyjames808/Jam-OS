@@ -640,6 +640,15 @@ struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *
 struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
                                         int prio, const cpumask_t *mask, int prio_cap)
 {
+    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
+    if (t)
+        thread_wake(t);
+    return t;
+}
+
+struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
+                                           int prio, const cpumask_t *mask, int prio_cap)
+{
     struct thread *t = thread_alloc(name, prio);
     if (!t)
         return NULL;
@@ -667,7 +676,6 @@ struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), vo
 
     t->state = T_BLOCKED;
     t->cpu = percpu_index();   /* placement hint only: "last ran here" */
-    thread_wake(t);
     return t;
 }
 

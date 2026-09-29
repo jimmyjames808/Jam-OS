@@ -30,8 +30,10 @@
  *     after its insert, so a table is never written after it is destroyed.
  *   - process_start vs uthread_start (review R5): start_thread makes p
  *     RUNNING with `starting` set and creates the first thread with the
- *     lock dropped; while `starting`, uthread_start refuses (ERR_BAD_STATE).
- *     So no thread of p runs before the first one exists: if its creation
+ *     lock dropped, suspended, and wakes it only after clearing `starting`;
+ *     while `starting`, uthread_start refuses (ERR_BAD_STATE). Only callers
+ *     outside p can be refused (none of p's code has run yet), and no
+ *     thread of p runs before the first one exists: if its creation
  *     fails, p goes back to NEW with nothing of it run, the startup handle
  *     still in its table untouched, and process_start takes it back. (It
  *     used to be possible to start a second thread in that window, which
@@ -631,9 +633,15 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     struct dbg_process_start hk = { p, false };
     if (from_new)
         DBG_HOOK(DBG_PROCESS_START, &hk);
+    /* Created suspended: nothing of p may run until `starting` is clear
+     * again (below), or p's own first thread could call thread_start inside
+     * the window and be refused. The PC stress test hit exactly that within
+     * a second: the new thread preempted its creator on the same CPU and
+     * reached thread_start first ("user process exited with the wrong
+     * code"). */
     struct thread *t = hk.fail ? NULL
-                               : thread_try_create_capped(u->name, uthread_main, u, prio, mask,
-                                                          PRIO_USER_MAX);
+                               : thread_try_create_suspended(u->name, uthread_main, u, prio,
+                                                             mask, PRIO_USER_MAX);
     if (!t) {
         f = plock(p);
         u->state = UT_NEW;
@@ -654,7 +662,9 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     bool dying = p->state >= PROCESS_DYING;
     punlock(p, f);
     if (dying)
-        thread_cancel(t);   /* a kill ran before u->t was published */
+        thread_cancel(t);   /* a kill ran before u->t was published (this also wakes it) */
+    else
+        thread_wake(t);     /* only now may it run */
     return OK;
 }
 
