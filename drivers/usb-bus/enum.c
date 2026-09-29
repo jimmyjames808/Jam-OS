@@ -597,6 +597,14 @@ static void parse_config(struct usbdev *d)
         } else if (type == 5 && len >= 7 && cur) {   /* endpoint of an active interface */
             uint8_t addr = p[2], attr = p[3];
             uint8_t dci = (uint8_t)((addr & 0xf) * 2 + ((addr & 0x80) ? 1 : 0));
+            /* Endpoint 0, or one another interface already lists: not this
+             * interface's (its class driver may only reach its own). */
+            if (dci < 2 || (d->eps[dci].dci && d->eps[dci].ifnum != cur->number)) {
+                drv_log("usb %s: if%u lists endpoint %02x, not its own: ignored", d->path,
+                        cur->number, addr);
+                p += len;
+                continue;
+            }
             if (cur->nep < MAX_EPS_IF)
                 cur->ep_addr[cur->nep++] = addr;
             if (dci >= 2 && dci < 32) {
@@ -699,7 +707,7 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     /* Find the alternate setting's endpoints. */
     const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
     bool in_alt = false, found = false;
-    uint8_t nep = 0, addrs[MAX_EPS_IF];
+    uint8_t nep = 0, nacc = 0, addrs[MAX_EPS_IF];
     struct ep neweps[MAX_EPS_IF];
     uint8_t cls = f->cls, sub = f->sub, proto = f->proto;
     while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
@@ -726,7 +734,7 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
             e->esit = (uint16_t)(e->mps * (e->burst + 1));
             e->interval = ep_interval(d->speed, attr & 3, p[6]);
             e->type = ((attr & 3) == 3 && (addr & 0x80)) ? EPT_INTR_IN : 0;
-            addrs[nep++] = addr;
+            nep++;
         }
         p += p[0];
     }
@@ -737,9 +745,10 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
         if (n->dci < 2 || n->dci >= 32)
             continue;
         struct ep *e = &d->eps[n->dci];
-        bool was = e->configured && !(drop & (1u << n->dci));
-        if (was)
-            continue;   /* another interface's; leave it */
+        bool others = e->dci && e->ifnum != f->number;
+        if (others || (e->configured && !(drop & (1u << n->dci))))
+            continue;   /* another interface's; leave it (and don't list it) */
+        addrs[nacc++] = n->addr;
         int kb = e->buf_page;
         if (drop & (1u << n->dci))
             ring_free(&g_hc, &e->ring);   /* a new ring: the context starts at its first TRB */
@@ -766,8 +775,8 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     f->cls = cls;
     f->sub = sub;
     f->proto = proto;
-    f->nep = nep;
-    for (int i = 0; i < nep; i++)
+    f->nep = nacc;
+    for (int i = 0; i < nacc; i++)
         f->ep_addr[i] = addrs[i];
     return CC_SUCCESS;
 }
