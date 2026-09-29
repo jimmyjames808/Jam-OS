@@ -89,6 +89,14 @@
   > 1 TiB, wrapping, misaligned) are logged and left UNSIZED; the utest tries each MSI-X function until
   one's table BAR can be handed out and prints which it used.
   **PC 0.0.16-m6: init + utest 19/19 passed** (VMD fix confirmed); drivers=kernel: 1 driver bound + stopped, 0 skipped.
+- **M6 phase 2 review DONE (0.0.17-m6)**: fixes on main - devmgr kills a driver's whole JOB and turns BME off
+  itself; a driver ending by itself = a problem in RESULTS; xhci-noop always halts+resets; resource_pci_bar
+  checks the WHOLE BAR again (vs decode-on functions only; the PC's original xHCI refusal was the VMD's
+  bogus ~2^64 BAR, fixed in faf32a7); devmgr STOP_WAIT 15 s. OPEN, moved to M7 Track D (M7-PLAN.md):
+  stale DMA after a rebind (finding 1, CONFIRMED by `ktest=review_m6p2_stale_dma_after_rebind`; no rebind
+  happens on the PC today), non-transferable driver handles, D-state changes for devmgr.
+  QEMU: 201/201 ktests at 4+8, utest 19/19 clean, stress=30, xhcitest PASS. **Next: PC final round on
+  0.0.17-m6 = All tests + 2-min + 10-min (signs off M5.5 + M6); M7 agents start when the 10-min run starts.**
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
   console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional

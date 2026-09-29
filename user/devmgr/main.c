@@ -39,7 +39,7 @@
 #define MS          1000000ull
 #define S           1000000000ull
 #define MAX_DEVS    64
-#define STOP_WAIT   (5 * S)
+#define STOP_WAIT   (15 * S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
 #define KEY_CHANNEL 1
 #define KEY_DRIVER  0x100   /* + binding index: its process terminated */
 

@@ -129,9 +129,22 @@ driver.h additions; kernel syscalls stubbed), then four agents in parallel.
 
 ### Track D: supervision (agent 4, smaller)
 - devmgr: restart a dead driver (exponential backoff 100 ms .. 5 s, give
-  up after 5 in a minute and log it); device state reset before rebind
-  (M6 review finding 7: a function reset or controller halt before bus
-  mastering goes back on).
+  up after 5 in a minute and log it).
+- **Stale DMA after a rebind (M6 phase 2 review finding 1, CONFIRMED:
+  `ktest=review_m6p2_stale_dma_after_rebind` shows edu writing 4080 bytes
+  into released pages).** devmgr must stop turning Bus Master Enable on at
+  bind; the driver turns it on through its own dma_cap
+  (`dma_cap_bus_master(dma, on)`, a new syscall + driver.h call) only after
+  it has quiesced the device (xHCI: handoff, halt, HCRST; edu: DMA engine
+  idle). Belt and braces: pins released by an unclean cap close stay
+  quarantined until the next driver's dma_cap_bus_master(on) (Fuchsia's
+  BTI quarantine). Make that ktest a normal test that passes.
+- Handles a driver receives are not transferable (dma_cap, interrupt,
+  BARs, device), so a driver can't smuggle them out through DR_SERVE; and
+  a dma_cap's close turns BME off only if it is still the function's
+  current cap (M6 phase 2 review finding 2).
+- The config filter lets RIGHT_MANAGE holders (devmgr) change the power
+  state, so a function left in D3 can be woken (review finding 7).
 - The reconnect rule written into each protocol; a test driver that dies
   on command; utests for restart, backoff, give-up.
 
