@@ -921,31 +921,14 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
     return OK;
 }
 
-status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
-                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
+/* A pin is a kernel allocation that lives until unpin or the cap's
+ * close: one handle unit of the VMO's job, like any small object (a
+ * driver could otherwise pin one page forever and fill the kernel
+ * heap; test: m6r_pins_are_charged). A new busy pin range [first, end)
+ * on v, charged and listed. */
+static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
+                              struct vmo_range **out)
 {
-    if (!dma_cap || !pin_id)
-        return ERR_INVALID_ARGS;
-    if (dma_cap->type != OBJ_DMA_CAP)
-        return ERR_WRONG_TYPE;
-    if (len == 0 || ((offset | len) & (PAGE_SIZE - 1)))
-        return ERR_INVALID_ARGS;
-    if (offset > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
-        return ERR_OUT_OF_RANGE;
-    uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
-    if (!phys_out || phys_cap < end - first)
-        return ERR_BUFFER_TOO_SMALL;
-    /* A cap bound to a function pins only while its Bus Master Enable is
-     * on, and while it is the function's current cap (its driver turned
-     * bus mastering on with it: dma_cap_bus_master). */
-    if (!dma_cap_bus_master_on(dma_cap))
-        return ERR_BAD_STATE;
-    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
-
-    /* A pin is a kernel allocation that lives until unpin or the cap's
-     * close: one handle unit of the VMO's job, like any small object (a
-     * driver could otherwise pin one page forever and fill the kernel
-     * heap; test: m6r_pins_are_charged). */
     uint64_t jf = vlock(v);
     struct job *job = v->job;
     vunlock(v, jf);
@@ -968,10 +951,19 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         kfree(r);
         return st;
     }
+    *out = r;
+    return OK;
+}
+
+/* The pin takes a reference on the cap and goes on the cap's list from
+ * the start (busy until published), unless its last handle is already
+ * gone (ERR_BAD_STATE). */
+static status_t pin_link_cap(struct vmo_range *r, struct kobject *dma_cap)
+{
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    status_t st = OK;
     kobject_ref(dma_cap);
     r->cap = dma_cap;
-    /* On the cap's list from the start (busy until published), unless its
-     * last handle is already gone. */
     uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
     if (c->closed) {
         st = ERR_BAD_STATE;
@@ -980,31 +972,65 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         r->cap_linked = true;
     }
     spin_unlock_irqrestore(&dma_cap->lock, cf);
-    if (st == OK && v->kind == VMO_PAGED)
-        st = commit_pages(v, first, end);
-    if (st != OK) {
-        range_remove(v, r);
-        return st;
-    }
+    return st;
+}
 
-    /* Publish it, unless the cap was closed meanwhile: its close path ran
-     * (or is running) and skipped this busy pin, so the pin goes here. */
-    cf = spin_lock_irqsave(&dma_cap->lock);
+/* Publish the pin, unless the cap was closed meanwhile: its close path ran
+ * (or is running) and skipped this busy pin, so the pin goes here. */
+static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *dma_cap,
+                            uint64_t *phys_out, uint64_t *pin_id)
+{
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
     if (c->closed) {
         spin_unlock_irqrestore(&dma_cap->lock, cf);
         range_remove(v, r);
         return ERR_BAD_STATE;
     }
     uint64_t f = vlock(v);
-    for (uint64_t idx = first; idx < end; idx++) {
-        phys_out[idx - first] = phys_locked(v, idx);
-        ASSERT(phys_out[idx - first] != 0 || v->kind != VMO_PAGED);
+    for (uint64_t idx = r->first; idx < r->end; idx++) {
+        phys_out[idx - r->first] = phys_locked(v, idx);
+        ASSERT(phys_out[idx - r->first] != 0 || v->kind != VMO_PAGED);
     }
     r->busy = false;
     *pin_id = r->key;
     vunlock(v, f);
     spin_unlock_irqrestore(&dma_cap->lock, cf);
     return OK;
+}
+
+status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
+                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
+{
+    if (!dma_cap || !pin_id)
+        return ERR_INVALID_ARGS;
+    if (dma_cap->type != OBJ_DMA_CAP)
+        return ERR_WRONG_TYPE;
+    if (len == 0 || ((offset | len) & (PAGE_SIZE - 1)))
+        return ERR_INVALID_ARGS;
+    if (offset > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
+    uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
+    if (!phys_out || phys_cap < end - first)
+        return ERR_BUFFER_TOO_SMALL;
+    /* A cap bound to a function pins only while its Bus Master Enable is
+     * on, and while it is the function's current cap (its driver turned
+     * bus mastering on with it: dma_cap_bus_master). */
+    if (!dma_cap_bus_master_on(dma_cap))
+        return ERR_BAD_STATE;
+
+    struct vmo_range *r;
+    status_t st = pin_range_new(v, first, end, &r);
+    if (st != OK)
+        return st;
+    st = pin_link_cap(r, dma_cap);
+    if (st == OK && v->kind == VMO_PAGED)
+        st = commit_pages(v, first, end);
+    if (st != OK) {
+        range_remove(v, r);
+        return st;
+    }
+    return pin_publish(v, r, dma_cap, phys_out, pin_id);
 }
 
 /* The last pin may hold the cap's last reference; this runs from the cap's
