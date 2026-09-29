@@ -105,10 +105,10 @@ all of them at once.
 Unchanged lines (no switch): timestamp, spin_lock, page alloc (one CPU and
 all CPUs), context switch, same-CPU block+wake and channel_call, cache-line
 round trips, the two wake-affine placement lines, TLB shootdown, user
-syscall / clock_get / page fault. Note: the idle-CPU lines are measured with
-the other switches as booted, so spin-before-idle also shortens the
-cross-CPU channel_call "off" halves' neighbours; compare each line's off
-half with M5, and its on half with the off half.
+syscall / clock_get / page fault. Each off/on line flips only its own
+switch; the others stay as booted (all on), so an "off" half is M5 for that
+feature only (e.g. the channel_call P->P2 "spinidle off" half already has
+the placement fix). Compare each on half with its off half.
 
 Investigations:
 - (b) Pinned cross-CPU channel_call +8-11% in M5: the M5 wake-affine code
