@@ -312,6 +312,25 @@ static bool t_stall_recovered(void)
     return true;
 }
 
+/* More requests queued on DR_SERVE than usb-bus takes in one pass (64):
+ * the channel stays readable, so no new port edge comes; usb-bus must come
+ * back for the rest by itself, or DR_SERVE is dead for good (this call,
+ * and devmgr's stop, never answered). txid 0: the replies go to devmgr's
+ * end, which drops them. */
+static bool t_serve_backlog(void)
+{
+    struct usbbus_status_req q = { .txid = 0, .ordinal = USBBUS_STATUS };
+    unsigned sent = 0;
+    for (int i = 0; i < 300; i++)
+        if (jam_channel_write(bus, &q, sizeof(q), NULL, 0) == OK)
+            sent++;
+    struct bus_status b;
+    status_t st = get_status(&b);
+    if (st != OK)
+        FAIL("%u requests queued, then usbbus.status: %s", sent, status_str(st));
+    return true;
+}
+
 /* ---- the interactive part (QEMU monitor) ----------------------------------------------- */
 
 /* M7 integration: devmgr binds drv/hid to the test keyboard (it owns the
@@ -592,6 +611,7 @@ int main(int argc, char **argv)
                "scenario): skipped\n");
         skipped += 5;
     }
+    run("serve_backlog", t_serve_backlog);
     jam_handle_close(bus);
     int n = failed ? snprintf(line, sizeof(line), "usbtest: %u passed, %u FAILED, %u skipped",
                               passed, failed, skipped)

@@ -593,6 +593,9 @@ static void serve_bus(struct hc *h)
         if (!rn || drv_channel_write(h->serve, r, rn, rhs, rhn) != OK)
             idl_close_all(rhs, rhn);
     }
+    /* 64 taken and maybe more queued: the binding is edge-triggered and the
+     * channel stays readable, so no packet will say so. Come back. */
+    h->serve_pending = true;
 }
 
 static void serve_chan(int i)
