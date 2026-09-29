@@ -83,6 +83,10 @@ uint64_t hhdm_offset;
 
 static struct range early[MAX_EARLY_RANGES];
 static size_t early_count;
+/* M6: every boot memory-map range that is (or was) RAM, page-rounded
+ * outwards, for pmm_range_has_ram (never changes after early init). */
+static struct range ram[BOOT_MAX_MEMMAP];
+static size_t ram_count;
 static bool early_done;
 static uint64_t max_pfn;
 
@@ -115,6 +119,10 @@ void pmm_early_init(const struct boot_info *bi)
             if (end_pfn > max_pfn)
                 max_pfn = end_pfn;
         }
+        if ((boot_mem_is_ram(r->type) || r->type == BOOT_MEM_BAD) && r->length &&
+            ram_count < BOOT_MAX_MEMMAP)
+            ram[ram_count++] = (struct range){ ALIGN_DOWN(r->base, PAGE_SIZE),
+                                               ALIGN_UP(r->base + r->length, PAGE_SIZE) };
         if (r->type != BOOT_MEM_USABLE)
             continue;
         /* Physical page 0 is never handed out: 0 means "no page" in the
@@ -134,6 +142,17 @@ void pmm_early_init(const struct boot_info *bi)
 uint64_t pmm_max_pfn(void)
 {
     return max_pfn;
+}
+
+bool pmm_range_has_ram(uint64_t base, uint64_t len)
+{
+    if (len == 0)
+        return false;
+    uint64_t end = base + len < base ? UINT64_MAX : base + len;
+    for (size_t i = 0; i < ram_count; i++)
+        if (ram[i].base < end && base < ram[i].end)
+            return true;
+    return false;
 }
 
 /* Carves from the top of the highest range that fits, keeping low memory

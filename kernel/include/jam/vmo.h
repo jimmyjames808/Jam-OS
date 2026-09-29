@@ -55,9 +55,10 @@ status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struc
 /* M5: charge the VMO's pages to job (JOB_LIMIT_PAGES; see process.h), now
  * and whenever it commits more; a commit or fault the job can't afford
  * fails with ERR_NO_MEMORY. Once, before the VMO is shared: ERR_BAD_STATE
- * if it already has a job or is physical, ERR_NO_MEMORY if its current
- * pages (a contiguous VMO) don't fit. A NULL job is allowed and charges
- * nothing. */
+ * if it already has a job, ERR_NO_MEMORY if its current pages (a
+ * contiguous VMO) don't fit. A physical VMO owns no pages: only its struct
+ * (one JOB_LIMIT_HANDLES unit) is charged (M6). A NULL job is allowed and
+ * charges nothing. */
 struct job;
 status_t vmo_set_job(struct vmo *v, struct job *job);
 
@@ -94,15 +95,18 @@ status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned v
                         void **va);
 status_t vmo_unmap_kernel(struct vmo *v, void *va);
 
-/* DMA. dma_cap_create is a kernel-only constructor for now (OBJ_DMA_CAP;
- * drivers get one from devmgr in M6). */
+/* DMA. dma_cap_create makes an unbound capability (kernel tests); drivers
+ * get bound ones (dma_cap_create_for in <jam/resource.h>) from devmgr. */
 status_t dma_cap_create(struct kobject **out);
 /* Pin [offset, offset+len) (both page-aligned, len > 0) for device DMA:
  * commits the pages, forbids decommitting or shrinking them away, and
  * writes each page's physical address to phys_out[0..len/PAGE_SIZE).
  * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
- * if phys_cap (entries) is too small. The pin holds references on the VMO
- * and the capability until vmo_unpin. */
+ * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
+ * a function whose Bus Master Enable is off or its last handle is gone.
+ * The pin holds references on the VMO and the capability until vmo_unpin
+ * or until the cap's last handle closes (which releases every pin made
+ * with it). */
 status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                  uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
 /* ERR_NOT_FOUND if pin_id isn't a live pin of v. */

@@ -26,6 +26,8 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/report.h>
+#include <jam/resource.h>
+#include <jam/resource_impl.h>
 #include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/time.h>
@@ -296,8 +298,18 @@ bool userboot_run_init(uint64_t timeout_s)
         return false;
     }
     static const char *const argv[] = { "init" };
+    /* M6: init holds the root of hardware authority (SR_RESOURCE) and
+     * slices it for devmgr. */
+    struct userboot_handle extra[1];
+    unsigned nextra = 0;
+    struct kobject *res = resource_root();
+    if (res) {
+        extra[0].role = SR_RESOURCE;
+        extra[0].kh = khandle_from_new(res, RES_RIGHTS);
+        nextra = 1;
+    }
     struct process *p;
-    status_t st = userboot_spawn("bin/init", argv, 1, root, NULL, 0, NULL, &p);
+    status_t st = userboot_spawn("bin/init", argv, 1, root, extra, nextra, NULL, &p);
     if (st != OK) {
         report("init: could not start bin/init (%s)", status_str(st));
         job_unref(root);
