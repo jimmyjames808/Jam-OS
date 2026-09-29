@@ -625,7 +625,11 @@ static void event(struct hc *h, volatile struct trb *e, uint32_t d3)
     }
 }
 
-void hc_poll(struct hc *h)
+/* Drain the event ring. After an interrupt ERDP is written even when the
+ * ring turned out empty (an earlier poll took the events): the write is
+ * what clears Event Handler Busy, and while EHB is set the controller
+ * raises no interrupt (xHCI 5.5.2.3.3). */
+static void poll_events(struct hc *h, bool after_irq)
 {
     if (!h->ctx)
         return;
@@ -643,10 +647,15 @@ void hc_poll(struct hc *h)
             h->ev_cycle ^= 1;
         }
     }
-    if (n) {
+    if (n || after_irq) {
         uint64_t deq = h->ctx_dev + DMA_EVRING + (uint64_t)h->ev_deq * sizeof(struct trb);
         ir_wr64(h, IR_ERDP, deq | ERDP_EHB);
     }
+}
+
+void hc_poll(struct hc *h)
+{
+    poll_events(h, false);
 }
 
 static void irq(struct hc *h)
@@ -669,13 +678,16 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
     uint64_t now = drv_clock_ns(), cap = now + cap_ms * MS;
     struct port_packet pkt;
     status_t st = drv_port_wait(h->port, deadline < cap ? deadline : cap, &pkt);
+    bool fired = false;
     if (st == OK) {
-        if (pkt.key == KEY_IRQ)
+        if (pkt.key == KEY_IRQ) {
             irq(h);
-        else
+            fired = true;
+        } else {
             serve_packet(h, &pkt);
+        }
     }
-    hc_poll(h);
+    poll_events(h, fired);
 }
 
 /* Waiting for a completion: poll the event ring at least every 50 ms, so
