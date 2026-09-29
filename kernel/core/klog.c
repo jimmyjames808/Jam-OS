@@ -6,10 +6,10 @@
 #include <jam/spinlock.h>
 #include <jam/time.h>
 
-#define KLOG_SIZE (64 * 1024)   /* power of two */
+/* KLOG_SIZE (klog.h): a power of two */
 
 static char ring[KLOG_SIZE];
-static uint64_t head;           /* total bytes ever written */
+static volatile uint64_t head;  /* total bytes ever written */
 static spinlock_t ring_lock = SPINLOCK_INIT("klog");
 static bool at_line_start = true;
 
@@ -17,8 +17,10 @@ static bool at_line_start = true;
  * never interleave. */
 static void emit(const char *s, size_t len)
 {
+    uint64_t h = head;
     for (size_t i = 0; i < len; i++)
-        ring[head++ & (KLOG_SIZE - 1)] = s[i];
+        ring[h++ & (KLOG_SIZE - 1)] = s[i];
+    head = h;
     serial_write(s, len);
     fbcon_write(s, len);
 }
@@ -74,4 +76,34 @@ size_t klog_tail(char *buf, size_t size)
         buf[i] = ring[(head - n + i) & (KLOG_SIZE - 1)];
     spin_unlock_irqrestore(&ring_lock, f);
     return (size_t)n;
+}
+
+/* ---- readers (M7) ------------------------------------------------------------ */
+
+uint64_t klog_head(void)
+{
+    return head;
+}
+
+size_t klog_ring_copy(const char *r, uint64_t size, uint64_t h, uint64_t pos, char *buf,
+                      size_t cap, uint64_t *first)
+{
+    uint64_t oldest = h > size ? h - size : 0;
+    if (pos < oldest)
+        pos = oldest;
+    if (pos > h)
+        pos = h;
+    uint64_t n = h - pos < cap ? h - pos : cap;
+    for (uint64_t i = 0; i < n; i++)
+        buf[i] = r[(pos + i) & (size - 1)];
+    *first = pos;
+    return (size_t)n;
+}
+
+size_t klog_read_at(uint64_t pos, char *buf, size_t cap, uint64_t *first)
+{
+    uint64_t f = spin_lock_irqsave(&ring_lock);
+    size_t n = klog_ring_copy(ring, KLOG_SIZE, head, pos, buf, cap, first);
+    spin_unlock_irqrestore(&ring_lock, f);
+    return n;
 }

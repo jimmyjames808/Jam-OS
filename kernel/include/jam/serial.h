@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <jam/status.h>
 
 /* COM1. Most modern PCs have no serial port; init detects that and the
  * write becomes a no-op. In QEMU it is the main log channel, and on the
@@ -42,3 +43,20 @@ struct serial_ring {
 bool     serial_ring_put(struct serial_ring *r, char c);
 int      serial_ring_get(struct serial_ring *r);
 uint32_t serial_ring_used(const struct serial_ring *r);
+
+/* M7: COM1 input (serial.c "Input"). serial_rx_start turns the receive
+ * interrupt on and calls notify(ctx) (interrupts off, under the rx lock)
+ * whenever bytes arrived; ERR_BAD_STATE if a reader exists already,
+ * ERR_NOT_FOUND without a UART. serial_rx_read takes up to cap bytes and,
+ * if the ring is then empty, calls empty(ctx) under the same lock (so a
+ * reader's "readable" signal can't be cleared after new bytes set it).
+ * serial_rx_stop: no more calls to notify once it returns. inject: tests
+ * put bytes in as if received. */
+bool     serial_present(void);
+status_t serial_rx_start(void (*notify)(void *), void *ctx);
+void     serial_rx_stop(void);
+size_t   serial_rx_read(char *buf, size_t cap, void (*empty)(void *), void *ctx);
+void     serial_rx_inject(const char *s, size_t len);
+uint64_t serial_rx_dropped(void);
+bool     serial_rx_storm(void);   /* too many bad bytes: receive is polled */
+extern volatile uint64_t serial_rx_bytes, serial_rx_errors;

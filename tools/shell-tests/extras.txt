@@ -1,0 +1,26 @@
+# More of the M7 shell (QEMU_INPUT=this file, command line "shell"): the
+# benchmark and a short stress run from the shell, scrollback, clear, and
+# last a panic, whose screen must show over the console (qemu-test.sh saves
+# the screen as <name>.png when the kernel halts).
+wait 120 Jam OS shell
+wait jam>
+send bench
+wait 300 shell: bench: done
+wait jam>
+send stress 10
+wait 120 shell: stress 10: PASSED
+wait jam>
+send log 3
+wait jam>
+# Page Up on a terminal scrolls the screen back; any other key returns
+type \e[5~\e[5~
+sleep 0.5
+shot scrolled-back
+type \e[6~\e[6~
+send clear
+wait jam>
+sleep 0.5
+shot cleared
+send panic
+wait 30 KERNEL PANIC
+wait system halted

@@ -31,6 +31,9 @@ struct pci_dev {
     uint8_t  msix_table_bar, msix_pba_bar;
     uint32_t msix_table_off, msix_pba_off;
     volatile uint32_t *msix_table;  /* kernel UC mapping of the table, or NULL */
+    /* M7: RES_PCI_DEV resources made through system calls (devmgr's, for a
+     * driver) that are alive: the function belongs to a driver process. */
+    volatile uint32_t proc_users;
 };
 
 /* Enumerate every ECAM segment in acpi.ecam[]; logs one line per function. */
@@ -40,8 +43,13 @@ void pci_init(void);
 void pci_report(void);
 uint32_t pci_count(void);
 struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
-/* The n-th function with this vendor/device (0xffff = any), or NULL. */
+/* The n-th function with this vendor/device (0xffff = any), or NULL.
+ * While pci_hide_in_use is set (M7: `ktest` run from the shell, with
+ * devmgr's drivers running), functions a process holds (proc_users) are
+ * left out, so the kernel tests that drive a device skip it instead of
+ * fighting its driver. */
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n);
+extern volatile bool pci_hide_in_use;
 
 /* Config space, width 1, 2 or 4, offset < 4096 and aligned to width. */
 uint32_t pci_cfg_read(struct pci_dev *d, uint32_t off, uint32_t width);

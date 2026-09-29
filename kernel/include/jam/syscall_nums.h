@@ -61,6 +61,14 @@
 #define SYS_dma_cap_create       100
 #define SYS_vmo_pin              101
 #define SYS_vmo_unpin            102
+#define SYS_klog_open            110
+#define SYS_klog_read            111
+#define SYS_framebuffer_take     112
+#define SYS_debug_command        113
+#define SYS_reboot               114
+#define SYS_serial_open          115
+#define SYS_serial_read          116
+#define SYS_serial_write         117
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 103
+#define SYSCALL_COUNT 118

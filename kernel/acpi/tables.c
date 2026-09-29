@@ -136,6 +136,13 @@ static void parse_fadt(const struct acpi_header *h)
     acpi.pm_timer_32bit = flags & (1u << 8);   /* TMR_VAL_EXT */
     if (h->length >= 111)
         acpi.boot_arch_flags = *(const uint16_t *)(f + 109);
+    /* M7: RESET_REG (offset 116, a GAS) and RESET_VALUE (128), valid when
+     * flags.RESET_REG_SUP (bit 10) is set. */
+    if (h->length >= 129 && (flags & (1u << 10))) {
+        acpi.reset_reg = *(const struct acpi_gas *)(f + 116);
+        acpi.reset_value = f[128];
+        acpi.has_reset_reg = acpi.reset_reg.address != 0;
+    }
     /* ACPI 2.0+: X_PM_TMR_BLK wins when it is an I/O port. */
     if (h->length >= 208 + 12) {
         const struct acpi_gas *x = (const struct acpi_gas *)(f + 208);
