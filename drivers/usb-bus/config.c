@@ -87,7 +87,7 @@ static void ep_from_desc(struct ep_desc *e, uint8_t speed, const uint8_t *p)
  * Payload (xHCI 4.14.2). */
 static void ep_companion(struct ep_desc *e, const uint8_t *p)
 {
-    e->burst = p[2];
+    e->burst = p[2] > 15 ? 15 : p[2];   /* 0..15; the field is 8 bits */
     uint16_t bpi = le16(p + 4);
     if (bpi)
         e->esit = bpi;

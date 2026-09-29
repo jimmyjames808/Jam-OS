@@ -231,7 +231,7 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
     if (u == U_UP || u == U_DOWN)
         return browse(e, u == U_UP);
     if (u == U_TAB || (!u && cp == '\t'))
-        return sh_complete(e->line, &e->len, &e->pos, LINE_MAX);
+        return sh_complete(e->line, &e->len, &e->pos, line_max);
     if (cp >= 0x20 && cp < 0x7f && !(ev->mods & (INPUT_MOD_CTRL | INPUT_MOD_ALT)))
         return insert(e, (char)cp);
     return false;
