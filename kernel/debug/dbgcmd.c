@@ -51,12 +51,12 @@
 #define CMD_MAX 64
 
 struct run {
-    char           cmd[CMD_MAX];
-    struct job    *scope;     /* a reference, or NULL */
-    struct job    *caller;    /* a reference, or NULL: "kill" spares its ancestors */
-    struct event  *done;      /* SIG_SIGNALED when result is set */
-    int64_t        result;
-    volatile int   refs;      /* the thread and the caller */
+    char           cmd[CMD_MAX];  /* the command line, NUL-terminated */
+    struct job    *scope;         /* a reference, or NULL */
+    struct job    *caller;        /* a reference, or NULL: "kill" spares its ancestors */
+    struct event  *done;          /* SIG_SIGNALED when result is set */
+    int64_t        result;        /* exec's return value */
+    volatile int   refs;          /* the thread and the caller */
 };
 
 static spinlock_t busy_lock = SPINLOCK_INIT("dbgcmd");

@@ -90,8 +90,8 @@ enum vmo_kind { VMO_PAGED, VMO_CONTIG, VMO_PHYS };
 enum range_kind { RANGE_MAP, RANGE_PIN };
 
 struct vmo_range {
-    struct list_node node;
-    enum range_kind  kind;
+    struct list_node node;        /* on the VMO's ranges list (VMO lock) */
+    enum range_kind  kind;        /* a kernel mapping or a pin */
     bool             busy;        /* being set up or unmapped: not findable */
     uint64_t         first, end;  /* page indices */
     uint64_t         key;         /* mapping: base va; pin: pin id */
@@ -110,21 +110,21 @@ struct vmo_range {
 };
 
 struct vmo {
-    struct kobject   base;
-    enum vmo_kind    kind;
-    uint32_t         flags;       /* VMO_CONTIGUOUS / VMO_DMA32 */
-    unsigned         cache;       /* physical: VM_UC / VM_WC / 0 */
-    uint64_t         size;        /* bytes, a page multiple */
-    uint64_t         committed;   /* pages owned right now */
-    uint64_t         tables;      /* paged: table pages (mid + leaf), charged like pages */
-    struct job      *job;         /* charged for them (a reference), or NULL */
-    uint64_t         phys;        /* contiguous / physical: first byte */
-    unsigned         order;       /* contiguous: buddy order it came from */
-    uint64_t         next_pin_id;
-    struct list_node ranges;      /* struct vmo_range: kernel mappings and pins */
-    struct list_node umaps;       /* struct vmo_umap: user mappings (reverse map) */
-    struct mutex     resize;      /* serialises vmo_set_size */
-    uint64_t       **root[ROOT_ENTRIES];   /* paged: root[r][m][l] = phys */
+    struct kobject   base;                /* OBJ_VMO; base.lock is the VMO lock */
+    enum vmo_kind    kind;                /* paged, contiguous or physical */
+    uint32_t         flags;               /* VMO_CONTIGUOUS / VMO_DMA32 */
+    unsigned         cache;               /* physical: VM_UC / VM_WC / 0 */
+    uint64_t         size;                /* bytes, a page multiple */
+    uint64_t         committed;           /* pages owned right now */
+    uint64_t         tables;              /* paged: table pages (mid + leaf), charged like pages */
+    struct job      *job;                 /* charged for them (a reference), or NULL */
+    uint64_t         phys;                /* contiguous / physical: first byte */
+    unsigned         order;               /* contiguous: buddy order it came from */
+    uint64_t         next_pin_id;         /* the next pin's id */
+    struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
+    struct list_node umaps;               /* struct vmo_umap: user mappings (reverse map) */
+    struct mutex     resize;              /* serialises vmo_set_size */
+    uint64_t       **root[ROOT_ENTRIES];  /* paged: root[r][m][l] = phys */
 };
 
 static uint64_t vlock(struct vmo *v)

@@ -36,10 +36,10 @@
 void switch_context(uint64_t *save_rsp, uint64_t load_rsp);
 
 struct runqueue {
-    spinlock_t       lock;
-    struct list_node queues[PRIO_MAX + 1];
-    uint32_t         bitmap;      /* bit p set: queues[p] non-empty */
-    volatile uint32_t nr_ready;
+    spinlock_t       lock;                  /* guards everything below and the threads queued */
+    struct list_node queues[PRIO_MAX + 1];  /* one list of ready threads per priority */
+    uint32_t         bitmap;                /* bit p set: queues[p] non-empty */
+    volatile uint32_t nr_ready;             /* threads queued (read racily by placement) */
     /* What placement reads about this CPU, kept on the run queue's own
      * lines (written under the lock by schedule()), so a waker on another
      * CPU never has to touch this CPU's struct cpu or its current thread:
@@ -48,7 +48,7 @@ struct runqueue {
     volatile uint32_t busy;
     volatile int     cur_prio;
     struct thread   *idle;
-    struct thread   *prev;        /* handed from schedule to finish_switch */
+    struct thread   *prev;                  /* handed from schedule to finish_switch */
 };
 
 static struct runqueue rqs[MAX_CPUS];
@@ -63,7 +63,7 @@ static struct runqueue rqs[MAX_CPUS];
 struct cpu_topo {
     int16_t sibling;   /* the other hyperthread of this core, or -1 */
     uint8_t type;      /* enum core_type */
-    uint8_t pad;
+    uint8_t pad;       /* 0 */
 };
 static struct cpu_topo topo[MAX_CPUS];
 static cpumask_t online_mask;   /* CPUs whose run queue is in service (atomic bits) */
@@ -71,9 +71,9 @@ static cpumask_t online_mask;   /* CPUs whose run queue is in service (atomic bi
 /* Debug trace: each CPU's last few switches. */
 #define TRACE_N 8
 struct switch_event {
-    struct thread *prev, *next;
-    int prev_state;
-    uint64_t tick;
+    struct thread *prev, *next;   /* the threads switched from and to */
+    int prev_state;               /* prev's state at the switch */
+    uint64_t tick;                /* this CPU's tick count then */
 };
 static struct switch_event trace[MAX_CPUS][TRACE_N];
 static uint32_t trace_pos[MAX_CPUS];
@@ -485,9 +485,9 @@ void schedule(void)
  * honours the current thread's wake_sync flag and clears it (one wakee per
  * flag); thread_wake_sync always places wake-affine. */
 struct waker {
-    struct thread *me;   /* NULL: interrupt handler or the idle thread */
-    uint32_t       cpu;
-    bool           sync;
+    struct thread *me;    /* NULL: interrupt handler or the idle thread */
+    uint32_t       cpu;   /* the CPU the wake comes from */
+    bool           sync;  /* place wake-affine */
 };
 
 static struct waker waker_now(bool consume)

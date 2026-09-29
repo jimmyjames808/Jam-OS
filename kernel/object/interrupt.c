@@ -63,22 +63,22 @@ enum irq_kind { IK_VIRTUAL, IK_MSI, IK_MSIX };
 
 struct kinterrupt {
     struct kobject    base;       /* base.lock ("interrupt") guards the flags below */
-    volatile uint32_t magic;
+    volatile uint32_t magic;      /* IRQ_MAGIC while alive: catches a fire after free */
     uint8_t           kind;       /* enum irq_kind */
     bool              maskable;   /* masked at the device from fire to ack */
-    bool              masked;
+    bool              masked;     /* masked now (fire to ack) */
     bool              pending;    /* virtual maskable: fired while masked (a PBA bit) */
     bool              dead;       /* teardown started: fires are ignored */
     volatile uint8_t  torn;       /* TORN_*: teardown runs once */
     bool              listed;     /* on dev_irqs (dev_lock) */
-    uint8_t           vec;
-    uint32_t          cpu;
-    struct pci_dev   *dev;
+    uint8_t           vec;        /* its CPU vector (MSI, MSI-X) */
+    uint32_t          cpu;        /* the CPU the vector is on */
+    struct pci_dev   *dev;        /* the device (MSI, MSI-X), else NULL */
     uint32_t          index;      /* MSI-X table entry, 0 for MSI */
     struct list_node  dev_node;   /* on dev_irqs (dev_lock) */
     struct job       *job;        /* charged one JOB_LIMIT_HANDLES unit (a reference) */
-    volatile uint64_t fires;
-    volatile uint64_t late;
+    volatile uint64_t fires;      /* times delivered (statistics) */
+    volatile uint64_t late;       /* fires after teardown began (ignored) */
 };
 
 static spinlock_t dev_lock = SPINLOCK_INIT("interrupt devices");

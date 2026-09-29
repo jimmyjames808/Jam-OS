@@ -55,16 +55,16 @@
 #define PCID_SLOTS 8
 
 struct pcid_cpu {
-    uint64_t id[PCID_SLOTS];
-    uint64_t gen[PCID_SLOTS];
-    uint32_t victim;
-    uint32_t epoch;
+    uint64_t id[PCID_SLOTS];   /* address-space id each slot holds, 0 = empty */
+    uint64_t gen[PCID_SLOTS];  /* its TLB generation when last loaded */
+    uint32_t victim;           /* round-robin cursor for the next slot to reuse */
+    uint32_t epoch;            /* last epoch seen: a change forgets every slot */
     /* PCID 0 may hold user entries: a user address space was loaded as
      * PCID 0 (the switch off). The next PCID-0 load with the switch on
      * must flush, or kernel threads would keep translations to user pages
      * that later unmaps no longer shoot down here. */
     bool     zero_dirty;
-    uint64_t kept, flushed;   /* statistics */
+    uint64_t kept, flushed;    /* statistics */
 } __attribute__((aligned(64)));
 
 static struct pcid_cpu pcpu[MAX_CPUS];

@@ -34,8 +34,8 @@ static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
 #define TD_DESTROY      2u
 
 static struct td_cpu {
-    unsigned        depth;
-    struct kobject *head;
+    unsigned        depth;   /* >0 while a drainer runs on this CPU */
+    struct kobject *head;    /* pending objects, linked by td_next */
 } td[MAX_CPUS];
 
 static void td_run(struct kobject *obj, uint8_t what)
@@ -198,9 +198,9 @@ void kobject_unobserve(struct kobject *obj, struct observer *o)
 /* ---- object_wait_one ------------------------------------------------------ */
 
 struct one_waiter {
-    struct observer obs;
-    struct thread  *thread;
-    bool            hit;
+    struct observer obs;      /* registered on the object */
+    struct thread  *thread;   /* the waiter */
+    bool            hit;      /* the signals matched */
 };
 
 static void one_waiter_fire(struct observer *o, signals_t current)

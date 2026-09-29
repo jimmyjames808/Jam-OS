@@ -5,19 +5,20 @@
 #include <stdint.h>
 #include <jam/cpu.h>
 
+/* A 64-bit interrupt gate (Intel SDM Vol. 3A, 6.14.1). */
 struct __attribute__((packed)) idt_entry {
-    uint16_t offset_lo;
-    uint16_t selector;
-    uint8_t  ist;
-    uint8_t  type_attr;
-    uint16_t offset_mid;
-    uint32_t offset_hi;
-    uint32_t zero;
+    uint16_t offset_lo;    /* handler address bits 0-15 */
+    uint16_t selector;     /* code segment to run it in */
+    uint8_t  ist;          /* IST stack index, 0 = none */
+    uint8_t  type_attr;    /* gate type, DPL, present */
+    uint16_t offset_mid;   /* handler address bits 16-31 */
+    uint32_t offset_hi;    /* handler address bits 32-63 */
+    uint32_t zero;         /* 0 */
 };
 
 struct __attribute__((packed)) idtr {
-    uint16_t limit;
-    uint64_t base;
+    uint16_t limit;   /* bytes of the table - 1 */
+    uint64_t base;    /* its linear address */
 };
 
 extern const uint64_t isr_table[256];

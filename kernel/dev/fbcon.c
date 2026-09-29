@@ -25,7 +25,7 @@
 extern const uint8_t font_8x16[128][16];
 
 struct cell {
-    char     ch;
+    char     ch;       /* the character in this cell */
     uint32_t fg, bg;   /* framebuffer-native pixel values */
 };
 

@@ -16,9 +16,9 @@
 #define REDIR_MASKED (1u << 16)
 
 struct ioapic {
-    volatile uint32_t *mmio;
-    uint32_t gsi_base;
-    uint32_t pins;
+    volatile uint32_t *mmio;   /* IOREGSEL at [0], IOWIN at [4] */
+    uint32_t gsi_base;         /* first GSI of its pins */
+    uint32_t pins;             /* number of redirection entries */
 };
 
 static struct ioapic ioapics[ACPI_MAX_IOAPICS];

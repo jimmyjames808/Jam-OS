@@ -52,19 +52,19 @@
 #define CACHE_POOL           32
 
 struct kmem_cache {
-    const char      *name;
-    size_t           obj_size;   /* rounded up to align */
-    unsigned         order;
-    uint32_t         per_slab;
-    struct list_node partial, full;
-    spinlock_t       lock;
+    const char      *name;           /* for the lock checker and statistics */
+    size_t           obj_size;       /* rounded up to align */
+    unsigned         order;          /* a slab is 2^order pages */
+    uint32_t         per_slab;       /* objects per slab */
+    struct list_node partial, full;  /* slabs with free objects / with none; lock */
+    spinlock_t       lock;           /* "kmem_cache": guards the slab lists and every slab */
 };
 
 struct slab {
-    struct list_node   node;
-    struct kmem_cache *cache;
-    void              *freelist;
-    uint32_t           inuse;
+    struct list_node   node;       /* on its cache's partial or full list */
+    struct kmem_cache *cache;      /* the cache it belongs to */
+    void              *freelist;   /* free objects, linked through their first word */
+    uint32_t           inuse;      /* objects handed out */
 };
 
 #define SLAB_HDR ALIGN_UP(sizeof(struct slab), 64)

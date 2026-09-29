@@ -52,14 +52,16 @@
 #include <jam/time.h>
 
 struct job {
-    struct kobject    base;
-    struct job       *parent;
-    uint32_t          depth;      /* a root job is 0 */
-    bool              killed;     /* (L) no new processes or child jobs */
-    struct list_node  children;   /* (L) struct job, by child_node */
-    struct list_node  child_node; /* on parent->children (the parent's lock) */
-    struct list_node  procs;      /* (L) struct job_link of each live process */
+    struct kobject    base;        /* OBJ_JOB; base.lock is the (L) below */
+    struct job       *parent;      /* a reference, NULL for a root job */
+    uint32_t          depth;       /* a root job is 0 */
+    bool              killed;      /* (L) no new processes or child jobs */
+    struct list_node  children;    /* (L) struct job, by child_node */
+    struct list_node  child_node;  /* on parent->children (the parent's lock) */
+    struct list_node  procs;       /* (L) struct job_link of each live process */
+    /* by JOB_LIMIT_*: this job and its descendants, now */
     volatile uint64_t used[JOB_LIMIT_COUNT];
+    /* by JOB_LIMIT_*: this job's own limit (JOB_NO_LIMIT) */
     volatile uint64_t limit[JOB_LIMIT_COUNT];
 };
 

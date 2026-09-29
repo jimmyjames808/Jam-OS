@@ -509,11 +509,11 @@ static void crash_stack(void)
  * shell's `crash <name>` (debug_command "crash <name>"). In the order they
  * run at boot. */
 static const struct crash_test {
-    const char *name;
-    void      (*fn)(void);
-    bool        early;
-    bool        needs_2cpus;
-    const char *what;
+    const char *name;          /* the shell's `crash <name>` */
+    void      (*fn)(void);     /* does the crash */
+    bool        early;         /* runs before the scheduler starts */
+    bool        needs_2cpus;   /* skipped on a single CPU */
+    const char *what;          /* what it shows, for the list */
 } crash_tests[] = {
     { "bp",         crash_bp,         true,  false, "breakpoint (int3): must CONTINUE, no panic" },
     { "panic",      crash_panic,      true,  false, "a plain panic()" },

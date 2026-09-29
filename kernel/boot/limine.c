@@ -42,8 +42,8 @@ void limine_entry(void);
 static struct boot_info bi;
 
 struct ap_start {
-    void (*entry)(void *);
-    void *arg;
+    void (*entry)(void *);   /* what the AP runs */
+    void *arg;               /* entry's argument */
 };
 static struct ap_start ap_starts[BOOT_MAX_CPUS];
 

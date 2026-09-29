@@ -19,9 +19,9 @@
 #include <jam/vmo.h>
 
 struct bootfs_file {
-    char     name[BOOTFS_NAME_MAX];
-    uint64_t offset;
-    uint64_t size;
+    char     name[BOOTFS_NAME_MAX];   /* NUL-terminated, e.g. "bin/init" */
+    uint64_t offset;                  /* from the image start */
+    uint64_t size;                    /* bytes */
 };
 
 static struct bootfs_file *files;

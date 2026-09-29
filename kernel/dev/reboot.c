@@ -84,6 +84,7 @@ _Noreturn void machine_reboot(void)
     outb(0x64, 0xfe);
     delay_ms(50);
 
+    /* An empty IDT: the int3 below then triple-faults, which resets the CPU. */
     static const struct __attribute__((packed)) { uint16_t limit; uint64_t base; } none = { 0, 0 };
     __asm__ volatile("lidt %0; int3" ::"m"(none));
     for (;;)

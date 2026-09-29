@@ -35,9 +35,9 @@
 #define F_IRQS_ON 2u   /* acquired with interrupts enabled */
 
 struct lock_class {
-    const char *name;
-    uint8_t     subclass;
-    bool        sleeping;
+    const char *name;                  /* the lock's class name */
+    uint8_t     subclass;              /* spin_lock_nested's level, 0 = plain */
+    bool        sleeping;              /* a mutex class (may sleep) */
     uint8_t     flags;                 /* F_*, set-only */
     uint16_t    sub[MAX_SUBCLASSES];   /* subclass -> class index + 1 */
 };

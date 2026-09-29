@@ -7,8 +7,8 @@
 #include <jam/kprintf.h>
 
 struct out {
-    char  *buf;
-    size_t size;
+    char  *buf;   /* where the output goes */
+    size_t size;  /* its size, NUL included */
     size_t len;   /* chars that would have been written */
 };
 

@@ -55,8 +55,8 @@ static void uncharge(struct job *job)
 /* ---- kernel log readers -------------------------------------------------- */
 
 struct klog_reader {
-    struct kobject   base;
-    struct job      *job;
+    struct kobject   base;    /* OBJ_KLOG */
+    struct job      *job;     /* charged one handle unit (a reference) */
     uint64_t         seen;    /* (object lock) end of the last read */
     struct list_node node;    /* on `readers` (readers_lock) */
 };
@@ -173,8 +173,8 @@ void klog_poll(void)
 /* ---- COM1 input ----------------------------------------------------------- */
 
 struct serial_in {
-    struct kobject base;
-    struct job    *job;
+    struct kobject base;      /* OBJ_SERIAL */
+    struct job    *job;       /* charged one handle unit (a reference) */
     bool           started;   /* serial_rx_start succeeded: stop on zero handles */
 };
 
@@ -245,8 +245,8 @@ size_t serial_in_read(struct kobject *in, char *buf, size_t cap)
 /* ---- the screen ------------------------------------------------------------- */
 
 struct screen {
-    struct kobject base;
-    struct job    *job;
+    struct kobject base;   /* OBJ_SCREEN */
+    struct job    *job;    /* charged one handle unit (a reference) */
     bool           owns;   /* fbcon_take succeeded: release on zero handles */
 };
 

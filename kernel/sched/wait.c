@@ -31,7 +31,7 @@
  * In the periodic timer mode, or with lapic_oneshot off, each CPU's tick
  * expires its own queue. */
 struct sleepq {
-    spinlock_t       lock;
+    spinlock_t       lock;   /* guards list */
     struct list_node list;   /* struct thread, by wake_at_tsc */
 } __attribute__((aligned(64)));
 static struct sleepq sleepqs[MAX_CPUS];

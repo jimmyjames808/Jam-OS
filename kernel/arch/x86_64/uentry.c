@@ -195,7 +195,7 @@ void user_trap_return(struct trap_frame *f)
 /* ---- page faults and user copies ------------------------------------------- */
 
 struct ex_entry {
-    uint64_t insn, fixup;
+    uint64_t insn, fixup;   /* a copy instruction that may fault; where to resume if it does */
 };
 extern const struct ex_entry __ex_table_start[], __ex_table_end[];
 

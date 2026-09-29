@@ -53,9 +53,9 @@ struct vec_slot {
 };
 
 struct vec_table {
-    struct vec_slot s[VEC_DEVICE_COUNT];
-    uint16_t        count;     /* used slots (alloc_lock) */
-    uint16_t        cursor;    /* next-fit start (alloc_lock) */
+    struct vec_slot s[VEC_DEVICE_COUNT];  /* one per device vector */
+    uint16_t        count;                /* used slots (alloc_lock) */
+    uint16_t        cursor;               /* next-fit start (alloc_lock) */
 };
 
 static struct vec_table *vtab[MAX_CPUS];

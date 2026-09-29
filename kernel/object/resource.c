@@ -41,8 +41,8 @@
 #include <jam/spinlock.h>
 
 struct resource {
-    struct kobject  base;
-    uint32_t        kind;
+    struct kobject  base;          /* OBJ_RESOURCE */
+    uint32_t        kind;          /* RES_* */
     uint64_t        start, size;   /* ROOT / MMIO: the physical range */
     struct pci_dev *dev;           /* PCI_DEV */
     struct job     *job;           /* charged one handle unit, or NULL */

@@ -23,18 +23,18 @@
 #include <jam/time.h>
 
 struct chan_pair {
-    spinlock_t        lock;
+    spinlock_t        lock;    /* "channel pair": guards both endpoints' queues and state */
     struct channel   *ep[2];   /* NULL once that endpoint has closed */
     volatile uint32_t refs;    /* one per endpoint not yet destroyed */
 };
 
 /* One queued message. The khandles follow the header, then the bytes. */
 struct chan_msg {
-    struct list_node node;
-    uint32_t         nbytes;
-    uint32_t         nhandles;
-    struct job      *job;      /* the sender's job, charged `charge` bytes (a reference) */
-    uint64_t         charge;
+    struct list_node node;      /* on the receiver's queue */
+    uint32_t         nbytes;    /* message bytes */
+    uint32_t         nhandles;  /* khandles carried */
+    struct job      *job;       /* the sender's job, charged `charge` bytes (a reference) */
+    uint64_t         charge;    /* bytes charged to job */
 };
 
 static inline struct khandle *msg_handles(struct chan_msg *m)
@@ -50,18 +50,18 @@ static inline uint8_t *msg_bytes(struct chan_msg *m)
 /* A thread inside channel_call, waiting on its own endpoint for the reply
  * carrying txid. The writer that delivers the reply unlinks it. */
 struct chan_waiter {
-    struct list_node node;
-    uint32_t         txid;
-    struct thread   *thread;
-    struct chan_msg *reply;
+    struct list_node node;     /* on the endpoint's callers list */
+    uint32_t         txid;     /* the reply it waits for */
+    struct thread   *thread;   /* the caller */
+    struct chan_msg *reply;    /* set by the writer that delivers it */
 };
 
 struct channel {
-    struct kobject    base;
-    struct chan_pair *pair;
+    struct kobject    base;          /* OBJ_CHANNEL */
+    struct chan_pair *pair;          /* shared with the peer */
     uint32_t          side;          /* our index in pair->ep */
     struct list_node  queue;         /* chan_msg, oldest first */
-    uint32_t          nqueued;
+    uint32_t          nqueued;       /* messages on queue (at most CHANNEL_MAX_QUEUED) */
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */

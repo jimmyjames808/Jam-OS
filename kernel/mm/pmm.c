@@ -75,7 +75,7 @@
 #define PCP_DRAIN_TRIES 3
 
 struct range {
-    uint64_t base, end;
+    uint64_t base, end;   /* physical, [base, end) */
 };
 
 struct page *const vmemmap = (struct page *)VMEMMAP_BASE;

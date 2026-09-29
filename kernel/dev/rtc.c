@@ -27,7 +27,7 @@ static uint8_t cmos(uint8_t reg)
 }
 
 struct raw {
-    uint8_t sec, min, hour, day, mon, year;
+    uint8_t sec, min, hour, day, mon, year;   /* the CMOS registers as read (BCD or binary) */
 };
 
 /* One snapshot, taken while no update is in progress; false if one never

@@ -13,8 +13,8 @@
 #define IST_STACK_SIZE (16 * 1024)
 
 struct __attribute__((packed)) gdtr {
-    uint16_t limit;
-    uint64_t base;
+    uint16_t limit;   /* bytes of the table - 1 */
+    uint64_t base;    /* its linear address */
 };
 
 /* Early BSP tables, used only until gdt_init_cpu runs on the BSP. */

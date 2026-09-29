@@ -20,21 +20,21 @@
 #include <jam/x86.h>
 
 struct call {
-    void (*fn)(void *);
-    void *arg;
-    volatile uint32_t pending;
+    void (*fn)(void *);          /* runs on each target CPU */
+    void *arg;                   /* fn's argument */
+    volatile uint32_t pending;   /* targets that have not run fn yet */
 };
 
 /* One request per (target CPU, caller) at a time: each target has a small
  * inbox protected by its own lock. */
 struct call_slot {
-    struct list_node node;
-    struct call     *call;
+    struct list_node node;   /* on the target's inbox */
+    struct call     *call;   /* the request (on the caller's stack) */
 };
 
 struct inbox {
-    spinlock_t       lock;
-    struct list_node items;
+    spinlock_t       lock;    /* guards items */
+    struct list_node items;   /* struct call_slot, oldest first */
 };
 
 static struct inbox inboxes[MAX_CPUS];
@@ -200,7 +200,7 @@ void smp_call_all(void (*fn)(void *), void *arg)
 /* ---- TLB shootdown -------------------------------------------------------- */
 
 struct flush_range {
-    uint64_t va, len;
+    uint64_t va, len;   /* virtual range to flush, bytes */
 };
 
 static void flush_local(void *arg)

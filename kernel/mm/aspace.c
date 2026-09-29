@@ -151,26 +151,26 @@ _Static_assert(ASPACE_CAN_READ == ASPACE_READ << CAN_SHIFT &&
                ASPACE_CAN_EXEC == ASPACE_EXEC << CAN_SHIFT, "CAN bits mirror the permissions");
 
 struct mapping {
-    struct list_node node;      /* as->maps, sorted by base (region lock) */
-    struct vmo_umap  umap;      /* on the VMO's reverse map (VMO lock) */
-    struct vmo      *vmo;
-    uint64_t         base, len; /* bytes, page-aligned */
-    uint64_t         vmo_off;   /* VMO offset of base */
-    unsigned         flags;     /* current ASPACE_READ/WRITE/EXEC */
-    unsigned         max;       /* what aspace_protect may grant */
+    struct list_node node;       /* as->maps, sorted by base (region lock) */
+    struct vmo_umap  umap;       /* on the VMO's reverse map (VMO lock) */
+    struct vmo      *vmo;        /* the VMO mapped (a reference) */
+    uint64_t         base, len;  /* bytes, page-aligned */
+    uint64_t         vmo_off;    /* VMO offset of base */
+    unsigned         flags;      /* current ASPACE_READ/WRITE/EXEC */
+    unsigned         max;        /* what aspace_protect may grant */
 };
 
 struct aspace {
     struct mutex      lock;       /* region lock (see the file header) */
     spinlock_t        pt_lock;    /* page-table entries */
     uint64_t          pml4;       /* physical */
-    uint64_t         *pml4v;
+    uint64_t         *pml4v;      /* pml4 through the HHDM */
     struct list_node  maps;       /* struct mapping */
-    uint32_t          nmaps;
+    uint32_t          nmaps;      /* entries on maps */
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
-    volatile uint32_t refs;
+    volatile uint32_t refs;       /* references */
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
     /* PCIDs (pcid.h): a never-reused id, and the TLB generation,
      * bumped by every change that must reach TLBs (gather_note). */

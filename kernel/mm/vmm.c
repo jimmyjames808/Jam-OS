@@ -346,9 +346,9 @@ static uint64_t vmap_reserve_raw(uint64_t len)
  * list is unmapped (its TLB entries were shot down when it was freed) but its
  * page tables stay, so reusing it needs no new tables. Guarded by vmap_lock. */
 struct vslot {
-    struct vslot *next;
+    struct vslot *next;   /* next free slot */
     uint64_t      va;     /* lowest mapped byte (the guard page is below) */
-    uint64_t      size;
+    uint64_t      size;   /* bytes */
 };
 static struct vslot *free_slots;
 

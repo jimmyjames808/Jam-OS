@@ -10,16 +10,17 @@
 
 struct acpi_info acpi;
 
+/* Root System Description Pointer (ACPI 6.5, 5.2.5.3). */
 struct __attribute__((packed)) rsdp {
-    char     signature[8];
-    uint8_t  checksum;
-    char     oem_id[6];
-    uint8_t  revision;
-    uint32_t rsdt;
-    uint32_t length;
-    uint64_t xsdt;
-    uint8_t  ext_checksum;
-    uint8_t  reserved[3];
+    char     signature[8];   /* "RSD PTR " */
+    uint8_t  checksum;       /* first 20 bytes sum to 0 */
+    char     oem_id[6];      /* the firmware vendor */
+    uint8_t  revision;       /* 0 = ACPI 1.0 (RSDT only), 2+ = has the XSDT */
+    uint32_t rsdt;           /* physical address of the RSDT */
+    uint32_t length;         /* bytes of the whole RSDP (revision 2+) */
+    uint64_t xsdt;           /* physical address of the XSDT (revision 2+) */
+    uint8_t  ext_checksum;   /* all bytes sum to 0 (revision 2+) */
+    uint8_t  reserved[3];    /* 0 */
 };
 
 #define MAX_TABLES 64
@@ -63,11 +64,12 @@ const struct acpi_header *acpi_find(const char sig[4], unsigned n)
 
 /* ---- MADT ------------------------------------------------------------- */
 
+/* Multiple APIC Description Table (ACPI 6.5, 5.2.12). */
 struct __attribute__((packed)) madt {
-    struct acpi_header h;
-    uint32_t lapic_addr;
-    uint32_t flags;
-    uint8_t  entries[];
+    struct acpi_header h;   /* signature "APIC" */
+    uint32_t lapic_addr;    /* local APIC physical address */
+    uint32_t flags;         /* bit 0: PC-AT compatible 8259s present */
+    uint8_t  entries[];     /* variable-length entries to h.length */
 };
 
 static void add_cpu(uint32_t uid, uint32_t apic_id, uint32_t flags)

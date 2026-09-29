@@ -32,7 +32,7 @@ struct port_qentry {
     struct list_node     node;      /* in port->queue */
     struct port_binding *binding;   /* NULL: a user packet, freed when dequeued */
     struct job          *job;       /* user packet: charged USER_PACKET_CHARGE (a reference) */
-    struct port_packet   pkt;
+    struct port_packet   pkt;       /* the packet itself */
 };
 
 #define USER_PACKET_CHARGE sizeof(struct port_qentry)
@@ -40,17 +40,17 @@ struct port_qentry {
 
 struct port_binding {
     struct observer    obs;         /* on obj; guarded by obj->lock */
-    struct port       *port;
-    struct kobject    *obj;
-    uint64_t           key;
-    uint32_t           flags;
-    volatile uint32_t  refs;
+    struct port       *port;        /* the port it queues on (no reference) */
+    struct kobject    *obj;         /* the watched object (a reference) */
+    uint64_t           key;         /* goes into the packet */
+    uint32_t           flags;       /* PORT_BIND_* */
+    volatile uint32_t  refs;        /* the list's and, while queued, the queue's */
     bool               matched;     /* PERSISTENT: last seen state; obj->lock */
     bool               queued;      /* entry is in port->queue; port lock */
     struct list_node   port_node;   /* in port->bindings; bindings_lock */
     struct list_node   reap_node;   /* private list of whoever removed it */
     struct job        *job;         /* charged BINDING_CHARGE (a reference) */
-    struct port_qentry entry;
+    struct port_qentry entry;       /* its one packet, queued when it fires */
 };
 
 static volatile uint64_t live_ports, live_bindings, live_user_packets;

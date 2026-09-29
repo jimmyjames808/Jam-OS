@@ -13,8 +13,8 @@
 
 struct handle_slot {
     struct kobject *obj;        /* NULL: free or in transit */
-    rights_t        rights;
-    uint32_t        gen;
+    rights_t        rights;     /* what this handle may do */
+    uint32_t        gen;        /* bumped on each reuse: stale handles don't match */
     uint32_t        next_free;  /* slot index + 1, 0 = end */
     bool            intransit;  /* taken for a send, reserved until commit/untake */
 };

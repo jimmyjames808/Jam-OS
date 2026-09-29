@@ -44,11 +44,11 @@
 /* ---- state ----------------------------------------------------------------- */
 
 struct ecam_seg {
-    uint64_t phys;            /* ECAM base (bus 0's address, per MCFG) */
-    uint16_t segment;
-    uint8_t  bus_start, bus_end;
-    volatile uint8_t *bus_va[256];   /* uncached 1 MiB per bus, NULL = not walked */
-    uint8_t  visited[32];            /* bus bitmap: loop guard for the walk */
+    uint64_t phys;                  /* ECAM base (bus 0's address, per MCFG) */
+    uint16_t segment;               /* PCI segment group */
+    uint8_t  bus_start, bus_end;    /* buses this ECAM range covers */
+    volatile uint8_t *bus_va[256];  /* uncached 1 MiB per bus, NULL = not walked */
+    uint8_t  visited[32];           /* bus bitmap: loop guard for the walk */
 };
 
 static struct ecam_seg segs[ACPI_MAX_ECAM];

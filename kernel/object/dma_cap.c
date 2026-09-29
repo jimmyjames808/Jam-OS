@@ -69,10 +69,10 @@
 #define CMD_BME     0x04
 
 struct q_batch {
-    struct list_node node;       /* on dma_fn.batches */
-    struct list_node pins;       /* vmo.c ranges (their cap_node) */
-    uint64_t         npins, pages;
-    uint64_t         deadline;   /* uptime_ns() at which it goes */
+    struct list_node node;          /* on dma_fn.batches */
+    struct list_node pins;          /* vmo.c ranges (their cap_node) */
+    uint64_t         npins, pages;  /* pins and pages in the batch */
+    uint64_t         deadline;      /* uptime_ns() at which it goes */
 };
 
 struct dma_fn {

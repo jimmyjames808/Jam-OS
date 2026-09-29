@@ -30,20 +30,20 @@ static const char *const kind_names[K_KINDS] = {
 };
 
 struct pingpong {
-    spinlock_t       lock;
-    struct waitqueue wq;
-    int              turn;
+    spinlock_t       lock;   /* guards turn */
+    struct waitqueue wq;     /* the two sides wait here */
+    int              turn;   /* 0 or 1: whose move it is */
 };
 
 struct worker {
-    enum kind         kind;
-    uint32_t          index;
-    uint64_t          seed;
-    uint64_t          local_count;   /* counter: increments this thread made */
-    struct pingpong  *pp;
-    int               side;          /* pingpong: 0 or 1 */
-    struct thread    *thread;
-    volatile uint64_t last_progress_ns;
+    enum kind         kind;              /* what this worker does */
+    uint32_t          index;             /* its slot in the worker table */
+    uint64_t          seed;              /* its random number state */
+    uint64_t          local_count;       /* counter: increments this thread made */
+    struct pingpong  *pp;                /* pingpong: the shared state */
+    int               side;              /* pingpong: 0 or 1 */
+    struct thread    *thread;            /* the worker thread */
+    volatile uint64_t last_progress_ns;  /* last time it finished a step (the stuck check) */
 };
 
 static volatile bool stop;
