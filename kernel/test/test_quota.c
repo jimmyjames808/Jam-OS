@@ -56,3 +56,56 @@ KTEST(quota_child_cannot_raise_own_job_limit)
     KT_EQ(info.exit_code, 50);                  /* the raise was refused */
     KT_EQ(ji.limit[JOB_LIMIT_PAGES], 64);
 }
+
+/* R3. A job costs its parent a handle unit and jobs nest at most
+ * JOB_MAX_DEPTH deep. The review's attack: job_create(cur) -> close cur ->
+ * repeat (sysc_job_create + sysc_handle_close), holding one handle to the
+ * bottom of an ever longer chain. Now the chain stops at the depth cap, the
+ * whole chain is charged to the top job, and a charge at the bottom walks
+ * at most JOB_MAX_DEPTH levels. */
+KTEST(quota_job_chain_bounded)
+{
+    struct job *top = quota_job();   /* depth 1 (the root job is 0) */
+    uint64_t before = free_now();
+    struct job *cur = top;
+    job_ref(cur);
+    unsigned made = 0;
+    status_t st;
+    for (;;) {
+        struct job *next;
+        st = job_create(cur, &next);
+        if (st != OK)
+            break;
+        job_unref(cur);   /* "close the handle": next keeps it alive */
+        cur = next;
+        made++;
+        KT_ASSERT(made < 100000);
+    }
+    KT_EQ(st, ERR_OUT_OF_RANGE);
+    KT_EQ(made, JOB_MAX_DEPTH - 2);   /* depths 2 .. JOB_MAX_DEPTH - 1 */
+    KT_EQ(job_used(top, JOB_LIMIT_HANDLES), made);   /* every job below top */
+    uint64_t used = before - free_now();
+    uint64_t t0 = uptime_ns();
+    KT_EQ(job_charge(cur, JOB_LIMIT_HANDLES, 1), OK);
+    uint64_t charge_ns = uptime_ns() - t0;
+    job_uncharge(cur, JOB_LIMIT_HANDLES, 1);
+    kprintf("quota: %u-deep job chain behind one reference: %lu kernel pages, %lu handle "
+            "units charged, one charge at the bottom took %lu ns\n", made, used,
+            job_used(top, JOB_LIMIT_HANDLES), charge_ns);
+    job_unref(cur);   /* the whole chain goes, crediting top */
+    KT_EQ(job_used(top, JOB_LIMIT_HANDLES), 0);
+    job_unref(top);
+    KT_ASSERT(used <= 16);
+
+    /* The handle unit is a real limit: a job allowed 2 units has room for
+     * exactly two child jobs. */
+    struct job *j = quota_job(), *a, *b, *c;
+    KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, 2), OK);
+    KT_EQ(job_create(j, &a), OK);
+    KT_EQ(job_create(j, &b), OK);
+    KT_EQ(job_create(j, &c), ERR_NO_RESOURCES);
+    job_unref(a);
+    job_unref(b);
+    KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 0);
+    job_unref(j);
+}

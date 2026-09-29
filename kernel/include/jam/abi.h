@@ -104,11 +104,15 @@ struct port_packet {
  * more than its parent has left, whatever its own limit says. */
 
 #define JOB_LIMIT_PAGES     1   /* committed VMO pages (charged to the VMO creator's job) */
-#define JOB_LIMIT_HANDLES   2   /* handle-table slots in use */
+#define JOB_LIMIT_HANDLES   2   /* handle-table slots in use, plus one per child job */
 #define JOB_LIMIT_THREADS   3   /* live threads */
 #define JOB_LIMIT_MSG_BYTES 4   /* bytes of queued channel messages, charged to the sender */
 #define JOB_LIMIT_COUNT     5   /* kinds are 1 .. JOB_LIMIT_COUNT - 1 */
 #define JOB_NO_LIMIT        UINT64_MAX
+/* Jobs nest at most this deep: a root job is depth 0, and job_create fails
+ * with ERR_OUT_OF_RANGE for a job that would be at depth JOB_MAX_DEPTH. A
+ * job counts as one JOB_LIMIT_HANDLES unit of its parent while it exists. */
+#define JOB_MAX_DEPTH       32
 
 /* job_get_info. Arrays are indexed by JOB_LIMIT_*; index 0 is unused. */
 struct job_info {

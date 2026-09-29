@@ -50,7 +50,8 @@ struct process {
     struct kobject      base;        /* OBJ_PROCESS */
     struct handle_table handles;
     struct mutex        setup;       /* process_start's insert vs. teardown */
-    struct job         *job;         /* a reference */
+    struct job         *job;         /* a reference; NULL once torn down (cleared under L;
+                                        read unlocked only by p's own live threads) */
     struct aspace      *as;          /* (L) a reference; NULL once torn down */
     int                 state;       /* (L) PROCESS_* */
     bool                killed;      /* (L) */
@@ -261,7 +262,10 @@ static void process_finish(struct process *p)
 
     uint64_t f = plock(p);
     struct aspace *as = p->as;
+    struct job *job = p->job;
     p->as = NULL;
+    p->job = NULL;
+    p->handles.job = NULL;
     p->state = PROCESS_DEAD;
     p->finished = true;
     punlock(p, f);
@@ -270,6 +274,10 @@ static void process_finish(struct process *p)
      * the address space, its mappings and their pages go now. */
     if (as)
         aspace_unref(as);
+    /* And the job: nothing of a dead process needs it (no thread is left
+     * to charge anything), so whoever sees SIG_TERMINATED can close the
+     * job and have it go (and credit its own parent) at once. */
+    job_unref(job);
     kobject_signal(&p->base, 0, SIG_TERMINATED);
 }
 
@@ -361,6 +369,9 @@ status_t uthread_set_priority(struct uthread *u, int prio)
  * true if the caller must run the teardown. */
 static bool thread_left(struct process *p)
 {
+    /* Credit the job while we still count: once nthreads drops, the last
+     * thread may tear p down and drop p->job. */
+    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     uint64_t f = plock(p);
     if (p->nthreads == 0)
         panic("process \"%s\": thread count underflow", p->name);
@@ -373,7 +384,6 @@ static bool thread_left(struct process *p)
         finish = p->state == PROCESS_DYING;
     }
     punlock(p, f);
-    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     return finish;
 }
 

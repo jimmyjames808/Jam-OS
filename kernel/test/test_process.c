@@ -98,9 +98,10 @@ KTEST(proc_job_hierarchy_limits)
     job_uncharge(child, JOB_LIMIT_THREADS, 1);
     job_uncharge(child, JOB_LIMIT_PAGES, 8);
     job_uncharge(parent, JOB_LIMIT_PAGES, 2);
-    job_is_empty(parent);
+    KT_EQ(job_used(parent, JOB_LIMIT_HANDLES), 1);   /* the child job itself */
     KT_EQ(job_charge(NULL, JOB_LIMIT_PAGES, 1000), OK);   /* kernel objects: never charged */
     job_unref(child);
+    job_is_empty(parent);
     job_unref(parent);
 }
 

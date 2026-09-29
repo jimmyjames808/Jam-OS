@@ -53,7 +53,9 @@ struct uthread;
 /* ---- jobs ------------------------------------------------------------------ */
 
 /* A new job under parent (NULL: a root job) with no limits of its own and
- * one reference for the caller. */
+ * one reference for the caller. It costs parent one JOB_LIMIT_HANDLES unit
+ * until it is destroyed (ERR_NO_RESOURCES over the limit); ERR_OUT_OF_RANGE
+ * if it would be JOB_MAX_DEPTH deep. */
 status_t job_create(struct job *parent, struct job **out);
 static inline struct kobject *job_kobject(struct job *j) { return (struct kobject *)j; }
 static inline struct job *job_from_kobject(struct kobject *o)
