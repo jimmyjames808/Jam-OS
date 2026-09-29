@@ -456,6 +456,7 @@ void schedule(void)
         next = rq->idle;
     if (next == prev) {
         prev->state = T_RUNNING;
+        rq->cur_prio = prev->is_idle ? -1 : prev->prio;   /* a boost just ended */
         prev->slice = SLICE_TICKS;   /* refresh: a thread that used its slice
                                       * while alone must be sliced again once
                                       * a same-priority peer is queued (C4) */
