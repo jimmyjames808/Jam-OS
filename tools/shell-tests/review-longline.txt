@@ -1,0 +1,21 @@
+# Review: a command line longer than the screen row (before the fix). The console's
+# current line is one row: the echo wraps (commits a row), and every redraw
+# ("\r" + prompt + the whole line) committed another copy of the first row
+# (7 copies in the shot). Now the shell caps the line at the row width.
+wait 120 Jam OS shell
+wait jam>
+sleep 1
+send clear
+wait jam>
+type aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbb
+type \x7f\x7f\x7f\x7f\x7f
+type \e[D\e[D\e[D\e[D\e[D
+type X
+sleep 1
+shot longline
+send
+wait unknown command
+sleep 0.5
+shot longline-after
+send reboot
+wait reboot: resetting
