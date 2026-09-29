@@ -76,8 +76,12 @@ fields in the slot context must be right, or the keyboard never enumerates.
 
 ## Tracks
 
-Phase 1: a foundation commit (IDL with handles; usb/input/console IDL files;
-driver.h additions; kernel syscalls stubbed), then four agents in parallel.
+Phase 1: four agents in parallel. Tracks A (usb-bus), C (console/shell/
+kernel services) and D (supervision) start at once from main 2026-09-29;
+the foundation (IDL with handles, usb/input/console IDL files, driver.h
+additions) lands on main while they work, and Track B (HID) starts on top
+of it. A and C merge main into their branch when the foundation lands
+(A needs usb.idl to serve; C needs input.idl/console.idl).
 
 ### Foundation (on main, before the agents)
 - genidl: handle arguments/results; `drv_channel_call` variant carrying
