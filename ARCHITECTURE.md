@@ -530,15 +530,15 @@ back on a panic, even from a compositor; M7's HID driver handles a mouse
 as well as a keyboard and sends events through a protocol a compositor
 can take over; M11's IOMMU matters most for GPUs.
 
-## Audio (future track, any time after M7)
+## Audio (track; user 2026-09-29: right after M8)
 
 Decided 2026-09-29: the user listens on **headphones in the case's front
 panel jack**. That jack hangs off the motherboard's **Intel HD Audio
 controller (00:1f.3, 8086:7a50, MSI)** and its Realtek codec (the ASUS
 TUF B760-PLUS WIFI uses an ALC897-class codec; confirm the vendor/device
 id on the PC). A separate track like graphics: it needs only M6 (PCI, MSI,
-DMA, drivers as processes) and M7 (a shell to start it), not storage or
-networking, so it can be picked up whenever wanted.
+DMA, drivers as processes) and M7 (a shell to start it); the user wants it
+right after M8 (so A2's WAV playback from /data works straight away).
 
 - **A1: HD Audio driver + `beep`.** Controller reset, CORB/RIRB command
   rings, codec enumeration (vendor id, the widget graph: pin complexes,
