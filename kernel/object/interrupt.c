@@ -36,7 +36,8 @@
  * second object for the same vector, MSI together with MSI-X, and to turn
  * MSI-X off when the last of a function's vectors goes.
  *
- * Lock order: "interrupt devices" (dev_lock) -> "pci config" (Track A's
+ * Lock order: "interrupt devices" (dev_lock) -> "pci command" (Track C's
+ * pci_cmd_lock, around pci_msi_enable only) -> "pci config" (Track A's
  * leaf); "interrupt" (the object) -> "pci config" (mask in fire/ack) and
  * -> "port" -> "port waiters" -> run queues (observers). The vector
  * allocator's lock is a leaf and is never held with these. Track A's
@@ -51,6 +52,7 @@
 #include <jam/panic.h>
 #include <jam/pci.h>
 #include <jam/process.h>
+#include <jam/resource_impl.h>   /* pci_cmd_lock */
 #include <jam/spinlock.h>
 #include <jam/x86.h>
 
@@ -121,8 +123,15 @@ static status_t dev_claim(struct kinterrupt *o)
     if (msix)
         pci_msi_mask(d, true, o->index, true);   /* quiet while it changes */
     st = pci_msi_set(d, msix, o->index, msi_address(o->cpu), msi_data(o->vec));
-    if (st == OK && same == 0)
+    if (st == OK && same == 0) {
+        /* MSI enable also sets INTx Disable in the command register: take
+         * Track C's command lock, so a driver's filtered config write (a
+         * read-modify-write of the same register under that lock) can't
+         * undo it. */
+        uint64_t cf = pci_cmd_lock();
         st = pci_msi_enable(d, msix, true);
+        pci_cmd_unlock(cf);
+    }
     if (st == OK) {
         if (o->maskable)
             pci_msi_mask(d, msix, o->index, false);
@@ -150,8 +159,11 @@ static void dev_release(struct kinterrupt *o)
             others |= container_of(n, struct kinterrupt, dev_node)->dev == d;
         if (o->maskable)
             pci_msi_mask(d, msix, o->index, true);
-        if (!others)
+        if (!others) {
+            uint64_t cf = pci_cmd_lock();   /* INTx Disable goes back: see dev_claim */
             pci_msi_enable(d, msix, false);
+            pci_cmd_unlock(cf);
+        }
     }
     spin_unlock_irqrestore(&dev_lock, f);
 }
