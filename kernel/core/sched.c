@@ -1444,6 +1444,36 @@ static void wake(struct waitqueue *wq, bool all)
 void waitqueue_wake_one(struct waitqueue *wq) { wake(wq, false); }
 void waitqueue_wake_all(struct waitqueue *wq) { wake(wq, true); }
 
+/* m->lock held, m->owner NULL: wake the first waiter to race for it, or,
+ * once the longest waiter has waited MUTEX_HANDOFF_NS, make that waiter the
+ * owner before waking it, so nobody can take the mutex in between.
+ * Waiters that are still on the queue have mutex_since set (they set it
+ * under m->lock before queueing and clear it after leaving). */
+volatile uint64_t mutex_handoffs;   /* statistics */
+
+static void mutex_pass_on(struct mutex *m)
+{
+    struct waitqueue *wq = &m->wq;
+    uint64_t g = spin_lock_irqsave(&wq->lock);
+    struct thread *oldest = NULL;
+    for (struct list_node *n = wq->waiters.next; n != &wq->waiters; n = n->next) {
+        struct thread *t = container_of(n, struct thread, wait_node);
+        if (t->mutex_since && (!oldest || t->mutex_since < oldest->mutex_since))
+            oldest = t;
+    }
+    if (oldest && uptime_ns() - oldest->mutex_since >= MUTEX_HANDOFF_NS) {
+        list_del(&oldest->wait_node);
+        m->owner = oldest;
+        mutex_handoffs++;
+        thread_wake(oldest);
+    } else if (!list_empty(&wq->waiters)) {
+        struct thread *t = list_first(&wq->waiters, struct thread, wait_node);
+        list_del(&t->wait_node);
+        thread_wake(t);
+    }
+    spin_unlock_irqrestore(&wq->lock, g);
+}
+
 void mutex_init(struct mutex *m, const char *name)
 {
     spin_init(&m->lock, name);
@@ -1459,8 +1489,12 @@ void mutex_lock(struct mutex *m)
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->owner == me)
         panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
-    while (m->owner)
-        waitqueue_wait(&m->wq, &m->lock, &f);
+    if (m->owner) {
+        me->mutex_since = uptime_ns() | 1;
+        while (m->owner && m->owner != me)   /* owner == me: handed to us */
+            waitqueue_wait(&m->wq, &m->lock, &f);
+        me->mutex_since = 0;
+    }
     m->owner = me;
     spin_unlock_irqrestore(&m->lock, f);
 }
@@ -1472,17 +1506,23 @@ status_t mutex_lock_cancellable(struct mutex *m)
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->owner == me)
         panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
-    while (m->owner) {
+    if (m->owner)
+        me->mutex_since = uptime_ns() | 1;
+    while (m->owner && m->owner != me) {   /* owner == me: handed to us */
         if (waitqueue_wait_cancellable(&m->wq, &m->lock, &f, DEADLINE_NEVER) != OK) {
+            if (m->owner == me)
+                break;   /* handed over as we were cancelled: it's ours */
             /* mutex_unlock may have picked us as the one waiter to wake:
              * pass that on so the next waiter doesn't sleep through it. */
             if (!m->owner)
                 waitqueue_wake_one(&m->wq);
+            me->mutex_since = 0;
             spin_unlock_irqrestore(&m->lock, f);
             lockdep_sleep_release(m);
             return ERR_CANCELED;
         }
     }
+    me->mutex_since = 0;
     m->owner = me;
     spin_unlock_irqrestore(&m->lock, f);
     return OK;
@@ -1501,6 +1541,6 @@ void mutex_unlock(struct mutex *m)
      * lock order is the same one mutex_lock establishes ("mutex" then "mutex
      * waiters"), and the woken thread must re-take m->lock before it returns
      * from waitqueue_wait, so it cannot free the mutex under us. (C9) */
-    waitqueue_wake_one(&m->wq);
+    mutex_pass_on(m);
     spin_unlock_irqrestore(&m->lock, f);
 }

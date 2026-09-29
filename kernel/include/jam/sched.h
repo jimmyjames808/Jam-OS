@@ -84,6 +84,7 @@ struct thread {
 
     struct list_node  rq_node;       /* run queue */
     struct list_node  wait_node;     /* wait queue */
+    uint64_t          mutex_since;   /* waiting for a mutex since (uptime ns), 0 = not */
     struct list_node  sleep_node;    /* a CPU's sleeper queue (sched.c) */
     uint64_t          wake_at_ns;
     uint64_t          wake_at_tsc;   /* the same deadline as a TSC value */
@@ -276,6 +277,12 @@ status_t waitqueue_wait_cancellable(struct waitqueue *wq, spinlock_t *lock, uint
 void waitqueue_wake_one(struct waitqueue *wq);
 void waitqueue_wake_all(struct waitqueue *wq);
 
+/* Sleeping lock. Normally the woken waiter races newcomers for it (fast
+ * under light contention); once some waiter has waited MUTEX_HANDOFF_NS,
+ * mutex_unlock hands the mutex straight to the longest waiter instead, so
+ * no thread can be starved by others barging in ahead of it. */
+#define MUTEX_HANDOFF_NS 1000000ull
+extern volatile uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter */
 struct mutex {
     spinlock_t       lock;
     struct thread   *owner;
