@@ -19,7 +19,11 @@ msg bytes). First real user processes on the PC. "All tests" first panicked in p
 thread reaping, +1 free page; fixed fc78454), then PASSED 122/122 on the PC. Benchmark recorded (BENCH.md M5 column). The 10-min stress first FAILED at
 14 s ("a dead process left something charged to its job": thread_left credited the job after
 the unlock; fixed d010dc4), then PASSED with 0 failures on the PC. **Every M5 check has passed
-on the PC. Remaining for M5 ✅: merge the review-fix agent's work (R1-R8) and rerun on the PC.** The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
+on the PC. Remaining for M5 ✅: merge the review-fix agent's work (R1-R8) and rerun on the PC.**
+**M5.5 agent started 2026-09-29 (base 3259578)**, in parallel with the review-fix agent: spin-before-idle,
+hybrid placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers, interrupt-driven
+serial, PCIDs (last; the fix agent also edits aspace.c), and the two M5 bench regressions. Every
+optimisation gets a runtime switch + cmdline word and bench measures off|on in the same PC run. The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
 Benchmark for BENCH.md M5 column, stress).
 
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
