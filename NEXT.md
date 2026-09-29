@@ -51,6 +51,16 @@
   RUNNING now: independent review of phase 1; phase 2 agents (1) devmgr + drivers/edu + kill/rights
   utests, (2) drivers/xhci-noop + boot entry "USB controller test (xHCI no-op, M6 done test)" (`xhcitest`).
   devmgr gets a one-line match entry 0c0330 -> drv/xhci-noop when both merge.
+- **xhci-noop MERGED** (M6 done-test driver + boot entry "USB controller test (xHCI no-op, M6 done test)",
+  `xhcitest`): QEMU PASS kernel + process mode (also MSI-only via QEMU_XHCI=msi=on,msix=off). 191/191.
+- **PC Devices run 2026-09-29 (IMG_0067, v0.0.12-m6p1): booted fine, no hang in BAR sizing.** 24 functions on
+  6 buses; boot display 01:00.0 RTX 10de:2702 (fb 0x4000000000) marked D. **xHCI 00:14.0 8086:7a60 rev 11:
+  MSI only (8 vectors, 64-bit, not maskable), NO MSI-X**, BAR0 mem64 0x4016200000 64K. **Ethernet 05:00.0
+  10ec:8125 rev 05: MSI 1 (64-bit, maskable), MSI-X 32 (table bar4+0x0, pba bar4+0x800)**, bar0 io 0x3000,
+  bar2 mem64 0x86500000 64K (the registers), bar4 mem64 0x86510000 16K (MSI-X only) - so the M9 driver's
+  registers never share a page with the MSI-X table. Others: Wi-Fi 00:14.3 8086:7a70 (MSI-X 16), VMD/RAID
+  00:0e.0 8086:a77f, NVMe 02:00.0 c0a9:5421 (Crucial), SATA, HD audio x2, SMBus, serial-bus (I2C/SPI)
+  functions, 6 bridges, no iGPU function (disabled in firmware).
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
