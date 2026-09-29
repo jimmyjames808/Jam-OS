@@ -1,0 +1,37 @@
+# usb: one USB interface, as usb-bus (drivers/usb-bus) serves it to the
+# class driver bound to that interface (M7-PLAN.md). The class driver can
+# only reach its own interface through this channel. When the device is
+# unplugged (or usb-bus restarts) the channel's peer closes: the class
+# driver exits 0, and devmgr binds a new one when the interface comes back.
+# Format: see tools/genidl.py.
+#
+# speed: 1 full (12 Mb/s), 2 low (1.5), 3 high (480), 4 super (5 Gb/s),
+# 5 super+ (10). Descriptor and control data are at most 1024 bytes.
+
+protocol usb 10
+
+# The interface this channel is for, and its device.
+1  info  () -> (u16 vendor, u16 product, u8 speed, u8 interface_number, u8 class_code, u8 subclass, u8 protocol, u8 num_endpoints, u8 alt_setting, u8 address)
+# GET_DESCRIPTOR from the device (standard request, recipient device) or,
+# with `interface_recipient` 1, from this interface (HID report
+# descriptors). `length` <= 1024; `actual` bytes of `data` are valid.
+2  get_descriptor  (u8 type, u8 index, u16 lang, u16 length, u8 interface_recipient) -> (u16 actual, u8[1024] data)
+# A control transfer on endpoint 0 addressed to THIS interface: usb-bus
+# refuses (ERR_ACCESS_DENIED) a recipient other than the interface or one
+# of its endpoints, and a wIndex naming another interface. Class requests
+# (HID: SET_PROTOCOL, SET_IDLE, GET_REPORT, SET_REPORT) go through here.
+# IN: bmRequestType bit 7 set, `length` <= 1024 bytes come back.
+3  control_in  (u8 request_type, u8 request, u16 value, u16 index, u16 length) -> (u16 actual, u8[1024] data)
+# OUT: up to 64 bytes of data (`length` of `data`).
+4  control_out  (u8 request_type, u8 request, u16 value, u16 index, u16 length, u8[64] data) -> ()
+# Start polling interrupt-IN endpoint `endpoint` (address with bit 7 set,
+# one of this interface's). Each completed transfer arrives as one message
+# on `reports` holding exactly the bytes the device sent (<= max_packet);
+# if the queue is full usb-bus drops reports and counts them (`dropped`
+# in the next `endpoint_stats`). Closing `reports` stops the endpoint;
+# usb-bus closes it when the device goes away.
+5  open_interrupt_in  (u8 endpoint) -> (handle reports, u16 max_packet, u8 interval_ms)
+6  endpoint_stats  (u8 endpoint) -> (u64 reports, u64 dropped, u64 errors)
+# SET_INTERFACE: select an alternate setting of this interface (closes its
+# open endpoints first).
+7  set_interface  (u8 alt_setting) -> ()

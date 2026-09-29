@@ -1,0 +1,21 @@
+# console: the console process (user/console) serves this to programs (the
+# shell), devmgr and init. It owns the screen after boot (M7-PLAN.md
+# "Screen ownership"). If the channel's peer closes (the console
+# restarted), clients ask devmgr/init for the new one. Format: see
+# tools/genidl.py.
+
+protocol console 12
+
+# Write text (UTF-8; \n, \r, \b, \t and ESC [ ... m colours understood).
+1  write  (u16 length, u8[2048] text) -> ()
+2  size   () -> (u16 cols, u16 rows)
+3  clear  () -> ()
+# A channel on which the console sends this client the keys typed while it
+# is the focused client (the most recent open_keys wins; closing the
+# channel gives focus back). Each message is one struct input_key_event
+# (<jam/abi.h>).
+4  open_keys      () -> (handle keys)
+# A new input source: the console serves the `input` protocol on its end;
+# the caller (devmgr, for a HID driver; or the serial source) gets the
+# other end and hands it to the source, which calls `input` on it.
+5  connect_input  () -> (handle source)

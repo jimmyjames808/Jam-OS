@@ -83,13 +83,17 @@ additions) lands on main while they work, and Track B (HID) starts on top
 of it. A and C merge main into their branch when the foundation lands
 (A needs usb.idl to serve; C needs input.idl/console.idl).
 
-### Foundation (on main, before the agents)
-- genidl: handle arguments/results; `drv_channel_call` variant carrying
-  handles in `driver.h` (both builds); devmgr's protocol moved to IDL.
+### Foundation (on main; done 2026-09-29, commit after this edit)
+- genidl: handle RESULTS (server -> client; handle arguments refused:
+  ownership on a failed call is ambiguous); `drv_channel_call_h` in
+  `driver.h` (both builds); null.make_vmo + drvtest checks prove it.
+  devmgr's protocol stays hand-written for now.
+- driver.h roles DR_USB (a `usb` interface channel) and DR_INPUT (an
+  `input` channel to the console); <jam/abi.h> gains INPUT_KEY_*,
+  INPUT_MOD_* and struct input_key_event.
 - abi/idl/usb.idl, input.idl, console.idl (the contracts).
-- syscalls reserved: `klog_read`, `framebuffer_take/release`,
-  `debug_command`, `reboot`; startup roles for the new services.
-- QEMU flags: usb-kbd + usb-mouse, a usb-hub with a keyboard behind it.
+- Kernel syscalls and QEMU USB flags are left to Tracks C and A (they
+  started before the foundation; C reserves 110-119, D 120-129).
 
 ### Track A: usb-bus (agent 1, the big one)
 - Start from drivers/xhci-noop: keep its init; add port handling (USB 2 /

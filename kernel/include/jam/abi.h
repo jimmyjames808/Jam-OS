@@ -238,3 +238,30 @@ struct pci_dev_info {
 
 /* interrupt_create_msi flags */
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
+
+/* input (M7; abi/idl/input.idl, console.idl) --------------------------------- */
+
+#define INPUT_KEY_UP     0
+#define INPUT_KEY_DOWN   1
+#define INPUT_KEY_REPEAT 2
+
+/* The HID boot report's modifier byte. */
+#define INPUT_MOD_LCTRL  (1u << 0)
+#define INPUT_MOD_LSHIFT (1u << 1)
+#define INPUT_MOD_LALT   (1u << 2)
+#define INPUT_MOD_LGUI   (1u << 3)
+#define INPUT_MOD_RCTRL  (1u << 4)
+#define INPUT_MOD_RSHIFT (1u << 5)
+#define INPUT_MOD_RALT   (1u << 6)
+#define INPUT_MOD_RGUI   (1u << 7)
+#define INPUT_MOD_CTRL   (INPUT_MOD_LCTRL | INPUT_MOD_RCTRL)
+#define INPUT_MOD_SHIFT  (INPUT_MOD_LSHIFT | INPUT_MOD_RSHIFT)
+#define INPUT_MOD_ALT    (INPUT_MOD_LALT | INPUT_MOD_RALT)
+
+/* One message on a console.open_keys channel. */
+struct input_key_event {
+    uint16_t usage;       /* HID keyboard page usage id, 0 for text from a terminal */
+    uint8_t  state;       /* INPUT_KEY_* */
+    uint8_t  mods;        /* INPUT_MOD_* */
+    uint32_t codepoint;   /* the character typed, or 0 */
+};
