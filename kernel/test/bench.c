@@ -42,6 +42,8 @@
 #include <jam/irq.h>
 #include <jam/channel.h>
 #include <jam/cpu.h>
+#include <jam/interrupt.h>
+#include <jam/interrupt_test.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
@@ -49,6 +51,7 @@
 #include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
+#include <jam/port.h>
 #include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/serial.h>
@@ -710,6 +713,61 @@ static void ipi(int other)
     off_on(SW_SPINIDLE, what, ipi_measure, other, SAMPLES);
 }
 
+/* ---- interrupts (M6) --------------------------------------------------------
+ * An interrupt object's vector, raised by a fixed IPI to the CPU the vector
+ * allocator gave it (an E-core on the PC), standing in for the device's
+ * MSI: the handler there raises SIG_INTERRUPT, the persistent port binding
+ * queues the packet and wakes the thread blocked in port_wait on P, which
+ * then acks. The MSI round trip with a real device is phase 2 (edu). */
+
+static struct kobject *birq;
+static struct port *birq_port;
+static uint32_t birq_cpu;
+static uint8_t birq_vec;
+
+static void birq_round(void)
+{
+    struct port_packet pkt;
+    ipi_send(birq_cpu, birq_vec);
+    port_wait(birq_port, DEADLINE_NEVER, &pkt);
+    interrupt_ack(birq);
+}
+
+static void bench_interrupt(void *arg)
+{
+    (void)arg;
+    uint64_t until;
+    warm_until(&until);
+    while (uptime_ns() < until)
+        birq_round();
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        birq_round();
+        samples[i] = span_ps(t0, stamp(), 1);
+    }
+}
+
+static void interrupt_round_trip(void)
+{
+    if (interrupt_create_virtual(&birq) != OK || port_create(&birq_port) != OK ||
+        port_bind(birq_port, birq, 1, SIG_INTERRUPT, PORT_BIND_PERSISTENT) != OK ||
+        !interrupt_vector_of(birq, &birq_cpu, &birq_vec)) {
+        report("bench: interrupt round trip: no interrupt object");
+        return;
+    }
+    run_on(cpu_p, bench_interrupt, NULL);
+    char where[16], what[64];
+    const char *k = kind((int)birq_cpu);
+    if (k[0] == '?')
+        ksnprintf(where, sizeof(where), "cpu%u", birq_cpu);
+    else
+        ksnprintf(where, sizeof(where), "%s", k);
+    ksnprintf(what, sizeof(what), "interrupt: vector on %s -> port_wait wakes P", where);
+    result(what, samples, SAMPLES);
+    kobject_unref(&birq_port->base);
+    kobject_unref(birq);
+}
+
 static void chan_server(void *arg)
 {
     struct channel *ep = arg;
@@ -1312,6 +1370,8 @@ void bench_run(void)
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
             ipi(others[i]);
+    if (cpu_count > 1)
+        interrupt_round_trip();
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
             chan_call(others[i]);

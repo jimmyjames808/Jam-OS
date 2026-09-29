@@ -110,3 +110,16 @@ status_t sys_vmar_unmap(struct handle_table *t, handle_t vmar, uint64_t addr,
 status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, uint64_t len,
                           uint32_t flags);
 /* end VMARs */
+
+/* interrupts (M6) ---------------------------------------------------------------
+ * (kernel/abi/sysc_interrupt.c; semantics as in <jam/interrupt.h>) */
+
+/* New interrupt object for MSI (flags 0, index 0) or MSI-X (IRQ_MSIX, table
+ * entry index) of the function `dev` names: a RES_PCI_DEV handle with
+ * RIGHT_MANAGE (devmgr's; drivers get the interrupt handle from it). The
+ * handle gets RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE. */
+status_t sys_interrupt_create_msi(struct handle_table *t, handle_t dev, uint32_t index,
+                                  uint32_t flags, handle_t *out);
+/* RIGHT_WRITE: clear SIG_INTERRUPT and unmask. */
+status_t sys_interrupt_ack(struct handle_table *t, handle_t irq);
+/* end interrupts */
