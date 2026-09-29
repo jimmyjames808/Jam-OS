@@ -1,9 +1,9 @@
 /* M7 Track D, review of M6 phase 2 finding 7: devmgr (RIGHT_MANAGE on the
  * function) may change the PM power state, to wake a function it finds in
  * D1-D3 before binding a driver; a driver may not. The system call waits
- * out the transition and puts back what a D3hot -> D0 reset lost. Needs a
- * function with a PM capability that is neither a bridge nor the display
- * (QEMU's e1000e); skipped without one. */
+ * out the transition and puts back what a D3hot -> D0 reset lost. Uses
+ * QEMU's e1000e (8086:10d3, it has a PM capability) and is skipped
+ * anywhere else: on the PC it would power real devices down and up. */
 #include <jam/handle.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -16,16 +16,11 @@
 
 static struct pci_dev *pm_function(uint16_t *pm)
 {
-    for (uint32_t i = 0; i < pci_count(); i++) {
-        struct pci_dev *d = pci_get(i);
-        if (!d || (d->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY)) ||
-            (d->info.header_type & 0x7f) || !d->info.bar[0].size ||
-            !(d->info.bar[0].flags & PCI_BAR_MMIO))
-            continue;
-        if ((*pm = pci_find_cap(d, PM_CAP)))
-            return d;
-    }
-    return NULL;
+    struct pci_dev *d = pci_find(0x8086, 0x10d3, 0);   /* QEMU's e1000e only */
+    if (!d || !d->info.bar[0].size || !(d->info.bar[0].flags & PCI_BAR_MMIO) ||
+        !(*pm = pci_find_cap(d, PM_CAP)))
+        return NULL;
+    return d;
 }
 
 KTEST(pci_power_wake_needs_manage)
@@ -33,7 +28,7 @@ KTEST(pci_power_wake_needs_manage)
     uint16_t pm = 0;
     struct pci_dev *d = pm_function(&pm);
     if (!d) {
-        kprintf("ktest %s: no function with a PM capability, skipped\n", ktest_current);
+        kprintf("ktest %s: no QEMU e1000e with a PM capability, skipped\n", ktest_current);
         return;
     }
     struct handle_table t;
