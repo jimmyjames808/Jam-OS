@@ -161,7 +161,14 @@
   the screen); init supervises devmgr (kill devmgr -> USB back in ~0.6 s); authority: devmgr query vs
   control channels (SR_DEVMGR_CTL), console client levels ADMIN/SHELL/PROGRAM (new_client), run kills its
   job. QEMU: 226/226 + live ktest, utest 30, all shell scripts incl. review repros, fun-test, usbkeys PASS.
-  **Next: PC sign-off round (quick check of menu/commands/apps/demo/kill devmgr) + 10-min stress = M7 done.**
+  **M7 ✅ DONE 2026-09-29: 10-min stress (`stress 600` from the shell) PASSED on 0.0.23-m7.**
+- **Apps with real pixel graphics MERGED (v0.0.24-m7)**: user/fun gfx layer via console.lend_screen (RAM back
+  buffer, changed-tile present, proportional scaled font); fractal (tiles on all CPUs, progressive + AA,
+  AVX2 kernel, deep zoom: double-double perturbation to 1e28x), life (age colours, density zoom-out, map),
+  tetris (bevelled sprites, line-clear animation, particles, 60 Hz). New ktest
+  starvation_boost_rescues_low_priority (PC stress always shows 0 boosts: check it passes on the PC's
+  TSC-deadline tick path). 227/227, fun-test PASS. **Next PC flash**: try the apps + `ktest starvation`.
+- **NEXT MILESTONE: M8 (storage)**, then the audio track (A1/A2, user: right after M8).
   User wants next: the fractal (and life) at full 2560x1440 through console.lend_screen (asked about
   deeper zoom via double-double: awaiting answer). (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
