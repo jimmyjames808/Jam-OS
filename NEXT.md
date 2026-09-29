@@ -37,7 +37,14 @@ panic with the right messages. 10-min stress: running.
 threads/jobs, all sysc_* glue, kill, quotas + no-panic OOM, userboot, init spawning utest,
 utest suite, user-path bench lines, delete m5_weak.c; (2) per-CPU page caches, stack cache
 limit + failable kstack_alloc, channel_call wake-affine hand-off, per-thread priority ceiling.
-When both report: review, merge (sched.c overlap expected), full tests 4+8, then PC run.
+When both report: review, merge (sched.c overlap expected), full tests 4+8, then PC run. **Perf agent MERGED 2026-09-29** (pmm per-CPU stashes 64/16 with
+raw stash locks outside lockdep, kstack_free + kstack_alloc_try, prio_cap/PRIO_USER_MAX 24 +
+thread_create_capped, thread_wake_sync / thread_set_wake_sync used by channel_call; main 114/114
++ stress at 4+8). QEMU can't measure page-alloc scaling (TCG slow-page artifact, see BENCH.md):
+PC must show "all 28 CPUs" page line drop from 19 us toward ~50 ns, new "server unpinned" ~622 ns,
+"server not on P" ~1268 ns, M4 calls/s not below 836k. Processes agent still running; its merge
+will conflict in sched.c (thread struct, thread creation, stack cache) - use kstack_alloc_try
+for ERR_NO_MEMORY and thread_create_capped / PRIO_USER_MAX for user threads.
 
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
