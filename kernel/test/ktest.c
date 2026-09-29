@@ -1,6 +1,7 @@
 #include <jam/interrupt.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
+#include <jam/resource_impl.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/sched.h>
@@ -41,6 +42,8 @@ static void warm_singletons(void)
     uint8_t vec;
     if (vector_alloc(warm_vector, NULL, &cpu, &vec) == OK)
         vector_free(cpu, vec);
+    /* M7: the DMA quarantine's thread, started by the first bound dma_cap. */
+    dma_quarantine_start();
 }
 
 static uint64_t free_pages_now(uint64_t *total)

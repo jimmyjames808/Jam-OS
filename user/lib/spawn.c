@@ -184,6 +184,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
      * then the extras. Until the write succeeds they are all ours to close
      * on failure. */
     handle_t hs[STARTUP_MAX_HANDLES];
+    rights_t rs[STARTUP_MAX_HANDLES];
     unsigned n = 0;
     /* The child's own job goes without RIGHT_MANAGE (JOB_RIGHTS_OWN): the
      * limits we set on it are ours to change, not the child's. */
@@ -193,23 +194,27 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     };
     for (unsigned i = 0; st == OK && i < sizeof(dup) / sizeof(dup[0]); i++) {
         st = jam_handle_duplicate(dup[i].h, dup[i].rights, &hs[n]);
-        if (st == OK)
+        if (st == OK) {
+            rs[n] = RIGHT_SAME;
             m->roles[n++] = dup[i].role;
+        }
     }
     if (st == OK) {
         hs[n] = vmar;
+        rs[n] = RIGHT_SAME;
         m->roles[n++] = SR_SELF_VMAR;
         vmar = HANDLE_INVALID;
     }
     for (unsigned i = 0; i < a->nextra; i++) {
         hs[n] = a->extra[i].h;
+        rs[n] = a->extra_rights && a->extra_rights[i] ? a->extra_rights[i] : RIGHT_SAME;
         m->roles[n++] = a->extra[i].role;
     }
     m->nhandles = n;
     if (st == OK)
         st = jam_channel_create(&ch[0], &ch[1]);
-    if (st == OK)
-        st = jam_channel_write(ch[0], msg, (uint32_t)len, hs, n);
+    if (st == OK)   /* the extras with the rights the caller chose (M7) */
+        st = jam_channel_write_rights(ch[0], msg, (uint32_t)len, hs, rs, n);
     if (st == OK)
         n = 0;   /* all in the message now */
     if (st == OK) {

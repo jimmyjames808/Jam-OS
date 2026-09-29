@@ -372,7 +372,11 @@ struct cfg_hole {
  *   - PCIe Device Control with Initiate Function Level Reset (bit 15) set,
  *     Advanced Features Control with Initiate FLR (bit 0) set, and a PM
  *     PowerState change (D3hot -> D0 resets the function): a reset would
- *     undo what the kernel set up behind its back;
+ *     undo what the kernel set up behind its back. M7: a RIGHT_MANAGE
+ *     holder (devmgr, `manage`) may change the PowerState: it wakes a
+ *     function left in D1-D3 before binding a driver, and
+ *     sys_pci_config_write waits out the transition (10 ms) and puts back
+ *     the BARs and command register a reset lost;
  *   - the SR-IOV capability (new functions with their own BARs) and the
  *     Resizable BAR / VF Resizable BAR capabilities (BAR sizes).
  * Everything else a function's own driver may write (cache line size,
@@ -380,6 +384,22 @@ struct cfg_hole {
  * the PCIe capabilities). */
 status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
                                pci_cfg_reader_t rd)
+{
+    return pci_cfg_write_allowed_as(d, off, width, value, rd, false);
+}
+
+bool pci_cfg_write_changes_power(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
+                                 pci_cfg_reader_t rd)
+{
+    uint32_t pm = std_cap(d, rd, CAP_ID_PM);
+    if (!pm || pm + 4 < off || pm + 4 >= off + width)
+        return false;
+    uint8_t vb = (uint8_t)(value >> (8 * (pm + 4 - off)));
+    return ((vb ^ rd(d, pm + 4, 1)) & 0x03) != 0;
+}
+
+status_t pci_cfg_write_allowed_as(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t value,
+                                  pci_cfg_reader_t rd, bool manage)
 {
     if (pci_cfg_access_ok(off, width) != OK)
         return ERR_INVALID_ARGS;
@@ -438,7 +458,7 @@ status_t pci_cfg_write_allowed(struct pci_dev *d, uint32_t off, uint32_t width, 
             return ERR_ACCESS_DENIED;
         if (pcie && b == pcie + 9 && (vb & 0x80))          /* Device Control: FLR */
             return ERR_ACCESS_DENIED;
-        if (pm && b == pm + 4 && ((vb ^ rd(d, pm + 4, 1)) & 0x03))   /* PMCSR PowerState */
+        if (!manage && pm && b == pm + 4 && ((vb ^ rd(d, pm + 4, 1)) & 0x03))   /* PowerState */
             return ERR_ACCESS_DENIED;
         if (af && b == af + 4 && (vb & 0x01))              /* AF Control: Initiate FLR */
             return ERR_ACCESS_DENIED;

@@ -497,4 +497,21 @@ jam_vmo_unpin:
     ret
     .size jam_vmo_unpin, . - jam_vmo_unpin
 
+    .globl jam_dma_cap_bus_master
+    .type jam_dma_cap_bus_master, @function
+jam_dma_cap_bus_master:
+    mov $SYS_dma_cap_bus_master, %eax
+    syscall
+    ret
+    .size jam_dma_cap_bus_master, . - jam_dma_cap_bus_master
+
+    .globl jam_channel_write_rights
+    .type jam_channel_write_rights, @function
+jam_channel_write_rights:
+    mov %rcx, %r10
+    mov $SYS_channel_write_rights, %eax
+    syscall
+    ret
+    .size jam_channel_write_rights, . - jam_channel_write_rights
+
     .section .note.GNU-stack, "", @progbits

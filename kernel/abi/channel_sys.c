@@ -104,6 +104,46 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
     return st;
 }
 
+status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
+                                  uint32_t nbytes, const handle_t *handles,
+                                  const rights_t *rights, uint32_t nhandles)
+{
+    if (nhandles && !rights)
+        return ERR_INVALID_ARGS;
+    struct channel *ch;
+    status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
+    if (st != OK)
+        return st;
+    struct khandle khs[CHANNEL_MAX_HANDLES];
+    rights_t had[CHANNEL_MAX_HANDLES];
+    st = take_all(t, handles, khs, nhandles);
+    if (st == OK) {
+        /* Each arrives with rights[i]: a subset of what it has (as
+         * handle_duplicate), or RIGHT_SAME. Checked before anything
+         * changes, restored if the write fails. */
+        for (uint32_t i = 0; i < nhandles; i++) {
+            had[i] = khs[i].rights;
+            if (rights[i] != RIGHT_SAME && (rights[i] & ~had[i]))
+                st = ERR_INVALID_ARGS;
+        }
+        if (st == OK) {
+            for (uint32_t i = 0; i < nhandles; i++)
+                if (rights[i] != RIGHT_SAME)
+                    khs[i].rights = rights[i];
+            st = channel_write(ch, bytes, nbytes, khs, nhandles);
+            if (st != OK)
+                for (uint32_t i = 0; i < nhandles; i++)
+                    khs[i].rights = had[i];
+        }
+        if (st != OK)
+            untake_all(t, handles, khs, nhandles);
+        else
+            commit_all(t, handles, nhandles);
+    }
+    kobject_unref((struct kobject *)ch);
+    return st;
+}
+
 status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint32_t bytes_cap,
                           uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
                           uint32_t *actual_handles)

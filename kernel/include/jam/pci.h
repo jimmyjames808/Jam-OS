@@ -53,7 +53,8 @@ uint16_t pci_find_cap(struct pci_dev *d, uint32_t id);
 /* MSI / MSI-X. `index` is the MSI-X table entry, or 0 for MSI (M6 uses a
  * single MSI vector). pci_msi_set writes address/data (entry masked while
  * it changes); pci_msi_enable turns MSI or MSI-X on/off for the function
- * and disables INTx while either is on. ERR_NOT_SUPPORTED if the function
+ * and disables INTx (turning the last one off leaves INTx disabled, M7).
+ * ERR_NOT_SUPPORTED if the function
  * lacks the capability, ERR_OUT_OF_RANGE for a bad index. */
 status_t pci_msi_set(struct pci_dev *d, bool msix, uint32_t index, uint64_t addr, uint32_t data);
 status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on);
@@ -66,6 +67,17 @@ status_t pci_msi_mask(struct pci_dev *d, bool msix, uint32_t index, bool masked)
 status_t pci_set_bus_master(struct pci_dev *d, bool on);
 /* Memory decode on (a driver needs its BARs to answer). Same refusals. */
 status_t pci_enable_memory(struct pci_dev *d);
+
+/* M7: around a power-state change (D3hot -> D0 resets a function without
+ * No_Soft_Reset): save the command register and the BAR registers, then
+ * put back whatever the change lost. Restore returns true if the BARs had
+ * been lost (the function was reset); INTx Disable ends up set. */
+struct pci_saved_config {
+    uint16_t command;
+    uint32_t bar[6];
+};
+void pci_save_config(struct pci_dev *d, struct pci_saved_config *out);
+bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in);
 
 /* Does [phys, phys + len) touch a page holding any function's MSI-X table
  * or PBA? Such pages are never mapped for anyone but the kernel. */

@@ -2,8 +2,9 @@
  * test's kernel side. The handles are built here the way devmgr builds
  * them (M6-PLAN.md "Phase 2"): the driver gets its function without
  * RIGHT_MANAGE, BAR 0, one interrupt object (MSI-X entry 0 if the
- * function has MSI-X, else MSI) and a bound dma_cap, with Bus Master
- * Enable turned on here (MSI needs it too). Everything the driver holds
+ * function has MSI-X, else MSI) and a bound dma_cap, which leaves Bus
+ * Master Enable off until the driver has reset the controller and turns
+ * it on itself (M7). Everything the driver holds
  * goes when it exits: the dma_cap's close turns Bus Master Enable off,
  * the interrupt object's disables MSI / MSI-X; both are checked. */
 #include <jam/abi.h>
@@ -23,8 +24,12 @@
 
 #define S           1000000000ull
 #define RUN_LIMIT_S 30            /* the driver's own waits add up to a few seconds */
-#define IRQ_RIGHTS  (RIGHTS_BASIC | RIGHTS_IO)
-#define DEV_RIGHTS  (RES_RIGHTS & ~RIGHT_MANAGE)
+/* devmgr's (<devmgr.h> DEVMGR_DRV_*_RIGHTS): nothing to pass on or slice. */
+#define KEEP        (RIGHT_WAIT | RIGHT_INSPECT)
+#define DEV_RIGHTS  (KEEP | RIGHT_READ | RIGHT_WRITE)
+#define BAR_RIGHTS  (KEEP | RIGHT_MAP)
+#define IRQ_RIGHTS  (KEEP | RIGHTS_IO)
+#define DMA_RIGHTS  KEEP
 
 struct pci_dev *xhci_find(uint32_t n)
 {
@@ -66,12 +71,6 @@ static status_t build_handles(struct pci_dev *d, uint32_t roles[4], struct khand
         *what = "dma_cap";
         st = dma_cap_create_for(d, &cap);
     }
-    if (st == OK) {
-        *what = "bus master";
-        uint64_t f = pci_cmd_lock();
-        st = pci_set_bus_master(d, true);
-        pci_cmd_unlock(f);
-    }
     if (root)
         kobject_unref(root);
     if (pci)
@@ -89,11 +88,11 @@ static status_t build_handles(struct pci_dev *d, uint32_t roles[4], struct khand
     roles[0] = DR_PCIDEV;
     kh[0] = khandle_from_new(dev, DEV_RIGHTS);
     roles[1] = DR_BAR(0);
-    kh[1] = khandle_from_new(bar, DEV_RIGHTS);
+    kh[1] = khandle_from_new(bar, BAR_RIGHTS);
     roles[2] = DR_IRQ(0);
     kh[2] = khandle_from_new(irq, IRQ_RIGHTS);
     roles[3] = DR_DMA;
-    kh[3] = khandle_from_new(cap, DMA_CAP_RIGHTS);
+    kh[3] = khandle_from_new(cap, DMA_RIGHTS);
     return OK;
 }
 

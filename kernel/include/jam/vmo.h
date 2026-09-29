@@ -103,10 +103,11 @@ status_t dma_cap_create(struct kobject **out);
  * writes each page's physical address to phys_out[0..len/PAGE_SIZE).
  * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
  * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
- * a function whose Bus Master Enable is off or its last handle is gone.
- * The pin holds references on the VMO and the capability until vmo_unpin
- * or until the cap's last handle closes (which releases every pin made
- * with it). */
+ * a function whose Bus Master Enable is off, or that has a newer cap
+ * (M7), or its last handle is gone. The pin holds references on the VMO
+ * and the capability until vmo_unpin or until the cap's last handle
+ * closes (which releases every pin made with it, or for a cap bound to a
+ * function quarantines them: dma_cap.c). */
 status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                  uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
 /* Undo a pin. Only the capability it was made with may: ERR_NOT_FOUND if
