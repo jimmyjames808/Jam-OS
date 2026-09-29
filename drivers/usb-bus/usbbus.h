@@ -280,6 +280,7 @@ struct ep {
     struct { uint16_t idx; uint8_t slot; } inflight[INTR_TRBS];
     uint8_t ninflight;
     uint32_t errors_in_row;
+    uint16_t last_cc;     /* the completion code that halted it */
     uint64_t reports, dropped, errors;
 };
 

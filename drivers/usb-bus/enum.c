@@ -232,14 +232,21 @@ static void ep_set_deq(struct usbdev *d, uint8_t dci, struct ring *r)
 }
 
 /* After a halt (STALL, a transaction error): Reset Endpoint, then move the
- * dequeue pointer past whatever was queued (xHCI 4.6.8, 4.8.3). */
-static void ep_reset(struct usbdev *d, uint8_t dci, struct ring *r)
+ * dequeue pointer past whatever was queued (xHCI 4.6.8, 4.8.3). tsp:
+ * Transfer State Preserve, a soft retry that keeps the data toggle (after
+ * a transaction error the device's toggle didn't move either). */
+static void ep_reset_tsp(struct usbdev *d, uint8_t dci, struct ring *r, bool tsp)
 {
     uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_RESET_EP) | ((uint32_t)dci << 16) |
-                             ((uint32_t)d->slot << 24), NULL, 1000);
+                             ((uint32_t)d->slot << 24) | (tsp ? 1u << 9 : 0), NULL, 1000);
     if (cc != CC_SUCCESS && cc != CC_CONTEXT_STATE && !d->gone)
         drv_log("usb %s: Reset Endpoint (ep %u): %s", d->path, dci, cc_str(cc));
     ep_set_deq(d, dci, r);
+}
+
+static void ep_reset(struct usbdev *d, uint8_t dci, struct ring *r)
+{
+    ep_reset_tsp(d, dci, r, false);
 }
 
 /* A running endpoint whose transfer never finished: Stop Endpoint, then
@@ -455,6 +462,7 @@ static void intr_event(struct usbdev *d, struct ep *e, uint64_t trb, uint32_t cc
     if (cc == CC_STOPPED || cc == CC_STOPPED_LEN || cc == CC_STOPPED_SHORT)
         return;
     /* An error halts the endpoint: reset it from the main loop. */
+    e->last_cc = (uint16_t)cc;
     e->errors++;
     e->errors_in_row++;
     e->halted = true;
@@ -1641,7 +1649,15 @@ bool usb_work(struct hc *h)
                             d->path, e->addr, e->errors_in_row);
                     ep_close(d, e);
                 } else {
-                    ep_reset(d, e->dci, &e->ring);
+                    /* A STALL is the device's halt: clear it there too
+                     * (both toggles back to DATA0). Other errors: a soft
+                     * retry that keeps the toggle. */
+                    bool stall = e->last_cc == CC_STALL;
+                    ep_reset_tsp(d, e->dci, &e->ring, !stall);
+                    if (stall) {
+                        uint32_t n = 0;
+                        usb_control(d, 0x02, 1, 0, e->addr, 0, NULL, &n, 1000);
+                    }
                     e->halted = false;
                     if (e->errors_in_row > 3)
                         hc_sleep(h, 10);
