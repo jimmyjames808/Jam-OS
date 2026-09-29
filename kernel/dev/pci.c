@@ -745,10 +745,16 @@ struct pci_dev *pci_get(uint32_t index)
 
 volatile bool pci_hide_in_use;
 
+bool pci_in_use(const struct pci_dev *d)
+{
+    return __atomic_load_n(&d->proc_users, __ATOMIC_RELAXED) ||
+           __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
+}
+
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
 {
     for (uint32_t i = 0; i < ndevs; i++)
-        if ((!pci_hide_in_use || !devs[i].proc_users) &&
+        if ((!pci_hide_in_use || !pci_in_use(&devs[i])) &&
             (vendor == 0xffff || devs[i].info.vendor == vendor) &&
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];

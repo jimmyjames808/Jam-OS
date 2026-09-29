@@ -125,6 +125,10 @@ status_t sys_pci_device_open(struct handle_table *t, handle_t pci, uint32_t inde
         return st;
     st = resource_pci_device(p, index, &dev);
     kobject_unref(p);
+    /* devmgr (RIGHT_MANAGE) binds a driver to it: the function is the
+     * drivers' from now on (pci.h: driver_managed). */
+    if (st == OK && (r & RIGHT_MANAGE) && t->job)
+        __atomic_store_n(&resource_pci_dev(dev)->driver_managed, true, __ATOMIC_RELAXED);
     return st == OK ? publish_res(t, dev, r, out) : st;
 }
 

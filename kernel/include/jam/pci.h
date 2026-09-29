@@ -34,6 +34,11 @@ struct pci_dev {
     /* M7: RES_PCI_DEV resources made through system calls (devmgr's, for a
      * driver) that are alive: the function belongs to a driver process. */
     volatile uint32_t proc_users;
+    /* M7: a process opened it with RIGHT_MANAGE (devmgr binding a driver to
+     * it). Sticky for the rest of the boot: while devmgr (or its driver)
+     * restarts, proc_users can be 0 for a moment, and a `ktest` from the
+     * shell must not grab the function in that gap. */
+    volatile bool driver_managed;
 };
 
 /* Enumerate every ECAM segment in acpi.ecam[]; logs one line per function. */
@@ -45,11 +50,14 @@ uint32_t pci_count(void);
 struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
 /* The n-th function with this vendor/device (0xffff = any), or NULL.
  * While pci_hide_in_use is set (M7: `ktest` run from the shell, with
- * devmgr's drivers running), functions a process holds (proc_users) are
+ * devmgr's drivers running), functions in use by drivers (pci_in_use) are
  * left out, so the kernel tests that drive a device skip it instead of
  * fighting its driver. */
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n);
 extern volatile bool pci_hide_in_use;
+/* A process holds it (proc_users), or devmgr ever opened it to bind a
+ * driver (driver_managed, sticky). */
+bool pci_in_use(const struct pci_dev *d);
 
 /* Config space, width 1, 2 or 4, offset < 4096 and aligned to width. */
 uint32_t pci_cfg_read(struct pci_dev *d, uint32_t off, uint32_t width);
