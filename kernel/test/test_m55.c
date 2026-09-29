@@ -650,7 +650,12 @@ KTEST(pcid_slot_bookkeeping)
         bool was = pcid_is_on();
         pcid_set(!was);
         pcid_set(was);
-        KT_EQ(pcid_test_decide(3, 1000, 2, true), 1);
+        /* Forgotten: flushed, in whichever slot comes next (the
+         * round-robin position isn't reset, and needn't be: a flushing
+         * load clears the slot's old entries). */
+        uint32_t after = pcid_test_decide(3, 1000, 2, true);
+        KT_EQ(after & KEEP, 0);
+        KT_ASSERT(after >= 1 && after <= PCID_SLOTS_PER_CPU);
     }
 }
 
