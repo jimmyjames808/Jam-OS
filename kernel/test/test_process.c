@@ -319,6 +319,33 @@ KTEST(proc_job_kill_tree)
     job_unref(j);
 }
 
+/* M7 review: debug_command's "kill" (job_find_process) never finds a
+ * process of the caller's ancestor jobs -- from the shell, `kill init`
+ * left the whole system unsupervised (init is in the root job). */
+KTEST(proc_find_spares_ancestor_jobs)
+{
+    struct job *j = fresh_job(), *sub;
+    KT_EQ(job_create(j, &sub), OK);
+    struct process *sup, *kid, *p;
+    KT_EQ(process_create(j, "sup", &sup), OK);     /* never started */
+    KT_EQ(process_create(sub, "kid", &kid), OK);
+    KT_ASSERT((p = job_find_process(j, "sup", NULL)) == sup);
+    kobject_unref(process_kobject(p));
+    KT_ASSERT(job_find_process(j, "sup", sub) == NULL);   /* sub's supervisor */
+    KT_ASSERT((p = job_find_process(j, "kid", sub)) == kid);   /* its own job: fine */
+    kobject_unref(process_kobject(p));
+    KT_ASSERT((p = job_find_process(j, "sup", j)) == sup);     /* not a STRICT ancestor */
+    kobject_unref(process_kobject(p));
+    unsigned killed = 0;
+    KT_EQ(job_kill(j, &killed), OK);
+    KT_EQ(killed, 2);
+    kobject_unref(process_kobject(sup));
+    kobject_unref(process_kobject(kid));
+    job_unref(sub);
+    job_is_empty(j);
+    job_unref(j);
+}
+
 /* Review R7: debug_write prints with no lock held and a process can't
  * flood the console: 100 lines at once, then 50 a second, the rest are
  * dropped (and counted in a note). */

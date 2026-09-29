@@ -384,13 +384,26 @@ struct job *job_root_of(struct job *j)
     return j;
 }
 
-struct process *job_find_process(struct job *j, const char *name)
+/* Is a a strict ancestor of j? */
+static bool job_above(struct job *a, struct job *j)
+{
+    for (j = j ? j->parent : NULL; j; j = j->parent)
+        if (j == a)
+            return true;
+    return false;
+}
+
+struct process *job_find_process(struct job *j, const char *name, struct job *spare)
 {
     struct kobject *procs[PRINT_MAX];
     struct job *kids[PRINT_MAX];
     unsigned np = 0, nk = 0;
+    /* The processes of the caller's ancestor jobs (init, its supervisor)
+     * are never found: killing them leaves the caller unsupervised. */
+    bool skip_procs = spare && job_above(j, spare);
     uint64_t f = jlock(j);
-    for (struct list_node *n = j->procs.next; n != &j->procs && np < PRINT_MAX; n = n->next) {
+    for (struct list_node *n = j->procs.next; n != &j->procs && np < PRINT_MAX && !skip_procs;
+         n = n->next) {
         struct process *p = process_from_job_link(container_of(n, struct job_link, node));
         if (kobject_tryref(process_kobject(p)))
             procs[np++] = process_kobject(p);
@@ -412,7 +425,7 @@ struct process *job_find_process(struct job *j, const char *name)
     }
     for (unsigned i = 0; i < nk; i++) {
         if (!found)
-            found = job_find_process(kids[i], name);
+            found = job_find_process(kids[i], name, spare);
         kobject_unref(&kids[i]->base);
     }
     return found;
