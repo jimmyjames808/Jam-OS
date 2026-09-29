@@ -1,6 +1,5 @@
 /* edu: the driver for QEMU's `edu` test device (1234:11e8, hw/misc/edu.c),
- * the M6 sample driver. Built both ways like every driver: into the kernel
- * (a kernel process) and as drv/edu in bootfs (a process devmgr starts).
+ * the sample driver: drv/edu in bootfs, a process devmgr starts.
  *
  * Handles (roles from <jam/driver.h>):
  *   DR_BAR(0)   its registers (1 MiB of MMIO; the first page is all we use)
@@ -316,7 +315,7 @@ static int setup(const struct driver_start *s, struct edu *e)
         drv_log("factorial(12) by polling: %u (%s)", f, status_str(st));
         return 4;
     }
-    /* Quiesce before bus mastering goes on (M7). A driver before us may
+    /* Quiesce before bus mastering goes on. A driver before us may
      * have died in the middle of a transfer: the device finishes it by
      * itself, reaching no memory while Bus Master Enable is off (it went
      * off with that driver's dma_cap, and our new cap starts with it off).

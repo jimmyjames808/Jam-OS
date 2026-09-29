@@ -1,5 +1,4 @@
-/* drvtest: checks <jam/driver.h> itself, the same code in both builds (a
- * ktest runs it as a kernel process, utest as a process). It exercises the
+/* drvtest: checks <jam/driver.h> itself (utest runs it). It exercises the
  * heap, channels, ports, waits, VMOs and mappings, threads and the clock,
  * checks the device calls refuse bad handles, and, given a channel to a
  * null server (role DRVTEST_NULL), calls it through the generated client,
@@ -77,7 +76,7 @@ static void t_heap(void)
     CHECK(intact);
     for (int i = 0; i < N; i++)
         drv_free(p[i]);
-    /* Bigger than a heap chunk in the kernel build. */
+    /* A big block (more than one heap growth step). */
     uint8_t *big = drv_malloc(300u << 10);
     CHECK(big != NULL);
     if (big) {
@@ -260,7 +259,7 @@ static void t_null_protocol(handle_t ch)
         all &= null_ping(ch, i, &v) == OK && v == i;
     CHECK(all);
 
-    /* A handle result (M7 IDL): the VMO arrives, readable, with its size;
+    /* A handle result: the VMO arrives, readable, with its size;
      * an error carries no handle; a NULL out-pointer gets it closed. */
     handle_t vmo = HANDLE_INVALID;
     uint64_t got_size = 0;

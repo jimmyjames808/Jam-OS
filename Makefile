@@ -44,9 +44,13 @@ S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
 # Drivers (the rules are further down, after the user programs'): every
-# drivers/<name>/*.c is the program drv/<name> in bootfs (libos +
-# user/lib/driver_user.c).
-DRIVERS := $(sort $(patsubst drivers/%/,%,$(dir $(wildcard drivers/*/*.c))))
+# drivers/<name>/*.c, and every test driver's drivers/test/<name>/*.c, is
+# the program drv/<name> in bootfs (libos + user/lib/driver_user.c).
+DRIVER_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard drivers/*/*.c drivers/test/*/*.c))))
+DRIVERS     := $(sort $(notdir $(DRIVER_DIRS)))
+ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
+$(error two driver directories share a name: $(DRIVER_DIRS))
+endif
 
 .PHONY: all image run debug clean font usb syscalls idl check compdb
 
@@ -189,7 +193,7 @@ DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/statu
                $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
 DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
-DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard drivers/$(1)/*.c))
+DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c))
 
 .SECONDARY: $(DRV_HDRS)
 $(DRV_INC)/jam/driver.h: drivers/include/jam/driver.h
