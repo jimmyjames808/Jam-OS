@@ -104,4 +104,5 @@ status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)
 /* addrs: kernel array of at least len / PAGE_SIZE entries. */
 status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
                      uint64_t len, uint64_t *addrs, uint64_t *pin_id);
-status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, uint64_t pin_id);
+/* Only with the dma_cap the pin was made with (vmo_unpin). */
+status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t pin_id);

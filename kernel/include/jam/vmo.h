@@ -109,5 +109,8 @@ status_t dma_cap_create(struct kobject **out);
  * with it). */
 status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                  uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
-/* ERR_NOT_FOUND if pin_id isn't a live pin of v. */
-status_t vmo_unpin(struct vmo *v, uint64_t pin_id);
+/* Undo a pin. Only the capability it was made with may: ERR_NOT_FOUND if
+ * pin_id isn't a live pin of v, ERR_ACCESS_DENIED if it was made with
+ * another dma_cap (a client sharing the VMO must not free a page a device
+ * still writes to). */
+status_t vmo_unpin(struct vmo *v, struct kobject *dma_cap, uint64_t pin_id);

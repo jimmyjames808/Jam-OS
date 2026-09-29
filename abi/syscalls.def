@@ -127,7 +127,9 @@
 # cache type VMO_CACHE_*; refused over RAM or an MSI-X table/PBA page.
 99  vmo_create_physical status  handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out
 # DMA: a capability bound to the function; vmo_pin writes one device
-# address per page to addrs[] and the pin's id to *pin_id.
+# address per page to addrs[] and the pin's id to *pin_id. vmo_unpin needs
+# the cap the pin was made with (ERR_ACCESS_DENIED for any other): holding
+# the VMO isn't enough to take a page away from a device still using it.
 100 dma_cap_create    status    handle_t dev, handle_t *out
 101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
-102 vmo_unpin         status    handle_t vmo, uint64_t pin_id
+102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id

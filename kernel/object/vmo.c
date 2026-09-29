@@ -1026,15 +1026,16 @@ void vmo_release_cap_pins(struct dma_cap *c)
     }
 }
 
-status_t vmo_unpin(struct vmo *v, uint64_t pin_id)
+status_t vmo_unpin(struct vmo *v, struct kobject *dma_cap, uint64_t pin_id)
 {
     uint64_t f = vlock(v);
     struct vmo_range *r = range_find_locked(v, RANGE_PIN, pin_id);
-    if (r)
+    status_t st = !r ? ERR_NOT_FOUND : r->cap != dma_cap ? ERR_ACCESS_DENIED : OK;
+    if (st == OK)
         r->busy = true;
     vunlock(v, f);
-    if (!r)
-        return ERR_NOT_FOUND;
+    if (st != OK)
+        return st;
     range_remove(v, r);
     return OK;
 }

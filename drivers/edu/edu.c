@@ -160,7 +160,7 @@ static status_t finish_held(struct edu *e)
     if (!e->held)
         return OK;
     status_t st = wait_irq(e, IRQ_DMA, drv_clock_ns() + OP_TIMEOUT, NULL);
-    status_t u = drv_vmo_unpin(e->vmo, e->held_pin);
+    status_t u = drv_vmo_unpin(e->vmo, e->dma, e->held_pin);
     e->held = false;
     return st != OK ? st : u;
 }
@@ -207,7 +207,7 @@ static status_t do_dma_roundtrip(void *ctx, uint32_t len)
         st = dma_run(e, BUF_ADDR, addrs[1], len, DMA_TO_RAM);
     if (st == OK)
         st = wait_irq(e, IRQ_DMA, drv_clock_ns() + OP_TIMEOUT, NULL);
-    status_t u = drv_vmo_unpin(e->vmo, pin);
+    status_t u = drv_vmo_unpin(e->vmo, e->dma, pin);
     if (st != OK)
         return st;
     if (u != OK)
@@ -236,7 +236,7 @@ static status_t do_dma_start(void *ctx, uint32_t len, uint64_t *out_addr)
         return st;
     st = dma_run(e, addrs[0], BUF_ADDR, len, 0);
     if (st != OK) {
-        drv_vmo_unpin(e->vmo, pin);
+        drv_vmo_unpin(e->vmo, e->dma, pin);
         return st;
     }
     e->held = true;

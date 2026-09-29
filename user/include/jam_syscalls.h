@@ -68,4 +68,4 @@ status_t jam_interrupt_ack(handle_t irq);
 status_t jam_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out);
 status_t jam_dma_cap_create(handle_t dev, handle_t *out);
 status_t jam_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id);
-status_t jam_vmo_unpin(handle_t vmo, uint64_t pin_id);
+status_t jam_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);

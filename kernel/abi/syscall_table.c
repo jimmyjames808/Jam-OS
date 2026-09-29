@@ -311,7 +311,7 @@ static int64_t call_vmo_pin(const struct syscall_frame *f)
 
 static int64_t call_vmo_unpin(const struct syscall_frame *f)
 {
-    return sysc_vmo_unpin((handle_t)f->args[0], f->args[1]);
+    return sysc_vmo_unpin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
 }
 
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
