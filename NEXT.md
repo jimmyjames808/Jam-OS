@@ -131,7 +131,9 @@
   utest 29, usbkeys-test PASS (type help through a hub, kill hid, kill console, reboot).
   **Next PC round**: plain "Jam OS" -> type into the shell with the real keyboard (0c45:652f port 10),
   `kill hid-10:0` while typing, `reboot`, Ctrl+Alt+Del; keytest entry as fallback. Independent M7 review
-  RUNNING. Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
+  RUNNING. **PC 2026-09-29 (0.0.20-m7): user reports ALL WORKED: typing into the shell with the real
+  keyboard, usb/devices/ps, `kill hid-10:0` recovers, ktest m4, reboot.** GAP found: init doesn't restart
+  devmgr (killing devmgr loses USB until reset) -> add to the cleanup step. Then the boot-menu cleanup (user agreed shape: Jam OS, safe mode, Tests folder; demo/utest/
   crash as shell commands; retire xhcitest + drivers=kernel entries) and the 10-min sign-off.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
