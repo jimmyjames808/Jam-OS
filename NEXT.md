@@ -36,6 +36,13 @@ thread reaping, +1 free page; fixed fc78454), then PASSED 122/122 on the PC. Ben
 14 s ("a dead process left something charged to its job": thread_left credited the job after
 the unlock; fixed d010dc4), then PASSED with 0 failures on the PC. **Every M5 check has passed
 on the PC. Remaining for M5 ✅: merge the review-fix agent's work (R1-R8) and rerun on the PC.**
+**Review fixes MERGED 2026-09-29 (6727edf):** RIGHT_MANAGE, job depth cap 32, VMO + user page tables
++ kernel objects charged, process_start STARTING window, debug_write printed outside the lock + rate
+limit, job_kill (syscall 80). Merge fix: both branches moved the thread credit, the merge had it
+twice -> kept one. Main: 131/131 + stress at 4+8, utest 14/14 with clean root job. OPEN: the fix agent
+saw one 4-CPU stress failure "counter#14 made no progress for 10 s" (kernel mutex has no hand-off to
+waiters, so a waiter can starve) - look at mutex fairness after M5.5 merges (sched.c is M5.5's).
+Next: flash, PC round (init+utest, All tests, stress) -> mark M5 done.
 **M5.5 agent started 2026-09-29 (base 3259578)**, in parallel with the review-fix agent: spin-before-idle,
 hybrid placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers, interrupt-driven
 serial, PCIDs (last; the fix agent also edits aspace.c), and the two M5 bench regressions. Every
