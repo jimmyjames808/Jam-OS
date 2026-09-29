@@ -1,0 +1,87 @@
+# The fun apps (user/life, user/tetris, user/fractal) from the shell:
+# QEMU_INPUT=this file, command line "shell" (or tools/fun-test.sh). Each
+# app's self-test, then each one played for a few seconds through the
+# serial terminal (arrows arrive as ESC [ A..D, letters as themselves),
+# with screenshots (<name>.png next to the log), quit with q, and the
+# shell prompt must come back: the console leaves its alternate screen.
+wait 120 Jam OS shell
+wait jam>
+send run life --selftest
+wait 120 life: selftest PASSED
+wait run: bin/life exited with code 0
+wait jam>
+send run tetris --selftest
+wait 60 tetris: selftest PASSED
+wait run: bin/tetris exited with code 0
+wait jam>
+send run fractal --selftest
+wait 120 fractal: selftest PASSED
+wait run: bin/fractal exited with code 0
+wait jam>
+# life: a 1024x1024 world (quick under QEMU), zoomed in, then all of it
+send run life size=1024
+wait run: bin/life started
+sleep 4
+type ++
+sleep 3
+shot fun-life-zoomed-in
+type ---
+sleep 3
+shot fun-life
+type g
+sleep 1
+type q
+wait 30 generations of a 1024x1024 world
+wait run: bin/life exited with code 0
+wait jam>
+# tetris: move, rotate, drop a few pieces
+send run tetris
+wait run: bin/tetris started
+sleep 2
+type \e[D\e[D\e[D\x20
+sleep 0.5
+type \e[A\e[C\e[C\e[C\e[C\x20
+sleep 0.5
+type x\x20
+sleep 0.5
+type \e[D\x20
+sleep 0.5
+type \e[B\e[B\e[B
+sleep 1
+shot fun-tetris
+type p
+sleep 0.5
+shot fun-tetris-paused
+type q
+wait 30 tetris: score
+wait run: bin/tetris exited with code 0
+wait jam>
+# fractal: the whole set, a famous place, a Julia set
+send run fractal
+wait run: bin/fractal started
+sleep 6
+shot fun-fractal
+type 2
+sleep 6
+shot fun-fractal-seahorse
+# the Julia set of the seahorse valley point, in another palette
+type jc
+sleep 6
+shot fun-fractal-julia
+type q
+wait 30 renders on
+wait run: bin/fractal exited with code 0
+wait jam>
+# a program that dies on the alternate screen without leaving it: the
+# console notices (its key channel closed) and shows the text screen again
+send run tetris --crash-test
+wait 30 run: bin/tetris exited with code 3
+wait jam>
+# the shell is back in charge of the keys and the screen
+send help
+wait Commands:
+wait jam>
+sleep 0.5
+shot fun-shell-after
+send reboot
+wait reboot: resetting

@@ -28,7 +28,10 @@
  *
  * Program output (console.write) is also written to COM1 as it is (the
  * kernel log goes there by itself), so a serial terminal, and the QEMU
- * tests, see the same session. */
+ * tests, see the same session.
+ *
+ * Full-screen programs (bin/life, bin/tetris, bin/fractal) use the
+ * alternate screen: see "the alternate screen" below. */
 #include <os.h>
 #include <idl/console.h>
 #include <idl/input.h>
@@ -137,6 +140,41 @@ static void kernel_line(const char *s, size_t n)
     commit(l);
 }
 
+/* ---- the alternate screen (full-screen programs) ------------------------------
+ *
+ * ESC [ ? 1049 h switches to a grid of its own (rows x cols, blank), and
+ * ESC [ ? 1049 l back to the text screen, which is redrawn as it was. On
+ * the alternate screen ESC [ <row> ; <col> H moves the cursor anywhere,
+ * ESC [ 2 J, K, A, B, C and D work as usual, ESC [ ? 25 l / h hide and
+ * show the cursor, and ESC [ ? 2026 h / l bracket a frame (synchronized
+ * output: nothing is drawn in between, for at most 250 ms). Its output is
+ * NOT mirrored to COM1 (a full frame is ~100 KB: seconds at 115200 baud).
+ * Kernel log lines keep going into the scrollback meanwhile.
+ *
+ * The alternate screen belongs to the client whose key channel had focus
+ * when it was entered (so: open_keys first). When that channel closes (the
+ * program exits, crashes or is killed), the console leaves the alternate
+ * screen by itself. */
+
+static struct cell *alt;           /* rows * cols */
+static bool alt_on, alt_cursor, alt_sync;
+static uint64_t alt_sync_since;
+static uint32_t alt_x, alt_y;
+static handle_t alt_owner;         /* a focus channel, or HANDLE_INVALID */
+static uint32_t alt_gen;           /* tells a stale owner packet from a live one */
+static void alt_enter(void);
+static void alt_leave(void);
+
+static void alt_newline(void)
+{
+    alt_x = 0;
+    if (++alt_y < rows)
+        return;
+    alt_y = rows - 1;
+    memmove(alt, alt + cols, (size_t)(rows - 1) * cols * sizeof(struct cell));
+    blank(alt + (size_t)(rows - 1) * cols, cols, A_OUT);
+}
+
 /* ---- program output: a small terminal on the current line ------------------ */
 
 enum { ES_NONE, ES_ESC, ES_CSI };
@@ -163,16 +201,22 @@ static void clear_screen(void)
     view_back = 0;
 }
 
+static bool bold;   /* ESC [ 1 m: the normal colours (30-37) come out bright */
+
 static void sgr(uint32_t p)
 {
     uint8_t fg = out_attr & 15, bg = out_attr >> 4;
     if (p == 0) {
         fg = C_WHITE;
         bg = C_BLACK;
+        bold = false;
     } else if (p == 1) {
         fg |= 8;
+        bold = true;
+    } else if (p == 22) {
+        bold = false;
     } else if (p >= 30 && p <= 37) {
-        fg = (uint8_t)(p - 30) | (fg & 8);
+        fg = (uint8_t)(p - 30) | (bold ? 8 : 0);
     } else if (p == 39) {
         fg = C_WHITE;
     } else if (p >= 40 && p <= 47) {
@@ -181,6 +225,8 @@ static void sgr(uint32_t p)
         bg = C_BLACK;
     } else if (p >= 90 && p <= 97) {
         fg = (uint8_t)(p - 90 + 8);
+    } else if (p >= 100 && p <= 107) {   /* bright backgrounds */
+        bg = (uint8_t)(p - 100 + 8);
     }
     out_attr = ATTR(fg, bg);
 }
@@ -203,6 +249,49 @@ static void csi(char final)
     if (np > 4)
         np = 4;   /* ESC [ ; ; ; ; m: the 5th and later are dropped (not read past params) */
     uint32_t n = params[0] ? params[0] : 1;
+    if (esc_len && esc_buf[0] == '?') {   /* DEC private modes */
+        if (final != 'h' && final != 'l')
+            return;
+        for (uint32_t i = 0; i < np; i++) {
+            if (params[i] == 1049) {
+                if (final == 'h')
+                    alt_enter();
+                else
+                    alt_leave();
+            } else if (params[i] == 25) {
+                alt_cursor = final == 'h';
+            } else if (params[i] == 2026 && alt_on) {
+                alt_sync = final == 'h';
+                alt_sync_since = (uint64_t)jam_clock_get();
+            }
+        }
+        return;
+    }
+    if (alt_on && final != 'm') {
+        switch (final) {
+        case 'H':
+        case 'f':
+            alt_y = params[0] ? params[0] - 1 : 0;
+            alt_x = np > 1 && params[1] ? params[1] - 1 : 0;
+            if (alt_y >= rows)
+                alt_y = rows - 1;
+            if (alt_x >= cols)
+                alt_x = cols - 1;
+            break;
+        case 'J':
+            if (params[0] == 2)
+                blank(alt, rows * cols, out_attr);
+            break;
+        case 'K':
+            blank(alt + alt_y * cols + alt_x, cols - alt_x, out_attr);
+            break;
+        case 'A': alt_y = alt_y > n ? alt_y - n : 0; break;
+        case 'B': alt_y = alt_y + n < rows ? alt_y + n : rows - 1; break;
+        case 'C': alt_x = alt_x + n < cols ? alt_x + n : cols - 1; break;
+        case 'D': alt_x = alt_x > n ? alt_x - n : 0; break;
+        }
+        return;
+    }
     switch (final) {
     case 'm':
         if (np == 0)
@@ -229,8 +318,42 @@ static void csi(char final)
     }
 }
 
+/* UTF-8: the block elements full-screen programs draw with become glyphs
+ * 1..6 (drawn by draw_cell); any other non-ASCII character is one '?'. */
+enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
+static uint32_t utf_cp, utf_need;
+
+static uint8_t utf_glyph(uint32_t cp)
+{
+    switch (cp) {
+    case 0x2580: return G_UPPER;    /* upper half block */
+    case 0x2584: return G_LOWER;    /* lower half block */
+    case 0x2588: return G_FULL;     /* full block */
+    case 0x2591: return G_LIGHT;    /* light shade */
+    case 0x2592: return G_MEDIUM;   /* medium shade */
+    case 0x2593: return G_DARK;     /* dark shade */
+    }
+    return '?';
+}
+
+static void put_char(uint8_t ch);
+
 static void out_char(uint8_t ch)
 {
+    if (ch >= 0x80 && esc_state == ES_NONE) {
+        if (ch >= 0xc0) {   /* a lead byte */
+            utf_need = ch >= 0xf0 ? 3 : ch >= 0xe0 ? 2 : 1;
+            utf_cp = ch & (0x3fu >> utf_need);
+        } else if (utf_need) {
+            utf_cp = utf_cp << 6 | (ch & 0x3f);
+            if (--utf_need == 0)
+                put_char(utf_glyph(utf_cp));
+        } else {
+            put_char('?');   /* a stray continuation byte */
+        }
+        return;
+    }
+    utf_need = 0;
     if (esc_state == ES_ESC) {
         esc_state = ch == '[' ? ES_CSI : ES_NONE;
         esc_len = 0;
@@ -244,6 +367,19 @@ static void out_char(uint8_t ch)
             csi((char)ch);
             esc_state = ES_NONE;
         }
+        return;
+    }
+    if (alt_on) {
+        if (ch == 0x1b)
+            esc_state = ES_ESC;
+        else if (ch == '\n')
+            alt_newline();
+        else if (ch == '\r')
+            alt_x = 0;
+        else if (ch == '\b' && alt_x)
+            alt_x--;
+        else if (ch >= 0x20 && ch <= 0x7e)
+            put_char(ch);
         return;
     }
     switch (ch) {
@@ -268,8 +404,18 @@ static void out_char(uint8_t ch)
     }
     if (ch < 0x20)
         return;
-    if (ch > 0x7e)
-        ch = '?';   /* UTF-8 continuation bytes and the like: the font is ASCII */
+    put_char(ch);
+}
+
+/* A printable character or a block glyph at the cursor. */
+static void put_char(uint8_t ch)
+{
+    if (alt_on) {
+        if (alt_x >= cols)
+            alt_newline();
+        alt[alt_y * cols + alt_x++] = (struct cell){ ch, out_attr };
+        return;
+    }
     if (cur_x >= cols)
         new_line();
     cur[cur_x++] = (struct cell){ ch, out_attr };
@@ -292,6 +438,16 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
         bg = t;
     }
     const uint8_t *g = font_8x16[c.ch & 0x7f];
+    uint8_t block[GH];
+    if (c.ch >= G_UPPER && c.ch <= G_DARK) {   /* the block elements */
+        static const uint8_t shade[3][2] = { { 0x88, 0x22 }, { 0xaa, 0x55 }, { 0x77, 0xdd } };
+        for (int i = 0; i < GH; i++)
+            block[i] = c.ch == G_UPPER ? (i < GH / 2 ? 0xff : 0)
+                     : c.ch == G_LOWER ? (i >= GH / 2 ? 0xff : 0)
+                     : c.ch == G_FULL  ? 0xff
+                                       : shade[c.ch - G_LIGHT][i & 1];
+        g = block;
+    }
     volatile uint32_t *row = fbp + (uint64_t)y * GH * (fbi.pitch / 4) + x * GW;
     for (int i = 0; i < GH; i++, row += fbi.pitch / 4) {
         uint8_t bits = g[i];
@@ -302,9 +458,25 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 
 static void render(void)
 {
+    if (alt_on && alt_sync && (uint64_t)jam_clock_get() - alt_sync_since < 250000000ull)
+        return;   /* mid-frame: stay dirty, draw once the frame is complete */
     dirty = false;
     if (!fbp)
         return;
+    if (alt_on) {
+        for (uint32_t y = 0; y < rows; y++)
+            for (uint32_t x = 0; x < cols; x++) {
+                struct cell c = alt[y * cols + x];
+                uint8_t inv = alt_cursor && x == alt_x && y == alt_y;
+                struct cell *s = &shadow[y * cols + x];
+                if (s->ch != c.ch || s->attr != c.attr || shadow_cursor[y * cols + x] != inv) {
+                    draw_cell(x, y, c, inv);
+                    *s = c;
+                    shadow_cursor[y * cols + x] = inv;
+                }
+            }
+        return;
+    }
     struct cell empty = { ' ', A_OUT };
     uint64_t first;   /* the committed line on screen row 0 */
     uint32_t shown = view_back ? rows : rows - 1;
@@ -366,13 +538,15 @@ static struct input_key_event pending[PENDING_KEYS];
 static unsigned npending;
 static handle_t port;
 
-enum { K_KLOG = 1, K_CLIENT, K_SOURCE };
+enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* A focus channel whose client is gone is noticed when a key is sent to it
  * (ERR_PEER_CLOSED): it is dropped and the one below gets the key. */
 static void focus_drop(unsigned i)
 {
+    if (focus[i] == alt_owner)
+        alt_leave();
     jam_handle_close(focus[i]);
     for (unsigned j = i; j + 1 < nfocus; j++)
         focus[j] = focus[j + 1];
@@ -407,7 +581,7 @@ static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, 
     }
     /* Scrollback: Shift+PageUp/Down on a keyboard, PageUp/Down on a terminal. */
     bool page = usage == 0x4b || usage == 0x4e;
-    if (page && (terminal || (mods & INPUT_MOD_SHIFT))) {
+    if (page && !alt_on && (terminal || (mods & INPUT_MOD_SHIFT))) {
         if (state == INPUT_KEY_UP)
             return;
         uint32_t step = rows / 2 ? rows / 2 : 1;
@@ -445,6 +619,51 @@ static status_t op_open_keys(void *ctx, handle_t *out)
     for (unsigned i = 0; i < n; i++)
         jam_channel_write(mine, &pending[i], sizeof(pending[i]), NULL, 0);
     return OK;
+}
+
+/* The alternate screen (above): entered for the focused key channel. */
+static void alt_enter(void)
+{
+    if (alt_on)
+        return;
+    alt_on = true;
+    alt_cursor = true;
+    alt_sync = false;
+    alt_x = alt_y = 0;
+    blank(alt, rows * cols, A_OUT);
+    alt_gen++;
+    alt_owner = nfocus ? focus[nfocus - 1] : HANDLE_INVALID;
+    if (alt_owner &&
+        jam_port_bind(port, alt_owner, KEY(K_ALT, alt_gen), SIG_PEER_CLOSED, PORT_BIND_ONCE) != OK)
+        alt_owner = HANDLE_INVALID;
+    dirty = true;
+}
+
+static void alt_leave(void)
+{
+    if (!alt_on)
+        return;
+    if (alt_owner)
+        jam_port_unbind(port, alt_owner, KEY(K_ALT, alt_gen));   /* may have fired already */
+    alt_owner = HANDLE_INVALID;
+    alt_on = false;
+    alt_sync = false;
+    sgr(0);
+    dirty = true;
+}
+
+/* The alternate screen's owner closed its key channel: drop it from the
+ * focus stack, which leaves the alternate screen. */
+static void alt_owner_event(uint32_t gen)
+{
+    if (!alt_on || gen != alt_gen || !alt_owner)
+        return;   /* stale: left (and maybe entered again) since */
+    for (unsigned i = 0; i < nfocus; i++)
+        if (focus[i] == alt_owner) {
+            focus_drop(i);
+            return;
+        }
+    alt_leave();
 }
 
 /* ---- input sources ------------------------------------------------------------- */
@@ -609,9 +828,11 @@ static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
     /* Kernel lines logged before this write go above it: e.g. a ktest's
      * output before the shell's summary line. */
     klog_event();
+    bool was_alt = alt_on;
     for (unsigned i = 0; i < length; i++)
         out_char(text[i]);
-    jam_serial_write(root, text, length);
+    if (!was_alt || !alt_on)   /* the alternate screen isn't mirrored to COM1 */
+        jam_serial_write(root, text, length);
     dirty = true;
     return OK;
 }
@@ -716,7 +937,8 @@ int main(int argc, char **argv)
     sb = malloc((size_t)SCROLLBACK * cols * sizeof(struct cell));
     shadow = malloc((size_t)rows * cols * sizeof(struct cell));
     shadow_cursor = malloc((size_t)rows * cols);
-    if (!sb || !shadow || !shadow_cursor) {
+    alt = malloc((size_t)rows * cols * sizeof(struct cell));
+    if (!sb || !shadow || !shadow_cursor || !alt) {
         printf("console: out of memory\n");
         return 1;
     }
@@ -724,6 +946,7 @@ int main(int argc, char **argv)
         blank(line(i), cols, A_OUT);
     memset(shadow, 0, (size_t)rows * cols * sizeof(struct cell));   /* ch 0: redraw all */
     memset(shadow_cursor, 0, (size_t)rows * cols);
+    blank(alt, rows * cols, A_OUT);
     blank(cur, cols, A_OUT);
 
     st = jam_klog_open(root, &klog);
@@ -758,6 +981,9 @@ int main(int argc, char **argv)
             case K_SOURCE:
                 if (i < MAX_SOURCES)
                     source_event(i);
+                break;
+            case K_ALT:
+                alt_owner_event(i);
                 break;
             }
         } else if (st != ERR_TIMED_OUT) {
