@@ -22,7 +22,15 @@ still loaded); arch_thread_switch calls aspace_switch(prev->aspace,next->aspace)
 aspace_fault takes the region mutex, so never hold it (or any spinlock) across a user copy;
 #PF err W->ASPACE_WRITE, I/D->ASPACE_EXEC else READ; ERR_OUT_OF_RANGE from aspace_fault =
 kill (bus error); vmar_create_for(as) for SR_SELF_VMAR; userboot passes ASPACE_CAN_* bits.
-Track A still running.
+**Track A MERGED 2026-09-29** (syscall.S, isr.S rewrite with swapgs + paranoid
+IST entry, uentry.c, usercopy.S + __ex_table, fpu.c XSAVE, SMEP/SMAP/UMIP; main = 107/107 +
+stress at 4+8, all crash tests incl. testsmap/testsmep, and 107/107 with -smap,-smep).
+Phase-2 notes from A: user thread = t->aspace + fpu_ustate_alloc(t) + stack_top, then
+arch_enter_user(entry, stack, arg0, arg1); return_to_user_work() and kill_current() in
+uentry.c currently thread_exit() -> replace with process kill; test CR3 hooks
+(#ifndef JAM_NO_KTESTS) in arch_thread_switch/syscall_entry_c/trap.c; FS/KERNEL_GS bases
+zeroed at entry (no TLS yet); aspace teardown must wait until no CPU has it loaded.
+**Phase 1 complete. Next: phase 2.**
 
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
