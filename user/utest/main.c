@@ -7,14 +7,20 @@
  * page, handle and thread, a runaway child hits its job's limits and gets
  * ERR_NO_MEMORY / ERR_NO_RESOURCES (no panic), FPU/SSE/AVX state survives
  * preemption, and many threads come and go. M6: the null and drvtest
- * drivers (drivers/) run as processes and talk through <idl/null.h>.
+ * drivers (drivers/) run as processes and talk through <idl/null.h>;
+ * with devmgr (init hands us its channel, SR_DEVMGR): the edu driver
+ * process it bound, called through <idl/edu.h>, killed in the middle of a
+ * DMA, and what a driver's handles can't do. The devmgr tests skip
+ * themselves without devmgr or the device (edu is QEMU's).
  *
  * Children are this same program started with a mode ("utest nullderef",
  * see child.c), each in a job of its own so its usage can be read exactly.
  * One line per test ("utest: <name> ok"); the summary also goes into the
  * kernel's RESULTS box. Exit code 0 when everything passed. */
 #include <os.h>
+#include <devmgr.h>
 #include <idl/null.h>
+#include <check/edu_check.h>
 #include "utest.h"
 
 #define MS 1000000ull
@@ -852,6 +858,212 @@ static bool t_startup_message(void)
     return true;
 }
 
+/* ---- devmgr and the edu driver process (M6 phase 2) ------------------------------------ */
+
+#define EDU_VENDOR 0x1234
+#define EDU_DEVICE 0x11e8
+#define CMD_BME    0x04
+
+/* devmgr's channel, or 0 (with a line saying the test is skipped). */
+static handle_t devmgr(void)
+{
+    handle_t dm = startup_handle(SR_DEVMGR);
+    if (!dm)
+        printf("utest: %s: no devmgr channel (not started by init?): skipped\n", cur);
+    return dm;
+}
+
+static status_t dm_call(handle_t dm, uint32_t op, uint16_t vendor, uint16_t device,
+                        struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
+{
+    return devmgr_call(dm, op, vendor, device, 0, r, hs, hs ? DEVMGR_MAX_HANDLES : 0, nh,
+                       now() + 30 * S);
+}
+
+/* The edu protocol end to end: utest -> devmgr's edu driver process. */
+static bool t_edu_process(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    struct devmgr_rep r;
+    if (!dm)
+        return true;
+    status_t st = dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no edu device (not QEMU?): skipped\n", cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    CHECK_EQ(nh, 1);
+    struct edu_check_result res;
+    CHECK_ST(edu_check(hs[0], now() + 60 * S, &res), OK);
+    char line[160];
+    int n = snprintf(line, sizeof(line),
+                     "edu (process): factorial(10)=%u ok, DMA 4 KiB round trip ok in %lu us, "
+                     "MSI -> driver in %lu us",
+                     res.fact10, (unsigned long)(res.dma_ns / 1000),
+                     (unsigned long)(res.msi_ns / 1000));
+    jam_debug_report(line, (uint64_t)n);
+    CHECK_ST(jam_handle_close(hs[0]), OK);
+    /* What devmgr must refuse. */
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, 0x1234, 0x0bad, &r, hs, &nh), ERR_NOT_FOUND);
+    CHECK_ST(dm_call(dm, 0x00030063u, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), ERR_NOT_SUPPORTED);
+    CHECK_ST(dm_call(dm, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    CHECK(r.a >= 1);   /* edu at least */
+    return true;
+}
+
+/* Killing the edu driver process while its DMA runs: Bus Master Enable
+ * goes off, the pinned buffer and everything else charged to its job are
+ * gone, its MSI vector is free (devmgr can make a new interrupt object for
+ * the function: a live one would be ERR_ALREADY_BOUND), and a fresh driver
+ * works. */
+static bool t_edu_killed_mid_dma(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    struct devmgr_rep r;
+    if (!dm)
+        return true;
+    status_t st = dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no edu device (not QEMU?): skipped\n", cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    handle_t ch = hs[0];
+    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
+    CHECK_EQ(nh, 3);
+    handle_t proc = hs[0], job = hs[1], dev = hs[2];
+
+    uint64_t addr = 0;
+    uint32_t cmd = 0, f = 0;
+    CHECK_ST(edu_dma_start_until(ch, now() + 10 * S, 4096, &addr), OK);   /* running now */
+    CHECK(addr && addr < (1ull << 32));
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    CHECK(cmd & CMD_BME);
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
+    uint64_t t0 = now();
+    CHECK_ST(dm_call(dm, DEVMGR_KILL, EDU_VENDOR, EDU_DEVICE, &r, NULL, NULL), OK);
+    printf("utest: %s: killed mid-DMA, dead %lu us later\n", cur,
+           (unsigned long)((now() - t0) / 1000));
+    struct process_info info;
+    CHECK_ST(jam_process_get_info(proc, &info), OK);
+    CHECK_EQ(info.state, PROCESS_DEAD);
+    CHECK(info.killed);
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    CHECK(!(cmd & CMD_BME));                                  /* bus mastering off */
+    if (!job_is_empty(job))                                   /* pins, VMOs, threads: gone */
+        return false;
+    CHECK_ST(edu_factorial_until(ch, now() + 5 * S, 3, &f), ERR_PEER_CLOSED);
+    CHECK_ST(jam_pci_config_write(dev, 0x3c, 1, 0), ERR_ACCESS_DENIED);   /* a read-only view */
+    CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    CHECK_ST(jam_handle_close(dev), OK);
+
+    /* A new driver: new vector, new dma_cap (bus mastering back on), works. */
+    CHECK_ST(dm_call(dm, DEVMGR_REBIND, EDU_VENDOR, EDU_DEVICE, &r, NULL, NULL), OK);
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
+    CHECK_ST(edu_factorial_until(hs[0], now() + 10 * S, 10, &f), OK);
+    CHECK_EQ(f, 3628800);
+    CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * S, 4096), OK);
+    CHECK_ST(jam_handle_close(hs[0]), OK);
+    return true;
+}
+
+/* A capability's config offset (the standard list), or 0. */
+static uint32_t find_cap(handle_t dev, uint32_t id)
+{
+    uint32_t p = 0, v = 0;
+    if (jam_pci_config_read(dev, 0x34, 1, &p) != OK)
+        return 0;
+    for (int guard = 0; p >= 0x40 && guard < 48; guard++) {
+        p &= ~3u;
+        if (jam_pci_config_read(dev, p, 2, &v) != OK)
+            return 0;
+        if ((v & 0xff) == id)
+            return p;
+        p = v >> 8;
+    }
+    return 0;
+}
+
+/* What a driver's handles can't do, with a function that has MSI-X (the
+ * same handles devmgr gives its driver, minus the interrupt and the
+ * dma_cap): map its MSI-X table or PBA page, turn on bus mastering, make a
+ * dma_cap or an interrupt object, write its MSI-X capability, reach any
+ * other function (no RES_PCI, no slicing), get DMA memory or pin without
+ * a dma_cap. */
+static bool t_driver_handle_limits(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES], x, v;
+    uint32_t nh = 0;
+    struct devmgr_rep r;
+    if (!dm)
+        return true;
+    status_t st = dm_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, &r, hs, &nh);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no function with MSI-X: skipped\n", cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    CHECK(nh >= 2);
+    handle_t dev = hs[0];
+    uint32_t mask = r.a, cap = find_cap(dev, 0x11), tab = 0, pba = 0, ctl = 0, cmd = 0;
+    CHECK(cap != 0);
+    CHECK_ST(jam_pci_config_read(dev, cap + 4, 4, &tab), OK);
+    CHECK_ST(jam_pci_config_read(dev, cap + 8, 4, &pba), OK);
+    CHECK_ST(jam_pci_config_read(dev, cap + 2, 2, &ctl), OK);
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    /* The MSI-X table and PBA pages, in whichever BAR each lives. */
+    const uint32_t where[2] = { tab, pba };
+    for (int i = 0; i < 2; i++) {
+        uint32_t bir = where[i] & 7, page = where[i] & ~0xfffu;
+        CHECK(bir < 6 && (mask & (1u << bir)));
+        handle_t bar = hs[1 + __builtin_popcount(mask & ((1u << bir) - 1))];
+        CHECK_ST(jam_vmo_create_physical(bar, page, 4096, VMO_CACHE_UC, &x), ERR_ACCESS_DENIED);
+        /* The rest of the BAR is the driver's: page 0, unless it holds the
+         * table or the PBA itself. */
+        bool zero_protected = page == 0 || ((where[1 - i] & 7) == bir &&
+                                            (where[1 - i] & ~0xfffu) == 0);
+        if (!zero_protected) {
+            CHECK_ST(jam_vmo_create_physical(bar, 0, 4096, VMO_CACHE_UC, &x), OK);
+            CHECK_ST(jam_handle_close(x), OK);
+        }
+        CHECK_ST(jam_resource_create(bar, RES_MMIO, 0, 4096, &x), ERR_ACCESS_DENIED);
+    }
+    /* Config: the kernel's bits and capabilities are read-only. */
+    CHECK_ST(jam_pci_config_write(dev, 0x04, 2, cmd ^ CMD_BME), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_pci_config_write(dev, cap + 2, 2, ctl), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_pci_config_write(dev, 0x10, 4, 0xffffffffu), ERR_ACCESS_DENIED);   /* BAR 0 */
+    /* No RIGHT_MANAGE. */
+    CHECK_ST(jam_pci_bus_master(dev, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_dma_cap_create(dev, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_interrupt_create_msi(dev, 0, IRQ_MSIX, &x), ERR_ACCESS_DENIED);
+    /* No other function: its handle is one function, and can't be sliced. */
+    struct pci_dev_info info;
+    CHECK_ST(jam_pci_enum(dev, 0, &info), ERR_WRONG_TYPE);
+    CHECK_ST(jam_pci_device_open(dev, 0, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_resource_create(dev, RES_PCI, 0, 0, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_pci_bar_resource(dev, tab & 7, &x), ERR_ACCESS_DENIED);
+    /* No dma_cap: no DMA memory, no pins. */
+    CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, HANDLE_INVALID, &x),
+             ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmo_create(4096, DRV_VMO_DMA32, dev, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    uint64_t addr = 0, pin = 0;
+    CHECK_ST(jam_vmo_pin(v, HANDLE_INVALID, 0, 4096, &addr, &pin), ERR_BAD_HANDLE);
+    CHECK_ST(jam_vmo_pin(v, dev, 0, 4096, &addr, &pin), ERR_WRONG_TYPE);
+    CHECK_ST(jam_handle_close(v), OK);
+    for (uint32_t i = 0; i < nh; i++)
+        CHECK_ST(jam_handle_close(hs[i]), OK);
+    return true;
+}
+
 static const struct {
     const char *name;
     bool (*fn)(void);
@@ -872,6 +1084,9 @@ static const struct {
     { "many_threads", t_many_threads },
     { "driver_processes", t_driver_processes },
     { "driver_killed", t_driver_killed },
+    { "edu_process", t_edu_process },
+    { "edu_killed_mid_dma", t_edu_killed_mid_dma },
+    { "driver_handle_limits", t_driver_handle_limits },
 };
 
 int main(int argc, char **argv)

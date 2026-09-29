@@ -19,6 +19,8 @@ enum startup_role {
     SR_STDOUT,      /* channel; M5 libos prints through debug_write instead */
     SR_BOOTFS,      /* M5: a VMO of the whole bootfs image, read-only */
     SR_RESOURCE,    /* M6: a resource (init: the root; devmgr: RES_PCI) */
+    SR_DEVMGR,      /* M6: a channel to devmgr (devmgr: its server end; the
+                     * programs init starts: a client end, <devmgr.h>) */
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };
 
