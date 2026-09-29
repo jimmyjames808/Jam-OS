@@ -7,8 +7,12 @@
 # usage: the HID Keyboard/Keypad page (0x07) usage id (4 = a ... 0x39 =
 # Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0xe0..0xe7 modifiers).
 # state: INPUT_KEY_UP / DOWN / REPEAT; mods: INPUT_MOD_* (the HID boot
-# report's modifier byte); codepoint: the character in the US layout
-# after modifiers, or 0 (not a printing key). See <jam/abi.h> "input".
+# report's modifier byte); codepoint: the character in the US layout with
+# Shift, Caps Lock and Num Lock applied (Ctrl, Alt and GUI are NOT: Ctrl+C
+# is usage 0x06, codepoint 'c', a CTRL bit in mods), Enter '\n', Tab
+# '\t', Backspace '\b', Escape 0x1b; 0 for keys that type nothing
+# (arrows, F-keys, modifiers, locks). Ctrl+Alt+Del is just usage 0x4c DOWN
+# with CTRL and ALT set: the console decides. See <jam/abi.h> "input".
 
 protocol input 11
 
