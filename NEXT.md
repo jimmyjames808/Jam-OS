@@ -88,7 +88,7 @@
   Fixed in 0.0.16-m6: upper half 0 -> size from the low half; implausible sizes (not a power of two,
   > 1 TiB, wrapping, misaligned) are logged and left UNSIZED; the utest tries each MSI-X function until
   one's table BAR can be handed out and prints which it used.
-  **PC 0.0.16-m6: init + utest 19/19 passed** (VMD fix confirmed).
+  **PC 0.0.16-m6: init + utest 19/19 passed** (VMD fix confirmed); drivers=kernel: 1 driver bound + stopped, 0 skipped.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
   console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional
