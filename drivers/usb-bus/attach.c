@@ -81,7 +81,12 @@ static void dev_place(struct usbdev *d, int parent, uint8_t port, uint8_t speed)
 
 /* ---- the steps -------------------------------------------------------------- */
 
-/* Enable Slot, with the slot type of the root port's protocol. */
+/* Enable Slot, with the slot type of the root port's protocol. A success
+ * with a slot id outside 1..MaxSlotsEn is a controller fault and fails the
+ * step; a real id (not 0, which names no slot) is disabled first, or the
+ * controller would keep it enabled with nobody tracking it. It never
+ * reaches d->slot: dev_free would write its DCBAA entry, which for an id
+ * past MaxSlotsEn is outside the array. */
 static bool enable_slot(struct attach *a)
 {
     struct hc *h = &g_hc;
@@ -93,8 +98,15 @@ static bool enable_slot(struct attach *a)
             slot_type = h->proto[i].slot_type;
     uint32_t slot = 0;
     uint32_t cc = hc_command(h, 0, 0, 0, TRB_TYPE(TRB_ENABLE_SLOT) | slot_type << 16, &slot, 1000);
-    if (cc != CC_SUCCESS || !slot || slot > h->max_slots_en)
+    if (cc != CC_SUCCESS)
         return failed(a, "Enable Slot", cc);
+    if (!slot || slot > h->max_slots_en) {
+        drv_log("usb %s: Enable Slot gave slot %u (MaxSlotsEn %u)", d->path, slot,
+                h->max_slots_en);
+        if (slot && !disable_slot_id(d->path, slot))
+            drv_log("usb %s: slot %u stays enabled", d->path, slot);
+        return failed(a, "Enable Slot", CC_BAD_SLOT);
+    }
     d->slot = (uint8_t)slot;
     return true;
 }

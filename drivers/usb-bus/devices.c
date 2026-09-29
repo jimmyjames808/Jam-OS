@@ -112,15 +112,17 @@ void dev_free(struct usbdev *d, bool slot_disabled)
     d->used = false;
 }
 
+bool disable_slot_id(const char *path, uint32_t slot)
+{
+    uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_DISABLE_SLOT) | slot << 24, NULL, 1000);
+    if (cc != CC_SUCCESS)
+        drv_log("usb %s: Disable Slot %u: %s", path, slot, cc_str(cc));
+    return cc == CC_SUCCESS || cc == 11;   /* 11: Slot Not Enabled */
+}
+
 bool disable_slot(struct usbdev *d)
 {
-    if (!d->slot)
-        return true;
-    uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_DISABLE_SLOT) | ((uint32_t)d->slot << 24),
-                             NULL, 1000);
-    if (cc != CC_SUCCESS)
-        drv_log("usb %s: Disable Slot %u: %s", d->path, d->slot, cc_str(cc));
-    return cc == CC_SUCCESS || cc == 11;   /* 11: Slot Not Enabled */
+    return !d->slot || disable_slot_id(d->path, d->slot);
 }
 
 /* ---- contexts --------------------------------------------------------------- */

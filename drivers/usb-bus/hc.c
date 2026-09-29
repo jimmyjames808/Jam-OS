@@ -49,6 +49,7 @@ const char *cc_str(uint32_t cc)
     case 36: return "Split Transaction Error";
     case CC_TIMEOUT: return "timed out";
     case CC_GONE: return "device gone";
+    case CC_BAD_SLOT: return "slot id out of range";
     default: return "error";
     }
 }

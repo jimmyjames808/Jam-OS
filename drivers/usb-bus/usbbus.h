@@ -163,6 +163,7 @@ static inline uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] <<
 /* ours, never the controller's */
 #define CC_TIMEOUT      256
 #define CC_GONE         257
+#define CC_BAD_SLOT     258   /* Enable Slot "succeeded" with a slot id outside 1..MaxSlotsEn */
 
 #define RING_TRBS 256   /* one 4 KiB segment; the last is the Link TRB */
 
@@ -413,6 +414,7 @@ struct usbdev *dev_alloc(void);           /* a cleared entry, NULL if all are us
  * the slot, so its DMA pages are kept (leaked) rather than reused. */
 void dev_free(struct usbdev *d, bool slot_disabled);
 bool disable_slot(struct usbdev *d);      /* true once the controller let go of the slot */
+bool disable_slot_id(const char *path, uint32_t slot);   /* the same for a bare slot id */
 volatile uint32_t *in_ctx(struct usbdev *d, unsigned index);    /* 0 control, 1 slot, dci+1 */
 volatile uint32_t *out_ctx(struct usbdev *d, unsigned index);   /* 0 slot, dci */
 void in_reset(struct usbdev *d);          /* input context: cleared, slot copied from output */
