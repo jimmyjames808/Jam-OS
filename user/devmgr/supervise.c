@@ -90,7 +90,10 @@ void sup_died(struct binding *b, uint32_t gen)
             forget_driver(b);
             b->state = DEVMGR_SUP_RESTARTING;
             b->console_wait = true;
-            b->restart_at = console && usb_console_gone(b) ? DEADLINE_NEVER : now();
+            /* Try at once: if the console is still down, usb_handles says
+             * ERR_SHOULD_WAIT and sup_run_due parks it for SET_CONSOLE. (A
+             * SET_CONSOLE may well have come before this death.) */
+            b->restart_at = now();
             b->input_gen = 0;
             say(false, "devmgr: %s %s: its console went away: reconnecting", bdf(b), b->path);
             return;
