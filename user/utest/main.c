@@ -1064,6 +1064,10 @@ static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
     CHECK_EQ(nh, 2);   /* process and job: no hardware */
     *proc = hs[0];
     CHECK_ST(jam_handle_close(hs[1]), OK);
+    /* No function behind it: DRIVER_VIEW must not open PCI function 0. */
+    uint32_t vh = 0;
+    CHECK_ST(dm_call(dm, DEVMGR_DRIVER_VIEW, TV, TD, &r, hs, &vh), ERR_NOT_FOUND);
+    CHECK_EQ(vh, 0);
     return true;
 }
 

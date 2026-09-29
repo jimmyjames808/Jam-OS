@@ -309,7 +309,10 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         }
         return;
     case DEVMGR_DRIVER_VIEW: {
-        if (!b) {
+        /* A PCI function's only: a USB or soft binding has no function (its
+         * index 0 would open PCI function 0, and a reused USB binding would
+         * then lose that RIGHT_MANAGE handle). */
+        if (!b || b->kind != BIND_PCI) {
             r->status = ERR_NOT_FOUND;
             return;
         }
