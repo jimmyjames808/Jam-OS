@@ -257,6 +257,29 @@ void serial_panic(void)
         put_sync((char)c);
 }
 
+/* The run-time switch, for the benchmark. Turning it off first drains the
+ * ring synchronously with the lock held and the transmit interrupt off, so
+ * synchronous writes that follow can't overtake or interleave with bytes
+ * still queued (review finding 4). */
+void serial_set_async(bool on)
+{
+    if (!present)
+        return;
+    uint64_t f = spin_lock_irqsave(&tx_lock);
+    if (!on && serial_async) {
+        outb(COM1 + REG_IER, 0);
+        thre_on = false;
+        int c;
+        while ((c = serial_ring_get(&tx)) >= 0)
+            put_sync((char)c);
+    }
+    serial_async = on;
+    if (on)
+        set_thre_locked();
+    spin_unlock_no_resched(&tx_lock);
+    irq_restore(f);
+}
+
 uint32_t serial_pending(void)
 {
     return serial_ring_used(&tx);

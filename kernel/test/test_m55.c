@@ -140,10 +140,9 @@ KTEST(spin_idle_skips_ipi)
     sched_idle_spin_ns = keep;
     kprintf("spin-idle: %lu of %d wakeups polled with a 50 ms window, %lu with none\n",
             polled_on, PP_ROUNDS, polled_off);
-    /* Alone in QEMU ~90% poll; with the Mac busy, TCG's vCPUs stall and
-     * the window runs out in host time (~1/3). The PC benchmark measures
-     * the real share; here the point is "many" against "none". */
-    KT_ASSERT(polled_on >= PP_ROUNDS / 10);
+    /* With the review fix (the spin leaves idle_polling set for
+     * schedule() to clear) 199-200 of 200 poll even with the Mac busy. */
+    KT_ASSERT(polled_on >= PP_ROUNDS * 9 / 10);
     KT_EQ(polled_off, 0);
 }
 
@@ -586,14 +585,23 @@ static void far_sleeper(void *arg)
 KTEST(oneshot_far_deadline_does_not_wrap)
 {
     uint64_t now = rdtsc();
-    kprintf("far-deadline: uptime_to_tsc(UINT64_MAX-1) = %lx, rdtsc = %lx\n",
-            uptime_to_tsc(UINT64_MAX - 1), now);
-    /* Pick a deadline ~2^64 ns out whose TSC value wraps to about one
-     * second ago (the wrapped value moves down 1:1 with the deadline). */
-    uint64_t w = uptime_to_tsc(UINT64_MAX - 1);
-    far_deadline = UINT64_MAX - 1;
-    if (w != UINT64_MAX && w > now)   /* wrapped: aim the wrap into the past */
-        far_deadline -= (w - now) / tsc_hz * 1000000000ull + 1000000000ull;
+    /* The unsaturated conversion, exactly (128-bit) and as the old code
+     * computed it (wrapping mod 2^64). */
+    uint64_t ns = UINT64_MAX - 1;
+    unsigned __int128 exact = (unsigned __int128)(ns / 1000000000ull) * tsc_hz + uptime_to_tsc(0);   /* = boot TSC */
+    far_deadline = ns;
+    if (exact > UINT64_MAX) {
+        /* This TSC is fast enough to wrap: pick a deadline whose wrapped
+         * value lands about one second ago (it moves 1:1 with the
+         * deadline's whole seconds). A slower TSC (QEMU can run below
+         * 2 GHz) never wraps; then UINT64_MAX - 1 itself is the test. */
+        uint64_t w = (uint64_t)exact;
+        if (w > now)
+            far_deadline -= ((w - now) / tsc_hz + 1) * 1000000000ull;
+        else
+            far_deadline -= 1000000000ull;
+    }
+    kprintf("far-deadline: tsc_hz %lu, wraps %d, rdtsc %lx\n", tsc_hz, exact > UINT64_MAX, now);
     kprintf("far-deadline: deadline %lx ns -> tsc %lx\n", far_deadline,
             uptime_to_tsc(far_deadline));
     uint32_t cpu = cpu_count > 1 ? 1 : 0;
@@ -688,6 +696,10 @@ KTEST(pcid_slot_bookkeeping)
     KT_EQ(pcid_test_decide(2, 1000, 2, false), 0);
     KT_EQ(pcid_test_decide(2, 1000, 2, false), 0);
     KT_EQ(pcid_test_decide(2, 0, 0, false), 0);
+    /* Switched back on: the first kernel-table load flushes PCID 0, which
+     * held the user address space's entries; the next one keeps. */
+    KT_EQ(pcid_test_decide(2, 0, 0, true), 0);
+    KT_EQ(pcid_test_decide(2, 0, 0, true), 0 | KEEP);
     /* Flipping the real switch makes every CPU forget its slots. */
     if (pcid_usable()) {
         KT_EQ(pcid_test_decide(3, 1000, 2, true), 1);

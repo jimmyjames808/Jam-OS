@@ -249,7 +249,7 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_AFFINEPAIR: sched_affine_pair = v; break;
     case SW_KMCACHE:    heap_percpu = v; break;
     case SW_ONESHOT:    lapic_oneshot = v; break;
-    case SW_SERIALIRQ:  serial_async = v; break;
+    case SW_SERIALIRQ:  serial_set_async(v); break;
     case SW_FPUOPT:     fpu_opt = v; break;
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     default:            break;

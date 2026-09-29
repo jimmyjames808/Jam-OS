@@ -59,6 +59,11 @@ struct pcid_cpu {
     uint64_t gen[PCID_SLOTS];
     uint32_t victim;
     uint32_t epoch;
+    /* PCID 0 may hold user entries: a user address space was loaded as
+     * PCID 0 (the switch off). The next PCID-0 load with the switch on
+     * must flush, or kernel threads would keep translations to user pages
+     * that later unmaps no longer shoot down here (review finding 3). */
+    bool     zero_dirty;
     uint64_t kept, flushed;   /* statistics */
 } __attribute__((aligned(64)));
 
@@ -112,9 +117,14 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const volatile
     }
     if (!sw || !id) {
         /* PCID 0. The kernel's tables have no user half, so with the
-         * switch on nothing tagged 0 can be stale; off, every load flushes
-         * as in M5. */
-        *keep = sw && !reset;
+         * switch on nothing tagged 0 can be stale unless a user address
+         * space was loaded as PCID 0 while the switch was off; off, every
+         * load flushes as in M5. */
+        if (!sw && id)
+            pc->zero_dirty = true;
+        *keep = sw && !reset && !pc->zero_dirty;
+        if (sw)
+            pc->zero_dirty = false;
         return 0;
     }
     uint64_t g = __atomic_load_n(gen, __ATOMIC_SEQ_CST);

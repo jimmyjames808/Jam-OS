@@ -19,6 +19,7 @@ void serial_write(const char *s, size_t len);
 void serial_start_irq(void);
 void serial_poll(void);
 void serial_panic(void);
+void serial_set_async(bool on);   /* the benchmark's switch; off drains the ring first */
 extern volatile bool serial_async;
 extern volatile uint64_t serial_dropped, serial_irqs, serial_rescues;
 /* Bytes queued, not yet in the UART; whether output is interrupt-driven
