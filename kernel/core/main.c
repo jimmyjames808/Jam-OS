@@ -169,6 +169,25 @@ _Noreturn static void kmain_stage2(void *arg)
             ok &= userboot_run_init(60, "xhcitest");
         }
     }
+    /* "Visual demo" boot entry: init starts bin/demo, which draws on the
+     * framebuffer itself (a WC physical VMO from the root resource) with
+     * every CPU. The text console stops drawing meanwhile and redraws when
+     * it's over, so the RESULTS box shows. */
+    if (cmdline_has("demo")) {
+        const struct boot_framebuffer *f = &boot->fb;
+        if (!f->virt || f->bpp != 32) {
+            report("demo: needs a 32-bit framebuffer");
+            ok = false;
+        } else {
+            char arg[160];
+            ksnprintf(arg, sizeof(arg), "demo:%lx:%u:%u:%u:%u:%u:%u:%u", f->phys, f->width,
+                      f->height, f->pitch, f->red_shift, f->green_shift, f->blue_shift,
+                      cpu_count);
+            fbcon_mute(true);
+            ok &= userboot_run_init(180, arg);
+            fbcon_mute(false);
+        }
+    }
     sched_print_stats();
     if (serial_dropped || serial_irq_broken())
         report("serial: %lu characters dropped (ring full)%s", serial_dropped,

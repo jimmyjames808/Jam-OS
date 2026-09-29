@@ -24,6 +24,7 @@ struct cell {
 
 static struct boot_framebuffer fb;
 static bool ready;
+static volatile bool muted;   /* a program owns the screen (the visual demo) */
 static uint32_t cols, rows, cx, cy;
 static uint32_t cur_fg, cur_bg;
 static struct cell cells[MAX_ROWS][MAX_COLS];
@@ -38,6 +39,8 @@ static uint32_t native(uint32_t rgb)
 
 static void draw_cell(uint32_t col, uint32_t row)
 {
+    if (muted)
+        return;   /* the text is still kept: fbcon_mute(false) redraws it */
     const struct cell *c = &cells[row][col];
     const uint8_t *glyph = font_8x16[(uint8_t)c->ch & 0x7f];
     uint8_t *line = (uint8_t *)fb.virt + (uint64_t)row * GLYPH_H * fb.pitch + col * GLYPH_W * 4;
@@ -52,6 +55,8 @@ static void draw_cell(uint32_t col, uint32_t row)
 
 static void redraw_all(void)
 {
+    if (muted)
+        return;
     for (uint32_t r = 0; r < rows; r++)
         for (uint32_t c = 0; c < cols; c++)
             draw_cell(c, r);
@@ -184,4 +189,16 @@ uint64_t fbcon_time_redraw(uint64_t (*now)(void))
 void fbcon_force_unlock(void)
 {
     spin_force_unlock(&lock);
+    muted = false;   /* the panic screen always shows */
+}
+
+void fbcon_mute(bool on)
+{
+    if (!ready)
+        return;
+    uint64_t f = spin_lock_irqsave(&lock);
+    muted = on;
+    if (!on)
+        redraw_all();
+    spin_unlock_irqrestore(&lock, f);
 }

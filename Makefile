@@ -134,7 +134,7 @@ USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack -T user
 LIBGCC      := $(shell $(CC) -print-libgcc-file-name)
 UINC_HDRS   := abi.h bootfs.h startup.h status.h syscall_nums.h
 UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
-USER_PROGS  := init utest devmgr
+USER_PROGS  := init utest devmgr demo
 UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <jam/boot.h>
@@ -16,3 +17,6 @@ uint64_t fbcon_time_redraw(uint64_t (*now)(void));
 uint64_t fbcon_phys(uint64_t *len);
 /* Drop any console lock state so panic output always gets through. */
 void fbcon_force_unlock(void);
+/* Stop drawing (the text is still recorded) while a program draws on the
+ * framebuffer itself; unmuting redraws everything. A panic unmutes. */
+void fbcon_mute(bool on);
