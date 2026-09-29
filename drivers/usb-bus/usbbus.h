@@ -1,10 +1,12 @@
 /* usb-bus internals, shared by its files: the xHCI host controller
- * (hc.c), the USB device model (devices.c: the device table and contexts;
- * control.c: control transfers and descriptors; intr.c: interrupt-IN
- * endpoints; config.c: configurations and interfaces; report.c: log and
- * RESULTS lines), enumeration (attach.c), hubs (hub.c), root ports
- * (rootport.c), the port work the main loop drives (work.c), and the
- * servers plus the main loop (serve.c). See serve.c for the overview.
+ * (hc.c; ring.c: the DMA page pool and transfer rings), the USB device
+ * model (devices.c: the device table and contexts; control.c: control
+ * transfers and descriptors; intr.c: interrupt-IN endpoints; config.c:
+ * configurations and interfaces; report.c: log and RESULTS lines),
+ * enumeration (attach.c), hubs (hub.c), root ports (rootport.c), the port
+ * work the main loop drives (work.c), the `usb` protocol (iface.c), and
+ * the channels, the `usbbus` protocol and the main loop (serve.c). See
+ * serve.c for the overview.
  * Only <jam/driver.h> and the generated IDL headers are included, like
  * every driver. */
 #pragma once
@@ -16,6 +18,8 @@
 static inline void zero(void *p, uint64_t n) { __builtin_memset(p, 0, n); }
 static inline void copy(void *d, const void *s, uint64_t n) { __builtin_memcpy(d, s, n); }
 static inline uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static inline uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
+static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 
 /* ---- limits ---------------------------------------------------------------- */
 
@@ -412,8 +416,8 @@ void hc_release(struct hc *h, bool quiet);
 uint32_t hc_portsc(struct hc *h, uint32_t port);
 void hc_portsc_write(struct hc *h, uint32_t port, uint32_t set);
 bool hc_port_is_usb3(struct hc *h, uint32_t port);
-const char *cc_str(uint32_t cc);
 
+/* ring.c: the page pool (hc.c sets it up) and transfer rings. */
 int   pool_alloc(struct hc *h);            /* a zeroed page, -1 if none */
 void  pool_free(struct hc *h, int page);
 void *pool_va(struct hc *h, int page);
@@ -448,6 +452,7 @@ extern uint32_t g_attached, g_detached, g_failed, g_report_generation;
 extern bool g_first_report_done;
 void devices_reset(void);                 /* the counters and ids, for a fresh start */
 struct usbdev *dev_by_slot(uint8_t slot);
+struct usbdev *dev_find(uint32_t id);     /* by id: a live one (not gone), else NULL */
 int  dev_index(const struct usbdev *d);
 struct usbdev *child_at(int parent, uint8_t port);   /* parent -1: a root port */
 struct usbdev *dev_alloc(void);           /* a cleared entry, NULL if all are used */
@@ -508,6 +513,7 @@ void dev_line(struct usbdev *d, bool report_it, const char *prefix);   /* report
 void dev_log_detail(struct usbdev *d);
 void dev_set_path(struct usbdev *d, const struct usbdev *parent, uint8_t port);   /* "9.1" */
 const char *speed_long(uint8_t speed);
+const char *cc_str(uint32_t cc);          /* a completion code's name, from the xHCI spec */
 
 /* ---- attach.c -------------------------------------------------------------- */
 
@@ -542,11 +548,32 @@ bool usb_busy(void);                      /* port or hub work pending */
 
 void serve_packet(struct hc *h, const struct port_packet *p);
 /* Channels: interface channels (the usb protocol) and report channels. */
-void chan_close(int i);
 #define CHAN_IFACE   1
 #define CHAN_REPORTS 2
+/* A channel usb-bus serves: an interface's `usb` channel, or a report
+ * channel of an open interrupt-IN endpoint. */
+struct chan {
+    handle_t h;          /* our end; HANDLE_INVALID: a free slot */
+    uint8_t kind;        /* CHAN_IFACE or CHAN_REPORTS */
+    uint8_t a;           /* CHAN_IFACE: interface number; CHAN_REPORTS: DCI */
+    bool pending;        /* may have something to read: the main loop serves it */
+    uint16_t gen;        /* bumped at every add and close: in its port key */
+    uint32_t dev_id;     /* the device's id */
+};
+/* Serve h (kind CHAN_*, of device dev_id; a: its interface or DCI): its
+ * slot, -1 if there is none or the port can't watch it (h stays the
+ * caller's then). */
+int  chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a);
+void chan_close(int i);
+handle_t chan_handle(int i);   /* HANDLE_INVALID for a free slot or a bad index */
 void serve_iface_gone(uint32_t dev_id);   /* close every channel of a device */
 void serve_device_ready(struct usbdev *d); /* tell devmgr about its interfaces */
 /* A report from an interrupt IN endpoint for a client: returns false if the
  * client's channel is gone (the caller closes the endpoint). */
 bool serve_report(int chan, const void *data, uint32_t len, bool *dropped);
+
+/* ---- iface.c --------------------------------------------------------------- */
+
+/* One request of the `usb` protocol on interface channel c; OK, or the
+ * channel's read status (ERR_SHOULD_WAIT: nothing queued). */
+status_t iface_serve_one(struct chan *c);

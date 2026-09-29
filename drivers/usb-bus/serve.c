@@ -9,12 +9,14 @@
  * pending, so a wait deep inside an enumeration (hc_wait) never runs a
  * request; the main loop serves them between steps.
  *
- * Files: hc.c the controller (registers, rings, commands, events);
- * devices.c the device table and contexts; control.c control transfers
- * and descriptors; intr.c interrupt-IN endpoints; config.c configurations,
- * endpoints and SET_INTERFACE; report.c log and RESULTS lines; attach.c
- * enumeration and detach; hub.c hubs; rootport.c root ports; work.c the
- * port work the loop drives; this file the servers and the loop.
+ * Files: hc.c the controller (registers, bring-up, commands, events);
+ * ring.c the DMA page pool and transfer rings; devices.c the device table
+ * and contexts; control.c control transfers and descriptors; intr.c
+ * interrupt-IN endpoints; config.c configurations, endpoints and
+ * SET_INTERFACE; report.c log and RESULTS lines; attach.c enumeration and
+ * detach; hub.c hubs; rootport.c root ports; work.c the port work the loop
+ * drives; iface.c the `usb` protocol's requests; this file the channels,
+ * the `usbbus` protocol and the loop.
  *
  * devmgr: for each interface of a configured device (hubs aside) usb-bus
  * writes a `usbbus.interface_attached` message on DR_SERVE (txid 0) with
@@ -29,23 +31,11 @@
  * everything, halts and resets the controller and returns 0. Exit codes:
  * 0 clean; 1 the controller failed to come up or to stop; 2 missing
  * handles. */
-#include "usbbus.h"
-#include <idl/usb.h>
 #include <idl/usbbus.h>
+#include "usbbus.h"
 
 #define SETTLE_NS     (500 * NS_PER_MS)
 #define MAX_WAITERS   8
-
-/* A channel usb-bus serves: an interface's `usb` channel, or a report
- * channel of an open interrupt-IN endpoint. */
-struct chan {
-    handle_t h;          /* our end; HANDLE_INVALID: a free slot */
-    uint8_t kind;        /* CHAN_IFACE or CHAN_REPORTS */
-    uint8_t a;           /* CHAN_IFACE: interface number; CHAN_REPORTS: DCI */
-    bool pending;        /* may have something to read: the main loop serves it */
-    uint16_t gen;        /* bumped at every add and close: in its port key */
-    uint32_t dev_id;     /* the device's id */
-};
 
 static struct chan chans[MAX_CHANS];
 /* wait_settled requests waiting for their answer. */
@@ -58,10 +48,7 @@ static bool serve_closed;   /* DR_SERVE's peer is gone (or there was none) */
 
 /* ---- channels ------------------------------------------------------------------ */
 
-/* Serve h (kind CHAN_*, of device dev_id; a: its interface or DCI): its
- * slot, -1 if there is none or the port can't watch it (h stays the
- * caller's then). */
-static int chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a)
+int chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a)
 {
     for (int i = 0; i < MAX_CHANS; i++) {
         struct chan *c = &chans[i];
@@ -96,7 +83,7 @@ void chan_close(int i)
     chans[i].gen++;
 }
 
-static handle_t chan_handle(int i)
+handle_t chan_handle(int i)
 {
     return i >= 0 && i < MAX_CHANS ? chans[i].h : HANDLE_INVALID;
 }
@@ -138,14 +125,6 @@ bool serve_report(int c, const void *data, uint32_t len, bool *dropped)
         return true;
     }
     return st == OK;
-}
-
-static struct usbdev *dev_find(uint32_t id)
-{
-    for (int i = 0; id && i < MAX_DEVS; i++)
-        if (g_devs[i].used && g_devs[i].id == id && !g_devs[i].gone)
-            return &g_devs[i];
-    return NULL;
 }
 
 /* A new `usb` channel for interface `num` of d: our end served, the
@@ -212,227 +191,6 @@ void serve_device_ready(struct usbdev *d)
         f->devmgr_chan = c;
     }
 }
-
-/* ---- the usb protocol (one interface per channel) ---------------------------------- */
-
-static struct usbdev *ctx_dev(void *ctx, struct iface **f)
-{
-    struct chan *c = ctx;
-    struct usbdev *d = dev_find(c->dev_id);
-    *f = d ? usb_iface(d, c->a) : NULL;
-    return *f ? d : NULL;
-}
-
-static status_t cc_status(uint32_t cc)
-{
-    switch (cc) {
-    case CC_SUCCESS: return OK;
-    case CC_STALL: return ERR_NOT_SUPPORTED;   /* the device refused the request */
-    case CC_TIMEOUT: return ERR_TIMED_OUT;
-    case CC_GONE: return ERR_PEER_CLOSED;
-    case CC_PARAMETER: return ERR_INVALID_ARGS;
-    case CC_BANDWIDTH: case CC_RESOURCE: return ERR_NO_RESOURCES;
-    default: return ERR_INTERNAL;              /* a transfer error (logged) */
-    }
-}
-
-static status_t u_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *speed,
-                       uint8_t *ifnum, uint8_t *cls, uint8_t *sub, uint8_t *proto, uint8_t *nep,
-                       uint8_t *alt, uint8_t *address)
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    *vendor = d->vid;
-    *product = d->pid;
-    *speed = d->speed;
-    *ifnum = f->number;
-    *cls = f->cls;
-    *sub = f->sub;
-    *proto = f->proto;
-    *nep = f->nep;
-    *alt = f->alt;
-    *address = d->address;
-    return OK;
-}
-
-static status_t u_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_t lang,
-                                 uint16_t length, uint8_t ir, uint16_t *actual, uint8_t data[1024])
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    if (!length || length > 1024 || ir > 1)
-        return ERR_INVALID_ARGS;
-    uint32_t n = 0;
-    uint32_t cc = usb_control(d, ir ? 0x81 : 0x80, 6, (uint16_t)(type << 8 | index),
-                              ir ? f->number : lang, length, data, &n, 1000);
-    *actual = (uint16_t)n;
-    return cc_status(cc);
-}
-
-/* May this interface's client send this request? Its own interface or
- * one of its endpoints only; of the standard requests only the harmless
- * ones (the rest would change state usb-bus keeps: SET_INTERFACE goes
- * through set_interface, CLEAR_FEATURE(HALT) would desync the xHC). */
-static status_t check_request(struct iface *f, uint8_t rt, uint8_t req, uint16_t index)
-{
-    uint8_t recip = rt & 0x1f, type = (rt >> 5) & 3;
-    if (recip == 1) {
-        if ((index & 0xff) != f->number)
-            return ERR_ACCESS_DENIED;
-    } else if (recip == 2) {
-        bool mine = false;
-        for (int i = 0; i < f->nep; i++)
-            mine |= f->ep_addr[i] == (index & 0xff);
-        if (!mine)
-            return ERR_ACCESS_DENIED;
-    } else {
-        return ERR_ACCESS_DENIED;
-    }
-    if (type == 0 && !(req == 0 || req == 6 || req == 10))   /* GET_STATUS/DESCRIPTOR/INTERFACE */
-        return ERR_ACCESS_DENIED;
-    if (type == 3)
-        return ERR_ACCESS_DENIED;
-    return OK;
-}
-
-static status_t u_control_in(void *ctx, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
-                             uint16_t length, uint16_t *actual, uint8_t data[1024])
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    if (!(rt & 0x80) || length > 1024)
-        return ERR_INVALID_ARGS;
-    status_t st = check_request(f, rt, req, index);
-    if (st != OK)
-        return st;
-    uint32_t n = 0;
-    uint32_t cc = usb_control(d, rt, req, value, index, length, data, &n, 1000);
-    *actual = (uint16_t)n;
-    return cc_status(cc);
-}
-
-static status_t u_control_out(void *ctx, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
-                              uint16_t length, const uint8_t data[64])
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    if ((rt & 0x80) || length > 64)
-        return ERR_INVALID_ARGS;
-    status_t st = check_request(f, rt, req, index);
-    if (st != OK)
-        return st;
-    uint8_t buf[64];
-    __builtin_memcpy(buf, data, length);
-    uint32_t n = 0;
-    return cc_status(usb_control(d, rt, req, value, index, length, buf, &n, 1000));
-}
-
-static struct ep *iface_ep(struct usbdev *d, struct iface *f, uint8_t addr)
-{
-    for (int i = 0; i < f->nep; i++)
-        if (f->ep_addr[i] == addr) {
-            uint8_t dci = ep_dci(addr);
-            if (dci >= 2 && d->eps[dci].dci == dci)
-                return &d->eps[dci];
-        }
-    return NULL;
-}
-
-static status_t u_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *reports,
-                                    uint16_t *max_packet, uint8_t *interval_ms)
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    struct ep *e = (endpoint & 0x80) ? iface_ep(d, f, endpoint) : NULL;
-    if (!e || e->type != EPT_INTR_IN)
-        return ERR_INVALID_ARGS;
-    if (!e->configured)
-        return ERR_BAD_STATE;
-    if (e->open) {
-        /* A class driver that died and was restarted may ask before the
-         * main loop reaped its old report channel: if that one's reader is
-         * gone, the endpoint is free. */
-        signals_t seen = 0;
-        handle_t old = chan_handle(e->chan);
-        if (e->owner != EP_OWNER_CLIENT || !old ||
-            drv_object_wait_one(old, SIG_PEER_CLOSED, 0, &seen) != OK)
-            return ERR_ALREADY_BOUND;
-        ep_close(d, e);
-    }
-    handle_t a, b;
-    status_t st = drv_channel_create(&a, &b);
-    if (st != OK)
-        return st;
-    int c = chan_add(a, CHAN_REPORTS, d->id, e->dci);
-    if (c < 0) {
-        drv_handle_close(a);
-        drv_handle_close(b);
-        return ERR_NO_RESOURCES;
-    }
-    if (ep_open_intr(d, e, EP_OWNER_CLIENT, c) != 0) {
-        chan_close(c);
-        drv_handle_close(b);
-        return ERR_NO_RESOURCES;
-    }
-    uint32_t us = (1u << e->interval) * 125u;
-    *reports = b;
-    *max_packet = e->mps;
-    *interval_ms = (uint8_t)(us < 1000 ? 1 : us / 1000 > 255 ? 255 : us / 1000);
-    return OK;
-}
-
-static status_t u_endpoint_stats(void *ctx, uint8_t endpoint, uint64_t *reports,
-                                 uint64_t *dropped, uint64_t *errors, uint8_t *open)
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    struct ep *e = iface_ep(d, f, endpoint);
-    if (!e)
-        return ERR_INVALID_ARGS;
-    *reports = e->reports;
-    *dropped = e->dropped;
-    *errors = e->errors;
-    /* Open for a reader that is still there (a dead class driver's report
-     * channel may not be reaped yet). */
-    *open = 0;
-    if (e->open) {
-        signals_t seen = 0;
-        handle_t c = chan_handle(e->chan);
-        *open = c && drv_object_wait_one(c, SIG_PEER_CLOSED, 0, &seen) != OK;
-    }
-    return OK;
-}
-
-static status_t u_set_interface(void *ctx, uint8_t alt)
-{
-    struct iface *f;
-    struct usbdev *d = ctx_dev(ctx, &f);
-    if (!d)
-        return ERR_PEER_CLOSED;
-    return cc_status(dev_set_interface(d, f, alt));
-}
-
-static const struct usb_ops usb_ops = {
-    .info = u_info,
-    .get_descriptor = u_get_descriptor,
-    .control_in = u_control_in,
-    .control_out = u_control_out,
-    .open_interrupt_in = u_open_interrupt_in,
-    .endpoint_stats = u_endpoint_stats,
-    .set_interface = u_set_interface,
-};
 
 /* ---- the usbbus protocol (DR_SERVE) ----------------------------------------------------- */
 
@@ -664,7 +422,7 @@ static void serve_chan(int i)
      * class drivers, error recovery -- for a minute. */
     uint64_t t0 = drv_clock_ns();
     for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * NS_PER_MS; guard++) {
-        status_t st = c->kind == CHAN_IFACE ? usb_serve_one(c->h, &usb_ops, c) : drop_input(c);
+        status_t st = c->kind == CHAN_IFACE ? iface_serve_one(c) : drop_input(c);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)

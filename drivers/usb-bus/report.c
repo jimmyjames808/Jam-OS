@@ -53,6 +53,38 @@ void report_controller(const struct hc *h)
 
 /* ---- names ------------------------------------------------------------------ */
 
+const char *cc_str(uint32_t cc)
+{
+    switch (cc) {
+    case 0: return "Invalid";
+    case CC_SUCCESS: return "Success";
+    case CC_DATA_BUFFER: return "Data Buffer Error";
+    case CC_BABBLE: return "Babble Detected";
+    case CC_TRANSACTION: return "USB Transaction Error";
+    case CC_TRB: return "TRB Error";
+    case CC_STALL: return "Stall";
+    case CC_RESOURCE: return "Resource Error";
+    case CC_BANDWIDTH: return "Bandwidth Error";
+    case CC_NO_SLOTS: return "No Slots Available";
+    case 11: return "Slot Not Enabled";
+    case 12: return "Endpoint Not Enabled";
+    case CC_SHORT_PACKET: return "Short Packet";
+    case CC_PARAMETER: return "Parameter Error";
+    case CC_CONTEXT_STATE: return "Context State Error";
+    case 22: return "Incompatible Device";
+    case CC_RING_STOPPED: return "Command Ring Stopped";
+    case CC_ABORTED: return "Command Aborted";
+    case CC_STOPPED: return "Stopped";
+    case CC_STOPPED_LEN: return "Stopped - Length Invalid";
+    case 35: return "Secondary Bandwidth Error";
+    case 36: return "Split Transaction Error";
+    case CC_TIMEOUT: return "timed out";
+    case CC_GONE: return "device gone";
+    case CC_BAD_SLOT: return "slot id out of range";
+    default: return "error";
+    }
+}
+
 static const char *speed_str(uint8_t s)
 {
     switch (s) {

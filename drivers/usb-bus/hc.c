@@ -5,7 +5,8 @@
  * ring on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Then
  * the Supported Protocol capabilities (which root ports are USB 2 and
  * which USB 3), port power, a DMA page pool for contexts, rings and
- * buffers, commands with a timeout (and Command Abort), and the event loop
+ * buffers (handed out by ring.c), commands with a timeout (and Command
+ * Abort), and the event loop
  * that every wait goes through: events are drained on each interrupt and
  * also polled at least every 50 ms, so a lost MSI costs latency, never a
  * hang. */
@@ -18,41 +19,6 @@ struct hc g_hc;
 #define DMA_CMDRING 0x1000
 #define DMA_EVRING  0x2000
 #define DMA_SPARRAY 0x3000
-
-static uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
-static uint32_t lo32(uint64_t v) { return (uint32_t)v; }
-
-const char *cc_str(uint32_t cc)
-{
-    switch (cc) {
-    case 0: return "Invalid";
-    case CC_SUCCESS: return "Success";
-    case CC_DATA_BUFFER: return "Data Buffer Error";
-    case CC_BABBLE: return "Babble Detected";
-    case CC_TRANSACTION: return "USB Transaction Error";
-    case CC_TRB: return "TRB Error";
-    case CC_STALL: return "Stall";
-    case CC_RESOURCE: return "Resource Error";
-    case CC_BANDWIDTH: return "Bandwidth Error";
-    case CC_NO_SLOTS: return "No Slots Available";
-    case 11: return "Slot Not Enabled";
-    case 12: return "Endpoint Not Enabled";
-    case CC_SHORT_PACKET: return "Short Packet";
-    case CC_PARAMETER: return "Parameter Error";
-    case CC_CONTEXT_STATE: return "Context State Error";
-    case 22: return "Incompatible Device";
-    case CC_RING_STOPPED: return "Command Ring Stopped";
-    case CC_ABORTED: return "Command Aborted";
-    case CC_STOPPED: return "Stopped";
-    case CC_STOPPED_LEN: return "Stopped - Length Invalid";
-    case 35: return "Secondary Bandwidth Error";
-    case 36: return "Split Transaction Error";
-    case CC_TIMEOUT: return "timed out";
-    case CC_GONE: return "device gone";
-    case CC_BAD_SLOT: return "slot id out of range";
-    default: return "error";
-    }
-}
 
 /* ---- registers ------------------------------------------------------------- */
 
@@ -376,91 +342,6 @@ static int pool_setup(struct hc *h)
         return FAIL(h, "DMA pool", "map: %s", status_str(st));
     h->pool = p;
     return 0;
-}
-
-int pool_alloc(struct hc *h)
-{
-    for (int i = 0; i < POOL_PAGES; i++)
-        if (!h->pool_used[i]) {
-            h->pool_used[i] = 1;
-            zero(h->pool + (uint64_t)i * PAGE, PAGE);
-            if (++h->pool_inuse > h->pool_peak)
-                h->pool_peak = h->pool_inuse;
-            return i;
-        }
-    drv_log("DMA pool: all %u pages in use", POOL_PAGES);
-    return -1;
-}
-
-void pool_free(struct hc *h, int page)
-{
-    if (page >= 0 && page < POOL_PAGES && h->pool_used[page]) {
-        h->pool_used[page] = 0;
-        h->pool_inuse--;
-    }
-}
-
-void *pool_va(struct hc *h, int page)
-{
-    return h->pool + (uint64_t)page * PAGE;
-}
-
-uint64_t pool_dev(struct hc *h, int page)
-{
-    return h->pool_addr[page];
-}
-
-/* ---- rings ------------------------------------------------------------------------ */
-
-bool ring_init(struct hc *h, struct ring *r)
-{
-    r->page = pool_alloc(h);
-    if (r->page < 0)
-        return false;
-    r->t = pool_va(h, r->page);
-    r->dev = pool_dev(h, r->page);
-    r->t[RING_TRBS - 1].d0 = lo32(r->dev);
-    r->t[RING_TRBS - 1].d1 = hi32(r->dev);
-    r->t[RING_TRBS - 1].d3 = TRB_TYPE(TRB_LINK) | TRB_TC;
-    r->enq = 0;
-    r->cycle = 1;
-    return true;
-}
-
-void ring_free(struct hc *h, struct ring *r)
-{
-    if (r->page >= 0)
-        pool_free(h, r->page);
-    r->page = -1;
-    r->t = NULL;
-}
-
-uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3)
-{
-    uint32_t i = r->enq;
-    volatile struct trb *t = &r->t[i];
-    t->d0 = d0;
-    t->d1 = d1;
-    t->d2 = d2;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    t->d3 = (d3 & ~TRB_C) | r->cycle;   /* the cycle bit last: now the xHC's */
-    uint64_t addr = r->dev + (uint64_t)i * sizeof(struct trb);
-    if (++r->enq == RING_TRBS - 1) {
-        volatile struct trb *l = &r->t[RING_TRBS - 1];
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        l->d3 = (l->d3 & ~TRB_C) | r->cycle;
-        r->enq = 0;
-        r->cycle ^= 1;
-    }
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return addr;
-}
-
-uint32_t ring_index(const struct ring *r, uint64_t trb_dev)
-{
-    if (!r->t || trb_dev < r->dev || trb_dev >= r->dev + PAGE || (trb_dev & 15))
-        return RING_TRBS;
-    return (uint32_t)((trb_dev - r->dev) / sizeof(struct trb));
 }
 
 /* ---- memory, run --------------------------------------------------------------------- */
