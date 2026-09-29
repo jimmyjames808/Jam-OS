@@ -158,9 +158,11 @@ static inline status_t usb_info(handle_t ch, uint16_t *out_vendor, uint16_t *out
     return usb_info_until(ch, DEADLINE_NEVER, out_vendor, out_product, out_speed, out_interface_number, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_alt_setting, out_address);
 }
 
-/* GET_DESCRIPTOR from the device (standard request, recipient device) or,
- * with `interface_recipient` 1, from this interface (HID report
- * descriptors). `length` <= 1024; `actual` bytes of `data` are valid. */
+/* GET_DESCRIPTOR from the device (standard request, recipient device,
+ * wIndex = `lang`) or, with `interface_recipient` 1, from this interface
+ * (HID report descriptors): usb-bus then sets wIndex to this interface's
+ * number itself and ignores `lang`. `length` <= 1024; `actual` bytes of
+ * `data` are valid. */
 static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
 {
     struct usb_get_descriptor_req idl_q;
