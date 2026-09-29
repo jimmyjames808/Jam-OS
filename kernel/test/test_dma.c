@@ -329,9 +329,9 @@ KTEST(dma_quarantine_stats_consistent)
 
     mid_dev = d;
     mid_calls = 0;
-    dbg_hooks[DBG_DMA_RELEASED] = mid_release_hook;
+    __atomic_store_n(&dbg_hooks[DBG_DMA_RELEASED], mid_release_hook, __ATOMIC_RELEASE);
     dma_quarantine_flush(d);
-    dbg_hooks[DBG_DMA_RELEASED] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_DMA_RELEASED], NULL, __ATOMIC_RELEASE);
     dma_quarantine_stats(d, &q2);
     kobject_unref(vmo_kobject(v));
     kprintf("ktest %s: mid-release: %lu pin(s), %lu held + %lu released page(s); before: %lu + "

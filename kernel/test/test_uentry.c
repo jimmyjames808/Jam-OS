@@ -176,8 +176,8 @@ static void utest_init(void)
 {
     /* Install the test hooks once. The CR3 hook must be live before any
      * user thread is created; the syscall hook before it makes a call. */
-    uentry_test_cr3 = utest_cr3;
-    uentry_test_syscall = utest_syscall;
+    __atomic_store_n(&uentry_test_cr3, utest_cr3, __ATOMIC_RELEASE);
+    __atomic_store_n(&uentry_test_syscall, utest_syscall, __ATOMIC_RELEASE);
 }
 
 /* ---- page tables ---------------------------------------------------------- */
@@ -673,7 +673,7 @@ KTEST(uentry_nmi_in_user)
     volatile uint64_t *counter = u.data;
     *counter = 0;
     nmi_seen = 0;
-    uentry_test_nmi = count_nmi;
+    __atomic_store_n(&uentry_test_nmi, count_nmi, __ATOMIC_RELEASE);
 
     struct urun r = { &u, &prog, UCODE, 0, 0 };
     struct thread *t = user_spawn(&r, 1);
@@ -691,6 +691,6 @@ KTEST(uentry_nmi_in_user)
 
     thread_cancel(t);
     user_join(t);
-    uentry_test_nmi = NULL;
+    __atomic_store_n(&uentry_test_nmi, NULL, __ATOMIC_RELEASE);
     uspace_destroy(&u);
 }

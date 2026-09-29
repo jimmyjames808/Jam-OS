@@ -18,15 +18,17 @@ enum {
     DBG_N
 };
 
-extern void (*volatile dbg_hooks[DBG_N])(void *arg);
+/* Set and cleared by tests with __atomic_store_n (release); read once per
+ * hook point with an acquire load. */
+extern void (*dbg_hooks[DBG_N])(void *arg);
 
 #ifdef JAM_NO_KTESTS
 #define DBG_HOOK(id, arg) ((void)(arg))
 #else
-#define DBG_HOOK(id, arg)                                \
-    do {                                                 \
-        void (*_h)(void *) = dbg_hooks[id];              \
-        if (_h)                                          \
-            _h(arg);                                     \
+#define DBG_HOOK(id, arg)                                                  \
+    do {                                                                   \
+        void (*_h)(void *) = __atomic_load_n(&dbg_hooks[id], __ATOMIC_ACQUIRE); \
+        if (_h)                                                            \
+            _h(arg);                                                       \
     } while (0)
 #endif

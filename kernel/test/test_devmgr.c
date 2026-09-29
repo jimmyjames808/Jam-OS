@@ -297,9 +297,9 @@ static unsigned sweep(const struct dm *m, struct pci_dev *d, const struct refusa
         KT_EQ(job_set_limit(m->job, kind, ref->used[kind] + h), OK);
         lift_job = m->job;
         lift_kind = kind;
-        dbg_hooks[DBG_PROCESS_START] = lift_hook;
+        __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], lift_hook, __ATOMIC_RELEASE);
         status_t st = dm_call(m, DM_REBIND, &r, NULL, NULL);
-        dbg_hooks[DBG_PROCESS_START] = NULL;
+        __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], NULL, __ATOMIC_RELEASE);
         lift_job = NULL;
         KT_EQ(job_set_limit(m->job, kind, JOB_NO_LIMIT), OK);
         if (st == OK) {

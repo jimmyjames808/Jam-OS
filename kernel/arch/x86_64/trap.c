@@ -42,7 +42,8 @@ void trap_dispatch(struct trap_frame *f)
         /* Never schedules or touches the user return path: NMIs stay
          * blocked until this handler's iretq. */
 #ifndef JAM_NO_KTESTS
-        if (uentry_test_nmi && uentry_test_nmi(f))
+        bool (*h)(struct trap_frame *) = __atomic_load_n(&uentry_test_nmi, __ATOMIC_ACQUIRE);
+        if (h && h(f))
             return;
 #endif
         nmi_handler(f);

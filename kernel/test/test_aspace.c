@@ -471,9 +471,9 @@ KTEST(aspace_decommit_two_cpus)
     uint64_t me_before = tlb_mask_flush_count(0);
     uint64_t other_before = cpu_count > 3 ? tlb_mask_flush_count(3) : 0;
     two_hook_ran = two_hook_ok = 0;
-    dbg_hooks[DBG_GATHER_PRE_FREE] = two_hook;
+    __atomic_store_n(&dbg_hooks[DBG_GATHER_PRE_FREE], two_hook, __ATOMIC_RELEASE);
     KT_EQ(vmo_decommit(v, 0, PG), OK);
-    dbg_hooks[DBG_GATHER_PRE_FREE] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_GATHER_PRE_FREE], NULL, __ATOMIC_RELEASE);
 
     KT_EQ(two_hook_ran, 1);
     KT_ASSERT(two_hook_ok);   /* both shot down while the page was still held */

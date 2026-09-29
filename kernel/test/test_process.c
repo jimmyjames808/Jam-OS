@@ -400,9 +400,9 @@ KTEST(proc_start_window_refuses_other_threads)
     struct khandle arg0 = khandle_from_new((struct kobject *)b, RIGHTS_BASIC | RIGHTS_IO);
 
     window_st = OK;
-    dbg_hooks[DBG_PROCESS_START] = window_hook;
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], window_hook, __ATOMIC_RELEASE);
     status_t st = process_start(p, u1, 0x400000, 0x800000, &arg0, 0, NULL);
-    dbg_hooks[DBG_PROCESS_START] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], NULL, __ATOMIC_RELEASE);
     KT_EQ(window_st, ERR_BAD_STATE);   /* the second start was refused */
     KT_EQ(st, ERR_NO_MEMORY);          /* the first failed "for lack of memory"... */
     KT_ASSERT(arg0.obj == (struct kobject *)b);   /* ...and gave the handle back */

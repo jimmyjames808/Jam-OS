@@ -42,11 +42,11 @@ long copy_str_user_raw(char *dst, const char *usrc, size_t n);
 void fpu_save(void *area);
 
 #ifndef JAM_NO_KTESTS
-bool (*volatile uentry_test_syscall)(struct syscall_frame *f, int64_t *ret);
-uint64_t (*volatile uentry_test_cr3)(struct thread *t);
-void (*volatile uentry_test_fault)(struct thread *t, uint64_t vector, uint64_t rip,
+bool (*uentry_test_syscall)(struct syscall_frame *f, int64_t *ret);
+uint64_t (*uentry_test_cr3)(struct thread *t);
+void (*uentry_test_fault)(struct thread *t, uint64_t vector, uint64_t rip,
                                    uint64_t addr);
-bool (*volatile uentry_test_nmi)(struct trap_frame *f);
+bool (*uentry_test_nmi)(struct trap_frame *f);
 #endif
 
 /* Not an exception vector: the kill came from the exit path's checks. */
@@ -143,7 +143,8 @@ _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t ri
                 t->id, why, rip, addr);
     }
 #ifndef JAM_NO_KTESTS
-    void (*h)(struct thread *, uint64_t, uint64_t, uint64_t) = uentry_test_fault;
+    void (*h)(struct thread *, uint64_t, uint64_t, uint64_t) =
+        __atomic_load_n(&uentry_test_fault, __ATOMIC_ACQUIRE);
     if (h)
         h(t, vector, rip, addr);
 #else
@@ -166,7 +167,8 @@ int64_t syscall_entry_c(struct syscall_frame *f)
     irq_enable();
     int64_t r;
 #ifndef JAM_NO_KTESTS
-    bool (*h)(struct syscall_frame *, int64_t *) = uentry_test_syscall;
+    bool (*h)(struct syscall_frame *, int64_t *) =
+        __atomic_load_n(&uentry_test_syscall, __ATOMIC_ACQUIRE);
     if (!h || !h(f, &r))
 #endif
         r = syscall_dispatch(f);
@@ -324,7 +326,7 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
      * or the kernel's when this CPU is leaving a test thread), or 0 to leave
      * CR3 alone. It tracks the per-CPU state itself, so the choice never
      * depends on prev, which a joiner may already be tearing down. */
-    uint64_t (*h)(struct thread *) = uentry_test_cr3;
+    uint64_t (*h)(struct thread *) = __atomic_load_n(&uentry_test_cr3, __ATOMIC_ACQUIRE);
     if (h) {
         uint64_t want = h(next);
         if (want && read_cr3() != want)

@@ -13,7 +13,7 @@
 #include <jam/sched.h>
 #include <jam/userboot.h>
 
-void (*volatile dbg_hooks[DBG_N])(void *arg);
+void (*dbg_hooks[DBG_N])(void *arg);
 
 uint64_t kt_free_pages(void)
 {

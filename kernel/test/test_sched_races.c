@@ -156,7 +156,7 @@ KTEST(repro_finish_switch_double_reap)
     fs_target = NULL;
     fs_phase = 1;
     fs_seen_state = -1;
-    dbg_hooks[DBG_FINISH_SWITCH] = fs_hook;
+    __atomic_store_n(&dbg_hooks[DBG_FINISH_SWITCH], fs_hook, __ATOMIC_RELEASE);
     cpumask_t m;
     cpumask_one(&m, 1);
     struct thread *x = thread_create_on("repro-victim", fs_victim, NULL, PRIO_DEFAULT, &m);
@@ -169,7 +169,7 @@ KTEST(repro_finish_switch_double_reap)
     spin_unlock_irqrestore(&fs_lock, f);
     waitqueue_wake_one(&fs_wq);                /* x runs on cpu 2 and exits there */
     KT_ASSERT(wait_for(&fs_phase, 3, 2000));
-    dbg_hooks[DBG_FINISH_SWITCH] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_FINISH_SWITCH], NULL, __ATOMIC_RELEASE);
     thread_sleep_ms(5);
     kprintf("repro: cpu 1's finish_switch saw \"repro-victim\" in state %d (T_DEAD = %d)\n",
             fs_seen_state, T_DEAD);
@@ -253,8 +253,8 @@ KTEST(repro_wake_stale_cpu)
     ab_phase = 0;
     ab_stop = 0;
     ab_target = NULL;
-    dbg_hooks[DBG_SCHED_PREV] = ab_sched_hook;
-    dbg_hooks[DBG_WAKE_ONCPU] = ab_wake_hook;
+    __atomic_store_n(&dbg_hooks[DBG_SCHED_PREV], ab_sched_hook, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_WAKE_ONCPU], ab_wake_hook, __ATOMIC_RELEASE);
     cpumask_t m;
     cpumask_one(&m, 2);
     ab_stale_waker = thread_create_on("repro-stale", ab_stale, NULL, PRIO_DEFAULT, &m);
@@ -269,8 +269,8 @@ KTEST(repro_wake_stale_cpu)
     ab_phase = 4;
     thread_wake(ab_target);   /* the real wakeup: runs on cpu 3, blocks again */
     thread_join(ab_stale_waker);
-    dbg_hooks[DBG_SCHED_PREV] = NULL;
-    dbg_hooks[DBG_WAKE_ONCPU] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_SCHED_PREV], NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_WAKE_ONCPU], NULL, __ATOMIC_RELEASE);
     thread_sleep_ms(20);
 
     uint64_t before = ab_wakes;
@@ -339,9 +339,9 @@ KTEST(repro_unmap_migrate_stale_tlb)
     KT_EQ(tlb_seen, 0xfeedface);
 
     tlb_hook_preempt = -1;
-    dbg_hooks[DBG_UNMAP_PRE_SHOOT] = tlb_unmap_hook;
+    __atomic_store_n(&dbg_hooks[DBG_UNMAP_PRE_SHOOT], tlb_unmap_hook, __ATOMIC_RELEASE);
     vmm_unmap(pml4, va, PAGE_SIZE);
-    dbg_hooks[DBG_UNMAP_PRE_SHOOT] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_UNMAP_PRE_SHOOT], NULL, __ATOMIC_RELEASE);
     /* Preemption was held across the flush + shootdown: no migration could
      * strand a CPU with a stale entry. */
     KT_ASSERT(tlb_hook_preempt > 0);
