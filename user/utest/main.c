@@ -6,13 +6,15 @@
  * processes, a child killed while blocked in channel_call gives back every
  * page, handle and thread, a runaway child hits its job's limits and gets
  * ERR_NO_MEMORY / ERR_NO_RESOURCES (no panic), FPU/SSE/AVX state survives
- * preemption, and many threads come and go.
+ * preemption, and many threads come and go. M6: the null and drvtest
+ * drivers (drivers/) run as processes and talk through <idl/null.h>.
  *
  * Children are this same program started with a mode ("utest nullderef",
  * see child.c), each in a job of its own so its usage can be read exactly.
  * One line per test ("utest: <name> ok"); the summary also goes into the
  * kernel's RESULTS box. Exit code 0 when everything passed. */
 #include <os.h>
+#include <idl/null.h>
 #include "utest.h"
 
 #define MS 1000000ull
@@ -750,6 +752,92 @@ static bool t_job_kill_reaps_orphans(void)
     return true;
 }
 
+/* ---- drivers (M6) ---------------------------------------------------------------- */
+
+#define DRVTEST_NULL 0x40   /* drvtest's role for its channel to a null server */
+
+/* Start bootfs driver drv/<name> in job, handing it h under driver role
+ * `role` (h is consumed). */
+static status_t driver(const char *name, handle_t job, uint32_t role, handle_t h,
+                       handle_t *proc)
+{
+    char path[32];
+    snprintf(path, sizeof(path), "drv/%s", name);
+    const char *argv[] = { path };
+    struct spawn_handle x = { SR_DRIVER(role), h };
+    struct spawn_args a = {
+        .path = path, .argc = 1, .argv = argv, .job = job, .extra = &x, .nextra = 1,
+    };
+    return spawn(&a, proc);
+}
+
+static bool job_is_empty(handle_t job)
+{
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        if (ji.used[k])
+            FAIL("the drivers' job still has %lu units of kind %u", (unsigned long)ji.used[k], k);
+    return true;
+}
+
+/* The null driver as a process, called through the generated client from
+ * here, then by the drvtest driver (a process too), which checks the whole
+ * driver.h surface in the process build. */
+static bool t_driver_processes(void)
+{
+    handle_t job, a, b, srv, cli;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(driver("null", job, DR_SERVE, b, &srv), OK);
+    uint64_t v = 0;
+    uint32_t sum = 0;
+    CHECK_ST(null_ping(a, 7, &v), OK);
+    CHECK_EQ(v, 7);
+    CHECK_ST(null_add(a, 40, 2, &sum), OK);
+    CHECK_EQ(sum, 42);
+    CHECK_ST(driver("drvtest", job, DRVTEST_NULL, a, &cli), OK);   /* our end goes to it */
+    struct process_info info;
+    CHECK_ST(spawn_wait(cli, 30 * S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);   /* every drvtest check passed */
+    CHECK_ST(spawn_wait(srv, 10 * S, &info), OK);   /* its client is gone: it returns */
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    CHECK_ST(jam_handle_close(cli), OK);
+    CHECK_ST(jam_handle_close(srv), OK);
+    if (!job_is_empty(job))
+        return false;
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* Killing a driver process that is waiting for requests. */
+static bool t_driver_killed(void)
+{
+    handle_t job, a, b, srv;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(driver("null", job, DR_SERVE, b, &srv), OK);
+    uint8_t data[16], rev[16];
+    for (int i = 0; i < 16; i++)
+        data[i] = (uint8_t)i;
+    CHECK_ST(null_reverse(a, data, rev), OK);
+    CHECK(rev[0] == 15 && rev[15] == 0);
+    CHECK_ST(jam_process_kill(srv), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(srv, 10 * S, &info), OK);
+    CHECK(info.killed);
+    uint64_t v;
+    CHECK_ST(null_ping(a, 1, &v), ERR_PEER_CLOSED);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(srv), OK);
+    if (!job_is_empty(job))
+        return false;
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
 static bool t_startup_message(void)
 {
     handle_t job, proc;
@@ -782,6 +870,8 @@ static const struct {
     { "job_kill_reaps_orphans", t_job_kill_reaps_orphans },
     { "fpu_state_survives_preemption", t_fpu_state_survives_preemption },
     { "many_threads", t_many_threads },
+    { "driver_processes", t_driver_processes },
+    { "driver_killed", t_driver_killed },
 };
 
 int main(int argc, char **argv)

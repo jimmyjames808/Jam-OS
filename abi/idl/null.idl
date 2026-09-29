@@ -1,0 +1,10 @@
+# null: the M6 test protocol (an echo server). drivers/null serves it; the
+# drvtest driver (run by a ktest and by utest) calls it through the
+# generated client. Format: see tools/genidl.py.
+
+protocol null 1
+
+1  ping     (u64 value)     -> (u64 value)
+2  add      (u32 a, u32 b)  -> (u32 sum)
+# A fixed-size byte array each way: the reply is the request reversed.
+3  reverse  (u8[16] data)   -> (u8[16] data)
