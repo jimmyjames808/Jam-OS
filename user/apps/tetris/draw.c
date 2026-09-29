@@ -77,9 +77,10 @@ static inline double ease_out(double t)   /* 0..1 */
 
 #define MAX_PARTS 900
 static struct part {
-    float x, y, vx, vy, life, max;
-    uint32_t c;
-    int size;
+    float x, y, vx, vy;   /* position and velocity */
+    float life, max;      /* seconds left; seconds it started with */
+    uint32_t c;           /* colour */
+    int size;             /* pixels square */
 } parts[MAX_PARTS];
 static int nparts;
 static uint64_t rng_fx = 0x9a17c1e5;

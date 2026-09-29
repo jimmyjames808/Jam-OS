@@ -20,8 +20,10 @@ static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
 }
 
 struct civil {
-    int64_t  year;
-    unsigned month, day, hour, minute, second, wday;
+    int64_t  year;                         /* e.g. 2026 */
+    unsigned month, day;                   /* 1..12, 1..31 */
+    unsigned hour, minute, second;         /* 0..23, 0..59, 0..59 */
+    unsigned wday;                         /* 0: Sunday */
 };
 
 static void civil_from_secs(int64_t t, struct civil *c)

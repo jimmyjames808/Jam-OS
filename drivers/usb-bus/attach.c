@@ -28,9 +28,9 @@
 /* One enumeration in progress: the device, and when a step fails, which
  * one and its completion code. */
 struct attach {
-    struct usbdev *d;
-    const char *failed_at;
-    uint32_t cc;
+    struct usbdev *d;      /* the device being enumerated */
+    const char *failed_at; /* the step that failed, NULL while none has */
+    uint32_t cc;           /* that step's completion code */
     uint8_t iproduct;      /* the product string's index, from the device descriptor */
 };
 

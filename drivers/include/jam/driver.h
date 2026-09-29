@@ -39,8 +39,11 @@
 
 struct driver_start {
     const char *name;             /* the driver's name, for logs */
-    uint32_t    nhandles;
-    struct { uint32_t role; handle_t h; } handles[DRV_MAX_HANDLES];
+    uint32_t    nhandles;         /* entries in handles[] */
+    struct {
+        uint32_t role;            /* DR_* */
+        handle_t h;               /* the handle */
+    } handles[DRV_MAX_HANDLES];
 };
 
 int driver_main(const struct driver_start *s);

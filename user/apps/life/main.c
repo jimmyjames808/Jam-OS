@@ -314,8 +314,8 @@ static struct {
     uint64_t gens, compute_ns;    /* generations computed, and their time (the summary) */
     uint64_t gen_us;              /* one generation's time, smoothed (the HUD) */
     uint64_t win_t, win_gen;      /* generations a second, counted over a second */
-    uint32_t gps;
-    struct fps fps;
+    uint32_t gps;                 /* the last second's generations */
+    struct fps fps;               /* frames a second (the HUD) */
 } game = { .si = 3, .dirty = true };   /* 60 generations a second */
 
 /* The world, the screen, the colours, the map and the view. Returns 0, or

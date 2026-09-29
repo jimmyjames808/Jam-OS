@@ -7,8 +7,8 @@
 #define MAX_SEEN 64
 
 struct seen {
-    uint32_t id;
-    uint16_t vendor, product;
+    uint32_t id;                /* usb-bus's device id */
+    uint16_t vendor, product;   /* its USB ids */
 };
 
 /* usb-bus: the bound driver that answers usbbus.status (as usbtest finds it). */

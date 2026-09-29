@@ -14,7 +14,7 @@
 
 struct block {
     uint64_t size;    /* payload bytes, a multiple of ALIGN */
-    uint64_t magic;
+    uint64_t magic;   /* MAGIC_USED or MAGIC_FREE: catches a bad free */
     /* payload; while free its first 8 bytes link the free list */
 };
 

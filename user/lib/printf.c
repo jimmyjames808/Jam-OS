@@ -13,8 +13,8 @@
 #define PRINTF_BUF 512
 
 struct out {
-    char  *buf;
-    size_t size;
+    char  *buf;       /* the caller's buffer */
+    size_t size;      /* its size, the NUL included */
     size_t len;   /* chars that would have been written */
 };
 

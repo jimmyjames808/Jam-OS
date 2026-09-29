@@ -84,8 +84,8 @@ void  free(void *p);
 
 struct bootfs_view {
     const uint8_t *base;   /* the whole image, mapped read-only */
-    uint64_t       size;
-    uint32_t       count;
+    uint64_t       size;   /* its size in bytes */
+    uint32_t       count;  /* files in its entry table */
 };
 
 /* Map the bootfs image VMO (SR_BOOTFS) read-only and check its header and
@@ -101,17 +101,17 @@ status_t bootfs_default(const struct bootfs_view **out);
 
 struct spawn_handle {
     uint32_t role;   /* enum startup_role, usually SR_USER + n */
-    handle_t h;
+    handle_t h;      /* the handle (moved) */
 };
 
 struct spawn_args {
     const char                *path;     /* in bootfs, e.g. "bin/utest" */
     const char                *name;     /* process name; NULL: the path's last part */
-    int                        argc;
-    const char *const         *argv;
+    int                        argc;     /* entries in argv */
+    const char *const         *argv;     /* argv[0] is the program's name as it sees it */
     handle_t                   job;      /* needs JOB_RIGHTS_OWN */
     const struct spawn_handle *extra;    /* moved into the startup message */
-    unsigned                   nextra;
+    unsigned                   nextra;   /* entries in extra */
     /* NULL, or nextra entries: what the child's copy of extra[i] gets (a
      * subset of its rights, e.g. without RIGHT_TRANSFER); 0 or
      * RIGHT_SAME: the same as extra[i].h. */

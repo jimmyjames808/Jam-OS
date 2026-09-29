@@ -64,9 +64,9 @@
  * here and its directory under drivers/. */
 #define ANY_CLASS 0xffffffffu
 static const struct {
-    uint16_t    vendor, device;
-    uint32_t    class_code;
-    const char *path;
+    uint16_t    vendor, device;   /* PCI ids, 0xffff: any */
+    uint32_t    class_code;       /* class << 16 | subclass << 8 | prog_if, or ANY_CLASS */
+    const char *path;             /* the driver in bootfs */
 } matches[] = {
     { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },        /* QEMU's edu test device */
     { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller */

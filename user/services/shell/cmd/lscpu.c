@@ -4,7 +4,7 @@
 
 struct core_count {
     uint32_t cores[3], threads[3];   /* by CPU_TYPE_* */
-    uint32_t max_smt[3];
+    uint32_t max_smt[3];             /* the most threads one core has */
 };
 
 static void count_cores(const struct cpu_stat *c, uint32_t n, struct core_count *k)

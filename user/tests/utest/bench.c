@@ -30,8 +30,8 @@ struct ubench_result {
     uint32_t txid;     /* 0 */
     uint32_t n;        /* samples */
     uint32_t batch;    /* operations per sample */
-    uint32_t reserved;
-    uint64_t cycles[SAMPLES];
+    uint32_t reserved;   /* 0 */
+    uint64_t cycles[SAMPLES];   /* TSC cycles per sample */
 };
 
 static struct ubench_result res;

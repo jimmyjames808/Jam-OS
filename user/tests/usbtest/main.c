@@ -70,21 +70,28 @@ static handle_t bus;
 static uint64_t in(uint64_t ns) { return now() + ns; }
 static uint64_t soon(void) { return in(5 * NS_PER_S); }   /* a usb-bus or usb call's deadline */
 
+/* One device as usbbus.device reports it (the same fields). */
 struct dev {
-    uint32_t id, parent;
-    uint16_t vid, pid, bcd, mps0;
-    uint8_t speed, address, slot, root_port, port, level, tt_slot, tt_port, cls, sub, proto;
-    uint8_t nconfigs, config, nifs, hub_ports;
-    uint32_t route;
-    char path[25], name[41], serial[25];
+    uint32_t id, parent;             /* usb-bus's ids: its own, its hub's (0: a root port) */
+    uint16_t vid, pid, bcd, mps0;    /* USB ids, bcdUSB, EP0 max packet */
+    uint8_t speed, address, slot;    /* USB speed, address, xHCI slot */
+    uint8_t root_port, port, level;  /* root port, port on its hub, tier (1: root port) */
+    uint8_t tt_slot, tt_port;        /* its TT's hub slot and port, 0: none */
+    uint8_t cls, sub, proto;         /* device class, subclass, protocol */
+    uint8_t nconfigs, config;        /* configurations; the one set (0: unconfigured) */
+    uint8_t nifs, hub_ports;         /* interfaces; a hub's ports (0: not a hub) */
+    uint32_t route;                  /* route string */
+    char path[25], name[41], serial[25];   /* "9.1", product, serial: NUL-terminated */
 };
 
 static struct dev devs[MAX_DEV];
 static unsigned ndevs;
 
+/* usbbus.status's results. */
 struct bus_status {
-    uint32_t devices, hubs, ifaces, hid, problems, generation;
-    uint8_t settled;
+    uint32_t devices, hubs, ifaces, hid, problems;   /* counts */
+    uint32_t generation;             /* bumps on every attach and detach */
+    uint8_t settled;                 /* no port work pending, nothing changed for 500 ms */
 };
 
 static status_t get_status(struct bus_status *b)
@@ -397,7 +404,7 @@ static handle_t dm;   /* devmgr */
 
 struct kbd {
     handle_t ch;      /* ours, to the test keyboard's interface 0 */
-    uint32_t id;
+    uint32_t id;      /* usb-bus's device id */
     char     name[32];   /* hid's process name, "hid-6.1:0" */
 };
 

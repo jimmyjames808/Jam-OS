@@ -78,9 +78,11 @@ static char *fmt_sci(char *buf, size_t size, double x)
 
 /* Exploring: what the keys change between frames. */
 static struct {
-    bool     quit, cycling, touring, recolour;
+    bool     quit;                /* q */
+    bool     cycling, touring;    /* space: the palette cycles; t: the tour runs */
+    bool     recolour;            /* the palette changed: colour every tile again */
     dd       saved_cx, saved_cy;  /* where j left the Mandelbrot set (j again goes back) */
-    double   saved_zoom;
+    double   saved_zoom;          /* and its zoom */
     int      step_px;             /* an arrow: 1/8 of the height, whole tiles */
     uint64_t tour_step_at;        /* the tour's last step in */
 } ex = { .saved_zoom = 1, .recolour = true };
@@ -98,7 +100,7 @@ static const char *const help_line =
     "    b benchmark    r reset    h help    q quit";
 
 struct hud {
-    char l1[160], l2[160], l3[220], l4[220];
+    char l1[160], l2[160], l3[220], l4[220];   /* the panel's four lines */
     int  u, pad, lh, badge;      /* scale, padding, line height, the DEEP badge's width */
     int  px, py, pw, ph;         /* the panel */
     int  hw, hh;                 /* the help line's panel */

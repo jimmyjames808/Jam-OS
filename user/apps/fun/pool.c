@@ -69,12 +69,13 @@ bool fun_is_tcg(void)
 #define POOL_SPIN  20000   /* pauses (~1 ms) before a worker sleeps */
 
 static struct {
-    uint32_t n;
-    handle_t ev[FUN_MAX_THREADS];
-    volatile uint32_t sleeping[FUN_MAX_THREADS];
-    volatile uint32_t phase, next, done, items;
-    void (*fn)(uint32_t, uint32_t, void *);
-    void *arg;
+    uint32_t n;                            /* threads, the caller's included */
+    handle_t ev[FUN_MAX_THREADS];          /* worker i sleeps on ev[i] */
+    volatile uint32_t sleeping[FUN_MAX_THREADS];   /* worker i sleeps (or is about to) */
+    volatile uint32_t phase;               /* bumped by pool_run: a new batch */
+    volatile uint32_t next, done, items;   /* the next item to take; threads done; items */
+    void (*fn)(uint32_t, uint32_t, void *);   /* the batch's work: fn(item, thread, arg) */
+    void *arg;                             /* its argument */
 } pool = { .n = 1 };
 uint32_t pool_items_by[FUN_MAX_THREADS];
 

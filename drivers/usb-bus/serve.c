@@ -36,22 +36,25 @@
 #define SETTLE_NS     (500 * NS_PER_MS)
 #define MAX_WAITERS   8
 
+/* A channel usb-bus serves: an interface's `usb` channel, or a report
+ * channel of an open interrupt-IN endpoint. */
 struct chan {
-    handle_t h;
-    uint8_t kind;
+    handle_t h;          /* our end; HANDLE_INVALID: a free slot */
+    uint8_t kind;        /* CHAN_IFACE or CHAN_REPORTS */
     uint8_t a;           /* CHAN_IFACE: interface number; CHAN_REPORTS: DCI */
-    bool pending;
-    uint16_t gen;
-    uint32_t dev_id;
+    bool pending;        /* may have something to read: the main loop serves it */
+    uint16_t gen;        /* bumped at every add and close: in its port key */
+    uint32_t dev_id;     /* the device's id */
 };
 
 static struct chan chans[MAX_CHANS];
+/* wait_settled requests waiting for their answer. */
 static struct {
-    bool used;
-    uint32_t txid;
-    uint64_t deadline;
+    bool used;           /* taken */
+    uint32_t txid;       /* the request's, for the reply */
+    uint64_t deadline;   /* answer by then, settled or not */
 } waiters[MAX_WAITERS];
-static bool serve_closed;
+static bool serve_closed;   /* DR_SERVE's peer is gone (or there was none) */
 
 /* ---- channels ------------------------------------------------------------------ */
 

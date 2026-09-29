@@ -3,8 +3,8 @@
 #include "sh.h"
 
 struct line_ref {
-    const char *s;
-    size_t      n;
+    const char *s;   /* the line, in the input */
+    size_t      n;   /* its length without the newline */
 };
 
 static bool numeric, reverse;

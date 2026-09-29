@@ -46,7 +46,7 @@ enum bind_kind {
 };
 
 struct binding {
-    enum bind_kind      kind;
+    enum bind_kind      kind;       /* what is bound */
     uint32_t            index;      /* BIND_PCI: pci_enum's */
     struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT, BIND_USB: vendor/device
                                      * only (BIND_USB: the USB ids) */
@@ -54,7 +54,7 @@ struct binding {
     bool                test;       /* its deaths and giving up are expected (not problems) */
     handle_t            dev;        /* BIND_PCI: ours, with RIGHT_MANAGE (0 until started once) */
     /* The driver while it runs. */
-    handle_t            job, proc;
+    handle_t            job, proc;  /* its job and process, 0 while none runs */
     handle_t            client;     /* our end of its DR_SERVE channel (GET_SERVICE's) */
     uint64_t            client_key; /* the port watches client for events under it (0: not) */
     handle_t            serve;      /* the driver's end, kept while its restart is due */

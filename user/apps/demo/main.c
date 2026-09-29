@@ -31,10 +31,10 @@ static bool quit;                           /* a key was pressed */
 /* The frame being drawn, set by this thread between frames. */
 enum { MANDEL, JULIA };
 static struct {
-    int      kind;
+    int      kind;            /* MANDEL or JULIA */
     double   cx, cy, px;      /* centre and the size of one pixel */
     double   jr, ji;          /* Julia constant */
-    int      maxit;
+    int      maxit;           /* iterations before a point counts as inside */
     double   shift;           /* palette rotation */
     bool     tinted;          /* scene 3: colour rows by thread */
 } fr;

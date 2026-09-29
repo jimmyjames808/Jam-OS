@@ -125,8 +125,8 @@ static unsigned nhist;   /* entries ever added */
 static unsigned line_max = LINE_MAX;
 
 struct edit {
-    char     line[LINE_MAX + 1];
-    unsigned len, pos;
+    char     line[LINE_MAX + 1];   /* the line being edited */
+    unsigned len, pos;             /* its length; the cursor */
     unsigned back;                 /* 0 = the new line, n = the n-th newest in the history */
     char     saved[LINE_MAX + 1];  /* the new line while browsing the history */
 };

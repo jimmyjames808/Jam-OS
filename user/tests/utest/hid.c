@@ -79,18 +79,20 @@ static const uint8_t rd_media[] = {
     0x75, 0x08, 0x95, 0x07, 0x81, 0x02, 0xc0,
 };
 
+/* An interface of a mock device. */
 struct mock_if {
-    uint8_t        num, cls, subclass, protocol;
+    uint8_t        num, cls, subclass, protocol;   /* interface number, class triple */
     uint8_t        ep;         /* interrupt IN address */
-    uint8_t        maxp;
-    const uint8_t *rdesc;
-    uint16_t       rlen;
+    uint8_t        maxp;       /* its max packet */
+    const uint8_t *rdesc;      /* the report descriptor */
+    uint16_t       rlen;       /* its length */
 };
 
+/* A mock device: its interfaces. */
 struct mock_dev {
-    uint16_t              vendor, product;
-    const struct mock_if *ifs;
-    unsigned              nifs;
+    uint16_t              vendor, product;   /* USB ids */
+    const struct mock_if *ifs;               /* interfaces */
+    unsigned              nifs;              /* how many */
 };
 
 #define IF(num, cls, sub, proto, ep, maxp, rd) { num, cls, sub, proto, ep, maxp, rd, sizeof(rd) }
@@ -134,42 +136,47 @@ static uint16_t build_config(const struct mock_dev *dev, uint8_t *o)
 
 /* ---- the mocks --------------------------------------------------------------- */
 
+/* A control request hid made (the mock's log). */
 struct ctl {
-    uint8_t  type, request;
-    uint16_t value, index, length;
-    uint8_t  data0;
+    uint8_t  type, request;          /* bmRequestType, bRequest */
+    uint16_t value, index, length;   /* wValue, wIndex, wLength */
+    uint8_t  data0;                  /* the first data byte (an OUT's) */
 };
 
 #define EV_KEY   1
 #define EV_MOUSE 2
 
+/* An input event hid sent (the mock console's log). */
 struct ev {
-    uint8_t  kind;
-    uint8_t  state, mods, buttons;
-    uint16_t usage;
-    int16_t  dx, dy;
-    int8_t   wheel;
-    uint32_t cp;
-    uint64_t t;
+    uint8_t  kind;                   /* EV_KEY or EV_MOUSE */
+    uint8_t  state, mods, buttons;   /* key: INPUT_KEY_*, modifiers; mouse: buttons */
+    uint16_t usage;                  /* key usage */
+    int16_t  dx, dy;                 /* mouse movement */
+    int8_t   wheel;                  /* mouse wheel */
+    uint32_t cp;                     /* key codepoint */
+    uint64_t t;                      /* when it arrived (uptime ns) */
 };
 
 #define MAX_CTL 32
 #define MAX_EV  512
 
+/* One hid under test: the mock usb-bus and console it talks to. */
 struct mock {
-    const struct mock_dev *dev;
-    const struct mock_if  *itf;
-    uint8_t   config[256];
-    uint16_t  config_len;
-    handle_t  job, proc, port;
+    const struct mock_dev *dev;       /* the device it is shown */
+    const struct mock_if  *itf;       /* its interface under test */
+    uint8_t   config[256];            /* the device's configuration descriptor */
+    uint16_t  config_len;             /* its length */
+    handle_t  job, proc, port;        /* hid's job and process; the port we wait on */
     handle_t  usb, input;       /* our ends: we serve usb and input */
     handle_t  reports;          /* usb-bus's end of the reports channel */
-    bool      usb_closed_by_peer, input_closed_by_peer;
-    unsigned  report_desc_reads, refused, opens;
-    struct ctl ctl[MAX_CTL];
-    unsigned  nctl;
-    struct ev ev[MAX_EV];
-    unsigned  nev;
+    bool      usb_closed_by_peer, input_closed_by_peer;   /* hid closed its end */
+    unsigned  report_desc_reads;      /* GET_DESCRIPTOR(report) requests */
+    unsigned  refused;                /* requests the mock refused */
+    unsigned  opens;                  /* open_interrupt_in calls */
+    struct ctl ctl[MAX_CTL];          /* control requests, in order */
+    unsigned  nctl;                   /* how many */
+    struct ev ev[MAX_EV];             /* input events, in order */
+    unsigned  nev;                    /* how many */
 };
 
 static status_t m_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *speed,
@@ -514,9 +521,9 @@ static uint8_t usage_of(char c, bool *shift)
 
 /* Wanted key events, in order. */
 struct want {
-    uint16_t usage;
-    uint8_t  state, mods;
-    uint32_t cp;
+    uint16_t usage;          /* key usage */
+    uint8_t  state, mods;    /* INPUT_KEY_*, modifiers */
+    uint32_t cp;             /* codepoint */
 };
 
 static unsigned count_not_repeat(struct mock *m, unsigned from)

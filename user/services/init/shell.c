@@ -55,13 +55,14 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 enum { CONSOLE, SERIALIN, DEVMGR, SHELL, NSVC };
 
 struct svc {
-    const char *path;
-    handle_t    proc, job;
-    bool        running, given_up;
+    const char *path;          /* in bootfs */
+    handle_t    proc, job;     /* while it runs */
+    bool        running;       /* started, its end not seen yet */
+    bool        given_up;      /* ended too often: not started again */
     uint64_t    next_try;      /* uptime ns */
-    uint64_t    backoff;
+    uint64_t    backoff;       /* the last delay before a restart, ns */
     uint64_t    started;       /* uptime ns */
-    uint64_t    window_start;
+    uint64_t    window_start;  /* the minute its ends are counted in (uptime ns) */
     unsigned    ends;          /* in the current window */
 };
 

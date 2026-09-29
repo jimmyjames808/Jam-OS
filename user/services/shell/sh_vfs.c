@@ -155,9 +155,10 @@ static status_t boot_read(const char *rel, const void **data, uint64_t *size)
 
 struct mount {
     const char *path;   /* "/boot" */
-    status_t  (*stat)(const char *rel, bool *dir, uint64_t *size);
-    int       (*readdir)(const char *rel, struct sh_dirent *out, int cap);
-    status_t  (*read)(const char *rel, const void **data, uint64_t *size);
+    /* rel: the path inside the mount, "" for its root */
+    status_t  (*stat)(const char *rel, bool *dir, uint64_t *size);   /* sh_stat */
+    int       (*readdir)(const char *rel, struct sh_dirent *out, int cap);   /* sh_readdir */
+    status_t  (*read)(const char *rel, const void **data, uint64_t *size);  /* sh_read_file */
 };
 
 static const struct mount mounts[] = {

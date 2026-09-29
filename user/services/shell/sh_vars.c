@@ -3,14 +3,14 @@
 #include "sh_core.h"
 
 struct var {
-    char  name[SH_NAME_MAX];
+    char  name[SH_NAME_MAX];   /* NAME */
     char *value;   /* NULL: free slot */
-    bool  exported;
+    bool  exported;   /* in the environment of programs `run` starts */
 };
 static struct var vars[SH_MAX_VARS];
 
 struct alias {
-    char  name[SH_NAME_MAX];
+    char  name[SH_NAME_MAX];   /* the word it replaces */
     char *value;   /* NULL: free slot */
 };
 static struct alias aliases[SH_MAX_ALIAS];

@@ -78,10 +78,10 @@ int sh_status(void);   /* $? */
 #define SH_CMD(name) int shc_##name(int argc, char **argv)
 
 struct sh_cmd {
-    const char *name;
-    int       (*fn)(int argc, char **argv);
+    const char *name;    /* what is typed */
+    int       (*fn)(int argc, char **argv);   /* shc_<name> */
     uint8_t     cat;     /* index into sh_categories */
-    const char *usage;
+    const char *usage;   /* the arguments, for `help <cmd>` and usage errors */
     const char *help;    /* its first line is what `help` lists */
 };
 
@@ -166,8 +166,8 @@ const char *sh_human(uint64_t bytes, char *buf, size_t cap);
 
 struct sh_tz {
     bool sydney;       /* Australia/Sydney: AEST +10, AEDT +11 (Oct..Apr) */
-    int  off_min;      /* fixed zones */
-    char name[24];
+    int  off_min;      /* fixed zones: minutes east of UTC */
+    char name[24];     /* what dates show: "UTC", "UTC+05:30" */
 };
 
 /* TZ: Australia/Sydney (also Sydney, AEST, AEDT, local), UTC/GMT, or
@@ -204,7 +204,7 @@ void        sh_fmt_cpu_time(uint64_t ns, char *buf, size_t cap);
 
 /* The lines of a text: sh_next_line walks them. */
 struct sh_lines {
-    const char *p, *end;
+    const char *p, *end;   /* the next line's start; the end of the text */
 };
 bool sh_next_line(struct sh_lines *l, const char **s, size_t *n);
 /* The line and a newline. */
@@ -219,9 +219,9 @@ bool sh_count_opt(int argc, char **argv, int *i, uint64_t *n);
 #define SH_PATH_MAX 128
 #define SH_DIR_MAX  256   /* entries ls and find read from one directory */
 struct sh_dirent {
-    char     name[64];
-    bool     dir;
-    uint64_t size;
+    char     name[64];   /* the entry's name, without the directory */
+    bool     dir;        /* a directory */
+    uint64_t size;       /* a file's bytes */
 };
 const char *sh_cwd(void);
 bool        sh_chdir(const char *path);

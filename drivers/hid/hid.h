@@ -31,29 +31,39 @@ struct kbd_held {
 struct kbd {
     uint8_t  mods;           /* modifier byte of the last report taken */
     uint8_t  leds;           /* LED_* */
-    uint8_t  nheld;
-    struct kbd_held held[6];
+    uint8_t  nheld;          /* entries in held[] */
+    struct kbd_held held[6]; /* the keys down, in the order they went down */
     bool     repeating;      /* the most recent repeatable key is still down */
-    uint8_t  rep_raw;
-    uint16_t rep_usage;
+    uint8_t  rep_raw;        /* that key's usage in the report */
+    uint16_t rep_usage;      /* the usage its REPEATs carry */
     uint64_t rep_next;       /* its next REPEAT (uptime ns) */
     uint64_t rollover;       /* phantom (ErrorRollOver) reports ignored */
     uint64_t short_reports;  /* reports too short to be a boot report */
 };
 
+/* The driver's state: one interface. Only the driver's one thread uses it. */
 struct hid {
-    handle_t usb, input, reports, port;
-    uint16_t vendor, product;
-    uint8_t  iface, alt, subclass, protocol, speed;
-    uint8_t  ep_in, interval_ms;
-    uint16_t max_packet;
-    uint16_t report_desc_len;
-    enum hid_kind kind;
-    enum hid_stop stop;
-    uint64_t nreports, events, input_errors, led_errors;
+    handle_t usb;            /* DR_USB: the `usb` channel of our interface */
+    handle_t input;          /* DR_INPUT: the console's `input` channel, or HANDLE_INVALID */
+    handle_t reports;        /* the report channel open_interrupt_in gave, or HANDLE_INVALID */
+    handle_t port;           /* the loop's port, or HANDLE_INVALID */
+    uint16_t vendor, product;   /* USB ids (usb.info) */
+    uint8_t  iface, alt;     /* interface number and its active alternate setting */
+    uint8_t  subclass, protocol;   /* 1 and 1 / 2: a boot keyboard / mouse */
+    uint8_t  speed;          /* the device's USB speed */
+    uint8_t  ep_in;          /* the interrupt IN endpoint's address, 0: none found */
+    uint8_t  interval_ms;    /* its polling interval */
+    uint16_t max_packet;     /* its max packet size */
+    uint16_t report_desc_len;   /* from the HID descriptor, 0: none */
+    enum hid_kind kind;      /* 0 until a boot keyboard or mouse is set up */
+    enum hid_stop stop;      /* why the loop ends, STOP_NONE while it runs */
+    uint64_t nreports;       /* reports taken */
+    uint64_t events;         /* input events sent (or logged) */
+    uint64_t input_errors;   /* input calls that failed (the event was dropped) */
+    uint64_t led_errors;     /* LED SET_REPORTs that failed */
     uint64_t keys_down;      /* key DOWN events (for the RESULTS line at the end) */
-    uint8_t  mouse_buttons;
-    struct kbd kbd;
+    uint8_t  mouse_buttons;  /* the buttons of the last mouse report */
+    struct kbd kbd;          /* the keyboard layer (keyboard.c) */
     uint8_t *buf;            /* 1024 bytes: descriptors, reports */
 };
 

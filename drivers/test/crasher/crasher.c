@@ -21,14 +21,16 @@
 #define CRASHER_CRASH 0xc4a50002u
 #define CRASHER_EXIT  0xc4a50003u
 
+/* A request: CRASHER_* ordinal, arg = EXIT's code. */
 struct req {
-    uint32_t txid, ordinal, arg;
+    uint32_t txid, ordinal, arg;   /* the caller's txid, CRASHER_*, EXIT's exit code */
 };
 
+/* PING's reply. */
 struct ping_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint64_t started_ns;
+    uint32_t txid;         /* the request's */
+    int32_t  status;       /* OK */
+    uint64_t started_ns;   /* when this instance of the driver started (uptime) */
 } __attribute__((packed));
 
 static void crash(void)

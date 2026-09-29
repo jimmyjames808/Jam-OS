@@ -27,17 +27,19 @@
 
 /* The ELF64 bits we read (the kernel's elf.c has the full checks). */
 struct ehdr {
-    uint8_t  ident[16];
-    uint16_t type, machine;
-    uint32_t version;
-    uint64_t entry, phoff, shoff;
-    uint32_t flags;
-    uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
+    uint8_t  ident[16];                /* "\x7fELF", class 2: 64-bit */
+    uint16_t type, machine;            /* 2: executable; 62: x86-64 */
+    uint32_t version;                  /* the ELF version (not checked) */
+    uint64_t entry, phoff, shoff;      /* entry point; program / section header offsets */
+    uint32_t flags;                    /* none on x86-64 */
+    uint16_t ehsize, phentsize, phnum; /* this header's size; a program header's; how many */
+    uint16_t shentsize, shnum, shstrndx;   /* section headers (not used) */
 };
 
 struct phdr {
-    uint32_t type, flags;
-    uint64_t offset, vaddr, paddr, filesz, memsz, align;
+    uint32_t type, flags;              /* PT_*; PF_* */
+    uint64_t offset, vaddr, paddr;     /* in the file; where it goes; (not used) */
+    uint64_t filesz, memsz, align;     /* bytes in the file; in memory (the rest zero); (not used) */
 };
 
 #define PT_LOAD 1

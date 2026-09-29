@@ -167,8 +167,10 @@ static inline uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] <<
 
 #define RING_TRBS 256   /* one 4 KiB segment; the last is the Link TRB */
 
+/* A Transfer Request Block (xHCI 4.11): four dwords, the cycle bit in d3's
+ * bit 0 says whose it is (the producer's or the consumer's). */
 struct trb {
-    uint32_t d0, d1, d2, d3;
+    uint32_t d0, d1, d2, d3;   /* parameter lo/hi, status, control (type, flags, cycle) */
 };
 
 /* USB speeds (the xHCI default Protocol Speed IDs; usb.idl's too) */
@@ -196,171 +198,204 @@ static inline uint8_t ep_dci(uint8_t addr)
 
 /* ---- the controller -------------------------------------------------------- */
 
+/* A transfer ring: one pool page of RING_TRBS TRBs, the last a Link TRB
+ * back to the first. */
 struct ring {
-    volatile struct trb *t;
-    uint64_t dev;       /* device address of t[0] */
-    uint32_t enq;
-    uint32_t cycle;
-    int      page;      /* pool page, -1: none */
+    volatile struct trb *t;   /* the page, mapped (shared with the controller) */
+    uint64_t dev;             /* device address of t[0] */
+    uint32_t enq;             /* the next TRB to fill */
+    uint32_t cycle;           /* our producer cycle state (0 or 1) */
+    int      page;            /* pool page, -1: none */
 };
 
 #define MAX_MAPS 48
 #define MAX_PROTOS 8
 
+/* The controller. One instance (g_hc); only the driver's one thread
+ * touches it, so nothing here is locked. */
 struct hc {
-    const char *name;
-    handle_t dev, bar, irq, dma, port, serve;
-    struct { uint32_t page; volatile uint8_t *va; } map[MAX_MAPS];
-    unsigned nmap;
-    bool map_failed;
-    uint32_t map_fail_off;
-    status_t map_fail_st;
+    const char *name;                /* the driver's name, for logs */
+    handle_t dev, bar, irq, dma, port, serve;   /* DR_PCIDEV, DR_BAR(0), DR_IRQ(0), DR_DMA, our
+                                                 * port, DR_SERVE */
+    struct {
+        uint32_t page;               /* BAR0 offset of the page */
+        volatile uint8_t *va;        /* where it is mapped */
+    } map[MAX_MAPS];                 /* BAR0 pages mapped so far (reg() maps on first use) */
+    unsigned nmap;                   /* entries in map[] */
+    bool map_failed;                 /* a register page couldn't be mapped (the first failure: */
+    uint32_t map_fail_off;           /* its offset */
+    status_t map_fail_st;            /* and why) */
 
-    uint16_t vendor, device;
-    uint8_t revision;
-    bool msix;
-    uint32_t irq_vectors;
-    uint32_t caplen, hciver, hcs1, hcs2, hcc1, dboff, rtsoff;
-    uint32_t ports, slots, scratchpads, pagesize, max_slots_en;
+    uint16_t vendor, device;         /* PCI ids */
+    uint8_t revision;                /* PCI revision id */
+    bool msix;                       /* the interrupt is MSI-X entry 0 (else MSI) */
+    uint32_t irq_vectors;            /* vectors the function offers */
+    uint32_t caplen, hciver;         /* CAPLENGTH, HCIVERSION */
+    uint32_t hcs1, hcs2, hcc1;       /* HCSPARAMS1, HCSPARAMS2, HCCPARAMS1 */
+    uint32_t dboff, rtsoff;          /* doorbell array and runtime register offsets */
+    uint32_t ports, slots;           /* MaxPorts, MaxSlots */
+    uint32_t scratchpads;            /* Max Scratchpad Buffers */
+    uint32_t pagesize;               /* PAGESIZE in bytes (only 4096 is supported) */
+    uint32_t max_slots_en;           /* slots enabled (CONFIG): at most MAX_DEVS */
     uint32_t csz;                    /* context size: 32 or 64 */
-    const char *handoff;
-    /* Supported Protocol capabilities: port ranges */
-    struct { uint8_t major, minor, first, count, slot_type, psic; } proto[MAX_PROTOS];
-    unsigned nproto;
+    const char *handoff;             /* how the BIOS handoff went, for the RESULTS line */
+    /* Supported Protocol capabilities: which root ports speak which USB */
+    struct {
+        uint8_t major, minor;        /* USB revision (BCD) */
+        uint8_t first, count;        /* root ports first .. first + count - 1 */
+        uint8_t slot_type;           /* Protocol Slot Type (for Enable Slot) */
+        uint8_t psic;                /* Protocol Speed ID Count */
+    } proto[MAX_PROTOS];
+    unsigned nproto;                 /* entries in proto[] */
 
     /* the fixed DMA area: DCBAA, ERST, command and event rings, scratchpad array */
-    handle_t ctx_vmo, sp_vmo;
-    uint8_t *ctx;
-    uint64_t ctx_dev;
-    uint32_t ctx_pages;
-    uint64_t ctx_pin, sp_pin;
-    bool ctx_pinned, sp_pinned;
+    handle_t ctx_vmo, sp_vmo;        /* the area's VMO, the scratchpad pages' VMO */
+    uint8_t *ctx;                    /* the area, mapped */
+    uint64_t ctx_dev;                /* its device address (contiguous, below 4 GiB) */
+    uint32_t ctx_pages;              /* its size in pages */
+    uint64_t ctx_pin, sp_pin;        /* pin ids */
+    bool ctx_pinned, sp_pinned;      /* pinned: unpin at release */
 
-    /* the page pool */
-    handle_t pool_vmo;
-    uint8_t *pool;
-    uint64_t *pool_addr;
-    uint64_t pool_pin;
-    bool pool_pinned;
-    uint8_t pool_used[POOL_PAGES];
-    uint32_t pool_inuse, pool_peak;
+    /* the page pool: contexts, rings and buffers, one page each */
+    handle_t pool_vmo;               /* POOL_PAGES pages */
+    uint8_t *pool;                   /* mapped */
+    uint64_t *pool_addr;             /* each page's device address (drv_malloc) */
+    uint64_t pool_pin;               /* pin id */
+    bool pool_pinned;                /* pinned: unpin at release */
+    uint8_t pool_used[POOL_PAGES];   /* 1: handed out */
+    uint32_t pool_inuse, pool_peak;  /* pages handed out now, and the most ever */
 
-    uint32_t cmd_enq, cmd_cycle;
-    uint32_t ev_deq, ev_cycle;
-    bool running;
+    uint32_t cmd_enq, cmd_cycle;     /* command ring: next TRB, producer cycle state */
+    uint32_t ev_deq, ev_cycle;       /* event ring: next TRB, consumer cycle state */
+    bool running;                    /* RS set and HCH clear */
     bool dead;                       /* HSE / HCE, or a stuck command ring */
 
     /* the one outstanding command */
     struct {
-        bool busy, done;
-        uint64_t trb;
-        uint32_t cc, slot, param;
+        bool busy, done;             /* issued; its completion event came */
+        uint64_t trb;                /* its device address (matches the event's pointer) */
+        uint32_t cc, slot, param;    /* from the event: completion code, slot id, parameter */
     } cmd;
 
     /* the one outstanding control transfer */
     struct {
-        bool busy, done;
-        uint8_t slot;
-        uint64_t data_trb, status_trb, setup_trb;
-        uint32_t cc, len, residual;
-        bool short_seen;
+        bool busy, done;             /* running; finished (cc says how) */
+        uint8_t slot;                /* the device's slot */
+        uint64_t data_trb, status_trb, setup_trb;   /* its TRBs' device addresses (0: none) */
+        uint32_t cc;                 /* completion code of the transfer */
+        uint32_t residual;           /* bytes not transferred (a short data stage) */
+        bool short_seen;             /* the data stage ended short */
     } ctl;
     int ctl_page;                    /* the shared control bounce buffer */
 
     uint32_t port_changed[8];        /* bitmap of root ports with a Port Status Change event */
     bool stopping;                   /* DR_SERVE closed: wind down */
-    bool serve_pending;
-    uint64_t irqs, events, spurious_events, polled_events;
+    bool serve_pending;              /* DR_SERVE may have requests: the main loop reads it */
+    uint64_t irqs, events;           /* interrupts taken, events processed */
+    uint64_t spurious_events;        /* events that matched nothing outstanding */
 };
 
 extern struct hc g_hc;
 
 /* ---- the device model ------------------------------------------------------ */
 
+/* An endpoint of a device, by DCI (d->eps[dci]). */
 struct ep {
     uint8_t dci;          /* 0: unused */
     uint8_t addr;         /* bEndpointAddress */
     uint8_t attr;         /* bmAttributes */
     uint8_t type;         /* EPT_* */
-    uint8_t binterval;
-    uint8_t ifnum;
+    uint8_t binterval;    /* bInterval, as the descriptor has it */
+    uint8_t ifnum;        /* the interface it belongs to */
     uint16_t mps;         /* wMaxPacketSize (bits 10:0) */
     uint8_t burst;        /* additional transactions (HS) or SS bMaxBurst */
     uint16_t esit;        /* max ESIT payload */
     uint8_t interval;     /* xHCI Interval field: 2^n x 125 us */
-    bool configured;
-    struct ring ring;
+    bool configured;      /* in the controller (a Configure Endpoint added it) */
+    struct ring ring;     /* its transfer ring (page -1: none) */
     /* interrupt IN polling */
-    bool open;
-    bool halted;
+    bool open;            /* polled: transfers are queued */
+    bool halted;          /* an error halted it; the main loop recovers it */
     uint8_t owner;        /* EP_OWNER_* */
     int chan;             /* reports channel slot (EP_OWNER_CLIENT), -1 none */
-    int buf_page;
-    uint8_t *buf;
-    uint64_t buf_dev;
+    int buf_page;         /* pool page for the transfers' buffers, -1: none */
+    uint8_t *buf;         /* that page, mapped */
+    uint64_t buf_dev;     /* its device address */
     /* queued transfers: TRB index in the ring -> buffer slot */
-    struct { uint16_t idx; uint8_t slot; } inflight[INTR_TRBS];
-    uint8_t ninflight;
-    uint32_t errors_in_row;
+    struct {
+        uint16_t idx;     /* ring index of the TRB */
+        uint8_t slot;     /* which INTR_STRIDE slice of buf it fills */
+    } inflight[INTR_TRBS];
+    uint8_t ninflight;    /* entries in inflight[] */
+    uint32_t errors_in_row;   /* errors since the last good transfer */
     uint16_t last_cc;     /* the completion code that halted it */
-    uint64_t reports, dropped, errors;
+    uint64_t reports;     /* transfers delivered */
+    uint64_t dropped;     /* reports lost to the client's full queue */
+    uint64_t errors;      /* transfers that failed */
 };
 
 #define EP_OWNER_CLIENT 1
 #define EP_OWNER_HUB    2
 
+/* An interface of a configured device (its active alternate setting). */
 struct iface {
-    uint8_t number, alt, cls, sub, proto, nep;
-    uint8_t ep_addr[MAX_EPS_IF];
-    uint8_t num_alts;
+    uint8_t number, alt;  /* bInterfaceNumber, the active bAlternateSetting */
+    uint8_t cls, sub, proto;   /* class, subclass, protocol */
+    uint8_t nep;          /* entries in ep_addr[] */
+    uint8_t ep_addr[MAX_EPS_IF];   /* its endpoints' addresses */
+    uint8_t num_alts;     /* alternate settings the configuration lists */
     int devmgr_chan;      /* the channel sent to devmgr, -1 none */
 };
 
+/* A device (hubs included): an entry of g_devs. */
 struct usbdev {
-    bool used;
-    bool gone;
+    bool used;            /* the entry is taken */
+    bool gone;            /* detached or failed: only the cleanup is left */
     bool configured;      /* SET_CONFIGURATION done */
     bool reported;        /* its line is out */
     uint32_t id;          /* unique for this run; 0 = never */
-    uint8_t slot;
+    uint8_t slot;         /* xHCI slot id, 0: none */
     int parent;           /* devs[] index of its hub, -1: root port */
     uint8_t port;         /* port on the parent hub, or the root port */
-    uint8_t root_port;
+    uint8_t root_port;    /* the root port its branch hangs on */
     uint8_t level;        /* 1: on a root port */
-    uint32_t route;
-    uint8_t speed;
-    uint8_t tt_slot, tt_port;
-    bool tt_mtt;
-    uint32_t tt_clears;              /* CLEAR_TT_BUFFERs sent (the first few logged) */
-    char path[24];
+    uint32_t route;       /* route string (xHCI 8.9): a hub port per tier below the root */
+    uint8_t speed;        /* SPEED_* */
+    uint8_t tt_slot, tt_port;   /* its TT's hub slot and port (FS/LS behind HS), 0: none */
+    bool tt_mtt;          /* that hub runs multi-TT */
+    uint32_t tt_clears;   /* CLEAR_TT_BUFFERs sent (the first few logged) */
+    char path[24];        /* "9.1": root port 9, hub port 1 */
 
-    int out_page, in_page;
-    struct ring ep0;
-    uint16_t mps0;
-    uint8_t address;
+    int out_page, in_page;   /* pool pages: output (device) and input contexts, -1: none */
+    struct ring ep0;      /* the default control endpoint's ring */
+    uint16_t mps0;        /* EP0 max packet */
+    uint8_t address;      /* the USB address the controller gave it */
 
-    uint16_t vid, pid, bcd;
-    uint8_t cls, sub, proto, nconfigs, cfg_value, iserial;
+    uint16_t vid, pid, bcd;   /* idVendor, idProduct, bcdUSB */
+    uint8_t cls, sub, proto;  /* device class, subclass, protocol */
+    uint8_t nconfigs;     /* bNumConfigurations */
+    uint8_t cfg_value;    /* the bConfigurationValue set */
+    uint8_t iserial;      /* the serial number string's index */
     uint8_t *cfg;         /* the active configuration descriptor (drv_malloc) */
-    uint16_t cfg_len;
-    char product[40];
-    char serial[24];
+    uint16_t cfg_len;     /* its length in bytes */
+    char product[40];     /* product string (ASCII, for logs), "" if none */
+    char serial[24];      /* serial number string, "" if none */
 
-    struct iface ifs[MAX_IFS];
-    uint8_t nifs;
+    struct iface ifs[MAX_IFS];   /* its interfaces */
+    uint8_t nifs;         /* entries in ifs[] */
     struct ep eps[32];    /* by DCI */
-    uint8_t max_dci;
+    uint8_t max_dci;      /* the highest configured DCI (the slot's Context Entries) */
 
     /* hub */
-    bool is_hub, ss_hub;
-    uint8_t hub_ports;
-    uint8_t ttt;
-    bool hub_mtt;
-    uint16_t hub_chars;
-    uint32_t pgood_ms;
+    bool is_hub, ss_hub;  /* used as a hub; a SuperSpeed one */
+    uint8_t hub_ports;    /* downstream ports (at most 15) */
+    uint8_t ttt;          /* TT Think Time (HS hub), from wHubCharacteristics */
+    bool hub_mtt;         /* runs multi-TT (never: alternate setting 0 is single-TT) */
+    uint16_t hub_chars;   /* wHubCharacteristics */
+    uint32_t pgood_ms;    /* bPwrOn2PwrGood, in ms */
     uint32_t hub_change[8];          /* ports (bit 0: the hub itself) to look at */
-    bool hub_scan_all;
-    uint8_t hub_intr_dci;
+    bool hub_scan_all;    /* look at every port (set up after hub_setup) */
+    uint8_t hub_intr_dci; /* its status-change endpoint, 0: none */
 
     const char *problem;             /* why it stopped short of configured */
     uint8_t port_fail[16];           /* hub: failed attach attempts per port */

@@ -242,8 +242,8 @@ static const char *collection_name(uint32_t page, uint32_t usage)
 /* The summary being built: out holds len characters, cap bytes with the
  * NUL. */
 struct text {
-    char    *s;
-    uint32_t len, cap;
+    char    *s;          /* the buffer */
+    uint32_t len, cap;   /* characters in it; its size with the NUL */
 };
 
 /* Append to t; past the cap the text is cut, as snprintf cuts it. */

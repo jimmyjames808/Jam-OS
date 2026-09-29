@@ -5,7 +5,7 @@
 #include <idl/null.h>
 
 struct null_state {
-    uint64_t calls;
+    uint64_t calls;   /* requests served */
 };
 
 static status_t do_ping(void *ctx, uint64_t value, uint64_t *out_value)

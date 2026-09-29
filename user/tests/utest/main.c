@@ -1063,9 +1063,9 @@ static status_t crasher_ping(handle_t ch, uint64_t deadline, uint64_t *started)
 {
     uint32_t q[2] = { 0, CRASHER_PING };
     struct {
-        uint32_t txid;
-        int32_t  status;
-        uint64_t started;
+        uint32_t txid;       /* ours */
+        int32_t  status;     /* OK */
+        uint64_t started;    /* when this instance of the driver started */
     } __attribute__((packed)) rep;
     uint32_t n = 0;
     struct channel_call_args a = {
@@ -1402,8 +1402,8 @@ static bool t_driver_handle_limits(void)
 }
 
 static const struct {
-    const char *name;
-    bool (*fn)(void);
+    const char *name;    /* in the "utest: <name> ok" lines */
+    bool (*fn)(void);    /* true: passed */
 } tests[] = {
     { "basics", t_basics },
     { "rights", t_rights },

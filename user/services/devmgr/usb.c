@@ -39,7 +39,7 @@ struct usb_if {
     uint32_t bus;       /* devs index of the usb-bus that reported it */
     int32_t  bind;      /* devs index of its class driver's binding; -1: none */
     uint16_t gen;       /* bumped at every use of the slot: in its port key */
-    struct usbbus_interface_attached_req info;
+    struct usbbus_interface_attached_req info;   /* what usb-bus said about it */
 };
 
 static struct usb_if usb_ifs[MAX_USB_IFS];

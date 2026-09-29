@@ -128,11 +128,11 @@ status_t op_open_keys(void *ctx, handle_t *out)
 /* ---- input sources ------------------------------------------------------------- */
 
 struct source {
-    handle_t ch;
+    handle_t ch;        /* our end of its `input` channel; 0: a free slot */
     int      esc;       /* terminal escape parser */
-    char     params[8];
-    unsigned np;
-    bool     last_cr;
+    char     params[8]; /* the escape's parameter bytes so far */
+    unsigned np;        /* how many */
+    bool     last_cr;   /* the last text byte was '\r' (a '\n' after it is dropped) */
 };
 static struct source sources[MAX_SOURCES];
 

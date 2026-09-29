@@ -4,11 +4,11 @@
 #include "sh.h"
 
 struct sample {
-    uint64_t          t;
-    struct cpu_stat  *cpu;
-    uint32_t          ncpu;
-    struct proc_stat *proc;
-    int               nproc;
+    uint64_t          t;       /* when (uptime ns) */
+    struct cpu_stat  *cpu;     /* SH_MAX_CPUS of them (malloc'd) */
+    uint32_t          ncpu;    /* filled */
+    struct proc_stat *proc;    /* SH_MAX_PROCS of them (malloc'd) */
+    int               nproc;   /* filled */
 };
 
 static bool take(struct sample *s)
@@ -74,8 +74,8 @@ static void cpu_bars(const struct sample *a, const struct sample *b, uint64_t dt
 static void processes(const struct sample *a, const struct sample *b, uint64_t dt, bool screen)
 {
     struct row {
-        int      i;
-        uint64_t d;
+        int      i;   /* index in b->proc */
+        uint64_t d;   /* its CPU time in the interval, ns */
     } rows[SH_MAX_PROCS];
     int np = 0;
     for (int i = 0; i < b->nproc; i++) {

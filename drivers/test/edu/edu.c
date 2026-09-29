@@ -57,14 +57,15 @@
 #define OP_TIMEOUT   (2000 * MS)   /* a DMA is ~100 ms in QEMU: generous under load */
 
 struct edu {
-    volatile void *regs;
-    handle_t irq, port, dma, vmo;
+    volatile void *regs;   /* BAR0, mapped */
+    handle_t irq, port;    /* DR_IRQ(0); the port its interrupts arrive on */
+    handle_t dma, vmo;     /* DR_DMA; the DMA buffer's VMO */
     uint8_t *buf;          /* the DMA VMO mapped: page 0 goes out, page 1 comes back */
     uint32_t seen;         /* interrupt status bits taken off the device, not yet used */
     uint32_t seq;          /* varies the DMA pattern */
     bool     held;         /* dma_start's transfer: running, its pin held */
-    uint64_t held_pin;
-    uint64_t irqs;
+    uint64_t held_pin;     /* that pin's id */
+    uint64_t irqs;         /* interrupts taken */
 };
 
 static uint32_t rd(struct edu *e, uint32_t off) { return drv_read32(e->regs, off); }

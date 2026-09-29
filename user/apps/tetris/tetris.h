@@ -19,23 +19,23 @@ struct game {
     int      type, rot, x, y; /* the falling piece: its box's top-left */
     int      hold;            /* -1: none */
     bool     held;            /* hold used for this piece */
-    uint8_t  bag[7];
-    int      nbag;
-    int      next[3];
-    uint64_t rng;
-    uint32_t score, lines, level, pieces;
-    bool     over, paused;
+    uint8_t  bag[7];          /* the 7-bag: every piece once, shuffled */
+    int      nbag;            /* pieces left in it */
+    int      next[3];         /* the preview */
+    uint64_t rng;             /* the random state */
+    uint32_t score, lines, level, pieces;   /* the counters shown */
+    bool     over, paused;    /* the game is over; paused (p) */
     uint64_t fall_at;         /* the next gravity step (ns) */
     uint64_t lock_at;         /* 0: not on the ground */
-    int      lock_moves;
+    int      lock_moves;      /* moves on the ground (each resets the lock delay) */
     /* For the animations only (the rules never look at these): */
     int      cleared[4], ncleared;   /* the rows the last lock cleared, where they were */
     uint8_t  cleared_cells[4][BW];   /* what they held */
-    uint64_t cleared_at;
+    uint64_t cleared_at;      /* when (ns) */
     int      locked_type, locked_rot, locked_x, locked_y;   /* the last piece locked */
-    uint64_t locked_at;
+    uint64_t locked_at;       /* when (ns) */
     int      drop_type, drop_rot, drop_x, drop_y0, drop_y1; /* the last hard drop */
-    uint64_t dropped_at;
+    uint64_t dropped_at;      /* when (ns) */
 };
 
 /* ---- the rules (game.c) ---- */
