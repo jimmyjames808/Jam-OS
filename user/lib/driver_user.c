@@ -1,5 +1,5 @@
-/* <jam/driver.h> in the process build (M6): every call is a system call,
- * or libos (malloc, printf, threads).
+/* <jam/driver.h>'s implementation: every call is a system call, or libos
+ * (malloc, vsnprintf, threads).
  *
  * Part of libos, so ordinary programs can use it too: a client calling a
  * driver through a generated <idl/...> stub goes through drv_channel_call.
@@ -7,10 +7,9 @@
  * turns the startup message into the struct driver_start and sets
  * libos_driver_start.
  *
- * Differences from the kernel build a driver can see: none in results. A
- * thread started with drv_thread_start keeps its 64 KiB stack (from the
+ * A thread started with drv_thread_start keeps its 64 KiB stack (from the
  * heap) after it exits: libos can't free a stack it may still be running
- * on, so a driver starts its threads once, not per request. */
+ * on. */
 #include <os.h>
 #include <jam/driver.h>
 
@@ -111,6 +110,20 @@ void *drv_malloc(size_t n)
 void drv_free(void *p)
 {
     free(p);
+}
+
+int drv_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
+{
+    return vsnprintf(buf, size, fmt, ap);
+}
+
+int drv_snprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return n;
 }
 
 /* ---- handles, channels, ports, waiting ----------------------------------------- */
@@ -227,7 +240,7 @@ status_t drv_vmo_write(handle_t vmo, uint64_t off, const void *buf, uint64_t len
 }
 
 /* Map the pages holding [off, off + len) of vmo; *addr points at off
- * itself (as vmo_map_kernel does in the kernel build). */
+ * itself. */
 static status_t map_pages(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags, void **addr)
 {
     if (!addr || !len || off + len < off)

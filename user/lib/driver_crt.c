@@ -7,8 +7,7 @@
  * Roles: whoever starts a driver passes each handle with startup role
  * SR_DRIVER(DR_*) (= SR_USER + the driver role, <os.h>); the rest of the
  * startup message (process, vmar, job, bootfs) is libos's. The driver's
- * name is its argv[0] without the path ("drv/null" -> "null"), as in the
- * kernel build's table. */
+ * name is its argv[0] without the path ("drv/null" -> "null"). */
 #include <os.h>
 #include <jam/driver.h>
 
