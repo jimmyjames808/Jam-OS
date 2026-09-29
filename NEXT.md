@@ -42,7 +42,9 @@ limit, job_kill (syscall 80). Merge fix: both branches moved the thread credit, 
 twice -> kept one. Main: 131/131 + stress at 4+8, utest 14/14 with clean root job. OPEN: the fix agent
 saw one 4-CPU stress failure "counter#14 made no progress for 10 s" (kernel mutex has no hand-off to
 waiters, so a waiter can starve) - look at mutex fairness after M5.5 merges (sched.c is M5.5's).
-PC round on 6727edf: init+utest PASSED (utest 14 passed, root job clean); All tests + stress pending -> mark M5 done.
+PC round on 6727edf: init+utest PASSED (utest 14 passed, root job clean); All tests first panicked in
+proc_debug_write_rate_limited (fixed bound vs the PC's slow console; ad57a6f), then PASSED 131/131.
+Stress pending -> mark M5 done.
 **M5.5 agent started 2026-09-29 (base 3259578)**, in parallel with the review-fix agent: spin-before-idle,
 hybrid placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers, interrupt-driven
 serial, PCIDs (last; the fix agent also edits aspace.c), and the two M5 bench regressions. Every
