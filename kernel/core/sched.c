@@ -1158,6 +1158,13 @@ _Noreturn static void idle_loop(void)
             uint64_t end = rdtsc() + spin_ns * (tsc_hz / 1000000) / 1000;
             while (!idle_has_work(c) && rdtsc() < end)
                 cpu_relax();
+            if (idle_has_work(c)) {
+                /* Leave idle_polling set: schedule() clears it under the
+                 * run queue lock, so a waker that enqueued before that
+                 * still sees "polling" and skips a redundant IPI. */
+                schedule();
+                continue;
+            }
             irq_disable();
             __atomic_store_n(&c->idle_polling, false, __ATOMIC_SEQ_CST);
             __atomic_thread_fence(__ATOMIC_SEQ_CST);
