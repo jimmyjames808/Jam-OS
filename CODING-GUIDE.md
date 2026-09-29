@@ -92,6 +92,21 @@ syscall path returns an error.
 
 The Makefile finds programs and drivers by directory: no list to edit.
 
+### Licence and outside code
+
+Jam OS is BSD-2-Clause ([LICENSE](LICENSE)). Everything in the tree must
+be compatible with that.
+
+- **Never copy code from GPL or LGPL projects** (Linux, GRUB, glibc, ...),
+  not even a few lines. *Why:* it would force the whole project under the
+  GPL. Reading them for hardware facts is fine: register names and
+  offsets, bit meanings, init order, quirks. Write the code yourself and
+  cite the fact's source in a comment ("init order as in Linux r8169").
+  Prefer permissive references (FreeBSD, OpenBSD, the vendor datasheet).
+- **Vendored code goes in `third_party/<name>/` with its own LICENSE file**
+  and an entry in `third_party/VERSIONS.md`. Only permissive licences
+  (BSD, MIT, ISC, 0BSD, Zlib, Apache-2.0).
+
 ### Files and functions
 
 - **One job per file.** The file header says what that job is. A file you
@@ -573,6 +588,8 @@ the exact commands and each script's QEMU setup are in
 - [ ] Every new allocation reachable from user code is charged and capped,
       and fails with an error instead of panicking.
 - [ ] Every new hardware wait has a time deadline.
+- [ ] No code copied from GPL/LGPL projects; outside code only in
+      `third_party/` with its licence (BSD-2-Clause compatible).
 - [ ] New locks have a class name and are in the documented lock order;
       nothing blocks under a spinlock.
 - [ ] Functions ≤ ~60 lines, files ≤ ~600, nothing copied from elsewhere.

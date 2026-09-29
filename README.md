@@ -116,5 +116,5 @@ rules for changing the code, for agents and humans alike, are in
 
 ## Licence
 
-No licence yet. The third-party code in `third_party/` keeps its own
-licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause).
+Jam OS is released under the [BSD 2-Clause License](LICENSE). The
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause).
