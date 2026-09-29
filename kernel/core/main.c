@@ -118,7 +118,7 @@ _Noreturn static void kmain_stage2(void *arg)
     sched_init_bsp();   /* this code is now thread "main" */
     ipi_init();
     ioapic_init();
-    serial_start_irq();   /* M5.5: COM1 output from its transmit interrupt */
+    serial_start_irq();   /* COM1 output from its transmit interrupt */
     lapic_timer_calibrate();
     lapic_timer_start(TICK_HZ);
     smp_start_aps(boot);
@@ -126,7 +126,7 @@ _Noreturn static void kmain_stage2(void *arg)
 
     kprintf("measuring ticks on every CPU for 1 s...\n");
     bool ok = smp_report(1000);
-    /* M6: PCI enumeration and the resource tree, once every CPU is online
+    /* PCI enumeration and the resource tree, once every CPU is online
      * (the vector allocator spreads MSIs over them). */
     pci_init();
     resource_init();
@@ -150,7 +150,7 @@ _Noreturn static void kmain_stage2(void *arg)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
-     * or, M7, on "shell" or a plain boot (empty command line): devmgr, the
+     * or on "shell" or a plain boot (empty command line): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
      * RESULTS box only comes if init ever ends). "nousb" (the safe mode
      * entry) is shell mode with devmgr leaving USB controllers alone. Test,
@@ -160,9 +160,8 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 shell ? (nousb ? "shell-nousb" : "shell") : NULL);
-
-    /* M7 "USB keyboard test" boot entry: init starts devmgr alone (usb-bus,
-     * a hid per HID interface, keys to the log) for 30 s. */
+    /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
+     * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest");
     sched_print_stats();
@@ -203,6 +202,7 @@ _Noreturn void kmain(struct boot_info *bi)
     heap_init();
 
     /* Loader-reclaimable memory (Limine's stack, page tables, and the code
-     * the parked APs are spinning in) is freed in M2, after the APs start. */
+     * the parked APs are spinning in) is freed once the APs have started
+     * (smp_start_aps). */
     stack_switch_call(kstack_alloc(KERNEL_STACK_SZ), kmain_stage2, NULL);
 }
