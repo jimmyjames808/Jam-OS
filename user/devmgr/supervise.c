@@ -43,7 +43,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
     if (n >= SUP_RESTART_LIMIT) {
         b->state = DEVMGR_SUP_GAVE_UP;
         say(true, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s", bdf(b), b->path,
-            why, n, (unsigned long)(SUP_WINDOW / S),
+            why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
             b->test ? " (the crash-test driver: expected)" : "");
         if (!b->test)
             problems++;
@@ -52,7 +52,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
     uint64_t delay = SUP_BACKOFF_FIRST << n;
     if (delay > SUP_BACKOFF_MAX)
         delay = SUP_BACKOFF_MAX;
-    b->backoff_ms = (uint32_t)(delay / MS);
+    b->backoff_ms = (uint32_t)(delay / NS_PER_MS);
     b->restart_at = t + delay;
     b->state = DEVMGR_SUP_RESTARTING;
     /* The channel the restart will serve, handed out from now on. (If this

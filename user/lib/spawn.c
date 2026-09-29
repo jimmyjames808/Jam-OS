@@ -258,7 +258,7 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
 {
     signals_t seen;
     status_t st = jam_object_wait_one(proc, SIG_TERMINATED,
-                                      (uint64_t)jam_clock_get() + timeout_ns, &seen);
+                                      now() + timeout_ns, &seen);
     if (st == OK && info)
         st = jam_process_get_info(proc, info);
     return st;

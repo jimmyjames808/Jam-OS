@@ -47,10 +47,8 @@
 #include <devmgr.h>
 #include <idl/console.h>
 
-#define MS 1000000ull
-#define S  1000000000ull
 #define GIVE_UP_COUNT  10
-#define GIVE_UP_WINDOW (60 * S)
+#define GIVE_UP_WINDOW (60 * NS_PER_S)
 
 void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
@@ -139,7 +137,7 @@ static void tell_devmgr(void)
         .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
         .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
         .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * S,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
     };
     status_t st = jam_channel_call(&a);   /* c goes with the request either way */
     if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
@@ -189,7 +187,7 @@ static status_t start_console(void)
 static status_t start_serialin(void)
 {
     handle_t src;
-    status_t st = console_connect_input_until(cons, now() + 5 * S, &src);
+    status_t st = console_connect_input_until(cons, now() + 5 * NS_PER_S, &src);
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
@@ -237,7 +235,7 @@ static status_t start_devmgr(void)
     devmgr_q = qa;
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
-    st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * S);
+    st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
     if (st != OK)
         init_say("init: devmgr doesn't answer (%s)", status_str(st));
     else
@@ -252,7 +250,7 @@ static status_t start_shell(void)
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
     handle_t p2 = HANDLE_INVALID, mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
     /* A SHELL-level console channel: no input sources of its own. */
-    status_t st = console_new_client_until(cons, now() + 5 * S, 1, &c);
+    status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 1, &c);
     if (st != OK)
         return st;
     if (devmgr) {
@@ -329,9 +327,9 @@ static void ended(unsigned i)
         return;
     }
     /* Ran for a while: start again soon; else back off. */
-    s->backoff = t - s->started > 10 * S || !s->backoff ? 100 * MS : s->backoff * 2;
-    if (s->backoff > 5 * S)
-        s->backoff = 5 * S;
+    s->backoff = t - s->started > 10 * NS_PER_S || !s->backoff ? 100 * NS_PER_MS : s->backoff * 2;
+    if (s->backoff > 5 * NS_PER_S)
+        s->backoff = 5 * NS_PER_S;
     s->next_try = t + s->backoff;
 }
 
@@ -364,9 +362,9 @@ bool init_shell(bool no_usb)
                                  : start_shell();
             if (st != OK) {
                 printf("init: can't start %s (%s)\n", s->path, status_str(st));
-                s->backoff = s->backoff ? s->backoff * 2 : 100 * MS;
-                if (s->backoff > 5 * S)
-                    s->backoff = 5 * S;
+                s->backoff = s->backoff ? s->backoff * 2 : 100 * NS_PER_MS;
+                if (s->backoff > 5 * NS_PER_S)
+                    s->backoff = 5 * NS_PER_S;
                 s->next_try = t + s->backoff;
                 deadline = s->next_try < deadline ? s->next_try : deadline;
             }

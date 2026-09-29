@@ -22,8 +22,6 @@
 #include <idl/usb.h>
 #include "utest.h"
 
-#define MS 1000000ull
-#define S  1000000000ull
 
 static const char *hcur;
 
@@ -417,7 +415,7 @@ static bool start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool
     };
     CHECK_ST(spawn(&a, &m->proc), OK);
     CHECK_ST(jam_port_bind(m->port, m->proc, KEY_PROC, SIG_TERMINATED, PORT_BIND_ONCE), OK);
-    if (wait_ready && !pump(m, now() + 20 * S, ready, m->itf->protocol == 1))
+    if (wait_ready && !pump(m, now() + 20 * NS_PER_S, ready, m->itf->protocol == 1))
         FAIL("the driver never opened its endpoint (%u control requests, dead %d)", m->nctl,
              dead(m));
     return true;
@@ -446,10 +444,10 @@ static bool peer_closed(handle_t h)
  * we still hold sees it gone; then its job is empty. */
 static bool finish(struct mock *m, int code)
 {
-    if (!pump(m, now() + 20 * S, is_dead, 0))
+    if (!pump(m, now() + 20 * NS_PER_S, is_dead, 0))
         FAIL("the driver is still running");
     struct process_info info;
-    CHECK_ST(spawn_wait(m->proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(m->proc, 5 * NS_PER_S, &info), OK);
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, code);
     serve_all(m);
@@ -539,7 +537,7 @@ static bool have_non_repeats(struct mock *m, unsigned arg)
  * `exact`, nothing else may follow for 30 ms. *at moves past them. */
 static bool expect_x(struct mock *m, unsigned *at, const struct want *w, unsigned n, bool exact)
 {
-    if (!pump(m, now() + 10 * S, have_non_repeats, *at << 16 | n))
+    if (!pump(m, now() + 10 * NS_PER_S, have_non_repeats, *at << 16 | n))
         FAIL("%u event(s), want %u", count_not_repeat(m, *at), n);
     unsigned i = *at;
     for (unsigned k = 0; k < n; k++, i++) {
@@ -554,7 +552,7 @@ static bool expect_x(struct mock *m, unsigned *at, const struct want *w, unsigne
     }
     *at = i;
     if (exact) {
-        pump_for(m, 30 * MS);
+        pump_for(m, 30 * NS_PER_MS);
         if (count_not_repeat(m, i))
             FAIL("%u event(s) more than wanted", count_not_repeat(m, i));
     }
@@ -617,9 +615,9 @@ bool t_hid_typing(void)
     unsigned at = 0;
     if (!expect_x(&m, &at, h, 6, false))
         return false;
-    if (!pump(&m, now() + 10 * S, have_events, nwant))
+    if (!pump(&m, now() + 10 * NS_PER_S, have_events, nwant))
         FAIL("%u events, want %u", m.nev, nwant);
-    pump_for(&m, 30 * MS);
+    pump_for(&m, 30 * NS_PER_MS);
     CHECK_EQ(m.nev, nwant);
     char got[32];
     unsigned n = 0, downs = 0, ups = 0;
@@ -759,7 +757,7 @@ bool t_hid_rollover(void)
     const uint8_t undefined[8] = { 0, 0, 0x04, 0x03, 0, 0, 0, 0 };
     if (!report(&m, undefined, 8))
         return false;
-    pump_for(&m, 50 * MS);
+    pump_for(&m, 50 * NS_PER_MS);
     CHECK_EQ(count_not_repeat(&m, at), 0);  /* nothing: not even the Shift */
     STEP(0, 0x04, 0x05);
     STEP(0, 0, 0);
@@ -780,7 +778,7 @@ bool t_hid_rollover(void)
     const uint8_t runt[2] = { LSHIFT, 0 };
     if (!report(&m, runt, 2))
         return false;
-    pump_for(&m, 50 * MS);
+    pump_for(&m, 50 * NS_PER_MS);
     CHECK_EQ(count_not_repeat(&m, at), 0);
     unplug(&m, true, true);
     return finish(&m, 0);
@@ -796,16 +794,16 @@ bool t_hid_repeat(void)
         return false;
     if (!keys(&m, 0, 0x1b, 0))              /* x */
         return false;
-    if (!pump(&m, now() + 5 * S, have_events, 1))
+    if (!pump(&m, now() + 5 * NS_PER_S, have_events, 1))
         FAIL("no DOWN");
     uint64_t t_down = m.ev[0].t;
-    pump(&m, t_down + 900 * MS, NULL, 0);
+    pump(&m, t_down + 900 * NS_PER_MS, NULL, 0);
     if (!keys(&m, LSHIFT, 0x1b, 0))
         return false;
-    pump(&m, t_down + 1400 * MS, NULL, 0);
+    pump(&m, t_down + 1400 * NS_PER_MS, NULL, 0);
     if (!keys(&m, 0, 0, 0))
         return false;
-    pump_for(&m, 300 * MS);
+    pump_for(&m, 300 * NS_PER_MS);
 
     unsigned reps = 0, shifted = 0, up_at = 0, first_rep = 0, shift_at = 0;
     for (unsigned i = 1; i < m.nev; i++) {
@@ -835,12 +833,13 @@ bool t_hid_repeat(void)
     uint64_t delay = m.ev[first_rep].t - t_down;
     uint64_t held = m.ev[up_at].t - t_down;
     printf("utest: %s: first repeat after %lu ms, %u repeats in %lu ms held (%u shifted)\n",
-           hcur, (unsigned long)(delay / MS), reps, (unsigned long)(held / MS), shifted);
-    if (delay < 480 * MS || delay > 1200 * MS)
-        FAIL("the first repeat came %lu ms after the DOWN", (unsigned long)(delay / MS));
+           hcur, (unsigned long)(delay / NS_PER_MS), reps, (unsigned long)(held / NS_PER_MS),
+           shifted);
+    if (delay < 480 * NS_PER_MS || delay > 1200 * NS_PER_MS)
+        FAIL("the first repeat came %lu ms after the DOWN", (unsigned long)(delay / NS_PER_MS));
     /* Held ~1.4 s: ~27 at 30 Hz. A slow QEMU may lose some; a burst of
      * catch-up repeats after a late wakeup would show up as too many. */
-    unsigned most = (unsigned)((held + 50 * MS - 500 * MS) / (1000000000ull / 30)) + 2;
+    unsigned most = (unsigned)((held + 50 * NS_PER_MS - 500 * NS_PER_MS) / (NS_PER_S / 30)) + 2;
     if (reps < 8 || reps > most)
         FAIL("%u repeats (at most %u)", reps, most);
     CHECK(shifted >= 2);
@@ -869,9 +868,9 @@ bool t_hid_mouse(void)
     if (!report(&m, r1, 4) || !report(&m, r2, 4) || !report(&m, r3, 4) || !report(&m, r4, 4) ||
         !report(&m, r5, 3) || !report(&m, r6, 8))
         return false;
-    if (!pump(&m, now() + 10 * S, have_events, 5))
+    if (!pump(&m, now() + 10 * NS_PER_S, have_events, 5))
         FAIL("%u mouse events, want 5", m.nev);
-    pump_for(&m, 30 * MS);
+    pump_for(&m, 30 * NS_PER_MS);
     CHECK_EQ(m.nev, 5);
     const struct { int16_t dx, dy; int8_t wheel; uint8_t buttons; } w[5] = {
         { 5, -3, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, -1, 0 }, { -128, 127, 0, 6 }, { 1, 1, 2, 4 },
@@ -933,7 +932,7 @@ bool t_hid_unplug_and_console_gone(void)
     unsigned at = 0;
     STEP(0, 0x04, 0);
     EXPECT({ 0x04, D, 0, 'a' });
-    pump_for(&m, 600 * MS);                 /* repeating now */
+    pump_for(&m, 600 * NS_PER_MS);                 /* repeating now */
     CHECK(m.nev > 1);
     unplug(&m, true, false);                /* DR_USB only */
     if (!finish(&m, 0))
@@ -955,7 +954,7 @@ bool t_hid_unplug_and_console_gone(void)
     const uint8_t click[4] = { 1, 0, 0, 0 };
     if (!report(&m, click, 4))
         return false;
-    pump_for(&m, 50 * MS);
+    pump_for(&m, 50 * NS_PER_MS);
     unplug(&m, true, true);
     return finish(&m, 0);
 }

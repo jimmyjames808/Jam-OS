@@ -248,11 +248,11 @@ bool stop_driver(struct binding *b, bool kill, bool excused)
     if (kill)
         kill_driver(b);
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
-                                      (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
+                                      now() + STOP_WAIT, &seen);
     bool ok = st == OK;
     if (st != OK) {
         say(true, "devmgr: %s %s did not stop in %lu s: killing its job", bdf(b), b->path,
-            (unsigned long)(STOP_WAIT / S));
+            (unsigned long)(STOP_WAIT / NS_PER_S));
         kill_driver(b);
     }
     struct process_info info;

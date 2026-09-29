@@ -24,8 +24,6 @@
 #include <check/edu_check.h>
 #include "utest.h"
 
-#define MS 1000000ull
-#define S  1000000000ull
 
 static const char *cur;
 
@@ -96,7 +94,7 @@ static bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit,
     if (limit_kind)
         CHECK_ST(jam_job_set_limit(job, limit_kind, limit), OK);
     CHECK_ST(child(mode, NULL, job, HANDLE_INVALID, &proc), OK);
-    CHECK_ST(spawn_wait(proc, 20 * S, info), OK);
+    CHECK_ST(spawn_wait(proc, 20 * NS_PER_S, info), OK);
     CHECK_EQ(info->state, PROCESS_DEAD);
     CHECK_ST(jam_handle_close(proc), OK);
     struct job_info ji;
@@ -115,8 +113,8 @@ static bool t_basics(void)
 {
     uint64_t t0 = now();
     CHECK(t0 > 0);
-    CHECK_ST(jam_nanosleep(t0 + 2 * MS), OK);
-    CHECK(now() >= t0 + 2 * MS);
+    CHECK_ST(jam_nanosleep(t0 + 2 * NS_PER_MS), OK);
+    CHECK(now() >= t0 + 2 * NS_PER_MS);
 
     handle_t e, tm, port;
     signals_t seen = 0;
@@ -129,8 +127,8 @@ static bool t_basics(void)
     CHECK_ST(jam_object_signal(e, 0, SIG_SIGNALED), ERR_INVALID_ARGS);   /* kernel bits */
 
     CHECK_ST(jam_timer_create(&tm), OK);
-    CHECK_ST(jam_timer_set(tm, now() + 5 * MS), OK);
-    CHECK_ST(jam_object_wait_one(tm, SIG_SIGNALED, now() + S, &seen), OK);
+    CHECK_ST(jam_timer_set(tm, now() + 5 * NS_PER_MS), OK);
+    CHECK_ST(jam_object_wait_one(tm, SIG_SIGNALED, now() + NS_PER_S, &seen), OK);
 
     CHECK_ST(jam_port_create(&port), OK);
     struct port_packet p = { .key = 7, .type = PORT_PACKET_USER }, out;
@@ -139,7 +137,7 @@ static bool t_basics(void)
     CHECK_ST(jam_port_wait(port, now(), &out), OK);
     CHECK(out.key == 7 && out.type == PORT_PACKET_USER && out.user.data[0] == 42);
     CHECK_ST(jam_port_bind(port, e, 9, SIG_SIGNALED, PORT_BIND_ONCE), OK);
-    CHECK_ST(jam_port_wait(port, now() + S, &out), OK);
+    CHECK_ST(jam_port_wait(port, now() + NS_PER_S, &out), OK);
     CHECK(out.key == 9 && out.type == PORT_PACKET_SIGNAL);
 
     CHECK_ST(jam_handle_close(port), OK);
@@ -314,7 +312,7 @@ static bool t_ping_pong(void)
         struct channel_call_args c = {
             .h = a, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
             .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-            .ractual = (uint64_t)(uintptr_t)&ra, .deadline_ns = now() + 5 * S,
+            .ractual = (uint64_t)(uintptr_t)&ra, .deadline_ns = now() + 5 * NS_PER_S,
         };
         CHECK_ST(jam_channel_call(&c), OK);
         if (ra != sizeof(rep) || rep[1] != i || rep[2] != ~i || rep[3] != 12345)
@@ -331,7 +329,7 @@ static bool t_ping_pong(void)
         .h = a, .wn = 4, .wbytes = (uint64_t)(uintptr_t)&req, .wh = (uint64_t)(uintptr_t)&e,
         .whn = 1, .rcap = 4, .rbytes = (uint64_t)(uintptr_t)&rep,
         .rh = (uint64_t)(uintptr_t)&back, .rhcap = 1, .rhactual = (uint64_t)(uintptr_t)&nh,
-        .deadline_ns = now() + 5 * S,
+        .deadline_ns = now() + 5 * NS_PER_S,
     };
     CHECK_ST(jam_channel_call(&c), OK);
     CHECK_EQ(nh, 1);
@@ -341,7 +339,7 @@ static bool t_ping_pong(void)
 
     CHECK_ST(jam_handle_close(a), OK);   /* the echo server sees PEER_CLOSED and exits 0 */
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, 0);
     CHECK_ST(jam_handle_close(proc), OK);
@@ -361,8 +359,8 @@ static bool t_kill_in_channel_call(void)
     CHECK_ST(child("caller", NULL, job, b, &proc), OK);
     signals_t seen;
     /* The request arriving means the child is (about to be) blocked. */
-    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * S, &seen), OK);
-    jam_nanosleep(now() + 30 * MS);
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
+    jam_nanosleep(now() + 30 * NS_PER_MS);
     CHECK_ST(info_of(job, &ji), OK);
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 2);   /* main (in the call) + the sleeper */
     CHECK(ji.used[JOB_LIMIT_PAGES] >= 16);      /* its heap */
@@ -371,7 +369,7 @@ static bool t_kill_in_channel_call(void)
 
     CHECK_ST(jam_process_kill(proc), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
     CHECK(info.killed);
     CHECK_EQ(info.threads, 0);
     CHECK_ST(info_of(job, &ji), OK);
@@ -524,7 +522,7 @@ static bool t_kernel_objects_are_charged(void)
  * round that takes far longer than the fastest one was preempted (or
  * interrupted) with the registers loaded, which is the case under test. */
 #define FPU_THREADS 48
-#define FPU_RUN_NS  (400 * MS)
+#define FPU_RUN_NS  (400 * NS_PER_MS)
 #define FPU_SPINS   4000000
 
 static bool have_avx;
@@ -636,7 +634,7 @@ static bool wait_threads(handle_t *th, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
         signals_t seen;
-        CHECK_ST(jam_object_wait_one(th[i], SIG_TERMINATED, now() + 20 * S, &seen), OK);
+        CHECK_ST(jam_object_wait_one(th[i], SIG_TERMINATED, now() + 20 * NS_PER_S, &seen), OK);
         CHECK_ST(jam_handle_close(th[i]), OK);
     }
     return true;
@@ -704,17 +702,17 @@ static bool t_kill_spinning_and_unstarted(void)
     handle_t job, proc, p2, v2;
     CHECK_ST(new_job(&job), OK);
     CHECK_ST(child("spin", NULL, job, HANDLE_INVALID, &proc), OK);
-    jam_nanosleep(now() + 30 * MS);
+    jam_nanosleep(now() + 30 * NS_PER_MS);
     CHECK_ST(jam_process_kill(proc), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
     CHECK(info.killed);
     CHECK_ST(jam_process_kill(proc), OK);   /* killing the dead is a no-op */
     CHECK_ST(jam_handle_close(proc), OK);
     /* A process that never started: killing it tears it down at once. */
     CHECK_ST(jam_process_create(job, "never", 5, 0, &p2, &v2), OK);
     CHECK_ST(jam_process_kill(p2), OK);
-    CHECK_ST(spawn_wait(p2, S, &info), OK);
+    CHECK_ST(spawn_wait(p2, NS_PER_S, &info), OK);
     CHECK(info.killed);
     CHECK_ST(jam_handle_close(v2), OK);
     CHECK_ST(jam_handle_close(p2), OK);
@@ -736,7 +734,7 @@ static bool t_job_kill_reaps_orphans(void)
     CHECK_ST(new_job(&job), OK);
     CHECK_ST(child("orphan", NULL, job, HANDLE_INVALID, &proc), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, 0);
     struct job_info ji;
@@ -800,10 +798,10 @@ static bool t_driver_processes(void)
     CHECK_EQ(sum, 42);
     CHECK_ST(driver("drvtest", job, DRVTEST_NULL, a, &cli), OK);   /* our end goes to it */
     struct process_info info;
-    CHECK_ST(spawn_wait(cli, 30 * S, &info), OK);
+    CHECK_ST(spawn_wait(cli, 30 * NS_PER_S, &info), OK);
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, 0);   /* every drvtest check passed */
-    CHECK_ST(spawn_wait(srv, 10 * S, &info), OK);   /* its client is gone: it returns */
+    CHECK_ST(spawn_wait(srv, 10 * NS_PER_S, &info), OK);   /* its client is gone: it returns */
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, 0);
     CHECK_ST(jam_handle_close(cli), OK);
@@ -828,7 +826,7 @@ static bool t_driver_killed(void)
     CHECK(rev[0] == 15 && rev[15] == 0);
     CHECK_ST(jam_process_kill(srv), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(srv, 10 * S, &info), OK);
+    CHECK_ST(spawn_wait(srv, 10 * NS_PER_S, &info), OK);
     CHECK(info.killed);
     uint64_t v;
     CHECK_ST(null_ping(a, 1, &v), ERR_PEER_CLOSED);
@@ -846,7 +844,7 @@ static bool t_startup_message(void)
     CHECK_ST(new_job(&job), OK);
     CHECK_ST(child("startup", "hello", job, HANDLE_INVALID, &proc), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 5 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, 0);
     CHECK_ST(jam_handle_close(proc), OK);
@@ -876,7 +874,7 @@ static status_t dm_call(handle_t dm, uint32_t op, uint16_t vendor, uint16_t devi
                         struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
 {
     return devmgr_call(dm, op, vendor, device, 0, r, hs, hs ? DEVMGR_MAX_HANDLES : 0, nh,
-                       now() + 30 * S);
+                       now() + 30 * NS_PER_S);
 }
 
 /* The edu protocol end to end: utest -> devmgr's edu driver process. */
@@ -895,7 +893,7 @@ static bool t_edu_process(void)
     CHECK_ST(st, OK);
     CHECK_EQ(nh, 1);
     struct edu_check_result res;
-    CHECK_ST(edu_check(hs[0], now() + 60 * S, &res), OK);
+    CHECK_ST(edu_check(hs[0], now() + 60 * NS_PER_S, &res), OK);
     char line[160];
     int n = snprintf(line, sizeof(line),
                      "edu (process): factorial(10)=%u ok, DMA 4 KiB round trip ok in %lu us, "
@@ -939,13 +937,13 @@ static bool t_devmgr_query_channel(void)
         .h = q, .wn = sizeof(qr), .wbytes = (uint64_t)(uintptr_t)&qr,
         .wh = (uint64_t)(uintptr_t)&b, .whn = 1, .rcap = sizeof(r),
         .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * S,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * NS_PER_S,
     };
     CHECK_ST(jam_channel_call(&ca), OK);
     CHECK(n >= DEVMGR_REP_HDR);
     CHECK_ST(r.status, ERR_ACCESS_DENIED);
     signals_t seen = 0;
-    CHECK_ST(jam_object_wait_one(a, SIG_PEER_CLOSED, now() + 5 * S, &seen), OK);
+    CHECK_ST(jam_object_wait_one(a, SIG_PEER_CLOSED, now() + 5 * NS_PER_S, &seen), OK);
     jam_handle_close(a);
     return true;
 }
@@ -989,7 +987,7 @@ static bool t_edu_killed_mid_dma(void)
 
     uint64_t addr = 0;
     uint32_t cmd = 0, f = 0;
-    CHECK_ST(edu_dma_start_until(ch, now() + 10 * S, 4096, &addr), OK);   /* running now */
+    CHECK_ST(edu_dma_start_until(ch, now() + 10 * NS_PER_S, 4096, &addr), OK);   /* running now */
     CHECK(addr && addr < (1ull << 32));
     CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
     CHECK(cmd & CMD_BME);
@@ -1011,7 +1009,7 @@ static bool t_edu_killed_mid_dma(void)
     CHECK(sup.d >= 2);
     CHECK_ST(info_of(job, &ji), OK);
     CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
-    CHECK_ST(edu_factorial_until(ch, now() + 5 * S, 3, &f), ERR_PEER_CLOSED);
+    CHECK_ST(edu_factorial_until(ch, now() + 5 * NS_PER_S, 3, &f), ERR_PEER_CLOSED);
     CHECK_ST(jam_pci_config_write(dev, 0x3c, 1, 0), ERR_ACCESS_DENIED);   /* a read-only view */
     CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(ch), OK);
@@ -1019,20 +1017,20 @@ static bool t_edu_killed_mid_dma(void)
 
     /* The reconnect rule: ask devmgr again; the call waits for the restart. */
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
-    CHECK_ST(edu_factorial_until(hs[0], now() + 10 * S, 10, &f), OK);
+    CHECK_ST(edu_factorial_until(hs[0], now() + 10 * NS_PER_S, 10, &f), OK);
     CHECK_EQ(f, 3628800);
     printf("utest: %s: restarted and answering %lu ms after the kill\n", cur,
-           (unsigned long)((now() - t0) / MS));
-    CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * S, 4096), OK);
+           (unsigned long)((now() - t0) / NS_PER_MS));
+    CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * NS_PER_S, 4096), OK);
     CHECK_ST(jam_handle_close(hs[0]), OK);
     CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
     CHECK(cmd & CMD_BME);
     /* The quarantine lets the dead driver's pages go a grace period (1 s)
      * after the new driver turned bus mastering on: then its job is empty
      * (pins, VMOs, threads: gone), and nothing wrote them meanwhile. */
-    uint64_t until = now() + 10 * S;
+    uint64_t until = now() + 10 * NS_PER_S;
     while (info_of(job, &ji) == OK && ji.used[JOB_LIMIT_PAGES] && now() < until)
-        jam_nanosleep(now() + 20 * MS);
+        jam_nanosleep(now() + 20 * NS_PER_MS);
     if (!job_is_empty(job))
         return false;
     if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
@@ -1095,7 +1093,8 @@ static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
     *ch = hs[0];
     uint64_t started = 0;
-    CHECK_ST(crasher_ping(*ch, now() + 10 * S, &started), OK);   /* up, whenever it started */
+    /* up, whenever it started */
+    CHECK_ST(crasher_ping(*ch, now() + 10 * NS_PER_S, &started), OK);
     CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
     CHECK_EQ(nh, 2);   /* process and job: no hardware */
     *proc = hs[0];
@@ -1115,10 +1114,10 @@ static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
     *t = now();
     CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 10 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(info.killed);   /* a crash: the kernel killed it */
     uint64_t started;
-    CHECK_ST(crasher_ping(ch, now() + 5 * S, &started), ERR_PEER_CLOSED);
+    CHECK_ST(crasher_ping(ch, now() + 5 * NS_PER_S, &started), ERR_PEER_CLOSED);
     return true;
 }
 
@@ -1136,9 +1135,9 @@ static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint6
     CHECK_ST(jam_handle_close(*proc), OK);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);   /* the new channel */
     *ch = hs[0];
-    CHECK_ST(crasher_ping(*ch, now() + 15 * S, &started), OK);   /* waits for the restart */
+    CHECK_ST(crasher_ping(*ch, now() + 15 * NS_PER_S, &started), OK);   /* waits for the restart */
     CHECK(started > t);
-    *delay_ms = (started - t) / MS;
+    *delay_ms = (started - t) / NS_PER_MS;
     CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
     *proc = hs[0];
     CHECK_ST(jam_handle_close(hs[1]), OK);
@@ -1219,20 +1218,20 @@ static bool t_supervised_give_up(void)
     uint64_t t = 0;
     if (!crash_it(ch, proc, &t))
         return false;
-    uint64_t until = now() + 5 * S;
+    uint64_t until = now() + 5 * NS_PER_S;
     for (;;) {
         if (!supervision(dm, TV, TD, &sup))
             return false;
         if (sup.a == DEVMGR_SUP_GAVE_UP || now() > until)
             break;
-        jam_nanosleep(now() + 10 * MS);
+        jam_nanosleep(now() + 10 * NS_PER_MS);
     }
     printf("utest: %s: after %u restarts: state %u (3 = gave up)\n", cur,
            sup.b - sup_restarts0, sup.a);
     CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
     CHECK_EQ(sup.b, sup_restarts0 + 5);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
-    jam_nanosleep(now() + 300 * MS);   /* no restart comes */
+    jam_nanosleep(now() + 300 * NS_PER_MS);   /* no restart comes */
     if (!supervision(dm, TV, TD, &sup))
         return false;
     CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
@@ -1245,15 +1244,15 @@ static bool t_supervised_give_up(void)
     uint32_t q[3] = { 0x78, CRASHER_EXIT, 0 };
     CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
     struct process_info info;
-    CHECK_ST(spawn_wait(proc, 10 * S, &info), OK);
+    CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(!info.killed && info.exit_code == 0);
-    until = now() + 5 * S;
+    until = now() + 5 * NS_PER_S;
     for (;;) {
         if (!supervision(dm, TV, TD, &sup))
             return false;
         if (sup.a == DEVMGR_SUP_FINISHED || now() > until)
             break;
-        jam_nanosleep(now() + 10 * MS);
+        jam_nanosleep(now() + 10 * NS_PER_MS);
     }
     CHECK_EQ(sup.a, DEVMGR_SUP_FINISHED);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
@@ -1300,7 +1299,7 @@ static bool t_driver_handle_limits(void)
     for (uint32_t inst = 0; inst < 32; inst++) {
         nh = 0;
         st = devmgr_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, inst, &r, hs, DEVMGR_MAX_HANDLES,
-                         &nh, now() + 30 * S);
+                         &nh, now() + 30 * NS_PER_S);
         if (st == ERR_NOT_FOUND)
             break;
         uint32_t t = 0, p = 0;
@@ -1441,7 +1440,7 @@ int main(int argc, char **argv)
         uint64_t t0 = now();
         if (tests[i].fn()) {
             passed++;
-            printf("utest: %s ok (%lu ms)\n", cur, (unsigned long)((now() - t0) / MS));
+            printf("utest: %s ok (%lu ms)\n", cur, (unsigned long)((now() - t0) / NS_PER_MS));
         }
     }
     char line[96];

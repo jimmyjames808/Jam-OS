@@ -9,15 +9,13 @@
 #include <devmgr.h>
 #include <jam/driver.h>
 
-#define MS        1000000ull
-#define S         1000000000ull
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
-#define STOP_WAIT (15 * S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
+#define STOP_WAIT (15 * NS_PER_S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
 
 /* Supervision (supervise.c). */
-#define SUP_BACKOFF_FIRST (100 * MS)
-#define SUP_BACKOFF_MAX   (5 * S)
-#define SUP_WINDOW        (60 * S)
+#define SUP_BACKOFF_FIRST (100 * NS_PER_MS)
+#define SUP_BACKOFF_MAX   (5 * NS_PER_S)
+#define SUP_WINDOW        (60 * NS_PER_S)
 #define SUP_RESTART_LIMIT 5   /* restarts within SUP_WINDOW; the next death gives up */
 
 /* Port keys: devmgr's channel, and a driver process's SIG_TERMINATED

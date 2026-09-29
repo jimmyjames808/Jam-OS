@@ -16,7 +16,6 @@
 #include <idl/input.h>
 #include <devmgr.h>
 
-#define MS 1000000ull
 
 static int checks, failed;
 
@@ -32,7 +31,7 @@ static int checks, failed;
 static bool next_key(handle_t k, struct input_key_event *ev)
 {
     signals_t seen;
-    if (jam_object_wait_one(k, SIG_READABLE, (uint64_t)jam_clock_get() + 2000 * MS, &seen) != OK)
+    if (jam_object_wait_one(k, SIG_READABLE, now() + 2000 * NS_PER_MS, &seen) != OK)
         return false;
     uint32_t n = 0;
     struct channel_read_args a = {
@@ -47,8 +46,8 @@ static bool typed(handle_t k, char c)
 {
     printf("contest: type %c now\n", c);
     struct input_key_event ev;
-    uint64_t end = (uint64_t)jam_clock_get() + 20000 * MS;
-    while ((uint64_t)jam_clock_get() < end)
+    uint64_t end = now() + 20000 * NS_PER_MS;
+    while (now() < end)
         if (next_key(k, &ev) && ev.state == INPUT_KEY_DOWN)
             return ev.codepoint == (uint32_t)c;
     printf("contest: no key (want %c)\n", c);
@@ -58,7 +57,7 @@ static bool typed(handle_t k, char c)
 static bool empty(handle_t k)
 {
     signals_t seen = 0;
-    jam_object_wait_one(k, SIG_READABLE, (uint64_t)jam_clock_get() + 50 * MS, &seen);
+    jam_object_wait_one(k, SIG_READABLE, now() + 50 * NS_PER_MS, &seen);
     return !(seen & SIG_READABLE);
 }
 
@@ -155,7 +154,7 @@ static int steal(void)
         .wh = (uint64_t)(uintptr_t)&theirs, .whn = 1, .rcap = sizeof(r),
         .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
         .rhactual = (uint64_t)(uintptr_t)&got,
-        .deadline_ns = (uint64_t)jam_clock_get() + 5000 * MS,
+        .deadline_ns = now() + 5000 * NS_PER_MS,
     };
     status_t st = jam_channel_call(&a);
     printf("contest: steal: DEVMGR_SET_CONSOLE: %s, reply %d\n", status_str(st),
@@ -164,13 +163,13 @@ static int steal(void)
         printf("contest: steal: refused (a query channel)\n");
         return 0;
     }
-    uint64_t end = (uint64_t)jam_clock_get() + 40000 * MS;
-    while ((uint64_t)jam_clock_get() < end) {
+    uint64_t end = now() + 40000 * NS_PER_MS;
+    while (now() < end) {
         while (console_serve_one(mine, &st_console, NULL) == OK)
             ;
         while (steal_src && input_serve_one(steal_src, &st_input, NULL) == OK)
             ;
-        jam_nanosleep((uint64_t)jam_clock_get() + 20 * MS);
+        jam_nanosleep(now() + 20 * NS_PER_MS);
     }
     printf("contest: steal: done\n");
     return 0;
@@ -197,7 +196,7 @@ int main(int argc, char **argv)
             return st == ERR_ACCESS_DENIED && !failed ? 0 : 1;
         printf("contest: cad: sending Ctrl+Alt+Del as an input source\n");
         CHECK(input_key(src, 0x4c, INPUT_KEY_DOWN, INPUT_MOD_LCTRL | INPUT_MOD_LALT, 0) == OK);
-        jam_nanosleep((uint64_t)jam_clock_get() + 2000 * MS);
+        jam_nanosleep(now() + 2000 * NS_PER_MS);
         printf("contest: cad: still here\n");
         return 1;
     }

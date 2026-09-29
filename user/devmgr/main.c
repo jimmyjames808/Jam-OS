@@ -217,7 +217,7 @@ static status_t kill_request(struct binding *b)
     kill_driver(b);
     signals_t seen;
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
-                                      (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
+                                      now() + STOP_WAIT, &seen);
     b->killed = true;
     sup_died(b, b->gen);   /* a death like any other: the restart is scheduled now */
     return st;

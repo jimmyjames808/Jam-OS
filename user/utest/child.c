@@ -229,7 +229,7 @@ static int orphan(void)
 static void finisher(void *arg)
 {
     (void)arg;
-    jam_nanosleep((uint64_t)jam_clock_get() + 20000000ull);
+    jam_nanosleep(now() + 20000000ull);
     jam_process_exit(11);
 }
 
