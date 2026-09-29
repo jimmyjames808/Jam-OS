@@ -108,10 +108,14 @@ void udelay(uint64_t us)
         __asm__ volatile("pause");
 }
 
+uint64_t tsc_to_ns(uint64_t d)
+{
+    return d / tsc_hz * 1000000000ull + (d % tsc_hz) * 1000000000ull / tsc_hz;
+}
+
 uint64_t uptime_ns(void)
 {
-    uint64_t d = rdtsc() - tsc_boot;
-    return d / tsc_hz * 1000000000ull + (d % tsc_hz) * 1000000000ull / tsc_hz;
+    return tsc_to_ns(rdtsc() - tsc_boot);
 }
 
 uint64_t uptime_to_tsc(uint64_t ns)

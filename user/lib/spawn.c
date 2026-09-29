@@ -164,6 +164,16 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
         memcpy(msg + len, a->argv[i], l);
         len += l;
     }
+    for (unsigned i = 0; a->envp && a->envp[i]; i++) {
+        size_t l = strlen(a->envp[i]) + 1;
+        if (len + l > sizeof(msg) || m->argc + m->envc >= 128) {
+            close_extras(a);
+            return ERR_OUT_OF_RANGE;
+        }
+        memcpy(msg + len, a->envp[i], l);
+        len += l;
+        m->envc++;
+    }
     m->strings_len = (uint32_t)(len - sizeof(*m));
 
     handle_t proc, vmar, thread = HANDLE_INVALID, ch[2] = { HANDLE_INVALID, HANDLE_INVALID };

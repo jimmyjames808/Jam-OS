@@ -13,6 +13,8 @@
 # QEMU_USB adds USB devices after the boot stick (which takes xhci.0 port
 # 1), e.g. "-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"
 # (give every device a port=, or QEMU picks the next free one).
+# QEMU_EXTRA: more QEMU arguments, e.g. "-rtc base=2026-01-15T01:02:03" (the
+# shell test sets the real-time clock with it).
 # QEMU_MONITOR names a script run against the QEMU monitor while it boots,
 # one command per line:
 #     expect <text>    wait (up to the timeout) until the serial log has <text>
@@ -47,7 +49,7 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
     -drive if=none,id=usbstick,format=raw,file="$img" \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
-    ${QEMU_USB:-} \
+    ${QEMU_USB:-} ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
     $serial -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
