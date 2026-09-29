@@ -6,9 +6,11 @@
  *   1. modifiers newly down (usages 0xe0..0xe7, DOWN);
  *   2. keys no longer in the report (UP, with the usage and codepoint their
  *      DOWN had);
- *   3. keys new in the report (DOWN, codepoint from the US layout);
- *   4. modifiers released (UP).
- * Every event carries the modifier byte as it is at that point.
+ *   3. modifiers released (UP);
+ *   4. keys new in the report (DOWN, codepoint from the US layout).
+ * Every event carries the modifier byte as it is at that point, so a key
+ * pressed in the same report that lets go of Shift is unshifted (the
+ * report is the state at one instant; the new key's DOWN comes last).
  *
  * Phantom state: a keyboard that sees more keys than it can tell apart
  * fills every slot with ErrorRollOver (0x01); 0x02 (POSTFail) and 0x03
@@ -170,7 +172,14 @@ void kbd_report(struct hid *h, const uint8_t *r, uint32_t n, uint64_t now)
             k->repeating = false;
         hid_key(h, gone.usage, INPUT_KEY_UP, cur, gone.codepoint);
     }
-    for (uint32_t i = 0; i < nk; i++) {           /* 3. keys pressed */
+    for (int i = 0; i < 8; i++) {                 /* 3. modifiers up */
+        uint8_t bit = (uint8_t)(1u << i);
+        if (!(want & bit) && (cur & bit)) {
+            cur &= (uint8_t)~bit;
+            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_UP, cur, 0);
+        }
+    }
+    for (uint32_t i = 0; i < nk; i++) {           /* 4. keys pressed */
         bool held = false;
         for (uint32_t j = 0; j < k->nheld && !held; j++)
             held = k->held[j].raw == keys[i];
@@ -193,13 +202,6 @@ void kbd_report(struct hid *h, const uint8_t *r, uint32_t n, uint64_t now)
             k->rep_next = now + REPEAT_DELAY_NS;
         }
         hid_key(h, nh.usage, INPUT_KEY_DOWN, cur, nh.codepoint);
-    }
-    for (int i = 0; i < 8; i++) {                 /* 4. modifiers up */
-        uint8_t bit = (uint8_t)(1u << i);
-        if (!(want & bit) && (cur & bit)) {
-            cur &= (uint8_t)~bit;
-            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_UP, cur, 0);
-        }
     }
     k->mods = cur;
     if (k->leds != leds && !h->stop)

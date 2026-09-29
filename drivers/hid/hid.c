@@ -116,7 +116,7 @@ void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_
         return;
     if (h->input == HANDLE_INVALID) {
         if (state == INPUT_KEY_DOWN)
-            drv_log("hid %04x:%04x if %u: key %#04x down, mods %#04x, codepoint %#x", h->vendor,
+            drv_log("hid %04x:%04x if %u: key 0x%02x down, mods 0x%02x, codepoint 0x%x", h->vendor,
                     h->product, h->iface, usage, mods, codepoint);
         h->events++;
         return;
@@ -132,7 +132,7 @@ void hid_set_leds(struct hid *h, uint8_t leds)
                                         HID_SET_REPORT, HID_REPORT_OUTPUT << 8, h->iface, 1,
                                         data);
     if (st != OK && !gone(h, st) && log_nth(++h->led_errors))
-        drv_log("hid %04x:%04x if %u: SET_REPORT(LEDs %#x) failed (%s)", h->vendor, h->product,
+        drv_log("hid %04x:%04x if %u: SET_REPORT(LEDs 0x%x) failed (%s)", h->vendor, h->product,
                 h->iface, leds, status_str(st));
 }
 
@@ -150,7 +150,7 @@ static void mouse_report(struct hid *h, const uint8_t *r, uint32_t n)
     h->mouse_buttons = buttons;
     if (h->input == HANDLE_INVALID) {
         if (buttons != was)
-            drv_log("hid %04x:%04x if %u: mouse buttons %#x", h->vendor, h->product, h->iface,
+            drv_log("hid %04x:%04x if %u: mouse buttons 0x%x", h->vendor, h->product, h->iface,
                     buttons);
         h->events++;
         return;
@@ -208,13 +208,43 @@ static const char *collection_name(uint32_t page, uint32_t usage)
     return "other";
 }
 
+struct text {
+    char    *s;
+    uint32_t len, cap;
+};
+
+static void put_str(struct text *t, const char *p)
+{
+    while (*p && t->len + 1 < t->cap)
+        t->s[t->len++] = *p++;
+    t->s[t->len] = 0;
+}
+
+static void put_num(struct text *t, uint32_t v, uint32_t base)
+{
+    char d[12];
+    int n = 0;
+    do {
+        d[n++] = "0123456789abcdef"[v % base];
+        v /= base;
+    } while (v);
+    if (base == 16)
+        put_str(t, "0x");
+    char one[2] = { 0, 0 };
+    while (n--) {
+        one[0] = d[n];
+        put_str(t, one);
+    }
+}
+
 /* A one-line summary of the report descriptor in h->buf (n bytes): its
  * top-level application collections with their first report id, e.g.
- * "keyboard (page 0x1 usage 0x6, id 1), consumer control (...)". */
+ * "keyboard id 1, consumer control id 3, vendor (page 0xff00 usage 0x1) id 6". */
 static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
 {
     const uint8_t *d = h->buf;
-    uint32_t page = 0, usage = 0, depth = 0, len = 0, count = 0;
+    struct text t = { out, 0, cap };
+    uint32_t page = 0, usage = 0, depth = 0, count = 0;
     bool want_id = false;
     out[0] = 0;
     for (uint32_t i = 0; i < n;) {
@@ -236,45 +266,37 @@ static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
                 page = v >> 16;
             break;
         case 0xa0:                                /* Collection */
-            if (depth++ == 0 && v == 1 && len + 64 < cap) {
-                if (count++) {
-                    out[len++] = ',';
-                    out[len++] = ' ';
-                }
+            if (depth++ == 0 && v == 1) {         /* a top-level application one */
+                if (count++)
+                    put_str(&t, ", ");
                 const char *nm = collection_name(page, usage);
-                while (*nm)
-                    out[len++] = *nm++;
-                out[len] = 0;
+                put_str(&t, nm);
+                if (nm[0] == 'v' || nm[0] == 'o') {
+                    put_str(&t, " (page ");
+                    put_num(&t, page, 16);
+                    put_str(&t, " usage ");
+                    put_num(&t, usage, 16);
+                    put_str(&t, ")");
+                }
                 want_id = true;
             }
             break;
         case 0xc0:                                /* End Collection */
             if (depth && !--depth)
-                want_id = false;                  /* no report id in that collection */
+                want_id = false;
             break;
         case 0x84:                                /* Report ID */
-            if (want_id && len + 12 < cap) {
-                const char *p = " id ";
-                while (*p)
-                    out[len++] = *p++;
-                if (v >= 100)
-                    out[len++] = (char)('0' + v / 100 % 10);
-                if (v >= 10)
-                    out[len++] = (char)('0' + v / 10 % 10);
-                out[len++] = (char)('0' + v % 10);
-                out[len] = 0;
+            if (want_id) {
+                put_str(&t, " id ");
+                put_num(&t, v, 10);
                 want_id = false;
             }
             break;
         }
         i += 1 + size;
     }
-    if (!count && cap > 16) {
-        const char *p = "no collections";
-        while (*p)
-            out[len++] = *p++;
-        out[len] = 0;
-    }
+    if (!count)
+        put_str(&t, "no collections");
 }
 
 /* ---- start ------------------------------------------------------------------ */
@@ -379,7 +401,7 @@ static int setup(struct hid *h)
     if (gone(h, st))
         return 0;
     if (st != OK) {
-        drv_log("hid %04x:%04x if %u: open_interrupt_in(%#x) failed (%s)", h->vendor,
+        drv_log("hid %04x:%04x if %u: open_interrupt_in(0x%x) failed (%s)", h->vendor,
                 h->product, h->iface, h->ep_in, status_str(st));
         return 3;
     }
@@ -390,7 +412,7 @@ static int setup(struct hid *h)
         if (h->stop)
             return 0;
     }
-    drv_log("hid %04x:%04x if %u: boot %s ready: endpoint %#x, %u-byte packets every %u ms, "
+    drv_log("hid %04x:%04x if %u: boot %s ready: endpoint 0x%x, %u-byte packets every %u ms, "
             "report descriptor %u bytes (%s)%s", h->vendor, h->product, h->iface, what, h->ep_in,
             h->max_packet, h->interval_ms, h->report_desc_len, coll[0] ? coll : "-",
             h->input == HANDLE_INVALID ? "; no DR_INPUT: events go to the log" : "");
