@@ -11,8 +11,6 @@
 
 #include <jam/driver.h>
 
-#define NS_PER_US 1000ull
-#define NS_PER_MS 1000000ull
 #define PAGE      4096u
 
 static inline void zero(void *p, uint64_t n) { __builtin_memset(p, 0, n); }

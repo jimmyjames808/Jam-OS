@@ -39,9 +39,6 @@
 
 #include <os.h>
 
-#define SH_MS 1000000ull
-#define SH_S  1000000000ull
-
 /* ---- output and input (sh_io.c) ---------------------------------------------------- */
 
 void sh_put(const char *s, size_t n);

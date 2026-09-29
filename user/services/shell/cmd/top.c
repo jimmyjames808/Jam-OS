@@ -13,7 +13,7 @@ struct sample {
 
 static bool take(struct sample *s)
 {
-    s->t = (uint64_t)jam_clock_get();
+    s->t = now();
     int64_t r = jam_cpu_stat(sh_root(), 0, s->cpu, SH_MAX_CPUS);
     s->ncpu = r > 0 ? (uint32_t)r : 0;
     s->nproc = sh_procs(s->proc, "top");
@@ -146,9 +146,9 @@ static void run_frames(struct sample *s, uint64_t delay_ms, uint64_t frames)
 {
     bool screen = !sh_piped();
     for (uint64_t f = 0; !frames || f < frames; f++) {
-        uint64_t deadline = (uint64_t)jam_clock_get() + delay_ms * SH_MS;
+        uint64_t deadline = now() + delay_ms * NS_PER_MS;
         bool quit = false;
-        while (!quit && (uint64_t)jam_clock_get() < deadline) {
+        while (!quit && now() < deadline) {
             int key = sh_poll_key(deadline);
             quit = key == 'q' || key == 'Q' || key == 3;
         }

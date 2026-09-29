@@ -4,9 +4,8 @@
 
 #include <jam/driver.h>
 
-#define MS               1000000ull
-#define REPEAT_DELAY_NS  (500 * MS)                /* held this long: REPEAT starts */
-#define REPEAT_PERIOD_NS (1000000000ull / 30)      /* then 30 a second */
+#define REPEAT_DELAY_NS  (500 * NS_PER_MS)   /* held this long: REPEAT starts */
+#define REPEAT_PERIOD_NS (NS_PER_S / 30)     /* then 30 a second */
 
 /* LED bits of the boot keyboard's output report (HID LED page 1..3). */
 #define LED_NUM    0x01u

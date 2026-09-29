@@ -55,7 +55,7 @@ static unsigned program_handles(struct spawn_handle *x, bool test, handle_t *out
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
     if (test && sh_devmgr_ctl() && jam_handle_duplicate(sh_devmgr_ctl(), RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR_CTL, h };
-    if (console_new_client_until(sh_console(), (uint64_t)jam_clock_get() + 5 * SH_S, 2, &h) == OK)
+    if (console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     /* In a pipe: its printf goes down a channel to us (libos printf.c). */
     if (sh_piped() && jam_channel_create(out_r, &out_w) == OK)
@@ -69,7 +69,7 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
 {
     status_t st;
     bool killed = false;
-    while ((st = spawn_wait(proc, 50 * SH_MS, info)) == ERR_TIMED_OUT) {
+    while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
         if (out_r)
             drain(out_r);
         if (sh_interrupted() && !killed) {
@@ -89,7 +89,7 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
 /* How it ended, as a status ($?). */
 static int ended(status_t st, const struct process_info *info, const char *path, uint64_t t0)
 {
-    uint64_t ms = ((uint64_t)jam_clock_get() - t0) / SH_MS;
+    uint64_t ms = (now() - t0) / NS_PER_MS;
     if (st != OK) {
         sh_tty("run: lost track of %s (%s)\n", path, status_str(st));
         return 126;
@@ -157,7 +157,7 @@ static int run_program(int argc, char **argv, bool test)
         .path = path, .argc = n, .argv = args, .job = job, .extra = x, .nextra = nx,
         .envp = (const char *const *)env,
     };
-    uint64_t t0 = (uint64_t)jam_clock_get();
+    uint64_t t0 = now();
     st = spawn(&a, &proc);
     sh_free_env(env);
     if (st != OK) {

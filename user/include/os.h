@@ -72,6 +72,10 @@ int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
 char  *strchr(const char *s, int c);
 
+/* memory ------------------------------------------------------------------------ */
+
+#define PAGE_SIZE 4096ull   /* mappings, protections and VMO sizes are whole pages */
+
 /* heap: a VMO mapped into our address space on first use ---------------------- */
 
 #define HEAP_SIZE (16u << 20)   /* address space reserved; pages commit on touch */

@@ -19,7 +19,6 @@
  * here uses malloc, so spawning doesn't grow the caller's heap. */
 #include <os.h>
 
-#define PAGE 4096ull
 #define STACK_PAGES 32   /* 128 KiB */
 #define STACK_TOP   0x00007ff000000000ull
 #define MAX_SEGS    8
@@ -47,8 +46,8 @@ struct phdr {
 #define PF_W 2
 #define PF_R 4
 
-static uint64_t down(uint64_t x) { return x & ~(PAGE - 1); }
-static uint64_t up(uint64_t x) { return (x + PAGE - 1) & ~(PAGE - 1); }
+static uint64_t down(uint64_t x) { return x & ~(PAGE_SIZE - 1); }
+static uint64_t up(uint64_t x) { return (x + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1); }
 
 /* Map one PT_LOAD segment of the file at file_off (in the bootfs VMO)
  * into vmar. */
@@ -107,7 +106,7 @@ static status_t load_elf(handle_t vmar, handle_t bootfs_vmo, uint64_t file_off,
 /* A stack with a no-access guard page below it; *top is 16-aligned. */
 static status_t make_stack(handle_t vmar, uint64_t *top)
 {
-    uint64_t size = (STACK_PAGES + 1) * PAGE, base = STACK_TOP - size, addr = base;
+    uint64_t size = (STACK_PAGES + 1) * PAGE_SIZE, base = STACK_TOP - size, addr = base;
     handle_t v;
     status_t st = jam_vmo_create(size, 0, HANDLE_INVALID, &v);
     if (st != OK)
@@ -115,7 +114,7 @@ static status_t make_stack(handle_t vmar, uint64_t *top)
     st = jam_vmar_map(vmar, v, 0, size, VMAR_READ | VMAR_WRITE | VMAR_FIXED, &addr);
     jam_handle_close(v);
     if (st == OK)
-        st = jam_vmar_protect(vmar, base, PAGE, 0);   /* the guard */
+        st = jam_vmar_protect(vmar, base, PAGE_SIZE, 0);   /* the guard */
     *top = STACK_TOP;
     return st;
 }

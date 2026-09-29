@@ -51,6 +51,11 @@ handle_t drv_handle(const struct driver_start *s, uint32_t role);
 
 /* ---- basics ---------------------------------------------------------------- */
 
+/* Times are in ns (the same constants as libos's <os.h>). */
+#define NS_PER_US 1000ull
+#define NS_PER_MS 1000000ull
+#define NS_PER_S  1000000000ull
+
 void     drv_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Also puts the line into the RESULTS box at the end of the run. */
 void     drv_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

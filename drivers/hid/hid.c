@@ -60,9 +60,9 @@
 #include <idl/input.h>
 #include <idl/usb.h>
 
-#define USB_TIMEOUT   (2000 * MS)
-#define INPUT_TIMEOUT (2000 * MS)
-#define REPORTS_GRACE (50 * MS)
+#define USB_TIMEOUT   (2000 * NS_PER_MS)
+#define INPUT_TIMEOUT (2000 * NS_PER_MS)
+#define REPORTS_GRACE (50 * NS_PER_MS)
 
 #define DESC_CONFIG    0x02
 #define DESC_INTERFACE 0x04

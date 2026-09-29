@@ -9,7 +9,6 @@
 #include <idl/null.h>
 
 #define DRVTEST_NULL 0x40   /* this test's own role: a channel to a null server */
-#define MS           1000000ull
 #define PAGE         4096u
 
 static unsigned checks, failures;
@@ -39,8 +38,8 @@ static void t_basics(const struct driver_start *s)
     CHECK(s->name && s->name[0]);
     CHECK(drv_handle(s, DR_PCIDEV) == HANDLE_INVALID);
     uint64_t t0 = drv_clock_ns();
-    CHECK_ST(drv_sleep_until(t0 + 2 * MS), OK);
-    CHECK(drv_clock_ns() >= t0 + 2 * MS);
+    CHECK_ST(drv_sleep_until(t0 + 2 * NS_PER_MS), OK);
+    CHECK(drv_clock_ns() >= t0 + 2 * NS_PER_MS);
     CHECK_ST(drv_sleep_until(0), OK);   /* in the past: at once */
 }
 
@@ -133,12 +132,12 @@ static void t_ports(void)
     CHECK_ST(drv_port_create(&port), OK);
     CHECK_ST(drv_channel_create(&a, &b), OK);
     CHECK_ST(drv_port_bind(port, b, 7, SIG_READABLE, PORT_BIND_ONCE), OK);
-    CHECK_ST(drv_port_wait(port, drv_clock_ns() + MS, &pkt), ERR_TIMED_OUT);
+    CHECK_ST(drv_port_wait(port, drv_clock_ns() + NS_PER_MS, &pkt), ERR_TIMED_OUT);
     CHECK_ST(drv_channel_write(a, msg, sizeof(msg), NULL, 0), OK);
-    CHECK_ST(drv_port_wait(port, drv_clock_ns() + 2000 * MS, &pkt), OK);
+    CHECK_ST(drv_port_wait(port, drv_clock_ns() + 2000 * NS_PER_MS, &pkt), OK);
     CHECK(pkt.key == 7 && pkt.type == PORT_PACKET_SIGNAL && (pkt.signal.observed & SIG_READABLE));
     signals_t seen = 0;
-    CHECK_ST(drv_object_wait_one(a, SIG_READABLE, drv_clock_ns() + MS, &seen), ERR_TIMED_OUT);
+    CHECK_ST(drv_object_wait_one(a, SIG_READABLE, drv_clock_ns() + NS_PER_MS, &seen), ERR_TIMED_OUT);
     CHECK_ST(drv_handle_close(a), OK);
     CHECK_ST(drv_handle_close(b), OK);
     CHECK_ST(drv_handle_close(port), OK);
@@ -198,7 +197,7 @@ static void t_threads(void)
     CHECK_ST(drv_channel_create(&a, &b), OK);
     CHECK_ST(drv_thread_start("drvtest-worker", worker, &a), OK);
     signals_t seen = 0;
-    CHECK_ST(drv_object_wait_one(b, SIG_READABLE, drv_clock_ns() + 5000 * MS, &seen), OK);
+    CHECK_ST(drv_object_wait_one(b, SIG_READABLE, drv_clock_ns() + 5000 * NS_PER_MS, &seen), OK);
     CHECK_ST(drv_channel_read(b, in, sizeof(in), &n, NULL, 0, &nh), OK);
     CHECK(n == 8 && in[4] == 42);
     CHECK_ST(drv_thread_start("bad", NULL, NULL), ERR_INVALID_ARGS);
@@ -232,7 +231,7 @@ static status_t raw_call(handle_t ch, void *req, uint32_t n)
 {
     uint8_t rep[64];
     uint32_t rn = 0;
-    status_t st = drv_channel_call(ch, req, n, rep, sizeof(rep), &rn, drv_clock_ns() + 5000 * MS);
+    status_t st = drv_channel_call(ch, req, n, rep, sizeof(rep), &rn, drv_clock_ns() + 5000 * NS_PER_MS);
     return st == OK ? idl_rep_status(rep, rn, rn) : st;
 }
 
@@ -244,7 +243,7 @@ static void t_null_protocol(handle_t ch)
     CHECK(v == 0x1234567890abcdefull);
     CHECK_ST(null_add(ch, 2, 3, &sum), OK);
     CHECK(sum == 5);
-    CHECK_ST(null_add_until(ch, drv_clock_ns() + 5000 * MS, 0xffffffffu, 2, &sum), OK);
+    CHECK_ST(null_add_until(ch, drv_clock_ns() + 5000 * NS_PER_MS, 0xffffffffu, 2, &sum), OK);
     CHECK(sum == 1);
     uint8_t data[16], rev[16];
     for (int i = 0; i < 16; i++)
@@ -301,13 +300,13 @@ static void t_null_protocol(handle_t ch)
     struct null_ping_req hq = { 0x77, NULL_PING, 1 };
     CHECK_ST(drv_channel_write(ch, &hq, sizeof(hq), &x, 1), OK);
     signals_t seen = 0;
-    CHECK_ST(drv_object_wait_one(ch, SIG_READABLE, drv_clock_ns() + 5000 * MS, &seen), OK);
+    CHECK_ST(drv_object_wait_one(ch, SIG_READABLE, drv_clock_ns() + 5000 * NS_PER_MS, &seen), OK);
     struct idl_rep_hdr rh = { 0, 0 };
     uint32_t n = 0, nh = 0;
     CHECK_ST(drv_channel_read(ch, &rh, sizeof(rh), &n, NULL, 0, &nh), OK);
     CHECK(n == sizeof(rh) && rh.txid == 0x77 && rh.status == ERR_INVALID_ARGS);
     /* The server closed the handle it was sent. */
-    CHECK_ST(drv_object_wait_one(y, SIG_PEER_CLOSED, drv_clock_ns() + 5000 * MS, &seen), OK);
+    CHECK_ST(drv_object_wait_one(y, SIG_PEER_CLOSED, drv_clock_ns() + 5000 * NS_PER_MS, &seen), OK);
     CHECK_ST(drv_handle_close(y), OK);
     /* And it still answers. */
     CHECK_ST(null_ping(ch, 99, &v), OK);

@@ -52,9 +52,8 @@
 #define BUF_SIZE     4096u
 
 #define PAGE         4096u
-#define MS           1000000ull
 #define IRQ_KEY      0xed
-#define OP_TIMEOUT   (2000 * MS)   /* a DMA is ~100 ms in QEMU: generous under load */
+#define OP_TIMEOUT   (2000 * NS_PER_MS)   /* a DMA is ~100 ms in QEMU: generous under load */
 
 struct edu {
     volatile void *regs;   /* BAR0, mapped */
@@ -329,7 +328,7 @@ static int setup(const struct driver_start *s, struct edu *e)
             drv_log("the device's DMA engine stays busy");
             return 4;
         }
-        drv_sleep_until(drv_clock_ns() + MS);
+        drv_sleep_until(drv_clock_ns() + NS_PER_MS);
     }
     wr(e, R_IRQ_ACK, 0xffffffffu);
     st = drv_dma_bus_master(e->dma, 1);   /* DMA, and MSI delivery */
