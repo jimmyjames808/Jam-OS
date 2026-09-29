@@ -7,7 +7,7 @@
  * (at most 4 MiB) never spans two chunks, so merging never touches an
  * unbacked struct page.
  *
- * Per-CPU stashes (M5). The buddy lists sit behind one global lock, which
+ * Per-CPU stashes. The buddy lists sit behind one global lock, which
  * collapsed when every CPU allocated at once (BENCH.md: 53 ns on one CPU,
  * 19 us with 28 CPUs). Each CPU now keeps up to PCP_MAX free order-0 pages
  * of its own. A single-page allocation or free on that CPU touches only its
@@ -83,7 +83,7 @@ uint64_t hhdm_offset;
 
 static struct range early[MAX_EARLY_RANGES];
 static size_t early_count;
-/* M6: every boot memory-map range that is (or was) RAM, page-rounded
+/* Every boot memory-map range that is (or was) RAM, page-rounded
  * outwards, for pmm_range_has_ram (never changes after early init). */
 static struct range ram[BOOT_MAX_MEMMAP];
 static size_t ram_count;

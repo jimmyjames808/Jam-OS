@@ -4,9 +4,8 @@
  * space's tables (aspace_pte, vmm_translate on aspace_pml4), and data
  * through the HHDM alias of the page an entry names. Two tests load an
  * address space's CR3 on a CPU and read user addresses directly, to catch
- * a stale TLB entry for real; those reads all go through user_peek(), the
- * one place that touches a user address (with stac/clac, so it keeps
- * working once SMAP is on). */
+ * a stale TLB entry for real; those reads all go through kt_user_peek()
+ * (ktest_util.c), the one place that touches a user address. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/cpu.h>
@@ -38,13 +37,6 @@
 #define PTE_NX (1ull << 63)
 #define PTE_ADDR 0x000ffffffffff000ull
 
-static uint64_t free_now(void)
-{
-    uint64_t total, free;
-    pmm_stats(&total, &free);
-    return free;
-}
-
 static void put(struct vmo *v)
 {
     kobject_unref(vmo_kobject(v));
@@ -74,46 +66,6 @@ static bool user_walk_ok(struct aspace *as, uint64_t va)
         t = phys_to_virt(e & PTE_ADDR);
     }
     return true;
-}
-
-/* THE only direct access to a user address in the tests. The caller has
- * this CPU on the address space (aspace_switch) and knows the page is
- * mapped. stac/clac when the CPU has SMAP, so this keeps working once
- * Track A turns SMAP on (without SMAP they would #UD). */
-static uint64_t user_peek(uint64_t va)
-{
-    uint32_t a, b, c, d;
-    cpuid(7, 0, &a, &b, &c, &d);
-    bool smap = b & (1u << 20);
-    if (smap)
-        __asm__ volatile("stac" ::: "memory");
-    uint64_t v = *(volatile uint64_t *)va;
-    if (smap)
-        __asm__ volatile("clac" ::: "memory");
-    return v;
-}
-
-static uint32_t cur_cpu(void)
-{
-    preempt_disable();
-    uint32_t c = this_cpu()->index;
-    preempt_enable_no_resched();
-    return c;
-}
-
-static void pin_self(uint32_t cpu)
-{
-    cpumask_t m;
-    cpumask_one(&m, cpu);
-    thread_set_affinity(current_thread(), &m);
-    KT_EQ(cur_cpu(), cpu);
-}
-
-static void unpin_self(void)
-{
-    cpumask_t all;
-    cpumask_all(&all);
-    thread_set_affinity(current_thread(), &all);
 }
 
 /* ---- map / unmap / protect edges ------------------------------------------ */
@@ -426,7 +378,7 @@ KTEST(aspace_switch_reads_user_memory)
     aspace_switch(NULL, as);
     KT_EQ(read_cr3() & PTE_ADDR, aspace_pml4(as));
     aspace_switch(as, as);   /* no-op */
-    uint64_t seen = user_peek(a + PG + 16);
+    uint64_t seen = kt_user_peek(a + PG + 16);
     uint64_t kernel_seen = *(volatile uint64_t *)&val;   /* the kernel half still works */
     aspace_switch(as, NULL);
     KT_EQ(read_cr3(), cr3);
@@ -457,11 +409,11 @@ static void two_runner(void *arg)
     uint64_t f = irq_save();
     aspace_switch(NULL, two_as[i]);
     irq_restore(f);
-    two_seen[i][0] = user_peek(two_addr[i]);   /* caches the translation */
+    two_seen[i][0] = kt_user_peek(two_addr[i]);   /* caches the translation */
     __atomic_add_fetch(&two_ready, 1, __ATOMIC_RELEASE);
     while (__atomic_load_n(&two_phase, __ATOMIC_ACQUIRE) < 1)
         cpu_relax();   /* the shootdown IPIs land here */
-    two_seen[i][1] = user_peek(two_addr[i]);
+    two_seen[i][1] = kt_user_peek(two_addr[i]);
     f = irq_save();
     aspace_switch(two_as[i], NULL);
     irq_restore(f);
@@ -486,7 +438,7 @@ KTEST(aspace_decommit_two_cpus)
         kprintf("ktest: %s skipped (needs >= 3 CPUs)\n", ktest_current);
         return;
     }
-    pin_self(0);
+    kt_pin_self(0);
     two_cpu[0] = 1;
     two_cpu[1] = 2;
     struct vmo *v;
@@ -556,7 +508,7 @@ KTEST(aspace_decommit_two_cpus)
     aspace_unref(two_as[0]);
     aspace_unref(two_as[1]);
     put(v);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* ---- decommit and shrink under mappings ----------------------------------- */
@@ -623,11 +575,11 @@ KTEST(aspace_decommit_and_shrink_unmap)
     put(v);
 }
 
-/* Big decommits and shrinks go a leaf table at a time (O8): across several
+/* Big decommits and shrinks go a leaf table at a time: across several
  * leaves, sparse and dense, with some of it mapped. */
 KTEST(aspace_large_decommit_batches)
 {
-    uint64_t base = free_now();
+    uint64_t base = kt_free_pages();
     struct aspace *as = new_as();
     struct vmo *v;
     enum { PAGES = 3000 };   /* ~6 leaves */
@@ -649,7 +601,7 @@ KTEST(aspace_large_decommit_batches)
     KT_EQ(pte_pa(as, a + 49 * PG), vmo_page_phys(v, 49 * PG));
     aspace_unref(as);
     put(v);
-    KT_GLOBAL_ASSERT(base - free_now() <= 2);
+    KT_GLOBAL_ASSERT(base - kt_free_pages() <= 2);
 }
 
 KTEST(aspace_destroy_frees_tables)
@@ -660,7 +612,7 @@ KTEST(aspace_destroy_frees_tables)
     uint64_t w = 0;
     KT_EQ(aspace_map(warm, keep, 0, PG, R, &w), OK);
 
-    uint64_t base = free_now();
+    uint64_t base = kt_free_pages();
     struct aspace *as = new_as();
     struct vmo *v;
     KT_EQ(vmo_create(4 * PG, 0, &v), OK);
@@ -677,12 +629,12 @@ KTEST(aspace_destroy_frees_tables)
     KT_EQ(aspace_pt_pages(as), 14);
     KT_EQ(vmo_committed(v), 4 * PG);
     KT_EQ(vmo_kobject(v)->refs, 6);
-    uint64_t before = free_now();
+    uint64_t before = kt_free_pages();
     aspace_unref(as);
-    KT_GLOBAL_ASSERT(free_now() - before >= 14 + 1);   /* the tables and the PML4 */
+    KT_GLOBAL_ASSERT(kt_free_pages() - before >= 14 + 1);   /* the tables and the PML4 */
     KT_EQ(vmo_kobject(v)->refs, 1);
     put(v);
-    KT_GLOBAL_ASSERT(base - free_now() <= 1);   /* at most a slab page */
+    KT_GLOBAL_ASSERT(base - kt_free_pages() <= 1);   /* at most a slab page */
 
     aspace_unref(warm);
     put(keep);
@@ -703,14 +655,6 @@ struct st_map {
 };
 static struct st_map st_maps[ST_MAX_THREADS][ST_SLOTS];
 
-static uint64_t rnd(uint64_t *s)
-{
-    *s ^= *s << 13;
-    *s ^= *s >> 7;
-    *s ^= *s << 17;
-    return *s;
-}
-
 static void st_bad_result(const char *what, status_t st)
 {
     kprintf("aspace stress: %s returned %d\n", what, st);
@@ -724,18 +668,18 @@ static void st_worker(void *arg)
     struct st_map *maps = st_maps[id];
     __atomic_add_fetch(&st_started, 1, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&st_stop, __ATOMIC_ACQUIRE)) {
-        struct st_map *m = &maps[rnd(&s) % ST_SLOTS];
+        struct st_map *m = &maps[kt_rng(&s) % ST_SLOTS];
         status_t st;
-        switch (rnd(&s) % 12) {
+        switch (kt_rng(&s) % 12) {
         case 0: case 1:   /* map into an empty slot */
             if (m->as)
                 break;
-            m->as = st_as[rnd(&s) % ST_AS];
-            m->len = (1 + rnd(&s) % 8) * PG;
-            m->off = (rnd(&s) % (ST_PAGES - 8)) * PG;
+            m->as = st_as[kt_rng(&s) % ST_AS];
+            m->len = (1 + kt_rng(&s) % 8) * PG;
+            m->off = (kt_rng(&s) % (ST_PAGES - 8)) * PG;
             m->addr = 0;
             st = aspace_map(m->as, st_vmo, m->off, m->len,
-                            (rnd(&s) & 1 ? RW : R) | ASPACE_CAN_WRITE, &m->addr);
+                            (kt_rng(&s) & 1 ? RW : R) | ASPACE_CAN_WRITE, &m->addr);
             if (st != OK) {
                 if (st != ERR_OUT_OF_RANGE)   /* the VMO may be shrunk right now */
                     st_bad_result("map", st);
@@ -745,16 +689,16 @@ static void st_worker(void *arg)
         case 2: case 3: case 4: case 5:   /* fault a page of one of ours */
             if (!m->as)
                 break;
-            st = aspace_fault(m->as, m->addr + (rnd(&s) % (m->len / PG)) * PG + 8,
-                              rnd(&s) & 1 ? ASPACE_WRITE : ASPACE_READ);
+            st = aspace_fault(m->as, m->addr + (kt_rng(&s) % (m->len / PG)) * PG + 8,
+                              kt_rng(&s) & 1 ? ASPACE_WRITE : ASPACE_READ);
             if (st != OK && st != ERR_ACCESS_DENIED && st != ERR_OUT_OF_RANGE)
                 st_bad_result("fault", st);
             break;
         case 6:   /* protect part of one of ours */
             if (!m->as)
                 break;
-            st = aspace_protect(m->as, m->addr + (rnd(&s) % (m->len / PG)) * PG, PG,
-                                rnd(&s) & 1 ? RW : R);
+            st = aspace_protect(m->as, m->addr + (kt_rng(&s) % (m->len / PG)) * PG, PG,
+                                kt_rng(&s) & 1 ? RW : R);
             if (st != OK)
                 st_bad_result("protect", st);
             break;
@@ -767,28 +711,28 @@ static void st_worker(void *arg)
             m->as = NULL;
             break;
         case 8: {   /* decommit a random range */
-            uint64_t first = rnd(&s) % ST_PAGES, n = 1 + rnd(&s) % 16;
+            uint64_t first = kt_rng(&s) % ST_PAGES, n = 1 + kt_rng(&s) % 16;
             st = vmo_decommit(st_vmo, first * PG, n * PG);
             if (st != OK && st != ERR_OUT_OF_RANGE)
                 st_bad_result("decommit", st);
             break;
         }
         case 9: {   /* commit through a write */
-            uint64_t val = rnd(&s);
-            st = vmo_write(st_vmo, (rnd(&s) % ST_PAGES) * PG + 16, &val, 8);
+            uint64_t val = kt_rng(&s);
+            st = vmo_write(st_vmo, (kt_rng(&s) % ST_PAGES) * PG + 16, &val, 8);
             if (st != OK && st != ERR_OUT_OF_RANGE)
                 st_bad_result("write", st);
             break;
         }
         case 10:   /* shrink and grow back (thread 0 only) */
-            if (id != 0 || rnd(&s) % 8)
+            if (id != 0 || kt_rng(&s) % 8)
                 break;
             if (vmo_set_size(st_vmo, (ST_PAGES / 2) * PG) != OK ||
                 vmo_set_size(st_vmo, ST_PAGES * PG) != OK)
                 st_bad_result("set_size", ERR_INTERNAL);
             break;
         case 11: {   /* run on an address space for a moment, so shootdowns hit us */
-            struct aspace *as = st_as[rnd(&s) % ST_AS];
+            struct aspace *as = st_as[kt_rng(&s) % ST_AS];
             preempt_disable();
             uint64_t f = irq_save();
             aspace_switch(NULL, as);
@@ -809,7 +753,7 @@ static void st_worker(void *arg)
 
 KTEST(aspace_stress)
 {
-    uint64_t base = free_now();
+    uint64_t base = kt_free_pages();
     KT_EQ(vmo_create(ST_PAGES * PG, 0, &st_vmo), OK);
     for (int i = 0; i < ST_AS; i++)
         st_as[i] = new_as();
@@ -865,7 +809,7 @@ KTEST(aspace_stress)
     thread_sleep_ms(10);
     /* Thread stacks may have joined the scheduler's cache; the harness
      * accounts those. Page tables and VMO pages must all be back. */
-    KT_GLOBAL_ASSERT(base - free_now() <= n * 16 + 4);
+    KT_GLOBAL_ASSERT(base - kt_free_pages() <= n * 16 + 4);
 }
 
 /* ---- vmar objects and the handle layer --------------------------------------- */

@@ -1,4 +1,4 @@
-/* M6 Track B: device vectors and interrupt objects.
+/* Device vectors and interrupt objects.
  *
  * No device is needed: virtual interrupt objects own a real (cpu, vector)
  * like an MSI does, so a fixed IPI with that vector to that CPU takes the
@@ -6,8 +6,8 @@
  * port), and interrupt_fire_virtual calls fire directly from any context
  * (threads, IPI handlers on every CPU). The lock checker is on, so every
  * lock the fire path takes is checked for use from interrupt handlers.
- * The MSI path itself needs Track A's PCI core: interrupt_edu_msi (end of
- * file) is the phase-2 test with QEMU's edu device and skips until then. */
+ * The MSI path itself needs a device: interrupt_edu_msi (end of file)
+ * uses QEMU's edu and skips without it. */
 #include <jam/cpu.h>
 #include <jam/event.h>
 #include <jam/handle.h>
@@ -28,22 +28,7 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define MS 1000000ull
 #define IRQ_RIGHTS (RIGHTS_BASIC | RIGHTS_IO)
-
-static void pin_self(uint32_t cpu)
-{
-    cpumask_t m;
-    cpumask_one(&m, cpu);
-    thread_set_affinity(current_thread(), &m);
-}
-
-static void unpin_self(void)
-{
-    cpumask_t m;
-    cpumask_all(&m);
-    thread_set_affinity(current_thread(), &m);
-}
 
 static struct thread *spawn_on(uint32_t cpu, const char *name, void (*fn)(void *), void *arg)
 {
@@ -69,7 +54,7 @@ static struct kobject *new_irq(bool maskable)
 /* A packet within ms milliseconds, or the status. */
 static status_t take(struct port *p, uint64_t ms, struct port_packet *pkt)
 {
-    return port_wait(p, uptime_ns() + ms * MS, pkt);
+    return port_wait(p, uptime_ns() + ms * NS_PER_MS, pkt);
 }
 
 static bool nothing_queued(struct port *p)
@@ -91,7 +76,7 @@ static bool vector_cpu(uint32_t i)
 /* Wait (bounded) until *v >= want. */
 static bool wait_at_least(volatile uint64_t *v, uint64_t want, uint64_t ms)
 {
-    uint64_t end = uptime_ns() + ms * MS;
+    uint64_t end = uptime_ns() + ms * NS_PER_MS;
     while (__atomic_load_n(v, __ATOMIC_ACQUIRE) < want) {
         if (uptime_ns() > end)
             return false;
@@ -288,19 +273,19 @@ KTEST(interrupt_vector_free_waits_for_running_handler)
 {
     if (cpu_count < 2)
         return;
-    pin_self(0);   /* vectors never land on CPU 0 when there are others */
+    kt_pin_self(0);   /* vectors never land on CPU 0 when there are others */
     uint32_t cpu;
     uint8_t vec;
     slow_in = slow_out = 0;
     KT_EQ(vector_alloc(slow_handler, NULL, &cpu, &vec), OK);
     KT_ASSERT(cpu != 0);
     ipi_send(cpu, vec);
-    uint64_t end = uptime_ns() + 1000 * MS;
+    uint64_t end = uptime_ns() + 1000 * NS_PER_MS;
     while (!__atomic_load_n(&slow_in, __ATOMIC_ACQUIRE))
         KT_ASSERT(uptime_ns() < end);
     vector_free(cpu, vec);
     KT_EQ(__atomic_load_n(&slow_out, __ATOMIC_ACQUIRE), 1);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* ---- interrupt objects -------------------------------------------------------- */
@@ -446,7 +431,7 @@ KTEST(interrupt_concurrent_fires_all_counted)
     struct consumer c = { .port = new_port(), .irq = new_irq(false) };
     KT_EQ(port_bind(c.port, c.irq, 5, SIG_INTERRUPT, PORT_BIND_PERSISTENT), OK);
     struct thread *t = spawn_on(cpu_count - 1, "irq-consumer", consume, &c);
-    pin_self(0);
+    kt_pin_self(0);
     uint64_t total = 0;
     for (int round = 0; round < 8; round++) {
         smp_call_others(fire_burst, c.irq);
@@ -463,7 +448,7 @@ KTEST(interrupt_concurrent_fires_all_counted)
             c.packets);
     kobject_unref(&c.port->base);
     kobject_unref(c.irq);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* The real vector path wakes a thread blocked in port_wait. */
@@ -489,7 +474,7 @@ KTEST(interrupt_vector_wakes_port_waiter)
     uint8_t vec;
     KT_ASSERT(interrupt_vector_of(irq, &cpu, &vec));
     struct thread *t = spawn_on(cpu_count > 2 ? 1 : 0, "irq-waiter", port_waiter, &w);
-    thread_sleep_ns(5 * MS);   /* let it block */
+    thread_sleep_ns(5 * NS_PER_MS);   /* let it block */
     ipi_send(cpu, vec);
     thread_join(t);
     KT_EQ(w.got, 1);
@@ -544,7 +529,7 @@ KTEST(interrupt_close_while_firing)
         f[i] = (struct firer){ .irq = irq, .stop = &stop };
         th[i] = spawn_on(1 + i, "irq-firer", fire_loop, &f[i]);
     }
-    pin_self(0);
+    kt_pin_self(0);
     struct port_packet pkt;
     for (int i = 0; i < 20; i++) {   /* ack under fire meanwhile */
         if (take(p, 5, &pkt) == OK)
@@ -571,7 +556,7 @@ KTEST(interrupt_close_while_firing)
     KT_GLOBAL_EQ(interrupt_live_count(), live + 1);
     kobject_unref(irq);
     KT_GLOBAL_EQ(interrupt_live_count(), live);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* The real race: the vector keeps arriving (IPIs from another CPU, like a
@@ -607,7 +592,7 @@ KTEST(interrupt_destroy_under_vector_storm)
     uint64_t ticks[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
         ticks[i] = cpus[i]->ticks;
-    pin_self(0);
+    kt_pin_self(0);
     storm_stop = false;
     storm_cpu = UINT32_MAX;
     struct thread *s = spawn_on(cpu_count - 1, "irq-storm", storm, NULL);
@@ -620,7 +605,7 @@ KTEST(interrupt_destroy_under_vector_storm)
         KT_ASSERT(interrupt_vector_of(irq, &cpu, &vec));
         storm_vec = vec;
         __atomic_store_n(&storm_cpu, cpu, __ATOMIC_RELEASE);
-        uint64_t end = uptime_ns() + 1000 * MS;
+        uint64_t end = uptime_ns() + 1000 * NS_PER_MS;
         while (interrupt_fire_count(irq) < 2) {
             struct port_packet pkt;
             if (take(p, 1, &pkt) == OK)
@@ -642,12 +627,12 @@ KTEST(interrupt_destroy_under_vector_storm)
     thread_join(s);
     KT_ASSERT(irq_device_unowned > unowned);
     /* No CPU was lost: every one still ticks. */
-    thread_sleep_ns(50 * MS);
+    thread_sleep_ns(50 * NS_PER_MS);
     for (uint32_t i = 0; i < cpu_count; i++)
         KT_ASSERT(cpus[i]->ticks > ticks[i]);
     kprintf("interrupt: storm sent %lu vectors, %lu unowned after teardown\n", storm_sent,
             irq_device_unowned - unowned);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* The port goes away with the interrupt's packet still queued, and the
@@ -727,7 +712,7 @@ KTEST(interrupt_job_charge)
 }
 
 /* The syscalls' error paths (the success path of interrupt_create_msi
- * needs a real RES_PCI_DEV: phase 2), and the argument checks of
+ * needs a real RES_PCI_DEV: interrupt_edu_msi), and the argument checks of
  * interrupt_create_msi on made-up functions. */
 KTEST(interrupt_syscall_errors)
 {
@@ -774,7 +759,7 @@ KTEST(interrupt_syscall_errors)
     KT_EQ(interrupt_create_msi(&fake, 0, IRQ_MSIX, &o), ERR_ACCESS_DENIED);
     fake.info.flags = 0;
     if (pci_count() == 0) {
-        /* Track A's stubs refuse to program it: the vector is given back. */
+        /* The PCI core refuses to program it: the vector is given back. */
         KT_EQ(interrupt_create_msi(&fake, 0, 0, &o), ERR_NOT_SUPPORTED);
         KT_EQ(interrupt_create_msi(&fake, 3, IRQ_MSIX, &o), ERR_NOT_SUPPORTED);
     }
@@ -783,9 +768,8 @@ KTEST(interrupt_syscall_errors)
         KT_EQ(vector_count(i), counts[i]);
 }
 
-/* TODO(phase 2): the MSI path end to end with QEMU's edu device (1234:11e8,
- * MSI, not maskable). Needs Track A's PCI core; skips while pci_find finds
- * no edu (in Track B's tree the PCI core is weak stubs). edu BAR0: 0x00
+/* The MSI path end to end with QEMU's edu device (1234:11e8, MSI, not
+ * maskable); skips where pci_find finds no edu (the PC). edu BAR0: 0x00
  * identification (low byte 0xed), 0x24 interrupt status, 0x60 raise (ORs
  * the value into the status and sends the MSI), 0x64 acknowledge (clears
  * those status bits). An MSI is a memory write by the device, so Bus
@@ -831,7 +815,7 @@ KTEST(interrupt_edu_msi)
     kobject_unref(&p->base);
     kobject_unref(irq);   /* MSI off at the device, vector freed */
     regs[0x60 / 4] = 1;   /* disabled: must not arrive anywhere */
-    thread_sleep_ns(10 * MS);
+    thread_sleep_ns(10 * NS_PER_MS);
     regs[0x64 / 4] = 1;
     KT_EQ(pci_set_bus_master(d, false), OK);
 }

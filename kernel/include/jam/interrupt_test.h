@@ -1,5 +1,5 @@
-/* Interrupt objects: hooks for ktests and the benchmark only (M6, Track
- * B). Nothing outside kernel/test uses these. */
+/* Interrupt objects: hooks for ktests and the benchmark only. Nothing
+ * outside kernel/test uses these. */
 #pragma once
 
 #include <stdbool.h>

@@ -6,7 +6,7 @@
 
 static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
 
-/* ---- iterative teardown (O1) ---------------------------------------------
+/* ---- iterative teardown --------------------------------------------------
  *
  * Closing an endpoint frees its queued messages, which may hold the last
  * handle to further endpoints, which close in turn: a channel chain, or an
@@ -135,7 +135,7 @@ void kobject_handle_drop(struct kobject *obj)
          * another CPU could drop the last reference: without this it would
          * destroy obj before, or while, on_zero_handles touches it. The
          * caller still holds the handle's reference, so this can't revive
-         * a dead object. (Track B review of M6.) */
+         * a dead object. */
         kobject_ref(obj);
         td_run(obj, TD_ZERO_HANDLES);
     }

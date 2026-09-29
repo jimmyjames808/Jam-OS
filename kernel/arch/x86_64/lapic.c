@@ -45,8 +45,8 @@ static bool x2;
 static volatile uint32_t *mmio;
 
 /* Timer modes. Each CPU's timer interrupt serves two clients: the 100 Hz
- * scheduler tick and (M5.5) the earliest deadline on that CPU's sleeper
- * queue (sched.c). In the two one-shot modes the timer is re-armed after
+ * scheduler tick and the earliest deadline on that CPU's sleeper queue
+ * (wait.c). In the two one-shot modes the timer is re-armed after
  * every interrupt for whichever comes first, both kept as absolute TSC
  * values in struct cpu (tick_deadline, timer_deadline):
  *   - TSC-deadline: the CPU has it and "nodeadline" is not given; arming is
@@ -56,7 +56,7 @@ static volatile uint32_t *mmio;
  *     counts (calibrated like the periodic mode, divide by 16).
  *   - APIC periodic: "nodeadline". A fixed 100 Hz; sleepers are woken by
  *     their CPU's tick, so sleeps have tick (10 ms) resolution.
- * The tick is kept (tickless idle is M10). `lapic_oneshot` (boot:
+ * The tick is kept (there is no tickless idle yet). `lapic_oneshot` (boot:
  * "nooneshot") switches the sleeper deadlines off at run time in either
  * one-shot mode: sleepers then wait for their CPU's next tick, which is how
  * the benchmark shows what the one-shot timers buy. */
@@ -116,7 +116,7 @@ static void send_icr(uint32_t dest, uint32_t low)
     uint64_t f = irq_save();   /* xAPIC: the two ICR writes must not be split */
     /* Per the SDM the x2APIC ICR WRMSR is not a serialising store barrier, so
      * fence first: any store the IPI's target reads (e.g. watchdog_target
-     * before an NMI) must be globally visible before the IPI is sent. (C10) */
+     * before an NMI) must be globally visible before the IPI is sent. */
     __asm__ volatile("mfence" ::: "memory");
     if (x2) {
         wrmsr(0x830, (uint64_t)dest << 32 | low);

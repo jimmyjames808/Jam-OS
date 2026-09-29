@@ -81,10 +81,10 @@ void ipi_init(void)
 static void check_callable(void)
 {
     /* Read per-CPU state with preemption off: irq_depth read preemptibly can
-     * belong to another CPU after a migration and panic falsely. (C7) A
-     * cross-CPU call while holding a spinlock can deadlock against a CPU
-     * spinning on that lock with interrupts off, which lockdep cannot see, so
-     * refuse it too. (C8) */
+     * belong to another CPU after a migration and panic falsely. A cross-CPU
+     * call while holding a spinlock can deadlock against a CPU spinning on
+     * that lock with interrupts off, which lockdep cannot see, so refuse it
+     * too. */
     preempt_disable();
     struct cpu *c = this_cpu();
     bool bad_irq = !irqs_enabled() || c->irq_depth;
@@ -133,7 +133,7 @@ void smp_call_on(uint32_t cpu, void (*fn)(void *), void *arg)
     wait_done(&c);
 }
 
-/* No memory for one slot per CPU (M5: this runs under system calls, via
+/* No memory for one slot per CPU (this runs under system calls, via
  * kernel TLB shootdowns, and must not fail): post from an on-stack array in
  * chunks instead, each chunk answered before the next goes out. Slower on
  * many CPUs, but it never allocates. */
@@ -237,7 +237,7 @@ static void flush_masked(void *arg)
  * paths that must not fail). Preemption stays off from the "which CPU am I"
  * decision until every chunk has answered, so the local flush and the
  * remote ones together cover the mask even if the caller would otherwise
- * migrate in between (the C3 rule of vmm_unmap). */
+ * migrate in between (the rule vmm_unmap follows). */
 void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len)
 {
     enum { CHUNK = 16 };
@@ -276,7 +276,7 @@ uint64_t tlb_mask_flush_count(uint32_t cpu)
 
 /* Flush a range from the CALLING CPU's TLB. The caller keeps preemption off
  * around this and tlb_shootdown so the "current" CPU can't change between the
- * two and escape both flushes. (C3) */
+ * two and escape both flushes (test: repro_unmap_migrate_stale_tlb). */
 void tlb_flush_local(uint64_t va, uint64_t len)
 {
     struct flush_range r = { va, len };

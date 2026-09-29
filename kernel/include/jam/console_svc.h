@@ -1,4 +1,4 @@
-/* M7 Track C: the kernel services the console and the shell use
+/* The kernel services the console and the shell use
  * (kernel/abi/sysc_console.c, kernel/core/dbgcmd.c, kernel/core/reboot.c).
  * The system calls are 110-117 in abi/syscalls.def; these are their
  * kernel halves, on objects, so ktests can drive them without a process.

@@ -1,4 +1,4 @@
-/* Cancellable waits (M4.5): thread_cancel makes every cancellable wait
+/* Cancellable waits: thread_cancel makes every cancellable wait
  * return ERR_CANCELED promptly, plain waits only see a spurious wakeup, and
  * a cancel racing a real wakeup never hangs or loses the wakeup. */
 #include <jam/channel.h>
@@ -12,7 +12,6 @@
 #include <jam/sys.h>
 #include <jam/time.h>
 
-#define SECOND 1000000000ull
 
 struct waiter {
     struct handle_table *t;
@@ -49,7 +48,7 @@ static void sleep_long(void *arg)
 {
     struct waiter *w = arg;
     w->started = true;
-    w->st = thread_sleep_cancellable(60 * SECOND);
+    w->st = thread_sleep_cancellable(60 * NS_PER_S);
 }
 
 /* Start fn, let it block, cancel it, and require ERR_CANCELED quickly. */
@@ -66,7 +65,7 @@ static void cancel_one(void (*fn)(void *), struct waiter *w)
     thread_cancel(th);
     thread_join(th);
     KT_EQ(w->st, ERR_CANCELED);
-    KT_ASSERT(uptime_ns() - t0 < SECOND / 10);
+    KT_ASSERT(uptime_ns() - t0 < NS_PER_S / 10);
 }
 
 KTEST(cancel_every_wait_kind)

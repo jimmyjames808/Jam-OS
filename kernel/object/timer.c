@@ -56,7 +56,7 @@ static void service_main(void *arg)
     }
 }
 
-/* M5: user code can make the first timer, so running out of memory for
+/* User code can make the first timer, so running out of memory for
  * the service thread is an error (and the next timer_create tries again),
  * not a panic. */
 static status_t service_start(void)

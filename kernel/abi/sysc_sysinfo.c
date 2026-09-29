@@ -1,4 +1,4 @@
-/* System calls 130-133 (M7 shell): read-only system information for
+/* System calls 130-133: read-only system information for the shell's
  * uname / free / lscpu / top / ps / date. Each needs RIGHT_READ on a
  * RES_ROOT handle (sysinfo_check_root); none changes anything. The
  * structs are in <jam/abi.h>; the rules every sysc_* follows are in sysc.h. */

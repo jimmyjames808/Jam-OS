@@ -9,7 +9,7 @@
  * so there is only one definition.
  *
  * User addresses are uint64_t, never C pointers, in the argument structs:
- * the kernel never dereferences them (M5-PLAN.md, "Fixed decisions"). */
+ * the kernel never dereferences them (it copies through usercopy.h). */
 #pragma once
 
 #include <stdint.h>
@@ -30,7 +30,7 @@ typedef uint32_t rights_t;
 #define RIGHT_WAIT      (1u << 7)   /* may wait on it / bind it to a port */
 #define RIGHT_INSPECT   (1u << 8)
 #define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
-#define RIGHT_SLICE     (1u << 10)  /* M6 resources: make a smaller resource inside this one */
+#define RIGHT_SLICE     (1u << 10)  /* resources: make a smaller resource inside this one */
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
@@ -52,8 +52,8 @@ typedef uint32_t signals_t;
 #define SIG_WRITABLE    (1u << 1)
 #define SIG_PEER_CLOSED (1u << 2)
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
-#define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good (M5) */
-#define SIG_INTERRUPT   (1u << 5)   /* M6 interrupt objects: fired, not acked yet */
+#define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good */
+#define SIG_INTERRUPT   (1u << 5)   /* interrupt objects: fired, not acked yet */
 #define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
 
 /* Deadlines are absolute nanoseconds of uptime. Also defined (identically)
@@ -66,7 +66,7 @@ typedef uint32_t signals_t;
 enum port_packet_type {
     PORT_PACKET_SIGNAL = 1,
     PORT_PACKET_USER = 2,
-    /* M6: interrupts arrive as PORT_PACKET_SIGNAL packets: bind the
+    /* Interrupts arrive as PORT_PACKET_SIGNAL packets: bind the
      * interrupt object PERSISTENT for SIG_INTERRUPT; `count` says how many
      * times it fired before the packet was read; interrupt_ack re-arms. */
 };
@@ -193,7 +193,7 @@ struct channel_call_args {
     uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever */
 };
 
-/* hardware (M6) --------------------------------------------------------------
+/* hardware -------------------------------------------------------------------
  * Resources are the authority over hardware: userboot gives init the root,
  * which slices it (resource_create) for devmgr; devmgr turns RES_PCI into
  * one RES_PCI_DEV per function (pci_device_open) and each BAR into a
@@ -234,7 +234,7 @@ struct pci_dev_info {
         uint32_t flags;       /* PCI_BAR_* */
         uint32_t reserved;
     } bar[6];                 /* a 64-bit BAR fills bar[i]; bar[i + 1] is empty */
-    /* M7: the function's DMA quarantine (pins a dma_cap still held when it
+    /* The function's DMA quarantine (pins a dma_cap still held when it
      * closed; see abi/syscalls.def dma_cap_bus_master), in pages. */
     uint32_t dma_quarantined; /* held right now */
     uint32_t dma_changed;     /* since boot: released pages found written while held */
@@ -243,7 +243,7 @@ struct pci_dev_info {
 /* interrupt_create_msi flags */
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
 
-/* input (M7; abi/idl/input.idl, console.idl) --------------------------------- */
+/* input (abi/idl/input.idl, console.idl) ------------------------------------- */
 
 #define INPUT_KEY_UP     0
 #define INPUT_KEY_DOWN   1
@@ -270,7 +270,7 @@ struct input_key_event {
     uint32_t codepoint;   /* the character typed, or 0 */
 };
 
-/* console services (M7 Track C; abi/syscalls.def 110-117) --------------------- */
+/* console services (abi/syscalls.def 110-117) --------------------------------- */
 
 /* framebuffer_take: the boot framebuffer's geometry. The VMO covers
  * pitch * height bytes rounded up to a page; pixel (x, y) is the uint32_t

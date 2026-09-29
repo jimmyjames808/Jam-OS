@@ -40,7 +40,7 @@ struct cpu {
     uint32_t       smt_id;
     volatile bool  online;
     volatile uint64_t ticks;
-    /* Timer (lapic.c, M5.5), absolute TSC values, touched only by this CPU
+    /* Timer (lapic.c), absolute TSC values, touched only by this CPU
      * with interrupts off: the next scheduler tick, the earliest sleeper
      * deadline (UINT64_MAX: none), and what the timer is armed for. */
     uint64_t       tick_deadline, timer_deadline, timer_armed;
@@ -51,7 +51,7 @@ struct cpu {
     uint32_t       irq_depth;       /* >0: inside an interrupt handler */
     volatile bool  need_resched;    /* set locally or by a reschedule IPI */
     /* The idle thread is polling need_resched and its run queue (spin
-     * before idle, M5.5): a remote wakeup needs no IPI. See idle_loop. */
+     * before idle): a remote wakeup needs no IPI. See idle_loop. */
     volatile bool  idle_polling;
     struct thread *current;
 
@@ -67,7 +67,7 @@ struct cpu {
     /* Statistics. */
     volatile uint64_t switches, steals, ipis;
     volatile uint64_t polled_wakes;   /* wakeups that found this CPU polling: no IPI */
-    /* CPU time (M7 shell, sched.c): the TSC at the last switch (0 until
+    /* CPU time (sched.c, for the shell): the TSC at the last switch (0 until
      * the run queue is online), the idle thread's cycles up to then, and
      * whether the idle thread runs now. Written by this CPU only. */
     volatile uint64_t switch_tsc, idle_tsc;

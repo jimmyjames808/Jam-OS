@@ -75,7 +75,7 @@ static inline void spin_unlock_irqrestore(spinlock_t *l, uint64_t f)
 {
     /* Drop the lock and the preemption it held, but defer the reschedule
      * check until interrupts are actually restored: preempt_enable() runs
-     * with interrupts still off here and would skip it. (C5) */
+     * with interrupts still off here and would skip it. */
     spin_unlock_no_resched(l);
     irq_restore(f);
     preempt_check();

@@ -1,4 +1,4 @@
-/* System calls for interrupt objects (M6, Track B): interrupt_create_msi
+/* System calls for interrupt objects: interrupt_create_msi
  * and interrupt_ack, plus their handle-level layer (sys.h). The rules
  * every sysc_* follows are in sysc.h. */
 #include <jam/interrupt.h>

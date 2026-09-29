@@ -16,16 +16,16 @@ enum startup_role {
     SR_SELF_VMAR,
     SR_SELF_THREAD,
     SR_JOB,
-    SR_STDOUT,      /* channel; M5 libos prints through debug_write instead */
-    SR_BOOTFS,      /* M5: a VMO of the whole bootfs image, read-only */
-    SR_RESOURCE,    /* M6: a resource (init: the root; devmgr: RES_PCI) */
-    SR_DEVMGR,      /* M6: a channel to devmgr (devmgr: its server end; the
-                     * programs init starts: a client end, <devmgr.h>).
-                     * M7: queries only (STATUS, GET_SERVICE, GET_DRIVER,
+    SR_STDOUT,      /* channel; libos prints through debug_write instead */
+    SR_BOOTFS,      /* a VMO of the whole bootfs image, read-only */
+    SR_RESOURCE,    /* a resource (init: the root; devmgr: RES_PCI) */
+    SR_DEVMGR,      /* a channel to devmgr (devmgr: its server end; the
+                     * programs init starts: a client end, <devmgr.h>),
+                     * queries only (STATUS, GET_SERVICE, GET_DRIVER,
                      * SUPERVISION) */
-    SR_CONSOLE,     /* M7: a client end of the console's channel (the shell,
+    SR_CONSOLE,     /* a client end of the console's channel (the shell,
                      * and what the shell runs: a restricted one) */
-    SR_DEVMGR_CTL,  /* M7: devmgr's control channel (every call; <devmgr.h>):
+    SR_DEVMGR_CTL,  /* devmgr's control channel (every call; <devmgr.h>):
                      * init, and the test programs init or the shell runs */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */

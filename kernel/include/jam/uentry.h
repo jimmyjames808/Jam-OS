@@ -1,4 +1,4 @@
-/* User entry and exit (Track A of M5-PLAN.md owns the implementation).
+/* User entry and exit (arch/x86_64/uentry.c, syscall.S).
  *
  * The user half of every address space is [USER_BASE, USER_TOP). Page 0
  * and the last page below the canonical hole are never mapped. */
@@ -54,7 +54,7 @@ void fpu_reset_and_load(struct thread *t);
 void fpu_clobbered(void);
 void fpu_save(void *area);
 void fpu_restore(const void *area);
-/* M5.5 switch: XSAVEOPT and the skipped restore (boot "nofpuopt"). */
+/* Run-time switch: XSAVEOPT and the skipped restore (boot "nofpuopt"). */
 extern volatile bool fpu_opt;
 bool fpu_has_xsaveopt(void);
 uint32_t fpu_area_size(void);

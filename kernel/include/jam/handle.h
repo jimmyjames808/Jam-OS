@@ -40,7 +40,7 @@ struct handle_table {
     uint32_t            used;
     uint32_t            free_head;   /* slot index + 1 of first free, 0 = none */
     uint32_t            free_tail;   /* slot index + 1 of last free (FIFO reuse) */
-    /* M5: the job every slot in use or reserved is charged to (one
+    /* The job every slot in use or reserved is charged to (one
      * JOB_LIMIT_HANDLES unit each; NULL for kernel tables), and how many
      * units are charged now (lock). A full job fails an insert with
      * ERR_NO_RESOURCES, like a full table. The owner (the process) holds

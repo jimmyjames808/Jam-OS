@@ -1,4 +1,4 @@
-/* M4.5 hardening checks that don't fit one object's test file: W^X on
+/* Hardening checks that don't fit one object's test file: W^X on
  * every alias of the kernel image, and the guard pages under IST stacks. */
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -79,7 +79,7 @@ KTEST(ist_stack_guards)
 
 /* Cost of a nested spin_lock/unlock pair with the checker on, on every CPU
  * at once: the pair's edge is already known, so after the first round the
- * checker should write nothing shared (M4.5 fast path). */
+ * checker should write nothing shared (lockdep.c's fast path). */
 #include <jam/kprintf.h>
 #include <jam/report.h>
 #include <jam/time.h>

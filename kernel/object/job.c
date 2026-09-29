@@ -19,13 +19,13 @@
  * until it is torn down (process_finish), so once SIG_TERMINATED is seen a
  * dead process no longer keeps its job alive.
  *
- * What a job costs (review R3): a job is charged to its PARENT as one
+ * What a job costs: a job is charged to its PARENT as one
  * JOB_LIMIT_HANDLES unit (a small kernel object, like the ones handle slots
  * name) from creation until it is destroyed, and jobs nest at most
  * JOB_MAX_DEPTH deep. So a process can't hold an unbounded chain of jobs
  * behind one handle, and a charge walks at most JOB_MAX_DEPTH levels.
  *
- * The tree (review R8, for job_kill). A job lists its child jobs and its
+ * The tree (for job_kill). A job lists its child jobs and its
  * live processes, under its object lock (class "job", interrupts off; only
  * list edits and the `killed` flag happen under it, and no other job's lock
  * is ever taken inside it). A child job is listed from job_create until it
@@ -324,7 +324,7 @@ void job_uncharge(struct job *j, uint32_t kind, uint64_t n)
     credit(j, NULL, kind, n);
 }
 
-/* ---- listing (M7: the shell's `ps`, through debug_command) ----------------- */
+/* ---- listing (the shell's `ps`, through debug_command) --------------------- */
 
 #define PRINT_MAX 32   /* processes / child jobs shown per job */
 

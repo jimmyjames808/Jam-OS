@@ -2,10 +2,10 @@
  *
  *   0x00-0x1f  CPU exceptions
  *   0x20-0x2f  legacy 8259 PIC (masked; only spurious ones can arrive)
- *   0x30-0xef  device interrupts (I/O APIC, MSI), from M6; 0x30 = COM1 (M5.5),
- *              0x31-0xef per-CPU MSI vectors (vector_alloc, M6)
+ *   0x30-0xef  device interrupts (I/O APIC, MSI); 0x30 = COM1,
+ *              0x31-0xef per-CPU MSI vectors (vector_alloc)
  *   0xf0       LAPIC timer
- *   0xf1-0xfd  IPIs, from M3
+ *   0xf1-0xfd  IPIs
  *   0xfe       LAPIC error
  *   0xff       LAPIC spurious
  */
@@ -15,7 +15,7 @@
 #include <stdint.h>
 
 #define VEC_PIC_BASE    0x20
-#define VEC_COM1        0x30   /* M5.5: the serial port's transmit interrupt */
+#define VEC_COM1        0x30   /* the serial port's interrupt */
 #define VEC_TIMER       0xf0
 #define VEC_RESCHEDULE  0xf1
 #define VEC_CALL        0xf2
@@ -30,7 +30,7 @@ extern volatile uint64_t irq_unexpected;
 extern volatile uint8_t  irq_last_unexpected;
 void irq_dispatch(struct trap_frame *f);
 
-/* Device vectors (M6): 0x31-0xef on every CPU, allocated per (cpu, vector)
+/* Device vectors: 0x31-0xef on every CPU, allocated per (cpu, vector)
  * by vector_alloc / vector_free (<jam/interrupt.h>). A device vector that
  * arrives with no owner (a message still in flight after its owner freed
  * it, a stray IPI) is EOI'd and counted here, never a panic. */

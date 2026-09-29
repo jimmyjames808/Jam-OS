@@ -5,7 +5,7 @@
  * hardware. When the cursor runs off the bottom, the console scrolls a third
  * of the screen at once so heavy logging does not redraw on every line.
  *
- * M7: a process (the console) can take the screen (fbcon_take, through the
+ * A process (the console) can take the screen (fbcon_take, through the
  * framebuffer_take system call). While it is taken the cell grid is still
  * kept up to date but nothing is drawn; fbcon_release redraws the grid, so
  * the screen shows the latest log again. A panic (fbcon_force_unlock)
@@ -139,7 +139,7 @@ void fbcon_init(const struct boot_framebuffer *f)
         fb_len = (uint64_t)f->pitch * f->height;
     }
     if (!f->virt || f->bpp != 32)
-        return;   /* M0 only drives 32-bpp linear framebuffers */
+        return;   /* only 32-bpp linear framebuffers are driven */
     fb = *f;
     cols = fb.width / GLYPH_W;
     rows = fb.height / GLYPH_H;

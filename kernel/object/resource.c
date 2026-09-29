@@ -1,4 +1,4 @@
-/* Resources (M6, Track C): the authority over hardware, as handles (see
+/* Resources: the authority over hardware, as handles (see
  * <jam/resource.h>).
  *
  * A resource is immutable after creation: its kind, its physical range
@@ -125,7 +125,7 @@ status_t resource_set_job(struct kobject *obj, struct job *job)
     if (st == OK) {
         job_ref(job);
         r->job = job;
-        /* M7: a function a process (devmgr) holds is in use by a driver. */
+        /* A function a process (devmgr) holds is in use by a driver. */
         if (r->kind == RES_PCI_DEV && r->dev && !r->counted) {
             r->counted = true;
             __atomic_add_fetch(&r->dev->proc_users, 1, __ATOMIC_RELAXED);
@@ -276,8 +276,8 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
      * then turns this one's decode on). Only functions with memory decode
      * on claim addresses: a disabled one can hold a stale or unassigned BAR
      * value (the PC's first run refused the xHCI's 64 KiB BAR because of
-     * one). Review of M6 phase 2: 9d4719a had narrowed this to the slack
-     * alone, so a page-aligned BAR was never checked. */
+     * one). The whole BAR is checked, not only a sub-page BAR's slack: a
+     * page-aligned BAR can overlap too (test: m6p2_bar_overlaps_live_function). */
     for (uint32_t i = 0; i < pci_count(); i++) {
         struct pci_dev *o = pci_get(i);
         if (!o || o == p->dev || !(pci_cfg_read(o, 0x04, 2) & 0x2))
@@ -368,7 +368,7 @@ struct cfg_hole {
  *   - PCIe Device Control with Initiate Function Level Reset (bit 15) set,
  *     Advanced Features Control with Initiate FLR (bit 0) set, and a PM
  *     PowerState change (D3hot -> D0 resets the function): a reset would
- *     undo what the kernel set up behind its back. M7: a RIGHT_MANAGE
+ *     undo what the kernel set up behind its back. A RIGHT_MANAGE
  *     holder (devmgr, `manage`) may change the PowerState: it wakes a
  *     function left in D1-D3 before binding a driver, and
  *     sys_pci_config_write waits out the transition (10 ms) and puts back

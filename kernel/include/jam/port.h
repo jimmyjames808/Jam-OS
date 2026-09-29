@@ -4,7 +4,7 @@
  * when they match; port_queue_user queues arbitrary PORT_PACKET_USER
  * packets; port_wait takes the oldest packet, blocking if there is none.
  * The port asserts SIG_READABLE while any packet is queued, so a thread
- * can also object_wait_one on it. M6 adds interrupt packets.
+ * can also object_wait_one on it. Interrupt objects fire as signal packets.
  *
  * Lock order (lock classes):
  *   "port bindings"  the port's binding list; held while taking a watched

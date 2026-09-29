@@ -13,7 +13,7 @@
  * The observer registration needs no reference of its own: it is always
  * removed, under the object's lock, before the list's reference drops.
  *
- * Job charges (review R6): a user packet and a binding are kernel memory
+ * Job charges: a user packet and a binding are kernel memory
  * a process makes the port hold (up to PORT_MAX_* each), so they are
  * charged as JOB_LIMIT_MSG_BYTES to the job of whoever queued / bound them
  * (job_current(); kernel callers are never charged), like a channel

@@ -1,6 +1,6 @@
 /* Handle tables (handle.h).
  *
- * Job charges (M5): every slot that is in use or reserved (in transit, or
+ * Job charges: every slot that is in use or reserved (in transit, or
  * reserved for a receive) costs its table's job one JOB_LIMIT_HANDLES unit.
  * Charges are taken before a slot is filled and credited when it goes back
  * on the free list; t->charged (under the lock) says how many are out, so
@@ -23,7 +23,7 @@ struct handle_slot {
  * so slot + 1 needs 17 bits; the remaining 15 bits are the generation. Eight
  * bits used to wrap after 256 reuses of a slot, letting a stale handle name a
  * new object; 15 bits plus FIFO slot reuse (below) push that far out of
- * reach. (O4) */
+ * reach (test: auditD_handle_generation_no_wrap). */
 #define GEN_BITS 15
 #define GEN_MASK ((1u << GEN_BITS) - 1)
 
@@ -49,7 +49,7 @@ static struct handle_slot *decode(struct handle_table *t, handle_t h)
  * out from the head) so a freed slot waits behind every other free slot
  * before it is reused, maximising the reuse distance and, with the wider
  * generation, making a stale handle value hitting its old slot with the same
- * generation practically impossible. (O4) */
+ * generation practically impossible. */
 static void freelist_push(struct handle_table *t, uint32_t idx)
 {
     t->slots[idx].next_free = 0;
@@ -103,7 +103,7 @@ void handle_table_destroy(struct handle_table *t)
     /* Resume scanning from where we left off rather than from slot 0 each
      * time: releasing a handle drops the lock (it may run on_zero_handles),
      * but no concurrent insert can happen during teardown, and slots never
-     * move here, so the index stays valid. This is O(n), not O(n^2). (O7) */
+     * move here, so the index stays valid. This is O(n), not O(n^2). */
     uint32_t i = 0;
     for (;;) {
         struct khandle kh = { 0 };
@@ -131,7 +131,7 @@ void handle_table_destroy(struct handle_table *t)
 
 /* With t->lock held: make sure there is a free slot. Used by the rare paths
  * (duplicate/replace) that hold a decoded slot; the common insert path grows
- * outside the lock via grow_table (O6). */
+ * outside the lock via grow_table. */
 static status_t ensure_free_locked(struct handle_table *t)
 {
     if (t->free_head)
@@ -160,7 +160,7 @@ static status_t ensure_free_locked(struct handle_table *t)
 /* Grow the table if it is still `oldcap` and full, allocating the (up to
  * ~1.5 MiB) new array OUTSIDE the handle lock so a bulk insert doesn't hold
  * the lock with IRQs off across the allocation and copy. The caller retries.
- * Returns OK when it either grew or found the situation already changed. (O6) */
+ * Returns OK when it either grew or found the situation already changed. */
 static status_t grow_table(struct handle_table *t, uint32_t oldcap)
 {
     uint32_t cap = oldcap ? oldcap * 2 : 16;
@@ -230,7 +230,7 @@ static struct khandle free_slot_locked(struct handle_table *t, struct handle_slo
  * It stays reserved until handle_untake restores it (failed send) or
  * handle_commit frees it (successful send), so a failed send can always put
  * the handle back and never has to fall back to a fresh insert that could
- * fail and lose it. (O5) */
+ * fail and lose it. */
 static struct khandle reserve_slot_locked(struct handle_table *t, struct handle_slot *s)
 {
     struct khandle kh = { s->obj, s->rights };
@@ -268,7 +268,7 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
         }
         uint32_t oldcap = t->capacity;
         spin_unlock_irqrestore(&t->lock, f);
-        status_t st = grow_table(t, oldcap);   /* allocate outside the lock (O6) */
+        status_t st = grow_table(t, oldcap);   /* allocate outside the lock */
         if (st != OK) {
             uncharge(t, 1);
             return st;
@@ -361,7 +361,7 @@ status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out)
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_TRANSFER);
     if (st == OK)
-        *out = reserve_slot_locked(t, s);   /* reserved until commit/untake (O5) */
+        *out = reserve_slot_locked(t, s);   /* reserved until commit/untake */
     spin_unlock_irqrestore(&t->lock, f);
     return st;
 }
@@ -426,7 +426,7 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
     struct handle_slot *s = intransit_slot(t, h);
     /* The slot was reserved by handle_take and held for us, so putting the
      * handle back is O(1) and can never fail: a failed send never loses a
-     * handle. (O5, O6) */
+     * handle. */
     status_t st;
     if (s) {
         s->gen--;             /* restore the original handle value */

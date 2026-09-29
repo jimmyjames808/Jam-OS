@@ -1,4 +1,4 @@
-/* userboot: the kernel's own tiny program loader (M5). It starts init from
+/* userboot: the kernel's own tiny program loader. It starts init from
  * bootfs; after that, programs are loaded by libos in user space. Kernel
  * tests and benchmarks use it too, to start user programs directly. */
 #pragma once
@@ -41,5 +41,5 @@ status_t userboot_root_job(struct job **out);
  * for it to exit, and report how it went. Returns true if it exited 0 and
  * left its job with nothing charged. arg (may be NULL) becomes init's
  * argv[1]: a mode (e.g. "keytest") that init runs instead of init.cfg. */
-/* timeout_s 0: wait for good (M7 shell mode). */
+/* timeout_s 0: wait for good (init's shell mode). */
 bool userboot_run_init(uint64_t timeout_s, const char *arg);

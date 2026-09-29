@@ -1,9 +1,8 @@
-/* M7 Track D: safe rebind (kernel/object/dma_cap.c). QEMU only: they need
- * the edu device; each skips itself without it.
+/* DMA capabilities and safe rebind (kernel/object/dma_cap.c). QEMU only:
+ * they need the edu device; each skips itself without it.
  *
  *   dma_stale_write_after_rebind
- *       The M6 phase 2 review's CONFIRMED finding 1, as a normal test: a
- *       driver dies while its device has a device -> RAM transfer queued
+ *       A driver dies while its device has a device -> RAM transfer queued
  *       (QEMU's edu starts it 100 ms after the command). Three rounds:
  *       nobody rebinds (control); the next driver quiesces the device (its
  *       DMA engine idle) before it turns bus mastering on, as drivers must;
@@ -13,24 +12,32 @@
  *       quarantine's release sees the changed page.
  *   dma_cap_owner_rules
  *       Only the function's current (newest) cap turns bus mastering on or
- *       pins; an older cap's close leaves Bus Master Enable alone (review
- *       finding 2); a new cap starts with it off.
+ *       pins; an older cap's close leaves Bus Master Enable alone; a new cap
+ *       starts with it off.
  *   dma_quarantine_phys_and_clean_close
  *       A clean close (nothing pinned) quarantines nothing; pins of a
- *       physical VMO (no RAM) are released at once. */
+ *       physical VMO (no RAM) are released at once.
+ *   m6r_pins_are_charged
+ *       Every pin is a kernel allocation, so it is charged: otherwise a
+ *       driver pins one page over and over and fills the kernel heap.
+ *   m6r_unpin_by_other_holder
+ *       Only the pin's own DMA capability may unpin it, not another holder
+ *       of the VMO, and the pinned page can't be decommitted. */
+#include <jam/handle.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
+#include <jam/process.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/string.h>
+#include <jam/sys.h>
 #include <jam/time.h>
 #include <jam/vmo.h>
 
 #define PG      PAGE_SIZE
-#define S       1000000000ull
 #define CMD_BME 0x04
 
 #define EDU_DMA_SRC 0x80
@@ -56,7 +63,7 @@ static bool bme(struct pci_dev *d)
 
 static bool edu_wait_idle(volatile uint8_t *r)
 {
-    uint64_t end = uptime_ns() + 2 * S;
+    uint64_t end = uptime_ns() + 2 * NS_PER_S;
     while (*(volatile uint64_t *)(r + EDU_DMA_CMD) & DMA_RUN) {
         if (uptime_ns() > end)
             return false;
@@ -164,7 +171,7 @@ KTEST(dma_stale_write_after_rebind)
         if (round == 1) {
             /* The reaper lets it go a grace period after bus mastering
              * went on (no flush: this is its path). */
-            uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS + 5 * S;
+            uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS + 5 * NS_PER_S;
             do {
                 thread_sleep_ms(20);
                 dma_quarantine_stats(d, &q);
@@ -276,4 +283,100 @@ KTEST(dma_quarantine_phys_and_clean_close)
     kobject_unref(cap);
     kobject_unref(vmo_kobject(phys));
     kobject_unref(vmo_kobject(ram));
+}
+
+/* ---- pins are charged --------------------------------------------------------- */
+
+KTEST(m6r_pins_are_charged)
+{
+    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
+    if (!d) {
+        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+        return;
+    }
+    struct job *j = kt_fresh_job();
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = j;
+    handle_t dev, cap, vh;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &dev), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_EQ(sys_vmo_create(&t, PG, 0, HANDLE_INVALID, &vh), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
+    uint64_t used = job_used(j, JOB_LIMIT_HANDLES);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, used + 64), OK);
+    /* The same page, again and again: each pin is a kmalloc'd range. */
+    unsigned ok = 0;
+    for (unsigned i = 0; i < 1000; i++) {
+        uint64_t pa, id;
+        if (sys_vmo_pin(&t, vh, cap, 0, PG, &pa, &id) != OK)
+            break;
+        ok++;
+    }
+    kprintf("ktest %s: %u pins with 64 handle units to spare\n", ktest_current, ok);
+    KT_ASSERT(ok <= 64);
+    handle_table_destroy(&t);   /* closes the cap: BME off, every pin quarantined */
+    KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & 0x04));
+    struct dma_quarantine_stats q;
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.pins, ok);
+    dma_quarantine_flush(d);   /* ... still charged until released */
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* ---- unpin needs nothing but a writable VMO handle ------------------------------- */
+
+/* A client hands its buffer VMO (RIGHT_WRITE, as a block or network client
+ * would) to a driver, which pins it for DMA. The client, not the driver,
+ * then unpins the driver's pin (ids count up from 1 per VMO) and
+ * decommits the page: it goes back to the page allocator while the device
+ * still has it as a DMA target and Bus Master Enable is on. */
+KTEST(m6r_unpin_by_other_holder)
+{
+    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
+    if (!d) {
+        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+        return;
+    }
+    struct job *j = kt_fresh_job();
+    struct handle_table td, tc;
+    handle_table_init(&td);
+    handle_table_init(&tc);
+    td.job = tc.job = j;
+    handle_t dev, cap, vc, vd;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&td, &kh, &dev), OK);
+    KT_EQ(sys_dma_cap_create(&td, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_bus_master(&td, cap, 1), OK);
+    KT_EQ(sys_vmo_create(&tc, PG, 0, HANDLE_INVALID, &vc), OK);
+    struct kobject *vo;
+    KT_EQ(handle_get(&tc, vc, OBJ_VMO, 0, &vo, NULL), OK);
+    struct khandle kv = khandle_from_new(vo, RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP);
+    KT_EQ(handle_insert(&td, &kv, &vd), OK);   /* "sent" to the driver */
+    uint64_t pa, id;
+    KT_EQ(sys_vmo_pin(&td, vd, cap, 0, PG, &pa, &id), OK);
+    /* The client, with a guessed id: without a cap, and with a cap of its
+     * own (bound to the same function, so it's a valid one). */
+    handle_t ccap, dev2;
+    struct khandle kd = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&tc, &kd, &dev2), OK);
+    KT_EQ(sys_dma_cap_create(&tc, dev2, &ccap), OK);
+    status_t un0 = sys_vmo_unpin(&tc, vc, HANDLE_INVALID, id);
+    status_t un = sys_vmo_unpin(&tc, vc, ccap, id);
+    status_t dc = sys_vmo_decommit(&tc, vc, 0, PG);
+    kprintf("ktest %s: client unpin of the driver's pin %lu: %s / %s, then decommit: %s "
+            "(device still has 0x%lx, BME %s)\n", ktest_current, id, status_str(un0),
+            status_str(un), status_str(dc), pa, (pci_cfg_read(d, 0x04, 2) & 0x04) ? "on" : "off");
+    handle_table_destroy(&tc);
+    handle_table_destroy(&td);   /* the driver's cap: its pin is quarantined */
+    dma_quarantine_flush(d);
+    kt_job_is_empty(j);
+    job_unref(j);
+    /* Only the pin's DMA capability may undo it (vmo_unpin takes the
+     * dma_cap), and the page stays pinned. */
+    KT_EQ(un0, ERR_BAD_HANDLE);
+    KT_EQ(un, ERR_ACCESS_DENIED);
+    KT_EQ(dc, ERR_BAD_STATE);
 }

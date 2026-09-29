@@ -1,5 +1,5 @@
-/* Status codes returned by object and handle operations (and, from M5,
- * by system calls). 0 is success; errors are negative. */
+/* Status codes returned by object and handle operations and by system
+ * calls. 0 is success; errors are negative. */
 #pragma once
 
 typedef int status_t;

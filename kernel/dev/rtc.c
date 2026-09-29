@@ -1,4 +1,4 @@
-/* The CMOS real-time clock (M7 shell: `date`), read through ports 0x70/0x71.
+/* The CMOS real-time clock (the shell's `date`), read through ports 0x70/0x71.
  *
  * The chip updates its registers once a second; for ~2 ms around that,
  * status A bit 7 (update in progress) is set and the registers may be

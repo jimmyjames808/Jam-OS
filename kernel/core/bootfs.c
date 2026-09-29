@@ -8,7 +8,7 @@
  *
  * The module's bytes stay where Limine put them. Its pages are
  * "kernel+modules" memory, which the PMM never hands out, and the HHDM maps
- * them read-only (M4.5), so bootfs_data can give out plain pointers and
+ * them read-only, so bootfs_data can give out plain pointers and
  * bootfs_find can make physical VMOs over them without copying. */
 #include <stdbool.h>
 #include <jam/boot.h>

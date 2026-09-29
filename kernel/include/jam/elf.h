@@ -1,6 +1,5 @@
-/* Static ELF64 executables: parse and validate into a load plan (Track C).
- * Nothing is mapped here; userboot (phase 2) and the libos loader apply
- * the plan. */
+/* Static ELF64 executables: parse and validate into a load plan.
+ * Nothing is mapped here; userboot and the libos loader apply the plan. */
 #pragma once
 
 #include <stdint.h>

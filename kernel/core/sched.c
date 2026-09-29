@@ -9,31 +9,31 @@
  *   completes, and whoever picks the thread waits for it to drop.
  * - Preemption happens on the way out of an interrupt, never while a
  *   spinlock is held (preempt_count > 0).
+ *
+ * Thread lifecycle (creation, exit, the stack cache) is in thread.c;
+ * blocking, sleeping, wait queues and mutexes are in wait.c.
+ * sched_internal.h is what the three files share.
  */
 #include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
-#include <jam/lapic.h>
-#include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/klog.h>
 #include <jam/serial.h>
-#include <jam/aspace.h>
 #include <jam/uentry.h>
 #include <jam/smp.h>
-#include <jam/string.h>
 #include <jam/time.h>
 #include <jam/x86.h>
 
-#define STACK_SIZE  THREAD_STACK_SIZE
+#include "sched_internal.h"
+
 #define WATCHDOG_S  5
 
 void switch_context(uint64_t *save_rsp, uint64_t load_rsp);
-void thread_start(void);
 
 struct runqueue {
     spinlock_t       lock;
@@ -57,9 +57,9 @@ static struct runqueue rqs[MAX_CPUS];
  * (sched_init_bsp, sched_run_ap_idle, sched_topology_init) and read-only
  * afterwards, so these lines stay shared in every cache. struct cpu's first
  * line, where the core id lives, is written on every syscall and switch
- * (user_rsp, kernel_rsp), so reading it from another CPU is a cache miss;
- * the M5 wake-affine code did that for every CPU on every wake that could
- * not stay on the waker's CPU (see select_cpu_affine). */
+ * (user_rsp, kernel_rsp), so reading it from another CPU is a cache miss,
+ * and wake-affine placement would pay one for every CPU on every wake that
+ * can't stay on the waker's CPU (see select_cpu_affine). */
 struct cpu_topo {
     int16_t sibling;   /* the other hyperthread of this core, or -1 */
     uint8_t type;      /* enum core_type */
@@ -89,62 +89,6 @@ static void dump_trace(uint32_t cpu)
                 e->next->name);
     }
 }
-static struct kmem_cache *thread_cache;
-static volatile uint64_t next_id = 1;
-
-/* Sleeping threads (any wait with a deadline): per-CPU one-shot timers
- * (M5.5). A thread that blocks with a deadline goes on the queue of the CPU
- * it blocks on, sorted by deadline, and that CPU's timer is armed for the
- * queue's head (lapic_timer_set), so it is woken within microseconds of
- * its deadline instead of at CPU 0's next 10 ms tick (M5). Races:
- *   - Only the owning CPU adds to its queue and arms its timer (the
- *     blocking thread has preemption off; the timer interrupt runs there),
- *     always under the queue lock with interrupts off.
- *   - Removal happens from anywhere: the expiring timer interrupt, or the
- *     thread itself once it is awake (on whatever CPU it runs on now), under
- *     the queue lock of the CPU it slept on (t->sleep_cpu, written only by
- *     t when it queues itself). A removal can only make the head later, so
- *     the armed timer may fire for nothing: harmless (lapic_early_irqs).
- *   - The expiring interrupt calls thread_wake(t) with the lock held, and t
- *     takes the same lock before it returns from its wait, so t can't
- *     return, exit and be freed while its waker is still in thread_wake
- *     (C6, as with the old global list).
- * Expiry compares TSC values (uptime_to_tsc rounds up), so a thread woken
- * at its deadline sees uptime_ns() >= the deadline and doesn't re-block.
- * In the periodic timer mode, or with lapic_oneshot off, each CPU's tick
- * expires its own queue. */
-struct sleepq {
-    spinlock_t       lock;
-    struct list_node list;   /* struct thread, by wake_at_tsc */
-} __attribute__((aligned(64)));
-static struct sleepq sleepqs[MAX_CPUS];
-
-/* The owning CPU, queue lock held: arm the timer for the head. */
-static void sleepq_arm(struct sleepq *q)
-{
-    lapic_timer_set(list_empty(&q->list)
-                        ? 0 : list_first(&q->list, struct thread, sleep_node)->wake_at_tsc);
-}
-
-/* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
- * reused (no TLB shootdown, no page allocation). Stacks over the limit must
- * be unmapped and freed (kstack_free), but reap() runs in finish_switch with
- * interrupts off, where the TLB shootdown that has to come first can't be
- * done. So they wait on `stack_doomed` (linked through each stack's lowest
- * word: still mapped, and nothing runs on it any more) until the next
- * sched_stack_trim, which thread creation and thread exit call. An exiting
- * thread trims the stacks of threads reaped before it, so during a burst of
- * exits the list holds only the last few (those reaped after the last exit
- * or creation); they are counted as cached pages meanwhile, so the leak
- * check stays exact. Freed stacks' virtual ranges are reused by kstack_alloc
- * (vmm.c). */
-static spinlock_t stack_lock = SPINLOCK_INIT("stack cache");
-static void *stack_cache[SCHED_STACK_CACHE_MAX];
-static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
-static void *stack_doomed;
-static volatile unsigned stack_doomed_n;
-static volatile uint64_t stacks_freed;
-
 /* ---- preemption ---------------------------------------------------------- */
 
 /* Single GS-relative instructions: see percpu.h for why. Once the count
@@ -173,7 +117,7 @@ void preempt_enable(void)
  * same CPU waits for the next tick), so spin_unlock_irqrestore calls this
  * again once interrupts are back on. The scheduler itself never routes
  * through here (it uses the no_resched unlock variants), so this cannot
- * recurse into schedule(). (C5) */
+ * recurse into schedule(). (test: repro_local_wake_latency) */
 void preempt_check(void)
 {
     if (!irqs_enabled())
@@ -256,21 +200,21 @@ static bool usable(const struct thread *t, uint32_t cpu)
     return cpumask_has(&t->affinity, cpu) && cpumask_has(&online_mask, cpu);
 }
 
-/* Hybrid placement order (M5.5), best first:
+/* Hybrid placement order, best first:
  *   0  an idle P-core whose HT sibling is idle too (or that has none): a
  *      whole core to itself;
  *   1  an idle E-core (E-cores have no SMT: nothing shares it);
  *   2  the idle HT sibling of a busy P-core (half a core);
  *   3  every CPU busy: the least loaded, ties to P-cores, then the thread's
- *      last CPU (the M5 rule, which is also the whole rule with the order
- *      switched off).
+ *      last CPU (the plain least-loaded rule, which is also the whole rule
+ *      with the order switched off).
  * Within classes 0-2 the thread's last CPU wins (its cache may still be
  * warm), then the lowest index. "Idle" means nothing running and nothing
  * queued. Without hybrid cores every CPU looks like a P-core, so the order
  * is just "whole idle core > idle sibling > busy". The loads are read
- * racily: a wrong guess costs time, not correctness. The M5 rule filled
- * CPUs in index order, i.e. both hyperthreads of a P-core before the next
- * core, and E-cores last. */
+ * racily: a wrong guess costs time, not correctness. The least-loaded rule
+ * alone fills CPUs in index order, i.e. both hyperthreads of a P-core before
+ * the next core, and E-cores last. */
 volatile bool sched_place_order = true;
 
 static inline uint32_t place_key(uint32_t load, int32_t sib_load, uint8_t type, bool last,
@@ -342,12 +286,11 @@ uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
  * loads are racy, like select_cpu's: a wrong guess costs time, never
  * correctness, since thread_wake queues t under the chosen CPU's lock.
  *
- * M5.5: the sibling comes from the topology table. M5 found it by reading
- * every CPU's struct cpu (core_id, online, current), up to cpu_count cache
- * lines on every wake that couldn't stay on the waker's CPU: twice per
- * round trip when client and server are pinned to different cores. That
- * was the 8-11% the pinned cross-CPU channel_call lines lost in M5 (the
- * P->HT line, whose scan stopped at its sibling, cpu 3, lost only 2%). */
+ * The sibling comes from the topology table. Finding it by reading every
+ * CPU's struct cpu (core_id, online, current) cost up to cpu_count cache
+ * misses on every wake that couldn't stay on the waker's CPU, twice per
+ * round trip when client and server are pinned to different cores: 8-11%
+ * on the benchmark's pinned cross-CPU channel_call lines. */
 static uint32_t select_cpu_affine(struct thread *t, uint32_t waker)
 {
     if (usable(t, waker) && !rqs[waker].nr_ready) {
@@ -385,10 +328,8 @@ void sched_kick(uint32_t cpu)
 
 /* ---- the switch ------------------------------------------------------------ */
 
-static void reap(struct thread *t);
-
 /* First thing on the far side of every switch_context. */
-static void finish_switch(void)
+void finish_switch(void)
 {
     struct cpu *c = this_cpu();
     struct runqueue *rq = &rqs[c->index];
@@ -408,7 +349,7 @@ static void finish_switch(void)
      * and this rq lock is held nobody else can pick prev, so its state is
      * stable; once on_cpu clears, prev can be woken, run, exit and be reaped
      * on another CPU, so a later read here could see a recycled state and
-     * reap it a second time. (C2) */
+     * reap it a second time. (test: repro_finish_switch_double_reap) */
     int prev_state = prev->state;
     /* Clear on_cpu BEFORE dropping the lock: a waker holding this lock and
      * seeing on_cpu set then knows prev has not yet reached schedule(). */
@@ -417,7 +358,7 @@ static void finish_switch(void)
     DBG_HOOK(DBG_FINISH_SWITCH, prev);
 
     if (prev_state == T_DEAD)
-        reap(prev);
+        thread_reap(prev);
     else if (prev_state == T_MIGRATING)
         thread_wake(prev);
 }
@@ -501,7 +442,8 @@ void schedule(void)
         rq->cur_prio = prev->is_idle ? -1 : prev->prio;   /* a boost just ended */
         prev->slice = SLICE_TICKS;   /* refresh: a thread that used its slice
                                       * while alone must be sliced again once
-                                      * a same-priority peer is queued (C4) */
+                                      * a same-priority peer is queued
+                                      * (test: repro_slice_not_reset) */
         spin_unlock_no_resched(&rq->lock);
         irq_restore(flags);
         return;
@@ -524,7 +466,7 @@ void schedule(void)
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, prev->state, c->ticks };
-    arch_thread_switch(prev, next);   /* kernel stack, FPU, address space (M5) */
+    arch_thread_switch(prev, next);   /* kernel stack, FPU, address space */
     switch_context(&prev->rsp, next->rsp);
 
     /* Back on prev's stack, possibly much later and on another CPU. */
@@ -563,7 +505,7 @@ static struct waker waker_now(bool consume)
     return w;
 }
 
-/* Client/server pairs on sibling hyperthreads (M5.5). Every wake from
+/* Client/server pairs on sibling hyperthreads. Every wake from
  * thread context records the waker in the wakee (partner_id, and how many
  * wakes in a row came from it). Two threads that each were woken by the
  * other at least PAIR_MIN times running are a pair. When one of them wakes
@@ -645,7 +587,7 @@ static void thread_wake_common(struct thread *t, bool sync)
          * lock; if it moved, drop the lock and retry with its new CPU. This
          * is the task_rq_lock pattern: marking T_RUNNING under the wrong run
          * queue's lock races schedule() on the real CPU and loses the thread
-         * (it ends RUNNING on no CPU and no queue). (C1) */
+         * (it ends RUNNING on no CPU and no queue). (test: repro_wake_stale_cpu) */
         for (;;) {
             uint32_t c = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
             struct runqueue *own = &rqs[c];
@@ -702,429 +644,6 @@ static void thread_wake_common(struct thread *t, bool sync)
         sched_kick(cpu);
 }
 
-/* ---- thread lifecycle ------------------------------------------------------ */
-
-/* May this context free stacks (kstack_free shoots down TLBs, which needs
- * interrupts on and no spinlock held: see check_callable in ipi.c)? */
-static bool can_trim(void)
-{
-    if (!irqs_enabled())
-        return false;
-    preempt_disable();
-    struct cpu *c = this_cpu();
-    bool ok = !c->irq_depth && !c->held_depth;
-    preempt_enable_no_resched();
-    return ok;
-}
-
-/* Take the doomed list (and, over `limit`, the excess cached stacks too)
- * under the lock, free them outside it. */
-static void trim_to(unsigned limit)
-{
-    if (!can_trim())
-        return;
-    void *list = NULL;
-    uint64_t f = spin_lock_irqsave(&stack_lock);
-    while (stack_cache_n > limit) {
-        void *top = stack_cache[--stack_cache_n];
-        *(void **)((char *)top - STACK_SIZE) = list;
-        list = top;
-    }
-    if (stack_doomed) {
-        void **tail = &list;
-        while (*tail)
-            tail = (void **)((char *)*tail - STACK_SIZE);
-        *tail = stack_doomed;
-        stack_doomed = NULL;
-        stack_doomed_n = 0;
-    }
-    spin_unlock_irqrestore(&stack_lock, f);
-    while (list) {
-        void *next = *(void **)((char *)list - STACK_SIZE);
-        kstack_free(list, STACK_SIZE);
-        __atomic_add_fetch(&stacks_freed, 1, __ATOMIC_RELAXED);
-        list = next;
-    }
-}
-
-void sched_stack_trim(void)
-{
-    if (__atomic_load_n(&stack_doomed_n, __ATOMIC_RELAXED))
-        trim_to(SCHED_STACK_CACHE_MAX);
-}
-
-unsigned sched_stack_cache_set_limit(unsigned limit)
-{
-    if (limit > SCHED_STACK_CACHE_MAX)
-        limit = SCHED_STACK_CACHE_MAX;
-    uint64_t f = spin_lock_irqsave(&stack_lock);
-    unsigned old = stack_cache_limit;
-    stack_cache_limit = limit;
-    spin_unlock_irqrestore(&stack_lock, f);
-    trim_to(limit);
-    return old;
-}
-
-uint64_t sched_stacks_freed(void)
-{
-    return __atomic_load_n(&stacks_freed, __ATOMIC_RELAXED);
-}
-
-/* NULL when out of memory. */
-static void *stack_get(void)
-{
-    sched_stack_trim();
-    uint64_t f = spin_lock_irqsave(&stack_lock);
-    void *s = stack_cache_n ? stack_cache[--stack_cache_n] : NULL;
-    spin_unlock_irqrestore(&stack_lock, f);
-    return s ? s : kstack_alloc_try(STACK_SIZE);
-}
-
-/* Pages held by cached thread stacks, and by stacks waiting to be freed.
- * Tests use this so stacks parked here aren't mistaken for leaks. */
-uint64_t sched_stack_cache_pages(void)
-{
-    uint64_t f = spin_lock_irqsave(&stack_lock);
-    uint64_t n = (uint64_t)(stack_cache_n + stack_doomed_n) * (STACK_SIZE / PAGE_SIZE);
-    spin_unlock_irqrestore(&stack_lock, f);
-    return n;
-}
-
-/* From reap, with interrupts off: cache the stack, or queue it for freeing. */
-static void stack_put(void *top)
-{
-    uint64_t f = spin_lock_irqsave(&stack_lock);
-    if (stack_cache_n < stack_cache_limit) {
-        stack_cache[stack_cache_n++] = top;
-    } else {
-        *(void **)((char *)top - STACK_SIZE) = stack_doomed;
-        stack_doomed = top;
-        stack_doomed_n++;
-    }
-    spin_unlock_irqrestore(&stack_lock, f);
-}
-
-static void thread_put(struct thread *t)
-{
-    if (__atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0)
-        kmem_cache_free(thread_cache, t);
-}
-
-static void reap(struct thread *t)
-{
-    /* A user thread normally drops its address space itself on the way out
-     * (uthread_exit_current); this covers any that didn't. Only now, after
-     * its last switch, is the address space surely not loaded for it. */
-    if (t->aspace) {
-        aspace_unref(t->aspace);
-        t->aspace = NULL;
-    }
-    fpu_ustate_free(t);   /* switched out for good: nothing saves into it now */
-    stack_put(t->stack_top);
-    thread_put(t);   /* the thread's reference to itself */
-}
-
-static struct thread *thread_alloc(const char *name, int prio)
-{
-    struct thread *t = kmem_cache_alloc(thread_cache);
-    if (!t)
-        return NULL;   /* boot callers panic; thread_try_create_on reports it */
-    memset(t, 0, sizeof(*t));
-    t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
-    size_t n = strlen(name);
-    if (n >= sizeof(t->name))
-        n = sizeof(t->name) - 1;
-    memcpy(t->name, name, n);
-    t->prio = prio < PRIO_MIN ? PRIO_MIN : prio > PRIO_MAX ? PRIO_MAX : prio;
-    t->base_prio = t->prio;
-    t->prio_cap = PRIO_MAX;
-    t->refs = 1;
-    cpumask_all(&t->affinity);
-    waitqueue_init(&t->exit_wq, "thread exit");
-    return t;
-}
-
-/* C side of thread_start, running on the new thread's stack. */
-_Noreturn void thread_entry(void (*fn)(void *), void *arg)
-{
-    finish_switch();
-    irq_enable();
-    fn(arg);
-    thread_exit();
-}
-
-struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, int prio)
-{
-    return thread_create_on(name, fn, arg, prio, NULL);
-}
-
-struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
-                                const cpumask_t *mask)
-{
-    struct thread *t = thread_try_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
-    if (!t)
-        panic("sched: out of memory for thread \"%s\"", name);
-    return t;
-}
-
-struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *arg, int prio,
-                                    const cpumask_t *mask, int prio_cap)
-{
-    struct thread *t = thread_try_create_capped(name, fn, arg, prio, mask, prio_cap);
-    if (!t)
-        panic("sched: out of memory for thread \"%s\"", name);
-    return t;
-}
-
-struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
-                                    const cpumask_t *mask)
-{
-    return thread_try_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
-}
-
-struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
-                                        int prio, const cpumask_t *mask, int prio_cap)
-{
-    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
-    if (t)
-        thread_wake(t);
-    return t;
-}
-
-struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
-                                           int prio, const cpumask_t *mask, int prio_cap)
-{
-    struct thread *t = thread_alloc(name, prio);
-    if (!t)
-        return NULL;
-    t->stack_top = stack_get();
-    if (!t->stack_top) {
-        kmem_cache_free(thread_cache, t);
-        return NULL;
-    }
-    if (mask)
-        t->affinity = *mask;
-    thread_set_priority_cap(t, prio_cap);   /* before it can first run */
-    t->prio = t->base_prio;
-    t->refs = 2;   /* the caller's, and the thread's own (dropped by reap) */
-
-    /* Frame for switch_context to pop: r15 r14 r13 r12 rbx rbp, ret. */
-    uint64_t *sp = (uint64_t *)t->stack_top;
-    *--sp = (uint64_t)thread_start;
-    *--sp = 0;                /* rbp */
-    *--sp = 0;                /* rbx */
-    *--sp = (uint64_t)fn;     /* r12 */
-    *--sp = (uint64_t)arg;    /* r13 */
-    *--sp = 0;                /* r14 */
-    *--sp = 0;                /* r15 */
-    t->rsp = (uint64_t)sp;
-
-    t->state = T_BLOCKED;
-    t->cpu = percpu_index();   /* placement hint only: "last ran here" */
-    return t;
-}
-
-_Noreturn void thread_exit(void)
-{
-    struct thread *t = current_thread();
-    uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    t->exited = true;
-    spin_unlock_irqrestore(&t->exit_wq.lock, f);
-    waitqueue_wake_all(&t->exit_wq);
-    sched_stack_trim();   /* stacks of threads reaped before us (see above) */
-    irq_disable();
-    t->state = T_DEAD;
-    schedule();
-    panic("sched: dead thread \"%s\" was scheduled", t->name);
-}
-
-void thread_join(struct thread *t)
-{
-    uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    while (!t->exited)
-        waitqueue_wait(&t->exit_wq, &t->exit_wq.lock, &f);
-    spin_unlock_irqrestore(&t->exit_wq.lock, f);
-    thread_put(t);
-}
-
-void thread_detach(struct thread *t)
-{
-    thread_put(t);
-}
-
-void thread_yield(void)
-{
-    schedule();
-}
-
-void thread_set_priority(struct thread *t, int prio)
-{
-    /* Takes effect the next time t is queued or switched out. Never touch
-     * t->prio here: while t is queued it names t's run queue list. */
-    int cap = t->prio_cap;
-    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > cap ? cap : prio;
-}
-
-void thread_set_priority_cap(struct thread *t, int cap)
-{
-    cap = cap < PRIO_MIN ? PRIO_MIN : cap > PRIO_MAX ? PRIO_MAX : cap;
-    t->prio_cap = cap;
-    if (t->base_prio > cap)
-        t->base_prio = cap;
-}
-
-void thread_set_affinity(struct thread *t, const cpumask_t *mask)
-{
-    t->affinity = *mask;
-    if (t != current_thread())
-        return;
-    /* Any migration from here on already honours the new mask. */
-    preempt_disable();
-    bool must_move = !cpumask_has(mask, this_cpu()->index);
-    preempt_enable_no_resched();
-    if (must_move)
-        schedule();   /* switches out as T_MIGRATING, resumes on an allowed CPU */
-}
-
-/* The current thread is already T_BLOCKED (set while the lock that guards
- * its wake condition was held, so no waker can slip in unnoticed) AND with
- * preemption disabled by the caller: a preemption between marking itself
- * blocked and arming the deadline would switch it out with nothing left to
- * wake it (found by the VMO agent: "sleeper made no progress" in stress).
- * Arm the deadline, drop `lock`, re-enable preemption, switch out, and on
- * return re-take `lock`. */
-static bool cancel_seen(struct thread *t)
-{
-    return __atomic_load_n(&t->cancel_pending, __ATOMIC_ACQUIRE);
-}
-
-/* Returns true if a cancellable wait was cancelled (before or during). */
-static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns,
-                           bool cancellable)
-{
-    struct thread *t = current_thread();
-    if (deadline_ns != DEADLINE_NEVER) {
-        /* Preemption is off (see above): this CPU's queue stays ours. */
-        uint32_t cpu = this_cpu()->index;
-        struct sleepq *q = &sleepqs[cpu];
-        t->wake_at_ns = deadline_ns;
-        t->wake_at_tsc = uptime_to_tsc(deadline_ns);
-        t->sleep_cpu = cpu;
-        uint64_t f = spin_lock_irqsave(&q->lock);
-        struct list_node *pos = q->list.prev;   /* most deadlines go last */
-        while (pos != &q->list &&
-               container_of(pos, struct thread, sleep_node)->wake_at_tsc > t->wake_at_tsc)
-            pos = pos->prev;
-        list_add(pos, &t->sleep_node);
-        if (q->list.next == &t->sleep_node)
-            sleepq_arm(q);   /* the new head */
-        spin_unlock_irqrestore(&q->lock, f);
-    }
-    if (lock)
-        spin_unlock_irqrestore(lock, *irqflags);
-    /* Cancellation: our T_BLOCKED store and thread_cancel's flag store are
-     * each followed by a read of the other (the flag here, our state in its
-     * thread_wake), with full fences between, so at least one side sees the
-     * other: either we see the flag and don't sleep, or it sees us blocked
-     * and wakes us. We may only skip the switch by moving BLOCKED -> RUNNING
-     * ourselves: if a waker already made us READY it has also queued us, and
-     * then we must go through schedule() like any thread woken before it
-     * switched out (overwriting READY put a running thread on a run queue;
-     * cancel_races_wakeup caught it as "dead thread was scheduled"). */
-    bool skip = false;
-    if (cancellable) {
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        if (cancel_seen(t)) {
-            int expect = T_BLOCKED;
-            skip = __atomic_compare_exchange_n(&t->state, &expect, T_RUNNING, false,
-                                               __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-        }
-    }
-    /* Registered for wakeup (wait queue / deadline): being preempted from
-     * here on is harmless, so preemption can come back on. */
-    preempt_enable_no_resched();
-    if (!skip)
-        schedule();
-    /* Always take the queue lock before touching sleep_node when we may
-     * have been on a sleeper queue: sched_timer_expire deletes the node and
-     * calls thread_wake(t) while holding it, so a lockless check here could
-     * let this thread return (and re-block or exit, freeing itself) while
-     * the waker is still inside thread_wake(t). Serialising on the lock
-     * keeps t alive until the waker is done. (C6) The queue is the one of
-     * the CPU we slept on, not the one we run on now. */
-    if (deadline_ns != DEADLINE_NEVER) {
-        struct sleepq *q = &sleepqs[t->sleep_cpu];
-        uint64_t f = spin_lock_irqsave(&q->lock);
-        if (t->sleep_node.next)
-            list_del(&t->sleep_node);
-        spin_unlock_irqrestore(&q->lock, f);
-    }
-    if (lock)
-        *irqflags = spin_lock_irqsave(lock);
-    return cancellable && cancel_seen(t);
-}
-
-void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
-{
-    preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
-    block_prepared(lock, irqflags, deadline_ns, false);
-}
-
-status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
-{
-    preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
-    return block_prepared(lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
-}
-
-void thread_sleep_ns(uint64_t ns)
-{
-    uint64_t deadline = uptime_ns() + ns;
-    while (uptime_ns() < deadline)
-        thread_block(NULL, NULL, deadline);
-}
-
-status_t thread_sleep_cancellable(uint64_t ns)
-{
-    uint64_t deadline = uptime_ns() + ns;
-    while (uptime_ns() < deadline)
-        if (thread_block_cancellable(NULL, NULL, deadline) != OK)
-            return ERR_CANCELED;
-    return OK;
-}
-
-void thread_cancel(struct thread *t)
-{
-    __atomic_store_n(&t->cancel_pending, true, __ATOMIC_SEQ_CST);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    thread_wake(t);
-}
-
-bool thread_cancel_pending(void)
-{
-    return cancel_seen(current_thread());
-}
-
-bool sched_timer_expire(void)
-{
-    struct sleepq *q = &sleepqs[this_cpu()->index];
-    bool woke = false;
-    spin_lock(&q->lock);   /* in the timer interrupt: IRQs already off */
-    uint64_t now = rdtsc();
-    while (!list_empty(&q->list)) {
-        struct thread *t = list_first(&q->list, struct thread, sleep_node);
-        if (t->wake_at_tsc > now)
-            break;
-        list_del(&t->sleep_node);
-        thread_wake(t);
-        woke = true;
-    }
-    sleepq_arm(q);
-    spin_unlock(&q->lock);
-    return woke;
-}
-
 /* ---- idle, work stealing ---------------------------------------------------- */
 
 /* With interrupts off: move one waiting thread from a busy CPU to us. Two
@@ -1150,7 +669,7 @@ static void try_steal(uint32_t me)
     }
 }
 
-/* Spin before idle (M5.5). An idle CPU first polls its run queue and
+/* Spin before idle. An idle CPU first polls its run queue and
  * need_resched for up to sched_idle_spin_ns, with interrupts on and `pause`
  * between looks, and only then halts. A wakeup that lands within the window
  * is seen at once: no wake-from-halt (most of the ~1.5 us cross-CPU
@@ -1173,7 +692,7 @@ static void try_steal(uint32_t me)
  * CPUs it costs at most 100 x the window per second per idle CPU (0.1% at
  * 10 us) plus the window after every wakeup; the gain is for wakeups that
  * come within the window, i.e. tightly coupled threads on different CPUs.
- * Tickless idle (M10) will make the tick part go away. Tunable at boot
+ * A tickless idle would make the tick part go away. Tunable at boot
  * ("idlespin=<us>", "nospinidle" = 0) and at run time (the benchmark). */
 volatile uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
 
@@ -1235,8 +754,7 @@ static void init_rq(uint32_t cpu)
         list_init(&rq->queues[p]);
     rq->cur_prio = -1;
     topo[cpu].sibling = -1;
-    spin_init(&sleepqs[cpu].lock, "sleepers");
-    list_init(&sleepqs[cpu].list);
+    sleepq_init(cpu);
 }
 
 /* This CPU's run queue is ready: placement may use it from now on. */
@@ -1265,7 +783,7 @@ static struct thread *make_idle(uint32_t cpu)
 
 void sched_init_bsp(void)
 {
-    thread_cache = kmem_cache_create("thread", sizeof(struct thread), 64);
+    thread_cache_init();
     for (uint32_t i = 0; i < MAX_CPUS; i++)
         init_rq(i);
     sched_idle_spin_ns = cmdline_has("nospinidle")
@@ -1289,7 +807,7 @@ void sched_init_bsp(void)
      * main blocks. */
     struct thread *idle = make_idle(0);
     idle->state = T_READY;
-    idle->stack_top = stack_get();
+    idle->stack_top = thread_stack_get();
     if (!idle->stack_top)
         panic("sched: out of memory for the idle stack");
     uint64_t *sp = (uint64_t *)idle->stack_top;
@@ -1383,7 +901,7 @@ void sched_tick(void)
     struct cpu *c = this_cpu();
     if (c->index == 0) {
         serial_poll();   /* rescues a stalled serial transmitter (serial.c) */
-        klog_poll();     /* M7: wakes kernel log readers (sysc_console.c) */
+        klog_poll();     /* wakes kernel log readers (sysc_console.c) */
     }
     watchdog_check(c);
     boost_starved(c);
@@ -1416,178 +934,4 @@ void sched_print_stats(void)
     }
     kprintf("sched: %lu context switches, %lu steals, %lu starvation boosts across %u CPUs\n",
             sw, st, boost_total, cpu_count);
-}
-
-/* ---- wait queues and mutexes --------------------------------------------- */
-
-void waitqueue_init(struct waitqueue *wq, const char *name)
-{
-    spin_init(&wq->lock, name);
-    list_init(&wq->waiters);
-}
-
-static bool wq_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
-                    uint64_t deadline_ns, bool cancellable)
-{
-    struct thread *t = current_thread();
-    bool same = lock == &wq->lock;
-    uint64_t f = 0;
-    preempt_disable();   /* re-enabled in block_prepared */
-    if (!same)
-        f = spin_lock_irqsave(&wq->lock);
-    list_add_tail(&wq->waiters, &t->wait_node);
-    t->state = T_BLOCKED;   /* before the wq lock drops: wakers pop under it */
-    if (!same)
-        spin_unlock_irqrestore(&wq->lock, f);
-    bool cancelled = block_prepared(lock, irqflags, deadline_ns, cancellable);
-
-    /* Take ourselves off the wait queue if we are still on it (timed out or
-     * spurious). Always hold wq->lock while touching wait_node: wake() pops
-     * the node and calls thread_wake(t) under wq->lock, so a lockless read
-     * could let this thread return and free itself mid-wake. When same, the
-     * caller's lock (already re-held by block_prepared) is wq->lock, so we
-     * are serialised; otherwise take wq->lock explicitly. (C6) */
-    if (!same) {
-        uint64_t g = spin_lock_irqsave(&wq->lock);
-        if (t->wait_node.next)
-            list_del(&t->wait_node);
-        spin_unlock_irqrestore(&wq->lock, g);
-    } else if (t->wait_node.next) {
-        list_del(&t->wait_node);
-    }
-    return cancelled;
-}
-
-void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
-                          uint64_t deadline_ns)
-{
-    wq_wait(wq, lock, irqflags, deadline_ns, false);
-}
-
-void waitqueue_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags)
-{
-    wq_wait(wq, lock, irqflags, DEADLINE_NEVER, false);
-}
-
-status_t waitqueue_wait_cancellable(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
-                                    uint64_t deadline_ns)
-{
-    return wq_wait(wq, lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
-}
-
-static void wake(struct waitqueue *wq, bool all)
-{
-    uint64_t f = spin_lock_irqsave(&wq->lock);
-    while (!list_empty(&wq->waiters)) {
-        struct thread *t = list_first(&wq->waiters, struct thread, wait_node);
-        list_del(&t->wait_node);
-        thread_wake(t);
-        if (!all)
-            break;
-    }
-    spin_unlock_irqrestore(&wq->lock, f);
-}
-
-void waitqueue_wake_one(struct waitqueue *wq) { wake(wq, false); }
-void waitqueue_wake_all(struct waitqueue *wq) { wake(wq, true); }
-
-/* m->lock held, m->owner NULL: wake the first waiter to race for it, or,
- * once the longest waiter has waited MUTEX_HANDOFF_NS, make that waiter the
- * owner before waking it, so nobody can take the mutex in between.
- * Waiters that are still on the queue have mutex_since set (they set it
- * under m->lock before queueing and clear it after leaving). */
-volatile uint64_t mutex_handoffs;   /* statistics */
-
-static void mutex_pass_on(struct mutex *m)
-{
-    struct waitqueue *wq = &m->wq;
-    uint64_t g = spin_lock_irqsave(&wq->lock);
-    struct thread *oldest = NULL;
-    for (struct list_node *n = wq->waiters.next; n != &wq->waiters; n = n->next) {
-        struct thread *t = container_of(n, struct thread, wait_node);
-        if (t->mutex_since && (!oldest || t->mutex_since < oldest->mutex_since))
-            oldest = t;
-    }
-    if (oldest && uptime_ns() - oldest->mutex_since >= MUTEX_HANDOFF_NS) {
-        list_del(&oldest->wait_node);
-        m->owner = oldest;
-        mutex_handoffs++;
-        thread_wake(oldest);
-    } else if (!list_empty(&wq->waiters)) {
-        struct thread *t = list_first(&wq->waiters, struct thread, wait_node);
-        list_del(&t->wait_node);
-        thread_wake(t);
-    }
-    spin_unlock_irqrestore(&wq->lock, g);
-}
-
-void mutex_init(struct mutex *m, const char *name)
-{
-    spin_init(&m->lock, name);
-    m->owner = NULL;
-    m->dep_cls = 0;
-    waitqueue_init(&m->wq, "mutex waiters");
-}
-
-void mutex_lock(struct mutex *m)
-{
-    struct thread *me = current_thread();
-    lockdep_sleep_acquire(m, m->lock.name, &m->dep_cls);
-    uint64_t f = spin_lock_irqsave(&m->lock);
-    if (m->owner == me)
-        panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
-    if (m->owner) {
-        me->mutex_since = uptime_ns() | 1;
-        while (m->owner && m->owner != me)   /* owner == me: handed to us */
-            waitqueue_wait(&m->wq, &m->lock, &f);
-        me->mutex_since = 0;
-    }
-    m->owner = me;
-    spin_unlock_irqrestore(&m->lock, f);
-}
-
-status_t mutex_lock_cancellable(struct mutex *m)
-{
-    struct thread *me = current_thread();
-    lockdep_sleep_acquire(m, m->lock.name, &m->dep_cls);
-    uint64_t f = spin_lock_irqsave(&m->lock);
-    if (m->owner == me)
-        panic("mutex \"%s\": recursive lock by \"%s\"", m->lock.name, me->name);
-    if (m->owner)
-        me->mutex_since = uptime_ns() | 1;
-    while (m->owner && m->owner != me) {   /* owner == me: handed to us */
-        if (waitqueue_wait_cancellable(&m->wq, &m->lock, &f, DEADLINE_NEVER) != OK) {
-            if (m->owner == me)
-                break;   /* handed over as we were cancelled: it's ours */
-            /* mutex_unlock may have picked us as the one waiter to wake:
-             * pass that on so the next waiter doesn't sleep through it. */
-            if (!m->owner)
-                waitqueue_wake_one(&m->wq);
-            me->mutex_since = 0;
-            spin_unlock_irqrestore(&m->lock, f);
-            lockdep_sleep_release(m);
-            return ERR_CANCELED;
-        }
-    }
-    me->mutex_since = 0;
-    m->owner = me;
-    spin_unlock_irqrestore(&m->lock, f);
-    return OK;
-}
-
-void mutex_unlock(struct mutex *m)
-{
-    uint64_t f = spin_lock_irqsave(&m->lock);
-    if (m->owner != current_thread())
-        panic("mutex \"%s\": unlocked by a thread that does not own it", m->lock.name);
-    m->owner = NULL;
-    lockdep_sleep_release(m);
-    /* Wake a waiter while still holding m->lock. Once ownership is dropped
-     * and m->lock released, the woken waiter can take the mutex and free the
-     * object it guards, so touching m->wq afterwards is a use-after-free. The
-     * lock order is the same one mutex_lock establishes ("mutex" then "mutex
-     * waiters"), and the woken thread must re-take m->lock before it returns
-     * from waitqueue_wait, so it cannot free the mutex under us. (C9) */
-    mutex_pass_on(m);
-    spin_unlock_irqrestore(&m->lock, f);
 }

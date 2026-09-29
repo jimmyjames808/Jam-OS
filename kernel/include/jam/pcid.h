@@ -1,4 +1,4 @@
-/* PCIDs: tagged TLB entries per address space (M5.5, arch/x86_64/pcid.c).
+/* PCIDs: tagged TLB entries per address space (arch/x86_64/pcid.c).
  *
  * Every user address space has a unique 64-bit id and a TLB generation,
  * bumped each time entries of it are removed or narrowed (aspace.c,
@@ -22,7 +22,7 @@ uint64_t pcid_new_id(void);
  * has published this CPU in the address space's active mask. */
 void     pcid_load(uint64_t pml4, uint64_t id, const volatile uint64_t *gen);
 /* The run-time switch (boot "nopcid" = never enabled). Off: every address
- * space runs as PCID 0 and each load flushes it, as in M5. Changing it
+ * space runs as PCID 0 and each load flushes it. Changing it
  * makes every CPU forget its slots. */
 void     pcid_set(bool on);
 bool     pcid_is_on(void);

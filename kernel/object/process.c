@@ -28,7 +28,7 @@
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
- *   - process_start vs uthread_start (review R5): start_thread makes p
+ *   - process_start vs uthread_start: start_thread makes p
  *     RUNNING with `starting` set and creates the first thread with the
  *     lock dropped, suspended, and wakes it only after clearing `starting`;
  *     while `starting`, uthread_start refuses (ERR_BAD_STATE). Only callers
@@ -74,7 +74,7 @@ struct process {
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     bool                starting;    /* (L) process_start is making the first thread */
     bool                listed;      /* on job's list (job_link); cleared at teardown */
-    bool                kernel;      /* a kernel process (M6 drivers): no address space */
+    bool                kernel;      /* a kernel process (drivers): no address space */
     void               *kctx;        /* kernel process: its owner's context... */
     void              (*kfini)(void *kctx);   /* ...and what finishes it, once, at teardown */
     struct job_link     job_link;    /* (the job's lock) */
@@ -303,7 +303,7 @@ uint64_t process_cpu_tsc(struct process *p)
 /* ---- debug output ---------------------------------------------------------- */
 
 /* Lines are assembled under out_lock (a spinlock: interrupts off) but
- * printed with it dropped (review R7): kprintf may redraw the framebuffer
+ * printed with it dropped: kprintf may redraw the framebuffer
  * console synchronously, far too long to keep interrupts off or the
  * process's other writers spinning. klog serialises whole lines, so a line
  * is never torn; two threads of one process writing at once may see their
@@ -419,7 +419,7 @@ static void process_finish(struct process *p)
     handle_table_destroy(&p->handles);   /* credits the job for every slot */
     mutex_unlock(&p->setup);
     /* A kernel process's owner lets go of what it holds for the process
-     * (M6 drivers: the heap, kernel mappings), still charged to the job:
+     * (a driver's heap, kernel mappings), still charged to the job:
      * after SIG_TERMINATED nothing of it may be. No thread is left. */
     if (p->kfini)
         p->kfini(p->kctx);
@@ -626,7 +626,7 @@ static void uthread_main(void *arg)
     bool run_kernel = u->kmode && p->state < PROCESS_DYING;
     punlock(p, f);
     if (u->kmode) {
-        /* A kernel process's thread (M6 drivers): no address space (the
+        /* A kernel process's thread (a driver): no address space (the
          * kernel's tables stay loaded) and no FPU state. A kill cancels it
          * like any thread; kernel/drivers/driver_kernel.c notices that at
          * its next drv_* call. Returning from entry ends the thread. */

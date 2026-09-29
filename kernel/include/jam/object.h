@@ -31,15 +31,15 @@ enum obj_type {
     OBJ_PORT,
     OBJ_VMO,
     OBJ_DMA_CAP,        /* permission to pin memory for device DMA */
-    OBJ_PROCESS,        /* M5 */
-    OBJ_THREAD,         /* M5 */
-    OBJ_INTERRUPT,      /* M6 */
-    OBJ_RESOURCE,       /* M6 */
-    OBJ_VMAR,           /* M5: a handle to an address space */
-    OBJ_JOB,            /* M5: resource limits for a group of processes */
-    OBJ_KLOG,           /* M7: a reader of the kernel log */
-    OBJ_SERIAL,         /* M7: COM1 input */
-    OBJ_SCREEN,         /* M7: ownership of the boot framebuffer */
+    OBJ_PROCESS,
+    OBJ_THREAD,
+    OBJ_INTERRUPT,      /* a device interrupt vector */
+    OBJ_RESOURCE,       /* authority over a piece of hardware */
+    OBJ_VMAR,           /* a handle to an address space */
+    OBJ_JOB,            /* resource limits for a group of processes */
+    OBJ_KLOG,           /* a reader of the kernel log */
+    OBJ_SERIAL,         /* COM1 input */
+    OBJ_SCREEN,         /* ownership of the boot framebuffer */
     OBJ_TYPE_COUNT,
 };
 

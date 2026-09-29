@@ -1,4 +1,4 @@
-/* Processes, user threads and jobs (M5).
+/* Processes, user threads and jobs.
  *
  * A process is a handle table, an address space, a job and a set of user
  * threads. A user thread is a scheduler thread (struct thread) plus the
@@ -52,7 +52,7 @@ struct uthread;
 
 /* ---- jobs ------------------------------------------------------------------ */
 
-/* What the kernel memory a job pays for is charged as (review R6):
+/* What the kernel memory a job pays for is charged as:
  *   JOB_LIMIT_PAGES      VMO pages and tables, a process's PML4, page tables
  *                        and mapping structs, and UTHREAD_KMEM_PAGES for every
  *                        running user thread (its kernel stack and XSAVE area);
@@ -113,7 +113,7 @@ status_t job_kill(struct job *j, unsigned *killed);
 struct job *job_current(void);
 void job_ref(struct job *j);     /* NULL is a no-op */
 void job_unref(struct job *j);   /* NULL is a no-op */
-/* M7 (debug_command "ps"): print j's processes and child jobs, recursively,
+/* debug_command "ps": print j's processes and child jobs, recursively,
  * to the kernel log; and the root of j's tree (a new reference; NULL in,
  * NULL out). */
 void job_print_tree(struct job *j, unsigned depth);
@@ -122,7 +122,7 @@ struct job *job_root_of(struct job *j);
  * Processes directly in a strict ancestor job of `spare` (may be NULL) are
  * skipped: debug_command's "kill" never reaches the caller's supervisors. */
 struct process *job_find_process(struct job *j, const char *name, struct job *spare);
-/* M7 shell (proc_list): fill out[*n..cap) with j's processes, then its
+/* The shell's proc_list: fill out[*n..cap) with j's processes, then its
  * child jobs' (depth first; at most 32 processes and 32 child jobs per job,
  * like job_print_tree). depth is j's depth below the tree's root. */
 void job_list_processes(struct job *j, uint32_t depth, struct proc_stat *out, uint32_t cap,
@@ -141,7 +141,7 @@ static inline struct process *process_from_kobject(struct kobject *o)
  * It costs job one JOB_LIMIT_HANDLES unit until it is torn down
  * (ERR_NO_RESOURCES) and its address space's PML4 (ERR_NO_MEMORY). */
 status_t process_create(struct job *job, const char *name, struct process **out);
-/* M6: a *kernel process* (kernel/drivers/driver_kernel.c runs drivers in
+/* A *kernel process* (kernel/drivers/driver_kernel.c runs drivers in
  * them): a process like any other (handle table, job, charges, kill,
  * SIG_TERMINATED) but with no address space of its own; its threads run
  * kernel code (process_start_kernel / uthread_start_kernel) on the
@@ -159,7 +159,7 @@ struct aspace *process_aspace(struct process *p);
 struct job *process_job(struct process *p);   /* no new reference */
 const char *process_name(struct process *p);
 void process_get_info(struct process *p, struct process_info *out);
-/* CPU time of all p's threads so far, in TSC cycles (M7 shell: ps, top). */
+/* CPU time of all p's threads so far, in TSC cycles (the shell's ps, top). */
 uint64_t process_cpu_tsc(struct process *p);
 /* The process of the current thread, NULL for kernel threads. */
 struct process *process_current(void);
@@ -213,7 +213,7 @@ struct process *uthread_process(struct uthread *u);   /* no new reference */
  * the job refuses UTHREAD_KMEM_PAGES or the kernel thread can't be made. */
 status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint64_t arg0,
                        uint64_t arg1, const cpumask_t *mask);
-/* Kernel processes (M6): start the first thread (p NEW -> RUNNING) / a
+/* Kernel processes: start the first thread (p NEW -> RUNNING) / a
  * further one running fn(arg) in the kernel; the thread leaves when fn
  * returns. Same charges and errors as process_start / uthread_start;
  * ERR_INVALID_ARGS for a user process. */

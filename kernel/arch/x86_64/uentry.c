@@ -122,8 +122,8 @@ static void return_to_user_work(void)
               t->sleep_depth);
 }
 
-/* A user thread did something fatal: its whole process is killed (M5 has
- * no exception channels). Runs on its kernel stack at the bottom (nothing
+/* A user thread did something fatal: its whole process is killed (there
+ * are no exception channels). Runs on its kernel stack at the bottom (nothing
  * of the kernel's below it, no locks), so leaving from here is like leaving
  * from a syscall. */
 _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t rip,
@@ -347,7 +347,7 @@ _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, ui
     c->tss.rsp[0] = (uint64_t)t->stack_top;
     c->kernel_rsp = (uint64_t)t->stack_top;
     fpu_reset_and_load(t);
-    /* No TLS yet (phase 2 saves FS per thread). The user GS base sits in
+    /* No TLS yet (FS is not saved per thread). The user GS base sits in
      * KERNEL_GS_BASE until the swapgs; keep both zero. */
     wrmsr(MSR_FS_BASE, 0);
     wrmsr(MSR_KERNEL_GS_BASE, 0);

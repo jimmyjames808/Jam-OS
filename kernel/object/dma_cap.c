@@ -1,12 +1,12 @@
 /* DMA capabilities: the permission to pin memory for device DMA
  * (vmo_pin). The IOMMU domain will hang off it once VT-d/AMD-Vi arrive.
  *
- * M6: a cap is bound to one PCI function (dma_cap_create_for; the
+ * A cap is bound to one PCI function (dma_cap_create_for; the
  * dma_cap_create system call needs its RES_PCI_DEV). Every pin made with a
  * cap is on the cap's `pins` list (vmo.c links and unlinks it; lock order:
  * the cap's object lock, then the VMO's).
  *
- * M7 (safe rebind; review of M6 phase 2, finding 1): a function has at
+ * Safe rebind: a function has at
  * most one CURRENT cap, the last one made for it (`owner`, its koid, under
  * the command-filter lock). Making a cap turns the function's Bus Master
  * Enable off: the new owner (its driver) turns it on with
@@ -23,7 +23,7 @@
  *      goes off and the command register is read back (flushing the posted
  *      write), under the command-filter lock so no racing filtered config
  *      write can turn it back on; an older cap (its function has a new
- *      owner) leaves it alone (finding 2);
+ *      owner) leaves it alone;
  *   3. only then the pins made with it go: an unbound cap (kernel tests)
  *      releases them; a bound cap QUARANTINES them. The device may still
  *      hold their addresses in a queued transfer, and Bus Master Enable
@@ -206,7 +206,7 @@ static void quarantine(struct dma_cap *c)
     struct q_batch *b = kzalloc(sizeof(*b));
     if (!b) {
         /* No memory for the bookkeeping: Bus Master Enable is off, so
-         * releasing now is what M6 did. */
+         * release at once, as before the quarantine existed. */
         vmo_release_cap_pins(c);
         return;
     }

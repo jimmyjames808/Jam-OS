@@ -1,4 +1,4 @@
-/* VMO operations on handles (the M5 system calls). */
+/* VMO operations on handles (the system calls' sys_* layer). */
 #include <jam/handle.h>
 #include <jam/sys.h>
 #include <jam/vmo.h>
@@ -37,7 +37,7 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
     status_t st = vmo_create(size, flags, &v);
     if (st != OK)
         return st;
-    /* Its pages are charged to the creating table's job (M5; none for a
+    /* Its pages are charged to the creating table's job (none for a
      * kernel table). */
     st = vmo_set_job(v, t->job);
     if (st != OK) {

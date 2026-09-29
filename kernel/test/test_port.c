@@ -1,4 +1,5 @@
-/* Tests for events, timers, ports and their handle-level layer. */
+/* Tests for events, timers, ports and their handle-level layer, and the
+ * cap on a port's bindings. */
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
@@ -11,7 +12,6 @@
 #include <jam/time.h>
 #include <jam/timer.h>
 
-#define MS 1000000ull
 
 /* A watched object that counts its own destruction. */
 struct pobj {
@@ -62,14 +62,14 @@ static struct ktimer *new_timer(void)
 static void expect_empty(struct port *p)
 {
     struct port_packet pkt;
-    KT_EQ(port_wait(p, uptime_ns() + 5 * MS, &pkt), ERR_TIMED_OUT);
+    KT_EQ(port_wait(p, uptime_ns() + 5 * NS_PER_MS, &pkt), ERR_TIMED_OUT);
     KT_ASSERT(!(kobject_signals(&p->base) & SIG_READABLE));
 }
 
 static void expect_signal(struct port *p, uint64_t key, uint64_t count)
 {
     struct port_packet pkt;
-    KT_EQ(port_wait(p, uptime_ns() + 2000 * MS, &pkt), OK);
+    KT_EQ(port_wait(p, uptime_ns() + 2000 * NS_PER_MS, &pkt), OK);
     KT_EQ(pkt.type, PORT_PACKET_SIGNAL);
     KT_EQ(pkt.status, OK);
     KT_EQ(pkt.key, key);
@@ -107,12 +107,12 @@ KTEST(event_signal_wait)
     KT_EQ(event_signal(e, SIG_SIGNALED, 0), OK);
     KT_EQ(kobject_signals(&e->base), 1u << 24);
     uint64_t t0 = uptime_ns();
-    KT_EQ(object_wait_one(&e->base, SIG_SIGNALED, t0 + 20 * MS, &seen), ERR_TIMED_OUT);
-    KT_ASSERT(uptime_ns() - t0 >= 20 * MS);
+    KT_EQ(object_wait_one(&e->base, SIG_SIGNALED, t0 + 20 * NS_PER_MS, &seen), ERR_TIMED_OUT);
+    KT_ASSERT(uptime_ns() - t0 >= 20 * NS_PER_MS);
 
     /* Set by another thread. */
     struct thread *t = thread_create("event signaller", event_later, e, PRIO_DEFAULT);
-    KT_EQ(object_wait_one(&e->base, SIG_SIGNALED, uptime_ns() + 2000 * MS, &seen), OK);
+    KT_EQ(object_wait_one(&e->base, SIG_SIGNALED, uptime_ns() + 2000 * NS_PER_MS, &seen), OK);
     KT_ASSERT(seen & SIG_SIGNALED);
     thread_join(t);
 
@@ -139,10 +139,10 @@ KTEST(event_rejects_non_user_bits)
 /* Wait for t to fire; check it was not early and at most 30 ms late. */
 static void expect_fires(struct ktimer *t, uint64_t deadline)
 {
-    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, deadline + 2000 * MS, NULL), OK);
+    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, deadline + 2000 * NS_PER_MS, NULL), OK);
     uint64_t now = uptime_ns();
     KT_ASSERT(now >= deadline);
-    if (now - deadline > 30 * MS)
+    if (now - deadline > 30 * NS_PER_MS)
         panic("ktest %s: timer %lu us late", ktest_current, (now - deadline) / 1000);
 }
 
@@ -150,7 +150,7 @@ KTEST(timer_fires_on_time)
 {
     struct ktimer *t = new_timer();
     for (int i = 0; i < 5; i++) {
-        uint64_t deadline = uptime_ns() + (10 + 17 * i) * MS;
+        uint64_t deadline = uptime_ns() + (10 + 17 * i) * NS_PER_MS;
         KT_EQ(timer_set(t, deadline), OK);
         KT_ASSERT(!(kobject_signals(&t->base) & SIG_SIGNALED));   /* re-arming clears it */
         expect_fires(t, deadline);
@@ -169,23 +169,23 @@ KTEST(timer_reset_and_cancel)
 
     /* Re-set to an earlier deadline: the service must re-plan. */
     uint64_t now = uptime_ns();
-    KT_EQ(timer_set(t, now + 500 * MS), OK);
+    KT_EQ(timer_set(t, now + 500 * NS_PER_MS), OK);
     thread_sleep_ms(5);
-    KT_EQ(timer_set(t, now + 40 * MS), OK);
-    expect_fires(t, now + 40 * MS);
+    KT_EQ(timer_set(t, now + 40 * NS_PER_MS), OK);
+    expect_fires(t, now + 40 * NS_PER_MS);
 
     /* Re-set to a later deadline: the old one must not fire. */
     now = uptime_ns();
-    KT_EQ(timer_set(t, now + 30 * MS), OK);
-    KT_EQ(timer_set(t, now + 120 * MS), OK);
-    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, now + 90 * MS, NULL), ERR_TIMED_OUT);
-    expect_fires(t, now + 120 * MS);
+    KT_EQ(timer_set(t, now + 30 * NS_PER_MS), OK);
+    KT_EQ(timer_set(t, now + 120 * NS_PER_MS), OK);
+    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, now + 90 * NS_PER_MS, NULL), ERR_TIMED_OUT);
+    expect_fires(t, now + 120 * NS_PER_MS);
 
     /* Cancel: disarms and clears. */
     now = uptime_ns();
-    KT_EQ(timer_set(t, now + 30 * MS), OK);
+    KT_EQ(timer_set(t, now + 30 * NS_PER_MS), OK);
     KT_EQ(timer_cancel(t), OK);
-    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, now + 80 * MS, NULL), ERR_TIMED_OUT);
+    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, now + 80 * NS_PER_MS, NULL), ERR_TIMED_OUT);
     KT_EQ(timer_set(t, 0), OK);
     KT_ASSERT(kobject_signals(&t->base) & SIG_SIGNALED);
     KT_EQ(timer_cancel(t), OK);
@@ -193,7 +193,7 @@ KTEST(timer_reset_and_cancel)
     KT_EQ(timer_cancel(t), OK);   /* already disarmed */
 
     /* Destroying an armed timer disarms it. */
-    KT_EQ(timer_set(t, uptime_ns() + 20 * MS), OK);
+    KT_EQ(timer_set(t, uptime_ns() + 20 * NS_PER_MS), OK);
     kobject_unref(&t->base);
     thread_sleep_ms(40);   /* the service must not touch the freed timer */
 }
@@ -204,24 +204,24 @@ KTEST(timer_many_fire_in_deadline_order)
     struct port *p = new_port();
     struct ktimer *ts[N];
     uint64_t deadline[N];
-    uint64_t base = uptime_ns() + 30 * MS;
+    uint64_t base = uptime_ns() + 30 * NS_PER_MS;
     for (int i = 0; i < N; i++) {
         ts[i] = new_timer();
-        deadline[i] = base + (uint64_t)((i * 7) % N) * 4 * MS;   /* distinct, shuffled */
+        deadline[i] = base + (uint64_t)((i * 7) % N) * 4 * NS_PER_MS;   /* distinct, shuffled */
         KT_EQ(port_bind(p, &ts[i]->base, i, SIG_SIGNALED, PORT_BIND_ONCE), OK);
         KT_EQ(timer_set(ts[i], deadline[i]), OK);
     }
     uint64_t last = 0;
     for (int n = 0; n < N; n++) {
         struct port_packet pkt;
-        KT_EQ(port_wait(p, uptime_ns() + 2000 * MS, &pkt), OK);
+        KT_EQ(port_wait(p, uptime_ns() + 2000 * NS_PER_MS, &pkt), OK);
         KT_ASSERT(pkt.key < N);
         uint64_t now = uptime_ns();
         KT_ASSERT(now >= deadline[pkt.key]);
         KT_ASSERT(deadline[pkt.key] > last);   /* in deadline order */
         last = deadline[pkt.key];
     }
-    KT_ASSERT(uptime_ns() - last <= 30 * MS);
+    KT_ASSERT(uptime_ns() - last <= 30 * NS_PER_MS);
     expect_empty(p);
     for (int i = 0; i < N; i++)
         kobject_unref(&ts[i]->base);
@@ -304,8 +304,8 @@ KTEST(port_wait_timeout)
     struct port *p = new_port();
     struct port_packet pkt;
     uint64_t t0 = uptime_ns();
-    KT_EQ(port_wait(p, t0 + 30 * MS, &pkt), ERR_TIMED_OUT);
-    KT_ASSERT(uptime_ns() - t0 >= 30 * MS);
+    KT_EQ(port_wait(p, t0 + 30 * NS_PER_MS, &pkt), ERR_TIMED_OUT);
+    KT_ASSERT(uptime_ns() - t0 >= 30 * NS_PER_MS);
     KT_EQ(port_wait(p, 0, &pkt), ERR_TIMED_OUT);   /* deadline in the past: poll */
     kobject_unref(&p->base);
 }
@@ -477,7 +477,7 @@ static volatile signals_t owo_seen;
 static void port_readable_waiter(void *arg)
 {
     signals_t seen = 0;
-    owo_status = object_wait_one(arg, SIG_READABLE, uptime_ns() + 3000 * MS, &seen);
+    owo_status = object_wait_one(arg, SIG_READABLE, uptime_ns() + 3000 * NS_PER_MS, &seen);
     owo_seen = seen;
 }
 
@@ -494,7 +494,7 @@ KTEST(port_object_wait_one_wakes)
     thread_join(t);
     KT_EQ(owo_status, OK);
     KT_ASSERT(owo_seen & SIG_READABLE);
-    KT_ASSERT(uptime_ns() - t0 < 500 * MS);
+    KT_ASSERT(uptime_ns() - t0 < 500 * NS_PER_MS);
     kobject_unref(&p->base);   /* destroys it with the packet still queued */
 }
 
@@ -510,7 +510,7 @@ static void mw_waiter(void *arg)
     (void)arg;
     for (;;) {
         struct port_packet pkt;
-        if (port_wait(mw_port, uptime_ns() + 5000 * MS, &pkt) != OK) {
+        if (port_wait(mw_port, uptime_ns() + 5000 * NS_PER_MS, &pkt) != OK) {
             __atomic_add_fetch(&mw_failures, 1, __ATOMIC_RELAXED);
             return;
         }
@@ -616,11 +616,11 @@ KTEST(port_sys_rights)
     KT_EQ(sys_port_bind(&tbl, pw, tm, 2, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
     KT_EQ(sys_event_signal(&tbl, ev, 0, SIG_SIGNALED), OK);
     signals_t seen;
-    KT_EQ(sys_object_wait_one(&tbl, pr, SIG_READABLE, uptime_ns() + 1000 * MS, &seen), OK);
+    KT_EQ(sys_object_wait_one(&tbl, pr, SIG_READABLE, uptime_ns() + 1000 * NS_PER_MS, &seen), OK);
     KT_EQ(sys_port_wait(&tbl, pr, DEADLINE_NEVER, &pkt), OK);
     KT_EQ(pkt.key, 1);
-    KT_EQ(sys_timer_set(&tbl, tm, uptime_ns() + 10 * MS), OK);
-    KT_EQ(sys_port_wait(&tbl, pr, uptime_ns() + 1000 * MS, &pkt), OK);
+    KT_EQ(sys_timer_set(&tbl, tm, uptime_ns() + 10 * NS_PER_MS), OK);
+    KT_EQ(sys_port_wait(&tbl, pr, uptime_ns() + 1000 * NS_PER_MS, &pkt), OK);
     KT_EQ(pkt.key, 2);
     KT_EQ(sys_timer_cancel(&tbl, tm), OK);
     pkt.key = 3;
@@ -664,7 +664,8 @@ static void sp_main(void *arg)
             event_signal(pr->pers, 0, SIG_SIGNALED);
             event_signal(pr->pers, SIG_SIGNALED, 0);
         }
-        if (object_wait_one(&pr->ack->base, SIG_SIGNALED, uptime_ns() + 5000 * MS, NULL) != OK) {
+        if (object_wait_one(&pr->ack->base, SIG_SIGNALED, uptime_ns() + 5000 * NS_PER_MS,
+                            NULL) != OK) {
             pr->failed = true;
             return;
         }
@@ -696,7 +697,7 @@ KTEST(port_stress_producers)
     const uint64_t want_edges = want_once * SP_TOGGLES;
     while (once_total < want_once || edge_total < want_edges) {
         struct port_packet pkt;
-        status_t st = port_wait(p, uptime_ns() + 5000 * MS, &pkt);
+        status_t st = port_wait(p, uptime_ns() + 5000 * NS_PER_MS, &pkt);
         if (st != OK)
             panic("ktest %s: lost packets (once %lu/%lu, edges %lu/%lu)", ktest_current,
                   once_total, want_once, edge_total, want_edges);
@@ -771,7 +772,7 @@ static void ch_consumer(void *arg)
 {
     struct port *p = arg;
     struct port_packet pkt;
-    while (port_wait(p, uptime_ns() + 5000 * MS, &pkt) == OK && pkt.key != CH_STOP)
+    while (port_wait(p, uptime_ns() + 5000 * NS_PER_MS, &pkt) == OK && pkt.key != CH_STOP)
         ;
     kobject_unref(&p->base);   /* often the last reference: destroys a busy port */
 }
@@ -794,7 +795,7 @@ KTEST(port_stress_churn)
         ts[i] = thread_create_on("port toggler", ch_toggler, evs[i], PRIO_DEFAULT, &m);
     }
     uint64_t seed = 0x9e3779b97f4a7c15ull, unbound = 0;
-    uint64_t t_end = uptime_ns() + 2000 * MS;   /* capped: slow with many CPUs under TCG */
+    uint64_t t_end = uptime_ns() + 2000 * NS_PER_MS;   /* capped: slow with many CPUs under TCG */
     int rounds = 0;
     for (; rounds < CH_ROUNDS && uptime_ns() < t_end; rounds++) {
         struct port *p = new_port();
@@ -826,4 +827,33 @@ KTEST(port_stress_churn)
     kprintf("ktest: port_stress_churn: %u togglers, %lu toggles, %lu unbinds, %d ports\n", n,
             ch_toggles, unbound, rounds);
     stats_equal(&before);
+}
+
+/* ---- the binding cap ------------------------------------------------------------ */
+
+KTEST(m45_port_binding_cap)
+{
+    struct port_stats before, now;
+    port_get_stats(&before);
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t port, ev;
+    KT_EQ(sys_port_create(&t, &port), OK);
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    for (uint64_t k = 0; k < PORT_MAX_BINDINGS; k++)
+        KT_EQ(sys_port_bind(&t, port, ev, k, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
+    KT_EQ(sys_port_bind(&t, port, ev, PORT_MAX_BINDINGS, SIG_SIGNALED, PORT_BIND_PERSISTENT),
+          ERR_NO_RESOURCES);
+    port_get_stats(&now);
+    KT_EQ(now.bindings - before.bindings, PORT_MAX_BINDINGS);
+
+    /* Freeing one makes room for one. */
+    KT_EQ(sys_port_unbind(&t, port, ev, 0), OK);
+    KT_EQ(sys_port_bind(&t, port, ev, PORT_MAX_BINDINGS, SIG_SIGNALED, PORT_BIND_PERSISTENT),
+          OK);
+
+    handle_table_destroy(&t);
+    port_get_stats(&now);
+    KT_EQ(now.bindings, before.bindings);
+    KT_EQ(now.ports, before.ports);
 }

@@ -20,7 +20,7 @@
  *     P-core's other hyperthread, E = an E-core. CPU 0 is avoided (it runs
  *     the boot thread and the sleep/timer tick work).
  *   - Nothing is printed while measuring.
- *   - Lines starting "user:" (M5) are measured in ring 3 by bin/utest
+ *   - Lines starting "user:" are measured in ring 3 by bin/utest
  *     (user/utest/bench.c), started with userboot pinned to the named CPUs
  *     at priority 24 like the kernel's benchmark threads: same TSC method,
  *     same warm-up, raw cycle counts sent back over a channel and turned
@@ -31,7 +31,7 @@
  *     (and their active-CPU mask updates) timed with interrupts off.
  * The other lines are kernel threads. The lock-order checker is on for
  * every lock, as it always is.
- *   - M5.5 optimisations each have a run-time switch. A line that one of
+ *   - The optimisations each have a run-time switch. A line that one of
  *     them should move is measured twice in the same run, switch off and
  *     then on, and printed as "<switch> off median/p99 on median/p99"
  *     (the other switches stay as booted). Switches: spinidle (an idle CPU
@@ -135,7 +135,7 @@ static void fmt_short(char *buf, size_t n, uint64_t ps)
         ksnprintf(buf, n, "%lums", ps / 1000000000);
 }
 
-/* One line for a measurement made with an M5.5 switch off and then on in
+/* One line for a measurement made with a switch off and then on in
  * the same run: "median/p99" each way. */
 static void result2(const char *what, const char *sw, uint64_t *off, uint64_t *on, unsigned n)
 {
@@ -214,10 +214,10 @@ static void run_on(int cpu, void (*fn)(void *), void *arg)
 
 static uint64_t *samples, *samples_off, *samples_on;
 
-/* M5.5 switches, each flipped between its off and on setting for one
+/* The switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). SW_ALL flips every one of
- * them at once ("m55": the M5 behaviour against all of M5.5). */
+ * them at once ("m55", the milestone that added them: none against all). */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
     SW_PCID, SW_COUNT, SW_ALL = SW_COUNT
@@ -444,7 +444,7 @@ static void page_all_cpus(void)
 }
 
 /* kmalloc on every CPU at once: without the per-CPU magazines every CPU
- * takes the kmalloc-64 cache lock twice per pair (M5.5, kmcache). */
+ * takes the kmalloc-64 cache lock twice per pair (switch kmcache). */
 static void kmalloc_all_cpus(void)
 {
     unsigned n = cpu_count * PAR_SAMPLES;
@@ -653,7 +653,7 @@ static void wakeup_measure(int other)
 }
 
 /* A pair that wakes each other with plain wakes (no wake-affine hint):
- * the responder may run anywhere but CPU 0 and P. As a pair (M5.5) it runs
+ * the responder may run anywhere but CPU 0 and P. As a pair it runs
  * on P's HT sibling; without, the hybrid order gives it a whole idle core. */
 static void wakeup_pair(void)
 {
@@ -713,12 +713,12 @@ static void ipi(int other)
     off_on(SW_SPINIDLE, what, ipi_measure, other, SAMPLES);
 }
 
-/* ---- interrupts (M6) --------------------------------------------------------
+/* ---- interrupts -------------------------------------------------------------
  * An interrupt object's vector, raised by a fixed IPI to the CPU the vector
  * allocator gave it (an E-core on the PC), standing in for the device's
  * MSI: the handler there raises SIG_INTERRUPT, the persistent port binding
  * queues the packet and wakes the thread blocked in port_wait on P, which
- * then acks. The MSI round trip with a real device is phase 2 (edu). */
+ * then acks. No real device: the numbers are the kernel's part alone. */
 
 static struct kobject *birq;
 static struct port *birq_port;
@@ -845,7 +845,7 @@ static void chan_call(int server_cpu)
 }
 
 /* The server may run anywhere but CPU 0 (the orchestrator's), so placement
- * decides where it runs. Wake-affine (M5) puts it on the caller's CPU, as
+ * decides where it runs. Wake-affine puts it on the caller's CPU, as
  * the caller blocks right after sending; kept off P as well, on P's idle HT
  * sibling. */
 static void chan_call_placed(void)
@@ -860,7 +860,7 @@ static void chan_call_placed(void)
     chan_call_mask(&m, "channel_call round trip, P client, server not on P");
 }
 
-/* ---- sleep accuracy (M5.5) ------------------------------------------------
+/* ---- sleep accuracy -------------------------------------------------------
  * A thread on P sleeps for a set time; the sample is how late it woke
  * (actual - requested). With one-shot timers the CPU's timer is armed for
  * the deadline; without, the sleeper waits for its CPU's next 10 ms tick. */
@@ -894,9 +894,9 @@ static void sleep_accuracy(int us)
     off_on(SW_ONESHOT, what, sleep_measure, us, TIMER_SAMPLES);
 }
 
-/* ---- serial output (M5.5) -------------------------------------------------
+/* ---- serial output --------------------------------------------------------
  * What a 100-character line costs the CPU that writes it to COM1 (the
- * serial part of every klog line): off, M5's synchronous output, which
+ * serial part of every klog line): off, synchronous output, which
  * waits for the UART character by character (~87 us each at 115200 baud
  * on real hardware); on, a copy into the transmit ring that the UART's
  * interrupt drains. Each sample starts with the ring empty (waited for,
@@ -939,7 +939,7 @@ static void serial_output(void)
         report("bench: serial: %lu characters dropped meanwhile", serial_dropped - drop0);
 }
 
-/* ---- placement of busy threads (M5.5) --------------------------------------
+/* ---- placement of busy threads ---------------------------------------------
  * Where the scheduler puts CPU-bound threads when there is room: one per
  * core except CPU 0's (which runs this thread), all unpinned but kept off
  * CPU 0. Not a time: the line counts how many landed on a core another
@@ -1030,7 +1030,7 @@ static void bench_shootdown(void *arg)
     }
 }
 
-/* ---- user FPU state save + restore (M5.5 breakdown) ----------------------------
+/* ---- user FPU state save + restore (breakdown) --------------------------------
  * One save and one restore of a user FPU area, as arch_thread_switch does
  * for a user thread going out and one coming in, timed in batches with
  * interrupts off (the registers are ours meanwhile; fpu_clobbered tells
@@ -1131,7 +1131,7 @@ static void as_switch(void)
     aspace_unref(as_a);
 }
 
-/* ---- user space (M5) ------------------------------------------------------ */
+/* ---- user space ----------------------------------------------------------- */
 
 #define USAMPLES 4000   /* user/utest/bench.c SAMPLES */
 
@@ -1264,7 +1264,7 @@ static void user_bench_off_on(enum sw s, const char *what, int cpu, int server_c
 }
 
 /* Breakdown of process->process channel_call against the kernel-thread
- * version (BENCH.md, investigation (a) of M5.5):
+ * version (BENCH.md's investigation (a)):
  *   - "thread->thread, same process" does the same calls without the two
  *     address-space switches per round trip (both threads share a CR3);
  *   - "XSAVE + XRSTOR" is one save and one restore of a user FPU state,

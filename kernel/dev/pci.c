@@ -1,6 +1,7 @@
-/* The kernel's PCI core (M6 Track A): ECAM config access, the bus walk,
- * the device table, capability lists, BAR decode/sizing, MSI and MSI-X
- * programming and Bus Master Enable. See <jam/pci.h>.
+/* The kernel's PCI core: ECAM config access, the bus walk, the device
+ * table, capability lists, BAR decode/sizing, MSI/MSI-X discovery and the
+ * command register (Bus Master Enable). MSI/MSI-X programming is in
+ * pci_msi.c, names and reports in pci_report.c. See <jam/pci.h>.
  *
  * Enumeration (pci_init) runs once, on CPU 0, before any driver exists:
  *   1. every MCFG segment is walked from its start bus, following each
@@ -33,39 +34,7 @@
 #include <jam/spinlock.h>
 #include <jam/string.h>
 
-/* Config space offsets and bits. */
-#define CFG_VENDOR     0x00
-#define CFG_DEVICE     0x02
-#define CFG_COMMAND    0x04
-#define CFG_STATUS     0x06
-#define CFG_REVISION   0x08
-#define CFG_HEADER     0x0e
-#define CFG_BAR0       0x10
-#define CFG_SECONDARY  0x19
-#define CFG_SUBORD     0x1a
-#define CFG_CAP_PTR    0x34
-#define CFG_CAP_PTR_CB 0x14   /* CardBus header */
-
-#define CMD_IO         (1u << 0)
-#define CMD_MEMORY     (1u << 1)
-#define CMD_MASTER     (1u << 2)
-#define CMD_INTX_OFF   (1u << 10)
-#define STATUS_CAPS    (1u << 4)
-
-#define CAP_ID_MSI     0x05
-#define CAP_ID_PCIE    0x10
-#define CAP_ID_MSIX    0x11
-
-#define MSI_CTL_ENABLE   (1u << 0)
-#define MSI_CTL_MMC(c)   (((c) >> 1) & 7)
-#define MSI_CTL_MME_MASK (7u << 4)
-#define MSI_CTL_64       (1u << 7)
-#define MSI_CTL_MASKABLE (1u << 8)
-
-#define MSIX_CTL_SIZE(c) (((c) & 0x7ff) + 1)
-#define MSIX_CTL_FMASK   (1u << 14)
-#define MSIX_CTL_ENABLE  (1u << 15)
-#define MSIX_ENTRY_CTL_MASK 1u
+#include "pci_internal.h"
 
 /* Capability walks: a standard list has at most 48 entries in 0x40-0xff,
  * an extended one at most 960 in 0x100-0xfff. */
@@ -87,7 +56,7 @@ static uint32_t nsegs;
 static struct pci_dev devs[PCI_MAX_DEVS];
 static uint32_t ndevs;
 static bool table_full;
-static spinlock_t pci_lock = SPINLOCK_INIT("pci");
+spinlock_t pci_lock = SPINLOCK_INIT("pci");
 
 /* Pages holding an MSI-X table or PBA, [start, end) page aligned. */
 #define MAX_PROT (2 * PCI_MAX_DEVS)
@@ -105,29 +74,6 @@ static bool cfg_args_ok(uint32_t off, uint32_t width)
 {
     return (width == 1 || width == 2 || width == 4) && off < 4096 && !(off & (width - 1));
 }
-
-static uint32_t raw_read(volatile void *cfg, uint32_t off, uint32_t width)
-{
-    volatile uint8_t *p = (volatile uint8_t *)cfg + off;
-    switch (width) {
-    case 1:  return *p;
-    case 2:  return *(volatile uint16_t *)p;
-    default: return *(volatile uint32_t *)p;
-    }
-}
-
-static void raw_write(volatile void *cfg, uint32_t off, uint32_t width, uint32_t v)
-{
-    volatile uint8_t *p = (volatile uint8_t *)cfg + off;
-    switch (width) {
-    case 1:  *p = (uint8_t)v; break;
-    case 2:  *(volatile uint16_t *)p = (uint16_t)v; break;
-    default: *(volatile uint32_t *)p = v; break;
-    }
-}
-
-static inline uint32_t rd(struct pci_dev *d, uint32_t off, uint32_t w) { return raw_read(d->cfg, off, w); }
-static inline void wr(struct pci_dev *d, uint32_t off, uint32_t w, uint32_t v) { raw_write(d->cfg, off, w, v); }
 
 uint32_t pci_cfg_read(struct pci_dev *d, uint32_t off, uint32_t width)
 {
@@ -178,11 +124,6 @@ uint32_t pci_cfg_read_bdf(uint16_t segment, uint8_t bus, uint8_t dev, uint8_t fn
 }
 
 /* ---- capabilities ------------------------------------------------------------ */
-
-static bool untouchable(const struct pci_dev *d)
-{
-    return d->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY);
-}
 
 /* Standard list: bounded and cycle-checked (a visited bitmap over the 64
  * dword slots), so a garbage or looping list ends. Caller holds the lock or
@@ -558,139 +499,6 @@ bool pci_phys_protected(uint64_t phys, uint64_t len)
     return false;
 }
 
-/* ---- names and logging ----------------------------------------------------------- */
-
-static const char *class_name(const struct pci_dev *d)
-{
-    uint32_t c = d->info.class_code, s = d->info.subclass, p = d->info.prog_if;
-    switch (c << 8 | s) {
-    case 0x0100: return "SCSI";
-    case 0x0101: return "IDE";
-    case 0x0104: return "RAID";
-    case 0x0106: return "SATA";
-    case 0x0108: return "NVMe";
-    case 0x0200: return "Ethernet";
-    case 0x0280: return "network";
-    case 0x0300: return "VGA";
-    case 0x0302: return "3D";
-    case 0x0380: return "display";
-    case 0x0401: return "audio";
-    case 0x0403: return "HD audio";
-    case 0x0480: return "multimedia";
-    case 0x0500: return "RAM ctl";
-    case 0x0580: return "memory ctl";
-    case 0x0600: return "host brg";
-    case 0x0601: return "ISA brg";
-    case 0x0604: return "PCI brg";
-    case 0x0680: return "bridge";
-    case 0x0700: return "serial";
-    case 0x0780: return "comm";
-    case 0x0805: return "SD host";
-    case 0x0880: return "system";
-    case 0x0c03:
-        return p == 0x30 ? "xHCI" : p == 0x20 ? "EHCI" : p == 0x10 ? "OHCI" : p == 0 ? "UHCI" : "USB";
-    case 0x0c05: return "SMBus";
-    case 0x0c80: return "serial bus";
-    case 0x1180: return "signal";
-    }
-    return "";
-}
-
-static void fmt_size(char *buf, size_t n, uint64_t size)
-{
-    if (size >= (1ull << 30) && !(size & ((1ull << 30) - 1)))
-        ksnprintf(buf, n, "%luG", size >> 30);
-    else if (size >= (1ull << 20) && !(size & ((1ull << 20) - 1)))
-        ksnprintf(buf, n, "%luM", size >> 20);
-    else if (size >= (1ull << 10) && !(size & ((1ull << 10) - 1)))
-        ksnprintf(buf, n, "%luK", size >> 10);
-    else
-        ksnprintf(buf, n, "%lu", size);
-}
-
-static int fmt_bdf(char *buf, size_t n, const struct pci_dev *d)
-{
-    if (d->info.segment)
-        return ksnprintf(buf, n, "%04x:%02x:%02x.%x", d->info.segment, d->info.bus, d->info.dev,
-                         d->info.fn);
-    return ksnprintf(buf, n, "%02x:%02x.%x", d->info.bus, d->info.dev, d->info.fn);
-}
-
-/* "bar0 mem64 pf 0x6000000000 256M bar2 io 0x3000 256 ..." */
-static void fmt_bars(char *buf, size_t n, const struct pci_dev *d)
-{
-    size_t len = 0;
-    buf[0] = '\0';
-    for (int b = 0; b < 6 && len < n; b++) {
-        uint32_t fl = d->info.bar[b].flags;
-        if (!fl)
-            continue;
-        char sz[24];
-        if (fl & PCI_BAR_UNSIZED)
-            ksnprintf(sz, sizeof(sz), "unsized");
-        else
-            fmt_size(sz, sizeof(sz), d->info.bar[b].size);
-        len += ksnprintf(buf + len, n - len, "%sbar%d %s%s%s 0x%lx %s", len ? " " : "", b,
-                         (fl & PCI_BAR_IO) ? "io" : "mem", (fl & PCI_BAR_64) ? "64" : "",
-                         (fl & PCI_BAR_PREFETCH) ? " pf" : "", d->info.bar[b].phys, sz);
-    }
-}
-
-static void fmt_irqs(char *buf, size_t n, const struct pci_dev *d)
-{
-    size_t len = ksnprintf(buf, n, "msi %u", d->info.msi_vectors);
-    if (d->cap_msi && len < n)
-        len += ksnprintf(buf + len, n - len, "%s%s", d->msi_64 ? " 64-bit" : " 32-bit",
-                         d->msi_maskable ? " maskable" : "");
-    if (len < n)
-        len += ksnprintf(buf + len, n - len, ", msix %u", d->info.msix_vectors);
-    if (d->cap_msix && len < n)
-        ksnprintf(buf + len, n - len, " (table bar%u+0x%x, pba bar%u+0x%x)", d->msix_table_bar,
-                  d->msix_table_off, d->msix_pba_bar, d->msix_pba_off);
-}
-
-static void log_function(const struct pci_dev *d)
-{
-    char bdf[16], irqs[96], bars[400];
-    fmt_bdf(bdf, sizeof(bdf), d);
-    fmt_irqs(irqs, sizeof(irqs), d);
-    fmt_bars(bars, sizeof(bars), d);
-    kprintf("pci: %s %04x:%04x class %02x%02x%02x rev %02x %s%s%s %s%s%s\n", bdf, d->info.vendor,
-            d->info.device, d->info.class_code, d->info.subclass, d->info.prog_if,
-            d->info.revision, class_name(d),
-            (d->info.flags & PCI_INFO_DISPLAY) ? " [boot display]" : "",
-            (d->info.flags & PCI_INFO_BRIDGE) ? " [bridge]" : "", irqs, bars[0] ? "; " : "", bars);
-}
-
-/* Two RESULTS lines for a function worth reading in full. */
-static void report_full(const char *what, const struct pci_dev *d)
-{
-    char bdf[16], irqs[96], bars[400];
-    fmt_bdf(bdf, sizeof(bdf), d);
-    fmt_irqs(irqs, sizeof(irqs), d);
-    fmt_bars(bars, sizeof(bars), d);
-    report("pci: %s %s %04x:%04x rev %02x %s", what, bdf, d->info.vendor, d->info.device,
-           d->info.revision, irqs);
-    report("pci:   %s %s", bdf, bars[0] ? bars : "no BARs");
-}
-
-static void report_class(const char *what, uint8_t c, uint8_t s, int prog_if)
-{
-    uint32_t any = 0;
-    for (uint32_t i = 0; i < ndevs; i++) {
-        struct pci_dev *d = &devs[i];
-        if (d->info.class_code == c && d->info.subclass == s &&
-            (prog_if < 0 || d->info.prog_if == prog_if) && any++ < 2)
-            report_full(what, d);   /* the first two in full; the box is small */
-    }
-    if (any > 2)
-        report("pci: %u more %s functions (see the log)", any - 2, what);
-    if (!any && prog_if >= 0)
-        report("pci: no %s function (class %02x%02x%02x)", what, c, s, prog_if);
-    else if (!any)
-        report("pci: no %s function (class %02x%02x)", what, c, s);
-}
-
 /* ---- init --------------------------------------------------------------------- */
 
 void pci_init(void)
@@ -716,7 +524,7 @@ void pci_init(void)
     for (uint32_t i = 0; i < ndevs; i++) {
         size_or_mark(&devs[i]);
         read_caps(&devs[i]);
-        log_function(&devs[i]);
+        pci_log_function(&devs[i]);
     }
 
     uint32_t buses = 0;
@@ -726,12 +534,12 @@ void pci_init(void)
     char disp[24] = "none";
     for (uint32_t i = 0; i < ndevs; i++)
         if (devs[i].info.flags & PCI_INFO_DISPLAY)
-            fmt_bdf(disp, sizeof(disp), &devs[i]);
+            pci_fmt_bdf(disp, sizeof(disp), &devs[i]);
     report("pci: %u functions on %u bus%s (%u ECAM segment%s)%s; boot display %s (fb 0x%lx)",
            ndevs, buses, buses == 1 ? "" : "es", nsegs, nsegs == 1 ? "" : "s",
            table_full ? ", TABLE FULL" : "", disp, display_fb);
-    report_class("xHCI", 0x0c, 0x03, 0x30);
-    report_class("Ethernet", 0x02, 0x00, -1);
+    pci_report_class("xHCI", 0x0c, 0x03, 0x30);
+    pci_report_class("Ethernet", 0x02, 0x00, -1);
 }
 
 /* ---- lookups ---------------------------------------------------------------------- */
@@ -759,217 +567,6 @@ struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];
     return NULL;
-}
-
-/* ---- the Devices entry ------------------------------------------------------------ */
-
-/* The RESULTS box holds 48 lines; the boot's other lines (topology, timer,
- * fpu, the pci_init lines, "run complete", maybe irq/serial) take about
- * ten to twelve, and the list's own header one. Up to 32 functions get a
- * line each, up to 64 two per line, beyond that three (compact). */
-#define LIST_LINES 32
-
-static int fmt_entry(char *buf, size_t n, const struct pci_dev *d, bool compact)
-{
-    char bdf[16];
-    fmt_bdf(bdf, sizeof(bdf), d);
-    const char *fl = (d->info.flags & PCI_INFO_DISPLAY) ? " D" : (d->info.flags & PCI_INFO_BRIDGE) ? " B" : "";
-    if (compact)
-        return ksnprintf(buf, n, "%s %04x:%04x %02x%02x%02x m%u x%u%s", bdf, d->info.vendor,
-                         d->info.device, d->info.class_code, d->info.subclass, d->info.prog_if,
-                         d->info.msi_vectors, d->info.msix_vectors, fl);
-    return ksnprintf(buf, n, "%s %04x:%04x %02x%02x%02x %-10s msi %-2u msix %-3u%s", bdf,
-                     d->info.vendor, d->info.device, d->info.class_code, d->info.subclass,
-                     d->info.prog_if, class_name(d), d->info.msi_vectors, d->info.msix_vectors,
-                     fl);
-}
-
-void pci_report(void)
-{
-    uint32_t per = ndevs <= LIST_LINES ? 1 : ndevs <= 2 * LIST_LINES ? 2 : 3;
-    report("pci list: %u functions (msi/msix = vector counts; D boot display, B bridge)", ndevs);
-    for (uint32_t i = 0; i < ndevs; i += per) {
-        char line[128];
-        size_t len = 0;
-        line[0] = '\0';
-        for (uint32_t k = 0; k < per && i + k < ndevs && len + 1 < sizeof(line); k++) {
-            if (k)
-                len += ksnprintf(line + len, sizeof(line) - len, " | ");
-            size_t col = len + (per == 3 ? 36 : 54);
-            if (len + 1 < sizeof(line))
-                len += fmt_entry(line + len, sizeof(line) - len, &devs[i + k], per == 3);
-            if (len >= sizeof(line))
-                len = sizeof(line) - 1;
-            /* Pad so the next column lines up. */
-            while (k + 1 < per && i + k + 1 < ndevs && len < col && len + 1 < sizeof(line))
-                line[len++] = ' ';
-            line[len] = '\0';
-        }
-        while (len && line[len - 1] == ' ')
-            line[--len] = '\0';
-        report("%s", line);
-    }
-}
-
-/* ---- MSI / MSI-X ------------------------------------------------------------------- */
-
-static status_t check_irq(struct pci_dev *d, bool msix, uint32_t index)
-{
-    if (!d)
-        return ERR_INVALID_ARGS;
-    if (untouchable(d))
-        return ERR_ACCESS_DENIED;
-    if (msix) {
-        if (!d->cap_msix)
-            return ERR_NOT_SUPPORTED;
-        if (index >= d->info.msix_vectors)
-            return ERR_OUT_OF_RANGE;
-        if (!d->msix_table)
-            return ERR_BAD_STATE;   /* table BAR has no address */
-    } else {
-        if (!d->cap_msi)
-            return ERR_NOT_SUPPORTED;
-        if (index != 0)
-            return ERR_OUT_OF_RANGE;
-    }
-    return OK;
-}
-
-/* The MSI-X table only answers while memory decode is on. */
-static void ensure_memory(struct pci_dev *d)
-{
-    uint16_t cmd = rd(d, CFG_COMMAND, 2);
-    if (!(cmd & CMD_MEMORY))
-        wr(d, CFG_COMMAND, 2, cmd | CMD_MEMORY);
-}
-
-static inline volatile uint32_t *msix_entry(struct pci_dev *d, uint32_t index)
-{
-    return d->msix_table + 4 * index;
-}
-
-/* MSI mask bits register (maskable MSI only). */
-static uint32_t msi_mask_off(struct pci_dev *d)
-{
-    return d->cap_msi + (d->msi_64 ? 0x10 : 0x0c);
-}
-
-status_t pci_msi_set(struct pci_dev *d, bool msix, uint32_t index, uint64_t addr, uint32_t data)
-{
-    status_t st = check_irq(d, msix, index);
-    if (st != OK)
-        return st;
-    if (!msix && !d->msi_64 && (addr >> 32))
-        return ERR_INVALID_ARGS;
-    uint64_t f = spin_lock_irqsave(&pci_lock);
-    if (msix) {
-        ensure_memory(d);
-        volatile uint32_t *e = msix_entry(d, index);
-        uint32_t ctl = e[3];
-        if (!(ctl & MSIX_ENTRY_CTL_MASK))
-            e[3] = ctl | MSIX_ENTRY_CTL_MASK;
-        e[0] = (uint32_t)addr;
-        e[1] = (uint32_t)(addr >> 32);
-        e[2] = data;
-        if (!(ctl & MSIX_ENTRY_CTL_MASK))
-            e[3] = ctl;
-        (void)e[3];   /* flush the posted writes */
-    } else {
-        uint32_t c = d->cap_msi;
-        uint16_t ctl = rd(d, c + 2, 2);
-        uint32_t mask = 0;
-        bool off_while = false;
-        if (d->msi_maskable) {
-            mask = rd(d, msi_mask_off(d), 4);
-            wr(d, msi_mask_off(d), 4, mask | 1);
-        } else if (ctl & MSI_CTL_ENABLE) {
-            /* Not maskable: keep a half-written message from going out by
-             * turning MSI off while it changes. */
-            wr(d, c + 2, 2, ctl & ~MSI_CTL_ENABLE);
-            off_while = true;
-        }
-        wr(d, c + 4, 4, (uint32_t)addr);
-        if (d->msi_64) {
-            wr(d, c + 8, 4, (uint32_t)(addr >> 32));
-            wr(d, c + 0x0c, 2, data & 0xffff);
-        } else {
-            wr(d, c + 8, 2, data & 0xffff);
-        }
-        if (d->msi_maskable)
-            wr(d, msi_mask_off(d), 4, mask);
-        if (off_while)
-            wr(d, c + 2, 2, ctl);
-        (void)rd(d, c + 2, 2);
-    }
-    spin_unlock_irqrestore(&pci_lock, f);
-    return OK;
-}
-
-status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on)
-{
-    status_t st = check_irq(d, msix, 0);
-    if (st != OK)
-        return st;
-    uint64_t f = spin_lock_irqsave(&pci_lock);
-    uint16_t msi_ctl = d->cap_msi ? rd(d, d->cap_msi + 2, 2) : 0;
-    uint16_t msix_ctl = d->cap_msix ? rd(d, d->cap_msix + 2, 2) : 0;
-    if (on && ((msix && (msi_ctl & MSI_CTL_ENABLE)) || (!msix && (msix_ctl & MSIX_CTL_ENABLE)))) {
-        spin_unlock_irqrestore(&pci_lock, f);
-        return ERR_BAD_STATE;   /* the other kind is on */
-    }
-    uint16_t cmd = rd(d, CFG_COMMAND, 2);
-    if (on) {
-        wr(d, CFG_COMMAND, 2, cmd | CMD_INTX_OFF);
-        if (msix) {
-            ensure_memory(d);
-            /* Enable under the function mask, then lift it: the entries'
-             * own mask bits decide from here. */
-            wr(d, d->cap_msix + 2, 2, msix_ctl | MSIX_CTL_ENABLE | MSIX_CTL_FMASK);
-            wr(d, d->cap_msix + 2, 2, (msix_ctl | MSIX_CTL_ENABLE) & ~MSIX_CTL_FMASK);
-        } else {
-            wr(d, d->cap_msi + 2, 2, (msi_ctl & ~MSI_CTL_MME_MASK) | MSI_CTL_ENABLE);
-        }
-    } else {
-        if (msix) {
-            wr(d, d->cap_msix + 2, 2, msix_ctl | MSIX_CTL_FMASK);
-            wr(d, d->cap_msix + 2, 2, msix_ctl & ~(MSIX_CTL_ENABLE | MSIX_CTL_FMASK));
-            msix_ctl &= ~MSIX_CTL_ENABLE;
-        } else {
-            wr(d, d->cap_msi + 2, 2, msi_ctl & ~MSI_CTL_ENABLE);
-            msi_ctl &= ~MSI_CTL_ENABLE;
-        }
-        /* INTx Disable stays set (M7; review of M6 phase 2): clearing it
-         * with the last MSI gone could let an INTx the device has pending
-         * fire into a line nobody handles, and an unbound function has no
-         * business interrupting. */
-        (void)cmd;
-    }
-    (void)rd(d, CFG_COMMAND, 2);
-    spin_unlock_irqrestore(&pci_lock, f);
-    return OK;
-}
-
-status_t pci_msi_mask(struct pci_dev *d, bool msix, uint32_t index, bool masked)
-{
-    status_t st = check_irq(d, msix, index);
-    if (st != OK)
-        return st;
-    if (!msix && !d->msi_maskable)
-        return ERR_NOT_SUPPORTED;
-    uint64_t f = spin_lock_irqsave(&pci_lock);
-    if (msix) {
-        ensure_memory(d);
-        volatile uint32_t *e = msix_entry(d, index);
-        uint32_t ctl = e[3];
-        e[3] = masked ? ctl | MSIX_ENTRY_CTL_MASK : ctl & ~MSIX_ENTRY_CTL_MASK;
-        (void)e[3];
-    } else {
-        uint32_t m = rd(d, msi_mask_off(d), 4);
-        wr(d, msi_mask_off(d), 4, masked ? m | 1 : m & ~1u);
-        (void)rd(d, msi_mask_off(d), 4);
-    }
-    spin_unlock_irqrestore(&pci_lock, f);
-    return OK;
 }
 
 /* ---- command register ---------------------------------------------------------------- */
@@ -1010,7 +607,7 @@ bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in)
         lost |= rd(d, CFG_BAR0 + 4 * i, 4) != in->bar[i];
     if (lost) {
         /* Decode off while the BARs go back, then the command register as
-         * it was (INTx Disable set whatever it was: M7). */
+         * it was, but with INTx Disable set (see pci_msi_enable). */
         wr(d, CFG_COMMAND, 2, cmd & ~(CMD_IO | CMD_MEMORY | CMD_MASTER));
         for (uint32_t i = 0; i < bar_count(d); i++)
             wr(d, CFG_BAR0 + 4 * i, 4, in->bar[i]);

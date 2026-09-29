@@ -1,12 +1,9 @@
-/* Regression tests for the M4 object-layer audit findings. These began as
- * repros that leaked or overflowed on the audited code and now PASS on the
- * fixed kernel under a normal "ktest" run:
- *   O1  a deep channel chain, and a deep alternating channel/port chain,
- *       tear down iteratively instead of overflowing the kernel stack
- *   O2  channel reference cycles (direct, 2-cycle, 3-cycle) are refused, and
- *       the legitimate sends that look similar still work
- *   O4  handle generations no longer wrap after 256 slot reuses
- */
+/* Channels that hold channels (endpoints sent in messages): reference
+ * cycles (direct, 2-cycle, 3-cycle) are refused while the legitimate sends
+ * that look similar still work, and a deep chain of channels, or of
+ * channels and ports alternating, is torn down iteratively instead of
+ * overflowing the kernel stack. Each began as a repro that leaked or
+ * overflowed; the audit* names are theirs. */
 #include <jam/channel.h>
 #include <jam/event.h>
 #include <jam/handle.h>
@@ -19,7 +16,7 @@
 #define CH(p) ((struct kobject *)(p))
 #define CRIGHTS (RIGHTS_BASIC | RIGHTS_IO)
 
-/* ---- O2: cycles refused, legitimate sends allowed ------------------------ */
+/* ---- cycles refused, legitimate sends allowed ---------------------------- */
 
 /* A1 in B1's queue and B1 in A1's queue would be a 2-cycle nothing can reach.
  * The second send carries B1, whose queue already holds the channel A1, so it
@@ -124,14 +121,13 @@ KTEST(auditC_sys_channel_cycle_refused)
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
-/* ---- O1: iterative teardown --------------------------------------------- */
+/* ---- iterative teardown ------------------------------------------------- */
 
 /* e[i]'s queue holds e[i+1]; releasing e[0] closes the whole chain. This is a
  * legitimate (acyclic) structure, so it is built top-down -- each endpoint is
- * sent while its own queue is still empty, which O2 allows (only cycles are
- * refused). On the audited code channel_close then recursed one stack frame
- * per level and overflowed the 64 KiB kernel stack; now it drains
- * iteratively. */
+ * sent while its own queue is still empty, which is allowed (only cycles
+ * are refused). channel_close used to recurse one stack frame per level
+ * and overflow the 64 KiB kernel stack; now it drains iteratively. */
 enum { AUDIT_DEPTH = 1000 };
 
 KTEST(auditB_channel_deep_close_iterative)
@@ -148,7 +144,7 @@ KTEST(auditB_channel_deep_close_iterative)
         struct khandle ke = khandle_from_new(CH(e), CRIGHTS);
         struct khandle kep = khandle_from_new(CH(ep), CRIGHTS);
         /* Queue e onto the previous endpoint (via its peer). e's queue is
-         * empty here, so O2 permits it; the previous peer then closes. */
+         * empty here, so it may be sent; the previous peer then closes. */
         KT_EQ(channel_write((struct channel *)peer.obj, "n", 1, &ke, 1), OK);
         khandle_release(&peer);
         peer = kep;
@@ -162,8 +158,8 @@ KTEST(auditB_channel_deep_close_iterative)
 /* A deep chain that alternates channel and port: channel head[i]'s queue holds
  * port p[i], and p[i] is bound to head[i+1] (so it holds the only reference to
  * it). Releasing head[0] cascades channel_close -> release port -> port_destroy
- * -> unref next channel -> ... which recursed through BOTH object types on the
- * audited code. It now drains iteratively too. */
+ * -> unref next channel -> ..., which used to recurse through BOTH object
+ * types. It now drains iteratively too. */
 enum { ALT_DEPTH = 500 };
 
 KTEST(auditB2_alternating_channel_port_iterative)
@@ -202,38 +198,4 @@ KTEST(auditB2_alternating_channel_port_iterative)
     KT_GLOBAL_EQ(channel_live_count(), live);
     KT_EQ(ps1.ports, ps0.ports);
     KT_EQ(ps1.bindings, ps0.bindings);
-}
-
-/* ---- O4: handle generation no longer wraps ------------------------------ */
-
-static void audit_dummy_destroy(struct kobject *o) { kfree(o); }
-static const struct kobject_ops audit_dummy_ops = { .name = "audit dummy",
-                                                    .destroy = audit_dummy_destroy };
-
-KTEST(auditD_handle_generation_no_wrap)
-{
-    struct handle_table t;
-    handle_table_init(&t);
-    struct kobject *first = kzalloc(sizeof(*first));
-    kobject_init(first, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
-    struct khandle kh = khandle_from_new(first, RIGHTS_BASIC);
-    handle_t stale, h = 0;
-    KT_EQ(handle_insert(&t, &kh, &stale), OK);
-    KT_EQ(handle_close(&t, stale), OK);
-    struct kobject *o = NULL;
-    for (int i = 0; i < 256; i++) {
-        o = kzalloc(sizeof(*o));
-        kobject_init(o, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
-        kh = khandle_from_new(o, RIGHTS_BASIC | RIGHT_SIGNAL);
-        KT_EQ(handle_insert(&t, &kh, &h), OK);
-        if (i < 255)
-            KT_EQ(handle_close(&t, h), OK);
-    }
-    struct kobject *got = NULL;
-    status_t st = handle_get(&t, stale, OBJ_NONE, 0, &got, NULL);
-    kprintf("auditD: stale %x new %x lookup of stale -> %s\n", stale, h, status_str(st));
-    if (st == OK)
-        kobject_unref(got);
-    handle_table_destroy(&t);
-    KT_EQ(st, ERR_BAD_HANDLE);   /* 15-bit generation + FIFO reuse: no wrap */
 }
