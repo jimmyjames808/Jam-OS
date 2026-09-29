@@ -173,13 +173,21 @@ Makefile, `boot/limine.conf` (module line).
   channel messages charged to the sender's job (closes TODO(M5)/O3c);
   `thread_alloc`, handle-table growth, `kstack_alloc` and the
   `smp_call_others` allocation return errors instead of panicking.
-- `channel_call` wake-affine handoff; user priority cap at 24.
+- `channel_call` wake-affine handoff (run the woken server on the caller's
+  CPU, or its idle HT sibling: 1.3 us vs 2.0 us round trip on the PC); user
+  priority cap at 24.
+- Thread stack cache: pages beyond the 256 cached stacks go back to the
+  allocator, and `kstack_alloc` failure is an error, not a panic.
 - Per-CPU page caches for order-0 pages (a small magazine per CPU in front
   of the buddy lock). The PC benchmark 2026-09-29: page alloc+free is
   53 ns on one CPU but 19 us with all 28 CPUs allocating at once (one
   global lock). Processes faulting pages in on every core will hit this.
   Done when the all-CPU benchmark line is within a few times the one-CPU
-  line. Same idea for kmalloc (114 ns) later if it shows up.
+  line. The same for kmalloc is M5.5.
+- Benchmark lines for the new paths (they become the M5 column of
+  BENCH.md): syscall round trip, user page fault, process-to-process
+  channel_call (same CPU, HT sibling, other P-core, E-core), address-space
+  switch.
 - `utest`: runs as a process under init and checks the milestone: syscalls
   and rights, bad pointers get `ERR_INVALID_ARGS`, a NULL dereference kills
   only that process, W^X in user space, channel ping-pong between two
