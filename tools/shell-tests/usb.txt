@@ -1,0 +1,8 @@
+# The shell's usb command (QEMU_USB adds a hub with a keyboard behind it).
+wait 120 Jam OS shell
+wait jam>
+send usb
+wait problem(s)
+wait jam>
+send reboot
+wait reboot: resetting

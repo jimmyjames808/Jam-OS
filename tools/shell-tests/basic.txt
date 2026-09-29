@@ -26,7 +26,9 @@ wait jam>
 send nosuchcommand
 wait nosuchcommand: unknown command
 send usb
-wait usb: no USB bus driver yet
+wait usb:
+wait problem(s)
+wait jam>
 send devices
 wait devmgr:
 send ps

@@ -24,6 +24,7 @@
 #include <os.h>
 #include <devmgr.h>
 #include <idl/console.h>
+#include <idl/usbbus.h>
 
 #define LINE_MAX  240
 #define HIST      32
@@ -263,7 +264,7 @@ static void cmd_help(void)
     say("Commands:\n"
         "  help                 this list\n"
         "  devices              PCI functions and the drivers devmgr bound\n"
-        "  usb                  USB devices\n"
+        "  usb                  USB devices (from usb-bus)\n"
         "  ps                   jobs and processes\n"
         "  run <prog> [args]    start bin/<prog> (or a bootfs path), wait, show how it ended\n"
         "  ktest [prefix]       kernel tests (as the boot menu's All tests)\n"
@@ -332,6 +333,92 @@ static void cmd_devices(void)
         else
             say("devmgr: %s\n", status_str(st));
     }
+}
+
+/* usb-bus: the bound driver that answers usbbus.status (as usbtest finds it). */
+static handle_t find_usb_bus(void)
+{
+    for (uint32_t n = 0; devmgr && n < 16; n++) {
+        struct devmgr_rep r;
+        handle_t hs[1];
+        uint32_t nh = 0;
+        status_t st = devmgr_call(devmgr, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, hs, 1, &nh,
+                                  (uint64_t)jam_clock_get() + 5 * S);
+        if (st == ERR_NOT_FOUND)
+            break;
+        if (st != OK || nh != 1)
+            continue;
+        uint32_t d, h, i, hid, p, g;
+        uint8_t settled;
+        if (usbbus_status_until(hs[0], (uint64_t)jam_clock_get() + 2 * S, &d, &h, &i, &hid, &p, &g,
+                                &settled) == OK)
+            return hs[0];
+        jam_handle_close(hs[0]);
+    }
+    return HANDLE_INVALID;
+}
+
+static const char *usb_speed(uint8_t s)
+{
+    static const char *const names[] = { "?", "FS", "LS", "HS", "SS", "SS+" };
+    return s < 6 ? names[s] : "?";
+}
+
+static void cmd_usb(void)
+{
+    handle_t bus = find_usb_bus();
+    if (!bus) {
+        say("usb: no USB bus driver bound (devmgr has none that answers usbbus)\n");
+        return;
+    }
+    uint32_t ndev, nhub, nif, nhid, nprob, gen;
+    uint8_t settled;
+    status_t st = usbbus_wait_settled_until(bus, (uint64_t)jam_clock_get() + 5 * S, 3000, &ndev,
+                                            &nhub, &nif, &nhid, &nprob, &gen, &settled);
+    if (st != OK) {
+        say("usb: %s\n", status_str(st));
+        jam_handle_close(bus);
+        return;
+    }
+    say("usb: %u device(s), %u hub(s), %u interface(s) (%u HID), %u problem(s)%s\n", ndev, nhub,
+        nif, nhid, nprob, settled ? "" : ", still settling");
+    struct { uint32_t id; uint16_t vendor, product; } seen[64];
+    uint32_t nseen = 0;
+    for (uint32_t i = 0; i < ndev; i++) {
+        uint32_t id, parent, route;
+        uint16_t vendor, product, bcd, mp0;
+        uint8_t speed, addr, slot, rport, port, level, tts, ttp, cls, sub, proto, ncfg, cfg, nifs,
+            hubports, path[24], name[40], serial[24];
+        if (usbbus_device_until(bus, (uint64_t)jam_clock_get() + 2 * S, i, &id, &parent, &vendor,
+                                &product, &bcd, &speed, &addr, &slot, &rport, &port, &level,
+                                &route, &tts, &ttp, &cls, &sub, &proto, &ncfg, &cfg, &nifs,
+                                &mp0, &hubports, path, name, serial) != OK)
+            break;
+        path[23] = name[39] = '\0';
+        if (nseen < 64)
+            seen[nseen++] = (typeof(seen[0])){ id, vendor, product };
+        say("  %-8s %04x:%04x %-3s", (char *)path, vendor, product, usb_speed(speed));
+        if (cls == 9)
+            say(" hub, %u ports", hubports);
+        for (uint8_t k = 0; k < nifs && k < 8; k++) {
+            uint8_t num, alt, nalt, icls, isub, iproto, nep, eps[8];
+            if (usbbus_interface_until(bus, (uint64_t)jam_clock_get() + 2 * S, id, k, &num, &alt,
+                                       &nalt, &icls, &isub, &iproto, &nep, eps) != OK)
+                continue;
+            const char *what = icls == 3 && isub == 1 && iproto == 1 ? " kbd"
+                             : icls == 3 && isub == 1 && iproto == 2 ? " mouse"
+                             : icls == 3 ? " hid" : icls == 8 ? " storage" : icls == 9 ? "" : "";
+            if (icls != 9)
+                say(" if%u %02x.%02x.%02x%s", num, icls, isub, iproto, what);
+        }
+        for (uint32_t j = 0; parent && j < nseen; j++)
+            if (seen[j].id == parent)
+                say(" behind hub %04x:%04x", seen[j].vendor, seen[j].product);
+        if (name[0])
+            say("  \"%s\"", (char *)name);
+        say("\n");
+    }
+    jam_handle_close(bus);
 }
 
 static void cmd_run(int argc, char **argv)
@@ -483,7 +570,7 @@ static void run_command(char *line)
     } else if (!strcmp(c, "devices")) {
         cmd_devices();
     } else if (!strcmp(c, "usb")) {
-        say("usb: no USB bus driver yet (M7 Track A); `devices` lists the controller\n");
+        cmd_usb();
     } else if (!strcmp(c, "ps")) {
         kcmd("ps");
     } else if (!strcmp(c, "run")) {
