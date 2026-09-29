@@ -102,3 +102,32 @@
 # RIGHT_MANAGE); returns once they are all dead. The jobs take no new
 # processes or child jobs afterwards.
 80  job_kill          status    handle_t job
+
+# hardware (M6: M6-PLAN.md) -------------------------------------------------
+# Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,
+# which needs RIGHT_SLICE.
+90  resource_create   status    handle_t parent, uint32_t kind, uint64_t base, uint64_t size, handle_t *out
+# PCI (needs RES_PCI): function `index` (0 ..), ERR_OUT_OF_RANGE past the last.
+91  pci_enum          status    handle_t pci, uint32_t index, struct pci_dev_info *out
+92  pci_device_open   status    handle_t pci, uint32_t index, handle_t *out
+# One function (RES_PCI_DEV). Config access is filtered: BARs, the command
+# register's decode/bus-master bits and the MSI/MSI-X capabilities are
+# refused (ERR_ACCESS_DENIED); width 1, 2 or 4.
+93  pci_config_read   status    handle_t dev, uint32_t offset, uint32_t width, uint32_t *value
+94  pci_config_write  status    handle_t dev, uint32_t offset, uint32_t width, uint32_t value
+95  pci_bar_resource  status    handle_t dev, uint32_t bar, handle_t *out
+# Bus Master Enable needs RIGHT_MANAGE on the device (devmgr has it,
+# drivers don't: devmgr turns it on when it hands out a dma_cap).
+96  pci_bus_master    status    handle_t dev, uint32_t enable
+# Interrupt objects: MSI or MSI-X (flags IRQ_MSIX) vector `index` of the
+# function; bind to a port PERSISTENT for SIG_INTERRUPT; ack re-arms.
+97  interrupt_create_msi status handle_t dev, uint32_t index, uint32_t flags, handle_t *out
+98  interrupt_ack     status    handle_t irq
+# MMIO for processes: a physical VMO over [res.base + offset, + size) with
+# cache type VMO_CACHE_*; refused over RAM or an MSI-X table/PBA page.
+99  vmo_create_physical status  handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out
+# DMA: a capability bound to the function; vmo_pin writes one device
+# address per page to addrs[] and the pin's id to *pin_id.
+100 dma_cap_create    status    handle_t dev, handle_t *out
+101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
+102 vmo_unpin         status    handle_t vmo, uint64_t pin_id

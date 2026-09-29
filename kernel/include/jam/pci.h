@@ -1,0 +1,72 @@
+/* The kernel's PCI core (M6, Track A; kernel/dev/pci.c). The kernel keeps
+ * everything a buggy or hostile driver must not do itself: ECAM access, BAR
+ * sizing, MSI/MSI-X programming and Bus Master Enable. devmgr (a process)
+ * decides which driver gets which device, through resource handles
+ * (jam/resource.h); drivers see only <jam/driver.h>.
+ *
+ * Enumeration runs once at boot (pci_init, after ACPI and before userboot)
+ * and the table never changes afterwards (no hotplug), so `struct pci_dev`
+ * pointers stay valid forever and lookups need no lock. Config accesses go
+ * through one IRQ-safe leaf lock.
+ *
+ * Never touched: the function whose BAR holds the boot framebuffer
+ * (PCI_INFO_DISPLAY) and every bridge. Their command registers are never
+ * written and their BARs never sized (sizing disables decode). */
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <jam/abi.h>
+#include <jam/status.h>
+
+#define PCI_MAX_DEVS 256
+
+struct pci_dev {
+    uint32_t index;                 /* position in the table (pci_enum's index) */
+    struct pci_dev_info info;       /* what pci_enum reports */
+    volatile void *cfg;             /* this function's 4 KiB of ECAM */
+    /* Capabilities (config offsets; 0 = absent). */
+    uint16_t cap_msi, cap_msix, cap_pcie;
+    bool     msi_64, msi_maskable;
+    uint8_t  msix_table_bar, msix_pba_bar;
+    uint32_t msix_table_off, msix_pba_off;
+    volatile uint32_t *msix_table;  /* kernel UC mapping of the table, or NULL */
+};
+
+/* Enumerate every ECAM segment in acpi.ecam[]; logs one line per function. */
+void pci_init(void);
+/* The "Devices" boot entry (`pcilist`): every function into the RESULTS
+ * box, one line each (BDF, ids, class, MSI/MSI-X vector counts). */
+void pci_report(void);
+uint32_t pci_count(void);
+struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
+/* The n-th function with this vendor/device (0xffff = any), or NULL. */
+struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n);
+
+/* Config space, width 1, 2 or 4, offset < 4096 and aligned to width. */
+uint32_t pci_cfg_read(struct pci_dev *d, uint32_t off, uint32_t width);
+void pci_cfg_write(struct pci_dev *d, uint32_t off, uint32_t width, uint32_t v);
+/* Capability offset by id: standard list (id < 0x100) or extended (0x100 +
+ * PCIe extended id); 0 if absent. */
+uint16_t pci_find_cap(struct pci_dev *d, uint32_t id);
+
+/* MSI / MSI-X. `index` is the MSI-X table entry, or 0 for MSI (M6 uses a
+ * single MSI vector). pci_msi_set writes address/data (entry masked while
+ * it changes); pci_msi_enable turns MSI or MSI-X on/off for the function
+ * and disables INTx while either is on. ERR_NOT_SUPPORTED if the function
+ * lacks the capability, ERR_OUT_OF_RANGE for a bad index. */
+status_t pci_msi_set(struct pci_dev *d, bool msix, uint32_t index, uint64_t addr, uint32_t data);
+status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on);
+/* Per-vector mask: MSI-X always, MSI only if msi_maskable (else a no-op
+ * returning ERR_NOT_SUPPORTED). */
+status_t pci_msi_mask(struct pci_dev *d, bool msix, uint32_t index, bool masked);
+
+/* Bus Master Enable, with a config read-back so it has taken effect when
+ * this returns. Refused (ERR_ACCESS_DENIED) for the display and bridges. */
+status_t pci_set_bus_master(struct pci_dev *d, bool on);
+/* Memory decode on (a driver needs its BARs to answer). Same refusals. */
+status_t pci_enable_memory(struct pci_dev *d);
+
+/* Does [phys, phys + len) touch a page holding any function's MSI-X table
+ * or PBA? Such pages are never mapped for anyone but the kernel. */
+bool pci_phys_protected(uint64_t phys, uint64_t len);

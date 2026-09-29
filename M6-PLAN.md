@@ -25,7 +25,7 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
 | Resources | `resource` object: the root of hardware authority (MMIO ranges, PCI devices), sliced into smaller ones; MMIO VMOs for processes need one |
 | DMA | `dma_cap` bound to one PCI function: `vmo_pin` returns device addresses, closing it clears Bus Master Enable then releases the pins; contiguous VMOs below 4 GiB for 32-bit DMA |
 | `<jam/driver.h>` | the only header a driver includes; two implementations (kernel thread with its own handle table / process over syscalls); a build check enforces it |
-| IDL | `tools/genidl.py`: protocol file -> C structs, client stubs, server dispatch; first protocols `pcidev` and `edu` |
+| IDL | `tools/genidl.py`: protocol file -> C structs, client stubs, server dispatch; first protocols `null` (test echo) and `edu` |
 | devmgr | a process started by init: enumerates via the PCI root resource, matches drivers, starts each driver process with exactly its handles |
 | Drivers | `edu` (QEMU), `xhci-noop` (the PC's done test; also works on QEMU's qemu-xhci) |
 
@@ -34,9 +34,12 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
 - **Who does what.** The kernel's PCI core owns ECAM, BAR sizing, MSI/MSI-X
   table/capability writes and Bus Master Enable. devmgr (a process) owns
   *policy*: which driver binds to which device, starting it, handing it
-  handles. A driver never gets config-space access beyond what the
-  `pcidev` protocol (served by devmgr) allows for its own function, never
-  maps an MSI-X table or PBA page, never does port I/O.
+  handles. A driver reads its own function's config space and writes only
+  what the kernel's filter allows (`pci_config_read/write` on its
+  `RES_PCI_DEV`; BARs, decode/bus-master bits and the MSI/MSI-X
+  capabilities are read-only to it); Bus Master Enable needs RIGHT_MANAGE
+  on the device, which only devmgr holds. A driver never maps an MSI-X
+  table or PBA page and never does port I/O.
 - **Boot display is untouchable.** The device whose BAR holds the boot
   framebuffer, and every bridge, are never BAR-sized and their command
   register is never written (sizing disables decode; the console would go
@@ -48,18 +51,18 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
 - **Target CPU**: the allocator spreads vectors over CPUs, preferring
   E-cores then the least-loaded CPU (fewest vectors). CPU0 only if nothing
   else is online. Affinity change is not in M6.
-- **Interrupt object semantics**: fires -> if bound to a port, queues ONE
-  packet (`PKT_INTERRUPT`: key, timestamp of the first unacked fire, count
-  of fires since the last ack) and further fires only bump the count;
-  otherwise raises `SIG_INTERRUPT`. `interrupt_ack` re-arms (clears the
-  signal / allows the next packet). MSI-X vectors with per-vector masking
-  are masked from fire to ack; plain MSI (edge) is left unmasked and
-  coalesced. Destroying the object: disable the vector at the device,
-  wait until no CPU is inside its handler (`irq_sync`), free the vector,
-  drop any queued packet.
-- **Port packets from IRQ context**: the port's packet queue lock is
-  IRQ-safe already (bindings_lock is irqsave); the interrupt path must not
-  allocate: each interrupt object owns its one packet, preallocated.
+- **Interrupt object semantics**: firing raises `SIG_INTERRUPT`; a driver
+  binds the object to a port `PORT_BIND_PERSISTENT` for that signal, so
+  the existing coalescing gives ONE packet whose `count` is the fires
+  since it was queued (no new packet type). `interrupt_ack` clears the
+  signal and unmasks. MSI-X vectors (and maskable MSI) are masked from
+  fire to ack; plain MSI (edge) is left unmasked and coalesced.
+  Destroying the object: disable the vector at the device, wait until no
+  CPU is inside its handler, free the vector.
+- **IRQ context**: the fire path must not allocate or sleep. Raising a
+  signal from an interrupt is already done by timers; Track B checks the
+  whole signal -> observer -> port packet path is IRQ-safe and
+  allocation-free for a persistent binding, and fixes it if not.
 - **Resources**: kinds `RES_ROOT`, `RES_MMIO` (phys base + size),
   `RES_PCI` (all of PCI: enumerate + make per-device handles),
   `RES_PCI_DEV` (one function, segment:bus:dev.fn). A slice must lie inside
@@ -73,23 +76,24 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
   device. Cache: `VM_UC` for registers, `VM_WC` allowed for framebuffers.
 - **DMA**: `dma_cap_create` needs a `RES_PCI_DEV` handle; the cap records
   the BDF; `vmo_pin` needs a `dma_cap` whose device has BME on (devmgr
-  enables it through `pcidev.enable_bus_master`); device address = physical
+  enables it with `pci_bus_master`); device address = physical
   address today. Closing the last handle of the cap: BME off first, then a
   config read-back (flushes posted writes), then unpin. A process kill
   runs the same path. `VMO_CONTIGUOUS | VMO_DMA32` gives a run below 4 GiB.
 - **Driver entry**: `int driver_main(const struct driver_start *s)` where
-  `driver_start` lists the handles by role (`DR_PCIDEV`, `DR_BAR0..5`,
-  `DR_IRQ0..`, `DR_DMA`, `DR_PORT`, `DR_LOG`). In the kernel build a
+  `driver_start` lists the handles by role (`DR_PCIDEV`, `DR_SERVE`,
+  `DR_DMA`, `DR_BAR(n)`, `DR_IRQ(n)`). In the kernel build a
   kernel thread runs it with its own handle table (a *kernel process*: a
   `struct process` with the kernel address space, so handle rights and
   jobs work unchanged); in the process build libos's `_start` decodes the
   startup message into the same struct.
-- **driver.h surface** (both builds): channels, ports, events, timers,
-  object_wait, VMO create/read/write/map/pin, `mmio_map(bar_handle,
-  offset, len) -> volatile void *`, `interrupt_ack`, `dlog(fmt, ...)`,
-  `clock_ns()`, `sleep_ns()`, `thread_start(fn, arg)`, `dmalloc/dfree`
-  (a per-driver heap: libos malloc in the process build, a fixed VMO-backed
-  heap in the kernel build, never kmalloc). Nothing else.
+- **driver.h surface** (both builds; `drivers/include/jam/driver.h` in the
+  foundation is authoritative): `drv_` handles, channels, ports, waiting,
+  VMO create/read/write/map/pin, `drv_mmio_map`, `drv_interrupt_ack`,
+  `drv_pci_config_read/write`, `drv_log`/`drv_report`, clock, sleep,
+  threads, `drv_malloc/drv_free` (libos malloc in the process build, a
+  VMO-backed per-driver heap in the kernel build, never kmalloc), MMIO
+  accessors. Nothing else.
 - **Build check**: each driver is compiled with `-nostdinc -I
   kernel/include/jam/driver-only/` (only `driver.h` and freestanding
   headers visible), and `tools/checkdriver.py` rejects an object whose
@@ -109,18 +113,21 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
 Phase 1 runs four agents in parallel on top of a foundation commit (headers
 + weak stubs + reserved syscall numbers), like M5. Phase 2 joins them.
 
-### Foundation (on main, before the agents)
+### Foundation (on main, before the agents; done)
 - Headers: `jam/pci.h` (kernel PCI core), `jam/interrupt.h` (vectors +
-  interrupt objects), `jam/resource.h`, `jam/dma_cap.h` (bound cap),
-  `jam/driver.h` (+ `driver_start` roles), `jam/idl.h` (wire header).
-- New object types `OBJ_INTERRUPT`, `OBJ_RESOURCE`; `PKT_INTERRUPT`.
-- `abi/syscalls.def`: reserved lines for every M6 syscall (stubs return
-  ERR_NOT_SUPPORTED): `resource_create`, `pci_enum`, `pci_device_open`,
-  `pci_config_read/write` (RES_PCI_DEV, filtered), `pci_bar_resource`,
-  `pci_bus_master`, `interrupt_create_msi`, `interrupt_ack`,
-  `vmo_create_physical`, `dma_cap_create`, `vmo_pin`, `vmo_unpin`.
+  interrupt objects), `jam/resource.h` (+ bound dma_cap),
+  `drivers/include/jam/driver.h` (+ `driver_start` roles).
+- `OBJ_INTERRUPT`, `OBJ_RESOURCE` (already reserved), `SIG_INTERRUPT`,
+  `RIGHT_SLICE`, `RES_*`, `VMO_CACHE_*`, `struct pci_dev_info`, `IRQ_MSIX`,
+  startup role `SR_RESOURCE` (all in `<jam/abi.h>` / `<jam/startup.h>`).
+- `abi/syscalls.def` 90-102: every M6 syscall (the generator's weak
+  stubs return ERR_NOT_SUPPORTED until a track implements them).
+  Track B implements `interrupt_create_msi` and `interrupt_ack`; Track C
+  all the others.
 - `kernel/core/m6_weak.c`: weak stubs for every interface function.
-- QEMU flags (edu).
+- `main.c` calls `pci_init(); resource_init();` after every CPU is online
+  (before ktests/bench/stress/userboot), and `pci_report()` on `pcilist`.
+- QEMU flags (edu) in tools/qemu-test.sh and `make run`.
 
 ### Track A: PCI core (agent 1)
 - ECAM mapping per MCFG segment (UC, kernel vmap), config read/write
@@ -138,8 +145,12 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
 - Log: one line per function (`pci: 00:14.0 8086:7a60 class 0c0330 xHCI
   msi/msix bars ...`) and RESULTS lines: function count, the xHCI and NIC
   lines with their interrupt capabilities.
-- Boot menu entry **"Devices"** (`pcilist`): enumeration only, RESULTS box
-  lists every function (the first PC check of M6).
+- Boot menu entry **"Devices"** (`pcilist`, already in boot/limine.conf;
+  main.c calls `pci_report()`): enumeration only, the RESULTS box lists
+  every function (the first PC check of M6). The box holds 48 lines of
+  120 characters and the PC may have 40+ functions: pack two functions per
+  line if needed, always show the xHCI and NIC in full with their MSI and
+  MSI-X vector counts and BARs.
 - ktests on QEMU q35: host bridge 8086:29c0 present, edu 1234:11e8 found
   with MSI, qemu-xhci 1b36:000d with MSI-X, BAR sizes as QEMU defines them,
   sizing restores the BAR, the display device is skipped.
@@ -155,6 +166,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
 - A kernel-only `interrupt_create_virtual` + `interrupt_fire_test` for
   ktests (no device needed).
 - Syscalls `interrupt_create_msi` (RES_PCI_DEV), `interrupt_ack`.
+- Check/fix: the signal -> port path from IRQ context (above).
 - Bench line: "MSI round trip: device raise -> driver thread wakes" (edu
   raise register, in kernel; process version in phase 2).
 - ktests: coalescing (fire 3x before ack -> one packet, count 3), ack
@@ -171,9 +183,13 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
 - `dma_cap` bound to a BDF; `vmo_pin`/`vmo_unpin` syscalls with user
   copies of the address list; the close path (BME off, read-back, unpin);
   `VMO_DMA32` contiguous allocation (pmm zone already exists).
+- The rest of the M6 syscalls: `resource_create`, `pci_enum`,
+  `pci_device_open`, `pci_config_read/write` with the filter,
+  `pci_bar_resource`, `pci_bus_master` (RIGHT_MANAGE); userboot puts the
+  root resource into init's startup message (`SR_RESOURCE`).
 - ktests: slice outside parent refused, MMIO over RAM refused, MSI-X page
   refused, pin without BME refused, close clears BME (read config back),
-  kill mid-pin, job clean afterwards.
+  config filter, kill mid-pin, job clean afterwards.
 
 ### Track D: driver.h, both builds, IDL, build check (agent 4)
 - `driver.h` + the kernel implementation (kernel process: `struct process`
@@ -181,7 +197,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   + the libos implementation; `dmalloc` in both.
 - Build: `drivers/<name>/*.c` compiled twice (kernel object linked into
   jamos.elf; user ELF into bootfs), include isolation, `checkdriver.py`.
-- `tools/genidl.py` + `abi/idl/pcidev.idl`, `abi/idl/edu.idl`; generated
+- `tools/genidl.py` + `abi/idl/null.idl`, `abi/idl/edu.idl`; generated
   code committed and checked for staleness like syscalls.def.
 - A tiny `drivers/null` test driver (echo server over an IDL protocol)
   that runs both ways, with ktests/utests using the generated client.
@@ -189,9 +205,9 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
 ### Phase 2: devmgr, edu, xhci-noop (after the merge; 1-2 agents)
 - **devmgr** (user process from bootfs, started by init): `pci_enum`,
   match table (vendor/device/class -> driver ELF), per device:
-  `pci_device_open`, BAR resources, interrupt objects, dma_cap, a
-  `pcidev` channel it serves (filtered config access, bus master), spawn
-  the driver in a child job with a quota. Logs bindings.
+  `pci_device_open`, BAR resources, interrupt objects, dma_cap (and
+  `pci_bus_master` on), a copy of the device handle without RIGHT_MANAGE,
+  spawn the driver in a child job with a quota. Logs bindings.
 - **edu driver**: identification register, liveness (0x04 invert),
   factorial with and without interrupt, DMA RAM -> device -> RAM through a
   pinned DMA32 VMO with a completion interrupt; exposes the `edu` IDL

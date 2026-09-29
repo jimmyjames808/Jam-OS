@@ -25,6 +25,7 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -device qemu-xhci,id=xhci \
     -drive if=none,id=usbstick,format=raw,file="$img" \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
+    -device edu,dma_mask=0xffffffff \
     -serial file:"$log" -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
 qpid=$!

@@ -48,6 +48,19 @@
 #define SYS_process_get_info     78
 #define SYS_thread_set_priority  79
 #define SYS_job_kill             80
+#define SYS_resource_create      90
+#define SYS_pci_enum             91
+#define SYS_pci_device_open      92
+#define SYS_pci_config_read      93
+#define SYS_pci_config_write     94
+#define SYS_pci_bar_resource     95
+#define SYS_pci_bus_master       96
+#define SYS_interrupt_create_msi 97
+#define SYS_interrupt_ack        98
+#define SYS_vmo_create_physical  99
+#define SYS_dma_cap_create       100
+#define SYS_vmo_pin              101
+#define SYS_vmo_unpin            102
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 81
+#define SYSCALL_COUNT 103

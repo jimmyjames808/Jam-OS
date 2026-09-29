@@ -22,6 +22,8 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
+#include <jam/pci.h>
+#include <jam/resource.h>
 #include <jam/x86.h>
 
 #define JAMOS_VERSION   "0.0.9-m5.5"
@@ -120,6 +122,12 @@ _Noreturn static void kmain_stage2(void *arg)
 
     kprintf("measuring ticks on every CPU for 1 s...\n");
     bool ok = smp_report(1000);
+    /* M6: PCI enumeration and the resource tree, once every CPU is online
+     * (the vector allocator spreads MSIs over them). */
+    pci_init();
+    resource_init();
+    if (cmdline_has("pcilist"))
+        pci_report();
     if (cmdline_has("selftest"))
         selftest_run_smp();
 #ifdef JAM_NO_KTESTS

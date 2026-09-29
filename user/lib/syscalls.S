@@ -387,4 +387,114 @@ jam_job_kill:
     ret
     .size jam_job_kill, . - jam_job_kill
 
+    .globl jam_resource_create
+    .type jam_resource_create, @function
+jam_resource_create:
+    mov %rcx, %r10
+    mov $SYS_resource_create, %eax
+    syscall
+    ret
+    .size jam_resource_create, . - jam_resource_create
+
+    .globl jam_pci_enum
+    .type jam_pci_enum, @function
+jam_pci_enum:
+    mov $SYS_pci_enum, %eax
+    syscall
+    ret
+    .size jam_pci_enum, . - jam_pci_enum
+
+    .globl jam_pci_device_open
+    .type jam_pci_device_open, @function
+jam_pci_device_open:
+    mov $SYS_pci_device_open, %eax
+    syscall
+    ret
+    .size jam_pci_device_open, . - jam_pci_device_open
+
+    .globl jam_pci_config_read
+    .type jam_pci_config_read, @function
+jam_pci_config_read:
+    mov %rcx, %r10
+    mov $SYS_pci_config_read, %eax
+    syscall
+    ret
+    .size jam_pci_config_read, . - jam_pci_config_read
+
+    .globl jam_pci_config_write
+    .type jam_pci_config_write, @function
+jam_pci_config_write:
+    mov %rcx, %r10
+    mov $SYS_pci_config_write, %eax
+    syscall
+    ret
+    .size jam_pci_config_write, . - jam_pci_config_write
+
+    .globl jam_pci_bar_resource
+    .type jam_pci_bar_resource, @function
+jam_pci_bar_resource:
+    mov $SYS_pci_bar_resource, %eax
+    syscall
+    ret
+    .size jam_pci_bar_resource, . - jam_pci_bar_resource
+
+    .globl jam_pci_bus_master
+    .type jam_pci_bus_master, @function
+jam_pci_bus_master:
+    mov $SYS_pci_bus_master, %eax
+    syscall
+    ret
+    .size jam_pci_bus_master, . - jam_pci_bus_master
+
+    .globl jam_interrupt_create_msi
+    .type jam_interrupt_create_msi, @function
+jam_interrupt_create_msi:
+    mov %rcx, %r10
+    mov $SYS_interrupt_create_msi, %eax
+    syscall
+    ret
+    .size jam_interrupt_create_msi, . - jam_interrupt_create_msi
+
+    .globl jam_interrupt_ack
+    .type jam_interrupt_ack, @function
+jam_interrupt_ack:
+    mov $SYS_interrupt_ack, %eax
+    syscall
+    ret
+    .size jam_interrupt_ack, . - jam_interrupt_ack
+
+    .globl jam_vmo_create_physical
+    .type jam_vmo_create_physical, @function
+jam_vmo_create_physical:
+    mov %rcx, %r10
+    mov $SYS_vmo_create_physical, %eax
+    syscall
+    ret
+    .size jam_vmo_create_physical, . - jam_vmo_create_physical
+
+    .globl jam_dma_cap_create
+    .type jam_dma_cap_create, @function
+jam_dma_cap_create:
+    mov $SYS_dma_cap_create, %eax
+    syscall
+    ret
+    .size jam_dma_cap_create, . - jam_dma_cap_create
+
+    .globl jam_vmo_pin
+    .type jam_vmo_pin, @function
+jam_vmo_pin:
+    mov %rcx, %r10
+    mov $SYS_vmo_pin, %eax
+    syscall
+    ret
+    .size jam_vmo_pin, . - jam_vmo_pin
+
+    .globl jam_vmo_unpin
+    .type jam_vmo_unpin, @function
+jam_vmo_unpin:
+    mov $SYS_vmo_unpin, %eax
+    syscall
+    ret
+    .size jam_vmo_unpin, . - jam_vmo_unpin
+
     .section .note.GNU-stack, "", @progbits

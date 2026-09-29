@@ -30,6 +30,7 @@ typedef uint32_t rights_t;
 #define RIGHT_WAIT      (1u << 7)   /* may wait on it / bind it to a port */
 #define RIGHT_INSPECT   (1u << 8)
 #define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
+#define RIGHT_SLICE     (1u << 10)  /* M6 resources: make a smaller resource inside this one */
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
@@ -52,6 +53,7 @@ typedef uint32_t signals_t;
 #define SIG_PEER_CLOSED (1u << 2)
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
 #define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good (M5) */
+#define SIG_INTERRUPT   (1u << 5)   /* M6 interrupt objects: fired, not acked yet */
 #define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
 
 /* Deadlines are absolute nanoseconds of uptime. Also defined (identically)
@@ -64,7 +66,9 @@ typedef uint32_t signals_t;
 enum port_packet_type {
     PORT_PACKET_SIGNAL = 1,
     PORT_PACKET_USER = 2,
-    /* M6: PORT_PACKET_INTERRUPT */
+    /* M6: interrupts arrive as PORT_PACKET_SIGNAL packets: bind the
+     * interrupt object PERSISTENT for SIG_INTERRUPT; `count` says how many
+     * times it fired before the packet was read; interrupt_ack re-arms. */
 };
 
 struct port_packet {
@@ -188,3 +192,49 @@ struct channel_call_args {
     uint64_t rhactual;         /* user address of a uint32_t, or 0 */
     uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever */
 };
+
+/* hardware (M6) --------------------------------------------------------------
+ * Resources are the authority over hardware: userboot gives init the root,
+ * which slices it (resource_create) for devmgr; devmgr turns RES_PCI into
+ * one RES_PCI_DEV per function (pci_device_open) and each BAR into a
+ * RES_MMIO (pci_bar_resource) for the driver. */
+
+#define RES_ROOT     1   /* everything */
+#define RES_MMIO     2   /* physical range [base, base + size); never RAM */
+#define RES_PCI      3   /* all PCI functions: pci_enum, pci_device_open */
+#define RES_PCI_DEV  4   /* one PCI function (index from pci_enum) */
+
+/* vmo_create_physical cache types. */
+#define VMO_CACHE_WB 0
+#define VMO_CACHE_UC 1   /* device registers */
+#define VMO_CACHE_WC 2   /* framebuffers */
+
+/* pci_enum. BAR flags: PCI_BAR_* ; size 0 = BAR not implemented. */
+#define PCI_BAR_MMIO     (1u << 0)
+#define PCI_BAR_64       (1u << 1)
+#define PCI_BAR_PREFETCH (1u << 2)
+#define PCI_BAR_IO       (1u << 3)   /* port I/O: never handed to drivers */
+#define PCI_BAR_UNSIZED  (1u << 4)   /* not sized (boot display, bridges): size unknown */
+
+#define PCI_INFO_BRIDGE  (1u << 0)
+#define PCI_INFO_DISPLAY (1u << 1)   /* holds the boot framebuffer: never touched */
+
+struct pci_dev_info {
+    uint16_t segment;
+    uint8_t  bus, dev, fn;
+    uint8_t  header_type;
+    uint16_t vendor, device;
+    uint8_t  class_code, subclass, prog_if, revision;
+    uint32_t flags;           /* PCI_INFO_* */
+    uint16_t msi_vectors;     /* 0 = no MSI capability */
+    uint16_t msix_vectors;    /* 0 = no MSI-X capability */
+    struct {
+        uint64_t phys;
+        uint64_t size;
+        uint32_t flags;       /* PCI_BAR_* */
+        uint32_t reserved;
+    } bar[6];                 /* a 64-bit BAR fills bar[i]; bar[i + 1] is empty */
+};
+
+/* interrupt_create_msi flags */
+#define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */

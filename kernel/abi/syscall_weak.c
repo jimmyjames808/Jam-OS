@@ -282,3 +282,81 @@ WEAK int64_t sysc_job_kill(handle_t job)
     (void)job;
     return ERR_NOT_SUPPORTED;
 }
+
+WEAK int64_t sysc_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size, uint64_t out)
+{
+    (void)parent, (void)kind, (void)base, (void)size, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_enum(handle_t pci, uint32_t index, uint64_t out)
+{
+    (void)pci, (void)index, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_device_open(handle_t pci, uint32_t index, uint64_t out)
+{
+    (void)pci, (void)index, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_config_read(handle_t dev, uint32_t offset, uint32_t width, uint64_t value)
+{
+    (void)dev, (void)offset, (void)width, (void)value;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_config_write(handle_t dev, uint32_t offset, uint32_t width, uint32_t value)
+{
+    (void)dev, (void)offset, (void)width, (void)value;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_bar_resource(handle_t dev, uint32_t bar, uint64_t out)
+{
+    (void)dev, (void)bar, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable)
+{
+    (void)dev, (void)enable;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_interrupt_create_msi(handle_t dev, uint32_t index, uint32_t flags, uint64_t out)
+{
+    (void)dev, (void)index, (void)flags, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_interrupt_ack(handle_t irq)
+{
+    (void)irq;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache, uint64_t out)
+{
+    (void)res, (void)offset, (void)size, (void)cache, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_dma_cap_create(handle_t dev, uint64_t out)
+{
+    (void)dev, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs, uint64_t pin_id)
+{
+    (void)vmo, (void)dma, (void)offset, (void)len, (void)addrs, (void)pin_id;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_vmo_unpin(handle_t vmo, uint64_t pin_id)
+{
+    (void)vmo, (void)pin_id;
+    return ERR_NOT_SUPPORTED;
+}

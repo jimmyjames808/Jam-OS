@@ -179,6 +179,7 @@ QEMU_FLAGS := -M q35 -m 2G -smp 4 -cpu max \
     -drive if=none,id=usbstick,format=raw,file=$(IMAGE) \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
     -device usb-kbd,bus=xhci.0 \
+    -device edu,dma_mask=0xffffffff \
     -netdev user,id=net0 -device e1000e,netdev=net0 \
     -serial stdio -no-reboot
 
