@@ -523,6 +523,11 @@ static status_t b_open_interface(void *ctx, uint32_t id, uint8_t num, handle_t *
     struct usbdev *d = dev_find(id);
     if (!d || !d->configured)
         return ERR_NOT_FOUND;
+    /* A hub is usb-bus's own: a client's set_interface or endpoint calls
+     * would take its status-change endpoint away (M7 review). */
+    struct iface *f = usb_iface(d, num);
+    if (d->is_hub || (f && f->cls == 9))
+        return ERR_ACCESS_DENIED;
     return iface_channel(d, num, out, NULL);
 }
 

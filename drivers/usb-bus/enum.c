@@ -690,20 +690,17 @@ static uint32_t configure_eps(struct usbdev *d, uint32_t add, uint32_t drop)
     return cc;
 }
 
+/* SET_INTERFACE. The controller and usb-bus must agree on every endpoint
+ * whatever fails: the old endpoints are dropped by a Configure Endpoint of
+ * their own first (refused: nothing changed on either side, every old
+ * endpoint still configured with its ring), and only then do the new ones
+ * get rings and an add (refused: configure_eps frees their rings, none is
+ * configured). A ring is never freed while the controller's context still
+ * points at it. */
 uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
 {
     if (alt >= f->num_alts)
         return CC_PARAMETER;
-    /* Close and drop this interface's endpoints. */
-    uint32_t drop = 0, add = 0;
-    for (int k = 2; k < 32; k++) {
-        struct ep *e = &d->eps[k];
-        if (e->dci && e->ifnum == f->number) {
-            ep_close(d, e);
-            if (e->configured)
-                drop |= 1u << k;
-        }
-    }
     /* Find the alternate setting's endpoints. */
     const uint8_t *p = d->cfg, *end = d->cfg + d->cfg_len;
     bool in_alt = false, found = false;
@@ -740,19 +737,31 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     }
     if (!found)
         return CC_PARAMETER;
+    /* Close this interface's endpoints, then drop them. */
+    uint32_t drop = 0, add = 0, cc;
+    for (int k = 2; k < 32; k++) {
+        struct ep *e = &d->eps[k];
+        if (e->dci && e->ifnum == f->number) {
+            ep_close(d, e);
+            if (e->configured)
+                drop |= 1u << k;
+        }
+    }
+    if (drop && (cc = configure_eps(d, 0, drop)) != CC_SUCCESS) {
+        drv_log("usb %s: if%u: dropping its endpoints for alt %u: %s (unchanged)", d->path,
+                f->number, alt, cc_str(cc));
+        return cc;
+    }
     for (int i = 0; i < nep; i++) {
         struct ep *n = &neweps[i];
         if (n->dci < 2 || n->dci >= 32)
             continue;
         struct ep *e = &d->eps[n->dci];
-        bool others = e->dci && e->ifnum != f->number;
-        if (others || (e->configured && !(drop & (1u << n->dci))))
+        if ((e->dci && e->ifnum != f->number) || e->configured)
             continue;   /* another interface's; leave it (and don't list it) */
         addrs[nacc++] = n->addr;
         int kb = e->buf_page;
-        if (drop & (1u << n->dci))
-            ring_free(&g_hc, &e->ring);   /* a new ring: the context starts at its first TRB */
-        struct ring keep = e->ring;
+        struct ring keep = e->ring;   /* none after the drop: a new one comes with the add */
         *e = *n;
         e->ring = keep;
         e->buf_page = kb;
@@ -762,11 +771,11 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
         if (e->type == EPT_INTR_IN)
             add |= 1u << n->dci;
     }
-    uint32_t cc = CC_SUCCESS;
-    if (add || drop)
-        cc = configure_eps(d, add, drop);
-    if (cc != CC_SUCCESS)
+    if (add && (cc = configure_eps(d, add, 0)) != CC_SUCCESS) {
+        drv_log("usb %s: if%u: adding the endpoints of alt %u: %s (none configured)", d->path,
+                f->number, alt, cc_str(cc));
         return cc;
+    }
     uint32_t n = 0;
     cc = usb_control(d, 0x01, 11, alt, f->number, 0, NULL, &n, 1000);
     if (cc != CC_SUCCESS && !(cc == CC_STALL && alt == 0 && f->num_alts == 1))
