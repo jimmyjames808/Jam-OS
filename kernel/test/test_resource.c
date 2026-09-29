@@ -669,7 +669,8 @@ static struct pci_dev *edu(void)
 {
     struct pci_dev *d = pci_find(EDU_VENDOR, EDU_DEVICE, 0);
     if (!d)
-        kprintf("ktest %s: no edu device (PCI core not merged yet?), skipped\n", ktest_current);
+        kprintf("ktest %s: no free edu device (QEMU -device edu only; from the shell its "
+                "driver has it), skipped\n", ktest_current);
     return d;
 }
 
