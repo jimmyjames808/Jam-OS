@@ -507,6 +507,31 @@ back on a panic, even from a compositor; M7's HID driver handles a mouse
 as well as a keyboard and sends events through a protocol a compositor
 can take over; M11's IOMMU matters most for GPUs.
 
+## Audio (future track, any time after M7)
+
+Decided 2026-09-29: the user listens on **headphones in the case's front
+panel jack**. That jack hangs off the motherboard's **Intel HD Audio
+controller (00:1f.3, 8086:7a50, MSI)** and its Realtek codec (the ASUS
+TUF B760-PLUS WIFI uses an ALC897-class codec; confirm the vendor/device
+id on the PC). A separate track like graphics: it needs only M6 (PCI, MSI,
+DMA, drivers as processes) and M7 (a shell to start it), not storage or
+networking, so it can be picked up whenever wanted.
+
+- **A1: HD Audio driver + `beep`.** Controller reset, CORB/RIRB command
+  rings, codec enumeration (vendor id, the widget graph: pin complexes,
+  mixers, DACs, amplifiers), find the front-panel headphone pin (default
+  configuration "front, headphone out"; jack detect via unsolicited
+  responses), route a DAC to it, unmute and set gains, one output stream
+  with a Buffer Descriptor List in a pinned DMA32 VMO, MSI on buffer
+  completion. Done: `beep` in the shell plays a tone in the headphones on
+  the real PC; unplugging/replugging the headphones is logged.
+- **A2: `audio` protocol + mixer service.** Programs open a stream (rate,
+  format), write samples through a shared VMO ring; a mixer process mixes
+  streams and owns the device; volume from the shell. Done: two programs
+  play at once. WAV playback from `/data` once M8 exists.
+- **A3 (later):** input (the front mic jack), HDMI/DP audio on the RTX
+  (01:00.1, 10de:22bb), USB audio class devices on M7's usb-bus.
+
 ## Storage
 
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
