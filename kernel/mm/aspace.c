@@ -105,8 +105,9 @@
  * lock-free atomics, fine under pt_lock.
  *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
- * kernel CR3, with PCIDs a cheap load that keeps the user entries); one decommit batch holds the VMO lock (with
- * interrupts off) for up to 512 pages times the number of mappings of the
+ * kernel CR3, with PCIDs a cheap load that keeps the user entries); one
+ * decommit batch holds the VMO lock (with interrupts off) for up to 512
+ * pages times the number of mappings of the
  * VMO that overlap them, so a VMO mapped thousands of times makes that
  * latency grow. The region lock must never be held across a user copy:
  * the copy's fault would take it again. */

@@ -1,4 +1,5 @@
-/* A driver can't pass its hardware handles on. devmgr hands them over with channel_write_rights (syscall 121) minus RIGHT_DUPLICATE and
+/* A driver can't pass its hardware handles on. devmgr hands them over with
+ * channel_write_rights (syscall 121) minus RIGHT_DUPLICATE and
  * RIGHT_TRANSFER, and a physical VMO made from such a BAR inherits that.
  *
  *   chan_write_rights            the system call's rules

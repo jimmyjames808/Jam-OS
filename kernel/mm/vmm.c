@@ -148,11 +148,12 @@ void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 
     /* Flush the removed range from every CPU's TLB, INCLUDING this one, with
      * preemption disabled across the whole decision. Doing the local flush
-     * and then shooting down only the OTHER CPUs (as before) let a migration
-     * in between move us to a CPU that never got flushed, so a use after
-     * unmap silently kept working. Keeping preemption off pins "this CPU" so
+     * and then shooting down only the OTHER CPUs would let a migration in
+     * between move us to a CPU that never got flushed, so a use after unmap
+     * would silently keep working. Keeping preemption off pins "this CPU" so
      * the local flush plus the remote shootdown together cover everyone
-     * (test: repro_unmap_migrate_stale_tlb). For a non-kernel or pre-SMP unmap only the local flush is needed. */
+     * (test: repro_unmap_migrate_stale_tlb). For a non-kernel or pre-SMP
+     * unmap only the local flush is needed. */
     preempt_disable();
     tlb_flush_local(start, end - start);
     if (kernel) {

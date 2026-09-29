@@ -336,8 +336,10 @@ void lapic_timer_start(unsigned hz)
 const char *lapic_timer_mode(void)
 {
     switch (timer_mode) {
-    case TMR_MODE_DEADLINE: return lapic_oneshot ? "TSC-deadline, one-shot timers" : "TSC-deadline";
-    case TMR_MODE_ONESHOT:  return lapic_oneshot ? "APIC one-shot, one-shot timers" : "APIC one-shot";
+    case TMR_MODE_DEADLINE:
+        return lapic_oneshot ? "TSC-deadline, one-shot timers" : "TSC-deadline";
+    case TMR_MODE_ONESHOT:
+        return lapic_oneshot ? "APIC one-shot, one-shot timers" : "APIC one-shot";
     default:                return "APIC periodic";
     }
 }

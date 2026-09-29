@@ -34,7 +34,8 @@ static const char *class_name(const struct pci_dev *d)
     case 0x0805: return "SD host";
     case 0x0880: return "system";
     case 0x0c03:
-        return p == 0x30 ? "xHCI" : p == 0x20 ? "EHCI" : p == 0x10 ? "OHCI" : p == 0 ? "UHCI" : "USB";
+        return p == 0x30 ? "xHCI" : p == 0x20 ? "EHCI" : p == 0x10 ? "OHCI"
+             : p == 0 ? "UHCI" : "USB";
     case 0x0c05: return "SMBus";
     case 0x0c80: return "serial bus";
     case 0x1180: return "signal";
@@ -147,7 +148,8 @@ static int fmt_entry(char *buf, size_t n, const struct pci_dev *d, bool compact)
 {
     char bdf[16];
     pci_fmt_bdf(bdf, sizeof(bdf), d);
-    const char *fl = (d->info.flags & PCI_INFO_DISPLAY) ? " D" : (d->info.flags & PCI_INFO_BRIDGE) ? " B" : "";
+    const char *fl = (d->info.flags & PCI_INFO_DISPLAY)  ? " D"
+                   : (d->info.flags & PCI_INFO_BRIDGE) ? " B" : "";
     if (compact)
         return ksnprintf(buf, n, "%s %04x:%04x %02x%02x%02x m%u x%u%s", bdf, d->info.vendor,
                          d->info.device, d->info.class_code, d->info.subclass, d->info.prog_if,

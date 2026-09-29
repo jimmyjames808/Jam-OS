@@ -18,7 +18,8 @@ _Static_assert(sizeof(struct port_packet) == 48, "port_packet layout");
 _Static_assert(offsetof(struct port_packet, signal.count) == 24, "port_packet layout");
 
 _Static_assert(sizeof(struct channel_read_args) == 48, "channel_read_args layout");
-_Static_assert(offsetof(struct channel_read_args, actual_handles) == 40, "channel_read_args layout");
+_Static_assert(offsetof(struct channel_read_args, actual_handles) == 40,
+               "channel_read_args layout");
 _Static_assert(sizeof(struct channel_call_args) == 80, "channel_call_args layout");
 _Static_assert(offsetof(struct channel_call_args, deadline_ns) == 72, "channel_call_args layout");
 

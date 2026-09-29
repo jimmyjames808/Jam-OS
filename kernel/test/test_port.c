@@ -426,10 +426,12 @@ KTEST(port_destroy_frees_everything)
         os[i] = pobj_new(&destroyed);
 
     KT_EQ(port_bind(p, &os[0]->base, 0, SIG_SIGNALED, PORT_BIND_ONCE), OK);        /* armed */
-    KT_EQ(port_bind(p, &os[1]->base, 1, SIG_SIGNALED, PORT_BIND_ONCE), OK);        /* fired, queued */
+    /* fired, queued */
+    KT_EQ(port_bind(p, &os[1]->base, 1, SIG_SIGNALED, PORT_BIND_ONCE), OK);
     KT_EQ(port_bind(p, &os[2]->base, 2, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);  /* idle */
     KT_EQ(port_bind(p, &os[3]->base, 3, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);  /* queued */
-    KT_EQ(port_bind(p, &os[4]->base, 4, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);  /* unbound, queued */
+    /* unbound, queued */
+    KT_EQ(port_bind(p, &os[4]->base, 4, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
     KT_EQ(port_bind(p, &os[5]->base, 5, SIG_READABLE, PORT_BIND_PERSISTENT), OK);  /* two ways */
     KT_EQ(port_bind(p, &os[5]->base, 6, SIG_READABLE, PORT_BIND_ONCE), OK);
     kobject_signal(&os[1]->base, 0, SIG_SIGNALED);

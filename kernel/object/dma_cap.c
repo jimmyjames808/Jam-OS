@@ -122,11 +122,12 @@ static void release_batch(struct pci_dev *d, struct q_batch *b, const char *why)
     fn->releasing--;
     spin_unlock_irqrestore(&q_lock, f);
     if (changed)
-        kprintf("dma: %02x:%02x.%x: %lu quarantined page%s CHANGED while held: the device wrote them "
-                "after its dma_cap closed (a driver turned bus mastering on without "
-                "quiescing it?)\n", BDF(d), changed, changed == 1 ? "" : "s");
-    kprintf("dma: %02x:%02x.%x: quarantine released (%lu pin%s, %lu page%s, %s)\n", BDF(d), b->npins,
-            b->npins == 1 ? "" : "s", pages, pages == 1 ? "" : "s", why);
+        kprintf("dma: %02x:%02x.%x: %lu quarantined page%s CHANGED while held: "
+                "the device wrote them after its dma_cap closed (a driver turned bus "
+                "mastering on without quiescing it?)\n", BDF(d), changed,
+                changed == 1 ? "" : "s");
+    kprintf("dma: %02x:%02x.%x: quarantine released (%lu pin%s, %lu page%s, %s)\n", BDF(d),
+            b->npins, b->npins == 1 ? "" : "s", pages, pages == 1 ? "" : "s", why);
     kfree(b);
 }
 
@@ -243,8 +244,9 @@ static void quarantine(struct dma_cap *c)
     fn->pins += b->npins;
     fn->pages += b->pages;
     spin_unlock_irqrestore(&q_lock, f);
-    kprintf("dma: %02x:%02x.%x: dma_cap closed with %lu pin%s (%lu page%s) still held: quarantined\n",
-            BDF(c->dev), b->npins, b->npins == 1 ? "" : "s", b->pages, b->pages == 1 ? "" : "s");
+    kprintf("dma: %02x:%02x.%x: dma_cap closed with %lu pin%s (%lu page%s) still held: "
+            "quarantined\n", BDF(c->dev), b->npins, b->npins == 1 ? "" : "s", b->pages,
+            b->pages == 1 ? "" : "s");
     wake_reaper();
 }
 

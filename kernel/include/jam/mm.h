@@ -60,7 +60,10 @@ static inline struct page *pfn_to_page(uint64_t pfn) { return &vmemmap[pfn]; }
 static inline uint64_t page_to_pfn(const struct page *p) { return (uint64_t)(p - vmemmap); }
 static inline uint64_t page_to_phys(const struct page *p) { return page_to_pfn(p) << PAGE_SHIFT; }
 static inline void *page_to_virt(const struct page *p) { return phys_to_virt(page_to_phys(p)); }
-static inline struct page *virt_to_page(const void *va) { return pfn_to_page(virt_to_phys(va) >> PAGE_SHIFT); }
+static inline struct page *virt_to_page(const void *va)
+{
+    return pfn_to_page(virt_to_phys(va) >> PAGE_SHIFT);
+}
 
 void         pmm_early_init(const struct boot_info *bi);
 /* Bump allocator used only while building the first page tables. */

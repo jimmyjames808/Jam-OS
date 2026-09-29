@@ -57,8 +57,10 @@ status_t sys_event_create(struct handle_table *t, handle_t *out);
 status_t sys_event_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set);
 /* New timer: RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE. */
 status_t sys_timer_create(struct handle_table *t, handle_t *out);
-status_t sys_timer_set(struct handle_table *t, handle_t h, uint64_t deadline_ns);   /* RIGHT_WRITE */
-status_t sys_timer_cancel(struct handle_table *t, handle_t h);                      /* RIGHT_WRITE */
+/* RIGHT_WRITE. */
+status_t sys_timer_set(struct handle_table *t, handle_t h, uint64_t deadline_ns);
+/* RIGHT_WRITE. */
+status_t sys_timer_cancel(struct handle_table *t, handle_t h);
 /* New port: RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE. */
 status_t sys_port_create(struct handle_table *t, handle_t *out);
 /* Port needs RIGHT_WRITE, the watched object (any type) RIGHT_WAIT. */

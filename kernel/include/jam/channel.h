@@ -30,7 +30,9 @@
 
 #define CHANNEL_MAX_BYTES   65536
 #define CHANNEL_MAX_HANDLES 64
-#define CHANNEL_MAX_QUEUED  1024   /* messages waiting on one endpoint; write fails ERR_SHOULD_WAIT beyond */
+/* Messages waiting on one endpoint; a write beyond that fails with
+ * ERR_SHOULD_WAIT. */
+#define CHANNEL_MAX_QUEUED  1024
 
 struct channel;   /* embeds struct kobject first, type OBJ_CHANNEL */
 

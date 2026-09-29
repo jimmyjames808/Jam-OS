@@ -55,7 +55,8 @@ static void acpi_reset(void)
 void reboot_describe(char *buf, size_t size)
 {
     if (acpi.has_reset_reg)
-        ksnprintf(buf, size, "ACPI reset register (%s 0x%lx = 0x%x), then 0xCF9, 8042, triple fault",
+        ksnprintf(buf, size,
+                  "ACPI reset register (%s 0x%lx = 0x%x), then 0xCF9, 8042, triple fault",
                   acpi.reset_reg.space == 1 ? "io" : acpi.reset_reg.space == 0 ? "mem" : "pci",
                   acpi.reset_reg.address, acpi.reset_value);
     else

@@ -110,10 +110,28 @@ def parse():
     return sorted(calls, key=lambda c: c.nr)
 
 
-def kernel_params(c):
+def wrap(head, parts, tail, width=100):
+    """head + ", ".join(parts) + tail, on one line if it fits in `width`
+    columns, else broken after commas with continuation lines aligned just
+    past the opening parenthesis (the house style for long calls)."""
+    one = head + ", ".join(parts) + tail
+    if len(one) <= width:
+        return [one]
+    lines, cur, pad = [], head, " " * len(head)
+    for i, p in enumerate(parts):
+        piece = p + (", " if i < len(parts) - 1 else tail)
+        if cur != head and len(cur + piece.rstrip()) > width:
+            lines.append(cur.rstrip())
+            cur = pad
+        cur += piece
+    lines.append(cur)
+    return lines
+
+
+def kernel_param_list(c):
     if c.struct:
-        return f"const struct {c.struct} *args"
-    return ", ".join(a.kernel_decl() for a in c.args) or "void"
+        return [f"const struct {c.struct} *args"]
+    return [a.kernel_decl() for a in c.args] or ["void"]
 
 
 def user_params(c):
@@ -140,7 +158,7 @@ def gen_impl(calls):
            " * goes to user rax. */",
            "#pragma once", "", "#include <stdint.h>", "#include <jam/abi.h>", ""]
     for c in calls:
-        out.append(f"int64_t sysc_{c.name}({kernel_params(c)});")
+        out += wrap(f"int64_t sysc_{c.name}(", kernel_param_list(c), ");")
     out.append("")
     return "\n".join(out)
 
@@ -165,9 +183,9 @@ def gen_table(calls):
         else:
             if not c.args:
                 out.append("    (void)f;")
-            vals = [f"f->args[{i}]" if a.pointer or a.ctype == "uint64_t" else f"({a.ctype})f->args[{i}]"
-                    for i, a in enumerate(c.args)]
-            out.append(f"    return sysc_{c.name}({', '.join(vals)});")
+            vals = [f"f->args[{i}]" if a.pointer or a.ctype == "uint64_t"
+                    else f"({a.ctype})f->args[{i}]" for i, a in enumerate(c.args)]
+            out += wrap(f"    return sysc_{c.name}(", vals, ");")
         out.append("}")
         out.append("")
     out.append("static const syscall_fn syscall_table[SYSCALL_COUNT] = {")
