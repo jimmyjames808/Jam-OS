@@ -121,8 +121,10 @@ struct process *process_current(void);
 /* debug_write / debug_report: print buf[0..n) (kernel memory) line by line
  * as "[name] line"; with report_it the lines also go into the RESULTS box
  * (without the prefix; a few dozen at most across all processes). Control
- * characters become '?'. */
-void process_debug_write(struct process *p, const char *buf, size_t n, bool report_it);
+ * characters become '?'. Printing happens with no lock held; plain lines
+ * are rate-limited per process (100 at once, then 50 a second; the rest
+ * are dropped and counted). Returns how many lines were printed. */
+size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it);
 
 /* Start a NEW process: move *arg0 (if arg0->obj is set) into its handle
  * table and start ut with rdi = that handle's value (0 if none) and rsi =

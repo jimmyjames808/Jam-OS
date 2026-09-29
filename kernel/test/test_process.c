@@ -12,6 +12,7 @@
 #include <jam/channel.h>
 #include <jam/dbghook.h>
 #include <jam/elf.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/process.h>
@@ -274,6 +275,31 @@ KTEST(proc_never_started)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, 0x400000, 0, &none, 0, NULL), ERR_BAD_STATE);
     kobject_unref(uthread_kobject(u));   /* its reference on p was the last */
+    job_is_empty(j);
+    job_unref(j);
+}
+
+/* Review R7: debug_write prints with no lock held and a process can't
+ * flood the console: 100 lines at once, then 50 a second, the rest are
+ * dropped (and counted in a note). */
+KTEST(proc_debug_write_rate_limited)
+{
+    enum { LINES = 300 };
+    static char buf[LINES * 16];
+    size_t len = 0;
+    for (unsigned i = 0; i < LINES; i++)
+        len += ksnprintf(buf + len, sizeof(buf) - len, "flood %u\n", i);
+    struct job *j = fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "flood", &p), OK);
+    size_t printed = process_debug_write(p, buf, len, false);
+    kprintf("proc: %lu of %u lines printed\n", (unsigned long)printed, LINES);
+    KT_ASSERT(printed >= 100 && printed <= 110);   /* the burst, maybe a refill or two */
+    thread_sleep_ms(100);                           /* ~5 more lines' worth */
+    printed = process_debug_write(p, buf, len, false);
+    KT_ASSERT(printed >= 3 && printed <= 15);
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* prints the dropped-lines note */
+    kobject_unref(process_kobject(p));
     job_is_empty(j);
     job_unref(j);
 }

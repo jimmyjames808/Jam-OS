@@ -49,12 +49,15 @@
 #include <jam/process.h>
 #include <jam/report.h>
 #include <jam/string.h>
+#include <jam/time.h>
 #include <jam/uentry.h>
 
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
 
 #define OUT_LINE        200   /* debug_write lines longer than this are split */
 #define USER_REPORT_MAX 24    /* debug_report lines kept, all processes together */
+#define OUT_BURST       100   /* debug_write lines a process may print at once... */
+#define OUT_PER_S       50    /* ...and then per second (the rest are dropped, counted) */
 
 struct process {
     struct kobject      base;        /* OBJ_PROCESS */
@@ -72,9 +75,13 @@ struct process {
     uint32_t            nthreads;    /* (L) started threads that haven't left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX];
-    /* debug_write: the current, unfinished output line ("process output") */
+    /* debug_write ("process output" lock): the current, unfinished line and
+     * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;
     uint32_t            out_len;
+    uint32_t            out_tokens;    /* lines that may be printed now */
+    uint32_t            out_dropped;   /* lines dropped since the last one printed */
+    uint64_t            out_refill_ns; /* when out_tokens was last topped up */
     char                out[OUT_LINE];
 };
 
@@ -184,6 +191,8 @@ status_t process_create(struct job *job, const char *name, struct process **out)
     p->handles.job = job;
     mutex_init(&p->setup, "process setup");
     spin_init(&p->out_lock, "process output");
+    p->out_tokens = OUT_BURST;
+    p->out_refill_ns = uptime_ns();
     job_ref(job);
     p->job = job;
     p->state = PROCESS_NEW;
@@ -232,40 +241,112 @@ void process_get_info(struct process *p, struct process_info *out)
 
 /* ---- debug output ---------------------------------------------------------- */
 
-/* With out_lock held: print the buffered line with the process name. */
-static void out_flush_locked(struct process *p, bool report_it)
+/* Lines are assembled under out_lock (a spinlock: interrupts off) but
+ * printed with it dropped (review R7): kprintf may redraw the framebuffer
+ * console synchronously, far too long to keep interrupts off or the
+ * process's other writers spinning. klog serialises whole lines, so a line
+ * is never torn; two threads of one process writing at once may see their
+ * lines come out in either order. Each process may print OUT_BURST lines
+ * at once and OUT_PER_S a second after that (a token bucket under
+ * out_lock); the rest are dropped and counted, and the count is printed
+ * before the next line that gets through. debug_report lines are exempt
+ * (USER_REPORT_MAX caps them for everyone together). */
+
+enum out_kind { OUT_NONE, OUT_PRINT, OUT_REPORT };
+
+/* out_lock held: move the buffered line into line[] (NUL-terminated). */
+static void out_take_locked(struct process *p, char *line)
 {
-    p->out[p->out_len] = '\0';
-    if (report_it)
-        report("%s", p->out);   /* prints it too */
-    else
-        kprintf("[%s] %s\n", p->name, p->out);
+    memcpy(line, p->out, p->out_len);
+    line[p->out_len] = '\0';
     p->out_len = 0;
 }
 
-void process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
+/* out_lock held: may one more plain line be printed now? If so, *dropped
+ * gets (and clears) the count of lines dropped before it. */
+static bool out_allow_locked(struct process *p, uint32_t *dropped)
+{
+    uint64_t now = uptime_ns();
+    uint64_t add = (now - p->out_refill_ns) * OUT_PER_S / 1000000000ull;
+    if (add) {
+        p->out_tokens = p->out_tokens + add > OUT_BURST ? OUT_BURST
+                                                        : p->out_tokens + (uint32_t)add;
+        p->out_refill_ns = now;
+    }
+    if (!p->out_tokens) {
+        p->out_dropped++;
+        return false;
+    }
+    p->out_tokens--;
+    *dropped = p->out_dropped;
+    p->out_dropped = 0;
+    return true;
+}
+
+/* No lock held. */
+static void out_print(struct process *p, const char *line, enum out_kind kind,
+                      uint32_t dropped)
+{
+    if (dropped)
+        kprintf("[%s] (%u lines dropped: too much output)\n", p->name, dropped);
+    if (kind == OUT_REPORT)
+        report("%s", line);   /* prints it too */
+    else if (kind == OUT_PRINT)
+        kprintf("[%s] %s\n", p->name, line);
+}
+
+size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
 {
     static volatile uint32_t reports;
     if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX)
         report_it = false;   /* the RESULTS box is for a few lines */
-    uint64_t f = spin_lock_irqsave(&p->out_lock);
-    if (report_it && p->out_len)
-        out_flush_locked(p, false);   /* someone's unfinished line first */
-    for (size_t i = 0; i < n; i++) {
-        char c = buf[i];
-        if (c == '\n') {
-            out_flush_locked(p, report_it);
-            continue;
+    enum out_kind mine = report_it ? OUT_REPORT : OUT_PRINT;
+    char line[OUT_LINE];
+    size_t i = 0, printed = 0;
+    bool others = report_it;   /* someone's unfinished line goes out first */
+    for (;;) {
+        enum out_kind kind = OUT_NONE;
+        uint32_t dropped = 0;
+        uint64_t f = spin_lock_irqsave(&p->out_lock);
+        if (others) {
+            others = false;
+            if (p->out_len) {
+                out_take_locked(p, line);
+                kind = OUT_PRINT;
+            }
         }
-        if ((c < 0x20 && c != '\t') || c >= 0x7f)
-            c = '?';   /* no escape sequences on the console */
-        p->out[p->out_len++] = c;
-        if (p->out_len == OUT_LINE - 1)
-            out_flush_locked(p, report_it);
+        if (kind == OUT_NONE) {
+            for (; i < n && kind == OUT_NONE; i++) {
+                char c = buf[i];
+                if (c == '\n') {
+                    kind = mine;
+                    break;
+                }
+                if ((c < 0x20 && c != '\t') || c >= 0x7f)
+                    c = '?';   /* no escape sequences on the console */
+                p->out[p->out_len++] = c;
+                if (p->out_len == OUT_LINE - 1)
+                    kind = mine;   /* too long: split (the loop's i++ steps past c) */
+            }
+            if (kind != OUT_NONE && i < n && buf[i] == '\n')
+                i++;
+            if (kind == OUT_NONE && report_it && p->out_len)
+                kind = OUT_REPORT;   /* a report is always a whole line */
+            if (kind != OUT_NONE)
+                out_take_locked(p, line);
+        }
+        bool took = kind != OUT_NONE;
+        if (kind == OUT_PRINT && !out_allow_locked(p, &dropped))
+            kind = OUT_NONE;   /* over the rate: dropped (and counted) */
+        spin_unlock_irqrestore(&p->out_lock, f);
+        if (!took)
+            break;
+        if (kind != OUT_NONE) {
+            out_print(p, line, kind, dropped);
+            printed++;
+        }
     }
-    if (report_it && p->out_len)
-        out_flush_locked(p, true);   /* a report is always a whole line */
-    spin_unlock_irqrestore(&p->out_lock, f);
+    return printed;
 }
 
 /* Close the handle table and drop the address space: the process is dead.
@@ -276,10 +357,18 @@ static void process_finish(struct process *p)
     mutex_lock(&p->setup);
     handle_table_destroy(&p->handles);   /* credits the job for every slot */
     mutex_unlock(&p->setup);
+    /* Its last words, even without a newline, and how many lines it lost. */
+    char line[OUT_LINE] = "";
+    enum out_kind kind = OUT_NONE;
     uint64_t of = spin_lock_irqsave(&p->out_lock);
-    if (p->out_len)
-        out_flush_locked(p, false);   /* its last words, even without a newline */
+    if (p->out_len) {
+        out_take_locked(p, line);
+        kind = OUT_PRINT;
+    }
+    uint32_t dropped = p->out_dropped;
+    p->out_dropped = 0;
     spin_unlock_irqrestore(&p->out_lock, of);
+    out_print(p, line, kind, dropped);
 
     uint64_t f = plock(p);
     struct aspace *as = p->as;
