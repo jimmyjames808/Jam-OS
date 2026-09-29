@@ -39,6 +39,14 @@ import sys
 
 COMPILER_HELPERS = {"memcpy", "memmove", "memset", "memcmp"}
 
+# Sections a driver object may have. Anything else (.ktests, __ex_table,
+# .limine_requests, .init_array, ...) could be KEEP()'d into a kernel table
+# by kernel/linker.ld whatever objcopy does to the symbols, and so be run or
+# obeyed by the kernel outside the driver's process. (Review of M6 phase 1.)
+ALLOWED_SECTION = re.compile(
+    r"^(\.(text|rodata|data|bss)(\..*)?|\.debug_.*|\.comment|\.eh_frame|"
+    r"\.note\.GNU-stack|\.note\.gnu\.property|\.group)$")
+
 
 def declared_functions(path):
     """Names of the functions a header declares (prototypes, not inline
@@ -64,6 +72,20 @@ def declared_functions(path):
         m = re.match(r"^(?:[A-Za-z_][A-Za-z0-9_]*[\s\*]+)+\**\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", stmt)
         if m and not m.group(1).startswith("__"):
             names.add(m.group(1))
+    return names
+
+
+def sections(nm_tool, obj):
+    """Section names of obj, read with the objdump next to nm_tool."""
+    tool = nm_tool[:-2] + "objdump" if nm_tool.endswith("nm") else "objdump"
+    r = subprocess.run([tool, "-h", "-w", obj], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"checkdriver: {tool} -h {obj} failed:\n{r.stderr}")
+    names = []
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) > 2 and f[0].isdigit():
+            names.append(f[1])
     return names
 
 
@@ -114,6 +136,9 @@ def main():
     allowed = surface | COMPILER_HELPERS
     bad = []
     for obj in objs:
+        for sec in sections(tool, obj):
+            if not ALLOWED_SECTION.match(sec):
+                bad.append(f"  {obj}: has section '{sec}' (drivers get .text/.rodata/.data/.bss only)")
         for line in nm(tool, obj, "-u"):
             sym = line.split()[-1]
             if sym not in allowed:

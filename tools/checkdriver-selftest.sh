@@ -24,7 +24,7 @@ for f in tools/checkdriver-tests/*.c; do
     *)    want=rejected ;;
     esac
     if [ "$got" = "$want" ]; then
-        echo "checkdriver-selftest: $b: $got, as it should be ($(grep -m1 -E 'error:|: uses|: defines' "$log" | sed 's/^ *//' | cut -c1-110))"
+        echo "checkdriver-selftest: $b: $got, as it should be ($(grep -m1 -E 'error:|: uses|: defines|: has section' "$log" | sed 's/^ *//' | cut -c1-110))"
     else
         echo "checkdriver-selftest: $b: $got, but it must be $want:"
         sed 's/^/    /' "$log"
