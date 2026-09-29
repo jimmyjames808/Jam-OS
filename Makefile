@@ -28,7 +28,7 @@ CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror \
           -fno-PIC -fno-pie -fno-omit-frame-pointer -fno-lto \
           -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
           -mno-red-zone -mcmodel=kernel \
-          -Ikernel/include -Ithird_party/limine-protocol/include \
+          -Ikernel/include -Idrivers/include -Ithird_party/limine-protocol/include \
           -MMD -MP
 ASFLAGS := $(CFLAGS)
 LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
@@ -43,7 +43,14 @@ endif
 S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
-.PHONY: all image run debug clean font usb syscalls
+# Drivers (M6; the rules are further down, after the user programs'). Every
+# drivers/<name>/*.c is built twice: into the kernel (KDRV_OBJS: one object
+# per driver, run as a kernel process, kernel/drivers/driver_kernel.c) and
+# as the user program drv/<name> in bootfs (libos + user/lib/driver_user.c).
+DRIVERS   := $(sort $(patsubst drivers/%/,%,$(dir $(wildcard drivers/*/*.c))))
+KDRV_OBJS := $(DRIVERS:%=$(BUILD)/kdrv/%.o) $(BUILD)/kdrivers.o
+
+.PHONY: all image run debug clean font usb syscalls idl check FORCE
 
 all: $(KERNEL) $(BOOTFS)
 
@@ -65,7 +72,23 @@ $(SYSCALLS_OK): abi/syscalls.def tools/gensyscalls.py kernel/include/jam/abi.h $
 syscalls:
 	python3 tools/gensyscalls.py gen
 
-$(OBJS): | $(SYSCALLS_OK)
+# Protocols (M6). tools/genidl.py turns abi/idl/<name>.idl into the header
+# drivers/include/idl/<name>.h (message structs, client stubs, server
+# dispatch; all static inline over <jam/driver.h>). Committed and checked
+# like the syscall glue; `make idl` regenerates.
+IDL_SRCS := $(wildcard abi/idl/*.idl)
+IDL_GEN  := drivers/include/idl/common.h $(IDL_SRCS:abi/idl/%.idl=drivers/include/idl/%.h)
+IDL_OK   := $(BUILD)/idl.ok
+
+$(IDL_OK): $(IDL_SRCS) tools/genidl.py $(wildcard $(IDL_GEN))
+	@mkdir -p $(BUILD)
+	python3 tools/genidl.py check
+	@touch $@
+
+idl:
+	python3 tools/genidl.py gen
+
+$(OBJS): | $(SYSCALLS_OK) $(IDL_OK)
 
 # Two-pass link: stage 1 has an empty symbol table; its function addresses
 # become the table linked into the final kernel. .ksyms is the last section,
@@ -75,19 +98,19 @@ $(BUILD)/ksyms_empty.c: tools/gensyms.py
 	: > $(BUILD)/empty.nm
 	python3 tools/gensyms.py gen $(BUILD)/empty.nm $@
 
-$(BUILD)/jamos.stage1.elf: $(OBJS) $(BUILD)/ksyms_empty.o kernel/linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms_empty.o -o $@
+$(BUILD)/jamos.stage1.elf: $(OBJS) $(KDRV_OBJS) $(BUILD)/ksyms_empty.o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(KDRV_OBJS) $(BUILD)/ksyms_empty.o -o $@
 
 $(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
 	$(CROSS)nm -n --defined-only $< > $(BUILD)/stage1.nm
 	python3 tools/gensyms.py gen $(BUILD)/stage1.nm $@
 
-$(KERNEL): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms.o -o $@
+$(KERNEL): $(OBJS) $(KDRV_OBJS) $(BUILD)/ksyms.o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(KDRV_OBJS) $(BUILD)/ksyms.o -o $@
 	$(CROSS)nm -n --defined-only $@ > $(BUILD)/final.nm
 	python3 tools/gensyms.py verify $(BUILD)/stage1.nm $(BUILD)/final.nm
 
-$(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(BUILD)/%.o: $(BUILD)/%.c
+$(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o $(BUILD)/kdrivers.o: $(BUILD)/%.o: $(BUILD)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.c
@@ -106,16 +129,17 @@ USER_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror \
                -ffreestanding -fno-stack-protector -fno-stack-check \
                -fno-PIC -fno-pie -fno-omit-frame-pointer -fno-lto \
                -fno-asynchronous-unwind-tables -m64 -march=x86-64 -mcmodel=small \
-               -Iuser/include -I$(BUILD)/uinc -MMD -MP
+               -Iuser/include -I$(BUILD)/uinc -Idrivers/include -MMD -MP
 USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack -T user/linker.ld
 LIBGCC      := $(shell $(CC) -print-libgcc-file-name)
 UINC_HDRS   := abi.h bootfs.h startup.h status.h syscall_nums.h
 UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
 USER_PROGS  := init utest
 UOBJ        := $(BUILD)/uobj
-LIBOS_SRCS  := $(filter-out user/lib/crt0.S,$(wildcard user/lib/*.c user/lib/*.S))
+LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
+                             $(wildcard user/lib/*.c user/lib/*.S))
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
-USER_OBJS   := $(LIBOS_OBJS) $(UOBJ)/user/lib/crt0.S.o \
+USER_OBJS   := $(LIBOS_OBJS) $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
                $(foreach p,$(USER_PROGS),$(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(p)/*.c)))
 
 .SECONDARY: $(UINC)
@@ -123,7 +147,7 @@ $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK)
+$(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -149,11 +173,99 @@ $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)
 endef
 $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 
+# ---- drivers (M6: ARCHITECTURE.md "The migration rule") --------------------
+# A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>),
+# the generated <idl/*.h> and the compiler's freestanding headers
+# (stdint/stddef/stdbool/stdarg): -nostdinc drops every other include path,
+# and DRV_INC holds copies of just those files. -fno-builtin: no call is
+# assumed to be a C library function. tools/checkdriver.py then fails the
+# build if a driver object uses any symbol driver.h doesn't provide (see
+# its header for the exact list), so declaring kmalloc yourself doesn't
+# work either. `make check` proves the check rejects what it should.
+#
+# Kernel build: each file is compiled with the kernel's code-generation
+# flags and driver_main renamed to driver_main__<name>; the driver's files
+# are linked into one object (ld -r), checked, and every symbol but
+# driver_main__<name> made local (objcopy), so drivers can't collide with
+# each other or with the kernel, nor call into one another. The generated
+# kdrivers.c lists them for driver_kernel_find(). Process build: the same
+# files with the user flags, linked (ld -r, checked) with crt0, driver_crt
+# (main -> driver_main) and libos into drv/<name>.
+drv_cname    = $(subst -,_,$(1))
+DRV_SURFACE := drivers/include/jam/driver.h kernel/include/jam/abi.h kernel/include/jam/status.h
+DRV_INC     := $(BUILD)/driver-include
+DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h \
+               $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
+DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
+DRV_KCFLAGS := $(filter-out -I%,$(CFLAGS)) $(DRV_ISOLATE)
+DRV_UCFLAGS := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
+DRV_OBJS     = $(patsubst %.c,$(BUILD)/$(1)/%.o,$(wildcard drivers/$(2)/*.c))
+
+.SECONDARY: $(DRV_HDRS)
+$(DRV_INC)/jam/driver.h: drivers/include/jam/driver.h
+	@mkdir -p $(dir $@)
+	cp $< $@
+$(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h: $(DRV_INC)/jam/%.h: kernel/include/jam/%.h
+	@mkdir -p $(dir $@)
+	cp $< $@
+$(DRV_INC)/idl/%.h: drivers/include/idl/%.h | $(IDL_OK)
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(BUILD)/kdrv/drivers/%.o: drivers/%.c | $(DRV_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(DRV_KCFLAGS) -Ddriver_main=driver_main__$(call drv_cname,$(firstword $(subst /, ,$*))) \
+	    -c $< -o $@
+
+$(BUILD)/udrv/drivers/%.o: drivers/%.c | $(DRV_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(DRV_UCFLAGS) -c $< -o $@
+
+define DRIVER
+$(BUILD)/kdrv/$(1).o: $(call DRV_OBJS,kdrv,$(1)) tools/checkdriver.py $(DRV_SURFACE)
+	$(LD) -r -o $$@.r $(call DRV_OBJS,kdrv,$(1))
+	python3 tools/checkdriver.py $(CROSS)nm $(1) $$@.r -- $(DRV_SURFACE)
+	$(CROSS)objcopy --keep-global-symbol=driver_main__$(call drv_cname,$(1)) $$@.r $$@
+	rm -f $$@.r
+
+$(BUILD)/udrv/$(1).o: $(call DRV_OBJS,udrv,$(1)) tools/checkdriver.py $(DRV_SURFACE)
+	$(LD) -r -o $$@.r $(call DRV_OBJS,udrv,$(1))
+	python3 tools/checkdriver.py $(CROSS)nm $(1) $$@.r -- $(DRV_SURFACE)
+	mv $$@.r $$@
+
+$(BUILD)/drv/$(1): $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o $(BUILD)/udrv/$(1).o \
+                   $(UOBJ)/libos.a user/linker.ld
+	@mkdir -p $$(dir $$@)
+	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
+	    $(BUILD)/udrv/$(1).o $(UOBJ)/libos.a $(LIBGCC) -o $$@
+
+$(BUILD)/drv/$(1).bootfs: $(BUILD)/drv/$(1)
+	$(STRIP) --strip-debug $$< -o $$@
+endef
+$(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
+
+# The kernel's table of its drivers; rewritten only when the list changes.
+$(BUILD)/kdrivers.c: FORCE
+	@mkdir -p $(BUILD)
+	python3 tools/checkdriver.py table $@ $(DRIVERS)
+$(BUILD)/kdrivers.o: | $(IDL_OK)
+
+# `make check`: the generated code is current, and the driver check still
+# rejects what it must (tools/checkdriver-tests/: a kernel include, a
+# kmalloc call, a call into another driver, ...) and accepts a clean one.
+check: all
+	python3 tools/gensyscalls.py check
+	python3 tools/genidl.py check
+	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_KCFLAGS)" SURFACE="$(DRV_SURFACE)" \
+	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
-BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) init.cfg=boot/init.cfg
+BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
+                $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg
 
-$(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) boot/init.cfg tools/mkbootfs.py
+$(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
+           tools/mkbootfs.py
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
 image: $(IMAGE)
@@ -201,4 +313,5 @@ font:
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(USER_OBJS:.o=.d)
+-include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) \
+         $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,kdrv,$(d)) $(call DRV_OBJS,udrv,$(d))))

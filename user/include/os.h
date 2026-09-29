@@ -107,6 +107,10 @@ struct spawn_args {
  * BOOTFS (a duplicate of ours) and the extras, which are
  * consumed whatever happens. *proc gets the process handle. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
+/* Drivers (M6): the startup role that hands a driver process a handle with
+ * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
+ * these into the driver's struct driver_start. */
+#define SR_DRIVER(r) (SR_USER + (r))
 /* Wait up to timeout_ns for proc to die (SIG_TERMINATED), then fill *info
  * (may be NULL). ERR_TIMED_OUT if it is still alive. */
 status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *info);

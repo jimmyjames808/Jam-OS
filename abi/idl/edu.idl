@@ -1,0 +1,14 @@
+# edu: QEMU's `edu` test device, as its driver serves it (M6 phase 2
+# implements the server; the stubs exist from phase 1).
+# Format: see tools/genidl.py.
+
+protocol edu 2
+
+# n! computed by the device (32 bits, wrapping like the device does).
+1  factorial      (u32 n)    -> (u32 result)
+# RAM -> device -> RAM through a pinned DMA32 VMO, len bytes: the call's
+# status says whether the data came back intact.
+2  dma_roundtrip  (u32 len)  -> ()
+# Raise the device's interrupt and wait for it: the time from the raise to
+# the driver thread waking.
+3  raise_irq      ()         -> (u64 latency_ns)
