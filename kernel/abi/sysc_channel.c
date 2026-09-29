@@ -23,7 +23,7 @@ static void *buf_get(uint8_t *small, uint32_t n)
     return n <= SMALL ? small : kmalloc(n);
 }
 
-static void buf_put(uint8_t *small, void *b)
+static void buf_put(const uint8_t *small, void *b)
 {
     if (b != small)
         kfree(b);

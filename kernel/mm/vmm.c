@@ -222,7 +222,8 @@ uint64_t vmm_kernel_pml4(void)
     return kernel_pml4;
 }
 
-static void map_kernel_section(const struct boot_info *bi, char *start, char *end, unsigned flags)
+static void map_kernel_section(const struct boot_info *bi, const char *start, const char *end,
+                               unsigned flags)
 {
     uint64_t va = ALIGN_DOWN((uint64_t)start, PAGE_SIZE);
     uint64_t pa = va - bi->kernel_virt_base + bi->kernel_phys_base;
@@ -376,7 +377,7 @@ static void slot_put(struct vslot *s)
  * Every page table is created BEFORE any leaf is written, so a failure
  * leaves no mapping behind to undo (and nothing another CPU could have
  * cached). */
-static bool map_stack_pages(uint64_t va, struct page *chain, uint64_t n, bool may_fail)
+static bool map_stack_pages(uint64_t va, const struct page *chain, uint64_t n, bool may_fail)
 {
     uint64_t f = spin_lock_irqsave(&pt_lock);
     for (uint64_t i = 0; i < n; i++)

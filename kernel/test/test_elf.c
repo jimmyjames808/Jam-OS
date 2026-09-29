@@ -125,7 +125,7 @@ static void fuzzbuf_free(struct fuzzbuf *fb)
 }
 
 /* Copy src[0..len) to the end of the buffer; returns where it went. */
-static uint8_t *place(struct fuzzbuf *fb, const void *src, uint64_t len)
+static uint8_t *place(const struct fuzzbuf *fb, const void *src, uint64_t len)
 {
     uint8_t *p = fb->base + fb->cap - len;
     memcpy(p, src, len);

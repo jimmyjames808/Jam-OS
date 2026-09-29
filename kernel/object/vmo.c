@@ -542,7 +542,7 @@ status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len
 /* ---- size, commit, decommit -------------------------------------------- */
 
 /* With the lock held: does any mapping or pin cover a page in [first, end)? */
-static bool ranges_overlap_locked(struct vmo *v, uint64_t first, uint64_t end)
+static bool ranges_overlap_locked(const struct vmo *v, uint64_t first, uint64_t end)
 {
     for (struct list_node *n = v->ranges.next; n != &v->ranges; n = n->next) {
         struct vmo_range *r = container_of(n, struct vmo_range, node);
@@ -553,7 +553,8 @@ static bool ranges_overlap_locked(struct vmo *v, uint64_t first, uint64_t end)
 }
 
 /* With the lock held: zap pages [first, end) from every user mapping. */
-static void zap_umaps_locked(struct vmo *v, uint64_t first, uint64_t end, struct tlb_gather *g)
+static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                             struct tlb_gather *g)
 {
     for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
         struct vmo_umap *u = container_of(n, struct vmo_umap, node);
@@ -839,7 +840,7 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
 }
 
 /* With the lock held: the non-busy range of `kind` with this key. */
-static struct vmo_range *range_find_locked(struct vmo *v, enum range_kind kind, uint64_t key)
+static struct vmo_range *range_find_locked(const struct vmo *v, enum range_kind kind, uint64_t key)
 {
     for (struct list_node *n = v->ranges.next; n != &v->ranges; n = n->next) {
         struct vmo_range *r = container_of(n, struct vmo_range, node);

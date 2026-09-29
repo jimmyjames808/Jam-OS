@@ -60,7 +60,7 @@ static uint64_t rnd(struct worker *w)
     return w->seed;
 }
 
-static void fail(const char *what, struct worker *w)
+static void fail(const char *what, const struct worker *w)
 {
     if (__atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED) <= 10)
         report("stress: FAILED %s (thread %s#%u)", what, kind_names[w->kind], w->index);
@@ -131,7 +131,7 @@ static void do_migrator(struct worker *w)
     thread_set_affinity(current_thread(), &m);
 }
 
-static void do_pingpong(struct worker *w)
+static void do_pingpong(const struct worker *w)
 {
     struct pingpong *pp = w->pp;
     uint64_t f = spin_lock_irqsave(&pp->lock);

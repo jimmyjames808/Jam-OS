@@ -92,7 +92,7 @@ static struct kinterrupt *to_irq(struct kobject *obj)
 
 /* ---- the device side ------------------------------------------------------ */
 
-static void dev_mask(struct kinterrupt *o, bool masked)
+static void dev_mask(const struct kinterrupt *o, bool masked)
 {
     if (o->kind != IK_VIRTUAL)
         pci_msi_mask(o->dev, o->kind == IK_MSIX, o->index, masked);

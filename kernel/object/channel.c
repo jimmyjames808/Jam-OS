@@ -173,7 +173,7 @@ static void msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *hand
 
 /* With ch->base.lock held: kick every channel_call waiting on ch so it
  * re-checks closed / peer_closed. Waiters unlink themselves. */
-static void wake_callers_locked(struct channel *ch)
+static void wake_callers_locked(const struct channel *ch)
 {
     for (struct list_node *n = ch->callers.next; n != &ch->callers; n = n->next)
         thread_wake(container_of(n, struct chan_waiter, node)->thread);

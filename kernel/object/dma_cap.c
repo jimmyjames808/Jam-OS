@@ -89,7 +89,7 @@ static spinlock_t q_lock = SPINLOCK_INIT("dma quarantine");
 static struct waitqueue q_wq;
 static volatile int q_state;   /* 0 not started, 1 starting, 2 running */
 
-static struct dma_fn *fn_of(struct pci_dev *d)
+static struct dma_fn *fn_of(const struct pci_dev *d)
 {
     return d && d->index < PCI_MAX_DEVS ? &fns[d->index] : NULL;
 }
@@ -197,7 +197,7 @@ void dma_quarantine_start(void)
 
 /* Bus mastering just went on for d through its current cap: every batch
  * waiting starts its grace period. */
-static void start_grace(struct pci_dev *d)
+static void start_grace(const struct pci_dev *d)
 {
     struct dma_fn *fn = fn_of(d);
     uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS;

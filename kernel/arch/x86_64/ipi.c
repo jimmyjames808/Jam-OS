@@ -115,7 +115,7 @@ static void post(uint32_t cpu, struct call_slot *slot, struct call *c)
     ipi_send(cpu, VEC_CALL);
 }
 
-static void wait_done(struct call *c)
+static void wait_done(const struct call *c)
 {
     uint64_t start = rdtsc();
     while (__atomic_load_n(&c->pending, __ATOMIC_ACQUIRE)) {

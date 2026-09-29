@@ -42,7 +42,7 @@ static void build(uint64_t *gdt, struct tss *tss)
     gdt[8] = 0;
 }
 
-static void load(uint64_t *gdt, size_t size)
+static void load(const uint64_t *gdt, size_t size)
 {
     struct gdtr gdtr = { size - 1, (uint64_t)gdt };
     __asm__ volatile(

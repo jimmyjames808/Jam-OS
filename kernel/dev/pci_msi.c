@@ -6,7 +6,7 @@
 
 #include "pci_internal.h"
 
-static status_t check_irq(struct pci_dev *d, bool msix, uint32_t index)
+static status_t check_irq(const struct pci_dev *d, bool msix, uint32_t index)
 {
     if (!d)
         return ERR_INVALID_ARGS;
@@ -36,13 +36,13 @@ static void ensure_memory(struct pci_dev *d)
         wr(d, CFG_COMMAND, 2, cmd | CMD_MEMORY);
 }
 
-static inline volatile uint32_t *msix_entry(struct pci_dev *d, uint32_t index)
+static inline volatile uint32_t *msix_entry(const struct pci_dev *d, uint32_t index)
 {
     return d->msix_table + 4 * index;
 }
 
 /* MSI mask bits register (maskable MSI only). */
-static uint32_t msi_mask_off(struct pci_dev *d)
+static uint32_t msi_mask_off(const struct pci_dev *d)
 {
     return d->cap_msi + (d->msi_64 ? 0x10 : 0x0c);
 }

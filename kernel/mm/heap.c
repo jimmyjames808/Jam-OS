@@ -215,7 +215,7 @@ static inline void mag_unlock(struct kmag *m)
 }
 
 /* With interrupts off: this CPU's magazine for c, or NULL (none yet). */
-static struct kmag *mag_here(struct kmem_cache *c)
+static struct kmag *mag_here(const struct kmem_cache *c)
 {
     struct kmag *b = mags[percpu_index()];
     return b ? &b[c - cache_pool] : NULL;

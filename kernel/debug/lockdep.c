@@ -272,7 +272,7 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
     c->held_depth++;
 }
 
-static void release_checks(spinlock_t *l)
+static void release_checks(const spinlock_t *l)
 {
     if (disabled)
         return;
@@ -344,7 +344,7 @@ void lockdep_sleep_release(const void *lock)
 
 /* ---- the lock itself ---------------------------------------------------- */
 
-static void wait_turn(spinlock_t *l, uint16_t ticket)
+static void wait_turn(const spinlock_t *l, uint16_t ticket)
 {
     uint64_t start = 0;
     for (uint32_t spins = 0;; spins++) {

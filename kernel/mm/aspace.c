@@ -290,7 +290,7 @@ static uint64_t leaf_bits(unsigned perms, unsigned cache)
 }
 
 /* pt_lock held: the leaf entry for va, NULL if a table is missing. */
-static uint64_t *pte_find(struct aspace *as, uint64_t va)
+static uint64_t *pte_find(const struct aspace *as, uint64_t va)
 {
     uint64_t *t = as->pml4v;
     for (int l = 4; l > 1; l--) {
@@ -551,7 +551,7 @@ void aspace_unref(struct aspace *as)
 /* ---- mappings ----------------------------------------------------------- */
 
 /* Region lock held: the mapping containing addr, or NULL. */
-static struct mapping *find(struct aspace *as, uint64_t addr)
+static struct mapping *find(const struct aspace *as, uint64_t addr)
 {
     for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
         struct mapping *m = container_of(n, struct mapping, node);
@@ -563,7 +563,7 @@ static struct mapping *find(struct aspace *as, uint64_t addr)
     return NULL;
 }
 
-static struct mapping *next_of(struct aspace *as, struct mapping *m)
+static struct mapping *next_of(const struct aspace *as, const struct mapping *m)
 {
     return m->node.next == &as->maps ? NULL : container_of(m->node.next, struct mapping, node);
 }

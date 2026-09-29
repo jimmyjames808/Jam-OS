@@ -76,7 +76,7 @@ static void reg_add(struct thread *t, uint64_t pml4, struct uprog *prog)
         }
     panic("utest: reg table full");
 }
-static void reg_del(struct thread *t)
+static void reg_del(const struct thread *t)
 {
     uint64_t f = spin_lock_irqsave(&reg_lock);
     for (unsigned i = 0; i < MAX_CPUS; i++)
@@ -84,14 +84,14 @@ static void reg_del(struct thread *t)
             regs[i].t = NULL;
     spin_unlock_irqrestore(&reg_lock, f);
 }
-static struct uprog *reg_prog(struct thread *t)
+static struct uprog *reg_prog(const struct thread *t)
 {
     for (unsigned i = 0; i < MAX_CPUS; i++)
         if (regs[i].t == t)
             return regs[i].prog;
     return NULL;
 }
-static uint64_t reg_pml4(struct thread *t)
+static uint64_t reg_pml4(const struct thread *t)
 {
     for (unsigned i = 0; i < MAX_CPUS; i++)
         if (regs[i].t == t)
@@ -191,7 +191,7 @@ static uint64_t table_alloc(void)
 }
 
 /* Map one 4 KiB user page (its own leaf tables created on the way). */
-static void umap(struct uspace *u, uint64_t va, uint64_t pa, bool writable, bool exec)
+static void umap(const struct uspace *u, uint64_t va, uint64_t pa, bool writable, bool exec)
 {
     uint64_t *t = phys_to_virt(u->pml4);
     for (int level = 4; level > 1; level--) {

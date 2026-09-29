@@ -89,7 +89,7 @@ static bool msi_on(struct pci_dev *d)
 
 /* One call; handles that come back go into hs (up to DM_MAX_HANDLES; NULL:
  * none expected). Returns the reply's status. */
-static status_t dm_call(struct dm *m, uint32_t op, struct dm_rep *r, struct khandle *hs,
+static status_t dm_call(const struct dm *m, uint32_t op, struct dm_rep *r, struct khandle *hs,
                         uint32_t *nh)
 {
     struct dm_req q = { 0, op, op == DM_STATUS ? 0 : EDU_VENDOR, op == DM_STATUS ? 0 : EDU_DEVICE,
@@ -107,7 +107,7 @@ static status_t dm_call(struct dm *m, uint32_t op, struct dm_rep *r, struct khan
 
 /* Start devmgr in a fresh job, as init does (RES_PCI, its control
  * channel), and wait for its first binding pass: edu bound. */
-static void dm_start(struct dm *m, struct pci_dev *d)
+static void dm_start(struct dm *m, const struct pci_dev *d)
 {
     m->was_managed = d->driver_managed;
     m->job = kt_fresh_job();
@@ -139,7 +139,7 @@ static void wait_driver_up(struct pci_dev *d)
 }
 
 /* The bound driver's process (a reference), once it has set up. */
-static struct process *dm_driver(struct dm *m, struct pci_dev *d)
+static struct process *dm_driver(const struct dm *m, struct pci_dev *d)
 {
     struct khandle hs[DM_MAX_HANDLES];
     uint32_t nh = 0;
@@ -171,7 +171,7 @@ static int64_t dm_stop(struct dm *m, struct pci_dev *d)
 
 /* Once the test holds nothing of theirs either: devmgr's job (and every
  * driver job below it) must be charged for nothing. */
-static void dm_job_empty(struct dm *m)
+static void dm_job_empty(const struct dm *m)
 {
     kt_job_is_empty(m->job);
     job_unref(m->job);
@@ -256,7 +256,7 @@ struct refusal_ref {
 };
 
 /* After a refused start: nothing of the driver is left. */
-static void check_nothing_left(struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
+static void check_nothing_left(const struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
                                uint32_t kind, uint64_t headroom)
 {
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
@@ -288,7 +288,7 @@ static void lift_hook(void *arg)
 /* Give devmgr's job `headroom` more units of `kind` than it uses without
  * a driver and REBIND, one more unit each round, until a start gets
  * through; every refusal must leave nothing. Returns the rounds refused. */
-static unsigned sweep(struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
+static unsigned sweep(const struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
                       uint32_t kind)
 {
     struct dm_rep r;

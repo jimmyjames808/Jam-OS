@@ -23,13 +23,13 @@ struct ioapic {
 
 static struct ioapic ioapics[ACPI_MAX_IOAPICS];
 
-static uint32_t io_read(struct ioapic *io, uint32_t reg)
+static uint32_t io_read(const struct ioapic *io, uint32_t reg)
 {
     io->mmio[0] = reg;   /* IOREGSEL */
     return io->mmio[4];  /* IOWIN at +0x10 */
 }
 
-static void io_write(struct ioapic *io, uint32_t reg, uint32_t v)
+static void io_write(const struct ioapic *io, uint32_t reg, uint32_t v)
 {
     io->mmio[0] = reg;
     io->mmio[4] = v;

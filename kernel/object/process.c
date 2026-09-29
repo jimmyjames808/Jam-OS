@@ -318,7 +318,7 @@ static bool out_allow_locked(struct process *p, uint32_t *dropped)
 }
 
 /* No lock held. */
-static void out_print(struct process *p, const char *line, enum out_kind kind,
+static void out_print(const struct process *p, const char *line, enum out_kind kind,
                       uint32_t dropped)
 {
     if (dropped)

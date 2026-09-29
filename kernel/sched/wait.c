@@ -37,7 +37,7 @@ struct sleepq {
 static struct sleepq sleepqs[MAX_CPUS];
 
 /* The owning CPU, queue lock held: arm the timer for the head. */
-static void sleepq_arm(struct sleepq *q)
+static void sleepq_arm(const struct sleepq *q)
 {
     lapic_timer_set(list_empty(&q->list)
                         ? 0 : list_first(&q->list, struct thread, sleep_node)->wake_at_tsc);
@@ -51,7 +51,7 @@ void sleepq_init(uint32_t cpu)
 
 /* ---- blocking ----------------------------------------------------------- */
 
-static bool cancel_seen(struct thread *t)
+static bool cancel_seen(const struct thread *t)
 {
     return __atomic_load_n(&t->cancel_pending, __ATOMIC_ACQUIRE);
 }

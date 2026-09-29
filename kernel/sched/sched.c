@@ -254,7 +254,7 @@ static uint32_t pick_cpu(const cpumask_t *cand, const struct cpu_topo *tp,
     return best;
 }
 
-static uint32_t select_cpu(struct thread *t)
+static uint32_t select_cpu(const struct thread *t)
 {
     cpumask_t cand;
     for (unsigned w = 0; w < MAX_CPUS / 64; w++)
@@ -368,7 +368,7 @@ void finish_switch(void)
 /* CPU time: prev ran from the last switch until now. Before c->current
  * changes, so a reader that still sees prev as current adds a run that
  * starts at the new switch_tsc (a few cycles at most). */
-static inline void account_switch(struct cpu *c, struct thread *prev, struct thread *next)
+static inline void account_switch(struct cpu *c, struct thread *prev, const struct thread *next)
 {
     uint64_t now = rdtsc(), last = c->switch_tsc;
     uint64_t d = last && now > last ? now - last : 0;
@@ -698,7 +698,7 @@ static void try_steal(uint32_t me)
  * ("idlespin=<us>", "nospinidle" = 0) and at run time (the benchmark). */
 volatile uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
 
-static bool idle_has_work(struct cpu *c)
+static bool idle_has_work(const struct cpu *c)
 {
     return rqs[c->index].nr_ready || c->need_resched;
 }

@@ -179,7 +179,7 @@ static struct process *pick_process(struct job *j, bool to_kill)
 
 /* A referenced child of j listed after `after` (NULL: the first), or NULL.
  * `after` must be referenced (so it is still listed). */
-static struct job *next_child(struct job *j, struct job *after)
+static struct job *next_child(struct job *j, const struct job *after)
 {
     struct job *c = NULL;
     uint64_t f = jlock(j);
@@ -286,7 +286,7 @@ void job_get_info(struct job *j, struct job_info *out)
 }
 
 /* Undo a charge of n at every level from j up to (not including) stop. */
-static void credit(struct job *j, struct job *stop, uint32_t kind, uint64_t n)
+static void credit(struct job *j, const struct job *stop, uint32_t kind, uint64_t n)
 {
     for (; j != stop; j = j->parent) {
         uint64_t old = __atomic_fetch_sub(&j->used[kind], n, __ATOMIC_RELAXED);
@@ -433,7 +433,7 @@ struct job *job_root_of(struct job *j)
 }
 
 /* Is a a strict ancestor of j? */
-static bool job_above(struct job *a, struct job *j)
+static bool job_above(const struct job *a, const struct job *j)
 {
     for (j = j ? j->parent : NULL; j; j = j->parent)
         if (j == a)

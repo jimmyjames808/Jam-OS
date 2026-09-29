@@ -34,7 +34,7 @@ static handle_t encode(uint32_t slot, uint32_t gen)
 
 /* Returns the slot for h if it is live and current, else NULL. A free or
  * in-transit slot (obj == NULL) never matches. */
-static struct handle_slot *decode(struct handle_table *t, handle_t h)
+static struct handle_slot *decode(const struct handle_table *t, handle_t h)
 {
     uint32_t idx = h >> GEN_BITS;
     if (idx == 0 || idx > t->capacity)
@@ -88,12 +88,12 @@ void handle_table_init(struct handle_table *t)
 /* Charge n handle units to t's job (no lock needed: job counters are
  * atomic). The caller adds n to t->charged under the lock once the slots
  * are really taken, or uncharges them again. */
-static status_t charge(struct handle_table *t, uint32_t n)
+static status_t charge(const struct handle_table *t, uint32_t n)
 {
     return job_charge(t->job, JOB_LIMIT_HANDLES, n);
 }
 
-static void uncharge(struct handle_table *t, uint32_t n)
+static void uncharge(const struct handle_table *t, uint32_t n)
 {
     job_uncharge(t->job, JOB_LIMIT_HANDLES, n);
 }
@@ -276,7 +276,7 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
     }
 }
 
-static status_t check(struct handle_slot *s, enum obj_type type, rights_t need)
+static status_t check(const struct handle_slot *s, enum obj_type type, rights_t need)
 {
     if (!s)
         return ERR_BAD_HANDLE;
@@ -420,7 +420,7 @@ status_t handle_table_find(struct handle_table *t, enum obj_type type, struct ko
 
 /* The reserved slot for an in-transit handle h, if h names one that was taken
  * and not yet committed or restored. */
-static struct handle_slot *intransit_slot(struct handle_table *t, handle_t h)
+static struct handle_slot *intransit_slot(const struct handle_table *t, handle_t h)
 {
     uint32_t idx = h >> GEN_BITS;
     if (!idx || idx > t->capacity)
