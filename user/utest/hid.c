@@ -854,6 +854,7 @@ bool t_hid_repeat(void)
 }
 
 /* A boot mouse: buttons, deltas, the wheel; unchanged reports send nothing;
+ * the reports channel closing alone ends it with 5 (restart me);
  * a 3-byte report has no wheel. */
 bool t_hid_mouse(void)
 {
@@ -886,8 +887,11 @@ bool t_hid_mouse(void)
             e->wheel != w[i].wheel || e->buttons != w[i].buttons)
             FAIL("mouse event %u: %d %d %d %#x", i, e->dx, e->dy, e->wheel, e->buttons);
     }
-    unplug(&m, false, true);                /* the reports channel alone closing is enough */
-    return finish(&m, 0);
+    /* The reports channel alone closing (usb-bus gave the endpoint up after
+     * errors) with DR_USB still open: not "device gone" but exit 5, so
+     * devmgr restarts hid instead of leaving the mouse dead (M7 review). */
+    unplug(&m, false, true);
+    return finish(&m, 5);
 }
 
 /* A composite keyboard: the boot interface types, the report-protocol one

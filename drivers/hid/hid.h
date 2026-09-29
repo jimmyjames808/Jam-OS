@@ -17,7 +17,8 @@ enum hid_kind { HID_KEYBOARD = 1, HID_MOUSE = 2 };
 
 enum hid_stop {
     STOP_NONE = 0,
-    STOP_DEVICE_GONE,    /* DR_USB or the reports channel closed: unplugged */
+    STOP_DEVICE_GONE,    /* DR_USB closed (or both): unplugged */
+    STOP_REPORTS_LOST,   /* the reports channel closed, DR_USB still open */
     STOP_CONSOLE_GONE,   /* DR_INPUT closed: the console restarted */
 };
 
