@@ -15,6 +15,7 @@
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/syscall.h>
 #include <jam/trap.h>
@@ -88,14 +89,24 @@ static uint32_t preempt_count_now(void)
  * the thread was cancelled. Returns with interrupts off and nothing left
  * to do, so the check can't go stale before the return: an IPI arriving
  * now is taken in user mode and comes straight back through here. */
+/* The current thread leaves ring 3 for good: its process is dying (or,
+ * for the kernel's own ring-3 test threads, which have no process, just
+ * the thread). Nothing held; interrupts on. */
+_Noreturn static void leave_user(void)
+{
+    if (current_thread()->process)
+        uthread_exit_current();
+    thread_exit();
+}
+
 static void return_to_user_work(void)
 {
     for (;;) {
-        /* Phase 2: a cancelled user thread's process is being killed; the
-         * thread leaves here instead of returning to user code. */
+        /* A cancelled user thread's process is being killed (process_kill):
+         * the thread leaves here instead of returning to user code. */
         if (thread_cancel_pending()) {
             irq_enable();
-            thread_exit();
+            leave_user();
         }
         struct cpu *c = this_cpu();
         if (c->preempt_count || c->held_depth || c->irq_depth) {
@@ -113,9 +124,10 @@ static void return_to_user_work(void)
               t->sleep_depth);
 }
 
-/* A user thread did something fatal. Runs on its kernel stack at the
- * bottom (nothing of the kernel's below it, no locks), so exiting from here
- * is like exiting from a syscall. */
+/* A user thread did something fatal: its whole process is killed (M5 has
+ * no exception channels). Runs on its kernel stack at the bottom (nothing
+ * of the kernel's below it, no locks), so leaving from here is like leaving
+ * from a syscall. */
 _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t rip,
                                    uint64_t addr)
 {
@@ -124,8 +136,14 @@ _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t ri
     if (preempt_count_now())
         panic("user fault (%s) in \"%s\" with preemption disabled", why, t->name);
     __atomic_add_fetch(&user_faults, 1, __ATOMIC_RELAXED);
-    kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx\n", t->name, t->id,
-            why, rip, addr);
+    if (t->process) {
+        kprintf("user: process \"%s\" killed: %s at rip %lx, address %lx (thread \"%s\")\n",
+                process_name(t->process), why, rip, addr, t->name);
+        process_kill(t->process, PROCESS_KILLED_CODE, true);
+    } else {
+        kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx\n", t->name,
+                t->id, why, rip, addr);
+    }
 #ifndef JAM_NO_KTESTS
     void (*h)(struct thread *, uint64_t, uint64_t, uint64_t) = uentry_test_fault;
     if (h)
@@ -133,7 +151,7 @@ _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t ri
 #else
     (void)vector;
 #endif
-    thread_exit();   /* phase 2: kill the process */
+    leave_user();
 }
 
 _Noreturn void user_fault_kill(struct trap_frame *f, const char *why)
@@ -223,6 +241,11 @@ bool trap_page_fault(struct trap_frame *f)
         irq_disable();
         if (s == OK)
             return true;   /* retry the access */
+        if (!fix && s == ERR_NO_MEMORY)
+            kill_current("page fault: out of memory (or the job's page limit)", 14, f->rip,
+                         addr);
+        if (!fix && s == ERR_OUT_OF_RANGE)
+            kill_current("bus error: page past the end of a shrunk VMO", 14, f->rip, addr);
     }
     if (fix) {
         f->rip = fix->fixup;
