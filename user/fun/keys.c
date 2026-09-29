@@ -31,33 +31,44 @@ int key_decode(const struct input_key_event *ev)
     return KEY_NONE;
 }
 
-int gfx_key(uint64_t deadline)
+status_t gfx_key_event(uint64_t deadline, struct input_key_event *ev)
 {
     if (!scr.keys)
-        return KEY_QUIT;
+        return ERR_BAD_HANDLE;
     for (;;) {
-        struct input_key_event ev;
         uint32_t n = 0;
         struct channel_read_args a = {
-            .h = scr.keys, .bytes_cap = sizeof(ev), .bytes = (uint64_t)(uintptr_t)&ev,
+            .h = scr.keys, .bytes_cap = sizeof(*ev), .bytes = (uint64_t)(uintptr_t)ev,
             .actual_bytes = (uint64_t)(uintptr_t)&n,
         };
         status_t st = jam_channel_read(&a);
         if (st == OK) {
-            int k = n == sizeof(ev) ? key_decode(&ev) : KEY_NONE;
-            if (k != KEY_NONE)
-                return k;
+            if (n == sizeof(*ev))
+                return OK;
             continue;
         }
         if (st != ERR_SHOULD_WAIT)
-            return KEY_QUIT;   /* the console went away */
+            return st;   /* the console went away */
         if (!deadline)
-            return KEY_NONE;
+            return ERR_TIMED_OUT;
         signals_t seen;
         st = jam_object_wait_one(scr.keys, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+        if (st != OK)
+            return st;
+    }
+}
+
+int gfx_key(uint64_t deadline)
+{
+    for (;;) {
+        struct input_key_event ev;
+        status_t st = gfx_key_event(deadline, &ev);
         if (st == ERR_TIMED_OUT)
             return KEY_NONE;
         if (st != OK)
             return KEY_QUIT;
+        int k = key_decode(&ev);
+        if (k != KEY_NONE)
+            return k;
     }
 }

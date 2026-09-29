@@ -136,6 +136,10 @@ enum {
 int      gfx_key(uint64_t deadline);
 /* One key event decoded (KEY_NONE for a release or a bare modifier). */
 int      key_decode(const struct input_key_event *ev);
+/* The next key event itself (down, repeat or up) before deadline: OK;
+ * ERR_TIMED_OUT when none came (deadline 0: don't wait); another error
+ * when the key channel broke. */
+status_t gfx_key_event(uint64_t deadline, struct input_key_event *ev);
 
 /* ---- CPUs and the thread pool ---------------------------------------------------------- */
 
