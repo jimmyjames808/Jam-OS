@@ -157,7 +157,8 @@
 112 framebuffer_take  status    handle_t root, struct fb_info *info, handle_t *vmo, handle_t *owner
 # Run a kernel test entry point in a kernel thread (needs RIGHT_MANAGE on
 # the root): "ktest [prefix]", "bench", "stress <seconds>", "devices",
-# "ps". Output goes to the kernel log (follow it with a klog reader).
+# "ps", "mem", "kill <name>" (the first process of that name in the
+# caller's job tree; for restart tests). Output goes to the kernel log (follow it with a klog reader).
 # Blocks until done; returns the result (ktest: tests run; stress: 0 if it
 # passed, else 1; devices: PCI functions), ERR_NOT_SUPPORTED for an unknown
 # command (or a kernel without tests), ERR_BAD_STATE while one runs.

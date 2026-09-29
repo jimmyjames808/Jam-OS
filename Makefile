@@ -134,7 +134,7 @@ USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack -T user
 LIBGCC      := $(shell $(CC) -print-libgcc-file-name)
 UINC_HDRS   := abi.h bootfs.h startup.h status.h syscall_nums.h
 UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
-USER_PROGS  := init utest devmgr
+USER_PROGS  := init utest devmgr console shell serialin contest
 UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
@@ -309,6 +309,8 @@ usb: $(IMAGE)
 
 font:
 	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf kernel/dev/font_8x16.c
+	(echo "// Copied from kernel/dev/font_8x16.c by \`make font\`: the console draws in user space."; \
+	 cat kernel/dev/font_8x16.c) > user/console/font_8x16.c
 
 clean:
 	rm -rf $(BUILD)

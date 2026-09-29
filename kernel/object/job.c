@@ -383,3 +383,37 @@ struct job *job_root_of(struct job *j)
     job_ref(j);
     return j;
 }
+
+struct process *job_find_process(struct job *j, const char *name)
+{
+    struct kobject *procs[PRINT_MAX];
+    struct job *kids[PRINT_MAX];
+    unsigned np = 0, nk = 0;
+    uint64_t f = jlock(j);
+    for (struct list_node *n = j->procs.next; n != &j->procs && np < PRINT_MAX; n = n->next) {
+        struct process *p = process_from_job_link(container_of(n, struct job_link, node));
+        if (kobject_tryref(process_kobject(p)))
+            procs[np++] = process_kobject(p);
+    }
+    for (struct list_node *n = j->children.next; n != &j->children && nk < PRINT_MAX;
+         n = n->next) {
+        struct job *c = container_of(n, struct job, child_node);
+        if (kobject_tryref(&c->base))
+            kids[nk++] = c;
+    }
+    junlock(j, f);
+    struct process *found = NULL;
+    for (unsigned i = 0; i < np; i++) {
+        struct process *p = process_from_kobject(procs[i]);
+        if (!found && !strcmp(process_name(p), name))
+            found = p;   /* keeps the reference */
+        else
+            kobject_unref(procs[i]);
+    }
+    for (unsigned i = 0; i < nk; i++) {
+        if (!found)
+            found = job_find_process(kids[i], name);
+        kobject_unref(&kids[i]->base);
+    }
+    return found;
+}

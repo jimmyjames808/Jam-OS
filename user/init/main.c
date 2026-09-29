@@ -3,7 +3,9 @@
  *
  * M6: it first starts devmgr (bin/devmgr, if bootfs has it) in a job of
  * its own with a RES_PCI resource sliced from the root, and waits until
- * devmgr has bound its drivers. Then it runs the programs listed in
+ * devmgr has bound its drivers. M7: with "shell" (a plain boot) it then
+ * starts and supervises the console, serial input and shell instead
+ * (shell.c) and never exits. Otherwise it runs the programs listed in
  * init.cfg one after another, each as a real child process in a job of
  * its own (a child of init's job) with a client end of devmgr's channel
  * (SR_DEVMGR), waits for each to finish and reports how it ended: the
@@ -14,6 +16,7 @@
 #include <devmgr.h>
 
 bool init_xhcitest(void);   /* xhcitest.c */
+bool init_shell(handle_t devmgr_ch);   /* shell.c: M7, never returns */
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
@@ -260,6 +263,12 @@ int main(int argc, char **argv)
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
     if (argc > 1 && !strcmp(argv[1], "xhcitest"))
         return init_xhcitest() ? 0 : 1;
+    /* M7: a plain boot: devmgr, then the console, serial input and shell. */
+    if (argc > 1 && !strcmp(argv[1], "shell")) {
+        start_devmgr();
+        init_shell(devmgr_ch);
+        return 1;
+    }
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);

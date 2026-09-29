@@ -4,6 +4,12 @@
 # QEMU_IMAGE picks another image (e.g. build/noktests/jamos.img).
 # QEMU_XHCI adds qemu-xhci properties (e.g. "msi=on,msix=off": an MSI-only
 # xHCI like many Intel PCH controllers).
+# QEMU_INPUT=<script> types into the serial port (M7: the shell tests): the
+# serial port becomes a socket chardev (still logged to <name>.log) that
+# tools/serial-feed.py drives with the script (its format is in that file).
+# The run ends when QEMU does (e.g. the script's `reboot`: -no-reboot) or
+# at QEMU_TIMEOUT; it passes if every `wait` in the script matched and QEMU
+# ended by itself.
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -20,7 +26,13 @@ mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
 
 log="$out/$name.log" mon="build/.qemu-$name.sock"   # unix socket paths max out at 104 bytes
-rm -f "$log" "$mon"
+ser="build/.qemu-$name.ser"
+rm -f "$log" "$mon" "$ser"
+if [ -n "${QEMU_INPUT:-}" ]; then
+    serial="-chardev socket,id=ser0,path=$ser,server=on,wait=on,logfile=$log -serial chardev:ser0"
+else
+    serial="-serial file:$log"
+fi
 qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
     -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
@@ -28,13 +40,20 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -drive if=none,id=usbstick,format=raw,file="$img" \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
     -device edu,dma_mask=0xffffffff \
-    -serial file:"$log" -display none -no-reboot \
+    $serial -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
 qpid=$!
+fpid=
+if [ -n "${QEMU_INPUT:-}" ]; then
+    QEMU_MON="$mon" SHOT_DIR="$out" \
+        python3 tools/serial-feed.py "$ser" "$QEMU_INPUT" 2> "$out/$name.feed" &
+    fpid=$!
+fi
 
 i=0
 limit=$(( ${QEMU_TIMEOUT:-30} * 2 ))
-while [ $i -lt $limit ] && ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
+while [ $i -lt $limit ] && kill -0 $qpid 2>/dev/null &&
+      ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
 done
@@ -44,5 +63,12 @@ sleep 0.5
 kill $qpid 2>/dev/null || true
 wait $qpid 2>/dev/null || true
 python3 -c "from PIL import Image; Image.open('$out/$name.ppm').save('$out/$name.png')" 2>/dev/null || true
-rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon"
+rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon" "$ser"
+if [ -n "$fpid" ]; then
+    fst=0
+    wait $fpid || fst=$?
+    cat "$out/$name.feed"
+    [ $fst -eq 0 ] && [ $i -lt $limit ] || { echo "$name: FAILED (input script)"; exit 1; }
+    exit 0
+fi
 grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }

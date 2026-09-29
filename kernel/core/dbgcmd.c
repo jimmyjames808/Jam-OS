@@ -12,6 +12,10 @@
  *   stress <s>       stress_run(s), 1..600 s: 0 if every check held, else 1
  *   devices          pci_report(): the number of PCI functions
  *   ps               the caller's job tree (processes, jobs, what they use)
+ *   mem              physical memory: total and free (the result: free MiB)
+ *   kill <name>      kill the first process of that name in the caller's
+ *                    job tree (tests of restarts: the console, serialin,
+ *                    later the HID driver); the result is its koid
  *
  * The boot menu entries still call the same functions from thread "main";
  * nothing here changes them. */
@@ -93,7 +97,12 @@ status_t dbgcmd_check(const char *cmd, size_t len)
     }
     if (is(cmd, n, "stress"))
         return parse_u64(rest, &s) && s >= 1 && s <= 600 ? OK : ERR_INVALID_ARGS;
-    if (is(cmd, n, "devices") || is(cmd, n, "ps"))
+    if (is(cmd, n, "kill"))
+    {
+        const char *after;
+        return *rest && word(rest, &after) && !*after ? OK : ERR_INVALID_ARGS;
+    }
+    if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem"))
         return *rest ? ERR_INVALID_ARGS : OK;
     return ERR_NOT_SUPPORTED;
 }
@@ -118,6 +127,26 @@ static int64_t exec(const char *cmd, struct job *scope)
     if (is(cmd, n, "devices")) {
         pci_report();
         return pci_count();
+    }
+    if (is(cmd, n, "kill")) {
+        struct process *p = scope ? job_find_process(scope, rest) : NULL;
+        if (!p) {
+            kprintf("kill: no process called \"%s\"\n", rest);
+            return ERR_NOT_FOUND;
+        }
+        struct process_info info;
+        process_get_info(p, &info);
+        kprintf("kill: process %lu \"%s\"\n", info.koid, rest);
+        process_kill(p, PROCESS_KILLED_CODE, true);
+        kobject_unref(process_kobject(p));
+        return (int64_t)info.koid;
+    }
+    if (is(cmd, n, "mem")) {
+        uint64_t total, free;
+        pmm_stats(&total, &free);
+        kprintf("mem: %lu MiB managed, %lu MiB free, %lu pages in the thread stack cache\n",
+                total >> 8, free >> 8, sched_stack_cache_pages());
+        return (int64_t)(free >> 8);
     }
     if (is(cmd, n, "ps")) {
         if (scope)

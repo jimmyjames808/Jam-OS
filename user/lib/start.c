@@ -63,6 +63,7 @@ const char *startup_role_name(uint32_t role)
     case SR_BOOTFS:       return "bootfs";
     case SR_RESOURCE:     return "resource";
     case SR_DEVMGR:       return "devmgr";
+    case SR_CONSOLE:      return "console";
     }
     return role >= SR_USER ? "user" : "?";
 }

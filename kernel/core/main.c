@@ -151,10 +151,15 @@ _Noreturn static void kmain_stage2(void *arg)
      * edu check on QEMU), before user space starts its own devmgr. */
     if (cmdline_has("drivers=kernel"))
         ok &= kdev_run_kernel_mode();
-    /* User space: init from bootfs, on "init" or on a plain boot (empty
-     * command line). Test, benchmark and crash entries don't start it. */
-    if (cmdline_has("init") || !boot->cmdline[0])
-        ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300), NULL);
+    /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
+     * or, M7, on "shell" or a plain boot (empty command line): devmgr, the
+     * console, serial input and the shell, for good (no timeout; the
+     * RESULTS box only comes if init ever ends). Test, benchmark and crash
+     * entries don't start it. */
+    bool shell = cmdline_has("shell") || !boot->cmdline[0];
+    if (cmdline_has("init") || shell)
+        ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
+                                shell ? "shell" : NULL);
     /* M6 done test ("USB controller test" boot entry): xhci-noop on the
      * xHCI as a kernel process (handles built in the kernel), then as a
      * process that init starts with handles it makes through the M6

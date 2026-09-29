@@ -118,6 +118,8 @@ void job_unref(struct job *j);   /* NULL is a no-op */
  * NULL out). */
 void job_print_tree(struct job *j, unsigned depth);
 struct job *job_root_of(struct job *j);
+/* The first live process called `name` in j's tree (a reference), or NULL. */
+struct process *job_find_process(struct job *j, const char *name);
 
 /* ---- processes ------------------------------------------------------------- */
 
