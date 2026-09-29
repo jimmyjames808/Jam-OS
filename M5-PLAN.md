@@ -159,6 +159,15 @@ Makefile, `boot/limine.conf` (module line).
   image.
 
 ### Phase 2: processes, syscalls, userboot, jobs (after the merge)
+Status 2026-09-29: built and passing in QEMU (see NEXT.md), except the
+three items a parallel agent owns (per-CPU page caches, the stack cache
+limit, `channel_call` wake-affine placement). Decisions made on the way:
+VMO pages are charged to the job of the process that created the VMO (so
+libos's loader pays for a child's data and stack; userboot charges the
+child's own job); a process with no threads left exits with code 0; the
+bootfs handle carries RIGHT_EXEC (programs map their text from it) but
+never RIGHT_WRITE; new calls `debug_report`, `job_get_info`,
+`process_get_info`, `thread_set_priority`.
 - `process`, `thread`, `job` objects and their syscalls; `process_kill`
   and the return-to-user cancel check; user thread creation on top of
   Track A's `arch_enter_user`.
