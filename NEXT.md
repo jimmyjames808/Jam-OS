@@ -30,6 +30,9 @@ arch_enter_user(entry, stack, arg0, arg1); return_to_user_work() and kill_curren
 uentry.c currently thread_exit() -> replace with process kill; test CR3 hooks
 (#ifndef JAM_NO_KTESTS) in arch_thread_switch/syscall_entry_c/trap.c; FS/KERNEL_GS bases
 zeroed at entry (no TLS yet); aspace teardown must wait until no CPU has it loaded.
+**PC 2026-09-29, build 0.0.7-m5-phase1 (4b4db91):** All tests passed (107, first real ring-3
+code on the PC), fpu XSAVE xcr0 7 / 832-byte state, smep=smap=umip=1; testsmap and testsmep
+panic with the right messages. 10-min stress: running.
 **Phase 1 complete. Phase 2 started 2026-09-29 with two worktree agents:** (1) processes/
 threads/jobs, all sysc_* glue, kill, quotas + no-panic OOM, userboot, init spawning utest,
 utest suite, user-path bench lines, delete m5_weak.c; (2) per-CPU page caches, stack cache
