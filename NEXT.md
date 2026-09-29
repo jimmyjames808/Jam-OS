@@ -61,6 +61,16 @@
   registers never share a page with the MSI-X table. Others: Wi-Fi 00:14.3 8086:7a70 (MSI-X 16), VMD/RAID
   00:0e.0 8086:a77f, NVMe 02:00.0 c0a9:5421 (Crucial), SATA, HD audio x2, SMBus, serial-bus (I2C/SPI)
   functions, 6 bridges, no iGPU function (disabled in firmware).
+- **M6 DONE TEST PASSED ON THE PC 2026-09-29 (IMG_0069, v0.0.14-m6 = 9d4719a)**: xhci-noop, Intel 8086:7a60 rev 11,
+  25 ports, 34 scratchpads, MSI vector 0 of 8, BIOS handoff ok (not BIOS-owned); 3 No-Op commands completed
+  via MSI in BOTH modes: kernel process latency min/median/max 12/46/54 us, user process 11/46/47 us; bus
+  master off, MSI off, job clean -> PASS both; init clean; run complete: no problems. (Latency ~46 us is
+  the driver's IMOD = 40 us interrupt moderation, not the kernel.) Two PC-only fixes it took:
+  test_pci skips QEMU-only devices (5b06f16); resource_pci_bar's neighbour check limited to sub-page
+  slack + decode-on functions, refusals now log their reason (9d4719a).
+  Left for M6: merge the devmgr + edu agent (running; it also changes vmo_unpin to take the dma_cap and
+  adds devmgr's 0c0330 -> drv/xhci-noop entry), independent review of phase 2, then PC: All tests,
+  2-min stress, and ONE 10-min stress that signs off M5.5 and M6 together (user: 2-min until then).
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
