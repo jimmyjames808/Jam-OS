@@ -246,6 +246,42 @@ static bool run_config(const char *cfg, uint64_t len)
     return ok;
 }
 
+/* The "Visual demo" boot entry: bin/demo with the root resource (it maps
+ * the framebuffer itself) and the kernel's description of the screen. */
+static bool run_demo(const char *spec)
+{
+    handle_t job, proc, res;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
+    if (st == OK)
+        st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHT_SAME, &res);
+    if (st != OK) {
+        init_say("init: demo: can't set it up (%s)", status_str(st));
+        return false;
+    }
+    const char *av[] = { "bin/demo", spec };
+    struct spawn_handle x = { SR_RESOURCE, res };
+    struct spawn_args a = { .path = "bin/demo", .argc = 2, .argv = av, .job = job,
+                            .extra = &x, .nextra = 1 };
+    if ((st = spawn(&a, &proc)) != OK) {
+        init_say("init: demo: could not start (%s)", status_str(st));
+        jam_handle_close(job);
+        return false;
+    }
+    struct process_info info;
+    st = spawn_wait(proc, 170000000000ull, &info);
+    if (st == ERR_TIMED_OUT) {
+        jam_job_kill(job);
+        st = spawn_wait(proc, 10000000000ull, &info);
+    }
+    bool ok = st == OK && !info.killed && info.exit_code == 0;
+    if (!ok)
+        init_say("init: demo ended badly (%s, code %ld)", status_str(st),
+                 st == OK ? (long)info.exit_code : -1L);
+    jam_handle_close(proc);
+    jam_handle_close(job);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     printf("init: hello from ring 3 (%d arg%s:", argc, argc == 1 ? "" : "s");
@@ -269,6 +305,8 @@ int main(int argc, char **argv)
         init_shell(devmgr_ch);
         return 1;
     }
+    if (argc > 1 && !strncmp(argv[1], "demo:", 5))
+        return run_demo(argv[1]) ? 0 : 1;
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);

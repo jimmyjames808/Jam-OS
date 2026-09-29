@@ -25,7 +25,13 @@
  *              out duplicates of it)
  *
  * devmgr keeps its own handle to each function (with RIGHT_MANAGE, from
- * pci_device_open) and nothing else of the driver's. Each binding is
+ * pci_device_open) and nothing else of the driver's.
+ *
+ * M7: a driver may also WRITE on DR_SERVE by itself (txid 0): usb-bus
+ * sends `usbbus.interface_attached` (abi/idl/usbbus.idl) with the
+ * interface's `usb` channel for each interface of a new device. devmgr
+ * watches each driver's channel for these, logs them and keeps the
+ * channel (phase 2: starts the class driver with it, role DR_USB). Each binding is
  * logged, with one RESULTS line per bound driver.
  *
  * It runs until every client end of its channel is gone (init closes its
@@ -35,6 +41,7 @@
 #include <os.h>
 #include <devmgr.h>
 #include <jam/driver.h>
+#include <idl/usbbus.h>
 
 #define MS          1000000ull
 #define S           1000000000ull
@@ -42,6 +49,8 @@
 #define STOP_WAIT   (15 * S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
 #define KEY_CHANNEL 1
 #define KEY_DRIVER  0x100   /* + binding index: its process terminated */
+#define KEY_EVENTS  0x200   /* + binding index: its driver wrote to us (usb-bus) */
+#define MAX_USB_IFS 64
 
 /* ---- the match table ---------------------------------------------------------
  * vendor/device (0xffff = any) and/or class (class << 16 | subclass << 8 |
@@ -55,7 +64,7 @@ static const struct {
     const char *path;
 } matches[] = {
     { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },        /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/xhci-noop" },   /* any xHCI controller */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller (M7) */
 };
 
 /* Per-driver job limits: 16 MiB, 256 handles, 16 threads, 1 MiB queued. */
@@ -78,6 +87,13 @@ struct binding {
 };
 
 static struct binding devs[MAX_DEVS];
+
+/* USB interfaces usb-bus reported (M7): their `usb` channels, kept until a
+ * class driver takes them (phase 2's match table) or the device goes. */
+static struct {
+    handle_t ch;
+    struct usbbus_interface_attached_req info;
+} usb_ifs[MAX_USB_IFS];
 static unsigned ndevs, nbound, nfailed, nskipped;
 static handle_t pci_res, port;
 
@@ -214,6 +230,10 @@ static status_t bind(struct binding *b)
     b->client = client;
     b->running = true;
     b->killed = false;
+    /* What the driver writes on its own (usb-bus: interface_attached). */
+    if (jam_port_bind(port, client, KEY_EVENTS + (uint64_t)(b - devs), SIG_READABLE,
+                      PORT_BIND_PERSISTENT) != OK)
+        say(false, "devmgr: %s: can't watch its channel for events", bdf(b));
     return OK;
 }
 
@@ -262,6 +282,7 @@ static bool unbind(struct binding *b, bool kill, bool excused)
 {
     if (!b->proc)
         return true;
+    jam_port_unbind(port, b->client, KEY_EVENTS + (uint64_t)(b - devs));
     jam_handle_close(b->client);   /* a serving driver sees its client gone */
     b->client = HANDLE_INVALID;
     signals_t seen;
@@ -325,9 +346,12 @@ static void bind_all(void)
 static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
 {
     uint32_t seen = 0;
+    bool any_bound = q->ordinal == DEVMGR_GET_SERVICE && q->vendor == 0xffff &&
+                     q->device == 0xffff;
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
-        bool hit = msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
+        bool hit = any_bound ? b->proc != HANDLE_INVALID
+                   : msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
                        ? b->info.msix_vectors &&
                              !(b->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
                        : b->info.vendor == q->vendor && b->info.device == q->device;
@@ -421,6 +445,73 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         for (uint32_t i = 0; i < *nh; i++)
             jam_handle_close(hs[i]);
         *nh = 0;
+    }
+}
+
+/* ---- USB interfaces (M7) --------------------------------------------------------- */
+
+/* b's driver wrote on its channel by itself: usb-bus's interface_attached
+ * (txid 0, one handle: the interface's `usb` channel). Anything else, or a
+ * reply nobody waited for, is dropped. */
+static void driver_events(struct binding *b)
+{
+    for (int guard = 0; guard < 64 && b->client; guard++) {
+        _Alignas(8) uint8_t buf[sizeof(struct usbbus_interface_attached_req)];
+        handle_t hs[4];
+        uint32_t n = 0, nh = 0;
+        struct channel_read_args a = {
+            .h = b->client, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
+            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_BUFFER_TOO_SMALL) {
+            /* Not ours: take it off the queue. */
+            uint8_t *big = malloc(n ? n : 1);
+            handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));
+            a.bytes = (uint64_t)(uintptr_t)big;
+            a.bytes_cap = n;
+            a.handles = (uint64_t)(uintptr_t)bh;
+            a.handles_cap = nh;
+            if (big && bh && jam_channel_read(&a) == OK)
+                for (uint32_t i = 0; i < nh; i++)
+                    jam_handle_close(bh[i]);
+            free(big);
+            free(bh);
+            continue;
+        }
+        if (st != OK)
+            return;
+        const struct usbbus_interface_attached_req *m = (const void *)buf;
+        if (n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
+            for (uint32_t i = 0; i < nh; i++)
+                jam_handle_close(hs[i]);
+            continue;
+        }
+        /* Forget interfaces whose device went away (usb-bus closed them). */
+        unsigned slot = MAX_USB_IFS;
+        for (unsigned i = 0; i < MAX_USB_IFS; i++) {
+            signals_t seen = 0;
+            if (usb_ifs[i].ch &&
+                jam_object_wait_one(usb_ifs[i].ch, SIG_PEER_CLOSED, 0, &seen) == OK) {
+                jam_handle_close(usb_ifs[i].ch);
+                usb_ifs[i].ch = HANDLE_INVALID;
+            }
+            if (!usb_ifs[i].ch && slot == MAX_USB_IFS)
+                slot = i;
+        }
+        char path[25];
+        memcpy(path, m->path, 24);
+        path[24] = 0;
+        say(false, "devmgr: usb %s %04x:%04x interface %u (%02x/%02x/%02x) attached; no class "
+            "driver yet", path, m->vendor, m->product, m->interface_number, m->class_code,
+            m->subclass, m->protocol);
+        if (slot == MAX_USB_IFS) {
+            jam_handle_close(hs[0]);
+            continue;
+        }
+        usb_ifs[slot].ch = hs[0];
+        usb_ifs[slot].info = *m;
     }
 }
 
@@ -525,6 +616,8 @@ int main(int argc, char **argv)
             armed = false;
         else if (pkt.key >= KEY_DRIVER && pkt.key < KEY_DRIVER + ndevs)
             reaped(&devs[pkt.key - KEY_DRIVER]);
+        else if (pkt.key >= KEY_EVENTS && pkt.key < KEY_EVENTS + ndevs && pkt.status == OK)
+            driver_events(&devs[pkt.key - KEY_EVENTS]);
     }
     if (st != ERR_PEER_CLOSED) {
         say(true, "devmgr: serving failed (%s)", status_str(st));
@@ -549,6 +642,9 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < ndevs; i++)
         if (devs[i].dev)
             jam_handle_close(devs[i].dev);
+    for (unsigned i = 0; i < MAX_USB_IFS; i++)
+        if (usb_ifs[i].ch)
+            jam_handle_close(usb_ifs[i].ch);
     say(false, "devmgr: %u driver(s) stopped; exiting", stopped);
     return ok ? 0 : 1;
 }

@@ -28,7 +28,7 @@
 #include <jam/resource.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.17-m6"
+#define JAMOS_VERSION   "0.0.18-m7a"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -172,6 +172,25 @@ _Noreturn static void kmain_stage2(void *arg)
         } else {
             ok &= xhci_launch(xhc, false);
             ok &= userboot_run_init(60, "xhcitest");
+        }
+    }
+    /* "Visual demo" boot entry: init starts bin/demo, which draws on the
+     * framebuffer itself (a WC physical VMO from the root resource) with
+     * every CPU. The text console stops drawing meanwhile and redraws when
+     * it's over, so the RESULTS box shows. */
+    if (cmdline_has("demo")) {
+        const struct boot_framebuffer *f = &boot->fb;
+        if (!f->virt || f->bpp != 32) {
+            report("demo: needs a 32-bit framebuffer");
+            ok = false;
+        } else {
+            char arg[160];
+            ksnprintf(arg, sizeof(arg), "demo:%lx:%u:%u:%u:%u:%u:%u:%u", f->phys, f->width,
+                      f->height, f->pitch, f->red_shift, f->green_shift, f->blue_shift,
+                      cpu_count);
+            fbcon_mute(true);
+            ok &= userboot_run_init(180, arg);
+            fbcon_mute(false);
         }
     }
     sched_print_stats();
