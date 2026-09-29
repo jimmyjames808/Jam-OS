@@ -1,3 +1,11 @@
+/* COM1 (dev/serial.c): the kernel log's first output and, while a process
+ * reads it, a line of input.
+ *
+ * Output goes through a ring drained by the transmit interrupt once one is
+ * routed, and synchronously before that, after a panic, or when the IRQ
+ * never arrives. Input is a second ring filled by the receive interrupt.
+ * The ring has no lock of its own: tx_lock and rx_lock in serial.c guard
+ * the two rings. */
 #pragma once
 
 #include <stdbool.h>

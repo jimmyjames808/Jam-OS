@@ -1,3 +1,6 @@
+/* kvsnprintf and friends: a small printf for the kernel (the formats are
+ * listed in kprintf.h). kprintf formats into a 512-byte stack buffer
+ * (longer output is cut) and hands the result to klog in one call. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <jam/klog.h>

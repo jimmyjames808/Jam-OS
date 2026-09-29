@@ -1,3 +1,8 @@
+/* The I/O APICs and the legacy 8259 PICs. At boot the 8259s are moved
+ * off the exception vectors and masked, and every I/O APIC pin is masked;
+ * ioapic_route_isa then unmasks single legacy ISA lines (COM1), applying
+ * the MADT's interrupt source overrides. Each I/O APIC is reached through
+ * its index/data register pair (IOREGSEL, IOWIN). */
 #include <jam/acpi.h>
 #include <jam/ioapic.h>
 #include <jam/irq.h>

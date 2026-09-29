@@ -1,3 +1,6 @@
+/* Formatted kernel output. kprintf writes to the kernel log (klog), which
+ * feeds the serial port and the framebuffer console; ksnprintf formats into
+ * a buffer and never writes past `size`. */
 #pragma once
 
 #include <stdarg.h>

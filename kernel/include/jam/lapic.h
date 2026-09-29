@@ -1,3 +1,7 @@
+/* The local APIC (arch/x86_64/lapic.c): x2APIC or xAPIC, IPIs and NMIs,
+ * and the per-CPU timer that drives both the scheduler tick and the
+ * one-shot sleeper deadlines. Each function works on the calling CPU's own
+ * APIC; call with interrupts off where it says so. */
 #pragma once
 
 #include <stdbool.h>

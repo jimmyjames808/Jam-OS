@@ -1,3 +1,6 @@
+/* The kernel command line from the loader: space-separated boot words
+ * ("selftest", "nopcid") and key=N values ("stress=60"). Set once at boot;
+ * read-only afterwards. */
 #pragma once
 
 #include <stdbool.h>

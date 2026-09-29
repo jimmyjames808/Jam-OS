@@ -1,3 +1,10 @@
+/* The local APIC: x2APIC through MSRs or xAPIC through MMIO (rd/wr hide
+ * which), IPIs, error reporting, and the per-CPU timer.
+ *
+ * The timer modes and how the scheduler tick and the sleeper deadlines
+ * share one timer are described above timer_mode below. Every function
+ * works on the calling CPU's own APIC; the IPI senders keep interrupts off
+ * across the two xAPIC ICR writes so they can't be split. */
 #include <jam/acpi.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>

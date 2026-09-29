@@ -1,3 +1,11 @@
+/* Inter-processor interrupts: reschedule kicks, cross-CPU function calls
+ * (smp_call_on / smp_call_others), TLB shootdowns, the watchdog NMI and
+ * the panic stop.
+ *
+ * A cross-CPU call puts a slot on the target's inbox (inboxes[], one lock
+ * per target) and waits, spinning, until every target has run it: the
+ * slots live on the caller's stack, so the caller must not return before
+ * `pending` reaches 0. Waiting is bounded: after 5 s it panics. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>

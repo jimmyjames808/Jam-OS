@@ -1,3 +1,6 @@
+/* Kernel symbol table for backtraces. tools/gensyms.py builds it from the
+ * linked kernel and a second link embeds it: a table sorted by address, and
+ * the NUL-separated names it points into. */
 #pragma once
 
 #include <stdint.h>

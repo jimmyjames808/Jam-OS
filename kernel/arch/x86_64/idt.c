@@ -1,3 +1,7 @@
+/* The interrupt descriptor table: one gate per vector, all pointing into
+ * isr.S's stubs (isr_table). NMI, #DB, double fault and machine check run
+ * on their own IST stacks, since they can arrive when the current stack
+ * can't be trusted. One table is shared by every CPU. */
 #include <stdint.h>
 #include <jam/cpu.h>
 

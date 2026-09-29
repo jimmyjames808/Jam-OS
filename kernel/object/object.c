@@ -1,3 +1,12 @@
+/* The kernel object core: reference counts, handle counts, signals and
+ * the observers that wait on them, shared by every object type.
+ *
+ * An object has two counts: `refs` (kernel references; the last one
+ * destroys it) and `handles` (handle-table entries; the last one calls
+ * on_zero_handles, e.g. a channel endpoint tells its peer). Both drops can
+ * cascade through other objects, so they run through td_run's per-CPU
+ * pending list instead of recursing (see "iterative teardown" below).
+ * Signals and the observer list are guarded by the object's own lock. */
 #include <jam/kprintf.h>
 #include <jam/object.h>
 #include <jam/panic.h>

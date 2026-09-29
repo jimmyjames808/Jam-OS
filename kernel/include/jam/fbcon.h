@@ -1,3 +1,6 @@
+/* The kernel's text console on the boot framebuffer (dev/fbcon.c). It
+ * draws the kernel log until the console process takes the screen
+ * (framebuffer_take), and again after a panic, which always draws. */
 #pragma once
 
 #include <stddef.h>

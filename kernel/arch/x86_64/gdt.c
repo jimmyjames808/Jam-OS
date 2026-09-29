@@ -1,3 +1,8 @@
+/* The GDT and TSS. Each CPU has its own GDT (the TSS descriptor differs)
+ * and TSS, whose RSP0 is the kernel stack for entries from user mode and
+ * whose IST slots are the NMI, #DB, double-fault and machine-check stacks.
+ * The BSP runs on static early tables until its per-CPU ones exist. The
+ * segment order is fixed by SYSCALL/SYSRET (see build()). */
 #include <stdint.h>
 #include <jam/cpu.h>
 #include <jam/mm.h>

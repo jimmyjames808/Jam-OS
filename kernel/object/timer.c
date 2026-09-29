@@ -1,3 +1,12 @@
+/* Timer objects: a timer asserts SIG_SIGNALED once uptime reaches its
+ * deadline.
+ *
+ * One kernel thread, "timer service", serves every timer: armed timers sit
+ * on one list sorted by deadline, and the service sleeps until the earliest.
+ * Arming an earlier timer wakes it to re-plan. service_lock guards the list
+ * and each timer's `armed` and `deadline_ns`; it is taken before the timer's
+ * own object lock (kobject_signal), never after. The service thread starts
+ * with the first timer_create, so it costs nothing until a timer exists. */
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/sched.h>

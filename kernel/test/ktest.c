@@ -1,3 +1,11 @@
+/* The kernel test runner. ktest_run runs every KTEST (collected by the
+ * linker between __ktests_start and __ktests_end) whose name starts with a
+ * prefix, and checks after each one that it gave back every page it took
+ * (within LEAK_SLACK_PAGES).
+ *
+ * At boot ("ktest") every check is strict. From the shell on a live system
+ * (ktest_live) the KT_GLOBAL_* checks are relaxed, since other processes
+ * change the global counts, and tests marked KT_SKIP_LIVE are skipped. */
 #include <jam/interrupt.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>

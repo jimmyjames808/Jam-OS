@@ -1,3 +1,5 @@
+/* The register frame every interrupt and exception entry builds
+ * (arch/x86_64/isr.S) and hands to trap_dispatch (arch/x86_64/trap.c). */
 #pragma once
 
 #include <stdint.h>
