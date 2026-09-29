@@ -13,7 +13,7 @@
 #include <jam/sched.h>
 #include <jam/time.h>
 
-static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
+static uint64_t next_koid = 1024;            /* small numbers reserved */
 
 /* ---- iterative teardown --------------------------------------------------
  *

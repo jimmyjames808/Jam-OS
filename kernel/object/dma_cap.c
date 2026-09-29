@@ -87,7 +87,7 @@ struct dma_fn {
 static struct dma_fn fns[PCI_MAX_DEVS];
 static spinlock_t q_lock = SPINLOCK_INIT("dma quarantine");
 static struct waitqueue q_wq;
-static volatile int q_state;   /* 0 not started, 1 starting, 2 running */
+static int q_state;            /* 0 not started, 1 starting, 2 running */
 
 static struct dma_fn *fn_of(const struct pci_dev *d)
 {

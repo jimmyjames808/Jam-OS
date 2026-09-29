@@ -331,7 +331,7 @@ static void out_print(const struct process *p, const char *line, enum out_kind k
 
 size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
 {
-    static volatile uint32_t reports;
+    static uint32_t reports;
     if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX)
         report_it = false;   /* the RESULTS box is for a few lines */
     enum out_kind mine = report_it ? OUT_REPORT : OUT_PRINT;

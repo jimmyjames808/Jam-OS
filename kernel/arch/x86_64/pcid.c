@@ -70,8 +70,8 @@ struct pcid_cpu {
 static struct pcid_cpu pcpu[MAX_CPUS];
 static volatile int usable = -1;          /* -1: not decided yet */
 static volatile bool on;
-static volatile uint32_t epoch = 1;       /* pcpu[].epoch starts at 0: a reset */
-static volatile uint64_t next_id = 1;
+static uint32_t epoch = 1;                /* pcpu[].epoch starts at 0: a reset */
+static uint64_t next_id = 1;
 
 bool pcid_usable(void)
 {

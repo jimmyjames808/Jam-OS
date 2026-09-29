@@ -124,7 +124,7 @@ struct thread {
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */
-    volatile bool     cancel_pending;
+    bool              cancel_pending;
 
     /* Lock checker: mutexes this thread holds, innermost last. */
     uint32_t          sleep_depth;

@@ -48,7 +48,7 @@ _Static_assert(VEC_DEVICE_COUNT == VEC_DEVICE_LAST - VEC_DEVICE_FIRST + 1, "vect
 struct vec_slot {
     vector_fn_t       fn;      /* NULL: unowned (atomic) */
     void             *ctx;     /* written before fn is published */
-    volatile uint32_t busy;    /* handlers running now (only this CPU runs them) */
+    uint32_t          busy;    /* handlers running now (only this CPU runs them) */
     bool              used;    /* allocated, possibly still draining (alloc_lock) */
 };
 

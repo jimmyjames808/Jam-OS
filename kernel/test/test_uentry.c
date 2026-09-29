@@ -102,7 +102,7 @@ static uint64_t reg_pml4(const struct thread *t)
 /* The PML4 each CPU currently has loaded for a test thread (0 = kernel
  * tables). Set/cleared only inside the CR3 hook, which runs with interrupts
  * off; read by uspace_destroy to know when a PML4 is safe to free. */
-static volatile uint64_t cpu_test_pml4[MAX_CPUS];
+static uint64_t cpu_test_pml4[MAX_CPUS];
 
 /* CR3 to load when switching TO `next` (see uentry_test.h). Tracks this
  * CPU's loaded test PML4 itself, so leaving a test thread always restores

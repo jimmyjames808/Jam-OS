@@ -18,7 +18,7 @@
 static spinlock_t service_lock = SPINLOCK_INIT("timer service");
 static struct list_node armed = LIST_INIT(armed);   /* by deadline, earliest first */
 static struct thread *service;                      /* NULL until it is running */
-static volatile bool service_started;
+static bool service_started;
 
 /* With service_lock held. Ties keep arming order. */
 static void insert_sorted(struct ktimer *t)

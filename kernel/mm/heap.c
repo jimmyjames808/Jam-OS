@@ -71,7 +71,7 @@ struct slab {
 
 /* One CPU's magazine for one cache. */
 struct kmag {
-    volatile uint32_t busy;             /* the magazine lock (see the top) */
+    uint32_t          busy;             /* the magazine lock (see the top) */
     volatile uint32_t n;                /* objs[0..n) free; written with busy held */
     void             *objs[MAG_MAX];    /* LIFO: objs[n-1] is the hottest */
 } __attribute__((aligned(64)));

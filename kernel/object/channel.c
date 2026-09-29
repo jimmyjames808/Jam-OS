@@ -67,8 +67,8 @@ struct channel {
     bool              peer_closed;   /* the peer left the pair */
 };
 
-static volatile uint64_t live_endpoints;
-static volatile uint32_t next_txid;
+static uint64_t live_endpoints;
+static uint32_t next_txid;
 
 uint64_t channel_live_count(void)
 {

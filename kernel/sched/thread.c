@@ -17,7 +17,7 @@
 #define STACK_SIZE  THREAD_STACK_SIZE
 
 static struct kmem_cache *thread_cache;
-static volatile uint64_t next_id = 1;
+static uint64_t next_id = 1;
 
 /* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
  * reused (no TLB shootdown, no page allocation). Stacks over the limit must
@@ -36,7 +36,7 @@ static void *stack_cache[SCHED_STACK_CACHE_MAX];
 static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
 static void *stack_doomed;
 static volatile unsigned stack_doomed_n;
-static volatile uint64_t stacks_freed;
+static uint64_t stacks_freed;
 
 /* May this context free stacks (kstack_free shoots down TLBs, which needs
  * interrupts on and no spinlock held: see check_callable in ipi.c)? */

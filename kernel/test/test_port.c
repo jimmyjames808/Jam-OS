@@ -651,7 +651,7 @@ enum { SP_PRODUCERS = 8, SP_ROUNDS = 2000, SP_TOGGLES = 3, SP_PERS_KEY = 100 };
 struct sp_producer {
     /* ONCE-bound, PERSISTENT-bound, and the consumer's ack */
     struct event     *once, *pers, *ack;
-    volatile uint64_t sent;                /* rising edges made */
+    uint64_t          sent;                /* rising edges made */
     volatile bool     failed;              /* a check failed */
 };
 

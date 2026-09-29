@@ -99,7 +99,7 @@ static volatile uint64_t zone_free[ZONE_COUNT];
 static spinlock_t lock = SPINLOCK_INIT("pmm");
 
 struct pcp {
-    volatile uint32_t busy;             /* the stash lock (see the top) */
+    uint32_t          busy;             /* the stash lock (see the top) */
     volatile uint32_t n;                /* pages[0..n) stashed; written with
                                          * busy held, read racily by stats */
     struct page      *pages[PCP_MAX];   /* LIFO: pages[n-1] is the hottest */
@@ -107,7 +107,7 @@ struct pcp {
 
 static struct pcp pcps[MAX_CPUS];
 static volatile unsigned pcp_zone = ZONE_DMA32;
-static volatile uint64_t pcp_drains;
+static uint64_t pcp_drains;
 
 void pmm_early_init(const struct boot_info *bi)
 {

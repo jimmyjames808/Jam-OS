@@ -69,7 +69,7 @@ struct kinterrupt {
     bool              masked;     /* masked now (fire to ack) */
     bool              pending;    /* virtual maskable: fired while masked (a PBA bit) */
     bool              dead;       /* teardown started: fires are ignored */
-    volatile uint8_t  torn;       /* TORN_*: teardown runs once */
+    uint8_t           torn;       /* TORN_*: teardown runs once */
     bool              listed;     /* on dev_irqs (dev_lock) */
     uint8_t           vec;        /* its CPU vector (MSI, MSI-X) */
     uint32_t          cpu;        /* the CPU the vector is on */
@@ -83,7 +83,7 @@ struct kinterrupt {
 
 static spinlock_t dev_lock = SPINLOCK_INIT("interrupt devices");
 static struct list_node dev_irqs = LIST_INIT(dev_irqs);
-static volatile uint64_t live;
+static uint64_t live;
 
 static struct kinterrupt *to_irq(struct kobject *obj)
 {

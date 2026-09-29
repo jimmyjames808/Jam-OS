@@ -227,7 +227,7 @@ void tlb_shootdown(uint64_t va, uint64_t len)
 
 /* Per-CPU count of masked shootdowns handled (for tests: which CPUs an
  * address-space unmap actually interrupted). */
-static volatile uint64_t mask_flushes[MAX_CPUS];
+static uint64_t mask_flushes[MAX_CPUS];
 
 static void flush_masked(void *arg)
 {
