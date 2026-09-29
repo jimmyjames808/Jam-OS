@@ -133,12 +133,39 @@ void smp_call_on(uint32_t cpu, void (*fn)(void *), void *arg)
     wait_done(&c);
 }
 
+/* No memory for one slot per CPU (M5: this runs under system calls, via
+ * kernel TLB shootdowns, and must not fail): post from an on-stack array in
+ * chunks instead, each chunk answered before the next goes out. Slower on
+ * many CPUs, but it never allocates. */
+static void call_others_chunked(void (*fn)(void *), void *arg)
+{
+    enum { CHUNK = 16 };
+    struct call_slot slots[CHUNK];
+    preempt_disable();
+    uint32_t me = this_cpu()->index;
+    for (uint32_t next = 0; next < cpu_count;) {
+        uint32_t targets[CHUNK], n = 0;
+        for (; next < cpu_count && n < CHUNK; next++)
+            if (next != me && cpus[next]->online)
+                targets[n++] = next;
+        if (!n)
+            continue;
+        struct call c = { fn, arg, n };
+        for (uint32_t i = 0; i < n; i++)
+            post(targets[i], &slots[i], &c);
+        wait_done(&c);
+    }
+    preempt_enable();
+}
+
 void smp_call_others(void (*fn)(void *), void *arg)
 {
     check_callable();
     struct call_slot *slots = kmalloc(sizeof(*slots) * cpu_count);
-    if (!slots)
-        panic("smp_call: out of memory");
+    if (!slots) {
+        call_others_chunked(fn, arg);
+        return;
+    }
     preempt_disable();
     uint32_t me = this_cpu()->index, n = 0;
     struct call c = { fn, arg, 0 };

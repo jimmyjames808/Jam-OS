@@ -322,17 +322,37 @@ static uint64_t vmap_reserve_raw(uint64_t len)
     return va;
 }
 
+void *kstack_try_alloc(size_t size)
+{
+    /* Every page first, so running out (M5: user code creates threads)
+     * returns NULL with nothing mapped instead of panicking. */
+    enum { MAX_PAGES = 64 };
+    size = ALIGN_UP(size, PAGE_SIZE);
+    if (size / PAGE_SIZE > MAX_PAGES)
+        panic("vmm: kernel stack of %lu bytes is too big", (uint64_t)size);
+    uint64_t pas[MAX_PAGES];
+    uint64_t n = size / PAGE_SIZE;
+    for (uint64_t i = 0; i < n; i++) {
+        pas[i] = pmm_alloc_page_phys(PMM_ZERO);
+        if (!pas[i]) {
+            while (i--)
+                pmm_free_page_phys(pas[i]);
+            return NULL;
+        }
+    }
+    uint64_t va = vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
+    for (uint64_t i = 0; i < n; i++)
+        vmm_map(kernel_pml4, va + i * PAGE_SIZE, pas[i], PAGE_SIZE,
+                VM_WRITE | VM_GLOBAL | VM_SMALL);
+    return (void *)(va + size);
+}
+
 void *kstack_alloc(size_t size)
 {
-    size = ALIGN_UP(size, PAGE_SIZE);
-    uint64_t va = vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;   /* guard below */
-    for (uint64_t off = 0; off < size; off += PAGE_SIZE) {
-        uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
-        if (!pa)
-            panic("vmm: out of memory for kernel stack");
-        vmm_map(kernel_pml4, va + off, pa, PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
-    }
-    return (void *)(va + size);
+    void *top = kstack_try_alloc(size);
+    if (!top)
+        panic("vmm: out of memory for kernel stack");
+    return top;
 }
 
 void *vmm_map_mmio(uint64_t pa, uint64_t len)

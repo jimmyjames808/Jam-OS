@@ -101,8 +101,11 @@ const char *vmm_cache_type(uint64_t pml4, uint64_t va);
 int      vmm_access(uint64_t pml4, uint64_t va);
 
 /* Kernel stack in the vmap area with an unmapped guard page below it.
- * Returns the TOP of the stack. */
+ * Returns the TOP of the stack; panics when out of memory (boot). */
 void    *kstack_alloc(size_t size);
+/* Same, but NULL when out of memory (M5: stacks for threads user code
+ * asks for). */
+void    *kstack_try_alloc(size_t size);
 /* Reserve (but do not map) kernel virtual space in the vmap area. */
 uint64_t vmm_reserve(uint64_t len);
 /* Map a physical MMIO range uncached into the vmap area. */

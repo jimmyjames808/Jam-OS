@@ -19,6 +19,7 @@
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
+#include <jam/aspace.h>
 #include <jam/uentry.h>
 #include <jam/smp.h>
 #include <jam/string.h>
@@ -374,12 +375,14 @@ void thread_wake(struct thread *t)
 
 /* ---- thread lifecycle ------------------------------------------------------ */
 
+/* NULL if there is no memory for a new stack (M5: user code can ask for
+ * threads, so running out is an error, not a panic). */
 static void *stack_get(void)
 {
     uint64_t f = spin_lock_irqsave(&stack_lock);
     void *s = stack_cache_n ? stack_cache[--stack_cache_n] : NULL;
     spin_unlock_irqrestore(&stack_lock, f);
-    return s ? s : kstack_alloc(STACK_SIZE);
+    return s ? s : kstack_try_alloc(STACK_SIZE);
 }
 
 /* Pages held by the cached (reused, never unmapped) thread stacks. Tests use
@@ -411,6 +414,13 @@ static void thread_put(struct thread *t)
 
 static void reap(struct thread *t)
 {
+    /* A user thread normally drops its address space itself on the way out
+     * (uthread_exit_current); this covers any that didn't. Only now, after
+     * its last switch, is the address space surely not loaded for it. */
+    if (t->aspace) {
+        aspace_unref(t->aspace);
+        t->aspace = NULL;
+    }
     fpu_ustate_free(t);   /* switched out for good: nothing saves into it now */
     stack_put(t->stack_top);
     thread_put(t);   /* the thread's reference to itself */
@@ -420,7 +430,7 @@ static struct thread *thread_alloc(const char *name, int prio)
 {
     struct thread *t = kmem_cache_alloc(thread_cache);
     if (!t)
-        panic("sched: out of memory for threads");
+        return NULL;   /* boot callers panic; thread_try_create_on reports it */
     memset(t, 0, sizeof(*t));
     t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     size_t n = strlen(name);
@@ -452,11 +462,26 @@ struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, in
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask)
 {
+    struct thread *t = thread_try_create_on(name, fn, arg, prio, mask);
+    if (!t)
+        panic("sched: out of memory for thread \"%s\"", name);
+    return t;
+}
+
+struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask)
+{
     struct thread *t = thread_alloc(name, prio);
+    if (!t)
+        return NULL;
+    t->stack_top = stack_get();
+    if (!t->stack_top) {
+        kmem_cache_free(thread_cache, t);
+        return NULL;
+    }
     if (mask)
         t->affinity = *mask;
     t->refs = 2;   /* the caller's, and the thread's own (dropped by reap) */
-    t->stack_top = stack_get();
 
     /* Frame for switch_context to pop: r15 r14 r13 r12 rbx rbp, ret. */
     uint64_t *sp = (uint64_t *)t->stack_top;
@@ -709,6 +734,8 @@ static struct thread *make_idle(uint32_t cpu)
     char name[24];
     ksnprintf(name, sizeof(name), "idle/%u", cpu);
     struct thread *t = thread_alloc(name, PRIO_MIN);
+    if (!t)
+        panic("sched: out of memory for the idle thread");
     t->is_idle = true;
     t->state = T_RUNNING;
     cpumask_one(&t->affinity, cpu);
@@ -724,6 +751,8 @@ void sched_init_bsp(void)
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);
+    if (!main)
+        panic("sched: out of memory for thread main");
     main->state = T_RUNNING;
     main->on_cpu = true;
     main->cpu = 0;
@@ -735,6 +764,8 @@ void sched_init_bsp(void)
     struct thread *idle = make_idle(0);
     idle->state = T_READY;
     idle->stack_top = stack_get();
+    if (!idle->stack_top)
+        panic("sched: out of memory for the idle stack");
     uint64_t *sp = (uint64_t *)idle->stack_top;
     *--sp = (uint64_t)thread_start;
     *--sp = 0; *--sp = 0;

@@ -23,6 +23,8 @@
  * threads may starve others, deliberately. */
 #define STARVE_TICKS 100
 #define PRIO_BOOST   30
+/* User threads may ask for at most this (M5; THREAD_PRIO_USER_MAX in abi.h). */
+#define PRIO_USER_MAX 24
 
 typedef struct {
     uint64_t bits[MAX_CPUS / 64];
@@ -56,6 +58,7 @@ enum thread_state {
 
 struct aspace;
 struct process;
+struct uthread;
 
 struct waitqueue {
     spinlock_t       lock;
@@ -93,6 +96,7 @@ struct thread {
      * page tables and never touch the FPU. */
     struct aspace    *aspace;        /* address space (a reference) */
     struct process   *process;       /* owning process */
+    struct uthread   *uthread;       /* its thread object (process.h) */
     void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
@@ -108,9 +112,13 @@ struct thread {
 /* Create and start a thread. The caller gets a reference: release it with
  * thread_join (waits for exit) or thread_detach. */
 struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, int prio);
-/* Same, restricted to `mask` from the start. */
+/* Same, restricted to `mask` from the start. Both panic if there is no
+ * memory for the thread (fine for the kernel's own threads). */
 struct thread *thread_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                 const cpumask_t *mask);
+/* Same, but NULL when out of memory (M5: threads user code asks for). */
+struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
+                                    const cpumask_t *mask);
 _Noreturn void thread_exit(void);
 void thread_join(struct thread *t);
 void thread_detach(struct thread *t);
