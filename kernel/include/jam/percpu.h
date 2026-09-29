@@ -46,6 +46,9 @@ struct cpu {
     uint32_t       preempt_count;   /* >0: this CPU must not switch threads */
     uint32_t       irq_depth;       /* >0: inside an interrupt handler */
     volatile bool  need_resched;    /* set locally or by a reschedule IPI */
+    /* The idle thread is polling need_resched and its run queue (spin
+     * before idle, M5.5): a remote wakeup needs no IPI. See idle_loop. */
+    volatile bool  idle_polling;
     struct thread *current;
 
     /* Lock checker: locks held right now, innermost last. */
@@ -59,6 +62,7 @@ struct cpu {
 
     /* Statistics. */
     volatile uint64_t switches, steals, ipis;
+    volatile uint64_t polled_wakes;   /* wakeups that found this CPU polling: no IPI */
 
     uint64_t       gdt[9] __attribute__((aligned(16)));
     struct tss     tss;

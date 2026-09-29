@@ -30,8 +30,13 @@
  *     The address-space switch line is the kernel alone: two CR3 loads
  *     (and their active-CPU mask updates) timed with interrupts off.
  * The other lines are kernel threads. The lock-order checker is on for
- * every lock, as it always is. Idle CPUs wait in `hlt`, so a wakeup of an
- * idle CPU includes the hardware's wake-from-halt time. */
+ * every lock, as it always is.
+ *   - M5.5 optimisations each have a run-time switch. A line that one of
+ *     them should move is measured twice in the same run, switch off and
+ *     then on, and printed as "<switch> off median/p99 on median/p99"
+ *     (the other switches stay as booted). Switches: spinidle (an idle CPU
+ *     polls for SCHED_IDLE_SPIN_NS before `hlt`; off, a wakeup of an idle
+ *     CPU includes the hardware's wake-from-halt time). */
 #include <jam/aspace.h>
 #include <jam/bootfs.h>
 #include <jam/irq.h>
@@ -112,6 +117,31 @@ static void result(const char *what, uint64_t *s, unsigned n)
     report("bench: %-44s median %-10s p99 %s", what, med, p99);
 }
 
+/* "1539.5ns", "12.3us", "10ms": a value with its unit, no space. */
+static void fmt_short(char *buf, size_t n, uint64_t ps)
+{
+    if (ps < 10000000)
+        ksnprintf(buf, n, "%lu.%luns", ps / 1000, ps / 100 % 10);
+    else if (ps < 10000000000ull)
+        ksnprintf(buf, n, "%lu.%luus", ps / 1000000, ps / 100000 % 10);
+    else
+        ksnprintf(buf, n, "%lums", ps / 1000000000);
+}
+
+/* One line for a measurement made with an M5.5 switch off and then on in
+ * the same run: "median/p99" each way. */
+static void result2(const char *what, const char *sw, uint64_t *off, uint64_t *on, unsigned n)
+{
+    sort(off, n);
+    sort(on, n);
+    char a[16], b[16], c[16], d[16];
+    fmt_short(a, sizeof(a), off[(n - 1) / 2]);
+    fmt_short(b, sizeof(b), off[(n - 1) * 99 / 100]);
+    fmt_short(c, sizeof(c), on[(n - 1) / 2]);
+    fmt_short(d, sizeof(d), on[(n - 1) * 99 / 100]);
+    report("bench: %-44s %s off %s/%s on %s/%s", what, sw, a, b, c, d);
+}
+
 /* ---- CPUs ------------------------------------------------------------------ */
 
 static int cpu_p = -1, cpu_p2 = -1, cpu_ht = -1, cpu_e = -1;
@@ -175,7 +205,54 @@ static void run_on(int cpu, void (*fn)(void *), void *arg)
     thread_join(spawn_on(cpu, fn, arg));
 }
 
-static uint64_t *samples;
+static uint64_t *samples, *samples_off, *samples_on;
+
+/* M5.5 switches, each flipped between its off and on setting for one
+ * measurement and put back afterwards (on = the boot setting, or the
+ * default if the boot turned it off). */
+enum sw { SW_SPINIDLE, SW_COUNT };
+static const char *const sw_name[SW_COUNT] = { "spinidle" };
+static uint64_t sw_boot[SW_COUNT];
+
+static void sw_save(void)
+{
+    sw_boot[SW_SPINIDLE] = sched_idle_spin_ns;
+}
+
+static void sw_set(enum sw s, bool on)
+{
+    switch (s) {
+    case SW_SPINIDLE:
+        sched_idle_spin_ns = on ? (sw_boot[s] ? sw_boot[s] : SCHED_IDLE_SPIN_NS) : 0;
+        break;
+    case SW_COUNT:
+        break;
+    }
+}
+
+static void sw_restore(enum sw s)
+{
+    switch (s) {
+    case SW_SPINIDLE: sched_idle_spin_ns = sw_boot[s]; break;
+    case SW_COUNT: break;
+    }
+}
+
+/* Run `measure` (which fills `samples`) with switch s off, then on, and
+ * report both on one line. */
+static void off_on(enum sw s, const char *what, void (*measure)(int), int arg, unsigned n)
+{
+    uint64_t *keep = samples;
+    sw_set(s, false);
+    samples = samples_off;
+    measure(arg);
+    sw_set(s, true);
+    samples = samples_on;
+    measure(arg);
+    sw_restore(s);
+    samples = keep;
+    result2(what, sw_name[s], samples_off, samples_on, n);
+}
 
 static void warm_until(uint64_t *deadline)
 {
@@ -466,7 +543,7 @@ static void wake_initiator(void *arg)
     waitqueue_wake_all(&wpp.wq);
 }
 
-static void wakeup(int other)
+static void wakeup_measure(int other)
 {
     spin_init(&wpp.lock, "bench pingpong");
     waitqueue_init(&wpp.wq, "bench pingpong waiters");
@@ -475,12 +552,20 @@ static void wakeup(int other)
     struct thread *r = spawn_on(other, wake_responder, NULL);
     run_on(cpu_p, wake_initiator, NULL);
     thread_join(r);
+}
+
+/* Across CPUs the responder's CPU is idle between rounds: halted (spin
+ * before idle off) or polling (on). */
+static void wakeup(int other)
+{
     char what[64];
-    if (other == cpu_p)
-        ksnprintf(what, sizeof(what), "block+wake round trip, same CPU (P)");
-    else
-        ksnprintf(what, sizeof(what), "block+wake round trip P->%s (idle CPU)", kind(other));
-    result(what, samples, SAMPLES);
+    if (other == cpu_p) {
+        wakeup_measure(other);
+        result("block+wake round trip, same CPU (P)", samples, SAMPLES);
+        return;
+    }
+    ksnprintf(what, sizeof(what), "block+wake round trip P->%s (idle CPU)", kind(other));
+    off_on(SW_SPINIDLE, what, wakeup_measure, other, SAMPLES);
 }
 
 /* ---- IPI, channel_call, TLB shootdown -------------------------------------- */
@@ -506,13 +591,19 @@ static void bench_ipi(void *arg)
     }
 }
 
-static void ipi(int other)
+static void ipi_measure(int other)
 {
     ipi_target = other;
     run_on(cpu_p, bench_ipi, NULL);
+}
+
+/* The target is idle: halted, or polling (it still needs the IPI, but is
+ * not waking from halt). */
+static void ipi(int other)
+{
     char what[64];
     ksnprintf(what, sizeof(what), "IPI function call round trip P->%s", kind(other));
-    result(what, samples, SAMPLES);
+    off_on(SW_SPINIDLE, what, ipi_measure, other, SAMPLES);
 }
 
 static void chan_server(void *arg)
@@ -568,19 +659,27 @@ static void chan_call_mask(const cpumask_t *mask, const char *what)
     kobject_unref((struct kobject *)a);   /* closes it: the server sees PEER_CLOSED */
     thread_join(srv);
     kobject_unref((struct kobject *)b);
-    result(what, samples, SAMPLES);
+    if (what)
+        result(what, samples, SAMPLES);
+}
+
+static void chan_call_measure(int server_cpu)
+{
+    cpumask_t m;
+    cpumask_one(&m, (uint32_t)server_cpu);
+    chan_call_mask(&m, NULL);
 }
 
 static void chan_call(int server_cpu)
 {
-    cpumask_t m;
-    cpumask_one(&m, (uint32_t)server_cpu);
     char what[64];
-    if (server_cpu == cpu_p)
-        ksnprintf(what, sizeof(what), "channel_call round trip, same CPU (P)");
-    else
-        ksnprintf(what, sizeof(what), "channel_call round trip P->%s, 1 client", kind(server_cpu));
-    chan_call_mask(&m, what);
+    if (server_cpu == cpu_p) {
+        chan_call_measure(server_cpu);
+        result("channel_call round trip, same CPU (P)", samples, SAMPLES);
+        return;
+    }
+    ksnprintf(what, sizeof(what), "channel_call round trip P->%s, 1 client", kind(server_cpu));
+    off_on(SW_SPINIDLE, what, chan_call_measure, server_cpu, SAMPLES);
 }
 
 /* The server may run anywhere but CPU 0 (the orchestrator's), so placement
@@ -773,10 +872,16 @@ static void user_benches(void)
 void bench_run(void)
 {
     samples = kmalloc(SAMPLES * sizeof(uint64_t));
-    if (!samples) {
+    samples_off = kmalloc(SAMPLES * sizeof(uint64_t));
+    samples_on = kmalloc(SAMPLES * sizeof(uint64_t));
+    if (!samples || !samples_off || !samples_on) {
         kprintf("bench: out of memory\n");
+        kfree(samples);
+        kfree(samples_off);
+        kfree(samples_on);
         return;
     }
+    sw_save();
     ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
     pick_cpus();
     const char *brand = cpu_features.brand;
@@ -837,4 +942,6 @@ void bench_run(void)
     user_benches();
     thread_set_affinity(current_thread(), &all);
     kfree(samples);
+    kfree(samples_off);
+    kfree(samples_on);
 }

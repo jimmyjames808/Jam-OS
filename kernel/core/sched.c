@@ -10,6 +10,7 @@
  * - Preemption happens on the way out of an interrupt, never while a
  *   spinlock is held (preempt_count > 0).
  */
+#include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
@@ -286,8 +287,18 @@ void sched_kick(uint32_t cpu)
     preempt_disable();
     bool remote = c != this_cpu();
     preempt_enable_no_resched();
-    if (remote)
-        ipi_send(cpu, VEC_RESCHEDULE);
+    if (!remote)
+        return;
+    /* A CPU spinning in idle_loop sees need_resched by itself. The fence
+     * orders our need_resched store (and the enqueue before it) against
+     * the read of its polling flag: the other half of idle_loop's
+     * handshake. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&c->idle_polling, __ATOMIC_RELAXED)) {
+        c->polled_wakes++;   /* racy statistic */
+        return;
+    }
+    ipi_send(cpu, VEC_RESCHEDULE);
 }
 
 /* ---- the switch ------------------------------------------------------------ */
@@ -343,6 +354,10 @@ void schedule(void)
     struct runqueue *rq = &rqs[c->index];
     spin_lock(&rq->lock);
     c->need_resched = false;
+    /* Whatever runs next, this CPU is no longer spinning in idle_loop (an
+     * interrupt during the spin can switch the idle thread out from here). */
+    if (c->idle_polling)
+        __atomic_store_n(&c->idle_polling, false, __ATOMIC_SEQ_CST);
 
     struct thread *prev = c->current;
     prev->prio = prev->base_prio;   /* a boost lasts one turn on the CPU */
@@ -919,6 +934,38 @@ static void try_steal(uint32_t me)
     }
 }
 
+/* Spin before idle (M5.5). An idle CPU first polls its run queue and
+ * need_resched for up to sched_idle_spin_ns, with interrupts on and `pause`
+ * between looks, and only then halts. A wakeup that lands within the window
+ * is seen at once: no wake-from-halt (most of the ~1.5 us cross-CPU
+ * block+wake round trip on the PC, BENCH.md), and no IPI either, because
+ * the CPU says it is polling (cpu->idle_polling) and sched_kick skips the
+ * IPI for a polling CPU.
+ *
+ * The flag handshake is Dekker's: the idle CPU clears idle_polling, fences
+ * and then looks at its queue and need_resched once more before `hlt`; a
+ * waker queues, sets need_resched, fences and then reads idle_polling. At
+ * least one sees the other: either the waker sees polling cleared and sends
+ * the IPI (which, if it lands before the `hlt`, stays pending through the
+ * sti shadow and ends the halt at once), or the idle CPU sees the work and
+ * doesn't halt. schedule() also clears the flag, for the case where an
+ * interrupt that arrived during the spin switches the idle thread out.
+ *
+ * Power: a spinning CPU runs at full clock and, on a P-core, takes issue
+ * slots from its hyperthread sibling (pause yields most of them). The
+ * window is spent once per idle entry, so with the 100 Hz tick waking idle
+ * CPUs it costs at most 100 x the window per second per idle CPU (0.1% at
+ * 10 us) plus the window after every wakeup; the gain is for wakeups that
+ * come within the window, i.e. tightly coupled threads on different CPUs.
+ * Tickless idle (M10) will make the tick part go away. Tunable at boot
+ * ("idlespin=<us>", "nospinidle" = 0) and at run time (the benchmark). */
+volatile uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
+
+static bool idle_has_work(struct cpu *c)
+{
+    return rqs[c->index].nr_ready || c->need_resched;
+}
+
 _Noreturn static void idle_loop(void)
 {
     struct cpu *c = this_cpu();
@@ -926,10 +973,26 @@ _Noreturn static void idle_loop(void)
         irq_disable();
         if (!rqs[c->index].nr_ready)
             try_steal(c->index);
-        if (rqs[c->index].nr_ready || c->need_resched) {
+        if (idle_has_work(c)) {
             irq_enable();
             schedule();
             continue;
+        }
+        uint64_t spin_ns = sched_idle_spin_ns;
+        if (spin_ns) {
+            __atomic_store_n(&c->idle_polling, true, __ATOMIC_SEQ_CST);
+            irq_enable();
+            uint64_t end = rdtsc() + spin_ns * (tsc_hz / 1000000) / 1000;
+            while (!idle_has_work(c) && rdtsc() < end)
+                cpu_relax();
+            irq_disable();
+            __atomic_store_n(&c->idle_polling, false, __ATOMIC_SEQ_CST);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (idle_has_work(c)) {
+                irq_enable();
+                schedule();
+                continue;
+            }
         }
         __asm__ volatile("sti; hlt" ::: "memory");   /* sti's shadow covers hlt */
     }
@@ -978,6 +1041,8 @@ void sched_init_bsp(void)
     thread_cache = kmem_cache_create("thread", sizeof(struct thread), 64);
     for (uint32_t i = 0; i < MAX_CPUS; i++)
         init_rq(i);
+    sched_idle_spin_ns = cmdline_has("nospinidle")
+                             ? 0 : cmdline_get_u64("idlespin", SCHED_IDLE_SPIN_NS / 1000, 0) * 1000;
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);

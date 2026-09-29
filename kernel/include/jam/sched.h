@@ -215,8 +215,15 @@ void sched_stack_trim(void);
 unsigned sched_stack_cache_set_limit(unsigned limit);
 /* Stacks freed (unmapped, pages returned) since boot. */
 uint64_t sched_stacks_freed(void);
-/* Tell `cpu` to look at its run queue soon (IPI if remote). */
+/* Tell `cpu` to look at its run queue soon (IPI if remote and not polling
+ * in idle). */
 void sched_kick(uint32_t cpu);
+
+/* Spin before idle (M5.5): how long an idle CPU polls for work before it
+ * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The
+ * benchmark flips it at run time. */
+#define SCHED_IDLE_SPIN_NS 10000
+extern volatile uint64_t sched_idle_spin_ns;
 void sched_print_stats(void);
 
 /* ---- wait queues and mutexes --------------------------------------------- */
