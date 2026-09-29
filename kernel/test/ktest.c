@@ -1,3 +1,4 @@
+#include <jam/interrupt.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
 #include <jam/ktest.h>
@@ -21,7 +22,12 @@ const char *ktest_current = "?";
 /* Force one-time lazily-created singletons into existence before the baseline,
  * so their allocation isn't charged to whichever test first happens to use
  * them. The timer service thread's stack is allocated on first timer use and
- * never freed. */
+ * never freed; so are the device vector tables (irq.c) on the first vector_alloc. */
+static void warm_vector(void *ctx)
+{
+    (void)ctx;
+}
+
 static void warm_singletons(void)
 {
     struct ktimer *tm;
@@ -30,6 +36,11 @@ static void warm_singletons(void)
     timer_set(tm, uptime_ns() + 1000000000ull);
     timer_cancel(tm);
     kobject_unref(&tm->base);
+    /* M6: the per-CPU device vector tables, made on the first vector_alloc. */
+    uint32_t cpu;
+    uint8_t vec;
+    if (vector_alloc(warm_vector, NULL, &cpu, &vec) == OK)
+        vector_free(cpu, vec);
 }
 
 static uint64_t free_pages_now(uint64_t *total)
