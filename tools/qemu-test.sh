@@ -2,6 +2,8 @@
 # Boot build/jamos.img headless in QEMU with a given kernel command line,
 # wait until it halts, then save the serial log and a screenshot.
 # QEMU_IMAGE picks another image (e.g. build/noktests/jamos.img).
+# QEMU_XHCI adds qemu-xhci properties (e.g. "msi=on,msix=off": an MSI-only
+# xHCI like many Intel PCH controllers).
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -22,7 +24,7 @@ rm -f "$log" "$mon"
 qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
     -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
-    -device qemu-xhci,id=xhci \
+    -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
     -drive if=none,id=usbstick,format=raw,file="$img" \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
     -device edu,dma_mask=0xffffffff \

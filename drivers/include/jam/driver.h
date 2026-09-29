@@ -80,6 +80,13 @@ status_t drv_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns,
 
 /* ---- memory --------------------------------------------------------------- */
 
+/* drv_vmo_create flags (the same values as the kernel's VMO_CONTIGUOUS /
+ * VMO_DMA32, which drivers can't see): memory a device reaches by DMA.
+ * Either one uses the driver's DR_DMA capability (no DR_DMA: refused).
+ * Contiguous memory is committed (zeroed) at creation, at most 4 MiB. */
+#define DRV_VMO_CONTIGUOUS (1u << 0)
+#define DRV_VMO_DMA32      (1u << 1)   /* every page below 4 GiB */
+
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out);
 status_t drv_vmo_read(handle_t vmo, uint64_t off, void *buf, uint64_t len);
 status_t drv_vmo_write(handle_t vmo, uint64_t off, const void *buf, uint64_t len);
@@ -97,6 +104,12 @@ status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
 
 /* ---- device --------------------------------------------------------------- */
 
+/* Interrupts (DR_IRQ(n)): bind the object to a port PORT_BIND_PERSISTENT
+ * for SIG_INTERRUPT (drv_object_wait_one on it can miss a fire); each
+ * packet's signal.count is the fires coalesced into it. drv_interrupt_ack
+ * clears the signal and unmasks: for a plain (edge) MSI a fire before the
+ * ack is folded into the current packet, so ack BEFORE scanning the
+ * device's status, then scan. */
 status_t drv_interrupt_ack(handle_t irq);
 /* Its own config space (DR_PCIDEV), filtered by the kernel: BARs, the
  * command register's decode and bus-master bits and the MSI/MSI-X
