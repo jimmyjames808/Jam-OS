@@ -109,13 +109,7 @@ static void make_image(uint8_t *img)
 
 static uint64_t rng_state = 0x9e3779b97f4a7c15ull;
 
-static uint64_t rng(void)
-{
-    rng_state ^= rng_state << 13;
-    rng_state ^= rng_state >> 7;
-    rng_state ^= rng_state << 17;
-    return rng_state;
-}
+static uint64_t rng(void) { return kt_rng(&rng_state); }
 
 /* Everything bootfs_init relies on after a successful validation. */
 static void check_accepted(uint8_t *img, uint64_t len)

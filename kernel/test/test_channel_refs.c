@@ -1,12 +1,9 @@
-/* Regression tests for the M4 object-layer audit findings. These began as
- * repros that leaked or overflowed on the audited code and now PASS on the
- * fixed kernel under a normal "ktest" run:
- *   O1  a deep channel chain, and a deep alternating channel/port chain,
- *       tear down iteratively instead of overflowing the kernel stack
- *   O2  channel reference cycles (direct, 2-cycle, 3-cycle) are refused, and
- *       the legitimate sends that look similar still work
- *   O4  handle generations no longer wrap after 256 slot reuses
- */
+/* Channels that hold channels (endpoints sent in messages): reference
+ * cycles (direct, 2-cycle, 3-cycle) are refused while the legitimate sends
+ * that look similar still work, and a deep chain of channels, or of
+ * channels and ports alternating, is torn down iteratively instead of
+ * overflowing the kernel stack. Each began as a repro that leaked or
+ * overflowed; the audit* names are theirs. */
 #include <jam/channel.h>
 #include <jam/event.h>
 #include <jam/handle.h>
@@ -202,38 +199,4 @@ KTEST(auditB2_alternating_channel_port_iterative)
     KT_GLOBAL_EQ(channel_live_count(), live);
     KT_EQ(ps1.ports, ps0.ports);
     KT_EQ(ps1.bindings, ps0.bindings);
-}
-
-/* ---- O4: handle generation no longer wraps ------------------------------ */
-
-static void audit_dummy_destroy(struct kobject *o) { kfree(o); }
-static const struct kobject_ops audit_dummy_ops = { .name = "audit dummy",
-                                                    .destroy = audit_dummy_destroy };
-
-KTEST(auditD_handle_generation_no_wrap)
-{
-    struct handle_table t;
-    handle_table_init(&t);
-    struct kobject *first = kzalloc(sizeof(*first));
-    kobject_init(first, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
-    struct khandle kh = khandle_from_new(first, RIGHTS_BASIC);
-    handle_t stale, h = 0;
-    KT_EQ(handle_insert(&t, &kh, &stale), OK);
-    KT_EQ(handle_close(&t, stale), OK);
-    struct kobject *o = NULL;
-    for (int i = 0; i < 256; i++) {
-        o = kzalloc(sizeof(*o));
-        kobject_init(o, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
-        kh = khandle_from_new(o, RIGHTS_BASIC | RIGHT_SIGNAL);
-        KT_EQ(handle_insert(&t, &kh, &h), OK);
-        if (i < 255)
-            KT_EQ(handle_close(&t, h), OK);
-    }
-    struct kobject *got = NULL;
-    status_t st = handle_get(&t, stale, OBJ_NONE, 0, &got, NULL);
-    kprintf("auditD: stale %x new %x lookup of stale -> %s\n", stale, h, status_str(st));
-    if (st == OK)
-        kobject_unref(got);
-    handle_table_destroy(&t);
-    KT_EQ(st, ERR_BAD_HANDLE);   /* 15-bit generation + FIFO reuse: no wrap */
 }

@@ -14,6 +14,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/abi.h>
 #include <jam/panic.h>
 
 struct ktest {
@@ -94,6 +95,41 @@ extern const char *ktest_skip_reason;   /* set by KT_SKIP_LIVE */
             return;                                                              \
         }                                                                        \
     } while (0)
+
+/* ---- helpers shared by the tests (kernel/test/ktest_util.c) ------------- */
+
+struct handle_table;
+struct job;
+struct kobject;
+struct pci_dev;
+
+/* Free pages now (pmm_stats: drains the per-CPU caches first). */
+uint64_t kt_free_pages(void);
+/* Free pages plus the pages parked in the thread stack cache, as the
+ * per-test leak check counts them: a helper thread's stack just moves
+ * between the two. */
+uint64_t kt_free_and_cached_pages(void);
+/* The CPU the caller runs on (it may move right after). */
+uint32_t kt_cur_cpu(void);
+/* Pin the current thread to `cpu` (it moves there before this returns);
+ * returns cpu. kt_unpin_self lets it run anywhere again: every test that
+ * pins must unpin, or whatever runs next stays pinned. */
+uint32_t kt_pin_self(uint32_t cpu);
+void kt_unpin_self(void);
+/* The tests' only direct access to a user address: read va in the address
+ * space loaded on this CPU (the caller loaded it and knows the page is
+ * mapped), with stac/clac around it when the CPU has SMAP. */
+uint64_t kt_user_peek(uint64_t va);
+/* xorshift64: the next number of the sequence *state (never 0) holds. */
+uint64_t kt_rng(uint64_t *state);
+/* A new job under the root job; the caller holds the only reference. */
+struct job *kt_fresh_job(void);
+/* Panic unless j is charged for nothing at all. */
+void kt_job_is_empty(struct job *j);
+/* The signals of the object behind handle h. */
+signals_t kt_signals_of(struct handle_table *t, handle_t h);
+/* A RES_PCI_DEV resource for d (a new reference). */
+struct kobject *kt_pci_dev_res(struct pci_dev *d);
 
 /* Benchmarks ("bench" on the command line); results go to the RESULTS box. */
 void bench_run(void);

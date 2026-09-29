@@ -18,8 +18,6 @@
 #include <jam/time.h>
 #include <jam/userboot.h>
 
-#define MS 1000000ull
-#define S  1000000000ull
 
 static handle_t put_handle(struct handle_table *t, struct kobject *obj, rights_t rights)
 {
@@ -152,9 +150,9 @@ KTEST(sysinfo_thread_cpu_time)
     uint64_t idle0 = 0, idle1 = 0;
     for (uint32_t i = 0; i < cpu_count; i++)
         idle0 += sched_cpu_idle_tsc(i);
-    struct thread *sp = thread_create("ktspin", spin_for, (void *)(uintptr_t)(100 * MS),
+    struct thread *sp = thread_create("ktspin", spin_for, (void *)(uintptr_t)(100 * NS_PER_MS),
                                       PRIO_DEFAULT);
-    struct thread *sl = thread_create("ktsleep", sleep_for, (void *)(uintptr_t)(100 * MS),
+    struct thread *sl = thread_create("ktsleep", sleep_for, (void *)(uintptr_t)(100 * NS_PER_MS),
                                       PRIO_DEFAULT);
     thread_sleep_ms(50);
     uint64_t mid = tsc_to_ns(thread_cpu_tsc(sp));   /* while it runs: the current run counts */
@@ -169,11 +167,11 @@ KTEST(sysinfo_thread_cpu_time)
     kprintf("sysinfo_thread_cpu_time: spinner %lu us (%lu us at 50 ms), sleeper %lu us, "
             "idle %lu us over %u CPUs\n", spin_ns / 1000, mid / 1000, sleep_ns / 1000,
             idle_ns / 1000, cpu_count);
-    KT_ASSERT(spin_ns >= 60 * MS && spin_ns <= 400 * MS);
-    KT_ASSERT(mid >= 10 * MS);
-    KT_ASSERT(sleep_ns < 20 * MS);
+    KT_ASSERT(spin_ns >= 60 * NS_PER_MS && spin_ns <= 400 * NS_PER_MS);
+    KT_ASSERT(mid >= 10 * NS_PER_MS);
+    KT_ASSERT(sleep_ns < 20 * NS_PER_MS);
     if (cpu_count >= 3)
-        KT_ASSERT(idle_ns >= 50 * MS);
+        KT_ASSERT(idle_ns >= 50 * NS_PER_MS);
 }
 
 /* A process's CPU time: live (its spinning thread) and after it died
@@ -202,11 +200,12 @@ KTEST(sysinfo_process_cpu_time)
     KT_ASSERT(st[0].job_pages > 0);
 
     process_kill(p, PROCESS_KILLED_CODE, true);
-    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 10 * S, NULL), OK);
+    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 10 * NS_PER_S, NULL),
+          OK);
     uint64_t dead = tsc_to_ns(process_cpu_tsc(p));
     kprintf("sysinfo_process_cpu_time: %lu us after 200 ms spinning, %lu us once dead\n",
             live / 1000, dead / 1000);
-    KT_ASSERT(live >= 50 * MS && live <= 1000 * MS);
+    KT_ASSERT(live >= 50 * NS_PER_MS && live <= 1000 * NS_PER_MS);
     KT_ASSERT(dead >= live);
     n = 0;
     job_list_processes(root, 0, st, 4, &n);

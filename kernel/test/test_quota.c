@@ -16,23 +16,6 @@
 #include <jam/userboot.h>
 #include <jam/vmo.h>
 
-#define S 1000000000ull
-
-static __attribute__((unused)) uint64_t free_now(void)
-{
-    uint64_t total, free;
-    pmm_stats(&total, &free);
-    return free;
-}
-
-static struct job *quota_job(void)
-{
-    struct job *root, *j;
-    KT_EQ(userboot_root_job(&root), OK);
-    KT_EQ(job_create(root, &j), OK);
-    job_unref(root);
-    return j;
-}
 
 /* R4. A program gets its own job (SR_JOB) without RIGHT_MANAGE, so the
  * limit its parent set is binding: the child mode "raise-own-limit"
@@ -41,12 +24,13 @@ static struct job *quota_job(void)
  * the bug: it escaped its limit). */
 KTEST(quota_child_cannot_raise_own_job_limit)
 {
-    struct job *j = quota_job();
+    struct job *j = kt_fresh_job();
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 64), OK);   /* a 256 KiB budget */
     const char *argv[] = { "utest", "raise-own-limit" };
     struct process *p;
     KT_EQ(userboot_spawn("bin/utest", argv, 2, j, NULL, 0, NULL, &p), OK);
-    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20 * S, NULL), OK);
+    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20 * NS_PER_S, NULL),
+          OK);
     struct process_info info;
     process_get_info(p, &info);
     kobject_unref(process_kobject(p));
@@ -66,8 +50,8 @@ KTEST(quota_child_cannot_raise_own_job_limit)
  * at most JOB_MAX_DEPTH levels. */
 KTEST(quota_job_chain_bounded)
 {
-    struct job *top = quota_job();   /* depth 1 (the root job is 0) */
-    uint64_t before = free_now();
+    struct job *top = kt_fresh_job();   /* depth 1 (the root job is 0) */
+    uint64_t before = kt_free_pages();
     struct job *cur = top;
     job_ref(cur);
     unsigned made = 0;
@@ -85,7 +69,7 @@ KTEST(quota_job_chain_bounded)
     KT_EQ(st, ERR_OUT_OF_RANGE);
     KT_EQ(made, JOB_MAX_DEPTH - 2);   /* depths 2 .. JOB_MAX_DEPTH - 1 */
     KT_EQ(job_used(top, JOB_LIMIT_HANDLES), made);   /* every job below top */
-    uint64_t used = before - free_now();
+    uint64_t used = before - kt_free_pages();
     uint64_t t0 = uptime_ns();
     KT_EQ(job_charge(cur, JOB_LIMIT_HANDLES, 1), OK);
     uint64_t charge_ns = uptime_ns() - t0;
@@ -100,7 +84,7 @@ KTEST(quota_job_chain_bounded)
 
     /* The handle unit is a real limit: a job allowed 2 units has room for
      * exactly two child jobs. */
-    struct job *j = quota_job(), *a, *b, *c;
+    struct job *j = kt_fresh_job(), *a, *b, *c;
     KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, 2), OK);
     KT_EQ(job_create(j, &a), OK);
     KT_EQ(job_create(j, &b), OK);
@@ -118,17 +102,17 @@ KTEST(quota_job_chain_bounded)
  * kernel memory per VMO handle, nothing charged). */
 KTEST(quota_vmo_tables_charged)
 {
-    struct job *j = quota_job();
+    struct job *j = kt_fresh_job();
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 0), OK);
     struct vmo *v;
     KT_EQ(vmo_create(VMO_MAX_SIZE, 0, &v), OK);
     KT_EQ(vmo_set_job(v, j), OK);
-    uint64_t before = free_now();
+    uint64_t before = kt_free_pages();
     unsigned refused = 0;
     for (uint64_t off = 0; off < VMO_MAX_SIZE; off += 2ull << 20)
         if (vmo_commit(v, off, PAGE_SIZE) == ERR_NO_MEMORY)
             refused++;
-    uint64_t used = before - free_now();
+    uint64_t used = before - kt_free_pages();
     kprintf("quota: %u commits refused, job charged %lu pages, kernel spent %lu pages\n",
             refused, job_used(j, JOB_LIMIT_PAGES), used);
     KT_EQ(refused, VMO_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
@@ -186,7 +170,7 @@ static void map_one(struct aspace *as, struct vmo *v, uint64_t addr, status_t wa
 KTEST(quota_aspace_tables_charged)
 {
     enum { N = 512, LIMIT = 64 };
-    struct job *j = quota_job();
+    struct job *j = kt_fresh_job();
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, LIMIT), OK);
     struct process *p;
     KT_EQ(process_create(j, "quota-pt", &p), OK);
@@ -207,7 +191,7 @@ KTEST(quota_aspace_tables_charged)
     KT_EQ(aspace_unmap(as, base, PAGE_SIZE), OK);
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1 + 3);   /* the VMO keeps its page */
 
-    uint64_t before = free_now(), charged0 = job_used(j, JOB_LIMIT_PAGES);
+    uint64_t before = kt_free_pages(), charged0 = job_used(j, JOB_LIMIT_PAGES);
     unsigned i;
     status_t st = OK;
     for (i = 0; i < N; i++) {
@@ -221,7 +205,7 @@ KTEST(quota_aspace_tables_charged)
         if (st != OK)
             break;
     }
-    uint64_t used = before - free_now();
+    uint64_t used = before - kt_free_pages();
     uint64_t charged = job_used(j, JOB_LIMIT_PAGES);
     kprintf("quota: stopped after %u of %u mappings (%s), job charged %lu page(s), kernel "
             "spent %lu pages (%lu page-table pages)\n", i, N, status_str(st), charged, used,
@@ -270,7 +254,7 @@ KTEST(quota_aspace_tables_charged)
  * the caller's again, nothing stays charged. */
 KTEST(quota_process_and_thread_charged)
 {
-    struct job *j = quota_job();
+    struct job *j = kt_fresh_job();
     struct process *p;
     KT_EQ(process_create(j, "quota-thread", &p), OK);
     KT_EQ(job_used(j, JOB_LIMIT_HANDLES), 1);   /* the process */

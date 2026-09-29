@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+#define NS_PER_US 1000ull
+#define NS_PER_MS 1000000ull
+#define NS_PER_S  1000000000ull
+
 extern uint64_t tsc_hz;
 
 static inline uint64_t rdtsc(void)

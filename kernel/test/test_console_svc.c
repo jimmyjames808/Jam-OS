@@ -19,7 +19,6 @@
 #include <jam/userboot.h>
 #include <jam/vmo.h>
 
-#define MS 1000000ull
 
 static bool contains(const char *hay, size_t n, const char *needle)
 {
@@ -75,7 +74,7 @@ KTEST(console_klog_reader)
     klog_reader_read(r, start, buf, sizeof(buf), &first);
     kprintf("console_klog_reader: marker 7f3a\n");
     signals_t seen = 0;
-    KT_EQ(object_wait_one(r, SIG_READABLE, uptime_ns() + 1000 * MS, &seen), OK);
+    KT_EQ(object_wait_one(r, SIG_READABLE, uptime_ns() + 1000 * NS_PER_MS, &seen), OK);
     size_t n = klog_reader_read(r, start, buf, sizeof(buf), &first);
     KT_EQ(first, start);
     KT_ASSERT(contains(buf, n, "marker 7f3a"));
@@ -84,7 +83,7 @@ KTEST(console_klog_reader)
         KT_EQ(kobject_signals(r) & SIG_READABLE, 0);
     /* A reader behind the end is raised again by the tick. */
     klog_reader_read(r, 0, buf, 1, &first);
-    KT_EQ(object_wait_one(r, SIG_READABLE, uptime_ns() + 1000 * MS, NULL), OK);
+    KT_EQ(object_wait_one(r, SIG_READABLE, uptime_ns() + 1000 * NS_PER_MS, NULL), OK);
     kobject_unref(r);
 }
 
@@ -231,7 +230,7 @@ KTEST(console_serial_rx_ring)
     struct khandle kh = khandle_from_new(in, RIGHTS_BASIC);
     KT_EQ(kobject_signals(in) & SIG_READABLE, 0);
     serial_rx_inject("abc", 3);
-    KT_EQ(object_wait_one(in, SIG_READABLE, uptime_ns() + 100 * MS, NULL), OK);
+    KT_EQ(object_wait_one(in, SIG_READABLE, uptime_ns() + 100 * NS_PER_MS, NULL), OK);
     char buf[64];
     KT_EQ(serial_in_read(in, buf, 2), 2);
     KT_ASSERT(kobject_signals(in) & SIG_READABLE);   /* 'c' still waiting */

@@ -1,9 +1,8 @@
-/* M6 Track C: resources, MMIO VMOs for processes, bound DMA capabilities,
- * the config-space write filter and their system calls (sys_* layer).
+/* Resources, MMIO VMOs for processes, bound DMA capabilities, the
+ * config-space write filter and their system calls (sys_* layer).
  *
  * Tests that need a real PCI function (QEMU's edu 1234:11e8, qemu-xhci
- * 1b36:000d) skip themselves while the PCI core is only a stub
- * (pci_count() == 0, phase 1) and run for real once Track A is merged. */
+ * 1b36:000d) skip themselves where it doesn't exist (the PC). */
 #include <jam/acpi.h>
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
@@ -47,15 +46,6 @@ static uint64_t hole(void)
     KT_ASSERT(!pmm_range_has_ram(h, 1ull << 30));
     KT_EQ(resource_phys_mappable(h, 1ull << 30), OK);
     return h;
-}
-
-static struct job *test_job(void)
-{
-    struct job *root, *j;
-    KT_EQ(userboot_root_job(&root), OK);
-    KT_EQ(job_create(root, &j), OK);
-    job_unref(root);
-    return j;
 }
 
 static void job_clean(struct job *j)
@@ -191,7 +181,7 @@ static handle_t insert_root(struct handle_table *t, rights_t rights)
 
 KTEST(resource_sys_rights_and_charges)
 {
-    struct job *j = test_job();
+    struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
@@ -353,6 +343,11 @@ static uint32_t fake_read(struct pci_dev *d, uint32_t off, uint32_t width)
     for (uint32_t i = 0; i < width; i++)
         v |= (uint32_t)fake_cfg[off + i] << (8 * i);
     return v;
+}
+
+static void put8(uint32_t off, uint8_t v)
+{
+    fake_cfg[off] = v;
 }
 
 static void put16(uint32_t off, uint16_t v)
@@ -569,7 +564,7 @@ KTEST(resource_dma_cap_close_frees_pinned_vmo)
  * a real device mid-DMA.) */
 KTEST(resource_kill_releases_pins)
 {
-    struct job *j = test_job();
+    struct job *j = kt_fresh_job();
     struct kobject *cap;
     KT_EQ(dma_cap_create(&cap), OK);
     KT_EQ(dma_cap_set_job(cap, j), OK);
@@ -726,7 +721,7 @@ KTEST(resource_managed_function_stays_in_use)
         return;
     bool was = d->driver_managed;
     d->driver_managed = false;
-    struct job *j = test_job();
+    struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
@@ -751,7 +746,7 @@ KTEST(resource_managed_function_stays_in_use)
 
 KTEST(resource_dma_close_clears_bus_master)
 {
-    struct job *j = test_job();
+    struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
@@ -815,7 +810,7 @@ KTEST(resource_dma_close_clears_bus_master)
 
 KTEST(resource_pci_device_calls)
 {
-    struct job *j = test_job();
+    struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
@@ -890,4 +885,88 @@ KTEST(resource_msix_page_refused)
     /* Its MSI-X capability is read-only to a driver. */
     KT_EQ(sys_pci_config_write(&t, dev, d->cap_msix, 4, 0xc0000000u), ERR_ACCESS_DENIED);
     handle_table_destroy(&t);
+}
+
+/* ---- the config filter: other resets, caps the live list hides ------------------ */
+
+KTEST(m6r_filter_other_resets)
+{
+    static struct pci_dev d;
+    memset(&d, 0, sizeof(d));
+    memset(fake_cfg, 0, sizeof(fake_cfg));
+    put16(0x06, 0x10);             /* capability list */
+    put8(0x34, 0x40);
+    put16(0x40, 0x5001);           /* PM (01) at 0x40 -> 0x50 */
+    put16(0x50, 0x0013);           /* Advanced Features (13) at 0x50, end */
+    /* PMCSR (0x44): D0 -> D3hot and back resets a function without
+     * No_Soft_Reset, like FLR. */
+    KT_EQ(pci_cfg_write_allowed(&d, 0x44, 2, 3, fake_read), ERR_ACCESS_DENIED);
+    KT_EQ(pci_cfg_write_allowed(&d, 0x44, 1, 3, fake_read), ERR_ACCESS_DENIED);
+    KT_EQ(pci_cfg_write_allowed(&d, 0x44, 2, 0x8000, fake_read), OK);   /* PME status W1C */
+    /* AF Control (0x54) bit 0: Initiate FLR. */
+    KT_EQ(pci_cfg_write_allowed(&d, 0x54, 1, 1, fake_read), ERR_ACCESS_DENIED);
+    KT_EQ(pci_cfg_write_allowed(&d, 0x54, 1, 0, fake_read), OK);
+    /* M7 (review finding 7): devmgr (RIGHT_MANAGE) may change the power
+     * state, to wake a function left in D3; still no FLR for anyone. */
+    KT_EQ(pci_cfg_write_allowed_as(&d, 0x44, 2, 3, fake_read, true), OK);
+    KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 2, 3, fake_read));
+    KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 1, 3, fake_read));
+    KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 4, 3, fake_read));
+    KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x44, 2, 0x8000, fake_read));
+    KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x45, 1, 3, fake_read));
+    KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x40, 4, 0x03000000, fake_read));   /* PMC, not PMCSR */
+    KT_EQ(pci_cfg_write_allowed_as(&d, 0x54, 1, 1, fake_read, true), ERR_ACCESS_DENIED);
+    put16(0x44, 3);   /* in D3hot now: back to D0 */
+    KT_EQ(pci_cfg_write_allowed(&d, 0x44, 2, 0, fake_read), ERR_ACCESS_DENIED);
+    KT_EQ(pci_cfg_write_allowed_as(&d, 0x44, 2, 0, fake_read, true), OK);
+    KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 2, 0, fake_read));
+}
+
+KTEST(m6r_filter_uses_known_caps)
+{
+    static struct pci_dev d;
+    memset(&d, 0, sizeof(d));
+    memset(fake_cfg, 0, sizeof(fake_cfg));
+    /* The kernel found MSI at 0x60 at boot; the live list now says there
+     * are no capabilities (a device whose list a vendor register can hide). */
+    d.cap_msi = 0x60;
+    d.cap_msix = 0x70;
+    put16(0x60, 0x0005);
+    put16(0x70, 0x0011);
+    KT_EQ(pci_cfg_write_allowed(&d, 0x64, 4, 0xfee00000u, fake_read), ERR_ACCESS_DENIED);
+    KT_EQ(pci_cfg_write_allowed(&d, 0x72, 2, 0x8000, fake_read), ERR_ACCESS_DENIED);
+}
+
+KTEST(m6p2_bar_overlaps_live_function)
+{
+    struct pci_dev *e = pci_find(0x1234, 0x11e8, 0), *x = pci_find(0x1b36, 0x000d, 0);
+    if (!e || !x) {
+        kprintf("ktest %s: no edu + qemu-xhci, skipped\n", ktest_current);
+        return;
+    }
+    KT_ASSERT(pci_cfg_read(x, 0x04, 2) & 0x2);   /* the xHCI decodes its BAR 0 */
+    KT_ASSERT(e->info.bar[0].size >= x->info.bar[0].size);
+    struct kobject *root = resource_root(), *pci, *dev, *res = NULL;
+    KT_ASSERT(root);
+    KT_EQ(resource_create(root, RES_PCI, 0, 0, &pci), OK);
+    KT_EQ(resource_pci_device(pci, e->index, &dev), OK);
+    /* edu's BAR 0 as firmware might have left a disabled function's: over
+     * the xHCI's registers (page-aligned and bigger than a page, so it has
+     * no rounding slack). */
+    uint64_t saved = e->info.bar[0].phys;
+    e->info.bar[0].phys = x->info.bar[0].phys;
+    status_t st = resource_pci_bar(dev, 0, &res);
+    e->info.bar[0].phys = saved;
+    uint64_t base = 0, size = 0;
+    if (st == OK)
+        resource_range(res, &base, &size);
+    kprintf("ktest %s: a BAR over 00:%02x.%u's registers [%lx, +%lx): %s%s\n", ktest_current,
+            x->info.dev, x->info.fn, x->info.bar[0].phys, x->info.bar[0].size, status_str(st),
+            st == OK ? " (a RES_MMIO over another function's registers)" : "");
+    if (res)
+        kobject_unref(res);
+    kobject_unref(dev);
+    kobject_unref(pci);
+    kobject_unref(root);
+    KT_EQ(st, ERR_ACCESS_DENIED);
 }

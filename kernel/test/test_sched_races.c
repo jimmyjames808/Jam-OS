@@ -1,9 +1,9 @@
-/* These began as audit repros (each ended in a panic naming the defect) and
- * are now REGRESSION TESTS for the fixes: they run in a normal "ktest" pass
- * and PASS on the fixed kernel. They still use the dbghook injection points
- * (jam/dbghook.h) to force the interleaving deterministically; the hooks are
- * zero-cost when unset. Each needs >= 4 CPUs to build the interleaving, so on
- * a smaller machine they skip rather than fail. */
+/* Races in the scheduler's switch and wake paths (and one in the TLB
+ * shootdown a migrating thread needs), each forced with the dbghook
+ * injection points (jam/dbghook.h, free when unset) so the interleaving
+ * happens every time. They began as repros that panicked on the defect and
+ * are regression tests for the fixes now. Each needs >= 4 CPUs to build
+ * its interleaving, so on a smaller machine they skip rather than fail. */
 #include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
@@ -16,8 +16,6 @@
 #include <jam/time.h>
 #include <jam/x86.h>
 
-void (*volatile dbg_hooks[DBG_N])(void *arg);
-
 static bool enabled(void)
 {
     if (cpu_count < 4) {
@@ -26,31 +24,6 @@ static bool enabled(void)
         return false;
     }
     return true;
-}
-
-/* Restore full affinity: these tests pin main to a CPU, and must not leave it
- * pinned for whatever runs next. */
-static void unpin_self(void)
-{
-    cpumask_t all;
-    cpumask_all(&all);
-    thread_set_affinity(current_thread(), &all);
-}
-
-static uint32_t cur_cpu(void)
-{
-    preempt_disable();
-    uint32_t c = this_cpu()->index;
-    preempt_enable_no_resched();
-    return c;
-}
-
-static void pin_self(uint32_t cpu)
-{
-    cpumask_t m;
-    cpumask_one(&m, cpu);
-    thread_set_affinity(current_thread(), &m);
-    KT_EQ(cur_cpu(), cpu);
 }
 
 static bool wait_for(volatile int *v, int want, uint64_t ms)
@@ -86,7 +59,7 @@ static void lat_high(void *arg)
 /* Returns the worst wake-to-run latency in microseconds. */
 static uint64_t lat_measure(uint32_t high_cpu, uint32_t waker_cpu, int rounds)
 {
-    pin_self(waker_cpu);
+    kt_pin_self(waker_cpu);
     uint64_t worst = 0, sum = 0;
     for (int i = 0; i < rounds; i++) {
         thread_sleep_ms(3);   /* the high thread is blocked again */
@@ -129,7 +102,7 @@ KTEST(repro_local_wake_latency)
     spin_unlock_irqrestore(&lat_lock, f);
     waitqueue_wake_all(&lat_wq);
     thread_join(h);
-    unpin_self();
+    kt_unpin_self();
     (void)remote;
     /* Fixed: spin_unlock_irqrestore now re-checks need_resched once interrupts
      * are back on, so a higher-priority thread woken on the waker's own CPU
@@ -177,7 +150,7 @@ KTEST(repro_finish_switch_double_reap)
 {
     if (!enabled())
         return;
-    pin_self(0);
+    kt_pin_self(0);
     waitqueue_init(&fs_wq, "repro fs wq");
     fs_go = 0;
     fs_target = NULL;
@@ -214,7 +187,7 @@ KTEST(repro_finish_switch_double_reap)
     KT_ASSERT(y1->stack_top != y2->stack_top);
     thread_join(y1);
     thread_join(y2);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* ---- 3. thread_wake locks a run queue chosen from a stale t->cpu ------------ */
@@ -276,7 +249,7 @@ KTEST(repro_wake_stale_cpu)
 {
     if (!enabled())
         return;
-    pin_self(0);
+    kt_pin_self(0);
     ab_phase = 0;
     ab_stop = 0;
     ab_target = NULL;
@@ -321,7 +294,7 @@ KTEST(repro_wake_stale_cpu)
     ab_stop = 1;
     thread_wake(ab_target);
     thread_join(ab_target);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* ---- 4. kernel unmap: the CPU the caller migrates to keeps a stale TLB ---- */
@@ -351,7 +324,7 @@ KTEST(repro_unmap_migrate_stale_tlb)
 {
     if (!enabled())
         return;
-    pin_self(1);
+    kt_pin_self(1);
     uint64_t pml4 = vmm_kernel_pml4();
     uint64_t va = vmm_reserve(PAGE_SIZE);
     uint64_t pa1 = pmm_alloc_page_phys(PMM_ZERO);
@@ -385,7 +358,7 @@ KTEST(repro_unmap_migrate_stale_tlb)
     vmm_unmap(pml4, va, PAGE_SIZE);
     pmm_free_page_phys(pa1);
     pmm_free_page_phys(pa2);
-    unpin_self();
+    kt_unpin_self();
 }
 
 /* ---- 5. a thread whose slice ran out while alone is never sliced again ---- */
@@ -410,7 +383,7 @@ KTEST(repro_slice_not_reset)
 {
     if (!enabled())
         return;
-    pin_self(0);
+    kt_pin_self(0);
     rr_stop = 0;
     rr_y_ran_ns = 0;
     cpumask_t m;
@@ -427,7 +400,7 @@ KTEST(repro_slice_not_reset)
     uint64_t ms = (rr_y_ran_ns - t0) / 1000000;
     kprintf("repro: same-priority thread waited %lu ms for a CPU running one spinner "
             "(slice is %u ticks = %u ms)\n", ms, SLICE_TICKS, SLICE_TICKS * 10);
-    unpin_self();
+    kt_unpin_self();
     /* Fixed: schedule()'s next == prev path now refreshes the slice, so a
      * later same-priority thread gets the CPU within a slice or two instead
      * of waiting ~1 s for the starvation boost. (C4) */

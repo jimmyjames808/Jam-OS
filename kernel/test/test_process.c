@@ -22,26 +22,8 @@
 #include <jam/time.h>
 #include <jam/userboot.h>
 
-#define S 1000000000ull
 
 extern volatile uint64_t user_faults;
-
-static struct job *fresh_job(void)
-{
-    struct job *root, *j;
-    KT_EQ(userboot_root_job(&root), OK);
-    KT_EQ(job_create(root, &j), OK);
-    job_unref(root);   /* j keeps it */
-    return j;
-}
-
-static void job_is_empty(struct job *j)
-{
-    for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
-        if (job_used(j, k))
-            panic("ktest %s: job kind %u still has %lu units", ktest_current, k,
-                  job_used(j, k));
-}
 
 /* Start "utest <mode> [arg]" in j with an optional extra handle. */
 static struct process *start(struct job *j, const char *mode, const char *arg,
@@ -63,7 +45,8 @@ static struct process *start(struct job *j, const char *mode, const char *arg,
 /* Wait for p to die; its info. Drops the caller's reference. */
 static struct process_info finish(struct process *p)
 {
-    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20 * S, NULL), OK);
+    KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 20 * NS_PER_S, NULL),
+          OK);
     struct process_info info;
     process_get_info(p, &info);
     KT_EQ(info.state, PROCESS_DEAD);
@@ -103,7 +86,7 @@ KTEST(proc_job_hierarchy_limits)
     KT_EQ(job_used(parent, JOB_LIMIT_HANDLES), 1);   /* the child job itself */
     KT_EQ(job_charge(NULL, JOB_LIMIT_PAGES, 1000), OK);   /* kernel objects: never charged */
     job_unref(child);
-    job_is_empty(parent);
+    kt_job_is_empty(parent);
     job_unref(parent);
 }
 
@@ -112,7 +95,7 @@ KTEST(proc_job_hierarchy_limits)
  * a guard below it. */
 KTEST(proc_elf_load_layout)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process *p = start(j, "spin", NULL, NULL);
     struct aspace *as = process_aspace(p);
     KT_ASSERT(as);
@@ -152,13 +135,13 @@ KTEST(proc_elf_load_layout)
     process_kill(p, PROCESS_KILLED_CODE, true);
     struct process_info info = finish(p);
     KT_ASSERT(info.killed);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
 KTEST(proc_exit_code_and_startup_message)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process_info info = finish(start(j, "exit7", NULL, NULL));
     KT_ASSERT(!info.killed);
     KT_EQ(info.exit_code, 7);
@@ -166,13 +149,13 @@ KTEST(proc_exit_code_and_startup_message)
     KT_EQ(info.exit_code, 0);   /* the child checked argv, handles, bootfs rights */
     info = finish(start(j, "main-exits", NULL, NULL));
     KT_EQ(info.exit_code, 11);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
 KTEST(proc_fault_kills_the_process)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     uint64_t faults = user_faults;
     struct process_info info = finish(start(j, "nullderef", NULL, NULL));
     KT_ASSERT(info.killed);
@@ -180,7 +163,7 @@ KTEST(proc_fault_kills_the_process)
     info = finish(start(j, "execdata", NULL, NULL));
     KT_ASSERT(info.killed);
     KT_EQ(user_faults, faults + 2);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -188,13 +171,14 @@ KTEST(proc_fault_kills_the_process)
  * never answers is killed, and every page, handle and thread comes back. */
 KTEST(proc_kill_in_channel_call_cleans_up)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct channel *mine, *theirs;
     KT_EQ(channel_create(&mine, &theirs), OK);
     struct khandle kh = khandle_from_new((struct kobject *)theirs, RIGHTS_BASIC | RIGHTS_IO);
     struct process *p = start(j, "caller", NULL, &kh);
     /* Its request arriving means it is (about to be) blocked in the call. */
-    KT_EQ(object_wait_one((struct kobject *)mine, SIG_READABLE, uptime_ns() + 10 * S, NULL), OK);
+    KT_EQ(object_wait_one((struct kobject *)mine, SIG_READABLE, uptime_ns() + 10 * NS_PER_S, NULL),
+          OK);
     thread_sleep_ms(20);
     KT_EQ(job_used(j, JOB_LIMIT_THREADS), 2);
     KT_ASSERT(job_used(j, JOB_LIMIT_PAGES) >= 16);
@@ -212,22 +196,22 @@ KTEST(proc_kill_in_channel_call_cleans_up)
     KT_EQ(channel_read(mine, buf, sizeof(buf), &nb, NULL, 0, NULL), OK);
     KT_EQ(nb, 16);
     KT_EQ(channel_read(mine, buf, sizeof(buf), &nb, NULL, 0, NULL), ERR_PEER_CLOSED);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     kobject_unref((struct kobject *)mine);
     job_unref(j);
 }
 
 KTEST(proc_runaway_hits_its_job_limit)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 256), OK);
     struct process_info info = finish(start(j, "hog", NULL, NULL));
     KT_ASSERT(!info.killed);
     KT_EQ(info.exit_code, 42);   /* it got ERR_NO_MEMORY from vmo_commit */
-    job_is_empty(j);
+    kt_job_is_empty(j);
     info = finish(start(j, "hogfault", NULL, NULL));
     KT_ASSERT(info.killed);       /* a page fault it can't pay for: killed, no panic */
-    job_is_empty(j);
+    kt_job_is_empty(j);
     /* The program's own data and stack are charged to its job too (userboot
      * made them for it): with no pages at all it either can't be loaded
      * (its .data copy) or dies on its first stack touch. */
@@ -239,7 +223,7 @@ KTEST(proc_runaway_hits_its_job_limit)
         KT_ASSERT(finish(p).killed);
     else
         KT_EQ(st, ERR_NO_MEMORY);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -248,7 +232,7 @@ KTEST(proc_runaway_hits_its_job_limit)
 KTEST(proc_kill_spinning_processes)
 {
     enum { N = 6 };
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process *ps[N];
     for (int i = 0; i < N; i++)
         ps[i] = start(j, "spin", NULL, NULL);
@@ -257,7 +241,7 @@ KTEST(proc_kill_spinning_processes)
         process_kill(ps[i], PROCESS_KILLED_CODE, true);
     for (int i = 0; i < N; i++)
         KT_ASSERT(finish(ps[i]).killed);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -265,7 +249,7 @@ KTEST(proc_kill_spinning_processes)
  * everything it had is freed with its last reference. */
 KTEST(proc_never_started)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process *p;
     KT_EQ(process_create(j, "never", &p), OK);
     struct uthread *u;
@@ -275,7 +259,7 @@ KTEST(proc_never_started)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, 0x400000, 0, &none, 0, NULL), ERR_BAD_STATE);
     kobject_unref(uthread_kobject(u));   /* its reference on p was the last */
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -284,7 +268,7 @@ KTEST(proc_never_started)
  * waits until they are all dead, and the killed jobs take nothing new. */
 KTEST(proc_job_kill_tree)
 {
-    struct job *j = fresh_job(), *sub, *subsub;
+    struct job *j = kt_fresh_job(), *sub, *subsub;
     KT_EQ(job_create(j, &sub), OK);
     KT_EQ(job_create(sub, &subsub), OK);
     struct process *a = start(j, "spin", NULL, NULL);
@@ -315,7 +299,7 @@ KTEST(proc_job_kill_tree)
     KT_EQ(killed, 0);
     job_unref(subsub);
     job_unref(sub);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -324,7 +308,7 @@ KTEST(proc_job_kill_tree)
  * left the whole system unsupervised (init is in the root job). */
 KTEST(proc_find_spares_ancestor_jobs)
 {
-    struct job *j = fresh_job(), *sub;
+    struct job *j = kt_fresh_job(), *sub;
     KT_EQ(job_create(j, &sub), OK);
     struct process *sup, *kid, *p;
     KT_EQ(process_create(j, "sup", &sup), OK);     /* never started */
@@ -342,7 +326,7 @@ KTEST(proc_find_spares_ancestor_jobs)
     kobject_unref(process_kobject(sup));
     kobject_unref(process_kobject(kid));
     job_unref(sub);
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -356,7 +340,7 @@ KTEST(proc_debug_write_rate_limited)
     size_t len = 0;
     for (unsigned i = 0; i < LINES; i++)
         len += ksnprintf(buf + len, sizeof(buf) - len, "flood %u\n", i);
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process *p;
     KT_EQ(process_create(j, "flood", &p), OK);
     /* The allowance depends on how long printing takes: 50 lines/s refill
@@ -382,7 +366,7 @@ KTEST(proc_debug_write_rate_limited)
     (void)t2;
     process_kill(p, PROCESS_KILLED_CODE, true);   /* prints the dropped-lines note */
     kobject_unref(process_kobject(p));
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }
 
@@ -404,7 +388,7 @@ static void window_hook(void *arg)
 
 KTEST(proc_start_window_refuses_other_threads)
 {
-    struct job *j = fresh_job();
+    struct job *j = kt_fresh_job();
     struct process *p;
     KT_EQ(process_create(j, "window", &p), OK);
     struct uthread *u1;
@@ -434,6 +418,6 @@ KTEST(proc_start_window_refuses_other_threads)
     kobject_unref(uthread_kobject(window_u2));
     process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
     kobject_unref(process_kobject(p));
-    job_is_empty(j);
+    kt_job_is_empty(j);
     job_unref(j);
 }

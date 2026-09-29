@@ -1,8 +1,11 @@
-/* Tests for the object/handle foundation, using a tiny test-only object. */
+/* Tests for the object/handle foundation, using a tiny test-only object;
+ * user signal bits; handle generations. */
 #include <jam/handle.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/sched.h>
+#include <jam/sys.h>
 #include <jam/time.h>
 
 struct tobj {
@@ -213,4 +216,70 @@ KTEST(object_wait_many_waiters)
     KT_ASSERT(list_empty(&o->base.observers));
     kobject_unref(herd_obj);
     KT_EQ(destroyed, 1);
+}
+
+/* ---- user signal bits ---------------------------------------------------------- */
+
+KTEST(m45_object_signal_user_bits)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t ev, a, b, weak;
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    KT_EQ(sys_channel_create(&t, &a, &b), OK);
+
+    KT_EQ(sys_object_signal(&t, ev, 0, 1u << 24), OK);
+    KT_EQ(kt_signals_of(&t, ev) & SIG_USER_ALL, 1u << 24);
+    KT_EQ(sys_object_signal(&t, a, 0, 0x81000000u), OK);
+    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x81000000u);
+    KT_EQ(sys_object_signal(&t, a, 1u << 24, 0), OK);
+    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x80000000u);
+    KT_ASSERT(kt_signals_of(&t, a) & SIG_WRITABLE);   /* kernel bits untouched */
+
+    /* Kernel-owned bits are off limits, and the right is required. */
+    KT_EQ(sys_object_signal(&t, a, 0, SIG_READABLE), ERR_INVALID_ARGS);
+    KT_EQ(sys_object_signal(&t, a, SIG_WRITABLE, 0), ERR_INVALID_ARGS);
+    KT_EQ(handle_duplicate(&t, ev, RIGHTS_BASIC, &weak), OK);
+    KT_EQ(sys_object_signal(&t, weak, 0, 1u << 25), ERR_ACCESS_DENIED);
+
+    /* A user bit wakes a waiter like any signal. */
+    signals_t seen = 0;
+    KT_EQ(sys_object_wait_one(&t, ev, 1u << 24, uptime_ns() + NS_PER_S, &seen), OK);
+    KT_ASSERT(seen & (1u << 24));
+
+    handle_table_destroy(&t);
+}
+
+/* ---- O4: handle generation no longer wraps ------------------------------ */
+
+static void audit_dummy_destroy(struct kobject *o) { kfree(o); }
+static const struct kobject_ops audit_dummy_ops = { .name = "audit dummy",
+                                                    .destroy = audit_dummy_destroy };
+
+KTEST(auditD_handle_generation_no_wrap)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    struct kobject *first = kzalloc(sizeof(*first));
+    kobject_init(first, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
+    struct khandle kh = khandle_from_new(first, RIGHTS_BASIC);
+    handle_t stale, h = 0;
+    KT_EQ(handle_insert(&t, &kh, &stale), OK);
+    KT_EQ(handle_close(&t, stale), OK);
+    struct kobject *o = NULL;
+    for (int i = 0; i < 256; i++) {
+        o = kzalloc(sizeof(*o));
+        kobject_init(o, OBJ_EVENT, &audit_dummy_ops, "audit dummy", 0);
+        kh = khandle_from_new(o, RIGHTS_BASIC | RIGHT_SIGNAL);
+        KT_EQ(handle_insert(&t, &kh, &h), OK);
+        if (i < 255)
+            KT_EQ(handle_close(&t, h), OK);
+    }
+    struct kobject *got = NULL;
+    status_t st = handle_get(&t, stale, OBJ_NONE, 0, &got, NULL);
+    kprintf("auditD: stale %x new %x lookup of stale -> %s\n", stale, h, status_str(st));
+    if (st == OK)
+        kobject_unref(got);
+    handle_table_destroy(&t);
+    KT_EQ(st, ERR_BAD_HANDLE);   /* 15-bit generation + FIFO reuse: no wrap */
 }

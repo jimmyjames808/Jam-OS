@@ -1,8 +1,8 @@
-/* M4 milestone: a service loop the way M5 programs will write one.
+/* A whole service, the way a user program writes one.
  *
  * One server thread and one client per remaining CPU, each with its OWN
- * handle table, using only the handle-level sys_ API (the future system
- * calls). The server waits on a single port bound to every client's
+ * handle table, using only the handle-level sys_ API (what the system
+ * calls run). The server waits on a single port bound to every client's
  * channel plus a periodic timer. Each client first sends the server an
  * event handle, which the server signals (a handle crossing tables), then
  * makes thousands of channel_calls and checks every reply. At the end

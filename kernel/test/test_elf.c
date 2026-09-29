@@ -99,13 +99,7 @@ KTEST(elf_programs)
 
 static uint64_t rng_state = 0x243f6a8885a308d3ull;
 
-static uint64_t rng(void)
-{
-    rng_state ^= rng_state << 13;
-    rng_state ^= rng_state >> 7;
-    rng_state ^= rng_state << 17;
-    return rng_state;
-}
+static uint64_t rng(void) { return kt_rng(&rng_state); }
 
 /* The fuzz buffer: a VMO mapped into the vmap area, which leaves an
  * unmapped gap after every mapping. Each case puts its image flush
