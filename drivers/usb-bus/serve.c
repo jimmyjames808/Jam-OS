@@ -757,7 +757,7 @@ int driver_main(const struct driver_start *s)
                 next = now + 100 * MS;
             if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
                 break;
-            if (did || usb_busy())
+            if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */
                 next = now;
             bool any = h->serve_pending;
             for (int i = 0; i < MAX_CHANS && !any; i++)

@@ -255,6 +255,13 @@ static void ep_stop(struct usbdev *d, uint8_t dci, struct ring *r)
 {
     uint32_t cc = hc_command(&g_hc, 0, 0, 0, TRB_TYPE(TRB_STOP_EP) | ((uint32_t)dci << 16) |
                              ((uint32_t)d->slot << 24), NULL, 1000);
+    if (cc == CC_CONTEXT_STATE && d->out_page >= 0 && (out_ctx(d, dci)[0] & 7) == 2) {
+        /* Halted (an error the main loop hasn't recovered yet, or one it
+         * gave up on): Stop can't touch it and Set TR Dequeue would fail
+         * the same way, leaving it halted for the next open. Reset it. */
+        ep_reset(d, dci, r);
+        return;
+    }
     if (cc != CC_SUCCESS && cc != CC_CONTEXT_STATE && !d->gone)
         drv_log("usb %s: Stop Endpoint (ep %u): %s", d->path, dci, cc_str(cc));
     ep_set_deq(d, dci, r);
