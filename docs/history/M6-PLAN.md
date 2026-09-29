@@ -1,5 +1,7 @@
 # M6 plan: PCIe, MSI/MSI-X, devmgr, drivers through handles
 
+> **Historical.** This plan is finished and kept as written; paths and status in it are as they were then. What it delivered: [HISTORY.md](../HISTORY.md).
+
 Goal (ARCHITECTURE.md milestone row): **a sample driver bound through the
 handle-only API runs in the kernel, then as a process.** Concretely:
 

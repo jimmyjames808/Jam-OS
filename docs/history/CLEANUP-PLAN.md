@@ -1,5 +1,7 @@
 # Cleanup (M7.5): readability and structure, no behaviour change
 
+> **Historical.** This plan is finished and kept as written; paths and status in it are as they were then. What it delivered: [HISTORY.md](../HISTORY.md).
+
 **Status: DONE in QEMU (2026-09-30).** Tracks A-E, a round of bug fixes and
 the after-the-merge step are merged; the PC round (All tests, 2-minute
 stress) and the independent review of the after-the-merge step are next.

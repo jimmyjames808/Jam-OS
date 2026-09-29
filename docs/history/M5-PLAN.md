@@ -1,5 +1,7 @@
 # M5 plan: ring 3, processes, init
 
+> **Historical.** This plan is finished and kept as written; paths and status in it are as they were then. What it delivered: [HISTORY.md](../HISTORY.md).
+
 Goal (ARCHITECTURE.md milestone row): **init runs from bootfs; a process
 killed mid-`channel_call` cleans up; a runaway process hits its job quota,
 not a panic.** Everything else in this file serves those three checks.

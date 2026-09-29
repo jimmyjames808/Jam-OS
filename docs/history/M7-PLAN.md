@@ -1,5 +1,7 @@
 # M7 plan: USB, keyboard and mouse, console, shell
 
+> **Historical.** This plan is finished and kept as written; paths and status in it are as they were then. What it delivered: [HISTORY.md](../HISTORY.md).
+
 Goal (ARCHITECTURE.md milestone row): **typing into the shell on the real PC
 with the USB drivers as processes; killing the HID driver mid-use recovers;
 `ktest` runs from the shell.** Everything is a process from the start (the
