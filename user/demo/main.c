@@ -8,7 +8,7 @@
  * The pool (libfun: one thread per CPU, this one included) renders each
  * frame at half resolution, rows handed out a few at a time (so fast rows
  * and slow rows even out); then this thread draws the overlay, the pool
- * doubles every pixel into the screen's back buffer, and gfx_present
+ * doubles every pixel into the screen's back buffer, and gfx_present_all
  * shows it. Three scenes:
  *
  *   1. a deep zoom into the Mandelbrot set's Seahorse Valley, 1.5 -> ~1e-13
