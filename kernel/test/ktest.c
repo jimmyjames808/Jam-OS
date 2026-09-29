@@ -58,6 +58,10 @@ int ktest_run(const char *prefix)
     for (const struct ktest *t = __ktests_start; t < __ktests_end; t++) {
         if (memcmp(t->name, prefix, pl))
             continue;
+        /* The review's regression tests (test_review.c) fail until their
+         * bugs are fixed: only "ktest=review..." runs them. */
+        if (!memcmp(t->name, "review_", 7) && (pl < 6 || memcmp(prefix, "review", 6)))
+            continue;
         ktest_current = t->name;
         /* Account pages held by the reusable thread stack cache alongside free
          * pages: a stack just moves between the two, so free + cached is

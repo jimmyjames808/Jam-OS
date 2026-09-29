@@ -220,6 +220,22 @@ static int startup(int argc, char **argv)
     return 0;
 }
 
+/* Review regression (kernel/test/test_review.c, review_child_raises_own_job_limit):
+ * lift our own job's page limit through SR_JOB, then commit 1 MiB. 0 if
+ * both worked (the bug), 50 if the kernel refused the raise, 51 if the
+ * raise "worked" but the commit was still refused. */
+static int review_raise(void)
+{
+    if (jam_job_set_limit(startup_handle(SR_JOB), JOB_LIMIT_PAGES, JOB_NO_LIMIT) != OK)
+        return 50;
+    handle_t v;
+    if (jam_vmo_create(1 << 20, 0, HANDLE_INVALID, &v) != OK)
+        return 52;
+    status_t st = jam_vmo_commit(v, 0, 1 << 20);
+    jam_handle_close(v);
+    return st == OK ? 0 : 51;
+}
+
 int child_main(int argc, char **argv)
 {
     const char *m = argv[1];
@@ -236,6 +252,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
+    if (!strcmp(m, "review-raise")) return review_raise();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);
     return 127;
