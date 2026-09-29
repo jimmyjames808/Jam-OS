@@ -402,6 +402,22 @@ uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_
     return n;
 }
 
+status_t handle_table_find(struct handle_table *t, enum obj_type type, struct kobject **out)
+{
+    struct kobject *o = NULL;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    for (uint32_t i = 0; i < t->capacity && !o; i++)
+        if (t->slots[i].obj && t->slots[i].obj->type == type)
+            o = t->slots[i].obj;
+    if (o)
+        kobject_ref(o);   /* the handle's reference keeps it alive until here */
+    spin_unlock_irqrestore(&t->lock, f);
+    if (!o)
+        return ERR_NOT_FOUND;
+    *out = o;
+    return OK;
+}
+
 /* The reserved slot for an in-transit handle h, if h names one that was taken
  * and not yet committed or restored. */
 static struct handle_slot *intransit_slot(struct handle_table *t, handle_t h)
