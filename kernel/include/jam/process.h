@@ -113,6 +113,11 @@ status_t job_kill(struct job *j, unsigned *killed);
 struct job *job_current(void);
 void job_ref(struct job *j);     /* NULL is a no-op */
 void job_unref(struct job *j);   /* NULL is a no-op */
+/* M7 (debug_command "ps"): print j's processes and child jobs, recursively,
+ * to the kernel log; and the root of j's tree (a new reference; NULL in,
+ * NULL out). */
+void job_print_tree(struct job *j, unsigned depth);
+struct job *job_root_of(struct job *j);
 
 /* ---- processes ------------------------------------------------------------- */
 

@@ -20,6 +20,7 @@
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
+#include <jam/klog.h>
 #include <jam/serial.h>
 #include <jam/aspace.h>
 #include <jam/uentry.h>
@@ -1336,8 +1337,10 @@ static void boost_starved(struct cpu *c)
 void sched_tick(void)
 {
     struct cpu *c = this_cpu();
-    if (c->index == 0)
+    if (c->index == 0) {
         serial_poll();   /* rescues a stalled serial transmitter (serial.c) */
+        klog_poll();     /* M7: wakes kernel log readers (sysc_console.c) */
+    }
     watchdog_check(c);
     boost_starved(c);
 

@@ -26,7 +26,18 @@
  *     after serial_panic, output is synchronous as in M5. serial_panic
  *     (interrupts off, other CPUs halted) first writes out whatever the
  *     ring still holds, so the panic text follows it in order.
- *   - serial_async is the run-time switch (the benchmark flips it). */
+ *   - serial_async is the run-time switch (the benchmark flips it).
+ *
+ * Input (M7): while someone reads COM1 (serial_rx_start; the serial_open
+ * system call), the received-data interrupt is on too (IER bit 0, same IRQ
+ * 4) and the handler moves bytes from the UART's FIFO into the rx ring
+ * under the "serial rx" lock, then calls the reader's notify callback
+ * (under that lock, so serial_rx_stop can't race a late call). CPU 0's tick
+ * drains the FIFO as well: that covers a lost edge (the line stays high
+ * while data is pending, so an edge-triggered interrupt can be missed) and
+ * a COM1 whose interrupt isn't routed (then input is polled, <= 10 ms).
+ * Bytes with a framing/parity error or a break are dropped (a floating
+ * receive line with no cable attached produces those, not data). */
 #include <stdint.h>
 #include <jam/cmdline.h>
 #include <jam/ioapic.h>
@@ -37,6 +48,7 @@
 #include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/x86.h>
+#include <jam/status.h>
 
 #define COM1 0x3f8
 #define REG_DATA 0
@@ -44,7 +56,12 @@
 #define REG_IIR  2
 #define REG_LSR  5
 #define IER_THRE 0x02
+#define IER_RDA  0x01
+#define LSR_DR   0x01
+#define LSR_RXERR 0x1c   /* parity, framing, break */
 #define LSR_THRE 0x20
+#define RX_RING  4096
+#define RX_BURST 256     /* bytes taken per drain, at most */
 #define FIFO_LEN 16
 #define SERIAL_RESCUES_MAX 8
 #define BROKEN_FLUSH 4096
@@ -62,6 +79,15 @@ static volatile bool hold;       /* tests: don't drain */
 volatile uint64_t serial_dropped, serial_irqs, serial_rescues;
 static uint64_t last_irqs;
 static uint32_t last_tail;
+
+static char rx_buf[RX_RING];
+static struct serial_ring rx = { rx_buf, RX_RING, 0, 0, 0 };
+static spinlock_t rx_lock = SPINLOCK_INIT("serial rx");
+static volatile bool rx_on;      /* someone reads: drain the FIFO */
+static uint8_t rx_ier;           /* IER_RDA while rx_on and the IRQ is routed (tx_lock) */
+static void (*rx_notify)(void *);
+static void *rx_ctx;
+volatile uint64_t serial_rx_bytes, serial_rx_errors;
 
 /* ---- the ring (also used by the tests on a ring of their own) ---------------- */
 
@@ -135,8 +161,32 @@ static void set_thre_locked(void)
     bool want = serial_ring_used(&tx) && !hold;
     if (want != thre_on) {
         thre_on = want;
-        outb(COM1 + REG_IER, want ? IER_THRE : 0);
+        outb(COM1 + REG_IER, (want ? IER_THRE : 0) | rx_ier);
     }
+}
+
+/* Move what the UART received into the rx ring; tell the reader. Any
+ * context (interrupts off inside). */
+static void rx_drain(void)
+{
+    if (!rx_on)
+        return;
+    uint64_t f = spin_lock_irqsave(&rx_lock);
+    bool got = false;
+    uint8_t lsr;
+    for (int n = 0; n < RX_BURST && ((lsr = inb(COM1 + REG_LSR)) & LSR_DR); n++) {
+        uint8_t c = inb(COM1 + REG_DATA);
+        if (lsr & LSR_RXERR) {
+            serial_rx_errors++;
+            continue;
+        }
+        serial_rx_bytes++;
+        serial_ring_put(&rx, (char)c);
+        got = true;
+    }
+    if (got && rx_notify)
+        rx_notify(rx_ctx);
+    spin_unlock_irqrestore(&rx_lock, f);
 }
 
 static void on_com1(struct trap_frame *f)
@@ -148,6 +198,7 @@ static void on_com1(struct trap_frame *f)
     fill_fifo_locked();
     set_thre_locked();
     spin_unlock(&tx_lock);
+    rx_drain();
     lapic_eoi();
 }
 
@@ -203,6 +254,7 @@ void serial_write(const char *s, size_t len)
 /* CPU 0's tick, interrupts off. See the top: rescue a stalled transmitter. */
 void serial_poll(void)
 {
+    rx_drain();
     if (!irq_routed || broken || !serial_ring_used(&tx))
         return;
     spin_lock(&tx_lock);
@@ -225,7 +277,7 @@ void serial_poll(void)
          * detected within SERIAL_RESCUES_MAX ticks of the first queued
          * byte, so little is queued by then. A failure path: M5's
          * behaviour from here on. */
-        outb(COM1 + REG_IER, 0);
+        outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
         int c;
         for (int n = 0; n < BROKEN_FLUSH && (c = serial_ring_get(&tx)) >= 0; n++)
@@ -267,7 +319,7 @@ void serial_set_async(bool on)
         return;
     uint64_t f = spin_lock_irqsave(&tx_lock);
     if (!on && serial_async) {
-        outb(COM1 + REG_IER, 0);
+        outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
         int c;
         while ((c = serial_ring_get(&tx)) >= 0)
@@ -299,4 +351,81 @@ void serial_test_hold(bool on)
     set_thre_locked();
     spin_unlock_no_resched(&tx_lock);
     irq_restore(f);
+}
+
+/* ---- input (M7) ------------------------------------------------------------------ */
+
+bool serial_present(void)
+{
+    return present;
+}
+
+status_t serial_rx_start(void (*notify)(void *), void *ctx)
+{
+    if (!present)
+        return ERR_NOT_FOUND;
+    uint64_t f = spin_lock_irqsave(&rx_lock);
+    if (rx_on) {
+        spin_unlock_irqrestore(&rx_lock, f);
+        return ERR_BAD_STATE;
+    }
+    rx.head = rx.tail = 0;
+    rx_notify = notify;
+    rx_ctx = ctx;
+    while (inb(COM1 + REG_LSR) & LSR_DR)   /* whatever came before: stale */
+        (void)inb(COM1 + REG_DATA);
+    rx_on = true;
+    spin_unlock_irqrestore(&rx_lock, f);
+    f = spin_lock_irqsave(&tx_lock);
+    rx_ier = irq_routed ? IER_RDA : 0;
+    outb(COM1 + REG_IER, (thre_on ? IER_THRE : 0) | rx_ier);
+    spin_unlock_no_resched(&tx_lock);
+    irq_restore(f);
+    return OK;
+}
+
+void serial_rx_stop(void)
+{
+    uint64_t f = spin_lock_irqsave(&tx_lock);
+    rx_ier = 0;
+    if (present)
+        outb(COM1 + REG_IER, thre_on ? IER_THRE : 0);
+    spin_unlock_no_resched(&tx_lock);
+    irq_restore(f);
+    f = spin_lock_irqsave(&rx_lock);
+    rx_on = false;
+    rx_notify = NULL;
+    rx_ctx = NULL;
+    rx.head = rx.tail = 0;
+    spin_unlock_irqrestore(&rx_lock, f);
+}
+
+size_t serial_rx_read(char *buf, size_t cap, void (*empty)(void *), void *ctx)
+{
+    uint64_t f = spin_lock_irqsave(&rx_lock);
+    size_t n = 0;
+    int c;
+    while (n < cap && (c = serial_ring_get(&rx)) >= 0)
+        buf[n++] = (char)c;
+    if (empty && !serial_ring_used(&rx))
+        empty(ctx);
+    spin_unlock_irqrestore(&rx_lock, f);
+    return n;
+}
+
+void serial_rx_inject(const char *s, size_t len)
+{
+    uint64_t f = spin_lock_irqsave(&rx_lock);
+    if (rx_on) {
+        for (size_t i = 0; i < len; i++)
+            serial_ring_put(&rx, s[i]);
+        if (len && rx_notify)
+            rx_notify(rx_ctx);
+    }
+    spin_unlock_irqrestore(&rx_lock, f);
+}
+
+uint64_t serial_rx_dropped(void)
+{
+    return rx.dropped;
 }

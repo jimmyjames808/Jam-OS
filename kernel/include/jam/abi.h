@@ -265,3 +265,18 @@ struct input_key_event {
     uint8_t  mods;        /* INPUT_MOD_* */
     uint32_t codepoint;   /* the character typed, or 0 */
 };
+
+/* console services (M7 Track C; abi/syscalls.def 110-117) --------------------- */
+
+/* framebuffer_take: the boot framebuffer's geometry. The VMO covers
+ * pitch * height bytes rounded up to a page; pixel (x, y) is the uint32_t
+ * at y * pitch + x * 4, colour channels at the given bit shifts (8 bits
+ * each). */
+struct fb_info {
+    uint32_t width, height;
+    uint32_t pitch;         /* bytes per line */
+    uint32_t bpp;           /* 32 */
+    uint8_t  red_shift, green_shift, blue_shift, reserved;
+    uint32_t reserved2;
+    uint64_t size;          /* bytes of the VMO */
+};

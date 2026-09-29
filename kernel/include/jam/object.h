@@ -37,6 +37,9 @@ enum obj_type {
     OBJ_RESOURCE,       /* M6 */
     OBJ_VMAR,           /* M5: a handle to an address space */
     OBJ_JOB,            /* M5: resource limits for a group of processes */
+    OBJ_KLOG,           /* M7: a reader of the kernel log */
+    OBJ_SERIAL,         /* M7: COM1 input */
+    OBJ_SCREEN,         /* M7: ownership of the boot framebuffer */
     OBJ_TYPE_COUNT,
 };
 

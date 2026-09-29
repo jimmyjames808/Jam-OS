@@ -3,11 +3,18 @@
  * Text is kept in a cell grid so scrolling only ever WRITES to the
  * framebuffer: reading back write-combined video memory is very slow on real
  * hardware. When the cursor runs off the bottom, the console scrolls a third
- * of the screen at once so heavy logging does not redraw on every line. */
+ * of the screen at once so heavy logging does not redraw on every line.
+ *
+ * M7: a process (the console) can take the screen (fbcon_take, through the
+ * framebuffer_take system call). While it is taken the cell grid is still
+ * kept up to date but nothing is drawn; fbcon_release redraws the grid, so
+ * the screen shows the latest log again. A panic (fbcon_force_unlock)
+ * takes the screen back for good. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <jam/fbcon.h>
 #include <jam/spinlock.h>
+#include <jam/status.h>
 
 #define GLYPH_W  8
 #define GLYPH_H  16
@@ -28,6 +35,7 @@ static uint32_t cols, rows, cx, cy;
 static uint32_t cur_fg, cur_bg;
 static struct cell cells[MAX_ROWS][MAX_COLS];
 static spinlock_t lock = SPINLOCK_INIT("fbcon");
+static volatile bool taken;   /* a process owns the screen: keep cells, draw nothing */
 
 static uint32_t native(uint32_t rgb)
 {
@@ -38,6 +46,8 @@ static uint32_t native(uint32_t rgb)
 
 static void draw_cell(uint32_t col, uint32_t row)
 {
+    if (taken)
+        return;
     const struct cell *c = &cells[row][col];
     const uint8_t *glyph = font_8x16[(uint8_t)c->ch & 0x7f];
     uint8_t *line = (uint8_t *)fb.virt + (uint64_t)row * GLYPH_H * fb.pitch + col * GLYPH_W * 4;
@@ -52,6 +62,8 @@ static void draw_cell(uint32_t col, uint32_t row)
 
 static void redraw_all(void)
 {
+    if (taken)
+        return;
     for (uint32_t r = 0; r < rows; r++)
         for (uint32_t c = 0; c < cols; c++)
             draw_cell(c, r);
@@ -184,4 +196,39 @@ uint64_t fbcon_time_redraw(uint64_t (*now)(void))
 void fbcon_force_unlock(void)
 {
     spin_force_unlock(&lock);
+    taken = false;   /* a panic always draws */
+}
+
+bool fbcon_geometry(struct boot_framebuffer *out)
+{
+    if (!ready)
+        return false;
+    *out = fb;
+    return true;
+}
+
+status_t fbcon_take(void)
+{
+    if (!ready)
+        return ERR_NOT_FOUND;
+    uint64_t f = spin_lock_irqsave(&lock);
+    status_t st = taken ? ERR_BAD_STATE : OK;
+    taken = true;
+    spin_unlock_irqrestore(&lock, f);
+    return st;
+}
+
+void fbcon_release(void)
+{
+    if (!ready)
+        return;
+    uint64_t f = spin_lock_irqsave(&lock);
+    taken = false;
+    redraw_all();
+    spin_unlock_irqrestore(&lock, f);
+}
+
+bool fbcon_is_taken(void)
+{
+    return taken;
 }
