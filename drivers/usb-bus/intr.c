@@ -175,6 +175,27 @@ static void ep_recover(struct hc *h, struct usbdev *d, struct ep *e)
     intr_fill(d, e);
 }
 
+/* d's endpoints marked for a drop or a recovery; true if any was acted on. */
+static bool dev_upkeep(struct hc *h, struct usbdev *d)
+{
+    bool did = false;
+    for (int k = 2; k < 32 && (d->ep_recover | d->ep_drop); k++) {
+        struct ep *e = &d->eps[k];
+        if (d->ep_drop & (1u << k)) {
+            d->ep_drop &= ~(1u << k);
+            ep_close(d, e);
+            did = true;
+        } else if (d->ep_recover & (1u << k)) {
+            d->ep_recover &= ~(1u << k);
+            if (!e->open)
+                continue;
+            ep_recover(h, d, e);
+            did = true;
+        }
+    }
+    return did;
+}
+
 bool intr_upkeep(struct hc *h)
 {
     bool did = false;
@@ -182,20 +203,8 @@ bool intr_upkeep(struct hc *h)
         struct usbdev *d = &g_devs[i];
         if (!d->used || d->gone)
             continue;
-        for (int k = 2; k < 32 && (d->ep_recover | d->ep_drop); k++) {
-            struct ep *e = &d->eps[k];
-            if (d->ep_drop & (1u << k)) {
-                d->ep_drop &= ~(1u << k);
-                ep_close(d, e);
-                did = true;
-            } else if (d->ep_recover & (1u << k)) {
-                d->ep_recover &= ~(1u << k);
-                if (!e->open)
-                    continue;
-                ep_recover(h, d, e);
-                did = true;
-            }
-        }
+        if (dev_upkeep(h, d))
+            did = true;
     }
     return did;
 }

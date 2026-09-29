@@ -241,12 +241,22 @@ static void usb_report_summary(const char *when)
                nhid, nhid == 1 ? "" : "s", kbd, mouse, g_failed, g_attached, g_detached);
 }
 
-void usb_report_all(bool at_stop)
+/* Hub i's children onto the stack (sp entries so far), port 15 first so
+ * that port 1 comes off first. */
+static void push_children(int i, int *stack, int *sp)
 {
-    g_first_report_done = true;
-    g_report_generation = g_generation;
-    /* Tree order: each root port's device, then what hangs below it. */
-    int order[MAX_DEVS], n = 0;
+    for (int c = 15; c >= 1; c--)
+        for (int q = 0; q < MAX_DEVS; q++)
+            if (g_devs[q].used && g_devs[q].parent == i && g_devs[q].port == c &&
+                *sp < MAX_DEVS)
+                stack[(*sp)++] = q;
+}
+
+/* Tree order: each root port's device, then what hangs below it (depth
+ * first). The g_devs indexes into order (MAX_DEVS); how many. */
+static int tree_order(int *order)
+{
+    int n = 0;
     for (uint32_t p = 1; p <= g_hc.ports; p++) {
         int stack[MAX_DEVS], sp = 0;
         for (int i = 0; i < MAX_DEVS; i++)
@@ -255,13 +265,18 @@ void usb_report_all(bool at_stop)
         while (sp && n < MAX_DEVS) {
             int i = stack[--sp];
             order[n++] = i;
-            for (int c = 15; c >= 1; c--)
-                for (int q = 0; q < MAX_DEVS; q++)
-                    if (g_devs[q].used && g_devs[q].parent == i && g_devs[q].port == c &&
-                        sp < MAX_DEVS)
-                        stack[sp++] = q;
+            push_children(i, stack, &sp);
         }
     }
+    return n;
+}
+
+void usb_report_all(bool at_stop)
+{
+    g_first_report_done = true;
+    g_report_generation = g_generation;
+    int order[MAX_DEVS];
+    int n = tree_order(order);
     for (int k = 0; k < n; k++) {
         struct usbdev *d = &g_devs[order[k]];
         if ((d->vid || d->pid) && !d->reported) {

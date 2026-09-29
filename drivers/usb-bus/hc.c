@@ -250,6 +250,54 @@ static int read_caps(struct hc *x)
     return 0;
 }
 
+/* A Supported Protocol capability at off (its first dword v): which
+ * root ports speak which USB, and their slot type. */
+static void add_protocol(struct hc *x, uint32_t off, uint32_t v)
+{
+    uint32_t name = hc_rd(x, off + 8), dw3 = hc_rd(x, off + 12);
+    uint8_t first = name & 0xff, count = (name >> 8) & 0xff;
+    drv_log("supported protocol: USB %x.%02x, ports %u-%u, %u speed IDs, slot type %u",
+            v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, dw3 & 0x1f);
+    if (x->nproto < MAX_PROTOS && first && count) {
+        x->proto[x->nproto].major = (uint8_t)(v >> 24);
+        x->proto[x->nproto].minor = (uint8_t)(v >> 16);
+        x->proto[x->nproto].first = first;
+        x->proto[x->nproto].count = count;
+        x->proto[x->nproto].slot_type = dw3 & 0x1f;
+        x->proto[x->nproto].psic = (uint8_t)(name >> 28);
+        x->nproto++;
+    }
+}
+
+/* The USB Legacy Support capability at off (its first dword v): take the
+ * controller from the BIOS (xHCI 4.22.1), at most 1 s, then turn its SMIs
+ * off. */
+static void bios_handoff(struct hc *x, uint32_t off, uint32_t v)
+{
+    uint32_t ctl = hc_rd(x, off + 4);
+    uint64_t t0 = drv_clock_ns();
+    drv_write8(reg(x, off + 3), 0, 1);
+    bool released = false;
+    while (drv_clock_ns() - t0 < 1000 * NS_PER_MS) {
+        if (!(hc_rd(x, off) & LEG_BIOS_OWNED)) {
+            released = true;
+            break;
+        }
+        drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
+    }
+    if (released) {
+        x->handoff = v & LEG_BIOS_OWNED ? "ok" : "ok (not BIOS-owned)";
+    } else {
+        x->handoff = "timeout";
+        drv_log("BIOS did not release the controller in 1 s; clearing BIOS Owned");
+        drv_write8(reg(x, off + 2), 0, 0);
+    }
+    ctl = hc_rd(x, off + 4);
+    hc_wr(x, off + 4, (ctl & ~(LEGCTL_SMI_ENABLES | LEGCTL_SMI_STATUS)) | LEGCTL_SMI_STATUS);
+    drv_log("BIOS handoff %s after %lu ms", x->handoff,
+            (unsigned long)((drv_clock_ns() - t0) / NS_PER_MS));
+}
+
 /* Walk the extended capabilities: the legacy handoff, and the Supported
  * Protocol capabilities (which root ports speak USB 2, which USB 3). */
 static int ext_caps(struct hc *x)
@@ -267,45 +315,10 @@ static int ext_caps(struct hc *x)
         if (v == 0xffffffffu)
             break;
         uint32_t id = v & 0xff, next = (v >> 8) & 0xff;
-        if (id == XCAP_PROTOCOL) {
-            uint32_t name = hc_rd(x, off + 8), dw3 = hc_rd(x, off + 12);
-            uint8_t first = name & 0xff, count = (name >> 8) & 0xff;
-            drv_log("supported protocol: USB %x.%02x, ports %u-%u, %u speed IDs, slot type %u",
-                    v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, dw3 & 0x1f);
-            if (x->nproto < MAX_PROTOS && first && count) {
-                x->proto[x->nproto].major = (uint8_t)(v >> 24);
-                x->proto[x->nproto].minor = (uint8_t)(v >> 16);
-                x->proto[x->nproto].first = first;
-                x->proto[x->nproto].count = count;
-                x->proto[x->nproto].slot_type = dw3 & 0x1f;
-                x->proto[x->nproto].psic = (uint8_t)(name >> 28);
-                x->nproto++;
-            }
-        }
-        if (id == XCAP_LEGACY) {
-            uint32_t ctl = hc_rd(x, off + 4);
-            uint64_t t0 = drv_clock_ns();
-            drv_write8(reg(x, off + 3), 0, 1);
-            bool released = false;
-            while (drv_clock_ns() - t0 < 1000 * NS_PER_MS) {
-                if (!(hc_rd(x, off) & LEG_BIOS_OWNED)) {
-                    released = true;
-                    break;
-                }
-                drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
-            }
-            if (released) {
-                x->handoff = v & LEG_BIOS_OWNED ? "ok" : "ok (not BIOS-owned)";
-            } else {
-                x->handoff = "timeout";
-                drv_log("BIOS did not release the controller in 1 s; clearing BIOS Owned");
-                drv_write8(reg(x, off + 2), 0, 0);
-            }
-            ctl = hc_rd(x, off + 4);
-            hc_wr(x, off + 4, (ctl & ~(LEGCTL_SMI_ENABLES | LEGCTL_SMI_STATUS)) | LEGCTL_SMI_STATUS);
-            drv_log("BIOS handoff %s after %lu ms", x->handoff,
-                    (unsigned long)((drv_clock_ns() - t0) / NS_PER_MS));
-        }
+        if (id == XCAP_PROTOCOL)
+            add_protocol(x, off, v);
+        if (id == XCAP_LEGACY)
+            bios_handoff(x, off, v);
         if (!next)
             break;
         off += next * 4;
@@ -452,14 +465,10 @@ uint32_t ring_index(const struct ring *r, uint64_t trb_dev)
 
 /* ---- memory, run --------------------------------------------------------------------- */
 
-static int setup_memory(struct hc *x)
+/* The fixed DMA area (DCBAA, ERST, the command and event rings, the
+ * scratchpad array): one contiguous DMA32 VMO, pinned, mapped, zeroed. */
+static int alloc_ctx_area(struct hc *x)
 {
-    uint32_t ps = op_rd(x, OP_PAGESIZE) & 0xffff;
-    x->pagesize = ps ? (1u << (__builtin_ctz(ps) + 12)) : 0;
-    if (x->pagesize != PAGE)
-        return FAIL(x, "PAGESIZE", "controller page size %u (register %x); only 4 KiB is supported",
-                    x->pagesize, ps);
-
     uint32_t sp_array_pages = (x->scratchpads * 8 + PAGE - 1) / PAGE;
     x->ctx_pages = DMA_SPARRAY / PAGE + sp_array_pages;
     uint64_t len = (uint64_t)x->ctx_pages * PAGE;
@@ -486,11 +495,17 @@ static int setup_memory(struct hc *x)
         return FAIL(x, "DMA memory", "map: %s", status_str(st));
     x->ctx = p;
     zero(x->ctx, len);
+    return 0;
+}
 
+/* The scratchpad buffers the controller asked for, their array, and
+ * DCBAA entry 0 pointing at it. */
+static int setup_scratchpads(struct hc *x)
+{
     volatile uint64_t *dcbaa = (volatile uint64_t *)(x->ctx + DMA_DCBAA);
     if (x->scratchpads) {
         uint64_t splen = (uint64_t)x->scratchpads * PAGE;
-        st = drv_vmo_create(splen, DRV_VMO_DMA32, &x->sp_vmo);
+        status_t st = drv_vmo_create(splen, DRV_VMO_DMA32, &x->sp_vmo);
         if (st != OK)
             return FAIL(x, "scratchpads", "VMO of %u pages: %s", x->scratchpads, status_str(st));
         uint64_t *sp = drv_malloc(x->scratchpads * sizeof(uint64_t));
@@ -508,7 +523,13 @@ static int setup_memory(struct hc *x)
         drv_free(sp);
         dcbaa[0] = x->ctx_dev + DMA_SPARRAY;
     }
+    return 0;
+}
 
+/* The command ring and the one-segment event ring (interrupter 0), and
+ * the registers that point the controller at them and at the DCBAA. */
+static int program_rings(struct hc *x)
+{
     struct trb *cr = (struct trb *)(x->ctx + DMA_CMDRING);
     uint64_t cr_dev = x->ctx_dev + DMA_CMDRING;
     cr[RING_TRBS - 1].d0 = lo32(cr_dev);
@@ -539,8 +560,23 @@ static int setup_memory(struct hc *x)
     ir_wr(x, IR_IMOD, IMOD_40US);
     ir_wr(x, IR_IMAN, IMAN_IE | IMAN_IP);
     if (x->map_failed)
-        return FAIL(x, "map registers", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
+        return FAIL(x, "map registers", "offset %x: %s", x->map_fail_off,
+                    status_str(x->map_fail_st));
     return 0;
+}
+
+static int setup_memory(struct hc *x)
+{
+    uint32_t ps = op_rd(x, OP_PAGESIZE) & 0xffff;
+    x->pagesize = ps ? (1u << (__builtin_ctz(ps) + 12)) : 0;
+    if (x->pagesize != PAGE)
+        return FAIL(x, "PAGESIZE",
+                    "controller page size %u (register %x); only 4 KiB is supported",
+                    x->pagesize, ps);
+    int r;
+    if ((r = alloc_ctx_area(x)) || (r = setup_scratchpads(x)))
+        return r;
+    return program_rings(x);
 }
 
 static int run(struct hc *x)
@@ -718,6 +754,38 @@ void hc_sleep(struct hc *h, uint64_t ms)
 
 /* ---- commands ------------------------------------------------------------------------ */
 
+/* The command at t (of this type) got no completion in timeout_ms.
+ * Command Abort: the ring stops, the command completes with Command
+ * Aborted (or finishes meanwhile). A ring that doesn't stop in 5 s leaves
+ * the controller dead. */
+static void abort_command(struct hc *h, volatile struct trb *t, uint32_t type,
+                          uint64_t timeout_ms)
+{
+    drv_log("command type %u: no completion in %lu ms; aborting it", type,
+            (unsigned long)timeout_ms);
+    /* The whole register holds a valid pointer (our enqueue point and
+     * cycle), as Linux writes it: if the ring has stopped by the time
+     * the high dword lands, some controllers take the 64-bit value as
+     * the new Command Ring Pointer -- 0 would send the next command
+     * fetch to physical address 0. */
+    uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
+    op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
+    uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
+    while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
+        hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
+    hc_poll(h);
+    if (op_rd(h, OP_CRCR) & CRCR_CRR) {
+        h->dead = true;
+        drv_report("FAILED: the command ring did not stop 5 s after Command Abort");
+    } else if (!h->cmd.done) {
+        /* Stopped without taking it (never fetched): the next doorbell
+         * would run it late, against contexts we free on the timeout.
+         * A No Op in its place (what Linux does); its completion is
+         * logged as not the outstanding one. */
+        t->d3 = TRB_TYPE(TRB_NOOP_CMD) | (t->d3 & TRB_C);
+    }
+}
+
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms)
 {
@@ -746,34 +814,8 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
     uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
     while (!h->cmd.done && !h->dead && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
-    if (!h->cmd.done && !h->dead) {
-        /* Command Abort: the ring stops, the command completes with
-         * Command Aborted (or finishes meanwhile). */
-        uint32_t type = TRB_TYPE_OF(d3);
-        drv_log("command type %u: no completion in %lu ms; aborting it", type,
-                (unsigned long)timeout_ms);
-        /* The whole register holds a valid pointer (our enqueue point and
-         * cycle), as Linux writes it: if the ring has stopped by the time
-         * the high dword lands, some controllers take the 64-bit value as
-         * the new Command Ring Pointer -- 0 would send the next command
-         * fetch to physical address 0. */
-        uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
-        op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
-        uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
-        while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
-            hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
-        hc_poll(h);
-        if (op_rd(h, OP_CRCR) & CRCR_CRR) {
-            h->dead = true;
-            drv_report("FAILED: the command ring did not stop 5 s after Command Abort");
-        } else if (!h->cmd.done) {
-            /* Stopped without taking it (never fetched): the next doorbell
-             * would run it late, against contexts we free on the timeout.
-             * A No Op in its place (what Linux does); its completion is
-             * logged as not the outstanding one. */
-            t->d3 = TRB_TYPE(TRB_NOOP_CMD) | (t->d3 & TRB_C);
-        }
-    }
+    if (!h->cmd.done && !h->dead)
+        abort_command(h, t, TRB_TYPE_OF(d3), timeout_ms);
     h->cmd.busy = false;
     if (!h->cmd.done)
         return h->dead ? CC_GONE : CC_TIMEOUT;
