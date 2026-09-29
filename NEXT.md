@@ -12,6 +12,7 @@
   their first run. If anything looks like memory corruption on the PC, boot with `nopcid` first.
   **PC 2026-09-29: All tests PASSED (143) after fixing a test-only expectation in
   pcid_slot_bookkeeping (8acd552; that block had never run before) - first real PCID run is clean.**
+  Benchmark recorded (BENCH.md M5.5 section, IMG_0066); 2-min stress PASSED on the PC.
   Independent review agent RUNNING (worktree, read-only on main). **Next PC round**: flash, then All
   tests, Benchmark (-> M5.5 column of BENCH.md; expected moves listed under "M5.5 (expected)"),
   2-min stress; 10-min stress = M5.5 sign-off after the review's fixes land.
