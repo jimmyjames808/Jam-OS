@@ -276,8 +276,18 @@ static void attached(struct binding *bus, const struct usbbus_interface_attached
         bind_interface(slot, path);
 }
 
+/* Only a usb-bus reports interfaces: any other driver writing
+ * interface_attached on its DR_SERVE would get a class driver started on a
+ * channel it serves itself -- with a console input source (review of M7:
+ * a compromised driver could type into the shell). */
+static bool is_usb_bus(const struct binding *b)
+{
+    return b->kind == BIND_PCI && b->path && strcmp(b->path, "drv/usb-bus") == 0;
+}
+
 void usb_driver_events(struct binding *b)
 {
+    bool bus = is_usb_bus(b);
     for (int guard = 0; guard < 1024 && b->client; guard++) {
         _Alignas(8) uint8_t buf[sizeof(struct usbbus_interface_attached_req)];
         handle_t hs[4];
@@ -295,7 +305,7 @@ void usb_driver_events(struct binding *b)
         if (st != OK)
             return;
         const struct usbbus_interface_attached_req *m = (const void *)buf;
-        if (n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
+        if (!bus || n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
             for (uint32_t i = 0; i < nh; i++)
                 jam_handle_close(hs[i]);
             continue;
