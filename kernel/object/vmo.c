@@ -52,8 +52,8 @@
  * nothing; if a table it needs is refused, the page's charge is undone.
  * Tables stay (charged) until shrink or destroy frees them, as before
  * (decommit leaves them). Contiguous VMOs are charged whole when the job is
- * set. Kernel VMOs have no job. Physical VMOs own no memory and are never
- * charged.
+ * set. Kernel VMOs have no job. Physical VMOs own no memory: only their
+ * struct (one handle unit) is ever charged.
  *
  * Commit: a zeroed page is allocated with the lock dropped, then published
  * under the lock if its slot is still empty (the loser of a race frees its
@@ -71,6 +71,7 @@
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
+#include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -95,6 +96,11 @@ struct vmo_range {
     uint64_t         first, end;  /* page indices */
     uint64_t         key;         /* mapping: base va; pin: pin id */
     struct kobject  *cap;         /* pin: the DMA capability (referenced) */
+    /* M6: a pin is also on its cap's list (struct dma_cap.pins, under the
+     * cap's lock), so closing the cap can find and release it. */
+    struct vmo      *v;           /* pin: the VMO it pins */
+    struct list_node cap_node;
+    bool             cap_linked;  /* on the cap's list (cap's lock) */
 };
 
 struct vmo {
@@ -443,7 +449,7 @@ status_t vmo_set_job(struct vmo *v, struct job *job)
 {
     uint64_t f = vlock(v);
     status_t st = OK;
-    if (v->job || v->kind == VMO_PHYS) {
+    if (v->job) {
         st = ERR_BAD_STATE;
     } else {
         /* The struct itself is one handle unit (a mapping or a message can
@@ -812,8 +818,15 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
     uint64_t f = vlock(v);
     list_del(&r->node);
     vunlock(v, f);
-    if (r->cap)
+    if (r->cap) {
+        f = spin_lock_irqsave(&r->cap->lock);
+        if (r->cap_linked) {
+            list_del(&r->cap_node);
+            r->cap_linked = false;
+        }
+        spin_unlock_irqrestore(&r->cap->lock, f);
         kobject_unref(r->cap);
+    }
     kfree(r);
     kobject_unref(&v->base);
 }
@@ -914,6 +927,11 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
     if (!phys_out || phys_cap < end - first)
         return ERR_BUFFER_TOO_SMALL;
+    /* M6: a cap bound to a function pins only while its Bus Master Enable
+     * is on (devmgr turns it on with pci_bus_master). */
+    if (!dma_cap_bus_master_on(dma_cap))
+        return ERR_BAD_STATE;
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
 
     struct vmo_range *r = kzalloc(sizeof(*r));
     if (!r)
@@ -921,6 +939,7 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     r->kind = RANGE_PIN;
     r->first = first;
     r->end = end;
+    r->v = v;
     status_t st = range_add(v, r);
     if (st != OK) {
         kfree(r);
@@ -928,11 +947,31 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     }
     kobject_ref(dma_cap);
     r->cap = dma_cap;
-    if (v->kind == VMO_PAGED && (st = commit_pages(v, first, end)) != OK) {
+    /* On the cap's list from the start (busy until published), unless its
+     * last handle is already gone. */
+    uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
+    if (c->closed) {
+        st = ERR_BAD_STATE;
+    } else {
+        list_add_tail(&c->pins, &r->cap_node);
+        r->cap_linked = true;
+    }
+    spin_unlock_irqrestore(&dma_cap->lock, cf);
+    if (st == OK && v->kind == VMO_PAGED)
+        st = commit_pages(v, first, end);
+    if (st != OK) {
         range_remove(v, r);
         return st;
     }
 
+    /* Publish it, unless the cap was closed meanwhile: its close path ran
+     * (or is running) and skipped this busy pin, so the pin goes here. */
+    cf = spin_lock_irqsave(&dma_cap->lock);
+    if (c->closed) {
+        spin_unlock_irqrestore(&dma_cap->lock, cf);
+        range_remove(v, r);
+        return ERR_BAD_STATE;
+    }
     uint64_t f = vlock(v);
     for (uint64_t idx = first; idx < end; idx++) {
         phys_out[idx - first] = phys_locked(v, idx);
@@ -941,7 +980,34 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     r->busy = false;
     *pin_id = r->key;
     vunlock(v, f);
+    spin_unlock_irqrestore(&dma_cap->lock, cf);
     return OK;
+}
+
+/* The last pin may hold the cap's last reference; this runs from the cap's
+ * on_zero_handles (inside the object teardown drainer), so its destroy is
+ * queued behind us and c stays valid until we return. (It may already have
+ * no references at all: taking one here would be a bug.) */
+void vmo_release_cap_pins(struct dma_cap *c)
+{
+    for (;;) {
+        struct vmo_range *r = NULL;
+        uint64_t cf = spin_lock_irqsave(&c->base.lock);
+        for (struct list_node *n = c->pins.next; n != &c->pins && !r; n = n->next) {
+            struct vmo_range *x = container_of(n, struct vmo_range, cap_node);
+            /* x is on the list, so it (and its VMO reference) is alive. */
+            uint64_t f = vlock(x->v);
+            if (!x->busy) {
+                x->busy = true;   /* ours now: vmo_unpin can't find it */
+                r = x;
+            }
+            vunlock(x->v, f);
+        }
+        spin_unlock_irqrestore(&c->base.lock, cf);
+        if (!r)
+            break;
+        range_remove(r->v, r);
+    }
 }
 
 status_t vmo_unpin(struct vmo *v, uint64_t pin_id)

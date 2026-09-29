@@ -84,6 +84,32 @@ static bool run(int argc, char **argv)
     return ok;
 }
 
+/* M6: userboot gives init the root resource (SR_RESOURCE). Check it is
+ * one: slicing RES_PCI out of it works, a zero-sized MMIO slice doesn't.
+ * (devmgr will get that RES_PCI in phase 2.) */
+static bool check_root_resource(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), pci, bad;
+    if (root == HANDLE_INVALID) {
+        say("init: no root resource (SR_RESOURCE) in the startup message");
+        return false;
+    }
+    status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
+    if (st != OK) {
+        say("init: can't slice RES_PCI from the root resource (%s)", status_str(st));
+        return false;
+    }
+    jam_handle_close(pci);
+    st = jam_resource_create(root, RES_MMIO, 0x100000000ull, 0, &bad);
+    if (st != ERR_INVALID_ARGS) {
+        say("init: a zero-sized MMIO slice gave %s, want ERR_INVALID_ARGS", status_str(st));
+        if (st == OK)
+            jam_handle_close(bad);
+        return false;
+    }
+    return true;
+}
+
 /* init.cfg: one program per line, "<path in bootfs> [args...]"; blank lines
  * and lines starting with '#' are ignored. */
 static bool run_config(const char *cfg, uint64_t len)
@@ -129,6 +155,9 @@ int main(int argc, char **argv)
         handle_t h = startup_handle_at(i, &role);
         printf("init: handle %u = %#x (%s)\n", i, h, startup_role_name(role));
     }
+
+    if (!check_root_resource())
+        return 1;
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);

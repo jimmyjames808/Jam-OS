@@ -77,6 +77,11 @@ void         pmm_free_page_phys(uint64_t pa);
  * thread context with no heap lock held. */
 void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
 uint64_t     pmm_max_pfn(void);
+/* Does [base, base + len) touch memory the boot memory map calls RAM
+ * (usable, loader/ACPI reclaimable, ACPI NVS, kernel and modules) or bad
+ * RAM? Page-granular. M6: MMIO resources and physical VMOs for processes
+ * must never cover RAM. */
+bool         pmm_range_has_ram(uint64_t base, uint64_t len);
 /* Per-CPU page stashes: empty all of them into the buddy lists (returns the
  * pages moved; the allocator does this itself before failing), and the
  * number of pages parked in them / whole-machine drains so far (tests). */
