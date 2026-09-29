@@ -1,118 +1,120 @@
 # Jam OS
 
-A capability-based x86_64 operating system in C that boots on real PCs.
-Monolithic now, microkernel later. See [ARCHITECTURE.md](ARCHITECTURE.md).
+Jam OS is a from-scratch operating system for x86_64 PCs, written in C. It
+is capability-based: a program can do only what the handles it holds
+allow, and every driver and service runs as a separate user process that
+the kernel supervises through those handles. It boots from a USB stick on
+a real desktop PC, which is where every milestone is tested.
 
-## Build (macOS)
+![The Jam OS shell in QEMU: uname, free, ps and usb](docs/images/shell.png)
 
-```sh
-brew install x86_64-elf-gcc qemu mtools
-make            # the kernel, the user programs and build/bootfs.img
-make image      # build/jamos.img: FAT32 USB image with Limine (UEFI)
-make run        # boot it in QEMU: q35 + OVMF + USB boot over xHCI
-make debug      # same, paused for gdb on :1234
-make check      # generated code current, driver isolation check still rejects what it must
-make KTESTS=0   # a kernel without the in-kernel tests (build/noktests/)
-make syscalls   # regenerate the system call glue after editing abi/syscalls.def
-make idl        # regenerate drivers/include/idl/*.h after editing abi/idl/*.idl
-make compdb     # compile_commands.json for VS Code / clangd
-```
+## What works today
 
-User programs (`user/services/`, `user/apps/`, `user/tests/`: every
-directory there is `bin/<name>`) are built with the same cross compiler as static
-ELFs at 0x400000 and packed with `boot/init.cfg` into `build/bootfs.img`,
-which Limine loads as a module (`module_path` on every boot menu entry).
-The system call numbers, the kernel dispatch table and the user wrappers
-are generated from `abi/syscalls.def` by `tools/gensyscalls.py`; the output
-is committed, and every build fails if it doesn't match the `.def`.
+- UEFI boot from a USB stick (via Limine) on a real PC with 28 CPUs, and in
+  QEMU.
+- A preemptive SMP kernel: per-CPU scheduling for hybrid P/E-core CPUs,
+  virtual memory, a lock-order checker, a watchdog and a panic screen with
+  a symbolised backtrace.
+- Capability handles, channels and ports; processes, threads and jobs with
+  quotas on every kernel resource a process can use.
+- Drivers as user processes: a PCI core with MSI/MSI-X and DMA
+  capabilities, a device manager that restarts crashed drivers, and USB
+  (xHCI controller, hubs, keyboard and mouse).
+- A console and a shell with ~60 commands, pipes, variables and Tab
+  completion, plus a few apps (a Mandelbrot explorer, life, tetris).
+- Kernel and user-space test suites, stress tests and a benchmark, runnable
+  from the boot menu or the shell.
 
-The boot menu has **Jam OS** (a plain boot: init starts the
-console, devmgr with the USB drivers and the shell: you type at the `jam>`
-prompt with a real USB keyboard; `help` lists the commands), **Jam OS (safe
-mode)** (`nousb`: no USB drivers, serial input only) and a **Tests** folder
-with what must run without a keyboard: **All tests** (`ktest`: every
-in-kernel test), the **2-minute** (after each fix) and **10-minute**
-(milestone sign-off) stress tests, the **Benchmark** (`bench`), **init +
-utest + usbtest** (the user-space regression run, RESULTS box with `utest: N
-passed` and whether init's root job ended clean) and the timer fallback
-(`nodeadline selftest`). Everything else is a shell command: `ktest`,
-`bench`, `stress`, `utest`, `usbtest`, `devices`/`lspci`, `usb`/`lsusb`,
-`pci`, `memmap`, `demo`, `crash <name> yes` (the deliberate panics), `top`,
-`ps`, `date`, the text tools with pipes, and the apps `run fractal`,
-`run tetris`, `run life`. Hidden boot words for the QEMU tests:
-`pcilist`, `keytest`, `memmap`, `selftest`, `test<name>` (a crash test).
+Not yet: storage (files live in a read-only boot image), networking,
+audio, power management. The plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Build and run in QEMU
+
+On macOS, with [Homebrew](https://brew.sh):
 
 ```sh
-tools/qemu-test.sh build/test kt ktest                  # all ktests
-tools/qemu-test.sh build/test chan ktest=chan           # tests starting "chan"
-QEMU_SMP=8 QEMU_TIMEOUT=60 tools/qemu-test.sh build/test st ktest stress=30
-QEMU_SMP=20 tools/qemu-test.sh build/test smp20 selftest   # like the real PC
-```
-`QEMU_MEM`, `QEMU_SMP`, `QEMU_CPU` (e.g. `max,-x2apic`) change the machine;
-`QEMU_TIMEOUT` (seconds, default 30) is how long to wait for it to finish;
-`QEMU_IMAGE` boots another image. `make KTESTS=0 image` builds a kernel
-without the in-kernel tests into `build/noktests/`.
-
-## Boot on a real PC
-
-```sh
-diskutil list external
-make usb DEV=/dev/diskN
+brew install x86_64-elf-gcc qemu mtools   # the OVMF UEFI firmware comes with qemu
+make run                                  # build, then boot it in QEMU
 ```
 
-`tools/write-usb.sh` refuses internal disks and asks before erasing. Then boot
-the PC from the stick in UEFI mode with Secure Boot off.
+`make run` boots the image in QEMU (q35, OVMF, the stick on a USB xHCI
+controller, a USB keyboard) with the serial console on your terminal. Type
+at the `jam>` prompt; `help` lists the commands. Python 3 is needed for
+the build tools (and Pillow for test screenshots).
+
+| Command | What it does |
+|---|---|
+| `make` | the kernel, the user programs and the boot filesystem image |
+| `make image` | `build/jamos.img`: a FAT32 USB image with Limine (UEFI) |
+| `make run` | boot the image in QEMU |
+| `make debug` | the same, stopped for gdb on :1234 |
+| `make check` | generated code current, the driver isolation check, the docs check |
+| `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
+| `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |
+| `make idl` | regenerate `drivers/include/idl/` after editing `abi/idl/` |
+| `make compdb` | `compile_commands.json` for editors |
+
+Testing (the tiers, `tools/qemu-test.sh`, the shell scripts, the boot menu)
+is in [docs/TESTING.md](docs/TESTING.md).
+
+## Boot a real PC
+
+> **Warning:** `make usb` erases the whole disk you give it. It refuses
+> internal disks and asks before writing, but check the disk number twice.
+
+Write the image with `make usb DEV=/dev/diskN`, then boot the PC from the
+stick in UEFI mode with Secure Boot off. The steps, the faster way to
+update a stick, and the PC it was built for are in
+[docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Where things live
 
-```
-kernel/main.c        the boot sequence (kmain), then the tests or user space
-kernel/boot/         loader glue (the only place that knows about Limine)
-kernel/arch/x86_64/  entry, interrupts, syscall/sysret, user entry, CPUs,
-                     LAPIC/IOAPIC, TSC, FPU, PCIDs, IPIs and TLB shootdown
-kernel/acpi/         static ACPI tables (MADT, FADT, HPET, MCFG)
-kernel/mm/           physical pages, page tables, heap, address spaces
-kernel/sched/        scheduler (run queues, placement, the switch), threads
-                     and the stack cache, waits, wait queues, mutexes
-kernel/object/       kernel objects and handles: channels, ports, events,
-                     timers, VMOs, VMARs, processes, jobs, interrupts,
-                     resources, dma_cap
-kernel/abi/          the handle-level sys_* API and the syscalls (sysc_*.c,
-                     the generated dispatch table)
-kernel/proc/         starting programs: bootfs, the ELF parser, userboot
-                     (starts init)
-kernel/dev/          the kernel's own devices: framebuffer console, serial,
-                     font, RTC, PCI core (+ MSI, reports), reboot
-kernel/debug/        klog, the panic screen, symbols, spinlocks + the lock
-                     checker, the RESULTS box, debug_command (shell tests),
-                     self-tests, crash tests and the stress test (these ship
-                     in every kernel)
-kernel/test/         in-kernel tests (KTEST, by subject) and the benchmark;
-                     left out by `make KTESTS=0`
-kernel/lib/          string, kprintf, the command line
-kernel/include/jam/  kernel headers (the ones user code may see are copied
-                     for it: UINC_HDRS in the Makefile)
-drivers/usb-bus/     xHCI + hubs: serves one channel per USB interface
-drivers/hid/         USB HID boot keyboard and mouse -> the console
-drivers/test/        test drivers: null, drvtest, edu (QEMU), crasher
-drivers/include/     <jam/driver.h> (all a driver may use), generated <idl/*.h>
-user/lib/            libos: crt0, syscall wrappers, printf, heap, startup
-                     message, bootfs reader, spawn(), threads, driver.h's
-                     implementation
-user/include/        libos and service headers (<os.h>, <devmgr.h>, ...)
-user/services/       init, console, devmgr, serialin, shell (shell/cmd/: one
-                     file per command)
-user/apps/           fractal, life, tetris, demo, and fun/ (libfun: the
-                     apps' screen, drawing, keys and thread pool)
-user/tests/          utest (the user-space suite), usbtest, contest
-abi/syscalls.def     the system call table
-abi/idl/             the protocols (IDL)
-boot/limine.conf     boot menu
-boot/init.cfg        what init starts in the regression run (packed into bootfs)
-tools/               image, bootfs, syscall, IDL and symbol generators, the
-                     driver check, QEMU test scripts (qemu-test.sh,
-                     shell-tests/, usb-test.sh, ...), font converter, USB writer
-third_party/         Limine (BSD-2), limine.h (0BSD), Spleen font (BSD-2)
-```
+| Path | What |
+|---|---|
+| `kernel/main.c` | the boot sequence, then the tests or user space |
+| `kernel/boot/` | loader glue (the only code that knows about Limine) |
+| `kernel/arch/x86_64/` | entry, interrupts, syscalls, CPUs, APIC, TSC, FPU, PCIDs, IPIs |
+| `kernel/acpi/` | static ACPI tables (MADT, FADT, HPET, MCFG) |
+| `kernel/mm/` | physical pages, page tables, heap, address spaces |
+| `kernel/sched/` | scheduler, threads, waits, mutexes |
+| `kernel/object/` | kernel objects and handles |
+| `kernel/abi/` | the handle-level API and the syscalls |
+| `kernel/proc/` | bootfs, the ELF parser, userboot (starts init) |
+| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC, PCI core, reboot |
+| `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
+| `kernel/test/` | in-kernel tests and the benchmark |
+| `kernel/include/jam/` | kernel headers |
+| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
+| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
+| `user/services/` | init, console, devmgr, serialin, shell |
+| `user/apps/` | fractal, life, tetris, demo, and `fun/` (the apps library) |
+| `user/tests/` | utest, usbtest, contest |
+| `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
+| `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
+| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer |
+| `third_party/` | Limine and `limine.h`, the Spleen font |
+| `docs/` | the documentation below |
 
-How the code is written: [CODING-GUIDE.md](CODING-GUIDE.md).
+## Documentation
+
+| Doc | For |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | how the system is designed, and why |
+| [CODING-GUIDE.md](CODING-GUIDE.md) | how the code is written and changed (agents and humans) |
+| [NEXT.md](NEXT.md) | the handoff: current state, next step, open questions |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | milestones: done, next, later |
+| [docs/HISTORY.md](docs/HISTORY.md) | what each milestone delivered, bugs and lessons, decisions |
+| [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | the real PC, and flashing the stick |
+| [docs/BENCH.md](docs/BENCH.md) | benchmark numbers from the PC |
+
+## Contributing
+
+Jam OS is one person's project, written together with AI agents. The
+rules for changing the code, for agents and humans alike, are in
+[CODING-GUIDE.md](CODING-GUIDE.md).
+
+## Licence
+
+No licence yet. The third-party code in `third_party/` keeps its own
+licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause).

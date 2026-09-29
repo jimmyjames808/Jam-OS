@@ -1,61 +1,60 @@
 # Jam OS architecture
 
-This is the plan of record. Decisions marked *(open)* are not settled yet.
+How Jam OS is built and why. This page is the design only: milestone status
+is in [docs/ROADMAP.md](docs/ROADMAP.md), how it got here in
+[docs/HISTORY.md](docs/HISTORY.md), the machine it runs on in
+[docs/HARDWARE.md](docs/HARDWARE.md), and how the code is written in
+[CODING-GUIDE.md](CODING-GUIDE.md). Where a section describes something not
+built yet, it says so.
 
 ## Goals
 
 - Runs on a real x86_64 PC, booting via UEFI from a USB stick.
-- Close to daily-drivable, text console first (graphics are not a goal yet).
-- **Microkernel one driver at a time**: each driver and service is brought up
-  inside the kernel (where debugging on the real PC is easiest) and moved to
-  userspace in the same milestone, as soon as it is proven working there.
+- Close to daily-drivable, text console first.
+- A microkernel structure: every driver and service is a user process that
+  touches the world only through handles; the kernel keeps mechanisms and
+  enforcement ([the migration rule](#the-migration-rule)).
 
 | Decision | Choice |
 |---|---|
 | Language | C (gnu17, freestanding), x86_64-elf-gcc cross toolchain |
 | Build | Make |
-| Boot | Limine now, behind `struct boot_info`; own UEFI loader later |
-| Kernel | Monolithic, strict message-shaped driver boundary from day one |
+| Boot | Limine, behind `struct boot_info`; an own UEFI loader later |
+| Kernel | Mechanisms and enforcement only; drivers and services are processes |
 | SMP | From day one |
-| Native API | Capability handles; POSIX layer (musl) possible later |
+| Native API | Capability handles; a POSIX layer (musl) possible later |
 | Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
-| Syscall ABI | Unstable until M12; numbers, wrappers and the kernel dispatch table are generated from one table |
+| Syscall ABI | Unstable until M12; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
-| Ported code | Limine, uACPI, lwIP |
+| Ported code | Limine; uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
-| Program output | Every program gets a stdout channel handle in its startup message; M5 backs it with a `debug_write` syscall, the M7 console service replaces that |
-| IOMMU | Not yet; DMA gated by `dma_cap`, VT-d added behind it in M11 |
-| Driver migration | Decided 2026-09-29 (replaces 2026-09-28's bring-up in kernel, move out once proven): drivers and services are processes from the start (see The migration rule); the optional kernel build of drivers was removed in the M7.5 cleanup |
-| Users/logins | Decided 2026-09-29: single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 cannot store owners anyway) |
-| Target PC | ASUS TUF GAMING B760-PLUS WIFI, i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port; one USB controller: Intel B760 xHCI 1.2, PCI 8086:7A60 rev 0x11 (keyboard, mouse and the stick all on it), with an ASMedia USB 3 hub (174C:2074/3074) and composite HID devices (Cooler Master 2516, Sino Wealth 258A, Microdia 0C45) plus the ASUS AURA RGB controller (0B05:19AF) |
-| Networking | Decided 2026-09-29: the board's own Realtek RTL8125 2.5 GbE (ASUS TUF GAMING B760-PLUS WIFI), a PCIe device with MSI-X, driven natively (references: Linux `r8169`, FreeBSD `re`; check whether this revision needs Realtek's PHY firmware patch). No USB adapter. Wi-Fi (Intel AX201) is not planned. **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21, and nothing is ever sent untagged or on another VLAN** (the user's network must not see Jam OS traffic elsewhere): the VLAN is set in one place (boot word `vlan=`, default 21), added to every outgoing frame (ARP and DHCP included) below the IP stack, incoming frames for other VLANs or untagged are dropped, and with no VLAN configured the NIC stays down (fail closed). This applies to every path that can transmit: the M9 driver, netlog, `update`, and the M8.5 crash kernel if it ever gets networking |
+| Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows |
+| IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
+| Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
+| Networking | The board's own NIC, driven natively; every frame on VLAN 21 only ([Networking](#networking)) |
 
 ## The migration rule
 
-Every driver and service is a userspace process from the start (decided
-2026-09-29, after M6: the user asked "is there really a point writing
-drivers in kernel then switching to userspace?").
+Every driver and service is a userspace process from the start.
 
 - Drivers touch the world **only through handles**: channels, interrupt
   objects, VMOs, resource handles (MMIO, IRQs) and a DMA capability.
-- Drivers include only `<jam/driver.h>`, and `tools/checkdriver.py` fails the
-  build if a driver uses anything else (kernel headers, `kmalloc`, another
-  driver, extra sections). Driver code never touches kernel structs.
+- Drivers include only `<jam/driver.h>` (plus the generated IDL headers),
+  and `tools/checkdriver.py` fails the build if a driver uses anything else
+  (kernel headers, `kmalloc`, another driver, extra sections). Driver code
+  never touches kernel structs.
 - **Bring-up happens as a process.** A crashing process reports why and
   where (`process "x" killed: ... at rip ...`) and can't take the kernel
-  down; the process path enforces the full rules (the kernel-build glue
-  needed a review pass to match them); a stuck process can always be
-  killed. On the PC the M6 xHCI driver behaved identically both ways, so
-  kernel-first bought nothing.
+  down, and a stuck process can always be killed. Bringing a driver up in
+  the kernel first was tried and bought nothing
+  ([HISTORY.md](docs/HISTORY.md#lessons-that-keep-coming-back)).
 - **One build.** `<jam/driver.h>` has one implementation, over system
   calls (`user/lib/driver_user.c`), and every driver is a process that
-  devmgr starts and supervises. (A second build that ran a driver as a
-  *kernel process* was kept as an optional tool until the M7.5 cleanup
-  removed it: nothing used it once devmgr ran every driver as a process.)
+  devmgr starts and supervises.
 - What stays in the kernel **on purpose** is enforcement, not drivers:
   the PCI core (ECAM, BAR sizing, MSI/MSI-X programming, Bus Master
   Enable), vector allocation and interrupt objects, resources, DMA pins and
@@ -65,16 +64,18 @@ drivers in kernel then switching to userspace?").
 ## Layers
 
 ```
- Userland: init · shell · coreutils                            ring 3
- libos runtime (syscalls, malloc, channels, namespace, ELF loader)
+ Userland: init · shell · apps                                 ring 3
+ libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader)
  ─────────────────────────────────────────────────────────────
- Services (userspace processes from the start):
-   devmgr · fat32 · netstack (lwIP) · console · power
- Drivers: xHCI → USB HID / USB mass storage · NIC
+ Services (processes): devmgr · console · serialin
+   later: fat32 · netstack (lwIP) · power · audio mixer
+ Drivers (processes): usb-bus (xHCI + hubs) → hid
+   later: USB mass storage · NIC · HD Audio
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
-   scheduler · VMOs & address spaces · IRQ routing · uACPI
+   scheduler · VMOs & address spaces · PCI core · IRQ routing
    PMM · VMM · per-CPU · LAPIC/IOAPIC · timers · panic/klog
+   later: uACPI
  ─────────────────────────────────────────────────────────────
  struct boot_info  ←  Limine (later: own UEFI loader)
 ```
@@ -83,16 +84,18 @@ drivers in kernel then switching to userspace?").
 
 - `kernel/boot/limine.c` is the only file that includes `limine.h`. It fills
   `struct boot_info` (all physical addresses) and calls `kmain`.
-- Limine modules become **bootfs**, a read-only in-memory FS holding init and
-  the shell, so userspace starts before USB and FAT32 work. One module,
-  `bootfs.img` (`tools/mkbootfs.py`): a header, an entry table, each file on
-  its own pages. The kernel validates it as untrusted input at boot and
-  serves files as physical VMOs over the module's pages, without copying.
-- Order today (`kernel/main.c`): early console, PMM/VMM, heap, then on
-  the kernel's own stack: ACPI tables (MADT/MCFG/HPET), BSP LAPIC, TSC
-  calibration, BSP per-CPU, scheduler (the boot code becomes thread "main"),
-  IPIs, IOAPIC, LAPIC timer, AP startup, interrupts on. Later: uACPI, devmgr,
-  userboot → init.
+- Limine modules become **bootfs**, a read-only in-memory FS holding init,
+  the services, the drivers and the apps, so user space starts before
+  storage works. One module, `bootfs.img` (`tools/mkbootfs.py`): a header,
+  an entry table, each file on its own pages. The kernel validates it as
+  untrusted input at boot and serves files as physical VMOs over the
+  module's pages, without copying.
+- The order (`kernel/main.c`): early console, PMM/VMM, heap, bootfs, then
+  on the kernel's own stack: ACPI tables (MADT/MCFG/HPET), BSP LAPIC, TSC
+  calibration, BSP per-CPU, scheduler (the boot code becomes thread
+  "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
+  interrupts on, the PCI core and resources; then either the boot-time
+  tests (ktest, bench, stress) or userboot → init.
 
 ## Memory
 
@@ -102,41 +105,41 @@ drivers in kernel then switching to userspace?").
   holes stay unmapped (a buddy block never spans two chunks). Physical page 0
   is never handed out. An early bump allocator (top-down) builds the first
   page tables and the vmemmap.
-- **Per-CPU page stashes** (M5): the PC benchmark showed the global buddy lock
-  collapsing with 28 CPUs allocating at once (BENCH.md), so each CPU keeps up
+- **Per-CPU page stashes**: with 28 CPUs allocating at once a global buddy
+  lock collapses ([BENCH.md](docs/BENCH.md)), so each CPU keeps up
   to 64 free single pages, refilled and drained 16 at a time under one
   acquisition of the buddy lock. They hold the normal zone only (DMA32 when
   there is no memory above 4 GiB); DMA32 and multi-page requests go straight
   to the buddy lists. Stashed pages count as free in `pmm_stats`. Before an
   allocation fails, every stash is drained (stolen under its own lock, no
   IPIs, so it works with spinlocks held); below 8 MiB free the stashes are
-  bypassed. Details and races at the top of `pmm.c`.
+  bypassed. Details and races at the top of `kernel/mm/pmm.c`.
 - **Kernel stacks**: `kstack_alloc` (panics) / `kstack_alloc_try` (NULL) map a
   stack under a guard page in the vmap area; `kstack_free` unmaps it (TLB
   shootdown), frees the pages and keeps the virtual range for the next stack
   of the same size, so thread churn neither grows the vmap area nor strands
   page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
-  in) is reclaimed in M2, after the APs have started.
+  in) is reclaimed once every AP has started.
 - **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
   mapped per section (text RX, rodata R, data RW+NX), HHDM with 1 GiB/2 MiB
   pages for RAM only (write-back), framebuffer write-combining via PAT index 5.
   W^X holds for every alias of a page, including the HHDM view of the kernel
-  image (M4.5). All 256 kernel-half PDPTs are created up front so every
+  image. All 256 kernel-half PDPTs are created up front so every
   address space can share PML4 entries 256-511. Layout:
   `ffff800000000000` HHDM, `ffffc00000000000` vmemmap,
   `ffffd00000000000` vmap (kernel stacks with guard pages, MMIO),
   `ffffffff80000000` kernel image.
 - **Heap**: `kmem_cache` slabs (header on-slab, pages tagged `PG_SLAB`) with
   kmalloc classes 16-2048; larger requests take whole buddy blocks.
-  **Per-CPU magazines** (M5.5): each CPU keeps up to 16 free objects per
+  **Per-CPU magazines**: each CPU keeps up to 16 free objects per
   cache in front of the cache lock, refilled and drained 8 at a time, in the
   style of the page stashes (flag lock, interrupts off; order magazine ->
   cache -> pmm). A refill never creates a slab while a partial one exists,
   and `pmm_stats` drains every magazine first, so page counts (the ktest
   leak check) stay exact. An allocation that finds no page for a new slab
   drains every magazine and retries. Switch `heap_percpu`, boot
-  `nokmcache`. Details at the top of `heap.c`.
+  `nokmcache`. Details at the top of `kernel/mm/heap.c`.
 - **VMO** kinds:
   - *paged*: sparse 3-level page tree, pages committed on demand, up to 64 GiB;
   - *contiguous*: one buddy block, up to 4 MiB, committed at creation;
@@ -146,17 +149,18 @@ drivers in kernel then switching to userspace?").
   Guards: a pinned or kernel-mapped range can't be decommitted or cut off by
   a shrink (`ERR_BAD_STATE`); pins hold references on both the VMO and the
   `dma_cap`.
-- **VMAR** (M5): one flat address space per process, no nested VMARs. Maps
+- **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
   on the VMO handle. User mappings are tracked in a per-VMO reverse map, so
   decommit and shrink unmap the pages from every address space (pins, which
   are DMA, still block them). Lock order: address-space region lock (a
   sleeping mutex) above `vmo`, page-table lock (a spinlock) below it.
-- **DMA**: `vmo_pin` needs a `dma_cap`. IOMMU goes behind the same API later.
-- **TLB**: today every kernel unmap does a synchronous range shootdown to all
-  CPUs (a full flush above 64 pages). M5 adds per-address-space active-CPU
-  masks and batching ("gather": free pages only after the flush).
-- **PCIDs** (M5.5, `arch/x86_64/pcid.c`): each user address space has a
+- **DMA**: `vmo_pin` needs a `dma_cap`. The IOMMU goes behind the same API.
+- **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
+  full flush above 64 pages). User address spaces keep a mask of the CPUs
+  running them, so a shootdown interrupts only those, and a "gather" frees
+  pages only after the flush.
+- **PCIDs** (`kernel/arch/x86_64/pcid.c`): each user address space has a
   never-reused id and a TLB generation; each CPU has 8 PCID slots (PCID 0 is
   the kernel's tables) remembering which address space they hold and the
   generation they last flushed at. A load whose slot is current keeps the
@@ -173,9 +177,8 @@ drivers in kernel then switching to userspace?").
 
 - Per-CPU block through `GS`: current thread, preempt count, IRQ depth, held
   locks (for the checker), watchdog state, statistics. Run queues live in a
-  static array indexed by CPU. `swapgs` arrives with ring 3 in M5; NMI, #MC
-  and #DB will check GS themselves, since they can land in user mode or in
-  the `swapgs` window.
+  static array indexed by CPU. NMI, #MC and #DB check GS themselves, since
+  they can land in user mode or in the `swapgs` window.
 - **Ticket spinlocks** (`spin_lock_irqsave` where interrupt handlers also
   take the lock). Holding one disables preemption. A lock's *name* is its
   class for the lock-order checker (`kernel/debug/lockdep.c`), which records every
@@ -187,15 +190,15 @@ drivers in kernel then switching to userspace?").
   lockless fast path (edges and IRQ flags only ever get set, so only a new
   edge takes the graph lock); it tracks sleeping mutexes too.
 - IPIs: reschedule, cross-CPU calls (`smp_call_on/others/all`, which refuse
-  to run with interrupts off), TLB shootdown on every kernel unmap, and NMI
-  halt of all other CPUs on panic.
+  to run with interrupts off), TLB shootdown, and NMI halt of all other
+  CPUs on panic.
 - **Watchdog**: each CPU checks the next one's tick count once a second; a
   CPU stuck with interrupts off for 5 s gets an NMI and panics with its own
   registers and backtrace.
 - Log lines carry `[seconds.micros]` timestamps. The log lock is always taken
   with interrupts off, so interrupt handlers may log; hot handlers (the LAPIC
   error handler) just count instead.
-- **Serial output** (M5.5, `dev/serial.c`): klog copies into a 64 KiB
+- **Serial output** (`kernel/dev/serial.c`): klog copies into a 64 KiB
   transmit ring; COM1's IRQ 4 (through the I/O APIC, MADT overrides
   honoured) goes to CPU 0, whose handler refills the 16-byte FIFO. Writers
   kick it by enabling the transmit-empty interrupt; a full ring drops and
@@ -208,19 +211,17 @@ drivers in kernel then switching to userspace?").
   between and read another CPU's data. Preemptible code uses single
   GS-relative instructions (`current_thread()`, `preempt_disable/enable`);
   everything else calls `this_cpu()` only with preemption or interrupts off.
-  (The stress test found this: a thread saw another CPU's current thread and
-  "didn't own" its own mutex.)
 - A wakeup that lands before the thread has switched out just marks it
   running again (as Linux does); waiting for it to switch out could deadlock
   when the waker is an interrupt on that thread's own CPU.
 - Timekeeping: TSC measured against the HPET (then ACPI PM timer, CPUID 15h,
   loader estimate; all printed for comparison). LAPIC timer in TSC-deadline
-  mode where available, else (M5.5) in APIC one-shot count mode (QEMU's
+  mode where available, else in APIC one-shot count mode (QEMU's
   TCG); `nodeadline` forces the periodic fallback, which is calibrated as
   the median of 5 bracketed runs. In the one-shot modes each CPU's timer is
   re-armed after every interrupt for the earlier of its next 100 Hz tick
   (an absolute TSC deadline, no drift) and its earliest sleeper (per-CPU
-  one-shot timers, see Scheduler). Tickless idle later.
+  one-shot timers, see Scheduler). Tickless idle is not built yet.
 - APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
   prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
   stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
@@ -234,8 +235,9 @@ drivers in kernel then switching to userspace?").
 
 - Every object embeds a `kobject`: type, refcount, handle count, signal bits,
   observers (waiters and port bindings). The last reference is dropped
-  through an iterative teardown (a per-CPU pending list in `object.c`), so
-  destroying a channel full of channels never recurses.
+  through an iterative teardown (a per-CPU pending list in
+  `kernel/object/object.c`), so destroying a channel full of channels never
+  recurses.
 - Per-process handle table, 65,536 slots. A handle value is
   `(slot + 1) << 15 | generation` (17 + 15 bits; 0 is never valid); freed
   slots are reused FIFO so a stale value takes a long time to come back.
@@ -245,11 +247,11 @@ drivers in kernel then switching to userspace?").
 - Sending handles uses **in-transit slots**: `handle_take` reserves the slot,
   then `handle_commit` (sent) or `handle_untake` (put back under the same
   value). A failed send never loses a handle.
-- Types today: `channel port event timer vmo dma_cap vmar process thread
-  job`; M6 adds `interrupt resource`.
-- **Processes** (M5, `object/process.c`): a handle table, an address space,
-  a job and user threads (`thread` objects wrapping scheduler threads).
-  NEW (the parent maps the program, makes a thread) → RUNNING
+- Types (`kernel/include/jam/object.h`): `event timer channel port vmo
+  dma_cap process thread interrupt resource vmar job klog serial screen`.
+- **Processes** (`kernel/object/process.c`): a handle table, an address
+  space, a job and user threads (`thread` objects wrapping scheduler
+  threads). NEW (the parent maps the program, makes a thread) → RUNNING
   (`process_start` moves the startup channel into the child) → DYING →
   DEAD (`SIG_TERMINATED`). **Kill** (`process_kill`, `process_exit`, a
   fatal fault, or the last thread leaving): every thread is cancelled
@@ -265,15 +267,14 @@ drivers in kernel then switching to userspace?").
   untouched. `debug_write` builds lines under a per-process spinlock but
   prints them with no lock held, 100 lines at once then 50/s per process
   (the rest are dropped and counted).
-- `resource` is the root of hardware authority (MMIO ranges, IRQs). init
-  holds the root, passes slices to devmgr, which gives each driver only its
-  own BARs and IRQ.
-- **Jobs** (M5, `object/job.c`): every process belongs to a job; jobs form
+- `resource` is the root of hardware authority (MMIO ranges, PCI devices).
+  Userboot hands init the root; init passes a PCI slice to devmgr, which
+  gives each driver only its own device, BARs and interrupt.
+- **Jobs** (`kernel/object/job.c`): every process belongs to a job; jobs form
   a tree at most 32 deep (`JOB_MAX_DEPTH`; deeper `job_create` fails
   `ERR_OUT_OF_RANGE`), so a charge walks at most 32 levels. Four counters,
   each with an optional limit, and between them every piece of kernel
-  memory user code can make the kernel hold is charged to some job (the
-  M5 review, R1-R3 and R6):
+  memory user code can make the kernel hold is charged to some job:
   - **pages**: committed VMO pages and the VMO's own mid/leaf table pages
     (the job of the process that created the VMO; a commit is charged
     before any table is built for it, so a refused one builds nothing); a
@@ -323,57 +324,59 @@ drivers in kernel then switching to userspace?").
   txid) match. The kernel stamps the txid; only the calling thread gets the
   reply; a reply arriving after a timeout stays queued as a normal message;
   closing your own endpoint mid-call returns `ERR_CANCELED`; calling on a
-  closed endpoint returns `ERR_BAD_STATE`. Handing the CPU straight to the
-  server thread (wake-affine placement) is not built yet: M5, before services
-  are built on it.
+  closed endpoint returns `ERR_BAD_STATE`. The request hands the server
+  the caller's CPU (wake-affine, see [Scheduler](#scheduler)).
 - **Port**: bind many handles and wait on all of them; matching signals queue
   packets. `ONCE` bindings fire once; `PERSISTENT` ones stay and coalesce
   into one queued packet with a count. Limits: 4096 user packets, 4096
   bindings per port; ports can't be bound to ports. The lock rank is
-  documented in `port.h`. From M6, **IRQs are port packets**, the same
-  in-kernel and in userspace.
+  documented in `kernel/include/jam/port.h`. **Interrupts are port
+  packets**: a driver binds its interrupt object `PERSISTENT` to a port.
 - **`object_wait_one`** for simple waits.
-- **Protocols** are written in a small IDL, turned into C structs and stubs by
-  a Python generator: `block netdev hid fs console power devmgr socket usb-bus`.
-  Bulk data (disk blocks, packets, file contents) moves through a shared VMO
-  ring; messages carry offsets. From M7 every protocol defines how a client
-  reconnects after `PEER_CLOSED` (the server restarted).
+- **Protocols** are written in a small IDL (`abi/idl/*.idl`), turned into C
+  structs, client stubs and server dispatch by `tools/genidl.py`
+  (`drivers/include/idl/`). Today: `null` and `edu` (tests), `usbbus` and
+  `usb` (usb-bus to devmgr and to class drivers), `input` and `console`.
+  Planned: `block`, `fs`, `netdev`, `socket`, `power`, `audio`. Bulk data
+  (disk blocks, packets, file contents) moves through a shared VMO ring;
+  messages carry offsets. Every protocol defines how a client reconnects
+  after `PEER_CLOSED` (the server restarted).
 
 ## Scheduler
 
 - Per-CPU run queues, 32 priority levels (31 most urgent), round-robin
   within a level, 20 ms slices on the 100 Hz tick.
-- Placement (M5.5 hybrid order): an idle P-core whose HT sibling is idle too
+- **Placement** (hybrid order): an idle P-core whose HT sibling is idle too
   > an idle E-core > the idle HT sibling of a busy P-core > least loaded
-  (ties to P-cores, then the thread's last CPU, the M5 rule); within the
+  (ties to P-cores, then the thread's last CPU); within the
   idle classes the last CPU wins. Without hybrid cores it is "whole idle
   core > idle sibling > busy". Placement reads only the CPUs a thread may
   use, from a read-mostly topology table (sibling, core type) and each run
   queue's own line (`nr_ready`, `busy`, `cur_prio`), never another CPU's
-  `struct cpu` (M5.5: that scan was the M5 cross-CPU regression). Idle CPUs
-  steal the best waiting thread from busy ones (two run queue locks, always
-  lower CPU index first). 256-bit affinity masks; `thread_create_on` sets
-  the mask before the thread first runs. Switch `sched_place_order`, boot
-  `noplaceorder`.
+  `struct cpu`: scanning every CPU's struct costs ~2 x 28 cache-line reads
+  per call round trip. Idle CPUs steal the best waiting thread from busy
+  ones (two run queue locks, always lower CPU index first). 256-bit
+  affinity masks; `thread_create_on` sets the mask before the thread first
+  runs. Switch `sched_place_order`, boot `noplaceorder`.
 - **Anti-starvation**: once a second each CPU boosts threads that have waited
   over 1 s to priority 30 for one slice. Priority 31 is above the boost, so
   real-time threads can still starve others by design. Each thread has a
   priority ceiling (`thread_create_capped`, `thread_set_priority_cap`;
   `PRIO_MAX` for kernel threads); user threads start at 16
   with ceiling `PRIO_USER_MAX` = 24; `thread_set_priority` above it fails
-  with `ERR_ACCESS_DENIED` (a capability may allow more later) (M5).
-- **Wake-affine hand-off** (M5): a waker that is about to block for the
+  with `ERR_ACCESS_DENIED` (a capability may allow more later).
+- **Wake-affine hand-off**: a waker that is about to block for the
   thread it wakes (`thread_wake_sync`, or `thread_set_wake_sync` around a
   send whose wakeup happens inside an observer) places it on its own CPU if
   allowed and nothing else is queued there, else on its idle HT sibling,
   else as usual. `channel_call` uses it for the request, and a server's
   reply uses it when nothing else is queued for the server.
-- **Client/server pairs** (M5.5): every wake from thread context records
+- **Client/server pairs**: every wake from thread context records
   the waker in the wakee; two threads that each woke the other twice
   running are a pair, and a plain wake (the waker keeps running) puts the
   wakee on the waker's idle HT sibling, so the pair shares a core. E-cores
   have no sibling. Switch `sched_affine_pair`, boot `noaffinepair`.
-- **Spin before idle** (M5.5): an idle CPU polls its run queue and
+- **Spin before idle**: an idle CPU polls its run queue and
   `need_resched` for 10 us (pause, interrupts on) before `hlt`, advertising
   it in `cpu->idle_polling` so `sched_kick` skips the IPI; a Dekker
   handshake (clear flag, fence, recheck / set need_resched, fence, read
@@ -389,19 +392,20 @@ drivers in kernel then switching to userspace?").
   covers a thread being woken while it is still switching out.
 - Kernel threads: `thread_create/exit/join/yield/sleep`, `thread_block(lock,
   deadline)`, wait queues with a condition-variable style
-  `waitqueue_wait(wq, lock)`, sleeping mutexes. Up to 256 exited threads'
-  stacks are cached for reuse; stacks beyond that are freed (by the next
-  thread creation or exit, since the reaper runs with interrupts off and
-  can't shoot down TLBs). **Sleepers** (every wait with a deadline, and so
-  the timer-object service) go on a deadline-ordered queue of the CPU they
-  block on, whose LAPIC timer is armed for its head (M5.5; M5 woke them from
-  CPU 0's tick, 10 ms resolution). Only the owning CPU adds and arms;
-  removal from anywhere under that queue's lock. Switch `lapic_oneshot`,
-  boot `nooneshot` (then each CPU's tick expires its own queue).
-- User FPU state (M5.5): XSAVEOPT where available, and no XRSTOR when the
+  `waitqueue_wait(wq, lock)`, sleeping mutexes (a waiter that has waited
+  1 ms gets the mutex handed to it, so none starves). Up to 256 exited
+  threads' stacks are cached for reuse; stacks beyond that are freed (by
+  the next thread creation or exit, since the reaper runs with interrupts
+  off and can't shoot down TLBs). **Sleepers** (every wait with a
+  deadline, and so the timer-object service) go on a deadline-ordered
+  queue of the CPU they block on, whose LAPIC timer is armed for its head.
+  Only the owning CPU adds and arms; removal from anywhere under that
+  queue's lock. Switch `lapic_oneshot`, boot `nooneshot` (then each CPU's
+  tick expires its own queue, 10 ms resolution).
+- User FPU state: XSAVEOPT where available, and no XRSTOR when the
   CPU's registers still hold the incoming thread's state (last restored
   here, not restored elsewhere since). Switch `fpu_opt`, boot `nofpuopt`.
-- **Cancellable waits** (M4.5): `thread_cancel(t)` sets a per-thread flag for
+- **Cancellable waits**: `thread_cancel(t)` sets a per-thread flag for
   good and wakes t. The cancellable waits (`thread_block_cancellable`,
   `waitqueue_wait_cancellable`, `thread_sleep_cancellable`,
   `mutex_lock_cancellable`, and through them `object_wait_one`, `port_wait`
@@ -409,45 +413,36 @@ drivers in kernel then switching to userspace?").
   wakeup. A wait that is also satisfied still succeeds, and a cancelled
   port/mutex waiter passes its wakeup on. The waiter moves itself
   BLOCKED -> RUNNING by CAS, and `thread_wake` does the same on its on-CPU
-  path, so neither can overwrite a state the other set. M5 uses this to
-  kill a process blocked in `channel_call` on a hung server.
-- To do, by milestone (scheduled 2026-09-29):
-  - M5 (done in phase 2): `channel_call` wake-affine placement; stack
-    cache pages beyond 256 go back to the allocator; `kstack_alloc_try`
-    for thread creation that can fail.
-  - M5.5 (built in QEMU 2026-09-29, PC run pending): hybrid placement
-    order; client/server pairs on sibling hyperthreads; spin before `hlt`;
-    per-CPU one-shot timers; interrupt-driven serial output; the M5
-    cross-CPU placement regression fixed. Every one has a run-time switch
-    and a boot word to turn it off, and the benchmark measures its lines
-    both ways in one run (BENCH.md).
-  - M10: tickless idle (a power feature, with ACPI power management).
-  - Not scheduled: `sched_ops` (a pluggable scheduler interface), until a
-    second scheduling policy is actually needed.
+  path, so neither can overwrite a state the other set. Killing a process
+  blocked in `channel_call` on a hung server relies on this.
+- Every optimisation above that has a switch can be turned off at boot, and
+  the benchmark measures its lines both ways in one run
+  ([BENCH.md](docs/BENCH.md)).
 
 ## Drivers and services
 
-| Component | Uses | Provides |
-|---|---|---|
-| devmgr | root resource, uACPI | PCIe enumeration (ECAM/MCFG), driver binding, BAR/IRQ(MSI-X)/DMA handoff |
-| xHCI | PCI resources | `usb-bus` |
-| USB HID | usb-bus | `hid` → keyboard layer |
-| USB mass storage (BOT, later UAS) | usb-bus | `block` |
-| fat32 | `block` | `fs` (FAT32 + LFN, read/write) |
-| NIC: Realtek RTL8125 2.5 GbE | PCI resources (MSI-X, DMA rings) | `netdev` |
-| netstack | lwIP + `netdev` | `socket` |
-| power | uACPI | shutdown, reboot, power button, later S3 |
-| console | framebuffer VMO + `hid` | text terminal |
+| Component | Uses | Provides | Built |
+|---|---|---|---|
+| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
+| hid | a `usb` interface | `input` events (boot keyboard and mouse, keyboard layout) to the console | yes |
+| console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
+| serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
+| USB mass storage (BOT, later UAS) | `usb` | `block` | no |
+| fat32 | `block` | `fs` (FAT32 + LFN, read/write) | no |
+| NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
+| netstack | lwIP + `netdev` | `socket` | no |
+| power | uACPI | shutdown, reboot, power button, later S3 | no |
 
-uACPI stays in the kernel permanently; everything else moves out.
+uACPI will live in the kernel; everything else is a process.
 
 Rules for userspace drivers:
 
-- devmgr programs MSI/MSI-X itself. A driver never gets raw ECAM access, and
-  its BAR mapping never includes the MSI-X table page.
+- The kernel's PCI core programs MSI/MSI-X. A driver never gets raw ECAM
+  access, and its BAR mapping never includes the MSI-X table page.
 - A `dma_cap` is bound to one device (PCI bus/device/function). `vmo_pin`
-  returns *device addresses* (physical today, IOMMU addresses after M11).
-- **Safe rebind (M7)**: the newest `dma_cap` of a function is its *current*
+  returns *device addresses* (physical until the IOMMU arrives).
+- **Safe rebind**: the newest `dma_cap` of a function is its *current*
   one; making it turns Bus Master Enable off, and only it turns it back on
   (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
   after quiescing its device (reset it, or see its DMA engine idle), so a
@@ -458,8 +453,8 @@ Rules for userspace drivers:
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
   until 1 s after the function's next driver turned bus mastering on, or
   30 s if none does; a page the device wrote meanwhile is logged.
-- MSI/MSI-X and MMIO only: no port I/O for userspace drivers.
-- **Supervision (M7)**: devmgr restarts a driver process that dies
+- MSI/MSI-X and MMIO only: no port I/O and no INTx for userspace drivers.
+- **Supervision**: devmgr restarts a driver process that dies
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the
   driver is finished): backoff 100 ms, doubling per restart within the
   last 60 s up to 5 s; the 6th death within 60 s gives up (log + RESULTS
@@ -475,102 +470,111 @@ Rules for userspace drivers:
   serve, and calls on it wait for the new driver. Drivers keep no state
   across a restart; each protocol's IDL says what a client must set up
   again (`input` and `console` define theirs).
+- **Authority**: devmgr has two channels, a query channel (look things up)
+  and a control channel (change bindings); console clients have a level
+  (ADMIN, SHELL, PROGRAM), and a program started from the shell gets a
+  PROGRAM channel and nothing of devmgr's.
+
+## Networking
+
+Not built yet; these rules bind every future path that can transmit.
+
+- The NIC is the board's own RTL8125 ([HARDWARE.md](docs/HARDWARE.md#other-devices)),
+  driven natively (references: Linux `r8169`, FreeBSD `re`; check whether
+  this revision needs Realtek's PHY firmware patch). No USB adapter; the
+  Wi-Fi is not planned.
+- **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
+  and nothing is ever sent untagged or on another VLAN** (the owner's
+  network must not see Jam OS traffic elsewhere). The VLAN is set in one
+  place (boot word `vlan=`, default 21) and added to every outgoing frame
+  (ARP and DHCP included) below the IP stack. Incoming untagged or
+  other-VLAN frames are dropped. With no VLAN configured the NIC stays
+  down (fail closed).
+- This covers every path that can transmit: the NIC driver, netlog,
+  `update`, and a crash kernel if it ever gets networking. A change that
+  could transmit comes with a test proving an untagged frame can't leave.
 
 ## Userland
 
-- **libos**: startup, syscall wrappers, malloc, printf, channel/port helpers,
-  IDL stubs, the ELF loader.
-- **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel starts
-  init from bootfs (on a plain boot or `init` on the command line) under a
-  root job, waits for it and reports its exit code and whether the root job
-  ended with nothing charged. Everything after that is loaded by libos
-  (`spawn()`, the same rules through ordinary syscalls); the kernel only
-  provides "create process, map, start at entry with stack". Text and
-  rodata map the bootfs pages directly (never writable: those pages are not
-  write-protected); writable data is copied into a fresh VMO, bss is zero;
-  the stack has a no-access guard page below it.
+- **libos** (`user/lib/`): startup, syscall wrappers, malloc, printf,
+  channel/port helpers, `spawn()`, threads, the ELF loader, and the
+  implementation of `<jam/driver.h>`. **libfun** (`user/apps/fun/`): the
+  apps' screen, drawing, keys and thread pool.
+- **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
+  starts init from bootfs under a root job, waits for it and reports its
+  exit code and whether the root job ended with nothing charged.
+  Everything after that is loaded by libos (`spawn()`, the same rules
+  through ordinary syscalls); the kernel only provides "create process,
+  map, start at entry with stack". Text and rodata map the bootfs pages
+  directly (never writable: those pages are not write-protected); writable
+  data is copied into a fresh VMO, bss is zero; the stack has a no-access
+  guard page below it.
 - **Startup message**: every process starts with one channel message holding
-  argv, environment, and handles by role: SELF_PROCESS, SELF_VMAR,
-  SELF_THREAD, JOB, BOOTFS (read/map/exec, never write) and program-specific
-  ones (SR_USER + n); later namespace entries and stdio. M5 programs print
-  with the `debug_write` syscall (lines prefixed `[process-name]` in the
+  argv, environment, and handles by role (`kernel/include/jam/startup.h`):
+  SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
+  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE and program-specific
+  ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
+  one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
-- **Namespace**: each process gets a table of path → channel handle (`/boot`,
-  `/data`, `/svc/net`, `/dev/console`). No global kernel VFS. A future POSIX
+- **init** holds the root capabilities and starts services with only the
+  handles they need: on a plain boot the console, serialin, devmgr and the
+  shell, restarting any that die (killing devmgr takes its drivers with its
+  job); for the regression run the programs in `boot/init.cfg`.
+- **Namespace** (not built yet beyond the shell's mount table): each
+  process gets a table of path → channel handle (`/boot`, `/data`,
+  `/svc/net`, `/dev/console`). No global kernel VFS. A future POSIX
   `open()` is built on this. Namespaces are the only permission system.
-- **init**: holds root capabilities, reads `/boot/init.cfg`, starts services
-  with only the handles they need.
-- **Shell**: processes, pipes over channels; built-ins `ls cat cp rm mkdir ps
-  kill mem ifconfig ping reboot poweroff`. **Today (`user/services/shell/`):**
-  main.c is the console I/O, the line editor and history; sh_parse.c
-  splits a line (`; && || |`, quotes), sh_vars.c holds variables ($NAME,
-  export -> the environment of `run`) and aliases, sh_exec.c runs a line
-  (pipes: stages run in turn, each one's output captured in memory as the
-  next one's input, by sh_io.c; a program in a pipe gets an SR_STDOUT
-  channel that libos printf writes to), sh_table.c is the one command table
-  (with help), sh_complete.c Tab completion, sh_vfs.c a mount table with
-  /boot = bootfs (M8 adds /data there); `cmd/<name>.c` is one file per
-  command, ~60 of them (uname date lscpu free ps top dmesg ls cat grep sort
-  ...), with shared helpers in named sh_*.c files. System info comes
-  from syscalls 130-133 (sys_info, cpu_stat, proc_list, rtc_read; RIGHT_READ
-  on the root); CPU time is counted per thread/CPU at every switch. From M7 the kernel tests are shell
-  commands too (`ktest`, `stress 600`), so a test run no longer needs a
+- **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
+  editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
+  `sh_vars.c` holds variables ($NAME, export -> the environment of `run`)
+  and aliases, `sh_exec.c` runs a line (pipes: stages run in turn, each
+  one's output captured in memory as the next one's input, by `sh_io.c`; a
+  program in a pipe gets an SR_STDOUT channel), `sh_table.c` is the one
+  command table (with help), `sh_complete.c` Tab completion, `sh_vfs.c` a
+  mount table with /boot = bootfs; `cmd/<name>.c` is one file per command.
+  System information comes from dedicated syscalls (`sys_info`,
+  `cpu_stat`, `proc_list`, `rtc_read`; `RIGHT_READ` on the root resource);
+  CPU time is counted per thread and CPU at every switch. The kernel tests
+  are shell commands too (`ktest`, `stress 600`), so a test run needs no
   reboot; rebooting is only for loading a new kernel from the stick.
-- **Executables**: static ELF64; no `fork`.
+- **Executables**: static ELF64 at 0x400000; no `fork`.
 
-## Graphics (future track, after M12)
+## Graphics
 
-Not a goal yet ("text console first"); decided 2026-09-29 so earlier
-milestones don't close doors. The monitor is on the RTX 4080 SUPER.
-- **G1: compositor on the firmware framebuffer.** The GOP framebuffer the
-  RTX gives at boot (fixed mode, no vsync) is the display. A compositor
-  process owns the framebuffer VMO; apps draw into their own surface VMOs
-  and send damage rectangles over a channel; input from the M7 HID driver
-  goes to the compositor, which routes it to the focused client. All
-  rendering is software (28 cores + AVX are plenty for 2D at 2560x1440).
-- **G2: toolkit, fonts, GUI apps** (TrueType rasterizer, small UI toolkit).
-- **G3: mode setting / vsync only through the Intel iGPU** (UHD 770 in the
-  i7-14700, documented by Intel), which needs a monitor on the
-  motherboard's output and the iGPU enabled in the BIOS. The RTX (NVIDIA
-  GSP firmware, no practical open path) stays a plain framebuffer.
-- **G4: 3D** only as a stretch: a multi-core software rasterizer, or
-  virtio-gpu under QEMU.
-Constraints on earlier milestones: the kernel always takes the framebuffer
-back on a panic, even from a compositor; M7's HID driver handles a mouse
-as well as a keyboard and sends events through a protocol a compositor
-can take over; M11's IOMMU matters most for GPUs.
+Text console first; these choices keep later graphics possible. The
+monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 
-## Audio (track; user 2026-09-29: right after M8)
+- The display is the firmware (GOP) framebuffer: fixed mode, no vsync. The
+  console owns it and can lend it to one program (`console.lend_screen`),
+  which is how the apps draw real pixels; the kernel takes it back on a
+  panic, from anyone.
+- A future compositor process owns the framebuffer VMO; apps draw into
+  their own surface VMOs and send damage rectangles over a channel; input
+  goes to the compositor, which routes it to the focused client. Rendering
+  is in software (28 cores and AVX are plenty for 2D at 2560x1440).
+- Mode setting and vsync only through the Intel iGPU (documented by
+  Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
+  plain framebuffer. The IOMMU matters most for GPUs.
+- The HID driver handles a mouse as well as a keyboard and sends events
+  through a protocol a compositor can take over.
 
-Decided 2026-09-29: the user listens on **headphones in the case's front
-panel jack**. That jack hangs off the motherboard's **Intel HD Audio
-controller (00:1f.3, 8086:7a50, MSI)** and its Realtek codec (the ASUS
-TUF B760-PLUS WIFI uses an ALC897-class codec; confirm the vendor/device
-id on the PC). A separate track like graphics: it needs only M6 (PCI, MSI,
-DMA, drivers as processes) and M7 (a shell to start it); the user wants it
-right after M8 (so A2's WAV playback from /data works straight away).
+## Audio
 
-- **A1: HD Audio driver + `beep`.** Controller reset, CORB/RIRB command
-  rings, codec enumeration (vendor id, the widget graph: pin complexes,
-  mixers, DACs, amplifiers), find the front-panel headphone pin (default
-  configuration "front, headphone out"; jack detect via unsolicited
-  responses), route a DAC to it, unmute and set gains, one output stream
-  with a Buffer Descriptor List in a pinned DMA32 VMO, MSI on buffer
-  completion. Done: `beep` in the shell plays a tone in the headphones on
-  the real PC; unplugging/replugging the headphones is logged.
-- **A2: `audio` protocol + mixer service.** Programs open a stream (rate,
-  format), write samples through a shared VMO ring; a mixer process mixes
-  streams and owns the device; volume from the shell. Done: two programs
-  play at once. WAV playback from `/data` once M8 exists.
-- **A3 (later):** input (the front mic jack), HDMI/DP audio on the RTX
-  (01:00.1, 10de:22bb), USB audio class devices on M7's usb-bus.
+Not built yet. The owner listens on headphones in the case's front-panel
+jack, which hangs off the board's Intel HD Audio controller and its
+Realtek codec ([HARDWARE.md](docs/HARDWARE.md#other-devices)). The driver is
+a process like any other (PCI, MSI, DMA through a pinned DMA32 buffer). A
+mixer service owns the device; programs open streams and write samples
+through a shared VMO ring.
 
 ## Storage
 
+Not built yet.
+
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
-  bootfs modules), which Jam OS never writes, and a **data partition**
-  mounted at `/data` for everything writable. A bug in the FAT32 writer can't
-  make the stick unbootable.
+  bootfs), which Jam OS never writes, and a **data partition** mounted at
+  `/data` for everything writable. A bug in the FAT32 writer can't make the
+  stick unbootable.
 - Write ordering: file data, then both FATs, then the directory entry.
 - The FAT "clean shutdown" bit is cleared while mounted and set on unmount;
   a dirty volume is checked on mount. `sync` and unmount send SCSI
@@ -580,57 +584,23 @@ right after M8 (so A2's WAV playback from /data works straight away).
 
 ## Debugging
 
-- Framebuffer klog from the first instruction, 64 KiB ring buffer (later
-  readable via `klog_read`). COM1 too when present (QEMU).
+- Framebuffer klog from the first instruction, 64 KiB ring buffer, readable
+  from user space through a klog reader handle (the console follows it).
+  COM1 too when present.
 - Panic screen: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, and the log tail. Symbols come from a
   two-pass link: `.ksyms` is the last section, so filling it in moves nothing
   (checked by `tools/gensyms.py verify`). #DF, NMI and #MC run on IST stacks.
   The other CPUs are halted by NMI first.
-- **ktest**: `KTEST(name)` registers a test in the `.ktests` section. Boot
-  with `ktest` (all) or `ktest=prefix`. Each test fails if it leaks more
-  than 2 pages; the run reports how many lock classes are in use.
-  `make KTESTS=0` builds a kernel without the tests or the DBG_HOOKs.
-- **DBG_HOOK** injection points (`dbghook.h`) let race regression tests stop
-  a thread at an exact line (the lost-wakeup and teardown races each have
-  one).
-- `tools/qemu-test.sh` boots any kernel command line headless
-  (`QEMU_SMP`, `QEMU_MEM`, `QEMU_CPU`, `QEMU_TIMEOUT`) and saves the serial
-  log and a screenshot (`QEMU_INPUT` types a script into the shell over
-  serial, `QEMU_USB`/`QEMU_MONITOR` add USB devices and send keys). The
-  boot menu is just **Jam OS**, **safe mode** (`nousb`)
-  and a **Tests** folder (All tests, 2- and 10-minute stress, Benchmark,
-  init + utest + usbtest, timer fallback); everything else is a shell
-  command (`ktest`, `bench`, `stress`, `utest`, `usbtest`, `pci`, `memmap`,
-  `demo`, and the crash tests that must panic as `crash <name> yes`) or a
-  hidden boot word (`pcilist`, `keytest`, `memmap`, `selftest`,
-  `test<name>`).
-- QEMU mirrors the PC: q35, OVMF, xHCI USB boot, e1000e (`make run`), gdb
-  stub (`make debug`).
+- **ktest**: `KTEST(name)` registers a test in the `.ktests` section, run
+  at boot (`ktest`, `ktest=prefix`) or from the shell. Each test fails if
+  it leaks more than 2 pages; the run reports how many lock classes are in
+  use. `make KTESTS=0` builds a kernel without the tests or the DBG_HOOKs.
+- **DBG_HOOK** injection points (`kernel/include/jam/dbghook.h`) let race
+  regression tests stop a thread at an exact line.
+- The RESULTS box: every run ends with a box of the lines that matter
+  (`report()`, `debug_report`), so a PC run can be read from one photo.
 - Per-CPU watchdog heartbeat: a stuck core turns into a panic screen.
-
-## Milestones
-
-| # | Milestone | Done when |
-|---|---|---|
-| **M0** ✅ | Toolchain, QEMU q35/OVMF, USB image, framebuffer console, panic screen | booted on the real PC 2026-09-28 |
-| **M1** ✅ | PMM, VMM, heap, GDT/TSS/IDT, full panic screen with symbols | all tests passed on the real PC 2026-09-28 |
-| **M2** ✅ | ACPI tables, LAPIC (x2APIC + xAPIC), IOAPIC/PIC masked, TSC + APIC timers, all cores, P/E topology, loader memory reclaimed | real PC 2026-09-28: 28 CPUs (16 P-threads + 12 E-cores, HT on), all exactly 100 ticks, TSC-deadline |
-| **M3** ✅ | Scheduler, kernel threads, ticket locks + lock-order checker, IPIs, TLB shootdown, watchdog, stress test | real PC 2026-09-28: 10-min stress passed (112 threads, 28 CPUs, lock checking on), after fixing an IRQ race in the checker found by the first run at 230 s |
-| **M4** ✅ | Objects, handles, channels, ports, events, timers, VMOs, handle-level `sys_` API; two-agent audit, 20 fixes | QEMU 64/64 ktests at 4 and 8 CPUs; real PC 2026-09-28 (channels + ports): 1 server + 27 clients, 492,673 calls/s, worst 67 us; the final audited build passed on the PC as part of the M4.5 run |
-| **M4.5** ✅ | Hardening: W^X on the HHDM alias, received-handle and signal gaps, channel "has room" signal, lock checker scaling, cancellable waits, new tests, stale docs | QEMU 2026-09-29: 78/78 ktests at 4 and 8 CPUs, stress and all crash tests pass. Real PC 2026-09-29: 78/78, 1 server + 27 clients 836,077 calls/s (M4: 492,673), worst 37 us (M4: 67), nested lock pair 48 ns on 28 CPUs at once; 10-min stress passed, 0 failures |
-| **M5** ✅ | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic. **QEMU 2026-09-29 (phase 2 branch): all three, 115/115 ktests, utest 12/12 under init, stress with user processes, crash tests, at 4 and 8 CPUs. Review fix pass: every kernel allocation a process can cause is charged to a job, RIGHT_MANAGE, depth cap, job_kill; 131/131 ktests, utest 14/14. PC 2026-09-29: init+utest 14/14 (root job clean), All tests 131/131, benchmark recorded (BENCH.md M5 column), 10-min stress sign-off passed with 0 failures** |
-| **M5.5** ✅ | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers, interrupt-driven serial output; investigate the two things the M5 PC benchmark flagged (process->process channel_call costs ~870 ns more than the kernel-thread version; pinned cross-CPU channel_call got 8-11% slower) | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass. **QEMU 2026-09-29 (M5.5 branch): all items built with run-time switches (bench measures off/on in one run); the regression was the wake-affine sibling scan (fixed); XSAVEOPT + skipped restores added; 134/134 ktests, init+utest, stress=20, all crash tests at 4 and 8 CPUs and with each switch off. PCIDs and TSC-deadline one-shots only run on the PC (TCG has neither): PC run next** PC 2026-09-29: All tests 143 (first real PCID run), benchmark (BENCH.md M5.5: cross-CPU wakeups 2-2.4x faster, kmalloc 4.3x / ~800x on 28 CPUs, timers 350 ns late instead of up to 10 ms, the M5 cross-CPU regression gone; PCIDs only 2%), 2-min stress; review fixes (deadline wrap, spin-idle IPI, mutex hand-off after 1 ms); signed off by the M6 10-min stress, 0 failures |
-| **M6** ✅ | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process **PC 2026-09-29: Devices lists all 24 functions (RTX untouched); the done test passed: the Intel xHCI 8086:7a60 (MSI-only) completed No-Op commands via a real MSI, as a kernel process and as a user process (median 46 us, IMOD 40 us); devmgr binds it as a process on every boot; All tests 201/201, utest 19/19, drivers=kernel; 10-min stress sign-off 0 failures. PC-only bugs fixed on the way: QEMU-only test devices, a BAR neighbour check, the VMD's 64-bit BAR with a hard-wired upper half (sized to ~2^64). Two independent reviews; stale DMA after a rebind moved to M7 Track D** |
-| **M7** ✅ | xHCI (8086:7A60) → hub driver (the PC has an ASMedia USB 3 hub) → HID (keyboard + mouse; composite devices: find the boot interfaces) → console → interactive shell (each a process from the start); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell **PC 2026-09-29: usb-bus enumerated all 8 devices (keyboard 0c45:652f, mouse 258a:0033, ASMedia hub, the boot stick behind it, RGB controllers) first time; typing into the shell with the real keyboard; `kill hid-10:0` recovers; `kill devmgr` recovers (init supervises it); hot-plug; reboot + Ctrl+Alt+Del; everyday shell commands with pipes; apps (fractal, tetris, life) and `demo` borrowing the screen; 10-min stress (from the shell, with the whole user space running) passed, 0 failures. Every driver and service is a process. Two reviews (M7, and phase 2) plus an authority pass (devmgr query/control channels, console client levels)** |
-| M7.5 | Cleanup, no behaviour change (CLEANUP-PLAN.md): the kernel build of drivers and its scaffolding removed; the shell's one command table, one file per command; usb-bus's enumeration split into files and steps; the kernel split by subsystem (sched, proc, debug), tests named by subject; user programs by role (services, apps, tests) on libos + libfun; CODING-GUIDE.md; `-Wvla`, `-Wframe-larger-than` | same commands, output, boot menu, ktest names, syscalls and IDL; every QEMU test passes (2026-09-30); PC round pending (All tests, 2-min stress) |
-| M8 | USB mass storage → FAT32 (processes), read-only ESP + writable data partition; every boot's log saved as `/data/logs/boot-NNNN.txt` | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test; a PC run's log can be read on the Mac from the stick |
-| M8.5 | Crash kernel (the Linux kdump approach): at boot reserve a slice of RAM and load a second Jam OS into it; on a panic, after the panic screen and halting the other CPUs, jump into it (kexec: its own `struct boot_info` saying only that slice is RAM, no firmware reset). It boots on one CPU with the normal drivers, resets each controller before use, reads the crashed kernel's log ring from memory, saves it as `/data/logs/boot-NNNN-crash.txt`, and reboots. The same kexec gives `reboot` a fast path: load the new `jamos.elf` + `bootfs.img` from the stick, stop the other CPUs, reset devices (stop DMA and interrupts), jump; this needs the kernel's own AP startup (INIT-SIPI-SIPI + trampoline, also needed for M12's own loader) so all 28 CPUs come back without Limine. pstore (log ring in RAM kept across a warm reset) only as an optional fallback for panics before the crash kernel is loaded | a deliberate panic on the real PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
-| M9 | RTL8125 NIC driver → lwIP → DHCP/DNS (processes), all traffic on VLAN 21 only (see Networking); netlog: klog streamed over UDP to a listener on the Mac; `update`: fetch a new kernel + bootfs from a small server on the Mac and kexec into it | `ping 1.1.1.1` on the real PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
-| M10 | uACPI poweroff, power button, ACPI reboot (stays in the kernel) | clean shutdown on real hardware |
-| M11 | IOMMU (VT-d) + interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
-| M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
-| M13 | Self-hosting: the build tools rewritten in C (no Python), then make, binutils and GCC ported on top of M12's musl POSIX layer (a "jamos" target); Jam OS builds `jamos.elf` + `bootfs.img` from source on the data partition, and `reboot` kexecs into the result (M8.5). A small compiler (TCC/cproc) may come first for user programs | Jam OS rebuilds itself on the real PC and boots the result, with no Mac involved |
-
-Every milestone is checked on the real PC from M0 on.
+- QEMU mirrors the PC: q35, OVMF, xHCI USB boot (`make run`), gdb stub
+  (`make debug`). How to run the tests: [docs/TESTING.md](docs/TESTING.md).

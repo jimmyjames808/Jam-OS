@@ -1,13 +1,14 @@
 # Benchmark baselines
 
-"Benchmark" in the boot menu (`bench`); method in `kernel/test/bench.c`.
+"Benchmark" in the boot menu, or `bench` in the shell; the method is in
+`kernel/test/bench.c`.
 Each entry: median / p99 of 4000 samples, kernel threads only, lock checker
 on. Record a new column for every milestone run on the real PC, so a
 regression shows up as a number, not a feeling.
 
-PC: Intel Core i7-14700 (8 P-cores with HT + 12 E-cores = 28 CPUs), TSC 2112
-MHz. CPUs used: P = cpu2, P2 = cpu4 (another P-core), HT = cpu3 (P's
-sibling), E = cpu16.
+The PC is described in [HARDWARE.md](HARDWARE.md) (28 CPUs: 8 P-cores with
+Hyper-Threading + 12 E-cores). CPUs used: P = cpu2, P2 = cpu4 (another
+P-core), HT = cpu3 (P's sibling), E = cpu16.
 
 | Benchmark | M4.5, 2026-09-29 | M5 (0.0.8-m5), 2026-09-29 |
 |---|---|---|

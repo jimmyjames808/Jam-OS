@@ -1,8 +1,9 @@
 # Jam OS coding guide
 
 The rules for writing and changing Jam OS code, for agents and for the
-owner. ARCHITECTURE.md says *what* the system is; this file says *how the
-code is written*. Where old code breaks a rule, new code follows the rule.
+owner. [ARCHITECTURE.md](ARCHITECTURE.md) says *what* the system is; this
+file says *how the code is written*; [docs/TESTING.md](docs/TESTING.md)
+says how to test it. Where old code breaks a rule, new code follows the rule.
 Fix old code only when you are already changing it for another reason, or
 in a separate cleanup commit.
 
@@ -43,8 +44,8 @@ scheduling, memory, and the hardware checks no process may bypass: the PCI
 core (ECAM, BAR sizing, MSI/MSI-X, Bus Master Enable), interrupt objects,
 resources, DMA pins and quarantine, the config-write filter.
 
-**Drivers and services are processes from the start** (ARCHITECTURE.md,
-"The migration rule"). A driver includes only `<jam/driver.h>`, the
+**Drivers and services are processes from the start**
+([the migration rule](ARCHITECTURE.md#the-migration-rule)). A driver includes only `<jam/driver.h>`, the
 generated `<idl/*.h>`, `<jam/abi.h>` and `<jam/status.h>`;
 `tools/checkdriver.py` fails the build otherwise. A driver keeps no state
 across a restart: a restart is a bind from scratch.
@@ -102,8 +103,8 @@ The Makefile finds programs and drivers by directory: no list to edit.
   can review and understand.
 - **Functions: aim for 60 lines or less; over 80 needs a reason in the
   review.** *Why:* NASA's Power of Ten uses 60 (one printed page); past that
-  functions stop being one idea. Split into named steps, as `enumerate()`'s
-  211 lines should become a short sequence of step functions. Long data
+  functions stop being one idea. Split into named steps, as usb-bus's `enumerate()`
+  became a short sequence of step functions. Long data
   tables and test bodies that are a straight list of checks are exempt, but
   prefer several short tests.
 - **At most three levels of nesting** inside a function. Use early
@@ -366,7 +367,7 @@ fractions. User programs may use floating point and SIMD freely.
   "was changed to". Git keeps history. Write the reason itself: not
   `/* (O3a) */` but `/* each binding is walked with interrupts off on every
   signal change, so an unbounded number is a DoS */`. For something not
-  built yet, say so plainly ("not built yet: X"); NEXT.md says when.
+  built yet, say so plainly ("not built yet: X"); the roadmap says when.
 - **Every file starts with a header comment:** what it holds, the model a
   reader needs, and its key invariants (lock order, ownership, what is
   charged to whom). pmm.c and keyboard.c are the model.
@@ -379,8 +380,9 @@ fractions. User programs may use floating point and SIMD freely.
 - **Hardware:** name every register and bit with a constant
   (`U_CAPS`, `PCI_BAR_MMIO`); comment the meaning of magic values; cite the
   spec section for non-obvious behaviour ("USB HID 1.11, Appendix B" for the boot keyboard report).
-- `/* */` comments only. No `TODO` without a matching line in NEXT.md;
-  prefer putting it in your report.
+- `/* */` comments only. No `TODO` without a matching line in
+  [docs/ROADMAP.md](docs/ROADMAP.md#smaller-follow-ups); prefer putting it
+  in your report.
 - Plain English, full sentences, short. The owner is learning from this.
 
 ---
@@ -492,23 +494,11 @@ fractions. User programs may use floating point and SIMD freely.
 the fix to see it fail. If a test is impossible (PC-only hardware), say so
 in the commit and the report.
 
-The tiers, cheapest first:
+Run the tests for the area you touched, cheapest tier first: the tiers,
+the exact commands and each script's QEMU setup are in
+[docs/TESTING.md](docs/TESTING.md).
 
-| Tier | Command | When |
-|---|---|---|
-| Build | `make`, `make KTESTS=0`, `make check` | every commit |
-| Kernel tests | `QEMU_SMP=4 tools/qemu-test.sh build/test kt ktest` (also `QEMU_SMP=8`; `ktest=<prefix>` for one area) | every kernel change |
-| User regression | `tools/qemu-test.sh build/test init init` (utest + usbtest, root job clean) | every change to syscalls, libos, services, drivers |
-| Shell scripts | `QEMU_INPUT=tools/shell-tests/<x>.txt tools/qemu-test.sh build/test <x> shell` | shell, console, input |
-| Area scripts | `tools/usb-test.sh`, `usbkeys-test.sh`, `fun-test.sh`, `crash-test.sh` | the area you touched |
-| 2-minute stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` | after each fix round |
-| 10-minute stress | the boot menu's 10-minute entry | milestone sign-off only |
-| The PC | the owner flashes and runs it | the final judge |
-
-- QEMU passing is necessary, not sufficient: TCG lacks PCIDs, TSC-deadline
-  and real USB timing. Say what still needs the PC.
-- The Mac is shared by several agents: a timing failure may be load. Rerun
-  once; a second failure is real.
+- QEMU passing is necessary, not sufficient: say what still needs the PC.
 - Don't loosen a test to make it pass. If an expectation was wrong, say so
   and why in the commit.
 
@@ -517,8 +507,8 @@ The tiers, cheapest first:
 ## 8. Agent workflow
 
 - **Plan first.** Parallel work starts from a written plan
-  (`M<n>-PLAN.md`, `CLEANUP-PLAN.md`) that gives each track the files it
-  owns. Touch nothing else; if the build forces an edit outside your
+  (docs/M<n>-PLAN.md; finished ones move to [docs/history/](docs/history/))
+  that gives each track the files it owns. Touch nothing else; if the build forces an edit outside your
   files, keep it minimal and name it in your report.
 - **Worktrees.** Each agent works on its own branch in its own git
   worktree. Commit there.
@@ -536,17 +526,32 @@ The tiers, cheapest first:
   body if the why is not obvious): `usb-bus: refuse hub interfaces`,
   `ktest: relax global counts on a live system`. **No `Co-Authored-By`
   trailer** on this repository.
-- **The networking rule** (hard requirement): every frame Jam OS sends is
-  tagged 802.1Q **VLAN 21**; nothing is ever sent untagged or on another
-  VLAN. The VLAN is set in one place (boot word `vlan=`, default 21) and
-  added below the IP stack to every frame (ARP and DHCP included);
-  incoming untagged or other-VLAN frames are dropped; with no VLAN
-  configured the NIC stays down. This covers every path that can transmit
-  (NIC driver, netlog, `update`, a crash kernel). A change that could
+- **The networking rule** (hard requirement,
+  [ARCHITECTURE.md](ARCHITECTURE.md#networking)): every frame Jam OS sends
+  is tagged VLAN 21, nothing else ever leaves. A change that could
   transmit needs a test that proves an untagged frame can't leave.
-- **Docs:** update ARCHITECTURE.md when the design changes and README.md
-  when a command or boot entry changes. NEXT.md is the owner's; write to
-  it only when asked.
+- **Docs:** each fact has one home, and other docs link to it instead of
+  copying it:
+
+  | Fact | Home |
+  |---|---|
+  | the design and its rules | [ARCHITECTURE.md](ARCHITECTURE.md) |
+  | milestone status: done, next, later | [docs/ROADMAP.md](docs/ROADMAP.md) |
+  | what happened: milestones, bugs, lessons, dated decisions | [docs/HISTORY.md](docs/HISTORY.md) |
+  | the real PC and flashing the stick | [docs/HARDWARE.md](docs/HARDWARE.md) |
+  | test commands, boot menu, boot words | [docs/TESTING.md](docs/TESTING.md) |
+  | benchmark numbers | [docs/BENCH.md](docs/BENCH.md) |
+  | current state, next step, open questions | [NEXT.md](NEXT.md) |
+  | commands, build targets, where code lives | [README.md](README.md) |
+  | the version string | `kernel/main.c` |
+
+  Update the doc in the same commit as the code that changes the fact.
+  History goes to HISTORY.md, never into comments or status docs. Don't
+  copy counts (tests, lines) into docs that aren't dated. NEXT.md is the
+  owner's handoff page; write to it only when asked. `make check` runs
+  `tools/checkdocs.py`, which fails on a link to a missing file or anchor,
+  a missing repo path, file name or header in backticks, or an unknown
+  `make` target.
 - **Report** (to whoever launched you), short:
   1. what changed (files, what moved where, line counts if you split);
   2. tests run and their results (and what only the PC can check);
@@ -572,6 +577,7 @@ The tiers, cheapest first:
       nothing blocks under a spinlock.
 - [ ] Functions ≤ ~60 lines, files ≤ ~600, nothing copied from elsewhere.
 - [ ] New files have a header comment; new struct fields have comments.
+- [ ] The docs that hold a fact I changed are updated in the same commit.
 - [ ] No milestone tags, audit ids or history in comments.
 - [ ] Only my track's files changed; refactor and behaviour change are in
       separate commits.
