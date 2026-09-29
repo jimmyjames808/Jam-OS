@@ -176,6 +176,10 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     if (console) {
         if (closed(console))
             return ERR_SHOULD_WAIT;   /* the console is restarting: wait for the new one */
+        /* A connect_input that timed out earlier may have been answered
+         * late: its source channel sits in our queue, holding one of the
+         * console's MAX_SOURCES slots until we take it off (and close it). */
+        drain(console);
         handle_t src;
         status_t st = console_connect_input_until(console, (uint64_t)jam_clock_get() + CONNECT_WAIT,
                                                   &src);
