@@ -618,6 +618,42 @@ static void serve_bus(struct hc *h)
     h->serve_pending = true;
 }
 
+/* Report channels carry nothing our way: drop what comes. */
+static status_t drop_input(const struct chan *c)
+{
+    uint8_t b[64];
+    handle_t hs[4];
+    uint32_t n, nh;
+    status_t st = drv_channel_read(c->h, b, sizeof(b), &n, hs, 4, &nh);
+    if (st == ERR_BUFFER_TOO_SMALL) {
+        st = idl_drain(c->h, n, nh);
+    } else if (st == OK) {
+        for (uint32_t k = 0; k < nh; k++)
+            drv_handle_close(hs[k]);
+    }
+    return st;
+}
+
+/* Channel i's peer is gone. A report channel's endpoint is closed by the
+ * main loop (ep_close closes the channel); an interface channel closes. */
+static void chan_peer_closed(int i)
+{
+    struct chan *c = &chans[i];
+    if (c->kind == CHAN_REPORTS) {
+        struct usbdev *d = dev_find(c->dev_id);
+        if (d && c->a < 32 && d->eps[c->a].chan == i)
+            d->ep_drop |= 1u << c->a;   /* ep_close closes the channel */
+        else
+            chan_close(i);
+    } else {
+        struct usbdev *d = dev_find(c->dev_id);
+        struct iface *f = d ? usb_iface(d, c->a) : NULL;
+        if (f && f->devmgr_chan == i)
+            f->devmgr_chan = -1;
+        chan_close(i);
+    }
+}
+
 static void serve_chan(int i)
 {
     struct chan *c = &chans[i];
@@ -628,39 +664,11 @@ static void serve_chan(int i)
      * class drivers, error recovery -- for a minute. */
     uint64_t t0 = drv_clock_ns();
     for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * NS_PER_MS; guard++) {
-        status_t st;
-        if (c->kind == CHAN_IFACE) {
-            st = usb_serve_one(c->h, &usb_ops, c);
-        } else {
-            /* Report channels carry nothing our way: drop what comes. */
-            uint8_t b[64];
-            handle_t hs[4];
-            uint32_t n, nh;
-            st = drv_channel_read(c->h, b, sizeof(b), &n, hs, 4, &nh);
-            if (st == ERR_BUFFER_TOO_SMALL) {
-                st = idl_drain(c->h, n, nh);
-            } else if (st == OK) {
-                for (uint32_t k = 0; k < nh; k++)
-                    drv_handle_close(hs[k]);
-            }
-        }
+        status_t st = c->kind == CHAN_IFACE ? usb_serve_one(c->h, &usb_ops, c) : drop_input(c);
         if (st == OK)
             continue;
-        if (st == ERR_PEER_CLOSED) {
-            if (c->kind == CHAN_REPORTS) {
-                struct usbdev *d = dev_find(c->dev_id);
-                if (d && c->a < 32 && d->eps[c->a].chan == i)
-                    d->ep_drop |= 1u << c->a;   /* ep_close closes the channel */
-                else
-                    chan_close(i);
-            } else {
-                struct usbdev *d = dev_find(c->dev_id);
-                struct iface *f = d ? usb_iface(d, c->a) : NULL;
-                if (f && f->devmgr_chan == i)
-                    f->devmgr_chan = -1;
-                chan_close(i);
-            }
-        }
+        if (st == ERR_PEER_CLOSED)
+            chan_peer_closed(i);
         return;
     }
     c->pending = true;   /* more than 64 queued: come back */
@@ -668,11 +676,12 @@ static void serve_chan(int i)
 
 /* ---- main --------------------------------------------------------------------------- */
 
-int driver_main(const struct driver_start *s)
+/* Fresh state, and the handles from s: 2 (the exit code) if one we need
+ * is missing, else 0. */
+static int take_handles(struct hc *h, const struct driver_start *s)
 {
-    struct hc *h = &g_hc;
-    /* Fresh state. A new process's statics are zero already (a restart is
-     * always a new process); clearing them here keeps that from mattering. */
+    /* A new process's statics are zero already (a restart is always a new
+     * process); clearing them here keeps that from mattering. */
     __builtin_memset(h, 0, sizeof(*h));
     __builtin_memset(chans, 0, sizeof(chans));
     __builtin_memset(waiters, 0, sizeof(waiters));
@@ -689,10 +698,19 @@ int driver_main(const struct driver_start *s)
     if (h->dev == HANDLE_INVALID || h->bar == HANDLE_INVALID || h->irq == HANDLE_INVALID ||
         h->dma == HANDLE_INVALID) {
         drv_report("missing handles: DR_PCIDEV %s, DR_BAR(0) %s, DR_IRQ(0) %s, DR_DMA %s",
-                   h->dev == HANDLE_INVALID ? "no" : "yes", h->bar == HANDLE_INVALID ? "no" : "yes",
-                   h->irq == HANDLE_INVALID ? "no" : "yes", h->dma == HANDLE_INVALID ? "no" : "yes");
+                   h->dev == HANDLE_INVALID ? "no" : "yes",
+                   h->bar == HANDLE_INVALID ? "no" : "yes",
+                   h->irq == HANDLE_INVALID ? "no" : "yes",
+                   h->dma == HANDLE_INVALID ? "no" : "yes");
         return 2;
     }
+    return 0;
+}
+
+/* The device table, and the port everything arrives on, with DR_SERVE
+ * bound to it. 0, or the exit code. */
+static int setup_port(struct hc *h)
+{
     g_devs = drv_malloc(MAX_DEVS * sizeof(struct usbdev));
     if (!g_devs)
         return 2;
@@ -711,56 +729,86 @@ int driver_main(const struct driver_start *s)
     } else {
         serve_closed = true;   /* nobody to serve: enumerate, report, stop */
     }
+    return 0;
+}
 
-    int r = hc_bring_up(h);
-    if (r == 0) {
-        report_controller(h);
-        usb_start(h);
-        uint64_t start = drv_clock_ns(), no_serve_end = start + 10000 * NS_PER_MS;
-        for (;;) {
-            if (h->serve_pending) {
-                h->serve_pending = false;
-                serve_bus(h);
-            }
-            if (serve_closed)
-                break;
-            for (int i = 0; i < MAX_CHANS; i++)
-                if (chans[i].pending && chans[i].h)
-                    serve_chan(i);
-            bool did = usb_work(h);
-            bool st_now = settled();
-            /* The list: once settled, and not before 2 s (USB 3 links may
-             * still be training after the reset). */
-            if (st_now && !g_first_report_done && drv_clock_ns() - start >= 2000 * NS_PER_MS)
-                usb_report_all(false);
-            uint64_t now = drv_clock_ns(), next = now + 1000 * NS_PER_MS;
-            for (int i = 0; i < MAX_WAITERS; i++) {
-                if (!waiters[i].used)
-                    continue;
-                if (st_now || now >= waiters[i].deadline)
-                    reply_waiter(i);
-                else if (waiters[i].deadline < next)
-                    next = waiters[i].deadline;
-            }
-            if (!g_first_report_done && next > now + 100 * NS_PER_MS)
-                next = now + 100 * NS_PER_MS;
-            if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
-                break;
-            if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */
-                next = now;
-            bool any = h->serve_pending;
-            for (int i = 0; i < MAX_CHANS && !any; i++)
-                any = chans[i].pending && chans[i].h;
-            if (!any)
-                hc_wait_idle(h, next);
-        }
-        if (!g_first_report_done)
-            usb_report_all(false);
-        else if (g_generation != g_report_generation)
-            usb_report_all(true);   /* what came since the list, and the counts now */
-        h->stopping = true;
-        usb_stop_all(h);
+/* Answer the wait_settled requests that are due (is_settled: now, or at
+ * their deadline); the earliest deadline still waiting, or next. */
+static uint64_t answer_waiters(bool is_settled, uint64_t now, uint64_t next)
+{
+    for (int i = 0; i < MAX_WAITERS; i++) {
+        if (!waiters[i].used)
+            continue;
+        if (is_settled || now >= waiters[i].deadline)
+            reply_waiter(i);
+        else if (waiters[i].deadline < next)
+            next = waiters[i].deadline;
     }
+    return next;
+}
+
+/* Is any request waiting to be served (DR_SERVE or a channel)? */
+static bool any_pending(const struct hc *h)
+{
+    bool any = h->serve_pending;
+    for (int i = 0; i < MAX_CHANS && !any; i++)
+        any = chans[i].pending && chans[i].h;
+    return any;
+}
+
+/* The main loop, from the first scan until devmgr stops us (or, with no
+ * DR_SERVE, until the list is out); then every device goes. */
+static void run(struct hc *h)
+{
+    report_controller(h);
+    usb_start(h);
+    uint64_t start = drv_clock_ns(), no_serve_end = start + 10000 * NS_PER_MS;
+    for (;;) {
+        if (h->serve_pending) {
+            h->serve_pending = false;
+            serve_bus(h);
+        }
+        if (serve_closed)
+            break;
+        for (int i = 0; i < MAX_CHANS; i++)
+            if (chans[i].pending && chans[i].h)
+                serve_chan(i);
+        bool did = usb_work(h);
+        bool is_settled = settled();
+        /* The list: once settled, and not before 2 s (USB 3 links may
+         * still be training after the reset). */
+        if (is_settled && !g_first_report_done && drv_clock_ns() - start >= 2000 * NS_PER_MS)
+            usb_report_all(false);
+        uint64_t now = drv_clock_ns();
+        uint64_t next = answer_waiters(is_settled, now, now + 1000 * NS_PER_MS);
+        if (!g_first_report_done && next > now + 100 * NS_PER_MS)
+            next = now + 100 * NS_PER_MS;
+        if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
+            break;
+        if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */
+            next = now;
+        if (!any_pending(h))
+            hc_wait_idle(h, next);
+    }
+    if (!g_first_report_done)
+        usb_report_all(false);
+    else if (g_generation != g_report_generation)
+        usb_report_all(true);   /* what came since the list, and the counts now */
+    h->stopping = true;
+    usb_stop_all(h);
+}
+
+int driver_main(const struct driver_start *s)
+{
+    struct hc *h = &g_hc;
+    int r = take_handles(h, s);
+    if (r == 0)
+        r = setup_port(h);
+    if (r != 0)
+        return r;
+    r = hc_bring_up(h);
+    if (r == 0)
+        run(h);
     for (int i = 0; i < MAX_CHANS; i++)
         chan_close(i);
     int q = hc_shutdown(h);

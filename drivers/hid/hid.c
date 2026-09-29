@@ -198,6 +198,18 @@ static void mouse_report(struct hid *h, const uint8_t *r, uint32_t n)
 
 /* ---- descriptors ------------------------------------------------------------ */
 
+/* The report descriptor's length in a HID descriptor (len bytes at d,
+ * HID 1.11 6.2.1): its first REPORT entry with a length, 0 if none. */
+static uint16_t report_len(const uint8_t *d, uint8_t len)
+{
+    for (uint32_t k = 0; k < d[5] && 6 + 3 * k + 3 <= len; k++) {
+        uint16_t n = (uint16_t)(d[7 + 3 * k] | d[8 + 3 * k] << 8);
+        if (d[6 + 3 * k] == DESC_REPORT && n)
+            return n;
+    }
+    return 0;
+}
+
 /* This interface's HID descriptor and interrupt IN endpoint, from the
  * configuration descriptor in h->buf (n bytes). */
 static void parse_config(struct hid *h, uint32_t n)
@@ -211,9 +223,8 @@ static void parse_config(struct hid *h, uint32_t n)
         if (type == DESC_INTERFACE && len >= 9) {
             ours = d[i + 2] == h->iface && d[i + 3] == h->alt;
         } else if (ours && type == DESC_HID && len >= 9) {
-            for (uint32_t k = 0; k < d[i + 5] && 6 + 3 * k + 3 <= len; k++)
-                if (d[i + 6 + 3 * k] == DESC_REPORT && !h->report_desc_len)
-                    h->report_desc_len = (uint16_t)(d[i + 7 + 3 * k] | d[i + 8 + 3 * k] << 8);
+            if (!h->report_desc_len)
+                h->report_desc_len = report_len(d + i, len);
         } else if (ours && type == DESC_ENDPOINT && len >= 7) {
             uint8_t addr = d[i + 2], attr = d[i + 3];
             if ((addr & 0x80) && (attr & 3) == 3 && !h->ep_in) {
@@ -264,6 +275,16 @@ static void text_add(struct text *t, const char *fmt, ...)
         t->len = t->len + (uint32_t)r < t->cap ? t->len + (uint32_t)r : t->cap - 1;
 }
 
+/* A top-level application collection: its name into t (with its page and
+ * usage when it has no name of its own). *count: collections so far. */
+static void add_collection(struct text *t, uint32_t page, uint32_t usage, uint32_t *count)
+{
+    const char *nm = collection_name(page, usage);
+    text_add(t, "%s%s", (*count)++ ? ", " : "", nm);
+    if (nm[0] == 'v' || nm[0] == 'o')
+        text_add(t, " (page 0x%x usage 0x%x)", page, usage);
+}
+
 /* A one-line summary of the report descriptor in h->buf (n bytes): its
  * top-level application collections with their first report id, e.g.
  * "keyboard id 1, consumer control id 3, vendor (page 0xff00 usage 0x1) id 6". */
@@ -294,10 +315,7 @@ static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
             break;
         case 0xa0:                                /* Collection */
             if (depth++ == 0 && v == 1) {         /* a top-level application one */
-                const char *nm = collection_name(page, usage);
-                text_add(&t, "%s%s", count++ ? ", " : "", nm);
-                if (nm[0] == 'v' || nm[0] == 'o')
-                    text_add(&t, " (page 0x%x usage 0x%x)", page, usage);
+                add_collection(&t, page, usage, &count);
                 want_id = true;
             }
             break;
@@ -327,8 +345,11 @@ static status_t class_out(struct hid *h, uint8_t request, uint16_t value)
                                  value, h->iface, 0, none);
 }
 
-/* 0..: the driver ends with that code; -1: serve reports. */
-static int setup(struct hid *h)
+/* The steps of setup() return what it does: 0..: the driver ends with
+ * that code; -1: go on. */
+
+/* usb.info: the device's ids and our interface. */
+static int read_info(struct hid *h)
 {
     uint8_t cls, nep;
     status_t st = usb_info_until(h->usb, deadline(USB_TIMEOUT), &h->vendor, &h->product,
@@ -347,10 +368,15 @@ static int setup(struct hid *h)
                 h->product, h->iface, cls);
         return 2;
     }
+    return -1;
+}
 
+/* The configuration descriptor: our HID descriptor and endpoint. */
+static int read_config(struct hid *h)
+{
     uint16_t n = 0;
-    st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_CONFIG, 0, 0, 9, 0, &n,
-                                  h->buf);
+    status_t st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_CONFIG, 0, 0, 9,
+                                           0, &n, h->buf);
     if (st == OK && n >= 4) {
         uint16_t total = (uint16_t)(h->buf[2] | h->buf[3] << 8);
         st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_CONFIG, 0, 0,
@@ -366,40 +392,36 @@ static int setup(struct hid *h)
         return 3;
     }
     parse_config(h, n);
+    return -1;
+}
 
-    char coll[160];
+/* The report descriptor, if the HID descriptor names one: its summary
+ * into coll (cap bytes; "" without one). Unreadable is logged, not fatal. */
+static int read_report_desc(struct hid *h, char *coll, uint32_t cap)
+{
     coll[0] = 0;
-    if (h->report_desc_len) {
-        uint16_t want = h->report_desc_len < BUF_SIZE ? h->report_desc_len : BUF_SIZE;
-        /* wIndex of an interface-recipient GET_DESCRIPTOR is the
-         * interface; `lang` carries it too for a usb-bus that passes it. */
-        st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_REPORT, 0, h->iface,
-                                      want, 1, &n, h->buf);
-        if (gone(h, st))
-            return 0;
-        if (st == OK)
-            summarise_report(h, n, coll, sizeof(coll));
-        else
-            drv_log("hid %04x:%04x if %u: report descriptor unreadable (%s): going on",
-                    h->vendor, h->product, h->iface, status_str(st));
-    }
-
-    bool boot = h->subclass == 1 && (h->protocol == 1 || h->protocol == 2);
-    if (!boot) {
-        drv_log("hid %04x:%04x if %u: subclass %u protocol %u (%s): not a boot keyboard/mouse: "
-                "skipped", h->vendor, h->product, h->iface, h->subclass, h->protocol,
-                coll[0] ? coll : "no report descriptor");
+    if (!h->report_desc_len)
+        return -1;
+    uint16_t want = h->report_desc_len < BUF_SIZE ? h->report_desc_len : BUF_SIZE, n = 0;
+    /* wIndex of an interface-recipient GET_DESCRIPTOR is the
+     * interface; `lang` carries it too for a usb-bus that passes it. */
+    status_t st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_REPORT, 0,
+                                           h->iface, want, 1, &n, h->buf);
+    if (gone(h, st))
         return 0;
-    }
-    h->kind = h->protocol == 1 ? HID_KEYBOARD : HID_MOUSE;
-    const char *what = h->kind == HID_KEYBOARD ? "keyboard" : "mouse";
-    if (!h->ep_in) {
-        drv_log("hid %04x:%04x if %u: boot %s without an interrupt IN endpoint", h->vendor,
-                h->product, h->iface, what);
-        return 3;
-    }
+    if (st == OK)
+        summarise_report(h, n, coll, cap);
+    else
+        drv_log("hid %04x:%04x if %u: report descriptor unreadable (%s): going on",
+                h->vendor, h->product, h->iface, status_str(st));
+    return -1;
+}
 
-    st = class_out(h, HID_SET_PROTOCOL, HID_PROTOCOL_BOOT);
+/* SET_PROTOCOL(boot), and for a keyboard SET_IDLE(0): a refusal is logged
+ * and ignored. */
+static int boot_protocol(struct hid *h)
+{
+    status_t st = class_out(h, HID_SET_PROTOCOL, HID_PROTOCOL_BOOT);
     if (gone(h, st))
         return 0;
     if (st != OK)
@@ -413,10 +435,15 @@ static int setup(struct hid *h)
             drv_log("hid %04x:%04x if %u: SET_IDLE(0) failed (%s): going on", h->vendor,
                     h->product, h->iface, status_str(st));
     }
+    return -1;
+}
 
+/* open_interrupt_in: the report channel; then the keyboard layer starts. */
+static int open_reports(struct hid *h)
+{
     uint16_t maxp = 0;
-    st = usb_open_interrupt_in_until(h->usb, deadline(USB_TIMEOUT), h->ep_in, &h->reports, &maxp,
-                                     &h->interval_ms);
+    status_t st = usb_open_interrupt_in_until(h->usb, deadline(USB_TIMEOUT), h->ep_in,
+                                              &h->reports, &maxp, &h->interval_ms);
     if (gone(h, st))
         return 0;
     if (st != OK) {
@@ -431,6 +458,34 @@ static int setup(struct hid *h)
         if (h->stop)
             return 0;
     }
+    return -1;
+}
+
+/* 0..: the driver ends with that code; -1: serve reports. */
+static int setup(struct hid *h)
+{
+    int r;
+    if ((r = read_info(h)) >= 0 || (r = read_config(h)) >= 0)
+        return r;
+    char coll[160];
+    if ((r = read_report_desc(h, coll, sizeof(coll))) >= 0)
+        return r;
+    bool boot = h->subclass == 1 && (h->protocol == 1 || h->protocol == 2);
+    if (!boot) {
+        drv_log("hid %04x:%04x if %u: subclass %u protocol %u (%s): not a boot keyboard/mouse: "
+                "skipped", h->vendor, h->product, h->iface, h->subclass, h->protocol,
+                coll[0] ? coll : "no report descriptor");
+        return 0;
+    }
+    h->kind = h->protocol == 1 ? HID_KEYBOARD : HID_MOUSE;
+    const char *what = h->kind == HID_KEYBOARD ? "keyboard" : "mouse";
+    if (!h->ep_in) {
+        drv_log("hid %04x:%04x if %u: boot %s without an interrupt IN endpoint", h->vendor,
+                h->product, h->iface, what);
+        return 3;
+    }
+    if ((r = boot_protocol(h)) >= 0 || (r = open_reports(h)) >= 0)
+        return r;
     /* In the RESULTS box too: which keyboards and mice are live. */
     drv_log("hid %04x:%04x if %u: boot %s: endpoint 0x%x, %u-byte packets every %u ms, "
             "report descriptor %u bytes (%s)", h->vendor, h->product, h->iface, what, h->ep_in,
@@ -452,6 +507,23 @@ static void take_report(struct hid *h, const uint8_t *r, uint32_t n)
         mouse_report(h, r, n);
 }
 
+/* The next message on the reports channel didn't fit (n bytes, nh
+ * handles): not a report of ours, but take it off anyway. False if there
+ * was no memory to read it into. */
+static bool drop_message(struct hid *h, uint32_t n, uint32_t nh)
+{
+    uint8_t *big = drv_malloc(n);
+    handle_t *bh = drv_malloc((nh ? nh : 1) * sizeof(handle_t));
+    bool have = big && bh;
+    uint32_t n2 = 0, nh2 = 0;
+    if (have && drv_channel_read(h->reports, big, n, &n2, bh, nh, &nh2) == OK)
+        for (uint32_t i = 0; i < nh2; i++)
+            drv_handle_close(bh[i]);
+    drv_free(bh);
+    drv_free(big);
+    return have;
+}
+
 /* Every report queued (the port binding fires on the edge to readable, so
  * the channel is emptied each time). */
 static void drain(struct hid *h)
@@ -460,16 +532,8 @@ static void drain(struct hid *h)
         uint32_t n = 0, nh = 0;
         handle_t hs[4];
         status_t st = drv_channel_read(h->reports, h->buf, BUF_SIZE, &n, hs, 4, &nh);
-        if (st == ERR_BUFFER_TOO_SMALL) {   /* not a report of ours: take it off anyway */
-            uint8_t *big = drv_malloc(n);
-            handle_t *bh = drv_malloc((nh ? nh : 1) * sizeof(handle_t));
-            uint32_t n2 = 0, nh2 = 0;
-            if (big && bh && drv_channel_read(h->reports, big, n, &n2, bh, nh, &nh2) == OK)
-                for (uint32_t i = 0; i < nh2; i++)
-                    drv_handle_close(bh[i]);
-            drv_free(bh);
-            drv_free(big);
-            if (!big || !bh)
+        if (st == ERR_BUFFER_TOO_SMALL) {
+            if (!drop_message(h, n, nh))
                 return;
             continue;
         }
