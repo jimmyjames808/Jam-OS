@@ -4,17 +4,15 @@
 - **M5 ✅ DONE 2026-09-29.** Main (v0.0.8-m5) passed everything on the PC: init+utest 14/14 (root job
   clean), All tests 131/131, benchmark (BENCH.md M5 column), and the **10-min stress sign-off with 0
   failures** on the f86cb64 build. M0-M5 all confirmed on the PC.
-- **M5.5 agent is RUNNING** in a background worktree (launched from base 3259578; branch name
-  `worktree-agent-<id>` shows in `git worktree list` / `git branch`, newest one). Scope: spin-before-idle,
-  hybrid P/E placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers,
-  interrupt-driven serial (PC has a real COM1), PCIDs (last), and investigate the two M5 bench
-  regressions (process->process call ~870 ns over kernel-thread version; pinned cross-CPU
-  channel_call +8-11%). Every optimisation has a runtime switch + cmdline word (`nopcid`,
-  `nospinidle`, ...) and `bench` prints off|on in one run. When it reports: review, merge (expect
-  conflicts: sched.c thread creation now has thread_try_create_suspended (f86cb64); aspace.c got
-  page-table charging from the review fixes; process.c), run 4+8 CPU ktest/init/stress, flash, PC:
-  All tests, Benchmark (-> M5.5 column of BENCH.md, photo is fine), 2-min stress, then 10-min.
-  Big agent code -> also launch an independent review agent after merging (user rule).
+- **M5.5 MERGED 2026-09-29 (dcd70f5, v0.0.9-m5.5).** QEMU: 143/143 ktests at 4 and 8,threads=2,
+  init+utest 14/14 root job clean, stress=30 at 4 and 8. Every optimisation has a runtime switch +
+  boot word (`nopcid`, `nospinidle`, `idlespin=<us>`, `noplaceorder`, `noaffinepair`, `nokmcache`,
+  `nooneshot`, `noserialirq`, `nofpuopt`; `m55` in bench = all) and `bench` prints `off med/p99 on
+  med/p99` per line. PCIDs + TSC-deadline one-shots have NEVER run (TCG lacks them): first PC run is
+  their first run. If anything looks like memory corruption on the PC, boot with `nopcid` first.
+  Independent review agent RUNNING (worktree, read-only on main). **Next PC round**: flash, then All
+  tests, Benchmark (-> M5.5 column of BENCH.md; expected moves listed under "M5.5 (expected)"),
+  2-min stress; 10-min stress = M5.5 sign-off after the review's fixes land.
 - **After M5.5: start M6.** Decided: M6 sample driver = QEMU `edu` device for development + the PC's
   xHCI (Intel 8086:7A60) "no-op command" MSI-X interrupt as the done test (in kernel, then as a
   process); HPET-FSB MSI only as an optional quick check; uACPI deferred to M10. M6 = PCIe
@@ -22,9 +20,10 @@
   interrupt objects (IRQs as port packets, ack to unmask), resource handles, dma_cap bound to a BDF
   (device addresses; closing clears Bus Master Enable), <jam/driver.h> in both builds, IDL generator.
   Write an M6-PLAN.md like M5-PLAN.md (foundation headers + parallel tracks) before launching agents.
-- **Open item**: the review-fix agent once saw "counter#14 made no progress for 10 s" in a 4-CPU
-  stress (kernel mutex has no hand-off to waiters, a waiter can starve). Look at mutex fairness after
-  M5.5 merges (M5.5 owns sched.c now).
+- **Open item**: "counter#14 (prio 16) made no progress for 10 s" seen twice in 4-CPU QEMU stress
+  (review-fix agent, and M5.5 agent with all switches off under host load; M5.5 fixed a stale-cur_prio
+  bug d3f0824 that may have been it). Kernel mutex has no hand-off to waiters. Watch the PC stress;
+  look at mutex fairness if it recurs.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
