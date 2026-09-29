@@ -240,33 +240,23 @@ static const char *collection_name(uint32_t page, uint32_t usage)
     return "other";
 }
 
+/* The summary being built: out holds len characters, cap bytes with the
+ * NUL. */
 struct text {
     char    *s;
     uint32_t len, cap;
 };
 
-static void put_str(struct text *t, const char *p)
+/* Append to t; past the cap the text is cut, as snprintf cuts it. */
+static void text_add(struct text *t, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void text_add(struct text *t, const char *fmt, ...)
 {
-    while (*p && t->len + 1 < t->cap)
-        t->s[t->len++] = *p++;
-    t->s[t->len] = 0;
-}
-
-static void put_num(struct text *t, uint32_t v, uint32_t base)
-{
-    char d[12];
-    int n = 0;
-    do {
-        d[n++] = "0123456789abcdef"[v % base];
-        v /= base;
-    } while (v);
-    if (base == 16)
-        put_str(t, "0x");
-    char one[2] = { 0, 0 };
-    while (n--) {
-        one[0] = d[n];
-        put_str(t, one);
-    }
+    va_list ap;
+    va_start(ap, fmt);
+    int r = drv_vsnprintf(t->s + t->len, t->cap - t->len, fmt, ap);
+    va_end(ap);
+    if (r > 0)
+        t->len = t->len + (uint32_t)r < t->cap ? t->len + (uint32_t)r : t->cap - 1;
 }
 
 /* A one-line summary of the report descriptor in h->buf (n bytes): its
@@ -299,17 +289,10 @@ static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
             break;
         case 0xa0:                                /* Collection */
             if (depth++ == 0 && v == 1) {         /* a top-level application one */
-                if (count++)
-                    put_str(&t, ", ");
                 const char *nm = collection_name(page, usage);
-                put_str(&t, nm);
-                if (nm[0] == 'v' || nm[0] == 'o') {
-                    put_str(&t, " (page ");
-                    put_num(&t, page, 16);
-                    put_str(&t, " usage ");
-                    put_num(&t, usage, 16);
-                    put_str(&t, ")");
-                }
+                text_add(&t, "%s%s", count++ ? ", " : "", nm);
+                if (nm[0] == 'v' || nm[0] == 'o')
+                    text_add(&t, " (page 0x%x usage 0x%x)", page, usage);
                 want_id = true;
             }
             break;
@@ -319,8 +302,7 @@ static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
             break;
         case 0x84:                                /* Report ID */
             if (want_id) {
-                put_str(&t, " id ");
-                put_num(&t, v, 10);
+                text_add(&t, " id %u", v);
                 want_id = false;
             }
             break;
@@ -328,7 +310,7 @@ static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
         i += 1 + size;
     }
     if (!count)
-        put_str(&t, "no collections");
+        text_add(&t, "no collections");
 }
 
 /* ---- start ------------------------------------------------------------------ */

@@ -5,46 +5,27 @@
  * RESULTS gets one line per device once enumeration first settles, in
  * tree order, and a summary; usb_report_all is called again when the
  * driver stops, and then lists only the devices that came later. The
- * lines are built with a small string builder (sb_*): drivers have no
- * snprintf. */
+ * lines are built piece by piece with drv_snprintf (append). */
 #include "usbbus.h"
 
-/* ---- the string builder ----------------------------------------------------- */
+/* ---- building a line --------------------------------------------------------- */
 
-struct sb {
-    char *b;
-    unsigned n, cap;
-};
+/* A device line holds at most 105 characters, what a RESULTS line shows. */
+#define LINE_CAP 106
 
-static void sb_c(struct sb *s, char c)
+/* Append to buf (n characters so far, cap bytes) and return the new
+ * length. Past the cap the text is cut, as snprintf cuts it. */
+static unsigned append(char *buf, unsigned n, unsigned cap, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static unsigned append(char *buf, unsigned n, unsigned cap, const char *fmt, ...)
 {
-    if (s->n + 1 < s->cap)
-        s->b[s->n++] = c;
-    s->b[s->n] = 0;
-}
-
-static void sb_s(struct sb *s, const char *str)
-{
-    while (*str)
-        sb_c(s, *str++);
-}
-
-static void sb_u(struct sb *s, uint32_t v)
-{
-    char t[12];
-    int i = 0;
-    do {
-        t[i++] = (char)('0' + v % 10);
-        v /= 10;
-    } while (v);
-    while (i)
-        sb_c(s, t[--i]);
-}
-
-static void sb_x(struct sb *s, uint32_t v, int digits)
-{
-    for (int i = digits - 1; i >= 0; i--)
-        sb_c(s, "0123456789abcdef"[(v >> (4 * i)) & 0xf]);
+    va_list ap;
+    va_start(ap, fmt);
+    int r = drv_vsnprintf(buf + n, cap - n, fmt, ap);
+    va_end(ap);
+    if (r < 0)
+        return n;
+    return n + (unsigned)r < cap ? n + (unsigned)r : cap - 1;
 }
 
 /* ---- names ------------------------------------------------------------------ */
@@ -94,89 +75,41 @@ static const char *iface_kind(const struct iface *f)
 
 void dev_set_path(struct usbdev *d, const struct usbdev *parent, uint8_t port)
 {
-    struct sb s = { d->path, 0, sizeof(d->path) };
-    if (parent) {
-        sb_s(&s, parent->path);
-        sb_c(&s, '.');
-    }
-    sb_u(&s, port);
+    if (parent)
+        drv_snprintf(d->path, sizeof(d->path), "%s.%u", parent->path, port);
+    else
+        drv_snprintf(d->path, sizeof(d->path), "%u", port);
 }
 
 /* ---- the device line -------------------------------------------------------- */
 
-/* " TT(slot 2 port 2)", " mtt" inside when the TT is a multi-TT hub's. */
-static void line_tt(struct sb *s, const struct usbdev *d)
+/* Everything before the interfaces, into s (LINE_CAP bytes); its length.
+ * " TT(slot 2 port 2)" (" mtt" inside when the TT is a multi-TT hub's),
+ * " hub 4p TTT1" (TTT: a high-speed hub's TT think time), " SS-hub 4p". */
+static unsigned line_head(char *s, const struct usbdev *d, const char *prefix)
 {
-    if (!d->tt_slot)
-        return;
-    sb_s(s, " TT(slot ");
-    sb_u(s, d->tt_slot);
-    sb_s(s, " port ");
-    sb_u(s, d->tt_port);
-    if (d->tt_mtt)
-        sb_s(s, " mtt");
-    sb_c(s, ')');
+    unsigned n = append(s, 0, LINE_CAP, "%sport %s %04x:%04x %s", prefix ? prefix : "", d->path,
+                        d->vid, d->pid, speed_str(d->speed));
+    if (d->tt_slot)
+        n = append(s, n, LINE_CAP, " TT(slot %u port %u%s)", d->tt_slot, d->tt_port,
+                   d->tt_mtt ? " mtt" : "");
+    n = append(s, n, LINE_CAP, " a%u mps%u cfg%u/%u", d->address, d->mps0, d->cfg_value,
+               d->nconfigs);
+    if (d->is_hub)
+        n = append(s, n, LINE_CAP, " %s %up", d->ss_hub ? "SS-hub" : "hub", d->hub_ports);
+    if (d->is_hub && d->speed == SPEED_HIGH)
+        n = append(s, n, LINE_CAP, " TTT%u", d->ttt);
+    if (d->problem)
+        n = append(s, n, LINE_CAP, " PROBLEM: %s", d->problem);
+    return n;
 }
 
-/* " hub 4p TTT1" (TTT: a high-speed hub's TT think time), " SS-hub 4p". */
-static void line_hub(struct sb *s, const struct usbdev *d)
+/* " if0 03/01/01 kbd" into t (cap bytes); its length. */
+static unsigned line_iface(char *t, unsigned cap, const struct iface *f)
 {
-    if (!d->is_hub)
-        return;
-    sb_s(s, d->ss_hub ? " SS-hub " : " hub ");
-    sb_u(s, d->hub_ports);
-    sb_c(s, 'p');
-    if (d->speed == SPEED_HIGH) {
-        sb_s(s, " TTT");
-        sb_u(s, d->ttt);
-    }
-}
-
-/* Everything before the interfaces. */
-static void line_head(struct sb *s, const struct usbdev *d, const char *prefix)
-{
-    if (prefix)
-        sb_s(s, prefix);
-    sb_s(s, "port ");
-    sb_s(s, d->path);
-    sb_c(s, ' ');
-    sb_x(s, d->vid, 4);
-    sb_c(s, ':');
-    sb_x(s, d->pid, 4);
-    sb_c(s, ' ');
-    sb_s(s, speed_str(d->speed));
-    line_tt(s, d);
-    sb_s(s, " a");
-    sb_u(s, d->address);
-    sb_s(s, " mps");
-    sb_u(s, d->mps0);
-    sb_s(s, " cfg");
-    sb_u(s, d->cfg_value);
-    sb_c(s, '/');
-    sb_u(s, d->nconfigs);
-    line_hub(s, d);
-    if (d->problem) {
-        sb_s(s, " PROBLEM: ");
-        sb_s(s, d->problem);
-    }
-}
-
-/* " if0 03/01/01 kbd" */
-static void line_iface(struct sb *s, const struct iface *f)
-{
-    sb_s(s, " if");
-    sb_u(s, f->number);
-    sb_c(s, ' ');
-    sb_x(s, f->cls, 2);
-    sb_c(s, '/');
-    sb_x(s, f->sub, 2);
-    sb_c(s, '/');
-    sb_x(s, f->proto, 2);
     const char *k = iface_kind(f);
-    if (k) {
-        sb_c(s, ' ');
-        sb_s(s, k);
-    }
+    return append(t, 0, cap, " if%u %02x/%02x/%02x%s%s", f->number, f->cls, f->sub, f->proto,
+                  k ? " " : "", k ? k : "");
 }
 
 static void line_emit(const char *line, bool report_it)
@@ -194,36 +127,27 @@ static void line_emit(const char *line, bool report_it)
  * goes last, and only if it fits. */
 void dev_line(struct usbdev *d, bool report_it, const char *prefix)
 {
-    char a[160], b[160];
-    struct sb s = { a, 0, 106 }, s2 = { b, 0, 106 };
-    a[0] = b[0] = 0;
-    line_head(&s, d, prefix);
-    struct sb *o = &s;
+    char a[LINE_CAP], b[LINE_CAP], t[48];
+    unsigned na = line_head(a, d, prefix), nb = 0;
+    char *o = a;
+    unsigned *on = &na;
+    b[0] = 0;
     for (int i = 0; i < d->nifs; i++) {
-        char t[48];
-        struct sb ts = { t, 0, sizeof(t) };
-        t[0] = 0;
-        line_iface(&ts, &d->ifs[i]);
-        if (o == &s && s.n + ts.n + 1 >= s.cap) {
-            o = &s2;
-            sb_s(&s2, "  port ");
-            sb_s(&s2, d->path);
-            sb_s(&s2, " (cont.):");
+        unsigned nt = line_iface(t, sizeof(t), &d->ifs[i]);
+        if (o == a && na + nt + 1 >= LINE_CAP) {
+            o = b;
+            on = &nb;
+            nb = append(b, 0, LINE_CAP, "  port %s (cont.):", d->path);
         }
-        sb_s(o, t);
+        *on = append(o, *on, LINE_CAP, "%s", t);
     }
     if (d->product[0]) {
-        char t[48];
-        struct sb ts = { t, 0, sizeof(t) };
-        t[0] = 0;
-        sb_s(&ts, " \"");
-        sb_s(&ts, d->product);
-        sb_c(&ts, '"');
-        if (o->n + ts.n + 1 < o->cap)
-            sb_s(o, t);
+        unsigned nt = append(t, 0, sizeof(t), " \"%s\"", d->product);
+        if (*on + nt + 1 < LINE_CAP)
+            *on = append(o, *on, LINE_CAP, "%s", t);
     }
     line_emit(a, report_it);
-    if (s2.n)
+    if (nb)
         line_emit(b, report_it);
 }
 
