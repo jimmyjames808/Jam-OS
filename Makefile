@@ -260,14 +260,16 @@ $(BUILD)/drv/$(1).bootfs: $(BUILD)/drv/$(1)
 endef
 $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 
-# `make check`: the generated code is current, and the driver check still
+# `make check`: the generated code is current, the driver check still
 # rejects what it must (tools/checkdriver-tests/: a kernel include, a
-# kmalloc call, a call into another driver, ...) and accepts a clean one.
+# kmalloc call, a call into another driver, ...) and accepts a clean one,
+# and the Markdown docs still match the tree (tools/checkdocs.py).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
 	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_CFLAGS)" SURFACE="$(DRV_SURFACE)" \
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
+	python3 tools/checkdocs.py
 
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
