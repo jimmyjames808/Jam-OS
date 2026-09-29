@@ -10,7 +10,11 @@
 #include <jam/driver.h>
 
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
-#define STOP_WAIT (15 * NS_PER_S)   /* > xhci-noop's worst case (~11 s of bounded waits) */
+/* How long a driver gets to end by itself when asked to stop, before its
+ * job is killed. usb-bus takes longest: a Disable Slot per device (1 s
+ * timeout each), then its final halt and reset (about 3 s of bounded
+ * waits). */
+#define STOP_WAIT (15 * NS_PER_S)
 
 /* Supervision (supervise.c). */
 #define SUP_BACKOFF_FIRST (100 * NS_PER_MS)

@@ -1,8 +1,8 @@
 /* devmgr: driver supervision. When a driver's process terminates:
  *
  *   - exit code 0 by itself (not killed): the driver is finished (a
- *     one-shot driver like xhci-noop). Not restarted; its job must be
- *     empty.
+ *     one-shot driver, like hid on an interface that is not a boot
+ *     keyboard or mouse). Not restarted; its job must be empty.
  *   - anything else -- a crash (the kernel killed it), a kill by anyone
  *     (DEVMGR_KILL included), an exit with an error: restarted. The rest
  *     of its job is killed first. Backoff: 100 ms after the first death,

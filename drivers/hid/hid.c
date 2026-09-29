@@ -2,8 +2,7 @@
  * interface: devmgr starts it when usb-bus reports an interface of class 3,
  * so each interface of a composite device (a keyboard with a media-key
  * interface, a keyboard+mouse receiver) gets a hid process of its own.
- * Built both ways like every driver (a kernel process with `drivers=kernel`,
- * drv/hid in bootfs otherwise).
+ * It is drv/hid in bootfs, a process like every driver.
  *
  * Handles (roles from <jam/driver.h>):
  *   DR_USB    the `usb` channel for this one interface (abi/idl/usb.idl);

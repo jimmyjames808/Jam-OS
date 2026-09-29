@@ -702,7 +702,8 @@ static void report_controller(struct hc *h)
 int driver_main(const struct driver_start *s)
 {
     struct hc *h = &g_hc;
-    /* Fresh state (the kernel build may run this more than once). */
+    /* Fresh state. A new process's statics are zero already (a restart is
+     * always a new process); clearing them here keeps that from mattering. */
     __builtin_memset(h, 0, sizeof(*h));
     __builtin_memset(chans, 0, sizeof(chans));
     __builtin_memset(waiters, 0, sizeof(waiters));
