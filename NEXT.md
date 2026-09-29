@@ -30,7 +30,11 @@ arch_enter_user(entry, stack, arg0, arg1); return_to_user_work() and kill_curren
 uentry.c currently thread_exit() -> replace with process kill; test CR3 hooks
 (#ifndef JAM_NO_KTESTS) in arch_thread_switch/syscall_entry_c/trap.c; FS/KERNEL_GS bases
 zeroed at entry (no TLS yet); aspace teardown must wait until no CPU has it loaded.
-**Phase 1 complete. Next: phase 2.**
+**Phase 1 complete. Phase 2 started 2026-09-29 with two worktree agents:** (1) processes/
+threads/jobs, all sysc_* glue, kill, quotas + no-panic OOM, userboot, init spawning utest,
+utest suite, user-path bench lines, delete m5_weak.c; (2) per-CPU page caches, stack cache
+limit + failable kstack_alloc, channel_call wake-affine hand-off, per-thread priority ceiling.
+When both report: review, merge (sched.c overlap expected), full tests 4+8, then PC run.
 
 
 State: M0-M4 done; **M4.5 hardening done in QEMU** (v0.0.6-m4.5). Main commits after the
