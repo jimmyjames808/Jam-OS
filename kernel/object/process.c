@@ -28,10 +28,20 @@
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
+ *   - process_start vs uthread_start (review R5): start_thread makes p
+ *     RUNNING with `starting` set and creates the first thread with the
+ *     lock dropped; while `starting`, uthread_start refuses (ERR_BAD_STATE).
+ *     So no thread of p runs before the first one exists: if its creation
+ *     fails, p goes back to NEW with nothing of it run, the startup handle
+ *     still in its table untouched, and process_start takes it back. (It
+ *     used to be possible to start a second thread in that window, which
+ *     could close the startup handle before the first creation failed; the
+ *     give-back then panicked.)
  *   - A NEW process whose last handle closes can never be started: it is
  *     marked dying under the lock (on_zero_handles can't sleep, so it can't
  *     tear down); what it owns is freed when its last reference goes. */
 #include <jam/aspace.h>
+#include <jam/dbghook.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
@@ -57,6 +67,7 @@ struct process {
     bool                killed;      /* (L) */
     bool                finished;    /* (L) teardown done */
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
+    bool                starting;    /* (L) process_start is making the first thread */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
@@ -476,7 +487,7 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     *finish = false;
     uint64_t f = plock(p);
     status_t st = OK;
-    if (u->state != UT_NEW)
+    if (u->state != UT_NEW || p->starting)
         st = ERR_BAD_STATE;
     else if (p->state != (from_new ? PROCESS_NEW : PROCESS_RUNNING))
         st = ERR_BAD_STATE;
@@ -491,8 +502,10 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         u->arg0 = arg0;
         u->arg1 = arg1;
         p->nthreads++;
-        if (from_new)
+        if (from_new) {
             p->state = PROCESS_RUNNING;
+            p->starting = true;
+        }
         kobject_ref(&u->base);   /* the running thread's own; dropped as it leaves */
     }
     int prio = u->prio;
@@ -500,13 +513,20 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     if (st != OK)
         return st;
 
-    struct thread *t = thread_try_create_capped(u->name, uthread_main, u, prio, mask,
-                                                PRIO_USER_MAX);
+    struct dbg_process_start hk = { p, false };
+    if (from_new)
+        DBG_HOOK(DBG_PROCESS_START, &hk);
+    struct thread *t = hk.fail ? NULL
+                               : thread_try_create_capped(u->name, uthread_main, u, prio, mask,
+                                                          PRIO_USER_MAX);
     if (!t) {
         f = plock(p);
         u->state = UT_NEW;
-        if (from_new && p->state == PROCESS_RUNNING && p->nthreads == 1)
-            p->state = PROCESS_NEW;   /* as if the start never happened */
+        if (from_new) {
+            p->starting = false;
+            if (p->state == PROCESS_RUNNING)
+                p->state = PROCESS_NEW;   /* as if the start never happened (nthreads is 1) */
+        }
         punlock(p, f);
         *finish = thread_left(p);
         kobject_unref(&u->base);
@@ -514,6 +534,8 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     }
     f = plock(p);
     u->t = t;
+    if (from_new)
+        p->starting = false;
     bool dying = p->state >= PROCESS_DYING;
     punlock(p, f);
     if (dying)
@@ -546,10 +568,12 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
         st = handle_insert(&p->handles, arg0, &hv);
     if (st == OK)
         st = start_thread(u, entry, stack, hv, arg1, mask, true, &finish);
-    if (st != OK && hv != HANDLE_INVALID) {
-        /* Give arg0 back: nothing in the child can have seen it. */
-        if (handle_remove(&p->handles, hv, arg0) != OK)
-            panic("process_start: lost the startup handle");
+    if (st != OK && hv != HANDLE_INVALID && handle_remove(&p->handles, hv, arg0) != OK) {
+        /* Give arg0 back: no thread of the child ran (see `starting`), so
+         * it is where we put it. If it somehow isn't, it is the child's
+         * now and dies with it; the caller sees arg0 empty. Never panic. */
+        kprintf("process_start: \"%s\" lost its startup handle\n", p->name);
+        arg0->obj = NULL;
     }
     mutex_unlock(&p->setup);
     if (finish)

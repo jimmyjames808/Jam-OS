@@ -9,6 +9,8 @@ enum {
     DBG_SCHED_PREV,        /* schedule, after prev->state was acted on, rq held */
     DBG_UNMAP_PRE_SHOOT,   /* vmm_unmap, after the local flush, before the shootdown */
     DBG_GATHER_PRE_FREE,   /* tlb_gather_finish, after the shootdown, before freeing (arg: gather) */
+    DBG_PROCESS_START,     /* process_start, process RUNNING, before its first thread is made
+                              (arg: struct dbg_process_start, process.h) */
     DBG_N
 };
 

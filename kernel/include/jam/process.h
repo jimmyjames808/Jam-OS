@@ -126,10 +126,20 @@ void process_debug_write(struct process *p, const char *buf, size_t n, bool repo
 
 /* Start a NEW process: move *arg0 (if arg0->obj is set) into its handle
  * table and start ut with rdi = that handle's value (0 if none) and rsi =
- * arg1. On failure *arg0 is still the caller's. mask (NULL = any CPU)
- * restricts the thread from the start (kernel benchmarks pin with it). */
+ * arg1. On failure *arg0 is still the caller's (and the process is NEW
+ * again, unless it was killed meanwhile). mask (NULL = any CPU) restricts
+ * the thread from the start (kernel benchmarks pin with it). Until it
+ * returns, no other thread of p can be started (uthread_start fails with
+ * ERR_BAD_STATE), so nothing in p can run before its first thread. */
 status_t process_start(struct process *p, struct uthread *ut, uint64_t entry, uint64_t stack,
                        struct khandle *arg0, uint64_t arg1, const cpumask_t *mask);
+/* Test hook DBG_PROCESS_START's argument: the window after process_start
+ * made p RUNNING and before its first thread exists. `fail` makes that
+ * thread's creation fail as if the kernel were out of memory. */
+struct dbg_process_start {
+    struct process *p;
+    bool            fail;
+};
 /* Kill p: every thread is cancelled and leaves; p goes DEAD (with
  * SIG_TERMINATED) once the last one has. `code` becomes the exit code;
  * `killed` says it was a kill, not an exit. Returns at once (the teardown

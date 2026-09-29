@@ -97,7 +97,7 @@ int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint6
                            arg1, NULL);
         if (arg0 != HANDLE_INVALID) {
             handle_t back;
-            if (st == OK)
+            if (st == OK || !kh.obj)
                 handle_commit(t, arg0);           /* it lives in the child now */
             else if (handle_untake(t, arg0, &kh, &back) != OK)
                 khandle_release(&kh);

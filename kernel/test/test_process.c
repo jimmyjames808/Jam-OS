@@ -10,6 +10,7 @@
 #include <jam/aspace_vmo.h>
 #include <jam/bootfs.h>
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/elf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -273,6 +274,58 @@ KTEST(proc_never_started)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, 0x400000, 0, &none, 0, NULL), ERR_BAD_STATE);
     kobject_unref(uthread_kobject(u));   /* its reference on p was the last */
+    job_is_empty(j);
+    job_unref(j);
+}
+
+/* Review R5: in the window between process_start making the process
+ * RUNNING and its first thread existing, nobody may start another thread
+ * of it (that thread could run and close the startup handle, and a failed
+ * first creation then lost it: a panic). The hook forces the window: it
+ * tries to start a second thread there, then makes the first creation
+ * fail as if out of memory. */
+static struct uthread *window_u2;
+static status_t window_st;
+
+static void window_hook(void *arg)
+{
+    struct dbg_process_start *h = arg;
+    window_st = uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL);
+    h->fail = true;
+}
+
+KTEST(proc_start_window_refuses_other_threads)
+{
+    struct job *j = fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "window", &p), OK);
+    struct uthread *u1;
+    KT_EQ(uthread_create(p, "first", &u1), OK);
+    KT_EQ(uthread_create(p, "second", &window_u2), OK);
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    kobject_unref((struct kobject *)a);
+    struct khandle arg0 = khandle_from_new((struct kobject *)b, RIGHTS_BASIC | RIGHTS_IO);
+
+    window_st = OK;
+    dbg_hooks[DBG_PROCESS_START] = window_hook;
+    status_t st = process_start(p, u1, 0x400000, 0x800000, &arg0, 0, NULL);
+    dbg_hooks[DBG_PROCESS_START] = NULL;
+    KT_EQ(window_st, ERR_BAD_STATE);   /* the second start was refused */
+    KT_EQ(st, ERR_NO_MEMORY);          /* the first failed "for lack of memory"... */
+    KT_ASSERT(arg0.obj == (struct kobject *)b);   /* ...and gave the handle back */
+    struct process_info info;
+    process_get_info(p, &info);
+    KT_EQ(info.state, PROCESS_NEW);     /* as if never started */
+    KT_EQ(info.threads, 0);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    KT_EQ(uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL), ERR_BAD_STATE);
+
+    khandle_release(&arg0);
+    kobject_unref(uthread_kobject(u1));
+    kobject_unref(uthread_kobject(window_u2));
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
+    kobject_unref(process_kobject(p));
     job_is_empty(j);
     job_unref(j);
 }
