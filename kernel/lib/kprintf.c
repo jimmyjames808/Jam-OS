@@ -59,12 +59,14 @@ int kvsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
         fmt++;
 
         char pad = ' ';
-        bool left = false;
+        bool left = false, alt = false;
         for (;; fmt++) {
             if (*fmt == '-')
                 left = true;
             else if (*fmt == '0')
                 pad = '0';
+            else if (*fmt == '#')
+                alt = true;   /* %#x: 0x prefix on non-zero values, as in C */
             else
                 break;
         }
@@ -102,6 +104,19 @@ int kvsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
             uint64_t v = lng == 0 ? va_arg(ap, unsigned)
                        : lng == 3 ? va_arg(ap, size_t)
                                   : va_arg(ap, unsigned long long);
+            if (alt && v && *fmt != 'u') {
+                /* The width counts the prefix: spaces go before it, zeros
+                 * after it. */
+                int nd = 0;
+                for (uint64_t t = v; t; t >>= 4)
+                    nd++;
+                if (!left && pad == ' ')
+                    for (int k = nd + 2; k < width; k++)
+                        put(&o, ' ');
+                put(&o, '0');
+                put(&o, *fmt == 'X' ? 'X' : 'x');
+                width = (!left && pad == ' ') ? 0 : (width > 2 ? width - 2 : 0);
+            }
             put_num(&o, v, *fmt == 'u' ? 10 : 16, *fmt == 'X', false, width, pad, left);
             break;
         }
