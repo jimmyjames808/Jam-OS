@@ -30,7 +30,7 @@
 present (unused). One USB controller: Intel xHCI 8086:7A60 rev 0x11 (keyboard, mouse, stick), an
 ASMedia USB 3 hub (174C:2074/3074; keyboard probably behind it -> M7 hub driver), composite HID
 devices (Cooler Master 2516:01C9/01C1, Sino Wealth 258A:0033, Microdia 0C45:652F), ASUS AURA
-0B05:19AF. Ethernet: Realtek RTL8125 2.5GbE (M9 native driver); user HAS an Ethernet cable ready (2026-09-29). Wi-Fi AX201 (not planned). Working
+0B05:19AF. Ethernet: Realtek RTL8125 2.5GbE (M9 native driver); user HAS an Ethernet cable ready (2026-09-29). **Jam OS must only ever send on VLAN 23** (user requirement; never untagged/other VLANs; fail closed; see ARCHITECTURE Networking). Unknown yet: whether the switch port is a trunk (Jam OS tags) or access on 23 (switch tags) - ask at M9. Wi-Fi AX201 (not planned). Working
 COM1 UART (no cable/parts; user prefers logs via stick in M8 / network in M9). XSAVE xcr0=7 (832 B).
 
 ## How we work with the user (see memory too)
