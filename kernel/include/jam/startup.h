@@ -21,6 +21,8 @@ enum startup_role {
     SR_RESOURCE,    /* M6: a resource (init: the root; devmgr: RES_PCI) */
     SR_DEVMGR,      /* M6: a channel to devmgr (devmgr: its server end; the
                      * programs init starts: a client end, <devmgr.h>) */
+    SR_CONSOLE,     /* M7: a client end of the console's channel (the shell,
+                     * and what the shell runs) */
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };
 

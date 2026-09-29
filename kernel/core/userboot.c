@@ -317,7 +317,7 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg)
     }
     uint64_t t0 = uptime_ns();
     st = object_wait_one(process_kobject(p), SIG_TERMINATED,
-                         t0 + timeout_s * 1000000000ull, NULL);
+                         timeout_s ? t0 + timeout_s * 1000000000ull : DEADLINE_NEVER, NULL);
     bool ok = false;
     if (st != OK) {
         report("init: still running after %lu s: killed (with everything it started)",

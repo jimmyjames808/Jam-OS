@@ -361,6 +361,54 @@ WEAK int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)
     return ERR_NOT_SUPPORTED;
 }
 
+WEAK int64_t sysc_klog_open(handle_t root, uint64_t out)
+{
+    (void)root, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap, uint64_t first)
+{
+    (void)reader, (void)pos, (void)buf, (void)cap, (void)first;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_framebuffer_take(handle_t root, uint64_t info, uint64_t vmo, uint64_t owner)
+{
+    (void)root, (void)info, (void)vmo, (void)owner;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_debug_command(handle_t root, uint64_t cmd, uint64_t len)
+{
+    (void)root, (void)cmd, (void)len;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_reboot(handle_t root)
+{
+    (void)root;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_serial_open(handle_t root, uint64_t out)
+{
+    (void)root, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
+{
+    (void)h, (void)buf, (void)cap;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
+{
+    (void)root, (void)buf, (void)len;
+    return ERR_NOT_SUPPORTED;
+}
+
 WEAK int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)
 {
     (void)dma, (void)on;

@@ -44,6 +44,7 @@
  * job) still kills everything before its own wait is cancelled. A child
  * job it holds a reference on stays listed, so the walk continues from its
  * list node. */
+#include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
@@ -320,4 +321,99 @@ void job_uncharge(struct job *j, uint32_t kind, uint64_t n)
         return;
     ASSERT(kind_ok(kind));
     credit(j, NULL, kind, n);
+}
+
+/* ---- listing (M7: the shell's `ps`, through debug_command) ----------------- */
+
+#define PRINT_MAX 32   /* processes / child jobs shown per job */
+
+void job_print_tree(struct job *j, unsigned depth)
+{
+    char pad[2 * JOB_MAX_DEPTH + 1];
+    unsigned w = depth < JOB_MAX_DEPTH ? depth * 2 : 2 * JOB_MAX_DEPTH;
+    memset(pad, ' ', w);
+    pad[w] = '\0';
+    kprintf("%sjob %lu: %lu pages, %lu handles, %lu threads\n", pad, j->base.koid,
+            job_used(j, JOB_LIMIT_PAGES), job_used(j, JOB_LIMIT_HANDLES),
+            job_used(j, JOB_LIMIT_THREADS));
+
+    /* References taken under the lock, used outside it (as job_kill does). */
+    struct kobject *procs[PRINT_MAX];
+    struct job *kids[PRINT_MAX];
+    unsigned np = 0, nk = 0, more = 0;
+    uint64_t f = jlock(j);
+    for (struct list_node *n = j->procs.next; n != &j->procs; n = n->next) {
+        struct process *p = process_from_job_link(container_of(n, struct job_link, node));
+        if (np < PRINT_MAX && kobject_tryref(process_kobject(p)))
+            procs[np++] = process_kobject(p);
+        else
+            more++;
+    }
+    for (struct list_node *n = j->children.next; n != &j->children; n = n->next) {
+        struct job *c = container_of(n, struct job, child_node);
+        if (nk < PRINT_MAX && kobject_tryref(&c->base))
+            kids[nk++] = c;
+        else
+            more++;
+    }
+    junlock(j, f);
+
+    static const char *const states[] = { "new", "running", "dying", "dead" };
+    for (unsigned i = 0; i < np; i++) {
+        struct process *p = process_from_kobject(procs[i]);
+        struct process_info info;
+        process_get_info(p, &info);
+        kprintf("%s  process %lu %-16s %-8s %u thread%s\n", pad, info.koid, process_name(p),
+                info.state < 4 ? states[info.state] : "?", info.threads,
+                info.threads == 1 ? "" : "s");
+        kobject_unref(procs[i]);
+    }
+    for (unsigned i = 0; i < nk; i++) {
+        job_print_tree(kids[i], depth + 1);
+        kobject_unref(&kids[i]->base);
+    }
+    if (more)
+        kprintf("%s  (%u more not shown)\n", pad, more);
+}
+
+struct job *job_root_of(struct job *j)
+{
+    while (j && j->parent)
+        j = j->parent;
+    job_ref(j);
+    return j;
+}
+
+struct process *job_find_process(struct job *j, const char *name)
+{
+    struct kobject *procs[PRINT_MAX];
+    struct job *kids[PRINT_MAX];
+    unsigned np = 0, nk = 0;
+    uint64_t f = jlock(j);
+    for (struct list_node *n = j->procs.next; n != &j->procs && np < PRINT_MAX; n = n->next) {
+        struct process *p = process_from_job_link(container_of(n, struct job_link, node));
+        if (kobject_tryref(process_kobject(p)))
+            procs[np++] = process_kobject(p);
+    }
+    for (struct list_node *n = j->children.next; n != &j->children && nk < PRINT_MAX;
+         n = n->next) {
+        struct job *c = container_of(n, struct job, child_node);
+        if (kobject_tryref(&c->base))
+            kids[nk++] = c;
+    }
+    junlock(j, f);
+    struct process *found = NULL;
+    for (unsigned i = 0; i < np; i++) {
+        struct process *p = process_from_kobject(procs[i]);
+        if (!found && !strcmp(process_name(p), name))
+            found = p;   /* keeps the reference */
+        else
+            kobject_unref(procs[i]);
+    }
+    for (unsigned i = 0; i < nk; i++) {
+        if (!found)
+            found = job_find_process(kids[i], name);
+        kobject_unref(&kids[i]->base);
+    }
+    return found;
 }

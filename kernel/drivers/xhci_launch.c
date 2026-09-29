@@ -35,7 +35,8 @@ struct pci_dev *xhci_find(uint32_t n)
 {
     for (uint32_t i = 0; i < pci_count(); i++) {
         struct pci_dev *d = pci_get(i);
-        if (d && d->info.class_code == 0x0c && d->info.subclass == 0x03 &&
+        if (d && (!pci_hide_in_use || !d->proc_users) && d->info.class_code == 0x0c &&
+            d->info.subclass == 0x03 &&
             d->info.prog_if == 0x30 && n-- == 0)
             return d;
     }

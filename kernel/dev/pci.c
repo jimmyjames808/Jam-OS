@@ -743,10 +743,13 @@ struct pci_dev *pci_get(uint32_t index)
     return index < ndevs ? &devs[index] : NULL;
 }
 
+volatile bool pci_hide_in_use;
+
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
 {
     for (uint32_t i = 0; i < ndevs; i++)
-        if ((vendor == 0xffff || devs[i].info.vendor == vendor) &&
+        if ((!pci_hide_in_use || !devs[i].proc_users) &&
+            (vendor == 0xffff || devs[i].info.vendor == vendor) &&
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];
     return NULL;

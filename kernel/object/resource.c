@@ -47,6 +47,7 @@ struct resource {
     uint64_t        start, size;   /* ROOT / MMIO: the physical range */
     struct pci_dev *dev;           /* PCI_DEV */
     struct job     *job;           /* charged one handle unit, or NULL */
+    bool            counted;       /* PCI_DEV made by a system call: in dev->proc_users */
 };
 
 static struct kobject *root;
@@ -71,6 +72,8 @@ status_t resource_mmio_range(struct kobject *res, uint64_t *base, uint64_t *size
 static void resource_destroy(struct kobject *obj)
 {
     struct resource *r = (struct resource *)obj;
+    if (r->counted)
+        __atomic_sub_fetch(&r->dev->proc_users, 1, __ATOMIC_RELAXED);
     job_uncharge(r->job, JOB_LIMIT_HANDLES, 1);
     job_unref(r->job);
     kfree(r);
@@ -134,6 +137,11 @@ status_t resource_set_job(struct kobject *obj, struct job *job)
     if (st == OK) {
         job_ref(job);
         r->job = job;
+        /* M7: a function a process (devmgr) holds is in use by a driver. */
+        if (r->kind == RES_PCI_DEV && r->dev && !r->counted) {
+            r->counted = true;
+            __atomic_add_fetch(&r->dev->proc_users, 1, __ATOMIC_RELAXED);
+        }
     }
     return st;
 }

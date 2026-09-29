@@ -1,0 +1,74 @@
+# The M7 shell over COM1: tools/qemu-test.sh with QEMU_INPUT=this file and
+# the command line "shell" (what a plain boot does). Types through the
+# serial port -> serialin -> console -> shell path and checks what the shell
+# writes back (the console mirrors program output to COM1).
+wait 120 Jam OS shell
+wait jam>
+send help
+wait restart the machine
+wait jam>
+sleep 0.5
+shot shell-help
+# line editing: "helx", backspace, "p" -> help; then the history (up, Enter)
+type helx\x7fp\r
+wait Commands:
+wait jam>
+type \e[A\r
+wait Commands:
+wait jam>
+# "hlp", left, left, "e" -> "help"; Home, Delete, End
+type hlp\e[D\e[De\r
+wait Commands:
+wait jam>
+type xhelp\e[H\e[3~\e[F\r
+wait Commands:
+wait jam>
+send nosuchcommand
+wait nosuchcommand: unknown command
+send usb
+wait usb:
+wait problem(s)
+wait jam>
+send devices
+wait devmgr:
+send ps
+wait process
+wait jam>
+send mem
+wait MiB free
+send log 5
+wait jam>
+# the console's protocols (a fake input source, focus, a source going away)
+send run contest
+wait 60 run: bin/contest exited with code 0
+wait jam>
+send run bin/utest
+wait 240 run: bin/utest exited with code 0
+wait jam>
+send ktest m4
+wait 300 shell: ktest m4:
+wait passed
+wait jam>
+sleep 0.5
+shot shell-ktest
+# restarts: the serial source, then the console itself (init restarts it,
+# the kernel draws its log meanwhile; serialin and the shell come back)
+send kill serialin
+wait bin/serialin was killed
+sleep 1
+send help
+wait Commands:
+wait jam>
+send kill console
+wait screen: back to the kernel's log
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+sleep 1
+send help
+wait Commands:
+wait jam>
+sleep 0.5
+shot shell-restarted
+send reboot
+wait reboot: resetting

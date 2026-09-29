@@ -497,6 +497,72 @@ jam_vmo_unpin:
     ret
     .size jam_vmo_unpin, . - jam_vmo_unpin
 
+    .globl jam_klog_open
+    .type jam_klog_open, @function
+jam_klog_open:
+    mov $SYS_klog_open, %eax
+    syscall
+    ret
+    .size jam_klog_open, . - jam_klog_open
+
+    .globl jam_klog_read
+    .type jam_klog_read, @function
+jam_klog_read:
+    mov %rcx, %r10
+    mov $SYS_klog_read, %eax
+    syscall
+    ret
+    .size jam_klog_read, . - jam_klog_read
+
+    .globl jam_framebuffer_take
+    .type jam_framebuffer_take, @function
+jam_framebuffer_take:
+    mov %rcx, %r10
+    mov $SYS_framebuffer_take, %eax
+    syscall
+    ret
+    .size jam_framebuffer_take, . - jam_framebuffer_take
+
+    .globl jam_debug_command
+    .type jam_debug_command, @function
+jam_debug_command:
+    mov $SYS_debug_command, %eax
+    syscall
+    ret
+    .size jam_debug_command, . - jam_debug_command
+
+    .globl jam_reboot
+    .type jam_reboot, @function
+jam_reboot:
+    mov $SYS_reboot, %eax
+    syscall
+    ret
+    .size jam_reboot, . - jam_reboot
+
+    .globl jam_serial_open
+    .type jam_serial_open, @function
+jam_serial_open:
+    mov $SYS_serial_open, %eax
+    syscall
+    ret
+    .size jam_serial_open, . - jam_serial_open
+
+    .globl jam_serial_read
+    .type jam_serial_read, @function
+jam_serial_read:
+    mov $SYS_serial_read, %eax
+    syscall
+    ret
+    .size jam_serial_read, . - jam_serial_read
+
+    .globl jam_serial_write
+    .type jam_serial_write, @function
+jam_serial_write:
+    mov $SYS_serial_write, %eax
+    syscall
+    ret
+    .size jam_serial_write, . - jam_serial_write
+
     .globl jam_dma_cap_bus_master
     .type jam_dma_cap_bus_master, @function
 jam_dma_cap_bus_master:

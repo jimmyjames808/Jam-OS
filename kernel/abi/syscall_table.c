@@ -314,6 +314,46 @@ static int64_t call_vmo_unpin(const struct syscall_frame *f)
     return sysc_vmo_unpin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_klog_open(const struct syscall_frame *f)
+{
+    return sysc_klog_open((handle_t)f->args[0], f->args[1]);
+}
+
+static int64_t call_klog_read(const struct syscall_frame *f)
+{
+    return sysc_klog_read((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4]);
+}
+
+static int64_t call_framebuffer_take(const struct syscall_frame *f)
+{
+    return sysc_framebuffer_take((handle_t)f->args[0], f->args[1], f->args[2], f->args[3]);
+}
+
+static int64_t call_debug_command(const struct syscall_frame *f)
+{
+    return sysc_debug_command((handle_t)f->args[0], f->args[1], f->args[2]);
+}
+
+static int64_t call_reboot(const struct syscall_frame *f)
+{
+    return sysc_reboot((handle_t)f->args[0]);
+}
+
+static int64_t call_serial_open(const struct syscall_frame *f)
+{
+    return sysc_serial_open((handle_t)f->args[0], f->args[1]);
+}
+
+static int64_t call_serial_read(const struct syscall_frame *f)
+{
+    return sysc_serial_read((handle_t)f->args[0], f->args[1], f->args[2]);
+}
+
+static int64_t call_serial_write(const struct syscall_frame *f)
+{
+    return sysc_serial_write((handle_t)f->args[0], f->args[1], f->args[2]);
+}
+
 static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
 {
     return sysc_dma_cap_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
@@ -384,6 +424,14 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_dma_cap_create] = call_dma_cap_create,
     [SYS_vmo_pin] = call_vmo_pin,
     [SYS_vmo_unpin] = call_vmo_unpin,
+    [SYS_klog_open] = call_klog_open,
+    [SYS_klog_read] = call_klog_read,
+    [SYS_framebuffer_take] = call_framebuffer_take,
+    [SYS_debug_command] = call_debug_command,
+    [SYS_reboot] = call_reboot,
+    [SYS_serial_open] = call_serial_open,
+    [SYS_serial_read] = call_serial_read,
+    [SYS_serial_write] = call_serial_write,
     [SYS_dma_cap_bus_master] = call_dma_cap_bus_master,
     [SYS_channel_write_rights] = call_channel_write_rights,
 };
