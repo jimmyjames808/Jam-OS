@@ -43,7 +43,7 @@ struct usb_if {
 };
 
 static struct usb_if usb_ifs[MAX_USB_IFS];
-handle_t console;
+static handle_t console;       /* our client end of the console (0: none) */
 static uint32_t console_gen;   /* bumped with every console we are given */
 
 static const char *if_path(const struct usb_if *u)

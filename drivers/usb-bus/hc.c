@@ -85,8 +85,8 @@ static volatile uint8_t *reg(struct hc *x, uint32_t off)
     return (volatile uint8_t *)va + (off - page);
 }
 
-uint32_t hc_rd(struct hc *x, uint32_t off) { return drv_read32(reg(x, off), 0); }
-void hc_wr(struct hc *x, uint32_t off, uint32_t v) { drv_write32(reg(x, off), 0, v); }
+static uint32_t hc_rd(struct hc *x, uint32_t off) { return drv_read32(reg(x, off), 0); }
+static void hc_wr(struct hc *x, uint32_t off, uint32_t v) { drv_write32(reg(x, off), 0, v); }
 static uint32_t op_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->caplen + r); }
 static void op_wr(struct hc *x, uint32_t r, uint32_t v) { hc_wr(x, x->caplen + r, v); }
 static uint32_t ir_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->rtsoff + IR0 + r); }
@@ -645,7 +645,8 @@ static void poll_events(struct hc *h, bool after_irq)
     }
 }
 
-void hc_poll(struct hc *h)
+/* The event ring now, without waiting. */
+static void hc_poll(struct hc *h)
 {
     poll_events(h, false);
 }

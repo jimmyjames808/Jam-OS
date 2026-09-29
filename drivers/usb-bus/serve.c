@@ -58,7 +58,10 @@ static bool serve_closed;   /* DR_SERVE's peer is gone (or there was none) */
 
 /* ---- channels ------------------------------------------------------------------ */
 
-int chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a)
+/* Serve h (kind CHAN_*, of device dev_id; a: its interface or DCI): its
+ * slot, -1 if there is none or the port can't watch it (h stays the
+ * caller's then). */
+static int chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a)
 {
     for (int i = 0; i < MAX_CHANS; i++) {
         struct chan *c = &chans[i];
@@ -93,7 +96,7 @@ void chan_close(int i)
     chans[i].gen++;
 }
 
-handle_t chan_handle(int i)
+static handle_t chan_handle(int i)
 {
     return i >= 0 && i < MAX_CHANS ? chans[i].h : HANDLE_INVALID;
 }

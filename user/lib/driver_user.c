@@ -10,8 +10,9 @@
  * A thread started with drv_thread_start keeps its 64 KiB stack (from the
  * heap) after it exits: libos can't free a stack it may still be running
  * on. */
-#include <os.h>
 #include <jam/driver.h>
+#include <os.h>
+#include "driver_start.h"
 
 #define PAGE           4096ull
 #define THREAD_STACK   (64u << 10)

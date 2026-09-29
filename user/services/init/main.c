@@ -13,10 +13,9 @@
  * lines go into the kernel's RESULTS box. At the end it closes its end of
  * devmgr's channel, which stops devmgr and its drivers, and waits for
  * that. init exits 0 if every program (and devmgr) exited 0. */
-#include <os.h>
 #include <devmgr.h>
-
-bool init_shell(bool nousb);   /* shell.c: never returns */
+#include <os.h>
+#include "init.h"
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
@@ -44,7 +43,6 @@ static int split(char *line, char **words)
     return n;
 }
 
-void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void init_say(const char *fmt, ...)
 {
     char buf[160];

@@ -202,7 +202,7 @@ void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *h
         *problems = np + g_failed;
 }
 
-void usb_report_summary(const char *when)
+static void usb_report_summary(const char *when)
 {
     uint32_t n, nh, ni, nhid, np;
     usb_counts(&n, &nh, &ni, &nhid, &np);

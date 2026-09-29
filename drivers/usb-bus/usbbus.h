@@ -411,8 +411,6 @@ extern struct usbdev *g_devs;   /* MAX_DEVS of them (drv_malloc) */
 int  hc_bring_up(struct hc *h);
 int  hc_shutdown(struct hc *h);
 void hc_release(struct hc *h, bool quiet);
-uint32_t hc_rd(struct hc *h, uint32_t off);
-void hc_wr(struct hc *h, uint32_t off, uint32_t v);
 uint32_t hc_portsc(struct hc *h, uint32_t port);
 void hc_portsc_write(struct hc *h, uint32_t port, uint32_t set);
 bool hc_port_is_usb3(struct hc *h, uint32_t port);
@@ -433,8 +431,6 @@ uint32_t ring_index(const struct ring *r, uint64_t trb_dev);   /* RING_TRBS if n
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms);
 void hc_doorbell(struct hc *h, uint32_t slot, uint32_t target);
-/* Process the event ring (and the interrupt). Called from every wait. */
-void hc_poll(struct hc *h);
 /* Wait for an interrupt (or anything else on the port) until deadline,
  * then poll. Packets for other keys are passed to serve_packet(). */
 void hc_wait(struct hc *h, uint64_t deadline);
@@ -506,7 +502,6 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems);
 void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */
-void usb_report_summary(const char *when);
 void dev_line(struct usbdev *d, bool report_it, const char *prefix);   /* report_it: RESULTS */
 void dev_log_detail(struct usbdev *d);
 void dev_set_path(struct usbdev *d, const struct usbdev *parent, uint8_t port);   /* "9.1" */
@@ -545,9 +540,7 @@ bool usb_busy(void);                      /* port or hub work pending */
 
 void serve_packet(struct hc *h, const struct port_packet *p);
 /* Channels: interface channels (the usb protocol) and report channels. */
-int  chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a);
 void chan_close(int i);
-handle_t chan_handle(int i);
 #define CHAN_IFACE   1
 #define CHAN_REPORTS 2
 void serve_iface_gone(uint32_t dev_id);   /* close every channel of a device */

@@ -131,10 +131,9 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
 void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
 bool usb_gone(const struct binding *b);
-/* The console: devmgr's client end of it (0: none), from SR_CONSOLE
- * or DEVMGR_SET_CONSOLE. A new one restarts the class drivers waiting for
- * it. */
-extern handle_t console;
+/* The console to connect class drivers to: devmgr's client end of it,
+ * from SR_CONSOLE or DEVMGR_SET_CONSOLE (consumed). A new one restarts the
+ * class drivers waiting for it. */
 void usb_new_console(handle_t ch);
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);

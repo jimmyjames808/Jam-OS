@@ -8,10 +8,9 @@
  * SR_DRIVER(DR_*) (= SR_USER + the driver role, <os.h>); the rest of the
  * startup message (process, vmar, job, bootfs) is libos's. The driver's
  * name is its argv[0] without the path ("drv/null" -> "null"). */
-#include <os.h>
 #include <jam/driver.h>
-
-extern const struct driver_start *libos_driver_start;   /* driver_user.c */
+#include <os.h>
+#include "driver_start.h"
 
 static struct driver_start start;
 

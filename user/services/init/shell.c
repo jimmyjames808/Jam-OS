@@ -43,14 +43,13 @@
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute is given up on (a line in the log and the RESULTS box). init
  * itself never returns in this mode. */
-#include <os.h>
 #include <devmgr.h>
 #include <idl/console.h>
+#include <os.h>
+#include "init.h"
 
 #define GIVE_UP_COUNT  10
 #define GIVE_UP_WINDOW (60 * NS_PER_S)
-
-void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 enum { CONSOLE, SERIALIN, DEVMGR, SHELL, NSVC };
 
