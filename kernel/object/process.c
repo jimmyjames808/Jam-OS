@@ -364,6 +364,13 @@ static bool thread_left(struct process *p)
     uint64_t f = plock(p);
     if (p->nthreads == 0)
         panic("process \"%s\": thread count underflow", p->name);
+    /* Credit the job BEFORE counting ourselves out, under the lock: the
+     * thread that brings nthreads to 0 signals SIG_TERMINATED, and whoever
+     * sees that must see every thread's credit. Crediting after the unlock
+     * (as first written) let the last thread finish while another was
+     * still between its count and its credit; the PC stress test caught
+     * it at 14 s ("a dead process left something charged to its job"). */
+    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     bool finish = false;
     if (--p->nthreads == 0) {
         if (p->state == PROCESS_RUNNING) {   /* the last thread left: exit 0 */
@@ -373,7 +380,6 @@ static bool thread_left(struct process *p)
         finish = p->state == PROCESS_DYING;
     }
     punlock(p, f);
-    job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     return finish;
 }
 
