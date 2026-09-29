@@ -470,6 +470,10 @@ void pmm_free_page_phys(uint64_t pa)
 
 void pmm_stats(uint64_t *total, uint64_t *free)
 {
+    /* Objects parked in the heap's per-CPU magazines hold slab pages that
+     * a drained heap would give back: return them first, so the count is
+     * exact (heap.c). Takes no lock of ours. */
+    kmem_drain_all();
     spin_lock(&lock);
     *total = total_pages;
     /* Under the lock, so no refill or drain is seen half done (see the top). */

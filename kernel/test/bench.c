@@ -210,8 +210,9 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). */
-enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_COUNT };
-static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair" };
+enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_COUNT };
+static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair",
+                                               "kmcache" };
 static uint64_t sw_boot[SW_COUNT];
 
 static uint64_t sw_get(enum sw s)
@@ -220,6 +221,7 @@ static uint64_t sw_get(enum sw s)
     case SW_SPINIDLE:   return sched_idle_spin_ns;
     case SW_PLACEORDER: return sched_place_order;
     case SW_AFFINEPAIR: return sched_affine_pair;
+    case SW_KMCACHE:    return heap_percpu;
     case SW_COUNT:      break;
     }
     return 0;
@@ -231,11 +233,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_SPINIDLE:   sched_idle_spin_ns = v; break;
     case SW_PLACEORDER: sched_place_order = v; break;
     case SW_AFFINEPAIR: sched_affine_pair = v; break;
+    case SW_KMCACHE:    heap_percpu = v; break;
     case SW_COUNT:      break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -336,20 +339,27 @@ static void bench_batch(void *arg)
     }
 }
 
+static void batch_measure(int unused)
+{
+    (void)unused;
+    run_on(cpu_p, bench_batch, NULL);
+}
+
 static void batch(const char *what, void (*op)(void))
 {
     batch_op = op;
-    run_on(cpu_p, bench_batch, NULL);
+    batch_measure(0);
     result(what, samples, SAMPLES);
 }
 
-/* ---- page allocation on every CPU at once --------------------------------- */
+/* ---- the same operation on every CPU at once --------------------------------- */
 
 #define PAR_SAMPLES 400
 static volatile uint32_t par_ready;
 static volatile bool par_go;
+static void (*par_op)(void);
 
-static void bench_page_all(void *arg)
+static void bench_all(void *arg)
 {
     uint64_t *mine = arg;
     __atomic_add_fetch(&par_ready, 1, __ATOMIC_RELEASE);
@@ -358,40 +368,73 @@ static void bench_page_all(void *arg)
     uint64_t until;
     warm_until(&until);
     while (uptime_ns() < until)
-        op_page();
+        par_op();
     for (unsigned i = 0; i < PAR_SAMPLES; i++) {
         uint64_t t0 = stamp();
         for (unsigned k = 0; k < BATCH; k++)
-            op_page();
+            par_op();
         mine[i] = span_ps(t0, stamp(), BATCH);
     }
+}
+
+/* op on every CPU at once; cpu_count * PAR_SAMPLES samples into `all`. */
+static bool all_cpus(void (*op)(void), uint64_t *all)
+{
+    struct thread **th = kmalloc(cpu_count * sizeof(*th));
+    if (!th)
+        return false;
+    par_op = op;
+    par_ready = 0;
+    par_go = false;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        th[i] = spawn_on((int)i, bench_all, all + i * PAR_SAMPLES);
+    while (par_ready < cpu_count)
+        thread_yield();
+    par_go = true;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        thread_join(th[i]);
+    kfree(th);
+    return true;
 }
 
 static void page_all_cpus(void)
 {
     unsigned n = cpu_count * PAR_SAMPLES;
     uint64_t *all = kmalloc(n * sizeof(uint64_t));
-    struct thread **th = kmalloc(cpu_count * sizeof(*th));
-    if (!all || !th) {
+    if (!all || !all_cpus(op_page, all)) {
         kprintf("bench: out of memory for the all-CPU test\n");
         kfree(all);
-        kfree(th);
         return;
     }
-    par_ready = 0;
-    par_go = false;
-    for (uint32_t i = 0; i < cpu_count; i++)
-        th[i] = spawn_on((int)i, bench_page_all, all + i * PAR_SAMPLES);
-    while (par_ready < cpu_count)
-        thread_yield();
-    par_go = true;
-    for (uint32_t i = 0; i < cpu_count; i++)
-        thread_join(th[i]);
     char what[64];
     ksnprintf(what, sizeof(what), "page alloc+free, all %u CPUs at once", cpu_count);
     result(what, all, n);
-    kfree(th);
     kfree(all);
+}
+
+/* kmalloc on every CPU at once: without the per-CPU magazines every CPU
+ * takes the kmalloc-64 cache lock twice per pair (M5.5, kmcache). */
+static void kmalloc_all_cpus(void)
+{
+    unsigned n = cpu_count * PAR_SAMPLES;
+    uint64_t *off = kmalloc(n * sizeof(uint64_t)), *on = kmalloc(n * sizeof(uint64_t));
+    bool ok = off && on;
+    if (ok) {
+        sw_set(SW_KMCACHE, false);
+        ok = all_cpus(op_kmalloc, off);
+        sw_set(SW_KMCACHE, true);
+        ok = ok && all_cpus(op_kmalloc, on);
+        sw_restore(SW_KMCACHE);
+    }
+    if (ok) {
+        char what[64];
+        ksnprintf(what, sizeof(what), "kmalloc(64)+kfree, all %u CPUs at once", cpu_count);
+        result2(what, sw_name[SW_KMCACHE], off, on, n);
+    } else {
+        kprintf("bench: out of memory for the all-CPU test\n");
+    }
+    kfree(off);
+    kfree(on);
 }
 
 /* ---- context switch: two threads yielding on one CPU ----------------------
@@ -1017,10 +1060,18 @@ void bench_run(void)
                "results under ~%lu ns mean nothing", step_ps / 1000, step_ps / 100);
 
     batch("spin_lock + spin_unlock, uncontended (P)", op_lock);
-    batch("kmalloc(64) + kfree (P)", op_kmalloc);
+    /* A live kmalloc(64) object keeps its slab from emptying: without the
+     * magazines, an empty slab goes straight back to the page allocator,
+     * and a lone alloc+free pair would build and free a slab every time. */
+    void *keeper = kmalloc(64);
+    batch_op = op_kmalloc;
+    off_on(SW_KMCACHE, "kmalloc(64) + kfree (P)", batch_measure, 0, SAMPLES);
     batch("page alloc + free, one CPU (P)", op_page);
-    if (cpu_count > 1)
+    if (cpu_count > 1) {
         page_all_cpus();
+        kmalloc_all_cpus();
+    }
+    kfree(keeper);
 
     context_switch();
     wakeup(cpu_p);

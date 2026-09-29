@@ -72,7 +72,9 @@ struct page *pmm_alloc_pages(unsigned order, unsigned flags);
 void         pmm_free_pages(struct page *p, unsigned order);
 uint64_t     pmm_alloc_page_phys(unsigned flags);   /* 0 on failure */
 void         pmm_free_page_phys(uint64_t pa);
-/* Free pages include those parked in the per-CPU stashes (see pmm.c). */
+/* Free pages include those parked in the per-CPU stashes (see pmm.c). It
+ * drains the heap's per-CPU magazines first (heap.c), so call it from
+ * thread context with no heap lock held. */
 void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
 uint64_t     pmm_max_pfn(void);
 /* Per-CPU page stashes: empty all of them into the buddy lists (returns the
@@ -138,3 +140,20 @@ void               kfree(void *p);
 struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align);
 void              *kmem_cache_alloc(struct kmem_cache *c);
 void               kmem_cache_free(struct kmem_cache *c, void *obj);
+
+/* Per-CPU magazines (M5.5, heap.c): each CPU keeps up to MAG_MAX free
+ * objects per cache, refilled and drained MAG_BATCH at a time. */
+#define MAG_MAX   16
+#define MAG_BATCH 8
+/* Once cpu_count is final (smp_start_aps): give every CPU its magazines.
+ * Until then every allocation takes the cache lock. */
+void               heap_percpu_init(void);
+/* The switch (boot "nokmcache"); the benchmark flips it. */
+extern volatile bool heap_percpu;
+/* Return every CPU's magazined objects to their slabs (pmm_stats does this
+ * first, so its count is exact). Returns how many moved. */
+uint64_t           kmem_drain_all(void);
+/* Tests: objects in cpu's magazine for c; the cache kmalloc(size) uses
+ * (NULL above the slab sizes). */
+uint64_t           kmem_cached_objects(uint32_t cpu, struct kmem_cache *c);
+struct kmem_cache *kmalloc_cache_for(size_t size);
