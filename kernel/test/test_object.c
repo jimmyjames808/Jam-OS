@@ -250,7 +250,7 @@ KTEST(m45_object_signal_user_bits)
     handle_table_destroy(&t);
 }
 
-/* ---- handle generations don't wrap (they used to after 256 reuses) ---------- */
+/* ---- handle generations don't wrap, even after 256 reuses of a slot ------- */
 
 static void audit_dummy_destroy(struct kobject *o) { kfree(o); }
 static const struct kobject_ops audit_dummy_ops = { .name = "audit dummy",

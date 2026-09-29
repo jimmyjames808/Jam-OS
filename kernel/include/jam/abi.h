@@ -4,9 +4,9 @@
  *
  * Shared by the kernel and user code (the user build sees this header
  * through a copy of a few allowed ones, never the kernel include tree), so
- * plain C types only and no kernel includes. The kernel headers that used
- * to define these (handle.h, object.h, port.h) include this one instead,
- * so there is only one definition.
+ * plain C types only and no kernel includes. The kernel headers that need
+ * these (handle.h, object.h, port.h) include this one rather than defining
+ * them again, so there is only one definition.
  *
  * User addresses are uint64_t, never C pointers, in the argument structs:
  * the kernel never dereferences them (it copies through usercopy.h). */

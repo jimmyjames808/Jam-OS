@@ -1,6 +1,7 @@
-/* AUDIT REPRO ONLY: test injection points. Each hook is NULL (off) unless a
- * repro ktest installs one; a hook only widens a window that the real code
- * already has (lock contention, an SMI, a preempted vCPU). */
+/* Test injection points (DBG_HOOK), for ktests only: `make KTESTS=0`
+ * compiles them away. Each hook is NULL (off) unless a race ktest installs
+ * one; a hook only widens a window that the real code already has (lock
+ * contention, an SMI, a preempted vCPU). */
 #pragma once
 
 enum {

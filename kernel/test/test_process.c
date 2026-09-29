@@ -347,8 +347,8 @@ KTEST(proc_debug_write_rate_limited)
      * while the burst is being printed. In QEMU the console is instant; on
      * the real PC every line also goes to the framebuffer and a real COM1
      * at 115200 baud (~4 ms a line), so the burst alone takes ~0.5 s and
-     * ~25 more lines are legitimately allowed (the first PC run printed
-     * more than a fixed 110 and failed). */
+     * ~25 more lines are legitimately allowed (so a fixed bound of 110
+     * fails on the PC). */
     uint64_t t0 = uptime_ns();
     size_t printed = process_debug_write(p, buf, len, false);
     uint64_t t1 = uptime_ns();

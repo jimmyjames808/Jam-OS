@@ -1,9 +1,9 @@
 /* Races in the scheduler's switch and wake paths (and one in the TLB
  * shootdown a migrating thread needs), each forced with the dbghook
  * injection points (jam/dbghook.h, free when unset) so the interleaving
- * happens every time. They began as repros that panicked on the defect and
- * are regression tests for the fixes now. Each needs >= 4 CPUs to build
- * its interleaving, so on a smaller machine they skip rather than fail. */
+ * happens every time. Each checks that the race's window, forced open,
+ * does no harm. Each needs >= 4 CPUs to build its interleaving, so on a
+ * smaller machine they skip rather than fail. */
 #include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
@@ -104,10 +104,10 @@ KTEST(repro_local_wake_latency)
     thread_join(h);
     kt_unpin_self();
     (void)remote;
-    /* Fixed: spin_unlock_irqrestore now re-checks need_resched once interrupts
-     * are back on, so a higher-priority thread woken on the waker's own CPU
-     * runs almost immediately instead of waiting up to a whole tick (10 ms).
-     * Was ~10.7 ms before the fix. */
+    /* spin_unlock_irqrestore re-checks need_resched once interrupts are
+     * back on, so a higher-priority thread woken on the waker's own CPU
+     * runs almost immediately instead of waiting up to a whole tick (10 ms,
+     * which is what this measures without that check). */
     KT_ASSERT(local < 2000);
 }
 
@@ -179,11 +179,11 @@ KTEST(repro_finish_switch_double_reap)
     cpumask_one(&m, 0);
     struct thread *y1 = thread_create_on("repro-y1", idle_fn, NULL, PRIO_MIN, &m);
     struct thread *y2 = thread_create_on("repro-y2", idle_fn, NULL, PRIO_MIN, &m);
-    /* Fixed: finish_switch reads prev->state BEFORE clearing on_cpu, so it no
-     * longer acts on the recycled T_DEAD it can observe late (the hook still
-     * reads that late value on purpose, showing the window exists) and does
-     * not reap the exited thread a second time. If it had, the two stacks
-     * would be one. */
+    /* finish_switch reads prev->state BEFORE clearing on_cpu, so it never
+     * acts on the recycled T_DEAD it can observe late (the hook reads that
+     * late value on purpose, showing the window exists) and does not reap
+     * the exited thread a second time. If it had, the two stacks would be
+     * one. */
     KT_ASSERT(y1->stack_top != y2->stack_top);
     thread_join(y1);
     thread_join(y2);
@@ -286,9 +286,9 @@ KTEST(repro_wake_stale_cpu)
             "wakes %lu -> %lu\n", t->name, t->state, t->on_cpu, t->rq_node.next != NULL,
             anywhere, before, ab_wakes);
     (void)anywhere;
-    /* Fixed: thread_wake re-reads t->cpu under the run queue lock and retries
-     * if it moved, so a stale waker can't mark the thread RUNNING under the
-     * wrong CPU's lock and strand it. Every later wake now lands. */
+    /* thread_wake re-reads t->cpu under the run queue lock and retries if
+     * it moved, so a stale waker can't mark the thread RUNNING under the
+     * wrong CPU's lock and strand it. Every later wake lands. */
     KT_ASSERT(ab_wakes > before);
     /* Retire the victim so it doesn't leak its stack for the whole run. */
     ab_stop = 1;
@@ -309,8 +309,8 @@ static void tlb_read(void *arg)
     tlb_seen = *tlb_va;
 }
 
-/* Fired between vmm_unmap's local flush and the remote shootdown. Under the
- * fix preemption is disabled across that window, so it records preempt_count
+/* Fired between vmm_unmap's local flush and the remote shootdown.
+ * Preemption is disabled across that window, so it records preempt_count
  * (> 0 proves migration cannot slip in and strand a CPU with a stale entry).
  * It cannot force a migration itself: schedule() with preemption disabled is
  * a hard error, which is exactly the guarantee we are checking. */
@@ -401,8 +401,8 @@ KTEST(repro_slice_not_reset)
     kprintf("repro: same-priority thread waited %lu ms for a CPU running one spinner "
             "(slice is %u ticks = %u ms)\n", ms, SLICE_TICKS, SLICE_TICKS * 10);
     kt_unpin_self();
-    /* Fixed: schedule()'s next == prev path now refreshes the slice, so a
-     * later same-priority thread gets the CPU within a slice or two instead
-     * of waiting ~1 s for the starvation boost. */
+    /* schedule()'s next == prev path refreshes the slice, so a later
+     * same-priority thread gets the CPU within a slice or two instead of
+     * waiting ~1 s for the starvation boost. */
     KT_ASSERT(ms <= 100);
 }
