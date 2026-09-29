@@ -16,7 +16,6 @@
 #include <os.h>
 #include <devmgr.h>
 
-bool init_xhcitest(void);   /* xhcitest.c */
 bool init_shell(bool nousb);   /* shell.c: M7, never returns */
 
 #define MAX_WORDS     16
@@ -333,8 +332,6 @@ int main(int argc, char **argv)
     if (!check_root_resource())
         return 1;
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
-    if (argc > 1 && !strcmp(argv[1], "xhcitest"))
-        return init_xhcitest() ? 0 : 1;
     /* M7: a plain boot: the console, devmgr (connected to it), serial
      * input and the shell; the safe mode entry: the same without USB. */
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
