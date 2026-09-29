@@ -58,4 +58,5 @@ void     serial_rx_stop(void);
 size_t   serial_rx_read(char *buf, size_t cap, void (*empty)(void *), void *ctx);
 void     serial_rx_inject(const char *s, size_t len);
 uint64_t serial_rx_dropped(void);
+bool     serial_rx_storm(void);   /* too many bad bytes: receive is polled */
 extern volatile uint64_t serial_rx_bytes, serial_rx_errors;

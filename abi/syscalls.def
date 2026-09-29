@@ -158,7 +158,7 @@
 # Run a kernel test entry point in a kernel thread (needs RIGHT_MANAGE on
 # the root): "ktest [prefix]", "bench", "stress <seconds>", "devices",
 # "ps", "mem", "kill <name>" (the first process of that name in the
-# caller's job tree; for restart tests). Output goes to the kernel log (follow it with a klog reader).
+# caller's job tree; for restart tests), "panic" (a test). Output goes to the kernel log (follow it with a klog reader).
 # Blocks until done; returns the result (ktest: tests run; stress: 0 if it
 # passed, else 1; devices: PCI functions), ERR_NOT_SUPPORTED for an unknown
 # command (or a kernel without tests), ERR_BAD_STATE while one runs.

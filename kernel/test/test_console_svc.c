@@ -205,6 +205,7 @@ KTEST(console_debug_command)
     KT_EQ(dbgcmd_check("devices", 7), OK);
     KT_EQ(dbgcmd_check("ps", 2), OK);
     KT_EQ(dbgcmd_check("mem", 3), OK);
+    KT_EQ(dbgcmd_check("panic", 5), OK);
     KT_EQ(dbgcmd_check("kill x", 6), OK);
     KT_EQ(dbgcmd_check("kill", 4), ERR_INVALID_ARGS);
     KT_EQ(dbgcmd_check("kill a b", 8), ERR_INVALID_ARGS);

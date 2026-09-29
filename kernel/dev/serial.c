@@ -37,7 +37,10 @@
  * while data is pending, so an edge-triggered interrupt can be missed) and
  * a COM1 whose interrupt isn't routed (then input is polled, <= 10 ms).
  * Bytes with a framing/parity error or a break are dropped (a floating
- * receive line with no cable attached produces those, not data). */
+ * receive line with no cable attached produces those, not data). If more
+ * than RX_STORM of those arrive in a second, the receive interrupt goes
+ * off for good (input is then polled by the tick): noise must not cost
+ * thousands of interrupts a second. */
 #include <stdint.h>
 #include <jam/cmdline.h>
 #include <jam/ioapic.h>
@@ -62,6 +65,7 @@
 #define LSR_THRE 0x20
 #define RX_RING  4096
 #define RX_BURST 256     /* bytes taken per drain, at most */
+#define RX_STORM 2000    /* bad bytes a second: the receive interrupt goes off */
 #define FIFO_LEN 16
 #define SERIAL_RESCUES_MAX 8
 #define BROKEN_FLUSH 4096
@@ -88,6 +92,8 @@ static uint8_t rx_ier;           /* IER_RDA while rx_on and the IRQ is routed (t
 static void (*rx_notify)(void *);
 static void *rx_ctx;
 volatile uint64_t serial_rx_bytes, serial_rx_errors;
+static uint64_t rx_errors_seen, rx_polls;
+static bool rx_storm;
 
 /* ---- the ring (also used by the tests on a ring of their own) ---------------- */
 
@@ -255,6 +261,19 @@ void serial_write(const char *s, size_t len)
 void serial_poll(void)
 {
     rx_drain();
+    if (rx_on && ++rx_polls % 100 == 0) {   /* once a second (CPU 0's tick) */
+        uint64_t e = serial_rx_errors;
+        if (e - rx_errors_seen > RX_STORM && rx_ier) {
+            spin_lock(&tx_lock);   /* the tick: interrupts are off */
+            rx_ier = 0;
+            rx_storm = true;
+            outb(COM1 + REG_IER, thre_on ? IER_THRE : 0);
+            spin_unlock(&tx_lock);
+            kprintf("serial: %lu bad bytes received in a second (noise on an open line?): "
+                    "receive interrupt off, input polled\n", e - rx_errors_seen);
+        }
+        rx_errors_seen = e;
+    }
     if (!irq_routed || broken || !serial_ring_used(&tx))
         return;
     spin_lock(&tx_lock);
@@ -375,9 +394,10 @@ status_t serial_rx_start(void (*notify)(void *), void *ctx)
     while (inb(COM1 + REG_LSR) & LSR_DR)   /* whatever came before: stale */
         (void)inb(COM1 + REG_DATA);
     rx_on = true;
+    rx_errors_seen = serial_rx_errors;
     spin_unlock_irqrestore(&rx_lock, f);
     f = spin_lock_irqsave(&tx_lock);
-    rx_ier = irq_routed ? IER_RDA : 0;
+    rx_ier = irq_routed && !rx_storm ? IER_RDA : 0;
     outb(COM1 + REG_IER, (thre_on ? IER_THRE : 0) | rx_ier);
     spin_unlock_no_resched(&tx_lock);
     irq_restore(f);
@@ -428,4 +448,9 @@ void serial_rx_inject(const char *s, size_t len)
 uint64_t serial_rx_dropped(void)
 {
     return rx.dropped;
+}
+
+bool serial_rx_storm(void)
+{
+    return rx_storm;
 }

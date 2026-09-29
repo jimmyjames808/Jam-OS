@@ -14,6 +14,8 @@
  *   devices          pci_report(): the number of PCI functions
  *   ps               the caller's job tree (processes, jobs, what they use)
  *   mem              physical memory: total and free (the result: free MiB)
+ *   panic            panic the kernel (a test: the panic screen must show
+ *                    over the console, which owns the screen)
  *   kill <name>      kill the first process of that name in the caller's
  *                    job tree (tests of restarts: the console, serialin,
  *                    later the HID driver); the result is its koid
@@ -25,6 +27,7 @@
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
+#include <jam/panic.h>
 #include <jam/pci.h>
 #include <jam/process.h>
 #include <jam/sched.h>
@@ -103,7 +106,7 @@ status_t dbgcmd_check(const char *cmd, size_t len)
         const char *after;
         return *rest && word(rest, &after) && !*after ? OK : ERR_INVALID_ARGS;
     }
-    if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem"))
+    if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic"))
         return *rest ? ERR_INVALID_ARGS : OK;
     return ERR_NOT_SUPPORTED;
 }
@@ -138,6 +141,8 @@ static int64_t exec(const char *cmd, struct job *scope)
         pci_report();
         return pci_count();
     }
+    if (is(cmd, n, "panic"))
+        panic("debug_command: panic asked for (a test of the panic screen)");
     if (is(cmd, n, "kill")) {
         struct process *p = scope ? job_find_process(scope, rest) : NULL;
         if (!p) {

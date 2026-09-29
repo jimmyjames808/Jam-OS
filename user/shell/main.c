@@ -274,6 +274,7 @@ static void cmd_help(void)
         "  kill <name>          kill the first process with that name (see ps)\n"
         "  clear                clear the screen\n"
         "  reboot               restart the machine\n"
+        "  panic                test: panic the kernel (its screen must show)\n"
         "Keys: left/right/home/end, backspace/delete, up/down history, Ctrl+C cancel,\n"
         "Ctrl+L clear, Shift+PageUp/PageDown scroll back.\n");
 }
@@ -519,6 +520,8 @@ static void run_command(char *line)
     } else if (!strcmp(c, "clear")) {
         flush();
         console_clear(con);
+    } else if (!strcmp(c, "panic")) {
+        kcmd("panic");
     } else if (!strcmp(c, "reboot")) {
         say("rebooting...\n");
         flush();
