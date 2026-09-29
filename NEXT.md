@@ -98,6 +98,15 @@
   QEMU: 201/201 ktests at 4+8, utest 19/19 clean, stress=30, xhcitest PASS. **Next: PC final round on
   0.0.17-m6 = All tests + 2-min + 10-min (signs off M5.5 + M6); M7 agents start when the 10-min run starts.**
   PC 0.0.17-m6: All tests 201/201, no problems.
+  User runs the 10-min stress directly (no 2-min first before a sign-off) - RUNNING (M5.5 + M6 sign-off).
+- **M7 STARTED 2026-09-29** (M7-PLAN.md). Agents running in worktrees: A usb-bus (xHCI + hubs + TT, serves
+  usb.idl; devmgr 0c0330 -> drv/usb-bus), C console + shell + kernel services (syscalls 110-119: klog read,
+  framebuffer hand-off, debug_command, reboot, COM1 RX), D supervision + safe rebind (syscalls 120-129:
+  dma_cap_bus_master; quarantine; non-transferable driver handles; restart with backoff), B hid + keyboard
+  layer (mock usb-bus/console tests). Foundation a252f56: IDL handle results + drv_channel_call_h,
+  usb/input/console .idl, input ABI, DR_USB/DR_INPUT. Merge order suggestion: D (devmgr/driver.h), C, A,
+  B; then phase 2 wiring (devmgr match HID interfaces -> drv/hid with DR_USB + DR_INPUT via
+  console.connect_input) and QEMU end-to-end (sendkey -> shell), then PC: USB device list first.
 
 - **Decision 2026-09-29 (user): drivers and services are PROCESSES FROM THE START** (M7 onward: xHCI, hub, HID,
   console, shell, FAT32, NIC all brought up as processes). The kernel build of a driver stays as an optional
