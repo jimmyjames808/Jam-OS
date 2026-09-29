@@ -21,9 +21,10 @@
 #include <jam/smp.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/userboot.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.6-m4.5"
+#define JAMOS_VERSION   "0.0.7-m5"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
@@ -135,9 +136,13 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
+    /* User space: init from bootfs, on "init" or on a plain boot (empty
+     * command line). Test, benchmark and crash entries don't start it. */
+    if (cmdline_has("init") || !boot->cmdline[0])
+        ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300));
     sched_print_stats();
 
-    report("M4.5 %s", ok ? "complete" : "FINISHED WITH PROBLEMS");
+    report("M5 %s", ok ? "complete" : "FINISHED WITH PROBLEMS");
     report_print(JAMOS_VERSION);
     kprintf("Idling.\n");
     thread_exit();   /* CPU 0 falls through to its idle thread */
