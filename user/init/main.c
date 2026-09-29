@@ -1,13 +1,14 @@
 /* init: the first user process, started by the kernel's userboot with the
- * root capabilities (M5-PLAN.md, phase 2).
+ * root job and the bootfs image.
  *
- * For now it proves ring 3 works end to end: it prints its arguments and
- * the handles it was given, then reads init.cfg from bootfs and says what
- * it would start. Starting the programs (process_create + the libos ELF
- * loader) comes with phase 2. */
+ * It runs the programs listed in init.cfg one after another, each as a
+ * real child process in a job of its own (a child of init's job), waits
+ * for each to finish and reports how it ended: the lines go into the
+ * kernel's RESULTS box. init exits 0 if every program exited 0. */
 #include <os.h>
 
-#define MAX_WORDS 16
+#define MAX_WORDS     16
+#define RUN_TIMEOUT_S 240   /* per program */
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -27,76 +28,117 @@ static int split(char *line, char **words)
     return n;
 }
 
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say(const char *fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    jam_debug_report(buf, (uint64_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
+}
+
+/* Run one program to completion. Returns true if it exited 0. */
+static bool run(int argc, char **argv)
+{
+    handle_t job, proc;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
+    if (st != OK) {
+        say("init: %s: no job (%s)", argv[0], status_str(st));
+        return false;
+    }
+    struct spawn_args a = {
+        .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
+    };
+    uint64_t t0 = (uint64_t)jam_clock_get();
+    st = spawn(&a, &proc);
+    if (st != OK) {
+        say("init: %s: could not start (%s)", argv[0], status_str(st));
+        jam_handle_close(job);
+        return false;
+    }
+    struct process_info info;
+    st = spawn_wait(proc, RUN_TIMEOUT_S * 1000000000ull, &info);
+    if (st == ERR_TIMED_OUT) {
+        say("init: %s: still running after %d s, killing it", argv[0], RUN_TIMEOUT_S);
+        jam_process_kill(proc);
+        st = spawn_wait(proc, 10000000000ull, &info);
+    }
+    uint64_t ms = ((uint64_t)jam_clock_get() - t0) / 1000000;
+    bool ok = false;
+    if (st != OK)
+        say("init: %s: lost track of it (%s)", argv[0], status_str(st));
+    else if (info.killed)
+        say("init: %s was killed after %lu ms", argv[0], (unsigned long)ms);
+    else {
+        say("init: %s exited with code %ld after %lu ms", argv[0], (long)info.exit_code,
+            (unsigned long)ms);
+        ok = info.exit_code == 0;
+    }
+    jam_handle_close(proc);
+    jam_handle_close(job);
+    return ok;
+}
+
 /* init.cfg: one program per line, "<path in bootfs> [args...]"; blank lines
  * and lines starting with '#' are ignored. */
-static void run_config(const struct bootfs_view *fs, const char *cfg, uint64_t len)
+static bool run_config(const char *cfg, uint64_t len)
 {
     char *text = malloc(len + 1);
     if (!text) {
-        printf("init: no memory for init.cfg\n");
-        return;
+        say("init: no memory for init.cfg");
+        return false;
     }
     memcpy(text, cfg, len);
     text[len] = '\0';
 
+    bool ok = true;
     int lineno = 0;
-    for (char *line = text; line; ) {
+    for (char *line = text; line;) {
         char *nl = strchr(line, '\n');
         if (nl)
             *nl = '\0';
         lineno++;
-        char *words[MAX_WORDS];
+        char *words[MAX_WORDS + 1];
         int n = line[0] == '#' ? 0 : split(line, words);
         if (n < 0) {
-            printf("init: init.cfg:%d: more than %d words\n", lineno, MAX_WORDS);
+            say("init: init.cfg:%d: more than %d words", lineno, MAX_WORDS);
+            ok = false;
         } else if (n > 0) {
-            const void *data;
-            uint64_t size;
-            status_t st = bootfs_lookup(fs, words[0], &data, &size);
-            printf("init: would run %s", words[0]);
-            for (int i = 1; i < n; i++)
-                printf(" %s", words[i]);
-            if (st == OK)
-                printf(" (%lu bytes in bootfs)\n", (unsigned long)size);
-            else
-                printf(" (%s)\n", st == ERR_NOT_FOUND ? "not in bootfs" : status_str(st));
+            words[n] = NULL;
+            ok &= run(n, words);
         }
         line = nl ? nl + 1 : NULL;
     }
     free(text);
+    return ok;
 }
 
 int main(int argc, char **argv)
 {
-    printf("init: hello from ring 3\n");
+    printf("init: hello from ring 3 (%d arg%s:", argc, argc == 1 ? "" : "s");
     for (int i = 0; i < argc; i++)
-        printf("init: argv[%d] = \"%s\"\n", i, argv[i]);
-    for (char **e = environ; *e; e++)
-        printf("init: env %s\n", *e);
+        printf(" %s", argv[i]);
+    printf(")\n");
     for (unsigned i = 0; i < startup_handle_count(); i++) {
         uint32_t role;
         handle_t h = startup_handle_at(i, &role);
         printf("init: handle %u = %#x (%s)\n", i, h, startup_role_name(role));
     }
 
-    handle_t bootfs_vmo = startup_handle(SR_BOOTFS);
-    if (bootfs_vmo == HANDLE_INVALID) {
-        printf("init: no bootfs handle, nothing to run\n");
-        return 1;
-    }
-    struct bootfs_view fs;
-    status_t st = bootfs_open(bootfs_vmo, &fs);
+    const struct bootfs_view *fs;
+    status_t st = bootfs_default(&fs);
     if (st != OK) {
-        printf("init: can't map bootfs (%s)\n", status_str(st));
+        say("init: can't map bootfs (%s)", status_str(st));
         return 1;
     }
     const void *cfg;
     uint64_t len;
-    st = bootfs_lookup(&fs, "init.cfg", &cfg, &len);
+    st = bootfs_lookup(fs, "init.cfg", &cfg, &len);
     if (st != OK) {
-        printf("init: no init.cfg in bootfs (%s)\n", status_str(st));
+        say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
     }
-    run_config(&fs, cfg, len);
-    return 0;
+    return run_config(cfg, len) ? 0 : 1;
 }

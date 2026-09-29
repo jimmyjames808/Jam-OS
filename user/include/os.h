@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <jam/abi.h>
@@ -80,3 +81,35 @@ status_t bootfs_open(handle_t vmo, struct bootfs_view *out);
 /* A file's bytes inside the mapping. ERR_NOT_FOUND if there is none. */
 status_t bootfs_lookup(const struct bootfs_view *fs, const char *name, const void **data,
                        uint64_t *size);
+/* Our SR_BOOTFS image, mapped on first use and kept. */
+status_t bootfs_default(const struct bootfs_view **out);
+
+/* processes and threads ------------------------------------------------------ */
+
+struct spawn_handle {
+    uint32_t role;   /* enum startup_role, usually SR_USER + n */
+    handle_t h;
+};
+
+struct spawn_args {
+    const char                *path;     /* in bootfs, e.g. "bin/utest" */
+    const char                *name;     /* process name; NULL: the path's last part */
+    int                        argc;
+    const char *const         *argv;
+    handle_t                   job;      /* needs RIGHT_WRITE */
+    const struct spawn_handle *extra;    /* moved into the startup message */
+    unsigned                   nextra;
+};
+
+/* Load a program from bootfs into a new process and start it. Its startup
+ * message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a duplicate
+ * of a->job), BOOTFS (a duplicate of ours) and the extras, which are
+ * consumed whatever happens. *proc gets the process handle. */
+status_t spawn(const struct spawn_args *a, handle_t *proc);
+/* Wait up to timeout_ns for proc to die (SIG_TERMINATED), then fill *info
+ * (may be NULL). ERR_TIMED_OUT if it is still alive. */
+status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *info);
+/* A new thread in our process running fn(arg) on [stack, stack+size); it
+ * exits when fn returns. *out gets its thread handle. */
+status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
+                      size_t stack_size, handle_t *out);
