@@ -33,6 +33,7 @@ uint64_t g_last_change_ns;
 bool g_first_report_done;
 static uint32_t next_id;
 static uint8_t root_fail[256];
+static uint8_t root_oc[256];   /* port power restores after over-current, per root port */
 static bool started;
 
 void usb_reset_state(void)
@@ -43,6 +44,7 @@ void usb_reset_state(void)
     next_id = 0;
     started = false;
     __builtin_memset(root_fail, 0, sizeof(root_fail));
+    __builtin_memset(root_oc, 0, sizeof(root_oc));
 }
 
 /* ---- small helpers ---------------------------------------------------------- */
@@ -267,6 +269,31 @@ static void ep_stop(struct usbdev *d, uint8_t dci, struct ring *r)
     ep_set_deq(d, dci, r);
 }
 
+/* A control transfer to a full/low-speed device behind a high-speed hub
+ * failed (not a STALL: that is the device's answer): the split transaction
+ * may have left the hub's TT buffer busy, and the next transfer to that
+ * endpoint could hang behind it. CLEAR_TT_BUFFER on the TT's hub (USB 2.0
+ * 11.24.2.3; Linux does the same for control and bulk, never interrupt),
+ * for both directions of the default endpoint. The hub is high speed, so
+ * its own transfers never come back here. */
+static void clear_tt_buffer(struct usbdev *d, uint32_t cc)
+{
+    struct usbdev *hub = dev_by_slot(d->tt_slot);
+    if (!hub || hub->gone)
+        return;
+    uint16_t tt = d->tt_mtt ? d->tt_port : 1;
+    uint32_t r[2] = { CC_SUCCESS, CC_SUCCESS };
+    for (int in = 0; in < 2; in++) {
+        uint16_t info = (uint16_t)(0 | (uint16_t)(d->address & 0x7f) << 4 | 0u << 11 |
+                                   (uint16_t)in << 15);   /* ep 0, control */
+        uint32_t n = 0;
+        r[in] = usb_control(hub, 0x23, 8, info, tt, 0, NULL, &n, 1000);
+    }
+    if (++d->tt_clears <= 4)
+        drv_log("usb %s: control transfer failed (%s): CLEAR_TT_BUFFER on hub %s port %u: %s, %s",
+                d->path, cc_str(cc), hub->path, tt, cc_str(r[0]), cc_str(r[1]));
+}
+
 uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
                      uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms)
 {
@@ -325,6 +352,9 @@ uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, 
         /* A halted default endpoint: STALL, transaction error, babble. */
         ep_reset(d, 1, &d->ep0);
     }
+    if (cc != CC_SUCCESS && cc != CC_STALL && cc != CC_GONE && d->tt_slot && !d->gone &&
+        !h->dead && !h->stopping)
+        clear_tt_buffer(d, cc);
     return cc;
 }
 
@@ -1401,6 +1431,36 @@ static bool hub_setup(struct usbdev *d)
     return true;
 }
 
+/* Over-current (M7 review). The port's power went off (the hub or the
+ * controller cut it); after a 100 ms cool-down it is powered again if the
+ * condition has cleared, at most OC_RESTORES times per port per boot (a
+ * device that keeps shorting stays off). Each step is logged; the device
+ * reconnects by itself and is enumerated as usual. */
+#define OC_RESTORES 3
+
+static void hub_over_current(struct usbdev *hub, uint8_t port)
+{
+    hc_sleep(&g_hc, 100);
+    uint16_t st = 0, chg = 0;
+    if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS)
+        return;
+    uint16_t power = hub->ss_hub ? 1u << 9 : 1u << 8;
+    if (st & power) {
+        drv_log("usb %s: port %u over-current; its power is still on", hub->path, port);
+        return;
+    }
+    if ((st & (1u << 3)) || hub->port_oc[port] >= OC_RESTORES) {
+        drv_report("usb %s: port %u over-current: port power left off (%s)", hub->path, port,
+                   st & (1u << 3) ? "still over current" : "restored 3 times already");
+        return;
+    }
+    hub->port_oc[port]++;
+    uint32_t cc = hub_feature(hub, true, HUB_PORT_POWER, port);
+    hc_sleep(&g_hc, hub->pgood_ms > 100 ? hub->pgood_ms : 100);
+    drv_report("usb %s: port %u over-current: port power restored (%u of %u): %s", hub->path,
+               port, hub->port_oc[port], OC_RESTORES, cc_str(cc));
+}
+
 static void hub_port(struct usbdev *hub, uint8_t port)
 {
     struct hc *h = &g_hc;
@@ -1420,8 +1480,12 @@ static void hub_port(struct usbdev *hub, uint8_t port)
     for (unsigned i = 0; i < 16; i++)
         if ((chg & (1u << i)) && tab[i])
             hub_feature(hub, false, tab[i], port);
-    if (chg & (1u << 3))
+    if (chg & (1u << 3)) {
         drv_log("usb %s: port %u over-current", hub->path, port);
+        hub_over_current(hub, port);
+        if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS)
+            return;
+    }
 
     struct usbdev *c = child_at(dev_index(hub), port);
     bool connected = st & 1, enabled = st & 2;
@@ -1586,6 +1650,28 @@ static bool root_reset(struct hc *h, uint32_t p, uint32_t *v)
     return true;
 }
 
+/* A root port's over-current (see hub_over_current): with Port Power
+ * Control the controller turned PP off. */
+static void root_over_current(struct hc *h, uint32_t p)
+{
+    hc_sleep(h, 100);
+    uint32_t v = hc_portsc(h, p);
+    if (v & PS_PP) {
+        drv_log("usb %u: over-current (PORTSC %08x); its power is still on", p, v);
+        return;
+    }
+    if ((v & PS_OCA) || root_oc[p] >= OC_RESTORES) {
+        drv_report("usb %u: over-current: port power left off (%s; PORTSC %08x)", p,
+                   v & PS_OCA ? "still over current" : "restored 3 times already", v);
+        return;
+    }
+    root_oc[p]++;
+    hc_portsc_write(h, p, PS_PP);
+    hc_sleep(h, 20);
+    drv_report("usb %u: over-current: port power restored (%u of %u; PORTSC %08x)", p, root_oc[p],
+               OC_RESTORES, hc_portsc(h, p));
+}
+
 static void root_port(struct hc *h, uint32_t p)
 {
     uint32_t v = hc_portsc(h, p);
@@ -1593,6 +1679,14 @@ static void root_port(struct hc *h, uint32_t p)
         return;
     if (v & PS_CHANGES)
         hc_portsc_write(h, p, v & PS_CHANGES);
+    if (v & PS_OCC) {
+        drv_log("usb %u: over-current (PORTSC %08x)", p, v);
+        root_over_current(h, p);
+        uint32_t w = hc_portsc(h, p);
+        if (w & PS_CHANGES)
+            hc_portsc_write(h, p, w & PS_CHANGES);
+        v = (w & ~PS_CHANGES) | ((v | w) & PS_CHANGES);   /* keep every change seen */
+    }
     struct usbdev *d = child_at(-1, (uint8_t)p);
     if (!(v & PS_CCS)) {
         root_fail[p] = 0;
