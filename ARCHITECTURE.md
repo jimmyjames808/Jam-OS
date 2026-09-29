@@ -320,6 +320,10 @@ with the framework itself.
     sibling); keeping busy client/server pairs on sibling hyperthreads;
     a short spin before `hlt`; per-CPU one-shot timers instead of CPU 0's
     tick (sleep and timeout resolution better than 10 ms).
+  - Serial output queued and sent by the UART's own transmit interrupt:
+    the PC has a working COM1 (found 2026-09-29), and klog currently waits
+    for every character at 115200 baud with interrupts off (~9 ms per
+    100-character line).
   - M10: tickless idle (a power feature, with ACPI power management).
   - Not scheduled: `sched_ops` (a pluggable scheduler interface), until a
     second scheduling policy is actually needed.
