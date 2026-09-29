@@ -1,6 +1,45 @@
 # Jam OS: handoff (updated 2026-09-29, before a context compact)
 
-## CURRENT STATE (read this first)
+## CURRENT STATE (read this first) -- written 2026-09-29 before a context compact
+
+- **Main = v0.0.24-m7 (ab4e106 + NEXT.md), flashed on the stick. M0-M7 ALL DONE + confirmed on the PC.**
+  M7 signed off 2026-09-29 by `stress 600` from the shell (0 failures, whole user space running).
+- **What Jam OS is now:** capability microkernel-ish OS; 28 CPUs; per-CPU scheduler (M5.5 perf pass,
+  mutex hand-off); ring-3 processes/jobs/quotas; PCI core + MSI/MSI-X + interrupt objects + resources +
+  dma_cap (safe rebind: the driver turns BME on via dma_cap_bus_master after quiescing; DMA quarantine);
+  drivers are PROCESSES from the start (kernel build optional: `drivers=kernel`); devmgr (supervision:
+  restart/backoff/give-up; query vs control channels); usb-bus (xHCI + hubs + TT; found all 8 PC
+  devices) -> hid (boot kbd/mouse, US layout) -> console (owns the framebuffer; lend_screen; client
+  levels ADMIN/SHELL/PROGRAM) -> shell (coreutils-ish builtins, pipes, vars, aliases, tab, top, date,
+  ktest/bench/stress/utest/usbtest/pci/memmap/demo/crash commands). init supervises console, serialin,
+  devmgr, shell. Apps: `run fractal` (AVX2, deep zoom to 1e28 via double-double perturbation), `run
+  life`, `run tetris`, `demo` -- real pixels through console.lend_screen.
+- **Boot menu:** Jam OS / Jam OS (safe mode: nousb) / Tests (All tests, stress 2 + 10 min, Benchmark,
+  init+utest+usbtest, timer fallback). Old entries are hidden cmdline words (pcilist, xhcitest, keytest,
+  drivers=kernel, demo, memmap, test<name>).
+- **Tests:** 227 ktests (boot strict; from the shell "live": KT_GLOBAL_* relaxed, 5 skipped), utest 30,
+  tools/shell-tests/*.txt via QEMU_INPUT (serial typing), tools/usb-test.sh, tools/usbkeys-test.sh
+  (USB typing via QEMU monitor sendkey), tools/fun-test.sh (FUN_HD=1 for 2560x1440), tools/crash-test.sh,
+  `make check`. QEMU runs: tools/qemu-test.sh <outdir> <name> <cmdline> (QEMU_SMP, QEMU_USB, QEMU_XHCI,
+  QEMU_INPUT, QEMU_MONITOR, QEMU_EXTRA). The Mac gets loaded by agents: timing flakes -> rerun once.
+- **Last PC round (0.0.24-m7):** `ktest starvation` PASSED (so 0 boosts in PC stress runs is legit:
+  28 CPUs steal waiting threads first). User was about to try the new app graphics (fractal `b`
+  benchmark, life gen/s, tetris feel) -- ask how they ran.
+- **Open questions to the user:** (1) want a `panic_reboot=<s>` boot option now (auto-reboot N s after a
+  panic), or wait for M8.5's crash kernel? (2) say when to start M8.
+- **NEXT MILESTONE: M8 (storage)**: USB mass storage (BOT; the stick 058f:6387 is HS BEHIND the ASMedia
+  hub) as a class driver on usb-bus, FAT32 service (process), read-only /boot + writable /data partition,
+  every boot's log to /data/logs/boot-NNNN.txt; sh_vfs mount table in the shell is ready for /data.
+  Write M8-PLAN.md (like M6/M7) before launching agents. Then the **audio track (A1 HDA + beep on the
+  front-panel headphone jack, A2 mixer)** right after M8 (user), then M8.5 crash kernel + kexec, M9
+  RTL8125 on VLAN 21 only. SSH was discussed and NOT added (user).
+- **Known gaps / follow-ups:** usb-bus re-examines a failed port only on a port status change (no timed
+  retry; 3 tries per port, reset on unplug) -- offered, not requested; README/ARCHITECTURE docs updated
+  for the new boot menu; devmgr's protocol is hand-written (not IDL); console.write always sends a
+  2048-byte array (variable-length IDL arrays would help).
+- **Worktrees:** many finished agent worktrees exist under .claude/worktrees (all merged); safe to leave.
+
+### Log of today's later work (newest first, detail for reference)
 - **M5 ✅ DONE 2026-09-29.** Main (v0.0.8-m5) passed everything on the PC: init+utest 14/14 (root job
   clean), All tests 131/131, benchmark (BENCH.md M5 column), and the **10-min stress sign-off with 0
   failures** on the f86cb64 build. M0-M5 all confirmed on the PC.
@@ -181,16 +220,17 @@
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
 present (unused). One USB controller: Intel xHCI 8086:7A60 rev 0x11 (keyboard, mouse, stick), an
-ASMedia USB 3 hub (174C:2074/3074; keyboard probably behind it -> M7 hub driver), composite HID
-devices (Cooler Master 2516:01C9/01C1, Sino Wealth 258A:0033, Microdia 0C45:652F), ASUS AURA
-0B05:19AF. Ethernet: Realtek RTL8125 2.5GbE (M9 native driver); user HAS an Ethernet cable ready (2026-09-29). **Jam OS must only ever send on VLAN 21** (user requirement; never untagged/other VLANs; fail closed; see ARCHITECTURE Networking). Unknown yet: whether the switch port is a trunk (Jam OS tags) or access on 21 (switch tags) - ask at M9. Wi-Fi AX201 (not planned). Working
+ASMedia USB 3 hub (174C:2074/3074; the BOOT STICK 058f:6387 is behind it; keyboard = Microdia
+0C45:652F on root port 10, mouse = Sino Wealth 258A:0033 port 11; RGB: Cooler Master 2516:01C9/01C1,
+ASUS AURA 0B05:19AF). xHCI: MSI only (8 vectors), 25 ports, 32-byte contexts, 34 scratchpads. Ethernet: Realtek RTL8125 2.5GbE (M9 native driver); user HAS an Ethernet cable ready (2026-09-29). **Jam OS must only ever send on VLAN 21** (user requirement; never untagged/other VLANs; fail closed; see ARCHITECTURE Networking). Unknown yet: whether the switch port is a trunk (Jam OS tags) or access on 21 (switch tags) - ask at M9. Wi-Fi AX201 (not planned). Working
 COM1 UART (no cable/parts; user prefers logs via stick in M8 / network in M9). XSAVE xcr0=7 (832 B).
 
 ## How we work with the user (see memory too)
 - Stick: flash immediately when the user says it's in (build, copy jamos.elf + bootfs.img +
   limine.conf to "/Volumes/NO NAME", cmp, eject; wait for the mount if /boot isn't there yet).
   Don't add long QEMU pre-checks before flashing.
-- PC checks: 2-min stress after each fix round, 10-min only as milestone sign-off. The kernel
+- PC checks: 2-min stress after each fix round, 10-min only as milestone sign-off (skip the 2-min
+  right before a sign-off; `stress 600` from the shell counts). The kernel
   prints a RESULTS box at the end; the user reads lines or sends a phone photo (HEIC in ~/Downloads;
   convert with `sips -s format png`).
 - Ask only for the specific lines needed; tell the user exactly which boot entry to pick.
@@ -198,6 +238,7 @@ COM1 UART (no cable/parts; user prefers logs via stick in M8 / network in M9). X
 - The user said to ignore the old blueprint artifact.
 
 ## Roadmap additions made 2026-09-29 (all in ARCHITECTURE.md)
+Audio track A1-A3 (right after M8); migration rule: drivers are processes from the start.
 M5.5 perf pass (row); M7 = xHCI -> hub -> HID (kb+mouse) -> console -> shell; M8 saves every boot's log
 to /data/logs; M8.5 crash kernel (kdump-style kexec) + kexec fast reboot with own AP startup; M9 =
 RTL8125 + lwIP + netlog + `update` (fetch kernel from the Mac, kexec); M13 self-hosting; graphics
