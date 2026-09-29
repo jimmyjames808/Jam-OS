@@ -1,14 +1,9 @@
 # Jam OS: handoff (updated 2026-09-29, before a context compact)
 
 ## CURRENT STATE (read this first)
-- **Main = 662c15c** (v0.0.8-m5). M0-M4.5 done + confirmed on the PC. **M5 is one step from done**:
-  on the PC the review-fixed build passed init+utest (14/14, root job clean) and All tests 131/131;
-  the 2 stress fixes since then (f86cb64: process_start creates the first thread SUSPENDED and wakes it
-  after clearing `starting`; the R5 fix had let a process's own first thread be refused by
-  thread_start -> "user process exited with the wrong code" at 1 s) are on the stick, and the
-  **10-min stress sign-off was RUNNING on the PC** when this was written. If it passes: mark M5 ✅ in
-  ARCHITECTURE.md (M5 row) and record it here. If it fails: the stress failure lines now print the
-  exit code; fix, flash, rerun the **2-minute** stress, then the 10-min once.
+- **M5 ✅ DONE 2026-09-29.** Main (v0.0.8-m5) passed everything on the PC: init+utest 14/14 (root job
+  clean), All tests 131/131, benchmark (BENCH.md M5 column), and the **10-min stress sign-off with 0
+  failures** on the f86cb64 build. M0-M5 all confirmed on the PC.
 - **M5.5 agent is RUNNING** in a background worktree (launched from base 3259578; branch name
   `worktree-agent-<id>` shows in `git worktree list` / `git branch`, newest one). Scope: spin-before-idle,
   hybrid P/E placement, sibling-HT pairs, per-CPU kmalloc caches, per-CPU one-shot timers,
