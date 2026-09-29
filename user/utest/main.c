@@ -11,7 +11,8 @@
  * with devmgr (init hands us its channel, SR_DEVMGR): the edu driver
  * process it bound, called through <idl/edu.h>, killed in the middle of a
  * DMA, and what a driver's handles can't do. The devmgr tests skip
- * themselves without devmgr or the device (edu is QEMU's).
+ * themselves without devmgr or the device (edu is QEMU's). M7: the hid
+ * driver process against a mock usb-bus and a mock console (hid.c).
  *
  * Children are this same program started with a mode ("utest nullderef",
  * see child.c), each in a job of its own so its usage can be read exactly.
@@ -1109,6 +1110,13 @@ static const struct {
     { "edu_process", t_edu_process },
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
+    { "hid_typing", t_hid_typing },
+    { "hid_modifiers", t_hid_modifiers },
+    { "hid_rollover", t_hid_rollover },
+    { "hid_repeat", t_hid_repeat },
+    { "hid_mouse", t_hid_mouse },
+    { "hid_composite", t_hid_composite },
+    { "hid_unplug_and_console_gone", t_hid_unplug_and_console_gone },
 };
 
 int main(int argc, char **argv)
