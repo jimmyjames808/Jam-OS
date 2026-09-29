@@ -107,8 +107,23 @@ static void putc_locked(char ch)
         newline();
 }
 
+/* The boot framebuffer's physical range, kept even when the console can't
+ * drive it: the PCI core must never touch the device that holds it. */
+static uint64_t fb_phys, fb_len;
+
+uint64_t fbcon_phys(uint64_t *len)
+{
+    if (len)
+        *len = fb_len;
+    return fb_phys;
+}
+
 void fbcon_init(const struct boot_framebuffer *f)
 {
+    if (f->virt) {
+        fb_phys = f->phys;
+        fb_len = (uint64_t)f->pitch * f->height;
+    }
     if (!f->virt || f->bpp != 32)
         return;   /* M0 only drives 32-bpp linear framebuffers */
     fb = *f;
