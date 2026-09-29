@@ -273,12 +273,15 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
                 me->dev, me->fn, bar, lo, hi);
         return ERR_ACCESS_DENIED;
     }
-    /* A BAR smaller than a page is rounded out to whole pages; refuse it if
-     * the added slack ([lo, phys) or [end, hi)) would reach another
-     * function's registers. Only functions with memory decode on claim
-     * addresses: a disabled one can hold a stale or unassigned BAR value
-     * (the PC's first run refused the xHCI's page-aligned 64 KiB BAR). */
-    struct { uint64_t a, len; } slack[2] = { { lo, phys - lo }, { end, hi - end } };
+    /* Refuse it if its pages -- the BAR itself, and for a BAR smaller than
+     * a page the slack it is rounded out with -- reach another function's
+     * registers: a stale, unassigned or overlapping BAR value would
+     * otherwise hand out a RES_MMIO over that function (and pci_bar_resource
+     * then turns this one's decode on). Only functions with memory decode
+     * on claim addresses: a disabled one can hold a stale or unassigned BAR
+     * value (the PC's first run refused the xHCI's 64 KiB BAR because of
+     * one). Review of M6 phase 2: 9d4719a had narrowed this to the slack
+     * alone, so a page-aligned BAR was never checked. */
     for (uint32_t i = 0; i < pci_count(); i++) {
         struct pci_dev *o = pci_get(i);
         if (!o || o == p->dev || !(pci_cfg_read(o, 0x04, 2) & 0x2))
@@ -289,13 +292,11 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
                 continue;
             /* An unsized BAR (display, bridges) covers at least its page. */
             uint64_t olen = ob->size ? ob->size : PAGE_SIZE;
-            for (int k = 0; k < 2; k++) {
-                if (slack[k].len && overlaps(slack[k].a, slack[k].len, ob->phys, olen)) {
-                    kprintf("resource: %02x:%02x.%u BAR %u [%lx, %lx) refused: its page reaches "
-                            "%02x:%02x.%u BAR %u [%lx, +%lx)\n", me->bus, me->dev, me->fn, bar,
-                            lo, hi, o->info.bus, o->info.dev, o->info.fn, b, ob->phys, olen);
-                    return ERR_ACCESS_DENIED;
-                }
+            if (overlaps(lo, hi - lo, ob->phys, olen)) {
+                kprintf("resource: %02x:%02x.%u BAR %u [%lx, %lx) refused: it reaches "
+                        "%02x:%02x.%u BAR %u [%lx, +%lx)\n", me->bus, me->dev, me->fn, bar,
+                        lo, hi, o->info.bus, o->info.dev, o->info.fn, b, ob->phys, olen);
+                return ERR_ACCESS_DENIED;
             }
         }
     }

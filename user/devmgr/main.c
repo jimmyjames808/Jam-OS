@@ -242,6 +242,16 @@ static void reaped(struct binding *b)
         info.killed ? "was killed" : info.exit_code ? "exited with an error" : "exited");
 }
 
+/* Kill b's driver: its whole job (killing only the process would leave
+ * anything it started holding its dma_cap, interrupt object and BARs),
+ * then Bus Master Enable off through our own handle, in case a dma_cap it
+ * sent away (on DR_SERVE) outlives it. Review of M6 phase 2. */
+static void kill_driver(struct binding *b)
+{
+    jam_job_kill(b->job);   /* returns once everything in it is dead */
+    jam_pci_bus_master(b->dev, 0);
+}
+
 /* Stop b's driver (kill = don't wait for it to return by itself) and
  * forget it. True if it ended cleanly (exit 0 when not killed) and its job
  * is empty. */
@@ -253,14 +263,14 @@ static bool unbind(struct binding *b, bool kill)
     b->client = HANDLE_INVALID;
     signals_t seen;
     if (kill)
-        jam_process_kill(b->proc);
+        kill_driver(b);
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
                                       (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
     bool ok = st == OK;
     if (st != OK) {
         say(true, "devmgr: %s %s did not stop in %lu s: killing its job", bdf(b), b->path,
             (unsigned long)(STOP_WAIT / S));
-        jam_job_kill(b->job);
+        kill_driver(b);
     }
     struct process_info info;
     if (jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
@@ -361,7 +371,7 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         if (!bound)
             r->status = ERR_NOT_FOUND;
         else if (b->running) {
-            jam_process_kill(b->proc);
+            kill_driver(b);
             signals_t seen;
             r->status = jam_object_wait_one(b->proc, SIG_TERMINATED,
                                             (uint64_t)jam_clock_get() + STOP_WAIT, &seen);
