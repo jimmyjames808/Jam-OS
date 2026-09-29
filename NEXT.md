@@ -72,6 +72,15 @@
   adds devmgr's 0c0330 -> drv/xhci-noop entry), independent review of phase 2, then PC: All tests,
   2-min stress, and ONE 10-min stress that signs off M5.5 and M6 together (user: 2-min until then).
   PC: All tests on 0.0.14-m6 -> run complete: no problems (incl. the xhci ktests on the real controller).
+  PC: 2-min stress on 0.0.14-m6 PASSED.
+- **devmgr + edu MERGED (v0.0.15-m6)**: user/devmgr (process, started by init; match table 1234:11e8 -> drv/edu,
+  class 0c0330 -> drv/xhci-noop, so EVERY plain/init boot now runs xhci-noop on the PC through devmgr),
+  drivers/edu both modes, kernel-mode devmgr (kdevmgr, boot word `drivers=kernel`), vmo_unpin(vmo, dma, pin)
+  ABI, MSI enable under pci_cmd_lock, utests edu_process / edu_killed_mid_dma / driver_handle_limits
+  (on the PC that one uses the first non-display MSI-X function: refused writes + memory decode on only).
+  QEMU: 200/200 ktests at 4+8, utest 19/19 clean, devmgr exits 0. Next: independent review of phase 2,
+  then PC: "Jam OS (init + utest)", "Drivers as kernel processes", All tests, 2-min, then the 10-min
+  sign-off of M5.5 + M6.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
