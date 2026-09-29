@@ -40,14 +40,15 @@
  * shell that ran it kills it).
  *
  * console.lend_screen lends the framebuffer to a program that draws on it
- * itself (the shell's `demo`): it gets the VMO (without RIGHT_DUPLICATE)
+ * itself (the shell's `demo`, bin/life, bin/tetris, bin/fractal through
+ * user/fun's gfx_open): it gets the VMO (without RIGHT_DUPLICATE)
  * and the geometry, and a lease channel. Meanwhile nothing is drawn (the
  * text model, the kernel log and the serial mirror keep going); when the
  * lease's other end closes (the program closed it or died), the whole
  * screen is redrawn.
  *
- * Full-screen programs (bin/life, bin/tetris, bin/fractal) use the
- * alternate screen: see "the alternate screen" below. */
+ * Full-screen text programs can use the alternate screen: see "the
+ * alternate screen" below. */
 #include <os.h>
 #include <idl/console.h>
 #include <idl/input.h>

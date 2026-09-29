@@ -1,9 +1,12 @@
 # The fun apps (user/life, user/tetris, user/fractal) from the shell:
 # QEMU_INPUT=this file, command line "shell" (or tools/fun-test.sh). Each
-# app's self-test, then each one played for a few seconds through the
-# serial terminal (arrows arrive as ESC [ A..D, letters as themselves),
-# with screenshots (<name>.png next to the log), quit with q, and the
-# shell prompt must come back: the console leaves its alternate screen.
+# app's self-test, then each one played for a while through the serial
+# terminal (arrows arrive as ESC [ A..D, letters as themselves), with
+# screenshots (<name>.png next to the log) of the screen the app borrowed
+# (console.lend_screen), quit with q, and the shell prompt must come back:
+# the console redraws its text screen when the lease closes. Then the
+# same when an app is killed (Ctrl+C: the shell kills its job) or crashes
+# (a page fault) with the screen still borrowed.
 wait 120 Jam OS shell
 wait jam>
 send run life --selftest
@@ -15,26 +18,29 @@ wait 60 tetris: selftest PASSED
 wait run: bin/tetris exited with code 0
 wait jam>
 send run fractal --selftest
-wait 120 fractal: selftest PASSED
+wait 240 fractal: selftest PASSED
 wait run: bin/fractal exited with code 0
 wait jam>
-# life: a 1024x1024 world (quick under QEMU), zoomed in, then all of it
-send run life size=1024
+# life: a 2048x2048 world (quick under QEMU): as it starts, zoomed in to
+# 16 px a cell, out to 2x2 cells a pixel, then a glider gun
+send run life size=2048
 wait run: bin/life started
 sleep 4
-type ++
+shot fun-life
+type +++
 sleep 3
 shot fun-life-zoomed-in
-type ---
+type -----
 sleep 3
-shot fun-life
-type g
-sleep 1
+shot fun-life-zoomed-out
+type ++++g
+sleep 2
+shot fun-life-gun
 type q
-wait 30 generations of a 1024x1024 world
+wait 30 generations of a 2048x2048 world
 wait run: bin/life exited with code 0
 wait jam>
-# tetris: move, rotate, drop a few pieces
+# tetris: move, rotate, drop a few pieces, hold one, pause
 send run tetris
 wait run: bin/tetris started
 sleep 2
@@ -43,10 +49,12 @@ sleep 0.5
 type \e[A\e[C\e[C\e[C\e[C\x20
 sleep 0.5
 type x\x20
+sleep 0.05
+shot fun-tetris-drop
 sleep 0.5
 type \e[D\x20
 sleep 0.5
-type \e[B\e[B\e[B
+type c\e[B\e[B\e[B
 sleep 1
 shot fun-tetris
 type p
@@ -56,26 +64,44 @@ type q
 wait 30 tetris: score
 wait run: bin/tetris exited with code 0
 wait jam>
-# fractal: the whole set, a famous place, a Julia set
+# fractal: the whole set, a famous place, a Julia set in another palette,
+# then deep: the tour's point zoomed 2^60 (~1e18x: perturbation)
 send run fractal
 wait run: bin/fractal started
-sleep 6
+sleep 8
 shot fun-fractal
 type 2
-sleep 6
+sleep 12
 shot fun-fractal-seahorse
-# the Julia set of the seahorse valley point, in another palette
 type jc
-sleep 6
+sleep 10
 shot fun-fractal-julia
+type j1tt++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+sleep 40
+shot fun-fractal-deep
 type q
 wait 30 renders on
 wait run: bin/fractal exited with code 0
 wait jam>
-# a program that dies on the alternate screen without leaving it: the
-# console notices (its key channel closed) and shows the text screen again
+# Ctrl+C in an app quits it (the shell would kill it too)
+send run life size=1024
+wait run: bin/life started
+sleep 3
+type \x03
+wait 30 run: bin/life
+wait jam>
+# Killed with the screen borrowed: a program that reads no keys, Ctrl+C
+# (the shell kills its job; the lease closes with it)
+send run tetris --hang-test
+wait 30 tetris: hang test: holding the screen
+sleep 1
+shot fun-hang
+type \x03
+wait 30 run: bin/tetris was killed
+wait jam>
+# ... and a crash: a program that dies (page fault) holding the screen
 send run tetris --crash-test
-wait 30 run: bin/tetris exited with code 3
+wait 30 run: bin/tetris was killed
 wait jam>
 # the shell is back in charge of the keys and the screen
 send help
