@@ -96,7 +96,8 @@ with the framework itself.
   a **vmemmap** indexed by PFN, backed in 2 MiB chunks; chunks over pure MMIO
   holes stay unmapped (a buddy block never spans two chunks). Physical page 0
   is never handed out. An early bump allocator (top-down) builds the first
-  page tables and the vmemmap. Per-CPU page caches: later, if profiling asks.
+  page tables and the vmemmap. Per-CPU page caches come in M5: the PC benchmark
+  showed the global lock collapsing with 28 CPUs allocating at once (BENCH.md).
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
   in) is reclaimed in M2, after the APs have started.
 - **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
