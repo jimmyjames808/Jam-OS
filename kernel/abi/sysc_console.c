@@ -125,6 +125,36 @@ size_t klog_reader_read(struct kobject *reader, uint64_t pos, char *buf, size_t 
     return n;
 }
 
+status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap, klog_sink_t sink,
+                             void *ctx, uint64_t *first, uint64_t *done_out)
+{
+    struct klog_reader *r = (struct klog_reader *)reader;
+    char chunk[CHUNK];
+    uint64_t start = 0, done = 0;
+    status_t st = OK;
+    do {
+        uint64_t f;
+        size_t want = cap - done < CHUNK ? cap - done : CHUNK;
+        size_t n = klog_read_at(pos, chunk, want, &f);
+        if (done == 0)
+            start = f;
+        else if (f != pos)
+            break;   /* overwritten between two steps: stop at the gap */
+        if (n && (st = sink(ctx, done, chunk, n)) != OK)
+            break;
+        done += n;
+        pos = f + n;
+        if (n < want)
+            break;
+    } while (done < cap);
+    /* Readable from where the caller's text ends, not from a step past a
+     * gap that was read and thrown away (M7 review). */
+    reader_update(r, start + done);
+    *first = start;
+    *done_out = done;
+    return st;
+}
+
 void klog_poll(void)
 {
     uint64_t h = klog_head();
@@ -323,6 +353,11 @@ int64_t sysc_klog_open(handle_t root, uint64_t out)
     return st == OK ? sysc_publish(t, r, READER_RIGHTS, out) : st;
 }
 
+static status_t to_user(void *ctx, uint64_t off, const char *text, size_t n)
+{
+    return copy_to_user(*(uint64_t *)ctx + off, text, n) == OK ? OK : ERR_INVALID_ARGS;
+}
+
 int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap, uint64_t first)
 {
     SYSC_TABLE(t);
@@ -332,25 +367,8 @@ int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap
         return st;
     if (cap > KLOG_READ_MAX)
         cap = KLOG_READ_MAX;
-    char chunk[CHUNK];
     uint64_t start = 0, done = 0;
-    do {
-        uint64_t f;
-        size_t want = cap - done < CHUNK ? cap - done : CHUNK;
-        size_t n = klog_reader_read(r, pos, chunk, want, &f);
-        if (done == 0)
-            start = f;
-        else if (f != pos)
-            break;   /* overwritten between two steps: stop at the gap */
-        if (n && copy_to_user(buf + done, chunk, n) != OK) {
-            st = ERR_INVALID_ARGS;
-            break;
-        }
-        done += n;
-        pos = f + n;
-        if (n < want)
-            break;
-    } while (done < cap);
+    st = klog_reader_read_to(r, pos, cap, to_user, &buf, &start, &done);
     kobject_unref(r);
     if (st == OK && copy_to_user(first, &start, sizeof(start)) != OK)
         st = ERR_INVALID_ARGS;

@@ -63,9 +63,67 @@ KTEST(pci_power_wake_needs_manage)
     KT_EQ(in_d3, 3);
     KT_EQ(pmcsr & 3, 0);
     KT_EQ(pci_cfg_read(d, 0x10, 4), bar0);   /* whatever a reset lost is back */
-    KT_EQ(pci_cfg_read(d, 0x04, 2) & 0x7, cmd & 0x7);
+    KT_EQ(pci_cfg_read(d, 0x04, 2) & 0x3, cmd & 0x3);   /* decode as it was */
+    KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & 0x4) || (cmd & 0x4));   /* BME never turned on */
     KT_ASSERT(pci_cfg_read(d, 0x04, 2) & 0x400);   /* INTx disabled */
     handle_table_destroy(&t);
     kobject_unref(pci);
     kobject_unref(root);
+}
+
+/* M7 review: sys_pci_config_write sleeps out the transition OUTSIDE the
+ * command lock, so the function's owner may turn Bus Master Enable off
+ * meanwhile (devmgr stopping the driver, its dma_cap closing). The restore
+ * must not bring the saved BME back: it keeps BME as it is now. Here on
+ * the e1000e, with the register writes a reset (or the owner) would make. */
+KTEST(pci_power_restore_keeps_bus_master_off)
+{
+    uint16_t pm = 0;
+    struct pci_dev *d = pm_function(&pm);
+    if (!d) {
+        kprintf("ktest %s: no QEMU e1000e with a PM capability, skipped\n", ktest_current);
+        return;
+    }
+    uint32_t cmd0 = pci_cfg_read(d, 0x04, 2), bar0 = pci_cfg_read(d, 0x10, 4);
+    uint64_t f = pci_cmd_lock();
+    pci_set_bus_master(d, true);
+    pci_enable_memory(d);
+    struct pci_saved_config saved;
+    pci_save_config(d, &saved);
+    KT_ASSERT(saved.command & 0x4);
+    pci_cmd_unlock(f);
+
+    /* 1. No reset; the owner turned BME off during the sleep. */
+    f = pci_cmd_lock();
+    pci_set_bus_master(d, false);
+    pci_cmd_unlock(f);
+    f = pci_cmd_lock();
+    KT_ASSERT(!pci_restore_config(d, &saved));
+    pci_cmd_unlock(f);
+    uint32_t cmd = pci_cfg_read(d, 0x04, 2);
+    KT_EQ(cmd & 0x4, 0);        /* BME stays off */
+    KT_EQ(cmd & 0x2, 0x2);      /* memory decode as saved */
+    KT_ASSERT(cmd & 0x400);     /* INTx disabled */
+
+    /* 2. A reset (command register 0, BAR lost): the BARs and decode come
+     * back, BME does not. */
+    f = pci_cmd_lock();
+    pci_cfg_write(d, 0x04, 2, 0);
+    pci_cfg_write(d, 0x10, 4, 0);
+    KT_ASSERT(pci_restore_config(d, &saved));
+    pci_cmd_unlock(f);
+    cmd = pci_cfg_read(d, 0x04, 2);
+    KT_EQ(pci_cfg_read(d, 0x10, 4), bar0);
+    KT_EQ(cmd & 0x4, 0);
+    KT_EQ(cmd & 0x2, 0x2);
+
+    /* 3. BME the owner turned ON meanwhile stays on. */
+    f = pci_cmd_lock();
+    pci_set_bus_master(d, true);
+    saved.command &= ~0x4;
+    pci_restore_config(d, &saved);
+    KT_EQ(pci_cfg_read(d, 0x04, 2) & 0x4, 0x4);
+    /* Put it back as it was. */
+    pci_set_bus_master(d, cmd0 & 0x4);
+    pci_cmd_unlock(f);
 }

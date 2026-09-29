@@ -76,7 +76,7 @@ KTEST(m45_read_into_full_table)
     KT_EQ(t.used, used);
 
     handle_table_destroy(&t);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* channel_call reserves slots for the reply before sending, so a full table
@@ -101,7 +101,7 @@ KTEST(m45_call_with_full_table_fails_before_send)
     KT_EQ(t.used, HANDLE_TABLE_MAX);   /* the failed reservation gave its slots back */
 
     handle_table_destroy(&t);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 struct writable_waiter {
@@ -152,7 +152,7 @@ KTEST(m45_writable_tracks_queue_room)
     KT_EQ(signals_of(&t, a) & (SIG_WRITABLE | SIG_PEER_CLOSED), SIG_PEER_CLOSED);
 
     handle_table_destroy(&t);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(m45_object_signal_user_bits)
@@ -246,5 +246,5 @@ KTEST(m45_call_canceled_by_own_close)
     KT_EQ(c.st, ERR_CANCELED);
     KT_ASSERT(uptime_ns() - t0 < SECOND);   /* promptly, not at the deadline */
     handle_table_destroy(&t);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }

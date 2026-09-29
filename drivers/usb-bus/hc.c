@@ -653,6 +653,16 @@ void hc_poll(struct hc *h)
     poll_events(h, false);
 }
 
+/* HSE / HCE: the controller has stopped itself. */
+static void check_status(struct hc *h, uint32_t sts)
+{
+    if ((sts & (STS_HSE | STS_HCE)) && !h->dead) {
+        h->dead = true;
+        drv_report("FAILED: host %s error (USBSTS %08x); the controller is stopped",
+                   sts & STS_HCE ? "controller" : "system", sts);
+    }
+}
+
 static void irq(struct hc *h)
 {
     h->irqs++;
@@ -661,11 +671,7 @@ static void irq(struct hc *h)
     ir_wr(h, IR_IMAN, IMAN_IE | IMAN_IP);
     uint32_t sts = op_rd(h, OP_USBSTS);
     op_wr(h, OP_USBSTS, sts & (STS_EINT | STS_PCD));
-    if ((sts & (STS_HSE | STS_HCE)) && !h->dead) {
-        h->dead = true;
-        drv_report("FAILED: host %s error (USBSTS %08x); the controller is stopped",
-                   sts & STS_HCE ? "controller" : "system", sts);
-    }
+    check_status(h, sts);
 }
 
 static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
@@ -682,6 +688,11 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
             serve_packet(h, &pkt);
         }
     }
+    /* An HSE comes through the platform (SERR#), not necessarily as an
+     * interrupt, and an HCE may come with none: without one, USBSTS is
+     * checked here too, at least every 200 ms in the idle loop (M7 review). */
+    if (!fired && h->running)
+        check_status(h, op_rd(h, OP_USBSTS));
     poll_events(h, fired);
 }
 

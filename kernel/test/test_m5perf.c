@@ -43,6 +43,7 @@ static struct page *stash_pages[80];
  * drains in batches, and every page in it is still counted free. */
 KTEST(pcp_refill_drain)
 {
+    KT_SKIP_LIVE("exact per-CPU stash and free page counts");
     uint32_t me = pin_self(cpu_count > 1 ? 1 : 0);
     pmm_drain_stashes();
     KT_EQ(pmm_stash_count(me), 0);
@@ -111,6 +112,7 @@ static void cross_free(void *arg)
 
 KTEST(pcp_cross_cpu_free)
 {
+    KT_SKIP_LIVE("exact per-CPU stash and free page counts");
     if (cpu_count < 2)
         return;
     uint32_t me = pin_self(0);
@@ -153,6 +155,7 @@ static void stash_some(void *arg)
 
 KTEST(pcp_oom_drains_stashes)
 {
+    KT_SKIP_LIVE("takes every free page");
     /* Park pages in every CPU's stash first. */
     for (uint32_t c = 0; c < cpu_count; c++) {
         cpumask_t m;
@@ -198,6 +201,7 @@ KTEST(pcp_oom_drains_stashes)
 /* A freed stack's pages go back, and its virtual range is reused. */
 KTEST(kstack_free_reuses_range)
 {
+    KT_SKIP_LIVE("exact free pages and kernel stack ranges");
     uint64_t free0 = free_now();
     void *a = kstack_alloc_try(64 * 1024);
     KT_ASSERT(a);
@@ -246,7 +250,7 @@ KTEST(stack_cache_limit_frees)
     KT_ASSERT(sched_stack_cache_pages() <= LIMIT * 16);
     KT_ASSERT(sched_stacks_freed() - freed0 >= THREADS - LIMIT);
     uint64_t accounted1 = free_now() + sched_stack_cache_pages();
-    KT_ASSERT(accounted1 + 2 >= accounted0);   /* slot bookkeeping: a page or two */
+    KT_GLOBAL_ASSERT(accounted1 + 2 >= accounted0);   /* slot bookkeeping: a page or two */
     sched_stack_cache_set_limit(old);
 }
 

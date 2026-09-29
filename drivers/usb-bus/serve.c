@@ -92,11 +92,16 @@ handle_t chan_handle(int i)
     return i >= 0 && i < MAX_CHANS ? chans[i].h : HANDLE_INVALID;
 }
 
+/* The interface channels first, then the report channels: a class driver
+ * that sees its reports channel close finds DR_USB already closed when the
+ * device is gone (hid tells "unplugged" from "endpoint given up" so). */
 void serve_iface_gone(uint32_t dev_id)
 {
-    for (int i = 0; i < MAX_CHANS; i++)
-        if (chans[i].h && chans[i].dev_id == dev_id)
-            chan_close(i);
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < MAX_CHANS; i++)
+            if (chans[i].h && chans[i].dev_id == dev_id &&
+                (chans[i].kind == CHAN_IFACE) == (pass == 0))
+                chan_close(i);
 }
 
 void serve_packet(struct hc *h, const struct port_packet *p)
@@ -518,6 +523,11 @@ static status_t b_open_interface(void *ctx, uint32_t id, uint8_t num, handle_t *
     struct usbdev *d = dev_find(id);
     if (!d || !d->configured)
         return ERR_NOT_FOUND;
+    /* A hub is usb-bus's own: a client's set_interface or endpoint calls
+     * would take its status-change endpoint away (M7 review). */
+    struct iface *f = usb_iface(d, num);
+    if (d->is_hub || (f && f->cls == 9))
+        return ERR_ACCESS_DENIED;
     return iface_channel(d, num, out, NULL);
 }
 

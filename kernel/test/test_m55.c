@@ -377,13 +377,13 @@ KTEST(kmag_refill_drain_accounting)
     KT_EQ(kmem_cached_objects(me, c), MAG_BATCH - 1);
     /* Exact accounting: the stats drain the 7 parked objects, and the two
      * slabs with live objects are what is used. */
-    KT_EQ(free_now(), free0 - 2);
+    KT_GLOBAL_EQ(free_now(), free0 - 2);
     KT_EQ(kmem_cached_objects(me, c), 0);
     /* Frees fill the magazine; the one that finds it full drains a batch. */
     for (int i = 0; i < 17; i++)
         kmem_cache_free(c, o[i]);
     KT_EQ(kmem_cached_objects(me, c), MAG_MAX - MAG_BATCH + 1);
-    KT_EQ(free_now(), free0);   /* drained: both slabs empty and given back */
+    KT_GLOBAL_EQ(free_now(), free0);   /* drained: both slabs empty and given back */
 
     /* An object freed on another CPU goes into that CPU's magazine. */
     if (cpu_count > 2) {
@@ -394,7 +394,7 @@ KTEST(kmag_refill_drain_accounting)
         uint64_t there = kmem_cached_objects(2, c);
         thread_join(thread_create_on("m55-free", free_it, NULL, PRIO_DEFAULT, &m));
         KT_EQ(kmem_cached_objects(2, c), there + 1);
-        KT_EQ(free_now(), free0);
+        KT_GLOBAL_EQ(free_now(), free0);
         KT_EQ(kmem_cached_objects(2, c), 0);
     }
     unpin_self();
@@ -415,6 +415,7 @@ static void park_16(void *arg)
  * and succeeds. */
 KTEST(kmag_oom_drains_magazines)
 {
+    KT_SKIP_LIVE("takes every free page");
     if (!heap_percpu || cpu_count < 3)
         return;
     struct kmem_cache *c = private_cache(&oom_cache, "m55 magazine oom");

@@ -99,7 +99,7 @@ KTEST(cancel_every_wait_kind)
      * dead waiter (the waiter's frame is long gone). */
     KT_EQ(sys_event_signal(&t, ev, 0, SIG_SIGNALED), OK);
     handle_table_destroy(&t);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 static struct mutex cancel_mutex;

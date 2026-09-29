@@ -309,6 +309,7 @@ struct usbdev {
     uint8_t speed;
     uint8_t tt_slot, tt_port;
     bool tt_mtt;
+    uint32_t tt_clears;              /* CLEAR_TT_BUFFERs sent (the first few logged) */
     char path[24];
 
     int out_page, in_page;
@@ -341,6 +342,7 @@ struct usbdev {
 
     const char *problem;             /* why it stopped short of configured */
     uint8_t port_fail[16];           /* hub: failed attach attempts per port */
+    uint8_t port_oc[16];             /* hub: port power restores after over-current */
     uint32_t ep_recover;             /* DCIs to reset after an error (main loop) */
     uint32_t ep_drop;                /* DCIs whose client went away (main loop) */
 };

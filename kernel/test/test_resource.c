@@ -715,6 +715,40 @@ KTEST(resource_pin_needs_bus_master)
     kobject_unref(cap);
 }
 
+/* M7 review: a function devmgr opened (RIGHT_MANAGE, from a process's
+ * table) stays in use by a driver for `ktest` from the shell even when no
+ * process holds it any more: while devmgr or the driver restarts,
+ * proc_users is 0 for a moment and a test must not grab the device then. */
+KTEST(resource_managed_function_stays_in_use)
+{
+    struct pci_dev *d = edu();   /* live: devmgr's edu driver has it, so skipped */
+    if (!d)
+        return;
+    bool was = d->driver_managed;
+    d->driver_managed = false;
+    struct job *j = test_job();
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = j;
+    handle_t dev, drv;
+    KT_ASSERT(open_edu(&t, &dev));
+    KT_ASSERT(d->driver_managed);
+    KT_ASSERT(d->proc_users);
+    /* A narrowed copy (a driver's) is not a binding by itself. */
+    KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
+    handle_table_destroy(&t);
+    job_unref(j);
+    KT_EQ(d->proc_users, 0);
+    KT_ASSERT(pci_in_use(d));   /* nobody holds it: still the drivers' */
+    bool hide = pci_hide_in_use;
+    pci_hide_in_use = true;
+    KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) != d);
+    pci_hide_in_use = false;
+    KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) == d);   /* the boot menu's tests see it */
+    pci_hide_in_use = hide;
+    d->driver_managed = was;
+}
+
 KTEST(resource_dma_close_clears_bus_master)
 {
     struct job *j = test_job();

@@ -96,7 +96,7 @@ KTEST(quota_job_chain_bounded)
     job_unref(cur);   /* the whole chain goes, crediting top */
     KT_EQ(job_used(top, JOB_LIMIT_HANDLES), 0);
     job_unref(top);
-    KT_ASSERT(used <= 16);
+    KT_GLOBAL_ASSERT(used <= 16);
 
     /* The handle unit is a real limit: a job allowed 2 units has room for
      * exactly two child jobs. */
@@ -134,7 +134,7 @@ KTEST(quota_vmo_tables_charged)
     KT_EQ(refused, VMO_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
     kobject_unref(vmo_kobject(v));
-    KT_ASSERT(used <= 16);          /* ...so the kernel didn't spend them either */
+    KT_GLOBAL_ASSERT(used <= 16);          /* ...so the kernel didn't spend them either */
 
     /* The first page of a VMO costs 3 (itself, a mid table, a leaf); the
      * next one in the same 2 MiB costs 1; one in a new 2 MiB costs 2. With
@@ -229,7 +229,7 @@ KTEST(quota_aspace_tables_charged)
     KT_EQ(st, ERR_NO_MEMORY);
     KT_ASSERT(i < N / 8);
     KT_ASSERT(charged <= LIMIT);
-    KT_ASSERT(used <= charged - charged0 + 16);   /* nothing big left uncharged */
+    KT_GLOBAL_ASSERT(used <= charged - charged0 + 16);   /* nothing big left uncharged */
 
     /* A split the job can't pay for fails before changing anything. */
     uint64_t big = 1ull << 44;
@@ -318,5 +318,5 @@ KTEST(quota_root_job_budget)
             "free pages\n", ji.limit[JOB_LIMIT_PAGES], ji.limit[JOB_LIMIT_HANDLES],
             ji.limit[JOB_LIMIT_MSG_BYTES], worst, free);
     KT_ASSERT(ji.limit[JOB_LIMIT_HANDLES] >= 4096);
-    KT_ASSERT(worst + (free / 4 < 8192 ? free / 4 : 8192) <= free + 64);   /* +: pmm noise */
+    KT_GLOBAL_ASSERT(worst + (free / 4 < 8192 ? free / 4 : 8192) <= free + 64);   /* +: pmm noise */
 }

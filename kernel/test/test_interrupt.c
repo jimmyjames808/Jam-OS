@@ -326,7 +326,7 @@ KTEST(interrupt_coalesces_fires_into_one_packet)
     KT_ASSERT(kobject_signals(irq) & SIG_INTERRUPT);
     kobject_unref(&p->base);
     kobject_unref(irq);
-    KT_EQ(interrupt_live_count(), live);
+    KT_GLOBAL_EQ(interrupt_live_count(), live);
 }
 
 KTEST(interrupt_ack_rearms_and_loses_nothing)
@@ -568,9 +568,9 @@ KTEST(interrupt_close_while_firing)
         kobject_unref(irq);
     }
     kobject_unref(&p->base);
-    KT_EQ(interrupt_live_count(), live + 1);
+    KT_GLOBAL_EQ(interrupt_live_count(), live + 1);
     kobject_unref(irq);
-    KT_EQ(interrupt_live_count(), live);
+    KT_GLOBAL_EQ(interrupt_live_count(), live);
     unpin_self();
 }
 
@@ -631,7 +631,7 @@ KTEST(interrupt_destroy_under_vector_storm)
          * port's destroy reaps it, which tears the object down mid-storm. */
         kobject_unref(irq);
         kobject_unref(&p->base);
-        KT_EQ(interrupt_live_count(), live);
+        KT_GLOBAL_EQ(interrupt_live_count(), live);
         /* Keep the storm on the dead vector a moment: it must be unowned. */
         uint64_t sent = storm_sent;
         while (storm_sent < sent + 20)
@@ -676,9 +676,9 @@ KTEST(interrupt_port_closed_with_packet_queued)
     KT_EQ(take(p, 0, &pkt), OK);   /* still signalled: bound -> packet at once */
     interrupt_fire_virtual(irq);
     kobject_unref(irq);   /* the binding keeps it */
-    KT_EQ(interrupt_live_count(), live + 1);
+    KT_GLOBAL_EQ(interrupt_live_count(), live + 1);
     kobject_unref(&p->base);
-    KT_EQ(interrupt_live_count(), live);
+    KT_GLOBAL_EQ(interrupt_live_count(), live);
     port_get_stats(&after);
     KT_EQ(after.ports, before.ports);
     KT_EQ(after.bindings, before.bindings);
@@ -720,7 +720,7 @@ KTEST(interrupt_job_charge)
     KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, base), OK);
     KT_EQ(interrupt_create_virtual_ex(j, false, &irq), ERR_NO_RESOURCES);
     KT_EQ(job_used(j, JOB_LIMIT_HANDLES), base);
-    KT_EQ(interrupt_live_count(), live);
+    KT_GLOBAL_EQ(interrupt_live_count(), live);
     for (uint32_t i = 0; i < cpu_count; i++)
         KT_EQ(vector_count(i), counts[i]);
     job_unref(j);
@@ -778,7 +778,7 @@ KTEST(interrupt_syscall_errors)
         KT_EQ(interrupt_create_msi(&fake, 0, 0, &o), ERR_NOT_SUPPORTED);
         KT_EQ(interrupt_create_msi(&fake, 3, IRQ_MSIX, &o), ERR_NOT_SUPPORTED);
     }
-    KT_EQ(interrupt_live_count(), live);
+    KT_GLOBAL_EQ(interrupt_live_count(), live);
     for (uint32_t i = 0; i < cpu_count; i++)
         KT_EQ(vector_count(i), counts[i]);
 }

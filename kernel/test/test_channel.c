@@ -61,7 +61,7 @@ KTEST(channel_basic)
     uint64_t live = channel_live_count();
     struct channel *a, *b;
     KT_EQ(channel_create(&a, &b), OK);
-    KT_EQ(channel_live_count(), live + 2);
+    KT_GLOBAL_EQ(channel_live_count(), live + 2);
     KT_EQ(kobject_signals(CH(a)), SIG_WRITABLE);
     KT_EQ(kobject_signals(CH(b)), SIG_WRITABLE);
 
@@ -88,7 +88,7 @@ KTEST(channel_basic)
 
     kobject_unref(CH(a));
     kobject_unref(CH(b));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(channel_should_wait)
@@ -220,7 +220,7 @@ KTEST(channel_own_endpoint_rejected)
     kobject_unref(CH(z0));
     kobject_unref(CH(s0));
     kobject_unref(CH(s1));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(channel_peer_closed)
@@ -251,7 +251,7 @@ KTEST(channel_peer_closed)
     KT_EQ(write_u32(a, 1), ERR_BAD_STATE);   /* a itself is closed */
     kobject_unref(CH(a));
     kobject_unref(CH(b));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(channel_transfer_handles)
@@ -287,7 +287,7 @@ KTEST(channel_transfer_handles)
     kobject_unref(CH(c));
     kobject_unref(CH(a));
     kobject_unref(CH(b));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(channel_destroy_releases_queued)
@@ -342,7 +342,7 @@ KTEST(channel_destroy_releases_queued)
     KT_EQ(destroyed, 1);
     kobject_unref(CH(b));
     KT_EQ(destroyed, 2);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* Writers and a reader racing the close of the reading endpoint: every
@@ -406,7 +406,7 @@ KTEST(channel_close_race)
         KT_ASSERT(race_made > 0);
         KT_EQ(race_destroyed, race_made);
     }
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* ---- the handle-level layer ------------------------------------------------ */
@@ -502,7 +502,7 @@ KTEST(channel_sys_layer)
 
     handle_table_destroy(&tbl);
     KT_EQ(destroyed, 2);
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 /* ---- cross-CPU ping-pong ------------------------------------------------------ */
@@ -644,7 +644,7 @@ KTEST(channel_call_concurrent)
     kobject_unref(CH(call_a));
     thread_join(srv);
     kobject_unref(CH(call_b));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
     kprintf("channel: %u calls from %u threads in %lu ms, %lu calls/s, avg %lu ns each\n",
             CALLERS * CALLS_EACH, CALLERS, ns / 1000000,
             (uint64_t)(CALLERS * CALLS_EACH * 1000000000ull / ns), ns / (CALLERS * CALLS_EACH));
@@ -775,5 +775,5 @@ KTEST(channel_call_peer_closed)
     KT_EQ(channel_call(close_a, q, sizeof(q), NULL, 0, r, sizeof(r), NULL, NULL, 0, NULL,
                        DEADLINE_NEVER), ERR_PEER_CLOSED);
     kobject_unref(CH(close_a));
-    KT_EQ(channel_live_count(), live);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }

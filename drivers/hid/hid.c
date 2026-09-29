@@ -40,12 +40,19 @@
  * and, when the report has a fourth byte, the wheel (input.mouse, sent
  * only when something changed).
  *
- * Ending (the reconnect rule of input.idl and usb.idl): DR_USB or the
- * reports channel closed = "device gone", exit 0 (devmgr binds a new hid
- * when the interface comes back); DR_INPUT closed = "console gone", exit 0
- * (devmgr restarts it connected to the new console). Exit 1: no DR_USB, or
- * a wait failed; 2: not a HID interface; 3: the device's descriptors or
- * endpoint couldn't be used; 4: out of memory.
+ * Ending (the reconnect rule of input.idl and usb.idl): DR_USB closed =
+ * "device gone", exit 0 (devmgr binds a new hid when the interface comes
+ * back); DR_INPUT closed = "console gone", exit 0 (devmgr restarts it
+ * connected to the new console). The reports channel closing while DR_USB
+ * stays open is NOT the device going: usb-bus stopped polling the endpoint
+ * (20 errors in a row) but the interface is still there, so exit 5 and
+ * devmgr restarts hid, which opens the endpoint again (an exit 0 there
+ * would leave the keyboard dead until it is replugged). usb-bus closes a
+ * gone device's interface channel before its report channels; hid still
+ * gives DR_USB REPORTS_GRACE to follow before it decides. Exit 1: no
+ * DR_USB, or a wait failed; 2: not a HID interface; 3: the device's
+ * descriptors or endpoint couldn't be used; 4: out of memory; 5: reports
+ * lost with the device still there.
  *
  * Every call is bounded: USB requests USB_TIMEOUT, input calls
  * INPUT_TIMEOUT (a late console costs that event, logged, not the
@@ -56,6 +63,7 @@
 
 #define USB_TIMEOUT   (2000 * MS)
 #define INPUT_TIMEOUT (2000 * MS)
+#define REPORTS_GRACE (50 * MS)
 
 #define DESC_CONFIG    0x02
 #define DESC_INTERFACE 0x04
@@ -95,6 +103,15 @@ static bool gone(struct hid *h, status_t st)
         return false;
     h->stop = STOP_DEVICE_GONE;
     return true;
+}
+
+/* The reports channel closed: the device went (DR_USB closes with it) or
+ * only the endpoint was given up (DR_USB stays open). */
+static void reports_closed(struct hid *h)
+{
+    status_t st = drv_object_wait_one(h->usb, SIG_PEER_CLOSED, drv_clock_ns() + REPORTS_GRACE,
+                                      NULL);
+    h->stop = st == OK ? STOP_DEVICE_GONE : STOP_REPORTS_LOST;
 }
 
 /* Log the 1st, 2nd, 4th, 8th ... occurrence of something. */
@@ -472,7 +489,7 @@ static void drain(struct hid *h)
         if (st == ERR_SHOULD_WAIT)
             return;
         if (st == ERR_PEER_CLOSED) {
-            h->stop = STOP_DEVICE_GONE;
+            reports_closed(h);
             return;
         }
         if (st != OK) {
@@ -544,6 +561,11 @@ int driver_main(const struct driver_start *s)
     int r = setup(h);
     if (r < 0)
         r = run(h);
+    if (r == 0 && h->stop == STOP_REPORTS_LOST) {
+        drv_log("hid %04x:%04x if %u: usb-bus closed the reports channel but the device is "
+                "still there: exit 5 (devmgr restarts hid)", h->vendor, h->product, h->iface);
+        r = 5;
+    }
     /* How it went, into the RESULTS box (the keytest boot entry counts
      * keys this way). */
     if (h->kind && r == 0) {

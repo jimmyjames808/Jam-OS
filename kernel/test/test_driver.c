@@ -82,7 +82,7 @@ KTEST(driver_kernel_drvtest_and_null)
     KT_EQ(si.killed, 0);
     KT_EQ(si.exit_code, 0);   /* null saw its client close and returned 0 */
     job_is_empty(j);
-    KT_EQ(channel_live_count(), chans);
+    KT_GLOBAL_EQ(channel_live_count(), chans);
     job_unref(j);
 }
 
@@ -112,7 +112,7 @@ KTEST(driver_kernel_raw_call_and_kill)
     KT_EQ(object_wait_one((struct kobject *)a, SIG_PEER_CLOSED, uptime_ns() + S, NULL), OK);
     kobject_unref((struct kobject *)a);
     job_is_empty(j);
-    KT_EQ(channel_live_count(), chans);
+    KT_GLOBAL_EQ(channel_live_count(), chans);
     job_unref(j);
 }
 
@@ -143,6 +143,6 @@ KTEST(driver_kernel_start_refused)
     KT_EQ(object_wait_one((struct kobject *)c, SIG_PEER_CLOSED, uptime_ns() + S, NULL), OK);
     kobject_unref((struct kobject *)a);
     kobject_unref((struct kobject *)c);
-    KT_EQ(channel_live_count(), chans);
+    KT_GLOBAL_EQ(channel_live_count(), chans);
     job_unref(j);
 }

@@ -745,10 +745,16 @@ struct pci_dev *pci_get(uint32_t index)
 
 volatile bool pci_hide_in_use;
 
+bool pci_in_use(const struct pci_dev *d)
+{
+    return __atomic_load_n(&d->proc_users, __ATOMIC_RELAXED) ||
+           __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
+}
+
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
 {
     for (uint32_t i = 0; i < ndevs; i++)
-        if ((!pci_hide_in_use || !devs[i].proc_users) &&
+        if ((!pci_hide_in_use || !pci_in_use(&devs[i])) &&
             (vendor == 0xffff || devs[i].info.vendor == vendor) &&
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];
@@ -1005,12 +1011,14 @@ bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in)
     if (lost) {
         /* Decode off while the BARs go back, then the command register as
          * it was (INTx Disable set whatever it was: M7). */
-        wr(d, CFG_COMMAND, 2, cmd & ~(CMD_IO | CMD_MEMORY));
+        wr(d, CFG_COMMAND, 2, cmd & ~(CMD_IO | CMD_MEMORY | CMD_MASTER));
         for (uint32_t i = 0; i < bar_count(d); i++)
             wr(d, CFG_BAR0 + 4 * i, 4, in->bar[i]);
     }
-    if (lost || cmd != (in->command | CMD_INTX_OFF))
-        wr(d, CFG_COMMAND, 2, in->command | CMD_INTX_OFF);
+    /* Bus Master Enable as it is now, never as saved (pci.h). */
+    uint16_t want = (uint16_t)((in->command & ~CMD_MASTER) | (cmd & CMD_MASTER) | CMD_INTX_OFF);
+    if (lost || cmd != want)
+        wr(d, CFG_COMMAND, 2, want);
     (void)rd(d, CFG_COMMAND, 2);
     spin_unlock_irqrestore(&pci_lock, f);
     return lost;

@@ -8,12 +8,17 @@
  *   device_list    every device is consistent (path, level, route, parent
  *                  hub, TT fields, configuration, interfaces)
  *   interfaces     each interface opens as a `usb` channel whose info and
- *                  GET_DESCRIPTOR(device) agree with the bus
+ *                  GET_DESCRIPTOR(device) agree with the bus; a hub's
+ *                  interface is refused (usb-bus's own)
  *   access         a class driver's channel refuses other interfaces,
  *                  device-recipient and state-changing standard requests
  * on QEMU's devices (vendor 0627) only:
  *   stall_recovered an unknown class request STALLs (ERR_NOT_SUPPORTED)
  *                  and the next request on endpoint 0 works
+ * on a QEMU usb-ccid (08e6:4433, no driver binds it; tools/usb-test.sh):
+ *   set_interface  its interrupt IN endpoint opened, then usb.set_interface
+ *                  (0): usb-bus drops the endpoint (the reports channel
+ *                  closes) and adds it back; it opens and polls again
  * and, when a keyboard with serial "jamos-keys" is attached (the
  * tools/usb-test.sh scenario, which types through the QEMU monitor), through
  * the real chain usb-bus -> devmgr -> drv/hid (M7 integration; hid owns the
@@ -206,9 +211,12 @@ static bool t_interfaces(void)
             CHECK_ST(usbbus_interface_until(bus, in(5 * S), d->id, k, &num, &alt, &nalts, &cls,
                                             &sub, &proto, &nep, eps), OK);
             CHECK(nep <= 8 && nalts >= 1);
-            if (cls == 9)
-                continue;   /* hubs are usb-bus's own */
             handle_t ch;
+            if (cls == 9 || d->hub_ports) {   /* hubs are usb-bus's own: refused */
+                CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch),
+                         ERR_ACCESS_DENIED);
+                continue;
+            }
             CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch), OK);
             uint16_t v = 0, p = 0;
             uint8_t sp = 0, n2 = 0, c2 = 0, s2 = 0, p2 = 0, e2 = 0, a2 = 0, ad = 0;
@@ -317,6 +325,53 @@ static bool t_stall_recovered(void)
  * back for the rest by itself, or DR_SERVE is dead for good (this call,
  * and devmgr's stop, never answered). txid 0: the replies go to devmgr's
  * end, which drops them. */
+static bool t_set_interface(void)
+{
+    const struct dev *d = NULL;
+    for (unsigned i = 0; i < ndevs && !d; i++)
+        if (devs[i].vid == 0x08e6 && devs[i].pid == 0x4433 && devs[i].config)
+            d = &devs[i];
+    if (!d) {
+        printf("usbtest: set_interface: no QEMU usb-ccid: skipped\n");
+        skipped++;
+        return true;
+    }
+    uint8_t num = 0, alt, nalts, cls, sub, proto, nep = 0, eps[8];
+    CHECK_ST(usbbus_interface_until(bus, in(5 * S), d->id, 0, &num, &alt, &nalts, &cls, &sub,
+                                    &proto, &nep, eps), OK);
+    handle_t ch, rep = HANDLE_INVALID;
+    CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), d->id, num, &ch), OK);
+    uint16_t mp;
+    uint8_t iv, ep = 0;
+    for (uint8_t i = 0; i < nep && !ep; i++)
+        if ((eps[i] & 0x80) && usb_open_interrupt_in_until(ch, in(5 * S), eps[i], &rep, &mp,
+                                                            &iv) == OK)
+            ep = eps[i];
+    status_t st = ep ? usb_set_interface_until(ch, in(5 * S), 0) : ERR_NOT_FOUND;
+    bool closed = ep && jam_object_wait_one(rep, SIG_PEER_CLOSED, in(5 * S), NULL) == OK;
+    if (rep != HANDLE_INVALID)
+        jam_handle_close(rep);
+    rep = HANDLE_INVALID;
+    status_t again = ep ? usb_open_interrupt_in_until(ch, in(5 * S), ep, &rep, &mp, &iv)
+                        : ERR_NOT_FOUND;
+    uint64_t reports = 0, dropped = 0, errors = 0;
+    uint8_t open = 0;
+    status_t sst = ep ? usb_endpoint_stats_until(ch, in(5 * S), ep, &reports, &dropped, &errors,
+                                                 &open) : ERR_NOT_FOUND;
+    if (rep != HANDLE_INVALID)
+        jam_handle_close(rep);
+    jam_handle_close(ch);
+    CHECK(ep != 0);   /* it has an interrupt IN endpoint */
+    CHECK_ST(st, OK);
+    CHECK(closed);    /* the old reports channel went with the old endpoint */
+    CHECK_ST(again, OK);
+    CHECK_ST(sst, OK);
+    CHECK(open);
+    printf("usbtest: set_interface(0) on %s if%u: endpoint %02x dropped, added back and open\n",
+           d->path, num, ep);
+    return true;
+}
+
 static bool t_serve_backlog(void)
 {
     struct usbbus_status_req q = { .txid = 0, .ordinal = USBBUS_STATUS };
@@ -599,6 +654,7 @@ int main(int argc, char **argv)
     run("interfaces", t_interfaces);
     run("access", t_access);
     run("stall_recovered", t_stall_recovered);
+    run("set_interface", t_set_interface);
     bool interactive = load() == OK && by_serial("jamos-keys");
     if (interactive) {
         run("keys", t_keys);
@@ -607,8 +663,8 @@ int main(int argc, char **argv)
         run("replug", t_replug);
         run("unplug_hub", t_unplug_hub);
     } else {
-        printf("usbtest: keys, kill_hid, unplug, replug, unplug_hub: no keyboard with serial jamos-keys (the QEMU USB "
-               "scenario): skipped\n");
+        printf("usbtest: keys, kill_hid, unplug, replug, unplug_hub: no keyboard with serial "
+               "jamos-keys (the QEMU USB scenario): skipped\n");
         skipped += 5;
     }
     run("serve_backlog", t_serve_backlog);

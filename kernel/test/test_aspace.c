@@ -525,16 +525,16 @@ KTEST(aspace_decommit_two_cpus)
 
     KT_EQ(two_hook_ran, 1);
     KT_ASSERT(two_hook_ok);   /* both shot down while the page was still held */
-    KT_EQ(two_victim->refcount, 0);   /* and freed after */
+    KT_GLOBAL_EQ(two_victim->refcount, 0);   /* and freed after (live: maybe reused already) */
     KT_EQ(aspace_pte(two_as[0], two_addr[0]), 0);
     KT_EQ(aspace_pte(two_as[1], two_addr[1]), 0);
     KT_EQ(vmm_translate(aspace_pml4(two_as[0]), two_addr[0]), UINT64_MAX);
     KT_EQ(vmm_translate(aspace_pml4(two_as[1]), two_addr[1]), UINT64_MAX);
     KT_EQ(vmo_committed(v), 0);
     /* CPUs that weren't using either address space were left alone. */
-    KT_EQ(tlb_mask_flush_count(0), me_before);
+    KT_GLOBAL_EQ(tlb_mask_flush_count(0), me_before);   /* others may unmap there */
     if (cpu_count > 3)
-        KT_EQ(tlb_mask_flush_count(3), other_before);
+        KT_GLOBAL_EQ(tlb_mask_flush_count(3), other_before);   /* others may unmap there */
 
     /* Grab the freed page and scribble on it, so a stale TLB entry would
      * read garbage; then fault a fresh zero page in behind both mappings. */
@@ -649,7 +649,7 @@ KTEST(aspace_large_decommit_batches)
     KT_EQ(pte_pa(as, a + 49 * PG), vmo_page_phys(v, 49 * PG));
     aspace_unref(as);
     put(v);
-    KT_ASSERT(base - free_now() <= 2);
+    KT_GLOBAL_ASSERT(base - free_now() <= 2);
 }
 
 KTEST(aspace_destroy_frees_tables)
@@ -679,10 +679,10 @@ KTEST(aspace_destroy_frees_tables)
     KT_EQ(vmo_kobject(v)->refs, 6);
     uint64_t before = free_now();
     aspace_unref(as);
-    KT_ASSERT(free_now() - before >= 14 + 1);   /* the tables and the PML4 */
+    KT_GLOBAL_ASSERT(free_now() - before >= 14 + 1);   /* the tables and the PML4 */
     KT_EQ(vmo_kobject(v)->refs, 1);
     put(v);
-    KT_ASSERT(base - free_now() <= 1);   /* at most a slab page */
+    KT_GLOBAL_ASSERT(base - free_now() <= 1);   /* at most a slab page */
 
     aspace_unref(warm);
     put(keep);
@@ -865,7 +865,7 @@ KTEST(aspace_stress)
     thread_sleep_ms(10);
     /* Thread stacks may have joined the scheduler's cache; the harness
      * accounts those. Page tables and VMO pages must all be back. */
-    KT_ASSERT(base - free_now() <= n * 16 + 4);
+    KT_GLOBAL_ASSERT(base - free_now() <= n * 16 + 4);
 }
 
 /* ---- vmar objects and the handle layer --------------------------------------- */
