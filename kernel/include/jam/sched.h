@@ -84,8 +84,10 @@ struct thread {
 
     struct list_node  rq_node;       /* run queue */
     struct list_node  wait_node;     /* wait queue */
-    struct list_node  sleep_node;    /* sleep list */
+    struct list_node  sleep_node;    /* a CPU's sleeper queue (sched.c) */
     uint64_t          wake_at_ns;
+    uint64_t          wake_at_tsc;   /* the same deadline as a TSC value */
+    uint32_t          sleep_cpu;     /* whose queue sleep_node is on */
 
     void             *stack_top;
     volatile uint32_t refs;
@@ -201,8 +203,11 @@ _Noreturn void sched_run_ap_idle(void);
 /* Once every AP that will start has started: record each CPU's HT sibling
  * for placement (until then placement knows no siblings). */
 void sched_topology_init(void);
-/* Called from the timer interrupt on every CPU. */
+/* Called from the timer interrupt on every CPU, at each scheduler tick. */
 void sched_tick(void);
+/* From every timer interrupt (M5.5): wake this CPU's sleepers that are
+ * due and re-arm its timer for the next one. True if it woke any. */
+bool sched_timer_expire(void);
 /* From the interrupt exit path: switch if a reschedule is pending. */
 void sched_irq_exit(uint64_t interrupted_rflags);
 /* Total anti-starvation boosts so far. */

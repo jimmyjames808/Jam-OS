@@ -2,6 +2,7 @@
  * magazines, per-CPU one-shot timers, the serial transmit ring, PCIDs. */
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
+#include <jam/lapic.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
@@ -412,4 +413,122 @@ KTEST(kmag_oom_drains_magazines)
     KT_EQ(left, 0);
     kmem_cache_free(c, obj);
     KT_EQ(free_now(), free0);
+}
+
+/* ---- per-CPU one-shot timers --------------------------------------------- */
+
+#define NSLEEP 5
+/* QEMU's emulated APIC timer and slow TCG wakeups make ~1.5 ms errors
+ * common there; the tick's are up to 10 ms. The PC is measured by the
+ * benchmark ("sleep ... wake-up error" lines: tens of us expected). */
+#define ONESHOT_BOUND (5 * MS)
+static const uint64_t sleep_ms[NSLEEP] = { 9, 1, 7, 3, 5 };
+static uint64_t sleep_base;
+static volatile uint32_t sleep_seq;
+static uint32_t sleep_rank[NSLEEP];
+static int64_t sleep_err[NSLEEP];
+
+static volatile bool sleep_go;
+static struct waitqueue sleep_wq;
+static spinlock_t sleep_lock_t = SPINLOCK_INIT("m55 sleepers go");
+
+static void sleeper(void *arg)
+{
+    uint32_t i = (uint32_t)(uintptr_t)arg;
+    uint64_t f = spin_lock_irqsave(&sleep_lock_t);
+    while (!sleep_go)   /* thread creation is slow in QEMU: start together */
+        waitqueue_wait(&sleep_wq, &sleep_lock_t, &f);
+    spin_unlock_irqrestore(&sleep_lock_t, f);
+    uint64_t deadline = sleep_base + sleep_ms[i] * MS;
+    uint64_t now = uptime_ns();
+    if (now < deadline)
+        thread_sleep_ns(deadline - now);
+    uint64_t woke = uptime_ns();
+    sleep_rank[i] = __atomic_fetch_add(&sleep_seq, 1, __ATOMIC_RELAXED);
+    sleep_err[i] = (int64_t)(woke - deadline);
+}
+
+/* Five threads on one CPU sleep to deadlines queued out of order: they wake
+ * in deadline order, and (with one-shot timers) each within ONESHOT_BOUND of its
+ * deadline, where CPU 0's 10 ms tick used to be the resolution. */
+KTEST(oneshot_timer_order_and_accuracy)
+{
+    uint32_t cpu = cpu_count > 1 ? 1 : 0;
+    cpumask_t m;
+    cpumask_one(&m, cpu);
+    struct thread *th[NSLEEP];
+    sleep_seq = 0;
+    sleep_go = false;
+    waitqueue_init(&sleep_wq, "m55 sleepers");
+    for (uint32_t i = 0; i < NSLEEP; i++)
+        th[i] = thread_create_on("m55-sleep", sleeper, (void *)(uintptr_t)i, PRIO_DEFAULT + 4,
+                                 &m);
+    uint64_t f = spin_lock_irqsave(&sleep_lock_t);
+    sleep_base = uptime_ns() + 10 * MS;
+    sleep_go = true;
+    spin_unlock_irqrestore(&sleep_lock_t, f);
+    waitqueue_wake_all(&sleep_wq);
+    for (uint32_t i = 0; i < NSLEEP; i++)
+        thread_join(th[i]);
+    bool oneshot = lapic_timer_has_oneshot() && lapic_oneshot;
+    for (uint32_t i = 0; i < NSLEEP; i++)
+        kprintf("oneshot: %lu ms sleeper woke %ld us late (rank %u)%s\n", sleep_ms[i],
+                sleep_err[i] / 1000, sleep_rank[i], oneshot ? "" : " (tick resolution)");
+    for (uint32_t i = 0; i < NSLEEP; i++) {
+        uint32_t earlier = 0;
+        for (uint32_t j = 0; j < NSLEEP; j++)
+            earlier += sleep_ms[j] < sleep_ms[i];
+        KT_EQ(sleep_rank[i], earlier);
+        KT_ASSERT(sleep_err[i] >= 0);   /* never early */
+        if (oneshot)
+            KT_ASSERT(sleep_err[i] < (int64_t)ONESHOT_BOUND);
+    }
+}
+
+/* A sleeper whose wait ends early (woken by something else) leaves its
+ * CPU's queue, and the queue keeps working for the ones still on it. */
+static struct waitqueue early_wq;
+static spinlock_t early_lock;
+static volatile bool early_flag;
+static volatile uint64_t early_woke;
+
+static void early_sleeper(void *arg)
+{
+    (void)arg;
+    uint64_t f = spin_lock_irqsave(&early_lock);
+    uint64_t deadline = uptime_ns() + 1000 * MS;
+    while (!early_flag && uptime_ns() < deadline)
+        waitqueue_wait_until(&early_wq, &early_lock, &f, deadline);
+    spin_unlock_irqrestore(&early_lock, f);
+    early_woke = uptime_ns();
+}
+
+KTEST(oneshot_timer_early_wake_leaves_queue)
+{
+    uint32_t cpu = cpu_count > 1 ? 1 : 0;
+    cpumask_t m;
+    cpumask_one(&m, cpu);
+    spin_init(&early_lock, "m55 early");
+    waitqueue_init(&early_wq, "m55 early waiters");
+    early_flag = false;
+    early_woke = 0;
+    struct thread *t = thread_create_on("m55-early", early_sleeper, NULL, PRIO_DEFAULT, &m);
+    thread_sleep_ms(5);
+    uint64_t f = spin_lock_irqsave(&early_lock);
+    early_flag = true;
+    spin_unlock_irqrestore(&early_lock, f);
+    uint64_t t0 = uptime_ns();
+    waitqueue_wake_all(&early_wq);
+    thread_join(t);
+    KT_ASSERT(early_woke - t0 < 500 * MS);   /* the wake, not the 1 s deadline */
+    /* The queue it left still wakes a later sleeper on that CPU on time. */
+    sleep_seq = 0;
+    sleep_go = true;
+    sleep_base = uptime_ns();
+    struct thread *s = thread_create_on("m55-sleep", sleeper, (void *)(uintptr_t)1, PRIO_DEFAULT,
+                                        &m);
+    thread_join(s);
+    KT_ASSERT(sleep_err[1] >= 0);
+    if (lapic_timer_has_oneshot() && lapic_oneshot)
+        KT_ASSERT(sleep_err[1] < (int64_t)ONESHOT_BOUND);
 }

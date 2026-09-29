@@ -44,6 +44,7 @@
 #include <jam/cpu.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
+#include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
@@ -210,9 +211,9 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* M5.5 switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). */
-enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_COUNT };
+enum sw { SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_COUNT };
 static const char *const sw_name[SW_COUNT] = { "spinidle", "placeorder", "affinepair",
-                                               "kmcache" };
+                                               "kmcache", "oneshot" };
 static uint64_t sw_boot[SW_COUNT];
 
 static uint64_t sw_get(enum sw s)
@@ -222,6 +223,7 @@ static uint64_t sw_get(enum sw s)
     case SW_PLACEORDER: return sched_place_order;
     case SW_AFFINEPAIR: return sched_affine_pair;
     case SW_KMCACHE:    return heap_percpu;
+    case SW_ONESHOT:    return lapic_oneshot;
     case SW_COUNT:      break;
     }
     return 0;
@@ -234,11 +236,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_PLACEORDER: sched_place_order = v; break;
     case SW_AFFINEPAIR: sched_affine_pair = v; break;
     case SW_KMCACHE:    heap_percpu = v; break;
+    case SW_ONESHOT:    lapic_oneshot = v; break;
     case SW_COUNT:      break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -774,6 +777,40 @@ static void chan_call_placed(void)
     chan_call_mask(&m, "channel_call round trip, P client, server not on P");
 }
 
+/* ---- sleep accuracy (M5.5) ------------------------------------------------
+ * A thread on P sleeps for a set time; the sample is how late it woke
+ * (actual - requested). With one-shot timers the CPU's timer is armed for
+ * the deadline; without, the sleeper waits for its CPU's next 10 ms tick. */
+
+#define TIMER_SAMPLES 200
+static uint64_t sleep_req_ns;
+
+static void bench_sleep(void *arg)
+{
+    (void)arg;
+    for (unsigned i = 0; i < 5; i++)   /* warm-up */
+        thread_sleep_ns(sleep_req_ns);
+    for (unsigned i = 0; i < TIMER_SAMPLES; i++) {
+        uint64_t t0 = stamp();
+        thread_sleep_ns(sleep_req_ns);
+        uint64_t ps = span_ps(t0, stamp(), 1), req = sleep_req_ns * 1000;
+        samples[i] = ps > req ? ps - req : 0;
+    }
+}
+
+static void sleep_measure(int us)
+{
+    sleep_req_ns = (uint64_t)us * 1000;
+    run_on(cpu_p, bench_sleep, NULL);
+}
+
+static void sleep_accuracy(int us)
+{
+    char what[64];
+    ksnprintf(what, sizeof(what), "sleep %u us (P): how late it wakes", us);
+    off_on(SW_ONESHOT, what, sleep_measure, us, TIMER_SAMPLES);
+}
+
 /* ---- placement of busy threads (M5.5) --------------------------------------
  * Where the scheduler puts CPU-bound threads when there is room: one per
  * core except CPU 0's (which runs this thread), all unpinned but kept off
@@ -1096,6 +1133,12 @@ void bench_run(void)
         chan_call_placed();
     if (cpu_count > 2)
         placement();
+    if (lapic_timer_has_oneshot()) {
+        sleep_accuracy(100);
+        sleep_accuracy(1000);
+    } else {
+        report("bench: sleep accuracy: periodic timer (nodeadline), one-shot timers not in use");
+    }
     if (cpu_count > 1) {
         run_on(cpu_p, bench_shootdown, NULL);
         char what[64];

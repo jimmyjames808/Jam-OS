@@ -24,5 +24,15 @@ void     lapic_timer_calibrate(void);   /* BSP, once, after tsc_calibrate */
 void     lapic_timer_start(unsigned hz);
 const char *lapic_timer_mode(void);
 
+/* One-shot timers (M5.5, see lapic.c): with interrupts off, ask for a timer
+ * interrupt on THIS CPU at TSC value when_tsc (0 = none needed); it calls
+ * sched_timer_expire. In the periodic mode the request waits for the next
+ * tick. lapic_oneshot switches the requests off at run time (boot:
+ * "nooneshot"); lapic_timer_has_oneshot says whether the mode can do them. */
+void     lapic_timer_set(uint64_t when_tsc);
+bool     lapic_timer_has_oneshot(void);
+extern volatile bool lapic_oneshot;
+extern volatile uint64_t lapic_early_irqs;
+
 extern volatile uint64_t lapic_errors;
 extern volatile uint32_t lapic_last_esr;

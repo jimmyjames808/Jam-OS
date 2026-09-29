@@ -90,9 +90,39 @@ static void dump_trace(uint32_t cpu)
 static struct kmem_cache *thread_cache;
 static volatile uint64_t next_id = 1;
 
-/* Sleeping threads; CPU 0's tick wakes the ones that are due. */
-static spinlock_t sleep_lock = SPINLOCK_INIT("sleepers");
-static struct list_node sleepers = LIST_INIT(sleepers);
+/* Sleeping threads (any wait with a deadline): per-CPU one-shot timers
+ * (M5.5). A thread that blocks with a deadline goes on the queue of the CPU
+ * it blocks on, sorted by deadline, and that CPU's timer is armed for the
+ * queue's head (lapic_timer_set), so it is woken within microseconds of
+ * its deadline instead of at CPU 0's next 10 ms tick (M5). Races:
+ *   - Only the owning CPU adds to its queue and arms its timer (the
+ *     blocking thread has preemption off; the timer interrupt runs there),
+ *     always under the queue lock with interrupts off.
+ *   - Removal happens from anywhere: the expiring timer interrupt, or the
+ *     thread itself once it is awake (on whatever CPU it runs on now), under
+ *     the queue lock of the CPU it slept on (t->sleep_cpu, written only by
+ *     t when it queues itself). A removal can only make the head later, so
+ *     the armed timer may fire for nothing: harmless (lapic_early_irqs).
+ *   - The expiring interrupt calls thread_wake(t) with the lock held, and t
+ *     takes the same lock before it returns from its wait, so t can't
+ *     return, exit and be freed while its waker is still in thread_wake
+ *     (C6, as with the old global list).
+ * Expiry compares TSC values (uptime_to_tsc rounds up), so a thread woken
+ * at its deadline sees uptime_ns() >= the deadline and doesn't re-block.
+ * In the periodic timer mode, or with lapic_oneshot off, each CPU's tick
+ * expires its own queue. */
+struct sleepq {
+    spinlock_t       lock;
+    struct list_node list;   /* struct thread, by wake_at_tsc */
+} __attribute__((aligned(64)));
+static struct sleepq sleepqs[MAX_CPUS];
+
+/* The owning CPU, queue lock held: arm the timer for the head. */
+static void sleepq_arm(struct sleepq *q)
+{
+    lapic_timer_set(list_empty(&q->list)
+                        ? 0 : list_first(&q->list, struct thread, sleep_node)->wake_at_tsc);
+}
 
 /* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
  * reused (no TLB shootdown, no page allocation). Stacks over the limit must
@@ -921,10 +951,21 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
 {
     struct thread *t = current_thread();
     if (deadline_ns != DEADLINE_NEVER) {
-        uint64_t f = spin_lock_irqsave(&sleep_lock);
+        /* Preemption is off (see above): this CPU's queue stays ours. */
+        uint32_t cpu = this_cpu()->index;
+        struct sleepq *q = &sleepqs[cpu];
         t->wake_at_ns = deadline_ns;
-        list_add_tail(&sleepers, &t->sleep_node);
-        spin_unlock_irqrestore(&sleep_lock, f);
+        t->wake_at_tsc = uptime_to_tsc(deadline_ns);
+        t->sleep_cpu = cpu;
+        uint64_t f = spin_lock_irqsave(&q->lock);
+        struct list_node *pos = q->list.prev;   /* most deadlines go last */
+        while (pos != &q->list &&
+               container_of(pos, struct thread, sleep_node)->wake_at_tsc > t->wake_at_tsc)
+            pos = pos->prev;
+        list_add(pos, &t->sleep_node);
+        if (q->list.next == &t->sleep_node)
+            sleepq_arm(q);   /* the new head */
+        spin_unlock_irqrestore(&q->lock, f);
     }
     if (lock)
         spin_unlock_irqrestore(lock, *irqflags);
@@ -951,17 +992,19 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
     preempt_enable_no_resched();
     if (!skip)
         schedule();
-    /* Always take sleep_lock before touching sleep_node when we may have
-     * been on the sleepers list: wake_sleepers deletes the node and calls
-     * thread_wake(t) while holding sleep_lock, so a lockless check here
-     * could let this thread return (and re-block or exit, freeing itself)
-     * while the waker is still inside thread_wake(t). Serialising on
-     * sleep_lock keeps t alive until the waker is done. (C6) */
+    /* Always take the queue lock before touching sleep_node when we may
+     * have been on a sleeper queue: sched_timer_expire deletes the node and
+     * calls thread_wake(t) while holding it, so a lockless check here could
+     * let this thread return (and re-block or exit, freeing itself) while
+     * the waker is still inside thread_wake(t). Serialising on the lock
+     * keeps t alive until the waker is done. (C6) The queue is the one of
+     * the CPU we slept on, not the one we run on now. */
     if (deadline_ns != DEADLINE_NEVER) {
-        uint64_t f = spin_lock_irqsave(&sleep_lock);
+        struct sleepq *q = &sleepqs[t->sleep_cpu];
+        uint64_t f = spin_lock_irqsave(&q->lock);
         if (t->sleep_node.next)
             list_del(&t->sleep_node);
-        spin_unlock_irqrestore(&sleep_lock, f);
+        spin_unlock_irqrestore(&q->lock, f);
     }
     if (lock)
         *irqflags = spin_lock_irqsave(lock);
@@ -1010,19 +1053,23 @@ bool thread_cancel_pending(void)
     return cancel_seen(current_thread());
 }
 
-static void wake_sleepers(void)
+bool sched_timer_expire(void)
 {
-    uint64_t now = uptime_ns();
-    spin_lock(&sleep_lock);   /* in the timer interrupt: IRQs already off */
-    for (struct list_node *n = sleepers.next; n != &sleepers;) {
-        struct thread *t = container_of(n, struct thread, sleep_node);
-        n = n->next;
-        if (t->wake_at_ns <= now) {
-            list_del(&t->sleep_node);
-            thread_wake(t);
-        }
+    struct sleepq *q = &sleepqs[this_cpu()->index];
+    bool woke = false;
+    spin_lock(&q->lock);   /* in the timer interrupt: IRQs already off */
+    uint64_t now = rdtsc();
+    while (!list_empty(&q->list)) {
+        struct thread *t = list_first(&q->list, struct thread, sleep_node);
+        if (t->wake_at_tsc > now)
+            break;
+        list_del(&t->sleep_node);
+        thread_wake(t);
+        woke = true;
     }
-    spin_unlock(&sleep_lock);
+    sleepq_arm(q);
+    spin_unlock(&q->lock);
+    return woke;
 }
 
 /* ---- idle, work stealing ---------------------------------------------------- */
@@ -1128,6 +1175,8 @@ static void init_rq(uint32_t cpu)
         list_init(&rq->queues[p]);
     rq->cur_prio = -1;
     topo[cpu].sibling = -1;
+    spin_init(&sleepqs[cpu].lock, "sleepers");
+    list_init(&sleepqs[cpu].list);
 }
 
 /* This CPU's run queue is ready: placement may use it from now on. */
@@ -1270,8 +1319,6 @@ static void boost_starved(struct cpu *c)
 void sched_tick(void)
 {
     struct cpu *c = this_cpu();
-    if (c->index == 0)
-        wake_sleepers();
     watchdog_check(c);
     boost_starved(c);
 

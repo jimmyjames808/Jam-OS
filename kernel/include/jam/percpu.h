@@ -40,6 +40,10 @@ struct cpu {
     uint32_t       smt_id;
     volatile bool  online;
     volatile uint64_t ticks;
+    /* Timer (lapic.c, M5.5), absolute TSC values, touched only by this CPU
+     * with interrupts off: the next scheduler tick, the earliest sleeper
+     * deadline (UINT64_MAX: none), and what the timer is armed for. */
+    uint64_t       tick_deadline, timer_deadline, timer_armed;
     void          *kstack_top;
 
     /* Scheduling state. */
