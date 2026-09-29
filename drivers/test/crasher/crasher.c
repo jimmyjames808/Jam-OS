@@ -40,6 +40,21 @@ static void crash(void)
     *p = 0xdead;
 }
 
+/* The next message didn't fit (n bytes, nh handles): not ours (too big,
+ * or with handles), but off the queue. False if it can't be read. */
+static bool drop_message(handle_t ch, uint32_t n, uint32_t nh)
+{
+    void *big = drv_malloc(n ? n : 1);
+    handle_t hs[64];
+    if (!big || nh > 64)
+        return false;
+    if (drv_channel_read(ch, big, n, &n, hs, nh, &nh) == OK)
+        for (uint32_t i = 0; i < nh; i++)
+            drv_handle_close(hs[i]);
+    drv_free(big);
+    return true;
+}
+
 int driver_main(const struct driver_start *s)
 {
     uint64_t started = drv_clock_ns();
@@ -62,15 +77,8 @@ int driver_main(const struct driver_start *s)
         if (st == ERR_PEER_CLOSED)
             return 0;   /* the client is gone */
         if (st == ERR_BUFFER_TOO_SMALL) {
-            /* Not ours (too big, or with handles): off the queue. */
-            void *big = drv_malloc(n ? n : 1);
-            handle_t hs[64];
-            if (!big || nh > 64)
+            if (!drop_message(ch, n, nh))
                 return 1;
-            if (drv_channel_read(ch, big, n, &n, hs, nh, &nh) == OK)
-                for (uint32_t i = 0; i < nh; i++)
-                    drv_handle_close(hs[i]);
-            drv_free(big);
             continue;
         }
         if (st != OK || n < 8)

@@ -33,11 +33,27 @@ handle_t root, port;
 
 /* ---- the kernel log ------------------------------------------------------------- */
 
-static handle_t klog;
-static uint64_t klog_pos;
-static char klog_buf[KLOG_BUF];
-static char partial[1024];
-static size_t npartial;
+static handle_t klog;              /* our kernel log reader */
+static uint64_t klog_pos;          /* the log position read up to */
+static char klog_buf[KLOG_BUF];    /* what one klog_read returns */
+static char partial[1024];         /* the line being gathered, without its newline */
+static size_t npartial;            /* its length */
+
+/* n bytes of the kernel log: each whole line goes to the scrollback, a
+ * line longer than `partial` in pieces. */
+static void klog_take(const char *p, int64_t n)
+{
+    for (int64_t i = 0; i < n; i++) {
+        char c = p[i];
+        if (c == '\n' || npartial == sizeof(partial)) {
+            kernel_line(partial, npartial);
+            npartial = 0;
+            if (c == '\n')
+                continue;
+        }
+        partial[npartial++] = c;
+    }
+}
 
 void klog_event(void)
 {
@@ -54,16 +70,7 @@ void klog_event(void)
             kernel_line(gap, (size_t)m);
         }
         klog_pos = first + (uint64_t)n;
-        for (int64_t i = 0; i < n; i++) {
-            char c = klog_buf[i];
-            if (c == '\n' || npartial == sizeof(partial)) {
-                kernel_line(partial, npartial);
-                npartial = 0;
-                if (c == '\n')
-                    continue;
-            }
-            partial[npartial++] = c;
-        }
+        klog_take(klog_buf, n);
     }
 }
 
