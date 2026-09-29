@@ -1,5 +1,13 @@
 # Jam OS: handoff (updated 2026-09-29, M5 phase 2 built on its branch)
 
+**2026-09-29 latest: M5 phase 2 MERGED (ee670aa, v0.0.8-m5).** Main: 122/122 ktests + stress at 4+8,
+init + utest 12/12 at 4+8 with the root job clean afterwards (0 pages/handles/threads/msg bytes), all
+15 crash tests OK. An INDEPENDENT REVIEW agent (user's rule: big agent code gets a separate reviewer)
+is reviewing the processes code (range 5a2ae4e..worktree-agent-ab062027be2f4bc40) and will commit
+failing regression tests only, no fixes. After its report: fix pass with tests, then the PC run
+("Jam OS (init + utest)", All tests 122+, Benchmark -> M5 column of BENCH.md, 10-min stress).
+The PC's 10-min stress of the phase-1 build (0.0.7-m5-phase1) was running; result not yet recorded.
+
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
 objects (object/process.c, object/job.c), every sysc_* (abi/sysc_*.c), kill = cancel all
 threads + last one out tears down, job charges (VMO pages, handle slots, threads, message
