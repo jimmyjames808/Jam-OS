@@ -175,7 +175,10 @@ status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off
         /* A power-state change (devmgr waking a function, M7): the
          * function may not be touched for 10 ms (PCI PM 1.2, D3hot -> D0
          * recovery; the longest), and D3hot -> D0 resets it unless it has
-         * No_Soft_Reset: put back the BARs and command register. */
+         * No_Soft_Reset: put back the BARs and command register. Not Bus
+         * Master Enable: the owner may have turned it off meanwhile (we
+         * slept outside the lock), and a reset turned it off anyway;
+         * pci_restore_config keeps it as it is now. */
         thread_sleep_ms(10);
         uint64_t f = pci_cmd_lock();
         if (pci_restore_config(d, &saved))

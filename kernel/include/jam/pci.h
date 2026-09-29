@@ -79,7 +79,12 @@ status_t pci_enable_memory(struct pci_dev *d);
 /* M7: around a power-state change (D3hot -> D0 resets a function without
  * No_Soft_Reset): save the command register and the BAR registers, then
  * put back whatever the change lost. Restore returns true if the BARs had
- * been lost (the function was reset); INTx Disable ends up set. */
+ * been lost (the function was reset); INTx Disable ends up set. Bus Master
+ * Enable is never put back: it stays as it is NOW (off after a reset, or
+ * whatever its owner set while the caller slept outside pci_cmd_lock), so
+ * bus mastering can't come back without its owner (the dma_cap) turning
+ * it on. I/O and memory decode come back as saved (the kernel never turns
+ * them off after boot, and the BARs they decode were just put back). */
 struct pci_saved_config {
     uint16_t command;
     uint32_t bar[6];
