@@ -63,13 +63,13 @@ int driver_main(const struct driver_start *s)
         drv_log("no DR_SERVE channel: nothing to serve");
         return 2;
     }
-    struct null_state *st = drv_malloc(sizeof(*st));
-    if (!st)
+    struct null_state *state = drv_malloc(sizeof(*state));
+    if (!state)
         return 3;
-    st->calls = 0;
-    status_t r = null_serve(ch, &ops, st);
-    drv_log("client gone after %lu call(s) (%s)", (unsigned long)st->calls,
-            r == OK ? "closed" : status_str(r));
-    drv_free(st);
-    return r == OK ? 0 : 1;
+    state->calls = 0;
+    status_t st = null_serve(ch, &ops, state);
+    drv_log("client gone after %lu call(s) (%s)", (unsigned long)state->calls,
+            st == OK ? "closed" : status_str(st));
+    drv_free(state);
+    return st == OK ? 0 : 1;
 }

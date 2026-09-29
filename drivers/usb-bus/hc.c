@@ -136,7 +136,9 @@ static void snapshot(struct hc *x)
     x->map_failed = mf;
 }
 
-#define fail(x, step, fmt, ...) \
+/* A bring-up or shutdown step failed: a RESULTS line naming it, the
+ * registers, and 1 (hc_bring_up's and hc_shutdown's failure code). */
+#define FAIL(x, step, fmt, ...) \
     (drv_report("FAILED at %s: " fmt, (step), ##__VA_ARGS__), snapshot(x), 1)
 
 static bool wait_op(struct hc *x, uint32_t r, uint32_t mask, uint32_t want, uint64_t timeout_ms,
@@ -182,16 +184,16 @@ static int check_pci(struct hc *x)
 {
     uint32_t id = cfg(x, 0x00, 4);
     if (id == 0xffffffffu)
-        return fail(x, "PCI config", "can't read the function's config space (DR_PCIDEV)");
+        return FAIL(x, "PCI config", "can't read the function's config space (DR_PCIDEV)");
     x->vendor = (uint16_t)id;
     x->device = (uint16_t)(id >> 16);
     x->revision = (uint8_t)cfg(x, 0x08, 1);
     uint32_t class = cfg(x, 0x08, 4) >> 8;
     if (class != 0x0c0330)
-        return fail(x, "PCI config", "class %06x is not an xHCI (0c0330)", class);
+        return FAIL(x, "PCI config", "class %06x is not an xHCI (0c0330)", class);
     uint32_t cmd = cfg(x, 0x04, 2);
     if (!(cmd & (1u << 1)))
-        return fail(x, "PCI config", "memory decode is off (command %04x)", cmd);
+        return FAIL(x, "PCI config", "memory decode is off (command %04x)", cmd);
     /* Bus mastering is off (devmgr binds a driver with it off):
      * hc_bring_up turns it on through DR_DMA once the controller is halted
      * and reset, so nothing a previous driver left queued reaches memory. */
@@ -199,7 +201,7 @@ static int check_pci(struct hc *x)
      * a driver (drivers may not change it). */
     uint32_t pm = pci_cap(x, 0x01);
     if (pm && (cfg(x, pm + 4, 2) & 3))
-        return fail(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
+        return FAIL(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
     uint32_t msix = pci_cap(x, 0x11), msi = pci_cap(x, 0x05);
     uint32_t mc_x = msix ? cfg(x, msix + 2, 2) : 0, mc = msi ? cfg(x, msi + 2, 2) : 0;
     if (mc_x & (1u << 15)) {
@@ -209,7 +211,7 @@ static int check_pci(struct hc *x)
         x->msix = false;
         x->irq_vectors = 1u << ((mc >> 1) & 7);
     } else {
-        return fail(x, "PCI config", "neither MSI-X (%04x) nor MSI (%04x) is enabled", mc_x, mc);
+        return FAIL(x, "PCI config", "neither MSI-X (%04x) nor MSI (%04x) is enabled", mc_x, mc);
     }
     drv_log("%04x:%04x rev %02x, command %04x, %s", x->vendor, x->device, x->revision, cmd,
             x->msix ? "MSI-X on" : "MSI on");
@@ -222,9 +224,9 @@ static int read_caps(struct hc *x)
 {
     uint32_t v = hc_rd(x, CAP_CAPLENGTH);
     if (x->map_failed)
-        return fail(x, "map BAR0", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
+        return FAIL(x, "map BAR0", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
     if (v == 0xffffffffu)
-        return fail(x, "capability registers", "BAR0 reads all ones (device not answering)");
+        return FAIL(x, "capability registers", "BAR0 reads all ones (device not answering)");
     x->caplen = v & 0xff;
     x->hciver = v >> 16;
     x->hcs1 = hc_rd(x, CAP_HCSPARAMS1);
@@ -237,10 +239,10 @@ static int read_caps(struct hc *x)
     x->scratchpads = (((x->hcs2 >> 21) & 0x1f) << 5) | (x->hcs2 >> 27);
     x->csz = (x->hcc1 & (1u << 2)) ? 64 : 32;
     if (x->caplen < 0x20 || x->caplen >= PAGE || !x->dboff || !x->rtsoff)
-        return fail(x, "capability registers", "CAPLENGTH %x DBOFF %x RTSOFF %x make no sense",
+        return FAIL(x, "capability registers", "CAPLENGTH %x DBOFF %x RTSOFF %x make no sense",
                     x->caplen, x->dboff, x->rtsoff);
     if (!x->ports || x->ports > 255 || !x->slots)
-        return fail(x, "capability registers", "%u ports, %u slots make no sense", x->ports,
+        return FAIL(x, "capability registers", "%u ports, %u slots make no sense", x->ports,
                     x->slots);
     drv_log("xHCI %x.%02x: %u ports, %u slots, %u scratchpads, AC64 %u, CSZ %u (%u-byte contexts), "
             "PPC %u", x->hciver >> 8, x->hciver & 0xff, x->ports, x->slots, x->scratchpads,
@@ -266,16 +268,16 @@ static int ext_caps(struct hc *x)
             break;
         uint32_t id = v & 0xff, next = (v >> 8) & 0xff;
         if (id == XCAP_PROTOCOL) {
-            uint32_t name = hc_rd(x, off + 8), st = hc_rd(x, off + 12);
+            uint32_t name = hc_rd(x, off + 8), dw3 = hc_rd(x, off + 12);
             uint8_t first = name & 0xff, count = (name >> 8) & 0xff;
             drv_log("supported protocol: USB %x.%02x, ports %u-%u, %u speed IDs, slot type %u",
-                    v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, st & 0x1f);
+                    v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, dw3 & 0x1f);
             if (x->nproto < MAX_PROTOS && first && count) {
                 x->proto[x->nproto].major = (uint8_t)(v >> 24);
                 x->proto[x->nproto].minor = (uint8_t)(v >> 16);
                 x->proto[x->nproto].first = first;
                 x->proto[x->nproto].count = count;
-                x->proto[x->nproto].slot_type = st & 0x1f;
+                x->proto[x->nproto].slot_type = dw3 & 0x1f;
                 x->proto[x->nproto].psic = (uint8_t)(name >> 28);
                 x->nproto++;
             }
@@ -318,7 +320,7 @@ static int stop(struct hc *x, const char *step)
     uint32_t cmd = op_rd(x, OP_USBCMD), sts;
     op_wr(x, OP_USBCMD, cmd & ~(CMD_RS | CMD_INTE | CMD_HSEE));
     if (!wait_op(x, OP_USBSTS, STS_HCH, STS_HCH, 100, &sts))
-        return fail(x, step, "no HCH 100 ms after RS=0 (USBCMD was %08x, USBSTS %08x)", cmd, sts);
+        return FAIL(x, step, "no HCH 100 ms after RS=0 (USBCMD was %08x, USBSTS %08x)", cmd, sts);
     x->running = false;
     return 0;
 }
@@ -327,13 +329,13 @@ static int reset(struct hc *x, const char *step)
 {
     uint32_t v;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
-        return fail(x, step, "Controller Not Ready 1 s before reset (USBSTS %08x)", v);
+        return FAIL(x, step, "Controller Not Ready 1 s before reset (USBSTS %08x)", v);
     op_wr(x, OP_USBCMD, CMD_HCRST);
     drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
     if (!wait_op(x, OP_USBCMD, CMD_HCRST, 0, 1000, &v))
-        return fail(x, step, "HCRST still set 1 s after reset (USBCMD %08x)", v);
+        return FAIL(x, step, "HCRST still set 1 s after reset (USBCMD %08x)", v);
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
-        return fail(x, step, "Controller Not Ready 1 s after reset (USBSTS %08x)", v);
+        return FAIL(x, step, "Controller Not Ready 1 s after reset (USBSTS %08x)", v);
     return 0;
 }
 
@@ -344,21 +346,21 @@ static int pool_setup(struct hc *h)
     uint64_t len = (uint64_t)POOL_PAGES * PAGE;
     status_t st = drv_vmo_create(len, DRV_VMO_DMA32, &h->pool_vmo);
     if (st != OK)
-        return fail(h, "DMA pool", "VMO of %u pages: %s", POOL_PAGES, status_str(st));
+        return FAIL(h, "DMA pool", "VMO of %u pages: %s", POOL_PAGES, status_str(st));
     h->pool_addr = drv_malloc(POOL_PAGES * sizeof(uint64_t));
     if (!h->pool_addr)
-        return fail(h, "DMA pool", "no memory for the page addresses");
+        return FAIL(h, "DMA pool", "no memory for the page addresses");
     st = drv_vmo_pin(h->pool_vmo, h->dma, 0, len, h->pool_addr, &h->pool_pin);
     if (st != OK)
-        return fail(h, "DMA pool", "pin %u pages: %s", POOL_PAGES, status_str(st));
+        return FAIL(h, "DMA pool", "pin %u pages: %s", POOL_PAGES, status_str(st));
     h->pool_pinned = true;
     for (unsigned i = 0; i < POOL_PAGES; i++)
         if (h->pool_addr[i] + PAGE > (1ull << 32) && !(h->hcc1 & 1))
-            return fail(h, "DMA pool", "page above 4 GiB and the controller has no AC64");
+            return FAIL(h, "DMA pool", "page above 4 GiB and the controller has no AC64");
     void *p;
     st = drv_vmo_map(h->pool_vmo, 0, len, VMAR_READ | VMAR_WRITE, &p);
     if (st != OK)
-        return fail(h, "DMA pool", "map: %s", status_str(st));
+        return FAIL(h, "DMA pool", "map: %s", status_str(st));
     h->pool = p;
     return 0;
 }
@@ -455,7 +457,7 @@ static int setup_memory(struct hc *x)
     uint32_t ps = op_rd(x, OP_PAGESIZE) & 0xffff;
     x->pagesize = ps ? (1u << (__builtin_ctz(ps) + 12)) : 0;
     if (x->pagesize != PAGE)
-        return fail(x, "PAGESIZE", "controller page size %u (register %x); only 4 KiB is supported",
+        return FAIL(x, "PAGESIZE", "controller page size %u (register %x); only 4 KiB is supported",
                     x->pagesize, ps);
 
     uint32_t sp_array_pages = (x->scratchpads * 8 + PAGE - 1) / PAGE;
@@ -463,25 +465,25 @@ static int setup_memory(struct hc *x)
     uint64_t len = (uint64_t)x->ctx_pages * PAGE;
     status_t st = drv_vmo_create(len, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &x->ctx_vmo);
     if (st != OK)
-        return fail(x, "DMA memory", "contiguous DMA32 VMO of %u pages: %s", x->ctx_pages,
+        return FAIL(x, "DMA memory", "contiguous DMA32 VMO of %u pages: %s", x->ctx_pages,
                     status_str(st));
     uint64_t addrs[8];
     if (x->ctx_pages > 8)
-        return fail(x, "DMA memory", "%u scratchpads need too big an array", x->scratchpads);
+        return FAIL(x, "DMA memory", "%u scratchpads need too big an array", x->scratchpads);
     st = drv_vmo_pin(x->ctx_vmo, x->dma, 0, len, addrs, &x->ctx_pin);
     if (st != OK)
-        return fail(x, "DMA memory", "pin: %s", status_str(st));
+        return FAIL(x, "DMA memory", "pin: %s", status_str(st));
     x->ctx_pinned = true;
     x->ctx_dev = addrs[0];
     for (uint32_t i = 1; i < x->ctx_pages; i++)
         if (addrs[i] != x->ctx_dev + (uint64_t)i * PAGE)
-            return fail(x, "DMA memory", "contiguous VMO pinned as scattered pages");
+            return FAIL(x, "DMA memory", "contiguous VMO pinned as scattered pages");
     if (x->ctx_dev + len > (1ull << 32))
-        return fail(x, "DMA memory", "DMA32 memory at %lx is above 4 GiB", x->ctx_dev);
+        return FAIL(x, "DMA memory", "DMA32 memory at %lx is above 4 GiB", x->ctx_dev);
     void *p;
     st = drv_vmo_map(x->ctx_vmo, 0, len, VMAR_READ | VMAR_WRITE, &p);
     if (st != OK)
-        return fail(x, "DMA memory", "map: %s", status_str(st));
+        return FAIL(x, "DMA memory", "map: %s", status_str(st));
     x->ctx = p;
     zero(x->ctx, len);
 
@@ -490,14 +492,14 @@ static int setup_memory(struct hc *x)
         uint64_t splen = (uint64_t)x->scratchpads * PAGE;
         st = drv_vmo_create(splen, DRV_VMO_DMA32, &x->sp_vmo);
         if (st != OK)
-            return fail(x, "scratchpads", "VMO of %u pages: %s", x->scratchpads, status_str(st));
+            return FAIL(x, "scratchpads", "VMO of %u pages: %s", x->scratchpads, status_str(st));
         uint64_t *sp = drv_malloc(x->scratchpads * sizeof(uint64_t));
         if (!sp)
-            return fail(x, "scratchpads", "no memory for %u addresses", x->scratchpads);
+            return FAIL(x, "scratchpads", "no memory for %u addresses", x->scratchpads);
         st = drv_vmo_pin(x->sp_vmo, x->dma, 0, splen, sp, &x->sp_pin);
         if (st != OK) {
             drv_free(sp);
-            return fail(x, "scratchpads", "pin %u pages: %s", x->scratchpads, status_str(st));
+            return FAIL(x, "scratchpads", "pin %u pages: %s", x->scratchpads, status_str(st));
         }
         x->sp_pinned = true;
         volatile uint64_t *arr = (volatile uint64_t *)(x->ctx + DMA_SPARRAY);
@@ -537,7 +539,7 @@ static int setup_memory(struct hc *x)
     ir_wr(x, IR_IMOD, IMOD_40US);
     ir_wr(x, IR_IMAN, IMAN_IE | IMAN_IP);
     if (x->map_failed)
-        return fail(x, "map registers", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
+        return FAIL(x, "map registers", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
     return 0;
 }
 
@@ -547,7 +549,7 @@ static int run(struct hc *x)
     op_wr(x, OP_USBCMD, CMD_RS | CMD_INTE | CMD_HSEE);
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_HCH, 0, 100, &sts))
-        return fail(x, "run", "HCH still set 100 ms after RS=1 (USBSTS %08x)", sts);
+        return FAIL(x, "run", "HCH still set 100 ms after RS=1 (USBSTS %08x)", sts);
     x->running = true;
     return 0;
 }
@@ -789,23 +791,23 @@ int hc_bring_up(struct hc *x)
         return r;
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &sts))
-        return fail(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
+        return FAIL(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
     if ((r = stop(x, "halt")) || (r = reset(x, "reset")))
         return r;
     /* Quiet now (halted and reset: it holds no DMA pointer of anyone's):
      * bus mastering on, for our DMA and the MSI, before anything is pinned
      * (drv_vmo_pin refuses until then) or DCBAAP/CRCR/ERST are written. */
-    status_t bm = drv_dma_bus_master(x->dma, 1);
-    if (bm != OK)
-        return fail(x, "bus master", "can't turn it on (%s)", status_str(bm));
+    status_t st = drv_dma_bus_master(x->dma, 1);
+    if (st != OK)
+        return FAIL(x, "bus master", "can't turn it on (%s)", status_str(st));
     if ((r = setup_memory(x)) || (r = pool_setup(x)))
         return r;
     x->ctl_page = pool_alloc(x);
     if (x->ctl_page < 0)
-        return fail(x, "DMA pool", "no page for control transfers");
-    status_t st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
+        return FAIL(x, "DMA pool", "no page for control transfers");
+    st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK)
-        return fail(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));
+        return FAIL(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));
     drv_interrupt_ack(x->irq);
     if ((r = run(x)))
         return r;

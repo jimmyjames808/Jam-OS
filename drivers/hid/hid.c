@@ -88,13 +88,19 @@
  * mock runs are plain "hid" and stay in the log. */
 static bool to_results;
 
-#define say_result(...)                 \
-    do {                                \
-        if (to_results)                 \
-            drv_report(__VA_ARGS__);    \
-        else                            \
-            drv_log(__VA_ARGS__);       \
-    } while (0)
+static void say_result(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say_result(const char *fmt, ...)
+{
+    char line[256];   /* a log line's size: drv_log and drv_report cut there too */
+    va_list ap;
+    va_start(ap, fmt);
+    drv_vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (to_results)
+        drv_report("%s", line);
+    else
+        drv_log("%s", line);
+}
 
 static bool gone(struct hid *h, status_t st)
 {

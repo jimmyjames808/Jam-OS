@@ -442,12 +442,12 @@ static bool settled(void)
 }
 
 static status_t b_status(void *ctx, uint32_t *devices, uint32_t *hubs, uint32_t *ifaces,
-                         uint32_t *hid, uint32_t *problems, uint32_t *generation, uint8_t *st)
+                         uint32_t *hid, uint32_t *problems, uint32_t *generation, uint8_t *is_settled)
 {
     (void)ctx;
     usb_counts(devices, hubs, ifaces, hid, problems);
     *generation = g_generation;
-    *st = settled();
+    *is_settled = settled();
     return OK;
 }
 
