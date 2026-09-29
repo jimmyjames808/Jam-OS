@@ -378,6 +378,7 @@ void hc_poll(struct hc *h);
 /* Wait for an interrupt (or anything else on the port) until deadline,
  * then poll. Packets for other keys are passed to serve_packet(). */
 void hc_wait(struct hc *h, uint64_t deadline);
+void hc_wait_idle(struct hc *h, uint64_t deadline);
 /* Sleep that keeps servicing the controller. */
 void hc_sleep(struct hc *h, uint64_t ms);
 void hc_set_dcbaa(struct hc *h, uint32_t slot, uint64_t addr);

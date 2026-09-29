@@ -344,8 +344,17 @@ static status_t u_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *repor
         return ERR_INVALID_ARGS;
     if (!e->configured)
         return ERR_BAD_STATE;
-    if (e->open)
-        return ERR_ALREADY_BOUND;
+    if (e->open) {
+        /* A class driver that died and was restarted may ask before the
+         * main loop reaped its old report channel: if that one's reader is
+         * gone, the endpoint is free. */
+        signals_t seen = 0;
+        handle_t old = chan_handle(e->chan);
+        if (e->owner != EP_OWNER_CLIENT || !old ||
+            drv_object_wait_one(old, SIG_PEER_CLOSED, 0, &seen) != OK)
+            return ERR_ALREADY_BOUND;
+        ep_close(d, e);
+    }
     handle_t a, b;
     status_t st = drv_channel_create(&a, &b);
     if (st != OK)
@@ -743,7 +752,7 @@ int driver_main(const struct driver_start *s)
             for (int i = 0; i < MAX_CHANS && !any; i++)
                 any = chans[i].pending && chans[i].h;
             if (!any)
-                hc_wait(h, next);
+                hc_wait_idle(h, next);
         }
         if (!g_first_report_done)
             usb_report_all(false);

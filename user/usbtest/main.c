@@ -21,6 +21,8 @@
  *   unplug         device_del: the interface and report channels see
  *                  PEER_CLOSED, the device leaves the list
  *   replug         device_add: it comes back (new id), keys work again
+ *   unplug_hub     device_del of its hub: the hub and everything behind it
+ *                  go (recursive detach), the keyboard's channel closes
  *
  * The marker lines ("usbtest: ready for keys", ...) are what the QEMU
  * monitor script waits for. Exit 0 if nothing failed; the summary goes to
@@ -417,6 +419,40 @@ static bool t_replug(void)
     return ok;
 }
 
+/* The hub the test keyboard hangs on goes: it and everything behind it
+ * leave the list, and the keyboard's channel closes. */
+static bool t_unplug_hub(void)
+{
+    CHECK_ST(load(), OK);
+    struct dev *k = by_serial("jamos-keys");
+    CHECK(k != NULL && k->parent);
+    struct dev *hub = by_id(k->parent);
+    CHECK(hub != NULL && hub->hub_ports);
+    uint32_t hub_id = hub->id;
+    unsigned below = 0;
+    for (unsigned i = 0; i < ndevs; i++)
+        for (struct dev *p = by_id(devs[i].parent); p; p = by_id(p->parent))
+            if (p->id == hub_id) {
+                below++;
+                break;
+            }
+    CHECK(below >= 1);
+    handle_t ch;
+    CHECK_ST(usbbus_open_interface_until(bus, in(5 * S), k->id, 0, &ch), OK);
+    struct bus_status before, after;
+    CHECK_ST(get_status(&before), OK);
+    printf("usbtest: unplug the hub now\n");
+    bool g = gone(ch, in(15 * S));
+    jam_handle_close(ch);
+    CHECK(g);
+    CHECK_ST(wait_settled(10000, &after), OK);
+    CHECK(after.devices == before.devices - 1 - below);
+    CHECK(after.hubs == before.hubs - 1);
+    CHECK_ST(load(), OK);
+    CHECK(by_id(hub_id) == NULL && by_serial("jamos-keys") == NULL);
+    return true;
+}
+
 /* ---- main ----------------------------------------------------------------------------- */
 
 static bool find_bus(void)
@@ -480,10 +516,11 @@ int main(int argc, char **argv)
         run("keys", t_keys);
         run("unplug", t_unplug);
         run("replug", t_replug);
+        run("unplug_hub", t_unplug_hub);
     } else {
-        printf("usbtest: keys, unplug, replug: no keyboard with serial jamos-keys (the QEMU USB "
+        printf("usbtest: keys, unplug, replug, unplug_hub: no keyboard with serial jamos-keys (the QEMU USB "
                "scenario): skipped\n");
-        skipped += 3;
+        skipped += 4;
     }
     jam_handle_close(bus);
     int n = failed ? snprintf(line, sizeof(line), "usbtest: %u passed, %u FAILED, %u skipped",

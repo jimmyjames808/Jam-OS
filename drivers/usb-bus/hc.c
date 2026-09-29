@@ -664,9 +664,9 @@ static void irq(struct hc *h)
     }
 }
 
-void hc_wait(struct hc *h, uint64_t deadline)
+static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
 {
-    uint64_t now = drv_clock_ns(), cap = now + 50 * MS;
+    uint64_t now = drv_clock_ns(), cap = now + cap_ms * MS;
     struct port_packet pkt;
     status_t st = drv_port_wait(h->port, deadline < cap ? deadline : cap, &pkt);
     if (st == OK) {
@@ -676,6 +676,19 @@ void hc_wait(struct hc *h, uint64_t deadline)
             serve_packet(h, &pkt);
     }
     hc_poll(h);
+}
+
+/* Waiting for a completion: poll the event ring at least every 50 ms, so
+ * a lost interrupt costs time, not the command. */
+void hc_wait(struct hc *h, uint64_t deadline)
+{
+    wait_capped(h, deadline, 50);
+}
+
+/* The main loop with nothing to do: 200 ms. */
+void hc_wait_idle(struct hc *h, uint64_t deadline)
+{
+    wait_capped(h, deadline, 200);
 }
 
 void hc_sleep(struct hc *h, uint64_t ms)
