@@ -1,4 +1,4 @@
-/* devmgr's protocol (M6 phase 2): how a program finds a driver devmgr
+/* devmgr's protocol: how a program finds a driver devmgr
  * bound. init starts devmgr and hands every program it runs a client end
  * of devmgr's channel (startup role SR_DEVMGR).
  *
@@ -17,7 +17,7 @@
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
  * function with MSI-X that isn't a bridge or the boot display".
  *
- * Trust (M7): devmgr serves two channels. The QUERY channel (startup role
+ * Trust: devmgr serves two channels. The QUERY channel (startup role
  * SR_DEVMGR) answers STATUS, GET_SERVICE, GET_DRIVER (read-only views) and
  * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
  * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND,
@@ -32,7 +32,7 @@
  * hands out USB interfaces), so even QUERY is for trusted programs only.
 
  *
- * Supervision (M7): devmgr restarts a driver that dies unexpectedly
+ * Supervision: devmgr restarts a driver that dies unexpectedly
  * (crashes, is killed by anyone, KILL included, or exits with an error;
  * one that exits 0 by itself is finished, not restarted). Backoff 100 ms,
  * doubling per restart within the last 60 s, at most 5 s; the 6th death
@@ -51,7 +51,7 @@
  * finished). A driver keeps no state across a restart: whatever a client
  * had set up through the old channel must be set up again.
  *
- * devmgr itself (M7 cleanup): in shell mode init restarts it when it dies,
+ * devmgr itself: in shell mode init restarts it when it dies,
  * with its whole job (every driver it ran), so every devmgr client end
  * sees ERR_PEER_CLOSED. The new devmgr binds everything again from
  * scratch. A client that needs devmgr for good gets the new client end
@@ -75,7 +75,7 @@
  * of devmgr's client end). ERR_NOT_FOUND: no such device, or no driver
  * bound to it (ERR_BAD_STATE: bound, but the driver is gone for good).
  * While a restart is due, the channel the restarted driver will serve
- * (see the reconnect rule above). M7: vendor and device 0xffff name the
+ * (see the reconnect rule above). Vendor and device 0xffff name the
  * instance-th function that has a driver bound, whatever it is (a client
  * asks each in turn which protocol it serves: tests find usb-bus this way
  * on QEMU and on the PC). Don't read from the channel: messages a driver
@@ -89,7 +89,7 @@
  * due, or it is gone). */
 #define DEVMGR_GET_DRIVER   0x00030003u
 /* (dev) -> (): kill the driver's job and answer once it is dead. That is
- * a death like any other: supervision restarts it (M7; not counted as a
+ * a death like any other: supervision restarts it (not counted as a
  * problem). */
 #define DEVMGR_KILL         0x00030004u
 /* (dev) -> (): kill the driver if it still runs, then bind the device
@@ -103,7 +103,7 @@
 #define DEVMGR_DRIVER_VIEW  0x00030006u
 /* (dev) -> u32 state (DEVMGR_SUP_*), restarts (since boot), the last
  * backoff in ms, and for a PCI function its DMA quarantine: pages held now
- * and pages found written while held since boot (M7). */
+ * and pages found written while held since boot. */
 #define DEVMGR_SUPERVISION  0x00030007u
 /* () -> (): start the crash-test driver (drv/crasher) as a supervised
  * driver of the software device DEVMGR_TEST_VENDOR:DEVMGR_TEST_DEVICE
@@ -112,12 +112,12 @@
  * problems). ERR_NOT_FOUND: no drv/crasher in bootfs. */
 #define DEVMGR_TEST_DRIVER  0x00030008u
 /* (1 handle: a client end of the console's channel) -> (): the console to
- * connect class drivers to (M7). init sends it after it restarted the
+ * connect class drivers to. init sends it after it restarted the
  * console (the first one comes as SR_CONSOLE); the class drivers that
  * ended because the old console went away start again connected to it. */
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
-/* USB class drivers (M7) are named by DEVMGR_USB_IFACE as the vendor, the
+/* USB class drivers are named by DEVMGR_USB_IFACE as the vendor, the
  * interface number as the device and usb-bus's device id (usbbus.device's
  * `id`) as the instance, for GET_DRIVER, KILL, REBIND and SUPERVISION.
  * Such a binding exists from the interface's attach until it is gone. */
@@ -144,15 +144,15 @@
  * driver's hardware handles can be duplicated or passed on (no
  * RIGHT_DUPLICATE, no RIGHT_TRANSFER; a physical VMO made from such a BAR
  * inherits that): a driver can't smuggle its function, registers,
- * interrupt or dma_cap out through DR_SERVE to outlive it (M7; review of
- * M6 phase 2, finding 2). devmgr makes them with RIGHT_TRANSFER and hands
+ * interrupt or dma_cap out through DR_SERVE to outlive it. devmgr makes
+ * them with RIGHT_TRANSFER and hands
  * them over with channel_write_rights. */
 #define DEVMGR_DRV_KEEP       (RIGHT_WAIT | RIGHT_INSPECT)
 #define DEVMGR_DRV_DEV_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 #define DEVMGR_DRV_BAR_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_MAP)
 #define DEVMGR_DRV_IRQ_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 #define DEVMGR_DRV_DMA_RIGHTS DEVMGR_DRV_KEEP
-/* A class driver's channels (M7: DR_USB, DR_INPUT). */
+/* A class driver's channels (DR_USB, DR_INPUT). */
 #define DEVMGR_DRV_CHAN_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 
 struct devmgr_req {

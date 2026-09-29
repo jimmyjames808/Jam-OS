@@ -1,4 +1,4 @@
-/* Jam OS user programs: static ELF64 at 0x400000 (M5-PLAN.md: no ASLR yet).
+/* Jam OS user programs: static ELF64 at 0x400000 (no ASLR yet).
  *
  * Three segments, each starting on its own page, so every page is either
  * read+execute, read-only or read+write, never writable and executable

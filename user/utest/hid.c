@@ -1,4 +1,4 @@
-/* utest: the HID driver (drivers/hid, M7 Track B) as a process, against a
+/* utest: the HID driver (drivers/hid) as a process, against a
  * mock usb-bus and a mock console, both served from here.
  *
  * The mock usb-bus serves abi/idl/usb.idl on the driver's DR_USB channel
@@ -883,7 +883,7 @@ bool t_hid_mouse(void)
     }
     /* The reports channel alone closing (usb-bus gave the endpoint up after
      * errors) with DR_USB still open: not "device gone" but exit 5, so
-     * devmgr restarts hid instead of leaving the mouse dead (M7 review). */
+     * devmgr restarts hid instead of leaving the mouse dead. */
     unplug(&m, false, true);
     return finish(&m, 5);
 }

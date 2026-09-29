@@ -1,17 +1,19 @@
-/* utest: the M5 test suite, run in ring 3 as a process under init.
+/* utest: the user-space test suite, run in ring 3 as a process under
+ * init (and by the shell's `utest`).
  *
- * It checks the milestone from user space: system calls and handle
+ * It checks the kernel from user space: system calls and handle
  * rights, bad user pointers (ERR_INVALID_ARGS, not a kill), a child that
  * crashes is killed and nothing else is, W^X, channel ping-pong between two
  * processes, a child killed while blocked in channel_call gives back every
  * page, handle and thread, a runaway child hits its job's limits and gets
  * ERR_NO_MEMORY / ERR_NO_RESOURCES (no panic), FPU/SSE/AVX state survives
- * preemption, and many threads come and go. M6: the null and drvtest
- * drivers (drivers/) run as processes and talk through <idl/null.h>;
- * with devmgr (init hands us its control channel, SR_DEVMGR_CTL): the edu driver
- * process it bound, called through <idl/edu.h>, killed in the middle of a
- * DMA, and what a driver's handles can't do. The devmgr tests skip
- * themselves without devmgr or the device (edu is QEMU's). M7: the hid
+ * preemption, and many threads come and go. Drivers: the null and
+ * drvtest drivers (drivers/) run as processes and talk through
+ * <idl/null.h>; with devmgr (init hands us its control channel,
+ * SR_DEVMGR_CTL): the edu driver process it bound, called through
+ * <idl/edu.h>, killed in the middle of a DMA, supervision bringing
+ * drivers back, and what a driver's handles can't do. The devmgr tests
+ * skip themselves without devmgr or the device (edu is QEMU's). The hid
  * driver process against a mock usb-bus and a mock console (hid.c).
  *
  * Children are this same program started with a mode ("utest nullderef",
@@ -438,7 +440,8 @@ static void waiter(void *arg)
 }
 
 /* Kernel memory a program makes the kernel hold is charged to its job
- * (the review's R6): a VMO's struct and a process are handle units, a
+ * (else a program could make the kernel hold memory past its limits): a
+ * VMO's struct and a process are handle units, a
  * thread's kernel stack is pages, port packets and bindings and each
  * handle a message carries are message bytes, and all of it comes back. */
 static bool t_kernel_objects_are_charged(void)
@@ -752,7 +755,7 @@ static bool t_job_kill_reaps_orphans(void)
     return true;
 }
 
-/* ---- drivers (M6) ---------------------------------------------------------------- */
+/* ---- drivers as processes ------------------------------------------------------- */
 
 #define DRVTEST_NULL 0x40   /* drvtest's role for its channel to a null server */
 
@@ -852,13 +855,13 @@ static bool t_startup_message(void)
     return true;
 }
 
-/* ---- devmgr and the edu driver process (M6 phase 2) ------------------------------------ */
+/* ---- devmgr and the edu driver process ------------------------------------------------ */
 
 #define EDU_VENDOR 0x1234
 #define EDU_DEVICE 0x11e8
 #define CMD_BME    0x04
 
-/* devmgr's control channel (M7: the tests kill, rebind and look at
+/* devmgr's control channel (the tests kill, rebind and look at
  * drivers' handles; init and the shell's `utest` hand it to us), or 0
  * (with a line saying the test is skipped). */
 static handle_t devmgr(void)
@@ -910,7 +913,7 @@ static bool t_edu_process(void)
     return true;
 }
 
-/* M7 cleanup: devmgr's query channel (SR_DEVMGR) answers the queries and
+/* devmgr's query channel (SR_DEVMGR) answers the queries and
  * refuses everything that changes something or hands out hardware. */
 static bool t_devmgr_query_channel(void)
 {
@@ -955,8 +958,8 @@ static bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct de
     return true;
 }
 
-/* Killing the edu driver process while its DMA runs (M6), and supervision
- * bringing it back (M7): Bus Master Enable goes off, its pinned buffer is
+/* Killing the edu driver process while its DMA runs, and supervision
+ * bringing it back: Bus Master Enable goes off, its pinned buffer is
  * quarantined (still charged to its job), its MSI vector is free; devmgr
  * restarts it at once (a KILL is a death like a crash) with a new vector
  * and dma_cap; the client reconnects through GET_SERVICE and factorial and
@@ -1002,7 +1005,7 @@ static bool t_edu_killed_mid_dma(void)
     CHECK_ST(jam_process_get_info(proc, &info), OK);
     CHECK_EQ(info.state, PROCESS_DEAD);
     CHECK(info.killed);
-    /* Its pinned buffer is quarantined (M7), still charged to its job. */
+    /* Its pinned buffer is quarantined, still charged to its job. */
     if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
         return false;
     CHECK(sup.a == DEVMGR_SUP_RESTARTING || sup.a == DEVMGR_SUP_RUNNING);
@@ -1046,7 +1049,7 @@ static bool t_edu_killed_mid_dma(void)
     return true;
 }
 
-/* ---- supervision with the crash-test driver (M7) ------------------------------------ */
+/* ---- supervision with the crash-test driver ----------------------------------------- */
 
 #define TV DEVMGR_TEST_VENDOR
 #define TD DEVMGR_TEST_DEVICE
@@ -1358,7 +1361,7 @@ static bool t_driver_handle_limits(void)
     CHECK_ST(jam_pci_device_open(dev, 0, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_resource_create(dev, RES_PCI, 0, 0, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_pci_bar_resource(dev, tab & 7, &x), ERR_ACCESS_DENIED);
-    /* Nothing to pass on (M7): the function and its BARs can't be
+    /* Nothing to pass on: the function and its BARs can't be
      * duplicated or sent (DR_SERVE is a channel like this one), nor can
      * the registers as a VMO. */
     handle_t ca, cb;

@@ -1,4 +1,4 @@
-/* usbtest: checks usb-bus from user space (M7 Track A). init runs it after
+/* usbtest: checks usb-bus from user space. init runs it after
  * utest (boot/init.cfg), on QEMU and on the PC.
  *
  * It finds usb-bus among devmgr's drivers (GET_SERVICE 0xffff/0xffff: the
@@ -21,7 +21,7 @@
  *                  closes) and adds it back; it opens and polls again
  * and, when a keyboard with serial "jamos-keys" is attached (the
  * tools/usb-test.sh scenario, which types through the QEMU monitor), through
- * the real chain usb-bus -> devmgr -> drv/hid (M7 integration; hid owns the
+ * the real chain usb-bus -> devmgr -> drv/hid (hid owns the
  * endpoint, usbtest watches its counters and hid's supervision):
  *   keys           devmgr started hid for it and hid polls the endpoint;
  *                  `sendkey a` reaches hid (press + release)
@@ -386,7 +386,7 @@ static bool t_serve_backlog(void)
 
 /* ---- the interactive part (QEMU monitor) ----------------------------------------------- */
 
-/* M7 integration: devmgr binds drv/hid to the test keyboard (it owns the
+/* devmgr binds drv/hid to the test keyboard (it owns the
  * interrupt endpoint), so usbtest watches through a channel of its own:
  * the endpoint's counters (usb.endpoint_stats: reports taken by hid, and
  * whether a reader is attached) and hid's supervision state in devmgr.
@@ -598,7 +598,7 @@ static bool t_unplug_hub(void)
 
 static bool find_bus(void)
 {
-    dm = startup_handle(SR_DEVMGR_CTL);   /* M7: it kills hid (control) */
+    dm = startup_handle(SR_DEVMGR_CTL);   /* control: it kills hid */
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {

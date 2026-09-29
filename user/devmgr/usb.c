@@ -1,4 +1,4 @@
-/* devmgr: USB interfaces and their class drivers (M7).
+/* devmgr: USB interfaces and their class drivers.
  *
  * usb-bus writes `usbbus.interface_attached` (abi/idl/usbbus.idl) on its
  * DR_SERVE channel, txid 0, by itself, for each interface of a device it
@@ -282,8 +282,8 @@ static void attached(struct binding *bus, const struct usbbus_interface_attached
 
 /* Only a usb-bus reports interfaces: any other driver writing
  * interface_attached on its DR_SERVE would get a class driver started on a
- * channel it serves itself -- with a console input source (review of M7:
- * a compromised driver could type into the shell). */
+ * channel it serves itself -- with a console input source (a compromised
+ * driver could type into the shell). */
 static bool is_usb_bus(const struct binding *b)
 {
     return b->kind == BIND_PCI && b->path && strcmp(b->path, "drv/usb-bus") == 0;

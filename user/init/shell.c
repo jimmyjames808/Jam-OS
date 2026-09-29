@@ -1,4 +1,4 @@
-/* init's shell mode (M7 Track C): a plain boot ("Jam OS", or "shell" on
+/* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
  * init starts and then supervises four services, each in a job of its own
@@ -14,7 +14,7 @@
  *             SR_DEVMGR; init keeps a client end of each) and a copy of
  *             init's (ADMIN) console client end (SR_CONSOLE), so its HID
 
- *             drivers type into the console (M7 integration). init waits
+ *             drivers type into the console. init waits
  *             for its first binding pass (up to 30 s). "nousb" (the safe
  *             mode boot entry) is passed on: no USB controller driver
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
@@ -34,7 +34,7 @@
  *     channel then closes) exit and come back connected to it, and devmgr
  *     gets the new channel (DEVMGR_SET_CONSOLE): its HID drivers, which
  *     end when their console goes, come back connected to it.
- *   - devmgr dying (M7 cleanup: killed, or a crash) takes its whole job
+ *   - devmgr dying (killed, or a crash) takes its whole job
  *     with it: every driver it started (usb-bus, each hid). A new devmgr
  *     binds them again from scratch (the kernel's safe rebind: a new
  *     dma_cap with Bus Master Enable off until usb-bus has reset the

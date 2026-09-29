@@ -223,7 +223,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     m->nhandles = n;
     if (st == OK)
         st = jam_channel_create(&ch[0], &ch[1]);
-    if (st == OK)   /* the extras with the rights the caller chose (M7) */
+    if (st == OK)   /* the extras with the rights the caller chose */
         st = jam_channel_write_rights(ch[0], msg, (uint32_t)len, hs, rs, n);
     if (st == OK)
         n = 0;   /* all in the message now */

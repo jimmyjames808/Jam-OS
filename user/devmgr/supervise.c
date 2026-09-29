@@ -1,4 +1,4 @@
-/* devmgr: driver supervision (M7). When a driver's process terminates:
+/* devmgr: driver supervision. When a driver's process terminates:
  *
  *   - exit code 0 by itself (not killed): the driver is finished (a
  *     one-shot driver like xhci-noop). Not restarted; its job must be

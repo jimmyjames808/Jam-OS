@@ -14,7 +14,7 @@
  *                committing a zeroed page, installing it, returning
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
  *   bench-echo   the server: read, write the same bytes back
- *   bench-tcall  (M5.5) channel_call to an echo THREAD of this process on a
+ *   bench-tcall  channel_call to an echo THREAD of this process on a
  *                channel of its own: the same work as bench-call without
  *                the address-space switches (both threads share our CR3),
  *                for the process->process breakdown in BENCH.md */

@@ -1,9 +1,9 @@
 /* init: the first user process, started by the kernel's userboot with the
  * root job, the root resource and the bootfs image.
  *
- * M6: it first starts devmgr (bin/devmgr, if bootfs has it) in a job of
+ * It first starts devmgr (bin/devmgr, if bootfs has it) in a job of
  * its own with a RES_PCI resource sliced from the root, and waits until
- * devmgr has bound its drivers. M7: with "shell" (a plain boot) or
+ * devmgr has bound its drivers. With "shell" (a plain boot) or
  * "shell-nousb" (the safe mode entry: devmgr leaves USB controllers alone)
  * it starts and supervises the console, serial input, devmgr and the shell
  * instead (shell.c) and never exits. Otherwise it runs the programs listed in
@@ -111,9 +111,9 @@ static bool run(int argc, char **argv)
     return ok;
 }
 
-/* M6: userboot gives init the root resource (SR_RESOURCE). Check it is
- * one: slicing RES_PCI out of it works, a zero-sized MMIO slice doesn't.
- * (devmgr will get that RES_PCI in phase 2.) */
+/* userboot gives init the root resource (SR_RESOURCE). Check it is one:
+ * slicing RES_PCI out of it works (devmgr gets such a slice), a
+ * zero-sized MMIO slice doesn't. */
 static bool check_root_resource(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), pci, bad;
@@ -137,7 +137,7 @@ static bool check_root_resource(void)
     return true;
 }
 
-/* devmgr: started before the programs, stopped after them. M7: with a
+/* devmgr: started before the programs, stopped after them. With a
  * console client end (consumed) for its class drivers' input. */
 static bool start_devmgr(handle_t console)
 {

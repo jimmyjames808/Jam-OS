@@ -2,8 +2,9 @@
  * space on the first malloc (pages are committed when first touched, and
  * charged to our job then). Blocks come from a bump pointer; freed blocks
  * go on a first-fit free list and are split when much bigger than asked.
- * No coalescing: good enough for M5's programs, replaced when something
- * needs better. A spinlock makes it safe for several threads. */
+ * No coalescing: good enough for programs that allocate a little up
+ * front (big buffers come from VMOs of their own), replaced when
+ * something needs better. A spinlock makes it safe for several threads. */
 #include <os.h>
 
 #define ALIGN       16u

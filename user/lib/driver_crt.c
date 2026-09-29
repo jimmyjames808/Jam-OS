@@ -1,4 +1,4 @@
-/* The process build's driver entry (M6): libos's _start reads the startup
+/* The process build's driver entry: libos's _start reads the startup
  * message and calls main(); this main() turns the message's handles into
  * the struct driver_start and runs driver_main. Linked into every driver
  * ELF (drv/<name> in bootfs), never into libos.a (other programs have a

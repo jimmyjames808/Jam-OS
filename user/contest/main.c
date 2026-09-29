@@ -1,9 +1,9 @@
-/* contest: checks of the console process's protocols (M7 Track C), run
- * from the shell (`run contest`; the shell hands it SR_CONSOLE).
+/* contest: checks of the console process's protocols, run from the shell
+ * (`run contest`; the shell hands it SR_CONSOLE).
  *
- * M7 cleanup: the shell hands a program a PROGRAM-level console channel
- * (console.idl new_client), so contest checks that it can't connect an
- * input source or make channels, then the focus stack with real keys: it
+ * The shell hands a program a PROGRAM-level console channel (console.idl
+ * new_client), so contest checks that it can't connect an input source or
+ * make channels, then the focus stack with real keys: it
  * prints "contest: type <c> now" and the test script types it over the
  * serial port (serialin, a real source): its open_keys gets it; a second
  * open_keys takes the keys, and closing it gives them back to the first.
@@ -61,10 +61,11 @@ static bool empty(handle_t k)
     return !(seen & SIG_READABLE);
 }
 
-/* ---- review probe `run contest steal`: devmgr takes DEVMGR_SET_CONSOLE from
- * any client of its channel (the shell hands every `run` program one). This
- * program poses as the console: USB class drivers devmgr (re)starts after
- * that connect their keys to it. */
+/* ---- probe `run contest steal`: a `run` program posing as the console. If
+ * it could send devmgr DEVMGR_SET_CONSOLE, the USB class drivers devmgr
+ * (re)starts afterwards would connect their keys to it
+ * (tools/shell-tests/review-steal.txt checks that they don't: `run`
+ * programs get no devmgr channel, and the query channel refuses it). */
 static handle_t steal_src;
 
 static status_t st_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
@@ -140,7 +141,7 @@ static int steal(void)
 {
     handle_t dm = startup_handle(SR_DEVMGR), mine, theirs;
     if (!dm) {
-        /* The fix: `run` programs get no devmgr channel. */
+        /* `run` programs get no devmgr channel. */
         printf("contest: steal: no devmgr channel: nothing to steal with\n");
         return 0;
     }
@@ -185,9 +186,9 @@ int main(int argc, char **argv)
         printf("contest: no console channel (SR_CONSOLE)\n");
         return 1;
     }
-    /* Review probe (`run contest cad`): a program with no root resource,
-     * only the console channel the shell hands it, tries to play a keyboard
-     * and send Ctrl+Alt+Del. Fixed: the channel can't connect a source. */
+    /* Probe (`run contest cad`): a program with no root resource, only the
+     * console channel the shell hands it, tries to play a keyboard and send
+     * Ctrl+Alt+Del. It must fail: that channel can't connect a source. */
     if (argc > 1 && !strcmp(argv[1], "cad")) {
         CHECK(!startup_handle(SR_RESOURCE));
         status_t st = console_connect_input(con, &src);
