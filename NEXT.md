@@ -8,6 +8,13 @@ failing regression tests only, no fixes. After its report: fix pass with tests, 
 ("Jam OS (init + utest)", All tests 122+, Benchmark -> M5 column of BENCH.md, 10-min stress).
 PC: the phase-1 build (0.0.7-m5-phase1) also PASSED the 10-min stress (no problems), so the rewritten
 interrupt/syscall entry path is confirmed on real hardware.
+**Review DONE:** no kernel crash/UAF/cross-process access found; 4 CONFIRMED quota escapes (R1 VMO
+table pages uncharged, R2 user page tables uncharged, R3 unbounded free job chains, R4 process can
+raise its own job limit) with failing tests in kernel/test/test_review.c (run: ktest=review_...;
+skipped by plain ktest), plus R5 process_start OOM race panic (plausible), R6 other uncharged kernel
+memory, R7 debug_write IRQs-off printing, R8 no job_kill. Review tests merged into main. A FIX agent
+is working on R1-R8. The PC is meanwhile running the pre-fix 0.0.8-m5 build (init+utest, All tests,
+Benchmark for BENCH.md M5 column, stress).
 
 **M5 phase 2 DONE in QEMU (branch of the phase-2 agent, 2026-09-29)**: process/thread/job
 objects (object/process.c, object/job.c), every sysc_* (abi/sysc_*.c), kill = cancel all
