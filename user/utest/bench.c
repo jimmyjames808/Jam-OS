@@ -43,11 +43,6 @@ static inline uint64_t stamp(void)
     return (uint64_t)hi << 32 | lo;
 }
 
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
-
 static int64_t null_syscall(void)
 {
     int64_t r;

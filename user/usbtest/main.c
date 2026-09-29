@@ -69,7 +69,6 @@ static handle_t bus;
             FAIL("%s is %s, want %s", #expr, status_str(_s), status_str(_w)); \
     } while (0)
 
-static uint64_t now(void) { return (uint64_t)jam_clock_get(); }
 static uint64_t in(uint64_t ns) { return now() + ns; }
 
 struct dev {

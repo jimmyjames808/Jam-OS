@@ -304,14 +304,14 @@ static int selftest(void)
     stamp(rpent, 3, 512, 512, 0);
     /* It settles into 116 cells (6 of them gliders flying off) at generation
      * 1103: find the last generation whose population differs from gen 1500's. */
-    uint64_t t0 = now_ns(), last_change = 0, last_pop = 0;
+    uint64_t t0 = now(), last_change = 0, last_pop = 0;
     while (gen < 1500) {
         pop = step(true);
         if (pop != last_pop)
             last_change = gen;
         last_pop = pop;
     }
-    uint64_t ms = (now_ns() - t0) / 1000000;
+    uint64_t ms = (now() - t0) / 1000000;
     snprintf(what, sizeof(what), "R-pentomino: 116 cells for good from gen %lu (1103-ish)",
              (unsigned long)last_change);
     check(pop == 116 && last_change >= 1100 && last_change <= 1106, what);
@@ -346,19 +346,19 @@ static int selftest(void)
     /* How much faster all CPUs are on a big world (information only). */
     world_alloc(4096);
     soup();
-    t0 = now_ns();
+    t0 = now();
     for (int i = 0; i < 4; i++)
         step(false);
-    uint64_t one = now_ns() - t0;
-    t0 = now_ns();
+    uint64_t one = now() - t0;
+    t0 = now();
     for (int i = 0; i < 4; i++)
         step(true);
-    uint64_t all = now_ns() - t0;
+    uint64_t all = now() - t0;
     ages = false;
-    t0 = now_ns();
+    t0 = now();
     for (int i = 0; i < 4; i++)
         step(true);
-    uint64_t noage = now_ns() - t0;
+    uint64_t noage = now() - t0;
     ages = true;
     uint64_t x10 = all ? one * 10 / all : 0;
     say("life: selftest: 4096x4096: %lu ms/gen on 1 CPU, %lu.%lu ms/gen on %u threads (%lu.%lux); "
@@ -674,13 +674,13 @@ static int play(int argc, char **argv)
     uint32_t si = 3;   /* 60 generations a second */
     bool paused = false, quit = false, dirty = true;
     uint64_t pop = population(cur), gens_total = 0, compute_ns = 0;
-    uint64_t win_t = now_ns(), win_gen = 0, gen_us = 0, last = now_ns();
+    uint64_t win_t = now(), win_gen = 0, gen_us = 0, last = now();
     uint32_t gps = 0;
     double owed = 0;   /* generations due (fractions carry over) */
     struct fps fps = { 0 };
     const uint64_t frame_ns = 16666667;
     while (!quit) {
-        uint64_t t0 = now_ns();
+        uint64_t t0 = now();
         double dt = (double)(t0 - last) / 1e9;
         last = t0;
         if (dt > 0.25)
@@ -693,22 +693,22 @@ static int play(int argc, char **argv)
                 owed -= n;
             }
             for (uint32_t i = 0; i < n; i++) {
-                uint64_t s0 = now_ns();
+                uint64_t s0 = now();
                 pop = step(pool_threads() > 1);
-                uint64_t d = now_ns() - s0;
+                uint64_t d = now() - s0;
                 compute_ns += d;
                 gens_total++;
                 gen_us = gen_us ? (gen_us * 7 + d / 1000) / 8 : d / 1000;
                 dirty = true;
-                if (now_ns() - t0 > frame_ns * 6 / 10) {   /* keep the frame rate */
+                if (now() - t0 > frame_ns * 6 / 10) {   /* keep the frame rate */
                     owed = 0;
                     break;
                 }
             }
         }
-        if (now_ns() - win_t >= 1000000000ull) {
-            gps = (uint32_t)((gen - win_gen) * 1000000000ull / (now_ns() - win_t));
-            win_t = now_ns();
+        if (now() - win_t >= 1000000000ull) {
+            gps = (uint32_t)((gen - win_gen) * 1000000000ull / (now() - win_t));
+            win_t = now();
             win_gen = gen;
         }
         /* The glide: most of the way in a few frames. */

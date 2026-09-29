@@ -29,8 +29,7 @@
 #include <os.h>
 #include <jam_syscalls.h>
 #include <idl/console.h>
-
-extern const uint8_t font_8x16[128][16];
+#include <font.h>
 
 #define STACK        (64u << 10)
 #define MAX_THREADS  64

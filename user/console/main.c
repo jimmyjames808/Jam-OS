@@ -66,7 +66,7 @@
 #define RENDER_NS  16000000ull
 #define KLOG_BUF   16384
 
-extern const uint8_t font_8x16[128][16];
+#include <font.h>
 
 /* Palette indices. */
 enum { C_BLACK, C_RED, C_GREEN, C_YELLOW, C_BLUE, C_MAGENTA, C_CYAN, C_GREY,

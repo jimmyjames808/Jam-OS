@@ -21,6 +21,19 @@
 
 int main(int argc, char **argv);
 
+/* time ------------------------------------------------------------------------ */
+
+#define NS_PER_US 1000ull
+#define NS_PER_MS 1000000ull
+#define NS_PER_S  1000000000ull
+
+/* Nanoseconds since boot: the clock deadlines (jam_object_wait_one,
+ * jam_port_wait, jam_nanosleep, ...) are measured on. */
+static inline uint64_t now(void)
+{
+    return (uint64_t)jam_clock_get();
+}
+
 /* startup message ----------------------------------------------------------- */
 
 /* The channel the startup message came on (still open). */

@@ -140,7 +140,8 @@ UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
-USER_OBJS   := $(LIBOS_OBJS) $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
+USER_OBJS   := $(LIBOS_OBJS) $(patsubst %,$(UOBJ)/%.o,$(wildcard user/fun/*.c)) \
+               $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
                $(foreach p,$(USER_PROGS),$(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(p)/*.c)))
 
 .SECONDARY: $(UINC)
@@ -160,14 +161,24 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# libfun (user/fun, fun.h): the screen, drawing, text, keys and thread pool
+# of the programs in FUN_PROGS, which link it before libos.
+FUN_PROGS   := life tetris fractal demo
+LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard user/fun/*.c))
+
+$(UOBJ)/libfun.a: $(LIBFUN_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
 define USER_PROG
 $(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(1)/*.c)) \
-                    $(UOBJ)/libos.a user/linker.ld
+                    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a user/linker.ld
 	@mkdir -p $$(dir $$@)
 	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o \
-	    $(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(1)/*.c)) $(UOBJ)/libos.a $(LIBGCC) -o $$@
+	    $(patsubst %,$(UOBJ)/%.o,$(wildcard user/$(1)/*.c)) \
+	    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a $(LIBGCC) -o $$@
 
 $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)
 	$(STRIP) --strip-debug $$< -o $$@
@@ -310,8 +321,9 @@ usb: $(IMAGE)
 
 font:
 	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf kernel/dev/font_8x16.c
-	(echo "// Copied from kernel/dev/font_8x16.c by \`make font\`: the console draws in user space."; \
-	 cat kernel/dev/font_8x16.c) > user/console/font_8x16.c
+	(echo "/* User space's copy of kernel/dev/font_8x16.c, written by \`make font\`. Its own object"; \
+	 echo " * in libos.a: only the programs that draw text (<font.h>) link it in. */"; \
+	 cat kernel/dev/font_8x16.c) > user/lib/font_8x16.c
 
 clean:
 	rm -rf $(BUILD)

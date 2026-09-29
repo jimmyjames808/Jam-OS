@@ -239,7 +239,7 @@ static void build_list(void)
 static void restart_passes(void)
 {
     pass_target = 16;
-    view_t0 = now_ns();
+    view_t0 = now();
     view_ns = 0;
     view_iters = 0;
     build_list();
@@ -358,13 +358,13 @@ static void work(uint64_t until)
             pass_target = pass_target > 1 ? pass_target / 2
                         : pass_target == 1 && v.ss > 1 && !aa_full ? 0 : -1;
             if (pass_target < 0) {
-                view_ns = now_ns() - view_t0;
+                view_ns = now() - view_t0;
                 break;
             }
             build_list();
             continue;
         }
-        uint64_t t0 = now_ns();
+        uint64_t t0 = now();
         if (did && t0 >= until)
             break;
         uint32_t left = plen - pnext, n = threads;
@@ -384,7 +384,7 @@ static void work(uint64_t until)
             pool_run(tile_item, NULL, n);
         pnext += n;
         did = true;
-        double per = (double)(now_ns() - t0) * threads / n;
+        double per = (double)(now() - t0) * threads / n;
         tile_ns = tile_ns > 0 ? (tile_ns + per) / 2 : per;
         for (uint32_t i = 0; i < threads; i++)
             view_iters += iters_by[i];
@@ -729,9 +729,9 @@ static int selftest(void)
     v.cy = tour_y;
     v.zoom = 1e20;
     apply_view();
-    uint64_t t0 = now_ns();
+    uint64_t t0 = now();
     same = compare_modes(M_PERTURB, M_DD, 24, 6000, &worst, &distinct);
-    uint64_t ms = (now_ns() - t0) / 1000000;
+    uint64_t ms = (now() - t0) / 1000000;
     compare_modes(M_DOUBLE, M_DOUBLE, 24, 6000, &worst, &dist_d);
     snprintf(what, sizeof(what), "zoom 1e20: perturbation == double-double at %d of 576 (%lu ms)",
              same, (unsigned long)ms);
@@ -800,17 +800,17 @@ static int selftest(void)
     v.zoom = 2000;
     v.maxit = 2000;
     kv.avx2 = false;
-    t0 = now_ns();
+    t0 = now();
     uint64_t iters = render_all(false);
-    uint64_t one_ns = now_ns() - t0;
-    t0 = now_ns();
+    uint64_t one_ns = now() - t0;
+    t0 = now();
     render_all(true);
-    uint64_t all = now_ns() - t0, all4 = 0;
+    uint64_t all = now() - t0, all4 = 0;
     if (avx2) {
         kv.avx2 = true;
-        t0 = now_ns();
+        t0 = now();
         render_all(true);
-        all4 = now_ns() - t0;
+        all4 = now() - t0;
     }
     uint64_t x10 = all ? one_ns * 10 / all : 0;
     say("fractal: selftest: seahorse valley 320x176, %lu M iterations: %lu ms on 1 CPU, %lu ms "
@@ -888,7 +888,7 @@ static void hud(bool draw, bool touring, bool cycling)
              fmt_sci(z, sizeof(z), v.zoom), kv.maxit, v.maxit ? "" : " (auto)",
              v.ss > 1 ? (v.ss == 2 ? "2x2" : v.ss == 3 ? "3x3" : "4x4") : "off", pal_names[pal_kind],
              cycling ? " (cycling)" : "", touring ? "    \aTOUR\a" : "");
-    uint64_t ns = pass_target < 0 ? view_ns : now_ns() - view_t0;
+    uint64_t ns = pass_target < 0 ? view_ns : now() - view_t0;
     uint64_t mips = ns ? view_iters * 1000 / ns : 0;
     const char *kern = kv.mode == M_PERTURB ? "perturbation" : kv.mode == M_DD ? "double-double"
                      : kv.avx2 ? "AVX2" : "double";
@@ -917,11 +917,11 @@ static void hud(bool draw, bool touring, bool cycling)
     if (!draw) {
         for (int i = 0; i < 2; i++)
             dirty_rect(hud_last[i][0], hud_last[i][1], hud_last[i][2], hud_last[i][3]);
-        int now[2][4] = { { px, 0, pw + 8 * u, py + ph + 8 * u },
+        int cur[2][4] = { { px, 0, pw + 8 * u, py + ph + 8 * u },
                           { (s->w - hw) / 2, s->h - hh - pad, show_help ? hw : 0, hh } };
-        memcpy(hud_last, now, sizeof(now));
+        memcpy(hud_last, cur, sizeof(cur));
         for (int i = 0; i < 2; i++)
-            dirty_rect(now[i][0], now[i][1], now[i][2], now[i][3]);
+            dirty_rect(cur[i][0], cur[i][1], cur[i][2], cur[i][3]);
         dirty_rect(0, 0, s->w, 3 * u);
         return;
     }
@@ -975,13 +975,13 @@ static void benchmark(void)
     uint32_t rows = (uint32_t)PH / 4;
     for (int i = 0; i < FUN_MAX_THREADS; i++)
         iters_by[i] = 0;
-    uint64_t t0 = now_ns();
+    uint64_t t0 = now();
     for (uint32_t j = 0; j < rows; j++)
         bench_row(j, 0, NULL);
-    uint64_t one = now_ns() - t0, iters = iters_by[0];
-    t0 = now_ns();
+    uint64_t one = now() - t0, iters = iters_by[0];
+    t0 = now();
     pool_run(bench_row, NULL, rows);
-    uint64_t all = now_ns() - t0, x10 = all ? one * 10 / all : 0;
+    uint64_t all = now() - t0, x10 = all ? one * 10 / all : 0;
     char a[32], b[32], c[32];
     snprintf(note, sizeof(note),
              "benchmark, %d x %d points, %s M iterations:  1 CPU %lu ms (%s M/s),  %u CPUs %lu ms "
@@ -1025,7 +1025,7 @@ static int play(int argc, char **argv)
     uint64_t renders = 0, last_frame = 0, tour_step_at = 0, frames = 0;
     const int step_px = ((PH / 8 + TS / 2) / TS) * TS;   /* an arrow: 1/8 of the height, whole tiles */
     while (!quit) {
-        uint64_t t0 = now_ns();
+        uint64_t t0 = now();
         bool busy = pass_target >= 0 || touring;
         /* Keys: whatever came; wait for one only when there's nothing to do. */
         int k = gfx_key(busy ? 0 : cycling ? last_frame + 16666667 : DEADLINE_NEVER);
@@ -1087,7 +1087,7 @@ static int play(int argc, char **argv)
                 if (pass_target <= 0) {   /* (else it comes after the passes still going) */
                     pass_target = v.ss > 1 ? 0 : -1;
                     if (pass_target == 0) {
-                        view_t0 = now_ns();
+                        view_t0 = now();
                         build_list();
                     }
                 }

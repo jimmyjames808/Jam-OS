@@ -78,11 +78,6 @@ static handle_t devmgr_q;   /* its query channel, client end */
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static bool nousb;
 
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
-
 static handle_t root_with(rights_t rights)
 {
     handle_t h = HANDLE_INVALID;

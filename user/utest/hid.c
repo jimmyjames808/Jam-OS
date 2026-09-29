@@ -52,11 +52,6 @@ static const char *hcur;
             FAIL("%s == %s: %ld vs %ld", #a, #b, (long)_a, (long)_b); \
     } while (0)
 
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
-
 /* ---- recorded devices ------------------------------------------------------ */
 
 /* The boot keyboard report descriptor (HID 1.11 appendix B.1, as QEMU's

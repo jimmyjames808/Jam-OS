@@ -1,7 +1,9 @@
-/* The fun apps' shared code (bin/life, bin/tetris, bin/fractal).
+/* libfun: the fun apps' shared code (user/fun).
  *
- * Each app compiles this in through a one-line user/<app>/fun.c
- * (`#include "../fun/fun.c"`), so there is no extra library to build.
+ * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
+ * bin/fractal, bin/demo), one object per job: gfx.c (the screen and
+ * drawing), text.c, keys.c, pool.c (CPUs and the thread pool), util.c
+ * (maths, memory, output, arguments, self-tests).
  *
  * The screen: the apps draw real pixels. gfx_open borrows the framebuffer
  * from the console (console.lend_screen through SR_CONSOLE: a
@@ -181,8 +183,6 @@ static inline double floord(double x)
 
 /* ---- odds and ends ---------------------------------------------------------------------- */
 
-static inline uint64_t now_ns(void) { return (uint64_t)jam_clock_get(); }
-
 /* xorshift64*: a fast deterministic generator. */
 static inline uint64_t rng_next(uint64_t *s)
 {
@@ -214,3 +214,11 @@ char    *commas(char *buf, size_t n, uint64_t v);
 bool     has_arg(int argc, char **argv, const char *name);
 /* The number after "name=" in argv, or def. */
 uint64_t arg_num(int argc, char **argv, const char *name, uint64_t def);
+
+/* Self-tests (`--selftest`): fun_selftest_begin names the app and how wide
+ * a check's description is padded; fun_check says one line, "<app>:
+ * selftest: <what> ok" (or FAILED); fun_selftest_end says the verdict and
+ * returns the exit code (0: every check passed). */
+void     fun_selftest_begin(const char *app, int width);
+void     fun_check(bool ok, const char *what);
+int      fun_selftest_end(void);

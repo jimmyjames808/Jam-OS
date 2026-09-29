@@ -54,11 +54,6 @@ static const char *cur;
             FAIL("%s == %s: %ld vs %ld", #a, #b, (long)_a, (long)_b); \
     } while (0)
 
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
-
 /* ---- helpers ------------------------------------------------------------------ */
 
 static handle_t own_job(void)

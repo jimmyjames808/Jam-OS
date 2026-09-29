@@ -21,11 +21,6 @@
  * them (the reconnect rule, <devmgr.h>). */
 #include "internal.h"
 
-static uint64_t now(void)
-{
-    return (uint64_t)jam_clock_get();
-}
-
 /* Restarts within the window. */
 static unsigned recent(const struct binding *b, uint64_t t)
 {

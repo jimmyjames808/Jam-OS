@@ -1025,24 +1025,24 @@ static int play(int argc, char **argv)
     blit(&scr.s, 0, 0, &bg, 0, 0, scr.w, scr.h);
 
     struct game g;
-    game_new(&g, now_ns() ^ 0x7e7715, now_ns());
+    game_new(&g, now() ^ 0x7e7715, now());
     uint32_t best = 0, games = 0, frames = 0;
-    uint64_t period = 1000000000ull / hz, last = now_ns(), t_start = last;
+    uint64_t period = 1000000000ull / hz, last = now(), t_start = last;
     bool quit = false;
     while (!quit) {
-        uint64_t now = now_ns();
-        game_tick(&g, now);
+        uint64_t t = now();
+        game_tick(&g, t);
         effects(&g);
         if (g.score > best)
             best = g.score;
-        parts_step((float)(now - last) / 1e9f);
-        last = now;
-        draw(&g, now, best);
+        parts_step((float)(t - last) / 1e9f);
+        last = t;
+        draw(&g, t, best);
         gfx_present();
         frames++;
         /* The next frame: at the frame rate while something moves, else
          * when the game has something to do (or a key comes). */
-        uint64_t deadline = animating(&g, now) ? now + period : game_deadline(&g);
+        uint64_t deadline = animating(&g, t) ? t + period : game_deadline(&g);
         int k = gfx_key(deadline);
         while (k != KEY_NONE) {
             if (k == KEY_QUIT || k == 'q' || k == 'Q') {
@@ -1050,12 +1050,12 @@ static int play(int argc, char **argv)
                 break;
             }
             bool was_over = g.over;
-            game_key(&g, k, now_ns());
+            game_key(&g, k, now());
             games += was_over && !g.over;
             k = gfx_key(0);   /* everything typed meanwhile, then draw */
         }
     }
-    uint64_t ms = (now_ns() - t_start) / 1000000ull;
+    uint64_t ms = (now() - t_start) / 1000000ull;
     gfx_close();
     say("tetris: score %u, %u lines, level %u (best %u over %u game(s)); %u frames in %lu ms, "
         "%lu MB to the screen\n",
@@ -1076,7 +1076,7 @@ static int crash_test(void)
     text_shadow(&scr.s, 40, 40, scr.ui * 2, 0xffffff,
                 "tetris --crash-test: dying with the screen borrowed");
     gfx_present();
-    jam_nanosleep(now_ns() + 500000000ull);
+    jam_nanosleep(now() + 500000000ull);
     say("tetris: crash test: faulting now\n");
     volatile int *p;
     __asm__("" : "=r"(p) : "0"((uintptr_t)8));   /* hide the null from the compiler */
@@ -1096,7 +1096,7 @@ static int hang_test(void)
     gfx_present();
     say("tetris: hang test: holding the screen\n");
     for (;;)
-        jam_nanosleep(now_ns() + 1000000000ull);
+        jam_nanosleep(now() + 1000000000ull);
 }
 
 int main(int argc, char **argv)
