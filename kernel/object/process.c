@@ -74,9 +74,6 @@ struct process {
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     bool                starting;    /* (L) process_start is making the first thread */
     bool                listed;      /* on job's list (job_link); cleared at teardown */
-    bool                kernel;      /* a kernel process (drivers): no address space */
-    void               *kctx;        /* kernel process: its owner's context... */
-    void              (*kfini)(void *kctx);   /* ...and what finishes it, once, at teardown */
     struct job_link     job_link;    /* (the job's lock) */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
@@ -101,7 +98,6 @@ struct uthread {
     int               state;         /* (process lock) enum ut_state */
     int               prio;
     uint64_t          entry, stack, arg0, arg1;
-    bool              kmode;         /* runs entry(arg0) in the kernel (a kernel process) */
     char              name[24];
 };
 
@@ -180,7 +176,7 @@ static const struct kobject_ops process_ops = {
     .on_zero_handles = process_on_zero_handles,
 };
 
-static status_t create(struct job *job, const char *name, bool kernel, struct process **out)
+status_t process_create(struct job *job, const char *name, struct process **out)
 {
     status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);   /* this object */
     if (st != OK)
@@ -190,13 +186,12 @@ static status_t create(struct job *job, const char *name, bool kernel, struct pr
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
     }
-    st = kernel ? OK : aspace_create_charged(job, &p->as);
+    st = aspace_create_charged(job, &p->as);
     if (st != OK) {
         kfree(p);
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return st;
     }
-    p->kernel = kernel;
     p->obj_charged = true;
     kobject_init(&p->base, OBJ_PROCESS, &process_ops, "process", 0);
     handle_table_init(&p->handles);
@@ -213,8 +208,7 @@ static status_t create(struct job *job, const char *name, bool kernel, struct pr
     p->listed = job != NULL;
     /* Listed last, fully made: from here on job_kill can find and kill it. */
     if (job && (st = job_attach_process(job, &p->job_link)) != OK) {   /* a killed job */
-        if (p->as)
-            aspace_unref(p->as);
+        aspace_unref(p->as);
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         job_unref(job);
         kfree(p);   /* nobody else has seen it */
@@ -222,27 +216,6 @@ static status_t create(struct job *job, const char *name, bool kernel, struct pr
     }
     *out = p;
     return OK;
-}
-
-status_t process_create(struct job *job, const char *name, struct process **out)
-{
-    return create(job, name, false, out);
-}
-
-status_t process_create_kernel(struct job *job, const char *name, void *ctx,
-                               void (*fini)(void *ctx), struct process **out)
-{
-    status_t st = create(job, name, true, out);
-    if (st == OK) {
-        (*out)->kctx = ctx;   /* nobody else has seen it yet */
-        (*out)->kfini = fini;
-    }
-    return st;
-}
-
-void *process_kernel_ctx(struct process *p)
-{
-    return p->kernel ? p->kctx : NULL;
 }
 
 struct process *process_from_job_link(struct job_link *l)
@@ -418,11 +391,6 @@ static void process_finish(struct process *p)
     mutex_lock(&p->setup);
     handle_table_destroy(&p->handles);   /* credits the job for every slot */
     mutex_unlock(&p->setup);
-    /* A kernel process's owner lets go of what it holds for the process
-     * (a driver's heap, kernel mappings), still charged to the job:
-     * after SIG_TERMINATED nothing of it may be. No thread is left. */
-    if (p->kfini)
-        p->kfini(p->kctx);
     /* Its last words, even without a newline, and how many lines it lost. */
     char line[OUT_LINE] = "";
     enum out_kind kind = OUT_NONE;
@@ -623,17 +591,7 @@ static void uthread_main(void *arg)
     if (as)
         aspace_ref(as);
     u->state = UT_RUNNING;
-    bool run_kernel = u->kmode && p->state < PROCESS_DYING;
     punlock(p, f);
-    if (u->kmode) {
-        /* A kernel process's thread (a driver): no address space (the
-         * kernel's tables stay loaded) and no FPU state. A kill cancels it
-         * like any thread; kernel/drivers/driver_kernel.c notices that at
-         * its next drv_* call. Returning from entry ends the thread. */
-        if (run_kernel)
-            ((void (*)(void *))(uintptr_t)u->entry)((void *)(uintptr_t)u->arg0);
-        uthread_exit_current();
-    }
     if (!as || fpu_ustate_alloc(t) != OK) {
         if (as)
             aspace_unref(as);
@@ -732,29 +690,6 @@ status_t uthread_start(struct uthread *u, uint64_t entry, uint64_t stack, uint64
     status_t st = start_thread(u, entry, stack, arg0, arg1, mask, false, &finish);
     if (finish)
         process_finish(u->proc);
-    return st;
-}
-
-status_t uthread_start_kernel(struct uthread *u, void (*fn)(void *), void *arg)
-{
-    if (!u->proc->kernel)
-        return ERR_INVALID_ARGS;
-    u->kmode = true;   /* ours alone until it starts */
-    return uthread_start(u, (uint64_t)(uintptr_t)fn, 0, (uint64_t)(uintptr_t)arg, 0, NULL);
-}
-
-status_t process_start_kernel(struct process *p, struct uthread *u, void (*fn)(void *), void *arg)
-{
-    if (u->proc != p || !p->kernel)
-        return ERR_INVALID_ARGS;
-    u->kmode = true;
-    bool finish = false;
-    mutex_lock(&p->setup);
-    status_t st = start_thread(u, (uint64_t)(uintptr_t)fn, 0, (uint64_t)(uintptr_t)arg, 0, NULL,
-                               true, &finish);
-    mutex_unlock(&p->setup);
-    if (finish)
-        process_finish(p);
     return st;
 }
 
