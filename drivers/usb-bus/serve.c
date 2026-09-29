@@ -9,9 +9,12 @@
  * pending, so a wait deep inside an enumeration (hc_wait) never runs a
  * request; the main loop serves them between steps.
  *
- * Files: hc.c the controller (registers, rings, commands, events),
- * enum.c devices, enumeration, control transfers, interrupt endpoints and
- * hubs, this file the servers and the loop.
+ * Files: hc.c the controller (registers, rings, commands, events);
+ * devices.c the device table and contexts; control.c control transfers
+ * and descriptors; intr.c interrupt-IN endpoints; config.c configurations,
+ * endpoints and SET_INTERFACE; report.c log and RESULTS lines; attach.c
+ * enumeration and detach; hub.c hubs; rootport.c root ports; work.c the
+ * port work the loop drives; this file the servers and the loop.
  *
  * devmgr: for each interface of a configured device (hubs aside) usb-bus
  * writes a `usbbus.interface_attached` message on DR_SERVE (txid 0) with
@@ -30,7 +33,7 @@
 #include <idl/usb.h>
 #include <idl/usbbus.h>
 
-#define SETTLE_NS     (500 * MS)
+#define SETTLE_NS     (500 * NS_PER_MS)
 #define MAX_WAITERS   8
 
 struct chan {
@@ -594,7 +597,7 @@ static void serve_bus(struct hc *h)
             waiters[i].used = true;
             waiters[i].txid = w->txid;
             uint32_t ms = w->timeout_ms > 60000 ? 60000 : w->timeout_ms;
-            waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * MS;
+            waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * NS_PER_MS;
             continue;
         }
         handle_t rhs[IDL_REP_HANDLES];
@@ -617,7 +620,7 @@ static void serve_chan(int i)
      * them from one client would hold the loop -- hot-plug, the other
      * class drivers, error recovery -- for a minute. */
     uint64_t t0 = drv_clock_ns();
-    for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * MS; guard++) {
+    for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * NS_PER_MS; guard++) {
         status_t st;
         if (c->kind == CHAN_IFACE) {
             st = usb_serve_one(c->h, &usb_ops, c);
@@ -742,7 +745,7 @@ int driver_main(const struct driver_start *s)
     if (r == 0) {
         report_controller(h);
         usb_start(h);
-        uint64_t start = drv_clock_ns(), no_serve_end = start + 10000 * MS;
+        uint64_t start = drv_clock_ns(), no_serve_end = start + 10000 * NS_PER_MS;
         for (;;) {
             if (h->serve_pending) {
                 h->serve_pending = false;
@@ -757,9 +760,9 @@ int driver_main(const struct driver_start *s)
             bool st_now = settled();
             /* The list: once settled, and not before 2 s (USB 3 links may
              * still be training after the reset). */
-            if (st_now && !g_first_report_done && drv_clock_ns() - start >= 2000 * MS)
+            if (st_now && !g_first_report_done && drv_clock_ns() - start >= 2000 * NS_PER_MS)
                 usb_report_all(false);
-            uint64_t now = drv_clock_ns(), next = now + 1000 * MS;
+            uint64_t now = drv_clock_ns(), next = now + 1000 * NS_PER_MS;
             for (int i = 0; i < MAX_WAITERS; i++) {
                 if (!waiters[i].used)
                     continue;
@@ -768,8 +771,8 @@ int driver_main(const struct driver_start *s)
                 else if (waiters[i].deadline < next)
                     next = waiters[i].deadline;
             }
-            if (!g_first_report_done && next > now + 100 * MS)
-                next = now + 100 * MS;
+            if (!g_first_report_done && next > now + 100 * NS_PER_MS)
+                next = now + 100 * NS_PER_MS;
             if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
                 break;
             if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */

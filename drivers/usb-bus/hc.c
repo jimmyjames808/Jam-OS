@@ -140,7 +140,7 @@ static void snapshot(struct hc *x)
 static bool wait_op(struct hc *x, uint32_t r, uint32_t mask, uint32_t want, uint64_t timeout_ms,
                     uint32_t *last)
 {
-    uint64_t end = drv_clock_ns() + timeout_ms * MS;
+    uint64_t end = drv_clock_ns() + timeout_ms * NS_PER_MS;
     for (;;) {
         uint32_t v = op_rd(x, r);
         if (last)
@@ -149,7 +149,7 @@ static bool wait_op(struct hc *x, uint32_t r, uint32_t mask, uint32_t want, uint
             return true;
         if (drv_clock_ns() > end || x->map_failed)
             return false;
-        drv_sleep_until(drv_clock_ns() + 50 * US);
+        drv_sleep_until(drv_clock_ns() + 50 * NS_PER_US);
     }
 }
 
@@ -283,12 +283,12 @@ static int ext_caps(struct hc *x)
             uint64_t t0 = drv_clock_ns();
             drv_write8(reg(x, off + 3), 0, 1);
             bool released = false;
-            while (drv_clock_ns() - t0 < 1000 * MS) {
+            while (drv_clock_ns() - t0 < 1000 * NS_PER_MS) {
                 if (!(hc_rd(x, off) & LEG_BIOS_OWNED)) {
                     released = true;
                     break;
                 }
-                drv_sleep_until(drv_clock_ns() + 1 * MS);
+                drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
             }
             if (released) {
                 x->handoff = v & LEG_BIOS_OWNED ? "ok" : "ok (not BIOS-owned)";
@@ -300,7 +300,7 @@ static int ext_caps(struct hc *x)
             ctl = hc_rd(x, off + 4);
             hc_wr(x, off + 4, (ctl & ~(LEGCTL_SMI_ENABLES | LEGCTL_SMI_STATUS)) | LEGCTL_SMI_STATUS);
             drv_log("BIOS handoff %s after %lu ms", x->handoff,
-                    (unsigned long)((drv_clock_ns() - t0) / MS));
+                    (unsigned long)((drv_clock_ns() - t0) / NS_PER_MS));
         }
         if (!next)
             break;
@@ -327,7 +327,7 @@ static int reset(struct hc *x, const char *step)
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
         return fail(x, step, "Controller Not Ready 1 s before reset (USBSTS %08x)", v);
     op_wr(x, OP_USBCMD, CMD_HCRST);
-    drv_sleep_until(drv_clock_ns() + 1 * MS);
+    drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
     if (!wait_op(x, OP_USBCMD, CMD_HCRST, 0, 1000, &v))
         return fail(x, step, "HCRST still set 1 s after reset (USBCMD %08x)", v);
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
@@ -336,11 +336,6 @@ static int reset(struct hc *x, const char *step)
 }
 
 /* ---- the DMA page pool ---------------------------------------------------------- */
-
-static void zero(void *p, uint64_t n)
-{
-    __builtin_memset(p, 0, n);
-}
 
 static int pool_setup(struct hc *h)
 {
@@ -569,7 +564,7 @@ static void power_ports(struct hc *h)
     }
     if (powered) {
         drv_log("powered %u root port(s)", powered);
-        drv_sleep_until(drv_clock_ns() + 20 * MS);
+        drv_sleep_until(drv_clock_ns() + 20 * NS_PER_MS);
     }
 }
 
@@ -676,7 +671,7 @@ static void irq(struct hc *h)
 
 static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
 {
-    uint64_t now = drv_clock_ns(), cap = now + cap_ms * MS;
+    uint64_t now = drv_clock_ns(), cap = now + cap_ms * NS_PER_MS;
     struct port_packet pkt;
     status_t st = drv_port_wait(h->port, deadline < cap ? deadline : cap, &pkt);
     bool fired = false;
@@ -711,7 +706,7 @@ void hc_wait_idle(struct hc *h, uint64_t deadline)
 
 void hc_sleep(struct hc *h, uint64_t ms)
 {
-    uint64_t end = drv_clock_ns() + ms * MS;
+    uint64_t end = drv_clock_ns() + ms * NS_PER_MS;
     while (drv_clock_ns() < end)
         hc_wait(h, end);
 }
@@ -743,7 +738,7 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
     h->cmd.cc = 0;
     h->cmd.slot = 0;
     hc_doorbell(h, 0, 0);
-    uint64_t deadline = drv_clock_ns() + timeout_ms * MS;
+    uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
     while (!h->cmd.done && !h->dead && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
     if (!h->cmd.done && !h->dead) {
@@ -759,9 +754,9 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
          * fetch to physical address 0. */
         uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
         op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
-        uint64_t end = drv_clock_ns() + 5000 * MS;
+        uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
         while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
-            hc_wait(h, drv_clock_ns() + 5 * MS);
+            hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
         hc_poll(h);
         if (op_rd(h, OP_CRCR) & CRCR_CRR) {
             h->dead = true;
