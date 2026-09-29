@@ -120,6 +120,11 @@ void job_print_tree(struct job *j, unsigned depth);
 struct job *job_root_of(struct job *j);
 /* The first live process called `name` in j's tree (a reference), or NULL. */
 struct process *job_find_process(struct job *j, const char *name);
+/* M7 shell (proc_list): fill out[*n..cap) with j's processes, then its
+ * child jobs' (depth first; at most 32 processes and 32 child jobs per job,
+ * like job_print_tree). depth is j's depth below the tree's root. */
+void job_list_processes(struct job *j, uint32_t depth, struct proc_stat *out, uint32_t cap,
+                        uint32_t *n);
 
 /* ---- processes ------------------------------------------------------------- */
 
@@ -152,6 +157,8 @@ struct aspace *process_aspace(struct process *p);
 struct job *process_job(struct process *p);   /* no new reference */
 const char *process_name(struct process *p);
 void process_get_info(struct process *p, struct process_info *out);
+/* CPU time of all p's threads so far, in TSC cycles (M7 shell: ps, top). */
+uint64_t process_cpu_tsc(struct process *p);
 /* The process of the current thread, NULL for kernel threads. */
 struct process *process_current(void);
 /* debug_write / debug_report: print buf[0..n) (kernel memory) line by line

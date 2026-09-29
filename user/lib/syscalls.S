@@ -580,4 +580,37 @@ jam_channel_write_rights:
     ret
     .size jam_channel_write_rights, . - jam_channel_write_rights
 
+    .globl jam_sys_info
+    .type jam_sys_info, @function
+jam_sys_info:
+    mov $SYS_sys_info, %eax
+    syscall
+    ret
+    .size jam_sys_info, . - jam_sys_info
+
+    .globl jam_cpu_stat
+    .type jam_cpu_stat, @function
+jam_cpu_stat:
+    mov %rcx, %r10
+    mov $SYS_cpu_stat, %eax
+    syscall
+    ret
+    .size jam_cpu_stat, . - jam_cpu_stat
+
+    .globl jam_proc_list
+    .type jam_proc_list, @function
+jam_proc_list:
+    mov $SYS_proc_list, %eax
+    syscall
+    ret
+    .size jam_proc_list, . - jam_proc_list
+
+    .globl jam_rtc_read
+    .type jam_rtc_read, @function
+jam_rtc_read:
+    mov $SYS_rtc_read, %eax
+    syscall
+    ret
+    .size jam_rtc_read, . - jam_rtc_read
+
     .section .note.GNU-stack, "", @progbits

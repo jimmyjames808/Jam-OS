@@ -33,6 +33,8 @@
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 
+const char jamos_version[] = JAMOS_VERSION;   /* sys_info (sysc_sysinfo.c) */
+
 static const char *mem_type_name(enum boot_mem_type t)
 {
     switch (t) {

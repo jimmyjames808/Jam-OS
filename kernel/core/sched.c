@@ -422,6 +422,47 @@ static void finish_switch(void)
         thread_wake(prev);
 }
 
+/* CPU time: prev ran from the last switch until now. Before c->current
+ * changes, so a reader that still sees prev as current adds a run that
+ * starts at the new switch_tsc (a few cycles at most). */
+static inline void account_switch(struct cpu *c, struct thread *prev, struct thread *next)
+{
+    uint64_t now = rdtsc(), last = c->switch_tsc;
+    uint64_t d = last && now > last ? now - last : 0;
+    __atomic_store_n(&prev->run_tsc, prev->run_tsc + d, __ATOMIC_RELAXED);
+    if (prev->is_idle)
+        c->idle_tsc += d;
+    c->switch_tsc = now;
+    c->idle_now = next->is_idle;
+}
+
+uint64_t thread_cpu_tsc(struct thread *t)
+{
+    uint64_t v = __atomic_load_n(&t->run_tsc, __ATOMIC_RELAXED);
+    uint32_t i = t->cpu;
+    if (__atomic_load_n(&t->on_cpu, __ATOMIC_ACQUIRE) && i < cpu_count && cpus[i] &&
+        cpus[i]->current == t) {
+        uint64_t last = cpus[i]->switch_tsc, now = rdtsc();
+        if (last && now > last)
+            v += now - last;
+    }
+    return v;
+}
+
+uint64_t sched_cpu_idle_tsc(uint32_t i)
+{
+    if (i >= cpu_count || !cpus[i])
+        return 0;
+    struct cpu *c = cpus[i];
+    uint64_t v = c->idle_tsc, last = c->switch_tsc;
+    if (c->idle_now) {
+        uint64_t now = rdtsc();
+        if (last && now > last)
+            v += now - last;
+    }
+    return v;
+}
+
 void schedule(void)
 {
     /* Interrupts off FIRST: until then this thread may migrate, and the
@@ -475,6 +516,7 @@ void schedule(void)
     next->cpu = c->index;
     next->slice = SLICE_TICKS;
     next->switches_in++;
+    account_switch(c, prev, next);
     c->current = next;
     rq->busy = !next->is_idle;
     rq->cur_prio = next->is_idle ? -1 : next->prio;
@@ -1201,6 +1243,8 @@ static void init_rq(uint32_t cpu)
 static void rq_online(struct cpu *c)
 {
     topo[c->index].type = (uint8_t)c->type;
+    c->idle_now = c->current && c->current->is_idle;   /* CPU time from here */
+    c->switch_tsc = rdtsc();
     __atomic_fetch_or(&online_mask.bits[c->index / 64], 1ull << (c->index % 64),
                       __ATOMIC_RELEASE);
 }

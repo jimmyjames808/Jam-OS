@@ -80,6 +80,7 @@ struct process {
     struct job_link     job_link;    /* (the job's lock) */
     int64_t             exit_code;   /* (L) */
     uint32_t            nthreads;    /* (L) started threads that haven't left */
+    uint64_t            cpu_done;    /* (L) CPU time (TSC) of the threads that left */
     struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX];
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -284,6 +285,19 @@ void process_get_info(struct process *p, struct process_info *out)
     out->threads = p->nthreads;
     punlock(p, f);
     out->koid = p->base.koid;
+}
+
+uint64_t process_cpu_tsc(struct process *p)
+{
+    uint64_t f = plock(p);
+    uint64_t v = p->cpu_done;
+    for (struct list_node *n = p->threads.next; n != &p->threads; n = n->next) {
+        struct uthread *u = container_of(n, struct uthread, node);
+        if (u->state == UT_RUNNING && u->t)
+            v += thread_cpu_tsc(u->t);
+    }
+    punlock(p, f);
+    return v;
 }
 
 /* ---- debug output ---------------------------------------------------------- */
@@ -582,6 +596,7 @@ _Noreturn void uthread_exit_current(void)
 
     uint64_t f = plock(p);
     u->state = UT_DEAD;
+    p->cpu_done += thread_cpu_tsc(t);   /* the few cycles from here on are lost */
     punlock(p, f);
     if (thread_left(p))
         process_finish(p);   /* our uthread's reference keeps p alive */

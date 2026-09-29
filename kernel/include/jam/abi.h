@@ -284,3 +284,65 @@ struct fb_info {
     uint32_t reserved2;
     uint64_t size;          /* bytes of the VMO */
 };
+
+/* system information for the shell (abi/syscalls.def 130-133) ----------------
+ * Read-only views for uname / free / lscpu / top / ps / date. Each call
+ * needs RIGHT_READ on a RES_ROOT handle (the shell's root has it). */
+
+#define SYSINFO_HYBRID  (1u << 0)   /* the CPU has P-cores and E-cores */
+#define SYSINFO_KTESTS  (1u << 1)   /* the kernel was built with its tests */
+
+struct sys_info {
+    char     version[32];       /* "0.0.20-m7" */
+    char     cpu_vendor[16];    /* "GenuineIntel" */
+    char     cpu_brand[48];     /* CPUID's brand string, trimmed */
+    uint64_t uptime_ns;
+    uint64_t tsc_hz;
+    uint64_t mem_total_pages;   /* 4 KiB pages the kernel manages */
+    uint64_t mem_free_pages;
+    uint64_t stack_cache_pages; /* free pages parked in the thread stack cache */
+    uint32_t cpu_count;         /* CPUs online */
+    uint32_t flags;             /* SYSINFO_* */
+};
+
+#define CPU_TYPE_UNKNOWN     0
+#define CPU_TYPE_PERFORMANCE 1   /* Intel P-core */
+#define CPU_TYPE_EFFICIENCY  2   /* Intel E-core */
+
+/* cpu_stat: one CPU. idle_ns is how long its idle thread has run (while
+ * idle the CPU halts or spins briefly), so busy = elapsed - idle. */
+struct cpu_stat {
+    uint32_t index;       /* 0 = the boot CPU */
+    uint32_t apic_id;
+    uint32_t type;        /* CPU_TYPE_* */
+    uint32_t core_id;     /* APIC id without the SMT bits: HT siblings share it */
+    uint32_t smt_id;
+    uint32_t online;
+    uint64_t idle_ns;
+    uint64_t switches;    /* context switches */
+};
+
+/* proc_list: one process of the caller's job tree (from its root job). */
+struct proc_stat {
+    uint64_t koid;
+    uint64_t job_koid;
+    uint64_t cpu_ns;      /* CPU time of all its threads, ever */
+    uint64_t job_pages;   /* pages charged to its job (and the jobs below it) */
+    uint32_t state;       /* PROCESS_* */
+    uint32_t threads;     /* live threads */
+    uint32_t depth;       /* its job's depth below the root job */
+    uint32_t reserved;
+    char     name[32];
+};
+
+/* rtc_read: the CMOS real-time clock as it stands, converted to binary and
+ * 24 hours. PCs keep it in UTC or (Windows) in local time: the RTC says
+ * nothing about which. */
+struct rtc_time {
+    uint16_t year;        /* 2000..2099 */
+    uint8_t  month;       /* 1..12 */
+    uint8_t  day;         /* 1..31 */
+    uint8_t  hour, minute, second;
+    uint8_t  status_b;    /* register B as read (bit 2 binary, bit 1 24-hour) */
+    uint64_t uptime_ns;   /* when it was read */
+};

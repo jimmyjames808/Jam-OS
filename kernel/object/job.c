@@ -49,6 +49,7 @@
 #include <jam/panic.h>
 #include <jam/process.h>
 #include <jam/string.h>
+#include <jam/time.h>
 
 struct job {
     struct kobject    base;
@@ -374,6 +375,53 @@ void job_print_tree(struct job *j, unsigned depth)
     }
     if (more)
         kprintf("%s  (%u more not shown)\n", pad, more);
+}
+
+void job_list_processes(struct job *j, uint32_t depth, struct proc_stat *out, uint32_t cap,
+                        uint32_t *n)
+{
+    struct kobject *procs[PRINT_MAX];
+    struct job *kids[PRINT_MAX];
+    unsigned np = 0, nk = 0;
+    uint64_t f = jlock(j);
+    for (struct list_node *e = j->procs.next; e != &j->procs && np < PRINT_MAX; e = e->next) {
+        struct process *p = process_from_job_link(container_of(e, struct job_link, node));
+        if (kobject_tryref(process_kobject(p)))
+            procs[np++] = process_kobject(p);
+    }
+    for (struct list_node *e = j->children.next; e != &j->children && nk < PRINT_MAX;
+         e = e->next) {
+        struct job *c = container_of(e, struct job, child_node);
+        if (kobject_tryref(&c->base))
+            kids[nk++] = c;
+    }
+    junlock(j, f);
+    uint64_t pages = job_used(j, JOB_LIMIT_PAGES);
+    for (unsigned i = 0; i < np; i++) {
+        struct process *p = process_from_kobject(procs[i]);
+        if (*n < cap) {
+            struct proc_stat *s = &out[(*n)++];
+            struct process_info info;
+            process_get_info(p, &info);
+            memset(s, 0, sizeof(*s));
+            s->koid = info.koid;
+            s->job_koid = j->base.koid;
+            s->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
+            s->job_pages = pages;
+            s->state = info.state;
+            s->threads = info.threads;
+            s->depth = depth;
+            const char *name = process_name(p);
+            size_t l = strlen(name);
+            memcpy(s->name, name, l < sizeof(s->name) - 1 ? l : sizeof(s->name) - 1);
+        }
+        kobject_unref(procs[i]);
+    }
+    for (unsigned i = 0; i < nk; i++) {
+        if (*n < cap)
+            job_list_processes(kids[i], depth + 1, out, cap, n);
+        kobject_unref(&kids[i]->base);
+    }
 }
 
 struct job *job_root_of(struct job *j)

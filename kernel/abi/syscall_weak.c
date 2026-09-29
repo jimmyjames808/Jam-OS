@@ -420,3 +420,27 @@ WEAK int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbyt
     (void)h, (void)bytes, (void)nbytes, (void)handles, (void)rights, (void)nhandles;
     return ERR_NOT_SUPPORTED;
 }
+
+WEAK int64_t sysc_sys_info(handle_t root, uint64_t out)
+{
+    (void)root, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap)
+{
+    (void)root, (void)first, (void)out, (void)cap;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap)
+{
+    (void)root, (void)out, (void)cap;
+    return ERR_NOT_SUPPORTED;
+}
+
+WEAK int64_t sysc_rtc_read(handle_t root, uint64_t out)
+{
+    (void)root, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
