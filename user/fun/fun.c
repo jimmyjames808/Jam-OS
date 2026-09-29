@@ -1,165 +1,467 @@
 /* The fun apps' shared code: see fun.h. */
 #include "fun.h"
 #include <idl/console.h>
+/* The console font (Spleen 8x16), for text(). */
+#include "../../kernel/dev/font_8x16.c"
 
-const uint32_t fun_palette[16] = {   /* user/console/main.c rgb[] */
-    0x101018, 0xcc4444, 0x44aa44, 0xccaa33, 0x4466cc, 0xaa44aa, 0x44aaaa, 0xb0b0b0,
-    0x707070, 0xff6666, 0x66dd66, 0xffdd55, 0x6699ff, 0xdd77dd, 0x66dddd, 0xf0f0f0,
-};
+/* ---- the screen -------------------------------------------------------------------- */
 
-/* ---- the terminal ------------------------------------------------------------------ */
+struct screen scr;
 
-static void term_send(struct term *t)
+static status_t map_vmo(handle_t vmo, uint64_t len, void **out)
 {
-    if (t->nout && t->con)
-        console_write(t->con, (uint16_t)t->nout, (const uint8_t *)t->out);
-    t->bytes_sent += t->nout;
-    t->nout = 0;
+    uint64_t addr = 0;
+    status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ | VMAR_WRITE,
+                               &addr);
+    *out = (void *)(uintptr_t)addr;
+    return st;
 }
 
-static void term_out(struct term *t, const char *s, uint32_t n)
+status_t gfx_open(void)
 {
-    while (n) {
-        uint32_t room = sizeof(t->out) - t->nout, k = n < room ? n : room;
-        memcpy(t->out + t->nout, s, k);
-        t->nout += k;
-        s += k;
-        n -= k;
-        if (t->nout == sizeof(t->out))
-            term_send(t);
-    }
-}
-
-static void term_outs(struct term *t, const char *s)
-{
-    term_out(t, s, (uint32_t)strlen(s));
-}
-
-status_t term_open(struct term *t)
-{
-    memset(t, 0, sizeof(*t));
-    t->con = startup_handle(SR_CONSOLE);
-    if (!t->con)
+    memset(&scr, 0, sizeof(scr));
+    scr.con = startup_handle(SR_CONSOLE);
+    if (!scr.con)
         return ERR_NOT_FOUND;
-    uint16_t c = 0, r = 0;
-    status_t st = console_size(t->con, &c, &r);
+    /* Keys first: then the screen (the console lends it to anyone who asks
+     * on a PROGRAM channel; the focus makes the keys ours while we run). */
+    status_t st = console_open_keys(scr.con, &scr.keys);
     if (st != OK)
         return st;
-    if (c < 40 || r < 20)
-        return ERR_OUT_OF_RANGE;
-    t->cols = c;
-    t->rows = r;
-    t->cell = calloc((size_t)c * r, sizeof(struct tcell));
-    t->shown = calloc((size_t)c * r, sizeof(struct tcell));   /* ch 0: send everything once */
-    if (!t->cell || !t->shown)
-        return ERR_NO_MEMORY;
-    for (uint32_t i = 0; i < t->cols * t->rows; i++)
-        t->cell[i] = (struct tcell){ ' ', C_WHITE, C_BLACK };
-    /* Keys first: the alternate screen belongs to the focused key channel. */
-    if ((st = console_open_keys(t->con, &t->keys)) != OK)
+    uint32_t w, h, pitch;
+    uint8_t rs, gs, bs;
+    uint64_t size;
+    handle_t vmo;
+    st = console_lend_screen(scr.con, &w, &h, &pitch, &rs, &gs, &bs, &size, &vmo, &scr.lease);
+    if (st != OK) {
+        jam_handle_close(scr.keys);
         return st;
-    term_outs(t, "\033[?1049h");
-    term_send(t);   /* on its own: the console mirrors this write to COM1, not the frames */
-    term_outs(t, "\033[?25l\033[0m\033[2J");
-    term_send(t);
-    t->open = true;
+    }
+    void *p = NULL;
+    if (w < 320 || h < 200 || w > 8192 || h > 8192 || pitch < w * 4 || size < (uint64_t)pitch * h)
+        st = ERR_NOT_SUPPORTED;
+    else
+        st = map_vmo(vmo, (size + 4095) & ~4095ull, &p);
+    jam_handle_close(vmo);   /* the mapping keeps it */
+    uint64_t px = (uint64_t)w * h * 4;
+    if (st == OK) {
+        scr.s.px = big_alloc(px);
+        scr.shown = big_alloc(px);
+        if (!scr.s.px || !scr.shown)
+            st = ERR_NO_MEMORY;
+    }
+    if (st != OK) {
+        jam_handle_close(scr.lease);
+        jam_handle_close(scr.keys);
+        return st;
+    }
+    scr.fb = p;
+    scr.w = scr.s.w = scr.s.stride = (int)w;
+    scr.h = scr.s.h = (int)h;
+    scr.pitch = pitch;
+    scr.rs = rs;
+    scr.gs = gs;
+    scr.bs = bs;
+    scr.native = rs == 16 && gs == 8 && bs == 0;
+    scr.ui = h > 1100 ? 2 : 1;
+    scr.open = true;
+    /* The shown copy starts black; the screen starts as the console left
+     * it, so the first present writes everything. */
+    gfx_present_all();
     return OK;
 }
 
-void term_close(struct term *t)
+void gfx_close(void)
 {
-    if (!t->open)
+    if (!scr.open)
         return;
-    term_outs(t, "\033[?2026l\033[0m\033[?25h\033[?1049l");
-    term_send(t);
-    jam_handle_close(t->keys);
-    t->keys = HANDLE_INVALID;
-    t->open = false;
+    scr.open = false;
+    jam_handle_close(scr.lease);   /* the console redraws its text screen */
+    jam_handle_close(scr.keys);    /* and the keys go back to the shell */
+    scr.lease = scr.keys = HANDLE_INVALID;
 }
 
-static void sgr(struct term *t, uint8_t fg, uint8_t bg)
+/* Present: rows in bands of PBAND, each row in pieces of PSEG pixels; a
+ * piece that differs from what the screen shows is written to both. */
+#define PBAND 16
+#define PSEG  64
+
+/* Not turned into rep movsb (slow under QEMU; a plain loop of wide stores
+ * is what write-combining memory likes best anyway). */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+static void copy_px(uint32_t *restrict d, const uint32_t *restrict s, int n)
 {
-    char b[16];
-    int n = snprintf(b, sizeof(b), "\033[%u;%um", fg < 8 ? 30u + fg : 90u + fg - 8,
-                     bg < 8 ? 40u + bg : 100u + bg - 8);
-    term_out(t, b, (uint32_t)n);
+    for (int i = 0; i < n; i++)
+        d[i] = s[i];
 }
 
-static void glyph(struct term *t, uint8_t ch)
+static inline bool same_px(const uint32_t *a, const uint32_t *b, int n)
 {
-    static const uint8_t low[] = { 0, 0x80, 0x84, 0x88, 0x91, 0x92, 0x93 };
-    if (ch >= G_UPPER && ch <= G_DARK) {
-        char u[3] = { (char)0xe2, (char)0x96, (char)low[ch] };
-        term_out(t, u, 3);
-    } else {
-        char c = ch >= 0x20 && ch < 0x7f ? (char)ch : ' ';
-        term_out(t, &c, 1);
-    }
+    const uint64_t *x = (const uint64_t *)a, *y = (const uint64_t *)b;
+    uint64_t diff = 0;
+    for (int i = 0; i < n / 2; i++)
+        diff |= x[i] ^ y[i];
+    if (n & 1)
+        diff |= a[n - 1] ^ b[n - 1];
+    return !diff;
 }
 
-void term_flush(struct term *t)
+static uint64_t present_bytes[FUN_MAX_THREADS];
+
+static void present_band(uint32_t band, uint32_t me, void *arg)
 {
-    if (!t->open)
-        return;
-    term_outs(t, "\033[?2026h");
-    int fg = -1, bg = -1;
-    uint32_t cx = ~0u, cy = ~0u;
-    for (uint32_t y = 0; y < t->rows; y++) {
-        for (uint32_t x = 0; x < t->cols; x++) {
-            struct tcell *c = &t->cell[y * t->cols + x], *s = &t->shown[y * t->cols + x];
-            if (c->ch == s->ch && c->fg == s->fg && c->bg == s->bg)
+    bool all = arg != NULL;
+    int y0 = (int)band * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
+    uint64_t bytes = 0;
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *b = scr.s.px + (uint64_t)y * scr.w;
+        uint32_t *s = scr.shown + (uint64_t)y * scr.w;
+        uint32_t *f = (uint32_t *)((uint8_t *)scr.fb + (uint64_t)y * scr.pitch);
+        for (int x = 0; x < scr.w; x += PSEG) {
+            int n = scr.w - x < PSEG ? scr.w - x : PSEG;
+            if (!all && same_px(b + x, s + x, n))
                 continue;
-            if (cy != y || cx != x) {
-                char b[24];
-                int n = snprintf(b, sizeof(b), "\033[%u;%uH", y + 1, x + 1);
-                term_out(t, b, (uint32_t)n);
+            copy_px(s + x, b + x, n);
+            if (scr.native) {
+                copy_px(f + x, b + x, n);
+            } else {
+                for (int i = 0; i < n; i++) {
+                    uint32_t c = b[x + i];
+                    f[x + i] = (c >> 16 & 0xff) << scr.rs | (c >> 8 & 0xff) << scr.gs |
+                               (c & 0xff) << scr.bs;
+                }
             }
-            /* A space or a full block shows one colour only. */
-            if (c->ch == ' ' ? c->bg != bg : c->ch == G_FULL ? c->fg != fg
-                                                             : c->fg != fg || c->bg != bg) {
-                sgr(t, c->fg, c->bg);
-                fg = c->fg;
-                bg = c->bg;
-            }
-            glyph(t, c->ch);
-            *s = *c;
-            cx = x + 1;
-            cy = y;
+            bytes += (uint64_t)n * 4;
         }
     }
-    term_outs(t, "\033[?2026l");
-    term_send(t);
+    present_bytes[me] += bytes;
 }
 
-void term_put(struct term *t, int x, int y, uint8_t ch, uint8_t fg, uint8_t bg)
+static void present(bool all)
 {
-    if (x < 0 || y < 0 || (uint32_t)x >= t->cols || (uint32_t)y >= t->rows)
+    if (!scr.open)
         return;
-    t->cell[(uint32_t)y * t->cols + (uint32_t)x] = (struct tcell){ ch, fg, bg };
+    for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
+        present_bytes[i] = 0;
+    pool_run(present_band, all ? (void *)1 : NULL, (uint32_t)(scr.h + PBAND - 1) / PBAND);
+    for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
+        scr.bytes += present_bytes[i];
+    scr.presents++;
 }
 
-void term_fill(struct term *t, int x, int y, int w, int h, uint8_t ch, uint8_t fg, uint8_t bg)
+void gfx_present(void) { present(false); }
+void gfx_present_all(void) { present(true); }
+
+/* ---- drawing ----------------------------------------------------------------------- */
+
+static bool clip(const struct surf *s, int *x, int *y, int *w, int *h)
 {
-    for (int j = y; j < y + h; j++)
-        for (int i = x; i < x + w; i++)
-            term_put(t, i, j, ch, fg, bg);
+    if (*x < 0) {
+        *w += *x;
+        *x = 0;
+    }
+    if (*y < 0) {
+        *h += *y;
+        *y = 0;
+    }
+    if (*x + *w > s->w)
+        *w = s->w - *x;
+    if (*y + *h > s->h)
+        *h = s->h - *y;
+    return *w > 0 && *h > 0;
 }
 
-int term_text(struct term *t, int x, int y, const char *s, uint8_t fg, uint8_t bg)
+void fill(const struct surf *s, int x, int y, int w, int h, uint32_t c)
 {
-    for (; *s; s++, x++)
-        term_put(t, x, y, (uint8_t)*s, fg, bg);
+    if (!clip(s, &x, &y, &w, &h))
+        return;
+    for (int j = y; j < y + h; j++) {
+        uint32_t *p = s->px + (uint64_t)j * s->stride + x;
+        for (int i = 0; i < w; i++)
+            p[i] = c;
+    }
+}
+
+void blend(const struct surf *s, int x, int y, int w, int h, uint32_t c, uint32_t a)
+{
+    if (!clip(s, &x, &y, &w, &h))
+        return;
+    for (int j = y; j < y + h; j++) {
+        uint32_t *p = s->px + (uint64_t)j * s->stride + x;
+        for (int i = 0; i < w; i++)
+            p[i] = mixc(p[i], c, a);
+    }
+}
+
+void panel(const struct surf *s, int x, int y, int w, int h, int r, uint32_t c, uint32_t a)
+{
+    if (r * 2 > h)
+        r = h / 2;
+    if (r * 2 > w)
+        r = w / 2;
+    for (int j = 0; j < h; j++) {
+        /* The corners: how far in the row starts (a quarter circle), with
+         * the edge pixel at partial alpha. */
+        int in = 0;
+        uint32_t edge_a = a;
+        int dy = j < r ? r - j : j >= h - r ? j - (h - r - 1) : 0;
+        if (dy) {
+            /* where the row meets the circle: (r - x)^2 + dy^2 = r^2 */
+            double rr = (double)r * r - (double)(dy - 0.5) * (dy - 0.5);
+            double off = r - (rr > 0 ? sqrtd(rr) : 0);
+            in = (int)off;
+            edge_a = (uint32_t)(a * (1.0 - (off - in)));
+        }
+        if (in * 2 >= w)
+            continue;
+        blend(s, x + in, y + j, 1, 1, c, edge_a);
+        blend(s, x + w - 1 - in, y + j, 1, 1, c, edge_a);
+        blend(s, x + in + 1, y + j, w - 2 * in - 2, 1, c, a);
+    }
+}
+
+void frame(const struct surf *s, int x, int y, int w, int h, int t, uint32_t c)
+{
+    fill(s, x, y, w, t, c);
+    fill(s, x, y + h - t, w, t, c);
+    fill(s, x, y + t, t, h - 2 * t, c);
+    fill(s, x + w - t, y + t, t, h - 2 * t, c);
+}
+
+void vgrad(const struct surf *s, int x, int y, int w, int h, uint32_t c0, uint32_t c1)
+{
+    for (int j = 0; j < h; j++)
+        fill(s, x, y + j, w, 1, mixc(c0, c1, h > 1 ? (uint32_t)(j * 256 / (h - 1)) : 0));
+}
+
+void line(const struct surf *s, int x0, int y0, int x1, int y1, uint32_t c)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && y0 >= 0 && x0 < s->w && y0 < s->h)
+            s->px[(uint64_t)y0 * s->stride + x0] = c;
+        if (x0 == x1 && y0 == y1)
+            break;
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+void blit(const struct surf *dst, int x, int y, const struct surf *src, int sx, int sy, int w,
+          int h)
+{
+    int x0 = x, y0 = y;
+    if (!clip(dst, &x, &y, &w, &h))
+        return;
+    sx += x - x0;
+    sy += y - y0;
+    for (int j = 0; j < h; j++)
+        copy_px(dst->px + (uint64_t)(y + j) * dst->stride + x,
+                src->px + (uint64_t)(sy + j) * src->stride + sx, w);
+}
+
+void blit_key(const struct surf *dst, int x, int y, const struct surf *src, uint32_t key)
+{
+    for (int j = 0; j < src->h; j++) {
+        if (y + j < 0 || y + j >= dst->h)
+            continue;
+        const uint32_t *sp = src->px + (uint64_t)j * src->stride;
+        uint32_t *dp = dst->px + (uint64_t)(y + j) * dst->stride;
+        for (int i = 0; i < src->w; i++)
+            if (sp[i] != key && x + i >= 0 && x + i < dst->w)
+                dp[x + i] = sp[i];
+    }
+}
+
+struct surf surf_new(int w, int h)
+{
+    struct surf s = { big_alloc((uint64_t)w * h * 4), w, h, w };
+    return s;
+}
+
+/* ---- text ---------------------------------------------------------------------------- */
+
+/* Per glyph: the first ink column and the advance at scale 1; and the
+ * glyph at twice the size smoothed by scale2x (EPX), for scales >= 2. */
+static struct { int8_t left; uint8_t adv; } gm[128];
+static uint16_t big_glyph[128][32];
+static bool text_ready;
+
+static inline int gbit(uint8_t c, int x, int y)
+{
+    if (x < 0 || x > 7 || y < 0 || y > 15)
+        return 0;
+    return font_8x16[c][y] >> (7 - x) & 1;
+}
+
+static void text_init(void)
+{
+    int digit_w = 0;
+    for (int c = 32; c < 127; c++) {
+        int lo = 8, hi = -1;
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 8; x++)
+                if (gbit((uint8_t)c, x, y)) {
+                    lo = x < lo ? x : lo;
+                    hi = x > hi ? x : hi;
+                }
+        if (hi < 0) {   /* space */
+            gm[c].left = 0;
+            gm[c].adv = 4;
+        } else {
+            gm[c].left = (int8_t)lo;
+            gm[c].adv = (uint8_t)(hi - lo + 2);
+        }
+        if (c >= '0' && c <= '9' && hi - lo + 1 > digit_w)
+            digit_w = hi - lo + 1;
+        /* scale2x: each pixel P becomes 4, a corner taking a neighbour's
+         * value where two neighbours agree (rounds the diagonals). */
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 8; x++) {
+                int p = gbit((uint8_t)c, x, y), a = gbit((uint8_t)c, x, y - 1);
+                int b = gbit((uint8_t)c, x + 1, y), l = gbit((uint8_t)c, x - 1, y);
+                int d = gbit((uint8_t)c, x, y + 1);
+                int e0 = p, e1 = p, e2 = p, e3 = p;
+                if (l == a && l != d && a != b)
+                    e0 = a;
+                if (a == b && a != l && b != d)
+                    e1 = b;
+                if (d == l && d != b && l != a)
+                    e2 = l;
+                if (b == d && b != a && d != l)
+                    e3 = d;
+                big_glyph[c][2 * y] |= (uint16_t)(e0 << (15 - 2 * x) | e1 << (14 - 2 * x));
+                big_glyph[c][2 * y + 1] |= (uint16_t)(e2 << (15 - 2 * x) | e3 << (14 - 2 * x));
+            }
+    }
+    /* Digits: all as wide as the widest, centred (numbers don't wobble). */
+    for (int c = '0'; c <= '9'; c++) {
+        int ink = gm[c].adv - 1;
+        gm[c].left = (int8_t)(gm[c].left - (digit_w - ink) / 2);
+        gm[c].adv = (uint8_t)(digit_w + 1);
+    }
+    text_ready = true;
+}
+
+static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, uint8_t ch)
+{
+    int left = gm[ch].left, w = (gm[ch].adv - 1) * scale;
+    for (int j = 0; j < 16 * scale; j++) {
+        int yy = y + j;
+        if (yy < 0 || yy >= s->h)
+            continue;
+        uint32_t *row = s->px + (uint64_t)yy * s->stride;
+        if (scale == 1) {
+            uint8_t bits = (uint8_t)(left >= 0 ? font_8x16[ch][j] << left : font_8x16[ch][j] >> -left);
+            for (int i = 0; bits && i < 8; i++, bits <<= 1)
+                if ((bits & 0x80) && x + i >= 0 && x + i < s->w)
+                    row[x + i] = c;
+            continue;
+        }
+        uint16_t bits = big_glyph[ch][j * 2 / scale];
+        for (int i = 0; i < w; i++) {
+            int sx = (2 * left) + i * 2 / scale;   /* column in the 16-wide glyph */
+            if (sx >= 0 && sx < 16 && (bits >> (15 - sx) & 1) && x + i >= 0 && x + i < s->w)
+                row[x + i] = c;
+        }
+    }
+}
+
+static int draw_text(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t alt,
+                     bool shadow, const char *str)
+{
+    if (!text_ready)
+        text_init();
+    if (scale < 1)
+        scale = 1;
+    if (shadow) {   /* a darkened halo one step down-right */
+        int o = scale > 1 ? scale / 2 + 1 : 1;
+        int xx = x;
+        for (const char *p = str; *p; p++) {
+            uint8_t ch = (uint8_t)*p;
+            if (ch == '\a' || ch < 32 || ch > 126)
+                continue;
+            glyph(s, xx + o, y + o, scale, 0x000000, ch);
+            xx += gm[ch].adv * scale;
+        }
+    }
+    bool use_alt = false;
+    for (; *str; str++) {
+        uint8_t ch = (uint8_t)*str;
+        if (ch == '\a') {
+            use_alt = !use_alt;
+            continue;
+        }
+        if (ch < 32 || ch > 126)
+            ch = '?';
+        glyph(s, x, y, scale, use_alt ? alt : c, ch);
+        x += gm[ch].adv * scale;
+    }
     return x;
 }
 
-int term_textf(struct term *t, int x, int y, uint8_t fg, uint8_t bg, const char *fmt, ...)
+int text(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str)
+{
+    return draw_text(s, x, y, scale, c, c, false, str);
+}
+
+int text_shadow(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str)
+{
+    return draw_text(s, x, y, scale, c, c, true, str);
+}
+
+int text2(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t alt, bool shadow,
+          const char *str)
+{
+    return draw_text(s, x, y, scale, c, alt, shadow, str);
+}
+
+int textf(const struct surf *s, int x, int y, int scale, uint32_t c, const char *fmt, ...)
 {
     char buf[256];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    return term_text(t, x, y, buf, fg, bg);
+    return draw_text(s, x, y, scale, c, c, false, buf);
+}
+
+int text_width(int scale, const char *str)
+{
+    if (!text_ready)
+        text_init();
+    int w = 0;
+    for (; *str; str++) {
+        uint8_t ch = (uint8_t)*str;
+        if (ch == '\a')
+            continue;
+        if (ch < 32 || ch > 126)
+            ch = '?';
+        w += gm[ch].adv;
+    }
+    return w * (scale < 1 ? 1 : scale);
+}
+
+void fps_frame(struct fps *f)
+{
+    uint64_t t = now_ns();
+    if (!f->t0)
+        f->t0 = t;
+    f->n++;
+    if (t - f->t0 >= 500000000ull) {
+        f->x10 = (uint32_t)((uint64_t)f->n * 10000000000ull / (t - f->t0));
+        f->t0 = t;
+        f->n = 0;
+    }
 }
 
 /* ---- keys ---------------------------------------------------------------------------- */
@@ -192,13 +494,15 @@ int key_decode(const struct input_key_event *ev)
     return KEY_NONE;
 }
 
-int term_key(struct term *t, uint64_t deadline)
+int gfx_key(uint64_t deadline)
 {
+    if (!scr.keys)
+        return KEY_QUIT;
     for (;;) {
         struct input_key_event ev;
         uint32_t n = 0;
         struct channel_read_args a = {
-            .h = t->keys, .bytes_cap = sizeof(ev), .bytes = (uint64_t)(uintptr_t)&ev,
+            .h = scr.keys, .bytes_cap = sizeof(ev), .bytes = (uint64_t)(uintptr_t)&ev,
             .actual_bytes = (uint64_t)(uintptr_t)&n,
         };
         status_t st = jam_channel_read(&a);
@@ -210,8 +514,10 @@ int term_key(struct term *t, uint64_t deadline)
         }
         if (st != ERR_SHOULD_WAIT)
             return KEY_QUIT;   /* the console went away */
+        if (!deadline)
+            return KEY_NONE;
         signals_t seen;
-        st = jam_object_wait_one(t->keys, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+        st = jam_object_wait_one(scr.keys, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
         if (st == ERR_TIMED_OUT)
             return KEY_NONE;
         if (st != OK)
@@ -253,6 +559,34 @@ uint32_t fun_cpu_count(void)
     if (n > FUN_MAX_THREADS)
         n = FUN_MAX_THREADS;
     return n;
+}
+
+bool fun_has_avx2(void)
+{
+    uint32_t r[4];
+    cpuid(0, 0, r);
+    if (r[0] < 7)
+        return false;
+    cpuid(1, 0, r);
+    bool fma = r[2] >> 12 & 1, osxsave = r[2] >> 27 & 1, avx = r[2] >> 28 & 1;
+    if (!fma || !osxsave || !avx)
+        return false;
+    uint32_t lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    if ((lo & 6) != 6)   /* the OS saves SSE and AVX state */
+        return false;
+    cpuid(7, 0, r);
+    return r[1] >> 5 & 1;
+}
+
+bool fun_is_tcg(void)
+{
+    uint32_t r[4];
+    cpuid(1, 0, r);
+    if (!(r[2] >> 31 & 1))   /* no hypervisor */
+        return false;
+    cpuid(0x40000000, 0, r);
+    return r[1] == 0x54474354 && r[2] == 0x43544743 && r[3] == 0x47435447;   /* "TCGTCGTCGTCG" */
 }
 
 #define POOL_STACK (64u << 10)
@@ -305,6 +639,8 @@ static void pool_worker(void *a)
 
 uint32_t pool_start(uint32_t n)
 {
+    if (pool.n > 1)
+        return pool.n;   /* already running */
     if (!n)
         n = fun_cpu_count();
     if (n > FUN_MAX_THREADS)
@@ -339,6 +675,58 @@ void pool_run(void (*fn)(uint32_t, uint32_t, void *), void *arg, uint32_t items)
     pool_work(0);
     while (__atomic_load_n(&pool.done, __ATOMIC_ACQUIRE) < pool.n)
         __builtin_ia32_pause();
+}
+
+/* ---- maths ----------------------------------------------------------------------------- */
+
+double log2d(double x)
+{
+    union { double d; uint64_t u; } u = { x };
+    int e = (int)((u.u >> 52) & 0x7ff) - 1023;
+    u.u = (u.u & 0x000fffffffffffffull) | 0x3ff0000000000000ull;   /* m in [1, 2) */
+    double m = u.d;
+    if (m > 1.4142135623730951) {   /* m in [0.707, 1.414): a faster series */
+        m *= 0.5;
+        e++;
+    }
+    double t = (m - 1) / (m + 1), t2 = t * t;
+    /* ln(m) = 2 atanh(t) */
+    double ln = 2 * t * (1 + t2 * (1.0 / 3 + t2 * (1.0 / 5 + t2 * (1.0 / 7 + t2 * (1.0 / 9 +
+                t2 * (1.0 / 11 + t2 / 13))))));
+    return e + ln * 1.4426950408889634;
+}
+
+double exp2d(double x)
+{
+    if (x < -1000)
+        return 0;
+    if (x > 1000)
+        x = 1000;
+    double fl = floord(x);
+    double f = (x - fl) * 0.6931471805599453, term = 1, sum = 1;
+    for (int k = 1; k < 14; k++) {
+        term *= f / k;
+        sum += term;
+    }
+    union { double d; uint64_t u; } v = { sum };
+    v.u += (uint64_t)(int64_t)fl << 52;
+    return v.d;
+}
+
+double sind(double x)
+{
+    const double pi = 3.141592653589793, tau = 2 * pi;
+    x -= tau * (double)(int64_t)(x / tau);
+    if (x > pi)
+        x -= tau;
+    if (x < -pi)
+        x += tau;
+    double x2 = x * x, term = x, sum = x;
+    for (int k = 1; k < 11; k++) {
+        term *= -x2 / ((2 * k) * (2 * k + 1));
+        sum += term;
+    }
+    return sum;
 }
 
 /* ---- odds and ends ---------------------------------------------------------------------- */
