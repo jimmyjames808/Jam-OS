@@ -651,10 +651,17 @@ static int noop(struct xhc *x, unsigned i)
  * forgets every DMA pointer we gave it). */
 static int shutdown(struct xhc *x)
 {
-    if (!x->caplen || x->map_failed)
-        return 0;   /* never touched it */
+    /* Never touched it: page 0 (capability + operational registers) isn't
+     * mapped. */
+    if (!x->caplen || !x->nmap || x->map[0].page != 0)
+        return 0;
     if (x->rtsoff)
         ir_wr(x, IR_IMAN, IMAN_IP);   /* IE = 0 */
+    /* A later page that failed to map (the doorbells, say, or that one)
+     * must not skip the halt: the controller may be running on our DMA
+     * memory, which release() frees once this returns 0. The operational
+     * registers are on page 0. (Review of M6 phase 2.) */
+    x->map_failed = false;
     int r = stop(x, "final halt");
     return r ? r : reset(x, "final reset");
 }
