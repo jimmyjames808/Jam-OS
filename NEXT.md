@@ -44,7 +44,13 @@
   a ref). Open notes for phase 2: pci_msi_enable's INTx-disable write should take Track C's
   pci_cmd_lock; devmgr's RES_PCI_DEV needs RIGHT_MANAGE; MSI needs BME on even for IRQ-only devices;
   object_wait_one on an interrupt can miss a fire (use the PERSISTENT port binding) - say so in driver.h.
-  Track D still running.
+- **Track D MERGED; M6 PHASE 1 COMPLETE** (4752cbc, v0.0.12-m6p1): driver.h both builds (kernel process via
+  process_create_kernel / driver_kernel_start; process via driver_crt), IDL (tools/genidl.py,
+  abi/idl -> drivers/include/idl), build check (tools/checkdriver.py + `make check` negative tests),
+  null + drvtest drivers. 189/189 ktests at 4+8, utest 16/16, stress=60 at 4+8, KTESTS=0 builds.
+  RUNNING now: independent review of phase 1; phase 2 agents (1) devmgr + drivers/edu + kill/rights
+  utests, (2) drivers/xhci-noop + boot entry "USB controller test (xHCI no-op, M6 done test)" (`xhcitest`).
+  devmgr gets a one-line match entry 0c0330 -> drv/xhci-noop when both merge.
 
 ## PC facts (ASUS TUF GAMING B760-PLUS WIFI, i7-14700 non-F)
 28 CPUs (8P+HT, 12E), 32 GB, RTX 4080 SUPER (monitor on it; framebuffer 2560x1440), iGPU UHD 770
