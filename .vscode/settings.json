@@ -1,0 +1,9 @@
+{
+    // Jam OS is cross-compiled (x86_64-elf-gcc, freestanding): IntelliSense
+    // must use the real build's commands, not the Mac's own compiler.
+    // Regenerate with `make compdb` after adding files.
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
+    "C_Cpp.default.intelliSenseMode": "gcc-x64",
+    "C_Cpp.default.cStandard": "gnu17",
+    "files.associations": { "*.def": "plaintext", "*.idl": "c" }
+}
