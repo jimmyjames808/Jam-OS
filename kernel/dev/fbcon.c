@@ -35,8 +35,8 @@ static uint32_t cols, rows, cx, cy;
 static uint32_t cur_fg, cur_bg;
 static struct cell cells[MAX_ROWS][MAX_COLS];
 static spinlock_t lock = SPINLOCK_INIT("fbcon");
-/* A process owns the screen (the console through framebuffer_take, or the
- * visual demo through fbcon_mute): keep the cells, draw nothing. */
+/* A process owns the screen (the console, through framebuffer_take): keep
+ * the cells, draw nothing. */
 static volatile bool taken;
 
 static uint32_t native(uint32_t rgb)
@@ -233,15 +233,4 @@ void fbcon_release(void)
 bool fbcon_is_taken(void)
 {
     return taken;
-}
-
-void fbcon_mute(bool on)
-{
-    if (on) {
-        uint64_t f = spin_lock_irqsave(&lock);
-        taken = true;
-        spin_unlock_irqrestore(&lock, f);
-    } else {
-        fbcon_release();
-    }
 }
