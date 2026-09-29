@@ -1029,14 +1029,18 @@ static bool t_edu_killed_mid_dma(void)
     CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
     CHECK(cmd & CMD_BME);
     /* The quarantine lets the dead driver's pages go a grace period (1 s)
-     * after the new driver turned bus mastering on: then its job is empty
-     * (pins, VMOs, threads: gone), and nothing wrote them meanwhile. */
+     * after the new driver turned bus mastering on. Its count drops only
+     * once the pages are back, so then the job is empty (pins, VMOs,
+     * threads: gone), and nothing wrote them meanwhile. */
     uint64_t until = now() + 10 * NS_PER_S;
-    while (info_of(job, &ji) == OK && ji.used[JOB_LIMIT_PAGES] && now() < until)
+    for (;;) {
+        if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+            return false;
+        if (!sup.d || now() > until)
+            break;
         jam_nanosleep(now() + 20 * NS_PER_MS);
+    }
     if (!job_is_empty(job))
-        return false;
-    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
         return false;
     printf("utest: %s: restarts %u, quarantine %u page(s) left, %u stale page(s)\n", cur,
            sup.b - restarts0, sup.d, sup.e - changed0);

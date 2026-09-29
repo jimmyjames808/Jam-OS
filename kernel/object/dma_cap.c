@@ -45,7 +45,16 @@
  * close), each with its own deadline, under `q_lock`. The "dma quarantine"
  * kernel thread releases due batches. At most one batch per owner can be
  * waiting: pinning needs the current cap with bus mastering on, and that
- * turning-on starts the older batches' grace. */
+ * turning-on starts the older batches' grace.
+ *
+ * The counters a reader sees (dma_quarantine_stats) move in one step. A
+ * batch being released is off the list but still counted in `pins` and
+ * `pages` until its pages are back with their VMOs; then, in one q_lock
+ * section, they drop and `released` / `changed` rise. So `pages +
+ * released` never dips, and a reader that sees a function's pins at 0 also
+ * sees every one of its batches finished: pages given back (and uncharged
+ * from their job once their VMO goes) and counted as released. */
+#include <jam/dbghook.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
@@ -69,8 +78,9 @@ struct q_batch {
 struct dma_fn {
     uint64_t         owner;      /* koid of the current cap, 0: none (cmd lock) */
     bool             init;       /* batches is a list (q_lock) */
-    struct list_node batches;    /* struct q_batch (q_lock) */
-    uint64_t         pins, pages;          /* held now (q_lock) */
+    struct list_node batches;    /* struct q_batch waiting (q_lock) */
+    uint32_t         releasing;  /* batches taken off the list, not yet released (q_lock) */
+    uint64_t         pins, pages;          /* held now, including batches releasing (q_lock) */
     uint64_t         released, changed;    /* totals, pages (q_lock) */
 };
 
@@ -95,15 +105,21 @@ static void wake_reaper(void)
         waitqueue_wake_all(&q_wq);
 }
 
-/* Release a batch taken off its function's list (no lock held). */
+/* Release a batch taken off its function's list (no lock held). Only
+ * once its pages are back does it leave the counters, all in one step
+ * (see the file header). */
 static void release_batch(struct pci_dev *d, struct q_batch *b, const char *why)
 {
     uint64_t pages = 0, changed = 0;
     vmo_release_quarantined(&b->pins, &pages, &changed);
+    DBG_HOOK(DBG_DMA_RELEASED, d);
     struct dma_fn *fn = fn_of(d);
     uint64_t f = spin_lock_irqsave(&q_lock);
+    fn->pins -= b->npins;
+    fn->pages -= b->pages;
     fn->released += pages;
     fn->changed += changed;
+    fn->releasing--;
     spin_unlock_irqrestore(&q_lock, f);
     if (changed)
         kprintf("dma: %02x:%02x.%x: %lu quarantined page%s CHANGED while held: the device wrote them "
@@ -115,7 +131,8 @@ static void release_batch(struct pci_dev *d, struct q_batch *b, const char *why)
 }
 
 /* With q_lock held: take fn's first batch due at `now` (all of them if
- * `all`) off its list. */
+ * `all`) off its list, for release_batch. It stays in the counters until
+ * then. */
 static struct q_batch *take_due_locked(struct dma_fn *fn, uint64_t now, bool all)
 {
     if (!fn->init)
@@ -124,8 +141,7 @@ static struct q_batch *take_due_locked(struct dma_fn *fn, uint64_t now, bool all
         struct q_batch *b = container_of(n, struct q_batch, node);
         if (all || b->deadline <= now) {
             list_del(&b->node);
-            fn->pins -= b->npins;
-            fn->pages -= b->pages;
+            fn->releasing++;
             return b;
         }
     }
@@ -254,10 +270,14 @@ void dma_quarantine_flush(struct pci_dev *d)
     for (;;) {
         uint64_t f = spin_lock_irqsave(&q_lock);
         struct q_batch *b = take_due_locked(fn, 0, true);
+        bool busy = fn->releasing != 0;
         spin_unlock_irqrestore(&q_lock, f);
-        if (!b)
+        if (b)
+            release_batch(d, b, "flushed");
+        else if (busy)
+            thread_sleep_ms(1);   /* the reaper is releasing one: done in a moment */
+        else
             return;
-        release_batch(d, b, "flushed");
     }
 }
 
