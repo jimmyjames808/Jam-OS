@@ -2,6 +2,7 @@
  * unset, export, env, alias, unalias and help are in sh_exec.c, next to
  * the tables they use.) */
 #include "sh.h"
+#include <idl/console.h>
 
 char **sh_make_env(void);          /* sh_exec.c */
 void   sh_free_env(char **env);
@@ -195,6 +196,18 @@ static void drain(handle_t out)
 
 int sh_run_program(int argc, char **argv)
 {
+    return sh_run_program_ex(argc, argv, false);
+}
+
+/* What a program gets (M7 cleanup, the review's authority findings): a
+ * PROGRAM-level console channel of its own (console.new_client: write,
+ * keys while it runs, the screen; no input sources, no new channels), and
+ * nothing of devmgr's unless `test` (the utest and usbtest commands: test
+ * suites that kill and rebind drivers get the query and control channels).
+ * When it ends its job is killed: anything it started goes with it, so
+ * its console channel never outlives it in the foreground. */
+int sh_run_program_ex(int argc, char **argv, bool test)
+{
     /* The bootfs path: "utest" -> bin/utest; "bin/x" as it is (as before);
      * else a path through the cwd ("/boot/bin/x", "../drv/x"). */
     char path[SH_PATH_MAX];
@@ -224,12 +237,14 @@ int sh_run_program(int argc, char **argv)
         sh_tty("run: no job (%s)\n", status_str(st));
         return 126;
     }
-    struct spawn_handle x[3];
+    struct spawn_handle x[4];
     unsigned nx = 0;
     handle_t h;
-    if (sh_devmgr() && jam_handle_duplicate(sh_devmgr(), RIGHT_SAME, &h) == OK)
+    if (test && sh_devmgr() && jam_handle_duplicate(sh_devmgr(), RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
-    if (jam_handle_duplicate(sh_console(), RIGHT_SAME, &h) == OK)
+    if (test && sh_devmgr_ctl() && jam_handle_duplicate(sh_devmgr_ctl(), RIGHT_SAME, &h) == OK)
+        x[nx++] = (struct spawn_handle){ SR_DEVMGR_CTL, h };
+    if (console_new_client_until(sh_console(), (uint64_t)jam_clock_get() + 5 * SH_S, 2, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     /* In a pipe: its printf goes down a channel to us (libos printf.c). */
     if (sh_piped() && jam_channel_create(&out_r, &out_w) == OK)
@@ -287,6 +302,10 @@ int sh_run_program(int argc, char **argv)
         code = info.exit_code < 0 ? 1 : info.exit_code > 255 ? 255 : (int)info.exit_code;
     }
     struct job_info ji;
+    if (jam_job_get_info(job, &ji) != OK || ji.used[JOB_LIMIT_THREADS]) {
+        sh_tty("run: killing what %s left running\n", path);
+        jam_job_kill(job);
+    }
     if (jam_job_get_info(job, &ji) == OK) {
         bool clean = true;
         for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)

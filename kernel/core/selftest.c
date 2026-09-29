@@ -10,6 +10,7 @@
 #include <jam/sched.h>
 #include <jam/selftest.h>
 #include <jam/spinlock.h>
+#include <jam/status.h>
 #include <jam/time.h>
 #include <jam/x86.h>
 #include <jam/smp.h>
@@ -379,86 +380,202 @@ static void irqs_off_forever(void *arg)
         cpu_relax();
 }
 
+/* ---- the crash tests, one function each ------------------------------------ */
+
+static void crash_lockorder(void)
+{
+    /* A then B once, then B then A: never deadlocks on this run, but the
+     * checker must still refuse the second order. */
+    spin_lock(&lock_a);
+    spin_lock(&lock_b);
+    spin_unlock(&lock_b);
+    spin_unlock(&lock_a);
+    spin_lock(&lock_b);
+    spin_lock(&lock_a);
+}
+
+static void crash_locknest(void)
+{
+    /* Two locks of one class, nested without spin_lock_nested. */
+    spin_lock(&pair_1);
+    spin_lock(&pair_2);
+}
+
+static void crash_lockirq(void)
+{
+    /* Taken in an interrupt handler on CPU 1, then with interrupts on. */
+    smp_call_on(1, take_c_in_irq, NULL);
+    spin_lock(&lock_c);
+}
+
+static void crash_mutexorder(void)
+{
+    mutex_init(&mutex_a, "test mutex A");
+    mutex_init(&mutex_b, "test mutex B");
+    mutex_lock(&mutex_a);
+    mutex_lock(&mutex_b);
+    mutex_unlock(&mutex_b);
+    mutex_unlock(&mutex_a);
+    mutex_lock(&mutex_b);
+    mutex_lock(&mutex_a);
+}
+
+static void crash_mutexspin(void)
+{
+    mutex_init(&mutex_a, "test mutex A");
+    spin_lock(&lock_a);
+    mutex_lock(&mutex_a);   /* may sleep with a spinlock held */
+}
+
+static void crash_stuck(void)
+{
+    spawn_pinned("lock-hog", hold_forever, 1, PRIO_DEFAULT);
+    thread_sleep_ms(50);
+    spin_lock(&lock_a);   /* spins until the 5 s stuck-lock panic */
+}
+
+static void crash_watchdog(void)
+{
+    spawn_pinned("irqs-off", irqs_off_forever, 1, PRIO_DEFAULT);
+    thread_sleep_ms(20000);   /* the watchdog should fire within ~6 s */
+}
+
+/* SMEP/SMAP: map one page as user (present, DPL 3) in the kernel's tables
+ * (kernel threads run on them), then have the kernel touch it without
+ * stac/clac. Both must be enabled by now (cpu_init_local ran on every CPU). */
+static void crash_user_page(bool exec)
+{
+    uint64_t va = 0x2000;   /* a user-range address, page 0 stays unmapped */
+    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+    unsigned flags = VM_USER | VM_SMALL | (exec ? VM_EXEC : VM_WRITE);
+    vmm_map(vmm_kernel_pml4(), va, pa, PAGE_SIZE, flags);
+    if (exec) {
+        *(volatile uint8_t *)phys_to_virt(pa) = 0xc3;   /* ret */
+        ((void (*)(void))va)();   /* kernel fetch from a user page: #PF */
+    } else {
+        volatile uint8_t x = *(volatile uint8_t *)va;   /* kernel read: #PF */
+        kprintf("selftest: SMAP did not fault, read %u\n", x);
+    }
+}
+
+static void crash_smap(void) { crash_user_page(false); }
+static void crash_smep(void) { crash_user_page(true); }
+
+static void crash_bp(void)
+{
+    __asm__ volatile("int3");
+    kprintf("selftest: returned from breakpoint\n");
+}
+
+static void crash_panic(void)
+{
+    panic("test panic requested (crash test)");
+}
+
+static void crash_pf(void)
+{
+    null_ptr[3] = 1;
+}
+
+static void crash_ro(void)   /* kernel text must be read-only */
+{
+    *(volatile uint8_t *)(uintptr_t)&selftest_run = 0xcc;
+}
+
+static void crash_rohhdm(void)   /* ...through the HHDM alias too */
+{
+    uint64_t pa = vmm_translate(vmm_kernel_pml4(), (uint64_t)(uintptr_t)&selftest_run);
+    *(volatile uint8_t *)phys_to_virt(pa) = 0xcc;
+}
+
+static void crash_stack(void)
+{
+    kprintf("%lu\n", recurse_forever(0));
+}
+
+/* Each one's boot word is "test<name>" (hidden options: the QEMU tests use
+ * them). `early` ones run at boot before the scheduler starts
+ * (selftest_crash), the others once every CPU is up (selftest_crash_smp).
+ * All of them also run on a running system: selftest_crash_run, the
+ * shell's `crash <name>` (debug_command "crash <name>"). In the order they
+ * run at boot. */
+static const struct crash_test {
+    const char *name;
+    void      (*fn)(void);
+    bool        early;
+    bool        needs_2cpus;
+    const char *what;
+} crash_tests[] = {
+    { "bp",         crash_bp,         true,  false, "breakpoint (int3): must CONTINUE, no panic" },
+    { "panic",      crash_panic,      true,  false, "a plain panic()" },
+    { "pf",         crash_pf,         true,  false, "page fault: a NULL write" },
+    { "ro",         crash_ro,         true,  false, "write to kernel code (must fault)" },
+    { "rohhdm",     crash_rohhdm,     true,  false, "write to kernel code through the HHDM alias" },
+    { "stack",      crash_stack,      true,  false, "stack overflow into the guard page" },
+    { "lockorder",  crash_lockorder,  false, false, "lock order inversion (must be caught)" },
+    { "locknest",   crash_locknest,   false, false, "two locks of one class nested" },
+    { "lockirq",    crash_lockirq,    false, true,  "lock used in and out of interrupts" },
+    { "mutexorder", crash_mutexorder, false, false, "mutex order inversion" },
+    { "mutexspin",  crash_mutexspin,  false, false, "mutex taken holding a spinlock" },
+    { "stuck",      crash_stuck,      false, true,  "stuck spinlock (panics after 5 s)" },
+    { "watchdog",   crash_watchdog,   false, true,  "a CPU stuck with interrupts off (watchdog)" },
+    { "smap",       crash_smap,       false, false, "SMAP: kernel reads a user page without stac" },
+    { "smep",       crash_smep,       false, false, "SMEP: kernel jumps to a user page" },
+};
+#define NCRASH (sizeof(crash_tests) / sizeof(crash_tests[0]))
+
+static int has_test_word(const char *cmdline, const char *name)
+{
+    char w[24];
+    ksnprintf(w, sizeof(w), "test%s", name);
+    return has_word(cmdline, w);
+}
+
 void selftest_crash_smp(void)
 {
-    if (cmdline_has("testlockorder")) {
-        /* A then B once, then B then A: never deadlocks on this run, but
-         * the checker must still refuse the second order. */
-        spin_lock(&lock_a);
-        spin_lock(&lock_b);
-        spin_unlock(&lock_b);
-        spin_unlock(&lock_a);
-        spin_lock(&lock_b);
-        spin_lock(&lock_a);
-    }
-    if (cmdline_has("testlocknest")) {
-        /* Two locks of one class, nested without spin_lock_nested. */
-        spin_lock(&pair_1);
-        spin_lock(&pair_2);
-    }
-    if (cmdline_has("testlockirq") && cpu_count > 1) {
-        /* Taken in an interrupt handler on CPU 1, then with interrupts on. */
-        smp_call_on(1, take_c_in_irq, NULL);
-        spin_lock(&lock_c);
-    }
-    if (cmdline_has("testmutexorder")) {
-        mutex_init(&mutex_a, "test mutex A");
-        mutex_init(&mutex_b, "test mutex B");
-        mutex_lock(&mutex_a);
-        mutex_lock(&mutex_b);
-        mutex_unlock(&mutex_b);
-        mutex_unlock(&mutex_a);
-        mutex_lock(&mutex_b);
-        mutex_lock(&mutex_a);
-    }
-    if (cmdline_has("testmutexspin")) {
-        mutex_init(&mutex_a, "test mutex A");
-        spin_lock(&lock_a);
-        mutex_lock(&mutex_a);   /* may sleep with a spinlock held */
-    }
-    if (cmdline_has("teststuck") && cpu_count > 1) {
-        spawn_pinned("lock-hog", hold_forever, 1, PRIO_DEFAULT);
-        thread_sleep_ms(50);
-        spin_lock(&lock_a);   /* spins until the 5 s stuck-lock panic */
-    }
-    if (cmdline_has("testwatchdog") && cpu_count > 1) {
-        spawn_pinned("irqs-off", irqs_off_forever, 1, PRIO_DEFAULT);
-        thread_sleep_ms(20000);   /* the watchdog should fire within ~6 s */
-    }
-    /* SMEP/SMAP: map one page as user (present, DPL 3) in the running kernel
-     * tables, then have the kernel touch it without stac/clac. Both must be
-     * enabled by now (cpu_init_local ran on every CPU). */
-    if (cmdline_has("testsmap") || cmdline_has("testsmep")) {
-        uint64_t va = 0x2000;   /* a user-range address, page 0 stays unmapped */
-        uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
-        unsigned flags = VM_USER | VM_SMALL | (cmdline_has("testsmep") ? VM_EXEC : VM_WRITE);
-        vmm_map(vmm_kernel_pml4(), va, pa, PAGE_SIZE, flags);
-        if (cmdline_has("testsmep")) {
-            *(volatile uint8_t *)phys_to_virt(pa) = 0xc3;   /* ret */
-            ((void (*)(void))va)();   /* kernel fetch from a user page: #PF */
-        } else {
-            volatile uint8_t x = *(volatile uint8_t *)va;   /* kernel read: #PF */
-            kprintf("selftest: SMAP did not fault, read %u\n", x);
-        }
-    }
+    const char *cl = cmdline_get();
+    for (size_t i = 0; i < NCRASH; i++)
+        if (!crash_tests[i].early && has_test_word(cl, crash_tests[i].name) &&
+            (!crash_tests[i].needs_2cpus || cpu_count > 1))
+            crash_tests[i].fn();
 }
 
 void selftest_crash(const char *cmdline)
 {
-    if (has_word(cmdline, "testbp")) {
-        __asm__ volatile("int3");
-        kprintf("selftest: returned from breakpoint\n");
+    for (size_t i = 0; i < NCRASH; i++)
+        if (crash_tests[i].early && has_test_word(cmdline, crash_tests[i].name))
+            crash_tests[i].fn();
+}
+
+bool selftest_crash_known(const char *name, size_t len)
+{
+    for (size_t i = 0; i < NCRASH; i++)
+        if (strlen(crash_tests[i].name) == len && !memcmp(crash_tests[i].name, name, len))
+            return true;
+    return false;
+}
+
+int64_t selftest_crash_run(const char *name)
+{
+    for (size_t i = 0; i < NCRASH; i++) {
+        const struct crash_test *c = &crash_tests[i];
+        if (strcmp(c->name, name))
+            continue;
+        if (c->needs_2cpus && cpu_count < 2) {
+            kprintf("crash %s: needs 2 CPUs\n", name);
+            return ERR_NOT_SUPPORTED;
+        }
+        kprintf("crash %s: %s\n", name, c->what);
+        c->fn();
+        return 0;   /* only bp comes back (or a crash test that failed to crash) */
     }
-    if (has_word(cmdline, "testpanic"))
-        panic("test panic requested on the kernel command line");
-    if (has_word(cmdline, "testpf"))
-        null_ptr[3] = 1;
-    if (has_word(cmdline, "testro"))   /* kernel text must be read-only */
-        *(volatile uint8_t *)(uintptr_t)&selftest_run = 0xcc;
-    if (has_word(cmdline, "testrohhdm")) {   /* ...through the HHDM alias too */
-        uint64_t pa = vmm_translate(vmm_kernel_pml4(), (uint64_t)(uintptr_t)&selftest_run);
-        *(volatile uint8_t *)phys_to_virt(pa) = 0xcc;
-    }
-    if (has_word(cmdline, "teststack"))
-        kprintf("%lu\n", recurse_forever(0));
+    return ERR_NOT_FOUND;
+}
+
+int64_t selftest_crash_list(void)
+{
+    kprintf("crash tests (each panics the kernel on purpose, except bp):\n");
+    for (size_t i = 0; i < NCRASH; i++)
+        kprintf("  %-10s %s\n", crash_tests[i].name, crash_tests[i].what);
+    return (int64_t)NCRASH;
 }

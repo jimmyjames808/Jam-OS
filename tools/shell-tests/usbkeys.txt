@@ -29,5 +29,21 @@ sleep 1
 usbkeys help\r
 wait 10 Commands:
 wait jam>
+# devmgr dies (M7 cleanup): init kills its job (usb-bus and every hid go
+# with it) and starts it again; the new usb-bus resets the controller and
+# enumerates, a new hid binds and the keyboard types again; the shell's
+# usb command talks to the new devmgr
+send kill devmgr
+wait shell: killed process
+wait 30 init: devmgr and its drivers are gone
+wait 90 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
+sleep 1
+usbkeys help\r
+wait 10 Commands:
+wait jam>
+send usb
+wait 30 problem(s)
+wait jam>
 send reboot
 wait reboot: resetting
+

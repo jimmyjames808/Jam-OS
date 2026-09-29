@@ -22,7 +22,8 @@
 
 /* Port keys: devmgr's channel, and a driver process's SIG_TERMINATED
  * (binding index and start generation, so a stale packet is recognised). */
-#define KEY_CHANNEL        1ull
+#define KEY_CHANNEL        1ull   /* the query channel (SR_DEVMGR) */
+#define KEY_CONTROL        2ull   /* the control channel (SR_DEVMGR_CTL) */
 #define KEY_DRIVER         (1ull << 32)
 #define KEY_OF(i, gen)     (KEY_DRIVER | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* A driver wrote on its DR_SERVE channel by itself (usb-bus:

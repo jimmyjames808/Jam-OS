@@ -397,6 +397,8 @@ static const struct sh_cmd cmds[] = {
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     M("devices", C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     M("usb", C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
+    M("pci", C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
+    M("memmap", C_SYSTEM, "memmap", "the loader's memory map"),
     M("log", C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
     M("mem", C_SYSTEM, "mem", "physical memory from the kernel, and the shell's job"),
     M("kill", C_SYSTEM, "kill <name>", "kill the first process with that name (see ps)"),
@@ -409,6 +411,13 @@ static const struct sh_cmd cmds[] = {
     M("ktest", C_TESTS, "ktest [prefix]", "kernel tests (as the boot menu's All tests)"),
     M("bench", C_TESTS, "bench", "kernel benchmark"),
     M("stress", C_TESTS, "stress <seconds>", "stress test (1..600)"),
+    M("utest", C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),
+    M("usbtest", C_TESTS, "usbtest", "the USB checks (bin/usbtest) and their result line"),
+    M("demo", C_TESTS, "demo [seconds]",
+      "the visual demo: fractals on every CPU (default 76 s; any key stops it)"),
+    M("crash", C_TESTS, "crash [name [yes]]",
+      "the kernel's crash tests: alone, the list; \"crash <name> yes\" runs one\n"
+      "  (each panics the machine on purpose, bp excepted)"),
     M("panic", C_TESTS, "panic", "panic the kernel (a test: its screen must show)"),
     C(pwd, C_FILES, "pwd", "the current directory"),
     C(cd, C_FILES, "cd [dir]", "change directory (no argument: $HOME)"),
@@ -665,6 +674,11 @@ static size_t assignment(const char *word)
 
 static int main_status;   /* set by sh_unknown while main.c runs a line */
 static int exec_line(const char *line);
+
+void sh_set_status(int code)
+{
+    main_status = code;
+}
 
 /* argv as a command: the table, else main.c (which calls sh_unknown for
  * what it doesn't know either). */
@@ -932,8 +946,6 @@ void sh_line(char *line)
     if (interrupted)
         last_status = 130;
 }
-
-int sh_run_program(int argc, char **argv);   /* cmds_shell.c */
 
 void sh_unknown(int argc, char **argv)
 {

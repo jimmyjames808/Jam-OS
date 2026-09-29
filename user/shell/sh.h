@@ -34,7 +34,15 @@ unsigned sh_history_count(void);                /* lines ever remembered */
 const char *sh_history_at(unsigned i);          /* i-th of the last 32, NULL if gone */
 handle_t sh_console(void);
 handle_t sh_root(void);
-handle_t sh_devmgr(void);
+handle_t sh_devmgr(void);       /* devmgr's query channel (the newest, M7), or 0 */
+handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
+/* cmds_shell.c: `run` (a program gets a PROGRAM-level console channel and
+ * nothing of devmgr's; its job is killed when it ends); _ex with `test`:
+ * also devmgr's query and control channels (the utest/usbtest commands). */
+int sh_run_program(int argc, char **argv);
+int sh_run_program_ex(int argc, char **argv, bool test);
+/* The status ($?) of the main.c command running now (its programs). */
+void sh_set_status(int code);
 
 /* ---- called by main.c ------------------------------------------------------------ */
 

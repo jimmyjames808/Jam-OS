@@ -42,6 +42,10 @@
  * RIGHT_MANAGE, from pci_device_open) and nothing else of the driver's.
  * Each binding is logged, with one RESULTS line per bound driver.
  *
+ * The argument "nousb" (init passes it on for the safe mode boot entry)
+ * leaves USB host controllers (class 0c03xx) without a driver: no USB at
+ * all, the console's input is the serial port alone.
+ *
  * M7: USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
@@ -74,6 +78,7 @@ struct binding devs[MAX_DEVS];
 unsigned ndevs, problems;
 handle_t pci_res, port;
 static unsigned nbound, nfailed, nskipped;
+static bool nousb;
 
 void say(bool report_it, const char *fmt, ...)
 {
@@ -111,6 +116,11 @@ static const char *match(const struct pci_dev_info *i)
     if (i->flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return NULL;   /* never a driver's */
     uint32_t cls = (uint32_t)i->class_code << 16 | (uint32_t)i->subclass << 8 | i->prog_if;
+    if (nousb && (cls >> 8) == 0x0c03) {
+        say(false, "devmgr: %02x:%02x.%x %04x:%04x: a USB controller, left alone (nousb)",
+            i->bus, i->dev, i->fn, i->vendor, i->device);
+        return NULL;
+    }
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
         if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
             (matches[k].device == 0xffff || matches[k].device == i->device) &&
@@ -338,7 +348,15 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
 
 /* Answer everything queued on ch. ERR_PEER_CLOSED once every client is
  * gone and nothing is left to read. */
-static status_t serve(handle_t ch)
+/* What a query channel (SR_DEVMGR) may ask; the control channel
+ * (SR_DEVMGR_CTL) may ask everything. */
+static bool query_ok(uint32_t ordinal)
+{
+    return ordinal == DEVMGR_STATUS || ordinal == DEVMGR_GET_SERVICE ||
+           ordinal == DEVMGR_GET_DRIVER || ordinal == DEVMGR_SUPERVISION;
+}
+
+static status_t serve(handle_t ch, bool control)
 {
     for (;;) {
         _Alignas(8) uint8_t buf[64];
@@ -367,9 +385,11 @@ static status_t serve(handle_t ch)
         }
         if (st != OK)
             return st;
-        /* Only SET_CONSOLE carries a handle (one). */
+        /* Only SET_CONSOLE carries a handle (one), and only on control. */
         const struct devmgr_req *q = (const struct devmgr_req *)buf;
-        bool set_console = n == sizeof(*q) && q->ordinal == DEVMGR_SET_CONSOLE && nh == 1;
+        bool denied = n >= 8 && !control && !query_ok(q->ordinal);
+        bool set_console = !denied && n == sizeof(*q) && q->ordinal == DEVMGR_SET_CONSOLE &&
+                           nh == 1;
         if (!set_console)
             for (uint32_t i = 0; i < nh; i++)
                 jam_handle_close(in[i]);
@@ -379,7 +399,9 @@ static status_t serve(handle_t ch)
         handle_t hs[DEVMGR_MAX_HANDLES];
         rights_t rs[DEVMGR_MAX_HANDLES];
         uint32_t nout = 0;
-        if (set_console) {
+        if (denied) {
+            r.status = ERR_ACCESS_DENIED;
+        } else if (set_console) {
             usb_new_console(in[0]);
             r.status = OK;
         } else if (n == sizeof(struct devmgr_req) && !nh) {
@@ -395,12 +417,20 @@ static status_t serve(handle_t ch)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
-    handle_t ch = startup_handle(SR_DEVMGR);
+    for (int i = 1; i < argc; i++)
+        nousb |= !strcmp(argv[i], "nousb");
+    /* chans[0]: control (SR_DEVMGR_CTL), chans[1]: queries (SR_DEVMGR).
+     * devmgr runs until the control channel's clients are all gone (with
+     * no control channel: the query channel's); a query channel whose
+     * clients are gone is just dropped. */
+    handle_t chans[2] = { startup_handle(SR_DEVMGR_CTL), startup_handle(SR_DEVMGR) };
+    const uint64_t keys[2] = { KEY_CONTROL, KEY_CHANNEL };
+    unsigned life = chans[0] ? 0 : 1;
+
     pci_res = startup_handle(SR_RESOURCE);
-    if (!ch || !pci_res) {
-        say(true, "devmgr: no %s in the startup message", ch ? "PCI resource" : "channel");
+    if (!chans[life] || !pci_res) {
+        say(true, "devmgr: no %s in the startup message",
+            chans[life] ? "PCI resource" : "channel");
         return 1;
     }
     status_t st = jam_port_create(&port);
@@ -429,25 +459,43 @@ int main(int argc, char **argv)
     say(false, "devmgr: %u function(s), %u driver(s) bound, %u failed, %u skipped; serving",
         ndevs, nbound, nfailed, nskipped);
 
-    bool armed = false;
+    bool armed[2] = { false, false };
     for (;;) {
-        st = serve(ch);
+        st = ERR_SHOULD_WAIT;
+        for (unsigned c = 0; c < 2 && st == ERR_SHOULD_WAIT; c++) {
+            if (!chans[c])
+                continue;
+            st = serve(chans[c], c == 0);
+            if (st == ERR_PEER_CLOSED && c != life) {
+                if (armed[c])
+                    jam_port_unbind(port, chans[c], keys[c]);
+                jam_handle_close(chans[c]);   /* nobody queries any more */
+                chans[c] = HANDLE_INVALID;
+                st = ERR_SHOULD_WAIT;
+            }
+        }
         if (st != ERR_SHOULD_WAIT)
             break;
         /* ONCE, re-armed after it fires (it fires at once if a message came
          * in meanwhile); a driver's death arrives on the same port, and a
          * due restart ends the wait. */
-        if (!armed) {
-            st = jam_port_bind(port, ch, KEY_CHANNEL, SIG_READABLE | SIG_PEER_CLOSED,
+        for (unsigned c = 0; c < 2 && st == ERR_SHOULD_WAIT; c++) {
+            if (!chans[c] || armed[c])
+                continue;
+            st = jam_port_bind(port, chans[c], keys[c], SIG_READABLE | SIG_PEER_CLOSED,
                                PORT_BIND_ONCE);
             if (st != OK)
                 break;
-            armed = true;
+            armed[c] = true;
+            st = ERR_SHOULD_WAIT;
         }
+        if (st != ERR_SHOULD_WAIT)
+            break;
         struct port_packet pkt;
         st = jam_port_wait(port, sup_next_deadline(), &pkt);
-        if (st == OK && pkt.key == KEY_CHANNEL)
-            armed = false;
+        if (st == OK && (pkt.key == KEY_CHANNEL || pkt.key == KEY_CONTROL))
+            armed[pkt.key == KEY_CONTROL ? 0 : 1] = false;
+
         else if (st == OK && (pkt.key & KEY_DRIVER) && KEY_INDEX(pkt.key) < ndevs)
             sup_died(&devs[KEY_INDEX(pkt.key)], KEY_GEN(pkt.key));
         else if (st == OK && (pkt.key & KEY_EVENTS) && KEY_INDEX(pkt.key) < ndevs) {

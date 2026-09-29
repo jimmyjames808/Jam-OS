@@ -23,10 +23,18 @@
  *                    tree, except those of the caller's ancestor jobs
  *                    (init: nothing would supervise the caller any more);
  *                    tests of restarts (the console, serialin, the HID
- *                    drivers); the result is its koid
+ *                    drivers, devmgr); the result is its koid
+ *   crash [name]     the boot menu's old crash tests (selftest.c): alone,
+ *                    list them (the result: how many); with a name, run it
+ *                    in a thread pinned to CPU 0 (as the boot's main thread
+ *                    ran them; the ones needing a second CPU use CPU 1).
+ *                    Each panics on purpose, except bp, which returns 0
+ *   memmap           the loader's memory map (the "memmap" boot word)
+
  *
  * The boot menu entries still call the same functions from thread "main";
  * nothing here changes them. */
+#include <jam/boot.h>
 #include <jam/console_svc.h>
 #include <jam/event.h>
 #include <jam/kprintf.h>
@@ -112,7 +120,15 @@ status_t dbgcmd_check(const char *cmd, size_t len)
         const char *after;
         return *rest && word(rest, &after) && !*after ? OK : ERR_INVALID_ARGS;
     }
-    if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic"))
+    if (is(cmd, n, "crash")) {
+        const char *after;
+        size_t k = word(rest, &after);
+        if (*after)
+            return ERR_INVALID_ARGS;
+        return !k || selftest_crash_known(rest, k) ? OK : ERR_NOT_FOUND;
+    }
+    if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic") ||
+        is(cmd, n, "memmap"))
         return *rest ? ERR_INVALID_ARGS : OK;
     return ERR_NOT_SUPPORTED;
 }
@@ -150,6 +166,13 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
     if (is(cmd, n, "devices")) {
         pci_report();
         return pci_count();
+    }
+    if (is(cmd, n, "crash"))
+        return *rest ? selftest_crash_run(rest) : selftest_crash_list();
+    if (is(cmd, n, "memmap")) {
+
+        kmain_print_memmap();
+        return 0;
     }
     if (is(cmd, n, "panic"))
         panic("debug_command: panic asked for (a test of the panic screen)");
@@ -240,7 +263,14 @@ int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct j
         run_put(r);
         return ERR_BAD_STATE;
     }
-    struct thread *t = thread_try_create_on("dbgcmd", run_thread, r, PRIO_DEFAULT, NULL);
+    /* A crash test runs on CPU 0, as from the boot menu: the ones that
+     * need a second CPU (stuck, watchdog, lockirq) take CPU 1. */
+    cpumask_t cpu0;
+    cpumask_one(&cpu0, 0);
+    const char *rest;
+    bool crash = is(r->cmd, word(r->cmd, &rest), "crash") && *rest;
+    struct thread *t = thread_try_create_on("dbgcmd", run_thread, r, PRIO_DEFAULT,
+                                            crash ? &cpu0 : NULL);
     if (!t) {
         f = spin_lock_irqsave(&busy_lock);
         busy = false;
