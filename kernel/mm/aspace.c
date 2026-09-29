@@ -48,6 +48,14 @@
  * A CPU that switches away after our read is flushed anyway (harmless).
  * Without PCIDs nothing else can hold stale user entries.
  *
+ * With PCIDs (M5.5, arch/x86_64/pcid.c) the second point no longer holds:
+ * a CR3 load keeps the entries of the PCID it leaves. So gather_note also
+ * bumps the address space's TLB generation (`tlb_gen`) BEFORE it reads the
+ * mask, and a CPU loading this address space again flush-loads its PCID
+ * when the generation moved since that CPU last flushed it. The active mask
+ * still says whom to interrupt: CPUs running the address space now. The
+ * ordering argument is at the top of pcid.c.
+ *
  * Freeing ("gather"). Pages that leave a user mapping (VMO pages on
  * decommit/shrink, page-table pages on unmap) go on a struct tlb_gather
  * and are released only after its shootdown has completed on every CPU in
@@ -97,7 +105,7 @@
  * lock-free atomics, fine under pt_lock.
  *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
- * kernel CR3) and no PCIDs; one decommit batch holds the VMO lock (with
+ * kernel CR3, with PCIDs a cheap load that keeps the user entries); one decommit batch holds the VMO lock (with
  * interrupts off) for up to 512 pages times the number of mappings of the
  * VMO that overlap them, so a VMO mapped thousands of times makes that
  * latency grow. The region lock must never be held across a user copy:
@@ -109,6 +117,7 @@
 #include <jam/ipi.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pcid.h>
 #include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
@@ -162,6 +171,10 @@ struct aspace {
     struct job       *job;        /* charged for all of it (a reference), or NULL */
     volatile uint32_t refs;
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
+    /* PCIDs (M5.5, pcid.h): a never-reused id, and the TLB generation,
+     * bumped by every change that must reach TLBs (gather_note). */
+    uint64_t          pcid_id;
+    volatile uint64_t tlb_gen;
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -210,7 +223,9 @@ static void gather_note(struct tlb_gather *g, struct aspace *as, uint64_t lo, ui
 {
     /* Order the entry stores before the mask read (see the file header):
      * a CPU whose bit we miss sets it after this fence, so it loads CR3
-     * after our stores are visible. */
+     * after our stores are visible. The generation bump (PCIDs) comes
+     * first: a CPU that switches in after it flushes its PCID. */
+    __atomic_add_fetch(&as->tlb_gen, 1, __ATOMIC_SEQ_CST);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     for (unsigned w = 0; w < MAX_CPUS / 64; w++)
         g->cpus.bits[w] |= __atomic_load_n(&as->active.bits[w], __ATOMIC_RELAXED);
@@ -486,6 +501,7 @@ status_t aspace_create_charged(struct job *job, struct aspace **out)
     spin_init(&as->pt_lock, "aspace page tables");
     list_init(&as->maps);
     as->refs = 1;
+    as->pcid_id = pcid_new_id();
     *out = as;
     return OK;
 }
@@ -837,11 +853,12 @@ void aspace_switch(struct aspace *prev, struct aspace *next)
     uint32_t cpu = this_cpu()->index;
     uint64_t bit = 1ull << (cpu % 64);
     if (next) {
-        /* Locked RMW before the CR3 load: see the file header. */
+        /* Locked RMW before the CR3 load (and before pcid_load reads the
+         * generation): see the file header. */
         __atomic_fetch_or(&next->active.bits[cpu / 64], bit, __ATOMIC_SEQ_CST);
-        write_cr3(next->pml4);
+        pcid_load(next->pml4, next->pcid_id, &next->tlb_gen);
     } else {
-        write_cr3(vmm_kernel_pml4());
+        pcid_load(vmm_kernel_pml4(), 0, NULL);
     }
     /* Only after the new CR3 has dropped prev's entries from this CPU. */
     if (prev)

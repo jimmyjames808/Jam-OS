@@ -84,8 +84,10 @@ struct thread {
 
     struct list_node  rq_node;       /* run queue */
     struct list_node  wait_node;     /* wait queue */
-    struct list_node  sleep_node;    /* sleep list */
+    struct list_node  sleep_node;    /* a CPU's sleeper queue (sched.c) */
     uint64_t          wake_at_ns;
+    uint64_t          wake_at_tsc;   /* the same deadline as a TSC value */
+    uint32_t          sleep_cpu;     /* whose queue sleep_node is on */
 
     void             *stack_top;
     volatile uint32_t refs;
@@ -100,6 +102,12 @@ struct thread {
      * woken onto its waker's CPU or that CPU's idle HT sibling. */
     bool              wake_sync;
     uint64_t          affine_wakes;
+    /* Client/server pairs (M5.5, sched.c): the thread that woke this one
+     * last (its id) and how many wakes in a row came from it; pair_wakes
+     * counts the times this thread was placed on its partner's sibling. */
+    uint64_t          partner_id;
+    uint32_t          partner_streak;
+    uint64_t          pair_wakes;
 
     /* M5 user state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
@@ -107,6 +115,8 @@ struct thread {
     struct process   *process;       /* owning process */
     struct uthread   *uthread;       /* its thread object (process.h) */
     void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
+    uint32_t          fpu_cpu;       /* CPU whose registers were last loaded
+                                      * from ustate (fpu.c, M5.5) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */
@@ -196,8 +206,14 @@ void thread_set_wake_sync(bool on);
  * idle thread. APs turn their own startup context into their idle thread. */
 void sched_init_bsp(void);
 _Noreturn void sched_run_ap_idle(void);
-/* Called from the timer interrupt on every CPU. */
+/* Once every AP that will start has started: record each CPU's HT sibling
+ * for placement (until then placement knows no siblings). */
+void sched_topology_init(void);
+/* Called from the timer interrupt on every CPU, at each scheduler tick. */
 void sched_tick(void);
+/* From every timer interrupt (M5.5): wake this CPU's sleepers that are
+ * due and re-arm its timer for the next one. True if it woke any. */
+bool sched_timer_expire(void);
 /* From the interrupt exit path: switch if a reschedule is pending. */
 void sched_irq_exit(uint64_t interrupted_rflags);
 /* Total anti-starvation boosts so far. */
@@ -218,8 +234,30 @@ void sched_stack_trim(void);
 unsigned sched_stack_cache_set_limit(unsigned limit);
 /* Stacks freed (unmapped, pages returned) since boot. */
 uint64_t sched_stacks_freed(void);
-/* Tell `cpu` to look at its run queue soon (IPI if remote). */
+/* Tell `cpu` to look at its run queue soon (IPI if remote and not polling
+ * in idle). */
 void sched_kick(uint32_t cpu);
+
+/* Spin before idle (M5.5): how long an idle CPU polls for work before it
+ * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The
+ * benchmark flips it at run time. */
+#define SCHED_IDLE_SPIN_NS 10000
+extern volatile uint64_t sched_idle_spin_ns;
+/* Hybrid placement order (M5.5): idle whole P-core > idle E-core > idle HT
+ * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the M5
+ * least-loaded rule. Boot: "noplaceorder". */
+extern volatile bool sched_place_order;
+/* Client/server pairs on sibling hyperthreads (M5.5): two threads that
+ * keep waking each other are placed on one core's two hyperthreads when
+ * the waker keeps running. Boot: "noaffinepair". */
+extern volatile bool sched_affine_pair;
+#ifndef JAM_NO_KTESTS
+/* Tests: run the placement rule on a made-up topology (arrays indexed by
+ * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */
+uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
+                             const uint8_t *type, const uint32_t *load, uint32_t last,
+                             bool order);
+#endif
 void sched_print_stats(void);
 
 /* ---- wait queues and mutexes --------------------------------------------- */

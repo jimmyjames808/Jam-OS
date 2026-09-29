@@ -43,9 +43,29 @@
 
 static bool x2;
 static volatile uint32_t *mmio;
-static bool use_deadline;
+
+/* Timer modes. Each CPU's timer interrupt serves two clients: the 100 Hz
+ * scheduler tick and (M5.5) the earliest deadline on that CPU's sleeper
+ * queue (sched.c). In the two one-shot modes the timer is re-armed after
+ * every interrupt for whichever comes first, both kept as absolute TSC
+ * values in struct cpu (tick_deadline, timer_deadline):
+ *   - TSC-deadline: the CPU has it and "nodeadline" is not given; arming is
+ *     one MSR write of the TSC value itself (the PC).
+ *   - APIC one-shot: no TSC-deadline (QEMU's TCG, which is how the one-shot
+ *     logic gets tested there); arming converts the distance to APIC timer
+ *     counts (calibrated like the periodic mode, divide by 16).
+ *   - APIC periodic: "nodeadline". A fixed 100 Hz; sleepers are woken by
+ *     their CPU's tick, so sleeps have tick (10 ms) resolution.
+ * The tick is kept (tickless idle is M10). `lapic_oneshot` (boot:
+ * "nooneshot") switches the sleeper deadlines off at run time in either
+ * one-shot mode: sleepers then wait for their CPU's next tick, which is how
+ * the benchmark shows what the one-shot timers buy. */
+enum { TMR_MODE_DEADLINE, TMR_MODE_ONESHOT, TMR_MODE_PERIODIC };
+static int timer_mode = TMR_MODE_PERIODIC;
 static uint32_t apic_ticks_per_sec;   /* with divide-by-16 */
 static uint64_t tsc_period;           /* TSC cycles per tick */
+volatile bool lapic_oneshot = true;
+volatile uint64_t lapic_early_irqs;   /* one-shot interrupts that found nothing due */
 
 static uint32_t rd(uint32_t reg)
 {
@@ -148,14 +168,61 @@ static void on_error(struct trap_frame *f)
     lapic_eoi();
 }
 
+/* Interrupts off: arm this CPU's timer for the earlier of its next tick and
+ * its sleeper deadline. A deadline already past fires at once. */
+static void timer_program(struct cpu *c)
+{
+    uint64_t when = c->tick_deadline;
+    if (lapic_oneshot && c->timer_deadline < when)
+        when = c->timer_deadline;
+    if (when == c->timer_armed)
+        return;
+    c->timer_armed = when;
+    if (timer_mode == TMR_MODE_DEADLINE) {
+        wrmsr(MSR_TSC_DEADLINE, when);
+    } else {
+        uint64_t now = rdtsc();
+        uint64_t d = when > now ? when - now : 0;
+        /* Up to the next tick at most, so this can't overflow 32 bits. */
+        uint64_t count = d * apic_ticks_per_sec / tsc_hz + 1;
+        wr(REG_TMR_INIT, count > 0xffffffffu ? 0xffffffffu : (uint32_t)count);
+    }
+}
+
+void lapic_timer_set(uint64_t when_tsc)
+{
+    struct cpu *c = this_cpu();
+    c->timer_deadline = when_tsc ? when_tsc : UINT64_MAX;
+    if (timer_mode != TMR_MODE_PERIODIC)
+        timer_program(c);
+}
+
 static void on_timer(struct trap_frame *f)
 {
     (void)f;
-    this_cpu()->ticks++;
-    if (use_deadline)
-        wrmsr(MSR_TSC_DEADLINE, rdtsc() + tsc_period);
+    struct cpu *c = this_cpu();
+    if (timer_mode == TMR_MODE_PERIODIC) {
+        c->ticks++;
+        lapic_eoi();
+        sched_timer_expire();
+        sched_tick();
+        return;
+    }
+    c->timer_armed = 0;   /* it fired: the next timer_program must arm again */
+    uint64_t now = rdtsc();
+    bool tick = now >= c->tick_deadline;
+    if (tick) {
+        c->ticks++;
+        c->tick_deadline += tsc_period;
+        if (c->tick_deadline <= now)   /* missed ticks (a long stall): don't catch up */
+            c->tick_deadline = now + tsc_period;
+    }
     lapic_eoi();
-    sched_tick();
+    if (!sched_timer_expire() && !tick)
+        lapic_early_irqs++;   /* e.g. the APIC count rounded short: re-armed below */
+    if (tick)
+        sched_tick();
+    timer_program(c);
 }
 
 void lapic_init_cpu(struct cpu *c)
@@ -195,8 +262,14 @@ void lapic_init_cpu(struct cpu *c)
 
 void lapic_timer_calibrate(void)
 {
-    use_deadline = cpu_features.tsc_deadline && !cmdline_has("nodeadline");
-    if (use_deadline)
+    if (cmdline_has("nodeadline"))
+        timer_mode = TMR_MODE_PERIODIC;
+    else if (cpu_features.tsc_deadline)
+        timer_mode = TMR_MODE_DEADLINE;
+    else
+        timer_mode = TMR_MODE_ONESHOT;
+    lapic_oneshot = !cmdline_has("nooneshot");
+    if (timer_mode == TMR_MODE_DEADLINE)
         return;
     /* Count APIC timer ticks against the TSC, 5 times, and keep the median.
      * Each run times the exact interval between starting the counter and
@@ -224,21 +297,45 @@ void lapic_timer_calibrate(void)
             apic_ticks_per_sec, rate[0], rate[RUNS - 1]);
 }
 
+/* Every CPU, once, with interrupts off. */
 void lapic_timer_start(unsigned hz)
 {
-    if (use_deadline) {
-        tsc_period = tsc_hz / hz;
+    struct cpu *c = this_cpu();
+    tsc_period = tsc_hz / hz;
+    if (!c->timer_deadline)
+        c->timer_deadline = UINT64_MAX;   /* none (struct cpu starts zeroed) */
+    c->timer_armed = 0;
+    switch (timer_mode) {
+    case TMR_MODE_DEADLINE:
         wr(REG_LVT_TMR, TMR_TSC_DEADLINE | VEC_TIMER);
         __asm__ volatile("mfence" ::: "memory");   /* SDM: order LVT before MSR */
-        wrmsr(MSR_TSC_DEADLINE, rdtsc() + tsc_period);
-    } else {
+        c->tick_deadline = rdtsc() + tsc_period;
+        timer_program(c);
+        break;
+    case TMR_MODE_ONESHOT:
+        wr(REG_TMR_DIV, 0x3);
+        wr(REG_LVT_TMR, VEC_TIMER);   /* one-shot: counts down once per arming */
+        c->tick_deadline = rdtsc() + tsc_period;
+        timer_program(c);
+        break;
+    default:
         wr(REG_TMR_DIV, 0x3);
         wr(REG_LVT_TMR, TMR_PERIODIC | VEC_TIMER);
         wr(REG_TMR_INIT, apic_ticks_per_sec / hz);
+        break;
     }
 }
 
 const char *lapic_timer_mode(void)
 {
-    return use_deadline ? "TSC-deadline" : "APIC periodic";
+    switch (timer_mode) {
+    case TMR_MODE_DEADLINE: return lapic_oneshot ? "TSC-deadline, one-shot timers" : "TSC-deadline";
+    case TMR_MODE_ONESHOT:  return lapic_oneshot ? "APIC one-shot, one-shot timers" : "APIC one-shot";
+    default:                return "APIC periodic";
+    }
+}
+
+bool lapic_timer_has_oneshot(void)
+{
+    return timer_mode != TMR_MODE_PERIODIC;
 }

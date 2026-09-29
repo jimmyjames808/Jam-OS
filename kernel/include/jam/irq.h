@@ -2,7 +2,7 @@
  *
  *   0x00-0x1f  CPU exceptions
  *   0x20-0x2f  legacy 8259 PIC (masked; only spurious ones can arrive)
- *   0x30-0xef  device interrupts (I/O APIC, MSI), from M6
+ *   0x30-0xef  device interrupts (I/O APIC, MSI), from M6; 0x30 = COM1 (M5.5)
  *   0xf0       LAPIC timer
  *   0xf1-0xfd  IPIs, from M3
  *   0xfe       LAPIC error
@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #define VEC_PIC_BASE    0x20
+#define VEC_COM1        0x30   /* M5.5: the serial port's transmit interrupt */
 #define VEC_TIMER       0xf0
 #define VEC_RESCHEDULE  0xf1
 #define VEC_CALL        0xf2

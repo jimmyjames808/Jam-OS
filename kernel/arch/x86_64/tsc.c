@@ -113,3 +113,12 @@ uint64_t uptime_ns(void)
     uint64_t d = rdtsc() - tsc_boot;
     return d / tsc_hz * 1000000000ull + (d % tsc_hz) * 1000000000ull / tsc_hz;
 }
+
+uint64_t uptime_to_tsc(uint64_t ns)
+{
+    if (ns == UINT64_MAX)
+        return UINT64_MAX;
+    /* Rounded up: at the returned TSC value uptime_ns() is already >= ns. */
+    uint64_t q = ns / 1000000000ull, r = ns % 1000000000ull;
+    return tsc_boot + q * tsc_hz + (r * tsc_hz + 999999999ull) / 1000000000ull;
+}

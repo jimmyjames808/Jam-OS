@@ -72,3 +72,60 @@ Notes
   channel_call, the M4 calls/s) by up to 30x between builds. With loader
   reclaim switched off, the old global-lock allocator also measured the same
   on 8 vCPUs as on one. Page-allocator scaling has to be measured on the PC.
+
+## M5.5 (expected)
+
+Built 2026-09-29, not yet run on the PC. Every M5.5 optimisation has a
+run-time switch, and a line it should move is measured with the switch off
+and then on in the same run, printed as `<switch> off median/p99 on
+median/p99` (units inline). The "off" half is the M5 behaviour, so it should
+match the M5 column; the "on" half is the M5.5 number. Switches (boot word
+to disable): spinidle (`nospinidle`), placeorder (`noplaceorder`),
+affinepair (`noaffinepair`), kmcache (`nokmcache`), oneshot (`nooneshot`),
+serialirq (`noserialirq`), fpuopt (`nofpuopt`), pcid (`nopcid`); `m55` flips
+all of them at once.
+
+| Line | Switch | Expected on the PC |
+|---|---|---|
+| kmalloc(64) + kfree (P) | kmcache | ~82 ns -> ~15-25 ns (no lock, no lockdep) |
+| kmalloc(64)+kfree, all 28 CPUs at once (new) | kmcache | lock collapse (us) -> same as one CPU |
+| block+wake round trip (idle CPU) P->HT/P2/E | spinidle | wake-from-halt gone: ~1.1/1.5/1.9 us -> a few hundred ns |
+| IPI function call round trip P->x | spinidle | somewhat faster (target polling, not halted) |
+| channel_call round trip P->x, 1 client | spinidle | lower by the halt exit on both sides; P->P2/P->E also recover the M5 regression (see below) with the switch in either position |
+| block+wake round trip P->unpinned partner (new) | affinepair | off ~ P->P2 line, on ~ P->HT line |
+| placement of 19 busy threads (new) | placeorder | off: ~8 share a core, 4 on E; on: 0 share, 12 on E |
+| serial_write of a 100-character line (new) | serialirq | ~8.7 ms -> a few us (one port write + a copy) |
+| sleep 100 us / 1000 us: how late it wakes (new) | oneshot | off: 0-10 ms (tick); on: tens of us |
+| XRSTOR + XSAVE of user FPU state (new) | fpuopt | XSAVE -> XSAVEOPT of an init-state area: cheaper save |
+| address-space switch (CR3 load + masks) | pcid | 46.5 ns -> lower (no TLB flush on the load) |
+| user: process->process channel_call, same CPU | pcid | ~1490 ns -> lower by the TLB refills |
+| user: thread->thread channel_call, 1 process (new) | fpuopt | the same call without CR3 switches (breakdown) |
+| user: process->process channel_call P->x | m55 | all of the above together |
+
+Unchanged lines (no switch): timestamp, spin_lock, page alloc (one CPU and
+all CPUs), context switch, same-CPU block+wake and channel_call, cache-line
+round trips, the two wake-affine placement lines, TLB shootdown, user
+syscall / clock_get / page fault. Each off/on line flips only its own
+switch; the others stay as booted (all on), so an "off" half is M5 for that
+feature only (e.g. the channel_call P->P2 "spinidle off" half already has
+the placement fix). Compare each on half with its off half.
+
+Investigations:
+- (b) Pinned cross-CPU channel_call +8-11% in M5: the M5 wake-affine code
+  (select_cpu_affine) found the waker's HT sibling by scanning every CPU's
+  struct cpu (core_id, online, current). With client and server pinned to
+  different cores both the request and the reply fall through that scan and
+  then select_cpu: ~2 x 28 cache-line reads per round trip (+163 ns P->P2,
+  +249 ns P->E; the P->HT scan stops at cpu 3, +25 ns). Fixed: a
+  read-mostly topology table, an online mask, and placement reads only the
+  CPUs a thread may use (a pinned thread reads one run queue). Expect the
+  P->P2 and P->E lines back at or below their M4.5 values.
+- (a) process->process channel_call on one CPU costs ~870 ns more than the
+  kernel-thread version. The run now prints the pieces: the thread->thread
+  line (same calls, no CR3 switches) minus the kernel line is syscalls
+  (5 per round trip, ~30 ns each by the syscall line), user copies, handle
+  lookups and FPU; the XRSTOR+XSAVE line times the FPU part (2 of each per
+  round trip); process->process minus thread->thread is the two CR3
+  switches plus the TLB refills, which PCIDs remove (pcid off/on on the
+  same line). The user echo server also does one failed channel_read per
+  round trip that the kernel server doesn't (it reads before waiting).

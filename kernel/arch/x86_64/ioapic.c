@@ -67,3 +67,38 @@ uint32_t ioapic_isa_to_gsi(uint8_t irq)
             return acpi.isos[i].gsi;
     return irq;
 }
+
+/* MADT interrupt-source-override flags: bits 0-1 polarity (0 = bus
+ * default, 1 = active high, 3 = active low), bits 2-3 trigger (0 = bus
+ * default, 1 = edge, 3 = level). ISA's default is edge, active high. */
+#define REDIR_ACTIVE_LOW (1u << 13)
+#define REDIR_LEVEL      (1u << 15)
+
+bool ioapic_route_isa(uint8_t irq, uint8_t vector, uint32_t dest_apic_id)
+{
+    uint32_t gsi = irq, low = vector;   /* fixed delivery, physical destination */
+    for (uint32_t i = 0; i < acpi.iso_count; i++) {
+        if (acpi.isos[i].irq != irq)
+            continue;
+        gsi = acpi.isos[i].gsi;
+        if ((acpi.isos[i].flags & 3) == 3)
+            low |= REDIR_ACTIVE_LOW;
+        if (((acpi.isos[i].flags >> 2) & 3) == 3)
+            low |= REDIR_LEVEL;
+    }
+    if (dest_apic_id > 0xff)
+        return false;   /* the redirection entry holds an 8-bit APIC id */
+    for (uint32_t i = 0; i < acpi.ioapic_count; i++) {
+        struct ioapic *io = &ioapics[i];
+        if (gsi < io->gsi_base || gsi >= io->gsi_base + io->pins)
+            continue;
+        uint32_t pin = gsi - io->gsi_base;
+        io_write(io, REG_REDIR + pin * 2 + 1, dest_apic_id << 24);
+        io_write(io, REG_REDIR + pin * 2, low);
+        kprintf("ioapic: ISA IRQ %u -> GSI %u -> vector 0x%x on lapic %u (%s, active %s)\n", irq,
+                gsi, vector, dest_apic_id, low & REDIR_LEVEL ? "level" : "edge",
+                low & REDIR_ACTIVE_LOW ? "low" : "high");
+        return true;
+    }
+    return false;
+}

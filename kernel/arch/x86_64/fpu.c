@@ -2,12 +2,31 @@
  * touches these registers, so the only state to manage is the user
  * threads': each has an XSAVE area (FXSAVE on CPUs without XSAVE), saved
  * and restored eagerly by arch_thread_switch whenever a thread that has
- * one switches out or in. No lazy #NM tricks: CR0.TS stays clear. */
+ * one switches out or in. No lazy #NM tricks: CR0.TS stays clear.
+ *
+ * M5.5 (switch fpu_opt, boot "nofpuopt"), both as Linux does them:
+ *   - XSAVEOPT instead of XSAVE where the CPU has it: it skips components
+ *     not modified since the last XRSTOR from the same area on this CPU
+ *     (and ones in their initial state). Every save follows a restore of
+ *     the same thread's area on this CPU (the thread ran in between), or a
+ *     skipped restore (below) whose registers came from that same XRSTOR,
+ *     so the tracking always refers to the right area; components it skips
+ *     hold exactly what the area already has.
+ *   - Skip the restore when this CPU's registers still hold the incoming
+ *     thread's state: it was the last thread restored here (fpu_owner) and
+ *     it has not been restored on another CPU since (t->fpu_cpu == this
+ *     CPU). A user thread that blocks and wakes on the same CPU with only
+ *     kernel threads (idle) in between keeps its registers. Anything else
+ *     that loads the registers must forget the owner: fpu_clobbered()
+ *     (only the benchmark does). A new area starts with fpu_cpu = none, so
+ *     a thread struct reused at a freed owner's address can't match. */
+#include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -26,6 +45,10 @@
 static uint64_t xcr0;
 static uint32_t area_size;
 static struct kmem_cache *area_cache;
+static bool has_xsaveopt;
+volatile bool fpu_opt = true;
+static struct thread *fpu_owner[MAX_CPUS];   /* whose state this CPU's registers hold */
+#define FPU_CPU_NONE UINT32_MAX
 
 /* Every CPU, from cpu_init_local. The BSP runs it first and sizes the
  * area; the APs only program their registers. */
@@ -49,13 +72,17 @@ void fpu_init_cpu(void)
             xsetbv(0, xcr0);
             cpuid(0xd, 0, &a, &b, &c, &d);
             area_size = b;   /* for the features now enabled in XCR0 */
+            cpuid(0xd, 1, &a, &b, &c, &d);
+            has_xsaveopt = a & 1;
         } else {
             area_size = FXSAVE_SIZE;
         }
         area_cache = kmem_cache_create("fpu state", area_size, 64);
-        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d",
-                cpu_features.xsave ? "XSAVE" : "FXSAVE", xcr0, area_size, cpu_features.smep,
-                cpu_features.smap, cpu_features.umip);
+        fpu_opt = !cmdline_has("nofpuopt");
+        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d pcid=%d/%d "
+               "invpcid=%d", cpu_features.xsave ? (has_xsaveopt ? "XSAVEOPT" : "XSAVE") : "FXSAVE",
+               xcr0, area_size, cpu_features.smep, cpu_features.smap, cpu_features.umip,
+               cpu_features.pcid, pcid_is_on(), cpu_features.invpcid);
         return;
     }
     if (cpu_features.xsave)
@@ -74,7 +101,10 @@ static void area_reset(void *area)
 
 void fpu_save(void *area)
 {
-    if (cpu_features.xsave)
+    if (cpu_features.xsave && has_xsaveopt && fpu_opt)
+        __asm__ volatile("xsaveopt64 (%0)" :: "r"(area), "a"((uint32_t)xcr0),
+                         "d"((uint32_t)(xcr0 >> 32)) : "memory");
+    else if (cpu_features.xsave)
         __asm__ volatile("xsave64 (%0)" :: "r"(area), "a"((uint32_t)xcr0),
                          "d"((uint32_t)(xcr0 >> 32)) : "memory");
     else
@@ -90,12 +120,43 @@ void fpu_restore(const void *area)
         __asm__ volatile("fxrstor64 (%0)" :: "r"(area) : "memory");
 }
 
-/* The registers hold whatever the last user thread on this CPU left;
- * arch_enter_user starts a thread from the default state instead. */
-void fpu_reset_and_load(void *area)
+/* Interrupts off: load t's state into this CPU's registers, unless they
+ * still hold it (see the top). */
+void fpu_load(struct thread *t)
 {
-    area_reset(area);
-    fpu_restore(area);
+    uint32_t cpu = this_cpu()->index;
+    if (fpu_opt && fpu_owner[cpu] == t && t->fpu_cpu == cpu)
+        return;
+    fpu_restore(t->ustate);
+    fpu_owner[cpu] = t;
+    t->fpu_cpu = cpu;
+}
+
+/* Interrupts off: something other than fpu_load put state in this CPU's
+ * registers. */
+void fpu_clobbered(void)
+{
+    fpu_owner[this_cpu()->index] = NULL;
+}
+
+/* The registers hold whatever the last user thread on this CPU left;
+ * arch_enter_user starts a thread from the default state instead.
+ * Interrupts off. */
+void fpu_reset_and_load(struct thread *t)
+{
+    area_reset(t->ustate);
+    t->fpu_cpu = FPU_CPU_NONE;
+    fpu_load(t);
+}
+
+bool fpu_has_xsaveopt(void)
+{
+    return has_xsaveopt;
+}
+
+uint32_t fpu_area_size(void)
+{
+    return area_size;
 }
 
 int fpu_ustate_alloc(struct thread *t)
@@ -106,6 +167,7 @@ int fpu_ustate_alloc(struct thread *t)
     if (!area)
         return ERR_NO_MEMORY;
     area_reset(area);
+    t->fpu_cpu = FPU_CPU_NONE;
     t->ustate = area;
     return OK;
 }

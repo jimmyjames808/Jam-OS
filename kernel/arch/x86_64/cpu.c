@@ -1,4 +1,5 @@
 #include <jam/cpu.h>
+#include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/string.h>
 #include <jam/x86.h>
@@ -28,6 +29,7 @@ void cpu_detect(void)
     f->tsc_deadline = c & (1u << 24);
     f->xsave  = c & (1u << 26);
     f->avx    = f->xsave && (c & (1u << 28));
+    f->pcid   = c & (1u << 17);
 
     if (max_leaf >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
@@ -35,6 +37,7 @@ void cpu_detect(void)
         f->smep   = b & (1u << 7);
         f->smap   = b & (1u << 20);
         f->umip   = c & (1u << 2);
+        f->invpcid = b & (1u << 10);
     }
     smap_on = f->smap;
 
@@ -101,6 +104,10 @@ void cpu_init_local(void)
      * address and fool the NMI/#MC/#DB entries, which tell the kernel's GS
      * from the user's by the base's sign. The loader may have left it on. */
     cr4 &= ~CR4_FSGSBASE;
+    /* PCIDs (M5.5, pcid.c). Needs CR3's PCID bits to be 0 when it is set:
+     * every CPU is on the kernel's tables here. */
+    if (pcid_usable())
+        cr4 |= CR4_PCIDE;
     write_cr4(cr4);
     fpu_init_cpu();
     syscall_init_cpu();

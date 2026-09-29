@@ -15,6 +15,7 @@ struct cpu_features {
     bool tsc_deadline;    /* LAPIC timer TSC-deadline mode */
     bool smep, smap, umip;
     bool xsave, avx;      /* XSAVE (CPUID 1.ECX[26]); AVX usable with it */
+    bool pcid, invpcid;   /* CPUID 1.ECX[17], 7.EBX[10] */
     uint32_t max_leaf;
     uint32_t crystal_hz;  /* CPUID 0x15, 0 if not reported */
     uint32_t tsc_ratio_num, tsc_ratio_den;

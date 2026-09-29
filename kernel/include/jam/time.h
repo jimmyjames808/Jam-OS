@@ -18,3 +18,6 @@ void tsc_calibrate(void);
 void tsc_calibrate_with_loader(uint64_t loader_hz);
 void udelay(uint64_t us);
 uint64_t uptime_ns(void);
+/* The TSC value at which uptime_ns() reaches `ns` (UINT64_MAX for
+ * UINT64_MAX): for arming timers. */
+uint64_t uptime_to_tsc(uint64_t ns);

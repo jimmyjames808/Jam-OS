@@ -46,3 +46,15 @@ _Noreturn void user_fault_kill(struct trap_frame *f, const char *why);
 /* Per-thread user FPU/SSE/AVX state (XSAVE area). 0 on success. */
 int  fpu_ustate_alloc(struct thread *t);
 void fpu_ustate_free(struct thread *t);
+/* Interrupts off (fpu.c): load t's state (skipped when this CPU's registers
+ * still hold it); start t from the default state; forget which thread's
+ * state the registers hold (after anything else loaded them). */
+void fpu_load(struct thread *t);
+void fpu_reset_and_load(struct thread *t);
+void fpu_clobbered(void);
+void fpu_save(void *area);
+void fpu_restore(const void *area);
+/* M5.5 switch: XSAVEOPT and the skipped restore (boot "nofpuopt"). */
+extern volatile bool fpu_opt;
+bool fpu_has_xsaveopt(void);
+uint32_t fpu_area_size(void);

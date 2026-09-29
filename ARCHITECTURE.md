@@ -124,6 +124,14 @@ with the framework itself.
   `ffffffff80000000` kernel image.
 - **Heap**: `kmem_cache` slabs (header on-slab, pages tagged `PG_SLAB`) with
   kmalloc classes 16-2048; larger requests take whole buddy blocks.
+  **Per-CPU magazines** (M5.5): each CPU keeps up to 16 free objects per
+  cache in front of the cache lock, refilled and drained 8 at a time, in the
+  style of the page stashes (flag lock, interrupts off; order magazine ->
+  cache -> pmm). A refill never creates a slab while a partial one exists,
+  and `pmm_stats` drains every magazine first, so page counts (the ktest
+  leak check) stay exact. An allocation that finds no page for a new slab
+  drains every magazine and retries. Switch `heap_percpu`, boot
+  `nokmcache`. Details at the top of `heap.c`.
 - **VMO** kinds:
   - *paged*: sparse 3-level page tree, pages committed on demand, up to 64 GiB;
   - *contiguous*: one buddy block, up to 4 MiB, committed at creation;
@@ -143,6 +151,18 @@ with the framework itself.
 - **TLB**: today every kernel unmap does a synchronous range shootdown to all
   CPUs (a full flush above 64 pages). M5 adds per-address-space active-CPU
   masks and batching ("gather": free pages only after the flush).
+- **PCIDs** (M5.5, `arch/x86_64/pcid.c`): each user address space has a
+  never-reused id and a TLB generation; each CPU has 8 PCID slots (PCID 0 is
+  the kernel's tables) remembering which address space they hold and the
+  generation they last flushed at. A load whose slot is current keeps the
+  entries (CR3 NOFLUSH), otherwise it flush-loads that PCID. Invalidation:
+  `gather_note` bumps the generation before reading the active mask, a
+  switch-in sets its active bit before reading the generation, so either
+  the CPU is shot down while it runs the address space or it flushes on its
+  next load; CPUs that only ran it earlier are never interrupted. Kernel
+  entries are global (PCIDs require PGE); INVPCID is not used. Switch
+  `pcid_set`, boot `nopcid`. QEMU's TCG has no PCIDs: the PC is the only
+  place this runs for real.
 
 ## SMP
 
@@ -170,6 +190,14 @@ with the framework itself.
 - Log lines carry `[seconds.micros]` timestamps. The log lock is always taken
   with interrupts off, so interrupt handlers may log; hot handlers (the LAPIC
   error handler) just count instead.
+- **Serial output** (M5.5, `dev/serial.c`): klog copies into a 64 KiB
+  transmit ring; COM1's IRQ 4 (through the I/O APIC, MADT overrides
+  honoured) goes to CPU 0, whose handler refills the 16-byte FIFO. Writers
+  kick it by enabling the transmit-empty interrupt; a full ring drops and
+  counts (a RESULTS line says so). CPU 0's tick rescues a stalled
+  transmitter; if no interrupt ever comes, output goes back to synchronous.
+  The panic path flushes the ring synchronously and stays synchronous.
+  Switch `serial_async`, boot `noserialirq`.
 - **Per-CPU access rule**: `this_cpu()` is two instructions (load the struct
   pointer, then the field), so from preemptible code a thread can migrate in
   between and read another CPU's data. Preemptible code uses single
@@ -182,9 +210,12 @@ with the framework itself.
   when the waker is an interrupt on that thread's own CPU.
 - Timekeeping: TSC measured against the HPET (then ACPI PM timer, CPUID 15h,
   loader estimate; all printed for comparison). LAPIC timer in TSC-deadline
-  mode where available (`nodeadline` forces the periodic fallback, which is
-  calibrated as the median of 5 bracketed runs). 100 Hz tick for now;
-  tickless idle later.
+  mode where available, else (M5.5) in APIC one-shot count mode (QEMU's
+  TCG); `nodeadline` forces the periodic fallback, which is calibrated as
+  the median of 5 bracketed runs. In the one-shot modes each CPU's timer is
+  re-armed after every interrupt for the earlier of its next 100 Hz tick
+  (an absolute TSC deadline, no drift) and its earliest sleeper (per-CPU
+  one-shot timers, see Scheduler). Tickless idle later.
 - APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
   prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
   stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
@@ -307,10 +338,18 @@ with the framework itself.
 
 - Per-CPU run queues, 32 priority levels (31 most urgent), round-robin
   within a level, 20 ms slices on the 100 Hz tick.
-- Placement: least-loaded allowed CPU; ties go to P-cores, then the thread's
-  last CPU. Idle CPUs steal the best waiting thread from busy ones (two run
-  queue locks, always lower CPU index first). 256-bit affinity masks;
-  `thread_create_on` sets the mask before the thread first runs.
+- Placement (M5.5 hybrid order): an idle P-core whose HT sibling is idle too
+  > an idle E-core > the idle HT sibling of a busy P-core > least loaded
+  (ties to P-cores, then the thread's last CPU, the M5 rule); within the
+  idle classes the last CPU wins. Without hybrid cores it is "whole idle
+  core > idle sibling > busy". Placement reads only the CPUs a thread may
+  use, from a read-mostly topology table (sibling, core type) and each run
+  queue's own line (`nr_ready`, `busy`, `cur_prio`), never another CPU's
+  `struct cpu` (M5.5: that scan was the M5 cross-CPU regression). Idle CPUs
+  steal the best waiting thread from busy ones (two run queue locks, always
+  lower CPU index first). 256-bit affinity masks; `thread_create_on` sets
+  the mask before the thread first runs. Switch `sched_place_order`, boot
+  `noplaceorder`.
 - **Anti-starvation**: once a second each CPU boosts threads that have waited
   over 1 s to priority 30 for one slice. Priority 31 is above the boost, so
   real-time threads can still starve others by design. Each thread has a
@@ -324,6 +363,18 @@ with the framework itself.
   allowed and nothing else is queued there, else on its idle HT sibling,
   else as usual. `channel_call` uses it for the request, and a server's
   reply uses it when nothing else is queued for the server.
+- **Client/server pairs** (M5.5): every wake from thread context records
+  the waker in the wakee; two threads that each woke the other twice
+  running are a pair, and a plain wake (the waker keeps running) puts the
+  wakee on the waker's idle HT sibling, so the pair shares a core. E-cores
+  have no sibling. Switch `sched_affine_pair`, boot `noaffinepair`.
+- **Spin before idle** (M5.5): an idle CPU polls its run queue and
+  `need_resched` for 10 us (pause, interrupts on) before `hlt`, advertising
+  it in `cpu->idle_polling` so `sched_kick` skips the IPI; a Dekker
+  handshake (clear flag, fence, recheck / set need_resched, fence, read
+  flag) loses no wakeup. Costs full clock for the window after each idle
+  entry (0.1% with the 100 Hz tick). Switch `sched_idle_spin_ns`, boot
+  `idlespin=<us>` / `nospinidle`.
 - Preemptible kernel: switches happen on interrupt exit or when the last
   spinlock is dropped, never with one held (`schedule()` panics if called
   with preemption disabled).
@@ -336,8 +387,15 @@ with the framework itself.
   `waitqueue_wait(wq, lock)`, sleeping mutexes. Up to 256 exited threads'
   stacks are cached for reuse; stacks beyond that are freed (by the next
   thread creation or exit, since the reaper runs with interrupts off and
-  can't shoot down TLBs). Timers and sleepers are woken by CPU 0's tick
-  (about 10 ms resolution).
+  can't shoot down TLBs). **Sleepers** (every wait with a deadline, and so
+  the timer-object service) go on a deadline-ordered queue of the CPU they
+  block on, whose LAPIC timer is armed for its head (M5.5; M5 woke them from
+  CPU 0's tick, 10 ms resolution). Only the owning CPU adds and arms;
+  removal from anywhere under that queue's lock. Switch `lapic_oneshot`,
+  boot `nooneshot` (then each CPU's tick expires its own queue).
+- User FPU state (M5.5): XSAVEOPT where available, and no XRSTOR when the
+  CPU's registers still hold the incoming thread's state (last restored
+  here, not restored elsewhere since). Switch `fpu_opt`, boot `nofpuopt`.
 - **Cancellable waits** (M4.5): `thread_cancel(t)` sets a per-thread flag for
   good and wakes t. The cancellable waits (`thread_block_cancellable`,
   `waitqueue_wait_cancellable`, `thread_sleep_cancellable`,
@@ -352,14 +410,12 @@ with the framework itself.
   - M5 (done in phase 2): `channel_call` wake-affine placement; stack
     cache pages beyond 256 go back to the allocator; `kstack_alloc_try`
     for thread creation that can fail.
-  - M5.5: hybrid placement order (idle P-core pair > idle E-core > busy HT
-    sibling); keeping busy client/server pairs on sibling hyperthreads;
-    a short spin before `hlt`; per-CPU one-shot timers instead of CPU 0's
-    tick (sleep and timeout resolution better than 10 ms).
-  - M5.5: serial output queued and sent by the UART's own transmit interrupt:
-    the PC has a working COM1 (found 2026-09-29), and klog currently waits
-    for every character at 115200 baud with interrupts off (~9 ms per
-    100-character line).
+  - M5.5 (built in QEMU 2026-09-29, PC run pending): hybrid placement
+    order; client/server pairs on sibling hyperthreads; spin before `hlt`;
+    per-CPU one-shot timers; interrupt-driven serial output; the M5
+    cross-CPU placement regression fixed. Every one has a run-time switch
+    and a boot word to turn it off, and the benchmark measures its lines
+    both ways in one run (BENCH.md).
   - M10: tickless idle (a power feature, with ACPI power management).
   - Not scheduled: `sched_ops` (a pluggable scheduler interface), until a
     second scheduling policy is actually needed.
@@ -494,7 +550,7 @@ can take over; M11's IOMMU matters most for GPUs.
 | **M4** ✅ | Objects, handles, channels, ports, events, timers, VMOs, handle-level `sys_` API; two-agent audit, 20 fixes | QEMU 64/64 ktests at 4 and 8 CPUs; real PC 2026-09-28 (channels + ports): 1 server + 27 clients, 492,673 calls/s, worst 67 us; the final audited build passed on the PC as part of the M4.5 run |
 | **M4.5** ✅ | Hardening: W^X on the HHDM alias, received-handle and signal gaps, channel "has room" signal, lock checker scaling, cancellable waits, new tests, stale docs | QEMU 2026-09-29: 78/78 ktests at 4 and 8 CPUs, stress and all crash tests pass. Real PC 2026-09-29: 78/78, 1 server + 27 clients 836,077 calls/s (M4: 492,673), worst 37 us (M4: 67), nested lock pair 48 ns on 28 CPUs at once; 10-min stress passed, 0 failures |
 | **M5** ✅ | Ring 3 (SMEP/SMAP, `swapgs`, eager XSAVE), syscalls, VMARs, processes, threads, jobs + quotas, userboot, bootfs, init, `debug_write` stdout | init runs from bootfs; a process killed mid-`channel_call` cleans up; a runaway process hits its job quota, not a panic. **QEMU 2026-09-29 (phase 2 branch): all three, 115/115 ktests, utest 12/12 under init, stress with user processes, crash tests, at 4 and 8 CPUs. Review fix pass: every kernel allocation a process can cause is charged to a job, RIGHT_MANAGE, depth cap, job_kill; 131/131 ktests, utest 14/14. PC 2026-09-29: init+utest 14/14 (root job clean), All tests 131/131, benchmark recorded (BENCH.md M5 column), 10-min stress sign-off passed with 0 failures** |
-| M5.5 | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers, interrupt-driven serial output; investigate the two things the M5 PC benchmark flagged (process->process channel_call costs ~870 ns more than the kernel-thread version; pinned cross-CPU channel_call got 8-11% slower) | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass |
+| M5.5 | Performance pass, measured by the benchmark (BENCH.md) now that process-to-process numbers exist: per-CPU kmalloc caches, PCIDs (no full TLB flush per address-space switch), hybrid placement order, client/server pairs on sibling hyperthreads, spin-before-idle, per-CPU one-shot timers, interrupt-driven serial output; investigate the two things the M5 PC benchmark flagged (process->process channel_call costs ~870 ns more than the kernel-thread version; pinned cross-CPU channel_call got 8-11% slower) | every change shows up as a better BENCH.md line on the PC with no worse line; all tests and the 10-min stress still pass. **QEMU 2026-09-29 (M5.5 branch): all items built with run-time switches (bench measures off/on in one run); the regression was the wake-affine sibling scan (fixed); XSAVEOPT + skipped restores added; 134/134 ktests, init+utest, stress=20, all crash tests at 4 and 8 CPUs and with each switch off. PCIDs and TSC-deadline one-shots only run on the PC (TCG has neither): PC run next** |
 | M6 | devmgr, PCIe, MSI/MSI-X, `<jam/driver.h>` in both builds; interrupt objects, resource handles, DMA VMOs for processes | a sample driver bound through the handle-only API runs in the kernel, then as a process |
 | M7 | xHCI (8086:7A60) → hub driver (the PC has an ASMedia USB 3 hub) → HID (keyboard + mouse; composite devices: find the boot interfaces) → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |
 | M8 | USB mass storage → FAT32 (userspace once working), read-only ESP + writable data partition; every boot's log saved as `/data/logs/boot-NNNN.txt` | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test; a PC run's log can be read on the Mac from the stick |

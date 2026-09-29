@@ -62,9 +62,14 @@ static inline void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
 #define CR4_OSXMMEXCPT (1ull << 10)
 #define CR4_UMIP       (1ull << 11)
 #define CR4_FSGSBASE   (1ull << 16)
+#define CR4_PCIDE      (1ull << 17)
 #define CR4_OSXSAVE    (1ull << 18)
 #define CR4_SMEP       (1ull << 20)
 #define CR4_SMAP       (1ull << 21)
+/* With CR4.PCIDE: CR3 bits 0-11 are the PCID, and a load with bit 63 set
+ * keeps that PCID's TLB entries (without it, they are flushed). */
+#define CR3_NOFLUSH    (1ull << 63)
+#define CR3_PCID_MASK  0xfffull
 
 #define RFLAGS_CF (1ull << 0)
 #define RFLAGS_PF (1ull << 2)
