@@ -35,7 +35,7 @@ const char *lapic_timer_mode(void);
  * "nooneshot"); lapic_timer_has_oneshot says whether the mode can do them. */
 void     lapic_timer_set(uint64_t when_tsc);
 bool     lapic_timer_has_oneshot(void);
-extern volatile bool lapic_oneshot;
+extern bool lapic_oneshot;
 
 extern volatile uint64_t lapic_errors;
 extern volatile uint32_t lapic_last_esr;

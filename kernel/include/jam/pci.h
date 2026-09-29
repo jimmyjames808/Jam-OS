@@ -54,7 +54,7 @@ struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
  * left out, so the kernel tests that drive a device skip it instead of
  * fighting its driver. */
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n);
-extern volatile bool pci_hide_in_use;
+extern bool pci_hide_in_use;
 /* A process holds it (proc_users), or devmgr ever opened it to bind a
  * driver (driver_managed, sticky). */
 bool pci_in_use(const struct pci_dev *d);

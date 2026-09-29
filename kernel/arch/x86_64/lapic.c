@@ -71,7 +71,7 @@ enum { TMR_MODE_DEADLINE, TMR_MODE_ONESHOT, TMR_MODE_PERIODIC };
 static int timer_mode = TMR_MODE_PERIODIC;
 static uint32_t apic_ticks_per_sec;   /* with divide-by-16 */
 static uint64_t tsc_period;           /* TSC cycles per tick */
-volatile bool lapic_oneshot = true;
+bool lapic_oneshot = true;
 static volatile uint64_t lapic_early_irqs;   /* one-shot interrupts that found nothing due */
 
 static uint32_t rd(uint32_t reg)
@@ -180,7 +180,7 @@ static void on_error(struct trap_frame *f)
 static void timer_program(struct cpu *c)
 {
     uint64_t when = c->tick_deadline;
-    if (lapic_oneshot && c->timer_deadline < when)
+    if (__atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED) && c->timer_deadline < when)
         when = c->timer_deadline;
     if (when == c->timer_armed)
         return;
@@ -275,7 +275,7 @@ void lapic_timer_calibrate(void)
         timer_mode = TMR_MODE_DEADLINE;
     else
         timer_mode = TMR_MODE_ONESHOT;
-    lapic_oneshot = !cmdline_has("nooneshot");
+    __atomic_store_n(&lapic_oneshot, !cmdline_has("nooneshot"), __ATOMIC_RELAXED);
     if (timer_mode == TMR_MODE_DEADLINE)
         return;
     /* Count APIC timer ticks against the TSC, 5 times, and keep the median.
@@ -335,11 +335,12 @@ void lapic_timer_start(unsigned hz)
 
 const char *lapic_timer_mode(void)
 {
+    bool oneshot = __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED);
     switch (timer_mode) {
     case TMR_MODE_DEADLINE:
-        return lapic_oneshot ? "TSC-deadline, one-shot timers" : "TSC-deadline";
+        return oneshot ? "TSC-deadline, one-shot timers" : "TSC-deadline";
     case TMR_MODE_ONESHOT:
-        return lapic_oneshot ? "APIC one-shot, one-shot timers" : "APIC one-shot";
+        return oneshot ? "APIC one-shot, one-shot timers" : "APIC one-shot";
     default:                return "APIC periodic";
     }
 }

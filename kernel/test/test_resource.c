@@ -736,12 +736,12 @@ KTEST(resource_managed_function_stays_in_use)
     job_unref(j);
     KT_EQ(d->proc_users, 0);
     KT_ASSERT(pci_in_use(d));   /* nobody holds it: still the drivers' */
-    bool hide = pci_hide_in_use;
-    pci_hide_in_use = true;
+    bool hide = __atomic_load_n(&pci_hide_in_use, __ATOMIC_RELAXED);
+    __atomic_store_n(&pci_hide_in_use, true, __ATOMIC_RELAXED);
     KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) != d);
-    pci_hide_in_use = false;
+    __atomic_store_n(&pci_hide_in_use, false, __ATOMIC_RELAXED);
     KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) == d);   /* the boot menu's tests see it */
-    pci_hide_in_use = hide;
+    __atomic_store_n(&pci_hide_in_use, hide, __ATOMIC_RELAXED);
     d->driver_managed = was;
 }
 

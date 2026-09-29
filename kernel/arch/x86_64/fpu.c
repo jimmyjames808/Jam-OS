@@ -47,7 +47,7 @@ static uint64_t xcr0;
 static uint32_t area_size;
 static struct kmem_cache *area_cache;
 static bool has_xsaveopt;
-volatile bool fpu_opt = true;
+bool fpu_opt = true;
 static struct thread *fpu_owner[MAX_CPUS];   /* whose state this CPU's registers hold */
 #define FPU_CPU_NONE UINT32_MAX
 
@@ -79,7 +79,7 @@ void fpu_init_cpu(void)
             area_size = FXSAVE_SIZE;
         }
         area_cache = kmem_cache_create("fpu state", area_size, 64);
-        fpu_opt = !cmdline_has("nofpuopt");
+        __atomic_store_n(&fpu_opt, !cmdline_has("nofpuopt"), __ATOMIC_RELAXED);
         report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d pcid=%d/%d "
                "invpcid=%d", cpu_features.xsave ? (has_xsaveopt ? "XSAVEOPT" : "XSAVE") : "FXSAVE",
                xcr0, area_size, cpu_features.smep, cpu_features.smap, cpu_features.umip,
@@ -102,7 +102,7 @@ static void area_reset(void *area)
 
 void fpu_save(void *area)
 {
-    if (cpu_features.xsave && has_xsaveopt && fpu_opt)
+    if (cpu_features.xsave && has_xsaveopt && __atomic_load_n(&fpu_opt, __ATOMIC_RELAXED))
         __asm__ volatile("xsaveopt64 (%0)" :: "r"(area), "a"((uint32_t)xcr0),
                          "d"((uint32_t)(xcr0 >> 32)) : "memory");
     else if (cpu_features.xsave)
@@ -126,7 +126,7 @@ void fpu_restore(const void *area)
 void fpu_load(struct thread *t)
 {
     uint32_t cpu = this_cpu()->index;
-    if (fpu_opt && fpu_owner[cpu] == t && t->fpu_cpu == cpu)
+    if (__atomic_load_n(&fpu_opt, __ATOMIC_RELAXED) && fpu_owner[cpu] == t && t->fpu_cpu == cpu)
         return;
     fpu_restore(t->ustate);
     fpu_owner[cpu] = t;

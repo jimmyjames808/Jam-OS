@@ -157,7 +157,7 @@ void               kmem_cache_free(struct kmem_cache *c, void *obj);
  * Until then every allocation takes the cache lock. */
 void               heap_percpu_init(void);
 /* The switch (boot "nokmcache"); the benchmark flips it. */
-extern volatile bool heap_percpu;
+extern bool heap_percpu;
 /* Return every CPU's magazined objects to their slabs (pmm_stats does this
  * first, so its count is exact). Returns how many moved. */
 uint64_t           kmem_drain_all(void);

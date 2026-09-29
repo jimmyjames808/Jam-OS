@@ -62,7 +62,7 @@ KTEST(oneshot_timer_order_and_accuracy)
     waitqueue_wake_all(&sleep_wq);
     for (uint32_t i = 0; i < NSLEEP; i++)
         thread_join(th[i]);
-    bool oneshot = lapic_timer_has_oneshot() && lapic_oneshot;
+    bool oneshot = lapic_timer_has_oneshot() && __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < NSLEEP; i++)
         kprintf("oneshot: %lu ms sleeper woke %ld us late (rank %u)%s\n", sleep_ms[i],
                 sleep_err[i] / 1000, sleep_rank[i], oneshot ? "" : " (tick resolution)");
@@ -121,7 +121,7 @@ KTEST(oneshot_timer_early_wake_leaves_queue)
                                         &m);
     thread_join(s);
     KT_ASSERT(sleep_err[1] >= 0);
-    if (lapic_timer_has_oneshot() && lapic_oneshot)
+    if (lapic_timer_has_oneshot() && __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED))
         KT_ASSERT(sleep_err[1] < (int64_t)ONESHOT_BOUND);
 }
 

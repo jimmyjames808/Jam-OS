@@ -55,6 +55,6 @@ void fpu_clobbered(void);
 void fpu_save(void *area);
 void fpu_restore(const void *area);
 /* Run-time switch: XSAVEOPT and the skipped restore (boot "nofpuopt"). */
-extern volatile bool fpu_opt;
+extern bool fpu_opt;
 bool fpu_has_xsaveopt(void);
 uint32_t fpu_area_size(void);

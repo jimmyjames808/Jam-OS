@@ -231,13 +231,13 @@ static uint64_t sw_boot[SW_COUNT];
 static uint64_t sw_get(enum sw s)
 {
     switch (s) {
-    case SW_SPINIDLE:   return sched_idle_spin_ns;
-    case SW_PLACEORDER: return sched_place_order;
-    case SW_AFFINEPAIR: return sched_affine_pair;
-    case SW_KMCACHE:    return heap_percpu;
-    case SW_ONESHOT:    return lapic_oneshot;
-    case SW_SERIALIRQ:  return serial_async;
-    case SW_FPUOPT:     return fpu_opt;
+    case SW_SPINIDLE:   return __atomic_load_n(&sched_idle_spin_ns, __ATOMIC_RELAXED);
+    case SW_PLACEORDER: return __atomic_load_n(&sched_place_order, __ATOMIC_RELAXED);
+    case SW_AFFINEPAIR: return __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED);
+    case SW_KMCACHE:    return __atomic_load_n(&heap_percpu, __ATOMIC_RELAXED);
+    case SW_ONESHOT:    return __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED);
+    case SW_SERIALIRQ:  return __atomic_load_n(&serial_async, __ATOMIC_RELAXED);
+    case SW_FPUOPT:     return __atomic_load_n(&fpu_opt, __ATOMIC_RELAXED);
     case SW_PCID:       return pcid_is_on();
     default:            break;
     }
@@ -247,13 +247,13 @@ static uint64_t sw_get(enum sw s)
 static void sw_put(enum sw s, uint64_t v)
 {
     switch (s) {
-    case SW_SPINIDLE:   sched_idle_spin_ns = v; break;
-    case SW_PLACEORDER: sched_place_order = v; break;
-    case SW_AFFINEPAIR: sched_affine_pair = v; break;
-    case SW_KMCACHE:    heap_percpu = v; break;
-    case SW_ONESHOT:    lapic_oneshot = v; break;
+    case SW_SPINIDLE:   __atomic_store_n(&sched_idle_spin_ns, v, __ATOMIC_RELAXED); break;
+    case SW_PLACEORDER: __atomic_store_n(&sched_place_order, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_AFFINEPAIR: __atomic_store_n(&sched_affine_pair, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_KMCACHE:    __atomic_store_n(&heap_percpu, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_ONESHOT:    __atomic_store_n(&lapic_oneshot, (bool)v, __ATOMIC_RELAXED); break;
     case SW_SERIALIRQ:  serial_set_async(v); break;
-    case SW_FPUOPT:     fpu_opt = v; break;
+    case SW_FPUOPT:     __atomic_store_n(&fpu_opt, (bool)v, __ATOMIC_RELAXED); break;
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     default:            break;
     }
@@ -933,11 +933,12 @@ static void serial_output(void)
         report("bench: serial: no COM1, or its interrupt is off/not working: line skipped");
         return;
     }
-    uint64_t drop0 = serial_dropped;
+    uint64_t drop0 = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
     off_on(SW_SERIALIRQ, "serial_write of a 100-character line (P)", serial_measure, 0,
            SERIAL_SAMPLES);
-    if (serial_dropped != drop0)
-        report("bench: serial: %lu characters dropped meanwhile", serial_dropped - drop0);
+    if (__atomic_load_n(&serial_dropped, __ATOMIC_RELAXED) != drop0)
+        report("bench: serial: %lu characters dropped meanwhile",
+               __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED) - drop0);
 }
 
 /* ---- placement of busy threads ---------------------------------------------

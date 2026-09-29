@@ -554,7 +554,7 @@ struct pci_dev *pci_get(uint32_t index)
     return index < ndevs ? &devs[index] : NULL;
 }
 
-volatile bool pci_hide_in_use;
+bool pci_hide_in_use;
 
 bool pci_in_use(const struct pci_dev *d)
 {
@@ -565,7 +565,7 @@ bool pci_in_use(const struct pci_dev *d)
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
 {
     for (uint32_t i = 0; i < ndevs; i++)
-        if ((!pci_hide_in_use || !pci_in_use(&devs[i])) &&
+        if ((!__atomic_load_n(&pci_hide_in_use, __ATOMIC_RELAXED) || !pci_in_use(&devs[i])) &&
             (vendor == 0xffff || devs[i].info.vendor == vendor) &&
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];

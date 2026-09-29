@@ -241,15 +241,15 @@ uint64_t sched_stacks_freed(void);
  * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The
  * benchmark flips it at run time. */
 #define SCHED_IDLE_SPIN_NS 10000
-extern volatile uint64_t sched_idle_spin_ns;
+extern uint64_t sched_idle_spin_ns;
 /* Hybrid placement order: idle whole P-core > idle E-core > idle HT
  * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the
  * plain least-loaded rule. Boot: "noplaceorder". */
-extern volatile bool sched_place_order;
+extern bool sched_place_order;
 /* Client/server pairs on sibling hyperthreads: two threads that
  * keep waking each other are placed on one core's two hyperthreads when
  * the waker keeps running. Boot: "noaffinepair". */
-extern volatile bool sched_affine_pair;
+extern bool sched_affine_pair;
 #ifndef JAM_NO_KTESTS
 /* Tests: run the placement rule on a made-up topology (arrays indexed by
  * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */

@@ -81,7 +81,7 @@ struct kmag {
 _Static_assert(sizeof(struct kmag) * CACHE_POOL <= (PAGE_SIZE << MAG_BLOCK_ORDER),
                "a CPU's magazines fit its block");
 static struct kmag *mags[MAX_CPUS];
-volatile bool heap_percpu = true;
+bool heap_percpu = true;
 
 static struct kmem_cache cache_pool[CACHE_POOL];
 static unsigned cache_pool_used;
@@ -330,7 +330,7 @@ uint64_t kmem_cached_objects(uint32_t cpu, struct kmem_cache *c)
 
 void heap_percpu_init(void)
 {
-    heap_percpu = !cmdline_has("nokmcache");
+    __atomic_store_n(&heap_percpu, !cmdline_has("nokmcache"), __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < cpu_count; i++) {
         if (mags[i])
             continue;
@@ -345,7 +345,7 @@ void heap_percpu_init(void)
 
 void *kmem_cache_alloc(struct kmem_cache *c)
 {
-    if (heap_percpu) {
+    if (__atomic_load_n(&heap_percpu, __ATOMIC_RELAXED)) {
         void *obj = mag_alloc(c);
         if (obj)
             return obj;
@@ -359,7 +359,7 @@ void *kmem_cache_alloc(struct kmem_cache *c)
 static void slab_free(struct slab *s, void *obj)
 {
     struct kmem_cache *c = s->cache;
-    if (heap_percpu && mag_free(c, obj))
+    if (__atomic_load_n(&heap_percpu, __ATOMIC_RELAXED) && mag_free(c, obj))
         return;
     spin_lock(&c->lock);
     slab_free_locked(c, s, obj);

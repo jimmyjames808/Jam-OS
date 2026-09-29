@@ -215,7 +215,7 @@ static bool usable(const struct thread *t, uint32_t cpu)
  * racily: a wrong guess costs time, not correctness. The least-loaded rule
  * alone fills CPUs in index order, i.e. both hyperthreads of a P-core before
  * the next core, and E-cores last. */
-volatile bool sched_place_order = true;
+bool sched_place_order = true;
 
 static inline uint32_t place_key(uint32_t load, int32_t sib_load, uint8_t type, bool last,
                                  bool order)
@@ -259,7 +259,8 @@ static uint32_t select_cpu(const struct thread *t)
     cpumask_t cand;
     for (unsigned w = 0; w < MAX_CPUS / 64; w++)
         cand.bits[w] = usable_word(t, w);
-    uint32_t best = pick_cpu(&cand, topo, NULL, t->cpu, sched_place_order);
+    uint32_t best = pick_cpu(&cand, topo, NULL, t->cpu,
+                             __atomic_load_n(&sched_place_order, __ATOMIC_RELAXED));
     if (best == UINT32_MAX)
         panic("sched: thread \"%s\" has no online CPU in its affinity mask", t->name);
     return best;
@@ -523,7 +524,7 @@ static struct waker waker_now(bool consume)
  * fields were written by whoever woke it last and are read racily. A
  * wrong guess costs time, not correctness. */
 #define PAIR_MIN 2
-volatile bool sched_affine_pair = true;
+bool sched_affine_pair = true;
 
 static void note_waker(struct thread *t, const struct thread *me)
 {
@@ -633,7 +634,7 @@ static void thread_wake_common(struct thread *t, bool sync)
         note_waker(t, w.me);
     if (w.me && w.sync)
         cpu = select_cpu_affine(t, w.cpu);
-    else if (w.me && sched_affine_pair && is_pair(t, w.me))
+    else if (w.me && __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED) && is_pair(t, w.me))
         cpu = select_cpu_pair(t, w.cpu);
     else
         cpu = select_cpu(t);
@@ -696,7 +697,7 @@ static void try_steal(uint32_t me)
  * come within the window, i.e. tightly coupled threads on different CPUs.
  * A tickless idle would make the tick part go away. Tunable at boot
  * ("idlespin=<us>", "nospinidle" = 0) and at run time (the benchmark). */
-volatile uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
+uint64_t sched_idle_spin_ns = SCHED_IDLE_SPIN_NS;
 
 static bool idle_has_work(const struct cpu *c)
 {
@@ -715,7 +716,7 @@ _Noreturn static void idle_loop(void)
             schedule();
             continue;
         }
-        uint64_t spin_ns = sched_idle_spin_ns;
+        uint64_t spin_ns = __atomic_load_n(&sched_idle_spin_ns, __ATOMIC_RELAXED);
         if (spin_ns) {
             __atomic_store_n(&c->idle_polling, true, __ATOMIC_SEQ_CST);
             irq_enable();
@@ -788,10 +789,11 @@ void sched_init_bsp(void)
     thread_cache_init();
     for (uint32_t i = 0; i < MAX_CPUS; i++)
         init_rq(i);
-    sched_idle_spin_ns = cmdline_has("nospinidle")
-                             ? 0 : cmdline_get_u64("idlespin", SCHED_IDLE_SPIN_NS / 1000, 0) * 1000;
-    sched_place_order = !cmdline_has("noplaceorder");
-    sched_affine_pair = !cmdline_has("noaffinepair");
+    uint64_t spin_ns = cmdline_has("nospinidle")
+                           ? 0 : cmdline_get_u64("idlespin", SCHED_IDLE_SPIN_NS / 1000, 0) * 1000;
+    __atomic_store_n(&sched_idle_spin_ns, spin_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&sched_place_order, !cmdline_has("noplaceorder"), __ATOMIC_RELAXED);
+    __atomic_store_n(&sched_affine_pair, !cmdline_has("noaffinepair"), __ATOMIC_RELAXED);
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);
