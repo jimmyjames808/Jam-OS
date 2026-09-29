@@ -73,36 +73,81 @@ Notes
   reclaim switched off, the old global-lock allocator also measured the same
   on 8 vCPUs as on one. Page-allocator scaling has to be measured on the PC.
 
-## M5.5 (expected)
+## M5.5 (0.0.9-m5.5), PC 2026-09-29
 
-Built 2026-09-29, not yet run on the PC. Every M5.5 optimisation has a
-run-time switch, and a line it should move is measured with the switch off
-and then on in the same run, printed as `<switch> off median/p99 on
-median/p99` (units inline). The "off" half is the M5 behaviour, so it should
-match the M5 column; the "on" half is the M5.5 number. Switches (boot word
-to disable): spinidle (`nospinidle`), placeorder (`noplaceorder`),
-affinepair (`noaffinepair`), kmcache (`nokmcache`), oneshot (`nooneshot`),
-serialirq (`noserialirq`), fpuopt (`nofpuopt`), pcid (`nopcid`); `m55` flips
-all of them at once.
+Read from a photo of the RESULTS box (IMG_0066), every digit checked zoomed.
+Every M5.5 optimisation has a run-time switch, and a line it should move is
+measured with the switch off and then on in the same run, printed as
+`<switch> off median/p99 on median/p99`. Switches (boot word to disable):
+spinidle (`nospinidle`), placeorder (`noplaceorder`), affinepair
+(`noaffinepair`), kmcache (`nokmcache`), oneshot (`nooneshot`), serialirq
+(`noserialirq`), fpuopt (`nofpuopt`), pcid (`nopcid`); `m55` flips all of
+them at once. Header lines: `fpu: XSAVEOPT ... pcid=1/1 invpcid=1`,
+`timer: TSC-deadline, one-shot timers at 100 Hz ... all ok`.
 
-| Line | Switch | Expected on the PC |
-|---|---|---|
-| kmalloc(64) + kfree (P) | kmcache | ~82 ns -> ~15-25 ns (no lock, no lockdep) |
-| kmalloc(64)+kfree, all 28 CPUs at once (new) | kmcache | lock collapse (us) -> same as one CPU |
-| block+wake round trip (idle CPU) P->HT/P2/E | spinidle | wake-from-halt gone: ~1.1/1.5/1.9 us -> a few hundred ns |
-| IPI function call round trip P->x | spinidle | somewhat faster (target polling, not halted) |
-| channel_call round trip P->x, 1 client | spinidle | lower by the halt exit on both sides; P->P2/P->E also recover the M5 regression (see below) with the switch in either position |
-| block+wake round trip P->unpinned partner (new) | affinepair | off ~ P->P2 line, on ~ P->HT line |
-| placement of 19 busy threads (new) | placeorder | off: ~8 share a core, 4 on E; on: 0 share, 12 on E |
-| serial_write of a 100-character line (new) | serialirq | ~8.7 ms -> a few us (one port write + a copy) |
-| sleep 100 us / 1000 us: how late it wakes (new) | oneshot | off: 0-10 ms (tick); on: tens of us |
-| XRSTOR + XSAVE of user FPU state (new) | fpuopt | XSAVE -> XSAVEOPT of an init-state area: cheaper save |
-| address-space switch (CR3 load + masks) | pcid | 46.5 ns -> lower (no TLB flush on the load) |
-| user: process->process channel_call, same CPU | pcid | ~1490 ns -> lower by the TLB refills |
-| user: thread->thread channel_call, 1 process (new) | fpuopt | the same call without CR3 switches (breakdown) |
-| user: process->process channel_call P->x | m55 | all of the above together |
+| Line | Switch | off (median / p99) | on (median / p99) | M5 median |
+|---|---|---|---|---|
+| kmalloc(64) + kfree (P) | kmcache | 53.0 / 53.4 ns | **19.2 / 19.3 ns** | 81.8 ns |
+| kmalloc(64)+kfree, all 28 CPUs at once (new) | kmcache | 19.2 / 19.6 us | **23.9 / 29.2 ns** (~800x) | - |
+| block+wake round trip (idle CPU) P->P2 | spinidle | 1387.1 / 1436.3 ns | **1003.6 / 1048.1 ns** | 1539.5 ns |
+| block+wake round trip (idle CPU) P->HT | spinidle | 1085.5 / 1113.4 ns | **480.9 / 691.1 ns** | 1102.1 ns |
+| block+wake round trip (idle CPU) P->E | spinidle | 1773.8 / 2384.5 ns | **943.9 / 1172.6 ns** | 1900.2 ns |
+| block+wake round trip P->unpinned partner (new) | affinepair | 1079.8 / 1219.5 ns | **470.0 / 695.9 ns** | - |
+| IPI function call round trip P->P2 | spinidle | 589.8 / 658.5 ns | **418.4 / 611.1 ns** | 583.2 ns |
+| IPI function call round trip P->HT | spinidle | 348.9 / 388.6 ns | **268.4 / 514.6 ns** | 344.1 ns |
+| IPI function call round trip P->E | spinidle | 1130.9 / 2504.3 ns | **474.3 / 1201.9 ns** | 1154.1 ns |
+| channel_call round trip P->P2, 1 client | spinidle | 1798.9 / 1929.1 ns | **1385.6 / 1558.0 ns** | 2166.3 ns |
+| channel_call round trip P->HT, 1 client | spinidle | 1240.8 / 1272.5 ns | **586.0 / 1006.4 ns** | 1293.3 ns |
+| channel_call round trip P->E, 1 client | spinidle | 2226.4 / 3255.1 ns | **1418.8 / 1693.8 ns** | 2582.4 ns |
+| placement of 19 busy threads (1 per core but cpu0's) (new) | placeorder | 15 share a core, 4 on E | **0 share, 12 on E** | - |
+| serial_write of a 100-character line (P) (new) | serialirq | 8948.0 / 8974.0 us | **6514.1 ns / 17.7 us** | - |
+| sleep 100 us (P): how late it wakes (new) | oneshot | 9899.9 / 9900.0 us | **349.8 / 414.7 ns** | - |
+| sleep 1000 us (P): how late it wakes (new) | oneshot | 8999.9 / 9000.0 us | **348.8 / 436.4 ns** | - |
+| XRSTOR + XSAVE of user FPU state (832 B, P) (new) | fpuopt | 46.4 / 47.6 ns | **39.9 / 40.3 ns** | - |
+| address-space switch (CR3 load + masks, P) | pcid | 66.6 / 66.9 ns | 67.9 / 68.2 ns | 46.5 ns (**+20 ns, see below**) |
+| user: process->process channel_call, same CPU (P) | pcid | 1436.3 / 1453.8 ns | 1406.9 / 1433.4 ns | 1489.8 ns |
+| user: thread->thread channel_call, 1 process (P) (new) | fpuopt | 1301.4 / 1327.4 ns | 1284.8 / 1317.0 ns | - |
+| user: process->process channel_call P->P2 | m55 | 2754.7 / 2853.2 ns | **2111.4 / 2192.8 ns** | 2956.4 ns |
+| user: process->process channel_call P->HT | m55 | 1957.0 / 1989.2 ns | **1195.3 / 1584.0 ns** | 1890.8 ns |
+| user: process->process channel_call P->E | m55 | 3546.8 / 4595.8 ns | **2105.7 / 2406.8 ns** | 3619.7 ns |
 
-Unchanged lines (no switch): timestamp, spin_lock, page alloc (one CPU and
+Lines without a switch (M5.5 run, M5 for comparison): timestamp 8.5 / 9.9 ns
+(8.5); spin_lock+unlock 26.5 / 27.0 (26.6); page alloc+free one CPU 19.1 /
+19.5 (19.0); all 28 CPUs 24.0 / 24.9 (24.0); context switch 30.1 / 30.4
+(30.2); block+wake same CPU 446.4 / 478.1 (471.0); channel_call same CPU
+549.6 / 583.2 (623.9, the magazines); cache-line P->P2 106.9 / 109.8 (97.0),
+P->HT 37.8 / 76.6 (35.9), P->E 101.7 / 104.6 (96.5) (hardware floor, noise);
+channel_call P client, server unpinned 543.0 / 573.3 (623.0); server not on
+P 589.8 / 1003.6 (1292.8: spinning sibling); TLB shootdown 1 page 27 CPUs
+4485.1 / 5594.7 (4975.5); user syscall 30.1 / 30.3 (30.0); clock_get 44.9 /
+45.1 (44.8); user page fault 745.1 / 971.9 (744.2).
+
+Reading:
+- Everything cross-CPU got much faster: an idle CPU that spins for 10 us
+  answers without the wake-from-halt, so block+wake P->HT is 2.3x faster,
+  P->E 1.9x, IPIs to an E-core 2.4x, kernel channel_call P->HT 2.1x, and a
+  user process->process call P->E 1.7x (3620 -> 2106 ns). Cost: p99 spreads
+  a little (a wake that just misses the window still pays the halt exit).
+- The M5 cross-CPU regression is gone: channel_call P->P2 / P->E with only
+  spin-idle off are 1799 / 2226 ns, below M5 (2166 / 2582) and M4.5
+  (2003 / 2333): the placement fix alone.
+- kmalloc is 4.3x faster on one CPU and ~800x on 28 at once; timers wake
+  350 ns late instead of up to 10 ms; a serial line costs 6.5 us instead of
+  9 ms; hybrid placement puts 19 busy threads on 19 different cores.
+- **PCIDs barely moved anything** (process->process same CPU 1436 -> 1407
+  ns, 2%). The breakdown answers investigation (a): kernel channel_call 550
+  ns, thread->thread in one process 1285 ns, process->process 1407 ns. So
+  the two CR3 switches plus TLB refills cost only ~120 ns; the other ~735 ns
+  is on the user side of the boundary (5 syscalls ~150 ns, FPU ~80 ns, and
+  ~500 ns of user copies, handle lookups, the extra failed channel_read,
+  entry/exit). That is where the next process-IPC win is, not the TLB.
+- **Watch: address-space switch 46.5 -> 66.6 / 67.9 ns** in both switch
+  positions: the PCID bookkeeping in pcid_load (epoch, slot search, seq_cst
+  generation read) runs whenever the CPU has PCIDs, or CR4.PCIDE makes the
+  CR3 write itself dearer. Real calls still got faster; look at it in a
+  later pass (`nopcid` boot makes the CPU skip PCIDs entirely, to compare).
+
+Design notes. Unchanged lines (no switch): timestamp, spin_lock, page alloc (one CPU and
 all CPUs), context switch, same-CPU block+wake and channel_call, cache-line
 round trips, the two wake-affine placement lines, TLB shootdown, user
 syscall / clock_get / page fault. Each off/on line flips only its own
