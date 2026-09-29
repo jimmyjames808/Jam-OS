@@ -37,7 +37,6 @@
 #include <jam/pci.h>
 #include <jam/process.h>
 #include <jam/resource.h>
-#include <jam/driver_kernel.h>
 #include <jam/resource_impl.h>
 #include <jam/spinlock.h>
 
@@ -56,17 +55,6 @@ static spinlock_t cmd_lock = SPINLOCK_INIT("pci cmd filter");
 static struct resource *res_of(struct kobject *obj)
 {
     return obj && obj->type == OBJ_RESOURCE ? (struct resource *)obj : NULL;
-}
-
-/* The physical range of a RES_MMIO (the kernel driver glue maps it). */
-status_t resource_mmio_range(struct kobject *res, uint64_t *base, uint64_t *size)
-{
-    struct resource *r = res_of(res);
-    if (!r || r->kind != RES_MMIO)
-        return ERR_WRONG_TYPE;
-    *base = r->start;
-    *size = r->size;
-    return OK;
 }
 
 static void resource_destroy(struct kobject *obj)

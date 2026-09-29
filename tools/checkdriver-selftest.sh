@@ -1,8 +1,7 @@
 #!/bin/sh
 # `make check`: prove the driver build check works. Each file in
-# tools/checkdriver-tests/ is compiled exactly like a driver's kernel build
-# (the Makefile passes CFLAGS = DRV_KCFLAGS: -nostdinc, only the driver
-# include directory) and then run through tools/checkdriver.py. ok_*.c must
+# tools/checkdriver-tests/ is compiled exactly like a driver (the Makefile
+# passes CFLAGS = DRV_CFLAGS: -nostdinc, only the driver include directory) and then run through tools/checkdriver.py. ok_*.c must
 # get through both; every other file must be stopped by one of them.
 # Environment: CC, NM, CFLAGS, SURFACE (driver.h abi.h status.h), OUT.
 set -u
