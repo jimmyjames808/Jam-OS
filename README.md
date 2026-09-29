@@ -31,7 +31,7 @@ in-kernel test), a
 **Benchmark** (`bench`: latency and throughput of the kernel's basic operations,
 then the same measured from ring 3 (`user:` lines: syscalls, page faults,
 process-to-process calls); median and p99, method explained in
-`kernel/test/bench.c`), a **10-minute stress test** (kernel threads plus user
+`kernel/test/bench.c`), a **2-minute stress test** (after each fix) and a **10-minute** one (milestone sign-off) (kernel threads plus user
 processes started and killed at random moments)
 and a **Tests** folder with the self-test, the
 timer fallback (`nodeadline`), the memory map (`memmap`) and deliberate
