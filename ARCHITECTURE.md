@@ -31,8 +31,8 @@ This is the plan of record. Decisions marked *(open)* are not settled yet.
 | IOMMU | Not yet; DMA gated by `dma_cap`, VT-d added behind it in M11 |
 | Driver migration | Decided 2026-09-28: move each driver out once proven on the PC, not in one late milestone |
 | Users/logins | Decided 2026-09-29: single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 cannot store owners anyway) |
-| Target PC | i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
-| Networking | *(open, decide at M9)*: leaning towards a USB Ethernet adapter (CDC-NCM/ECM, reuses the M7 USB stack); the board may have no Ethernet chip. Wi-Fi is not planned |
+| Target PC | ASUS TUF GAMING B760-PLUS WIFI, i7-14700 (hybrid 8P+12E, Hyper-Threading on: 28 CPUs in x2APIC mode; xAPIC mode only reached 20), 32 GB, RTX 4080 SUPER (Resizable BAR on, framebuffer at 256 GiB), Intel AX201 Wi-Fi, no serial port |
+| Networking | Decided 2026-09-29: the board's own Realtek RTL8125 2.5 GbE (ASUS TUF GAMING B760-PLUS WIFI), a PCIe device with MSI-X, driven natively (references: Linux `r8169`, FreeBSD `re`; check whether this revision needs Realtek's PHY firmware patch). No USB adapter. Wi-Fi (Intel AX201) is not planned |
 
 ## The migration rule
 
@@ -337,7 +337,7 @@ with the framework itself.
 | USB HID | usb-bus | `hid` → keyboard layer |
 | USB mass storage (BOT, later UAS) | usb-bus | `block` |
 | fat32 | `block` | `fs` (FAT32 + LFN, read/write) |
-| NIC *(decide at M9; leaning USB CDC-NCM/ECM adapter)* | usb-bus (or PCI resources) | `netdev` |
+| NIC: Realtek RTL8125 2.5 GbE | PCI resources (MSI-X, DMA rings) | `netdev` |
 | netstack | lwIP + `netdev` | `socket` |
 | power | uACPI | shutdown, reboot, power button, later S3 |
 | console | framebuffer VMO + `hid` | text terminal |
@@ -463,7 +463,7 @@ can take over; M11's IOMMU matters most for GPUs.
 | M7 | xHCI → HID (keyboard + mouse) → console → interactive shell (each moved to userspace once working); driver supervision; `reboot` command + Ctrl+Alt+Del; tests as shell commands | typing into the shell on the real PC with the USB drivers as processes; killing the HID driver mid-use recovers; `ktest` runs from the shell |
 | M8 | USB mass storage → FAT32 (userspace once working), read-only ESP + writable data partition; every boot's log saved as `/data/logs/boot-NNNN.txt` | `ls /boot` and writing a file under `/data` from a userspace filesystem service; the stick still boots after a pulled-plug test; a PC run's log can be read on the Mac from the stick |
 | M8.5 | Crash kernel (the Linux kdump approach): at boot reserve a slice of RAM and load a second Jam OS into it; on a panic, after the panic screen and halting the other CPUs, jump into it (kexec: its own `struct boot_info` saying only that slice is RAM, no firmware reset). It boots on one CPU with the normal drivers, resets each controller before use, reads the crashed kernel's log ring from memory, saves it as `/data/logs/boot-NNNN-crash.txt`, and reboots. The same kexec gives `reboot` a fast path: load the new `jamos.elf` + `bootfs.img` from the stick, stop the other CPUs, reset devices (stop DMA and interrupts), jump; this needs the kernel's own AP startup (INIT-SIPI-SIPI + trampoline, also needed for M12's own loader) so all 28 CPUs come back without Limine. pstore (log ring in RAM kept across a warm reset) only as an optional fallback for panics before the crash kernel is loaded | a deliberate panic on the real PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
-| M9 | NIC (decide: likely USB CDC-NCM/ECM) → lwIP → DHCP/DNS (userspace once working); netlog: klog streamed over UDP to a listener on the Mac; `update`: fetch a new kernel + bootfs from a small server on the Mac and kexec into it | `ping 1.1.1.1` on the real PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
+| M9 | RTL8125 NIC driver → lwIP → DHCP/DNS (userspace once working); netlog: klog streamed over UDP to a listener on the Mac; `update`: fetch a new kernel + bootfs from a small server on the Mac and kexec into it | `ping 1.1.1.1` on the real PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
 | M10 | uACPI poweroff, power button, ACPI reboot (stays in the kernel) | clean shutdown on real hardware |
 | M11 | IOMMU (VT-d) + interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
 | M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
