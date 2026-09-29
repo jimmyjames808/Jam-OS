@@ -10,6 +10,8 @@
   `nooneshot`, `noserialirq`, `nofpuopt`; `m55` in bench = all) and `bench` prints `off med/p99 on
   med/p99` per line. PCIDs + TSC-deadline one-shots have NEVER run (TCG lacks them): first PC run is
   their first run. If anything looks like memory corruption on the PC, boot with `nopcid` first.
+  **PC 2026-09-29: All tests PASSED (143) after fixing a test-only expectation in
+  pcid_slot_bookkeeping (8acd552; that block had never run before) - first real PCID run is clean.**
   Independent review agent RUNNING (worktree, read-only on main). **Next PC round**: flash, then All
   tests, Benchmark (-> M5.5 column of BENCH.md; expected moves listed under "M5.5 (expected)"),
   2-min stress; 10-min stress = M5.5 sign-off after the review's fixes land.
