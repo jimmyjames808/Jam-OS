@@ -398,10 +398,11 @@ _Noreturn void uthread_exit_current(void)
     uint64_t f = plock(p);
     u->state = UT_DEAD;
     punlock(p, f);
-    kobject_signal(&u->base, 0, SIG_TERMINATED);
-
     if (thread_left(p))
         process_finish(p);   /* our uthread's reference keeps p alive */
+    /* Only now: whoever sees SIG_TERMINATED must also see the job credited
+     * for this thread (and, for the last one, the process torn down). */
+    kobject_signal(&u->base, 0, SIG_TERMINATED);
     t->process = NULL;
     t->uthread = NULL;
     kobject_unref(&u->base);   /* the running thread's own reference */
