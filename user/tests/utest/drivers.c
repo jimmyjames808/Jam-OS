@@ -1,0 +1,312 @@
+/* utest: drivers as processes. The null and drvtest drivers run as
+ * processes started from here and talk through <idl/null.h>; with devmgr
+ * (its control channel, SR_DEVMGR_CTL): the edu driver process it bound,
+ * called through <idl/edu.h>, what the query channel may not do, and edu
+ * killed in the middle of a DMA (the device's pages quarantined, the
+ * driver restarted). Tests that need devmgr or the edu device (QEMU's)
+ * skip themselves without it. */
+#define CHECK_PROG "utest"
+#define CHECK_CUR  utest_cur
+#include <check.h>
+#include <devmgr.h>
+#include <idl/null.h>
+#include <os.h>
+#include "edu_check.h"
+#include "utest.h"
+
+/* ---- drivers as processes ------------------------------------------------------- */
+
+#define DRVTEST_NULL 0x40   /* drvtest's role for its channel to a null server */
+
+/* Start bootfs driver drv/<name> in job, handing it h under driver role
+ * `role` (h is consumed). */
+static status_t driver(const char *name, handle_t job, uint32_t role, handle_t h,
+                       handle_t *proc)
+{
+    char path[32];
+    snprintf(path, sizeof(path), "drv/%s", name);
+    const char *argv[] = { path };
+    struct spawn_handle x = { SR_DRIVER(role), h };
+    struct spawn_args a = {
+        .path = path, .argc = 1, .argv = argv, .job = job, .extra = &x, .nextra = 1,
+    };
+    return spawn(&a, proc);
+}
+
+static bool job_is_empty(handle_t job)
+{
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        if (ji.used[k])
+            FAIL("the drivers' job still has %lu units of kind %u", (unsigned long)ji.used[k], k);
+    return true;
+}
+
+/* The null driver as a process, called through the generated client from
+ * here, then by the drvtest driver (a process too), which checks the whole
+ * driver.h surface in the process build. */
+bool t_driver_processes(void)
+{
+    handle_t job, a, b, srv, cli;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(driver("null", job, DR_SERVE, b, &srv), OK);
+    uint64_t v = 0;
+    uint32_t sum = 0;
+    CHECK_ST(null_ping(a, 7, &v), OK);
+    CHECK_EQ(v, 7);
+    CHECK_ST(null_add(a, 40, 2, &sum), OK);
+    CHECK_EQ(sum, 42);
+    CHECK_ST(driver("drvtest", job, DRVTEST_NULL, a, &cli), OK);   /* our end goes to it */
+    struct process_info info;
+    CHECK_ST(spawn_wait(cli, 30 * NS_PER_S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);   /* every drvtest check passed */
+    CHECK_ST(spawn_wait(srv, 10 * NS_PER_S, &info), OK);   /* its client is gone: it returns */
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    CHECK_ST(jam_handle_close(cli), OK);
+    CHECK_ST(jam_handle_close(srv), OK);
+    if (!job_is_empty(job))
+        return false;
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* Killing a driver process that is waiting for requests. */
+bool t_driver_killed(void)
+{
+    handle_t job, a, b, srv;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(driver("null", job, DR_SERVE, b, &srv), OK);
+    uint8_t data[16], rev[16];
+    for (int i = 0; i < 16; i++)
+        data[i] = (uint8_t)i;
+    CHECK_ST(null_reverse(a, data, rev), OK);
+    CHECK(rev[0] == 15 && rev[15] == 0);
+    CHECK_ST(jam_process_kill(srv), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(srv, 10 * NS_PER_S, &info), OK);
+    CHECK(info.killed);
+    uint64_t v;
+    CHECK_ST(null_ping(a, 1, &v), ERR_PEER_CLOSED);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(srv), OK);
+    if (!job_is_empty(job))
+        return false;
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+bool t_startup_message(void)
+{
+    handle_t job, proc;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(child("startup", "hello", job, HANDLE_INVALID, &proc), OK);
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* ---- devmgr and the edu driver process ------------------------------------------------ */
+
+#define EDU_VENDOR 0x1234
+#define EDU_DEVICE 0x11e8
+
+/* devmgr's control channel (the tests kill, rebind and look at
+ * drivers' handles; init and the shell's `utest` hand it to us), or 0
+ * (with a line saying the test is skipped). */
+handle_t devmgr(void)
+{
+    handle_t dm = startup_handle(SR_DEVMGR_CTL);
+    if (!dm)
+        printf("utest: %s: no devmgr control channel (not started by init or the shell's "
+               "utest?): skipped\n", utest_cur);
+    return dm;
+}
+
+status_t dm_call(handle_t dm, uint32_t op, uint16_t vendor, uint16_t device,
+                        struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
+{
+    return devmgr_call(dm, op, vendor, device, 0, r, hs, hs ? DEVMGR_MAX_HANDLES : 0, nh,
+                       now() + 30 * NS_PER_S);
+}
+
+/* The edu protocol end to end: utest -> devmgr's edu driver process. */
+bool t_edu_process(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    struct devmgr_rep r;
+    if (!dm)
+        return true;
+    status_t st = dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no edu device (not QEMU?): skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    CHECK_EQ(nh, 1);
+    struct edu_check_result res;
+    CHECK_ST(edu_check(hs[0], now() + 60 * NS_PER_S, &res), OK);
+    char line[160];
+    int n = snprintf(line, sizeof(line),
+                     "edu (process): factorial(10)=%u ok, DMA 4 KiB round trip ok in %lu us, "
+                     "MSI -> driver in %lu us",
+                     res.fact10, (unsigned long)(res.dma_ns / 1000),
+                     (unsigned long)(res.msi_ns / 1000));
+    jam_debug_report(line, (uint64_t)n);
+    CHECK_ST(jam_handle_close(hs[0]), OK);
+    /* What devmgr must refuse. */
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, 0x1234, 0x0bad, &r, hs, &nh), ERR_NOT_FOUND);
+    CHECK_ST(dm_call(dm, 0x00030063u, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), ERR_NOT_SUPPORTED);
+    CHECK_ST(dm_call(dm, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    CHECK(r.a >= 1);   /* edu at least */
+    return true;
+}
+
+/* devmgr's query channel (SR_DEVMGR) answers the queries and
+ * refuses everything that changes something or hands out hardware. */
+bool t_devmgr_query_channel(void)
+{
+    handle_t q = startup_handle(SR_DEVMGR);
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    if (!q || !devmgr())
+        return true;
+    CHECK_ST(dm_call(q, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    static const uint32_t refused[] = { DEVMGR_KILL, DEVMGR_REBIND, DEVMGR_DRIVER_VIEW,
+                                        DEVMGR_TEST_DRIVER, DEVMGR_SET_CONSOLE, 0x00030063u };
+    for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        nh = 0;
+        CHECK_ST(dm_call(q, refused[i], 0xffff, 0xffff, &r, hs, &nh), ERR_ACCESS_DENIED);
+        CHECK_EQ(nh, 0);
+    }
+    /* SET_CONSOLE with its handle: refused, the handle closed. */
+    handle_t a, b;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    struct devmgr_req qr = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
+    uint32_t n = 0, got = 0;
+    struct channel_call_args ca = {
+        .h = q, .wn = sizeof(qr), .wbytes = (uint64_t)(uintptr_t)&qr,
+        .wh = (uint64_t)(uintptr_t)&b, .whn = 1, .rcap = sizeof(r),
+        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * NS_PER_S,
+    };
+    CHECK_ST(jam_channel_call(&ca), OK);
+    CHECK(n >= DEVMGR_REP_HDR);
+    CHECK_ST(r.status, ERR_ACCESS_DENIED);
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_PEER_CLOSED, now() + 5 * NS_PER_S, &seen), OK);
+    jam_handle_close(a);
+    return true;
+}
+
+/* devmgr's supervision view of a device. */
+bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_rep *r)
+{
+    CHECK_ST(dm_call(dm, DEVMGR_SUPERVISION, vendor, device, r, NULL, NULL), OK);
+    return true;
+}
+
+/* Killing the edu driver process while its DMA runs, and supervision
+ * bringing it back: Bus Master Enable goes off, its pinned buffer is
+ * quarantined (still charged to its job), its MSI vector is free; devmgr
+ * restarts it at once (a KILL is a death like a crash) with a new vector
+ * and dma_cap; the client reconnects through GET_SERVICE and factorial and
+ * DMA work; once the new driver has turned bus mastering on, the
+ * quarantine lets go (a grace period later) with no page written while it
+ * held them, and the dead driver's job is empty. */
+bool t_edu_killed_mid_dma(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    struct devmgr_rep r, sup;
+    if (!dm)
+        return true;
+    status_t st = dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no edu device (not QEMU?): skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    handle_t ch = hs[0];
+    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
+    CHECK_EQ(nh, 3);
+    handle_t proc = hs[0], job = hs[1], dev = hs[2];
+    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+        return false;
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    uint32_t restarts0 = sup.b, changed0 = sup.e;
+
+    uint64_t addr = 0;
+    uint32_t cmd = 0, f = 0;
+    CHECK_ST(edu_dma_start_until(ch, now() + 10 * NS_PER_S, 4096, &addr), OK);   /* running now */
+    CHECK(addr && addr < (1ull << 32));
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    CHECK(cmd & CMD_BME);
+    struct job_info ji;
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
+    uint64_t t0 = now();
+    CHECK_ST(dm_call(dm, DEVMGR_KILL, EDU_VENDOR, EDU_DEVICE, &r, NULL, NULL), OK);
+    printf("utest: %s: killed mid-DMA, dead %lu us later\n", utest_cur,
+           (unsigned long)((now() - t0) / 1000));
+    struct process_info info;
+    CHECK_ST(jam_process_get_info(proc, &info), OK);
+    CHECK_EQ(info.state, PROCESS_DEAD);
+    CHECK(info.killed);
+    /* Its pinned buffer is quarantined, still charged to its job. */
+    if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+        return false;
+    CHECK(sup.a == DEVMGR_SUP_RESTARTING || sup.a == DEVMGR_SUP_RUNNING);
+    CHECK(sup.d >= 2);
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
+    CHECK_ST(edu_factorial_until(ch, now() + 5 * NS_PER_S, 3, &f), ERR_PEER_CLOSED);
+    CHECK_ST(jam_pci_config_write(dev, 0x3c, 1, 0), ERR_ACCESS_DENIED);   /* a read-only view */
+    CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(proc), OK);
+
+    /* The reconnect rule: ask devmgr again; the call waits for the restart. */
+    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, &r, hs, &nh), OK);
+    CHECK_ST(edu_factorial_until(hs[0], now() + 10 * NS_PER_S, 10, &f), OK);
+    CHECK_EQ(f, 3628800);
+    printf("utest: %s: restarted and answering %lu ms after the kill\n", utest_cur,
+           (unsigned long)((now() - t0) / NS_PER_MS));
+    CHECK_ST(edu_dma_roundtrip_until(hs[0], now() + 10 * NS_PER_S, 4096), OK);
+    CHECK_ST(jam_handle_close(hs[0]), OK);
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    CHECK(cmd & CMD_BME);
+    /* The quarantine lets the dead driver's pages go a grace period (1 s)
+     * after the new driver turned bus mastering on. Its count drops only
+     * once the pages are back, so then the job is empty (pins, VMOs,
+     * threads: gone), and nothing wrote them meanwhile. */
+    uint64_t until = now() + 10 * NS_PER_S;
+    for (;;) {
+        if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
+            return false;
+        if (!sup.d || now() > until)
+            break;
+        jam_nanosleep(now() + 20 * NS_PER_MS);
+    }
+    if (!job_is_empty(job))
+        return false;
+    printf("utest: %s: restarts %u, quarantine %u page(s) left, %u stale page(s)\n", utest_cur,
+           sup.b - restarts0, sup.d, sup.e - changed0);
+    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
+    CHECK_EQ(sup.b, restarts0 + 1);
+    CHECK_EQ(sup.d, 0);
+    CHECK_EQ(sup.e, changed0);   /* 0 stale bytes */
+    CHECK_ST(jam_handle_close(job), OK);
+    CHECK_ST(jam_handle_close(dev), OK);
+    return true;
+}

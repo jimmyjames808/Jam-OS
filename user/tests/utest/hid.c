@@ -1,457 +1,21 @@
-/* utest: the HID driver (drivers/hid) as a process, against a
- * mock usb-bus and a mock console, both served from here.
- *
- * The mock usb-bus serves abi/idl/usb.idl on the driver's DR_USB channel
- * for a fake device made of recorded descriptors (a QEMU-style boot
- * keyboard, a boot mouse with a wheel, and a composite keyboard like the
- * PC's Sino Wealth 258a:0033: a boot keyboard interface plus a
- * report-protocol one with consumer and system control collections). It
- * records every control request, refuses one addressed to another
- * interface (as usb-bus does), and hands the driver a reports channel on
- * open_interrupt_in whose other end the tests write reports into. The mock
- * console serves abi/idl/input.idl on DR_INPUT and records each event with
- * the time it arrived.
- *
- * Everything runs on this one thread: pump() serves both channels until a
- * condition holds (a port wakes it when either has a request, or the
- * driver dies). Each test starts the driver in a job of its own and ends
- * with the driver exited 0 by itself, every one of our channel ends seeing
- * PEER_CLOSED (the driver closed everything), and its job empty. */
+/* utest: the HID driver (drivers/hid) as a process, against the mock
+ * usb-bus and mock console of hidmock.c: a boot keyboard types (the
+ * layout, modifiers, lock keys and their LEDs, rollover, key repeat), a
+ * boot mouse moves and clicks, a composite device's other interfaces are
+ * skipped, and the driver ends right when the device or the console goes.
+ * Each test starts the driver in a job of its own and ends with the
+ * driver exited by itself with the code it should, every one of our
+ * channel ends seeing PEER_CLOSED (the driver closed everything), and its
+ * job empty. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  hcur
 #include <check.h>
 #include <idl/input.h>
-#include <idl/usb.h>
 #include <os.h>
+#include "hidmock.h"
 #include "utest.h"
 
-static const char *hcur;   /* the test running */
-
-/* ---- recorded devices ------------------------------------------------------ */
-
-/* The boot keyboard report descriptor (HID 1.11 appendix B.1, as QEMU's
- * usb-kbd and most keyboards' boot interfaces have it). */
-static const uint8_t rd_keyboard[] = {
-    0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00,
-    0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
-    0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, 0x95, 0x01,
-    0x75, 0x03, 0x91, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
-    0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xc0,
-};
-/* A boot mouse with a wheel (3 buttons, x, y, wheel). */
-static const uint8_t rd_mouse[] = {
-    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01,
-    0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01,
-    0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81,
-    0x25, 0x7f, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06, 0xc0, 0xc0,
-};
-/* A gaming keyboard's second interface: system control (id 2), consumer
- * control (id 3) and a vendor collection (id 6). */
-static const uint8_t rd_media[] = {
-    0x05, 0x01, 0x09, 0x80, 0xa1, 0x01, 0x85, 0x02, 0x19, 0x81, 0x29, 0x83, 0x15, 0x00,
-    0x25, 0x01, 0x75, 0x01, 0x95, 0x03, 0x81, 0x02, 0x95, 0x05, 0x81, 0x01, 0xc0,
-    0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x03, 0x19, 0x00, 0x2a, 0x3c, 0x02, 0x15,
-    0x00, 0x26, 0x3c, 0x02, 0x95, 0x01, 0x75, 0x10, 0x81, 0x00, 0xc0,
-    0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x06, 0x15, 0x00, 0x26, 0xff, 0x00,
-    0x75, 0x08, 0x95, 0x07, 0x81, 0x02, 0xc0,
-};
-
-/* An interface of a mock device. */
-struct mock_if {
-    uint8_t        num, cls, subclass, protocol;   /* interface number, class triple */
-    uint8_t        ep;         /* interrupt IN address */
-    uint8_t        maxp;       /* its max packet */
-    const uint8_t *rdesc;      /* the report descriptor */
-    uint16_t       rlen;       /* its length */
-};
-
-/* A mock device: its interfaces. */
-struct mock_dev {
-    uint16_t              vendor, product;   /* USB ids */
-    const struct mock_if *ifs;               /* interfaces */
-    unsigned              nifs;              /* how many */
-};
-
-#define IF(num, cls, sub, proto, ep, maxp, rd) { num, cls, sub, proto, ep, maxp, rd, sizeof(rd) }
-
-static const struct mock_if kbd_ifs[] = { IF(0, 3, 1, 1, 0x81, 8, rd_keyboard) };
-static const struct mock_if mouse_ifs[] = { IF(0, 3, 1, 2, 0x81, 4, rd_mouse) };
-static const struct mock_if combo_ifs[] = {
-    IF(0, 3, 1, 1, 0x81, 8, rd_keyboard),
-    IF(1, 3, 0, 0, 0x82, 16, rd_media),
-    IF(2, 8, 6, 0x50, 0x83, 64, rd_media),   /* not HID at all (a mass storage one) */
-};
-static const struct mock_dev dev_kbd = { 0x0627, 0x0001, kbd_ifs, 1 };      /* QEMU usb-kbd */
-static const struct mock_dev dev_mouse = { 0x0627, 0x0001, mouse_ifs, 1 };
-static const struct mock_dev dev_combo = { 0x258a, 0x0033, combo_ifs, 3 };  /* the PC's */
-
-/* The configuration descriptor of dev: config, then per interface its
- * interface, HID (for class 3) and endpoint descriptors. */
-static uint16_t build_config(const struct mock_dev *dev, uint8_t *o)
-{
-    uint16_t n = 9;
-    for (unsigned i = 0; i < dev->nifs; i++) {
-        const struct mock_if *f = &dev->ifs[i];
-        const uint8_t itf[9] = { 9, 4, f->num, 0, 1, f->cls, f->subclass, f->protocol, 0 };
-        memcpy(o + n, itf, 9);
-        n += 9;
-        if (f->cls == 3) {
-            const uint8_t hid[9] = { 9, 0x21, 0x11, 0x01, 0, 1, 0x22, (uint8_t)f->rlen,
-                                     (uint8_t)(f->rlen >> 8) };
-            memcpy(o + n, hid, 9);
-            n += 9;
-        }
-        const uint8_t ep[7] = { 7, 5, f->ep, 3, f->maxp, 0, 10 };
-        memcpy(o + n, ep, 7);
-        n += 7;
-    }
-    const uint8_t cfg[9] = { 9, 2, (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)dev->nifs, 1, 0,
-                             0xa0, 50 };
-    memcpy(o, cfg, 9);
-    return n;
-}
-
-/* ---- the mocks --------------------------------------------------------------- */
-
-/* A control request hid made (the mock's log). */
-struct ctl {
-    uint8_t  type, request;          /* bmRequestType, bRequest */
-    uint16_t value, index, length;   /* wValue, wIndex, wLength */
-    uint8_t  data0;                  /* the first data byte (an OUT's) */
-};
-
-#define EV_KEY   1
-#define EV_MOUSE 2
-
-/* An input event hid sent (the mock console's log). */
-struct ev {
-    uint8_t  kind;                   /* EV_KEY or EV_MOUSE */
-    uint8_t  state, mods, buttons;   /* key: INPUT_KEY_*, modifiers; mouse: buttons */
-    uint16_t usage;                  /* key usage */
-    int16_t  dx, dy;                 /* mouse movement */
-    int8_t   wheel;                  /* mouse wheel */
-    uint32_t cp;                     /* key codepoint */
-    uint64_t t;                      /* when it arrived (uptime ns) */
-};
-
-#define MAX_CTL 32
-#define MAX_EV  512
-
-/* One hid under test: the mock usb-bus and console it talks to. */
-struct mock {
-    const struct mock_dev *dev;       /* the device it is shown */
-    const struct mock_if  *itf;       /* its interface under test */
-    uint8_t   config[256];            /* the device's configuration descriptor */
-    uint16_t  config_len;             /* its length */
-    handle_t  job, proc, port;        /* hid's job and process; the port we wait on */
-    handle_t  usb, input;       /* our ends: we serve usb and input */
-    handle_t  reports;          /* usb-bus's end of the reports channel */
-    bool      usb_closed_by_peer, input_closed_by_peer;   /* hid closed its end */
-    unsigned  report_desc_reads;      /* GET_DESCRIPTOR(report) requests */
-    unsigned  refused;                /* requests the mock refused */
-    unsigned  opens;                  /* open_interrupt_in calls */
-    struct ctl ctl[MAX_CTL];          /* control requests, in order */
-    unsigned  nctl;                   /* how many */
-    struct ev ev[MAX_EV];             /* input events, in order */
-    unsigned  nev;                    /* how many */
-};
-
-static status_t m_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *speed,
-                       uint8_t *iface, uint8_t *cls, uint8_t *sub, uint8_t *proto, uint8_t *nep,
-                       uint8_t *alt, uint8_t *address)
-{
-    struct mock *m = ctx;
-    *vendor = m->dev->vendor;
-    *product = m->dev->product;
-    *speed = 1;
-    *iface = m->itf->num;
-    *cls = m->itf->cls;
-    *sub = m->itf->subclass;
-    *proto = m->itf->protocol;
-    *nep = 1;
-    *alt = 0;
-    *address = 3;
-    return OK;
-}
-
-static status_t m_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_t lang,
-                                 uint16_t length, uint8_t recip, uint16_t *actual,
-                                 uint8_t data[1024])
-{
-    struct mock *m = ctx;
-    const uint8_t *src = NULL;
-    uint16_t n = 0;
-    (void)lang;
-    if (length > 1024)
-        return ERR_INVALID_ARGS;
-    if (type == 2 && index == 0 && !recip) {
-        src = m->config;
-        n = m->config_len;
-    } else if (type == 0x22 && recip) {
-        src = m->itf->rdesc;
-        n = m->itf->rlen;
-        m->report_desc_reads++;
-    } else {
-        return ERR_NOT_SUPPORTED;   /* a STALL */
-    }
-    *actual = n < length ? n : length;
-    memcpy(data, src, *actual);
-    return OK;
-}
-
-static status_t m_control_in(void *ctx, uint8_t type, uint8_t request, uint16_t value,
-                             uint16_t index, uint16_t length, uint16_t *actual,
-                             uint8_t data[1024])
-{
-    (void)ctx, (void)type, (void)request, (void)value, (void)index, (void)length, (void)data;
-    *actual = 0;
-    return ERR_NOT_SUPPORTED;
-}
-
-static status_t m_control_out(void *ctx, uint8_t type, uint8_t request, uint16_t value,
-                              uint16_t index, uint16_t length, const uint8_t data[64])
-{
-    struct mock *m = ctx;
-    if ((type & 0x1f) != 1 || index != m->itf->num || length > 64) {
-        m->refused++;   /* usb-bus: not this interface */
-        return ERR_ACCESS_DENIED;
-    }
-    if (m->nctl < MAX_CTL)
-        m->ctl[m->nctl++] = (struct ctl){ type, request, value, index, length,
-                                          length ? data[0] : 0 };
-    if (request == 0x0a)
-        return ERR_NOT_SUPPORTED;   /* SET_IDLE stalls, as on many real keyboards */
-    return OK;
-}
-
-static status_t m_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *out_reports,
-                                    uint16_t *max_packet, uint8_t *interval_ms)
-{
-    struct mock *m = ctx;
-    if (endpoint != m->itf->ep || m->reports) {
-        m->refused++;
-        return ERR_INVALID_ARGS;
-    }
-    handle_t a, b;
-    status_t st = jam_channel_create(&a, &b);
-    if (st != OK)
-        return st;
-    m->reports = a;
-    m->opens++;
-    *out_reports = b;
-    *max_packet = m->itf->maxp;
-    *interval_ms = 10;
-    return OK;
-}
-
-static status_t m_endpoint_stats(void *ctx, uint8_t endpoint, uint64_t *reports,
-                                 uint64_t *dropped, uint64_t *errors, uint8_t *open)
-{
-    (void)ctx, (void)endpoint;
-    *reports = *dropped = *errors = 0;
-    *open = 0;
-    return OK;
-}
-
-static const struct usb_ops mock_usb_ops = {
-    .info = m_info,
-    .get_descriptor = m_get_descriptor,
-    .control_in = m_control_in,
-    .control_out = m_control_out,
-    .open_interrupt_in = m_open_interrupt_in,
-    .endpoint_stats = m_endpoint_stats,
-};
-
-static struct ev *record(struct mock *m, uint8_t kind)
-{
-    if (m->nev == MAX_EV)
-        return NULL;
-    struct ev *e = &m->ev[m->nev++];
-    *e = (struct ev){ .kind = kind, .t = now() };
-    return e;
-}
-
-static status_t m_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
-{
-    struct ev *e = record(ctx, EV_KEY);
-    if (!e)
-        return ERR_NO_RESOURCES;
-    e->usage = usage;
-    e->state = state;
-    e->mods = mods;
-    e->cp = cp;
-    return OK;
-}
-
-static status_t m_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    struct ev *e = record(ctx, EV_MOUSE);
-    if (!e)
-        return ERR_NO_RESOURCES;
-    e->dx = dx;
-    e->dy = dy;
-    e->wheel = wheel;
-    e->buttons = buttons;
-    return OK;
-}
-
-static const struct input_ops mock_input_ops = { .key = m_key, .mouse = m_mouse };
-
-#define KEY_USB   1
-#define KEY_INPUT 2
-#define KEY_PROC  3
-
-static void serve_all(struct mock *m)
-{
-    status_t st;
-    if (m->usb && !m->usb_closed_by_peer) {
-        while ((st = usb_serve_one(m->usb, &mock_usb_ops, m)) == OK)
-            ;
-        if (st == ERR_PEER_CLOSED)
-            m->usb_closed_by_peer = true;
-    }
-    if (m->input && !m->input_closed_by_peer) {
-        while ((st = input_serve_one(m->input, &mock_input_ops, m)) == OK)
-            ;
-        if (st == ERR_PEER_CLOSED)
-            m->input_closed_by_peer = true;
-    }
-}
-
-static bool dead(struct mock *m)
-{
-    return jam_object_wait_one(m->proc, SIG_TERMINATED, 0, NULL) == OK;
-}
-
-/* Serve the driver until done(m, arg) holds (true), the deadline passes or
- * the driver is dead without it (false). */
-static bool pump(struct mock *m, uint64_t deadline, bool (*done)(struct mock *, unsigned),
-                 unsigned arg)
-{
-    for (;;) {
-        serve_all(m);
-        if (done && done(m, arg))
-            return true;
-        if (done && dead(m)) {   /* it may have died just after done() looked */
-            serve_all(m);
-            return done(m, arg);
-        }
-        if (now() >= deadline)
-            return false;
-        struct port_packet p;
-        jam_port_wait(m->port, deadline, &p);
-    }
-}
-
-static void pump_for(struct mock *m, uint64_t ns)
-{
-    pump(m, now() + ns, NULL, 0);
-}
-
-static bool have_events(struct mock *m, unsigned n)
-{
-    return m->nev >= n;
-}
-
-static bool is_dead(struct mock *m, unsigned unused)
-{
-    (void)unused;
-    return dead(m);
-}
-
-/* Ready: the endpoint is open, and a keyboard has set its LEDs. */
-static bool ready(struct mock *m, unsigned want_leds)
-{
-    if (!m->reports)
-        return false;
-    if (!want_leds)
-        return true;
-    for (unsigned i = 0; i < m->nctl; i++)
-        if (m->ctl[i].request == 0x09)
-            return true;
-    return false;
-}
-
-/* Start drv/hid on interface `ifn` of dev, with a console unless
- * !with_console, and wait until it serves reports (unless !wait_ready). */
-static bool start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool with_console,
-                  bool wait_ready)
-{
-    *m = (struct mock){ .dev = dev, .itf = &dev->ifs[ifn] };
-    m->config_len = build_config(dev, m->config);
-    handle_t usb_drv, input_drv = 0;
-    CHECK_ST(jam_job_create(startup_handle(SR_JOB), 0, &m->job), OK);
-    CHECK_ST(jam_channel_create(&m->usb, &usb_drv), OK);
-    if (with_console)
-        CHECK_ST(jam_channel_create(&m->input, &input_drv), OK);
-    CHECK_ST(jam_port_create(&m->port), OK);
-    CHECK_ST(jam_port_bind(m->port, m->usb, KEY_USB, SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_PERSISTENT), OK);
-    if (with_console)
-        CHECK_ST(jam_port_bind(m->port, m->input, KEY_INPUT, SIG_READABLE | SIG_PEER_CLOSED,
-                               PORT_BIND_PERSISTENT), OK);
-    const char *argv[] = { "drv/hid" };
-    struct spawn_handle x[2] = { { SR_DRIVER(DR_USB), usb_drv },
-                                 { SR_DRIVER(DR_INPUT), input_drv } };
-    struct spawn_args a = {
-        .path = "drv/hid", .argc = 1, .argv = argv, .job = m->job, .extra = x,
-        .nextra = with_console ? 2 : 1,
-    };
-    CHECK_ST(spawn(&a, &m->proc), OK);
-    CHECK_ST(jam_port_bind(m->port, m->proc, KEY_PROC, SIG_TERMINATED, PORT_BIND_ONCE), OK);
-    if (wait_ready && !pump(m, now() + 20 * NS_PER_S, ready, m->itf->protocol == 1))
-        FAIL("the driver never opened its endpoint (%u control requests, dead %d)", m->nctl,
-             dead(m));
-    return true;
-}
-
-/* Close what we still hold of the unplugged device: DR_USB and/or reports. */
-static void unplug(struct mock *m, bool usb, bool reports)
-{
-    if (usb && m->usb) {
-        jam_port_unbind(m->port, m->usb, KEY_USB);
-        jam_handle_close(m->usb);
-        m->usb = 0;
-    }
-    if (reports && m->reports) {
-        jam_handle_close(m->reports);
-        m->reports = 0;
-    }
-}
-
-static bool peer_closed(handle_t h)
-{
-    return !h || jam_object_wait_one(h, SIG_PEER_CLOSED, 0, NULL) == OK;
-}
-
-/* The driver must end by itself with exit code `code`; every channel end
- * we still hold sees it gone; then its job is empty. */
-static bool finish(struct mock *m, int code)
-{
-    if (!pump(m, now() + 20 * NS_PER_S, is_dead, 0))
-        FAIL("the driver is still running");
-    struct process_info info;
-    CHECK_ST(spawn_wait(m->proc, 5 * NS_PER_S, &info), OK);
-    CHECK(!info.killed);
-    CHECK_EQ(info.exit_code, code);
-    serve_all(m);
-    CHECK(peer_closed(m->usb));
-    CHECK(peer_closed(m->input));
-    CHECK(peer_closed(m->reports));
-    unplug(m, true, true);
-    if (m->input)
-        CHECK_ST(jam_handle_close(m->input), OK);
-    CHECK_ST(jam_handle_close(m->port), OK);
-    CHECK_ST(jam_handle_close(m->proc), OK);
-    struct job_info ji;
-    CHECK_ST(jam_job_get_info(m->job, &ji), OK);
-    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
-        if (ji.used[k])
-            FAIL("the driver's job still has %lu units of kind %u", (unsigned long)ji.used[k],
-                 k);
-    CHECK_ST(jam_handle_close(m->job), OK);
-    return true;
-}
+const char *hcur;   /* the test running */
 
 /* ---- typing ------------------------------------------------------------------ */
 
@@ -521,7 +85,7 @@ static bool have_non_repeats(struct mock *m, unsigned arg)
  * `exact`, nothing else may follow for 30 ms. *at moves past them. */
 static bool expect_x(struct mock *m, unsigned *at, const struct want *w, unsigned n, bool exact)
 {
-    if (!pump(m, now() + 10 * NS_PER_S, have_non_repeats, *at << 16 | n))
+    if (!mock_pump(m, now() + 10 * NS_PER_S, have_non_repeats, *at << 16 | n))
         FAIL("%u event(s), want %u", count_not_repeat(m, *at), n);
     unsigned i = *at;
     for (unsigned k = 0; k < n; k++, i++) {
@@ -536,7 +100,7 @@ static bool expect_x(struct mock *m, unsigned *at, const struct want *w, unsigne
     }
     *at = i;
     if (exact) {
-        pump_for(m, 30 * NS_PER_MS);
+        mock_pump_for(m, 30 * NS_PER_MS);
         if (count_not_repeat(m, i))
             FAIL("%u event(s) more than wanted", count_not_repeat(m, i));
     }
@@ -569,7 +133,7 @@ bool t_hid_typing(void)
 {
     hcur = "hid_typing";
     static struct mock m;
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     /* SET_PROTOCOL(boot), SET_IDLE(0) (refused: it goes on), LEDs Num Lock. */
     CHECK(m.nctl >= 3);
@@ -599,9 +163,9 @@ bool t_hid_typing(void)
     unsigned at = 0;
     if (!expect_x(&m, &at, h, 6, false))
         return false;
-    if (!pump(&m, now() + 10 * NS_PER_S, have_events, nwant))
+    if (!mock_pump(&m, now() + 10 * NS_PER_S, mock_have_events, nwant))
         FAIL("%u events, want %u", m.nev, nwant);
-    pump_for(&m, 30 * NS_PER_MS);
+    mock_pump_for(&m, 30 * NS_PER_MS);
     CHECK_EQ(m.nev, nwant);
     char got[32];
     unsigned n = 0, downs = 0, ups = 0;
@@ -619,8 +183,8 @@ bool t_hid_typing(void)
     if (strcmp(got, text) != 0)
         FAIL("typed \"%s\"", got);
     CHECK_EQ(downs, ups);
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 
 /* Shift and Caps Lock (with its LED), Num Lock and the keypad, Ctrl and
@@ -629,7 +193,7 @@ bool t_hid_modifiers(void)
 {
     hcur = "hid_modifiers";
     static struct mock m;
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     unsigned at = 0;
 #define STEP(mods, k0, k1) \
@@ -720,8 +284,8 @@ bool t_hid_modifiers(void)
            { 0xe1, D, LSHIFT, 0 }, { 0x05, D, LSHIFT, 'B' },
            { 0x05, U, LSHIFT, 'B' }, { 0x04, U, LSHIFT, 'a' }, { 0xe1, U, 0, 0 });
     CHECK_EQ(m.refused, 0);
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 
 /* Phantom state (ErrorRollOver in every slot) is ignored whole, and keys
@@ -730,7 +294,7 @@ bool t_hid_rollover(void)
 {
     hcur = "hid_rollover";
     static struct mock m;
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     unsigned at = 0;
     STEP(0, 0x04, 0);
@@ -741,7 +305,7 @@ bool t_hid_rollover(void)
     const uint8_t undefined[8] = { 0, 0, 0x04, 0x03, 0, 0, 0, 0 };
     if (!report(&m, undefined, 8))
         return false;
-    pump_for(&m, 50 * NS_PER_MS);
+    mock_pump_for(&m, 50 * NS_PER_MS);
     CHECK_EQ(count_not_repeat(&m, at), 0);  /* nothing: not even the Shift */
     STEP(0, 0x04, 0x05);
     STEP(0, 0, 0);
@@ -762,10 +326,10 @@ bool t_hid_rollover(void)
     const uint8_t runt[2] = { LSHIFT, 0 };
     if (!report(&m, runt, 2))
         return false;
-    pump_for(&m, 50 * NS_PER_MS);
+    mock_pump_for(&m, 50 * NS_PER_MS);
     CHECK_EQ(count_not_repeat(&m, at), 0);
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 
 /* Key repeat: the first REPEAT 500 ms after the DOWN, then ~30 a second;
@@ -774,20 +338,20 @@ bool t_hid_repeat(void)
 {
     hcur = "hid_repeat";
     static struct mock m;
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     if (!keys(&m, 0, 0x1b, 0))              /* x */
         return false;
-    if (!pump(&m, now() + 5 * NS_PER_S, have_events, 1))
+    if (!mock_pump(&m, now() + 5 * NS_PER_S, mock_have_events, 1))
         FAIL("no DOWN");
     uint64_t t_down = m.ev[0].t;
-    pump(&m, t_down + 900 * NS_PER_MS, NULL, 0);
+    mock_pump(&m, t_down + 900 * NS_PER_MS, NULL, 0);
     if (!keys(&m, LSHIFT, 0x1b, 0))
         return false;
-    pump(&m, t_down + 1400 * NS_PER_MS, NULL, 0);
+    mock_pump(&m, t_down + 1400 * NS_PER_MS, NULL, 0);
     if (!keys(&m, 0, 0, 0))
         return false;
-    pump_for(&m, 300 * NS_PER_MS);
+    mock_pump_for(&m, 300 * NS_PER_MS);
 
     unsigned reps = 0, shifted = 0, up_at = 0, first_rep = 0, shift_at = 0;
     for (unsigned i = 1; i < m.nev; i++) {
@@ -827,8 +391,8 @@ bool t_hid_repeat(void)
     if (reps < 8 || reps > most)
         FAIL("%u repeats (at most %u)", reps, most);
     CHECK(shifted >= 2);
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 
 /* A boot mouse: buttons, deltas, the wheel; unchanged reports send nothing;
@@ -838,7 +402,7 @@ bool t_hid_mouse(void)
 {
     hcur = "hid_mouse";
     static struct mock m;
-    if (!start(&m, &dev_mouse, 0, true, true))
+    if (!mock_start(&m, &dev_mouse, 0, true, true))
         return false;
     for (unsigned i = 0; i < m.nctl; i++)
         CHECK(m.ctl[i].request != 0x0a && m.ctl[i].request != 0x09);   /* no SET_IDLE, LEDs */
@@ -852,9 +416,9 @@ bool t_hid_mouse(void)
     if (!report(&m, r1, 4) || !report(&m, r2, 4) || !report(&m, r3, 4) || !report(&m, r4, 4) ||
         !report(&m, r5, 3) || !report(&m, r6, 8))
         return false;
-    if (!pump(&m, now() + 10 * NS_PER_S, have_events, 5))
+    if (!mock_pump(&m, now() + 10 * NS_PER_S, mock_have_events, 5))
         FAIL("%u mouse events, want 5", m.nev);
-    pump_for(&m, 30 * NS_PER_MS);
+    mock_pump_for(&m, 30 * NS_PER_MS);
     CHECK_EQ(m.nev, 5);
     const struct { int16_t dx, dy; int8_t wheel; uint8_t buttons; } w[5] = {
         { 5, -3, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, -1, 0 }, { -128, 127, 0, 6 }, { 1, 1, 2, 4 },
@@ -868,8 +432,8 @@ bool t_hid_mouse(void)
     /* The reports channel alone closing (usb-bus gave the endpoint up after
      * errors) with DR_USB still open: not "device gone" but exit 5, so
      * devmgr restarts hid instead of leaving the mouse dead. */
-    unplug(&m, false, true);
-    return finish(&m, 5);
+    mock_unplug(&m, false, true);
+    return mock_finish(&m, 5);
 }
 
 /* A composite keyboard: the boot interface types, the report-protocol one
@@ -879,29 +443,29 @@ bool t_hid_composite(void)
 {
     hcur = "hid_composite";
     static struct mock m;
-    if (!start(&m, &dev_combo, 1, true, false))
+    if (!mock_start(&m, &dev_combo, 1, true, false))
         return false;
-    if (!finish(&m, 0))
+    if (!mock_finish(&m, 0))
         return false;
     CHECK_EQ(m.nctl, 0);
     CHECK_EQ(m.opens, 0);
     CHECK_EQ(m.report_desc_reads, 1);
     CHECK_EQ(m.nev, 0);
 
-    if (!start(&m, &dev_combo, 2, true, false) || !finish(&m, 2))
+    if (!mock_start(&m, &dev_combo, 2, true, false) || !mock_finish(&m, 2))
         return false;
     CHECK_EQ(m.nctl, 0);
     CHECK_EQ(m.opens, 0);
 
-    if (!start(&m, &dev_combo, 0, true, true))
+    if (!mock_start(&m, &dev_combo, 0, true, true))
         return false;
     CHECK_EQ(m.refused, 0);                 /* its own endpoint 0x81, its own interface */
     unsigned at = 0;
     STEP(0, 0x0b, 0);
     STEP(0, 0, 0);
     EXPECT({ 0x0b, D, 0, 'h' }, { 0x0b, U, 0, 'h' });
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 
 /* Unplug while a key is held and repeating: DR_USB closing alone ends it
@@ -911,18 +475,18 @@ bool t_hid_unplug_and_console_gone(void)
 {
     hcur = "hid_unplug_and_console_gone";
     static struct mock m;
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     unsigned at = 0;
     STEP(0, 0x04, 0);
     EXPECT({ 0x04, D, 0, 'a' });
-    pump_for(&m, 600 * NS_PER_MS);                 /* repeating now */
+    mock_pump_for(&m, 600 * NS_PER_MS);                 /* repeating now */
     CHECK(m.nev > 1);
-    unplug(&m, true, false);                /* DR_USB only */
-    if (!finish(&m, 0))
+    mock_unplug(&m, true, false);                /* DR_USB only */
+    if (!mock_finish(&m, 0))
         return false;
 
-    if (!start(&m, &dev_kbd, 0, true, true))
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
     at = 0;
     STEP(0, 0x04, 0);
@@ -930,17 +494,17 @@ bool t_hid_unplug_and_console_gone(void)
     jam_port_unbind(m.port, m.input, KEY_INPUT);
     CHECK_ST(jam_handle_close(m.input), OK);   /* the console restarts */
     m.input = 0;
-    if (!finish(&m, 0))
+    if (!mock_finish(&m, 0))
         return false;
 
-    if (!start(&m, &dev_mouse, 0, false, true))
+    if (!mock_start(&m, &dev_mouse, 0, false, true))
         return false;
     const uint8_t click[4] = { 1, 0, 0, 0 };
     if (!report(&m, click, 4))
         return false;
-    pump_for(&m, 50 * NS_PER_MS);
-    unplug(&m, true, true);
-    return finish(&m, 0);
+    mock_pump_for(&m, 50 * NS_PER_MS);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
 }
 #undef STEP
 #undef EXPECT
