@@ -117,6 +117,15 @@ static void test_vmm(void)
  * block keeps the pattern it wrote: catches allocator races. */
 static volatile uint64_t smp_failures, smp_ops;
 
+/* p was filled with tag: check a sample of its bytes, then free it. */
+static void check_free(uint8_t *p, uint32_t size, uint8_t tag)
+{
+    for (uint32_t b = 0; b < size; b += 61)
+        if (p[b] != tag)
+            __atomic_add_fetch(&smp_failures, 1, __ATOMIC_RELAXED);
+    kfree(p);
+}
+
 static void smp_alloc_worker(void *arg)
 {
     uint32_t me = (uint32_t)(uintptr_t)arg;
@@ -132,10 +141,7 @@ static void smp_alloc_worker(void *arg)
         unsigned slot = seed % SLOTS;
         uint8_t tag = (uint8_t)(me * 7 + slot);
         if (ptrs[slot]) {
-            for (uint32_t b = 0; b < sizes[slot]; b += 61)
-                if (ptrs[slot][b] != tag)
-                    __atomic_add_fetch(&smp_failures, 1, __ATOMIC_RELAXED);
-            kfree(ptrs[slot]);
+            check_free(ptrs[slot], sizes[slot], tag);
             ptrs[slot] = NULL;
         } else {
             sizes[slot] = 1 + (seed >> 20) % ((seed & 1) ? 3000 : 200);

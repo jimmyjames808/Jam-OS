@@ -129,6 +129,26 @@ static unsigned class_of(spinlock_t *l, unsigned subclass)
     return i;
 }
 
+/* One breadth-first step over the dependency graph: every class in
+ * frontier not seen yet is marked seen and its dependencies go into next.
+ * False if none was new. */
+static bool bfs_step(const uint64_t *frontier, uint64_t *seen, uint64_t *next)
+{
+    bool any = false;
+    for (unsigned w = 0; w < WORDS; w++) {
+        uint64_t fresh = frontier[w] & ~seen[w];
+        seen[w] |= fresh;
+        while (fresh) {
+            unsigned b = w * 64 + (unsigned)__builtin_ctzll(fresh);
+            fresh &= fresh - 1;
+            any = true;
+            for (unsigned x = 0; x < WORDS; x++)
+                next[x] |= deps[b][x];
+        }
+    }
+    return any;
+}
+
 /* With the graph lock held: can `to` be reached from `from`? */
 static bool reachable(unsigned from, unsigned to)
 {
@@ -137,19 +157,7 @@ static bool reachable(unsigned from, unsigned to)
     memcpy(frontier, deps[from], sizeof(frontier));
     for (;;) {
         uint64_t next[WORDS] = { 0 };
-        bool any = false;
-        for (unsigned w = 0; w < WORDS; w++) {
-            uint64_t fresh = frontier[w] & ~seen[w];
-            seen[w] |= fresh;
-            while (fresh) {
-                unsigned b = w * 64 + (unsigned)__builtin_ctzll(fresh);
-                fresh &= fresh - 1;
-                any = true;
-                for (unsigned x = 0; x < WORDS; x++)
-                    next[x] |= deps[b][x];
-            }
-        }
-        if (!any)
+        if (!bfs_step(frontier, seen, next))
             break;
         memcpy(frontier, next, sizeof(frontier));
     }

@@ -222,6 +222,20 @@ static uint64_t phys_locked(struct vmo *v, uint64_t idx)
     return s ? *s : 0;
 }
 
+/* drop_from_locked's work on one leaf table, whose first entry is page
+ * `base`: drop its pages at index >= first. */
+static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, uint64_t first)
+{
+    for (uint64_t l = 0; l < LEAF_PAGES; l++) {
+        if (leaf[l] && base + l >= first) {
+            page_put(pa_page(leaf[l]));
+            leaf[l] = 0;
+            v->committed--;
+            job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+        }
+    }
+}
+
 /* Drop every page at index >= first, and free the table pages that lie
  * wholly past it, with no TLB care: for vmo_destroy (no references, so no
  * mappings and no lock needed) and the tail of a shrink (which has already
@@ -238,14 +252,7 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
             uint64_t base = r * MID_PAGES + m * LEAF_PAGES;
             if (!leaf || base + LEAF_PAGES <= first)
                 continue;
-            for (uint64_t l = 0; l < LEAF_PAGES; l++) {
-                if (leaf[l] && base + l >= first) {
-                    page_put(pa_page(leaf[l]));
-                    leaf[l] = 0;
-                    v->committed--;
-                    job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
-                }
-            }
+            drop_leaf_from_locked(v, leaf, base, first);
             if (base >= first) {
                 table_free_locked(v, leaf);
                 mid[m] = NULL;
@@ -743,6 +750,29 @@ void vmo_umap_remove(struct vmo *v, struct vmo_umap *u)
     kobject_unref(&v->base);
 }
 
+/* VMO lock held, a paged VMO: *pa gets page idx's physical address. If the
+ * page isn't committed, *fresh (if any) is committed there and taken
+ * (*fresh = NULL); with no fresh page *pa is 0. ERR_NO_MEMORY if the page's
+ * table can't be charged (*fresh is still the caller's). */
+static status_t paged_pa_locked(struct vmo *v, uint64_t idx, struct page **fresh, uint64_t *pa)
+{
+    uint64_t *s = slot_locked(v, idx, false);
+    if (s && *s) {
+        *pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
+        return OK;
+    }
+    if (!*fresh) {
+        *pa = 0;
+        return OK;
+    }
+    if (!(s = charge_slot_locked(v, idx, s)))
+        return ERR_NO_MEMORY;
+    *pa = *s = page_to_phys(*fresh);   /* the table takes our reference */
+    v->committed++;
+    *fresh = NULL;
+    return OK;
+}
+
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
                        unsigned perms)
 {
@@ -759,19 +789,13 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         if (v->kind != VMO_PAGED) {
             pa = v->phys + (idx << PAGE_SHIFT);
         } else {
-            uint64_t *s = slot_locked(v, idx, false);
-            if (s && *s) {
-                pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
-            } else if (fresh) {
-                if (!(s = charge_slot_locked(v, idx, s))) {
-                    vunlock(v, f);
-                    page_put(fresh);
-                    return ERR_NO_MEMORY;
-                }
-                pa = *s = page_to_phys(fresh);   /* the table takes our reference */
-                v->committed++;
-                fresh = NULL;
-            } else {
+            status_t st = paged_pa_locked(v, idx, &fresh, &pa);
+            if (st != OK) {
+                vunlock(v, f);
+                page_put(fresh);
+                return st;
+            }
+            if (!pa) {
                 vunlock(v, f);
                 fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
                 if (!fresh)

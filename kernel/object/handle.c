@@ -327,30 +327,36 @@ status_t handle_close(struct handle_table *t, handle_t h)
     return st;
 }
 
+/* t->lock held, s checked: a new handle to s's object with `rights` (a
+ * subset of s's, or RIGHT_SAME). */
+static status_t duplicate_locked(struct handle_table *t, const struct handle_slot *s,
+                                 rights_t rights, handle_t *out)
+{
+    rights_t r = rights == RIGHT_SAME ? s->rights : rights;
+    if ((r & s->rights) != r)
+        return ERR_INVALID_ARGS;   /* can't gain rights */
+    struct kobject *obj = s->obj;
+    status_t st = charge(t, 1);
+    if (st != OK)
+        return st;
+    st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
+    if (st != OK) {
+        uncharge(t, 1);
+        return st;
+    }
+    t->charged++;
+    kobject_ref(obj);
+    kobject_handle_gain(obj);
+    return OK;
+}
+
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_DUPLICATE);
-    if (st == OK) {
-        rights_t r = rights == RIGHT_SAME ? s->rights : rights;
-        if ((r & s->rights) != r) {
-            st = ERR_INVALID_ARGS;   /* can't gain rights */
-        } else {
-            struct kobject *obj = s->obj;
-            st = charge(t, 1);
-            if (st == OK) {
-                st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
-                if (st == OK) {
-                    t->charged++;
-                    kobject_ref(obj);
-                    kobject_handle_gain(obj);
-                } else {
-                    uncharge(t, 1);
-                }
-            }
-        }
-    }
+    if (st == OK)
+        st = duplicate_locked(t, s, rights, out);
     spin_unlock_irqrestore(&t->lock, f);
     return st;
 }

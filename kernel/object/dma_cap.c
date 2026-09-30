@@ -149,28 +149,37 @@ static struct q_batch *take_due_locked(struct dma_fn *fn, uint64_t now, bool all
     return NULL;
 }
 
+/* q_lock held: take a batch whose time is up (*dev gets its function),
+ * or NULL; *next gets the earliest deadline of the batches still waiting
+ * on the functions looked at. */
+static struct q_batch *find_due_locked(uint64_t now, struct pci_dev **dev, uint64_t *next)
+{
+    for (uint32_t i = 0; i < pci_count() && i < PCI_MAX_DEVS; i++) {
+        struct dma_fn *fn = &fns[i];
+        if (!fn->init)
+            continue;
+        struct q_batch *due = take_due_locked(fn, now, false);
+        if (due) {
+            *dev = pci_get(i);
+            return due;
+        }
+        for (struct list_node *n = fn->batches.next; n != &fn->batches; n = n->next) {
+            struct q_batch *b = container_of(n, struct q_batch, node);
+            if (b->deadline < *next)
+                *next = b->deadline;
+        }
+    }
+    return NULL;
+}
+
 static void reaper_main(void *arg)
 {
     (void)arg;
     uint64_t f = spin_lock_irqsave(&q_lock);
     for (;;) {
         uint64_t now = uptime_ns(), next = DEADLINE_NEVER;
-        struct q_batch *due = NULL;
         struct pci_dev *dev = NULL;
-        for (uint32_t i = 0; i < pci_count() && i < PCI_MAX_DEVS && !due; i++) {
-            struct dma_fn *fn = &fns[i];
-            if (!fn->init)
-                continue;
-            if ((due = take_due_locked(fn, now, false))) {
-                dev = pci_get(i);
-                break;
-            }
-            for (struct list_node *n = fn->batches.next; n != &fn->batches; n = n->next) {
-                struct q_batch *b = container_of(n, struct q_batch, node);
-                if (b->deadline < next)
-                    next = b->deadline;
-            }
-        }
+        struct q_batch *due = find_due_locked(now, &dev, &next);
         if (due) {
             spin_unlock_irqrestore(&q_lock, f);
             release_batch(dev, due, "its time was up");
