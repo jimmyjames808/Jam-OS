@@ -12,6 +12,11 @@
 #define HDA_PROTOCOL_ID 21u
 #define HDA_DUMP             0x00150001u
 #define HDA_INFO             0x00150002u
+#define HDA_OPEN_OUTPUT      0x00150003u
+#define HDA_START            0x00150004u
+#define HDA_STOP             0x00150005u
+#define HDA_POSITION         0x00150006u
+#define HDA_WAIT_PERIOD      0x00150007u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -42,8 +47,58 @@ struct hda_info_rep {
     uint8_t nodes[8];
     uint8_t text[240];
 } __attribute__((packed));
+struct hda_open_output_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t rate;
+    uint8_t channels;
+    uint8_t bits;
+} __attribute__((packed));
+struct hda_open_output_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t size;
+    uint32_t period;
+} __attribute__((packed));
+struct hda_start_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_start_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct hda_stop_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_stop_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct hda_position_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_position_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t frames;
+    uint32_t offset;
+} __attribute__((packed));
+struct hda_wait_period_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint64_t after;
+} __attribute__((packed));
+struct hda_wait_period_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t frames;
+    uint32_t offset;
+} __attribute__((packed));
 
-#define HDA_REQ_MAX 8u   /* bytes: the biggest request */
+#define HDA_REQ_MAX 16u   /* bytes: the biggest request */
 #define HDA_REP_MAX 288u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
@@ -132,6 +187,157 @@ static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_
     return hda_info_until(ch, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
 }
 
+/* ---- the output stream (docs/A1-PLAN.md) ----
+ * One output stream, 48 kHz, 16-bit, 2 channels: rate 48000, channels 2,
+ * bits 16 (anything else: ERR_NOT_SUPPORTED); a second open while one is
+ * open: ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
+ * protocol for start/stop/position/wait_period (they are refused on the
+ * driver's own channel, which devmgr shares among clients); `ring`, the
+ * sample ring as a VMO to map (read, write, map: nothing else), `size`
+ * bytes (65536) in `period`-byte periods (16384: 4096 frames, 85 ms).
+ * Frames are 4 bytes (left, right: little-endian s16). The stream starts
+ * stopped at frame 0, offset 0, with the ring all zeros. Closing `stream`
+ * (or dying) stops the stream and releases it. The driver zeroes the ring
+ * behind the play position, so a client may write any frame in
+ * [frames, frames + size / 4) (from the last position it was given) and
+ * one that stops writing plays silence within one ring. Write a period or
+ * more ahead: the controller fetches a little ahead of the position.
+ * Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
+ * the stream is gone; get the service again and open a new one. */
+static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+{
+    struct hda_open_output_req idl_q;
+    struct hda_open_output_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_OPEN_OUTPUT;
+    idl_q.rate = rate;
+    idl_q.channels = channels;
+    idl_q.bits = bits;
+    handle_t idl_rh[2];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 2, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 2)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_stream)
+            *out_stream = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        if (out_ring)
+            *out_ring = idl_rh[1];
+        else
+            drv_handle_close(idl_rh[1]);
+    }
+    if (idl_st == OK && out_size)
+        *out_size = idl_r.size;
+    if (idl_st == OK && out_period)
+        *out_period = idl_r.period;
+    return idl_st;
+}
+static inline status_t hda_open_output(handle_t ch, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+{
+    return hda_open_output_until(ch, DEADLINE_NEVER, rate, channels, bits, out_stream, out_ring, out_size, out_period);
+}
+
+/* On the stream channel: the DMA engine runs (RUN set) from where it was. */
+static inline status_t hda_start_until(handle_t ch, uint64_t deadline_ns)
+{
+    struct hda_start_req idl_q;
+    struct hda_start_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_START;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t hda_start(handle_t ch)
+{
+    return hda_start_until(ch, DEADLINE_NEVER);
+}
+
+/* On the stream channel: the DMA engine stops (RUN clear, waited for); the
+ * position stays. A wait_period in progress is answered ERR_BAD_STATE. */
+static inline status_t hda_stop_until(handle_t ch, uint64_t deadline_ns)
+{
+    struct hda_stop_req idl_q;
+    struct hda_stop_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_STOP;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t hda_stop(handle_t ch)
+{
+    return hda_stop_until(ch, DEADLINE_NEVER);
+}
+
+/* On the stream channel: frames played since the open, and the play
+ * position as a byte offset into the ring. */
+static inline status_t hda_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames, uint32_t *out_offset)
+{
+    struct hda_position_req idl_q;
+    struct hda_position_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_POSITION;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_frames)
+        *out_frames = idl_r.frames;
+    if (idl_st == OK && out_offset)
+        *out_offset = idl_r.offset;
+    return idl_st;
+}
+static inline status_t hda_position(handle_t ch, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_position_until(ch, DEADLINE_NEVER, out_frames, out_offset);
+}
+
+/* On the stream channel: answers once the period holding frame `after`
+ * has played (frames >= the next multiple of period / 4 above `after`),
+ * with position's results. ERR_BAD_STATE if the stream is stopped (or is
+ * stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
+ * periods (the DMA engine stalled). */
+static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    struct hda_wait_period_req idl_q;
+    struct hda_wait_period_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_WAIT_PERIOD;
+    idl_q.after = after;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_frames)
+        *out_frames = idl_r.frames;
+    if (idl_st == OK && out_offset)
+        *out_offset = idl_r.offset;
+    return idl_st;
+}
+static inline status_t hda_wait_period(handle_t ch, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_wait_period_until(ch, DEADLINE_NEVER, after, out_frames, out_offset);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -139,6 +345,11 @@ static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_
 struct hda_ops {
     status_t (*dump)(void *ctx, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs);
     status_t (*info)(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240]);
+    status_t (*open_output)(void *ctx, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period);
+    status_t (*start)(void *ctx);
+    status_t (*stop)(void *ctx);
+    status_t (*position)(void *ctx, uint64_t *out_frames, uint32_t *out_offset);
+    status_t (*wait_period)(void *ctx, uint64_t after, uint64_t *out_frames, uint32_t *out_offset);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -225,6 +436,107 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
             idl_r->nodes[idl_i] = out_nodes[idl_i];
         for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
             idl_r->text[idl_i] = out_text[idl_i];
+        return sizeof(*idl_r);
+    }
+    case HDA_OPEN_OUTPUT: {
+        const struct hda_open_output_req *idl_q = (const struct hda_open_output_req *)req;
+        struct hda_open_output_rep *idl_r = (struct hda_open_output_rep *)rep;
+        handle_t out_stream = HANDLE_INVALID;
+        handle_t out_ring = HANDLE_INVALID;
+        uint32_t out_size = 0;
+        uint32_t out_period = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_output) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->open_output(ctx, idl_q->rate, idl_q->channels, idl_q->bits, &out_stream, &out_ring, &out_size, &out_period);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_stream != HANDLE_INVALID && out_ring != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_stream != HANDLE_INVALID)
+                drv_handle_close(out_stream);
+            if (out_ring != HANDLE_INVALID)
+                drv_handle_close(out_ring);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_stream;
+        rhs[1] = out_ring;
+        *rhn = 2;
+        idl_r->size = out_size;
+        idl_r->period = out_period;
+        return sizeof(*idl_r);
+    }
+    case HDA_START: {
+        const struct hda_start_req *idl_q = (const struct hda_start_req *)req;
+        struct hda_start_rep *idl_r = (struct hda_start_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->start) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->start(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case HDA_STOP: {
+        const struct hda_stop_req *idl_q = (const struct hda_stop_req *)req;
+        struct hda_stop_rep *idl_r = (struct hda_stop_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stop) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stop(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case HDA_POSITION: {
+        const struct hda_position_req *idl_q = (const struct hda_position_req *)req;
+        struct hda_position_rep *idl_r = (struct hda_position_rep *)rep;
+        uint64_t out_frames = 0;
+        uint32_t out_offset = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->position) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->position(ctx, &out_frames, &out_offset);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->frames = out_frames;
+        idl_r->offset = out_offset;
+        return sizeof(*idl_r);
+    }
+    case HDA_WAIT_PERIOD: {
+        const struct hda_wait_period_req *idl_q = (const struct hda_wait_period_req *)req;
+        struct hda_wait_period_rep *idl_r = (struct hda_wait_period_rep *)rep;
+        uint64_t out_frames = 0;
+        uint32_t out_offset = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->wait_period) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->wait_period(ctx, idl_q->after, &out_frames, &out_offset);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->frames = out_frames;
+        idl_r->offset = out_offset;
         return sizeof(*idl_r);
     }
     }

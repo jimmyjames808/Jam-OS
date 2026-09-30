@@ -7,19 +7,20 @@
  *   DR_DMA      its dma_cap: bus mastering goes on after the reset
  *   DR_PCIDEV   its function (the ids, for the log)
  *   DR_SERVE    the channel it serves abi/idl/hda.idl on
- *   DR_IRQ(0)   its MSI: not used yet (the probe polls)
+ *   DR_IRQ(0)   its MSI: the output stream's period interrupts (irq.c)
  *
  * What it does: check the path finder against its fixtures, reset the
  * controller, find the codecs, print each codec's widget graph and the
  * path it offers to the log (dump.c), set up the best path (the front
  * headphone jack's, see path.c) muted and with the pin's output off, and
- * put a RESULTS line out; then serve `hda.dump` and `hda.info` until
- * devmgr closes the channel, stop the command rings, put the controller
- * back into reset and exit 0. It makes no sound: the output stream and
- * the unmuting are not built yet. verbs.c is the only way to a codec and
- * lets through GET verbs and an allow-list of SET verbs; nothing else the
- * firmware set up (configuration defaults, other pins, GPIOs) changes.
- * A restart is a bind from scratch. */
+ * put a RESULTS line out; then serve `hda.dump`, `hda.info` and the
+ * output stream on the path's DAC (stream.c, irq.c) until devmgr closes
+ * the channel, close the stream, stop the command rings, put the
+ * controller back into reset and exit 0. It makes no sound: the unmuting
+ * is not built yet. verbs.c is the only way to a codec and lets through
+ * GET verbs and an allow-list of SET verbs; nothing else the firmware set
+ * up (configuration defaults, other pins, GPIOs) changes. A restart is a
+ * bind from scratch. */
 #include <idl/hda.h>
 #include "hda.h"
 
@@ -238,7 +239,8 @@ int driver_main(const struct driver_start *ds)
         return r;
     }
     handle_t ch = drv_handle(ds, DR_SERVE);
-    status_t st = ch == HANDLE_INVALID ? OK : hda_serve(ch, &ops, s);
+    status_t st = ch == HANDLE_INVALID ? OK
+                : hda_loop(&s->hda, ds, &ops, s, s->set == OK ? &s->path : NULL);
     hda_ctrl_stop(&s->hda);
     drv_log("stopped: controller back in reset (%s)", st == OK ? "client closed" : status_str(st));
     return st == OK ? 0 : 1;

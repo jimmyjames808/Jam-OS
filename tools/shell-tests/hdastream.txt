@@ -1,0 +1,15 @@
+# The HD Audio output stream (drivers/hda): one emulated controller with
+# QEMU's hda-output codec writing what it plays to a WAV file; use
+# tools/hda-stream-test.sh (it adds the devices and checks the log and
+# the file). `hdatest` opens the stream, plays a known pattern, closes a
+# running stream and kills the driver mid-stream. (The marker is echoed
+# as hds-""1 so the typed line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+send hdatest; echo hds-""1
+wait 180 hdatest: kill
+wait hds-1
+wait jam>
+send reboot
+wait reboot: resetting

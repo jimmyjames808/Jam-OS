@@ -14,7 +14,9 @@
 # setting a path up muted uses: power D0 (0x705 payload 0), connection
 # select (0x701), pin control with the output and headphone bits clear
 # (0x707), and amp gain/mute with the mute bit set (the 4-bit 0x3, which
-# QEMU prints as 0x300). So no amp was unmuted and no pin output enabled.
+# QEMU prints as 0x300); tools/hda-verbs.awk sorts them. So no amp was
+# unmuted and no pin output enabled; and since nothing opens a stream
+# here, no converter format or stream tag was set either.
 # (QEMU's codecs ignore the pin control: their output pins read back 0x40,
 # output on, whatever is set, and the driver's log says so. The trace is
 # what shows the driver asked for the output off.)
@@ -54,45 +56,23 @@ if grep -E "path self-test: [^7]|parses back to another path|path: none" "$log";
 fi
 
 # Every verb the codecs got (their debug lines on QEMU's stderr) is a GET
-# or a silent SET; every path set-up sent at least the pin control and a mute.
-trace=$(grep "hda_audio_command: nid" "$out/hda-shell.out" | awk '
-    function hex(s,   i, c, v) {
-        v = 0
-        for (i = 3; i <= length(s); i++) {
-            c = index("0123456789abcdef", substr(s, i, 1))
-            if (c == 0) break
-            v = v * 16 + c - 1
-        }
-        return v
-    }
-    {
-        for (i = 1; i <= NF; i++) {
-            if ($i == "verb") v = hex($(i + 1))
-            if ($i == "payload") p = hex($(i + 1))
-        }
-        get = v >= 3840 || v == 2560 || v == 2816           # 0xf00-0xfff, 0xa00, 0xb00
-        ok = get || (v == 1797 && p == 0) || v == 1793 ||   # 0x705 D0, 0x701
-             (v == 1799 && int(p / 64) % 4 == 0) ||         # 0x707, bits 7:6 clear
-             (v == 768 && int(p / 128) % 2 == 1)            # 0x300, mute set
-        if (!ok) print "bad: " $0
-        if (!get) sets++
-        if (v == 1799) pinctl++
-        if (v == 768) mutes++
-    }
-    END { printf "sets %d pinctl %d mutes %d\n", sets, pinctl, mutes }')
+# or a silent SET (tools/hda-verbs.awk); every path set-up sent at least
+# the pin control and a mute.
+trace=$(awk -f tools/hda-verbs.awk "$out/hda-shell.out")
 verbs=$(grep -c "hda_audio_command: nid" "$out/hda-shell.out" || true)
 [ "$verbs" -gt 100 ] || { echo "hda-shell: only $verbs codec verb(s) traced"; ok=0; }
-bad=$(echo "$trace" | grep "^bad: " || true)
+bad=$(echo "$trace" | grep -E "^(conv|open|bad) " || true)
 if [ -n "$bad" ]; then
     echo "hda-shell: verbs that are neither GETs nor silent SETs:"
     echo "$bad" | head -10
     ok=0
 fi
-counts=$(echo "$trace" | tail -1)
-set -- $counts
+pinctl=$(echo "$trace" | grep -c "^silent .* verb 0x707 " || true)
+mutes=$(echo "$trace" | grep -c "^silent .* verb 0x300 " || true)
+counts="$(echo "$trace" | tail -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes"
 # 3 path set-ups (2 at boot, 1 after the restart), each one pin control
 # and at least one mute (the DAC's output amp).
-[ "$4" -ge 3 ] && [ "$6" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }
+[ "$pinctl" -ge 3 ] && [ "$mutes" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" \
     tools/qemu-test.sh "$out" hda-init init > "$out/hda-init.out" 2>&1 || true

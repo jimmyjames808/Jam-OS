@@ -5,8 +5,9 @@
 #
 # The driver reads the controller and every codec's widget graph, picks
 # the path from a DAC to the headphones and sets it up muted, with the
-# pin's output off: it makes no sound yet. The playback methods come with
-# the rest of the audio work (docs/A1-PLAN.md).
+# pin's output off, and serves one output stream on that path's DAC; it
+# unmutes nothing yet, so the stream is heard nowhere (docs/A1-PLAN.md
+# has the rest of the audio work).
 #
 # Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
 # fails with ERR_PEER_CLOSED means the driver died; get the channel from
@@ -30,3 +31,36 @@ protocol hda 21
 # from the DAC to the pin, `count` of them. text: what is set on each
 # node, read back from the codec, as one line (NUL-terminated).
 2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u32 count, u8[8] nodes, u8[240] text)
+
+# ---- the output stream (docs/A1-PLAN.md) ----
+# One output stream, 48 kHz, 16-bit, 2 channels: rate 48000, channels 2,
+# bits 16 (anything else: ERR_NOT_SUPPORTED); a second open while one is
+# open: ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
+# protocol for start/stop/position/wait_period (they are refused on the
+# driver's own channel, which devmgr shares among clients); `ring`, the
+# sample ring as a VMO to map (read, write, map: nothing else), `size`
+# bytes (65536) in `period`-byte periods (16384: 4096 frames, 85 ms).
+# Frames are 4 bytes (left, right: little-endian s16). The stream starts
+# stopped at frame 0, offset 0, with the ring all zeros. Closing `stream`
+# (or dying) stops the stream and releases it. The driver zeroes the ring
+# behind the play position, so a client may write any frame in
+# [frames, frames + size / 4) (from the last position it was given) and
+# one that stops writing plays silence within one ring. Write a period or
+# more ahead: the controller fetches a little ahead of the position.
+# Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
+# the stream is gone; get the service again and open a new one.
+3  open_output  (u32 rate, u8 channels, u8 bits) -> (handle stream, handle ring, u32 size, u32 period)
+# On the stream channel: the DMA engine runs (RUN set) from where it was.
+4  start  ()  -> ()
+# On the stream channel: the DMA engine stops (RUN clear, waited for); the
+# position stays. A wait_period in progress is answered ERR_BAD_STATE.
+5  stop  ()  -> ()
+# On the stream channel: frames played since the open, and the play
+# position as a byte offset into the ring.
+6  position  ()  -> (u64 frames, u32 offset)
+# On the stream channel: answers once the period holding frame `after`
+# has played (frames >= the next multiple of period / 4 above `after`),
+# with position's results. ERR_BAD_STATE if the stream is stopped (or is
+# stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
+# periods (the DMA engine stalled).
+7  wait_period  (u64 after)  -> (u64 frames, u32 offset)

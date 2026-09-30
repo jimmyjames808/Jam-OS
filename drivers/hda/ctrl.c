@@ -21,10 +21,10 @@
  *
  * Bus mastering goes on only after the reset: a reset stops every DMA
  * engine (streams and rings), so nothing a previous driver of this
- * function left running reaches memory. Unsolicited responses and
- * interrupts stay off (GCTL.UNSOL = 0, INTCTL = 0). At exit the rings are
- * stopped and the controller is put back into reset, which is also how
- * firmware leaves it. */
+ * function left running reaches memory. Unsolicited responses stay off
+ * (GCTL.UNSOL = 0), and so do interrupts (INTCTL = 0) until a stream
+ * opens (stream.c). At exit the rings are stopped and the controller is
+ * put back into reset, which is also how firmware leaves it. */
 #include "hda.h"
 
 #define RIRB_OFF      2048u                   /* 256 CORB entries x 4 bytes before it */
@@ -299,6 +299,11 @@ status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out)
     if (st == ERR_TIMED_OUT)
         h->timeouts++;
     return st;
+}
+
+status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what)
+{
+    return wait8(h, reg, mask, want, what);
 }
 
 /* ---- start and stop ----------------------------------------------------------- */

@@ -160,10 +160,10 @@ to be its only client, so it is designed as the mixer needs it now:
 |---|---|---|
 | `dump() -> (text VMO, length, codecs)` | 0 (done) | the graph, read now |
 | `info() -> (rates, formats, pin, dac, gain steps, jack state)` | 1 | what the driver chose and can do |
-| `open_output(rate, channels, bits) -> (ring VMO, size, period)` | 2 | the ring above; one stream at a time (a second open: ERR_BAD_STATE); closing the channel that opened it closes the stream |
-| `start()`, `stop()` | 2 | RUN on/off (with the mute ordering) |
-| `position() -> (u64 frames played, u32 ring offset)` | 2 | from the position buffer |
-| `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 | answers once a period past `after` has played: the client's write-ahead clock |
+| `open_output(rate, channels, bits) -> (stream channel, ring VMO, size, period)` | 2 (done) | the ring above; one stream at a time (a second open: ERR_BAD_STATE); the stream methods below are served on the `stream` channel it returns, and closing that channel closes the stream |
+| `start()`, `stop()` | 2 (done) | RUN on/off (stage 3 adds the mute ordering) |
+| `position() -> (u64 frames played, u32 ring offset)` | 2 (done) | from the position buffer |
+| `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 (done) | answers once the period holding frame `after` has played: the client's write-ahead clock |
 | `set_gain(i32 centibels)`, `get_gain` | 3 | the codec's output amp on the path, clamped to its steps |
 | `jack() -> (u8 state, u64 changes)` | 4 | plugged / unplugged / unknown, and a change count |
 
@@ -184,10 +184,64 @@ different files and can run as two tracks at once.
 |---|---|---|
 | **0. Probe** (done) | read-only: reset, rings (immediate fallback), codecs from STATESTS, each codec's graph logged (one line per widget, two for pins), RESULTS line, `hda.dump`, the shell's `hda`; devmgr binds 8086 / 04 03 00; `kill hda` reaches PCI drivers | `drivers/hda/{main,ctrl,graph,dump}.c`, `hda.h`, `abi/idl/hda.idl`, the shell's `cmd/hda.c`, `tools/hda-test.sh`, `tools/shell-tests/hda.txt` |
 | **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
-| **2. Output stream** | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
+| **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
 | **3. `beep`** (the join of 1 and 2) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
 | **4. Jacks** | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jack`, `hda` shows the jack state | drivers/hda/jack.c (new), `hda.idl` (jack) |
 | **5. Review** | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
+
+## Stage 2: what was built and learned
+
+- **The stream has a channel of its own.** devmgr hands every client a
+  duplicate of the one DR_SERVE channel, so "the channel that opened it"
+  can't be told apart from the others and its close is never seen.
+  `open_output` therefore returns a new channel (`stream`) with the ring;
+  start, stop, position and wait_period are served on it (refused on
+  DR_SERVE), and its peer closing (the client closes it, or dies) stops
+  and releases the stream. A2's mixer holds it.
+- **Clear-behind is per byte, at every position read** (every interrupt,
+  every request, and at least once a period), not per period: the driver
+  zeroes exactly what has played since the last read, before it tells
+  anyone the new position. So a client may write anywhere in
+  [position, position + ring) and its data is never zeroed; clearing
+  whole periods would wipe what a client wrote into the played part of
+  the period in progress.
+- **The converter's format and stream tag are the only SET verbs**
+  (`hda_converter_set`, which refused any other), sent at `open_output`
+  (and stream 0 at the close) to the first analog DAC of the first codec
+  that has one: DAC 02 on QEMU's codecs and on the PC's ALC897, the same
+  DAC the path finder is expected to choose. At the join (stage 3) the
+  stream took the DAC from stage 1's path and its two SETs moved onto
+  `hda_set`'s allow-list, so there is one command gate. The probe itself still sends only GETs (`tools/hda-test.sh`,
+  unchanged, 524 verbs).
+- **MSI for the stream only.** INTCTL gets GIE and the stream's bit while
+  a stream is open; CIE (the RIRB's interrupt) stays off, since commands
+  are polled and answered in microseconds. Stage 4 turns CIE on for jack
+  events; irq.c is where they will arrive.
+- **The stop order** at a close and at the driver's exit: RUN clear
+  (waited for), SRST 1/0, the stream's interrupt off, DPLBASE off, the
+  converter to stream 0, then the pins released. If RUN never clears the
+  pins are kept (logged): the dma_cap's close quarantines them.
+- **A kill mid-stream** (QEMU): the dma_cap's close turns bus mastering
+  off and quarantines the ring, the BDL page and the command-ring page
+  (3 pins, 18 pages); the restarted driver's reset finds the stream
+  descriptor still running ("stream 4 was running: stopping it") and
+  stops it before turning bus mastering on; the quarantine is released
+  1 s later with no page written.
+- **In QEMU** the capture is exact (the one-second pattern, sample for
+  sample), the position advances at 48.17 kHz by the guest's clock, the
+  position buffer and LPIB agree while running (QEMU does not reset LPIB
+  at SRST, only at RUN, so the gap is sampled while running only), and
+  there is one interrupt per period. QEMU's codec keeps its converter's
+  stream tag across the link reset; a real codec resets it.
+
+**What only the PC can show** (hdatest from the shell, or `hdatest` in
+the log after it): the MSI arriving (the close lines count "period
+interrupt(s)": about one per 85 ms), the position buffer against LPIB
+("position buffer vs LPIB up to N bytes": expect a FIFO's worth or less),
+the FIFO size (the open line), TCSEL (a "TCSEL was TCn" line only if the
+firmware left it non-zero), the rate hdatest measures (48 kHz within
+2 %) and the kill test's quarantine line. Nothing is heard: no path is
+programmed until stage 3.
 
 ## Tests
 

@@ -605,16 +605,21 @@ the board's Intel HD Audio controller and its codec
 is a process like any other (PCI, MSI, DMA through pinned DMA32 buffers),
 bound by devmgr to Intel's HD Audio functions (class 04 03 00). Built so
 far: the controller reset, the CORB/RIRB command rings, each codec's
-widget graph read and logged (`hda` in the shell), and the path from a
-DAC to the front headphone jack: found in the graph by a pure function
-(checked at every start against the PC's codec and QEMU's, kept as
-fixtures) and set up muted with the pin's output off. Every verb goes
-through one file with an allow-list of SET verbs, so the driver can never
-write the board's own jack descriptions, GPIOs or vendor coefficients.
-Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)): one
-output stream, the unmuting, jack detection, and a mixer service that
-owns the device, with programs opening streams and writing samples
-through a shared VMO ring.
+widget graph read and logged (`hda` in the shell), the path from a DAC to
+the front headphone jack, and one output stream on that DAC. The path is
+found in the graph by a pure function (checked at every start against
+the PC's codec and QEMU's, kept as fixtures) and set up muted with the
+pin's output off. Every verb goes through one file with an allow-list of
+SET verbs, so the driver can never write the board's own jack
+descriptions, GPIOs or vendor coefficients. `open_output` hands its
+client a channel of its own (closing it stops and releases the stream)
+and a 64 KiB DMA32 ring as a VMO to map, played in four periods with an
+interrupt (MSI, through the driver's port) at each; the position comes
+from the DMA position buffer, and the driver zeroes the ring behind it,
+so a client that stops writing gives silence, never a loop. Not built
+yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)): the unmuting, jack
+detection, and a mixer service that owns the device, with programs
+opening streams and writing samples through a shared VMO ring.
 
 ## Storage
 
