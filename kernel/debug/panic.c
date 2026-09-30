@@ -147,6 +147,10 @@ _Noreturn static void panic_end(void)
     kprintf("\nlast log lines:\n");
     klog_write_raw(start, strlen(start));
 
+    /* panic_reboot=<s>: count down, then reset instead of halting. It
+     * busy-waits on the TSC: interrupts are off and the other CPUs are
+     * halted, so nothing could wake a sleeping thread. Before the TSC is
+     * calibrated there is no clock to count with, so it halts. */
     uint64_t wait_time = cmdline_get_u64("panic_reboot", 0, 0);
     if (!wait_time || !tsc_hz) {
         kprintf("\n\nsystem halted.\n");
