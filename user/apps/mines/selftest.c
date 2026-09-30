@@ -235,8 +235,8 @@ static void test_pointer(void)
     pointer_init(&p, 2560, 1440, true);
     pointer_move(&p, 10, 0);
     int mid = pointer_x(&p) - 1280;
-    fun_check(fast == 120 && mid > 10 && mid < 30,
-              "pointer: a quick push goes up to 3 times as far");
+    fun_check(fast == 80 && mid > 10 && mid < 20,
+              "pointer: a quick push goes up to twice as far");
 }
 
 int mines_selftest(void)

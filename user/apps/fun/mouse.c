@@ -8,7 +8,10 @@
  * clamped to the screen. Acceleration goes by the size of one report: up
  * to ACCEL_FROM counts it is 1:1, so slow movement is exact (a cell of a
  * board can be hit on a 2560x1440 screen); from there the gain rises to
- * ACCEL_MAX at ACCEL_FULL counts, so a quick push crosses the screen.
+ * ACCEL_MAX at ACCEL_FULL counts, so a quick push crosses the screen. The
+ * whole gain is then scaled by $POINTER_SPEED, a percentage (25..400,
+ * default 100): `export POINTER_SPEED=70` in the shell slows every app's
+ * pointer.
  *
  * The arrow is not part of the app's picture: a present paints it into the
  * back buffer, copies what changed to the screen, and takes it out again
@@ -19,15 +22,18 @@
 
 /* ---- the pointer's position ----------------------------------------------------------- */
 
-#define ACCEL_FROM 4     /* counts in one report: up to here 1:1 */
-#define ACCEL_FULL 20    /* ... and from here the full gain */
-#define ACCEL_MAX  768   /* the full gain, x256 (3:1) */
+#define ACCEL_FROM 6     /* counts in one report: up to here 1:1 */
+#define ACCEL_FULL 30    /* ... and from here the full gain */
+#define ACCEL_MAX  512   /* the full gain, x256 (2:1) */
+#define SPEED_MIN  25    /* $POINTER_SPEED, percent */
+#define SPEED_MAX  400
 
 void pointer_init(struct pointer *p, int w, int h, bool accel)
 {
     p->w = w;
     p->h = h;
     p->accel = accel;
+    p->speed = 100;
     p->x256 = (w / 2) * 256 + 128;
     p->y256 = (h / 2) * 256 + 128;
 }
@@ -51,12 +57,27 @@ static int32_t clamp256(int64_t v, int pixels)
 void pointer_move(struct pointer *p, int dx, int dy)
 {
     int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-    int32_t g = p->accel ? gain(ax > ay ? ax : ay) : 256;
+    int32_t g = p->accel ? gain(ax > ay ? ax : ay) * p->speed / 100 : 256;
     p->x256 = clamp256((int64_t)p->x256 + (int64_t)dx * g, p->w);
     p->y256 = clamp256((int64_t)p->y256 + (int64_t)dy * g, p->h);
 }
 
 /* ---- the mouse as the app sees it ----------------------------------------------------- */
+
+/* $POINTER_SPEED as a percentage, 100 if unset or not a number. */
+static int speed_from_env(void)
+{
+    static const char key[] = "POINTER_SPEED=";
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, key, sizeof(key) - 1))
+            continue;
+        int v = 0;
+        for (const char *d = *e + sizeof(key) - 1; *d >= '0' && *d <= '9' && v < 10000; d++)
+            v = v * 10 + (*d - '0');
+        return v < SPEED_MIN ? (v ? SPEED_MIN : 100) : v > SPEED_MAX ? SPEED_MAX : v;
+    }
+    return 100;
+}
 
 static struct pointer ptr;
 static struct mouse state;   /* what gfx_mouse hands out: edges gather here until it does */
@@ -73,6 +94,7 @@ status_t gfx_mouse_open(bool accel)
     if (st != OK)
         return st;
     pointer_init(&ptr, scr.w, scr.h, accel);
+    ptr.speed = speed_from_env();
     memset(&state, 0, sizeof(state));
     state.x = pointer_x(&ptr);
     state.y = pointer_y(&ptr);

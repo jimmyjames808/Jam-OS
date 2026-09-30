@@ -208,6 +208,7 @@ struct pointer {
     int32_t x256, y256;   /* the position in 1/256 pixel, inside the screen */
     int     w, h;         /* the screen it is clamped to */
     bool    accel;        /* quick movement is amplified (mouse.c says how) */
+    int     speed;        /* with accel: the gain in percent (100: as it is) */
 };
 /* In the middle of a w x h screen. */
 void pointer_init(struct pointer *p, int w, int h, bool accel);
