@@ -1,5 +1,5 @@
 /* usbtest: what its files share (main.c: the bus, the device list and
- * the USB checks). See main.c. */
+ * the USB checks; storage.c: the mass-storage checks). See main.c. */
 #pragma once
 
 #define CHECK_PROG "usbtest"
@@ -37,3 +37,8 @@ status_t load(void);             /* read the device list into devs[] */
 struct dev *by_serial(const char *s);
 /* Run one test: counted as passed, failed or (if it said so) skipped. */
 void run(const char *name, bool (*fn)(void));
+
+/* ---- storage.c ----------------------------------------------------------------- */
+
+/* The mass-storage checks (its header has the list): run() for each. */
+void storage_tests(void);

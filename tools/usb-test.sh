@@ -8,6 +8,7 @@
 #       port 2.2  a usb-ccid (no driver: usbtest's set_interface check)
 #   xhci port 3   a usb-mouse
 #   xhci port 4   a usb-kbd
+# usbtest's storage checks run on the boot stick on the way (storage.c).
 # usbtest finds the test keyboard by its serial and prints markers; the
 # monitor script answers them: `sendkey a`; `sendkey c` (usbtest kills the
 # keyboard's hid while c is down) and `sendkey d` once hid is back;
@@ -50,7 +51,8 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2,port-power=on \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-grep -q "usbtest: 12 passed, 0 skipped (keys + unplug/replug ran)" "$log" || ok=0
+# 2 skipped: the second-disk storage checks, which are tools/storage-test.sh's
+grep -q "usbtest: 19 passed, 2 skipped (keys + unplug/replug ran)" "$log" || ok=0
 grep -q "run complete: no problems" "$log" || ok=0
 # hid's own lines, from the test keyboard's hid (behind the hub: "<root>.1:0")
 for k in 04 06 07 05; do

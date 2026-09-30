@@ -19,6 +19,9 @@
  *   set_interface  its interrupt IN endpoint opened, then usb.set_interface
  *                  (0): usb-bus drops the endpoint (the reports channel
  *                  closes) and adds it back; it opens and polls again
+ * on a mass-storage device (the boot stick; storage.c has the list):
+ *   storage_...    bulk transfers, and drv/usb-storage's `storage` and
+ *                  `block` protocols
  * and, when a keyboard with serial "jamos-keys" is attached (the
  * tools/usb-test.sh scenario, which types through the QEMU monitor), through
  * the real chain usb-bus -> devmgr -> drv/hid (hid owns the
@@ -626,6 +629,7 @@ int main(int argc, char **argv)
     run("access", t_access);
     run("stall_recovered", t_stall_recovered);
     run("set_interface", t_set_interface);
+    storage_tests();
     bool interactive = load() == OK && by_serial("jamos-keys");
     if (interactive) {
         run("keys", t_keys);
