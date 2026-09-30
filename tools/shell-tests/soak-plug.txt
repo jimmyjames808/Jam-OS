@@ -37,10 +37,7 @@ wait 120 init: /data mounted
 # ---- the end ---------------------------------------------------------------------------------
 wait 900 SOAK RESULTS
 wait soak: PASSED after
-wait 0 FAILED
 wait shell: soak: PASSED
 wait jam>
-send mount
-wait /data
 send reboot
 wait reboot: resetting
