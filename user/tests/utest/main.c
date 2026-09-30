@@ -87,7 +87,7 @@ bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit,
 
 /* ---- tests -------------------------------------------------------------------- */
 
-bool t_basics(void)
+static bool t_basics(void)
 {
     uint64_t t0 = now();
     CHECK(t0 > 0);
@@ -125,7 +125,7 @@ bool t_basics(void)
     return true;
 }
 
-bool t_rights(void)
+static bool t_rights(void)
 {
     handle_t v, ro, ro2, x, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t addr = 0;
@@ -180,7 +180,7 @@ bool t_rights(void)
     return true;
 }
 
-bool t_bad_pointers(void)
+static bool t_bad_pointers(void)
 {
     struct job_info before, after;
     CHECK_ST(info_of(own_job(), &before), OK);
@@ -238,7 +238,7 @@ bool t_bad_pointers(void)
     return true;
 }
 
-bool t_crash_kills_only_the_child(void)
+static bool t_crash_kills_only_the_child(void)
 {
     struct process_info info;
     if (!run_child("nullderef", 0, 0, &info))
@@ -253,7 +253,7 @@ bool t_crash_kills_only_the_child(void)
     return true;
 }
 
-bool t_wx(void)
+static bool t_wx(void)
 {
     handle_t v, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t addr = 0;
@@ -277,7 +277,7 @@ bool t_wx(void)
     return true;
 }
 
-bool t_ping_pong(void)
+static bool t_ping_pong(void)
 {
     handle_t a, b, job, proc;
     CHECK_ST(jam_channel_create(&a, &b), OK);
@@ -327,7 +327,7 @@ bool t_ping_pong(void)
     return true;
 }
 
-bool t_kill_in_channel_call(void)
+static bool t_kill_in_channel_call(void)
 {
     struct job_info before, ji;
     CHECK_ST(info_of(own_job(), &before), OK);
@@ -382,7 +382,7 @@ bool t_kill_in_channel_call(void)
     return true;
 }
 
-bool t_runaway_hits_job_limits(void)
+static bool t_runaway_hits_job_limits(void)
 {
     struct process_info info;
     if (!run_child("hog", JOB_LIMIT_PAGES, 256, &info))   /* 1 MiB */
@@ -418,7 +418,7 @@ static void waiter(void *arg)
  * VMO's struct and a process are handle units, a
  * thread's kernel stack is pages, port packets and bindings and each
  * handle a message carries are message bytes, and all of it comes back. */
-bool t_kernel_objects_are_charged(void)
+static bool t_kernel_objects_are_charged(void)
 {
     struct job_info a, b;
     CHECK_ST(info_of(own_job(), &a), OK);

@@ -537,18 +537,26 @@ void shift(int dx, int dy)
     restart_passes();
 }
 
+/* The tiles d tiles from the centre into order[], from order[n] on; the
+ * new count. */
+static int ring_tiles(int d, int n)
+{
+    for (int ty = 0; ty < TH; ty++)
+        for (int tx = 0; tx < TW; tx++) {
+            int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
+            if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
+                order[n++] = (uint32_t)(ty * TW + tx);
+        }
+    return n;
+}
+
 /* The middle first: the tiles into order[] by distance from the centre
  * (a counting sort). How many were placed. */
 static int order_tiles(void)
 {
     int maxd = TW + TH, n = 0;
     for (int d = 0; d <= maxd; d++)
-        for (int ty = 0; ty < TH; ty++)
-            for (int tx = 0; tx < TW; tx++) {
-                int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
-                if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
-                    order[n++] = (uint32_t)(ty * TW + tx);
-            }
+        n = ring_tiles(d, n);
     return n;
 }
 
