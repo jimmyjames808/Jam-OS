@@ -166,6 +166,14 @@ uint64_t ktest_accounted_pages(void);
 
 /* ---- helpers shared by the tests (kernel/test/ktest_util.c) ------------- */
 
+/* A bound on a wait that is there so a broken kernel fails instead of
+ * hanging (not a timing assertion): ms on an idle machine, thirty times
+ * that under load, where the thread waited for may be starved for seconds. */
+static inline uint64_t kt_patience_ms(uint64_t ms)
+{
+    return ktest_busy ? ms * 30 : ms;
+}
+
 struct handle_table;
 struct job;
 struct kobject;
@@ -216,13 +224,14 @@ void bench_run(void);
  *     keep       a failed test is recorded and the run carries on, ending
  *                with a summary; without it the first failure panics
  *     load       with the stress test's threads and processes running
- *                (kernel/debug/stress.c: stress_load_start) */
+ *                (kernel/debug/stress.c: stress_load_start), two per CPU;
+ *                load=N: N of them in all (2..1024: QEMU wants fewer) */
 struct ktest_opts {
     char     prefix[32];   /* run the tests whose names start with it */
     uint32_t loops;        /* at least 1 */
     uint64_t seed;         /* 0: link order, every loop */
     bool     keep;         /* record failures instead of panicking */
-    bool     load;         /* run under background load */
+    uint32_t load;         /* run under this many load workers; 0: no load */
 };
 
 /* Words into *o. boot: the kernel command line, where "ktest=<prefix>"

@@ -145,7 +145,7 @@ after the shell's `ktest`; `struct ktest_opts` in
 | `seed=<s>` | in an order shuffled from s. Loop k uses s + k - 1 and prints it: `ktest seed=<that>` replays that loop alone |
 | `shuffle` | a seed from the clock (printed) |
 | `keep` | a failed test is recorded and the run goes on; its report says how many FAILED. Without it the first failure panics |
-| `load` | with the stress test's workers running (two per CPU: counters, allocations, sleeps, migrations, thread and process churn) and a TLB shootdown round every 250 ms |
+| `load` | with the stress test's workers running (two per CPU: counters, allocations, sleeps, migrations, thread and process churn) and a TLB shootdown round every 250 ms. `load=<n>`: n workers in all (the QEMU script uses one per CPU) |
 
 Plain `ktest` is what it always was: once, in link order, strict.
 
@@ -159,7 +159,7 @@ global counts are not checked. Of 221 tests, 8 need an idle machine and 9
 more are skipped live; the rest run. Never mark a test that is only slow
 under load.
 
-**`soak [minutes] [loops=N] [seed=S] [halt] [idle]`** in the shell is the
+**`soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]`** in the shell is the
 whole thing in one command (default 3 minutes; Ctrl+C ends it after the
 step in progress):
 

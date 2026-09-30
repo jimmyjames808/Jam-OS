@@ -6,7 +6,7 @@
 wait 120 Jam OS shell
 wait jam>
 seen 60 init: /data mounted
-send soak loops=2 seed=11
+send soak loops=2 seed=11 load=4
 wait 30 soak: begun on
 wait 400 ktest: loop 1 of 1 done
 wait 200 utest:

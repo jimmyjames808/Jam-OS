@@ -45,6 +45,7 @@ static void stack_holder(void *arg)
 /* Stacks over the cache limit are freed, not kept (nor leaked). */
 KTEST(stack_cache_limit_frees)
 {
+    KT_NEEDS_IDLE("exact size of the thread stack cache, which every exiting thread changes");
     enum { LIMIT = 2, THREADS = 6 };
     unsigned old = sched_stack_cache_set_limit(LIMIT);
     KT_ASSERT(sched_stack_cache_pages() <= LIMIT * 16);

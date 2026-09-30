@@ -207,7 +207,11 @@ static bool parse_word(const char *w, size_t n, bool boot, struct ktest_opts *o,
     } else if (word_is(w, n, "keep")) {
         o->keep = true;
     } else if (word_is(w, n, "load")) {
-        o->load = true;
+        o->load = cpu_count * 2;
+    } else if (n > 5 && !memcmp(w, "load=", 5)) {
+        if (!word_num(w, n, "load=", &v) || v < 2 || v > 1024)
+            return false;
+        o->load = (uint32_t)v;
     } else if (boot ? n > 6 && !memcmp(w, "ktest=", 6) : true) {
         const char *p = boot ? w + 6 : w;
         size_t pl = boot ? n - 6 : n;
@@ -527,12 +531,12 @@ int ktest_run_opts(const struct ktest_opts *o)
     memset(rs.recent, 0, sizeof(rs.recent));
     warm_singletons();
     if (o->load) {
-        if (stress_load_start()) {
+        if (stress_load_start(o->load)) {
             /* The load makes channels, processes and pages of its own. */
             ktest_live = ktest_busy = true;
         } else {
             report("ktest: the load could not start: running without it");
-            rs.o.load = false;
+            rs.o.load = 0;
         }
     }
     rs.running = true;

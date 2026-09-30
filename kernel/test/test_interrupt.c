@@ -605,7 +605,7 @@ KTEST(interrupt_destroy_under_vector_storm)
         KT_ASSERT(interrupt_vector_of(irq, &cpu, &vec));
         storm_vec = vec;
         __atomic_store_n(&storm_cpu, cpu, __ATOMIC_RELEASE);
-        uint64_t end = uptime_ns() + 1000 * NS_PER_MS;
+        uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
         while (interrupt_fire_count(irq) < 2) {
             struct port_packet pkt;
             if (take(p, 1, &pkt) == OK)

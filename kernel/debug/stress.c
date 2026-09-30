@@ -506,11 +506,10 @@ static void load_main(void *arg)
     }
 }
 
-bool stress_load_start(void)
+bool stress_load_start(uint32_t n)
 {
-    if (load_thread || workers)
+    if (load_thread || workers || n < 2)
         return false;
-    uint32_t n = cpu_count * 2;
     kprintf("stress: background load: %u threads on %u CPUs (counters, allocations, sleeps, "
             "migrations, thread and process churn, TLB shootdowns)\n", n, cpu_count);
     workers_begin(n);

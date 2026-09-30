@@ -6,7 +6,7 @@
 # are read), then the boot stick itself is pulled (/data and /esp go) and
 # plugged back. The soak must end PASSED: a file cycle cut short by a pull
 # is not a failure, wrong data is.
-# Use tools/soak-test.sh (it sets @SEED@ and @LOOPS@ and adds the drive).
+# Use tools/soak-test.sh (it sets @SEED@, @LOOPS@ and @LOAD@ and adds the drive).
 wait 120 Jam OS shell
 wait jam>
 seen 60 init: /data mounted
@@ -14,7 +14,7 @@ monitor device_add usb-storage,id=s2,bus=xhci.0,port=2,drive=s2img
 wait 60 init: /usb0 mounted
 send mount -w /usb0; echo mw-$?
 wait mw-0
-send soak loops=@LOOPS@ seed=@SEED@
+send soak loops=@LOOPS@ seed=@SEED@ load=@LOAD@
 wait 60 soak: begun on
 wait 120 ktest: loop 1 of 1:
 sleep 10

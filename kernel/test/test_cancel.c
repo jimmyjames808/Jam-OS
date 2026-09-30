@@ -65,7 +65,7 @@ static void cancel_one(void (*fn)(void *), struct waiter *w)
     thread_cancel(th);
     thread_join(th);
     KT_EQ(w->st, ERR_CANCELED);
-    KT_ASSERT(uptime_ns() - t0 < NS_PER_S / 10);
+    KT_IDLE_ASSERT(uptime_ns() - t0 < NS_PER_S / 10);   /* how quickly: idle only */
 }
 
 KTEST(cancel_every_wait_kind)

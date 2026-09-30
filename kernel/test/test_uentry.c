@@ -423,6 +423,16 @@ KTEST(uentry_syscall_smp)
     }
 }
 
+/* *c after 20 ms. On a busy machine the thread counting may not have had
+ * its CPU by then: there, wait on (up to 20 s) until *c is past `floor`. */
+static uint64_t counter_after_20ms(volatile uint64_t *c, uint64_t floor)
+{
+    thread_sleep_ms(20);
+    for (int i = 0; ktest_busy && *c <= floor && i < 1000; i++)
+        thread_sleep_ms(20);
+    return *c;
+}
+
 /* A user busy-loop is preempted by the timer and resumes, and thread_cancel
  * stops it at its next return to user mode (how a process is killed). */
 KTEST(uentry_preempt_and_cancel)
@@ -445,10 +455,8 @@ KTEST(uentry_preempt_and_cancel)
     struct urun r = { &u, &prog, UCODE, 0, 0 };
     struct thread *t = user_spawn(&r, 1);
 
-    thread_sleep_ms(20);
-    uint64_t a = *counter;
-    thread_sleep_ms(20);
-    uint64_t b = *counter;
+    uint64_t a = counter_after_20ms(counter, 0);
+    uint64_t b = counter_after_20ms(counter, a);
     KT_ASSERT(a > 0);    /* it ran in ring 3 */
     KT_ASSERT(b > a);    /* and was preempted and resumed (we got CPU back, it kept going) */
 

@@ -208,7 +208,8 @@ KTEST(sysinfo_process_cpu_time)
     uint64_t dead = tsc_to_ns(process_cpu_tsc(p));
     kprintf("sysinfo_process_cpu_time: %lu us after 200 ms spinning, %lu us once dead\n",
             live / 1000, dead / 1000);
-    KT_ASSERT(live >= 50 * NS_PER_MS && live <= 1000 * NS_PER_MS);
+    KT_IDLE_ASSERT(live >= 50 * NS_PER_MS);   /* its share of 200 ms: idle only */
+    KT_ASSERT(live <= 1000 * NS_PER_MS);
     KT_ASSERT(dead >= live);
     n = 0;
     job_list_processes(root, 0, ps, 4, &n);

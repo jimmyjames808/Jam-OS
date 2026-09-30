@@ -1,7 +1,7 @@
 /* soak: the kernel tests over and over in a shuffled order on a busy
  * machine, until a time is up, then one summary.
  *
- *   soak [minutes] [loops=N] [seed=S] [halt] [idle]
+ *   soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]
  *
  * Each loop is `ktest loops=1 seed=<S + loop> keep load` (the kernel's own
  * load: the stress test's threads and processes) and then `utest`. All the
@@ -16,6 +16,7 @@
  *            prints each loop's, and `ktest seed=<it>` replays that loop
  *   halt     the first failure stops the machine on the panic screen (what
  *            the boot menu's Soak entry does), instead of being recorded
+ *   load=N   N kernel load workers instead of two per CPU (QEMU: fewer)
  *   idle     no load at all: only the repeated, shuffled tests and utest
  *
  * The summary (SOAK RESULTS) comes from the kernel: kernel/test/ktest_soak.c. */
@@ -27,6 +28,7 @@
 
 struct soak {
     uint64_t minutes, loops, seed;   /* loops 0: by the clock */
+    uint64_t workers;                /* kernel load workers; 0: two per CPU */
     bool     halt, idle;
     handle_t load_job, load_proc, load_ctl, load_ns;   /* bin/soakload, or 0 */
     uint64_t utest_runs, utest_failed;
@@ -52,6 +54,9 @@ static bool parse(int argc, char **argv, struct soak *s)
         else if (num_after(argv[i], "loops=", &s->loops) && s->loops >= 1 && s->loops <= 100000)
             ;
         else if (num_after(argv[i], "seed=", &s->seed) && s->seed >= 1 && s->seed <= 0x7fffffff)
+            ;
+        else if (num_after(argv[i], "load=", &s->workers) && s->workers >= 2 &&
+                 s->workers <= 1024)
             ;
         else if (sh_parse_u64(argv[i], &s->minutes) && s->minutes >= 1 && s->minutes <= 600)
             ;
@@ -119,9 +124,13 @@ static void stop_load(struct soak *s)
 /* One loop: the kernel tests, then utest. false: stop here. */
 static bool one_loop(struct soak *s, uint64_t loop)
 {
-    char cmd[64];
+    char cmd[64], load[16] = "";
+    if (!s->idle && s->workers)
+        snprintf(load, sizeof(load), " load=%lu", (unsigned long)s->workers);
+    else if (!s->idle)
+        snprintf(load, sizeof(load), " load");
     snprintf(cmd, sizeof(cmd), "ktest loops=1 seed=%lu%s%s", (unsigned long)(s->seed + loop),
-             s->halt ? "" : " keep", s->idle ? "" : " load");
+             s->halt ? "" : " keep", load);
     if (sh_kcmd(cmd) < 0)
         return false;
     if (sh_interrupted())
@@ -143,7 +152,7 @@ SH_CMD(soak)
 {
     struct soak s = { 0 };
     if (!parse(argc, argv, &s)) {
-        sh_tty("usage: soak [minutes] [loops=N] [seed=S] [halt] [idle]\n");
+        sh_tty("usage: soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]\n");
         return 2;
     }
     if (sh_kcmd("soak begin") < 0)

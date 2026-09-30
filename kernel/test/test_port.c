@@ -224,7 +224,7 @@ KTEST(timer_many_fire_in_deadline_order)
         KT_ASSERT(deadline[pkt.key] > last);   /* in deadline order */
         last = deadline[pkt.key];
     }
-    KT_ASSERT(uptime_ns() - last <= 30 * NS_PER_MS);
+    KT_IDLE_ASSERT(uptime_ns() - last <= 30 * NS_PER_MS);   /* how late: idle only */
     expect_empty(p);
     for (int i = 0; i < N; i++)
         kobject_unref(&ts[i]->base);

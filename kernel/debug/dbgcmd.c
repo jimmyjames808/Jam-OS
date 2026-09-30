@@ -6,7 +6,7 @@
  * The output is ordinary kernel log text, which the console follows with a
  * klog reader; the result comes back as the call's value.
  *
- *   ktest [prefix] [loops=N] [seed=S] [shuffle] [keep] [load]
+ *   ktest [prefix] [loops=N] [seed=S] [shuffle] [keep] [load[=N]]
  *                    ktest_run_opts (ktest.h has the words) with ktest_live
  *                    set: a failure panics,
  *                    as from the boot menu, but checks on system-wide counts

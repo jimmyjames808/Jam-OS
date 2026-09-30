@@ -93,11 +93,18 @@ def monitor(command):
         mon_sock.connect(path)
         mon_sock.settimeout(0.05)
     mon_sock.sendall(command.encode() + b"\n")
-    try:   # the monitor's echo and prompt: not needed, just not piled up
-        while mon_sock.recv(4096):
-            pass
+    reply = b""
+    try:   # the monitor's echo and prompt: not piled up; an error is said
+        while True:
+            got = mon_sock.recv(4096)
+            if not got:
+                break
+            reply += got
     except OSError:
         pass
+    for line in reply.decode(errors="replace").splitlines():
+        if "Error" in line or "error" in line:
+            print(f"serial-feed: monitor {command}: {line.strip()}", file=sys.stderr)
 
 
 KEYNAMES = {" ": "spc", "\r": "ret", "\n": "ret", "-": "minus", ".": "dot", "/": "slash",

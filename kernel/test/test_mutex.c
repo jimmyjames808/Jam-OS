@@ -30,6 +30,7 @@ static void mh_hammer(void *arg)
 
 KTEST(mutex_handoff_prevents_starvation)
 {
+    KT_NEEDS_IDLE("measures how long a waiter waits for a contended mutex on a CPU of its own");
     if (cpu_count < 3)
         return;
     mutex_init(&mh_mutex, "kt handoff");

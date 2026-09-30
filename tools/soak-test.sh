@@ -5,11 +5,15 @@
 # load (the stress workers) and bin/soakload's (files on /data and on a
 # second, writable stick; memory; channel calls; programs) running, utest
 # between the loops, and meanwhile the second stick and then the boot stick
-# pulled and plugged back through QEMU's monitor.
+# pulled and plugged back through QEMU's monitor. (The second stick is a
+# -blockdev node, like the boot stick: a -drive would be deleted with its
+# device at the first pull, and the device_add after it would find nothing.)
 #
 #   SOAK_LOOPS  loops (default 3)
 #   SOAK_SEED   the first loop's seed (default 1000 + the CPU count); a
 #               failure's line in SOAK RESULTS says how to replay its loop
+#   SOAK_LOAD   kernel load workers (default one per CPU: under TCG every
+#               worker costs the tests a host core; the PC runs two per CPU)
 #   QEMU_SMP    CPUs (default 4); run it at 4 and at 8
 #   QEMU_XHCI   passes through
 #
@@ -20,6 +24,7 @@ out=$1 name=${2:-soak}
 mkdir -p "$out"
 loops=${SOAK_LOOPS:-3}
 seed=${SOAK_SEED:-$((1000 + ${QEMU_SMP:-4}))}
+load=${SOAK_LOAD:-${QEMU_SMP:-4}}
 s2="$out/$name-s2.img"
 script="$out/$name.txt"
 tmp="$out/$name-files"
@@ -30,11 +35,11 @@ python3 -c "import random, sys; sys.stdout.buffer.write(random.Random(3).randbyt
 python3 tools/mkstick.py "$s2" 64 0c
 mformat -i "$s2@@1M" -T $((63 * 2048)) -F -v SOAK2 ::
 mcopy -i "$s2@@1M" "$tmp/second.txt" "$tmp/noise.bin" ::/
-sed -e "s/@LOOPS@/$loops/" -e "s/@SEED@/$seed/" tools/shell-tests/soak-plug.txt > "$script"
+sed -e "s/@LOOPS@/$loops/" -e "s/@SEED@/$seed/" -e "s/@LOAD@/$load/" tools/shell-tests/soak-plug.txt > "$script"
 
 ok=1
-if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-1200} QEMU_INPUT="$script" \
-     QEMU_USB="-drive if=none,id=s2img,format=raw,file=$s2" \
+if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$script" \
+     QEMU_USB="-blockdev driver=file,node-name=s2file,filename=$s2 -blockdev driver=raw,node-name=s2img,file=s2file" \
      tools/qemu-test.sh "$out" "$name" shell; then
     echo "$name: the shell script FAILED (see $out/$name.log)"
     ok=0
