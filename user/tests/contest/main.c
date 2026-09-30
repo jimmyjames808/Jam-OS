@@ -10,7 +10,9 @@
  * (What sources feed in -- terminal text and escapes, keyboard events --
  * is tested by every shell test typing over serial and usbkeys over USB.)
  * `contest trap` holds the keys forever: Ctrl+C must still reach the shell,
- * which kills it. Exit code 0 when all hold. */
+ * which kills it. Exit code 0 when all hold. The other words are probes
+ * the shell-test scripts run: `flood` (console writes flat out), `spew` and
+ * `junk` (a program's output in a pipe), `cad` and `steal` (authority). */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <idl/input.h>
@@ -202,8 +204,85 @@ static int flood(handle_t con)
     }
 }
 
+/* ---- probes of the shell's reading of a program's output in a pipe
+ * (SR_STDOUT; tools/shell-tests/cmds.txt runs them). ---- */
+
+/* Write line to the stdout channel, waiting for room. */
+static void out_line(handle_t out, const char *line)
+{
+    while (jam_channel_write(out, line, (uint32_t)strlen(line), NULL, 0) == ERR_SHOULD_WAIT) {
+        signals_t seen;
+        jam_object_wait_one(out, SIG_WRITABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen);
+    }
+}
+
+#define SPEW_THREADS 3
+/* Retry at once when the queue is full (no waiting for room), so a slot
+ * the reader frees is filled again before it can empty the queue. */
+static void spew_worker(void *arg)
+{
+    static const char line[] = "contest: spew\n";
+    for (;;)
+        (void)jam_channel_write((handle_t)(uintptr_t)arg, line, sizeof(line) - 1, NULL, 0);
+}
+
+/* `run contest spew | wc -l`: several threads write to stdout flat out,
+ * keeping the queue full whatever the shell reads. The shell reads a
+ * bounded round at a time, so Ctrl+C still gets through and kills us. */
+static int spew(handle_t out)
+{
+    static uint8_t stacks[SPEW_THREADS][8192];
+    for (unsigned i = 0; i < SPEW_THREADS; i++) {
+        handle_t t;
+        if (thread_spawn("spew", spew_worker, (void *)(uintptr_t)out, stacks[i],
+                         sizeof(stacks[i]), &t) != OK)
+            return 1;
+    }
+    spew_worker((void *)(uintptr_t)out);
+    return 1;
+}
+
+/* `run contest junk | cat`: messages printf never sends, between two
+ * lines: one over 4096 bytes, one carrying a handle, one carrying more
+ * handles than a read takes. The shell must drop them, close their handles
+ * (our ends see the peer close) and still copy the line after them. */
+static int junk(handle_t out)
+{
+    static char big[5000];
+    handle_t mine[9], theirs[9];
+    for (unsigned i = 0; i < 9; i++)
+        if (jam_channel_create(&mine[i], &theirs[i]) != OK)
+            return 1;
+    out_line(out, "contest: junk: before\n");
+    memset(big, 'x', sizeof(big));
+    CHECK(jam_channel_write(out, big, sizeof(big), NULL, 0) == OK);
+    CHECK(jam_channel_write(out, "one handle\n", 11, &theirs[0], 1) == OK);
+    CHECK(jam_channel_write(out, "eight handles\n", 14, &theirs[1], 8) == OK);
+    out_line(out, "contest: junk: after\n");
+    unsigned closed = 0;
+    uint64_t end = now() + 5000 * NS_PER_MS;
+    for (unsigned i = 0; i < 9; i++) {
+        signals_t seen = 0;
+        jam_object_wait_one(mine[i], SIG_PEER_CLOSED, end, &seen);
+        closed += (seen & SIG_PEER_CLOSED) != 0;
+    }
+    CHECK(closed == 9);
+    char line[80];
+    snprintf(line, sizeof(line), "contest: junk: %u of 9 handles closed by the reader\n", closed);
+    out_line(out, line);
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && (!strcmp(argv[1], "spew") || !strcmp(argv[1], "junk"))) {
+        handle_t out = startup_handle(SR_STDOUT);
+        if (!out) {
+            printf("contest: %s: no stdout channel (run it in a pipe)\n", argv[1]);
+            return 1;
+        }
+        return argv[1][0] == 's' ? spew(out) : junk(out);
+    }
     if (argc > 1 && !strcmp(argv[1], "steal"))
         return steal();
     if (argc > 1 && !strcmp(argv[1], "flood"))

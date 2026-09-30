@@ -12,20 +12,63 @@
 #include <idl/console.h>
 #include "sh.h"
 
-/* Copy what the program wrote to its SR_STDOUT channel into our output. */
-static void drain(handle_t out)
+/* One round of drain: a count and a time, so a program writing flat out
+ * can't keep wait_program from Ctrl+C and from seeing the program end. */
+#define DRAIN_BUDGET    64
+#define DRAIN_BUDGET_NS (20 * NS_PER_MS)
+#define DRAIN_HANDLES   4   /* slots to take a message's handles into, to close them */
+
+/* Take the next message off out and throw it away: n bytes and nh handles
+ * (what a read too small for it reported), its handles closed. */
+static void drop(handle_t out, uint32_t n, uint32_t nh)
+{
+    char *big = malloc(n ? n : 1);
+    handle_t *hs = malloc((nh ? nh : 1) * sizeof(handle_t));
+    uint32_t n2 = 0, nh2 = 0;
+    struct channel_read_args a = {
+        .h = out, .bytes_cap = n, .bytes = (uint64_t)(uintptr_t)big,
+        .actual_bytes = (uint64_t)(uintptr_t)&n2, .handles = (uint64_t)(uintptr_t)hs,
+        .handles_cap = nh, .actual_handles = (uint64_t)(uintptr_t)&nh2,
+    };
+    if (big && hs && jam_channel_read(&a) == OK)
+        for (uint32_t i = 0; i < nh2; i++)
+            jam_handle_close(hs[i]);
+    free(big);
+    free(hs);
+}
+
+/* Copy what the program wrote to its SR_STDOUT channel into our output,
+ * one round of it. A message printf wouldn't send (over 4096 bytes, or
+ * carrying handles) is dropped, its handles closed: left at the head of the
+ * queue it would fail every later read. True if more may be queued; false
+ * once the queue is empty or gone, or Ctrl+C was pressed. */
+static bool drain(handle_t out)
 {
     char buf[4096];
-    for (;;) {
-        uint32_t n = 0;
+    uint64_t t0 = now();
+    for (unsigned i = 0; i < DRAIN_BUDGET && now() - t0 < DRAIN_BUDGET_NS; i++) {
+        if (sh_interrupted())
+            return false;
+        handle_t hs[DRAIN_HANDLES];
+        uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
             .h = out, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
+            .handles_cap = DRAIN_HANDLES, .actual_handles = (uint64_t)(uintptr_t)&nh,
         };
-        if (jam_channel_read(&a) != OK)
-            return;
-        sh_put(buf, n);
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_BUFFER_TOO_SMALL) {
+            drop(out, n, nh);
+            continue;
+        }
+        if (st != OK)
+            return false;
+        for (uint32_t k = 0; k < nh; k++)
+            jam_handle_close(hs[k]);
+        if (!nh)
+            sh_put(buf, n);
     }
+    return true;
 }
 
 /* The bootfs path of argv0: "utest" -> bin/utest; "bin/x" as it is; else
@@ -80,7 +123,11 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
         }
     }
     if (out_r) {
-        drain(out_r);
+        /* What is left: the queue is capped (1024 messages), so this ends
+         * unless something the program left running keeps writing, which
+         * the guard (and Ctrl+C) cut short. */
+        for (unsigned guard = 0; guard < 64 && drain(out_r); guard++)
+            ;
         jam_handle_close(out_r);
     }
     return st;
