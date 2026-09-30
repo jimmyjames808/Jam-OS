@@ -77,6 +77,11 @@ void sup_died(struct binding *b, uint32_t gen)
         /* A USB class driver (usb.c): its interface gone = the end of it,
          * however it ended; exit 0 because the console went = reconnect. */
         if (usb_gone(b)) {
+            /* A disk's filesystem services go first: they map buffers its
+             * driver made, which stay charged to the driver's job until
+             * they are gone too (a service in the middle of a request has
+             * not ended by itself yet). */
+            disk_stopped(b);
             bool clean = job_empty(b->job, b->path);
             forget_driver(b);
             problems += !clean;
