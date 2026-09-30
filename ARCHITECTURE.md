@@ -529,14 +529,22 @@ Not built yet; these rules bind every future path that can transmit.
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and gives it
   to what it starts; the shell and logd are sent every later change (a
-  mount gone, or back with a new service). Its control channel (`abi/idl/initctl.idl`) serves
+  mount gone, or back with a new service), each change replacing the one
+  they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
   `kill <name>` and `reboot`, which syncs `/data` first (2 s at most); the
   shell holds one end, the console another that answers only `reboot`
   (Ctrl+Alt+Del).
 - **Namespace**: each process has a table of mount point → `fs` channel
   (`/boot`, `/data`, `/esp`), given by whoever started it (startup role
   NS: a channel on which the starter sends the mounts, and later ones to
-  a program that is already running). libos finds a path's mount and calls
+  a program that is already running). A program reads that channel only
+  when it next looks up a path, and some never do again (logd), so a
+  starter that follows its mounts for a running program keeps a
+  duplicate of the program's end and sends each change as the whole
+  namespace (`NS_SET`) after taking back the one not read yet
+  (`ns_update`): the program's end holds at most one message however
+  often the mounts change, and its next lookup sees the latest
+  (`user/include/os.h`, "files", has the protocol). libos finds a path's mount and calls
   that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
   through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
   bootfs image served by a process (`user/services/bootfs/`). No global

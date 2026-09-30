@@ -37,7 +37,10 @@
  *             control channel (SR_USER + 3, ctl.c: kill, sync, reboot) and
  *             init's namespace (SR_NS)
  * init keeps its end of the shell's and logd's SR_NS channels and sends
- * them every later change of its mounts (logd: of /data).
+ * them every later change of its mounts (logd: of /data), with ns_update:
+ * each change takes back the one they haven't read yet (logd never looks
+ * up a path again after it opens its file), so however often the mounts
+ * change, each holds at most one message from init.
  * None of the console, serialin and the shell gets RIGHT_MAP or
  * RIGHT_SLICE on the root: they can't reach hardware beyond the calls made
  * for them.
@@ -98,9 +101,7 @@ static struct svc svcs[NSVC] = {
 struct follower {
     const char *const *only;    /* the mounts it may have (NS_ALL: every one); NULL: none */
     handle_t           ns;      /* init's end of its SR_NS channel (0: not running) */
-    /* The mount points it was last sent, to tell it which are gone. */
-    char               has[NS_MAX_MOUNTS][NS_NAME_MAX];
-    unsigned           nhas;
+    handle_t           back;    /* a duplicate of its end, for ns_update (0: none) */
 };
 
 static const char *const logd_mounts[] = { DATA_MOUNT, NULL };
@@ -173,7 +174,7 @@ static status_t start(unsigned i, int argc, const char *const *argv, struct spaw
 {
     struct svc *s = &svcs[i];
     struct follower *f = &followers[i];
-    handle_t ns = HANDLE_INVALID;
+    handle_t ns = HANDLE_INVALID, back = HANDLE_INVALID;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
     if (st != OK) {
         for (unsigned k = 0; k < nx; k++)
@@ -183,7 +184,7 @@ static status_t start(unsigned i, int argc, const char *const *argv, struct spaw
     }
     struct spawn_args a = {
         .path = s->path, .argc = argc, .argv = argv, .job = s->job, .extra = x, .nextra = nx,
-        .ns = f->only, .ns_out = f->only ? &ns : NULL,
+        .ns = f->only, .ns_out = f->only ? &ns : NULL, .ns_back_out = f->only ? &back : NULL,
     };
     st = spawn(&a, &s->proc);
     if (st == OK)
@@ -198,12 +199,14 @@ static status_t start(unsigned i, int argc, const char *const *argv, struct spaw
         s->job = HANDLE_INVALID;
         if (ns)
             jam_handle_close(ns);
+        if (back)
+            jam_handle_close(back);
         return st;
     }
     s->running = true;
     s->started = now();
     f->ns = ns;
-    f->nhas = f->only ? mount_points(f->only, f->has) : 0;   /* what spawn just sent it */
+    f->back = back;
     return OK;
 }
 
@@ -213,32 +216,19 @@ static status_t start1(unsigned i, struct spawn_handle *x, unsigned nx)
     return start(i, 1, argv, x, nx);
 }
 
-/* Svc i's namespace follows init's: the mounts it has that init lost are
- * unmounted, and every mount of its list that init has is sent (again:
- * one whose service restarted has a new channel). */
+/* Svc i's namespace follows init's: the whole of it that its list
+ * allows (a mount whose service restarted has a new channel), replacing
+ * any earlier one it hasn't read. */
 static void tell_follower(unsigned i)
 {
     struct follower *f = &followers[i];
     if (!f->ns)
         return;
-    char have[NS_MAX_MOUNTS][NS_NAME_MAX];
-    unsigned n = mount_points(f->only, have);
-    status_t st = OK;
-    for (unsigned k = 0; st == OK && k < f->nhas; k++) {
-        bool still = false;
-        for (unsigned j = 0; j < n && !still; j++)
-            still = !strcmp(f->has[k], have[j]);
-        if (!still)
-            st = ns_send_one(f->ns, f->has[k], HANDLE_INVALID);
-    }
-    if (st == OK)
-        st = ns_send(f->ns, f->only);
-    /* It is gone, or its queue is full: the next one starts with what is
-     * mounted then. */
+    status_t st = ns_update(f->ns, f->back, f->only);
+    /* It is gone, or out of memory: the next change sends the whole
+     * namespace again, so nothing is lost for good. */
     if (st != OK && st != ERR_PEER_CLOSED)
         printf("init: %s didn't get the new mounts (%s)\n", svcs[i].path, status_str(st));
-    memcpy(f->has, have, sizeof(have));
-    f->nhas = n;
 }
 
 static void tell_mounts(void)
@@ -548,6 +538,10 @@ static void ended(unsigned i)
     if (followers[i].ns) {
         jam_handle_close(followers[i].ns);
         followers[i].ns = HANDLE_INVALID;
+    }
+    if (followers[i].back) {
+        jam_handle_close(followers[i].back);   /* its end, and what waits on it, go now */
+        followers[i].back = HANDLE_INVALID;
     }
     if (++s->ends > GIVE_UP_COUNT) {
         s->given_up = true;

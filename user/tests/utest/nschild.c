@@ -81,6 +81,31 @@ static int ns_late(void)
     return ns_holds("/u/hello", NS_HELLO) ? 0 : 65;
 }
 
+/* "ns-sleeper": say we run, then touch nothing until the parent says go
+ * (SR_USER), while it changes our namespace hundreds of times
+ * (nsnotice.c); then our mounts are what it has now: /boot and /w, not /v. */
+static int ns_sleeper(void)
+{
+    signals_t seen;
+    uint32_t ready = 0;
+    if (jam_channel_write(startup_handle(SR_USER), &ready, sizeof(ready), NULL, 0) != OK)
+        return 69;
+    if (jam_object_wait_one(startup_handle(SR_USER), SIG_READABLE, now() + 120 * NS_PER_S,
+                            &seen) != OK)
+        return 70;
+    if (fs_stat("/w/init.cfg", NULL, NULL, NULL) != OK)
+        return 71;
+    if (fs_stat("/v/init.cfg", NULL, NULL, NULL) != ERR_NOT_FOUND)
+        return 72;
+    if (fs_stat("/boot/init.cfg", NULL, NULL, NULL) != OK)
+        return 73;
+    struct fs_entry e;
+    unsigned n = 0;
+    while (fs_readdir("/", n, &e) == OK)
+        n++;
+    return n == 2 ? 0 : 74;
+}
+
 /* "fscat <path>": the file's text, for the shell's scripts (a program
  * `run` starts sees the shell's mounts). */
 static int fscat(const char *path)
@@ -133,6 +158,8 @@ int ns_child(int argc, char **argv)
         return ns_none();
     if (!strcmp(m, "ns-late"))
         return ns_late();
+    if (!strcmp(m, "ns-sleeper"))
+        return ns_sleeper();
     if (!strcmp(m, "fscat") && argc > 2)
         return fscat(argv[2]);
     if (!strcmp(m, "fs-hold") && argc > 2)
