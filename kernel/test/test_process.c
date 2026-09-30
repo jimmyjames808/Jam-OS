@@ -377,11 +377,17 @@ KTEST(proc_debug_write_rate_limited)
  * tries to start a second thread there, then makes the first creation
  * fail as if out of memory. */
 static struct uthread *window_u2;
+static struct process *window_p;
 static status_t window_st;
 
+/* Only the test's own process: the hook is global, and under load other
+ * threads start processes too (the soak's stress workers did, on the PC,
+ * and their starts failed "for lack of memory"). */
 static void window_hook(void *arg)
 {
     struct dbg_process_start *h = arg;
+    if (h->p != window_p)
+        return;
     window_st = uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL);
     h->fail = true;
 }
@@ -400,6 +406,7 @@ KTEST(proc_start_window_refuses_other_threads)
     struct khandle arg0 = khandle_from_new((struct kobject *)b, RIGHTS_BASIC | RIGHTS_IO);
 
     window_st = OK;
+    window_p = p;
     __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], window_hook, __ATOMIC_RELEASE);
     status_t st = process_start(p, u1, 0x400000, 0x800000, &arg0, 0, NULL);
     __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], NULL, __ATOMIC_RELEASE);
