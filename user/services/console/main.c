@@ -115,7 +115,12 @@ int main(int argc, char **argv)
     }
     st = jam_klog_open(root, &klog);
     if (st == OK) {
-        jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
+        /* Unbound, new kernel lines show only when a program writes (each
+         * write pulls them in first): say so, it's worth knowing. */
+        st = jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
+        if (st != OK)
+            printf("console: kernel log: port_bind: %s; its lines show only with program "
+                   "output\n", status_str(st));
         klog_event();   /* the boot log so far */
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
