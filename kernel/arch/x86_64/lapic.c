@@ -209,7 +209,7 @@ static void on_timer(struct trap_frame *f)
     (void)f;
     struct cpu *c = this_cpu();
     if (timer_mode == TMR_MODE_PERIODIC) {
-        c->ticks++;
+        __atomic_store_n(&c->ticks, c->ticks + 1, __ATOMIC_RELAXED);
         lapic_eoi();
         sched_timer_expire();
         sched_tick();
@@ -219,7 +219,7 @@ static void on_timer(struct trap_frame *f)
     uint64_t now = rdtsc();
     bool tick = now >= c->tick_deadline;
     if (tick) {
-        c->ticks++;
+        __atomic_store_n(&c->ticks, c->ticks + 1, __ATOMIC_RELAXED);
         c->tick_deadline += tsc_period;
         if (c->tick_deadline <= now)   /* missed ticks (a long stall): don't catch up */
             c->tick_deadline = now + tsc_period;

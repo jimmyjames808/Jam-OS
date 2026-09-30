@@ -126,7 +126,7 @@ static void fs_hook(void *arg)
         return;
     fs_phase = 2;          /* prev is off this CPU and its rq lock is free */
     udelay(20000);         /* stands in for an SMI / stalled vCPU here */
-    fs_seen_state = prev->state;
+    fs_seen_state = thread_state(prev);
     fs_phase = 3;
 }
 
@@ -201,7 +201,7 @@ static struct thread *volatile ab_stale_waker;
 static void ab_sched_hook(void *arg)
 {
     struct thread *prev = arg;
-    if (prev != ab_target || prev->state != T_BLOCKED)
+    if (prev != ab_target || thread_state(prev) != T_BLOCKED)
         return;
     uint32_t me = this_cpu()->index;   /* rq lock held: IRQs off */
     if (ab_phase == 1 && me == 1) {
@@ -262,7 +262,7 @@ KTEST(repro_wake_stale_cpu)
     cpumask_one(&m, 1);
     ab_target = thread_create_on("repro-aba", ab_victim, NULL, PRIO_DEFAULT, &m);
     KT_ASSERT(wait_for(&ab_phase, 3, 2000));   /* stale waker read t->cpu = 1 */
-    while (ab_target->on_cpu)
+    while (__atomic_load_n(&ab_target->on_cpu, __ATOMIC_RELAXED))
         cpu_relax();
     cpumask_one(&m, 3);
     thread_set_affinity(ab_target, &m);
@@ -283,7 +283,8 @@ KTEST(repro_wake_stale_cpu)
     for (uint32_t i = 0; i < cpu_count; i++)
         anywhere |= cpus[i]->current == t;
     kprintf("repro: \"%s\" state %d on_cpu %d queued %d current-somewhere %d, "
-            "wakes %lu -> %lu\n", t->name, t->state, t->on_cpu, t->rq_node.next != NULL,
+            "wakes %lu -> %lu\n", t->name, thread_state(t),
+            __atomic_load_n(&t->on_cpu, __ATOMIC_RELAXED), t->rq_node.next != NULL,
             anywhere, before, ab_wakes);
     (void)anywhere;
     /* thread_wake re-reads t->cpu under the run queue lock and retries if

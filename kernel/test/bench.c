@@ -497,12 +497,12 @@ static void yield_timer(void *arg)
         thread_yield();
     struct cpu *c = cpus[cpu_p];
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t sw0 = c->switches;
+        uint64_t sw0 = __atomic_load_n(&c->switches, __ATOMIC_RELAXED);
         uint64_t t0 = stamp();
         for (unsigned k = 0; k < BATCH; k++)
             thread_yield();
         uint64_t t1 = stamp();
-        uint64_t sw = c->switches - sw0;
+        uint64_t sw = __atomic_load_n(&c->switches, __ATOMIC_RELAXED) - sw0;
         yield_switches += sw;
         samples[i] = sw ? span_ps(t0, t1, sw) : 0;
     }

@@ -343,8 +343,8 @@ static void print_progress(uint64_t sec)
 {
     uint64_t sw = 0, steals = 0, t, fr;
     for (uint32_t i = 0; i < cpu_count; i++) {
-        sw += cpus[i]->switches;
-        steals += cpus[i]->steals;
+        sw += __atomic_load_n(&cpus[i]->switches, __ATOMIC_RELAXED);
+        steals += __atomic_load_n(&cpus[i]->steals, __ATOMIC_RELAXED);
     }
     pmm_stats(&t, &fr);
     kprintf("stress: %4lu s  switches %lu  steals %lu  counter %lu  allocs %lu  "

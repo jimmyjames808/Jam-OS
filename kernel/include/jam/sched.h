@@ -70,13 +70,13 @@ struct thread {
     uint64_t          rsp;           /* saved stack pointer while switched out */
     uint64_t          id;            /* unique, never reused */
     char              name[24];      /* for logs and panics, NUL-terminated */
-    volatile int      state;         /* T_* */
+    int               state;         /* T_* */
     int               prio;          /* effective priority (base or boosted) */
     int               base_prio;     /* priority without a boost */
     int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
     uint64_t          boosts;        /* starvation boosts it has had */
-    volatile bool     on_cpu;        /* its stack is still in use by a CPU */
+    bool              on_cpu;        /* its stack is still in use by a CPU */
     bool              is_idle;       /* a CPU's idle thread */
     uint32_t          cpu;           /* CPU it runs on / is queued on */
     uint32_t          slice;         /* ticks left of its time slice */
@@ -92,7 +92,7 @@ struct thread {
 
     void             *stack_top;     /* top of its kernel stack */
     uint32_t          refs;          /* references: creator's and its own */
-    volatile bool     exited;        /* has run thread_exit; exit_wq.lock */
+    bool              exited;        /* has run thread_exit; exit_wq.lock */
     struct waitqueue  exit_wq;       /* thread_join waits here */
 
     uint64_t          switches_in;   /* times it was switched in */
@@ -288,6 +288,20 @@ void waitqueue_wake_all(struct waitqueue *wq);
  * no thread can be starved by others barging in ahead of it. */
 #define MUTEX_HANDOFF_NS 1000000ull
 extern uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter (atomic) */
+/* A thread's state (T_*). It changes under the lock of the run queue or
+ * wait queue the thread is on, and other CPUs read it without that lock,
+ * so every access is atomic: relaxed, as the locks and on_cpu's
+ * release/acquire order everything else. */
+static inline int thread_state(const struct thread *t)
+{
+    return __atomic_load_n(&t->state, __ATOMIC_RELAXED);
+}
+
+static inline void thread_set_state(struct thread *t, int state)
+{
+    __atomic_store_n(&t->state, state, __ATOMIC_RELAXED);
+}
+
 struct mutex {
     spinlock_t       lock;      /* guards owner and the hand-off */
     struct thread   *owner;     /* the holder, NULL if free */

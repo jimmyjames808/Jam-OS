@@ -263,7 +263,7 @@ struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *),
     *--sp = 0;                /* r15 */
     t->rsp = (uint64_t)sp;
 
-    t->state = T_BLOCKED;
+    thread_set_state(t, T_BLOCKED);
     t->cpu = percpu_index();   /* placement hint only: "last ran here" */
     return t;
 }
@@ -272,12 +272,12 @@ _Noreturn void thread_exit(void)
 {
     struct thread *t = current_thread();
     uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    t->exited = true;
+    __atomic_store_n(&t->exited, true, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     waitqueue_wake_all(&t->exit_wq);
     sched_stack_trim();   /* stacks of threads reaped before us (see above) */
     irq_disable();
-    t->state = T_DEAD;
+    thread_set_state(t, T_DEAD);
     schedule();
     panic("sched: dead thread \"%s\" was scheduled", t->name);
 }
@@ -285,7 +285,7 @@ _Noreturn void thread_exit(void)
 void thread_join(struct thread *t)
 {
     uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    while (!t->exited)
+    while (!__atomic_load_n(&t->exited, __ATOMIC_ACQUIRE))
         waitqueue_wait(&t->exit_wq, &t->exit_wq.lock, &f);
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     thread_put(t);

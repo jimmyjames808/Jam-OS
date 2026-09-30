@@ -132,14 +132,14 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
+    thread_set_state(current_thread(), T_BLOCKED);
     block_prepared(lock, irqflags, deadline_ns, false);
 }
 
 status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
+    thread_set_state(current_thread(), T_BLOCKED);
     return block_prepared(lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
 }
 
@@ -208,7 +208,7 @@ static bool wq_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
     if (!same)
         f = spin_lock_irqsave(&wq->lock);
     list_add_tail(&wq->waiters, &t->wait_node);
-    t->state = T_BLOCKED;   /* before the wq lock drops: wakers pop under it */
+    thread_set_state(t, T_BLOCKED);   /* before the wq lock drops: wakers pop under it */
     if (!same)
         spin_unlock_irqrestore(&wq->lock, f);
     bool cancelled = block_prepared(lock, irqflags, deadline_ns, cancellable);

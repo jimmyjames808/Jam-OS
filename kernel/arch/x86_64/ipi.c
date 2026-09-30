@@ -44,14 +44,14 @@ static uint32_t halted;            /* CPUs that took the panic NMI */
 
 void ipi_send(uint32_t cpu, uint8_t vector)
 {
-    cpus[cpu]->ipis++;
+    __atomic_add_fetch(&cpus[cpu]->ipis, 1, __ATOMIC_RELAXED);
     lapic_send_ipi(cpus[cpu]->lapic_id, vector);
 }
 
 static void on_reschedule(struct trap_frame *f)
 {
     (void)f;
-    this_cpu()->need_resched = true;
+    cpu_set_need_resched(this_cpu(), true);
     lapic_eoi();
 }
 
@@ -155,7 +155,7 @@ static void call_others_chunked(void (*fn)(void *), void *arg)
     for (uint32_t next = 0; next < cpu_count;) {
         uint32_t targets[CHUNK], n = 0;
         for (; next < cpu_count && n < CHUNK; next++)
-            if (next != me && cpus[next]->online)
+            if (next != me && cpu_online(cpus[next]))
                 targets[n++] = next;
         if (!n)
             continue;
@@ -179,11 +179,11 @@ void smp_call_others(void (*fn)(void *), void *arg)
     uint32_t me = this_cpu()->index, n = 0;
     struct call c = { fn, arg, 0 };
     for (uint32_t i = 0; i < cpu_count; i++)
-        if (i != me && cpus[i]->online)
+        if (i != me && cpu_online(cpus[i]))
             n++;
     c.pending = n;
     for (uint32_t i = 0; i < cpu_count; i++)
-        if (i != me && cpus[i]->online)
+        if (i != me && cpu_online(cpus[i]))
             post(i, &slots[i], &c);
     preempt_enable();
     wait_done(&c);
@@ -266,7 +266,7 @@ void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len)
     for (uint32_t next = 0; next < cpu_count;) {
         uint32_t n = 0;
         for (; next < cpu_count && n < CHUNK; next++)
-            if (next != me && cpumask_has(mask, next) && cpus[next]->online)
+            if (next != me && cpumask_has(mask, next) && cpu_online(cpus[next]))
                 targets[n++] = next;
         if (!n)
             continue;
@@ -300,7 +300,7 @@ uint32_t ipi_halt_others(void)
         return 0;
     uint32_t others = 0;
     for (uint32_t i = 0; i < cpu_count; i++)
-        others += cpus[i]->online && cpus[i] != this_cpu();
+        others += cpu_online(cpus[i]) && cpus[i] != this_cpu();
     lapic_send_nmi_others();
     uint64_t start = rdtsc();
     while (__atomic_load_n(&halted, __ATOMIC_ACQUIRE) < others && rdtsc() - start < tsc_hz / 10)

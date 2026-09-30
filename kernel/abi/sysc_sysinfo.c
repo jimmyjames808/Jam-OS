@@ -57,7 +57,7 @@ void sysinfo_fill(struct sys_info *s)
     pmm_stats(&s->mem_total_pages, &s->mem_free_pages);
     s->stack_cache_pages = sched_stack_cache_pages();
     for (uint32_t i = 0; i < cpu_count; i++)
-        s->cpu_count += cpus[i] && cpus[i]->online;
+        s->cpu_count += cpus[i] && cpu_online(cpus[i]);
     s->flags = cpu_features.hybrid ? SYSINFO_HYBRID : 0;
 #ifndef JAM_NO_KTESTS
     s->flags |= SYSINFO_KTESTS;
@@ -75,9 +75,9 @@ void sysinfo_cpu(uint32_t i, struct cpu_stat *s)
     s->type = (uint32_t)c->type;
     s->core_id = c->core_id;
     s->smt_id = c->smt_id;
-    s->online = c->online;
+    s->online = cpu_online(c);
     s->idle_ns = tsc_to_ns(sched_cpu_idle_tsc(i));
-    s->switches = c->switches;
+    s->switches = __atomic_load_n(&c->switches, __ATOMIC_RELAXED);
 }
 
 int64_t sysc_sys_info(handle_t root, uint64_t out)

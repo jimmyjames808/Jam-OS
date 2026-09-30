@@ -144,7 +144,7 @@ static bool apic_msi_ok(uint32_t apic_id)
 static status_t tables_ensure(void)
 {
     for (uint32_t i = 0; i < cpu_count; i++) {
-        if (__atomic_load_n(&vtab[i], __ATOMIC_ACQUIRE) || !cpus[i] || !cpus[i]->online)
+        if (__atomic_load_n(&vtab[i], __ATOMIC_ACQUIRE) || !cpus[i] || !cpu_online(cpus[i]))
             continue;
         struct vec_table *t = kzalloc(sizeof(*t));
         if (!t)
@@ -173,7 +173,7 @@ status_t vector_alloc(vector_fn_t fn, void *ctx, uint32_t *cpu, uint8_t *vec)
         struct vec_table *t = vtab[i];
         view[i] = (struct vector_cpu_view){
             .type = c ? (uint8_t)c->type : CORE_UNKNOWN,
-            .usable = c && c->online && t && apic_msi_ok(c->lapic_id),
+            .usable = c && cpu_online(c) && t && apic_msi_ok(c->lapic_id),
             .nvec = t ? t->count : 0,
         };
     }

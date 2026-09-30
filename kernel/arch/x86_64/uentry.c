@@ -112,7 +112,7 @@ static void return_to_user_work(void)
             panic("returning to user mode with preempt_count %u, %u spinlock(s) held, "
                   "irq depth %u", c->preempt_count, c->held_depth, c->irq_depth);
         }
-        if (!c->need_resched)
+        if (!cpu_need_resched(c))
             break;
         schedule();   /* returns with interrupts off again */
     }
@@ -316,7 +316,7 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
         c->tss.rsp[0] = (uint64_t)next->stack_top;
         c->kernel_rsp = (uint64_t)next->stack_top;
     }
-    if (prev->ustate && prev->state != T_DEAD)
+    if (prev->ustate && thread_state(prev) != T_DEAD)
         fpu_save(prev->ustate);
     if (next->ustate)
         fpu_load(next);   /* skipped if this CPU still holds its state (fpu.c) */

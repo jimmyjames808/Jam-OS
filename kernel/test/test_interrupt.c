@@ -69,8 +69,8 @@ static bool vector_cpu(uint32_t i)
 {
     uint32_t usable = 0;
     for (uint32_t k = 0; k < cpu_count; k++)
-        usable += cpus[k]->online && cpus[k]->lapic_id < 0xff;
-    return cpus[i]->online && cpus[i]->lapic_id < 0xff && (i != 0 || usable == 1);
+        usable += cpu_online(cpus[k]) && cpus[k]->lapic_id < 0xff;
+    return cpu_online(cpus[i]) && cpus[i]->lapic_id < 0xff && (i != 0 || usable == 1);
 }
 
 /* Wait (bounded) until *v >= want. */
@@ -591,7 +591,7 @@ KTEST(interrupt_destroy_under_vector_storm)
     uint64_t unowned = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
     uint64_t ticks[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
-        ticks[i] = cpus[i]->ticks;
+        ticks[i] = cpu_ticks(cpus[i]);
     kt_pin_self(0);
     storm_stop = false;
     storm_cpu = UINT32_MAX;
@@ -630,7 +630,7 @@ KTEST(interrupt_destroy_under_vector_storm)
     /* No CPU was lost: every one still ticks. */
     thread_sleep_ns(50 * NS_PER_MS);
     for (uint32_t i = 0; i < cpu_count; i++)
-        KT_ASSERT(cpus[i]->ticks > ticks[i]);
+        KT_ASSERT(cpu_ticks(cpus[i]) > ticks[i]);
     kprintf("interrupt: storm sent %lu vectors, %lu unowned after teardown\n", storm_sent,
             unowned_now - unowned);
     kt_unpin_self();

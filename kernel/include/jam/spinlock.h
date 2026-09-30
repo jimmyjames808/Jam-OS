@@ -18,8 +18,8 @@
 
 typedef struct spinlock {
     uint16_t          next;    /* next ticket to hand out */
-    volatile uint16_t owner;   /* ticket now being served */
-    volatile uint16_t holder;  /* CPU index + 1 of the holder, 0 if free */
+    uint16_t          owner;   /* ticket now being served */
+    uint16_t          holder;  /* CPU index + 1 of the holder, 0 if free */
     uint16_t          cls;     /* lock class index + 1, resolved lazily */
     const char       *name;    /* lock class name */
 } spinlock_t;

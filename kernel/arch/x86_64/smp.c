@@ -66,7 +66,7 @@ void smp_init_bsp(const struct boot_info *bi)
     cpu_bringup(c);
     if (lapic_id() != c->lapic_id)
         panic("smp: BSP reports lapic %u, loader said %u", lapic_id(), c->lapic_id);
-    c->online = true;
+    __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
     online_count = 1;
 }
 
@@ -114,7 +114,7 @@ void smp_start_aps(const struct boot_info *bi)
     heap_percpu_init();
     if (online != cpu_count) {
         for (uint32_t i = 0; i < cpu_count; i++)
-            if (!cpus[i]->online)
+            if (!cpu_online(cpus[i]))
                 kprintf("smp: cpu %u (lapic %u) did not start\n", i, cpus[i]->lapic_id);
         /* Stuck APs may still be running loader code: keep its memory. */
         kprintf("smp: NOT reclaiming loader memory\n");
@@ -143,11 +143,11 @@ bool smp_report(uint64_t window_ms)
      * window N lines longer than the others. */
     static uint64_t before[MAX_CPUS], after[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
-        before[i] = cpus[i]->ticks;
+        before[i] = cpu_ticks(cpus[i]);
     uint64_t t0 = rdtsc();
     udelay(window_ms * 1000);
     for (uint32_t i = 0; i < cpu_count; i++)
-        after[i] = cpus[i]->ticks;
+        after[i] = cpu_ticks(cpus[i]);
     uint64_t measured_us = (rdtsc() - t0) / (tsc_hz / 1000000);
 
     uint64_t expect = TICK_HZ * window_ms / 1000;

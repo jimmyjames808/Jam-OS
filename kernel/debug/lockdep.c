@@ -363,7 +363,7 @@ static void wait_turn(const spinlock_t *l, uint16_t ticket)
             if (!start)
                 start = rdtsc();
             else if (rdtsc() - start > tsc_hz * STUCK_SECONDS) {
-                uint16_t h = l->holder;
+                uint16_t h = __atomic_load_n(&l->holder, __ATOMIC_RELAXED);
                 panic("spinlock \"%s\" stuck for %d s on cpu %u, held by cpu %d", l->name,
                       STUCK_SECONDS, this_cpu()->index, (int)h - 1);
             }
@@ -377,7 +377,7 @@ static void lock_common(spinlock_t *l, unsigned subclass)
     acquire_checks(l, subclass);   /* before spinning: report, don't hang */
     uint16_t ticket = __atomic_fetch_add(&l->next, 1, __ATOMIC_RELAXED);
     wait_turn(l, ticket);
-    l->holder = (uint16_t)(this_cpu()->index + 1);
+    __atomic_store_n(&l->holder, (uint16_t)(this_cpu()->index + 1), __ATOMIC_RELAXED);
 }
 
 void spin_lock(spinlock_t *l)
@@ -401,15 +401,15 @@ bool spin_trylock(spinlock_t *l)
         return false;
     }
     acquire_checks(l, 0);
-    l->holder = (uint16_t)(this_cpu()->index + 1);
+    __atomic_store_n(&l->holder, (uint16_t)(this_cpu()->index + 1), __ATOMIC_RELAXED);
     return true;
 }
 
 static void unlock_common(spinlock_t *l)
 {
     release_checks(l);
-    l->holder = 0;
-    __atomic_store_n(&l->owner, (uint16_t)(l->owner + 1), __ATOMIC_RELEASE);
+    __atomic_store_n(&l->holder, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&l->owner, (uint16_t)(l->owner + 1), __ATOMIC_RELEASE);   /* ours to write */
 }
 
 void spin_unlock(spinlock_t *l)
@@ -426,6 +426,6 @@ void spin_unlock_no_resched(spinlock_t *l)
 
 void spin_force_unlock(spinlock_t *l)
 {
-    l->holder = 0;
+    __atomic_store_n(&l->holder, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&l->owner, l->next, __ATOMIC_RELEASE);
 }
