@@ -72,6 +72,8 @@ static struct {
     bool           done;          /* keep: its function returned or failed (atomic) */
 } rs;
 
+static unsigned last_failed;   /* the last run's failures (ktest_last_failed) */
+
 /* What one run adds up to. */
 struct tally {
     int      ran, skipped, failed, drifted, relaxed_tests;
@@ -121,6 +123,8 @@ static uint64_t free_pages_now(uint64_t *total)
  * the joiner already woke) return to the cache before we measure. */
 static void settle(void)
 {
+    if (ktest_busy)
+        return;   /* the load never settles, and no page count is judged under it */
     for (int i = 0; i < 4; i++) {
         thread_sleep_ms(2);
         thread_yield();
@@ -373,6 +377,10 @@ static bool check_pages(const struct ktest *t, uint64_t before, struct tally *ty
 {
     uint64_t after = accounted_pages();
     long leaked = (long)(before - after);
+    if (leaked > LEAK_SLACK_PAGES && ktest_busy) {
+        ty->drifted++;   /* the load takes and frees pages all the time: nothing to read */
+        return true;
+    }
     if (leaked > LEAK_SLACK_PAGES) {
         after = ktest_accounted_pages();
         leaked = (long)(before - after);
@@ -540,10 +548,16 @@ int ktest_run_opts(const struct ktest_opts *o)
                                  "the \"stress: FAILED\" lines", 0, rs.o.seed);
     }
     report_run(&ty, load_failures);
+    last_failed = (unsigned)ty.failed + (load_failures ? 1 : 0);
     ktest_live = was_live;
     ktest_busy = false;
     kfree(order);
     return ty.ran;
+}
+
+unsigned ktest_last_failed(void)
+{
+    return last_failed;
 }
 
 int ktest_run(const char *prefix)

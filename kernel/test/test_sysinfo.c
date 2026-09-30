@@ -167,11 +167,14 @@ KTEST(sysinfo_thread_cpu_time)
     kprintf("sysinfo_thread_cpu_time: spinner %lu us (%lu us at 50 ms), sleeper %lu us, "
             "idle %lu us over %u CPUs\n", spin_ns / 1000, mid / 1000, sleep_ns / 1000,
             idle_ns / 1000, cpu_count);
-    KT_ASSERT(spin_ns >= 60 * NS_PER_MS && spin_ns <= 400 * NS_PER_MS);
-    KT_ASSERT(mid >= 10 * NS_PER_MS);
+    /* How much CPU a spinner gets, and that CPUs sat idle, only hold on an
+     * idle machine; that a sleeper is charged next to nothing always does. */
+    KT_IDLE_ASSERT(spin_ns >= 60 * NS_PER_MS);
+    KT_ASSERT(spin_ns <= 400 * NS_PER_MS);
+    KT_IDLE_ASSERT(mid >= 10 * NS_PER_MS);
     KT_ASSERT(sleep_ns < 20 * NS_PER_MS);
     if (cpu_count >= 3)
-        KT_ASSERT(idle_ns >= 50 * NS_PER_MS);
+        KT_IDLE_ASSERT(idle_ns >= 50 * NS_PER_MS);
 }
 
 /* A process's CPU time: live (its spinning thread) and after it died

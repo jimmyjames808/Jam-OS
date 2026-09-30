@@ -45,6 +45,7 @@ static void sleeper(void *arg)
  * deadline, far finer than the 10 ms tick a sleeper waits for without them. */
 KTEST(oneshot_timer_order_and_accuracy)
 {
+    KT_NEEDS_IDLE("exact wake-up times: the sleepers must get to sleep within 10 ms");
     uint32_t cpu = cpu_count > 1 ? 1 : 0;
     cpumask_t m;
     cpumask_one(&m, cpu);

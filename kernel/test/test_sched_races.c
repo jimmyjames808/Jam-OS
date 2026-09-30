@@ -148,6 +148,7 @@ static void idle_fn(void *arg)
 
 KTEST(repro_finish_switch_double_reap)
 {
+    KT_NEEDS_IDLE("stages a race step by step on pinned CPUs, each step within 2 s");
     if (!enabled())
         return;
     kt_pin_self(0);
@@ -247,6 +248,7 @@ static void ab_stale(void *arg)
 
 KTEST(repro_wake_stale_cpu)
 {
+    KT_NEEDS_IDLE("stages a race step by step on pinned CPUs, each step within 2 s");
     if (!enabled())
         return;
     kt_pin_self(0);

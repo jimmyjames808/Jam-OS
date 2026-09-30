@@ -232,6 +232,9 @@ struct ktest_opts {
 bool ktest_parse_opts(const char *words, bool boot, struct ktest_opts *o);
 /* Run the tests o selects. Returns how many passed, over all loops. */
 int ktest_run_opts(const struct ktest_opts *o);
+/* How many tests of the last run failed (keep; without it the first
+ * failure panicked), plus one if its load failed its own checks. */
+unsigned ktest_last_failed(void);
 /* The same with only a prefix ("" = all): once, in link order, a failure
  * panics. Returns how many ran (live: passed, not counting the skipped). */
 int ktest_run(const char *prefix);

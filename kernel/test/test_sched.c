@@ -94,6 +94,7 @@ static uint64_t pingpong(uint32_t a, uint32_t b)
  * nearly every wakeup skips the IPI. With the spin off none can. */
 KTEST(spin_idle_skips_ipi)
 {
+    KT_NEEDS_IDLE("counts wakeups that find CPU 2 idle and polling");
     if (cpu_count < 3)
         return;
     uint64_t keep = __atomic_load_n(&sched_idle_spin_ns, __ATOMIC_RELAXED);
@@ -207,6 +208,7 @@ static void busy_spinner(void *arg)
  * never both hyperthreads of one core, and never cpu 0's sibling. */
 KTEST(placement_spreads_over_cores)
 {
+    KT_NEEDS_IDLE("asserts which CPUs busy threads are placed on: every core must be idle");
     if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         return;
     kt_pin_self(0);
@@ -253,6 +255,7 @@ KTEST(placement_spreads_over_cores)
  * sibling; switched off, the hybrid order gives it a whole idle core. */
 KTEST(affine_pair_uses_sibling)
 {
+    KT_NEEDS_IDLE("asserts placement on an idle HT sibling");
     if (cpu_count < 4)
         return;
     uint32_t a = 0;
@@ -363,6 +366,7 @@ static uint64_t aff_round(uint32_t ccpu, const cpumask_t *smask, uint64_t *clien
 
 KTEST(wake_affine_channel_call)
 {
+    KT_NEEDS_IDLE("counts wakeups placed on the caller's CPU and its idle sibling");
     if (cpu_count < 2)
         return;
     kt_pin_self(0);   /* keep the test thread off the client's CPU */
