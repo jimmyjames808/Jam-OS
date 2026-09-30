@@ -128,6 +128,11 @@ void disk_hold_boot(void)
     boot_held = false;
 }
 
+void disk_drop_boot(void)
+{
+    boot_holding = boot_held = false;
+}
+
 /* Where a boot sector keeps its label (BS_VolLab) and, on FAT32, which
  * sector holds its backup copy (BPB_BkBootSec; 0: none). */
 static unsigned boot_label_at(const uint8_t *b, uint32_t *backup)

@@ -97,6 +97,8 @@ status_t disk_is_blank(bool *out);
  * ERR_BAD_STATE: nothing wrote sector 0. */
 void     disk_hold_boot(void);
 status_t disk_commit_boot(const char *label);
+/* The format failed: forget the held sector, write nothing. */
+void     disk_drop_boot(void);
 /* After a mount: find the FATs, log a volume found dirty, and (writable
  * FAT16/32) start keeping the dirty flag. */
 void     disk_watch(void);

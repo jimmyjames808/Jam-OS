@@ -53,8 +53,11 @@ static FRESULT format(void)
     if (fr == FR_MKFS_ABORTED)   /* too few clusters for FAT32 */
         fr = f_mkfs("", &small, work, FORMAT_WORK);
     free(work);
-    status_t st = disk_commit_boot(LABEL);
-    if (fr == FR_OK && st != OK)
+    /* Only a format that went through gets its boot sector: after a failed
+     * one the partition stays blank, for the next start to format. */
+    if (fr != FR_OK)
+        disk_drop_boot();
+    else if (disk_commit_boot(LABEL) != OK)
         fr = FR_DISK_ERR;
     if (fr == FR_OK)
         fr = f_mount(&vol.fs, "", 1);
