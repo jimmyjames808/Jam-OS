@@ -410,3 +410,58 @@ KTEST(repro_slice_not_reset)
      * waiting ~1 s for the starvation boost. */
     KT_ASSERT(ms <= 100);
 }
+
+/* ---- 6. a CPU taking its next thread looks idle to placement -------------- */
+
+/* schedule() used to take the next thread off its queue (the queued count
+ * drops) before marking the CPU busy, so for a moment a CPU starting work
+ * had load 0: a placement on another CPU that read it then took it for a
+ * whole idle core and queued a second thread behind the first (the PC,
+ * 2026-10-01: two busy threads on one core, placement_spreads_over_cores).
+ * The hook sits in that moment and reads the load placement would see. */
+static struct thread *volatile pk_marker;
+static volatile int pk_seen;
+static volatile uint32_t pk_load;
+
+static void pk_hook(void *arg)
+{
+    if (!arg || arg != pk_marker || pk_seen)
+        return;
+    preempt_disable();
+    pk_load = sched_cpu_load(this_cpu()->index);
+    preempt_enable_no_resched();
+    pk_seen = 1;
+}
+
+static void pk_body(void *arg)
+{
+    (void)arg;
+}
+
+KTEST(repro_picked_cpu_looks_idle)
+{
+    KT_NEEDS_IDLE("needs an idle CPU to wake a thread onto");
+    if (!enabled())
+        return;
+    uint32_t cpu = cpu_count - 1;
+    cpumask_t m;
+    cpumask_one(&m, cpu);
+    for (int round = 0; round < 3; round++) {
+        pk_seen = 0;
+        pk_load = 99;
+        struct thread *t = thread_try_create_suspended("repro-picked", pk_body, NULL,
+                                                       PRIO_DEFAULT, &m, PRIO_MAX);
+        KT_ASSERT(t != NULL);
+        pk_marker = t;
+        __atomic_store_n(&dbg_hooks[DBG_SCHED_PICKED], pk_hook, __ATOMIC_RELEASE);
+        thread_wake(t);
+        thread_join(t);
+        __atomic_store_n(&dbg_hooks[DBG_SCHED_PICKED], NULL, __ATOMIC_RELEASE);
+        pk_marker = NULL;
+        kprintf("repro: cpu %u taking its next thread: load %u as placement reads it\n", cpu,
+                pk_load);
+        KT_ASSERT(pk_seen);
+        /* Busy (1) from before the thread leaves the queue. */
+        KT_EQ(pk_load, 1);
+    }
+}

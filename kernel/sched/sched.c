@@ -204,9 +204,13 @@ static struct thread *pick_stealable(struct runqueue *rq, uint32_t cpu)
 
 /* ---- placement ------------------------------------------------------------- */
 
+/* Queued + running. The queued count first, with acquire: schedule() marks
+ * the CPU busy before the count drops, so a reader that sees the drop sees
+ * the busy flag too, and a CPU taking its next thread never reads as 0. */
 static uint32_t load_of(uint32_t cpu)
 {
-    return rq_ready(&rqs[cpu]) + rq_busy(&rqs[cpu]);
+    uint32_t ready = __atomic_load_n(&rqs[cpu].nr_ready, __ATOMIC_ACQUIRE);
+    return ready + rq_busy(&rqs[cpu]);
 }
 
 /* Word w of the CPUs t may run on that are in service. */
@@ -287,6 +291,11 @@ static uint32_t select_cpu(const struct thread *t)
 }
 
 #ifndef JAM_NO_KTESTS
+uint32_t sched_cpu_load(uint32_t cpu)
+{
+    return load_of(cpu);
+}
+
 uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
                              const uint8_t *type, const uint32_t *load, uint32_t last,
                              bool order)
@@ -460,7 +469,19 @@ void schedule(void)
     /* T_BLOCKED / T_DEAD: not queued. T_READY: a waker already queued it. */
     DBG_HOOK(DBG_SCHED_PREV, prev);
 
+    /* Busy BEFORE the queued count drops: taken off the queue and not yet
+     * marked running, the thread would be counted nowhere, and a placement
+     * reading the CPU then would see load 0 and take it for an idle core
+     * (a second thread queued behind the first, then stolen by whatever
+     * CPU looks first). The release fence orders this store before
+     * dequeue's store of nr_ready, which load_of reads first (acquire).
+     * (test: repro_picked_cpu_looks_idle) */
+    if (rq->bitmap && !rq_busy(rq)) {
+        __atomic_store_n(&rq->busy, 1, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+    }
     struct thread *next = pick_best(rq);
+    DBG_HOOK(DBG_SCHED_PICKED, next);
     if (!next)
         next = rq->idle;
     if (next == prev) {

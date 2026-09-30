@@ -18,6 +18,8 @@ enum {
                               the quarantine's counters record it (arg: the pci_dev) */
     DBG_STRESS_SHOOTDOWN,  /* stress run_seconds, a shootdown round's reads done, before they
                               are checked (arg: uint64_t *, CPUs that saw a stale mapping) */
+    DBG_SCHED_PICKED,      /* schedule, the next thread taken off the run queue, before it is
+                              marked running, rq held (arg: the thread, NULL: idle) */
     DBG_N
 };
 
