@@ -100,6 +100,8 @@ static int identify(struct disk *k)
     static uint8_t cfg[1024];
     uint16_t n = 0;
     st = usb_get_descriptor_until(k->usb, soon(), DESC_CONFIG, 0, 0, sizeof(cfg), 0, &n, cfg);
+    if (n > sizeof(cfg))
+        n = sizeof(cfg);   /* whatever usb-bus says, the buffer ends here */
     if (st != OK || !find_endpoints(k, alt, cfg, n)) {
         drv_log("usb-storage %04x:%04x if %u: no bulk IN and OUT endpoints (configuration "
                 "descriptor: %s, %u bytes)", k->vid, k->pid, k->ifnum, status_str(st), n);
