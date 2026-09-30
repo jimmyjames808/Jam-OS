@@ -53,8 +53,8 @@ extern const char *ktest_current;
  *
  *   KT_GLOBAL_EQ(a, b), KT_GLOBAL_ASSERT(cond)
  *       a check on a system-wide count (channel_live_count(),
- *       interrupt_live_count(), free pages, ...): made when ktest_live is
- *       false, else counted as "not checked live". The operands are
+ *       interrupt_live_count(), port_get_stats(), free pages, ...): made when
+ *       ktest_live is false, else counted as "not checked live". The operands are
  *       evaluated either way (free_now() drains the per-CPU caches, and
  *       tests rely on that). Checks on the test's own objects stay KT_EQ.
  *   KT_SKIP_LIVE("why")

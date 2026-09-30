@@ -653,8 +653,8 @@ KTEST(interrupt_port_closed_with_packet_queued)
     KT_EQ(interrupt_ack(irq), OK);   /* delivers the latched fire to nobody */
     KT_EQ(interrupt_fire_count(irq), 2);
     port_get_stats(&after);
-    KT_EQ(after.ports, before.ports);
-    KT_EQ(after.bindings, before.bindings);
+    KT_GLOBAL_EQ(after.ports, before.ports);
+    KT_GLOBAL_EQ(after.bindings, before.bindings);
 
     p = new_port();
     KT_EQ(port_bind(p, irq, 6, SIG_INTERRUPT, PORT_BIND_PERSISTENT), OK);
@@ -666,8 +666,8 @@ KTEST(interrupt_port_closed_with_packet_queued)
     kobject_unref(&p->base);
     KT_GLOBAL_EQ(interrupt_live_count(), live);
     port_get_stats(&after);
-    KT_EQ(after.ports, before.ports);
-    KT_EQ(after.bindings, before.bindings);
+    KT_GLOBAL_EQ(after.ports, before.ports);
+    KT_GLOBAL_EQ(after.bindings, before.bindings);
 }
 
 /* One JOB_LIMIT_HANDLES unit from creation until freed; closing the last

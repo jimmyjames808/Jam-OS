@@ -196,6 +196,6 @@ KTEST(auditB2_alternating_channel_port_iterative)
     struct port_stats ps1;
     port_get_stats(&ps1);
     KT_GLOBAL_EQ(channel_live_count(), live);
-    KT_EQ(ps1.ports, ps0.ports);
-    KT_EQ(ps1.bindings, ps0.bindings);
+    KT_GLOBAL_EQ(ps1.ports, ps0.ports);
+    KT_GLOBAL_EQ(ps1.bindings, ps0.bindings);
 }

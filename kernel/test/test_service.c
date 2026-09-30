@@ -241,8 +241,8 @@ KTEST(m4_milestone_service)
     struct port_stats ps;
     port_get_stats(&ps);
     KT_GLOBAL_EQ(channel_live_count(), channels_before);
-    KT_EQ(ps.ports, ps_before.ports);
-    KT_EQ(ps.bindings, ps_before.bindings);
+    KT_GLOBAL_EQ(ps.ports, ps_before.ports);
+    KT_GLOBAL_EQ(ps.bindings, ps_before.bindings);
 
     kfree(ct);
     kfree(server_chans);

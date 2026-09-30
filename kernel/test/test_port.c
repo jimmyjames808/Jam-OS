@@ -80,9 +80,9 @@ static void stats_equal(const struct port_stats *a)
 {
     struct port_stats b;
     port_get_stats(&b);
-    KT_EQ(b.ports, a->ports);
-    KT_EQ(b.bindings, a->bindings);
-    KT_EQ(b.user_packets, a->user_packets);
+    KT_GLOBAL_EQ(b.ports, a->ports);
+    KT_GLOBAL_EQ(b.bindings, a->bindings);
+    KT_GLOBAL_EQ(b.user_packets, a->user_packets);
 }
 
 /* ---- events -------------------------------------------------------------- */
@@ -445,8 +445,8 @@ KTEST(port_destroy_frees_everything)
     }
     struct port_stats mid;
     port_get_stats(&mid);
-    KT_EQ(mid.bindings, before.bindings + 7);
-    KT_EQ(mid.user_packets, before.user_packets + 10);
+    KT_GLOBAL_EQ(mid.bindings, before.bindings + 7);
+    KT_GLOBAL_EQ(mid.user_packets, before.user_packets + 10);
 
     kobject_unref(&p->base);
     stats_equal(&before);
@@ -857,7 +857,7 @@ KTEST(m45_port_binding_cap)
     KT_EQ(sys_port_bind(&t, port, ev, PORT_MAX_BINDINGS, SIG_SIGNALED, PORT_BIND_PERSISTENT),
           ERR_NO_RESOURCES);
     port_get_stats(&now);
-    KT_EQ(now.bindings - before.bindings, PORT_MAX_BINDINGS);
+    KT_GLOBAL_EQ(now.bindings - before.bindings, PORT_MAX_BINDINGS);
 
     /* Freeing one makes room for one. */
     KT_EQ(sys_port_unbind(&t, port, ev, 0), OK);
@@ -866,6 +866,6 @@ KTEST(m45_port_binding_cap)
 
     handle_table_destroy(&t);
     port_get_stats(&now);
-    KT_EQ(now.bindings, before.bindings);
-    KT_EQ(now.ports, before.ports);
+    KT_GLOBAL_EQ(now.bindings, before.bindings);
+    KT_GLOBAL_EQ(now.ports, before.ports);
 }
