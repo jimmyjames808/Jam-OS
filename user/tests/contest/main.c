@@ -11,10 +11,10 @@
  * is tested by every shell test typing over serial and usbkeys over USB.)
  * `contest trap` holds the keys forever: Ctrl+C must still reach the shell,
  * which kills it. Exit code 0 when all hold. */
-#include <os.h>
+#include <devmgr.h>
 #include <idl/console.h>
 #include <idl/input.h>
-#include <devmgr.h>
+#include <os.h>
 
 
 static int checks, failed;

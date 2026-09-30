@@ -54,7 +54,7 @@ static inline uint32_t scalec(uint32_t c, uint32_t t)
 /* ---- surfaces and the screen ------------------------------------------------------- */
 
 struct surf {
-    uint32_t *px;
+    uint32_t *px;       /* 0xRRGGBB pixels, row after row */
     int w, h, stride;   /* stride in pixels */
 };
 
@@ -66,10 +66,10 @@ struct screen {
     uint32_t *shown;    /* what the screen shows (RAM copy) */
     uint32_t *fb;       /* the framebuffer (write-combining: written, never read) */
     uint32_t pitch;     /* framebuffer bytes per line */
-    uint8_t  rs, gs, bs;
+    uint8_t  rs, gs, bs;   /* the framebuffer's red, green, blue bit positions */
     bool     native;    /* the framebuffer is 0xRRGGBB too: copied as it is */
-    handle_t con, keys, lease;
-    bool     open;
+    handle_t con, keys, lease;   /* the console, our key channel, the screen's lease */
+    bool     open;      /* gfx_open succeeded, gfx_close not called yet */
     uint64_t presents, bytes;   /* stats: presents, bytes written to the screen */
 };
 extern struct screen scr;
@@ -118,8 +118,8 @@ int  text_width(int scale, const char *str);
 
 /* Frames per second over the last half second or so, x10. */
 struct fps {
-    uint64_t t0;
-    uint32_t n, x10;
+    uint64_t t0;        /* the current count's start (uptime ns) */
+    uint32_t n, x10;    /* frames counted since; the last rate, x10 */
 };
 void fps_frame(struct fps *f);
 

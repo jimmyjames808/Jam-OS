@@ -1,11 +1,11 @@
 /* null: the test driver (drv/null in bootfs). It serves the `null`
  * protocol (abi/idl/null.idl: ping, add, reverse, make_vmo) on its
  * DR_SERVE channel until the client closes it, then exits 0. */
-#include <jam/driver.h>
 #include <idl/null.h>
+#include <jam/driver.h>
 
 struct null_state {
-    uint64_t calls;
+    uint64_t calls;   /* requests served */
 };
 
 static status_t do_ping(void *ctx, uint64_t value, uint64_t *out_value)
@@ -63,13 +63,13 @@ int driver_main(const struct driver_start *s)
         drv_log("no DR_SERVE channel: nothing to serve");
         return 2;
     }
-    struct null_state *st = drv_malloc(sizeof(*st));
-    if (!st)
+    struct null_state *state = drv_malloc(sizeof(*state));
+    if (!state)
         return 3;
-    st->calls = 0;
-    status_t r = null_serve(ch, &ops, st);
-    drv_log("client gone after %lu call(s) (%s)", (unsigned long)st->calls,
-            r == OK ? "closed" : status_str(r));
-    drv_free(st);
-    return r == OK ? 0 : 1;
+    state->calls = 0;
+    status_t st = null_serve(ch, &ops, state);
+    drv_log("client gone after %lu call(s) (%s)", (unsigned long)state->calls,
+            st == OK ? "closed" : status_str(st));
+    drv_free(state);
+    return st == OK ? 0 : 1;
 }

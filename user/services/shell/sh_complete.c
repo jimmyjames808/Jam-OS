@@ -7,9 +7,9 @@
 #define MAX_CAND 128
 
 struct cands {
-    char     names[MAX_CAND][64];
-    bool     dir[MAX_CAND];
-    unsigned n;
+    char     names[MAX_CAND][64];   /* the candidates */
+    bool     dir[MAX_CAND];         /* names[i] is a directory (completes with '/') */
+    unsigned n;                     /* how many */
 };
 
 static void cand_add(struct cands *c, const char *name, bool dir)

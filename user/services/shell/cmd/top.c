@@ -4,16 +4,16 @@
 #include "sh.h"
 
 struct sample {
-    uint64_t          t;
-    struct cpu_stat  *cpu;
-    uint32_t          ncpu;
-    struct proc_stat *proc;
-    int               nproc;
+    uint64_t          t;       /* when (uptime ns) */
+    struct cpu_stat  *cpu;     /* SH_MAX_CPUS of them (malloc'd) */
+    uint32_t          ncpu;    /* filled */
+    struct proc_stat *proc;    /* SH_MAX_PROCS of them (malloc'd) */
+    int               nproc;   /* filled */
 };
 
 static bool take(struct sample *s)
 {
-    s->t = (uint64_t)jam_clock_get();
+    s->t = now();
     int64_t r = jam_cpu_stat(sh_root(), 0, s->cpu, SH_MAX_CPUS);
     s->ncpu = r > 0 ? (uint32_t)r : 0;
     s->nproc = sh_procs(s->proc, "top");
@@ -74,8 +74,8 @@ static void cpu_bars(const struct sample *a, const struct sample *b, uint64_t dt
 static void processes(const struct sample *a, const struct sample *b, uint64_t dt, bool screen)
 {
     struct row {
-        int      i;
-        uint64_t d;
+        int      i;   /* index in b->proc */
+        uint64_t d;   /* its CPU time in the interval, ns */
     } rows[SH_MAX_PROCS];
     int np = 0;
     for (int i = 0; i < b->nproc; i++) {
@@ -146,9 +146,9 @@ static void run_frames(struct sample *s, uint64_t delay_ms, uint64_t frames)
 {
     bool screen = !sh_piped();
     for (uint64_t f = 0; !frames || f < frames; f++) {
-        uint64_t deadline = (uint64_t)jam_clock_get() + delay_ms * SH_MS;
+        uint64_t deadline = now() + delay_ms * NS_PER_MS;
         bool quit = false;
-        while (!quit && (uint64_t)jam_clock_get() < deadline) {
+        while (!quit && now() < deadline) {
             int key = sh_poll_key(deadline);
             quit = key == 'q' || key == 'Q' || key == 3;
         }

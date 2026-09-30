@@ -46,7 +46,10 @@ static uint8_t ep_interval(uint8_t speed, uint8_t xfer, uint8_t b)
 /* An endpoint as its descriptors give it: the fields parse_config and
  * dev_set_interface install into d->eps, so both derive them one way. */
 struct ep_desc {
-    uint8_t  dci, addr, attr, type, binterval;
+    uint8_t  dci;        /* its Device Context Index */
+    uint8_t  addr, attr; /* bEndpointAddress, bmAttributes */
+    uint8_t  type;       /* EPT_INTR_IN, or 0: usb-bus doesn't configure it */
+    uint8_t  binterval;  /* bInterval */
     uint8_t  interval;   /* xHCI Interval field */
     uint8_t  burst;      /* xHCI Max Burst Size */
     uint16_t mps;        /* wMaxPacketSize bits 10:0 */
@@ -55,9 +58,9 @@ struct ep_desc {
 
 /* One alternate setting of an interface, as the configuration lists it. */
 struct alt_desc {
-    uint8_t        cls, sub, proto;
-    uint8_t        nep;
-    struct ep_desc eps[MAX_EPS_IF];
+    uint8_t        cls, sub, proto;   /* the interface class, subclass, protocol */
+    uint8_t        nep;               /* entries in eps[] */
+    struct ep_desc eps[MAX_EPS_IF];   /* its endpoints, in descriptor order */
 };
 
 /* The endpoint descriptor at p (7 bytes or more) of a device at `speed`.
@@ -241,7 +244,7 @@ static void slot_set_hub(struct usbdev *d)
         s[2] = (s[2] & ~(3u << 16)) | ((uint32_t)d->ttt << 16);
 }
 
-static void ep_ctx_fill(volatile uint32_t *c, struct ep *e)
+static void ep_ctx_fill(volatile uint32_t *c, const struct ep *e)
 {
     uint32_t esit = e->esit ? e->esit : e->mps;
     c[0] = ((uint32_t)e->interval << 16) | ((esit >> 16) << 24);

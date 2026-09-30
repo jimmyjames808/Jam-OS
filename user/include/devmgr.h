@@ -156,15 +156,15 @@
 #define DEVMGR_DRV_CHAN_RIGHTS (DEVMGR_DRV_KEEP | RIGHT_READ | RIGHT_WRITE)
 
 struct devmgr_req {
-    uint32_t txid;
-    uint32_t ordinal;
+    uint32_t txid;             /* stamped by channel_call */
+    uint32_t ordinal;          /* DEVMGR_* */
     uint16_t vendor, device;   /* STATUS: 0 */
-    uint32_t instance;
+    uint32_t instance;         /* the n-th function with those ids, from 0 */
 } __attribute__((packed));
 
 struct devmgr_rep {
-    uint32_t txid;
-    int32_t  status;
+    uint32_t txid;             /* the request's */
+    int32_t  status;           /* OK: the results follow */
     uint32_t a, b, c;          /* STATUS: bound, failed, skipped; GET_DRIVER: pci_index;
                                 * DRIVER_VIEW: bar_mask; SUPERVISION: state, restarts,
                                 * backoff_ms */

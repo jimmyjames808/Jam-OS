@@ -44,6 +44,14 @@ struct usbdev *dev_by_slot(uint8_t slot)
     return NULL;
 }
 
+struct usbdev *dev_find(uint32_t id)
+{
+    for (int i = 0; id && i < MAX_DEVS; i++)
+        if (g_devs[i].used && g_devs[i].id == id && !g_devs[i].gone)
+            return &g_devs[i];
+    return NULL;
+}
+
 struct usbdev *child_at(int parent, uint8_t port)
 {
     for (int i = 0; i < MAX_DEVS; i++)

@@ -7,9 +7,9 @@ SH_CMD(time)
         sh_tty("usage: time <command...>\n");
         return 2;
     }
-    uint64_t t0 = (uint64_t)jam_clock_get();
+    uint64_t t0 = now();
     int st = sh_run_words(argc - 1, argv + 1);
-    uint64_t us = ((uint64_t)jam_clock_get() - t0) / 1000;
+    uint64_t us = (now() - t0) / NS_PER_US;
     sh_tty("time: %lu.%06lu s (status %d)\n", (unsigned long)(us / 1000000),
            (unsigned long)(us % 1000000), st);
     return st;

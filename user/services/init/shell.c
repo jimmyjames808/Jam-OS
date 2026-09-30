@@ -43,25 +43,25 @@
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute is given up on (a line in the log and the RESULTS box). init
  * itself never returns in this mode. */
-#include <os.h>
 #include <devmgr.h>
 #include <idl/console.h>
+#include <os.h>
+#include "init.h"
 
 #define GIVE_UP_COUNT  10
 #define GIVE_UP_WINDOW (60 * NS_PER_S)
 
-void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-
 enum { CONSOLE, SERIALIN, DEVMGR, SHELL, NSVC };
 
 struct svc {
-    const char *path;
-    handle_t    proc, job;
-    bool        running, given_up;
+    const char *path;          /* in bootfs */
+    handle_t    proc, job;     /* while it runs */
+    bool        running;       /* started, its end not seen yet */
+    bool        given_up;      /* ended too often: not started again */
     uint64_t    next_try;      /* uptime ns */
-    uint64_t    backoff;
+    uint64_t    backoff;       /* the last delay before a restart, ns */
     uint64_t    started;       /* uptime ns */
-    uint64_t    window_start;
+    uint64_t    window_start;  /* the minute its ends are counted in (uptime ns) */
     unsigned    ends;          /* in the current window */
 };
 
@@ -333,6 +333,38 @@ static void ended(unsigned i)
     s->next_try = t + s->backoff;
 }
 
+/* Start every service that is due, in order (all but the console wait
+ * for it); one that fails backs off. The next time one is due, or
+ * DEADLINE_NEVER. */
+static uint64_t start_due(uint64_t t)
+{
+    uint64_t deadline = DEADLINE_NEVER;
+    for (unsigned i = 0; i < NSVC; i++) {
+        struct svc *s = &svcs[i];
+        if (s->running || s->given_up)
+            continue;
+        if (i != CONSOLE && !cons)
+            continue;   /* waits for the console */
+        if (t < s->next_try) {
+            deadline = s->next_try < deadline ? s->next_try : deadline;
+            continue;
+        }
+        status_t st = i == CONSOLE    ? start_console()
+                      : i == SERIALIN ? start_serialin()
+                      : i == DEVMGR   ? start_devmgr()
+                                      : start_shell();
+        if (st != OK) {
+            printf("init: can't start %s (%s)\n", s->path, status_str(st));
+            s->backoff = s->backoff ? s->backoff * 2 : 100 * NS_PER_MS;
+            if (s->backoff > 5 * NS_PER_S)
+                s->backoff = 5 * NS_PER_S;
+            s->next_try = t + s->backoff;
+            deadline = s->next_try < deadline ? s->next_try : deadline;
+        }
+    }
+    return deadline;
+}
+
 bool init_shell(bool no_usb)
 {
     root = startup_handle(SR_RESOURCE);
@@ -345,30 +377,7 @@ bool init_shell(bool no_usb)
     printf("init: shell mode%s: starting the console, the serial input, devmgr and the shell\n",
            nousb ? " (safe mode: nousb)" : "");
     for (;;) {
-        uint64_t t = now(), deadline = DEADLINE_NEVER;
-        for (unsigned i = 0; i < NSVC; i++) {
-            struct svc *s = &svcs[i];
-            if (s->running || s->given_up)
-                continue;
-            if (i != CONSOLE && !cons)
-                continue;   /* waits for the console */
-            if (t < s->next_try) {
-                deadline = s->next_try < deadline ? s->next_try : deadline;
-                continue;
-            }
-            st = i == CONSOLE    ? start_console()
-                 : i == SERIALIN ? start_serialin()
-                 : i == DEVMGR   ? start_devmgr()
-                                 : start_shell();
-            if (st != OK) {
-                printf("init: can't start %s (%s)\n", s->path, status_str(st));
-                s->backoff = s->backoff ? s->backoff * 2 : 100 * NS_PER_MS;
-                if (s->backoff > 5 * NS_PER_S)
-                    s->backoff = 5 * NS_PER_S;
-                s->next_try = t + s->backoff;
-                deadline = s->next_try < deadline ? s->next_try : deadline;
-            }
-        }
+        uint64_t deadline = start_due(now());
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st == OK && pkt.key < NSVC && svcs[pkt.key].running)

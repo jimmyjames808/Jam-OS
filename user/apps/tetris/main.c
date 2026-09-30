@@ -117,7 +117,7 @@ static int hang_test(void)
     gfx_present();
     say("tetris: hang test: holding the screen\n");
     for (;;)
-        jam_nanosleep(now() + 1000000000ull);
+        jam_nanosleep(now() + NS_PER_S);
 }
 
 int main(int argc, char **argv)

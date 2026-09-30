@@ -24,7 +24,7 @@ static const char *driver_of(const struct pci_dev_info *info, uint32_t inst)
     handle_t hs[DEVMGR_MAX_HANDLES];
     uint32_t nh = 0;
     status_t st = devmgr_call(dm, DEVMGR_GET_DRIVER, info->vendor, info->device, inst, &rep, hs,
-                              DEVMGR_MAX_HANDLES, &nh, (uint64_t)jam_clock_get() + 5 * SH_S);
+                              DEVMGR_MAX_HANDLES, &nh, now() + 5 * NS_PER_S);
     for (uint32_t k = 0; k < nh; k++)
         jam_handle_close(hs[k]);
     return st == OK ? "  driver running" : st == ERR_BAD_STATE ? "  driver gone" : "";
@@ -39,7 +39,7 @@ static void devmgr_counts(void)
     }
     struct devmgr_rep rep;
     status_t st = devmgr_call(dm, DEVMGR_STATUS, 0, 0, 0, &rep, NULL, 0, NULL,
-                              (uint64_t)jam_clock_get() + 5 * SH_S);
+                              now() + 5 * NS_PER_S);
     if (st == OK)
         sh_say("devmgr: %u bound, %u failed, %u skipped\n", rep.a, rep.b, rep.c);
     else

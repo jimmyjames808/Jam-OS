@@ -128,11 +128,11 @@ status_t op_open_keys(void *ctx, handle_t *out)
 /* ---- input sources ------------------------------------------------------------- */
 
 struct source {
-    handle_t ch;
+    handle_t ch;        /* our end of its `input` channel; 0: a free slot */
     int      esc;       /* terminal escape parser */
-    char     params[8];
-    unsigned np;
-    bool     last_cr;
+    char     params[8]; /* the escape's parameter bytes so far */
+    unsigned np;        /* how many */
+    bool     last_cr;   /* the last text byte was '\r' (a '\n' after it is dropped) */
 };
 static struct source sources[MAX_SOURCES];
 
@@ -189,46 +189,61 @@ static void term_escape(struct source *s, char final)
     }
 }
 
+/* Byte b of source s's text while an escape sequence may be open: true
+ * if the sequence took it. A byte that ends a lone ESC sends the ESC key
+ * and is then an ordinary byte (false). */
+static bool escape_byte(struct source *s, uint8_t b)
+{
+    if (s->esc == 1) {   /* after ESC */
+        if (b == '[' || b == 'O') {
+            s->esc = 2;
+            s->np = 0;
+            return true;
+        }
+        s->esc = 0;
+        term_key(0x29, 0x1b);   /* a lone ESC */
+        return false;
+    }
+    if (s->esc == 2) {
+        if ((b >= '0' && b <= '9') || b == ';') {
+            if (s->np < sizeof(s->params) - 1)
+                s->params[s->np++] = (char)b;
+            return true;
+        }
+        s->esc = 0;
+        term_escape(s, (char)b);
+        return true;
+    }
+    return false;
+}
+
+/* An ordinary byte of source s's text as a key. */
+static void text_byte(struct source *s, uint8_t b)
+{
+    bool cr = false;
+    if (b == 0x1b)
+        s->esc = 1;
+    else if (b == '\r' || (b == '\n' && !s->last_cr))
+        term_key(0x28, '\n'), cr = b == '\r';
+    else if (b == '\n')
+        ;   /* the LF of a CR LF */
+    else if (b == 0x7f || b == 0x08)
+        term_key(0x2a, 0x08);
+    else if (b == '\t')
+        term_key(0x2b, '\t');
+    else
+        term_key(0, b);   /* printable, or a control character (Ctrl+C = 3) */
+    s->last_cr = cr;
+}
+
 static status_t op_text(void *ctx, uint16_t length, const uint8_t bytes[64])
 {
     struct source *s = ctx;
     if (length > 64)
         return ERR_INVALID_ARGS;
-    for (unsigned i = 0; i < length; i++) {
-        uint8_t b = bytes[i];
-        if (s->esc == 1) {   /* after ESC */
-            if (b == '[' || b == 'O') {
-                s->esc = 2;
-                s->np = 0;
-                continue;
-            }
-            s->esc = 0;
-            term_key(0x29, 0x1b);   /* a lone ESC */
-        } else if (s->esc == 2) {
-            if ((b >= '0' && b <= '9') || b == ';') {
-                if (s->np < sizeof(s->params) - 1)
-                    s->params[s->np++] = (char)b;
-                continue;
-            }
-            s->esc = 0;
-            term_escape(s, (char)b);
-            continue;
-        }
-        bool cr = false;
-        if (b == 0x1b)
-            s->esc = 1;
-        else if (b == '\r' || (b == '\n' && !s->last_cr))
-            term_key(0x28, '\n'), cr = b == '\r';
-        else if (b == '\n')
-            ;   /* the LF of a CR LF */
-        else if (b == 0x7f || b == 0x08)
-            term_key(0x2a, 0x08);
-        else if (b == '\t')
-            term_key(0x2b, '\t');
-        else
-            term_key(0, b);   /* printable, or a control character (Ctrl+C = 3) */
-        s->last_cr = cr;
-    }
+    for (unsigned i = 0; i < length; i++)
+        if (!escape_byte(s, bytes[i]))
+            text_byte(s, bytes[i]);
     return OK;
 }
 

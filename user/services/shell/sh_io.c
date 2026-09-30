@@ -181,8 +181,8 @@ bool sh_interrupted(void)
 
 bool sh_sleep(uint64_t ns)
 {
-    uint64_t deadline = (uint64_t)jam_clock_get() + ns;
-    while (!interrupted && (uint64_t)jam_clock_get() < deadline)
+    uint64_t deadline = now() + ns;
+    while (!interrupted && now() < deadline)
         sh_poll_key(deadline);
     return !interrupted;
 }

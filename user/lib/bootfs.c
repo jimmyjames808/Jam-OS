@@ -5,7 +5,6 @@
 #include <jam/bootfs.h>
 #include <os.h>
 
-#define PAGE 4096u
 
 status_t bootfs_open(handle_t vmo, struct bootfs_view *out)
 {
@@ -16,7 +15,7 @@ status_t bootfs_open(handle_t vmo, struct bootfs_view *out)
     status_t st = jam_vmo_get_size(vmo, &size);
     if (st != OK)
         return st;
-    if (size < sizeof(struct bootfs_header) || (size & (PAGE - 1)))
+    if (size < sizeof(struct bootfs_header) || (size & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
     st = jam_vmar_map(vmar, vmo, 0, size, VMAR_READ, &addr);
     if (st != OK)

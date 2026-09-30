@@ -1,6 +1,7 @@
-/* usb-bus: what it says about devices: the one-line summary of each
- * (dev_line, in the log and in RESULTS), the detailed log lines, the
- * device paths ("9.1": root port 9, hub port 1) and the RESULTS summary.
+/* usb-bus: what it says about the controller (its RESULTS line) and about
+ * devices: the one-line summary of each (dev_line, in the log and in
+ * RESULTS), the detailed log lines, the device paths ("9.1": root port 9,
+ * hub port 1) and the RESULTS summary.
  *
  * RESULTS gets one line per device once enumeration first settles, in
  * tree order, and a summary; usb_report_all is called again when the
@@ -28,7 +29,61 @@ static unsigned append(char *buf, unsigned n, unsigned cap, const char *fmt, ...
     return n + (unsigned)r < cap ? n + (unsigned)r : cap - 1;
 }
 
+/* ---- the controller ---------------------------------------------------------- */
+
+void report_controller(const struct hc *h)
+{
+    char r2[48] = "", r3[48] = "";   /* "1-4,9": the USB 2 and USB 3 root ports */
+    unsigned n2 = 0, n3 = 0;
+    for (unsigned i = 0; i < h->nproto; i++) {
+        bool usb3 = h->proto[i].major >= 3;
+        char *o = usb3 ? r3 : r2;
+        unsigned *k = usb3 ? &n3 : &n2;
+        unsigned first = h->proto[i].first, last = first + h->proto[i].count - 1;
+        if (first == last)
+            *k = append(o, *k, sizeof(r2), "%s%u", *k ? "," : "", first);
+        else
+            *k = append(o, *k, sizeof(r2), "%s%u-%u", *k ? "," : "", first, last);
+    }
+    drv_report("xHCI %04x:%04x rev %02x: %u ports (USB 2: %s, USB 3: %s), %u slots, %u-byte "
+               "contexts, %s, BIOS handoff %s", h->vendor, h->device, h->revision, h->ports,
+               n2 ? r2 : "-", n3 ? r3 : "-", h->max_slots_en, h->csz,
+               h->msix ? "MSI-X" : "MSI", h->handoff);
+}
+
 /* ---- names ------------------------------------------------------------------ */
+
+const char *cc_str(uint32_t cc)
+{
+    switch (cc) {
+    case 0: return "Invalid";
+    case CC_SUCCESS: return "Success";
+    case CC_DATA_BUFFER: return "Data Buffer Error";
+    case CC_BABBLE: return "Babble Detected";
+    case CC_TRANSACTION: return "USB Transaction Error";
+    case CC_TRB: return "TRB Error";
+    case CC_STALL: return "Stall";
+    case CC_RESOURCE: return "Resource Error";
+    case CC_BANDWIDTH: return "Bandwidth Error";
+    case CC_NO_SLOTS: return "No Slots Available";
+    case 11: return "Slot Not Enabled";
+    case 12: return "Endpoint Not Enabled";
+    case CC_SHORT_PACKET: return "Short Packet";
+    case CC_PARAMETER: return "Parameter Error";
+    case CC_CONTEXT_STATE: return "Context State Error";
+    case 22: return "Incompatible Device";
+    case CC_RING_STOPPED: return "Command Ring Stopped";
+    case CC_ABORTED: return "Command Aborted";
+    case CC_STOPPED: return "Stopped";
+    case CC_STOPPED_LEN: return "Stopped - Length Invalid";
+    case 35: return "Secondary Bandwidth Error";
+    case 36: return "Split Transaction Error";
+    case CC_TIMEOUT: return "timed out";
+    case CC_GONE: return "device gone";
+    case CC_BAD_SLOT: return "slot id out of range";
+    default: return "error";
+    }
+}
 
 static const char *speed_str(uint8_t s)
 {
@@ -202,7 +257,7 @@ void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *h
         *problems = np + g_failed;
 }
 
-void usb_report_summary(const char *when)
+static void usb_report_summary(const char *when)
 {
     uint32_t n, nh, ni, nhid, np;
     usb_counts(&n, &nh, &ni, &nhid, &np);
@@ -218,12 +273,22 @@ void usb_report_summary(const char *when)
                nhid, nhid == 1 ? "" : "s", kbd, mouse, g_failed, g_attached, g_detached);
 }
 
-void usb_report_all(bool at_stop)
+/* Hub i's children onto the stack (sp entries so far), port 15 first so
+ * that port 1 comes off first. */
+static void push_children(int i, int *stack, int *sp)
 {
-    g_first_report_done = true;
-    g_report_generation = g_generation;
-    /* Tree order: each root port's device, then what hangs below it. */
-    int order[MAX_DEVS], n = 0;
+    for (int c = 15; c >= 1; c--)
+        for (int q = 0; q < MAX_DEVS; q++)
+            if (g_devs[q].used && g_devs[q].parent == i && g_devs[q].port == c &&
+                *sp < MAX_DEVS)
+                stack[(*sp)++] = q;
+}
+
+/* Tree order: each root port's device, then what hangs below it (depth
+ * first). The g_devs indexes into order (MAX_DEVS); how many. */
+static int tree_order(int *order)
+{
+    int n = 0;
     for (uint32_t p = 1; p <= g_hc.ports; p++) {
         int stack[MAX_DEVS], sp = 0;
         for (int i = 0; i < MAX_DEVS; i++)
@@ -232,13 +297,18 @@ void usb_report_all(bool at_stop)
         while (sp && n < MAX_DEVS) {
             int i = stack[--sp];
             order[n++] = i;
-            for (int c = 15; c >= 1; c--)
-                for (int q = 0; q < MAX_DEVS; q++)
-                    if (g_devs[q].used && g_devs[q].parent == i && g_devs[q].port == c &&
-                        sp < MAX_DEVS)
-                        stack[sp++] = q;
+            push_children(i, stack, &sp);
         }
     }
+    return n;
+}
+
+void usb_report_all(bool at_stop)
+{
+    g_first_report_done = true;
+    g_report_generation = g_generation;
+    int order[MAX_DEVS];
+    int n = tree_order(order);
     for (int k = 0; k < n; k++) {
         struct usbdev *d = &g_devs[order[k]];
         if ((d->vid || d->pid) && !d->reported) {

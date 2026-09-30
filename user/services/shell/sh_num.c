@@ -17,7 +17,7 @@ bool sh_parse_u64(const char *s, uint64_t *out)
 
 bool sh_parse_seconds(const char *s, uint64_t *ns)
 {
-    uint64_t whole = 0, frac = 0, scale = SH_S;
+    uint64_t whole = 0, frac = 0, scale = NS_PER_S;
     const char *p = s;
     bool any = false;
     for (; *p >= '0' && *p <= '9'; p++, any = true) {
@@ -33,7 +33,7 @@ bool sh_parse_seconds(const char *s, uint64_t *ns)
             }
     if (*p || !any)
         return false;
-    *ns = whole * SH_S + frac;
+    *ns = whole * NS_PER_S + frac;
     return true;
 }
 

@@ -10,10 +10,10 @@
  * A thread started with drv_thread_start keeps its 64 KiB stack (from the
  * heap) after it exits: libos can't free a stack it may still be running
  * on. */
-#include <os.h>
 #include <jam/driver.h>
+#include <os.h>
+#include "driver_start.h"
 
-#define PAGE           4096ull
 #define THREAD_STACK   (64u << 10)
 #define LOG_LINE       256
 /* <jam/vmo.h>'s vmo_create flags (the kernel's header; user code doesn't
@@ -72,7 +72,7 @@ void drv_report(const char *fmt, ...)
 
 uint64_t drv_clock_ns(void)
 {
-    return (uint64_t)jam_clock_get();
+    return now();
 }
 
 status_t drv_sleep_until(uint64_t deadline_ns)
@@ -245,8 +245,8 @@ static status_t map_pages(handle_t vmo, uint64_t off, uint64_t len, uint32_t fla
 {
     if (!addr || !len || off + len < off)
         return ERR_INVALID_ARGS;
-    uint64_t first = off & ~(PAGE - 1);
-    uint64_t span = ((off + len + PAGE - 1) & ~(PAGE - 1)) - first;
+    uint64_t first = off & ~(PAGE_SIZE - 1);
+    uint64_t span = ((off + len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)) - first;
     uint64_t va = 0;
     status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, first, span, flags, &va);
     if (st == OK)
@@ -263,10 +263,10 @@ status_t drv_vmo_map(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags, v
 
 status_t drv_vmo_unmap(void *addr, uint64_t len)
 {
-    uint64_t a = (uint64_t)(uintptr_t)addr, first = a & ~(PAGE - 1);
+    uint64_t a = (uint64_t)(uintptr_t)addr, first = a & ~(PAGE_SIZE - 1);
     if (!len || a + len < a)
         return ERR_INVALID_ARGS;
-    uint64_t span = ((a + len + PAGE - 1) & ~(PAGE - 1)) - first;
+    uint64_t span = ((a + len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)) - first;
     return jam_vmar_unmap(startup_handle(SR_SELF_VMAR), first, span);
 }
 
@@ -291,8 +291,8 @@ status_t drv_mmio_map(handle_t bar, uint64_t off, uint64_t len, uint32_t cache,
 {
     if (!addr || !len || off + len < off)
         return ERR_INVALID_ARGS;
-    uint64_t first = off & ~(PAGE - 1);
-    uint64_t span = ((off + len + PAGE - 1) & ~(PAGE - 1)) - first;
+    uint64_t first = off & ~(PAGE_SIZE - 1);
+    uint64_t span = ((off + len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)) - first;
     handle_t vmo;
     status_t st = jam_vmo_create_physical(bar, first, span, cache, &vmo);
     if (st != OK)

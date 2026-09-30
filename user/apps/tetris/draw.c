@@ -26,6 +26,35 @@ static const uint32_t piece_rgb[NPIECES] = {
 
 /* A bevelled block b x b (its last row and column left transparent: the
  * gap between blocks). */
+/* Pixel (x, y) of a block of colour c: the face n x n (n = b - 1), a
+ * bevel e wide. */
+static uint32_t block_px(int x, int y, int n, int e, uint32_t c)
+{
+    if (x == n || y == n)
+        return KEY_PX;
+    /* The face: a gentle top-to-bottom gradient. */
+    uint32_t col = mixc(mixc(c, 0xffffff, 36), scalec(c, 200), (uint32_t)(y * 256 / n));
+    int dt = y, dl = x, db = n - 1 - y, dr = n - 1 - x;
+    int m = dt < dl ? dt : dl;
+    m = db < m ? db : m;
+    m = dr < m ? dr : m;
+    if (m < e) {   /* the bevel: lit from the top left */
+        if (m == dt && dt <= dr)
+            col = mixc(c, 0xffffff, 120);
+        else if (m == dl && dl <= db)
+            col = mixc(c, 0xffffff, 64);
+        else if (m == db)
+            col = scalec(c, 120);
+        else
+            col = scalec(c, 160);
+    } else if (y < e + (n - 2 * e) / 3 && x < n - e - 1) {
+        /* a soft shine across the top of the face */
+        uint32_t k = (uint32_t)(y - e) * 256 / (uint32_t)((n - 2 * e) / 3 + 1);
+        col = mixc(col, 0xffffff, 40 - k * 40 / 256);
+    }
+    return col;
+}
+
 static struct surf make_block(int b, uint32_t c)
 {
     struct surf s = surf_new(b, b);
@@ -33,34 +62,8 @@ static struct surf make_block(int b, uint32_t c)
         return s;
     int n = b - 1, e = b >= 30 ? b / 8 : b >= 14 ? 3 : 2;
     for (int y = 0; y < b; y++)
-        for (int x = 0; x < b; x++) {
-            uint32_t *p = &s.px[y * b + x];
-            if (x == n || y == n) {
-                *p = KEY_PX;
-                continue;
-            }
-            /* The face: a gentle top-to-bottom gradient. */
-            uint32_t col = mixc(mixc(c, 0xffffff, 36), scalec(c, 200), (uint32_t)(y * 256 / n));
-            int dt = y, dl = x, db = n - 1 - y, dr = n - 1 - x;
-            int m = dt < dl ? dt : dl;
-            m = db < m ? db : m;
-            m = dr < m ? dr : m;
-            if (m < e) {   /* the bevel: lit from the top left */
-                if (m == dt && dt <= dr)
-                    col = mixc(c, 0xffffff, 120);
-                else if (m == dl && dl <= db)
-                    col = mixc(c, 0xffffff, 64);
-                else if (m == db)
-                    col = scalec(c, 120);
-                else
-                    col = scalec(c, 160);
-            } else if (y < e + (n - 2 * e) / 3 && x < n - e - 1) {
-                /* a soft shine across the top of the face */
-                uint32_t k = (uint32_t)(y - e) * 256 / (uint32_t)((n - 2 * e) / 3 + 1);
-                col = mixc(col, 0xffffff, 40 - k * 40 / 256);
-            }
-            *p = col;
-        }
+        for (int x = 0; x < b; x++)
+            s.px[y * b + x] = block_px(x, y, n, e, c);
     return s;
 }
 
@@ -77,9 +80,10 @@ static inline double ease_out(double t)   /* 0..1 */
 
 #define MAX_PARTS 900
 static struct part {
-    float x, y, vx, vy, life, max;
-    uint32_t c;
-    int size;
+    float x, y, vx, vy;   /* position and velocity */
+    float life, max;      /* seconds left; seconds it started with */
+    uint32_t c;           /* colour */
+    int size;             /* pixels square */
 } parts[MAX_PARTS];
 static int nparts;
 static uint64_t rng_fx = 0x9a17c1e5;
@@ -125,23 +129,30 @@ static void parts_draw(const struct surf *s)
 /* The effects the game's last moves call for (once per new event). */
 static uint64_t seen_clear, seen_drop;
 
+/* The burst of a line clear: particles from every cell of the rows the
+ * last lock cleared, more for more rows. */
+static void clear_burst(const struct game *g)
+{
+    for (int i = 0; i < g->ncleared; i++) {
+        int row = g->cleared[i] - HIDDEN;
+        for (int x = 0; x < BW; x++) {
+            uint8_t cell = g->cleared_cells[i][x];
+            uint32_t c = cell ? piece_rgb[cell - 1] : 0xffffff;
+            for (int k = 0; k < 3 + g->ncleared; k++) {
+                float a = frand() * 6.2832f, sp = (float)B * (4 + 10 * frand());
+                fx_spawn((x + frand()) * B, (row + frand()) * B, sp * (float)cosd(a),
+                      sp * (float)sind(a) - (float)B * 8, 0.5f + 0.5f * frand(),
+                      mixc(c, 0xffffff, (uint32_t)(frand() * 160)), B / 5 + 2);
+            }
+        }
+    }
+}
+
 void effects(const struct game *g)
 {
     if (g->ncleared && g->cleared_at != seen_clear) {
         seen_clear = g->cleared_at;
-        for (int i = 0; i < g->ncleared; i++) {
-            int row = g->cleared[i] - HIDDEN;
-            for (int x = 0; x < BW; x++) {
-                uint8_t cell = g->cleared_cells[i][x];
-                uint32_t c = cell ? piece_rgb[cell - 1] : 0xffffff;
-                for (int k = 0; k < 3 + g->ncleared; k++) {
-                    float a = frand() * 6.2832f, sp = (float)B * (4 + 10 * frand());
-                    fx_spawn((x + frand()) * B, (row + frand()) * B, sp * (float)cosd(a),
-                          sp * (float)sind(a) - (float)B * 8, 0.5f + 0.5f * frand(),
-                          mixc(c, 0xffffff, (uint32_t)(frand() * 160)), B / 5 + 2);
-                }
-            }
-        }
+        clear_burst(g);
     }
     if (g->dropped_at && g->dropped_at != seen_drop && g->drop_y1 > g->drop_y0) {
         seen_drop = g->dropped_at;

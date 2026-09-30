@@ -5,9 +5,9 @@
  * <devmgr.h>. */
 #pragma once
 
-#include <os.h>
 #include <devmgr.h>
 #include <jam/driver.h>
+#include <os.h>
 
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
 /* How long a driver gets to end by itself when asked to stop, before its
@@ -46,7 +46,7 @@ enum bind_kind {
 };
 
 struct binding {
-    enum bind_kind      kind;
+    enum bind_kind      kind;       /* what is bound */
     uint32_t            index;      /* BIND_PCI: pci_enum's */
     struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT, BIND_USB: vendor/device
                                      * only (BIND_USB: the USB ids) */
@@ -54,7 +54,7 @@ struct binding {
     bool                test;       /* its deaths and giving up are expected (not problems) */
     handle_t            dev;        /* BIND_PCI: ours, with RIGHT_MANAGE (0 until started once) */
     /* The driver while it runs. */
-    handle_t            job, proc;
+    handle_t            job, proc;  /* its job and process, 0 while none runs */
     handle_t            client;     /* our end of its DR_SERVE channel (GET_SERVICE's) */
     uint64_t            client_key; /* the port watches client for events under it (0: not) */
     handle_t            serve;      /* the driver's end, kept while its restart is due */
@@ -112,6 +112,10 @@ unsigned mem_bars(const struct binding *b);
 
 /* Close b's client end (and stop watching it). */
 void close_client(struct binding *b);
+/* The next message on h didn't fit (ERR_BUFFER_TOO_SMALL: n bytes, nh
+ * handles): take it off the queue anyway, unanswered, and close its
+ * handles. (usb.c) */
+void discard(handle_t h, uint32_t n, uint32_t nh);
 
 /* usb.c: the interfaces usb-bus reports on its DR_SERVE channel, and
  * their class drivers. */
@@ -131,10 +135,9 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
 void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
 bool usb_gone(const struct binding *b);
-/* The console: devmgr's client end of it (0: none), from SR_CONSOLE
- * or DEVMGR_SET_CONSOLE. A new one restarts the class drivers waiting for
- * it. */
-extern handle_t console;
+/* The console to connect class drivers to: devmgr's client end of it,
+ * from SR_CONSOLE or DEVMGR_SET_CONSOLE (consumed). A new one restarts the
+ * class drivers waiting for it. */
 void usb_new_console(handle_t ch);
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);

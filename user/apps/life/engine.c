@@ -95,24 +95,34 @@ uint64_t population(const uint64_t *g)
     return n;
 }
 
+/* Cell (x, y) dead, and old (its age bits all set). */
+static void clear_cell(uint32_t x, uint32_t y)
+{
+    set(cur, x, y, false);
+    set(old, x, y, false);
+    for (int k = 0; k < 3; k++)
+        set(age[k], x, y, true);
+}
+
+/* Cell (x, y) alive and new. */
+static void birth_cell(uint32_t x, uint32_t y)
+{
+    set(cur, x, y, true);
+    set(old, x, y, false);
+    for (int k = 0; k < 3; k++)
+        set(age[k], x, y, false);
+}
+
 void stamp(const char *const *rows, uint32_t nrows, uint32_t x, uint32_t y, uint32_t margin)
 {
     uint32_t w = (uint32_t)strlen(rows[0]);
     for (uint32_t j = 0; j < nrows + 2 * margin; j++)
-        for (uint32_t i = 0; i < w + 2 * margin; i++) {
-            set(cur, x + i - margin, y + j - margin, false);
-            set(old, x + i - margin, y + j - margin, false);
-            for (int k = 0; k < 3; k++)
-                set(age[k], x + i - margin, y + j - margin, true);
-        }
+        for (uint32_t i = 0; i < w + 2 * margin; i++)
+            clear_cell(x + i - margin, y + j - margin);
     for (uint32_t j = 0; j < nrows; j++)
         for (uint32_t i = 0; rows[j][i]; i++)
-            if (rows[j][i] == 'O') {
-                set(cur, x + i, y + j, true);
-                set(old, x + i, y + j, false);
-                for (int k = 0; k < 3; k++)
-                    set(age[k], x + i, y + j, false);
-            }
+            if (rows[j][i] == 'O')
+                birth_cell(x + i, y + j);
 }
 
 const char *const glider[3] = { ".O.", "..O", "OOO" };

@@ -63,9 +63,9 @@ static int exec_alias(const char *alias, int argc, char **argv)
 }
 
 struct saved_var {
-    char  name[SH_NAME_MAX];
-    char *old;
-    bool  had;
+    char  name[SH_NAME_MAX];   /* NAME of a NAME=value prefix */
+    char *old;                 /* its value before (malloc'd copy) */
+    bool  had;                 /* it was set before */
 };
 
 #define MAX_SAVED 8

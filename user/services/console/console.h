@@ -9,10 +9,10 @@
  *   main.c     the kernel log, startup and the event loop */
 #pragma once
 
-#include <os.h>
 #include <font.h>
 #include <idl/console.h>
 #include <idl/input.h>
+#include <os.h>
 
 #define GW 8
 #define GH 16
@@ -37,7 +37,7 @@ enum { C_BLACK, C_RED, C_GREEN, C_YELLOW, C_BLUE, C_MAGENTA, C_CYAN, C_GREY,
 #define A_OUT     ATTR(C_WHITE, C_BLACK)
 
 struct cell {
-    uint8_t ch, attr;
+    uint8_t ch, attr;   /* the character (or a G_* block); ATTR(fg, bg) */
 };
 /* The block elements full-screen programs draw with, as cell characters. */
 enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
@@ -45,7 +45,7 @@ enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
 /* Client levels (console.idl new_client): see main.c. */
 enum { L_ADMIN, L_SHELL, L_PROGRAM };
 struct client {
-    uint8_t level;
+    uint8_t level;      /* L_* */
 };
 
 /* Port keys: the kind in the high half, an index in the low. */

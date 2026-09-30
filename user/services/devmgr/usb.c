@@ -28,9 +28,9 @@
  *   - exit 0 otherwise: finished (a non-boot interface it skipped);
  *   - a crash, a kill, an error exit: restarted with backoff
  *     (supervise.c), given up on after 5 in a minute. */
-#include "internal.h"
 #include <idl/console.h>
 #include <idl/usbbus.h>
+#include "internal.h"
 
 #define CONNECT_WAIT (2 * NS_PER_S)   /* console.connect_input */
 
@@ -39,11 +39,11 @@ struct usb_if {
     uint32_t bus;       /* devs index of the usb-bus that reported it */
     int32_t  bind;      /* devs index of its class driver's binding; -1: none */
     uint16_t gen;       /* bumped at every use of the slot: in its port key */
-    struct usbbus_interface_attached_req info;
+    struct usbbus_interface_attached_req info;   /* what usb-bus said about it */
 };
 
 static struct usb_if usb_ifs[MAX_USB_IFS];
-handle_t console;
+static handle_t console;       /* our client end of the console (0: none) */
 static uint32_t console_gen;   /* bumped with every console we are given */
 
 static const char *if_path(const struct usb_if *u)
@@ -62,8 +62,7 @@ static void drop(struct usb_if *u)
     u->bind = -1;
 }
 
-/* One message is queued on h that doesn't fit: take it off anyway. */
-static void discard(handle_t h, uint32_t n, uint32_t nh)
+void discard(handle_t h, uint32_t n, uint32_t nh)
 {
     uint8_t *big = malloc(n ? n : 1);
     handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));
@@ -246,7 +245,8 @@ static void bind_interface(unsigned slot, const char *path)
         return;
     }
     say(true, "devmgr: usb %04x:%04x if%u -> %s (%s, port %s)%s", m->vendor, m->product,
-        m->interface_number, path, what(m), if_path(u), b->input_gen ? "" : ", no console: to the log");
+        m->interface_number, path, what(m), if_path(u),
+        b->input_gen ? "" : ", no console: to the log");
 }
 
 static void attached(struct binding *bus, const struct usbbus_interface_attached_req *m,

@@ -21,14 +21,16 @@
 #define CRASHER_CRASH 0xc4a50002u
 #define CRASHER_EXIT  0xc4a50003u
 
+/* A request: CRASHER_* ordinal, arg = EXIT's code. */
 struct req {
-    uint32_t txid, ordinal, arg;
+    uint32_t txid, ordinal, arg;   /* the caller's txid, CRASHER_*, EXIT's exit code */
 };
 
+/* PING's reply. */
 struct ping_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint64_t started_ns;
+    uint32_t txid;         /* the request's */
+    int32_t  status;       /* OK */
+    uint64_t started_ns;   /* when this instance of the driver started (uptime) */
 } __attribute__((packed));
 
 static void crash(void)
@@ -36,6 +38,21 @@ static void crash(void)
     volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)8;   /* the null page: never mapped */
     __asm__ volatile("" : "+r"(p));   /* (the compiler may not see it's null) */
     *p = 0xdead;
+}
+
+/* The next message didn't fit (n bytes, nh handles): not ours (too big,
+ * or with handles), but off the queue. False if it can't be read. */
+static bool drop_message(handle_t ch, uint32_t n, uint32_t nh)
+{
+    void *big = drv_malloc(n ? n : 1);
+    handle_t hs[64];
+    if (!big || nh > 64)
+        return false;
+    if (drv_channel_read(ch, big, n, &n, hs, nh, &nh) == OK)
+        for (uint32_t i = 0; i < nh; i++)
+            drv_handle_close(hs[i]);
+    drv_free(big);
+    return true;
 }
 
 int driver_main(const struct driver_start *s)
@@ -60,15 +77,8 @@ int driver_main(const struct driver_start *s)
         if (st == ERR_PEER_CLOSED)
             return 0;   /* the client is gone */
         if (st == ERR_BUFFER_TOO_SMALL) {
-            /* Not ours (too big, or with handles): off the queue. */
-            void *big = drv_malloc(n ? n : 1);
-            handle_t hs[64];
-            if (!big || nh > 64)
+            if (!drop_message(ch, n, nh))
                 return 1;
-            if (drv_channel_read(ch, big, n, &n, hs, nh, &nh) == OK)
-                for (uint32_t i = 0; i < nh; i++)
-                    drv_handle_close(hs[i]);
-            drv_free(big);
             continue;
         }
         if (st != OK || n < 8)
@@ -76,7 +86,7 @@ int driver_main(const struct driver_start *s)
         switch (q.ordinal) {
         case CRASHER_PING: {
             struct ping_rep r = { q.txid, OK, started };
-            drv_channel_write(ch, &r, sizeof(r), NULL, 0);
+            (void)drv_channel_write(ch, &r, sizeof(r), NULL, 0);   /* a gone client: no reply */
             break;
         }
         case CRASHER_CRASH:
@@ -88,7 +98,7 @@ int driver_main(const struct driver_start *s)
             return n >= 12 ? (int)q.arg : 0;
         default: {
             struct { uint32_t txid; int32_t status; } r = { q.txid, ERR_NOT_SUPPORTED };
-            drv_channel_write(ch, &r, sizeof(r), NULL, 0);
+            (void)drv_channel_write(ch, &r, sizeof(r), NULL, 0);   /* as for PING */
             break;
         }
         }

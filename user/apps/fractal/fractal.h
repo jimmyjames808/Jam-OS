@@ -110,20 +110,20 @@ enum { M_DOUBLE, M_PERTURB, M_DD };
 
 /* Everything a kernel needs to know about the view. */
 struct kview {
-    int    mode;
-    bool   julia;
+    int    mode;          /* M_* */
+    bool   julia;         /* the Julia set of (jr, ji), not the Mandelbrot set */
     dd     cx, cy;        /* the centre */
     double px;            /* one pixel, in the plane */
     double jr, ji;        /* the Julia constant */
-    int    maxit;
+    int    maxit;         /* iterations before a point counts as inside */
     bool   avx2;          /* use the 4-lane kernel for M_DOUBLE */
 };
 
 /* The reference orbit for M_PERTURB: Z_0 .. Z_n (doubles, rounded from
  * double-double) of the view's centre. */
 struct ref {
-    double *zr, *zi;
-    int n, cap;
+    double *zr, *zi;      /* Z_i, real and imaginary parts (malloc'd) */
+    int n, cap;           /* entries; room */
 };
 /* (Re)compute it for v (single thread; ~maxit double-double steps). */
 bool ref_build(struct ref *r, const struct kview *v);
@@ -150,7 +150,7 @@ float it_perturb(const struct ref *r, double dcr, double dci, int maxit, uint64_
 #define MAX_ZOOM  1e28
 
 struct view {
-    bool   julia;
+    bool   julia;                /* the Julia set, not the Mandelbrot set */
     dd     cx, cy;               /* the centre */
     double zoom;                 /* 1: the whole set */
     double jr, ji;               /* the Julia constant */

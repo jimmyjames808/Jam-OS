@@ -13,8 +13,8 @@
 #define PRINTF_BUF 512
 
 struct out {
-    char  *buf;
-    size_t size;
+    char  *buf;       /* the caller's buffer */
+    size_t size;      /* its size, the NUL included */
     size_t len;   /* chars that would have been written */
 };
 
@@ -55,122 +55,153 @@ static void put_num(struct out *o, uint64_t v, unsigned base, bool upper, bool n
             put(o, ' ');
 }
 
+/* What comes between a '%' and its conversion character. */
+struct spec {
+    char pad;         /* ' ' or '0' (the 0 flag) */
+    bool left, alt;   /* the - flag: pad on the right; the # flag: 0x / 0X */
+    int  width;       /* the minimum field width */
+    int  prec;        /* the precision, -1: none (only %s uses it) */
+    int  lng;         /* 0 = int, 1 = long, 2 = long long, 3 = size_t */
+};
+
+/* Parse the flags, width, precision and length at *fmt (just after the
+ * '%'); *fmt is left at the conversion character. */
+static void parse_spec(const char **fmt, va_list *ap, struct spec *s)
+{
+    const char *f = *fmt;
+    s->pad = ' ';
+    s->left = s->alt = false;
+    for (;; f++) {
+        if (*f == '-')
+            s->left = true;
+        else if (*f == '0')
+            s->pad = '0';
+        else if (*f == '#')
+            s->alt = true;
+        else
+            break;
+    }
+    if (s->left)
+        s->pad = ' ';
+    s->width = 0;
+    if (*f == '*') {
+        s->width = va_arg(*ap, int);
+        if (s->width < 0) {
+            s->left = true;
+            s->pad = ' ';
+            s->width = -s->width;
+        }
+        f++;
+    } else {
+        while (*f >= '0' && *f <= '9')
+            s->width = s->width * 10 + (*f++ - '0');
+    }
+    s->prec = -1;
+    if (*f == '.') {
+        f++;
+        s->prec = 0;
+        if (*f == '*') {
+            s->prec = va_arg(*ap, int);
+            f++;
+        } else {
+            while (*f >= '0' && *f <= '9')
+                s->prec = s->prec * 10 + (*f++ - '0');
+        }
+    }
+    s->lng = 0;
+    if (*f == 'l') {
+        s->lng = 1;
+        if (*++f == 'l') {
+            s->lng = 2;
+            f++;
+        }
+    } else if (*f == 'z') {
+        s->lng = 3;
+        f++;
+    }
+    *fmt = f;
+}
+
+/* %s with a width and precision. */
+static void put_str(struct out *o, const char *s, const struct spec *sp)
+{
+    if (!s)
+        s = "(null)";
+    int len = (int)(sp->prec >= 0 ? strnlen(s, (size_t)sp->prec) : strlen(s));
+    int width = sp->width;
+    if (!sp->left)
+        for (; width > len; width--)
+            put(o, ' ');
+    for (int i = 0; i < len; i++)
+        put(o, s[i]);
+    if (sp->left)
+        for (; width > len; width--)
+            put(o, ' ');
+}
+
+/* The conversion at *fmt, its argument from ap. A '%' at the end of the
+ * format leaves *fmt on the NUL's left, so the caller's loop ends. */
+static void convert(struct out *o, const char **fmt, const struct spec *s, va_list *ap)
+{
+    char c = **fmt;
+    switch (c) {
+    case 'd':
+    case 'i': {
+        int64_t v = s->lng == 0 ? va_arg(*ap, int)
+                  : s->lng == 3 ? (int64_t)va_arg(*ap, size_t)
+                                : va_arg(*ap, long long);
+        bool neg = v < 0;
+        put_num(o, neg ? -(uint64_t)v : (uint64_t)v, 10, false, neg, s->width, s->pad, s->left,
+                "");
+        break;
+    }
+    case 'u':
+    case 'x':
+    case 'X': {
+        uint64_t v = s->lng == 0 ? va_arg(*ap, unsigned)
+                   : s->lng == 3 ? va_arg(*ap, size_t)
+                                 : va_arg(*ap, unsigned long long);
+        const char *prefix = s->alt && c != 'u' ? (c == 'X' ? "0X" : "0x") : "";
+        put_num(o, v, c == 'u' ? 10 : 16, c == 'X', false, s->width, s->pad, s->left, prefix);
+        break;
+    }
+    case 'p':
+        put_num(o, (uintptr_t)va_arg(*ap, void *), 16, false, false, 0, ' ', false, "0x");
+        break;
+    case 's':
+        put_str(o, va_arg(*ap, const char *), s);
+        break;
+    case 'c':
+        put(o, (char)va_arg(*ap, int));
+        break;
+    case '%':
+        put(o, '%');
+        break;
+    case '\0':
+        (*fmt)--;
+        break;
+    default:
+        put(o, '%');
+        put(o, c);
+    }
+}
+
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
     struct out o = { buf, size, 0 };
-
+    va_list aq;   /* a copy the helpers can take the address of */
+    va_copy(aq, ap);
     for (; *fmt; fmt++) {
         if (*fmt != '%') {
             put(&o, *fmt);
             continue;
         }
         fmt++;
-
-        char pad = ' ';
-        bool left = false, alt = false;
-        for (;; fmt++) {
-            if (*fmt == '-')
-                left = true;
-            else if (*fmt == '0')
-                pad = '0';
-            else if (*fmt == '#')
-                alt = true;
-            else
-                break;
-        }
-        if (left)
-            pad = ' ';
-        int width = 0;
-        if (*fmt == '*') {
-            width = va_arg(ap, int);
-            if (width < 0) {
-                left = true;
-                pad = ' ';
-                width = -width;
-            }
-            fmt++;
-        } else {
-            while (*fmt >= '0' && *fmt <= '9')
-                width = width * 10 + (*fmt++ - '0');
-        }
-        int prec = -1;   /* only used by %s */
-        if (*fmt == '.') {
-            fmt++;
-            prec = 0;
-            if (*fmt == '*') {
-                prec = va_arg(ap, int);
-                fmt++;
-            } else {
-                while (*fmt >= '0' && *fmt <= '9')
-                    prec = prec * 10 + (*fmt++ - '0');
-            }
-        }
-
-        int lng = 0;   /* 0 = int, 1 = long, 2 = long long, 3 = size_t */
-        if (*fmt == 'l') {
-            lng = 1;
-            if (*++fmt == 'l') {
-                lng = 2;
-                fmt++;
-            }
-        } else if (*fmt == 'z') {
-            lng = 3;
-            fmt++;
-        }
-
-        switch (*fmt) {
-        case 'd':
-        case 'i': {
-            int64_t v = lng == 0 ? va_arg(ap, int)
-                      : lng == 3 ? (int64_t)va_arg(ap, size_t)
-                                 : va_arg(ap, long long);
-            bool neg = v < 0;
-            put_num(&o, neg ? -(uint64_t)v : (uint64_t)v, 10, false, neg, width, pad, left, "");
-            break;
-        }
-        case 'u':
-        case 'x':
-        case 'X': {
-            uint64_t v = lng == 0 ? va_arg(ap, unsigned)
-                       : lng == 3 ? va_arg(ap, size_t)
-                                  : va_arg(ap, unsigned long long);
-            const char *prefix = alt && *fmt != 'u' ? (*fmt == 'X' ? "0X" : "0x") : "";
-            put_num(&o, v, *fmt == 'u' ? 10 : 16, *fmt == 'X', false, width, pad, left, prefix);
-            break;
-        }
-        case 'p':
-            put_num(&o, (uintptr_t)va_arg(ap, void *), 16, false, false, 0, ' ', false, "0x");
-            break;
-        case 's': {
-            const char *s = va_arg(ap, const char *);
-            if (!s)
-                s = "(null)";
-            int len = (int)(prec >= 0 ? strnlen(s, (size_t)prec) : strlen(s));
-            if (!left)
-                for (; width > len; width--)
-                    put(&o, ' ');
-            for (int i = 0; i < len; i++)
-                put(&o, s[i]);
-            if (left)
-                for (; width > len; width--)
-                    put(&o, ' ');
-            break;
-        }
-        case 'c':
-            put(&o, (char)va_arg(ap, int));
-            break;
-        case '%':
-            put(&o, '%');
-            break;
-        case '\0':
-            fmt--;
-            break;
-        default:
-            put(&o, '%');
-            put(&o, *fmt);
-        }
+        struct spec s;
+        parse_spec(&fmt, &aq, &s);
+        convert(&o, &fmt, &s, &aq);
     }
-
+    va_end(aq);
     if (size)
         buf[o.len < size ? o.len : size - 1] = '\0';
     return (int)o.len;

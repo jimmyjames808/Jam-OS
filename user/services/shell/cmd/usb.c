@@ -7,8 +7,8 @@
 #define MAX_SEEN 64
 
 struct seen {
-    uint32_t id;
-    uint16_t vendor, product;
+    uint32_t id;                /* usb-bus's device id */
+    uint16_t vendor, product;   /* its USB ids */
 };
 
 /* usb-bus: the bound driver that answers usbbus.status (as usbtest finds it). */
@@ -20,14 +20,14 @@ static handle_t find_usb_bus(void)
         handle_t hs[1];
         uint32_t nh = 0;
         status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, hs, 1, &nh,
-                                  (uint64_t)jam_clock_get() + 5 * SH_S);
+                                  now() + 5 * NS_PER_S);
         if (st == ERR_NOT_FOUND)
             break;
         if (st != OK || nh != 1)
             continue;
         uint32_t d, h, i, hid, p, g;
         uint8_t settled;
-        if (usbbus_status_until(hs[0], (uint64_t)jam_clock_get() + 2 * SH_S, &d, &h, &i, &hid, &p,
+        if (usbbus_status_until(hs[0], now() + 2 * NS_PER_S, &d, &h, &i, &hid, &p,
                                 &g, &settled) == OK)
             return hs[0];
         jam_handle_close(hs[0]);
@@ -46,7 +46,7 @@ static void interfaces(handle_t bus, uint32_t id, uint8_t nifs)
 {
     for (uint8_t k = 0; k < nifs && k < 8; k++) {
         uint8_t num, alt, nalt, icls, isub, iproto, nep, eps[8];
-        if (usbbus_interface_until(bus, (uint64_t)jam_clock_get() + 2 * SH_S, id, k, &num, &alt,
+        if (usbbus_interface_until(bus, now() + 2 * NS_PER_S, id, k, &num, &alt,
                                    &nalt, &icls, &isub, &iproto, &nep, eps) != OK)
             continue;
         const char *what = icls == 3 && isub == 1 && iproto == 1 ? " kbd"
@@ -64,7 +64,7 @@ static bool device_line(handle_t bus, uint32_t i, struct seen *seen, uint32_t *n
     uint16_t vendor, product, bcd, mp0;
     uint8_t speed, addr, slot, rport, port, level, tts, ttp, cls, sub, proto, ncfg, cfg, nifs,
         hubports, path[24], name[40], serial[24];
-    if (usbbus_device_until(bus, (uint64_t)jam_clock_get() + 2 * SH_S, i, &id, &parent, &vendor,
+    if (usbbus_device_until(bus, now() + 2 * NS_PER_S, i, &id, &parent, &vendor,
                             &product, &bcd, &speed, &addr, &slot, &rport, &port, &level, &route,
                             &tts, &ttp, &cls, &sub, &proto, &ncfg, &cfg, &nifs, &mp0, &hubports,
                             path, name, serial) != OK)
@@ -96,7 +96,7 @@ SH_CMD(usb)
     }
     uint32_t ndev, nhub, nif, nhid, nprob, gen;
     uint8_t settled;
-    status_t st = usbbus_wait_settled_until(bus, (uint64_t)jam_clock_get() + 5 * SH_S, 3000, &ndev,
+    status_t st = usbbus_wait_settled_until(bus, now() + 5 * NS_PER_S, 3000, &ndev,
                                             &nhub, &nif, &nhid, &nprob, &gen, &settled);
     if (st != OK) {
         sh_say("usb: %s\n", status_str(st));

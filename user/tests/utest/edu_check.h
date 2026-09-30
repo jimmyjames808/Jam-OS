@@ -5,8 +5,8 @@
  * logged with drv_log. */
 #pragma once
 
-#include <jam/driver.h>
 #include <idl/edu.h>
+#include <jam/driver.h>
 
 struct edu_check_result {
     uint32_t fact10;     /* factorial(10) as the device computed it */

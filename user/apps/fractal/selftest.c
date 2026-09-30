@@ -155,7 +155,8 @@ static void test_kernels(void)
     view.zoom = 1e27;
     apply_view();
     same = compare_modes(M_PERTURB, M_DD, 24, 9000, &worst, &distinct);
-    snprintf(what, sizeof(what), "zoom 1e27: perturbation == double-double at %d of 576 (%d values)",
+    snprintf(what, sizeof(what),
+             "zoom 1e27: perturbation == double-double at %d of 576 (%d values)",
              same, distinct);
     fun_check(same >= 576 * 90 / 100 && distinct > 300, what);
 }

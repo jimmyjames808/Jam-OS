@@ -63,7 +63,8 @@ static bool root_reset(struct hc *h, uint32_t p, uint32_t *v)
     *v = hc_portsc(h, p);
     hc_portsc_write(h, p, *v & (PS_WRC | PS_PRC | PS_PEC | PS_CSC | PS_PLC));
     if (!(*v & PS_PED)) {
-        drv_report("usb %u: FAILED: USB 3 port not enabled after a warm reset (PORTSC %08x)", p, *v);
+        drv_report("usb %u: FAILED: USB 3 port not enabled after a warm reset (PORTSC %08x)", p,
+                   *v);
         return false;
     }
     return true;

@@ -49,24 +49,6 @@ static status_t bar_for_driver(handle_t dev, unsigned n, handle_t *out)
     return st;
 }
 
-/* A capability's config offset (the standard list, bounded), or 0. */
-static uint32_t find_cap(handle_t dev, uint32_t id)
-{
-    uint32_t st = 0, p = 0, v = 0;
-    if (jam_pci_config_read(dev, 0x06, 2, &st) != OK || !(st & 0x10) ||
-        jam_pci_config_read(dev, 0x34, 1, &p) != OK)
-        return 0;
-    for (int guard = 0; p >= 0x40 && p < 0x100 && guard < 48; guard++) {
-        p &= ~3u;
-        if (jam_pci_config_read(dev, p, 2, &v) != OK)
-            return 0;
-        if ((v & 0xff) == id)
-            return p;
-        p = v >> 8;
-    }
-    return 0;
-}
-
 /* A function left in D1-D3 (by firmware, or a power-down) is woken to D0
  * before a driver gets it (a driver can't use a sleeping device, and only
  * we may change its power state: RIGHT_MANAGE). The kernel waits out the
@@ -74,11 +56,12 @@ static uint32_t find_cap(handle_t dev, uint32_t id)
  * D3hot -> D0 reset loses. */
 static status_t wake(struct binding *b)
 {
-    uint32_t pm = find_cap(b->dev, 0x01), pmcsr = 0;
+    uint32_t pm = pci_find_cap(b->dev, 0x01), pmcsr = 0;
     if (!pm || jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) != OK || !(pmcsr & 3))
         return OK;
     uint32_t was = pmcsr & 3;
-    status_t st = jam_pci_config_write(b->dev, pm + 4, 2, pmcsr & ~0x8003u);   /* (15: PME status, W1C) */
+    /* PMCSR: power state (bits 1:0) D0, and bit 15 (PME status, W1C) left alone. */
+    status_t st = jam_pci_config_write(b->dev, pm + 4, 2, pmcsr & ~0x8003u);
     if (st == OK && jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) == OK && (pmcsr & 3))
         st = ERR_TIMED_OUT;
     say(true, "devmgr: %s %04x:%04x was in D%u: %s", bdf(b), b->info.vendor, b->info.device, was,
@@ -119,6 +102,55 @@ static status_t pci_handles(struct binding *b, struct spawn_handle *x, rights_t 
     return st;
 }
 
+/* DR_SERVE: the end a restart kept (clients may have queued calls on it
+ * already), else a new channel whose other end becomes b->client. A USB
+ * class driver serves nobody. */
+static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+{
+    status_t st = OK;
+    if (!b->serve && b->kind != BIND_USB) {
+        handle_t client;
+        if ((st = jam_channel_create(&client, &b->serve)) == OK) {
+            close_client(b);
+            b->client = client;
+        }
+    }
+    if (st == OK && b->kind != BIND_USB) {
+        add(x, xr, n, DR_SERVE, b->serve, RIGHT_SAME);
+        b->serve = HANDLE_INVALID;
+    }
+    return st;
+}
+
+/* b's driver in job, with the n handles in x (arriving with xr[i]), which
+ * spawn consumes whatever happens. */
+static status_t spawn_driver(const struct binding *b, handle_t job, const struct spawn_handle *x,
+                             const rights_t *xr, unsigned n, handle_t *proc)
+{
+    /* A USB class driver is named after its interface ("hid-6.1:0"):
+     * in the log, in `ps`, for the shell's `kill`. */
+    const char *name = b->kind == BIND_USB ? b->name : NULL;
+    const char *argv[] = { name ? name : b->path };
+    struct spawn_args a = {
+        .path = b->path, .name = name, .argc = 1, .argv = argv, .job = job, .extra = x,
+        .nextra = n, .extra_rights = xr,
+    };
+    return spawn(&a, proc);
+}
+
+/* What the driver writes on its own (usb-bus: interface_attached): the
+ * port watches its client end. */
+static void watch_events(struct binding *b)
+{
+    if (b->client && !b->client_key) {
+        uint64_t key = KEY_EV_OF(b - devs, b->gen);
+        if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
+            b->client_key = key;
+        else
+            say(false, "devmgr: %s: can't watch its channel for events", bdf(b));
+    }
+}
+
 status_t start_driver(struct binding *b)
 {
     struct spawn_handle x[STARTUP_MAX_HANDLES];
@@ -128,33 +160,14 @@ status_t start_driver(struct binding *b)
     status_t st = b->kind == BIND_PCI   ? pci_handles(b, x, xr, &n)
                   : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
                                         : OK;
-    /* DR_SERVE: the end a restart kept (clients may have queued calls on
-     * it already), else a new channel. A USB class driver serves nobody. */
-    if (st == OK && !b->serve && b->kind != BIND_USB) {
-        handle_t client;
-        if ((st = jam_channel_create(&client, &b->serve)) == OK) {
-            close_client(b);
-            b->client = client;
-        }
-    }
-    if (st == OK && b->kind != BIND_USB) {
-        add(x, xr, &n, DR_SERVE, b->serve, RIGHT_SAME);
-        b->serve = HANDLE_INVALID;
-    }
+    if (st == OK)
+        st = add_serve(b, x, xr, &n);
     if (st == OK)
         st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     for (unsigned i = 0; st == OK && i < sizeof(limits) / sizeof(limits[0]); i++)
         st = jam_job_set_limit(job, limits[i].kind, limits[i].value);
     if (st == OK) {
-        /* A USB class driver is named after its interface ("hid-6.1:0"):
-         * in the log, in `ps`, for the shell's `kill`. */
-        const char *name = b->kind == BIND_USB ? b->name : NULL;
-        const char *argv[] = { name ? name : b->path };
-        struct spawn_args a = {
-            .path = b->path, .name = name, .argc = 1, .argv = argv, .job = job, .extra = x,
-            .nextra = n, .extra_rights = xr,
-        };
-        st = spawn(&a, &proc);   /* consumes the extras either way */
+        st = spawn_driver(b, job, x, xr, n, &proc);   /* consumes the extras either way */
         n = 0;
     }
     for (unsigned i = 0; i < n; i++)
@@ -179,14 +192,7 @@ status_t start_driver(struct binding *b)
     b->proc = proc;
     b->killed = false;
     b->state = DEVMGR_SUP_RUNNING;
-    /* What the driver writes on its own (usb-bus: interface_attached). */
-    if (b->client && !b->client_key) {
-        uint64_t key = KEY_EV_OF(b - devs, b->gen);
-        if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
-            b->client_key = key;
-        else
-            say(false, "devmgr: %s: can't watch its channel for events", bdf(b));
-    }
+    watch_events(b);
     return OK;
 }
 

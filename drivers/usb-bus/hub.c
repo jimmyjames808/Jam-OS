@@ -104,17 +104,17 @@ bool hub_setup(struct usbdev *d)
 static void hub_over_current(struct usbdev *hub, uint8_t port)
 {
     hc_sleep(&g_hc, 100);
-    uint16_t st = 0, chg = 0;
-    if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS)
+    uint16_t ps = 0, chg = 0;
+    if (hub_port_status(hub, port, &ps, &chg) != CC_SUCCESS)
         return;
     uint16_t power = hub->ss_hub ? 1u << 9 : 1u << 8;
-    if (st & power) {
+    if (ps & power) {
         drv_log("usb %s: port %u over-current; its power is still on", hub->path, port);
         return;
     }
-    if ((st & (1u << 3)) || hub->port_oc[port] >= OC_RESTORES) {
+    if ((ps & (1u << 3)) || hub->port_oc[port] >= OC_RESTORES) {
         drv_report("usb %s: port %u over-current: port power left off (%s)", hub->path, port,
-                   st & (1u << 3) ? "still over current" : "restored 3 times already");
+                   ps & (1u << 3) ? "still over current" : "restored 3 times already");
         return;
     }
     hub->port_oc[port]++;
@@ -129,9 +129,9 @@ static void hub_over_current(struct usbdev *hub, uint8_t port)
 /* The port's status and changes, with every change bit we saw cleared
  * (wPortChange bit -> C_* feature) and an over-current dealt with (then
  * the status is read again). False if it can't be read. */
-static bool hub_port_read(struct usbdev *hub, uint8_t port, uint16_t *st, uint16_t *chg)
+static bool hub_port_read(struct usbdev *hub, uint8_t port, uint16_t *ps, uint16_t *chg)
 {
-    uint32_t cc = hub_port_status(hub, port, st, chg);
+    uint32_t cc = hub_port_status(hub, port, ps, chg);
     if (cc != CC_SUCCESS) {
         if (!hub->gone)
             drv_log("usb %s: port %u status: %s", hub->path, port, cc_str(cc));
@@ -148,7 +148,7 @@ static bool hub_port_read(struct usbdev *hub, uint8_t port, uint16_t *st, uint16
     if (*chg & (1u << 3)) {
         drv_log("usb %s: port %u over-current", hub->path, port);
         hub_over_current(hub, port);
-        if (hub_port_status(hub, port, st, chg) != CC_SUCCESS)
+        if (hub_port_status(hub, port, ps, chg) != CC_SUCCESS)
             return false;
     }
     return true;
@@ -157,10 +157,10 @@ static bool hub_port_read(struct usbdev *hub, uint8_t port, uint16_t *st, uint16
 /* The device on the port, if any, against the status: detached when it
  * left, was replugged or its port got disabled. True if a new device
  * should be attached now. */
-static bool hub_port_wants_attach(struct usbdev *hub, uint8_t port, uint16_t st, uint16_t chg)
+static bool hub_port_wants_attach(struct usbdev *hub, uint8_t port, uint16_t ps, uint16_t chg)
 {
     struct usbdev *c = child_at(dev_index(hub), port);
-    bool connected = st & 1, enabled = st & 2;
+    bool connected = ps & 1, enabled = ps & 2;
     if (!connected) {
         hub->port_fail[port] = 0;
         if (c)
@@ -176,7 +176,7 @@ static bool hub_port_wants_attach(struct usbdev *hub, uint8_t port, uint16_t st,
 
 /* Wait (up to 800 ms) for the reset to finish, then clear its change
  * bits. False if it never did. */
-static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uint16_t *st,
+static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uint16_t *ps,
                                 uint16_t *chg)
 {
     struct hc *h = &g_hc;
@@ -185,9 +185,9 @@ static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uin
     uint16_t reset_chg = warm ? (1u << 5) | (1u << 4) : (1u << 4);
     while (drv_clock_ns() < end && !hub->gone && !h->stopping) {
         hc_sleep(h, 10);
-        if (hub_port_status(hub, port, st, chg) != CC_SUCCESS)
+        if (hub_port_status(hub, port, ps, chg) != CC_SUCCESS)
             continue;
-        if ((*chg & reset_chg) && !(*st & (1u << 4))) {
+        if ((*chg & reset_chg) && !(*ps & (1u << 4))) {
             done = true;
             break;
         }
@@ -195,7 +195,7 @@ static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uin
     if (!done) {
         hub->port_fail[port]++;
         drv_report("usb %s.%u: FAILED at hub port reset: no reset change in 800 ms (status %04x "
-                   "change %04x)", hub->path, port, *st, *chg);
+                   "change %04x)", hub->path, port, *ps, *chg);
         g_failed++;
         return false;
     }
@@ -211,13 +211,13 @@ static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uin
  * counted where it is the device's fault) if it can't be enumerated. */
 static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
 {
-    uint16_t st = 0, chg = 0;
+    uint16_t ps = 0, chg = 0;
     hc_sleep(&g_hc, 100);
-    if (hub_port_status(hub, port, &st, &chg) != CC_SUCCESS || !(st & 1))
+    if (hub_port_status(hub, port, &ps, &chg) != CC_SUCCESS || !(ps & 1))
         return false;
     /* A SuperSpeed port whose link is stuck (SS.Inactive, Compliance)
      * needs a warm reset (BH_PORT_RESET); the rest a (hot) PORT_RESET. */
-    uint32_t link = (st >> 5) & 0xf;
+    uint32_t link = (ps >> 5) & 0xf;
     bool warm = hub->ss_hub && (link == PLS_INACTIVE || link == PLS_COMPLIANCE);
     uint32_t cc = hub_feature(hub, true, warm ? HUB_BH_PORT_RESET : HUB_PORT_RESET, port);
     if (cc != CC_SUCCESS) {
@@ -226,20 +226,20 @@ static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
                 warm ? "BH_PORT_RESET" : "PORT_RESET", cc_str(cc));
         return false;
     }
-    if (!hub_port_reset_wait(hub, port, warm, &st, &chg))
+    if (!hub_port_reset_wait(hub, port, warm, &ps, &chg))
         return false;
-    if (!(st & 2)) {
+    if (!(ps & 2)) {
         hub->port_fail[port]++;
         drv_report("usb %s.%u: FAILED: port not enabled after reset (status %04x)", hub->path,
-                   port, st);
+                   port, ps);
         g_failed++;
         return false;
     }
     if (hub->ss_hub)
         *speed = SPEED_SUPER;
-    else if (st & (1u << 9))
+    else if (ps & (1u << 9))
         *speed = SPEED_LOW;
-    else if (st & (1u << 10))
+    else if (ps & (1u << 10))
         *speed = SPEED_HIGH;
     else
         *speed = SPEED_FULL;
@@ -248,9 +248,9 @@ static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
 
 static void hub_port(struct usbdev *hub, uint8_t port)
 {
-    uint16_t st = 0, chg = 0;
+    uint16_t ps = 0, chg = 0;
     uint8_t speed;
-    if (!hub_port_read(hub, port, &st, &chg) || !hub_port_wants_attach(hub, port, st, chg) ||
+    if (!hub_port_read(hub, port, &ps, &chg) || !hub_port_wants_attach(hub, port, ps, chg) ||
         !hub_port_reset(hub, port, &speed))
         return;
     hc_sleep(&g_hc, 10);

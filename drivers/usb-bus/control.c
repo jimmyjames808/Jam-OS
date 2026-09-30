@@ -16,7 +16,7 @@
 
 /* ---- endpoint recovery ------------------------------------------------------ */
 
-static void ep_set_deq(struct usbdev *d, uint8_t dci, struct ring *r)
+static void ep_set_deq(struct usbdev *d, uint8_t dci, const struct ring *r)
 {
     uint64_t p = r->dev + (uint64_t)r->enq * sizeof(struct trb);
     uint32_t cc = hc_command(&g_hc, (uint32_t)p | r->cycle, (uint32_t)(p >> 32), 0,
@@ -138,8 +138,9 @@ uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, 
             ep_stop(d, 1, &d->ep0);
     }
     if (cc == CC_SUCCESS) {
-        uint32_t n = h->ctl.short_seen ? length - (h->ctl.residual < length ? h->ctl.residual : length)
-                                       : length;
+        uint32_t n = h->ctl.short_seen
+                         ? length - (h->ctl.residual < length ? h->ctl.residual : length)
+                         : length;
         if (in && n)
             copy(data, buf, n);
         if (actual)

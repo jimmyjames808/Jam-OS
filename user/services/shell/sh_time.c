@@ -20,8 +20,10 @@ static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
 }
 
 struct civil {
-    int64_t  year;
-    unsigned month, day, hour, minute, second, wday;
+    int64_t  year;                         /* e.g. 2026 */
+    unsigned month, day;                   /* 1..12, 1..31 */
+    unsigned hour, minute, second;         /* 0..23, 0..59, 0..59 */
+    unsigned wday;                         /* 0: Sunday */
 };
 
 static void civil_from_secs(int64_t t, struct civil *c)
@@ -180,7 +182,7 @@ void sh_fmt_time(int64_t utc, const struct sh_tz *tz, char *buf, size_t cap, boo
 
 void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap)
 {
-    uint64_t s = ns / SH_S, d = s / 86400, h = s / 3600 % 24, m = s / 60 % 60;
+    uint64_t s = ns / NS_PER_S, d = s / 86400, h = s / 3600 % 24, m = s / 60 % 60;
     if (d)
         snprintf(buf, cap, "%lu day%s, %lu:%02lu", (unsigned long)d, d == 1 ? "" : "s",
                  (unsigned long)h, (unsigned long)m);

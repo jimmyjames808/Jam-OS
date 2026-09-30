@@ -25,8 +25,8 @@
  * 1 device -> RAM, bit 2 raise DMA_IRQ when done). The device's DMA buffer
  * is at device address 0x40000, 4 KiB; a transfer takes ~100 ms of QEMU
  * time. DMA addresses must be below 4 GiB (qemu-test.sh sets dma_mask). */
-#include <jam/driver.h>
 #include <idl/edu.h>
+#include <jam/driver.h>
 
 #define R_ID        0x00
 #define R_LIVE      0x04
@@ -52,19 +52,19 @@
 #define BUF_SIZE     4096u
 
 #define PAGE         4096u
-#define MS           1000000ull
 #define IRQ_KEY      0xed
-#define OP_TIMEOUT   (2000 * MS)   /* a DMA is ~100 ms in QEMU: generous under load */
+#define OP_TIMEOUT   (2000 * NS_PER_MS)   /* a DMA is ~100 ms in QEMU: generous under load */
 
 struct edu {
-    volatile void *regs;
-    handle_t irq, port, dma, vmo;
+    volatile void *regs;   /* BAR0, mapped */
+    handle_t irq, port;    /* DR_IRQ(0); the port its interrupts arrive on */
+    handle_t dma, vmo;     /* DR_DMA; the DMA buffer's VMO */
     uint8_t *buf;          /* the DMA VMO mapped: page 0 goes out, page 1 comes back */
     uint32_t seen;         /* interrupt status bits taken off the device, not yet used */
     uint32_t seq;          /* varies the DMA pattern */
     bool     held;         /* dma_start's transfer: running, its pin held */
-    uint64_t held_pin;
-    uint64_t irqs;
+    uint64_t held_pin;     /* that pin's id */
+    uint64_t irqs;         /* interrupts taken */
 };
 
 static uint32_t rd(struct edu *e, uint32_t off) { return drv_read32(e->regs, off); }
@@ -278,21 +278,13 @@ static const struct edu_ops ops = {
 
 /* ---- start ------------------------------------------------------------------------ */
 
-static int setup(const struct driver_start *s, struct edu *e)
+/* The steps of setup() return 0 (go on) or the driver's exit code. */
+
+/* BAR 0 mapped, and the device checked: its identification register,
+ * the liveness register, a factorial by polling (*id_out, *f_out: the
+ * identification and the factorial, for the log). */
+static int map_and_check(struct edu *e, handle_t bar, uint32_t *id_out, uint32_t *f_out)
 {
-    handle_t bar = drv_handle(s, DR_BAR(0)), dev = drv_handle(s, DR_PCIDEV);
-    e->irq = drv_handle(s, DR_IRQ(0));
-    e->dma = drv_handle(s, DR_DMA);
-    if (bar == HANDLE_INVALID || e->irq == HANDLE_INVALID || e->dma == HANDLE_INVALID) {
-        drv_log("missing handles (BAR 0 %#x, IRQ 0 %#x, DMA %#x)", bar, e->irq, e->dma);
-        return 2;
-    }
-    uint32_t ids = 0;
-    if (dev != HANDLE_INVALID && drv_pci_config_read(dev, 0, 4, &ids) == OK &&
-        ids != 0x11e81234u) {
-        drv_log("not an edu device: %04x:%04x", ids & 0xffff, ids >> 16);
-        return 2;
-    }
     status_t st = drv_mmio_map(bar, 0, PAGE, VMO_CACHE_UC, &e->regs);
     if (st != OK) {
         drv_log("can't map BAR 0 (%s)", status_str(st));
@@ -315,6 +307,14 @@ static int setup(const struct driver_start *s, struct edu *e)
         drv_log("factorial(12) by polling: %u (%s)", f, status_str(st));
         return 4;
     }
+    *id_out = id;
+    *f_out = f;
+    return 0;
+}
+
+/* Quiet the device, then bus mastering on. */
+static int quiesce(struct edu *e)
+{
     /* Quiesce before bus mastering goes on. A driver before us may
      * have died in the middle of a transfer: the device finishes it by
      * itself, reaching no memory while Bus Master Enable is off (it went
@@ -328,16 +328,21 @@ static int setup(const struct driver_start *s, struct edu *e)
             drv_log("the device's DMA engine stays busy");
             return 4;
         }
-        drv_sleep_until(drv_clock_ns() + MS);
+        drv_sleep_until(drv_clock_ns() + NS_PER_MS);
     }
     wr(e, R_IRQ_ACK, 0xffffffffu);
-    st = drv_dma_bus_master(e->dma, 1);   /* DMA, and MSI delivery */
+    status_t st = drv_dma_bus_master(e->dma, 1);   /* DMA, and MSI delivery */
     if (st != OK) {
         drv_log("can't turn bus mastering on (%s)", status_str(st));
         return 4;
     }
+    return 0;
+}
 
-    st = drv_port_create(&e->port);
+/* The port the interrupt arrives on, and the DMA buffer. */
+static int port_and_buffer(struct edu *e)
+{
+    status_t st = drv_port_create(&e->port);
     if (st == OK)
         st = drv_port_bind(e->port, e->irq, IRQ_KEY, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK) {
@@ -354,6 +359,28 @@ static int setup(const struct driver_start *s, struct edu *e)
         return 6;
     }
     e->buf = m;
+    return 0;
+}
+
+static int setup(const struct driver_start *s, struct edu *e)
+{
+    handle_t bar = drv_handle(s, DR_BAR(0)), dev = drv_handle(s, DR_PCIDEV);
+    e->irq = drv_handle(s, DR_IRQ(0));
+    e->dma = drv_handle(s, DR_DMA);
+    if (bar == HANDLE_INVALID || e->irq == HANDLE_INVALID || e->dma == HANDLE_INVALID) {
+        drv_log("missing handles (BAR 0 %#x, IRQ 0 %#x, DMA %#x)", bar, e->irq, e->dma);
+        return 2;
+    }
+    uint32_t ids = 0;
+    if (dev != HANDLE_INVALID && drv_pci_config_read(dev, 0, 4, &ids) == OK &&
+        ids != 0x11e81234u) {
+        drv_log("not an edu device: %04x:%04x", ids & 0xffff, ids >> 16);
+        return 2;
+    }
+    uint32_t id = 0, f = 0;
+    int r;
+    if ((r = map_and_check(e, bar, &id, &f)) || (r = quiesce(e)) || (r = port_and_buffer(e)))
+        return r;
     drv_log("edu rev %u.%u: liveness ok, factorial(12) = %u by polling; serving", id >> 24,
             (id >> 16) & 0xff, f);
     return 0;

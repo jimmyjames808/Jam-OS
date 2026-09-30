@@ -13,8 +13,8 @@
  *
  * Exits 0 when the console closes the channel (it restarted: init starts
  * a new serialin for the new console), 1 if the port can't be opened. */
-#include <os.h>
 #include <idl/input.h>
+#include <os.h>
 
 #define K_SERIAL 1
 #define K_CONSOLE 2

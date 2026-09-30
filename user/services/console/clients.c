@@ -26,7 +26,7 @@ static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
     for (unsigned i = 0; i < length; i++)
         out_char(text[i]);
     if (!was_alt || !alt_on)   /* the alternate screen isn't mirrored to COM1 */
-        jam_serial_write(root, text, length);
+        (void)jam_serial_write(root, text, length);   /* the mirror is best effort */
     dirty = true;
     return OK;
 }

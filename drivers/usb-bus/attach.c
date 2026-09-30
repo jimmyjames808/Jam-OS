@@ -28,14 +28,11 @@
 /* One enumeration in progress: the device, and when a step fails, which
  * one and its completion code. */
 struct attach {
-    struct usbdev *d;
-    const char *failed_at;
-    uint32_t cc;
+    struct usbdev *d;      /* the device being enumerated */
+    const char *failed_at; /* the step that failed, NULL while none has */
+    uint32_t cc;           /* that step's completion code */
     uint8_t iproduct;      /* the product string's index, from the device descriptor */
 };
-
-/* A step of the enumeration: false if the device can't go on. */
-typedef bool attach_step(struct attach *a);
 
 static bool failed(struct attach *a, const char *step, uint32_t cc)
 {
@@ -308,7 +305,9 @@ static bool setup_hub(struct attach *a)
     return true;
 }
 
-static attach_step *const steps[] = {
+/* The steps of the enumeration, in order; each is false if the device
+ * can't go on. */
+static bool (*const steps[])(struct attach *a) = {
     enable_slot,
     alloc_contexts,
     address_device,

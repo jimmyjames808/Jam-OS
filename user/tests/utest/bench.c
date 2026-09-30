@@ -30,18 +30,11 @@ struct ubench_result {
     uint32_t txid;     /* 0 */
     uint32_t n;        /* samples */
     uint32_t batch;    /* operations per sample */
-    uint32_t reserved;
-    uint64_t cycles[SAMPLES];
+    uint32_t reserved;   /* 0 */
+    uint64_t cycles[SAMPLES];   /* TSC cycles per sample */
 };
 
 static struct ubench_result res;
-
-static inline uint64_t stamp(void)
-{
-    uint32_t lo, hi;
-    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
-    return (uint64_t)hi << 32 | lo;
-}
 
 static int64_t null_syscall(void)
 {
@@ -65,10 +58,10 @@ static int b_null(void)
     for (uint64_t end = now() + WARM_NS; now() < end;)
         null_syscall();
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t t0 = stamp();
+        uint64_t t0 = cpu_tsc();
         for (unsigned k = 0; k < BATCH; k++)
             null_syscall();
-        res.cycles[i] = stamp() - t0;
+        res.cycles[i] = cpu_tsc() - t0;
     }
     return send(BATCH);
 }
@@ -78,10 +71,10 @@ static int b_clock(void)
     for (uint64_t end = now() + WARM_NS; now() < end;)
         ;
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t t0 = stamp();
+        uint64_t t0 = cpu_tsc();
         for (unsigned k = 0; k < BATCH; k++)
             jam_clock_get();
-        res.cycles[i] = stamp() - t0;
+        res.cycles[i] = cpu_tsc() - t0;
     }
     return send(BATCH);
 }
@@ -97,9 +90,9 @@ static int b_fault(void)
     for (unsigned i = 0; i < 256; i++)   /* warm-up: the last 256 pages */
         p[(uint64_t)(SAMPLES + i) * 4096] = 1;
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t t0 = stamp();
+        uint64_t t0 = cpu_tsc();
         p[(uint64_t)i * 4096] = 1;
-        res.cycles[i] = stamp() - t0;
+        res.cycles[i] = cpu_tsc() - t0;
     }
     return send(1);
 }
@@ -124,9 +117,9 @@ static int b_call(void)
     for (uint64_t end = now() + WARM_NS; now() < end;)
         call_once(ch);
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t t0 = stamp();
+        uint64_t t0 = cpu_tsc();
         call_once(ch);
-        res.cycles[i] = stamp() - t0;
+        res.cycles[i] = cpu_tsc() - t0;
     }
     return send(1);
 }
@@ -181,9 +174,9 @@ static int b_tcall(void)
     for (uint64_t end = now() + WARM_NS; now() < end;)
         call_once(mine);
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t t0 = stamp();
+        uint64_t t0 = cpu_tsc();
         call_once(mine);
-        res.cycles[i] = stamp() - t0;
+        res.cycles[i] = cpu_tsc() - t0;
     }
     jam_handle_close(mine);   /* the echo thread sees PEER_CLOSED and returns */
     return send(1);

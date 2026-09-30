@@ -58,7 +58,8 @@ void make_palette(int kind)
         double t = (double)i / PAL;
         if (kind == 6) {   /* rainbow: three sines a third apart */
             double a = t * 6.283185307179586;
-            pal[i] = rgb((uint32_t)(127.5 + 127 * sind(a)), (uint32_t)(127.5 + 127 * sind(a + 2.0944)),
+            pal[i] = rgb((uint32_t)(127.5 + 127 * sind(a)),
+                         (uint32_t)(127.5 + 127 * sind(a + 2.0944)),
                          (uint32_t)(127.5 + 127 * sind(a + 4.1888)));
             continue;
         }
@@ -268,6 +269,17 @@ static bool is_edge(int px, int py)
     return false;
 }
 
+/* Pixel (px, py)'s ss x ss sample points, as offsets from the centre in
+ * pixels, into ox and oy. */
+static void aa_offsets(int px, int py, int ss, double *ox, double *oy)
+{
+    for (int sy = 0; sy < ss; sy++)
+        for (int sx = 0; sx < ss; sx++) {
+            ox[sy * ss + sx] = px + (sx + 0.5) / ss - PW / 2.0;
+            oy[sy * ss + sx] = py + (sy + 0.5) / ss - PH / 2.0;
+        }
+}
+
 /* The anti-aliasing pass over tile t: ss x ss samples for each pixel on
  * an edge (until aa_pool is full). The iterations. */
 static uint64_t tile_aa(uint32_t t, int x0, int y0, int w, int h)
@@ -285,11 +297,7 @@ static uint64_t tile_aa(uint32_t t, int x0, int y0, int w, int h)
                 aa_full = true;
                 break;
             }
-            for (int sy = 0; sy < ss; sy++)
-                for (int sx = 0; sx < ss; sx++) {
-                    ox[sy * ss + sx] = px + (sx + 0.5) / ss - PW / 2.0;
-                    oy[sy * ss + sx] = py + (sy + 0.5) / ss - PH / 2.0;
-                }
+            aa_offsets(px, py, ss, ox, oy);
             eval_points(&kv, &ref, n, ox, oy, aa_pool + (uint64_t)blk * (uint32_t)n, &it);
             aa_idx[(uint64_t)py * PW + px] = blk + 1;
         }
@@ -469,8 +477,9 @@ void reproject(double f)
             int y1 = y0 + TS - 1 < PH ? y0 + TS - 1 : PH - 1;
             /* stretched only if the old picture was good (every 4th pixel
              * computed); a stretch of a stretch is worse than blocks */
-            bool cover = rp_l <= 4 && nu[(uint64_t)y0 * PW + x0] > -2 && nu[(uint64_t)y0 * PW + x1] > -2 &&
-                         nu[(uint64_t)y1 * PW + x0] > -2 && nu[(uint64_t)y1 * PW + x1] > -2;
+            bool cover = rp_l <= 4 && nu[(uint64_t)y0 * PW + x0] > -2 &&
+                         nu[(uint64_t)y0 * PW + x1] > -2 && nu[(uint64_t)y1 * PW + x0] > -2 &&
+                         nu[(uint64_t)y1 * PW + x1] > -2;
             int k = ty * TW + tx;
             tlev[k] = LV_NONE;
             tapprox[k] = cover;
@@ -528,6 +537,29 @@ void shift(int dx, int dy)
     restart_passes();
 }
 
+/* The tiles d tiles from the centre into order[], from order[n] on; the
+ * new count. */
+static int ring_tiles(int d, int n)
+{
+    for (int ty = 0; ty < TH; ty++)
+        for (int tx = 0; tx < TW; tx++) {
+            int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
+            if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
+                order[n++] = (uint32_t)(ty * TW + tx);
+        }
+    return n;
+}
+
+/* The middle first: the tiles into order[] by distance from the centre
+ * (a counting sort). How many were placed. */
+static int order_tiles(void)
+{
+    int maxd = TW + TH, n = 0;
+    for (int d = 0; d <= maxd; d++)
+        n = ring_tiles(d, n);
+    return n;
+}
+
 bool view_alloc(int w, int h)
 {
     PW = w;
@@ -553,16 +585,7 @@ bool view_alloc(int w, int h)
     if (!nu || !nu2 || !aa_idx || !aa_idx2 || !aa_pool || !tlev || !tapprox || !tdirty ||
         !order || !plist || !clist)
         return false;
-    /* The middle first: tiles by distance from the centre (a counting sort). */
-    int maxd = TW + TH, n = 0;
-    for (int d = 0; d <= maxd; d++)
-        for (int ty = 0; ty < TH; ty++)
-            for (int tx = 0; tx < TW; tx++) {
-                int dx = 2 * tx + 1 - TW, dy = 2 * ty + 1 - TH;
-                if ((int)sqrtd((double)dx * dx + (double)dy * dy) / 2 == d)
-                    order[n++] = (uint32_t)(ty * TW + tx);
-            }
-    return n == NT;
+    return order_tiles() == NT;
 }
 
 /* Render the whole view, all passes, on the pool (or one thread). */

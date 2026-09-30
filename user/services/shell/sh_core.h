@@ -18,8 +18,8 @@ bool sh_is_ctrl(const struct input_key_event *ev, char letter);
 #define SH_PIPE_MAX (4u << 20)   /* a pipe holds at most this; so does any sh_buf */
 
 struct sh_buf {
-    char  *p;
-    size_t n, cap;
+    char  *p;      /* malloc'd, NULL while empty */
+    size_t n, cap; /* bytes in it; its size */
     bool   full;   /* something was dropped (SH_PIPE_MAX, or out of memory) */
 };
 void sh_buf_add(struct sh_buf *b, const char *s, size_t n);
@@ -27,10 +27,10 @@ void sh_buf_add(struct sh_buf *b, const char *s, size_t n);
 /* Where a command's output goes (NULL: the screen) and its input from a
  * pipe (have_in false: none). A pipeline sets them for each stage. */
 struct sh_stdio {
-    struct sh_buf *out;
-    const char    *in;
-    size_t         in_len;
-    bool           have_in;
+    struct sh_buf *out;       /* the pipe to the next stage, NULL: the screen */
+    const char    *in;        /* the previous stage's output */
+    size_t         in_len;    /* its length */
+    bool           have_in;   /* there is a previous stage */
 };
 struct sh_stdio sh_stdio_get(void);
 void            sh_stdio_set(struct sh_stdio io);
@@ -46,8 +46,8 @@ bool sh_cancelled(void);
 #define SH_MAX_SEGS  32
 
 struct sh_words {
-    int   argc;
-    char *argv[SH_MAX_WORDS + 1];
+    int   argc;                      /* words */
+    char *argv[SH_MAX_WORDS + 1];    /* each malloc'd; NULL after the last */
     bool  quoted[SH_MAX_WORDS];   /* had quotes or escapes (never an alias) */
 };
 /* Split one simple command's text into words (malloc'd): quotes, escapes,
@@ -58,7 +58,7 @@ void sh_words_free(struct sh_words *w);
 enum { SH_OP_END, SH_OP_PIPE, SH_OP_SEMI, SH_OP_AND, SH_OP_OR };
 
 struct sh_seg {
-    char *text;
+    char *text; /* the segment, inside the line */
     int   op;   /* what follows it */
 };
 /* Cut a line at | ; && || outside quotes (and drop a # comment). The

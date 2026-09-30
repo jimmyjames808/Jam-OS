@@ -5,7 +5,8 @@
  * ring on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Then
  * the Supported Protocol capabilities (which root ports are USB 2 and
  * which USB 3), port power, a DMA page pool for contexts, rings and
- * buffers, commands with a timeout (and Command Abort), and the event loop
+ * buffers (handed out by ring.c), commands with a timeout (and Command
+ * Abort), and the event loop
  * that every wait goes through: events are drained on each interrupt and
  * also polled at least every 50 ms, so a lost MSI costs latency, never a
  * hang. */
@@ -18,41 +19,6 @@ struct hc g_hc;
 #define DMA_CMDRING 0x1000
 #define DMA_EVRING  0x2000
 #define DMA_SPARRAY 0x3000
-
-static uint32_t hi32(uint64_t v) { return (uint32_t)(v >> 32); }
-static uint32_t lo32(uint64_t v) { return (uint32_t)v; }
-
-const char *cc_str(uint32_t cc)
-{
-    switch (cc) {
-    case 0: return "Invalid";
-    case CC_SUCCESS: return "Success";
-    case CC_DATA_BUFFER: return "Data Buffer Error";
-    case CC_BABBLE: return "Babble Detected";
-    case CC_TRANSACTION: return "USB Transaction Error";
-    case CC_TRB: return "TRB Error";
-    case CC_STALL: return "Stall";
-    case CC_RESOURCE: return "Resource Error";
-    case CC_BANDWIDTH: return "Bandwidth Error";
-    case CC_NO_SLOTS: return "No Slots Available";
-    case 11: return "Slot Not Enabled";
-    case 12: return "Endpoint Not Enabled";
-    case CC_SHORT_PACKET: return "Short Packet";
-    case CC_PARAMETER: return "Parameter Error";
-    case CC_CONTEXT_STATE: return "Context State Error";
-    case 22: return "Incompatible Device";
-    case CC_RING_STOPPED: return "Command Ring Stopped";
-    case CC_ABORTED: return "Command Aborted";
-    case CC_STOPPED: return "Stopped";
-    case CC_STOPPED_LEN: return "Stopped - Length Invalid";
-    case 35: return "Secondary Bandwidth Error";
-    case 36: return "Split Transaction Error";
-    case CC_TIMEOUT: return "timed out";
-    case CC_GONE: return "device gone";
-    case CC_BAD_SLOT: return "slot id out of range";
-    default: return "error";
-    }
-}
 
 /* ---- registers ------------------------------------------------------------- */
 
@@ -85,8 +51,8 @@ static volatile uint8_t *reg(struct hc *x, uint32_t off)
     return (volatile uint8_t *)va + (off - page);
 }
 
-uint32_t hc_rd(struct hc *x, uint32_t off) { return drv_read32(reg(x, off), 0); }
-void hc_wr(struct hc *x, uint32_t off, uint32_t v) { drv_write32(reg(x, off), 0, v); }
+static uint32_t hc_rd(struct hc *x, uint32_t off) { return drv_read32(reg(x, off), 0); }
+static void hc_wr(struct hc *x, uint32_t off, uint32_t v) { drv_write32(reg(x, off), 0, v); }
 static uint32_t op_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->caplen + r); }
 static void op_wr(struct hc *x, uint32_t r, uint32_t v) { hc_wr(x, x->caplen + r, v); }
 static uint32_t ir_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->rtsoff + IR0 + r); }
@@ -136,7 +102,9 @@ static void snapshot(struct hc *x)
     x->map_failed = mf;
 }
 
-#define fail(x, step, fmt, ...) \
+/* A bring-up or shutdown step failed: a RESULTS line naming it, the
+ * registers, and 1 (hc_bring_up's and hc_shutdown's failure code). */
+#define FAIL(x, step, fmt, ...) \
     (drv_report("FAILED at %s: " fmt, (step), ##__VA_ARGS__), snapshot(x), 1)
 
 static bool wait_op(struct hc *x, uint32_t r, uint32_t mask, uint32_t want, uint64_t timeout_ms,
@@ -182,16 +150,16 @@ static int check_pci(struct hc *x)
 {
     uint32_t id = cfg(x, 0x00, 4);
     if (id == 0xffffffffu)
-        return fail(x, "PCI config", "can't read the function's config space (DR_PCIDEV)");
+        return FAIL(x, "PCI config", "can't read the function's config space (DR_PCIDEV)");
     x->vendor = (uint16_t)id;
     x->device = (uint16_t)(id >> 16);
     x->revision = (uint8_t)cfg(x, 0x08, 1);
     uint32_t class = cfg(x, 0x08, 4) >> 8;
     if (class != 0x0c0330)
-        return fail(x, "PCI config", "class %06x is not an xHCI (0c0330)", class);
+        return FAIL(x, "PCI config", "class %06x is not an xHCI (0c0330)", class);
     uint32_t cmd = cfg(x, 0x04, 2);
     if (!(cmd & (1u << 1)))
-        return fail(x, "PCI config", "memory decode is off (command %04x)", cmd);
+        return FAIL(x, "PCI config", "memory decode is off (command %04x)", cmd);
     /* Bus mastering is off (devmgr binds a driver with it off):
      * hc_bring_up turns it on through DR_DMA once the controller is halted
      * and reset, so nothing a previous driver left queued reaches memory. */
@@ -199,7 +167,7 @@ static int check_pci(struct hc *x)
      * a driver (drivers may not change it). */
     uint32_t pm = pci_cap(x, 0x01);
     if (pm && (cfg(x, pm + 4, 2) & 3))
-        return fail(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
+        return FAIL(x, "PCI power", "the function is in D%u, not D0", cfg(x, pm + 4, 2) & 3);
     uint32_t msix = pci_cap(x, 0x11), msi = pci_cap(x, 0x05);
     uint32_t mc_x = msix ? cfg(x, msix + 2, 2) : 0, mc = msi ? cfg(x, msi + 2, 2) : 0;
     if (mc_x & (1u << 15)) {
@@ -209,7 +177,7 @@ static int check_pci(struct hc *x)
         x->msix = false;
         x->irq_vectors = 1u << ((mc >> 1) & 7);
     } else {
-        return fail(x, "PCI config", "neither MSI-X (%04x) nor MSI (%04x) is enabled", mc_x, mc);
+        return FAIL(x, "PCI config", "neither MSI-X (%04x) nor MSI (%04x) is enabled", mc_x, mc);
     }
     drv_log("%04x:%04x rev %02x, command %04x, %s", x->vendor, x->device, x->revision, cmd,
             x->msix ? "MSI-X on" : "MSI on");
@@ -222,9 +190,9 @@ static int read_caps(struct hc *x)
 {
     uint32_t v = hc_rd(x, CAP_CAPLENGTH);
     if (x->map_failed)
-        return fail(x, "map BAR0", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
+        return FAIL(x, "map BAR0", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
     if (v == 0xffffffffu)
-        return fail(x, "capability registers", "BAR0 reads all ones (device not answering)");
+        return FAIL(x, "capability registers", "BAR0 reads all ones (device not answering)");
     x->caplen = v & 0xff;
     x->hciver = v >> 16;
     x->hcs1 = hc_rd(x, CAP_HCSPARAMS1);
@@ -237,15 +205,63 @@ static int read_caps(struct hc *x)
     x->scratchpads = (((x->hcs2 >> 21) & 0x1f) << 5) | (x->hcs2 >> 27);
     x->csz = (x->hcc1 & (1u << 2)) ? 64 : 32;
     if (x->caplen < 0x20 || x->caplen >= PAGE || !x->dboff || !x->rtsoff)
-        return fail(x, "capability registers", "CAPLENGTH %x DBOFF %x RTSOFF %x make no sense",
+        return FAIL(x, "capability registers", "CAPLENGTH %x DBOFF %x RTSOFF %x make no sense",
                     x->caplen, x->dboff, x->rtsoff);
     if (!x->ports || x->ports > 255 || !x->slots)
-        return fail(x, "capability registers", "%u ports, %u slots make no sense", x->ports,
+        return FAIL(x, "capability registers", "%u ports, %u slots make no sense", x->ports,
                     x->slots);
     drv_log("xHCI %x.%02x: %u ports, %u slots, %u scratchpads, AC64 %u, CSZ %u (%u-byte contexts), "
             "PPC %u", x->hciver >> 8, x->hciver & 0xff, x->ports, x->slots, x->scratchpads,
             x->hcc1 & 1, (x->hcc1 >> 2) & 1, x->csz, (x->hcc1 >> 3) & 1);
     return 0;
+}
+
+/* A Supported Protocol capability at off (its first dword v): which
+ * root ports speak which USB, and their slot type. */
+static void add_protocol(struct hc *x, uint32_t off, uint32_t v)
+{
+    uint32_t name = hc_rd(x, off + 8), dw3 = hc_rd(x, off + 12);
+    uint8_t first = name & 0xff, count = (name >> 8) & 0xff;
+    drv_log("supported protocol: USB %x.%02x, ports %u-%u, %u speed IDs, slot type %u",
+            v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, dw3 & 0x1f);
+    if (x->nproto < MAX_PROTOS && first && count) {
+        x->proto[x->nproto].major = (uint8_t)(v >> 24);
+        x->proto[x->nproto].minor = (uint8_t)(v >> 16);
+        x->proto[x->nproto].first = first;
+        x->proto[x->nproto].count = count;
+        x->proto[x->nproto].slot_type = dw3 & 0x1f;
+        x->proto[x->nproto].psic = (uint8_t)(name >> 28);
+        x->nproto++;
+    }
+}
+
+/* The USB Legacy Support capability at off (its first dword v): take the
+ * controller from the BIOS (xHCI 4.22.1), at most 1 s, then turn its SMIs
+ * off. */
+static void bios_handoff(struct hc *x, uint32_t off, uint32_t v)
+{
+    uint32_t ctl = hc_rd(x, off + 4);
+    uint64_t t0 = drv_clock_ns();
+    drv_write8(reg(x, off + 3), 0, 1);
+    bool released = false;
+    while (drv_clock_ns() - t0 < 1000 * NS_PER_MS) {
+        if (!(hc_rd(x, off) & LEG_BIOS_OWNED)) {
+            released = true;
+            break;
+        }
+        drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
+    }
+    if (released) {
+        x->handoff = v & LEG_BIOS_OWNED ? "ok" : "ok (not BIOS-owned)";
+    } else {
+        x->handoff = "timeout";
+        drv_log("BIOS did not release the controller in 1 s; clearing BIOS Owned");
+        drv_write8(reg(x, off + 2), 0, 0);
+    }
+    ctl = hc_rd(x, off + 4);
+    hc_wr(x, off + 4, (ctl & ~(LEGCTL_SMI_ENABLES | LEGCTL_SMI_STATUS)) | LEGCTL_SMI_STATUS);
+    drv_log("BIOS handoff %s after %lu ms", x->handoff,
+            (unsigned long)((drv_clock_ns() - t0) / NS_PER_MS));
 }
 
 /* Walk the extended capabilities: the legacy handoff, and the Supported
@@ -265,45 +281,10 @@ static int ext_caps(struct hc *x)
         if (v == 0xffffffffu)
             break;
         uint32_t id = v & 0xff, next = (v >> 8) & 0xff;
-        if (id == XCAP_PROTOCOL) {
-            uint32_t name = hc_rd(x, off + 8), st = hc_rd(x, off + 12);
-            uint8_t first = name & 0xff, count = (name >> 8) & 0xff;
-            drv_log("supported protocol: USB %x.%02x, ports %u-%u, %u speed IDs, slot type %u",
-                    v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, st & 0x1f);
-            if (x->nproto < MAX_PROTOS && first && count) {
-                x->proto[x->nproto].major = (uint8_t)(v >> 24);
-                x->proto[x->nproto].minor = (uint8_t)(v >> 16);
-                x->proto[x->nproto].first = first;
-                x->proto[x->nproto].count = count;
-                x->proto[x->nproto].slot_type = st & 0x1f;
-                x->proto[x->nproto].psic = (uint8_t)(name >> 28);
-                x->nproto++;
-            }
-        }
-        if (id == XCAP_LEGACY) {
-            uint32_t ctl = hc_rd(x, off + 4);
-            uint64_t t0 = drv_clock_ns();
-            drv_write8(reg(x, off + 3), 0, 1);
-            bool released = false;
-            while (drv_clock_ns() - t0 < 1000 * NS_PER_MS) {
-                if (!(hc_rd(x, off) & LEG_BIOS_OWNED)) {
-                    released = true;
-                    break;
-                }
-                drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
-            }
-            if (released) {
-                x->handoff = v & LEG_BIOS_OWNED ? "ok" : "ok (not BIOS-owned)";
-            } else {
-                x->handoff = "timeout";
-                drv_log("BIOS did not release the controller in 1 s; clearing BIOS Owned");
-                drv_write8(reg(x, off + 2), 0, 0);
-            }
-            ctl = hc_rd(x, off + 4);
-            hc_wr(x, off + 4, (ctl & ~(LEGCTL_SMI_ENABLES | LEGCTL_SMI_STATUS)) | LEGCTL_SMI_STATUS);
-            drv_log("BIOS handoff %s after %lu ms", x->handoff,
-                    (unsigned long)((drv_clock_ns() - t0) / NS_PER_MS));
-        }
+        if (id == XCAP_PROTOCOL)
+            add_protocol(x, off, v);
+        if (id == XCAP_LEGACY)
+            bios_handoff(x, off, v);
         if (!next)
             break;
         off += next * 4;
@@ -318,7 +299,7 @@ static int stop(struct hc *x, const char *step)
     uint32_t cmd = op_rd(x, OP_USBCMD), sts;
     op_wr(x, OP_USBCMD, cmd & ~(CMD_RS | CMD_INTE | CMD_HSEE));
     if (!wait_op(x, OP_USBSTS, STS_HCH, STS_HCH, 100, &sts))
-        return fail(x, step, "no HCH 100 ms after RS=0 (USBCMD was %08x, USBSTS %08x)", cmd, sts);
+        return FAIL(x, step, "no HCH 100 ms after RS=0 (USBCMD was %08x, USBSTS %08x)", cmd, sts);
     x->running = false;
     return 0;
 }
@@ -327,13 +308,13 @@ static int reset(struct hc *x, const char *step)
 {
     uint32_t v;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
-        return fail(x, step, "Controller Not Ready 1 s before reset (USBSTS %08x)", v);
+        return FAIL(x, step, "Controller Not Ready 1 s before reset (USBSTS %08x)", v);
     op_wr(x, OP_USBCMD, CMD_HCRST);
     drv_sleep_until(drv_clock_ns() + 1 * NS_PER_MS);
     if (!wait_op(x, OP_USBCMD, CMD_HCRST, 0, 1000, &v))
-        return fail(x, step, "HCRST still set 1 s after reset (USBCMD %08x)", v);
+        return FAIL(x, step, "HCRST still set 1 s after reset (USBCMD %08x)", v);
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &v))
-        return fail(x, step, "Controller Not Ready 1 s after reset (USBSTS %08x)", v);
+        return FAIL(x, step, "Controller Not Ready 1 s after reset (USBSTS %08x)", v);
     return 0;
 }
 
@@ -344,160 +325,77 @@ static int pool_setup(struct hc *h)
     uint64_t len = (uint64_t)POOL_PAGES * PAGE;
     status_t st = drv_vmo_create(len, DRV_VMO_DMA32, &h->pool_vmo);
     if (st != OK)
-        return fail(h, "DMA pool", "VMO of %u pages: %s", POOL_PAGES, status_str(st));
+        return FAIL(h, "DMA pool", "VMO of %u pages: %s", POOL_PAGES, status_str(st));
     h->pool_addr = drv_malloc(POOL_PAGES * sizeof(uint64_t));
     if (!h->pool_addr)
-        return fail(h, "DMA pool", "no memory for the page addresses");
+        return FAIL(h, "DMA pool", "no memory for the page addresses");
     st = drv_vmo_pin(h->pool_vmo, h->dma, 0, len, h->pool_addr, &h->pool_pin);
     if (st != OK)
-        return fail(h, "DMA pool", "pin %u pages: %s", POOL_PAGES, status_str(st));
+        return FAIL(h, "DMA pool", "pin %u pages: %s", POOL_PAGES, status_str(st));
     h->pool_pinned = true;
     for (unsigned i = 0; i < POOL_PAGES; i++)
         if (h->pool_addr[i] + PAGE > (1ull << 32) && !(h->hcc1 & 1))
-            return fail(h, "DMA pool", "page above 4 GiB and the controller has no AC64");
+            return FAIL(h, "DMA pool", "page above 4 GiB and the controller has no AC64");
     void *p;
     st = drv_vmo_map(h->pool_vmo, 0, len, VMAR_READ | VMAR_WRITE, &p);
     if (st != OK)
-        return fail(h, "DMA pool", "map: %s", status_str(st));
+        return FAIL(h, "DMA pool", "map: %s", status_str(st));
     h->pool = p;
     return 0;
 }
 
-int pool_alloc(struct hc *h)
-{
-    for (int i = 0; i < POOL_PAGES; i++)
-        if (!h->pool_used[i]) {
-            h->pool_used[i] = 1;
-            zero(h->pool + (uint64_t)i * PAGE, PAGE);
-            if (++h->pool_inuse > h->pool_peak)
-                h->pool_peak = h->pool_inuse;
-            return i;
-        }
-    drv_log("DMA pool: all %u pages in use", POOL_PAGES);
-    return -1;
-}
-
-void pool_free(struct hc *h, int page)
-{
-    if (page >= 0 && page < POOL_PAGES && h->pool_used[page]) {
-        h->pool_used[page] = 0;
-        h->pool_inuse--;
-    }
-}
-
-void *pool_va(struct hc *h, int page)
-{
-    return h->pool + (uint64_t)page * PAGE;
-}
-
-uint64_t pool_dev(struct hc *h, int page)
-{
-    return h->pool_addr[page];
-}
-
-/* ---- rings ------------------------------------------------------------------------ */
-
-bool ring_init(struct hc *h, struct ring *r)
-{
-    r->page = pool_alloc(h);
-    if (r->page < 0)
-        return false;
-    r->t = pool_va(h, r->page);
-    r->dev = pool_dev(h, r->page);
-    r->t[RING_TRBS - 1].d0 = lo32(r->dev);
-    r->t[RING_TRBS - 1].d1 = hi32(r->dev);
-    r->t[RING_TRBS - 1].d3 = TRB_TYPE(TRB_LINK) | TRB_TC;
-    r->enq = 0;
-    r->cycle = 1;
-    return true;
-}
-
-void ring_free(struct hc *h, struct ring *r)
-{
-    if (r->page >= 0)
-        pool_free(h, r->page);
-    r->page = -1;
-    r->t = NULL;
-}
-
-uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3)
-{
-    uint32_t i = r->enq;
-    volatile struct trb *t = &r->t[i];
-    t->d0 = d0;
-    t->d1 = d1;
-    t->d2 = d2;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    t->d3 = (d3 & ~TRB_C) | r->cycle;   /* the cycle bit last: now the xHC's */
-    uint64_t addr = r->dev + (uint64_t)i * sizeof(struct trb);
-    if (++r->enq == RING_TRBS - 1) {
-        volatile struct trb *l = &r->t[RING_TRBS - 1];
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        l->d3 = (l->d3 & ~TRB_C) | r->cycle;
-        r->enq = 0;
-        r->cycle ^= 1;
-    }
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return addr;
-}
-
-uint32_t ring_index(const struct ring *r, uint64_t trb_dev)
-{
-    if (!r->t || trb_dev < r->dev || trb_dev >= r->dev + PAGE || (trb_dev & 15))
-        return RING_TRBS;
-    return (uint32_t)((trb_dev - r->dev) / sizeof(struct trb));
-}
-
 /* ---- memory, run --------------------------------------------------------------------- */
 
-static int setup_memory(struct hc *x)
+/* The fixed DMA area (DCBAA, ERST, the command and event rings, the
+ * scratchpad array): one contiguous DMA32 VMO, pinned, mapped, zeroed. */
+static int alloc_ctx_area(struct hc *x)
 {
-    uint32_t ps = op_rd(x, OP_PAGESIZE) & 0xffff;
-    x->pagesize = ps ? (1u << (__builtin_ctz(ps) + 12)) : 0;
-    if (x->pagesize != PAGE)
-        return fail(x, "PAGESIZE", "controller page size %u (register %x); only 4 KiB is supported",
-                    x->pagesize, ps);
-
     uint32_t sp_array_pages = (x->scratchpads * 8 + PAGE - 1) / PAGE;
     x->ctx_pages = DMA_SPARRAY / PAGE + sp_array_pages;
     uint64_t len = (uint64_t)x->ctx_pages * PAGE;
     status_t st = drv_vmo_create(len, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &x->ctx_vmo);
     if (st != OK)
-        return fail(x, "DMA memory", "contiguous DMA32 VMO of %u pages: %s", x->ctx_pages,
+        return FAIL(x, "DMA memory", "contiguous DMA32 VMO of %u pages: %s", x->ctx_pages,
                     status_str(st));
     uint64_t addrs[8];
     if (x->ctx_pages > 8)
-        return fail(x, "DMA memory", "%u scratchpads need too big an array", x->scratchpads);
+        return FAIL(x, "DMA memory", "%u scratchpads need too big an array", x->scratchpads);
     st = drv_vmo_pin(x->ctx_vmo, x->dma, 0, len, addrs, &x->ctx_pin);
     if (st != OK)
-        return fail(x, "DMA memory", "pin: %s", status_str(st));
+        return FAIL(x, "DMA memory", "pin: %s", status_str(st));
     x->ctx_pinned = true;
     x->ctx_dev = addrs[0];
     for (uint32_t i = 1; i < x->ctx_pages; i++)
         if (addrs[i] != x->ctx_dev + (uint64_t)i * PAGE)
-            return fail(x, "DMA memory", "contiguous VMO pinned as scattered pages");
+            return FAIL(x, "DMA memory", "contiguous VMO pinned as scattered pages");
     if (x->ctx_dev + len > (1ull << 32))
-        return fail(x, "DMA memory", "DMA32 memory at %lx is above 4 GiB", x->ctx_dev);
+        return FAIL(x, "DMA memory", "DMA32 memory at %lx is above 4 GiB", x->ctx_dev);
     void *p;
     st = drv_vmo_map(x->ctx_vmo, 0, len, VMAR_READ | VMAR_WRITE, &p);
     if (st != OK)
-        return fail(x, "DMA memory", "map: %s", status_str(st));
+        return FAIL(x, "DMA memory", "map: %s", status_str(st));
     x->ctx = p;
     zero(x->ctx, len);
+    return 0;
+}
 
+/* The scratchpad buffers the controller asked for, their array, and
+ * DCBAA entry 0 pointing at it. */
+static int setup_scratchpads(struct hc *x)
+{
     volatile uint64_t *dcbaa = (volatile uint64_t *)(x->ctx + DMA_DCBAA);
     if (x->scratchpads) {
         uint64_t splen = (uint64_t)x->scratchpads * PAGE;
-        st = drv_vmo_create(splen, DRV_VMO_DMA32, &x->sp_vmo);
+        status_t st = drv_vmo_create(splen, DRV_VMO_DMA32, &x->sp_vmo);
         if (st != OK)
-            return fail(x, "scratchpads", "VMO of %u pages: %s", x->scratchpads, status_str(st));
+            return FAIL(x, "scratchpads", "VMO of %u pages: %s", x->scratchpads, status_str(st));
         uint64_t *sp = drv_malloc(x->scratchpads * sizeof(uint64_t));
         if (!sp)
-            return fail(x, "scratchpads", "no memory for %u addresses", x->scratchpads);
+            return FAIL(x, "scratchpads", "no memory for %u addresses", x->scratchpads);
         st = drv_vmo_pin(x->sp_vmo, x->dma, 0, splen, sp, &x->sp_pin);
         if (st != OK) {
             drv_free(sp);
-            return fail(x, "scratchpads", "pin %u pages: %s", x->scratchpads, status_str(st));
+            return FAIL(x, "scratchpads", "pin %u pages: %s", x->scratchpads, status_str(st));
         }
         x->sp_pinned = true;
         volatile uint64_t *arr = (volatile uint64_t *)(x->ctx + DMA_SPARRAY);
@@ -506,7 +404,13 @@ static int setup_memory(struct hc *x)
         drv_free(sp);
         dcbaa[0] = x->ctx_dev + DMA_SPARRAY;
     }
+    return 0;
+}
 
+/* The command ring and the one-segment event ring (interrupter 0), and
+ * the registers that point the controller at them and at the DCBAA. */
+static int program_rings(struct hc *x)
+{
     struct trb *cr = (struct trb *)(x->ctx + DMA_CMDRING);
     uint64_t cr_dev = x->ctx_dev + DMA_CMDRING;
     cr[RING_TRBS - 1].d0 = lo32(cr_dev);
@@ -537,8 +441,23 @@ static int setup_memory(struct hc *x)
     ir_wr(x, IR_IMOD, IMOD_40US);
     ir_wr(x, IR_IMAN, IMAN_IE | IMAN_IP);
     if (x->map_failed)
-        return fail(x, "map registers", "offset %x: %s", x->map_fail_off, status_str(x->map_fail_st));
+        return FAIL(x, "map registers", "offset %x: %s", x->map_fail_off,
+                    status_str(x->map_fail_st));
     return 0;
+}
+
+static int setup_memory(struct hc *x)
+{
+    uint32_t ps = op_rd(x, OP_PAGESIZE) & 0xffff;
+    x->pagesize = ps ? (1u << (__builtin_ctz(ps) + 12)) : 0;
+    if (x->pagesize != PAGE)
+        return FAIL(x, "PAGESIZE",
+                    "controller page size %u (register %x); only 4 KiB is supported",
+                    x->pagesize, ps);
+    int r;
+    if ((r = alloc_ctx_area(x)) || (r = setup_scratchpads(x)))
+        return r;
+    return program_rings(x);
 }
 
 static int run(struct hc *x)
@@ -547,7 +466,7 @@ static int run(struct hc *x)
     op_wr(x, OP_USBCMD, CMD_RS | CMD_INTE | CMD_HSEE);
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_HCH, 0, 100, &sts))
-        return fail(x, "run", "HCH still set 100 ms after RS=1 (USBSTS %08x)", sts);
+        return FAIL(x, "run", "HCH still set 100 ms after RS=1 (USBSTS %08x)", sts);
     x->running = true;
     return 0;
 }
@@ -645,7 +564,8 @@ static void poll_events(struct hc *h, bool after_irq)
     }
 }
 
-void hc_poll(struct hc *h)
+/* The event ring now, without waiting. */
+static void hc_poll(struct hc *h)
 {
     poll_events(h, false);
 }
@@ -663,8 +583,10 @@ static void check_status(struct hc *h, uint32_t sts)
 static void irq(struct hc *h)
 {
     h->irqs++;
-    /* Re-arm first: a fire from here on is a new packet. */
-    drv_interrupt_ack(h->irq);
+    /* Re-arm first: a fire from here on is a new packet. (Ignored: an ack
+     * that fails leaves the interrupt masked, and the event ring is polled
+     * at least every 50 ms anyway.) */
+    (void)drv_interrupt_ack(h->irq);
     ir_wr(h, IR_IMAN, IMAN_IE | IMAN_IP);
     uint32_t sts = op_rd(h, OP_USBSTS);
     op_wr(h, OP_USBSTS, sts & (STS_EINT | STS_PCD));
@@ -715,6 +637,38 @@ void hc_sleep(struct hc *h, uint64_t ms)
 
 /* ---- commands ------------------------------------------------------------------------ */
 
+/* The command at t (of this type) got no completion in timeout_ms.
+ * Command Abort: the ring stops, the command completes with Command
+ * Aborted (or finishes meanwhile). A ring that doesn't stop in 5 s leaves
+ * the controller dead. */
+static void abort_command(struct hc *h, volatile struct trb *t, uint32_t type,
+                          uint64_t timeout_ms)
+{
+    drv_log("command type %u: no completion in %lu ms; aborting it", type,
+            (unsigned long)timeout_ms);
+    /* The whole register holds a valid pointer (our enqueue point and
+     * cycle), as Linux writes it: if the ring has stopped by the time
+     * the high dword lands, some controllers take the 64-bit value as
+     * the new Command Ring Pointer -- 0 would send the next command
+     * fetch to physical address 0. */
+    uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
+    op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
+    uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
+    while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
+        hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
+    hc_poll(h);
+    if (op_rd(h, OP_CRCR) & CRCR_CRR) {
+        h->dead = true;
+        drv_report("FAILED: the command ring did not stop 5 s after Command Abort");
+    } else if (!h->cmd.done) {
+        /* Stopped without taking it (never fetched): the next doorbell
+         * would run it late, against contexts we free on the timeout.
+         * A No Op in its place (what Linux does); its completion is
+         * logged as not the outstanding one. */
+        t->d3 = TRB_TYPE(TRB_NOOP_CMD) | (t->d3 & TRB_C);
+    }
+}
+
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms)
 {
@@ -743,34 +697,8 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
     uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
     while (!h->cmd.done && !h->dead && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
-    if (!h->cmd.done && !h->dead) {
-        /* Command Abort: the ring stops, the command completes with
-         * Command Aborted (or finishes meanwhile). */
-        uint32_t type = TRB_TYPE_OF(d3);
-        drv_log("command type %u: no completion in %lu ms; aborting it", type,
-                (unsigned long)timeout_ms);
-        /* The whole register holds a valid pointer (our enqueue point and
-         * cycle), as Linux writes it: if the ring has stopped by the time
-         * the high dword lands, some controllers take the 64-bit value as
-         * the new Command Ring Pointer -- 0 would send the next command
-         * fetch to physical address 0. */
-        uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
-        op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
-        uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
-        while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
-            hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
-        hc_poll(h);
-        if (op_rd(h, OP_CRCR) & CRCR_CRR) {
-            h->dead = true;
-            drv_report("FAILED: the command ring did not stop 5 s after Command Abort");
-        } else if (!h->cmd.done) {
-            /* Stopped without taking it (never fetched): the next doorbell
-             * would run it late, against contexts we free on the timeout.
-             * A No Op in its place (what Linux does); its completion is
-             * logged as not the outstanding one. */
-            t->d3 = TRB_TYPE(TRB_NOOP_CMD) | (t->d3 & TRB_C);
-        }
-    }
+    if (!h->cmd.done && !h->dead)
+        abort_command(h, t, TRB_TYPE_OF(d3), timeout_ms);
     h->cmd.busy = false;
     if (!h->cmd.done)
         return h->dead ? CC_GONE : CC_TIMEOUT;
@@ -788,24 +716,24 @@ int hc_bring_up(struct hc *x)
         return r;
     uint32_t sts;
     if (!wait_op(x, OP_USBSTS, STS_CNR, 0, 1000, &sts))
-        return fail(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
+        return FAIL(x, "start", "Controller Not Ready still set after 1 s (USBSTS %08x)", sts);
     if ((r = stop(x, "halt")) || (r = reset(x, "reset")))
         return r;
     /* Quiet now (halted and reset: it holds no DMA pointer of anyone's):
      * bus mastering on, for our DMA and the MSI, before anything is pinned
      * (drv_vmo_pin refuses until then) or DCBAAP/CRCR/ERST are written. */
-    status_t bm = drv_dma_bus_master(x->dma, 1);
-    if (bm != OK)
-        return fail(x, "bus master", "can't turn it on (%s)", status_str(bm));
+    status_t st = drv_dma_bus_master(x->dma, 1);
+    if (st != OK)
+        return FAIL(x, "bus master", "can't turn it on (%s)", status_str(st));
     if ((r = setup_memory(x)) || (r = pool_setup(x)))
         return r;
     x->ctl_page = pool_alloc(x);
     if (x->ctl_page < 0)
-        return fail(x, "DMA pool", "no page for control transfers");
-    status_t st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
+        return FAIL(x, "DMA pool", "no page for control transfers");
+    st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK)
-        return fail(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));
-    drv_interrupt_ack(x->irq);
+        return FAIL(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));
+    (void)drv_interrupt_ack(x->irq);   /* as in irq(): polling covers a failure */
     if ((r = run(x)))
         return r;
     power_ports(x);
@@ -825,33 +753,35 @@ int hc_shutdown(struct hc *x)
     return r ? r : reset(x, "final reset");
 }
 
+/* The unpins and unmaps here are not checked: the process exits next,
+ * and a pin still held then is quarantined when the dma_cap closes. */
 void hc_release(struct hc *x, bool quiet)
 {
     if (x->pool_pinned && quiet)
-        drv_vmo_unpin(x->pool_vmo, x->dma, x->pool_pin);
+        (void)drv_vmo_unpin(x->pool_vmo, x->dma, x->pool_pin);
     if (x->pool)
-        drv_vmo_unmap(x->pool, (uint64_t)POOL_PAGES * PAGE);
+        (void)drv_vmo_unmap(x->pool, (uint64_t)POOL_PAGES * PAGE);
     if (x->pool_vmo != HANDLE_INVALID)
         drv_handle_close(x->pool_vmo);
     if (x->pool_addr)
         drv_free(x->pool_addr);
     if (x->ctx_pinned && quiet)
-        drv_vmo_unpin(x->ctx_vmo, x->dma, x->ctx_pin);
+        (void)drv_vmo_unpin(x->ctx_vmo, x->dma, x->ctx_pin);
     if (x->sp_pinned && quiet)
-        drv_vmo_unpin(x->sp_vmo, x->dma, x->sp_pin);
+        (void)drv_vmo_unpin(x->sp_vmo, x->dma, x->sp_pin);
     if (x->ctx)
-        drv_vmo_unmap(x->ctx, (uint64_t)x->ctx_pages * PAGE);
+        (void)drv_vmo_unmap(x->ctx, (uint64_t)x->ctx_pages * PAGE);
     if (x->ctx_vmo != HANDLE_INVALID)
         drv_handle_close(x->ctx_vmo);
     if (x->sp_vmo != HANDLE_INVALID)
         drv_handle_close(x->sp_vmo);
     for (unsigned i = 0; i < x->nmap; i++)
-        drv_vmo_unmap((void *)x->map[i].va, PAGE);
+        (void)drv_vmo_unmap((void *)x->map[i].va, PAGE);
     x->nmap = 0;
 }
 
 /* The device context base address array entry for a slot. */
-void hc_set_dcbaa(struct hc *h, uint32_t slot, uint64_t addr)
+void hc_set_dcbaa(const struct hc *h, uint32_t slot, uint64_t addr)
 {
     volatile uint64_t *dcbaa = (volatile uint64_t *)(h->ctx + DMA_DCBAA);
     dcbaa[slot] = addr;

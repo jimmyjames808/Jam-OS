@@ -72,6 +72,10 @@ int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
 char  *strchr(const char *s, int c);
 
+/* memory ------------------------------------------------------------------------ */
+
+#define PAGE_SIZE 4096ull   /* mappings, protections and VMO sizes are whole pages */
+
 /* heap: a VMO mapped into our address space on first use ---------------------- */
 
 #define HEAP_SIZE (16u << 20)   /* address space reserved; pages commit on touch */
@@ -84,8 +88,8 @@ void  free(void *p);
 
 struct bootfs_view {
     const uint8_t *base;   /* the whole image, mapped read-only */
-    uint64_t       size;
-    uint32_t       count;
+    uint64_t       size;   /* its size in bytes */
+    uint32_t       count;  /* files in its entry table */
 };
 
 /* Map the bootfs image VMO (SR_BOOTFS) read-only and check its header and
@@ -101,17 +105,17 @@ status_t bootfs_default(const struct bootfs_view **out);
 
 struct spawn_handle {
     uint32_t role;   /* enum startup_role, usually SR_USER + n */
-    handle_t h;
+    handle_t h;      /* the handle (moved) */
 };
 
 struct spawn_args {
     const char                *path;     /* in bootfs, e.g. "bin/utest" */
     const char                *name;     /* process name; NULL: the path's last part */
-    int                        argc;
-    const char *const         *argv;
+    int                        argc;     /* entries in argv */
+    const char *const         *argv;     /* argv[0] is the program's name as it sees it */
     handle_t                   job;      /* needs JOB_RIGHTS_OWN */
     const struct spawn_handle *extra;    /* moved into the startup message */
-    unsigned                   nextra;
+    unsigned                   nextra;   /* entries in extra */
     /* NULL, or nextra entries: what the child's copy of extra[i] gets (a
      * subset of its rights, e.g. without RIGHT_TRANSFER); 0 or
      * RIGHT_SAME: the same as extra[i].h. */
@@ -138,3 +142,36 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
  * exits when fn returns. *out gets its thread handle. */
 status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
                       size_t stack_size, handle_t *out);
+
+/* devices ------------------------------------------------------------------------ */
+
+/* The config-space offset of PCI capability `id` of the function dev (a
+ * RES_PCI_DEV handle with RIGHT_READ), or 0 if it has none. The list is
+ * walked at most 48 steps, inside the standard config space. */
+uint32_t pci_find_cap(handle_t dev, uint32_t id);
+
+/* the CPU ------------------------------------------------------------------------ */
+
+/* CPUID leaf `leaf`, subleaf `sub`: r = eax, ebx, ecx, edx. */
+static inline void cpu_cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4])
+{
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3])
+                     : "a"(leaf), "c"(sub));
+}
+
+/* XCR0: the register state the kernel saves for us (bit 1 SSE, bit 2 AVX).
+ * Only where CPUID.1:ECX.OSXSAVE (bit 27) is set. */
+static inline uint64_t cpu_xcr0(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return (uint64_t)hi << 32 | lo;
+}
+
+/* The TSC, fenced on both sides so nothing moves across the read. */
+static inline uint64_t cpu_tsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return (uint64_t)hi << 32 | lo;
+}

@@ -13,14 +13,12 @@
  * lines go into the kernel's RESULTS box. At the end it closes its end of
  * devmgr's channel, which stops devmgr and its drivers, and waits for
  * that. init exits 0 if every program (and devmgr) exited 0. */
-#include <os.h>
 #include <devmgr.h>
-
-bool init_shell(bool nousb);   /* shell.c: never returns */
+#include <os.h>
+#include "init.h"
 
 #define MAX_WORDS     16
 #define RUN_TIMEOUT_S 240   /* per program */
-#define S             1000000000ull
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
  * "Trust"); the programs init runs are the test suites: they get both. */
@@ -44,7 +42,6 @@ static int split(char *line, char **words)
     return n;
 }
 
-void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void init_say(const char *fmt, ...)
 {
     char buf[160];
@@ -77,7 +74,7 @@ static bool run(int argc, char **argv)
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
         .extra = x[0].h ? x : NULL, .nextra = x[0].h ? 2 : 0,
     };
-    uint64_t t0 = (uint64_t)jam_clock_get();
+    uint64_t t0 = now();
     st = spawn(&a, &proc);
     if (st != OK) {
         init_say("init: %s: could not start (%s)", argv[0], status_str(st));
@@ -85,16 +82,16 @@ static bool run(int argc, char **argv)
         return false;
     }
     struct process_info info;
-    st = spawn_wait(proc, RUN_TIMEOUT_S * 1000000000ull, &info);
+    st = spawn_wait(proc, RUN_TIMEOUT_S * NS_PER_S, &info);
     if (st == ERR_TIMED_OUT) {
         /* Its whole job: whatever it started (even orphans) goes too, and
          * job_kill returns once all of it is dead. */
         init_say("init: %s: still running after %d s, killing its job", argv[0], RUN_TIMEOUT_S);
         if (jam_job_kill(job) != OK)
             jam_process_kill(proc);
-        st = spawn_wait(proc, 10000000000ull, &info);
+        st = spawn_wait(proc, 10 * NS_PER_S, &info);
     }
-    uint64_t ms = ((uint64_t)jam_clock_get() - t0) / 1000000;
+    uint64_t ms = (now() - t0) / NS_PER_MS;
     bool ok = false;
     if (st != OK)
         init_say("init: %s: lost track of it (%s)", argv[0], status_str(st));
@@ -184,7 +181,7 @@ static bool start_devmgr(handle_t console)
     /* Wait for its first binding pass. */
     struct devmgr_rep r;
     st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
-                     (uint64_t)jam_clock_get() + 30 * S);
+                     now() + 30 * NS_PER_S);
     if (st != OK) {
         init_say("init: devmgr doesn't answer (%s)", status_str(st));
         return false;
@@ -201,19 +198,19 @@ static bool stop_devmgr(void)
     jam_handle_close(devmgr_ch);   /* its last control client: it stops its drivers, exits */
     devmgr_ch = devmgr_q = HANDLE_INVALID;
 
-    uint64_t t0 = (uint64_t)jam_clock_get();
+    uint64_t t0 = now();
     struct process_info info;
-    status_t st = spawn_wait(devmgr_proc, 30 * S, &info);
+    status_t st = spawn_wait(devmgr_proc, 30 * NS_PER_S, &info);
     if (st == ERR_TIMED_OUT) {
         init_say("init: devmgr still running 30 s after its channel closed: killing its job");
         jam_job_kill(devmgr_job);
-        st = spawn_wait(devmgr_proc, 10 * S, &info);
+        st = spawn_wait(devmgr_proc, 10 * NS_PER_S, &info);
     }
     bool ok = st == OK && !info.killed && info.exit_code == 0;
     if (st == OK)
         init_say("init: devmgr %s %ld after %lu ms",
                  info.killed ? "was killed, code" : "exited with code", (long)info.exit_code,
-                 (unsigned long)(((uint64_t)jam_clock_get() - t0) / 1000000));
+                 (unsigned long)((now() - t0) / NS_PER_MS));
     struct job_info ji;
     if (jam_job_get_info(devmgr_job, &ji) == OK)
         for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
@@ -273,7 +270,7 @@ static bool run_keytest(void)
     init_say("keytest: type on the USB keyboard now: %d s; each key DOWN is logged by its hid "
              "(hid-<port>:<interface>)", KEYTEST_S);
     for (int left = KEYTEST_S; left > 0; left -= 10) {
-        jam_nanosleep((uint64_t)jam_clock_get() + (uint64_t)(left < 10 ? left : 10) * S);
+        jam_nanosleep(now() + (uint64_t)(left < 10 ? left : 10) * NS_PER_S);
         if (left > 10)
             printf("init: keytest: %d s left\n", left - 10);
     }
