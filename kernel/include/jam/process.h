@@ -145,7 +145,6 @@ struct handle_table *process_handles(struct process *p);
 /* The process's address space with a NEW reference (aspace_unref it), or
  * NULL once the process is dead. */
 struct aspace *process_aspace(struct process *p);
-struct job *process_job(struct process *p);   /* no new reference */
 const char *process_name(struct process *p);
 void process_get_info(struct process *p, struct process_info *out);
 /* CPU time of all p's threads so far, in TSC cycles (the shell's ps, top). */
@@ -195,7 +194,6 @@ static inline struct uthread *uthread_from_kobject(struct kobject *o)
 /* A new, not yet started thread of p (caller gets the only reference).
  * ERR_BAD_STATE if p is dying. */
 status_t uthread_create(struct process *p, const char *name, struct uthread **out);
-struct process *uthread_process(struct uthread *u);   /* no new reference */
 /* Start ut (its process must be RUNNING) at entry with stack, rdi = arg0,
  * rsi = arg1. ERR_BAD_STATE if ut was started before or the process isn't
  * running, ERR_NO_RESOURCES over the job's thread limit, ERR_NO_MEMORY if

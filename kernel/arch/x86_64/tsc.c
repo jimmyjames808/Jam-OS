@@ -9,6 +9,13 @@
 #include <jam/x86.h>
 
 #define CAL_MS 50
+/* A reference timer that hasn't covered CAL_MS in this many TSC cycles is
+ * not ticking. The TSC's rate is what is being measured, so this is a
+ * deadline in time only roughly: 0.2 s at 10 GHz (4x CAL_MS, and no TSC is
+ * faster), 2 s at 1 GHz. A count of reads would be no better: a read costs
+ * anything from nanoseconds (RAM) to a microsecond (a real HPET or PM
+ * timer). */
+#define CAL_GIVE_UP_TSC (1ull << 31)
 
 uint64_t tsc_hz;
 static uint64_t tsc_boot;
@@ -20,9 +27,8 @@ static inline uint32_t inl(uint16_t port)
     return v;
 }
 
-static uint64_t measure_hpet(void)
+uint64_t tsc_measure_hpet(volatile uint64_t *h)
 {
-    volatile uint64_t *h = vmm_map_mmio(acpi.hpet_phys, 1024);
     uint64_t caps = h[0];                 /* general capabilities/id */
     uint64_t period_fs = caps >> 32;      /* counter period */
     if (!period_fs || period_fs > 100000000)
@@ -36,8 +42,13 @@ static uint64_t measure_hpet(void)
     uint64_t target = (uint64_t)CAL_MS * 1000000000000ull / period_fs;
     uint64_t h0 = h[0xf0 / 8] & mask, t0 = rdtsc();
     uint64_t h1;
-    while ((((h1 = h[0xf0 / 8] & mask) - h0) & mask) < target)
+    while ((((h1 = h[0xf0 / 8] & mask) - h0) & mask) < target) {
+        if (rdtsc() - t0 > CAL_GIVE_UP_TSC) {
+            kprintf("tsc: HPET not ticking (counter %#lx, started at %#lx)\n", h1, h0);
+            return 0;
+        }
         __asm__ volatile("pause");
+    }
     uint64_t t1 = rdtsc();
     uint64_t ns = ((h1 - h0) & mask) * period_fs / 1000000;
     return ns ? (t1 - t0) * 1000000000ull / ns : 0;
@@ -52,12 +63,14 @@ static uint64_t measure_pm_timer(void)
 
     uint32_t last = inl(port) & mask;
     uint64_t elapsed = 0, t0 = rdtsc();
-    for (uint64_t spins = 0; elapsed < target; spins++) {
+    while (elapsed < target) {
         uint32_t now = inl(port) & mask;
         elapsed += (now - last) & mask;
         last = now;
-        if (spins > 100000000)
-            return 0;   /* timer not ticking */
+        if (rdtsc() - t0 > CAL_GIVE_UP_TSC) {
+            kprintf("tsc: PM timer not ticking (at %#x)\n", now);
+            return 0;
+        }
     }
     uint64_t t1 = rdtsc();
     uint64_t ns = elapsed * 1000000000ull / pm_hz;
@@ -74,7 +87,7 @@ static void show(const char *name, uint64_t hz)
 
 void tsc_calibrate_with_loader(uint64_t loader_hz)
 {
-    uint64_t hpet = acpi.hpet_phys ? measure_hpet() : 0;
+    uint64_t hpet = acpi.hpet_phys ? tsc_measure_hpet(vmm_map_mmio(acpi.hpet_phys, 1024)) : 0;
     uint64_t pm = acpi.pm_timer_port ? measure_pm_timer() : 0;
     uint64_t cpuid = 0;
     if (cpu_features.crystal_hz && cpu_features.tsc_ratio_den)
@@ -95,11 +108,6 @@ void tsc_calibrate_with_loader(uint64_t loader_hz)
     tsc_hz = hz;
     kprintf("tsc: using %lu.%03lu MHz from %s\n", tsc_hz / 1000000, (tsc_hz / 1000) % 1000,
             hpet ? "HPET" : pm ? "PM timer" : cpuid ? "CPUID 15h" : "loader");
-}
-
-void tsc_calibrate(void)
-{
-    tsc_calibrate_with_loader(0);
 }
 
 void udelay(uint64_t us)

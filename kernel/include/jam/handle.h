@@ -79,6 +79,7 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
 /* Finish handle_take for a send that SUCCEEDED: release the reserved slot so
  * it can be reused. Call once per handle whose khandle the send consumed. */
 status_t handle_commit(struct handle_table *t, handle_t h);
+#ifndef JAM_NO_KTESTS
 /* Tests: the rights of every live handle in t to an object of `type`
  * (up to cap of them into out); returns how many there are. */
 uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_t *out,
@@ -87,6 +88,7 @@ uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_
  * `type` in t (another process's table: what it holds right now), or
  * ERR_NOT_FOUND. */
 status_t handle_table_find(struct handle_table *t, enum obj_type type, struct kobject **out);
+#endif
 /* Reserve n empty slots (all or none; ERR_NO_RESOURCES if the table can't
  * hold them) so a receive can't fail halfway and lose handles. Each value in
  * out[] is filled with handle_untake (which then cannot fail) or given back

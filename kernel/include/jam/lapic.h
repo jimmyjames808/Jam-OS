@@ -15,16 +15,14 @@ void     lapic_init_bsp(bool x2apic);
 void     lapic_init_cpu(struct cpu *c);
 uint32_t lapic_id(void);
 void     lapic_eoi(void);
-/* Fixed-vector IPI to one CPU, or to all CPUs except this one. */
+/* Fixed-vector IPI to one CPU. */
 void     lapic_send_ipi(uint32_t apic_id, uint8_t vector);
-void     lapic_send_ipi_others(uint8_t vector);
 void     lapic_send_nmi(uint32_t apic_id);
 void     lapic_send_nmi_others(void);
-bool     lapic_x2apic_mode(void);
 
 /* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and
  * "nodeadline" is not on the command line), else the APIC's own counter. */
-void     lapic_timer_calibrate(void);   /* BSP, once, after tsc_calibrate */
+void     lapic_timer_calibrate(void);   /* BSP, once, after tsc_calibrate_with_loader */
 void     lapic_timer_start(unsigned hz);
 const char *lapic_timer_mode(void);
 

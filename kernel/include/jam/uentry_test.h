@@ -20,9 +20,6 @@ extern bool (*uentry_test_syscall)(struct syscall_frame *f, int64_t *ret);
  * tracks per-CPU state itself. Called from arch_thread_switch with
  * interrupts off. */
 extern uint64_t (*uentry_test_cr3)(struct thread *t);
-/* Told about every user thread killed for a fault (before it exits). */
-extern void (*uentry_test_fault)(struct thread *t, uint64_t vector, uint64_t rip,
-                                          uint64_t addr);
 /* First look at every NMI (on the NMI's own context, GS already the
  * kernel's): return true to swallow it. */
 extern bool (*uentry_test_nmi)(struct trap_frame *f);

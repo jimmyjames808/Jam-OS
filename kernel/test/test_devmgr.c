@@ -25,10 +25,15 @@
 #include <jam/interrupt_test.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
+#include <jam/list.h>
+#include <jam/object.h>
 #include <jam/pci.h>
+#include <jam/port.h>
 #include <jam/process.h>
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
+#include <jam/sched.h>
+#include <jam/spinlock.h>
 #include <jam/startup.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
@@ -65,6 +70,8 @@ struct dm {
     struct job     *job;    /* devmgr's job; its drivers' jobs are below it */
     struct process *proc;   /* devmgr (a reference) */
     struct channel *ctl;    /* our end of its control channel */
+    struct channel *srv;    /* devmgr's end of it (a reference) */
+    struct port    *port;   /* devmgr's one port (a reference) */
     bool            was_managed;   /* the edu function's driver_managed before */
 };
 
@@ -116,6 +123,8 @@ static void dm_start(struct dm *m, const struct pci_dev *d)
     kobject_unref(root);
     struct channel *srv;
     KT_EQ(channel_create(&m->ctl, &srv), OK);
+    kobject_ref((struct kobject *)srv);
+    m->srv = srv;
     const char *argv[] = { "bin/devmgr", "nousb" };   /* on QEMU: edu is all it binds */
     struct userboot_handle x[2] = {
         { SR_RESOURCE, khandle_from_new(pci, RES_RIGHTS) },
@@ -126,6 +135,36 @@ static void dm_start(struct dm *m, const struct pci_dev *d)
     KT_EQ(dm_call(m, DM_STATUS, &r, NULL, NULL), OK);
     KT_EQ(r.a, 1);   /* bound */
     KT_EQ(r.b, 0);   /* failed */
+    struct kobject *po;
+    KT_EQ(handle_table_find(process_handles(m->proc), OBJ_PORT, &po), OK);
+    m->port = container_of(po, struct port, base);
+}
+
+/* Whether devmgr is asleep in port_wait with its control channel armed. */
+static bool dm_idle(const struct dm *m)
+{
+    struct kobject *srv = (struct kobject *)m->srv;
+    uint64_t f = spin_lock_irqsave(&srv->lock);
+    bool armed = !list_empty(&srv->observers);
+    spin_unlock_irqrestore(&srv->lock, f);
+    struct waitqueue *wq = &m->port->waiters;
+    f = spin_lock_irqsave(&wq->lock);
+    bool asleep = !list_empty(&wq->waiters);
+    spin_unlock_irqrestore(&wq->lock, f);
+    return armed && asleep;
+}
+
+/* Wait (bounded) until devmgr is idle. Until then its job's message bytes
+ * move after a reply: the control channel's ONCE binding is retired when
+ * its packet is dequeued and bound again only after the reply, and a dead
+ * driver's packet queued before the reply stays charged until devmgr takes
+ * it. Asleep in port_wait, it has done both. */
+static void dm_wait_idle(const struct dm *m)
+{
+    uint64_t until = uptime_ns() + NS_PER_S;
+    while (!dm_idle(m) && uptime_ns() < until)
+        thread_sleep_ms(1);
+    KT_ASSERT(dm_idle(m));
 }
 
 /* Wait (bounded) until the driver has set up: it turns bus mastering on
@@ -165,6 +204,8 @@ static int64_t dm_stop(struct dm *m, struct pci_dev *d)
     struct process_info info;
     process_get_info(m->proc, &info);
     kobject_unref(process_kobject(m->proc));
+    kobject_unref((struct kobject *)m->srv);
+    kobject_unref(&m->port->base);
     /* devmgr made it sticky */
     __atomic_store_n(&d->driver_managed, m->was_managed, __ATOMIC_RELAXED);
     return info.exit_code;
@@ -260,10 +301,14 @@ struct refusal_ref {
 static void check_nothing_left(const struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
                                uint32_t kind, uint64_t headroom)
 {
+    dm_wait_idle(m);
+    uint64_t used[JOB_LIMIT_COUNT];
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
-        if (job_used(m->job, k) != ref->used[k])
+        used[k] = job_used(m->job, k);
+    for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
+        if (used[k] != ref->used[k])
             panic("ktest %s: a start refused at job kind %u + %lu left kind %u at %lu (was %lu)",
-                  ktest_current, kind, headroom, k, job_used(m->job, k), ref->used[k]);
+                  ktest_current, kind, headroom, k, used[k], ref->used[k]);
     KT_GLOBAL_EQ(interrupt_live_count(), ref->irqs);
     KT_ASSERT(!bme(d));
     KT_ASSERT(!msi_on(d));
@@ -335,6 +380,7 @@ KTEST(devmgr_refused_start_leaves_nothing)
     status_t st = dm_call(&m, DM_REBIND, &r, NULL, NULL);
     KT_EQ(job_set_limit(m.job, JOB_LIMIT_THREADS, JOB_NO_LIMIT), OK);
     KT_EQ(st, ERR_NO_RESOURCES);
+    dm_wait_idle(&m);
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         ref.used[k] = job_used(m.job, k);   /* devmgr alone */
     KT_EQ(ref.used[JOB_LIMIT_THREADS], info.threads);

@@ -39,7 +39,6 @@ void spin_lock(spinlock_t *l);
 /* For taking two locks of the same class (e.g. two run queues): the
  * second one gets subclass 1 so the checker sees an ordered pair. */
 void spin_lock_nested(spinlock_t *l, unsigned subclass);
-bool spin_trylock(spinlock_t *l);
 void spin_unlock(spinlock_t *l);
 /* Release without the preemption check; used by the scheduler itself. */
 void spin_unlock_no_resched(spinlock_t *l);

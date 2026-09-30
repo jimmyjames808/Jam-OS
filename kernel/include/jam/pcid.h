@@ -26,8 +26,7 @@ void     pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen);
  * makes every CPU forget its slots. */
 void     pcid_set(bool on);
 bool     pcid_is_on(void);
-/* Statistics for tests: loads that kept a PCID's entries / flushed them. */
-uint64_t pcid_kept_loads(uint32_t cpu);
+/* Statistics for tests: loads that flushed a PCID's entries. */
 uint64_t pcid_flushed_loads(uint32_t cpu);
 #ifndef JAM_NO_KTESTS
 #define PCID_SLOTS_PER_CPU 8

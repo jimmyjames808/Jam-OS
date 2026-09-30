@@ -390,21 +390,6 @@ void spin_lock_nested(spinlock_t *l, unsigned subclass)
     lock_common(l, subclass);
 }
 
-bool spin_trylock(spinlock_t *l)
-{
-    preempt_disable();
-    uint16_t owner = __atomic_load_n(&l->owner, __ATOMIC_RELAXED);
-    uint16_t expect = owner;
-    if (!__atomic_compare_exchange_n(&l->next, &expect, (uint16_t)(owner + 1), false,
-                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-        preempt_enable();
-        return false;
-    }
-    acquire_checks(l, 0);
-    __atomic_store_n(&l->holder, (uint16_t)(this_cpu()->index + 1), __ATOMIC_RELAXED);
-    return true;
-}
-
 static void unlock_common(spinlock_t *l)
 {
     release_checks(l);

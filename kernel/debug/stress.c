@@ -9,6 +9,7 @@
  * one's job ends with nothing charged. Without a bootfs holding bin/utest
  * those workers count instead. */
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
@@ -365,6 +366,7 @@ static void run_seconds(const struct worker *ws, uint32_t n, uint64_t seconds, u
         while (uptime_ns() - start < sec * 1000000000ull)
             thread_sleep_ms(50);
         shootdown_round(va, sec);
+        DBG_HOOK(DBG_STRESS_SHOOTDOWN, &shoot_bad);
         if (__atomic_load_n(&shoot_bad, __ATOMIC_RELAXED)) {
             report("stress: FAILED TLB shootdown: a CPU saw a stale mapping");
             __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
@@ -421,6 +423,12 @@ bool stress_run(uint64_t seconds)
     mutex_init(&counter_mutex, "stress counter");
     counter = 0;
     __atomic_store_n(&stop, false, __ATOMIC_RELAXED);
+    /* Each run starts clean: the shell's `stress` can run many times in one
+     * boot, and one failed run must not fail all the later ones. */
+    __atomic_store_n(&failures, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&shoot_bad, 0, __ATOMIC_RELAXED);
+    for (unsigned k = 0; k < K_KINDS; k++)
+        __atomic_store_n(&ops[k], 0, __ATOMIC_RELAXED);
 
     uint64_t total, free_before, free_after;
     pmm_stats(&total, &free_before);

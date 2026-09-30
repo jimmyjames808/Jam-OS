@@ -103,10 +103,9 @@ void kobject_signal(struct kobject *obj, signals_t clear, signals_t set);
 void kobject_signal_locked(struct kobject *obj, signals_t clear, signals_t set);
 signals_t kobject_signals(struct kobject *obj);
 
-/* Register / unregister an observer. kobject_observe fires it immediately
- * (under the lock) if (signals & o->mask) != 0 already. */
+/* Register an observer. It fires immediately (under the lock) if
+ * (signals & o->mask) != 0 already. */
 void kobject_observe(struct kobject *obj, struct observer *o);
-void kobject_unobserve(struct kobject *obj, struct observer *o);
 
 /* Block until (signals & mask) != 0 or uptime_ns() >= deadline_ns
  * (DEADLINE_NEVER from sched.h for no limit). Returns OK, ERR_TIMED_OUT, or
