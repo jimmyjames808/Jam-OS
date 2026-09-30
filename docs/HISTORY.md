@@ -222,6 +222,7 @@ Dated decisions, newest first. The design they produced is in
   NVMe driver (easier, and the owner has a FAT partition on the internal
   Crucial drive from an earlier attempt) and other filesystems (exFAT,
   ext2, littlefs, an own copy-on-write one) were discussed and declined.
+  FAT32 comes from a FatFs port, not a hand-written driver.
   The repository went public under BSD-2-Clause; no GPL code may be copied.
 - 2026-09-30: the kernel build of drivers is removed (nothing used it once
   devmgr ran every driver as a process).

@@ -55,9 +55,12 @@ agents, like the [earlier plans](history/)):
   painful (no spaces from its shell; `notes.txt` shown as `NOTES.TXT`
   because the lowercase flags were never set; long names cut to 8.3, or
   every alias `~1` so aliases collided; forbidden characters accepted).
-  Get long names, the case flags, `~N` numbering and the character rules
-  right, or port FatFs (BSD-style licence) instead of writing FAT32 again:
-  decide in the plan.
+  Decided: **port FatFs** (ChaN's FatFs, BSD-style licence) instead of
+  writing FAT32 again; it gets long names, the case flags, `~N` numbering
+  and the character rules right. Vendor it in `third_party/fatfs/` with
+  its licence and a `third_party/VERSIONS.md` entry; the FAT service
+  supplies FatFs's disk callbacks (read/write sectors through the block
+  service) and runs as a process like any other service.
 
 ## Later
 
