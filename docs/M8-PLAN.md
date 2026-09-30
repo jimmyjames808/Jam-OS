@@ -99,7 +99,7 @@ them at `/data` and `/esp`. Restarts follow devmgr's supervision (M7).
    stick; fat formats it with FatFs's f_mkfs on first boot if it holds no
    FAT volume.
 The image build (tools/mkimage.py) writes both GPT entries. Flashing the
-new layout **erases the stick once**: the owner runs `make usb`;
+new layout **erases the stick once** (`make usb`);
 after that, updates copy files onto the ESP as now.
 
 **FatFs** (ChaN, BSD-style licence): vendored unmodified in a new
@@ -130,7 +130,7 @@ ERR_PEER_CLOSED).
 
 ## Tracks
 
-Phase 1: four agents in parallel, each in its own worktree. The protocol
+Phase 1: four tracks in parallel. The protocol
 files (usb.idl changes, block, fs, file) land on main first as the
 contract; the tracks build on them.
 
@@ -142,7 +142,7 @@ contract; the tracks build on them.
   JAMOS-DATA in the QEMU image, formatted by mformat, so every track can
   test against a real FAT volume from day one).
 
-### Track A: bulk transfers + usb-storage (agent 1)
+### Track A: bulk transfers + usb-storage
 - usb-bus: bulk endpoints in the endpoint-context fill (config.c), bulk
   transfer rings and completion (a new file beside intr.c), STALL and
   Clear Feature(ENDPOINT_HALT) recovery, the `open_bulk` / `bulk_in` /
@@ -156,7 +156,7 @@ contract; the tracks build on them.
 - QEMU: the boot stick itself (usb-storage), a second usb-storage disk
   behind the usb-hub, unplug mid-read, a STALL on an unknown command.
 
-### Track B: FatFs + the fat service (agent 2)
+### Track B: FatFs + the fat service
 - Vendor FatFs; the diskio glue over `block`; the `fs` and `file`
   protocols; FRESULT -> ERR_* mapping; f_mkfs on an unformatted
   JAMOS-DATA.
@@ -167,7 +167,7 @@ contract; the tracks build on them.
   `holiday-photos.txt` and `holiday-plans.txt` get distinct aliases,
   forbidden characters refused), a full disk, a dirty volume.
 
-### Track C: the namespace, spawn from a file, the shell (agent 3)
+### Track C: the namespace, spawn from a file, the shell
 - libos: SR_NS, path resolution to a mount, the file calls; spawn from a
   VMO (spawn.c loads from any VMO range; bootfs becomes one caller).
 - A bootfs server (the image served read-only through `fs`) so `/boot` is
@@ -178,7 +178,7 @@ contract; the tracks build on them.
   path.
 - Tested against the bootfs server and Track B's RAM-disk fat.
 
-### Track D: logd, reboot sync, debug_command (agent 4, smaller)
+### Track D: logd, reboot sync, debug_command
 - logd: the boot log files as above.
 - init: sync `/data` on `reboot` / Ctrl+Alt+Del (bounded).
 - `debug_command`'s `kill <name>` moves to init's control channel; the
@@ -192,7 +192,7 @@ contract; the tracks build on them.
   write a file, reboot, read it back; a boot log per boot.
 - The pulled-plug test in QEMU: kill QEMU while logd writes; the next boot
   still boots and mounts `/data` (dirty volume logged).
-- Independent review of the whole milestone (not by the track agents).
+- Independent review of the whole milestone, by someone who built none of it.
 - PC rounds: **read-only first** (the partition list and `ls /data` on a
   stick flashed with the new layout), then writes, then the boot logs,
   then the pulled-plug test on the real stick.
@@ -208,7 +208,7 @@ contract; the tracks build on them.
   Mac; pulling the stick mid-write and replugging leaves it bootable;
   All tests, the 2-minute stress, and the 10-minute sign-off.
 
-## The owner's answers (2026-09-30)
+## Decisions for this plan (2026-09-30)
 1. Nothing on the stick needs keeping: flashing the new layout (which
    erases it once) is fine.
 2. The data partition takes the rest of the 2 GB stick.
@@ -216,16 +216,14 @@ contract; the tracks build on them.
    there), and `/esp` is the ESP's own files, read-only, when USB storage
    works.
 
-## Rules for the agents
-- Work only in your worktree and your track's files; the foundation's IDL
-  files and headers are the contract. If one must change, say so in the
-  report instead of changing another track's side.
+## Rules for every track
+- The foundation's IDL files and headers are the contract between tracks;
+  a track that needs one changed says so instead of changing another
+  track's side.
 - Follow [CODING-GUIDE.md](../CODING-GUIDE.md): bounded waits, handles
   with the narrowest rights, a test for every fix, no GPL code (FatFs is
   BSD-style; Linux's usb-storage may be read for facts, never copied).
 - Every commit leaves the tree building with the existing tests passing at
-  4 and 8 CPUs. `make check` passes (docs and include order too).
-- **Do not spawn subagents or other agents.** No `Co-Authored-By` trailer.
-  Don't push, don't touch main, **never write to a USB disk**.
-- Anything only the real PC can show goes in the report with what the PC
-  run should print.
+  4 and 8 CPUs; `make check` passes (docs and include order too).
+- Anything only the real PC can show is written down with what the PC run
+  should print.

@@ -56,7 +56,7 @@ process for the keyboard is `hid-10:0`.
 
 ## Flash and boot the stick
 
-Only the owner does this: agents never write to a USB disk.
+Flashing writes to a USB disk: check which disk before every write.
 
 **A fresh stick** (erases the whole disk):
 
@@ -82,8 +82,7 @@ diskutil eject "/Volumes/NO NAME"
 
 Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick
 an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). The
-kernel ends every run with a RESULTS box; the owner reads lines from it or
-sends a photo.
+kernel ends every run with a RESULTS box that sums up what happened.
 
 ## If something goes wrong on the PC
 

@@ -2,8 +2,8 @@
 
 How to test a change, cheapest first, with the exact commands. The rule
 that a bug fix comes with a test is in
-[CODING-GUIDE.md](../CODING-GUIDE.md#7-testing); the latest results are in
-[NEXT.md](../NEXT.md) and, per milestone, in [HISTORY.md](HISTORY.md).
+[CODING-GUIDE.md](../CODING-GUIDE.md#7-testing); results per milestone are in
+[HISTORY.md](HISTORY.md).
 
 ## The tiers
 
@@ -16,12 +16,12 @@ that a bug fix comes with a test is in
 | Area scripts | [below](#area-scripts) | the area you touched |
 | 2-minute stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` | after each fix round, in QEMU and on the PC |
 | 10-minute stress | the boot menu's 10-minute entry, or `stress 600` in the shell | milestone sign-off only, on the PC |
-| The PC | the owner flashes the stick and runs it ([HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)) | the final judge |
+| The PC | flash the stick and run it ([HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)) | the final judge |
 
 - QEMU passing is necessary, not sufficient: TCG has no PCIDs and no
   TSC-deadline timer, and USB timing differs. Say what still needs the PC.
-- The Mac is shared by several agents: a timing failure may be load. Rerun
-  once; a second failure is real.
+- On a busy machine (several QEMU runs at once) a timing failure may be
+  load. Rerun once; a second failure is real.
 - On the PC the 2-minute stress is skipped right before a sign-off: the
   10-minute run covers it.
 

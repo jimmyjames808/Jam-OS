@@ -59,11 +59,11 @@ not a panic.** Everything else in this file serves those three checks.
 
 ## Tracks
 
-Phase 1 runs three agents in parallel, each in its own git worktree, on top
+Phase 1 runs three tracks in parallel, on top
 of a foundation commit on main that fixes the interfaces between them
 (headers + weak stubs, below). Phase 2 joins them.
 
-### Foundation (on main, before the agents)
+### Foundation (on main, before the tracks)
 - `jam/aspace.h`, `jam/usercopy.h`, `jam/uentry.h`, `jam/syscall.h`,
   `jam/startup.h`, `jam/bootfs.h`, `jam/elf.h`: the interfaces.
 - `kernel/core/m5_weak.c`: weak stub for every interface function, so each
@@ -74,7 +74,7 @@ of a foundation commit on main that fixes the interfaces between them
   next)` before `switch_context`; `trap_dispatch` hands #PF to
   `trap_page_fault()` before panicking.
 
-### Track A: entry path (agent 1)
+### Track A: entry path
 Files: `kernel/arch/x86_64/` (new `syscall.S`, `usercopy.S`, `fpu.c`,
 edits to `isr.S`, `trap.c`, `gdt.c`, `cpu.c`), `kernel/linker.ld`
 (`__ex_table`).
@@ -104,7 +104,7 @@ edits to `isr.S`, `trap.c`, `gdt.c`, `cpu.c`), `kernel/linker.ld`
   crash test (`testsmap`: the kernel reads a user page without `stac`);
   SMEP crash test (`testsmep`); an NMI arriving while in user mode.
 
-### Track B: address spaces and VMAR (agent 2)
+### Track B: address spaces and VMAR
 Files: `kernel/mm/aspace.c` (new), `kernel/object/vmar.c` (new),
 `kernel/object/vmo.c` (reverse map + O8), `kernel/abi/vmar_sys.c`,
 `kernel/arch/x86_64/ipi.c` (shootdown to a CPU mask).
@@ -130,7 +130,7 @@ Files: `kernel/mm/aspace.c` (new), `kernel/object/vmar.c` (new),
   shrink under a mapping, stress: 8 threads mapping/faulting/decommitting
   one VMO; no leaked page tables after destroy.
 
-### Track C: userland, ABI generator, bootfs, ELF (agent 3)
+### Track C: userland, ABI generator, bootfs, ELF
 Files: `user/` (new), `abi/syscalls.def` + `tools/gensyscalls.py` (new),
 `tools/mkbootfs.py` (new), `kernel/core/bootfs.c`, `kernel/core/elf.c`,
 Makefile, `boot/limine.conf` (module line).
@@ -162,7 +162,7 @@ Makefile, `boot/limine.conf` (module line).
 
 ### Phase 2: processes, syscalls, userboot, jobs (after the merge)
 Status 2026-09-29: built and passing in QEMU (see NEXT.md), except the
-three items a parallel agent owns (per-CPU page caches, the stack cache
+three items a parallel track owns (per-CPU page caches, the stack cache
 limit, `channel_call` wake-affine placement). Decisions made on the way:
 VMO pages are charged to the job of the process that created the VMO (so
 libos's loader pays for a child's data and stack; userboot charges the
@@ -211,14 +211,3 @@ never RIGHT_WRITE; new calls `debug_report`, `job_get_info`,
   stress test, and every crash test (old and new) pass.
 - The real PC: "All tests" and the 10-minute stress, then init + utest,
   with the RESULTS box showing the utest lines.
-
-## Rules for the agents
-- Work only in your worktree and your track's files; the foundation
-  headers are the contract. If an interface needs to change, say so in the
-  report instead of changing another track's side.
-- Every commit leaves the tree building with all existing ktests passing
-  (4 and 8 CPUs in QEMU: `tools/qemu-test.sh`). Add tests for everything.
-- No `Co-Authored-By` trailer on commits. Don't push, don't touch main,
-  never write to a USB disk.
-- Don't run tests in long repeated loops; one run at 4 and one at 8 CPUs
-  per change is enough unless you are chasing a race.

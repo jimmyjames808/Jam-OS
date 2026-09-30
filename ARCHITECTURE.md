@@ -484,8 +484,8 @@ Not built yet; these rules bind every future path that can transmit.
   this revision needs Realtek's PHY firmware patch). No USB adapter; the
   Wi-Fi is not planned.
 - **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
-  and nothing is ever sent untagged or on another VLAN** (the owner's
-  network must not see Jam OS traffic elsewhere). The VLAN is set in one
+  and nothing is ever sent untagged or on another VLAN** (the network it
+  runs on must not see Jam OS traffic elsewhere). The VLAN is set in one
   place (boot word `vlan=`, default 21) and added to every outgoing frame
   (ARP and DHCP included) below the IP stack. Incoming untagged or
   other-VLAN frames are dropped. With no VLAN configured the NIC stays
@@ -560,7 +560,7 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 
 ## Audio
 
-Not built yet. The owner listens on headphones in the case's front-panel
+Not built yet. The target is headphones in the case's front-panel
 jack, which hangs off the board's Intel HD Audio controller and its
 Realtek codec ([HARDWARE.md](docs/HARDWARE.md#other-devices)). The driver is
 a process like any other (PCI, MSI, DMA through a pinned DMA32 buffer). A

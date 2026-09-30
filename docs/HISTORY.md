@@ -19,8 +19,8 @@ are the kernel's version string; hashes are commits on main.
   code), and a job credited after its unlock (M5).
 - **A reviewer who didn't write the code finds what the author can't.**
   M5's review found four quota escapes; M7's found that a `run` program
-  could hijack the keyboard. Big agent-written code now always gets an
-  independent review after the merge.
+  could hijack the keyboard. Big changes now always get an independent
+  review after the merge.
 - **Kernel-first bring-up bought nothing.** M6's xHCI driver behaved the
   same as a kernel process and as a user process, while the process path
   gave better crash reports and could always be killed. Since then drivers
@@ -36,7 +36,7 @@ are the kernel's version string; hashes are commits on main.
 Plan: [CLEANUP-PLAN.md](history/CLEANUP-PLAN.md). Readability and
 structure with no behaviour change: same commands, output, boot menu,
 ktest names, syscall numbers and IDL; the version string stayed 0.0.24-m7.
-Five parallel tracks, then one agent for the moves that would collide:
+Five parallel tracks, then one pass for the moves that would collide:
 
 - The kernel build of drivers went (the kernel-process machinery,
   `drivers=kernel`, the xhci-noop driver and its `xhcitest` entry, the
@@ -220,7 +220,7 @@ with 27 clients at 836,077 calls/s (M4: 492,673), worst call 37 us,
   stress failed at 230 s on an IRQ race in the checker; after the fix the
   10-minute stress passed (112 threads, 28 CPUs).
 - **M4**: objects and handles, channels, ports, events, timers, VMOs; a
-  two-agent audit and 20 fixes. PC: 492,673 calls/s, worst 67 us.
+  two-part audit and 20 fixes. PC: 492,673 calls/s, worst 67 us.
 
 ## Decisions
 
@@ -228,8 +228,8 @@ Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
 - 2026-09-30: storage stays as planned: the USB stick and FAT32 only. An
-  NVMe driver (easier, and the owner has a FAT partition on the internal
-  Crucial drive from an earlier attempt) and other filesystems (exFAT,
+  NVMe driver (easier, and the internal Crucial drive already has a FAT
+  partition from an earlier attempt) and other filesystems (exFAT,
   ext2, littlefs, an own copy-on-write one) were discussed and declined.
   FAT32 comes from a FatFs port, not a hand-written driver.
   The repository went public under BSD-2-Clause; no GPL code may be copied.
@@ -239,8 +239,8 @@ Dated decisions, newest first. The design they produced is in
   discussed and not added. The boot menu became Jam OS / safe mode / a
   Tests folder; everything else is a shell command.
 - 2026-09-29, after M6: drivers and services are processes from the start
-  (the owner asked whether writing drivers in the kernel first had any
-  point; M6 showed it didn't). This replaced "bring up in the kernel, move
+  (writing drivers in the kernel first turned out to buy nothing; M6
+  showed it). This replaced "bring up in the kernel, move
   out in the same milestone".
 - 2026-09-29, after the M6 device listing: networking uses the board's own
   RTL8125 natively, not a USB Ethernet adapter (the earlier lean, when it

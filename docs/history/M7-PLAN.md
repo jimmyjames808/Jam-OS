@@ -78,7 +78,7 @@ fields in the slot context must be right, or the keyboard never enumerates.
 
 ## Tracks
 
-Phase 1: four agents in parallel. Tracks A (usb-bus), C (console/shell/
+Phase 1: four tracks in parallel. Tracks A (usb-bus), C (console/shell/
 kernel services) and D (supervision) start at once from main 2026-09-29;
 the foundation (IDL with handles, usb/input/console IDL files, driver.h
 additions) lands on main while they work, and Track B (HID) starts on top
@@ -97,7 +97,7 @@ of it. A and C merge main into their branch when the foundation lands
 - Kernel syscalls and QEMU USB flags are left to Tracks C and A (they
   started before the foundation; C reserves 110-119, D 120-129).
 
-### Track A: usb-bus (agent 1, the big one)
+### Track A: usb-bus
 - Start from drivers/xhci-noop: keep its init; add port handling (USB 2 /
   USB 3 protocol ports from the Supported Protocol capabilities), slots,
   device/input contexts (CSZ 32/64), Address Device, control transfers on
@@ -113,7 +113,7 @@ of it. A and C merge main into their branch when the foundation lands
   the monitor (`device_del` / `device_add`), control transfer errors (STALL
   on an unknown request), a device that disappears mid-transfer.
 
-### Track B: HID + keyboard layer (agent 2)
+### Track B: HID + keyboard layer
 - Class driver process built against a **mock usb-bus** (a test server in
   utest that serves recorded descriptors and reports), so it doesn't wait
   for Track A. Real descriptors from the PC's devices to test composite
@@ -124,7 +124,7 @@ of it. A and C merge main into their branch when the foundation lands
   modifiers, US layout, key repeat (500 ms / 30 Hz), Ctrl+Alt+Del.
 - `input` protocol to the console; reconnect when the console restarts.
 
-### Track C: console + shell + kernel services (agent 3)
+### Track C: console + shell + kernel services
 - Kernel: klog reader (a handle that reads the log from a position, with
   a signal on new lines), framebuffer hand-off, `debug_command` (ktest /
   bench / stress run in the kernel, output streamed back), `reboot`.
@@ -137,7 +137,7 @@ of it. A and C merge main into their branch when the foundation lands
   output; `ktest m4` from the shell; `reboot` restarts QEMU (-no-reboot
   exits: the test sees it).
 
-### Track D: supervision (agent 4, smaller)
+### Track D: supervision
 - devmgr: restart a dead driver (exponential backoff 100 ms .. 5 s, give
   up after 5 in a minute and log it).
 - **Stale DMA after a rebind (M6 phase 2 review finding 1, CONFIRMED:
@@ -173,16 +173,3 @@ of it. A and C merge main into their branch when the foundation lands
   stick); typing into the shell works; `ktest` from the shell passes;
   killing the HID driver while typing recovers; `reboot` reboots; All
   tests, the 2-minute stress, and the 10-minute sign-off.
-
-## Rules for the agents
-- Work only in your worktree and your track's files; the foundation
-  headers and IDL files are the contract. If one must change, say so in
-  the report instead of changing another track's side.
-- Drivers and services are processes; `<jam/driver.h>` only for drivers.
-- Every commit leaves the tree building with all existing tests passing
-  (4 and 8 CPUs in QEMU: `tools/qemu-test.sh`). Add tests for everything.
-- No `Co-Authored-By` trailer on commits. Don't push, don't touch main,
-  never write to a USB disk.
-- Anything only the real PC can show must be listed in the report with
-  what the PC run should print. Every wait bounded; a USB problem must
-  never hang the kernel or the boot.

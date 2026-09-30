@@ -112,10 +112,10 @@ uACPI is NOT in M6 (M10). No INTx for drivers (MSI/MSI-X only).
 
 ## Tracks
 
-Phase 1 runs four agents in parallel on top of a foundation commit (headers
+Phase 1 runs four tracks in parallel on top of a foundation commit (headers
 + weak stubs + reserved syscall numbers), like M5. Phase 2 joins them.
 
-### Foundation (on main, before the agents; done)
+### Foundation (on main, before the tracks; done)
 - Headers: `jam/pci.h` (kernel PCI core), `jam/interrupt.h` (vectors +
   interrupt objects), `jam/resource.h` (+ bound dma_cap),
   `drivers/include/jam/driver.h` (+ `driver_start` roles).
@@ -131,7 +131,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   (before ktests/bench/stress/userboot), and `pci_report()` on `pcilist`.
 - QEMU flags (edu) in tools/qemu-test.sh and `make run`.
 
-### Track A: PCI core (agent 1)
+### Track A: PCI core
 - ECAM mapping per MCFG segment (UC, kernel vmap), config read/write
   8/16/32 with a lock; bus walk from each segment's start bus following
   bridges' secondary/subordinate numbers; device table (`struct pci_dev`:
@@ -157,7 +157,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   with MSI, qemu-xhci 1b36:000d with MSI-X, BAR sizes as QEMU defines them,
   sizing restores the BAR, the display device is skipped.
 
-### Track B: vectors and interrupt objects (agent 2)
+### Track B: vectors and interrupt objects
 - Per-CPU vector allocator over 0x31-0xef (0x30 stays COM1), target CPU
   policy above; `irq_register` path for device vectors; spurious/unowned
   vectors counted.
@@ -175,7 +175,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   re-arms, destroy while firing on another CPU (virtual source fired from
   an IPI loop), port closed while a packet is queued, job charge.
 
-### Track C: resources, MMIO VMOs, DMA (agent 3)
+### Track C: resources, MMIO VMOs, DMA
 - `resource` object: root at boot (whole physical space minus RAM),
   `resource_create(parent, kind, base, size)` slicing, rights (`RIGHT_MAP`,
   `RIGHT_SLICE`); `RES_PCI` / `RES_PCI_DEV` from Track A's table.
@@ -193,7 +193,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   refused, pin without BME refused, close clears BME (read config back),
   config filter, kill mid-pin, job clean afterwards.
 
-### Track D: driver.h, both builds, IDL, build check (agent 4)
+### Track D: driver.h, both builds, IDL, build check
 - `driver.h` + the kernel implementation (kernel process: `struct process`
   on the kernel aspace, `driver_thread_start(name, driver_main, start)`)
   + the libos implementation; `dmalloc` in both.
@@ -204,7 +204,7 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
 - A tiny `drivers/null` test driver (echo server over an IDL protocol)
   that runs both ways, with ktests/utests using the generated client.
 
-### Phase 2: devmgr, edu, xhci-noop (after the merge; 1-2 agents)
+### Phase 2: devmgr, edu, xhci-noop (after the merge)
 - **devmgr** (user process from bootfs, started by init): `pci_enum`,
   match table (vendor/device/class -> driver ELF), per device:
   `pci_device_open`, BAR resources, interrupt objects, dma_cap (and
@@ -235,16 +235,3 @@ Phase 1 runs four agents in parallel on top of a foundation commit (headers
   xhci-noop completes via MSI/MSI-X in the kernel and as a process; All
   tests, Benchmark (new interrupt lines), 2-min stress; 10-min stress as
   the sign-off.
-
-## Rules for the agents
-- Work only in your worktree and your track's files; the foundation
-  headers are the contract. If an interface needs to change, say so in the
-  report instead of changing another track's side.
-- Every commit leaves the tree building with all existing ktests passing
-  (4 and 8 CPUs in QEMU: `tools/qemu-test.sh`). Add tests for everything.
-- No `Co-Authored-By` trailer on commits. Don't push, don't touch main,
-  never write to a USB disk.
-- Don't run tests in long repeated loops; one run at 4 and one at 8 CPUs
-  per change is enough unless you are chasing a race.
-- Anything that only runs on the PC (not in QEMU) must say so in the
-  report, with what the PC run should show.

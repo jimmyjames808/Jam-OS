@@ -100,8 +100,7 @@ update a stick, and the PC it was built for are in
 | Doc | For |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | how the system is designed, and why |
-| [CODING-GUIDE.md](CODING-GUIDE.md) | how the code is written and changed (agents and humans) |
-| [NEXT.md](NEXT.md) | the handoff: current state, next step, open questions |
+| [CODING-GUIDE.md](CODING-GUIDE.md) | how the code is written and changed |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | milestones: done, next, later |
 | [docs/HISTORY.md](docs/HISTORY.md) | what each milestone delivered, bugs and lessons, decisions |
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
@@ -110,9 +109,8 @@ update a stick, and the PC it was built for are in
 
 ## Contributing
 
-Jam OS is one person's project, written together with AI agents. The
-rules for changing the code, for agents and humans alike, are in
-[CODING-GUIDE.md](CODING-GUIDE.md).
+Jam OS is one person's project, written with the help of AI. The rules for
+changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 
 ## Licence
 

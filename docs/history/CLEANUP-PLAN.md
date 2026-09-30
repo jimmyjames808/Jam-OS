@@ -20,7 +20,7 @@ still work), same syscall numbers, same IDL. The only removals allowed are
 the ones listed. If a track finds a real bug, it notes it in its report
 and does not fix it here.
 
-## Tracks (parallel, one agent each, each in its own worktree)
+## Tracks (parallel)
 
 Each track owns the files listed. Touch nothing else unless the build
 forces it (then keep the edit minimal and say so in the report). The
@@ -56,8 +56,8 @@ user-program rule only as far as needed to compile subdirectories
   chain (demo, kill, mem, clear, panic, reboot, ...) into SH_CMD functions
   and delete run_command, split, sh_main_command, cmd_help, cmd_run and
   any other dead code. argv reaches every command intact (no join/re-split).
-- **One file per command** in `user/shell/cmd/<name>.c` (the owner's
-  choice). Code shared by several commands moves to named helper files
+- **One file per command** in `user/shell/cmd/<name>.c` (a
+  decided choice). Code shared by several commands moves to named helper files
   (e.g. `sh_time.c` for the calendar/time-zone code now in cmds_info.c,
   one for sysinfo/cpu helpers, one for path helpers), each with a short
   header or a section in sh.h.
@@ -118,7 +118,7 @@ libfun/font bits.
   copies (init/shell.c, devmgr/supervise.c, usbtest, utest main/hid/bench).
 - Milestone tags in the files E owns, as in D.
 
-## After the merge (one agent, sequential)
+## After the merge (sequential)
 Directory moves that would collide if done in parallel:
 `user/{services,apps,tests}/`, `kernel/core` into sched/, proc/, debug/;
 the sb_* -> drv_snprintf swap in usb-bus and hid; a last sweep for
@@ -135,8 +135,6 @@ owner is back).
 - Follow CODING-GUIDE.md if it exists by then; otherwise match the house
   style of kernel/object/port.c, drivers/hid/keyboard.c, user/devmgr/ and
   user/shell/sh.h.
-- Commit on your own branch (no Co-Authored-By trailer). Never push, never
-  touch ~/jamos (main), never write to any USB disk.
 - Report: what moved where, line counts before/after, anything you could
   not do, any bugs noticed (not fixed).
 

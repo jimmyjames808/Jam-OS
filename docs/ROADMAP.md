@@ -42,8 +42,8 @@ Done when: `ls /boot` and writing a file under `/data` work from a
 userspace filesystem service; the stick still boots after a pulled-plug
 test; a PC run's log can be read on the Mac from the stick.
 
-Notes for the plan (write the plan as docs/M8-PLAN.md before launching
-agents, like the [earlier plans](history/)):
+Notes for the plan ([M8-PLAN.md](M8-PLAN.md), like the
+[earlier plans](history/)):
 - The stick (058f:6387) is high-speed and sits behind the ASMedia hub, so
   storage goes through the hub ([HARDWARE.md](HARDWARE.md#usb)).
 - The shell's mount table (`user/services/shell/sh_vfs.c`) is ready for
@@ -70,7 +70,7 @@ agents, like the [earlier plans](history/)):
 | A2 | `audio` protocol + mixer service: streams through shared VMO rings, volume from the shell, WAV playback from `/data` | two programs play at once |
 | A3 | Microphone input, HDMI/DP audio on the RTX, USB audio devices | (not planned in detail) |
 | M8.5 | Crash kernel, the Linux kdump approach: reserve RAM at boot and load a second Jam OS there; on a panic jump into it (kexec, one CPU, controllers reset before use), save the crashed kernel's log ring as `/data/logs/boot-NNNN-crash.txt`, reboot. The same kexec gives `reboot` a fast path, which needs the kernel's own AP startup (INIT-SIPI-SIPI) so all 28 CPUs come back without Limine. A RAM log kept across a warm reset (pstore) only as a fallback | a deliberate panic on the PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
-| M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Ask the owner first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
+| M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
 | M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
 | M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
@@ -106,6 +106,6 @@ Offered or noticed, not scheduled into a milestone yet:
 ## Not planned
 
 - `fork` (a POSIX layer gets `posix_spawn`).
-- SSH (discussed; the owner chose not to add it).
+- SSH (discussed and not added).
 - Wi-Fi.
 - User accounts: single user; handles are the only authority.

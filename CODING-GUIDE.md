@@ -1,7 +1,7 @@
 # Jam OS coding guide
 
-The rules for writing and changing Jam OS code, for agents and for the
-owner. [ARCHITECTURE.md](ARCHITECTURE.md) says *what* the system is; this
+The rules for writing and changing Jam OS code.
+[ARCHITECTURE.md](ARCHITECTURE.md) says *what* the system is; this
 file says *how the code is written*; [docs/TESTING.md](docs/TESTING.md)
 says how to test it. Where old code breaks a rule, new code follows the rule.
 Fix old code only when you are already changing it for another reason, or
@@ -12,7 +12,8 @@ House style comes from the files the reviews called good:
 `drivers/hid/keyboard.c`, `user/services/devmgr/` (split by job) and
 `user/services/shell/sh.h`. When this guide doesn't cover something, copy them.
 
-The owner learns OS development by reading this code. Write it to be read.
+Write the code to be read: someone learning OS development should be able
+to follow it.
 
 ---
 
@@ -423,9 +424,9 @@ fractions. User programs may use floating point and SIMD freely.
   (`U_CAPS`, `PCI_BAR_MMIO`); comment the meaning of magic values; cite the
   spec section for non-obvious behaviour ("USB HID 1.11, Appendix B" for the boot keyboard report).
 - `/* */` comments only. No `TODO` without a matching line in
-  [docs/ROADMAP.md](docs/ROADMAP.md#smaller-follow-ups); prefer putting it
-  in your report.
-- Plain English, full sentences, short. The owner is learning from this.
+  [docs/ROADMAP.md](docs/ROADMAP.md#smaller-follow-ups); prefer the roadmap
+  line on its own.
+- Plain English, full sentences, short. Readers are learning from this.
 
 ---
 
@@ -480,7 +481,7 @@ fractions. User programs may use floating point and SIMD freely.
 6. Shared logic used by several commands goes into a named helper file,
    not a copy.
 7. If it needs a handle the shell doesn't hold, stop: that is a design
-   question for the owner.
+   question, not something to work around.
 8. Add checks to a `tools/shell-tests/*.txt` script.
 
 ### Add a driver
@@ -504,7 +505,7 @@ fractions. User programs may use floating point and SIMD freely.
 
 1. In `kernel/test/test_<subject>.c`: `KTEST(<subject>_<behaviour>)`.
    The name starts with the subject so `ktest=<subject>` selects it.
-   **Names never change**: the owner runs tests by name.
+   **Names never change**: tests are run by name.
 2. `KT_ASSERT`, `KT_EQ` for the test's own objects.
 3. System-wide counts (free pages, live channels) use `KT_GLOBAL_EQ` /
    `KT_GLOBAL_ASSERT`, so the test also runs from the shell on a live
@@ -546,28 +547,19 @@ the exact commands and each script's QEMU setup are in
 
 ---
 
-## 8. Agent workflow
+## 8. Contributing
 
-- **Plan first.** Parallel work starts from a written plan
+- **Plan first.** Larger work starts from a written plan
   (docs/M<n>-PLAN.md; finished ones move to [docs/history/](docs/history/))
-  that gives each track the files it owns. Touch nothing else; if the build forces an edit outside your
-  files, keep it minimal and name it in your report.
-- **Worktrees.** Each agent works on its own branch in its own git
-  worktree. Commit there.
-- **Never push. Never touch main or `~/jamos`. Never write to a USB disk**
-  (no `make usb`, no `tools/write-usb.sh`, no `dd`). Flashing is the
-  owner's job.
+  that splits it into tracks, each owning its files.
 - **Refactors and behaviour changes are separate commits.** A refactor
   keeps behaviour identical: same output, commands, ktest names, syscall
-  numbers, IDL. Found a bug during a refactor? Report it; fix it in its
-  own commit or track.
-- **Independent review.** After a big merge, a separate agent that did not
-  write the code reviews it; its fixes are merged after. Don't review your
-  own work as the review.
+  numbers, IDL. Found a bug during a refactor? Fix it in its own commit.
+- **Independent review.** A big change is reviewed by someone who did not
+  write it, and the review's fixes land after it.
 - **Commit messages:** `area: what changed`, present tense, one line (a
   body if the why is not obvious): `usb-bus: refuse hub interfaces`,
-  `ktest: relax global counts on a live system`. **No `Co-Authored-By`
-  trailer** on this repository.
+  `ktest: relax global counts on a live system`.
 - **The networking rule** (hard requirement,
   [ARCHITECTURE.md](ARCHITECTURE.md#networking)): every frame Jam OS sends
   is tagged VLAN 21, nothing else ever leaves. A change that could
@@ -583,23 +575,15 @@ the exact commands and each script's QEMU setup are in
   | the real PC and flashing the stick | [docs/HARDWARE.md](docs/HARDWARE.md) |
   | test commands, boot menu, boot words | [docs/TESTING.md](docs/TESTING.md) |
   | benchmark numbers | [docs/BENCH.md](docs/BENCH.md) |
-  | current state, next step, open questions | [NEXT.md](NEXT.md) |
   | commands, build targets, where code lives | [README.md](README.md) |
   | the version string | `kernel/main.c` |
 
   Update the doc in the same commit as the code that changes the fact.
   History goes to HISTORY.md, never into comments or status docs. Don't
-  copy counts (tests, lines) into docs that aren't dated. NEXT.md is the
-  owner's handoff page; write to it only when asked. `make check` runs
+  copy counts (tests, lines) into docs that aren't dated. `make check` runs
   `tools/checkdocs.py`, which fails on a link to a missing file or anchor,
   a missing repo path, file name or header in backticks, or an unknown
   `make` target.
-- **Report** (to whoever launched you), short:
-  1. what changed (files, what moved where, line counts if you split);
-  2. tests run and their results (and what only the PC can check);
-  3. anything in the plan you did not do, and why;
-  4. bugs noticed but not fixed, with file:line and how to reproduce;
-  5. branch name and commit hash.
 
 ---
 
@@ -624,10 +608,8 @@ the exact commands and each script's QEMU setup are in
 - [ ] New files have a header comment; new struct fields have comments.
 - [ ] The docs that hold a fact I changed are updated in the same commit.
 - [ ] No milestone tags, audit ids or history in comments.
-- [ ] Only my track's files changed; refactor and behaviour change are in
-      separate commits.
-- [ ] Commit message `area: what changed`, no Co-Authored-By.
-- [ ] Not pushed; main, `~/jamos` and USB disks untouched.
+- [ ] Refactor and behaviour change are in separate commits.
+- [ ] Commit message `area: what changed`.
 
 ---
 
