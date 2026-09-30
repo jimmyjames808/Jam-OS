@@ -164,8 +164,12 @@ of hanging takes `kt_patience_ms`.
 whole thing in one command (default 3 minutes; Ctrl+C ends it after the
 step in progress):
 
-- each loop: `ktest loops=1 seed=<S + loop> keep load`, then `utest`;
-- all the while `bin/soakload` (`user/tests/soakload/`) writes a file,
+- first one shuffled loop on the idle machine (`ktest loops=1 seed=S
+  keep`), then the loops under load, each `ktest loops=1 seed=<the next
+  seed> keep load` and then `utest`, and at the end, with the load
+  stopped, one more idle loop: the tests that need an idle machine run
+  there, after everything the soak did to the system;
+- during the loops under load `bin/soakload` (`user/tests/soakload/`) writes a file,
   syncs it, reads it back, compares and deletes it on `/data` and on every
   other writable stick (`mount -w /usb0` first), reads the files of
   read-only mounts twice, maps and unmaps memory, makes channel calls and

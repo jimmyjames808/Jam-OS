@@ -16,8 +16,8 @@ send mount -w /usb0; echo mw-$?
 wait mw-0
 send soak loops=@LOOPS@ seed=@SEED@ load=@LOAD@
 wait 60 soak: begun on
-wait 120 ktest: loop 1 of 1:
-sleep 10
+wait 120 stress: background load:
+sleep 8
 
 # ---- the second stick pulled mid-write, and back ------------------------------------------
 monitor device_del s2

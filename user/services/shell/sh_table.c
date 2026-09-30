@@ -65,7 +65,8 @@ static const struct sh_cmd cmds[] = {
     C(soak, C_TESTS, "soak [minutes] [loops=N] [seed=S]",
       "soak test: the kernel tests again and again in a shuffled order under load,\n"
       "  utest between the loops, files written and read back on /data and any writable\n"
-      "  stick (pull and plug sticks while it runs); ends with SOAK RESULTS. Default 3\n"
+      "  stick (pull and plug sticks while it runs), an idle loop before and after;\n"
+      "  ends with SOAK RESULTS. Default 3\n"
       "  minutes; loops=N: N loops instead. seed=S: the first loop's order (each loop\n"
       "  prints its seed). halt: stop on the panic screen at the first failure.\n"
       "  load=N: N kernel load threads (default two per CPU). idle: no load.\n"

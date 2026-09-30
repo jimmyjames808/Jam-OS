@@ -3,14 +3,19 @@
  *
  *   soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]
  *
- * Each loop is `ktest loops=1 seed=<S + loop> keep load` (the kernel's own
- * load: the stress test's threads and processes) and then `utest`. All the
- * while bin/soakload runs in the background: files written, read back and
- * deleted on /data and on every other writable stick, files of read-only
- * mounts read, memory mapped and unmapped, channel calls, programs started.
- * Sticks may be pulled and plugged while it runs. It stops after `minutes`
- * (default 3; the loop in progress finishes) or after N loops if loops= is
- * given, or on Ctrl+C between two steps.
+ * Each loop is `ktest loops=1 seed=<the next seed> keep load` (the kernel's
+ * own load: the stress test's threads and processes) and then `utest`. All
+ * the while bin/soakload runs in the background: files written, read back
+ * and deleted on /data and on every other writable stick, files of
+ * read-only mounts read, memory mapped and unmapped, channel calls,
+ * programs started. Sticks may be pulled and plugged while it runs. It
+ * stops after `minutes` (default 3; the loop in progress finishes) or after
+ * N loops if loops= is given, or on Ctrl+C between two steps.
+ *
+ * Before the load starts and again after it has stopped, one more shuffled
+ * loop runs without any load: the tests that need an idle machine only run
+ * there, and the last one sees whatever the soak left behind (it is the
+ * plain live `ktest` after utest, stick pulls and load).
  *
  *   seed=S   the first loop's seed (default: from the clock); the kernel
  *            prints each loop's, and `ktest seed=<it>` replays that loop
@@ -121,19 +126,24 @@ static void stop_load(struct soak *s)
         jam_handle_close(s->load_ns);
 }
 
-/* One loop: the kernel tests, then utest. false: stop here. */
-static bool one_loop(struct soak *s, uint64_t loop)
+/* The kernel tests once, in the next seed's order; busy: under the kernel's
+ * load. false: the kernel refused, or Ctrl+C. */
+static bool ktest_once(struct soak *s, bool busy)
 {
     char cmd[64], load[16] = "";
-    if (!s->idle && s->workers)
+    if (busy && s->workers)
         snprintf(load, sizeof(load), " load=%lu", (unsigned long)s->workers);
-    else if (!s->idle)
+    else if (busy)
         snprintf(load, sizeof(load), " load");
-    snprintf(cmd, sizeof(cmd), "ktest loops=1 seed=%lu%s%s", (unsigned long)(s->seed + loop),
+    snprintf(cmd, sizeof(cmd), "ktest loops=1 seed=%lu%s%s", (unsigned long)s->seed++,
              s->halt ? "" : " keep", load);
-    if (sh_kcmd(cmd) < 0)
-        return false;
-    if (sh_interrupted())
+    return sh_kcmd(cmd) >= 0 && !sh_interrupted();
+}
+
+/* One loop: the kernel tests, then utest. false: stop here. */
+static bool one_loop(struct soak *s)
+{
+    if (!ktest_once(s, !s->idle))
         return false;
     if (s->load_ns)
         ns_send(s->load_ns, NS_ALL);   /* a stick plugged back in is a new mount */
@@ -167,13 +177,16 @@ SH_CMD(soak)
                s.idle ? ", no load" : ", under load",
                s.halt ? ", halting on the first failure" : "");
     sh_flush();
+    /* An idle loop, the loops under load, an idle loop. */
+    bool go = s.idle || ktest_once(&s, false);
     if (!s.idle)
         start_load(&s);
     uint64_t end = now() + s.minutes * 60 * NS_PER_S;
-    for (uint64_t loop = 0; s.loops ? loop < s.loops : now() < end; loop++)
-        if (!one_loop(&s, loop))
-            break;
+    for (uint64_t loop = 0; go && (s.loops ? loop < s.loops : now() < end); loop++)
+        go = one_loop(&s);
     stop_load(&s);
+    if (go && !s.idle)
+        ktest_once(&s, false);
     char cmd[64];
     snprintf(cmd, sizeof(cmd), "soak end u=%lu,%lu io=%lu,%lu%s", (unsigned long)s.utest_runs,
              (unsigned long)s.utest_failed, (unsigned long)s.load.file_cycles,

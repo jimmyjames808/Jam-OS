@@ -5,7 +5,8 @@
 # load (the stress workers) and bin/soakload's (files on /data and on a
 # second, writable stick; memory; channel calls; programs) running, utest
 # between the loops, and meanwhile the second stick and then the boot stick
-# pulled and plugged back through QEMU's monitor. (The second stick is a
+# pulled and plugged back through QEMU's monitor. One more shuffled loop
+# without load runs before all that and one after it. (The second stick is a
 # -blockdev node, like the boot stick: a -drive would be deleted with its
 # device at the first pull, and the device_add after it would find nothing.)
 #
@@ -52,7 +53,8 @@ never() {
     ! grep -aqE "$1" "$log" || { echo "$name: a line matching '$1':"; grep -aE "$1" "$log" | head -5; ok=0; }
 }
 want "soak: PASSED after"
-want "kernel tests: $loops loop\(s\), seeds $seed to $((seed + loops - 1)): [0-9]+ passed, [0-9]+ skipped, 0 FAILED"
+# an idle loop before the load and one after it: loops + 2 in all
+want "kernel tests: $((loops + 2)) loop\(s\), seeds $seed to $((seed + loops + 1)): [0-9]+ passed, [0-9]+ skipped, 0 FAILED"
 want "utest between the loops: $loops run\(s\), 0 FAILED"
 want "file load: [1-9][0-9]* cycle\(s\) written, read back and compared, 0 FAILED"
 never "KERNEL PANIC"
