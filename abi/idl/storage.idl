@@ -1,0 +1,21 @@
+# storage: one USB mass-storage disk, as usb-storage (drivers/usb-storage)
+# serves it to devmgr on its DR_SERVE channel. The disk's partitions are
+# listed here, and each is opened as its own `block` channel: nothing is
+# ever given the whole disk. When the stick goes away the channel's peer
+# closes, and so does every `block` channel opened from it.
+# Format: see tools/genidl.py.
+
+protocol storage 14
+
+# The disk: SCSI INQUIRY's vendor and product (space-padded ASCII), block
+# size (512 on every stick seen so far), block count, and how many
+# partitions its partition table (MBR) lists.
+1  info  () -> (u8[8] vendor, u8[16] product, u32 block_size, u64 blocks, u8 partitions)
+# Partition `index` (0-based, in table order): the MBR type byte (0xEF: EFI
+# System; 0x0C / 0x0B: FAT32), its first block and length. Past the last:
+# ERR_OUT_OF_RANGE.
+2  partition  (u8 index) -> (u8 type, u64 start, u64 blocks)
+# A `block` channel limited to partition `index`: every request outside
+# its blocks fails ERR_OUT_OF_RANGE. `read_only` 1 makes it refuse writes
+# (ERR_ACCESS_DENIED); devmgr opens the ESP that way.
+3  open_partition  (u8 index, u8 read_only) -> (handle block)

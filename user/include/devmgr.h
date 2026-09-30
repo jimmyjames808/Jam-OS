@@ -121,6 +121,19 @@
  * interface number as the device and usb-bus's device id (usbbus.device's
  * `id`) as the instance, for GET_DRIVER, KILL, REBIND and SUPERVISION.
  * Such a binding exists from the interface's attach until it is gone. */
+/* (u32 known) -> u32 generation, u32 count, count struct devmgr_mount;
+ * count handles: each mount's `fs` channel (abi/idl/fs.idl), in the same
+ * order. Control channel only. M8: the boot disk's data partition at
+ * /data (read-write) and its ESP at /esp (read-only), each served by a fat
+ * service devmgr started over usb-storage's `block` channel. Answers once
+ * the mounts' generation differs from `known` (at once if it already does;
+ * 0 matches nothing), so init waits on it in a loop, bounded by its own
+ * deadline; a mount that appears, goes, or whose fat service restarts
+ * bumps the generation. */
+#define DEVMGR_MOUNTS       0x0003000au
+struct devmgr_mount {
+    char path[16];   /* "/data", "/esp": NUL-terminated */
+};
 #define DEVMGR_USB_IFACE    0xfffeu
 
 #define DEVMGR_SUP_NONE       0u   /* no driver started (yet) */

@@ -1,0 +1,21 @@
+# block: one partition of a disk, as usb-storage serves it (storage.idl's
+# open_partition). Block numbers are relative to the partition's start;
+# nothing outside it can be reached through this channel. Data moves
+# through a shared buffer (map_buffer), never through messages.
+# Format: see tools/genidl.py.
+
+protocol block 15
+
+# Block size in bytes, blocks in the partition, 1 if writes are refused.
+1  info  () -> (u32 block_size, u64 blocks, u8 read_only)
+# The buffer transfers use: a VMO of `size` bytes (64 KiB) for the client to
+# map. Once per channel (a second call: ERR_BAD_STATE).
+2  map_buffer  () -> (handle buffer, u32 size)
+# Read `count` blocks from `lba` into the buffer at `offset` (bytes).
+# lba + count past the partition: ERR_OUT_OF_RANGE; a disk error: ERR_IO.
+3  read  (u64 lba, u32 count, u32 offset) -> ()
+# Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
+# ERR_ACCESS_DENIED.
+4  write  (u64 lba, u32 count, u32 offset) -> ()
+# Everything written so far is on the medium (SCSI SYNCHRONIZE CACHE).
+5  sync  () -> ()

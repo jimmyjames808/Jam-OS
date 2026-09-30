@@ -22,5 +22,8 @@ typedef int status_t;
 #define ERR_ALREADY_BOUND  -15
 #define ERR_NOT_FOUND      -16
 #define ERR_NO_RESOURCES   -17   /* a table or queue is full */
+#define ERR_IO             -18   /* the device failed the request (a disk error) */
+#define ERR_ALREADY_EXISTS -19   /* the name is taken */
+#define ERR_NO_SPACE       -20   /* the medium is full */
 
 const char *status_str(status_t s);

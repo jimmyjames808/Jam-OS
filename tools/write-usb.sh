@@ -1,5 +1,6 @@
 #!/bin/sh
-# Write a Jam OS image to a USB stick on macOS.
+# Write a Jam OS image to a USB stick on macOS: the ESP and a data
+# partition grown to fill the rest of the stick (tools/mbr-grow.py).
 # Usage: tools/write-usb.sh build/jamos.img /dev/diskN
 set -eu
 
@@ -32,6 +33,12 @@ read -r answer
 diskutil unmountDisk "$dev"
 raw=$(echo "$dev" | sed 's|/dev/disk|/dev/rdisk|')
 sudo dd if="$img" of="$raw" bs=4m
+sync
+# The image's data partition is 64 MiB: grow it to the end of the stick
+# (Jam OS formats it, full size, on the first boot).
+diskutil unmountDisk "$dev" >/dev/null 2>&1 || true   # macOS may mount the new volumes
+bytes=$(diskutil info -plist "$dev" | plutil -extract TotalSize raw -)
+sudo python3 "$(dirname "$0")/mbr-grow.py" "$raw" $((bytes / 512))
 sync
 diskutil eject "$dev"
 echo "done: boot your PC from this stick (UEFI, Secure Boot off)."

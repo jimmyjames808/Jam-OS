@@ -1,0 +1,20 @@
+# file: one open file, the channel fs.open returned. Data moves through the
+# buffer VMO fs.open returned with it (map it once): read fills it from
+# offset 0, write takes what the client put there. Transfers larger than
+# the buffer (64 KiB) are split by the client (libos does). Closing the
+# channel closes the file (a written file's directory entry is updated
+# then, as by sync).
+# Format: see tools/genidl.py.
+
+protocol file 17
+
+# Read up to `length` bytes (<= the buffer's size) at `offset` into the
+# buffer; `actual` < length only at the end of the file.
+1  read  (u64 offset, u32 length) -> (u32 actual)
+# Write `length` bytes from the buffer at `offset` (FS_APPEND: at the end,
+# whatever `offset` says); the file grows as needed. Not opened FS_WRITE:
+# ERR_ACCESS_DENIED.
+2  write  (u64 offset, u32 length) -> (u32 actual)
+3  truncate  (u64 size) -> ()
+4  stat  () -> (u64 size, u64 mtime)
+5  sync  () -> ()

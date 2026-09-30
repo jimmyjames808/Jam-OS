@@ -67,17 +67,21 @@ make usb DEV=/dev/diskN
 
 `tools/write-usb.sh` refuses internal and non-removable disks, shows the
 disk, and asks you to type YES before it erases it. Check the disk number
-twice anyway.
+twice anyway. The stick gets two partitions: the ESP (volume `JAMOS`:
+Limine, the kernel, bootfs), which Jam OS never writes, and the data
+partition (`JAMOS-DATA`, mounted at `/data`), which `tools/mbr-grow.py`
+grows to the end of the stick; Jam OS formats it on the first boot.
 
 **Updating a stick that already boots Jam OS** (the usual way, nothing is
-erased): with the stick mounted as `NO NAME`,
+erased): with the ESP mounted as `JAMOS` (a stick made before M8 mounts as
+`NO NAME` instead),
 
 ```sh
 make image
-cp build/jamos.elf build/bootfs.img "/Volumes/NO NAME/boot/"
-cp boot/limine.conf "/Volumes/NO NAME/boot/limine/"
-cmp build/jamos.elf "/Volumes/NO NAME/boot/jamos.elf"   # and the other two
-diskutil eject "/Volumes/NO NAME"
+cp build/jamos.elf build/bootfs.img "/Volumes/JAMOS/boot/"
+cp boot/limine.conf "/Volumes/JAMOS/boot/limine/"
+cmp build/jamos.elf "/Volumes/JAMOS/boot/jamos.elf"   # and the other two
+diskutil eject "/Volumes/JAMOS"
 ```
 
 Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick

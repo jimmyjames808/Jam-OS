@@ -39,3 +39,24 @@ protocol usb 10
 # SET_INTERFACE: select an alternate setting of this interface (closes its
 # open endpoints first).
 7  set_interface  (u8 alt_setting) -> ()
+
+# ---- bulk endpoints (M8: mass storage) ----------------------------------
+# Open a bulk-IN / bulk-OUT pair of this interface (addresses with and
+# without bit 7; each one of this interface's bulk endpoints). usb-bus makes
+# a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
+# hands the class driver a VMO of it to map: transfers move data in and out
+# of this buffer, never through messages. Once per interface: a second call
+# is ERR_BAD_STATE until the channel is closed.
+8  open_bulk  (u8 ep_in, u8 ep_out) -> (handle buffer, u32 size)
+# One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
+# (offset + length <= size). `actual` bytes arrived (a short packet ends it
+# early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
+# on. No completion within timeout_ms (at most 60000): the transfer is
+# stopped and removed, ERR_TIMED_OUT.
+9  bulk_in  (u32 offset, u32 length, u32 timeout_ms) -> (u32 actual)
+# One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
+# errors as bulk_in.
+10 bulk_out  (u32 offset, u32 length, u32 timeout_ms) -> (u32 actual)
+# CLEAR_FEATURE(ENDPOINT_HALT) on one of the pair (its address) and reset
+# the endpoint's ring and data toggle.
+11 clear_halt  (u8 endpoint) -> ()

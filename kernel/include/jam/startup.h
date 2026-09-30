@@ -27,6 +27,8 @@ enum startup_role {
                      * and what the shell runs: a restricted one) */
     SR_DEVMGR_CTL,  /* devmgr's control channel (every call; <devmgr.h>):
                      * init, and the test programs init or the shell runs */
+    SR_NS,          /* the file namespace (M8): the mount points and their
+                     * `fs` channels, as libos's fs.c defines the encoding */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };

@@ -270,6 +270,9 @@ const char *status_str(status_t s)
     case ERR_ALREADY_BOUND:    return "ERR_ALREADY_BOUND";
     case ERR_NOT_FOUND:        return "ERR_NOT_FOUND";
     case ERR_NO_RESOURCES:     return "ERR_NO_RESOURCES";
+    case ERR_IO:               return "ERR_IO";
+    case ERR_ALREADY_EXISTS:   return "ERR_ALREADY_EXISTS";
+    case ERR_NO_SPACE:         return "ERR_NO_SPACE";
     default:                   return "ERR_?";
     }
 }

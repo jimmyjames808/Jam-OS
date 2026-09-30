@@ -143,6 +143,53 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
 status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
                       size_t stack_size, handle_t *out);
 
+/* files ---------------------------------------------------------------------------
+ * The namespace (M8): every program gets mount points (SR_NS, set up by
+ * whoever starts it; init gives /boot, /esp and /data) and these calls
+ * resolve a path to the longest matching mount, then talk to that mount's
+ * `fs` service (abi/idl/fs.idl, file.idl). Paths are absolute, at most
+ * FS_PATH_MAX - 1 bytes. Errors are the servers' ERR_* (fs.idl lists them);
+ * a path under no mount is ERR_NOT_FOUND. */
+
+#define FS_PATH_MAX 256
+#define FS_READ     1u    /* fs.open flags (fs.idl) */
+#define FS_WRITE    2u
+#define FS_CREATE   4u    /* create it if missing */
+#define FS_TRUNCATE 8u    /* empty it on open */
+#define FS_APPEND   16u   /* every write goes to the end */
+
+struct jfile {
+    handle_t ch;          /* the file protocol channel */
+    handle_t buf_vmo;     /* the transfer buffer */
+    uint8_t *buf;         /* ... mapped */
+    uint32_t buf_size;    /* its size in bytes */
+    uint64_t size;        /* the file's size at open (file_stat for now) */
+};
+
+struct fs_entry {
+    char     name[FS_PATH_MAX];   /* NUL-terminated */
+    bool     is_dir;              /* a directory */
+    uint64_t size;                /* bytes; 0 for a directory */
+};
+
+status_t file_open(const char *path, uint32_t flags, struct jfile *out);
+/* Read / write up to n bytes at offset; *done gets how many (a read short
+ * of n only at the end of the file). Split into buffer-sized calls. */
+status_t file_read(struct jfile *f, uint64_t offset, void *dst, size_t n, size_t *done);
+status_t file_write(struct jfile *f, uint64_t offset, const void *src, size_t n, size_t *done);
+status_t file_sync(struct jfile *f);
+void     file_close(struct jfile *f);
+/* A path's size, whether it is a directory, and its modification time
+ * (Unix seconds; 0 if unknown). Any of the outputs may be NULL. */
+status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime);
+/* Entry `index` of directory `path` ("." and ".." left out); past the last:
+ * ERR_NOT_FOUND. */
+status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out);
+status_t fs_mkdir(const char *path);
+status_t fs_unlink(const char *path);
+status_t fs_rename(const char *from, const char *to);   /* both on one mount */
+status_t fs_sync(const char *path);                      /* the mount holding path */
+
 /* devices ------------------------------------------------------------------------ */
 
 /* The config-space offset of PCI capability `id` of the function dev (a

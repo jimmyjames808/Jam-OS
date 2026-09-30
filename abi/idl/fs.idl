@@ -1,0 +1,34 @@
+# fs: one mounted filesystem, as a filesystem service serves it (fat for
+# /data and /esp, the bootfs server for /boot). libos's namespace sends a
+# path here with the mount point stripped: "/logs/boot-0001.txt" for
+# /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8, NUL-terminated
+# in a 256-byte field (at most 255 bytes); "." and ".." are resolved by the
+# server and never leave the mount. Errors are ERR_* (the server maps its
+# own codes): ERR_NOT_FOUND, ERR_ALREADY_EXISTS, ERR_NO_SPACE (full),
+# ERR_ACCESS_DENIED (read-only), ERR_INVALID_ARGS (a bad name), ERR_IO.
+# Format: see tools/genidl.py.
+
+protocol fs 16
+
+# Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
+# FS_TRUNCATE 8, FS_APPEND 16 (<os.h>). `file` speaks the file protocol;
+# `buffer` is the VMO its reads and writes go through; `size` is the file's
+# size now. Closing `file` closes the file.
+1  open  (u8[256] path, u32 flags) -> (handle file, handle buffer, u64 size)
+# A file or directory: its size (0 for a directory), 1 if a directory,
+# the modification time (Unix seconds, 0 if unknown).
+2  stat  (u8[256] path) -> (u64 size, u8 is_dir, u64 mtime)
+# Entry `index` (0-based) of directory `path`, "." and ".." left out.
+# Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
+# between calls.
+3  readdir  (u8[256] path, u32 index) -> (u8[256] name, u8 is_dir, u64 size)
+4  mkdir  (u8[256] path) -> ()
+# Remove a file, or an empty directory.
+5  unlink  (u8[256] path) -> ()
+# Rename or move within this filesystem.
+6  rename  (u8[256] from, u8[256] to) -> ()
+# Everything written through this filesystem is on the medium.
+7  sync  () -> ()
+# Bytes in the filesystem and bytes free, 1 if read-only, and the volume
+# label (NUL-terminated).
+8  statfs  () -> (u64 total, u64 free, u8 read_only, u8[16] label)

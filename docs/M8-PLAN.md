@@ -84,23 +84,27 @@ client of libos's namespace.
 
 **Who starts what.** devmgr binds usb-storage to mass-storage interfaces
 (class 08, subclass 06 SCSI, protocol 50 BOT). usb-storage reports its
-partitions to devmgr; devmgr starts fat for the partition named
-`JAMOS-DATA` (see the layout) and a read-only fat for the ESP of the disk
-it booted from, and hands init the resulting `fs` channels; init mounts
+partitions to devmgr; devmgr starts fat for the data partition of the
+boot disk (see the layout) and a read-only fat for the ESP of the disk
+it booted from, and hands init their `fs` channels (DEVMGR_MOUNTS in user/include/devmgr.h, which init waits on in a loop); init mounts
 them at `/data` and `/esp`. Restarts follow devmgr's supervision (M7).
 
-**The stick's layout.** GPT with two partitions:
-1. the ESP (FAT32, as today: Limine, jamos.elf, bootfs.img, limine.conf),
-   never written by Jam OS;
-2. `JAMOS-DATA`: type Microsoft basic data (so Windows and macOS mount it
-   and the Mac can read the logs), GPT partition name `JAMOS-DATA`.
-   Jam OS mounts or formats only a partition with that name **on the disk
-   it booted from** (the one holding the ESP). Size: the rest of the
-   stick; fat formats it with FatFs's f_mkfs on first boot if it holds no
-   FAT volume.
-The image build (tools/mkimage.py) writes both GPT entries. Flashing the
-new layout **erases the stick once** (`make usb`);
-after that, updates copy files onto the ESP as now.
+**The stick's layout** (built by the foundation: tools/mkimage.py,
+tools/mbr-grow.py). An MBR with two partitions:
+1. the ESP (type 0xEF, 1 MiB to 64 MiB, FAT32 volume `JAMOS`): Limine,
+   jamos.elf, bootfs.img, limine.conf; never written by Jam OS;
+2. the data partition (type 0x0C, FAT32 LBA, from 64 MiB to the end),
+   volume label `JAMOS-DATA`, so Windows and macOS mount it and the Mac
+   can read the logs.
+Jam OS mounts or formats a data partition only on **the disk it booted
+from**: the disk whose partition 1 is an ESP holding boot/jamos.elf, with
+partition 2 of type 0x0C. The QEMU image carries a formatted 64 MiB data
+partition, so every track can test against a real FAT volume from day one.
+`make usb` writes the image, then grows partition 2 to the end of the stick
+and wipes its first MiB; fat finds no FAT volume there and formats it
+(FatFs f_mkfs, label `JAMOS-DATA`) on the first boot. Flashing the new
+layout **erases the stick once** (`make usb`); after that, updates copy
+files onto the ESP as now.
 
 **FatFs** (ChaN, BSD-style licence): vendored unmodified in a new
 third_party/fatfs directory with its licence and a VERSIONS.md entry.
@@ -136,11 +140,11 @@ contract; the tracks build on them.
 
 ### Foundation (on main, before the tracks)
 - The IDL files above, generated, with the error mapping written down.
-- The SR_NS startup handle and the namespace helpers' declarations in
-  os.h (empty implementations so everything builds).
-- The stick layout in tools/mkimage.py (both partitions; a small
-  JAMOS-DATA in the QEMU image, formatted by mformat, so every track can
-  test against a real FAT volume from day one).
+- The SR_NS startup role and the file API in os.h (`file_open`,
+  `file_read`, ..., `fs_readdir`, FS_* flags), with placeholder stubs in
+  user/lib/fs.c that Track C replaces.
+- The stick layout (tools/mkimage.py, tools/mbr-grow.py, write-usb.sh)
+  and the three new error codes ERR_IO, ERR_ALREADY_EXISTS, ERR_NO_SPACE.
 
 ### Track A: bulk transfers + usb-storage
 - usb-bus: bulk endpoints in the endpoint-context fill (config.c), bulk
@@ -150,8 +154,8 @@ contract; the tracks build on them.
 - The usb-storage driver: GET MAX LUN, CBW/CSW with tag checks, INQUIRY,
   TEST UNIT READY (with retries while the stick spins up), READ
   CAPACITY(10), READ(10), WRITE(10), REQUEST SENSE, SYNCHRONIZE CACHE; BOT
-  reset recovery (Bulk-Only Mass Storage Reset, clear both halts); GPT
-  (and MBR) parsing; the `block` protocol per partition, with the range
+  reset recovery (Bulk-Only Mass Storage Reset, clear both halts); MBR
+  parsing; the `block` protocol per partition, with the range
   check.
 - QEMU: the boot stick itself (usb-storage), a second usb-storage disk
   behind the usb-hub, unplug mid-read, a STALL on an unknown command.
@@ -167,28 +171,40 @@ contract; the tracks build on them.
   `holiday-photos.txt` and `holiday-plans.txt` get distinct aliases,
   forbidden characters refused), a full disk, a dirty volume.
 
-### Track C: the namespace, spawn from a file, the shell
-- libos: SR_NS, path resolution to a mount, the file calls; spawn from a
-  VMO (spawn.c loads from any VMO range; bootfs becomes one caller).
+### Track C: the namespace, spawn from a file, init, the shell
+- libos: SR_NS (its encoding is this track's), path resolution to a mount,
+  the file calls in user/lib/fs.c; spawn from a VMO (spawn.c loads from
+  any VMO range; bootfs becomes one caller).
 - A bootfs server (the image served read-only through `fs`) so `/boot` is
-  a mount like any other; init builds the namespace and passes it on.
+  a mount like any other.
+- init: builds the namespace (`/boot` at once; `/data` and `/esp` from
+  DEVMGR_MOUNTS, waited on in a loop) and passes it to what it starts, and
+  new mounts to the running shell; syncs `/data` on `reboot` and
+  Ctrl+Alt+Del (bounded: 2 s); serves `kill <name>` on its control channel,
+  and `debug_command`'s kill goes (the kernel keeps only ktest, bench,
+  stress, crash and panic).
 - The shell: sh_vfs.c on the namespace; `ls`, `cat`, `cd`, `find` work on
   every mount; new commands `mkdir`, `rm`, `mv`, `cp`, `touch`, `write`
   (text from the command line into a file), `df`, `sync`; `run` takes a
-  path.
-- Tested against the bootfs server and Track B's RAM-disk fat.
+  path; `kill` goes through init.
+- Tested against the bootfs server and a stand-in `fs` server until
+  Track B's fat lands.
 
-### Track D: logd, reboot sync, debug_command
-- logd: the boot log files as above.
-- init: sync `/data` on `reboot` / Ctrl+Alt+Del (bounded).
-- `debug_command`'s `kill <name>` moves to init's control channel; the
-  kernel keeps only the test entry points (ktest, bench, stress, crash,
-  panic).
-- Tested with the RAM-disk fat until Track A lands.
+### Track D: devmgr's storage side, and logd
+- devmgr: for each usb-storage disk, read its partitions (`storage`
+  protocol); if it is the boot disk (partition 1 an ESP holding
+  boot/jamos.elf, partition 2 type 0x0C), start a read-only fat on the ESP
+  and a read-write fat on the data partition, and publish them through
+  DEVMGR_MOUNTS; restart them under the usual supervision; a stick that
+  goes away removes its mounts.
+- logd: the boot log files as above (a klog reader from byte 0, the next
+  free `/data/logs/boot-NNNN.txt`, sync at most once a second).
+- Tested with a mock usb-storage (a `storage` + `block` server in utest
+  over a RAM disk) until Track A lands.
 
 ### Phase 2: join, then the PC
-- devmgr's match table (08/06/50 -> usb-storage), partitions -> fat for
-  JAMOS-DATA -> init mounts `/data`. End to end in QEMU: boot, `ls /data`,
+- devmgr's match table (08/06/50 -> usb-storage: Track A adds the line),
+  partitions -> fat -> DEVMGR_MOUNTS -> init mounts `/data` and `/esp`. End to end in QEMU: boot, `ls /data`,
   write a file, reboot, read it back; a boot log per boot.
 - The pulled-plug test in QEMU: kill QEMU while logd writes; the next boot
   still boots and mounts `/data` (dirty volume logged).

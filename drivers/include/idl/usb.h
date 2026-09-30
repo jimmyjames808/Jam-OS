@@ -17,6 +17,10 @@
 #define USB_OPEN_INTERRUPT_IN 0x000a0005u
 #define USB_ENDPOINT_STATS   0x000a0006u
 #define USB_SET_INTERFACE    0x000a0007u
+#define USB_OPEN_BULK        0x000a0008u
+#define USB_BULK_IN          0x000a0009u
+#define USB_BULK_OUT         0x000a000au
+#define USB_CLEAR_HALT       0x000a000bu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct usb_info_req {
@@ -111,6 +115,50 @@ struct usb_set_interface_req {
     uint8_t alt_setting;
 } __attribute__((packed));
 struct usb_set_interface_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct usb_open_bulk_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t ep_in;
+    uint8_t ep_out;
+} __attribute__((packed));
+struct usb_open_bulk_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t size;
+} __attribute__((packed));
+struct usb_bulk_in_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t timeout_ms;
+} __attribute__((packed));
+struct usb_bulk_in_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t actual;
+} __attribute__((packed));
+struct usb_bulk_out_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t timeout_ms;
+} __attribute__((packed));
+struct usb_bulk_out_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t actual;
+} __attribute__((packed));
+struct usb_clear_halt_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t endpoint;
+} __attribute__((packed));
+struct usb_clear_halt_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -340,6 +388,121 @@ static inline status_t usb_set_interface(handle_t ch, uint8_t alt_setting)
     return usb_set_interface_until(ch, DEADLINE_NEVER, alt_setting);
 }
 
+/* ---- bulk endpoints (M8: mass storage) ----------------------------------
+ * Open a bulk-IN / bulk-OUT pair of this interface (addresses with and
+ * without bit 7; each one of this interface's bulk endpoints). usb-bus makes
+ * a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
+ * hands the class driver a VMO of it to map: transfers move data in and out
+ * of this buffer, never through messages. Once per interface: a second call
+ * is ERR_BAD_STATE until the channel is closed. */
+static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
+{
+    struct usb_open_bulk_req idl_q;
+    struct usb_open_bulk_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = USB_OPEN_BULK;
+    idl_q.ep_in = ep_in;
+    idl_q.ep_out = ep_out;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_buffer)
+            *out_buffer = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK && out_size)
+        *out_size = idl_r.size;
+    return idl_st;
+}
+static inline status_t usb_open_bulk(handle_t ch, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
+{
+    return usb_open_bulk_until(ch, DEADLINE_NEVER, ep_in, ep_out, out_buffer, out_size);
+}
+
+/* One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
+ * (offset + length <= size). `actual` bytes arrived (a short packet ends it
+ * early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
+ * on. No completion within timeout_ms (at most 60000): the transfer is
+ * stopped and removed, ERR_TIMED_OUT. */
+static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    struct usb_bulk_in_req idl_q;
+    struct usb_bulk_in_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = USB_BULK_IN;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    idl_q.timeout_ms = timeout_ms;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_actual)
+        *out_actual = idl_r.actual;
+    return idl_st;
+}
+static inline status_t usb_bulk_in(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_in_until(ch, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+}
+
+/* One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
+ * errors as bulk_in. */
+static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    struct usb_bulk_out_req idl_q;
+    struct usb_bulk_out_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = USB_BULK_OUT;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    idl_q.timeout_ms = timeout_ms;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_actual)
+        *out_actual = idl_r.actual;
+    return idl_st;
+}
+static inline status_t usb_bulk_out(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_out_until(ch, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+}
+
+/* CLEAR_FEATURE(ENDPOINT_HALT) on one of the pair (its address) and reset
+ * the endpoint's ring and data toggle. */
+static inline status_t usb_clear_halt_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint)
+{
+    struct usb_clear_halt_req idl_q;
+    struct usb_clear_halt_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = USB_CLEAR_HALT;
+    idl_q.endpoint = endpoint;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t usb_clear_halt(handle_t ch, uint8_t endpoint)
+{
+    return usb_clear_halt_until(ch, DEADLINE_NEVER, endpoint);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -352,6 +515,10 @@ struct usb_ops {
     status_t (*open_interrupt_in)(void *ctx, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms);
     status_t (*endpoint_stats)(void *ctx, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open);
     status_t (*set_interface)(void *ctx, uint8_t alt_setting);
+    status_t (*open_bulk)(void *ctx, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size);
+    status_t (*bulk_in)(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual);
+    status_t (*bulk_out)(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual);
+    status_t (*clear_halt)(void *ctx, uint8_t endpoint);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -528,6 +695,81 @@ static inline uint32_t usb_dispatch(const struct usb_ops *ops, void *ctx, const 
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->set_interface(ctx, idl_q->alt_setting);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case USB_OPEN_BULK: {
+        const struct usb_open_bulk_req *idl_q = (const struct usb_open_bulk_req *)req;
+        struct usb_open_bulk_rep *idl_r = (struct usb_open_bulk_rep *)rep;
+        handle_t out_buffer = HANDLE_INVALID;
+        uint32_t out_size = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_bulk) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->open_bulk(ctx, idl_q->ep_in, idl_q->ep_out, &out_buffer, &out_size);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_buffer != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_buffer != HANDLE_INVALID)
+                drv_handle_close(out_buffer);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_buffer;
+        *rhn = 1;
+        idl_r->size = out_size;
+        return sizeof(*idl_r);
+    }
+    case USB_BULK_IN: {
+        const struct usb_bulk_in_req *idl_q = (const struct usb_bulk_in_req *)req;
+        struct usb_bulk_in_rep *idl_r = (struct usb_bulk_in_rep *)rep;
+        uint32_t out_actual = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->bulk_in) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->bulk_in(ctx, idl_q->offset, idl_q->length, idl_q->timeout_ms, &out_actual);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->actual = out_actual;
+        return sizeof(*idl_r);
+    }
+    case USB_BULK_OUT: {
+        const struct usb_bulk_out_req *idl_q = (const struct usb_bulk_out_req *)req;
+        struct usb_bulk_out_rep *idl_r = (struct usb_bulk_out_rep *)rep;
+        uint32_t out_actual = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->bulk_out) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->bulk_out(ctx, idl_q->offset, idl_q->length, idl_q->timeout_ms, &out_actual);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->actual = out_actual;
+        return sizeof(*idl_r);
+    }
+    case USB_CLEAR_HALT: {
+        const struct usb_clear_halt_req *idl_q = (const struct usb_clear_halt_req *)req;
+        struct usb_clear_halt_rep *idl_r = (struct usb_clear_halt_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->clear_halt) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->clear_halt(ctx, idl_q->endpoint);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

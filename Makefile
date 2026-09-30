@@ -18,7 +18,11 @@ BUILD   := $(if $(filter 0,$(KTESTS)),build/noktests,build)
 KERNEL  := $(BUILD)/jamos.elf
 IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
-IMAGE_MIB := 64
+IMAGE_MIB := 128
+# The ESP ends at 64 MiB (it starts at 1 MiB); the data partition (/data,
+# FAT32 "JAMOS-DATA") fills the rest of the image: 64 MiB in QEMU, the
+# rest of the stick once tools/write-usb.sh has grown it.
+ESP_END_MIB := 64
 
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
@@ -284,8 +288,10 @@ $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.boo
 image: $(IMAGE)
 
 $(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py
-	python3 tools/mkimage.py $@ $(IMAGE_MIB)
-	mformat -i $@@@1M -F -v JAMOS ::
+	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB)
+	mformat -i $@@@1M -T $$(( ($(ESP_END_MIB) - 1) * 2048 )) -F -v JAMOS ::
+	mformat -i $@@@$(ESP_END_MIB)M -T $$(( ($(IMAGE_MIB) - $(ESP_END_MIB)) * 2048 )) -F \
+	    -v JAMOS-DATA ::
 	mmd -i $@@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $@@@1M $(LIMINE)/BOOTX64.EFI ::/EFI/BOOT/
 	mcopy -i $@@@1M boot/limine.conf ::/boot/limine/
