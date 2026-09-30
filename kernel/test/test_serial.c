@@ -30,7 +30,11 @@ KTEST(serial_ring_drops_when_full)
 }
 
 /* Queued output is sent by the UART's transmit interrupt (QEMU emulates
- * COM1 and its IRQ 4). */
+ * COM1 and its IRQ 4). The ring is shared: from the shell, the console
+ * and the kernel log write to COM1 at the same time, so a full 32 KiB ring
+ * can't empty in 2 s (at 115200 baud it drains ~11 KiB/s). What was queued
+ * and what is left are system-wide counts, checked only at the boot menu;
+ * that the interrupt fired is checked everywhere. */
 KTEST(serial_irq_drains_ring)
 {
     if (!serial_is_async() || !__atomic_load_n(&serial_async, __ATOMIC_RELAXED))
@@ -49,7 +53,7 @@ KTEST(serial_irq_drains_ring)
     uint64_t irqs = __atomic_load_n(&serial_irqs, __ATOMIC_RELAXED) - irqs0;
     kprintf("serial: %u bytes queued, drained with %lu interrupts (%lu tick rescues so far)\n",
             queued, irqs, __atomic_load_n(&serial_rescues, __ATOMIC_RELAXED));
-    KT_EQ(queued, sizeof(line));   /* the newline went out as \r\n */
-    KT_EQ(left, 0);
+    KT_GLOBAL_EQ(queued, sizeof(line));   /* the newline went out as \r\n */
+    KT_GLOBAL_EQ(left, 0);
     KT_ASSERT(irqs > 0);
 }
