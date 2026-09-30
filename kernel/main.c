@@ -174,8 +174,12 @@ _Noreturn static void kmain_stage2(void *arg)
         ok = false;
     }
 #else
-    if (cmdline_has("ktest") || ktest_prefix())
-        ktest_run(ktest_prefix() ? ktest_prefix() : "");
+    if (cmdline_has("ktest") || ktest_prefix()) {
+        /* loops=N seed=S shuffle keep load: the same words as the shell's ktest. */
+        struct ktest_opts o;
+        ktest_parse_opts(boot->cmdline, true, &o);
+        ktest_run_opts(&o);
+    }
     if (cmdline_has("bench"))
         bench_run();
 #endif
