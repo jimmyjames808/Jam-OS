@@ -100,6 +100,9 @@ status_t ns_child_start(const char *mode, const char *arg, const char *const *ns
 /* The child ended by itself with this code (its handle is closed). */
 bool ns_child_exits(handle_t proc, int64_t code);
 
+/* heap.c: libos's heap in a long-running program. */
+bool t_heap_reuses_freed_space(void);
+
 /* nsnotice.c: namespace changes a running program never reads. */
 bool t_ns_changes_stay_bounded(void);
 

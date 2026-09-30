@@ -559,6 +559,7 @@ static const struct {
     { "ns_mounts_reach_a_running_child", t_ns_mounts_reach_a_running_child },
     { "ns_malformed_messages", t_ns_malformed_messages },
     { "ns_changes_stay_bounded", t_ns_changes_stay_bounded },
+    { "heap_reuses_freed_space", t_heap_reuses_freed_space },
     { "ns_fat_mount", t_ns_fat_mount },
     { "spawn_from_vmo", t_spawn_from_vmo },
 };
