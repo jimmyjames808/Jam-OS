@@ -203,17 +203,17 @@ static void busy_spinner(void *arg)
         cpu_relax();
 }
 
-/* Real placement: busy threads kept off cpu 0 (where this thread runs) each
- * get a core of their own while whole cores are idle. With SMT that means
- * never both hyperthreads of one core, and never cpu 0's sibling. */
+/* Real placement: busy threads kept off cpu 0 (where this thread runs,
+ * busy too) each get a core of their own while whole cores are idle. With
+ * SMT that means never both hyperthreads of one core, and never cpu 0's
+ * sibling. It failed on the PC (2026-10-01, at boot: a spinner on cpu 1;
+ * live: two on core 28) and 1-10 times in 100 in QEMU with threads=2: a
+ * CPU taking its next thread looked idle to placement for a moment
+ * (repro_picked_cpu_looks_idle), and a thread queued there was stolen by
+ * whatever idle CPU looked first (steal_prefers_whole_core). */
 KTEST(placement_spreads_over_cores)
 {
     KT_NEEDS_IDLE("asserts which CPUs busy threads are placed on: every core must be idle");
-    /* Live, a service thread can hold a core for a moment: a spinner queued
-     * behind it is stolen by whichever CPU is idle first, its sibling's
-     * spinner included (the PC, 2026-10-01: two on core 28, none on core
-     * 12). */
-    KT_SKIP_LIVE("asserts which CPUs busy threads are placed on: services run on the cores");
     if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         return;
     kt_pin_self(0);
@@ -235,8 +235,12 @@ KTEST(placement_spreads_over_cores)
     spin_started = 0;
     for (uint32_t k = 0; k < n; k++)
         th[k] = thread_create_on("kt-spin", busy_spinner, NULL, PRIO_DEFAULT - 1, &m);
-    while (spin_started < n)
-        thread_sleep_ms(1);
+    /* Wait busy, not asleep: asleep, this thread would leave core 0 idle,
+     * and cpu 1 would rightly count as a whole idle core. */
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (spin_started < n && uptime_ns() < end)
+        cpu_relax();
+    bool all_started = spin_started == n;
     uint32_t where[8];
     for (uint32_t k = 0; k < n; k++)
         where[k] = th[k]->cpu;
@@ -244,6 +248,7 @@ KTEST(placement_spreads_over_cores)
     for (uint32_t k = 0; k < n; k++)
         thread_join(th[k]);
     kt_unpin_self();
+    KT_ASSERT(all_started);
     for (uint32_t k = 0; k < n; k++) {
         kprintf("placement: busy thread %u on cpu %u (core %u)\n", k, where[k],
                 cpus[where[k]]->core_id);
