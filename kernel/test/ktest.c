@@ -67,7 +67,7 @@ static struct {
     uint64_t       seed;          /* this loop's (0: link order) */
     uint32_t       pos, total;    /* the current test is pos of total (from 1) */
     const char    *recent[RECENT]; /* the tests before it, newest first */
-    struct thread *body;          /* keep: the thread the test's function runs in */
+    struct thread *body;          /* keep: the thread the test's function runs in (atomic) */
     bool           failed;        /* keep: a check of the current test failed (atomic) */
     bool           done;          /* keep: its function returned or failed (atomic) */
 } rs;
@@ -335,7 +335,7 @@ _Noreturn void ktest_fail(const char *fmt, ...)
     if (!irqs_enabled() || percpu_preempt_count())
         panic("ktest %s: %s (failed with interrupts or preemption off: the run can't go on)",
               ktest_current, msg);
-    if (current_thread() == rs.body)
+    if (current_thread() == __atomic_load_n(&rs.body, __ATOMIC_ACQUIRE))
         __atomic_store_n(&rs.done, true, __ATOMIC_RELEASE);
     thread_exit();
 }
@@ -345,6 +345,9 @@ _Noreturn void ktest_fail(const char *fmt, ...)
 static void keep_body(void *arg)
 {
     const struct ktest *t = arg;
+    /* Set here, not by the runner after thread_create: a check may fail
+     * before the runner runs again. */
+    __atomic_store_n(&rs.body, current_thread(), __ATOMIC_RELEASE);
     t->fn();
     __atomic_store_n(&rs.done, true, __ATOMIC_RELEASE);
 }
@@ -357,7 +360,7 @@ static void call_in_thread(const struct ktest *t)
     __atomic_store_n(&rs.failed, false, __ATOMIC_RELEASE);
     __atomic_store_n(&rs.done, false, __ATOMIC_RELEASE);
     uint64_t start = uptime_ns(), failed_at = 0;
-    rs.body = thread_create("ktest", keep_body, (void *)t, PRIO_DEFAULT);
+    struct thread *body = thread_create("ktest", keep_body, (void *)t, PRIO_DEFAULT);
     while (!__atomic_load_n(&rs.done, __ATOMIC_ACQUIRE)) {
         thread_sleep_ns(200000);
         uint64_t now = uptime_ns();
@@ -369,8 +372,8 @@ static void call_in_thread(const struct ktest *t)
         if (now - start > KEEP_LIMIT_S * 1000000000ull)
             panic("ktest %s: still running after %d s", t->name, KEEP_LIMIT_S);
     }
-    thread_join(rs.body);
-    rs.body = NULL;
+    thread_join(body);
+    __atomic_store_n(&rs.body, NULL, __ATOMIC_RELEASE);
     if (__atomic_load_n(&rs.failed, __ATOMIC_ACQUIRE))   /* a hook may point into the dead test */
         for (unsigned i = 0; i < DBG_N; i++)
             __atomic_store_n(&dbg_hooks[i], NULL, __ATOMIC_RELEASE);
