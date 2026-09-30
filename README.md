@@ -1,4 +1,9 @@
-# Jam OS
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/jamos-lockup-dark.png">
+    <img alt="Jam OS" src="docs/logo/jamos-lockup-light.png" width="420">
+  </picture>
+</h1>
 
 Jam OS is a from-scratch operating system for x86_64 PCs, written in C. It
 is capability-based: a program can do only what the handles it holds
