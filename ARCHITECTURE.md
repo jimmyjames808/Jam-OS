@@ -556,7 +556,11 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
 - The HID driver handles a mouse as well as a keyboard and sends events
-  through a protocol a compositor can take over.
+  through a protocol a compositor can take over. Until there is one, the
+  console passes mouse reports on to the client that has the key focus, on
+  its key channel, and only if that client asked for them (the wire format
+  is in `<jam/abi.h>` with the key event's); the apps library turns them
+  into a pointer and draws its arrow.
 
 ## Audio
 

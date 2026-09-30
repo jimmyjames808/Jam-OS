@@ -6,13 +6,22 @@
  * input sources, so Ctrl+Alt+Del and every key come from devmgr's drivers
  * or init's serial source. A focus a PROGRAM opened can't hold the keys
  * hostage: Ctrl+C goes to it and to the SHELL/ADMIN focus below it (the
- * shell that ran it kills it). */
+ * shell that ran it kills it).
+ *
+ * The mouse goes to the focus too, but only to one that asked: a client
+ * writes a struct input_want on its key channel, and mouse reports then
+ * arrive there as struct input_mouse_event, a message of another size
+ * than a key (<jam/abi.h> has the wire format). A client that never asked
+ * never gets one, so the shell's line editor reads nothing but keys. With
+ * no such focus the wheel scrolls the console back while the console has
+ * the screen, and the rest of the report is dropped. */
 #include "console.h"
 
 /* ---- keys: the focus stack of open_keys channels ------------------------------ */
 
 handle_t focus[MAX_FOCUS];
 static uint8_t focus_level[MAX_FOCUS];   /* the level of the client that opened it */
+static uint32_t focus_want[MAX_FOCUS];   /* INPUT_WANT_*: what it asked for besides keys */
 unsigned nfocus;
 static struct input_key_event pending[PENDING_KEYS];
 static unsigned npending;
@@ -27,6 +36,7 @@ void focus_drop(unsigned i)
     for (unsigned j = i; j + 1 < nfocus; j++) {
         focus[j] = focus[j + 1];
         focus_level[j] = focus_level[j + 1];
+        focus_want[j] = focus_want[j + 1];
     }
     nfocus--;
 }
@@ -115,6 +125,7 @@ status_t op_open_keys(void *ctx, handle_t *out)
     if (st != OK)
         return st;
     focus_level[nfocus] = c->level;
+    focus_want[nfocus] = 0;
     focus[nfocus++] = mine;
     *out = theirs;
     /* Keys typed before anyone listened. */
@@ -143,13 +154,65 @@ static status_t op_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, u
     return OK;
 }
 
+/* A round of what focus i wrote on its key channel: each struct input_want
+ * replaces what it wants. At most WANT_BUDGET of them, so a client writing
+ * flat out can't hold up the mouse. false: its client is gone, or wrote
+ * something the wire format doesn't allow, and the focus must be dropped. */
+#define WANT_BUDGET 8
+static bool focus_requests(unsigned i)
+{
+    for (unsigned n = 0; n < WANT_BUDGET; n++) {
+        struct input_want w;
+        uint32_t got = 0;
+        struct channel_read_args a = {
+            .h = focus[i], .bytes_cap = sizeof(w), .bytes = (uint64_t)(uintptr_t)&w,
+            .actual_bytes = (uint64_t)(uintptr_t)&got,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_SHOULD_WAIT)
+            return true;
+        if (st != OK || got != sizeof(w) || (w.events & ~INPUT_WANT_MOUSE) || w.reserved)
+            return false;
+        focus_want[i] = w.events;
+    }
+    return true;
+}
+
+/* A mouse report to the focus, if it asked for the mouse; false if nobody
+ * took it. Only the newest focus counts: the mouse belongs to whoever has
+ * the keys. */
+static bool mouse_to_focus(const struct input_mouse_event *ev)
+{
+    while (nfocus) {
+        unsigned i = nfocus - 1;
+        if (!focus_requests(i)) {
+            focus_drop(i);
+            continue;
+        }
+        if (!(focus_want[i] & INPUT_WANT_MOUSE))
+            return false;
+        status_t st = jam_channel_write(focus[i], ev, sizeof(*ev), NULL, 0);
+        if (st == ERR_PEER_CLOSED) {
+            focus_drop(i);
+            continue;
+        }
+        return true;   /* sent, or its queue is full (it isn't reading): dropped */
+    }
+    return false;
+}
+
 static status_t op_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
 {
     (void)ctx;
-    (void)dx;
-    (void)dy;
-    (void)buttons;
-    /* The wheel scrolls back; nothing else uses the mouse yet. */
+    struct input_mouse_event ev = {
+        .kind = INPUT_EVENT_MOUSE, .dx = dx, .dy = dy, .wheel = wheel, .buttons = buttons,
+    };
+    if (mouse_to_focus(&ev))
+        return OK;
+    /* Nobody wants the mouse: the wheel scrolls back, unless the screen is
+     * lent out (the text isn't on it to be scrolled). */
+    if (screen_lent())
+        return OK;
     if (wheel > 0)
         key_event(0x4b, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0, false);
     else if (wheel < 0)

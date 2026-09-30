@@ -182,6 +182,11 @@ status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, ui
     return OK;
 }
 
+bool screen_lent(void)
+{
+    return lease != HANDLE_INVALID;
+}
+
 /* The lease's other end closed: the screen is ours again, all of it
  * redrawn (the shadow grid forgets what it showed). */
 void lease_ended(void)
