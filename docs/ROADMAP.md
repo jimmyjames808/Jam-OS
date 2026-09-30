@@ -109,13 +109,57 @@ None has a plan yet; the order is the current preference.
 
 ## Smaller follow-ups
 
-Offered or noticed, not scheduled into a milestone yet:
+Offered or noticed, not scheduled into a milestone yet. The first ones
+are the design questions M8 left open
+([its review](history/M8-REVIEW.md) has the details):
+
+- **Running programs from `/data`**: decided to wait until after M8, so
+  due now. Code runs only from a VMO with `RIGHT_EXEC`, which only the
+  boot image's has; the choice is who may make a file executable (and
+  whether the answer is user-space pagers, under Design ideas).
+- **Which disk is the boot disk.** devmgr takes the first disk with Jam
+  OS's layout and kernel, not the one the machine booted from: with two
+  Jam OS sticks in, enumeration order decides which becomes `/data` (and
+  is formatted if blank). Limine reports the boot volume's MBR disk id;
+  devmgr could be told it.
+- **Every program gets every mount read-write**: init gives the shell all
+  of them and the shell passes them all on. A narrower namespace per
+  program (no `/data`, or read-only) is possible and unused.
+- **devmgr's job check at a driver's exit** can report a driver that ended
+  cleanly as "did not end cleanly" (seen on the PC for a hid after a warm
+  reboot: a request it left queued at usb-bus is still charged to its
+  job). A second look a moment later, before counting it as a problem,
+  would cover it.
+- **logd loses lines during the klog flood test**: the kernel test
+  `console_klog_read_after_gap` writes more than the 64 KiB kernel log
+  ring holds, on purpose, and no reader can follow it; each live `ktest`
+  leaves a "[logd: N bytes of the log were lost]" line. Skip that test live, or accept
+  it. A bigger ring would also cover the log written while the boot stick
+  is out.
+- **GPT sticks** are not read (their partitions are not mounted).
+- One bulk transfer at a time inside usb-bus's loop, and devmgr's
+  bounded waits (up to 2 s) on a slow usb-storage: both block other work
+  meanwhile. Asynchronous transfers would be a redesign of the serve loop.
+- `RIGHT_READ` on the root resource is one right for the kernel log, the
+  serial port, the process list and the clock: sysmon and logd each get
+  more than they use.
+- `make flash` copies the three files in place, so a stick pulled half
+  way does not boot (copy to a new name, then rename, would not).
+- The first `make -j8` after a new file in `abi/idl/` can spin forever;
+  run again, it builds. Not looked into.
+- Names and volume labels from someone else's stick are printed as they
+  are, escape sequences included; `ls` and `find` show a directory's
+  first 256 entries and say nothing about the rest; init's loop waits up
+  to 25 s for a `mount` and 15 s for a `kill`.
+- The mouse wheel's scroll-back passes QEMU's mouse test but does not work
+  on the PC: not looked into yet. The mouse test runs at 1280x800 only.
+
+The rest:
 
 - usb-bus retries a failed root port after 1 s, then 5 s; ports on hubs
   are still looked at again only on a port status change (the same
   pattern would fit `hub->port_fail` in hub.c).
-- The `init` run ends "with problems" about one run in three, on main
-  too: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
+- The `init` QEMU run ends "with problems" about one run in three: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
   again, and devmgr's shutdown stops usb-bus while that fat is still
   mounting; it exits ERR_IO and devmgr reports "fat-esp bin/fat did not
   end cleanly". A fat that finds its disk gone while mounting could exit 0,
@@ -131,8 +175,10 @@ Offered or noticed, not scheduled into a milestone yet:
   pass).
 - Files still over 800 lines: `vmo.c`, `sched.c`, `aspace.c` (splitting
   them needs internal headers).
-- The rest of the shell was not covered by the cleanup's review (only the
-  segment fix and `kill` were): review it next time.
+- Most of the shell has had no independent review (the cleanup's covered
+  the segment fix and `kill`, M8's the file commands): review the rest
+  next time.
+- `job_find_process` is used only by its own test.
 - A pluggable scheduler interface (`sched_ops`): not until a second
   policy is needed.
 
@@ -141,4 +187,7 @@ Offered or noticed, not scheduled into a milestone yet:
 - `fork` (a POSIX layer gets `posix_spawn`).
 - SSH (discussed and not added).
 - Wi-Fi.
+- HDMI/DisplayPort audio through the RTX.
+- Storage other than USB sticks with FAT32: an NVMe driver and other
+  filesystems were discussed and declined.
 - User accounts: single user; handles are the only authority.

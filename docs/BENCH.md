@@ -50,6 +50,14 @@ Other PC numbers from the M4.5 build ("All tests"): 1 server + 27 clients,
 836,077 channel_calls/s, worst call 37 us; nested lock pair on 28 CPUs at
 once 48 ns.
 
+The same lines from the M8 sign-off build's All tests, 2026-10-01 (commit
+36372eb; its version string still read 0.0.24-m7; read from a photo of the
+RESULTS box, IMG_0085): 1 server + 27 clients, 54,000 calls in 55 ms =
+975,166 channel_calls/s, average call 27,603 ns, worst 31 us; nested
+lock+unlock pair on 28 CPUs at once: average 51 ns, worst CPU 64 ns. The
+benchmark itself (the tables below) has not been run on the PC since
+M5.5.
+
 Notes
 - M5 reading: user code pays little for the kernel boundary itself (a
   syscall round trip is 30 ns; Jam OS has no Spectre/Meltdown mitigations,
@@ -164,7 +172,9 @@ on to a whole idle core if one is free (ARCHITECTURE.md, Scheduler), and a
 CPU taking its next thread no longer reads as idle to placement for a
 moment. The placement line should stay at 0 share; the stats line after
 the run counts the steals sent on. QEMU (16 vCPUs, threads=2): the line is
-"off 7 share, on 0" before and after.
+"off 7 share, on 0" before and after. Not yet measured on the PC: the
+next benchmark run there should check the placement line, and the
+cross-CPU lines that stealing can move, against the M5.5 column.
 
 Investigations:
 - (b) Pinned cross-CPU channel_call +8-11% in M5: the M5 wake-affine code

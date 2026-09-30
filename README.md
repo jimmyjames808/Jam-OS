@@ -25,14 +25,22 @@ a real desktop PC, which is where every milestone is tested.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
-- A console and a shell with ~60 commands, pipes, variables and Tab
-  completion, plus a few apps (a Mandelbrot explorer, life, tetris, snake,
-  minesweeper with the mouse, a graphical system monitor).
-- Kernel and user-space test suites, stress tests and a benchmark, runnable
-  from the boot menu or the shell.
+- Storage: USB sticks through a usb-storage driver and a FAT32 service
+  (FatFs) per volume. The stick Jam OS boots from has its boot partition
+  at `/esp`, read-only, and a data partition at `/data`; any other stick
+  shows up read-only at `/usb0`, `/usb1`, ... and `mount -w` makes it
+  writable. Each boot's kernel log is saved to `/data/logs/` and can be
+  read on another computer.
+- A console and a shell with about 70 commands, pipes, variables, Tab
+  completion and file commands (`ls cat cp mv rm mkdir write df mount`),
+  plus a few apps: a Mandelbrot explorer, life, tetris, snake, minesweeper
+  played with the mouse, and a graphical system monitor.
+- Kernel and user-space test suites, a stress test, a soak test (the
+  kernel tests repeated in shuffled order under load, with sticks pulled
+  and plugged) and a benchmark, runnable from the boot menu or the shell.
 
-Not yet: storage (files live in a read-only boot image), networking,
-audio, power management. The plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+Not yet: networking, audio (in progress), power management, running
+programs from `/data`. Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run in QEMU
 
@@ -50,15 +58,19 @@ the build tools (and Pillow for test screenshots).
 
 | Command | What it does |
 |---|---|
-| `make` | the kernel, the user programs and the boot filesystem image |
-| `make image` | `build/jamos.img`: a FAT32 USB image with Limine (UEFI) |
-| `make run` | boot the image in QEMU |
+| `make` | the kernel, the user programs and the boot filesystem image (not the disk image) |
+| `make image` | `build/jamos.img`: the USB image, a FAT32 boot partition with Limine (UEFI) and a FAT32 data partition |
+| `make run` | build the image and boot it in QEMU |
 | `make debug` | the same, stopped for gdb on :1234 |
-| `make check` | generated code current, the driver isolation check, the docs check |
+| `make usb DEV=/dev/diskN` | write the image to a USB stick, erasing it ([below](#boot-a-real-pc)) |
+| `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only |
+| `make check` | generated code current, the driver isolation check, the docs check, the include order |
+| `make includes` | put `#include` lines in the order the check wants |
 | `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
 | `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |
 | `make idl` | regenerate `drivers/include/idl/` after editing `abi/idl/` |
 | `make compdb` | `compile_commands.json` for editors |
+| `make clean` | remove `build/` |
 
 Testing (the tiers, `tools/qemu-test.sh`, the shell scripts, the boot menu)
 is in [docs/TESTING.md](docs/TESTING.md).
@@ -68,10 +80,12 @@ is in [docs/TESTING.md](docs/TESTING.md).
 > **Warning:** `make usb` erases the whole disk you give it. It refuses
 > internal disks and asks before writing, but check the disk number twice.
 
-Write the image with `make usb DEV=/dev/diskN`, then boot the PC from the
-stick in UEFI mode with Secure Boot off. The steps, the faster way to
-update a stick, and the PC it was built for are in
-[docs/HARDWARE.md](docs/HARDWARE.md).
+Write the image with `make usb DEV=/dev/diskN` (find N with
+`diskutil list external`), then boot the PC from the stick in UEFI mode
+with Secure Boot off. After that, `make flash` updates the stick in place
+and leaves `/data` alone; it asks for your password, because macOS does
+not mount the stick's boot partition by itself. The details, and the PC
+Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Where things live
 
@@ -94,12 +108,12 @@ update a stick, and the PC it was built for are in
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, contest, ramfs (a RAM filesystem for the file tests) |
+| `user/tests/` | utest, usbtest, contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
-| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer |
+| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |
 | `third_party/` | Limine and `limine.h`, the Spleen font, FatFs |
-| `docs/` | the documentation below |
+| `docs/` | the documentation below; `docs/logo/`, the logo |
 
 ## Documentation
 
@@ -112,6 +126,8 @@ update a stick, and the PC it was built for are in
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the real PC, and flashing the stick |
 | [docs/BENCH.md](docs/BENCH.md) | benchmark numbers from the PC |
+| [docs/A1-PLAN.md](docs/A1-PLAN.md) | the plan of the milestone in progress (audio) |
+| [docs/logo/README.md](docs/logo/README.md) | the logo's files and colours |
 
 ## Contributing
 
