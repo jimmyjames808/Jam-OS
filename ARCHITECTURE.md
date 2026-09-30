@@ -616,9 +616,13 @@ client a channel of its own (closing it stops and releases the stream)
 and a 64 KiB DMA32 ring as a VMO to map, played in four periods with an
 interrupt (MSI, through the driver's port) at each; the position comes
 from the DMA position buffer, and the driver zeroes the ring behind it,
-so a client that stops writing gives silence, never a loop. Not built
-yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)): the unmuting, jack
-detection, and a mixer service that owns the device, with programs
+so a client that stops writing gives silence, never a loop. The path is
+unmuted only while the stream runs, at a gain that starts at -30 dB
+(`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
+again as soon as it stops, so the jack is silent whenever nothing plays;
+`beep` in the shell makes the samples (the driver never makes sound of
+its own). Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
+jack detection, and a mixer service that owns the device, with programs
 opening streams and writing samples through a shared VMO ring.
 
 ## Storage

@@ -159,12 +159,12 @@ to be its only client, so it is designed as the mixer needs it now:
 | Method (abi/idl/hda.idl) | Stage | What |
 |---|---|---|
 | `dump() -> (text VMO, length, codecs)` | 0 (done) | the graph, read now |
-| `info() -> (rates, formats, pin, dac, gain steps, jack state)` | 1 | what the driver chose and can do |
+| `info() -> (rates, formats, pin, dac, gain steps, jack state)` | 1 (done) | what the driver chose and can do |
 | `open_output(rate, channels, bits) -> (stream channel, ring VMO, size, period)` | 2 (done) | the ring above; one stream at a time (a second open: ERR_BAD_STATE); the stream methods below are served on the `stream` channel it returns, and closing that channel closes the stream |
-| `start()`, `stop()` | 2 (done) | RUN on/off (stage 3 adds the mute ordering) |
+| `start()`, `stop()` | 2, 3 (done) | RUN on/off; the path unmuted just before RUN and muted again right after it clears (stage 3) |
 | `position() -> (u64 frames played, u32 ring offset)` | 2 (done) | from the position buffer |
 | `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 (done) | answers once the period holding frame `after` has played: the client's write-ahead clock |
-| `set_gain(i32 centibels)`, `get_gain` | 3 | the codec's output amp on the path, clamped to its steps |
+| `set_gain(i32 centibels)`, `get_gain` | 3 (done) | the codec's output amp on the path (the DAC's), rounded to its step, clamped to its range and to 0 dB; both answer the gain, the step and the range |
 | `jack() -> (u8 state, u64 changes)` | 4 | plugged / unplugged / unknown, and a change count |
 
 A2 then adds the `audio` protocol (programs' streams, each its own shared
@@ -185,7 +185,7 @@ different files and can run as two tracks at once.
 | **0. Probe** (done) | read-only: reset, rings (immediate fallback), codecs from STATESTS, each codec's graph logged (one line per widget, two for pins), RESULTS line, `hda.dump`, the shell's `hda`; devmgr binds 8086 / 04 03 00; `kill hda` reaches PCI drivers | `drivers/hda/{main,ctrl,graph,dump}.c`, `hda.h`, `abi/idl/hda.idl`, the shell's `cmd/hda.c`, `tools/hda-test.sh`, `tools/shell-tests/hda.txt` |
 | **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
 | **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
-| **3. `beep`** (the join of 1 and 2) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
+| **3. `beep`** (the join of 1 and 2, done) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
 | **4. Jacks** | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jack`, `hda` shows the jack state | drivers/hda/jack.c (new), `hda.idl` (jack) |
 | **5. Review** | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
 
@@ -345,6 +345,72 @@ path: codec 0 dac 02 -> mixer 0c -> pin 1b (front headphone jack), muted: afg D0
 and the RESULTS line ends `path 02-0c-1b muted`. A line starting `path
 self-test:` other than "7 of 7 fixture(s) passed", or one saying a dump
 "parses back to another path", means nothing was set up.
+
+## What stage 3 built and learned
+
+- **The join.** Stage 2's stream now plays to the DAC of stage 1's path
+  (no path set up: `open_output` fails ERR_NOT_FOUND), and its two
+  converter SETs go through `hda_set`'s allow-list: `hda_converter_set`
+  is gone, so verbs.c is the one gate for every verb.
+- **The path is open only while the stream runs.** `start` opens it just
+  before RUN (verbs.c `hda_output_open`, steps 4-6 above); `stop`, the
+  stream's close and the driver's exit close it right after RUN clears.
+  On the PC's ALC897 the opening is, in order: mixer 0c input 0 unmuted
+  (`3 0c 7000`: its amp has only a mute), DAC 02 output amp to the gain
+  (`3 02 b02f`, step 47: -30 dB), pin 1b output amp unmuted (`3 1b b000`),
+  pin 1b control 0xc0 (`707 1b c0`: output + headphone amp, since its pin
+  caps have HP drive) and EAPD on (`70c 1b 02`). The closing: EAPD off
+  (`70c 1b 00`), pin control back to what the muted set-up left (0x20,
+  input only), every output amp muted at step 0 (`3 1b b080`, `3 02 b080`:
+  the DAC has no mute, so step 0, -65.25 dB) and mixer 0c input 0 muted
+  (`3 0c 7080`). The other inputs of the mixer are never unmuted. After
+  opening, the driver reads back the pin control, EAPD and the DAC amp and
+  logs them.
+- **If a verb fails while opening**, it is logged by name, the path is
+  muted again (every closing verb tried) and `start` fails with its
+  status; `beep` says the path stayed muted.
+- **The gain**: -30 dB at every driver start (on the ALC897 DAC 02 step
+  47 of 0-87, 0.75 dB steps, 0 dB at 87; on QEMU's codecs step 44 of
+  0-74). `set_gain` takes centibels, rounds to the nearest step and clamps
+  to the amp's range and never above 0 dB; it is sent at once if a stream
+  plays. The volume amp is the first on the path with gain steps (the
+  DAC's on both codecs); the path self-test checks which one, its default
+  step, its range and the clamping on every fixture.
+- **`beep` writes at -12 dBFS** (a quarter of full scale) with 5 ms linear
+  fades, so with the default gain a beep leaves the DAC at about -42 dBFS.
+  The sine comes from a rotating phasor in doubles (renormalised every
+  1024 frames), set up with a series for sin and cos: no libm.
+- **hdatest turns the gain to its lowest** for its run (its pattern is a
+  near full-scale sawtooth, a test signal) and puts it back; on QEMU's
+  mixer=off codec there is no gain, so nothing changes there.
+- **In QEMU** (tools/beep-test.sh, the codec's mixer on, so its amp
+  scales the samples): `beep 440 500` gives 440.00 Hz, 500.0 ms, peak
+  4850 (a quarter of full scale at QEMU's linear volume for step 44),
+  fades (the first and last 2.5 ms reach about a third of the peak), no
+  clicks, silence after; the codec got only allow-listed verbs, the path
+  opened only while the converter had the stream's tag, closed before it
+  was released, and nothing open at the end. A driver killed mid-stream
+  can't mute: its successor's set-up does, before anything else.
+
+**On the PC** (the owner, after `make flash`). The first beep is loud
+enough to hear and not more, but a first beep on new code is still a
+first: headphones' own volume (if they have one) down, headphones off
+the head, near enough to hear.
+1. Plug the headphones into the front jack. `hda | grep -E "path|gain"`
+   should end with `hda: path: codec 0 dac 02 -> mixer 0c -> pin 1b (front
+   headphone jack), muted: ...` and `hda: gain -30.0 dB (step 47; -65.3
+   to 0.0 dB), heard only while a stream plays`.
+2. `beep`: a 440 Hz tone for 0.3 s; the shell says `beep: 440 Hz for 300
+   ms at -30.0 dB`. The log (`log 6`) shows `[hda] stream: open on
+   descriptor 7, tag 1, format 0x0011, converter 0/02`, `[hda] output:
+   unmuted at -30.0 dB (node 02 step 47); read back: pin 1b ctl c0 eapd
+   02, volume amp 2f`, `[hda] output: muted again` and the stream's close
+   line.
+3. Louder or quieter: `hda gain -20` (or -40), then `beep` again. 0 dB is
+   the most the driver allows; `hda gain` alone shows it.
+4. If nothing is heard: the read-back line says what the codec took (ctl
+   should be c0, eapd 02, volume amp 2f); `hdatest` checks the stream
+   itself (now quiet: it turns the gain down).
 
 ## Done when
 

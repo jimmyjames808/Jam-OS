@@ -21,7 +21,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stage 1 (codec control: the path DAC 02 -> mixer 0c -> pin 1b found and set up muted, through an allow-list of SET verbs) and stage 2 (one output stream on the path's DAC: the ring, period interrupts over MSI, clear-behind) work in QEMU, the stream sample for sample; stage 3 (`beep`) is next ([A1-PLAN.md](A1-PLAN.md)) |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`). The tone on the PC, stage 4 (jacks) and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol | after A1 |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
