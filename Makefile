@@ -60,7 +60,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb syscalls idl check compdb includes
+.PHONY: all image run debug clean font usb flash syscalls idl check compdb includes
 
 all: $(KERNEL) $(BOOTFS)
 
@@ -358,6 +358,12 @@ debug: $(IMAGE) $(BUILD)/ovmf-vars.fd
 # Write the image to a USB stick. Refuses anything that isn't external.
 usb: $(IMAGE)
 	tools/write-usb.sh $(IMAGE) $(DEV)
+
+# Update a stick that already boots Jam OS: the kernel, bootfs and
+# limine.conf onto its ESP; nothing erased, /data untouched. DEV is optional
+# (the one external disk with Jam OS's layout).
+flash: $(IMAGE)
+	tools/flash-usb.sh $(KERNEL) $(BOOTFS) boot/limine.conf $(DEV)
 
 font:
 	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf kernel/dev/font_8x16.c

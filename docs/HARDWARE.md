@@ -72,17 +72,21 @@ Limine, the kernel, bootfs), which Jam OS never writes, and the data
 partition (`JAMOS-DATA`, mounted at `/data`), which `tools/mbr-grow.py`
 grows to the end of the stick; Jam OS formats it on the first boot.
 
-**Updating a stick that already boots Jam OS** (the usual way, nothing is
-erased): with the ESP mounted as `JAMOS` (a stick made before M8 mounts as
-`NO NAME` instead),
+**Updating a stick that already boots Jam OS** (the usual way; nothing is
+erased and `/data` is not touched):
 
 ```sh
-make image
-cp build/jamos.elf build/bootfs.img "/Volumes/JAMOS/boot/"
-cp boot/limine.conf "/Volumes/JAMOS/boot/limine/"
-cmp build/jamos.elf "/Volumes/JAMOS/boot/jamos.elf"   # and the other two
-diskutil eject "/Volumes/JAMOS"
+make flash                       # or: make flash DEV=/dev/diskN
 ```
+
+`tools/flash-usb.sh` finds the one external disk with Jam OS's two
+partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`,
+compares all three, and ejects the stick. It asks for your password: macOS
+does not mount an MBR partition of type 0xEF by itself, so the script
+mounts it by hand with `sudo`. It refuses a disk whose first partition
+holds no Jam OS kernel. (A stick made before M8 has one partition that
+macOS mounts as `NO NAME`: copy the three files there by hand, or remake it
+with `make usb`.)
 
 Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick
 an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). The
