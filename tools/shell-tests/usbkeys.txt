@@ -34,8 +34,10 @@ wait jam>
 # enumerates, a new hid binds and the keyboard types again; the shell's
 # usb command talks to the new devmgr
 send kill devmgr
+# (init's line goes to the kernel log, the shell's through the console: their
+# order on the serial port isn't fixed, hence `seen`)
 wait shell: killed process
-wait 30 init: devmgr and its drivers are gone
+seen 30 init: devmgr and its drivers are gone
 wait 90 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 1
 usbkeys help\r

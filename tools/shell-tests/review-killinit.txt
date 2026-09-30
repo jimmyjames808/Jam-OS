@@ -10,8 +10,10 @@ send kill init
 wait 10 not killing it
 wait jam>
 send kill devmgr
+# (init's line goes to the kernel log, the shell's through the console: their
+# order on the serial port isn't fixed, hence `seen`)
 wait 10 shell: killed process
-wait 30 init: devmgr and its drivers are gone
+seen 30 init: devmgr and its drivers are gone
 wait 60 init: devmgr:
 send kill serialin
 wait bin/serialin was killed

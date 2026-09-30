@@ -56,8 +56,10 @@ send cat "/data/My Notes/first boot.txt"
 wait kept across a reboot-a
 # devmgr dies: its drivers and both filesystems go with it, and come back
 send kill devmgr
+# (init's line goes to the kernel log, the shell's through the console: their
+# order on the serial port isn't fixed, hence `seen`)
 wait shell: killed process
-wait 30 init: devmgr and its drivers are gone
+seen 30 init: devmgr and its drivers are gone
 wait 60 init: /data mounted
 wait 30 logd: writing /data/logs/boot-0001.txt
 send ls "/data/My Notes" | grep -c "^first boot.txt$" | grep ^1$ && echo ok-$T-back

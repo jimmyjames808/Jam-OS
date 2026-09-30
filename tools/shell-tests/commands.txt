@@ -63,8 +63,10 @@ wait run: killing what bin/utest left running
 wait jam>
 # devmgr dies: init takes its job (usb-bus, the hids) down and starts it again
 send kill devmgr
+# (init's line goes to the kernel log, the shell's through the console: their
+# order on the serial port isn't fixed, hence `seen`)
 wait shell: killed process
-wait 30 init: devmgr and its drivers are gone
+seen 30 init: devmgr and its drivers are gone
 wait 60 init: devmgr:
 send devices
 wait devmgr:
