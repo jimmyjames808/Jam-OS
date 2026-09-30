@@ -87,7 +87,9 @@
  * (RIGHTS_BASIC: wait, info), its job (RIGHTS_BASIC: wait, job_get_info)
  * and its function (RIGHTS_BASIC | RIGHT_READ: config reads), plus u32
  * pci_index. ERR_BAD_STATE while no driver process runs (a restart is
- * due, or it is gone). */
+ * due, or it is gone). Vendor and device 0xffff name the instance-th PCI
+ * function that has a driver bound, running or not (KILL takes the same
+ * numbering). */
 #define DEVMGR_GET_DRIVER   0x00030003u
 /* (dev) -> (): kill the driver's job and answer once it is dead. That is
  * a death like any other: supervision restarts it (not counted as a
