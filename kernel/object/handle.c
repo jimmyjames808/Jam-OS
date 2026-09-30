@@ -122,9 +122,14 @@ void handle_table_destroy(struct handle_table *t)
             break;
         khandle_release(&kh);   /* outside the lock: may run on_zero_handles */
     }
-    kfree(t->slots);
+    /* Emptied under the lock: a reader of another process's table
+     * (handle_table_objects) sees no slots rather than freed ones. */
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    struct handle_slot *slots = t->slots;
     t->slots = NULL;
     t->capacity = t->free_head = t->free_tail = 0;
+    spin_unlock_irqrestore(&t->lock, f);
+    kfree(slots);
     uncharge(t, t->charged);   /* the closed slots (and any reservation) */
     t->charged = 0;
 }
@@ -389,6 +394,25 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     }
     spin_unlock_irqrestore(&t->lock, f);
     return st;
+}
+
+uint32_t handle_table_objects(struct handle_table *t, enum obj_type type, struct kobject **out,
+                              uint32_t cap)
+{
+    uint32_t n = 0;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    for (uint32_t i = 0; i < t->capacity && n < cap; i++) {
+        struct kobject *o = t->slots[i].obj;
+        bool seen = !o || o->type != type;
+        for (uint32_t k = 0; k < n && !seen; k++)
+            seen = out[k] == o;
+        if (seen)
+            continue;
+        kobject_ref(o);   /* the handle's reference keeps it alive until here */
+        out[n++] = o;
+    }
+    spin_unlock_irqrestore(&t->lock, f);
+    return n;
 }
 
 #ifndef JAM_NO_KTESTS

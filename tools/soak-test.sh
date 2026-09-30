@@ -57,6 +57,14 @@ want "soak: PASSED after"
 want "kernel tests: $((loops + 2)) loop\(s\), seeds $seed to $((seed + loops + 1)): [0-9]+ passed, [0-9]+ skipped, 0 FAILED"
 want "utest between the loops: $loops run\(s\), 0 FAILED"
 want "file load: [1-9][0-9]* cycle\(s\) written, read back and compared, 0 FAILED"
+# Channel messages nobody reads must not pile up: a program's namespace
+# notices once did (logd's grew by ~20 KB per utest run). What stays queued
+# at the end is a few messages in flight.
+bytes=$(grep -aE "jobs: message bytes" "$log" | tail -1 | sed -E 's/.*\((-?[0-9]+)\).*/\1/')
+if [ -z "$bytes" ] || [ "$bytes" -gt 32768 ]; then
+    echo "$name: the job tree's message bytes grew by ${bytes:-?} (more than 32768)"
+    ok=0
+fi
 never "KERNEL PANIC"
 never "ktest: FAILED"
 never "stress: FAILED"
@@ -67,7 +75,7 @@ mtype -i "$s2@@1M" ::/second.txt 2>/dev/null | grep -q "a file on the second sti
 mcopy -n -i "$s2@@1M" ::/noise.bin "$tmp/noise.back" 2>/dev/null && cmp -s "$tmp/noise.bin" "$tmp/noise.back" ||
     { echo "$name: the second stick's noise.bin changed"; ok=0; }
 rm -rf "$tmp" "$script"
-grep -aE "soak: (PASSED|FAILED) after|kernel tests:|FAILED [a-z(]|utest between|file load:|soak: user load" "$log" |
+grep -aE "soak: (PASSED|FAILED) after|kernel tests:|FAILED [a-z(]|utest between|file load:|soak: user load|jobs: " "$log" |
     sed -e 's/^\[[ 0-9.]*\] *//' || true
 if [ $ok = 1 ]; then
     rm -f "$s2"

@@ -72,5 +72,9 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
                       struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,
                       uint64_t deadline_ns);
 
+/* The messages queued on ch now and what they are charged (bytes, plus
+ * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
+void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged);
+
 /* Endpoints alive right now (for leak checks in tests). */
 uint64_t channel_live_count(void);

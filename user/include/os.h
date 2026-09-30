@@ -139,8 +139,11 @@ struct spawn_args {
     const char *const         *ns;
     /* NULL: our end of its SR_NS channel is closed once that message is
      * sent (its namespace never changes). Else our end goes here after a
-     * successful spawn, for ns_send later. */
+     * successful spawn, for ns_update (or ns_send) later. */
     handle_t                  *ns_out;
+    /* With ns_out: NULL, or where a duplicate of the child's own end goes
+     * (RIGHT_READ only), for ns_update to take back what it hasn't read. */
+    handle_t                  *ns_back_out;
 };
 
 /* Load a program (spawn_args.path) into a new process and start it. Its
@@ -178,15 +181,29 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
  * (fs.idl lists them).
  *
  * SR_NS, the encoding: a channel end. Whoever started the program holds
- * the other end and writes struct ns_msg messages on it; an NS_MOUNT's
- * handles are the `fs` channels, one per path, in order. The first message
- * (an NS_MOUNT, possibly of nothing) comes right after the start; libos
- * waits for it (up to NS_FIRST_WAIT) before its first lookup. Later ones
- * change the running program's namespace: NS_MOUNT adds mounts, or
- * replaces those with the same path; NS_UNMOUNT (no handles) removes
- * them. Files already open stay open either way: each has its own channel.
- * A starter that closes its end leaves the namespace as it is. A malformed
- * message is dropped and its handles closed.
+ * the other end and writes struct ns_msg messages on it; an NS_MOUNT's or
+ * NS_SET's handles are the `fs` channels, one per path, in order. The
+ * first message (an NS_MOUNT, possibly of nothing) comes right after the
+ * start; libos waits for it (up to NS_FIRST_WAIT) before its first lookup.
+ * Later ones change the running program's namespace: NS_MOUNT adds mounts,
+ * or replaces those with the same path; NS_UNMOUNT (no handles) removes
+ * them; NS_SET makes the starter's mounts exactly the ones it lists (the
+ * starter's others go; the program's own, from ns_mount, stay unless one
+ * of the same path replaces them). Files already open stay open either
+ * way: each has its own channel. A starter that closes its end leaves the
+ * namespace as it is. A malformed message is dropped and its handles
+ * closed.
+ *
+ * libos reads SR_NS only when it next needs the namespace (a lookup), so
+ * a program that never looks up a path again never reads it. A starter
+ * that follows its own mounts for a running program (init, for the shell
+ * and logd) therefore keeps, beside its end, a duplicate of the program's
+ * end (spawn_args.ns_back_out) and sends with ns_update: an NS_SET of the
+ * whole namespace, after taking back whatever the program hasn't read
+ * yet. However many changes there are, the program's end then holds at
+ * most one message (a mount that came and went before it looked leaves
+ * nothing), its next lookup sees the starter's namespace as of the last
+ * change, and the starter never finds the queue full.
  *
  * The namespace may be used from several threads at once. */
 
@@ -204,10 +221,11 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
 #define NS_FIRST_WAIT (5 * NS_PER_S)
 #define NS_MOUNT      1u
 #define NS_UNMOUNT    2u
+#define NS_SET        3u
 
 struct ns_msg {
     uint32_t txid;                             /* 0: not a call */
-    uint32_t kind;                             /* NS_MOUNT or NS_UNMOUNT */
+    uint32_t kind;                             /* NS_MOUNT, NS_UNMOUNT or NS_SET */
     uint32_t count;                            /* paths used, at most NS_MAX_MOUNTS */
     uint32_t reserved;                         /* 0 */
     char     path[NS_MAX_MOUNTS][NS_NAME_MAX]; /* mount points, NUL-terminated */
@@ -239,6 +257,14 @@ status_t ns_send(handle_t to, const char *const *paths);
 /* The same for one channel of the caller's (consumed, whatever happens)
  * at path; fs HANDLE_INVALID sends an NS_UNMOUNT of path instead. */
 status_t ns_send_one(handle_t to, const char *path, handle_t fs);
+/* Keep a running program's namespace in step with ours: on `to` an
+ * NS_SET of our mounts listed in paths (as ns_send), after taking back
+ * through `back` (a duplicate of the program's end: spawn_args.ns_back_out;
+ * HANDLE_INVALID: none) every message the program hasn't read yet, their
+ * handles closed. With `back`, the program's end holds at most one message
+ * from us however often this is called, and it is our namespace as of the
+ * last call. */
+status_t ns_update(handle_t to, handle_t back, const char *const *paths);
 /* For fs services: a path inside a mount (fs.idl's 256-byte field, which
  * must hold a NUL) as the names it walks, joined by '/' with none leading
  * or trailing ("" for the mount's root): "/a/./b/../c" is "a/c", and ".."

@@ -4,7 +4,12 @@
  * The table starts empty. Mounts come from whoever started us, as ns_msg
  * messages on the SR_NS channel (taken here before every lookup, so a
  * mount sent to a running program is there for its next call), and from
- * ns_mount (init mounts its own). A lookup hands out a duplicate of the
+ * ns_mount (init mounts its own). Each mount remembers which of the two it
+ * came from: an NS_SET replaces only the starter's.
+ *
+ * ns_update is the starter's side: it takes back what the program hasn't
+ * read before it sends the whole namespace, so a program that never looks
+ * never holds more than one message. A lookup hands out a duplicate of the
  * mount's channel, so a call in progress keeps a channel of its own while
  * another thread replaces the mount.
  *
@@ -14,10 +19,12 @@
 #include "ns.h"
 
 #define TAKE_MAX 64   /* messages taken in one go: a flooding starter can't hold a lookup */
+#define BACK_MAX 1024 /* messages ns_update takes back: a channel end holds no more */
 
 struct mount {
     char     path[NS_NAME_MAX];   /* "/data" */
     handle_t fs;                  /* its `fs` channel */
+    bool     given;               /* from the starter (SR_NS), not ns_mount */
 };
 
 static struct mount mounts[NS_MAX_MOUNTS];   /* the first nmounts, in mount order; lock */
@@ -49,13 +56,14 @@ static bool valid_point(const char *path)
     return !strchr(path + 1, '/') && strcmp(path + 1, ".") && strcmp(path + 1, "..");
 }
 
-/* fs (consumed) at path, which is valid. */
-static status_t mount_locked(const char *path, handle_t fs)
+/* fs (consumed) at path, which is valid; given: it came from the starter. */
+static status_t mount_locked(const char *path, handle_t fs, bool given)
 {
     for (unsigned i = 0; i < nmounts; i++)
         if (!strcmp(mounts[i].path, path)) {
             jam_handle_close(mounts[i].fs);
             mounts[i].fs = fs;
+            mounts[i].given = given;
             return OK;
         }
     if (nmounts == NS_MAX_MOUNTS) {
@@ -63,7 +71,8 @@ static status_t mount_locked(const char *path, handle_t fs)
         return ERR_NO_RESOURCES;
     }
     memcpy(mounts[nmounts].path, path, strlen(path) + 1);
-    mounts[nmounts++].fs = fs;
+    mounts[nmounts].fs = fs;
+    mounts[nmounts++].given = given;
     return OK;
 }
 
@@ -81,25 +90,48 @@ static status_t unmount_locked(const char *path)
     return ERR_NOT_FOUND;
 }
 
+/* path is one of m's (checked, n bytes long) paths. */
+static bool in_msg(const struct ns_msg *m, const char *path)
+{
+    for (uint32_t i = 0; i < m->count; i++)
+        if (!strncmp(m->path[i], path, NS_NAME_MAX))
+            return true;
+    return false;
+}
+
+/* NS_SET: the starter's mounts that m doesn't list go (its handles then
+ * mount as an NS_MOUNT's). */
+static void set_locked(const struct ns_msg *m)
+{
+    for (unsigned i = 0; i < nmounts;) {
+        if (mounts[i].given && !in_msg(m, mounts[i].path))
+            (void)unmount_locked(mounts[i].path);   /* the next one moves to i */
+        else
+            i++;
+    }
+}
+
 /* One message from the starter: n bytes, nh handles (all consumed). */
 static void apply_locked(const struct ns_msg *m, uint32_t n, const handle_t *hs, uint32_t nh)
 {
+    bool mounting = m->kind == NS_MOUNT || m->kind == NS_SET;
     bool ok = n >= NS_MSG_SIZE(0) && m->count <= NS_MAX_MOUNTS && n == NS_MSG_SIZE(m->count) &&
-              !m->reserved &&
-              ((m->kind == NS_MOUNT && nh == m->count) || (m->kind == NS_UNMOUNT && !nh));
+              !m->reserved && ((mounting && nh == m->count) || (m->kind == NS_UNMOUNT && !nh));
     if (!ok) {
         for (uint32_t i = 0; i < nh; i++)
             jam_handle_close(hs[i]);
         return;
     }
+    if (m->kind == NS_SET)
+        set_locked(m);
     for (uint32_t i = 0; i < m->count; i++) {
         bool valid = valid_point(m->path[i]);
-        if (m->kind == NS_MOUNT && !valid)
+        if (mounting && !valid)
             jam_handle_close(hs[i]);
-        else if (m->kind == NS_MOUNT)
-            (void)mount_locked(m->path[i], hs[i]);   /* a full table closes it */
+        else if (mounting)
+            (void)mount_locked(m->path[i], hs[i], true);   /* a full table closes it */
         else if (valid)
-            (void)unmount_locked(m->path[i]);        /* not mounted: nothing to do */
+            (void)unmount_locked(m->path[i]);              /* not mounted: nothing to do */
     }
 }
 
@@ -124,21 +156,12 @@ static bool drop(handle_t ch, uint32_t n, uint32_t nh)
     return ok;
 }
 
-/* Everything the starter has sent so far, into the table. The first time,
- * wait for its first message: it is written right after our start. */
-static void take_locked(void)
+/* What the starter has sent so far (TAKE_MAX messages at most) into the
+ * table; how many messages were taken. */
+static unsigned take_some_locked(handle_t ch)
 {
-    handle_t ch = startup_handle(SR_NS);
-    if (!ch || starter_gone)
-        return;
-    if (!started) {
-        signals_t seen;
-        /* Timed out or failed: we go on with what there is (no mounts). */
-        (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, now() + NS_FIRST_WAIT,
-                                  &seen);
-        started = true;
-    }
-    for (unsigned i = 0; i < TAKE_MAX; i++) {
+    unsigned taken = 0;
+    for (; taken < TAKE_MAX; taken++) {
         struct ns_msg m;
         handle_t hs[NS_MAX_MOUNTS];
         uint32_t n = 0, nh = 0;
@@ -153,9 +176,32 @@ static void take_locked(void)
         if (st == ERR_PEER_CLOSED)
             starter_gone = true;
         if (st != OK)
-            return;
+            break;
         apply_locked(&m, n, hs, nh);
     }
+    return taken;
+}
+
+/* Everything the starter has sent so far, into the table. The first time,
+ * wait until its first message is taken: it is written right after our
+ * start, and a starter's ns_update may take it back just as we wake, to
+ * write the next one. Timed out or failed: we go on with what there is
+ * (no mounts). */
+static void take_locked(void)
+{
+    handle_t ch = startup_handle(SR_NS);
+    if (!ch || starter_gone)
+        return;
+    if (started) {
+        (void)take_some_locked(ch);
+        return;
+    }
+    uint64_t deadline = now() + NS_FIRST_WAIT;
+    signals_t seen;
+    while (!take_some_locked(ch) && !starter_gone &&
+           jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen) == OK)
+        ;
+    started = true;
 }
 
 /* ---- paths ------------------------------------------------------------------------ */
@@ -256,7 +302,7 @@ status_t ns_mount(const char *path, handle_t fs)
     }
     ns_lock();
     take_locked();   /* the starter's mounts first: ours replaces one of the same name */
-    status_t st = mount_locked(path, fs);
+    status_t st = mount_locked(path, fs, false);
     ns_unlock();
     return st;
 }
@@ -307,12 +353,14 @@ static bool listed(const char *const *paths, const char *path)
     return false;
 }
 
-status_t ns_send(handle_t to, const char *const *paths)
+/* A `kind` message (NS_MOUNT or NS_SET) of our mounts listed in paths,
+ * each with a duplicate of its channel, written on to. */
+static status_t send_ours(handle_t to, uint32_t kind, const char *const *paths)
 {
     struct ns_msg m;
     handle_t hs[NS_MAX_MOUNTS];
     memset(&m, 0, sizeof(m));
-    m.kind = NS_MOUNT;
+    m.kind = kind;
     status_t st = OK;
     ns_lock();
     take_locked();
@@ -329,6 +377,41 @@ status_t ns_send(handle_t to, const char *const *paths)
     for (uint32_t i = 0; st != OK && i < m.count; i++)
         jam_handle_close(hs[i]);   /* not sent: still ours */
     return st;
+}
+
+status_t ns_send(handle_t to, const char *const *paths)
+{
+    return send_ours(to, NS_MOUNT, paths);
+}
+
+/* Read every message still waiting on back (the program's end) and close
+ * the handles they carry: they are ours, and out of date. */
+static void take_back(handle_t back)
+{
+    for (unsigned i = 0; i < BACK_MAX; i++) {
+        struct ns_msg m;
+        handle_t hs[NS_MAX_MOUNTS];
+        uint32_t n = 0, nh = 0;
+        struct channel_read_args a = {
+            .h = back, .bytes_cap = sizeof(m), .bytes = (uint64_t)(uintptr_t)&m,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
+            .handles_cap = NS_MAX_MOUNTS, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_BUFFER_TOO_SMALL && drop(back, n, nh))
+            continue;   /* not one of ours: gone anyway */
+        if (st != OK)
+            return;     /* empty (or the program's end is gone) */
+        for (uint32_t k = 0; k < nh; k++)
+            jam_handle_close(hs[k]);
+    }
+}
+
+status_t ns_update(handle_t to, handle_t back, const char *const *paths)
+{
+    if (back)
+        take_back(back);
+    return send_ours(to, NS_SET, paths);
 }
 
 status_t ns_send_one(handle_t to, const char *path, handle_t fs)

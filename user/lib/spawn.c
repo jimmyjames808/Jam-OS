@@ -197,6 +197,7 @@ struct child {
     handle_t proc, vmar, thread;   /* from process_create and thread_create */
     handle_t ch[2];                /* the startup channel: ours, the child's */
     handle_t ns[2];                /* its SR_NS channel: ours (we write), the child's */
+    handle_t ns_back;              /* a read-only duplicate of ns[1], for ns_update */
     uint64_t entry, stack;         /* where its thread starts; its stack top */
 };
 
@@ -361,7 +362,8 @@ static status_t make_child(const struct spawn_args *a, const struct image *img, 
 /* Close what is still ours of c, except the process. */
 static void close_child(struct child *c)
 {
-    handle_t *hs[] = { &c->ch[0], &c->ch[1], &c->ns[0], &c->ns[1], &c->thread, &c->vmar };
+    handle_t *hs[] = { &c->ch[0], &c->ch[1], &c->ns[0], &c->ns[1], &c->ns_back, &c->thread,
+                       &c->vmar };
     for (unsigned i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
         if (*hs[i]) {
             jam_handle_close(*hs[i]);
@@ -383,6 +385,8 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     struct child c = { 0 };
     if (st == OK && a->ns)
         st = jam_channel_create(&c.ns[0], &c.ns[1]);
+    if (st == OK && a->ns && a->ns_out && a->ns_back_out)
+        st = jam_handle_duplicate(c.ns[1], RIGHT_READ, &c.ns_back);
     if (st == OK)
         st = jam_process_create(a->job, name, strlen(name), 0, &c.proc, &c.vmar);
     if (st != OK) {
@@ -396,6 +400,10 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     if (st == OK && a->ns_out) {
         *a->ns_out = c.ns[0];
         c.ns[0] = HANDLE_INVALID;
+    }
+    if (st == OK && c.ns_back) {
+        *a->ns_back_out = c.ns_back;
+        c.ns_back = HANDLE_INVALID;
     }
     close_child(&c);
     if (st != OK) {

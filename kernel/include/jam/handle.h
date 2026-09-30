@@ -89,6 +89,11 @@ uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_
  * ERR_NOT_FOUND. */
 status_t handle_table_find(struct handle_table *t, enum obj_type type, struct kobject **out);
 #endif
+/* debug_command "ps": new references to the distinct objects of `type`
+ * that t has live handles to, up to cap of them into out (the caller
+ * unrefs each); returns how many went into out. */
+uint32_t handle_table_objects(struct handle_table *t, enum obj_type type, struct kobject **out,
+                              uint32_t cap);
 /* Reserve n empty slots (all or none; ERR_NO_RESOURCES if the table can't
  * hold them) so a receive can't fail halfway and lose handles. Each value in
  * out[] is filled with handle_untake (which then cannot fail) or given back

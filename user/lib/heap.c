@@ -1,10 +1,22 @@
 /* A small heap: one VMO of HEAP_SIZE mapped read-write into our address
  * space on the first malloc (pages are committed when first touched, and
- * charged to our job then). Blocks come from a bump pointer; freed blocks
- * go on a first-fit free list and are split when much bigger than asked.
- * No coalescing: good enough for programs that allocate a little up
- * front (big buffers come from VMOs of their own), replaced when
- * something needs better. A spinlock makes it safe for several threads. */
+ * charged to our job then, for good). Blocks come from a bump pointer;
+ * freed blocks go on a free list kept in address order, and a freed block
+ * merges with a free neighbour on either side, or gives its space back to
+ * the bump pointer when it is the last block. malloc takes the first
+ * (lowest) free block that fits and splits it when it is much bigger than
+ * asked.
+ *
+ * Why the merging and the order: without them a long-running program that
+ * asks for the same big buffer again and again (the shell's `ls`, 68 KiB
+ * each time) finds the last one split by a small allocation made
+ * meanwhile, never whole again, and the bump pointer moves on: its pages
+ * grew on every command until the heap ran out. Lowest-first keeps small
+ * blocks together at the bottom and big holes whole.
+ *
+ * free walks the list (O(free blocks)): fine for the programs here, which
+ * keep few; big buffers can still come from VMOs of their own. A spinlock
+ * makes it safe for several threads. */
 #include <os.h>
 
 #define ALIGN       16u
@@ -64,6 +76,44 @@ static int heap_init(void)
     return 0;
 }
 
+static uint8_t *end_of(struct block *b)
+{
+    return (uint8_t *)(b + 1) + b->size;
+}
+
+/* b (marked free) into the list at its address, merged with the free
+ * block right after it and the one right before it; a block that then
+ * ends at the bump pointer goes back to it instead. */
+static void release_locked(struct block *b)
+{
+    struct block **pp = &free_list, *prev = NULL;
+    while (*pp && *pp < b) {
+        prev = *pp;
+        pp = next_of(*pp);
+    }
+    struct block *next = *pp;
+    if (next && end_of(b) == (uint8_t *)next) {
+        b->size += sizeof(struct block) + next->size;
+        next = *next_of(next);
+    }
+    if (prev && end_of(prev) == (uint8_t *)b) {
+        prev->size += sizeof(struct block) + b->size;
+        *next_of(prev) = next;
+        b = prev;
+    } else {
+        *next_of(b) = next;
+        *pp = b;
+    }
+    if (end_of(b) != heap_next)
+        return;
+    /* The last block: unlink it (it is prev, or where b was put). */
+    struct block **q = &free_list;
+    while (*q != b)
+        q = next_of(*q);
+    *q = *next_of(b);
+    heap_next = (uint8_t *)b;
+}
+
 void *malloc(size_t n)
 {
     if (n == 0)
@@ -86,11 +136,12 @@ void *malloc(size_t n)
         }
     }
     if (b && b->size >= size + sizeof(struct block) + SPLIT_MIN) {
+        /* The rest takes b's place in the list: the order holds. */
         struct block *rest = (struct block *)((uint8_t *)(b + 1) + size);
         rest->size = b->size - size - sizeof(struct block);
         rest->magic = MAGIC_FREE;
-        *next_of(rest) = free_list;
-        free_list = rest;
+        *next_of(rest) = *pp;
+        *pp = rest;
         b->size = size;
     }
     if (!b) {
@@ -128,7 +179,6 @@ void free(void *p)
     }
     lock();
     b->magic = MAGIC_FREE;
-    *next_of(b) = free_list;
-    free_list = b;
+    release_locked(b);
     unlock();
 }
