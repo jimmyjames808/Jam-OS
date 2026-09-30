@@ -508,7 +508,8 @@ void report_controller(const struct hc *h);
 
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems);
-void usb_report_all(bool at_stop);        /* a RESULTS line per device not listed yet + the summary */
+/* A RESULTS line per device not listed yet, and the summary. */
+void usb_report_all(bool at_stop);
 void dev_line(struct usbdev *d, bool report_it, const char *prefix);   /* report_it: RESULTS */
 void dev_log_detail(struct usbdev *d);
 void dev_set_path(struct usbdev *d, const struct usbdev *parent, uint8_t port);   /* "9.1" */

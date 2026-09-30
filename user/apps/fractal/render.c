@@ -58,7 +58,8 @@ void make_palette(int kind)
         double t = (double)i / PAL;
         if (kind == 6) {   /* rainbow: three sines a third apart */
             double a = t * 6.283185307179586;
-            pal[i] = rgb((uint32_t)(127.5 + 127 * sind(a)), (uint32_t)(127.5 + 127 * sind(a + 2.0944)),
+            pal[i] = rgb((uint32_t)(127.5 + 127 * sind(a)),
+                         (uint32_t)(127.5 + 127 * sind(a + 2.0944)),
                          (uint32_t)(127.5 + 127 * sind(a + 4.1888)));
             continue;
         }
@@ -476,8 +477,9 @@ void reproject(double f)
             int y1 = y0 + TS - 1 < PH ? y0 + TS - 1 : PH - 1;
             /* stretched only if the old picture was good (every 4th pixel
              * computed); a stretch of a stretch is worse than blocks */
-            bool cover = rp_l <= 4 && nu[(uint64_t)y0 * PW + x0] > -2 && nu[(uint64_t)y0 * PW + x1] > -2 &&
-                         nu[(uint64_t)y1 * PW + x0] > -2 && nu[(uint64_t)y1 * PW + x1] > -2;
+            bool cover = rp_l <= 4 && nu[(uint64_t)y0 * PW + x0] > -2 &&
+                         nu[(uint64_t)y0 * PW + x1] > -2 && nu[(uint64_t)y1 * PW + x0] > -2 &&
+                         nu[(uint64_t)y1 * PW + x1] > -2;
             int k = ty * TW + tx;
             tlev[k] = LV_NONE;
             tapprox[k] = cover;

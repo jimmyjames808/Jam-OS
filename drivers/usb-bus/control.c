@@ -138,8 +138,9 @@ uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, 
             ep_stop(d, 1, &d->ep0);
     }
     if (cc == CC_SUCCESS) {
-        uint32_t n = h->ctl.short_seen ? length - (h->ctl.residual < length ? h->ctl.residual : length)
-                                       : length;
+        uint32_t n = h->ctl.short_seen
+                         ? length - (h->ctl.residual < length ? h->ctl.residual : length)
+                         : length;
         if (in && n)
             copy(data, buf, n);
         if (actual)

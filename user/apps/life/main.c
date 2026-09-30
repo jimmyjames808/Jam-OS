@@ -277,7 +277,8 @@ static void render(void)
         org_y = (int64_t)floord(vy / kcells) - s->h / 2;
     }
     home_x = home_y = INT64_MIN;
-    if (zl < 0 && (int64_t)(W / (uint32_t)kcells) < s->w) {   /* the torus repeats: dim the copies */
+    /* The torus repeats on the screen: dim the copies. */
+    if (zl < 0 && (int64_t)(W / (uint32_t)kcells) < s->w) {
         home_x = (int64_t)floord(vx) - W / 2;
         if ((int64_t)(W / (uint32_t)kcells) < s->h)
             home_y = (int64_t)floord(vy) - W / 2;
@@ -319,10 +320,12 @@ static void hud(uint64_t pop, uint32_t gps, uint64_t gen_us, uint32_t speed, boo
     int pw = (w1 > w2 ? w1 : w2) + 2 * pad, ph = TEXT_H(3 * u) + TEXT_H(u) + 3 * pad;
     panel(s, pad, pad, pw, ph, 8 * u, 0x000000, 170);
     int x = text_shadow(s, 2 * pad, 2 * pad, 3 * u, 0xa8f070, "LIFE");
-    text2(s, x + pad, 2 * pad + TEXT_H(3 * u) - TEXT_H(u) - 3 * u, u, 0x8890b0, 0xe8ecff, false, line);
+    text2(s, x + pad, 2 * pad + TEXT_H(3 * u) - TEXT_H(u) - 3 * u, u, 0x8890b0, 0xe8ecff, false,
+          line);
     text2(s, 2 * pad, 2 * pad + TEXT_H(3 * u) + pad, u, 0x8890b0, 0xffffff, false, stats);
     if (paused)
-        text_shadow(s, (s->w - text_width(3 * u, "PAUSED")) / 2, 3 * pad, 3 * u, 0xffe070, "PAUSED");
+        text_shadow(s, (s->w - text_width(3 * u, "PAUSED")) / 2, 3 * pad, 3 * u, 0xffe070,
+                    "PAUSED");
     if (show_help) {
         const char *help = "arrows move    + - zoom    space pause    n step    f s faster / slower"
                            "    r new soup    c clear    g glider gun    p R-pentomino    a ages"

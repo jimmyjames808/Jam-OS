@@ -68,7 +68,8 @@ static char *fmt_sci(char *buf, size_t size, double x)
         e++;
     }
     if (e < 4)
-        snprintf(buf, size, "%d", (int)(x * (e == 0 ? 1 : e == 1 ? 10 : e == 2 ? 100 : 1000) + 0.5));
+        snprintf(buf, size, "%d",
+                 (int)(x * (e == 0 ? 1 : e == 1 ? 10 : e == 2 ? 100 : 1000) + 0.5));
     else
         snprintf(buf, size, "%d.%de%d", (int)x, (int)((x - (int)x) * 10), e);
     return buf;

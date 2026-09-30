@@ -247,7 +247,8 @@ static void read_line(char *buf)
         struct input_key_event ev;
         sh_get_key(&ev, DEADLINE_NEVER);
         uint16_t u = ev.usage;
-        if (u == U_ENTER || u == U_KP_ENTER || (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {
+        if (u == U_ENTER || u == U_KP_ENTER ||
+            (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {
             e.line[e.len] = '\0';
             memcpy(buf, e.line, e.len + 1);
             echo("\r\n");

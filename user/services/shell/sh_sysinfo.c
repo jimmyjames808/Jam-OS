@@ -46,6 +46,6 @@ const char *sh_cpu_type(uint32_t t)
 void sh_fmt_cpu_time(uint64_t ns, char *buf, size_t cap)
 {
     uint64_t cs = ns / 10000000;   /* hundredths */
-    snprintf(buf, cap, "%lu:%02lu.%02lu", (unsigned long)(cs / 6000), (unsigned long)(cs / 100 % 60),
-             (unsigned long)(cs % 100));
+    snprintf(buf, cap, "%lu:%02lu.%02lu", (unsigned long)(cs / 6000),
+             (unsigned long)(cs / 100 % 60), (unsigned long)(cs % 100));
 }

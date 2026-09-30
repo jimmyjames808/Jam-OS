@@ -117,7 +117,8 @@ static void clean_job(handle_t job, const char *path)
             clean &= ji.used[k] == 0;
         if (!clean)
             sh_tty("run: its job still holds %lu pages, %lu handles, %lu threads\n",
-                   (unsigned long)ji.used[JOB_LIMIT_PAGES], (unsigned long)ji.used[JOB_LIMIT_HANDLES],
+                   (unsigned long)ji.used[JOB_LIMIT_PAGES],
+                   (unsigned long)ji.used[JOB_LIMIT_HANDLES],
                    (unsigned long)ji.used[JOB_LIMIT_THREADS]);
     }
 }

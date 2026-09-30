@@ -60,7 +60,8 @@ static status_t wake(struct binding *b)
     if (!pm || jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) != OK || !(pmcsr & 3))
         return OK;
     uint32_t was = pmcsr & 3;
-    status_t st = jam_pci_config_write(b->dev, pm + 4, 2, pmcsr & ~0x8003u);   /* (15: PME status, W1C) */
+    /* PMCSR: power state (bits 1:0) D0, and bit 15 (PME status, W1C) left alone. */
+    status_t st = jam_pci_config_write(b->dev, pm + 4, 2, pmcsr & ~0x8003u);
     if (st == OK && jam_pci_config_read(b->dev, pm + 4, 2, &pmcsr) == OK && (pmcsr & 3))
         st = ERR_TIMED_OUT;
     say(true, "devmgr: %s %04x:%04x was in D%u: %s", bdf(b), b->info.vendor, b->info.device, was,

@@ -127,7 +127,8 @@ bool t_supervised_restart(void)
     uint64_t ms = 0;
     if (!crash_and_reconnect(dm, &ch, &proc, &ms))
         return false;
-    printf("utest: %s: crashed, restarted and answering %lu ms later\n", utest_cur, (unsigned long)ms);
+    printf("utest: %s: crashed, restarted and answering %lu ms later\n", utest_cur,
+           (unsigned long)ms);
     CHECK(ms >= 100 && ms < 3000);   /* the first backoff is 100 ms */
     if (!supervision(dm, TV, TD, &sup))
         return false;

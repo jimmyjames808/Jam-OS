@@ -137,7 +137,8 @@ static void t_ports(void)
     CHECK_ST(drv_port_wait(port, drv_clock_ns() + 2000 * NS_PER_MS, &pkt), OK);
     CHECK(pkt.key == 7 && pkt.type == PORT_PACKET_SIGNAL && (pkt.signal.observed & SIG_READABLE));
     signals_t seen = 0;
-    CHECK_ST(drv_object_wait_one(a, SIG_READABLE, drv_clock_ns() + NS_PER_MS, &seen), ERR_TIMED_OUT);
+    CHECK_ST(drv_object_wait_one(a, SIG_READABLE, drv_clock_ns() + NS_PER_MS, &seen),
+             ERR_TIMED_OUT);
     CHECK_ST(drv_handle_close(a), OK);
     CHECK_ST(drv_handle_close(b), OK);
     CHECK_ST(drv_handle_close(port), OK);
@@ -231,7 +232,8 @@ static status_t raw_call(handle_t ch, void *req, uint32_t n)
 {
     uint8_t rep[64];
     uint32_t rn = 0;
-    status_t st = drv_channel_call(ch, req, n, rep, sizeof(rep), &rn, drv_clock_ns() + 5000 * NS_PER_MS);
+    status_t st = drv_channel_call(ch, req, n, rep, sizeof(rep), &rn,
+                                   drv_clock_ns() + 5000 * NS_PER_MS);
     return st == OK ? idl_rep_status(rep, rn, rn) : st;
 }
 

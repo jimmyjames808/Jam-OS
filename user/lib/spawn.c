@@ -38,7 +38,8 @@ struct ehdr {
 struct phdr {
     uint32_t type, flags;              /* PT_*; PF_* */
     uint64_t offset, vaddr, paddr;     /* in the file; where it goes; (not used) */
-    uint64_t filesz, memsz, align;     /* bytes in the file; in memory (the rest zero); (not used) */
+    uint64_t filesz, memsz;            /* bytes in the file; in memory (the rest zero) */
+    uint64_t align;                    /* (not used) */
 };
 
 #define PT_LOAD 1
