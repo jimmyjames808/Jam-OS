@@ -12,9 +12,9 @@
  *   storage_bulk   usb.open_bulk gives a 64 KiB buffer, a second channel
  *                  is refused, bad transfers are refused, and an INQUIRY
  *                  by hand (CBW out, data in, CSW in) works
- *   storage_stall  an unknown SCSI command ends "failed" with sense
- *                  ILLEGAL REQUEST, whether the device STALLs its data
- *                  phase (real sticks) or pads it (QEMU); a CBW with a bad
+ *   storage_stall  an unknown SCSI command ends "failed" (QEMU: with
+ *                  sense ILLEGAL REQUEST), whether the device STALLs its
+ *                  data phase (real sticks) or pads it (QEMU); a CBW with a bad
  *                  signature is refused (QEMU: a STALL on the OUT pipe),
  *                  and after reset recovery the next command works
  *   storage_bind   the device is left in the middle of a READ, as a driver
@@ -31,12 +31,16 @@
  *                  written back unchanged (nothing on it is altered)
  *   storage_stop   DR_SERVE closed: the driver exits 0 and its block
  *                  channels close
- * and with a second disk whose serial is "jamos-disk2" (tools/
- * storage-test.sh: behind the hub, so at full speed):
- *   storage_disk2  the same read and write checks through the hub
+ * and with tools/storage-test.sh's two more disks, behind the hub (so at
+ * full speed), found by their serials:
+ *   storage_disk2  "jamos-disk2": the same read and write checks
  *   storage_unplug device_del in the middle of reads: the read fails
  *                  (it doesn't hang), the block channel closes, the
  *                  driver exits 0
+ *   storage_timeout "jamos-slow", too slow for a READ's 5 s: the READ
+ *                  fails ERR_TIMED_OUT (it doesn't hang); then a later
+ *                  one works, or after three in a row the driver gives
+ *                  up (exit 3)
  *
  * A block request's deadline here is BLK_WAIT: a command's own timeouts
  * (5 s, 10 s for a write) plus its reset recovery, twice. */
@@ -52,6 +56,8 @@
 #define RAW_CBW    0xf000u     /* where the hand-made CBW and CSW sit in the bulk buffer */
 #define RAW_CSW    0xf200u
 #define CBW_SIG    0x43425355u
+#define DISK2      "jamos-disk2"   /* the second disk's serial */
+#define SLOW       "jamos-slow"    /* the slow disk's */
 
 /* A mass-storage interface driven by hand. */
 struct raw {
@@ -60,6 +66,7 @@ struct raw {
     uint8_t ifnum;             /* interface number */
     uint8_t ep_in, ep_out;     /* bulk endpoint addresses */
     uint8_t *buf;              /* the bulk buffer, mapped; NULL: not open */
+    bool qemu;                 /* INQUIRY vendor "QEMU" */
     uint32_t tag;              /* the last CBW's tag */
 };
 
@@ -85,7 +92,7 @@ struct pch {
 };
 
 static struct raw boot_raw;
-static struct drive boot_drive, disk2;
+static struct drive boot_drive, disk2, slow;
 static uint8_t save[BUF_SIZE];   /* what a write check overwrote */
 
 static uint64_t usb_wait(void)
@@ -95,13 +102,14 @@ static uint64_t usb_wait(void)
 
 /* ---- finding the disks ------------------------------------------------------------ */
 
-/* The first Bulk-Only SCSI interface of the disk we want (second: the one
- * with serial "jamos-disk2"; else any other). */
-static bool find_disk(bool second, struct raw *r)
+/* The first Bulk-Only SCSI interface of the disk we want: the one with
+ * that serial, or (NULL) one that isn't a test scenario's extra disk. */
+static bool find_disk(const char *serial, struct raw *r)
 {
     for (unsigned i = 0; i < ndevs; i++) {
         const struct dev *d = &devs[i];
-        if (!d->config || d->hub_ports || second != !strcmp(d->serial, "jamos-disk2"))
+        bool extra = !strcmp(d->serial, DISK2) || !strcmp(d->serial, SLOW);
+        if (!d->config || d->hub_ports || (serial ? strcmp(d->serial, serial) != 0 : extra))
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
             uint8_t num, alt, nalts, cls, sub, proto, nep, eps[8];
@@ -256,6 +264,7 @@ static bool t_storage_bulk(void)
     bool stalled = false;
     CHECK_ST(raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled), OK);
     CHECK(moved == 36 && status == 0 && !stalled);
+    r->qemu = !memcmp(r->buf + 8, "QEMU    ", 8);
     printf("usbtest: INQUIRY by hand: \"%.8s\" \"%.16s\"\n", (const char *)r->buf + 8,
            (const char *)r->buf + 16);
     return true;
@@ -279,7 +288,8 @@ static bool t_storage_stall(void)
     uint8_t key = r->buf[2] & 0xf, asc = r->buf[12];
     printf("usbtest: unknown command: %s, CSW failed, sense %x/%02x\n",
            data_stalled ? "data phase STALLed, halt cleared" : "data phase padded", key, asc);
-    CHECK(key == 5);   /* ILLEGAL REQUEST */
+    if (r->qemu)
+        CHECK(key == 5 && asc == 0x20);   /* ILLEGAL REQUEST, invalid command opcode */
     /* a CBW that isn't one: the device refuses it and wants reset recovery */
     status_t bad = raw_cbw(r, 0x12345678, sense, 6, true, 18);
     CHECK(bad == ERR_IO || bad == OK);
@@ -601,7 +611,7 @@ static bool t_storage_stop(void)
 static bool t_storage_disk2(void)
 {
     struct raw r;
-    CHECK(find_disk(true, &r));
+    CHECK(find_disk(DISK2, &r));
     handle_t usb;
     CHECK_ST(usbbus_open_interface_until(bus, soon(), r.dev_id, r.ifnum, &usb), OK);
     if (!drive_start(&disk2, usb, "usb-storage-disk2"))
@@ -652,11 +662,65 @@ static bool t_storage_unplug(void)
     return true;
 }
 
+/* ---- the slow disk ------------------------------------------------------------------------------ */
+
+/* A disk too slow for a READ's 5 s (QEMU reads this one at 4 KiB/s, in
+ * bursts: a READ of 24 KiB may pass at once or wait 6 s). What must hold
+ * whatever the bursts do: a READ that gets no data in time fails
+ * ERR_TIMED_OUT in bounded time (it doesn't hang), and then either a later
+ * READ works (reset recovery left the disk usable), or, after three
+ * commands in a row without an answer, the driver gives up: exit 3, its
+ * channels closed. */
+static bool t_storage_timeout(void)
+{
+    struct raw r;
+    CHECK(find_disk(SLOW, &r));
+    handle_t usb;
+    CHECK_ST(usbbus_open_interface_until(bus, soon(), r.dev_id, r.ifnum, &usb), OK);
+    if (!drive_start(&slow, usb, "usb-storage-slow"))
+        return false;
+    struct pch p = { 0 };
+    if (!part_open(&slow, 0, true, &p))
+        return false;
+    unsigned timeouts = 0, worked_after = 0, other = 0, reads = 0;
+    uint64_t worst = 0;
+    status_t st = OK;
+    for (; reads < 8 && st != ERR_PEER_CLOSED && !(timeouts && worked_after); reads++) {
+        uint64_t t0 = now();
+        st = rd(&p, 48 * (uint64_t)reads, 48, 0);
+        if (now() - t0 > worst)
+            worst = now() - t0;
+        if (st == ERR_TIMED_OUT)
+            timeouts++;
+        else if (st == OK)
+            worked_after += timeouts != 0;
+        else if (st != ERR_PEER_CLOSED)
+            other++;
+    }
+    bool gave_up = st == ERR_PEER_CLOSED;
+    bool closed = gave_up && peer_closed(p.ch, in(15 * NS_PER_S));
+    part_close(&p);
+    struct process_info info = { 0 };
+    status_t ended = gave_up ? spawn_wait(slow.proc, 15 * NS_PER_S, &info) : OK;
+    printf("usbtest: %u READs of 24 KiB from a 4 KiB/s disk: %u timed out (the longest call "
+           "%lu ms), then %s\n", reads, timeouts, (unsigned long)(worst / NS_PER_MS),
+           gave_up ? "the driver gave up" : "one worked");
+    CHECK(timeouts >= 1 && !other);
+    CHECK(worst < 40 * NS_PER_S);
+    CHECK(worked_after || gave_up);
+    if (gave_up) {
+        CHECK(closed);
+        CHECK_ST(ended, OK);
+        CHECK(info.exit_code == 3 && !info.killed);
+    }
+    return true;
+}
+
 /* ---- all of them --------------------------------------------------------------------------------- */
 
 void storage_tests(void)
 {
-    if (load() != OK || !find_disk(false, &boot_raw)) {
+    if (load() != OK || !find_disk(NULL, &boot_raw)) {
         printf("usbtest: storage: no mass-storage device: skipped\n");
         skipped += 7;
     } else {
@@ -675,13 +739,15 @@ void storage_tests(void)
         drive_stop(&boot_drive);
     }
     struct raw r;
-    if (!find_disk(true, &r)) {
-        printf("usbtest: storage_disk2, storage_unplug: no disk with serial jamos-disk2 (the "
-               "tools/storage-test.sh scenario): skipped\n");
-        skipped += 2;
+    if (!find_disk(DISK2, &r) || !find_disk(SLOW, &r)) {
+        printf("usbtest: storage_disk2, storage_unplug, storage_timeout: no disks with serials "
+               DISK2 " and " SLOW " (the tools/storage-test.sh scenario): skipped\n");
+        skipped += 3;
         return;
     }
     run("storage_disk2", t_storage_disk2);
     run("storage_unplug", t_storage_unplug);
     drive_stop(&disk2);
+    run("storage_timeout", t_storage_timeout);
+    drive_stop(&slow);
 }

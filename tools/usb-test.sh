@@ -51,8 +51,8 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2,port-power=on \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-# 2 skipped: the second-disk storage checks, which are tools/storage-test.sh's
-grep -q "usbtest: 19 passed, 2 skipped (keys + unplug/replug ran)" "$log" || ok=0
+# 3 skipped: the storage checks on extra disks, which are tools/storage-test.sh's
+grep -q "usbtest: 19 passed, 3 skipped (keys + unplug/replug ran)" "$log" || ok=0
 grep -q "run complete: no problems" "$log" || ok=0
 # hid's own lines, from the test keyboard's hid (behind the hub: "<root>.1:0")
 for k in 04 06 07 05; do
