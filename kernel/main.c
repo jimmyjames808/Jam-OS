@@ -102,6 +102,32 @@ static const char *ktest_prefix(void)
     return NULL;
 }
 
+/* Does the command line name a mode: a test, benchmark, report or crash
+ * entry, or "init"? A boot without one is a plain boot and starts the
+ * shell, whatever options it carries (panic_reboot=15, nodeadline, ...):
+ * an option must never decide what is booted. */
+static bool mode_word_given(void)
+{
+    static const char *const modes[] = { "ktest", "bench", "selftest", "init", "keytest",
+                                         "pcilist", "memmap" };
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
+        if (cmdline_has(modes[i]))
+            return true;
+    if (ktest_prefix() || cmdline_get_u64("stress", 0, 1))
+        return true;
+    /* test<name>: a crash test at boot. */
+    for (const char *p = boot->cmdline; *p; p++) {
+        if ((p != boot->cmdline && p[-1] != ' ') || memcmp(p, "test", 4))
+            continue;
+        size_t n = 0;
+        while (p[4 + n] && p[4 + n] != ' ')
+            n++;
+        if (selftest_crash_known(p + 4, n))
+            return true;
+    }
+    return false;
+}
+
 /* Runs on the kernel's own stack, with its own page tables. */
 _Noreturn static void kmain_stage2(void *arg)
 {
@@ -158,13 +184,13 @@ _Noreturn static void kmain_stage2(void *arg)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
-     * or on "shell" or a plain boot (empty command line): devmgr, the
+     * or on "shell" or a plain boot (no mode word: mode_word_given): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
      * RESULTS box only comes if init ever ends). "nousb" (the safe mode
      * entry) is shell mode with devmgr leaving USB controllers alone. Test,
      * benchmark and crash entries don't start it. */
     bool nousb = cmdline_has("nousb");
-    bool shell = cmdline_has("shell") || nousb || !boot->cmdline[0];
+    bool shell = cmdline_has("shell") || nousb || !mode_word_given();
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 shell ? (nousb ? "shell-nousb" : "shell") : NULL);
