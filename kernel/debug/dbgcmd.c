@@ -19,18 +19,15 @@
  *   mem              physical memory: total and free (the result: free MiB)
  *   panic            panic the kernel (a test: the panic screen must show
  *                    over the console, which owns the screen)
- *   kill <name>      kill the first process of that name in the whole job
- *                    tree, except those of the caller's ancestor jobs
- *                    (init: nothing would supervise the caller any more);
- *                    tests of restarts (the console, serialin, the HID
- *                    drivers, devmgr); the result is its koid
  *   crash [name]     the crash tests (selftest.c; boot words test<name>): alone,
  *                    list them (the result: how many); with a name, run it
  *                    in a thread pinned to CPU 0 (as the boot's main thread
  *                    ran them; the ones needing a second CPU use CPU 1).
  *                    Each panics on purpose, except bp, which returns 0
  *   memmap           the loader's memory map (the "memmap" boot word)
-
+ *
+ * Killing a process by name is not here: that is init's (its control
+ * channel, abi/idl/initctl.idl), with the handles init and devmgr hold.
  *
  * The boot menu entries still call the same functions from thread "main";
  * nothing here changes them. */
@@ -53,7 +50,6 @@
 struct run {
     char           cmd[CMD_MAX];  /* the command line, NUL-terminated */
     struct job    *scope;         /* a reference, or NULL */
-    struct job    *caller;        /* a reference, or NULL: "kill" spares its ancestors */
     struct event  *done;          /* SIG_SIGNALED when result is set */
     int64_t        result;        /* exec's return value */
     int            refs;          /* the thread and the caller (atomic once it runs) */
@@ -115,11 +111,6 @@ status_t dbgcmd_check(const char *cmd, size_t len)
     }
     if (is(cmd, n, "stress"))
         return parse_u64(rest, &s) && s >= 1 && s <= 600 ? OK : ERR_INVALID_ARGS;
-    if (is(cmd, n, "kill"))
-    {
-        const char *after;
-        return *rest && word(rest, &after) && !*after ? OK : ERR_INVALID_ARGS;
-    }
     if (is(cmd, n, "crash")) {
         const char *after;
         size_t k = word(rest, &after);
@@ -133,7 +124,7 @@ status_t dbgcmd_check(const char *cmd, size_t len)
     return ERR_NOT_SUPPORTED;
 }
 
-static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
+static int64_t exec(const char *cmd, struct job *scope)
 {
     const char *rest;
     size_t n = word(cmd, &rest);
@@ -176,19 +167,6 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
     }
     if (is(cmd, n, "panic"))
         panic("debug_command: panic asked for (a test of the panic screen)");
-    if (is(cmd, n, "kill")) {
-        struct process *p = scope ? job_find_process(scope, rest, caller) : NULL;
-        if (!p) {
-            kprintf("kill: no process called \"%s\"\n", rest);
-            return ERR_NOT_FOUND;
-        }
-        struct process_info info;
-        process_get_info(p, &info);
-        kprintf("kill: process %lu \"%s\"\n", info.koid, rest);
-        process_kill(p, PROCESS_KILLED_CODE, true);
-        kobject_unref(process_kobject(p));
-        return (int64_t)info.koid;
-    }
     if (is(cmd, n, "mem")) {
         uint64_t total, free;
         pmm_stats(&total, &free);
@@ -211,7 +189,6 @@ static void run_put(struct run *r)
     if (__atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL))
         return;
     job_unref(r->scope);
-    job_unref(r->caller);
     kobject_unref(&r->done->base);
     kfree(r);
 }
@@ -220,7 +197,7 @@ static void run_thread(void *arg)
 {
     struct run *r = arg;
     kprintf("dbgcmd: %s\n", r->cmd);
-    r->result = exec(r->cmd, r->scope, r->caller);
+    r->result = exec(r->cmd, r->scope);
     kprintf("dbgcmd: %s -> %ld\n", r->cmd, r->result);
     uint64_t f = spin_lock_irqsave(&busy_lock);
     busy = false;
@@ -236,6 +213,7 @@ int64_t dbgcmd_run(const char *cmd, size_t len, struct job *scope)
 
 int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct job *caller)
 {
+    (void)caller;   /* no command looks at who asked */
     status_t st = dbgcmd_check(cmd, len);
     if (st != OK)
         return st;
@@ -250,8 +228,6 @@ int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct j
     r->cmd[len] = '\0';
     job_ref(scope);
     r->scope = scope;
-    job_ref(caller);
-    r->caller = caller;
     r->refs = 2;
 
     uint64_t f = spin_lock_irqsave(&busy_lock);

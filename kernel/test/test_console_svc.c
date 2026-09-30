@@ -276,9 +276,8 @@ KTEST(console_debug_command)
     KT_EQ(dbgcmd_check("ps", 2), OK);
     KT_EQ(dbgcmd_check("mem", 3), OK);
     KT_EQ(dbgcmd_check("panic", 5), OK);
-    KT_EQ(dbgcmd_check("kill x", 6), OK);
-    KT_EQ(dbgcmd_check("kill", 4), ERR_INVALID_ARGS);
-    KT_EQ(dbgcmd_check("kill a b", 8), ERR_INVALID_ARGS);
+    /* Killing a process by name is init's (initctl), not a debug command. */
+    KT_EQ(dbgcmd_check("kill x", 6), ERR_NOT_SUPPORTED);
     KT_EQ(dbgcmd_check("reboot", 6), ERR_NOT_SUPPORTED);
     KT_EQ(dbgcmd_check("", 0), ERR_INVALID_ARGS);
     KT_EQ(dbgcmd_run("rm -rf", 6, NULL), ERR_NOT_SUPPORTED);
@@ -294,7 +293,6 @@ KTEST(console_debug_command)
     KT_EQ(userboot_root_job(&root), OK);
     KT_EQ(job_create(root, &j), OK);
     KT_EQ(dbgcmd_run("ps", 2, root), 0);
-    KT_EQ(dbgcmd_run("kill nobody", 11, root), ERR_NOT_FOUND);
     job_unref(j);
     job_unref(root);
     KT_ASSERT(!dbgcmd_busy());

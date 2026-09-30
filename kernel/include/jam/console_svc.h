@@ -54,8 +54,8 @@ void     screen_owner_drop(struct kobject *owner);   /* unref, releasing if neve
  * thread and wait for it (cancellable: ERR_CANCELED leaves it running).
  * scope (may be NULL) is the job tree "ps" lists. */
 int64_t  dbgcmd_run(const char *cmd, size_t len, struct job *scope);
-/* The same for a caller in job `caller` (may be NULL): "kill" never finds a
- * process of one of its strict ancestor jobs. */
+/* The same for a caller in job `caller` (may be NULL); no command looks at
+ * it. */
 int64_t  dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct job *caller);
 bool     dbgcmd_busy(void);
 /* The parse without running anything (tests): 0 if cmd is known. */
