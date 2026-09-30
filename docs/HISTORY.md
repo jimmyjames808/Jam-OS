@@ -46,8 +46,9 @@ user processes:
 - devmgr finds disks and partitions and publishes mounts; init keeps the
   system's file namespace and sends each program its mounts (as one
   whole-namespace message, so a program that never looks is never
-  flooded); programs open files by path; the shell got `ls cat cp mv rm
-  mkdir touch write df sync mount`.
+  flooded); programs open files by path; the shell's file commands
+  (`ls`, `cat`, ...) work on every mount, and it got `mkdir touch write
+  cp mv rm df sync mount`.
 - logd saves each boot's log to `/data/logs/boot-NNNN.txt`, syncing every
   250 ms and flushing before a reboot.
 - Other sticks mount read-only at `/usb0`, `/usb1`, ... (`mount -w` to
@@ -57,9 +58,11 @@ user processes:
 
 Tracks A (usb-storage), B (fat), C (namespace, init, shell) and D (devmgr,
 logd) in parallel, a join, other sticks, then the review (28 findings;
-two High: fat mapped a client's buffer, so any program with `/data` could
-crash it; and a partitioned stick whose first sector looked like a FAT
-volume was served whole). The PC rounds found more: a second `ktest` in
+three High: fat mapped a client's buffer, so any program with `/data` could
+crash it; a partitioned stick whose first sector looked like a FAT volume
+was served whole; and the Alder/Raptor Lake INVLPG erratum, which old
+microcode leaves open while PCIDs are on, so the kernel now leaves them
+off there). The PC rounds found more: a second `ktest` in
 one boot always panicked (a test's static fake CPUs), the boot log lost
 its tail, two leaks (mount notices nobody read, 30 KB per utest run; the
 user heap never merged freed blocks), a global fault hook that failed
@@ -69,8 +72,8 @@ looked idle to placement; stealing ignored the core layout). The soak
 test (`ktest loops= seed= keep load`, `soak`) was built to find this
 kind of bug, and replaced the stress test as the PC's tier.
 
-On the PC (i7-14700K class Raptor Lake, microcode 0x11f: the INVLPG/PCID
-erratum is fixed there, so PCIDs stay on): the stick's `/esp` and
+On the PC (an i7-14700, Raptor Lake, with microcode 0x11f: the erratum is
+fixed there, so PCIDs stay on): the stick's `/esp` and
 `/data`, a SanDisk at `/usb0` read and written (macOS's check clean
 afterwards), the boot stick pulled mid-soak and replugged (the soak
 passed, the volume came back dirty and was mounted), the logs read on the
@@ -276,6 +279,16 @@ with 27 clients at 836,077 calls/s (M4: 492,673), worst call 37 us,
 Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
+- 2026-10-01: the soak test replaced the stress test as the PC's tier:
+  `soak 2` after a fix round, All tests and `soak 10` to sign off a
+  milestone; the stress test stays for kernel work. The audio track
+  started before M8's sign-off had finished. HDMI/DisplayPort audio is not
+  planned; USB audio maybe (A3). A boot splash with the logo animation and
+  its sound (AS) comes right after the audio milestones.
+- 2026-09-30: running programs from `/data` waits until after M8 (a
+  policy choice: anything written to the stick could then run). Other
+  sticks are read-only unless `mount -w`, and never formatted; GPT sticks
+  are left out for now.
 - 2026-09-30: storage stays as planned: the USB stick and FAT32 only. An
   NVMe driver (easier, and the internal Crucial drive already has a FAT
   partition from an earlier attempt) and other filesystems (exFAT,
