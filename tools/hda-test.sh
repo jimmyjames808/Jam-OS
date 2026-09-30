@@ -3,8 +3,8 @@
 #   1. the shell (tools/shell-tests/hda.txt): each controller's dump at
 #      boot, `hda` from the shell, `kill hda` and devmgr's restart;
 #   2. the `init` run (utest, usbtest) with the same devices: devmgr stops
-#      every driver at the end, and hda must end cleanly (its controller
-#      back in reset, its job empty: "run complete: no problems").
+#      every driver at the end, and each hda must end cleanly (its
+#      controller back in reset, exit 0, nothing left in init's root job).
 # The devices: intel-hda (ICH6, 8086:2668) with hda-duplex (codec 0) and
 # hda-output (codec 1), and ich9-intel-hda (8086:293e) with hda-micro. The
 # codecs log every verb they get (their debug=3), and every one must be a
@@ -46,9 +46,22 @@ fi
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" \
     tools/qemu-test.sh "$out" hda-init init > "$out/hda-init.out" 2>&1 || true
 log="$out/hda-init.log"
-grep -q "run complete: no problems" "$log" || { echo "hda-init: the run had problems"; ok=0; }
 n=$(grep -c "\[hda\] stopped: controller back in reset (client closed)" "$log" || true)
 [ "$n" = 2 ] || { echo "hda-init: $n clean stop(s), want 2"; ok=0; }
+if grep -E "drv/hda (did not end cleanly|crashed|was killed)|process \"hda\" killed" "$log"; then
+    echo "hda-init: the hda driver did not end cleanly"
+    ok=0
+fi
+grep -q "root job afterwards: .*(clean)" "$log" || { echo "hda-init: init's root job not clean"; ok=0; }
+# The run's own verdict is reported, not required: it ends "with problems"
+# about one run in three on main too, from a fat-esp shutdown race
+# (docs/ROADMAP.md, smaller follow-ups).
+if grep -q "run complete: no problems" "$log"; then
+    echo "hda-init: run complete: no problems"
+else
+    echo "hda-init: note: the run had problems:"
+    grep "devmgr: .* did not end cleanly" "$log" | head -3
+fi
 
 if [ $ok = 1 ]; then
     echo "hda: PASS ($verbs verbs, all GETs)"
