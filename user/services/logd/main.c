@@ -10,8 +10,14 @@
  * piece as it arrives. Bytes the ring dropped before logd got to them are
  * marked in the file with a "[logd: N bytes ... lost]" line.
  *
- * Sync: written bytes are synced at most once a second: at once when the
- * last sync is more than a second ago, else when that second is over.
+ * Sync: written bytes are synced at most every SYNC_EVERY (250 ms): at once
+ * when the last sync is longer ago than that, else when that time is over.
+ * So a sudden stop (a panic, the plug pulled) loses at most the last
+ * quarter of a second of the log, plus one write's time. The price while
+ * the log flows: four file.syncs a second, each a directory sector, the
+ * clean mark in the FATs and one cache flush of the stick; nothing while
+ * the log is quiet. A stop that is announced loses nothing: init asks for
+ * a flush (LOGD_SR_CTL, abi/idl/logctl.idl) before it resets the machine.
  *
  * Without /data (not mounted, gone, its filesystem restarting, full) logd
  * keeps running and tries again after RETRY_FIRST, doubling up to
@@ -23,12 +29,16 @@
  *
  * logd.h has the two startup handles that replace the namespace and the
  * kernel log for tests. */
+#include <idl/logctl.h>
 #include <os.h>
 #include "logd.h"
 
 #define CHUNK       4096u            /* bytes of log taken at a time */
 #define NOTE_MAX    80u              /* room before a piece for the "lost" line */
-#define SYNC_EVERY  NS_PER_S
+#define SYNC_EVERY  (250 * NS_PER_MS)
+#define FLUSH_MAX   (500 * NS_PER_MS)   /* a flush stops reading the log after this long */
+#define KEY_LOG     1ull             /* port keys: the log has more (or has ended) */
+#define KEY_CTL     2ull             /* a request on the control channel */
 #define RETRY_FIRST NS_PER_S
 #define RETRY_MAX   (8 * NS_PER_S)
 
@@ -41,6 +51,10 @@ struct source {
 };
 
 static struct source src;
+static handle_t port;          /* what wait_for waits on */
+static handle_t ctl;           /* LOGD_SR_CTL, or 0 */
+static bool     ctl_armed;     /* ctl is bound to the port (ONCE) */
+static bool     ctl_pending;   /* a request may be queued on ctl */
 static char     piece[NOTE_MAX + CHUNK];   /* the piece being written, after its note */
 static uint32_t piece_at, piece_len;       /* where it starts in piece[], its length (0: none) */
 
@@ -110,16 +124,24 @@ static void take(void)
  * deadline passes. */
 static void wait_for(bool for_log, uint64_t deadline)
 {
-    signals_t seen = 0;
-    if (src.klog && !for_log) {
-        jam_nanosleep(deadline);
-        return;
-    }
     signals_t mask = (for_log ? SIG_READABLE : 0) | (src.klog ? 0 : SIG_PEER_CLOSED);
-    status_t st = jam_object_wait_one(src.h, mask, deadline, &seen);
+    bool log_armed = mask && jam_port_bind(port, src.h, KEY_LOG, mask, PORT_BIND_ONCE) == OK;
+    if (ctl && !ctl_armed)
+        ctl_armed = jam_port_bind(port, ctl, KEY_CTL, SIG_READABLE | SIG_PEER_CLOSED,
+                                  PORT_BIND_ONCE) == OK;
+    struct port_packet pkt;
+    status_t st = jam_port_wait(port, deadline, &pkt);
+    if (st == OK && pkt.key == KEY_CTL) {
+        ctl_armed = false;
+        ctl_pending = true;
+    }
+    if (st == OK && pkt.key == KEY_LOG)
+        log_armed = false;
     /* Closed while /data is away: what is still queued can't be saved. */
-    if (!for_log && st == OK)
+    if (st == OK && pkt.key == KEY_LOG && !for_log)
         src.ended = true;
+    if (log_armed)
+        (void)jam_port_unbind(port, src.h, KEY_LOG);   /* not fired: nothing to undo but it */
 }
 
 static bool open_source(void)
@@ -176,6 +198,54 @@ static status_t save(uint64_t t)
     return logfile_sync();
 }
 
+/* logctl.flush: the log up to now into the file, and the file onto the
+ * medium. Reading stops when the log has no more or after FLUSH_MAX: a
+ * log that never pauses must not keep the caller. */
+static status_t op_flush(void *ctx)
+{
+    (void)ctx;
+    if (!up)
+        return ERR_NOT_FOUND;
+    uint64_t end = now() + FLUSH_MAX;
+    status_t st = OK;
+    do {
+        if (!piece_len)
+            take();
+        if (!piece_len)
+            break;
+        st = logfile_write(piece + piece_at, piece_len);
+        if (st == OK)
+            piece_len = 0;
+    } while (st == OK && now() < end);
+    if (st == OK)
+        st = logfile_sync();
+    if (st == OK) {
+        dirty = false;
+        last_sync = now();
+    }
+    return st;
+}
+
+static const struct logctl_ops ctl_ops = { .flush = op_flush };
+
+/* Answer what is queued on the control channel. OK, or what /data failed
+ * a flush with (the caller was told; the main loop then treats /data as
+ * gone). */
+static status_t serve_ctl(void)
+{
+    status_t st = OK;
+    ctl_pending = false;
+    for (int guard = 0; guard < 8 && st == OK; guard++)
+        st = logctl_serve_one(ctl, &ctl_ops, NULL);
+    if (st == OK) {
+        ctl_pending = true;   /* maybe more */
+    } else if (st != ERR_SHOULD_WAIT) {
+        jam_handle_close(ctl);   /* its holder is gone */
+        ctl = HANDLE_INVALID;
+    }
+    return OK;
+}
+
 /* No /data (any more): close the file, say so once, try again later. */
 static void lost_data(status_t st)
 {
@@ -197,15 +267,24 @@ int main(int argc, char **argv)
     store = fs ? store_fs(fs) : &store_ns;
     if (!open_source())
         return 1;
+    ctl = startup_handle(LOGD_SR_CTL);
+    if (jam_port_create(&port) != OK) {
+        printf("logd: no port\n");
+        return 1;
+    }
     while (!src.ended) {
         status_t st = OK;
         uint64_t t = now();
+        if (ctl && ctl_pending)
+            (void)serve_ctl();   /* always OK: a failed flush is its caller's to hear */
         if (!up && t >= retry_at)
             st = try_open();
         if (up)
             st = save(t);
         if (st != OK)
             lost_data(st);
+        if (ctl && ctl_pending)
+            continue;
         if (!up)
             wait_for(false, retry_at);
         else if (!piece_len)

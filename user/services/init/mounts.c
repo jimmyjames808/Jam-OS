@@ -155,6 +155,11 @@ void mounts_unwatch(void)
     nhave = 0;
 }
 
+void mounts_settle(void)
+{
+    (void)fs_sync_by(DATA_MOUNT, now() + NS_PER_S);   /* best effort: the reset comes next */
+}
+
 void mounts_sync(void)
 {
     uint64_t t0 = now();

@@ -34,11 +34,19 @@ data="$stick@@64M"
 want() {
     "$@" > /dev/null 2>&1 || { echo "$name: on the stick: '$*' failed"; ok=0; }
 }
+# The labels, as macOS and Windows read them: a plain label entry in the
+# root directory and the same text in the boot sector.
+want python3 tools/fat-label.py build/jamos.img 1
+want python3 tools/fat-label.py build/jamos.img 64
 if [ $ok = 1 ]; then
+    want python3 tools/fat-label.py "$stick" 64
     want mdir -i "$data" ::/logs/boot-0001.txt ::/logs/boot-0002.txt ::/logs/boot-0003.txt
     want mdir -i "$data" ::/after.txt
     mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data mounted" ||
         { echo "$name: boot-0001.txt on the stick doesn't hold the first boot's log"; ok=0; }
+    # boot 1 ended with `reboot`: its log holds the shutdown's own lines
+    mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced in" ||
+        { echo "$name: boot-0001.txt on the stick ends before the reboot's sync line"; ok=0; }
     mtype -i "$data" ::/after.txt 2>/dev/null | grep -q "after the pull-c" ||
         { echo "$name: after.txt on the stick doesn't hold what boot 3 wrote"; ok=0; }
 fi

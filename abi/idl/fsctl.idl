@@ -1,0 +1,16 @@
+# fsctl: a filesystem service's control channel, served by fat
+# (user/services/fat) to whoever started it with one (<fatsvc.h>:
+# FAT_SR_CTL): devmgr, which keeps the client end to itself. What it allows
+# is not for a filesystem's clients, so it is not part of `fs`. After
+# ERR_PEER_CLOSED the service is gone; its next start has a new channel.
+# Format: see tools/genidl.py.
+
+protocol fsctl 20
+
+# Stop serving, in order: every open file is closed with what it wrote
+# flushed, the volume is marked clean and the medium flushed, then this
+# answers (the flush's status) and the service exits 0. A request that came
+# before it was served to its end; one that comes after finds the channels
+# closed (ERR_PEER_CLOSED). Nothing is lost between the two, which a sync
+# followed by a kill can't promise.
+1  stop  () -> ()

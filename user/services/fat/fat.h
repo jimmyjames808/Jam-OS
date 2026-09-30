@@ -34,6 +34,7 @@
  * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart). */
 #define FAT_KEY_FS          1ull
 #define FAT_KEY_BLOCK       2ull
+#define FAT_KEY_CTL         3ull
 #define FAT_KEY_FILE_BIT    (1ull << 62)
 #define FAT_KEY_FILE(s, g)  (FAT_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
@@ -62,18 +63,24 @@ struct fat_vol {
 
 extern struct fat_vol vol;
 
-/* One open file: a slot of the table in fileops.c. */
+/* A file that is open, once however many fs.open calls share it. */
+struct fat_open {
+    unsigned refs;            /* slots of files[] that use it; 0: free */
+    bool     unsynced;        /* written since its last f_sync */
+    char     path[FS_PATH_MAX];/* its resolved path: what makes two opens one file */
+    FIL      fil;             /* FatFs's file, opened to read (and to write, if its first
+                               * open asked) */
+};
+
+/* One fs.open: a slot of the table in fileops.c. */
 struct fat_file {
     bool     used;            /* the slot holds an open file */
     bool     armed;           /* ch is bound to the port (ONCE) */
-    bool     unsynced;        /* written since its last f_sync */
     uint32_t gen;             /* bumped on every open of this slot */
     uint32_t flags;           /* FS_* it was opened with */
     handle_t ch;              /* our end of its `file` channel */
-    handle_t vmo;             /* its transfer buffer */
-    uint8_t *buf;             /* ... mapped, FAT_FILE_BUF bytes */
-    char     path[FS_PATH_MAX];/* its resolved path, for stat's mtime */
-    FIL      fil;             /* FatFs's file */
+    handle_t vmo;             /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
+    struct fat_open *o;       /* the file */
 };
 
 /* ---- disk.c ---------------------------------------------------------------------- */
@@ -85,16 +92,23 @@ status_t disk_open(handle_t block);
  * sector? */
 status_t disk_is_blank(bool *out);
 /* Around f_mkfs: keep its write of sector 0 (the boot sector) back, then
- * write it last, flushed before and after. Until the commit the partition
- * is still blank. ERR_BAD_STATE: nothing wrote sector 0. */
+ * write it last, flushed before and after, with `label` (at most 11
+ * characters, as f_setlabel will get) in its label field and in its
+ * backup copy's. Until the commit the partition is still blank.
+ * ERR_BAD_STATE: nothing wrote sector 0. */
 void     disk_hold_boot(void);
-status_t disk_commit_boot(void);
+status_t disk_commit_boot(const char *label);
+/* The format failed: forget the held sector, write nothing. */
+void     disk_drop_boot(void);
 /* After a mount: find the FATs, log a volume found dirty, and (writable
  * FAT16/32) start keeping the dirty flag. */
 void     disk_watch(void);
-/* Everything FatFs wrote is flushed (the caller synced the files): mark the
- * volume clean and flush the medium (block.sync). */
-status_t disk_settle(void);
+/* FatFs has written everything out (the caller synced the files): flush the
+ * medium if it needs it and mark the volume clean. durable: flush the mark
+ * too (fs.sync, fat's end); without it the mark goes out with the next
+ * flush, and a power cut before that finds a volume that is whole and
+ * called dirty. */
+status_t disk_settle(bool durable);
 
 /* ---- path.c ---------------------------------------------------------------------- */
 
@@ -107,6 +121,8 @@ status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX]);
 bool     path_is_root(const char *p);
 /* Is `p` below directory `dir` (compared without case, as FAT does)? */
 bool     path_inside(const char *p, const char *dir);
+/* Are two resolved paths the same, compared without case? */
+bool     path_same(const char *a, const char *b);
 /* The generic FRESULT -> ERR_* mapping (the methods refine FR_DENIED). */
 status_t fr_status(FRESULT r);
 /* A FAT date and time (the clock's own zone) as seconds since 1970 counted

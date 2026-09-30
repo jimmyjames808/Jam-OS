@@ -43,13 +43,24 @@
  * INVPCID is not used: invalidating a PCID that isn't loaded is deferred
  * to its next load, which only needs CR3's NOFLUSH bit.
  *
+ * The kernel shootdown above leans on invlpg dropping global entries, and
+ * on some Intel CPUs it may not while PCIDs are on (Intel's specification
+ * updates, errata ADL063 and RPL042: "INVLPG may not flush global
+ * translations when PCIDs are enabled"). A stale global entry is a kernel
+ * address still reaching a freed page. Microcode fixes it; pcid_decide
+ * leaves PCIDs off on an affected model that runs an older revision, as
+ * Linux does (arch/x86/mm/init.c, invlpg_miss_ids: the models and first
+ * fixed revisions in erratum[] are that table's).
+ *
  * The run-time switch (the benchmark) bumps an epoch; each CPU compares it
  * on every load and, when it changed, forgets every slot and flush-loads,
  * so entries cached under the other setting are never used. */
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
+#include <jam/kprintf.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
+#include <jam/string.h>
 #include <jam/x86.h>
 
 #define PCID_SLOTS 8
@@ -73,10 +84,76 @@ static bool on;                           /* the run-time switch (pcid_set) */
 static uint32_t epoch = 1;                /* pcpu[].epoch starts at 0: a reset */
 static uint64_t next_id = 1;
 
+/* Family 6 models whose INVLPG may miss global entries with PCIDs on, and
+ * the first microcode revision that fixes it. */
+static const struct {
+    uint32_t model;      /* CPUID model */
+    uint32_t fixed;      /* PCIDs are safe from this revision on */
+} erratum[] = {
+    { 0x97, 0x2e },      /* Alder Lake */
+    { 0x9a, 0x42c },     /* Alder Lake L */
+    { 0xbe, 0x11 },      /* Gracemont (Alder Lake N) */
+    { 0xb7, 0x118 },     /* Raptor Lake */
+    { 0xba, 0x4117 },    /* Raptor Lake P */
+    { 0xbf, 0x2e },      /* Raptor Lake S */
+};
+
+bool pcid_decide(const struct pcid_cpu_info *c, const char **why, uint32_t *fixed)
+{
+    *fixed = 0;
+    for (unsigned i = 0; i < sizeof(erratum) / sizeof(erratum[0]); i++)
+        if (c->intel && c->family == 6 && c->model == erratum[i].model)
+            *fixed = erratum[i].fixed;
+    if (!c->has_pcid || !c->has_pge) {
+        *why = "the CPU has none";
+        return false;
+    }
+    if (c->word_off) {
+        *why = "boot word nopcid";
+        return false;
+    }
+    if (c->word_on) {
+        *why = "boot word forcepcid";
+        return true;
+    }
+    if (*fixed && c->microcode < *fixed) {
+        *why = "INVLPG erratum, microcode older than the fix (forcepcid overrides)";
+        return false;
+    }
+    *why = *fixed ? "microcode has the INVLPG fix" : "not an affected CPU";
+    return true;
+}
+
+static bool decide_here(const char **why, uint32_t *fixed)
+{
+    const struct pcid_cpu_info c = {
+        .has_pcid = cpu_features.pcid, .has_pge = cpu_features.pge,
+        .intel = !strcmp(cpu_features.vendor, "GenuineIntel"),
+        .family = cpu_features.family, .model = cpu_features.model,
+        .microcode = cpu_features.microcode,
+        .word_off = cmdline_has("nopcid"), .word_on = cmdline_has("forcepcid"),
+    };
+    return pcid_decide(&c, why, fixed);
+}
+
+void pcid_report(void)
+{
+    const char *why;
+    uint32_t fixed;
+    bool use = decide_here(&why, &fixed);
+    if (fixed)
+        kprintf("pcid:        %s: %s (microcode %x, fixed in %x)\n", use ? "on" : "off", why,
+                cpu_features.microcode, fixed);
+    else
+        kprintf("pcid:        %s: %s\n", use ? "on" : "off", why);
+}
+
 bool pcid_usable(void)
 {
     if (__atomic_load_n(&usable, __ATOMIC_RELAXED) < 0) {
-        int u = cpu_features.pcid && cpu_features.pge && !cmdline_has("nopcid");
+        const char *why;
+        uint32_t fixed;
+        int u = decide_here(&why, &fixed);
         __atomic_store_n(&usable, u, __ATOMIC_RELAXED);
         __atomic_store_n(&on, u, __ATOMIC_RELAXED);
     }
@@ -161,9 +238,15 @@ void pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen)
  * what pcid_load would load (the PCID, plus PCID_TEST_KEEP when it keeps
  * the entries) on fake CPU `cpu` (< 4), as if PCIDs were in use and the
  * switch were `sw`. */
+static struct pcid_cpu fake[4];
+
+void pcid_test_reset(void)
+{
+    memset(fake, 0, sizeof(fake));
+}
+
 uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw)
 {
-    static struct pcid_cpu fake[4];
     bool keep;
     uint32_t pcid = decide(&fake[cpu % 4], sw, id, &gen, &keep);
     return pcid | (keep ? PCID_TEST_KEEP : 0);

@@ -25,7 +25,9 @@
  * A stick with no table at all, whose block 0 is a FAT boot sector (a
  * "superfloppy": many sticks are sold that way), is listed as one
  * partition of type PART_WHOLE covering the whole disk. That is the one
- * case in which a channel reaches block 0: there is no table to protect. */
+ * case in which a channel reaches block 0: there is no table to protect.
+ * The table is looked for first (mbr_table): block 0 of a partitioned
+ * stick may look like a FAT boot sector too. */
 #include <idl/block.h>
 #include "storage.h"
 
@@ -73,6 +75,27 @@ static bool fat_boot_sector(const struct disk *k, const uint8_t *s)
     return fat16 || fat32;
 }
 
+/* Does s (block 0) hold a partition table? Every entry's status byte is
+ * 00 or 80, at least one entry is in use, and none starts at block 0 (the
+ * table's own block: mtools' mformat writes such an entry, covering the
+ * whole disk, into the boot sector of a volume without a table). Asked before fat_boot_sector:
+ * some formatters leave a jump and a BPB in the MBR of a partitioned
+ * stick, and a disk with partitions must never be served whole. A FAT boot
+ * sector has boot code or zeros where the table would be: text and code
+ * fail the status bytes, zeros have no entry in use. */
+static bool mbr_table(const uint8_t *s)
+{
+    bool used = false;
+    for (int i = 0; i < MAX_PARTS; i++) {
+        const uint8_t *e = s + 446 + 16 * i;
+        bool in_use = e[4] && le32(e + 12);
+        if ((e[0] != 0x00 && e[0] != 0x80) || (in_use && !le32(e + 8)))
+            return false;
+        used |= in_use;
+    }
+    return used;
+}
+
 status_t parts_read(struct disk *k)
 {
     k->nparts = 0;
@@ -84,7 +107,7 @@ status_t parts_read(struct disk *k)
     const uint8_t *s = k->xbuf;
     if (s[510] != 0x55 || s[511] != 0xaa)
         return OK;   /* no partition table */
-    if (fat_boot_sector(k, s)) {
+    if (!mbr_table(s) && fat_boot_sector(k, s)) {
         k->parts[k->nparts++] = (struct part){ .type = PART_WHOLE, .start = 0, .blocks = k->blocks };
         return OK;
     }

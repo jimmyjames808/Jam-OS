@@ -171,7 +171,11 @@ Every driver and service is a userspace process from the start.
   next load; CPUs that only ran it earlier are never interrupted. Kernel
   entries are global (PCIDs require PGE); INVPCID is not used. Switch
   `pcid_set`, boot `nopcid`. QEMU's TCG has no PCIDs: the PC is the only
-  place this runs for real.
+  place this runs for real. On Alder Lake and Raptor Lake CPUs whose
+  microcode is older than Intel's fix, INVLPG may leave global entries
+  while PCIDs are on (errata ADL063, RPL042), which would break the
+  kernel's own shootdowns: there PCIDs stay off (`pcid_decide`; the boot
+  log's `pcid:` line says which and why; boot `forcepcid` overrides).
 
 ## SMP
 
@@ -592,8 +596,6 @@ through a shared VMO ring.
 
 ## Storage
 
-Not built yet.
-
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
   bootfs), which Jam OS never writes, and a **data partition** mounted at
   `/data` for everything writable. A bug in the FAT32 writer can't make the
@@ -602,8 +604,15 @@ Not built yet.
 - The FAT "clean shutdown" bit is cleared on the stick before the first
   sector written after a sync, and set again once everything is flushed (a
   sync, the last written file closed, a clean stop). A volume found dirty
-  is mounted anyway and logged: there is no fsck. Every sync sends SCSI
-  SYNCHRONIZE CACHE.
+  is mounted anyway and logged: there is no fsck. A sync sends SCSI
+  SYNCHRONIZE CACHE when a sector was written since the last one: a
+  file's sync is one, with the clean bit written after it and carried by
+  the next; a filesystem's sync (the shell's `sync`, init before a reboot)
+  flushes the bit too.
+- One file is one open file in fat, however many programs have it open:
+  a file being written can be opened by others to read, and they see what
+  has been written so far. A second writer is refused. fat never maps the
+  buffer it shares with a file's client (the client can shrink it).
 - Only the boot disk's blank data partition (no boot signature) is
   formatted; one that holds another filesystem or a damaged FAT is left
   alone. fat formats only when it is started with an explicit flag
@@ -622,21 +631,32 @@ Not built yet.
   0E EF) gets a fat service and the lowest free `/usbN`, one at a time so
   the numbers follow the order found; a stick with no partition table
   whose block 0 is a FAT boot sector is served by usb-storage as one
-  partition over the whole disk. GPT is not read. A partition that turns
+  partition over the whole disk (a block 0 that holds a partition table
+  is never taken for one, whatever else it holds). GPT is not read. A partition that turns
   out to hold no FAT volume is left alone and said so in the log.
 - Read-only is enforced below the filesystem: a `/usbN` partition's
   `block` channel is opened read-only, and usb-storage refuses every write
   on such a channel, so a bug in fat or FatFs can't change someone's
   stick. `mount -w /usbN` (the shell asks init, init asks devmgr:
   `DEVMGR_REMOUNT`) stops that fat and starts a new one on a channel
-  opened read-write; `mount -r` syncs it and goes back. The mount is gone
+  opened read-write; `mount -r` goes back. The stop is in order (devmgr's
+  own `fsctl` channel to each fat, `abi/idl/fsctl.idl`): files closed and
+  flushed, the volume marked clean, then the exit, so a program writing
+  at that moment gets an error for the write that came too late and loses
+  none that was answered. The mount is gone
   for a moment either way, and files open on it are closed. `/boot` and
   `/esp` can never be made writable and `/data` never read-only: init
   passes on nothing but `/usbN`, and devmgr remounts nothing else.
 - logd follows the kernel log from its first byte into
   `/data/logs/boot-NNNN.txt`, the next free number each boot, syncing at
-  most once a second. Without `/data` it waits and tries again; what the
-  kernel's ring drops meanwhile is marked in the file as lost.
+  most every 250 ms while the log flows. A reboot loses nothing: init
+  syncs the mounts, has logd write out and sync the log up to that line
+  (`abi/idl/logctl.idl`), and resets. A panic or a pulled plug loses what
+  was logged since the last sync, a quarter of a second at most plus the
+  write in flight; the panic's own text is never saved (the crash kernel
+  is a later milestone). Without `/data` it waits and tries again; what
+  the kernel's 64 KiB ring drops meanwhile, or in a burst faster than the
+  stick takes it, is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
 

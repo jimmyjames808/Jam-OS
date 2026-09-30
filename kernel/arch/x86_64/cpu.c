@@ -27,6 +27,15 @@ void cpu_detect(void)
     f->vendor[12] = '\0';
 
     cpuid(1, 0, &a, &b, &c, &d);
+    /* Family 6 and 15 extend the model, family 15 the family (SDM vol. 2A,
+     * CPUID leaf 1). */
+    f->family = a >> 8 & 0xf;
+    f->model = a >> 4 & 0xf;
+    f->stepping = a & 0xf;
+    if (f->family == 6 || f->family == 15)
+        f->model |= (a >> 16 & 0xf) << 4;
+    if (f->family == 15)
+        f->family += a >> 20 & 0xff;
     f->pge    = d & (1u << 13);
     f->pat    = d & (1u << 16);
     f->x2apic = c & (1u << 21);
@@ -42,6 +51,20 @@ void cpu_detect(void)
         f->smap   = b & (1u << 20);
         f->umip   = c & (1u << 2);
         f->invpcid = b & (1u << 10);
+        f->pku     = c & (1u << 3);
+        f->waitpkg = c & (1u << 5);
+        f->cet_ss  = c & (1u << 7);
+        f->pks     = c & (1u << 31);
+        f->uintr   = d & (1u << 5);
+        f->cet_ibt = d & (1u << 20);
+    }
+    /* The microcode revision: the high half of IA32_BIOS_SIGN_ID, which an
+     * Intel CPU fills in when CPUID leaf 1 runs after the MSR was cleared
+     * (SDM vol. 3A 10.11.7.1). Other vendors: not read. */
+    if (!strcmp(f->vendor, "GenuineIntel")) {
+        wrmsr(MSR_BIOS_SIGN_ID, 0);
+        cpuid(1, 0, &a, &b, &c, &d);
+        f->microcode = (uint32_t)(rdmsr(MSR_BIOS_SIGN_ID) >> 32);
     }
     smap_on = f->smap;
 

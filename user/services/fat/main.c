@@ -20,6 +20,7 @@
  * disk went away); 1 when the volume can't be served but might be later
  * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
  * partition holds no FAT volume fat can serve and nothing was formatted. */
+#include <idl/fsctl.h>
 #include "fat.h"
 
 #define LABEL       "JAMOS-DATA"
@@ -53,8 +54,11 @@ static FRESULT format(void)
     if (fr == FR_MKFS_ABORTED)   /* too few clusters for FAT32 */
         fr = f_mkfs("", &small, work, FORMAT_WORK);
     free(work);
-    status_t st = disk_commit_boot();
-    if (fr == FR_OK && st != OK)
+    /* Only a format that went through gets its boot sector: after a failed
+     * one the partition stays blank, for the next start to format. */
+    if (fr != FR_OK)
+        disk_drop_boot();
+    else if (disk_commit_boot(LABEL) != OK)
         fr = FR_DISK_ERR;
     if (fr == FR_OK)
         fr = f_mount(&vol.fs, "", 1);
@@ -122,20 +126,39 @@ static status_t arm_fs(handle_t serve)
                          PORT_BIND_ONCE);
 }
 
-/* Serve until the fs channel's client is gone or the disk is (OK), or
- * something fails (its status). Each channel gets FAT_BATCH requests per
- * turn, so one busy client can't starve the others. */
-static status_t run(handle_t serve)
+static bool stopping;   /* fsctl.stop was answered: nothing more is served */
+
+/* fsctl.stop: everything closed and on the medium; run() then ends. */
+static status_t op_stop(void *ctx)
+{
+    (void)ctx;
+    files_close_all();
+    stopping = true;
+    return vol.disk_gone ? ERR_PEER_CLOSED : disk_settle(true);
+}
+
+static const struct fsctl_ops ctl_ops = { .stop = op_stop };
+
+/* Serve until the fs channel's client is gone, the disk is, or fsctl.stop
+ * was asked (OK), or something fails (its status). Each channel gets
+ * FAT_BATCH requests per turn, so one busy client can't starve the others. */
+static status_t run(handle_t serve, handle_t ctl)
 {
     status_t st = arm_fs(serve);
     if (st == OK)
         st = jam_port_bind(vol.port, vol.block, FAT_KEY_BLOCK, SIG_PEER_CLOSED, PORT_BIND_ONCE);
-    while (st == OK && !vol.disk_gone) {
+    /* PERSISTENT: one stop is all it ever serves; its holder going away
+     * means nothing (the fs channel's clients decide when fat ends). */
+    if (st == OK && ctl)
+        st = jam_port_bind(vol.port, ctl, FAT_KEY_CTL, SIG_READABLE, PORT_BIND_PERSISTENT);
+    while (st == OK && !vol.disk_gone && !stopping) {
         struct port_packet pkt;
         st = jam_port_wait(vol.port, DEADLINE_NEVER, &pkt);
         if (st != OK)
             break;
-        if (pkt.key == FAT_KEY_BLOCK) {
+        if (pkt.key == FAT_KEY_CTL) {
+            (void)fsctl_serve_one(ctl, &ctl_ops, NULL);   /* nothing queued: nothing to do */
+        } else if (pkt.key == FAT_KEY_BLOCK) {
             vol.disk_gone = true;
         } else if (pkt.key & FAT_KEY_FILE_BIT) {
             files_event(pkt.key);
@@ -174,13 +197,13 @@ int main(int argc, char **argv)
         printf("fat %s: not serving: %s\n", vol.name, status_str(st));
         return no_volume ? FAT_EXIT_NO_VOLUME : 1;
     }
-    st = run(serve);
+    st = run(serve, startup_handle(FAT_SR_CTL));
     files_close_all();
     if (vol.disk_gone) {
         printf("fat %s: the disk is gone: stopping\n", vol.name);
         return 0;
     }
-    status_t st2 = disk_settle();
+    status_t st2 = disk_settle(true);
     if (st == OK)
         st = st2;
     if (st != OK)

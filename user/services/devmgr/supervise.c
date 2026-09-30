@@ -10,7 +10,10 @@
  *     after 5 restarts within 60 s gives up: no more restarts, a log line
  *     and a RESULTS line. A real driver's crash, error exit or give-up is
  *     a problem (devmgr exits 1 at the end); a DEVMGR_KILL, and anything
- *     the crash-test driver does, is expected.
+ *     the crash-test driver does, is expected. So is the filesystem
+ *     service of someone else's stick ending (excused): a stick that
+ *     fails its reads is that stick's trouble, said in the log and no
+ *     more; it is restarted and given up on like any other.
  *
  * The restart itself is a start from scratch (bind.c: new dma_cap, so Bus
  * Master Enable stays off until the new driver has quiesced the device;
@@ -21,6 +24,13 @@
  * them (the reconnect rule, <devmgr.h>). */
 #include <fatsvc.h>
 #include "internal.h"
+
+/* b ending is never a problem of ours: a test's, or the filesystem service
+ * of a stick that isn't the boot disk. */
+static bool excused(const struct binding *b)
+{
+    return b->test || (b->kind == BIND_FS && b->other);
+}
 
 /* Restarts within the window. */
 static unsigned recent(const struct binding *b, uint64_t t)
@@ -43,10 +53,11 @@ static void schedule(struct binding *b, const char *why, bool expected)
     b->serve = HANDLE_INVALID;
     if (n >= SUP_RESTART_LIMIT) {
         b->state = DEVMGR_SUP_GAVE_UP;
-        say(true, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s", bdf(b), b->path,
-            why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
-            b->test ? " (the crash-test driver: expected)" : "");
-        if (!b->test)
+        say(!excused(b) || b->test, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s",
+            bdf(b), b->path, why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
+            b->test ? " (the crash-test driver: expected)"
+            : excused(b) ? " (another stick's filesystem: left alone)" : "");
+        if (!excused(b))
             problems++;
         return;
     }
@@ -114,7 +125,7 @@ void sup_died(struct binding *b, uint32_t gen)
         return;
     }
     forget_driver(b);
-    bool expected = b->killed || b->test;
+    bool expected = b->killed || excused(b);
     if (!expected)
         problems++;
     char why[48];
@@ -175,9 +186,9 @@ void sup_run_due(void)
         b->console_wait = false;
         char why[48];
         snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(b->last));
-        if (!b->test)
+        if (!excused(b))
             problems++;
-        schedule(b, why, b->test);
+        schedule(b, why, excused(b));
     }
 }
 

@@ -1,0 +1,13 @@
+# logctl: logd's control channel, served by logd (user/services/logd) to
+# whoever started it with one (startup role SR_USER + 2): init, which asks
+# for a flush on the way to a reboot so the log's last lines are saved.
+# After ERR_PEER_CLOSED logd is gone: there is nothing to flush, and the
+# next logd comes with a new channel.
+# Format: see tools/genidl.py.
+
+protocol logctl 19
+
+# Everything logged so far is in the boot log's file and on the medium
+# (file.sync). ERR_NOT_FOUND: there is no /data to write to; else the
+# filesystem's error.
+1  flush  () -> ()

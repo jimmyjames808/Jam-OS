@@ -88,6 +88,7 @@ struct binding {
     /* A disk's driver (a BIND_USB running STORAGE_DRIVER) and BIND_FS (disk.c). */
     uint32_t            disk;       /* its disks slot + 1; 0: none */
     uint8_t             part;       /* BIND_FS: the partition it serves (storage.idl's index) */
+    handle_t            ctl;        /* BIND_FS: our end of its `fsctl` channel (0: none) */
     /* BIND_FS on a disk that isn't the boot disk (disk.c): a /usbN mount. */
     bool                other;      /* it is one: never given FAT_ARG_FORMAT */
     bool                rw;         /* its `block` channel is opened read-write (`mount -w`) */
@@ -204,6 +205,8 @@ status_t disk_remount(unsigned n, bool test, bool writable);
 /* A BIND_FS binding's handle for its service: FAT_SR_BLOCK, a new `block`
  * channel on its partition. ERR_PEER_CLOSED: the disk is gone. */
 status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* Close b's `fsctl` channel, if it has one. */
+void     fs_ctl_close(struct binding *b);
 /* The mount point b (BIND_FS) serves: "/data", "/esp-test", "/usb0". The
  * string is good until the next call. */
 const char *fs_mount_path(const struct binding *b);

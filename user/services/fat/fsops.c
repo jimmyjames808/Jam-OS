@@ -21,7 +21,7 @@ static status_t settled(status_t st)
 {
     if (st != OK || files_unsynced())
         return st;
-    return disk_settle();
+    return disk_settle(false);
 }
 
 static bool is_dir(const char *path)
@@ -171,7 +171,7 @@ static status_t op_sync(void *ctx)
     if (vol.read_only)
         return OK;
     status_t st = files_sync_all();
-    status_t st2 = files_unsynced() ? OK : disk_settle();
+    status_t st2 = files_unsynced() ? OK : disk_settle(true);
     return st != OK ? st : st2;
 }
 

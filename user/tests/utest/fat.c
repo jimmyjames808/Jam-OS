@@ -13,6 +13,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <fatsvc.h>
+#include <idl/fsctl.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
@@ -137,6 +138,9 @@ bool t_fat_format(void)
     CHECK(free_bytes > total - (1u << 20));
     CHECK_EQ(fat_kind(&disk), 32);
     CHECK(disk.mem[0] == 0xeb);   /* a boot sector at sector 0: no partition table inside */
+    /* the label is in the boot sector and its backup too, not only the root directory */
+    CHECK(!memcmp(disk.mem + 71, "JAMOS-DATA ", 11));
+    CHECK(!memcmp(disk.mem + 6 * RAMDISK_SECTOR + 71, "JAMOS-DATA ", 11));
     CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
     CHECK_ST(t_stat(&r, "/", NULL, &dir, NULL), OK);
     CHECK(dir);
@@ -289,18 +293,41 @@ static bool check_big_file(const struct fatrun *r)
     return true;
 }
 
-/* An open file is locked: no second writer, no unlink, no rename; and the
- * table of open files has an end. */
+/* An open file is locked: no second writer, no unlink, no rename; a reader
+ * next to the writer sees what it has written so far; and the table of
+ * open files has an end. */
 static bool check_open_files(const struct fatrun *r)
 {
     static struct tfile many[40];
     struct tfile f, g;
     unsigned n = 0;
     status_t st = OK;
-    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
-    CHECK_ST(t_open(r, "/hello.txt", FS_READ, &g), ERR_BAD_STATE);
+    struct tfile w;
+    char back[16] = "";
+    uint32_t done = 0;
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE | FS_TRUNCATE, &f), OK);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_open(r, "/HELLO.TXT", FS_READ | FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_write(&f, 0, "so far", 6, &done), OK);
+    CHECK_ST(t_open(r, "/Hello.txt", FS_READ, &g), OK);   /* one file, whatever the case */
+    CHECK_EQ(g.size, 6);
+    CHECK_ST(t_write(&f, 6, ", more", 6, &done), OK);     /* not synced: still seen */
+    CHECK_ST(t_read(&g, 0, back, sizeof(back), &done), OK);
+    CHECK_EQ(done, 12);
+    CHECK(!memcmp(back, "so far, more", 12));
+    CHECK_ST(t_write(&g, 0, "no", 2, &done), ERR_ACCESS_DENIED);   /* the reader can't write */
     CHECK_ST(t_unlink(r, "/hello.txt"), ERR_BAD_STATE);
     CHECK_ST(t_rename(r, "/hello.txt", "/other.txt"), ERR_BAD_STATE);
+    /* The writer goes first: the reader keeps the file, and nobody may
+     * write it until the reader has gone too. */
+    t_close(&f);
+    CHECK_ST(t_read(&g, 6, back, 6, &done), OK);
+    CHECK_EQ(done, 6);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
+    t_close(&g);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
+    CHECK_ST(t_open(r, "/hello.txt", FS_READ, &g), OK);
+    t_close(&g);
     t_close(&f);
     /* Closed: the very next call finds it so. Two readers are fine. */
     CHECK_ST(t_open(r, "/hello.txt", FS_READ, &f), OK);
@@ -318,6 +345,26 @@ static bool check_open_files(const struct fatrun *r)
     return true;
 }
 
+/* The transfer buffer is the client's to map, and with its handle the
+ * client can also shrink it to nothing: fat must answer the next read and
+ * write with an error, not fall over it. */
+static bool check_shrunk_buffer(const struct fatrun *r)
+{
+    uint8_t p[FS_PATH_MAX] = "/hello.txt";
+    handle_t ch, vmo;
+    uint64_t size = 0;
+    uint32_t n = 0;
+    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, p, FS_READ | FS_WRITE, &ch, &vmo, &size),
+             OK);
+    CHECK_ST(jam_vmo_set_size(vmo, 0), OK);
+    CHECK_ST(file_read_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(file_write_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(vmo), OK);
+    CHECK_ST(t_stat(r, "/hello.txt", &size, NULL, NULL), OK);   /* fat is still there */
+    return true;
+}
+
 bool t_fat_files(void)
 {
     struct fatrun r;
@@ -327,7 +374,24 @@ bool t_fat_files(void)
         return false;
     CHECK_EQ(fat_kind(&disk), 16);
     if (!check_reads(&r) || !check_open_flags(&r) || !check_growth(&r) || !check_big_file(&r) ||
-        !check_open_files(&r))
+        !check_open_files(&r) || !check_shrunk_buffer(&r))
+        return false;
+    /* fsctl.stop (what devmgr asks before a remount): a file still open
+     * with unsynced writes is closed and flushed, the volume is clean, and
+     * fat exits 0 with its fs channel's client still there. */
+    struct tfile late;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&r, "/late.txt", FS_WRITE | FS_CREATE, &late), OK);
+    CHECK_ST(t_write(&late, 0, "not synced", 10, &done), OK);
+    CHECK_ST(fsctl_stop_until(r.ctl, now() + FAT_CALL_NS), OK);
+    CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
+    CHECK_ST(t_write(&late, 10, "!", 1, &done), ERR_PEER_CLOSED);
+    t_close(&late);
+    if (!fat_wait(&r, 0))
+        return false;
+    CHECK_ST(jam_handle_close(r.fs), OK);
+    if (!ramdisk_join(&disk) || !fat_start(&r, &disk, false) ||
+        !file_is(&r, "/late.txt", "not synced"))
         return false;
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }
@@ -569,7 +633,13 @@ static bool dirty_on(unsigned megabytes, unsigned kind)
     uint32_t syncs = ramdisk_syncs(&disk);
     CHECK_ST(file_sync_until(f.ch, now() + FAT_CALL_NS), OK);
     CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
-    CHECK(ramdisk_syncs(&disk) > syncs);                   /* block.sync: on the medium */
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);             /* one block.sync: on the medium */
+    CHECK_ST(file_sync_until(f.ch, now() + FAT_CALL_NS), OK);
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);             /* nothing new: nothing sent */
+    CHECK_ST(t_sync(&r), OK);                              /* fs.sync: the clean mark too */
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 2);
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 2);
     CHECK_ST(t_write(&f, FAT_BUF, chunk, FAT_BUF, &done), OK);
     CHECK(!clean_bit(&disk, 0) && !clean_bit(&disk, 1));
     syncs = ramdisk_syncs(&disk);

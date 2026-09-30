@@ -22,6 +22,7 @@
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/pci.h>
+#include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
 #include <jam/resource.h>
@@ -63,6 +64,13 @@ static void print_boot_info(const struct boot_info *bi)
     kprintf("features:    nx=%d 1g=%d pat=%d pge=%d x2apic=%d invariant-tsc=%d\n",
             cpu_features.nx, cpu_features.pages_1g, cpu_features.pat,
             cpu_features.pge, cpu_features.x2apic, cpu_features.tsc_invariant);
+    kprintf("cpu id:      family %u model %x stepping %u, microcode %x\n", cpu_features.family,
+            cpu_features.model, cpu_features.stepping, cpu_features.microcode);
+    kprintf("cpu bits:    pcid=%d invpcid=%d pku=%d pks=%d waitpkg=%d cet-ss=%d cet-ibt=%d "
+            "uintr=%d\n", cpu_features.pcid, cpu_features.invpcid, cpu_features.pku,
+            cpu_features.pks, cpu_features.waitpkg, cpu_features.cet_ss, cpu_features.cet_ibt,
+            cpu_features.uintr);
+    pcid_report();
     kprintf("loader:      %s, cmdline \"%s\"\n", bi->loader_name, bi->cmdline);
     if (bi->fb.virt)
         kprintf("framebuffer: %ux%u %ubpp pitch %u @ phys %lx\n", bi->fb.width,

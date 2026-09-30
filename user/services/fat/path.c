@@ -94,6 +94,14 @@ bool path_inside(const char *p, const char *dir)
     return *p == '/';
 }
 
+bool path_same(const char *a, const char *b)
+{
+    while (*a && *b)
+        if (next_folded(&a) != next_folded(&b))
+            return false;
+    return !*a && !*b;
+}
+
 status_t fr_status(FRESULT r)
 {
     switch (r) {

@@ -39,6 +39,9 @@ void     mounts_unwatch(void);
 /* Everything written to /data is on the stick: fs.sync, given up after
  * 2 s (said in the log). Nothing to do without a /data. */
 void     mounts_sync(void);
+/* /data once more, without a word, for at most 1 s: after logd's last
+ * write, so the volume is left marked clean. */
+void     mounts_settle(void);
 
 /* ---- ctl.c ----------------------------------------------------------------------- */
 
@@ -59,6 +62,9 @@ void     ctl_serve(unsigned who);
 handle_t shell_root(void);
 /* devmgr's control channel, or 0 while none runs. */
 handle_t shell_devmgr(void);
+/* logd writes out and syncs the log up to now (logctl.flush), waited for
+ * until deadline at most. Nothing to do without a logd. */
+void     shell_flush_log(uint64_t deadline);
 /* Kill the service init runs under this name ("console", ...): its whole
  * job; init's loop then starts it again. *koid: its process's id.
  * ERR_NOT_FOUND: not a service of init's, or not running. */

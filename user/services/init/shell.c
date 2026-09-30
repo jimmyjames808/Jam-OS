@@ -23,8 +23,10 @@
  *             mode boot entry) is passed on: no USB controller driver.
  *             Its mounts (/data, /esp) are followed from then on (mounts.c)
  *   logd      bin/logd, once /data is mounted: root with READ (the kernel
- *             log) and a namespace holding only /data (SR_NS). It saves
- *             each boot's log as /data/logs/boot-NNNN.txt
+ *             log), a namespace holding only /data (SR_NS) and the server
+ *             end of a `logctl` channel (SR_USER + 2; init keeps the client
+ *             end and asks for a flush before a reboot). It saves each
+ *             boot's log as /data/logs/boot-NNNN.txt
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client; no connect_input), root with READ |
  *             MANAGE, RES_PCI with RIGHTS_BASIC (SR_USER + 1), devmgr's
@@ -62,6 +64,7 @@
  * itself never returns in this mode. */
 #include <devmgr.h>
 #include <idl/console.h>
+#include <idl/logctl.h>
 #include <os.h>
 #include "init.h"
 
@@ -109,6 +112,7 @@ static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
+static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) */
 static bool nousb;
 
 handle_t shell_root(void)
@@ -404,8 +408,28 @@ static status_t start_logd(void)
         svcs[LOGD].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) } };
-    return start1(LOGD, x, 1);
+    handle_t mine, theirs;
+    status_t st = jam_channel_create(&mine, &theirs);
+    if (st != OK)
+        return st;
+    struct spawn_handle x[] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) },
+                                { SR_USER + 2, theirs } };
+    st = start1(LOGD, x, 2);
+    if (st != OK) {
+        jam_handle_close(mine);
+        return st;
+    }
+    logd_ctl = mine;
+    return OK;
+}
+
+void shell_flush_log(uint64_t deadline)
+{
+    status_t st = logd_ctl ? logctl_flush_until(logd_ctl, deadline) : ERR_NOT_FOUND;
+    /* No logd or no /data: nothing to save. Else said on the screen and
+     * the serial port, which is all that is left. */
+    if (st != OK && st != ERR_NOT_FOUND && st != ERR_PEER_CLOSED)
+        printf("init: the boot log's last lines were not saved (%s)\n", status_str(st));
 }
 
 static status_t start_shell(void)
@@ -505,6 +529,10 @@ static void ended(unsigned i)
         mounts_unwatch();       /* its fat services went with its job */
         tell_mounts();
         printf("init: devmgr and its drivers are gone: starting them again\n");
+    }
+    if (i == LOGD && logd_ctl) {
+        jam_handle_close(logd_ctl);
+        logd_ctl = HANDLE_INVALID;
     }
     if (i == SHELL && to_shell) {
         jam_handle_close(to_shell);

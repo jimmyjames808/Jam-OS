@@ -20,6 +20,7 @@ struct fatrun {
     handle_t        job;    /* the job fat runs in, alone */
     handle_t        proc;   /* fat */
     handle_t        fs;     /* the client end of its `fs` channel */
+    handle_t        ctl;    /* the client end of its `fsctl` channel */
 };
 
 /* One open file. */

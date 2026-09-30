@@ -42,9 +42,12 @@ send cp /boot/bin/utest /data/utest.copy && hexdump -n 4 /data/utest.copy
 wait 7f 45 4c 46
 send ls /data/logs | grep -c "^boot-0001.txt$" | grep ^1$ && echo ok-$T-log
 wait ok-a-log
-# the log that is being written is logd's alone until it is closed
-send cat /data/logs/boot-0001.txt; echo st-$T=$?
-wait open for writing by another program
+# the log that is being written can be read, as far as logd has got; it
+# can't be written by anyone else
+send grep -c "init: /data mounted" /data/logs/boot-0001.txt | grep ^1$ && echo ok-$T-cat
+wait ok-a-cat
+send write -a /data/logs/boot-0001.txt mine; echo st-$T=$?
+wait write: /data/logs/boot-0001.txt: in use
 wait st-a=1
 
 # ---- a filesystem service that dies is mounted again, and logd carries on ---------------

@@ -20,6 +20,7 @@
  * so this is the only way it runs there). */
 KTEST(pcid_slot_bookkeeping)
 {
+    pcid_test_reset();   /* a second run in one boot starts from empty slots too */
     /* First load of an address space on a CPU: a slot, flushed. */
     KT_EQ(pcid_test_decide(0, 1000, 1, true), 1);
     KT_EQ(pcid_test_decide(0, 1000, 1, true), 1 | KEEP);   /* same generation: kept */
@@ -58,6 +59,60 @@ KTEST(pcid_slot_bookkeeping)
         uint32_t after = pcid_test_decide(3, 1000, 2, true);
         KT_EQ(after & KEEP, 0);
         KT_ASSERT(after >= 1 && after <= PCID_SLOTS_PER_CPU);
+    }
+}
+
+/* Whether PCIDs are used: the CPU, the boot words, and the models whose
+ * INVLPG may leave global entries while PCIDs are on. */
+KTEST(pcid_decision_table)
+{
+    static const struct {
+        struct pcid_cpu_info c;   /* the machine */
+        bool use;                 /* PCIDs on? */
+        uint32_t fixed;           /* the fixed revision reported */
+    } rows[] = {
+        /* no PCIDs, or no global pages: never, whatever the words say */
+        { { .has_pge = true, .intel = true, .family = 6, .model = 0x8e }, false, 0 },
+        { { .has_pcid = true, .intel = true, .family = 6, .model = 0x8e, .word_on = true },
+          false, 0 },
+        /* an Intel CPU outside the list; an AMD one with a listed model number */
+        { { .has_pcid = true, .has_pge = true, .intel = true, .family = 6, .model = 0x8e },
+          true, 0 },
+        { { .has_pcid = true, .has_pge = true, .family = 6, .model = 0xb7 }, true, 0 },
+        { { .has_pcid = true, .has_pge = true, .intel = true, .family = 15, .model = 0xb7 },
+          true, 0 },
+        /* each affected model: one below the fix, the fix, above it */
+        { { true, true, true, 6, 0x97, 0x2d, false, false }, false, 0x2e },
+        { { true, true, true, 6, 0x97, 0x2e, false, false }, true, 0x2e },
+        { { true, true, true, 6, 0x9a, 0x42b, false, false }, false, 0x42c },
+        { { true, true, true, 6, 0x9a, 0x42c, false, false }, true, 0x42c },
+        { { true, true, true, 6, 0xbe, 0x10, false, false }, false, 0x11 },
+        { { true, true, true, 6, 0xbe, 0x11, false, false }, true, 0x11 },
+        { { true, true, true, 6, 0xb7, 0x117, false, false }, false, 0x118 },
+        { { true, true, true, 6, 0xb7, 0x118, false, false }, true, 0x118 },
+        { { true, true, true, 6, 0xb7, 0x12b, false, false }, true, 0x118 },
+        { { true, true, true, 6, 0xba, 0x4116, false, false }, false, 0x4117 },
+        { { true, true, true, 6, 0xba, 0x4117, false, false }, true, 0x4117 },
+        { { true, true, true, 6, 0xbf, 0x2d, false, false }, false, 0x2e },
+        { { true, true, true, 6, 0xbf, 0x2e, false, false }, true, 0x2e },
+        /* a revision that could not be read counts as old */
+        { { true, true, true, 6, 0xb7, 0, false, false }, false, 0x118 },
+        /* the words: forcepcid overrides the erratum, nopcid everything */
+        { { true, true, true, 6, 0xb7, 0x117, false, true }, true, 0x118 },
+        { { true, true, true, 6, 0xb7, 0x12b, true, false }, false, 0x118 },
+        { { true, true, true, 6, 0xb7, 0x117, true, true }, false, 0x118 },
+        { { true, true, true, 6, 0x8e, 0, true, false }, false, 0 },
+    };
+    for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        const char *why = NULL;
+        uint32_t fixed = 99;
+        bool use = pcid_decide(&rows[i].c, &why, &fixed);
+        if (use != rows[i].use || fixed != rows[i].fixed)
+            kprintf("pcid_decision_table: row %u: %d (fixed %x), want %d (fixed %x)\n", i, use,
+                    fixed, rows[i].use, rows[i].fixed);
+        KT_EQ(use, rows[i].use);
+        KT_EQ(fixed, rows[i].fixed);
+        KT_ASSERT(why != NULL);
     }
 }
 

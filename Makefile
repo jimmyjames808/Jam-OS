@@ -320,11 +320,13 @@ $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.boo
 
 image: $(IMAGE)
 
-$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py
+$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py
 	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB)
 	mformat -i $@@@1M -T $$(( ($(ESP_END_MIB) - 1) * 2048 )) -F -v JAMOS ::
 	mformat -i $@@@$(ESP_END_MIB)M -T $$(( ($(IMAGE_MIB) - $(ESP_END_MIB)) * 2048 )) -F \
 	    -v JAMOS-DATA ::
+	python3 tools/fat-label.py $@ 1 --fix
+	python3 tools/fat-label.py $@ $(ESP_END_MIB) --fix
 	mmd -i $@@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $@@@1M $(LIMINE)/BOOTX64.EFI ::/EFI/BOOT/
 	mcopy -i $@@@1M boot/limine.conf ::/boot/limine/

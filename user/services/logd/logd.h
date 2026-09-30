@@ -16,9 +16,13 @@
  *   LOGD_SR_FS   an `fs` channel to use as /data (default: the namespace);
  *   LOGD_SR_LOG  a channel whose messages are the log's text (default: the
  *                kernel log, read with SR_RESOURCE). When its other end
- *                closes the log has ended: logd syncs and exits 0. */
+ *                closes the log has ended: logd syncs and exits 0.
+ * And one that is optional either way:
+ *   LOGD_SR_CTL  the server end of a `logctl` channel (abi/idl/logctl.idl):
+ *                its holder can ask for a flush. */
 #define LOGD_SR_FS  (SR_USER + 0)
 #define LOGD_SR_LOG (SR_USER + 1)
+#define LOGD_SR_CTL (SR_USER + 2)
 
 /* One way to reach /data. It holds at most one open file: the log. Errors
  * are the filesystem's (fs.idl), ERR_NOT_FOUND also for "no /data". */

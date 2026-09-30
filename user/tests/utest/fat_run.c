@@ -23,17 +23,19 @@ static void path_field(const char *s, uint8_t out[FS_PATH_MAX])
 
 static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format)
 {
-    handle_t block, serve;
+    handle_t block, serve, ctl;
     *r = (struct fatrun){ .rd = rd };
     if (!ramdisk_serve(rd, read_only, &block))
         return false;
     CHECK_ST(jam_channel_create(&r->fs, &serve), OK);
+    CHECK_ST(jam_channel_create(&r->ctl, &ctl), OK);
     CHECK_ST(new_job(&r->job), OK);
     const char *argv[] = { "fat", "utest", FAT_ARG_FORMAT };
-    struct spawn_handle x[2] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve } };
+    struct spawn_handle x[3] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
+                                 { FAT_SR_CTL, ctl } };
     struct spawn_args a = {
         .path = "bin/fat", .argc = format ? 3 : 2, .argv = argv, .job = r->job, .extra = x,
-        .nextra = 2,
+        .nextra = 3,
     };
     CHECK_ST(spawn(&a, &r->proc), OK);
     return true;
@@ -56,6 +58,8 @@ bool fat_wait(struct fatrun *r, int code)
     CHECK(!info.killed);
     CHECK_EQ(info.exit_code, code);
     CHECK_ST(jam_handle_close(r->proc), OK);
+    if (r->ctl)   /* none: a service someone else started (devmgr's) */
+        CHECK_ST(jam_handle_close(r->ctl), OK);
     struct job_info ji;
     CHECK_ST(info_of(r->job, &ji), OK);
     for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)

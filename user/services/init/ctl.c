@@ -14,7 +14,8 @@
  * killed. devmgr's PCI drivers (usb-bus itself) are not reached this way.
  *
  * reboot and sync flush /data and every /usbN first, for at most 2 s
- * (mounts_sync).
+ * (mounts_sync). reboot then has logd save the log's last lines, that one
+ * included (shell_flush_log), so a boot log ends with its own shutdown.
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
  * devmgr (DEVMGR_REMOUNT) for /usbN and refused for every other path:
@@ -33,6 +34,7 @@
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* devmgr's REMOUNT: a sync, then its service's stop */
 #define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* devmgr's KILL: it waits for the driver to die */
+#define LOG_WAIT    NS_PER_S          /* logd's flush before a reboot */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
 
 struct ctl {
@@ -183,7 +185,11 @@ static status_t op_sync(void *ctx)
 static status_t op_reboot(void *ctx)
 {
     (void)ctx;
+    /* The files first, then the log with the line that says so, then the
+     * volume's clean mark: each bounded, 4 s in all. */
     mounts_sync();
+    shell_flush_log(now() + LOG_WAIT);
+    mounts_settle();
     return jam_reboot(shell_root());   /* comes back only if it failed */
 }
 

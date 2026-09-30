@@ -54,6 +54,7 @@ DEFINE_CR(4)
 static inline void invlpg(uint64_t va) { __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory"); }
 static inline void wbinvd(void) { __asm__ volatile("wbinvd" ::: "memory"); }
 
+#define MSR_BIOS_SIGN_ID 0x8b   /* IA32_BIOS_SIGN_ID: the microcode revision in bits 63:32 */
 #define MSR_EFER           0xc0000080
 #define MSR_STAR           0xc0000081
 #define MSR_LSTAR          0xc0000082

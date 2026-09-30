@@ -11,5 +11,17 @@ wait 600 ktest (live system):
 wait shell: ktest:
 wait passed
 wait jam>
+# Twice more in the same boot: a test that leaves something behind (state
+# of its own, a thread, a count) fails its next run, not its first.
+send ktest
+wait 600 ktest (live system):
+wait shell: ktest:
+wait passed
+wait jam>
+send ktest
+wait 600 ktest (live system):
+wait shell: ktest:
+wait passed
+wait jam>
 send reboot
 wait reboot: resetting

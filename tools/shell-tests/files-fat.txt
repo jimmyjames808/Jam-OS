@@ -9,9 +9,11 @@
 wait 120 Jam OS shell
 wait jam>
 send run utest fat-shell
-wait run: bin/utest started
-wait Jam OS shell
-wait jam>
+# (the outer shell's "started" line, the second shell's banner and fat's
+# lines in the kernel log have no fixed order on the serial port: `seen`)
+seen 60 run: bin/utest started
+seen 60 fat utest: mounted
+sleep 1
 send T=f
 wait jam>
 send df | grep /data | grep -c JAMOS-DATA | grep ^1$ && echo ok-$T-df
@@ -62,6 +64,15 @@ wait rm: Trip 2026: a directory with entries
 wait st-f=1
 send rm -r "Trip 2026" end1 end2 && ls | grep -c Trip | grep ^0$ && ls | grep -c ^end | grep ^0$ && echo ok-$T-rmr
 wait ok-f-rmr
+# ---- cat of a file bigger than any command reads whole (4 MiB): it streams ---------------
+# (the pipe keeps the first 4 MiB and says so; head has its line)
+send seq 1 400000 | write long.txt; seq 1 400000 | write -a long.txt; ls -l long.txt
+wait MiB  long.txt
+wait jam>
+send cat long.txt | head -1 | grep ^1$ && echo ok-$T-stream
+wait 60 ok-f-stream
+send rm long.txt
+wait jam>
 send rm nosuch; echo st-$T=$?
 wait rm: nosuch: no such file or directory
 wait st-f=1
