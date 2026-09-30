@@ -213,10 +213,28 @@ contract; the tracks build on them.
   stick flashed with the new layout), then writes, then the boot logs,
   then the pulled-plug test on the real stick.
 
+### Phase 2b: other sticks (after Track C, before the review)
+Any other USB stick with a FAT partition becomes usable, safely:
+- devmgr starts a **read-only** fat for each FAT partition of a disk that
+  is not the boot disk and publishes it as `/usb0`, `/usb1`, ... (in the
+  order found; the mount goes when the stick does). `ls`, `cat` and `cp`
+  from it work; nothing on it can be changed.
+- `mount -w /usbN` (shell -> init -> devmgr's control channel) reopens
+  that partition read-write and restarts its fat; `mount -r /usbN` goes
+  back. `mount` alone lists the mounts and whether each is writable.
+- **Never formatted**: fat formats only the boot disk's blank data
+  partition. For any other disk it is started with formatting off, in
+  either mode; a partition it can't mount is left alone and reported.
+- Tests: a second usb-storage disk in QEMU with a FAT volume (read its
+  files; a write refused; `mount -w`, write, `mount -r`; unplug it while
+  mounted), and a non-FAT disk (no mount, nothing written).
+
 ## Done when
 - QEMU at 4 and 8 CPUs: all ktests; init + utest (with the RAM-disk fat
   tests); the end-to-end storage test; unplug mid-read; the pulled-plug
   test; stress; the shell scripts.
+- The real PC: another FAT32 stick plugged in shows up at `/usb0`, its
+  files can be read, a write is refused until `mount -w /usb0`.
 - The real PC: `ls /boot`, `ls /esp` (Limine, the kernel, limine.conf,
   bootfs.img) and `ls /data` from the shell; `cat
   /esp/boot/limine/limine.conf`; writing to `/esp` refused; `write` then
