@@ -38,6 +38,14 @@ mformat -i "$a@@1M" -T $((63 * 2048)) -F -v STICK-A ::
 mmd -i "$a@@1M" ::/photos
 mcopy -i "$a@@1M" "$tmp/hello.txt" "$tmp/big.bin" ::/
 mcopy -i "$a@@1M" "$tmp/nested.txt" ::/photos/
+# Some formatters leave a FAT boot sector's first bytes (the jump and the
+# BPB) in the MBR of a partitioned stick: a's MBR gets its partition's. The
+# partition table must still win, or the whole disk is served as one volume.
+python3 -c "
+import sys
+f = open(sys.argv[1], 'r+b')
+f.seek(1 << 20); boot = f.read(446)
+f.seek(0); f.write(boot)" "$a"
 python3 tools/mkstick.py "$b" 64
 mformat -i "$b" -T $((64 * 2048)) -F -v FLOPPY ::
 mcopy -i "$b" "$tmp/floppy.txt" ::/
