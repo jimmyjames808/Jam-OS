@@ -1,0 +1,111 @@
+# The apps that came with the mouse (user/apps/snake, user/apps/mines,
+# user/apps/sysmon) from the shell: run by tools/apps-test.sh (QEMU_USB = a
+# usb-kbd on xhci port 2 and a usb-mouse on port 3; the command line
+# "shell"). Each app's self-test, then each one used for a while, with
+# screenshots (<name>.png next to the log) of the screen it borrowed, quit
+# with q, and the shell prompt must come back. Nothing here depends on the
+# screen's size, so the same script runs at 1280x800 and at 2560x1440
+# (APPS_HD=1): the one mouse click is at the pointer's starting place, the
+# middle of the screen, which is the middle of the mines board.
+# tools/shell-tests/mouse.txt drives the mouse further.
+wait 120 Jam OS shell
+wait jam>
+seen 30 boot mouse ready
+send run snake --selftest
+wait 60 snake: selftest PASSED
+wait run: bin/snake exited with code 0
+wait jam>
+send run mines --selftest
+wait 60 mines: selftest PASSED
+wait run: bin/mines exited with code 0
+wait jam>
+send run sysmon --selftest
+wait 60 sysmon: selftest PASSED
+wait run: bin/sysmon exited with code 0
+wait jam>
+# snake: turn with an arrow and with w a s d, pause, carry on into a wall
+send run snake seed=7
+wait run: bin/snake started
+sleep 1
+type \e[A
+sleep 0.4
+type a
+sleep 0.4
+type s
+sleep 0.3
+shot apps-snake
+type d
+sleep 0.2
+type p
+sleep 0.5
+shot apps-snake-paused
+type p
+sleep 7
+shot apps-snake-over
+type \r
+sleep 0.5
+type q
+wait 30 snake: score
+wait run: bin/snake exited with code 0
+wait jam>
+# mines: before the mouse stirs the bottom line says the game needs one;
+# then one click in the middle of the board, and the other levels
+send run mines level=2 seed=5 noaccel trace
+wait run: bin/mines started
+wait mines: new game: Intermediate 16x16, 40 mines
+sleep 1
+shot apps-mines-no-mouse
+monitor mouse_move 10 10
+sleep 0.3
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 8,8: 39 opened, playing
+sleep 1.2
+shot apps-mines
+type 4
+wait 10 mines: new game: Giant 40x22, 180 mines
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 20,11:
+sleep 0.5
+shot apps-mines-giant
+type 1
+wait 10 mines: new game: Beginner 9x9, 10 mines
+sleep 0.5
+shot apps-mines-beginner
+type q
+wait 30 mines: 0 game(s) finished
+wait run: bin/mines exited with code 0
+wait jam>
+# sysmon: the shell command hands it the root resource to read
+send sysmon
+wait sysmon: bin/sysmon started
+sleep 4
+shot apps-sysmon
+type q
+wait 30 sysmon: bin/sysmon exited with code 0
+wait jam>
+# ... `run` doesn't: it says so and ends
+send run sysmon
+wait 30 sysmon: the kernel's figures need the root resource
+wait run: bin/sysmon exited with code 1
+wait jam>
+# ... and the PC's 28 CPUs (16 P + 12 E threads), made up
+send run sysmon fake=28
+wait run: bin/sysmon started
+sleep 8
+shot apps-sysmon-28
+type q
+wait 30 readings of 28 CPUs
+wait run: bin/sysmon exited with code 0
+wait jam>
+# the shell is back in charge of the keys and the screen
+send help sysmon
+wait the graphical system monitor
+wait jam>
+sleep 0.5
+shot apps-shell-after
+send reboot
+wait reboot: resetting

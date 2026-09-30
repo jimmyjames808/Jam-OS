@@ -21,7 +21,8 @@ a real desktop PC, which is where every milestone is tested.
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
 - A console and a shell with ~60 commands, pipes, variables and Tab
-  completion, plus a few apps (a Mandelbrot explorer, life, tetris).
+  completion, plus a few apps (a Mandelbrot explorer, life, tetris, snake,
+  minesweeper with the mouse, a graphical system monitor).
 - Kernel and user-space test suites, stress tests and a benchmark, runnable
   from the boot menu or the shell.
 
@@ -87,7 +88,7 @@ update a stick, and the PC it was built for are in
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
 | `user/services/` | init, console, devmgr, serialin, shell |
-| `user/apps/` | fractal, life, tetris, demo, and `fun/` (the apps library) |
+| `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, contest |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
