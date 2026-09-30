@@ -78,8 +78,9 @@ status_t disk_open(handle_t block)
         return st;
     size -= size % PAGE_SIZE;
     uint64_t addr = 0;
-    st = size ? jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, VMAR_READ | VMAR_WRITE,
-                             &addr)
+    /* A read-only partition's buffer is only ever read here. */
+    uint32_t perms = ro ? VMAR_READ : VMAR_READ | VMAR_WRITE;
+    st = size ? jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, perms, &addr)
               : ERR_INVALID_ARGS;
     jam_handle_close(vmo);   /* the mapping keeps the buffer */
     if (st != OK)
