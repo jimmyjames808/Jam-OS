@@ -37,6 +37,6 @@ KTEST(stress_failure_does_not_stick)
     kprintf("ktest %s: a third stress run: accounted %lu -> %lu pages\n", ktest_current,
             before, after);
     if (after + 2 < before)   /* the harness's slack: a partly used slab */
-        panic("ktest %s: a third stress run leaked %lu pages (accounted %lu -> %lu)",
-              ktest_current, before - after, before, after);
+        ktest_fail("a third stress run leaked %lu pages (accounted %lu -> %lu)",
+                   before - after, before, after);
 }

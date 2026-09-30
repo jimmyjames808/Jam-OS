@@ -338,7 +338,7 @@ KTEST(elf_corrupt)
         }
         why = NULL;
         if (elf_check(place(&fb, work, size), size, &plan, &why) != ERR_INVALID_ARGS)
-            panic("ktest elf_corrupt: case %d accepted", c);
+            ktest_fail("case %d accepted", c);
         KT_ASSERT(why != NULL);
     }
 
