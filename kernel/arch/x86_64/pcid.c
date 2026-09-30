@@ -50,6 +50,7 @@
 #include <jam/cpu.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
+#include <jam/string.h>
 #include <jam/x86.h>
 
 #define PCID_SLOTS 8
@@ -161,12 +162,20 @@ void pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen)
  * what pcid_load would load (the PCID, plus PCID_TEST_KEEP when it keeps
  * the entries) on fake CPU `cpu` (< 4), as if PCIDs were in use and the
  * switch were `sw`. */
+static struct pcid_cpu fake[4];
+
 uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw)
 {
-    static struct pcid_cpu fake[4];
     bool keep;
     uint32_t pcid = decide(&fake[cpu % 4], sw, id, &gen, &keep);
     return pcid | (keep ? PCID_TEST_KEEP : 0);
+}
+
+/* Fresh made-up CPUs: the test runs more than once in a boot (the shell's
+ * `ktest`), and what an earlier run left in their slots is not its start. */
+void pcid_test_reset(void)
+{
+    memset(fake, 0, sizeof(fake));
 }
 #endif
 

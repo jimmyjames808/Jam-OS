@@ -32,4 +32,5 @@ uint64_t pcid_flushed_loads(uint32_t cpu);
 #define PCID_SLOTS_PER_CPU 8
 #define PCID_TEST_KEEP 0x10000
 uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw);
+void pcid_test_reset(void);   /* the made-up CPUs as at boot: no slot in use */
 #endif
