@@ -461,7 +461,8 @@ KTEST(repro_picked_cpu_looks_idle)
         kprintf("repro: cpu %u taking its next thread: load %u as placement reads it\n", cpu,
                 pk_load);
         KT_ASSERT(pk_seen);
-        /* Busy (1) from before the thread leaves the queue. */
-        KT_EQ(pk_load, 1);
+        /* Busy from before the thread leaves the queue: at least 1 (live,
+         * others may be queued there too). */
+        KT_ASSERT(pk_load >= 1);
     }
 }

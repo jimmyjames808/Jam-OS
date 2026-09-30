@@ -224,7 +224,11 @@ KTEST(placement_spreads_over_cores)
             first &= cpus[j]->core_id != cpus[i]->core_id;
         cores += first;
     }
-    uint32_t n = cores - 1;   /* every core but cpu 0's */
+    /* Every core but cpu 0's. Live, services hold cores now and then: with
+     * as many spinners as idle cores a service on one leaves a spinner only
+     * half cores (all equally good, cpu 1 first), so leave half the cores
+     * spare (the PC's 19 give 8 either way; QEMU's 4 give 3 at boot, 1 live). */
+    uint32_t n = ktest_live ? (cores - 1) / 2 : cores - 1;
     if (n > 8)
         n = 8;
     struct thread *th[8];
@@ -297,6 +301,8 @@ static bool st_wait_started(uint32_t n)
 KTEST(steal_prefers_whole_core)
 {
     KT_NEEDS_IDLE("asserts where a stolen thread runs: every other core must be idle");
+    KT_SKIP_LIVE("asserts where a stolen thread runs among three chosen cores: a service on "
+                 "one of them changes the right answer");
     if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         return;
     int h = -1;
