@@ -13,6 +13,8 @@
  *                   RIGHT_MANAGE (reboot, on Ctrl+Alt+Del)
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
+ *   SR_USER + 8     init's control channel (abi/idl/initctl.idl), which
+ *                   answers this holder only `reboot`: Ctrl+Alt+Del
  *
  * The screen: a grid of 8x16 cells. Committed lines live in a scrollback
  * ring; the line the programs are writing (the "current line", where the

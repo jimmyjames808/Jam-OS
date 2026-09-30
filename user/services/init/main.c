@@ -1,18 +1,22 @@
 /* init: the first user process, started by the kernel's userboot with the
  * root job, the root resource and the bootfs image.
  *
- * It first starts devmgr (bin/devmgr, if bootfs has it) in a job of
- * its own with a RES_PCI resource sliced from the root, and waits until
- * devmgr has bound its drivers. With "shell" (a plain boot) or
- * "shell-nousb" (the safe mode entry: devmgr leaves USB controllers alone)
- * it starts and supervises the console, serial input, devmgr and the shell
- * instead (shell.c) and never exits. Otherwise it runs the programs listed in
- * init.cfg one after another, each as a real child process in a job of
- * its own (a child of init's job) with a client end of devmgr's channel
- * (SR_DEVMGR), waits for each to finish and reports how it ended: the
- * lines go into the kernel's RESULTS box. At the end it closes its end of
- * devmgr's channel, which stops devmgr and its drivers, and waits for
- * that. init exits 0 if every program (and devmgr) exited 0. */
+ * With "shell" (a plain boot) or "shell-nousb" (the safe mode entry:
+ * devmgr leaves USB controllers alone) it starts and supervises the bootfs
+ * server, the console, serial input, devmgr and the shell (shell.c) and
+ * never exits. Otherwise it starts the bootfs server (bin/bootfs: the boot
+ * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
+ * job of its own with a RES_PCI resource sliced from the root, waits until
+ * devmgr has bound its drivers, and runs the programs listed in init.cfg
+ * one after another, each as a real child process in a job of its own (a
+ * child of init's job) with a client end of devmgr's channel (SR_DEVMGR),
+ * the root resource to read with (SR_RESOURCE: RIGHT_READ only) and init's
+ * namespace as it is then (SR_NS: /boot, and what devmgr has mounted,
+ * mounts.c); it waits for each to finish and reports how it
+ * ended: the lines go into the kernel's RESULTS box. At the end it closes
+ * its end of devmgr's channel, which stops devmgr and its drivers, waits
+ * for that, and stops the bootfs server the same way. init exits 0 if
+ * every program (and devmgr, and the bootfs server) exited 0. */
 #include <devmgr.h>
 #include <os.h>
 #include "init.h"
@@ -23,6 +27,7 @@
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
  * "Trust"); the programs init runs are the test suites: they get both. */
 static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
+static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -61,18 +66,26 @@ static bool run(int argc, char **argv)
         init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
-    struct spawn_handle x[2] = { { SR_DEVMGR_CTL, HANDLE_INVALID }, { SR_DEVMGR, HANDLE_INVALID } };
-    if (devmgr_ch && ((st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x[0].h)) != OK ||
-                      (st = jam_handle_duplicate(devmgr_q, RIGHT_SAME, &x[1].h)) != OK)) {
-        init_say("init: %s: no devmgr channel for it (%s)", argv[0], status_str(st));
-        if (x[0].h)
-            jam_handle_close(x[0].h);
+    /* The root resource to read with (the kernel log, the clock), then
+     * devmgr's channels if there is a devmgr. */
+    struct spawn_handle x[3] = { { SR_RESOURCE, HANDLE_INVALID }, { SR_DEVMGR_CTL, HANDLE_INVALID },
+                                 { SR_DEVMGR, HANDLE_INVALID } };
+    st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | RIGHT_READ, &x[0].h);
+    if (st == OK && devmgr_ch)
+        st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x[1].h);
+    if (st == OK && devmgr_ch)
+        st = jam_handle_duplicate(devmgr_q, RIGHT_SAME, &x[2].h);
+    if (st != OK) {
+        init_say("init: %s: no handles for it (%s)", argv[0], status_str(st));
+        for (unsigned k = 0; k < 3; k++)
+            if (x[k].h)
+                jam_handle_close(x[k].h);
         jam_handle_close(job);
         return false;
     }
     struct spawn_args a = {
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
-        .extra = x[0].h ? x : NULL, .nextra = x[0].h ? 2 : 0,
+        .extra = x, .nextra = devmgr_ch ? 3 : 1, .ns = NS_ALL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);
@@ -187,6 +200,13 @@ static bool start_devmgr(handle_t console)
         return false;
     }
     printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    /* Its mounts, as they come: a program gets those there when it starts. */
+    handle_t watch;
+    st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &watch);
+    if (st == OK)
+        st = mounts_watch(watch, HANDLE_INVALID, 0);
+    if (st != OK)
+        printf("init: not following devmgr's mounts (%s)\n", status_str(st));
     return r.b == 0;
 }
 
@@ -195,8 +215,9 @@ static bool stop_devmgr(void)
     if (!devmgr_proc)
         return true;
     jam_handle_close(devmgr_q);
-    jam_handle_close(devmgr_ch);   /* its last control client: it stops its drivers, exits */
+    jam_handle_close(devmgr_ch);
     devmgr_ch = devmgr_q = HANDLE_INVALID;
+    mounts_unwatch();   /* its last control client gone: it stops its drivers, exits */
 
     uint64_t t0 = now();
     struct process_info info;
@@ -222,6 +243,61 @@ static bool stop_devmgr(void)
     jam_handle_close(devmgr_proc);
     jam_handle_close(devmgr_job);
     devmgr_proc = devmgr_job = HANDLE_INVALID;
+    return ok;
+}
+
+/* The bootfs server: /boot in our namespace, which every program we run is
+ * given. */
+static bool start_bootfs(void)
+{
+    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &bootfs_job);
+    if (st == OK)
+        st = jam_channel_create(&mine, &theirs);
+    if (st == OK) {
+        const char *argv[] = { BOOTFS_PATH };
+        struct spawn_handle x = { SR_USER + 0, theirs };
+        struct spawn_args a = {
+            .path = BOOTFS_PATH, .argc = 1, .argv = argv, .job = bootfs_job, .extra = &x,
+            .nextra = 1,
+        };
+        st = spawn(&a, &bootfs_proc);   /* consumes theirs */
+    }
+    if (st == OK)
+        st = ns_mount(BOOT_MOUNT, mine);   /* consumes mine */
+    else if (mine)
+        jam_handle_close(mine);
+    if (st != OK) {
+        init_say("init: no " BOOT_MOUNT ": the bootfs server didn't start (%s)", status_str(st));
+        if (bootfs_proc)
+            jam_handle_close(bootfs_proc);   /* without a client it exits by itself */
+        if (bootfs_job)
+            jam_handle_close(bootfs_job);
+        bootfs_proc = bootfs_job = HANDLE_INVALID;
+    }
+    return st == OK;
+}
+
+static bool stop_bootfs(void)
+{
+    if (!bootfs_proc)
+        return true;
+    (void)ns_unmount(BOOT_MOUNT);   /* its last client: it exits by itself */
+    struct process_info info;
+    status_t st = spawn_wait(bootfs_proc, 5 * NS_PER_S, &info);
+    if (st == ERR_TIMED_OUT) {
+        init_say("init: the bootfs server still runs 5 s after its last client left: killing it");
+        jam_job_kill(bootfs_job);
+        st = spawn_wait(bootfs_proc, 5 * NS_PER_S, &info);
+    }
+    bool ok = st == OK && !info.killed && info.exit_code == 0;
+    if (st == OK && !ok)
+        init_say("init: the bootfs server %s %ld", info.killed ? "was killed, code"
+                                                                : "exited with code",
+                 (long)info.exit_code);
+    jam_handle_close(bootfs_proc);
+    jam_handle_close(bootfs_job);
+    bootfs_proc = bootfs_job = HANDLE_INVALID;
     return ok;
 }
 
@@ -317,8 +393,10 @@ int main(int argc, char **argv)
         init_say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
     }
-    bool ok = start_devmgr(HANDLE_INVALID);
+    bool ok = start_bootfs();
+    ok &= start_devmgr(HANDLE_INVALID);
     ok &= run_config(cfg, len);
     ok &= stop_devmgr();
+    ok &= stop_bootfs();
     return ok ? 0 : 1;
 }
