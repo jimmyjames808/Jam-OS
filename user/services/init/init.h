@@ -22,7 +22,7 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Shell mode (shell.c). Runs for as long as the system does: returns
  * (false) only when init's own port fails. nousb: devmgr leaves the USB
  * controllers alone (the safe mode boot entry). */
-bool init_shell(bool nousb);
+bool init_shell(bool nousb, const char *shell_arg);
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 

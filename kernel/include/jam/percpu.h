@@ -118,6 +118,14 @@ static inline void percpu_preempt_inc(void)
     __asm__ volatile("incl %%gs:%c0" :: "i"(PERCPU_OFF(preempt_count)) : "memory");
 }
 
+/* This CPU's count now: nonzero means the caller can't be switched out. */
+static inline uint32_t percpu_preempt_count(void)
+{
+    uint32_t v;
+    __asm__ volatile("movl %%gs:%c1, %0" : "=r"(v) : "i"(PERCPU_OFF(preempt_count)));
+    return v;
+}
+
 /* Decrement; returns the new value (read on whatever CPU we are on then). */
 static inline uint32_t percpu_preempt_dec(void)
 {

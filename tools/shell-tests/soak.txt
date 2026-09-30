@@ -1,0 +1,25 @@
+# The soak test from the shell, short: `soak loops=2` (each loop: the kernel
+# tests in a shuffled order under the kernel's load, then utest; bin/soakload
+# writes and reads files meanwhile; an idle loop before and one after), and
+# its SOAK RESULTS box. No sticks are
+# pulled here: tools/soak-test.sh does that (soak-plug.txt).
+# QEMU_INPUT=this file, command line "shell", QEMU_TIMEOUT=600.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+send soak loops=2 seed=11 load=4
+wait 30 soak: begun on
+# an idle loop, two loops under load with utest after each, an idle loop
+wait 200 ktest: loop 1 of 1 done
+wait 400 ktest: loop 1 of 1 done
+wait 200 utest:
+wait 400 ktest: loop 1 of 1 done
+wait 200 utest:
+wait 200 ktest: loop 1 of 1 done
+wait 200 SOAK RESULTS
+wait soak: PASSED after
+wait kernel tests: 4 loop(s), seeds 11 to 14
+wait shell: soak: PASSED
+wait jam>
+send reboot
+wait reboot: resetting

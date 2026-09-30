@@ -136,14 +136,17 @@ KTEST(event_rejects_non_user_bits)
 
 /* ---- timers -------------------------------------------------------------- */
 
-/* Wait for t to fire; check it was not early and at most 30 ms late. */
+/* Wait for t to fire; check it was not early and, on an idle machine, at
+ * most 30 ms late (busy, higher-priority threads run before the waiter). */
 static void expect_fires(struct ktimer *t, uint64_t deadline)
 {
     KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, deadline + 2000 * NS_PER_MS, NULL), OK);
     uint64_t now = uptime_ns();
     KT_ASSERT(now >= deadline);
-    if (now - deadline > 30 * NS_PER_MS)
-        panic("ktest %s: timer %lu us late", ktest_current, (now - deadline) / 1000);
+    if (now - deadline > 30 * NS_PER_MS && ktest_busy)
+        ktest_idle_relaxed++;
+    else if (now - deadline > 30 * NS_PER_MS)
+        ktest_fail("timer %lu us late", (now - deadline) / 1000);
 }
 
 KTEST(timer_fires_on_time)
@@ -221,7 +224,7 @@ KTEST(timer_many_fire_in_deadline_order)
         KT_ASSERT(deadline[pkt.key] > last);   /* in deadline order */
         last = deadline[pkt.key];
     }
-    KT_ASSERT(uptime_ns() - last <= 30 * NS_PER_MS);
+    KT_IDLE_ASSERT(uptime_ns() - last <= 30 * NS_PER_MS);   /* how late: idle only */
     expect_empty(p);
     for (int i = 0; i < N; i++)
         kobject_unref(&ts[i]->base);
@@ -702,8 +705,8 @@ KTEST(port_stress_producers)
         struct port_packet pkt;
         status_t st = port_wait(p, uptime_ns() + 5000 * NS_PER_MS, &pkt);
         if (st != OK)
-            panic("ktest %s: lost packets (once %lu/%lu, edges %lu/%lu)", ktest_current,
-                  once_total, want_once, edge_total, want_edges);
+            ktest_fail("lost packets (once %lu/%lu, edges %lu/%lu)", once_total, want_once,
+                       edge_total, want_edges);
         packets++;
         KT_EQ(pkt.type, PORT_PACKET_SIGNAL);
         if (pkt.key < SP_PRODUCERS) {

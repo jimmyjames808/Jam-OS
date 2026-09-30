@@ -426,7 +426,12 @@ static void two_hook(void *arg)
     bool listed = false;
     for (struct list_node *n = g->pages.next; n != &g->pages; n = n->next)
         listed |= container_of(n, struct page, node) == two_victim;
-    two_hook_ok = listed && two_victim->refcount == 1 &&
+    /* The hook point is the whole system's: on a live machine other
+     * processes' unmaps pass through it too. Only the gather holding our
+     * page is ours. */
+    if (!listed)
+        return;
+    two_hook_ok = two_victim->refcount == 1 &&
                   tlb_mask_flush_count(two_cpu[0]) > two_count_before[0] &&
                   tlb_mask_flush_count(two_cpu[1]) > two_count_before[1];
     two_hook_ran++;

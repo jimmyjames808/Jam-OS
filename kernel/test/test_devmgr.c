@@ -307,8 +307,8 @@ static void check_nothing_left(const struct dm *m, struct pci_dev *d, const stru
         used[k] = job_used(m->job, k);
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         if (used[k] != ref->used[k])
-            panic("ktest %s: a start refused at job kind %u + %lu left kind %u at %lu (was %lu)",
-                  ktest_current, kind, headroom, k, used[k], ref->used[k]);
+            ktest_fail("a start refused at job kind %u + %lu left kind %u at %lu (was %lu)",
+                       kind, headroom, k, used[k], ref->used[k]);
     KT_GLOBAL_EQ(interrupt_live_count(), ref->irqs);
     KT_ASSERT(!bme(d));
     KT_ASSERT(!msi_on(d));
@@ -354,7 +354,7 @@ static unsigned sweep(const struct dm *m, struct pci_dev *d, const struct refusa
         KT_ASSERT(st == ERR_NO_RESOURCES || st == ERR_NO_MEMORY);
         check_nothing_left(m, d, ref, kind, h);
     }
-    panic("ktest %s: job kind %u: 512 more units and still no start", ktest_current, kind);
+    ktest_fail("job kind %u: 512 more units and still no start", kind);
 }
 
 KTEST(devmgr_refused_start_leaves_nothing)

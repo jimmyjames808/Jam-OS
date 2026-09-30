@@ -22,6 +22,19 @@ uint64_t kt_free_pages(void)
     return free;
 }
 
+uint64_t kt_free_pages_settled(void)
+{
+    uint64_t prev = kt_free_pages();
+    for (int i = 0; i < 100; i++) {
+        thread_sleep_ms(5);
+        uint64_t now = kt_free_pages();
+        if (now == prev)
+            break;
+        prev = now;
+    }
+    return prev;
+}
+
 uint64_t kt_free_and_cached_pages(void)
 {
     uint64_t total, free;
@@ -85,8 +98,7 @@ void kt_job_is_empty(struct job *j)
 {
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         if (job_used(j, k))
-            panic("ktest %s: job kind %u still has %lu units", ktest_current, k,
-                  job_used(j, k));
+            ktest_fail("job kind %u still has %lu units", k, job_used(j, k));
 }
 
 signals_t kt_signals_of(struct handle_table *t, handle_t h)

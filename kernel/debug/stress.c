@@ -7,7 +7,11 @@
  * kills them at random moments (before they run, while they spin in user
  * mode, while they are blocked in channel_call), then checks that each
  * one's job ends with nothing charged. Without a bootfs holding bin/utest
- * those workers count instead. */
+ * those workers count instead.
+ *
+ * The same workers also run as a background load (stress_load_start and
+ * stress_load_stop) while something else is tested: the kernel tests under
+ * `ktest load` and the shell's `soak`. */
 #include <jam/bootfs.h>
 #include <jam/channel.h>
 #include <jam/dbghook.h>
@@ -415,11 +419,15 @@ static void check_job_empty(void)
     }
 }
 
-bool stress_run(uint64_t seconds)
+/* The workers of the run in progress (one at a time: stress_run from the
+ * boot's main thread or a debug command, which are never two at once). */
+static struct worker *workers;
+static struct pingpong *pingpongs;
+static uint32_t nworkers;
+
+/* Start n workers from a clean slate. */
+static void workers_begin(uint32_t n)
 {
-    uint32_t n = cpu_count * 4;
-    kprintf("stress: %u threads on %u CPUs for %lu s, lock checking on\n", n, cpu_count,
-            seconds);
     mutex_init(&counter_mutex, "stress counter");
     counter = 0;
     __atomic_store_n(&stop, false, __ATOMIC_RELAXED);
@@ -429,30 +437,97 @@ bool stress_run(uint64_t seconds)
     __atomic_store_n(&shoot_bad, 0, __ATOMIC_RELAXED);
     for (unsigned k = 0; k < K_KINDS; k++)
         __atomic_store_n(&ops[k], 0, __ATOMIC_RELAXED);
+    nworkers = n;
+    workers = kzalloc(sizeof(*workers) * n);
+    pingpongs = kzalloc(sizeof(*pingpongs) * (n / 2 + 1));
+    assign_kinds(workers, pingpongs, n);
+    start_workers(workers, n);
+    shoot_va = (volatile uint64_t *)vmm_reserve(PAGE_SIZE);
+}
 
+/* Stop them and make the end-of-run checks; how many checks failed in all. */
+static uint64_t workers_end(void)
+{
+    stop_workers(workers, pingpongs, nworkers);
+    check_counter(workers, nworkers);
+    kfree(workers);
+    kfree(pingpongs);
+    workers = NULL;
+    pingpongs = NULL;
+    check_job_empty();
+    return __atomic_load_n(&failures, __ATOMIC_RELAXED);
+}
+
+bool stress_run(uint64_t seconds)
+{
+    uint32_t n = cpu_count * 4;
+    kprintf("stress: %u threads on %u CPUs for %lu s, lock checking on\n", n, cpu_count,
+            seconds);
     uint64_t total, free_before, free_after;
     pmm_stats(&total, &free_before);
 
-    struct worker *ws = kzalloc(sizeof(*ws) * n);
-    struct pingpong *pps = kzalloc(sizeof(*pps) * (n / 2 + 1));
-    assign_kinds(ws, pps, n);
-    start_workers(ws, n);
-
-    uint64_t va = vmm_reserve(PAGE_SIZE);
-    shoot_va = (volatile uint64_t *)va;
+    workers_begin(n);
     uint64_t start = uptime_ns();
-    run_seconds(ws, n, seconds, va, start);
-    stop_workers(ws, pps, n);
+    run_seconds(workers, n, seconds, (uint64_t)shoot_va, start);
+    uint64_t failed = workers_end();
 
-    check_counter(ws, n);
-    kfree(ws);
-    kfree(pps);
-    check_job_empty();
     pmm_stats(&total, &free_after);
     kprintf("stress: %lu KiB not returned (thread stacks are kept for reuse)\n",
             (free_before - free_after) * 4);
-    uint64_t failed = __atomic_load_n(&failures, __ATOMIC_RELAXED);
     report("stress: %s after %lu s (%lu failures)", failed ? "FAILED" : "PASSED",
             (uptime_ns() - start) / 1000000000, failed);
     return failed == 0;
+}
+
+/* ---- the background load ------------------------------------------------------- */
+
+#define LOAD_ROUND_MS 250   /* a TLB shootdown round this often */
+
+static struct thread *load_thread;
+static bool load_stop;
+static uint64_t load_start_ns;
+
+/* What stress_run's own loop does once a second, four times as often:
+ * shootdown rounds (IPIs to every CPU), and the starvation check. */
+static void load_main(void *arg)
+{
+    (void)arg;
+    uint64_t round = 0;
+    while (!__atomic_load_n(&load_stop, __ATOMIC_ACQUIRE)) {
+        thread_sleep_ms(LOAD_ROUND_MS);
+        shootdown_round((uint64_t)shoot_va, ++round);
+        if (__atomic_exchange_n(&shoot_bad, 0, __ATOMIC_RELAXED)) {
+            report("stress: FAILED TLB shootdown: a CPU saw a stale mapping (load round %lu)",
+                   round);
+            __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
+        }
+        if (round % (1000 / LOAD_ROUND_MS) == 0 && uptime_ns() - load_start_ns > 10000000000ull)
+            check_progress(workers, nworkers);
+    }
+}
+
+bool stress_load_start(uint32_t n)
+{
+    if (load_thread || workers || n < 2)
+        return false;
+    kprintf("stress: background load: %u threads on %u CPUs (counters, allocations, sleeps, "
+            "migrations, thread and process churn, TLB shootdowns)\n", n, cpu_count);
+    workers_begin(n);
+    load_start_ns = uptime_ns();
+    __atomic_store_n(&load_stop, false, __ATOMIC_RELEASE);
+    load_thread = thread_create("stress-load", load_main, NULL, PRIO_DEFAULT + 4);
+    return true;
+}
+
+uint64_t stress_load_stop(void)
+{
+    if (!load_thread)
+        return 0;
+    __atomic_store_n(&load_stop, true, __ATOMIC_RELEASE);
+    thread_join(load_thread);
+    load_thread = NULL;
+    print_progress((uptime_ns() - load_start_ns) / 1000000000);
+    uint64_t failed = workers_end();
+    kprintf("stress: background load stopped: %lu failures\n", failed);
+    return failed;
 }

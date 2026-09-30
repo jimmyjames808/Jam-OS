@@ -284,10 +284,24 @@ const char *sh_history_at(unsigned i)
     return i < nhist && nhist - i <= HIST ? hist[i % HIST] : NULL;
 }
 
+/* The boot word soak=<minutes> (init passes it to the boot's first shell):
+ * wait for the stick's /data, so the file load has something to write to,
+ * then run the soak test as if typed, halting on the first failure. */
+static void boot_soak(const char *minutes)
+{
+    char line[48];
+    echo("soak (boot word): waiting up to 20 s for /data\n");
+    sh_flush();
+    for (int i = 0; i < 100 && fs_statfs("/data", NULL, NULL, NULL, NULL) != OK; i++)
+        jam_nanosleep(now() + 200 * NS_PER_MS);
+    snprintf(line, sizeof(line), "soak %s halt", minutes);
+    echo("jam> %s\n", line);
+    sh_line(line);
+    sh_flush();
+}
+
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
     con = startup_handle(SR_CONSOLE);
     if (!con) {
         printf("shell: no console channel\n");
@@ -304,6 +318,8 @@ int main(int argc, char **argv)
         line_max = cols - PROMPT_W - 1;
     sh_init();
     echo("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
+    if (argc > 1 && !strncmp(argv[1], "soak=", 5))
+        boot_soak(argv[1] + 5);
     for (;;) {
         char line[LINE_MAX + 1];
         read_line(line);

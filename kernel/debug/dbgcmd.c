@@ -6,12 +6,18 @@
  * The output is ordinary kernel log text, which the console follows with a
  * klog reader; the result comes back as the call's value.
  *
- *   ktest [prefix]   ktest_run(prefix) with ktest_live set: a failure panics,
+ *   ktest [prefix] [loops=N] [seed=S] [shuffle] [keep] [load[=N]]
+ *                    ktest_run_opts (ktest.h has the words) with ktest_live
+ *                    set: a failure panics,
  *                    as from the boot menu, but checks on system-wide counts
  *                    (user space allocates meanwhile) are not made and the
  *                    per-test leak check only logs (ktest.h); PCI functions
  *                    a driver holds (or devmgr ever bound: pci_in_use) are
  *                    hidden from the tests (pci_hide_in_use)
+ *   soak begin       clear the soak record and note what the system holds
+ *   soak end u=<runs>,<failed> io=<cycles>,<failed> [halt]
+ *                    print the soak's summary (kernel/test/ktest_soak.c): the
+ *                    number of failures; with halt, panic if there is one
  *   bench            bench_run(): 0
  *   stress <s>       stress_run(s), 1..600 s: 0 if every check held, else 1
  *   devices          pci_report(): the number of PCI functions
@@ -102,11 +108,20 @@ status_t dbgcmd_check(const char *cmd, size_t len)
     const char *rest;
     size_t n = word(cmd, &rest);
     uint64_t s;
-    if (is(cmd, n, "ktest") || is(cmd, n, "bench")) {
+    if (is(cmd, n, "ktest") || is(cmd, n, "bench") || is(cmd, n, "soak")) {
 #ifdef JAM_NO_KTESTS
         return ERR_NOT_SUPPORTED;
 #else
-        return is(cmd, n, "bench") && *rest ? ERR_INVALID_ARGS : OK;
+        struct ktest_opts o;
+        const char *args;
+        if (is(cmd, n, "ktest"))
+            return ktest_parse_opts(rest, false, &o) ? OK : ERR_INVALID_ARGS;
+        if (is(cmd, n, "bench"))
+            return *rest ? ERR_INVALID_ARGS : OK;
+        size_t k = word(rest, &args);
+        if (is(rest, k, "begin"))
+            return *args ? ERR_INVALID_ARGS : OK;
+        return is(rest, k, "end") && ktest_soak_args_ok(args) ? OK : ERR_INVALID_ARGS;
 #endif
     }
     if (is(cmd, n, "stress"))
@@ -138,8 +153,10 @@ static int64_t exec(const char *cmd, struct job *scope)
         kprintf("ktest: from the shell: %u PCI function(s) in use by drivers are skipped\n", busy);
         /* User space runs meanwhile: global counts are not checked
          * (ktest.h: KT_GLOBAL_EQ, KT_SKIP_LIVE, the leak check logs). */
+        struct ktest_opts o;
+        ktest_parse_opts(rest, false, &o);   /* dbgcmd_check saw it parse */
         ktest_live = true;
-        int r = ktest_run(rest);
+        int r = ktest_run_opts(&o);
         ktest_live = false;
         __atomic_store_n(&pci_hide_in_use, false, __ATOMIC_RELAXED);
         return r;
@@ -147,6 +164,15 @@ static int64_t exec(const char *cmd, struct job *scope)
     if (is(cmd, n, "bench")) {
         bench_run();
         return 0;
+    }
+    if (is(cmd, n, "soak")) {
+        const char *args;
+        size_t k = word(rest, &args);
+        if (is(rest, k, "begin")) {
+            ktest_soak_begin(scope);
+            return 0;
+        }
+        return ktest_soak_end(scope, args);
     }
 #endif
     if (is(cmd, n, "stress")) {

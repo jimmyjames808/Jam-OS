@@ -25,7 +25,10 @@
 #define TAIL_BYTES   2048
 #define KERNEL_SPACE 0xffff800000000000ull
 
+#define NOTE_MAX     320
+
 int panic_in_progress;   /* set once, by the first CPU to panic */
+static char note[NOTE_MAX];   /* panic_note_set's line; its last byte stays 0 */
 static char tail[TAIL_BYTES + 1];
 
 static const char *const exception_names[32] = {
@@ -134,8 +137,18 @@ static void panic_begin(void)
     kprintf("\n\n");
 }
 
+void panic_note_set(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    kvsnprintf(note, NOTE_MAX - 1, fmt, ap);
+    va_end(ap);
+}
+
 _Noreturn static void panic_end(void)
 {
+    if (note[0])
+        kprintf("\n  %s\n", note);
     /* Show the tail of the log starting at a line boundary. */
     const char *start = tail;
     for (const char *p = tail; *p; p++)

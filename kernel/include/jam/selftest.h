@@ -29,3 +29,10 @@ int64_t selftest_crash_run(const char *name);
 int64_t selftest_crash_list(void);
 /* Stress test for `seconds`; returns true if every check held. */
 bool stress_run(uint64_t seconds);
+/* n (at least 2) of the stress test's workers as a background load, until
+ * stress_load_stop, which makes the end-of-run checks and returns how many
+ * checks failed (each failure is a "stress: FAILED" report line). false if
+ * a load or a stress run is already going. Callers are the debug commands
+ * and the boot's main thread: never two at once. */
+bool     stress_load_start(uint32_t n);
+uint64_t stress_load_stop(void);

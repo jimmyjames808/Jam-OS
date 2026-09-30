@@ -108,7 +108,7 @@ KTEST(repro_local_wake_latency)
      * back on, so a higher-priority thread woken on the waker's own CPU
      * runs almost immediately instead of waiting up to a whole tick (10 ms,
      * which is what this measures without that check). */
-    KT_ASSERT(local < 2000);
+    KT_IDLE_ASSERT(local < 2000);   /* a latency: idle only */
 }
 
 /* ---- 2. finish_switch reads prev->state after releasing it ---------------- */
@@ -148,6 +148,7 @@ static void idle_fn(void *arg)
 
 KTEST(repro_finish_switch_double_reap)
 {
+    KT_NEEDS_IDLE("stages a race step by step on pinned CPUs, each step within 2 s");
     if (!enabled())
         return;
     kt_pin_self(0);
@@ -247,6 +248,7 @@ static void ab_stale(void *arg)
 
 KTEST(repro_wake_stale_cpu)
 {
+    KT_NEEDS_IDLE("stages a race step by step on pinned CPUs, each step within 2 s");
     if (!enabled())
         return;
     kt_pin_self(0);
@@ -382,6 +384,7 @@ static void rr_late(void *arg)
 
 KTEST(repro_slice_not_reset)
 {
+    KT_NEEDS_IDLE("measures the wait for a CPU that runs one spinner and nothing else");
     if (!enabled())
         return;
     kt_pin_self(0);

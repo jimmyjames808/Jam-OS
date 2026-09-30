@@ -173,7 +173,7 @@ KTEST(bootfs_corrupt)
         uint8_t *p = img + IMG_SIZE - len;
         why = NULL;
         if (bootfs_validate(p, len, &why) != ERR_INVALID_ARGS)
-            panic("ktest bootfs_corrupt: case %d accepted", c);
+            ktest_fail("case %d accepted", c);
         KT_ASSERT(why != NULL);
     }
 

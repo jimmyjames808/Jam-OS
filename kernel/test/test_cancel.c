@@ -65,7 +65,7 @@ static void cancel_one(void (*fn)(void *), struct waiter *w)
     thread_cancel(th);
     thread_join(th);
     KT_EQ(w->st, ERR_CANCELED);
-    KT_ASSERT(uptime_ns() - t0 < NS_PER_S / 10);
+    KT_IDLE_ASSERT(uptime_ns() - t0 < NS_PER_S / 10);   /* how quickly: idle only */
 }
 
 KTEST(cancel_every_wait_kind)
@@ -185,7 +185,11 @@ KTEST(cancel_races_wakeup)
     handle_t port;
     KT_EQ(sys_port_create(&t, &port), OK);
     uint32_t ok = 0, canceled = 0;
-    for (uint32_t i = 0; i < 2000; i++) {
+    /* On a busy machine each racer waits for its CPU: a tenth of the races
+     * (2000 took 80 to 100 s under load in QEMU), which the load's own
+     * timing varies more than the spin below does. */
+    uint32_t races = ktest_busy ? 200 : 2000;
+    for (uint32_t i = 0; i < races; i++) {
         struct waiter w = { .t = &t, .h = port, .st = ERR_INTERNAL };
         cpumask_t m;
         cpumask_one(&m, cpu_count > 1 ? 1 + i % (cpu_count - 1) : 0);
@@ -213,6 +217,6 @@ KTEST(cancel_races_wakeup)
             KT_EQ(pkt.key, i);
         }
     }
-    report("cancel: 2000 races, %u woken, %u cancelled", ok, canceled);
+    report("cancel: %u races, %u woken, %u cancelled", races, ok, canceled);
     handle_table_destroy(&t);
 }
