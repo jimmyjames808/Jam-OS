@@ -342,6 +342,7 @@ static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct t
  * [va, stop) of one page table; with `detach` (region lock held), tables
  * left empty are unlinked onto g. */
 struct leaf_walk {
+    /* Edits one page table's leaves in [va, stop). */
     void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms);
     unsigned           perms;    /* passed to fn */
     bool               detach;   /* unlink the tables left empty */

@@ -149,7 +149,7 @@ static void do_pingpong(const struct worker *w)
 
 static void short_life(void *arg)
 {
-    volatile uint64_t *x = arg;
+    uint64_t *x = arg;
     __atomic_add_fetch(x, 1, __ATOMIC_RELAXED);   /* several run at once */
 }
 
