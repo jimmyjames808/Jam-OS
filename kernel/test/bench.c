@@ -1305,21 +1305,16 @@ static void user_benches(void)
 
 /* ---- driver --------------------------------------------------------------- */
 
-void bench_run(void)
+static void free_samples(void)
 {
-    samples = kmalloc(SAMPLES * sizeof(uint64_t));
-    samples_off = kmalloc(SAMPLES * sizeof(uint64_t));
-    samples_on = kmalloc(SAMPLES * sizeof(uint64_t));
-    if (!samples || !samples_off || !samples_on) {
-        kprintf("bench: out of memory\n");
-        kfree(samples);
-        kfree(samples_off);
-        kfree(samples_on);
-        return;
-    }
-    sw_save();
-    ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
-    pick_cpus();
+    kfree(samples);
+    kfree(samples_off);
+    kfree(samples_on);
+}
+
+/* The header: the CPU, the TSC, which CPUs play P/P2/HT/E. */
+static void print_header(void)
+{
     const char *brand = cpu_features.brand;
     while (*brand == ' ')
         brand++;
@@ -1328,14 +1323,11 @@ void bench_run(void)
     report("bench: kernel threads, then ring 3 ('user:' lines, bin/utest), lock checker on, "
            "median and p99 of %u samples", SAMPLES);
     kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
+}
 
-    /* The orchestrating thread stays on CPU 0, away from every measured CPU,
-     * so it can't be starved by (or compete with) a busy benchmark thread. */
-    cpumask_t zero, all;
-    cpumask_one(&zero, 0);
-    cpumask_all(&all);
-    thread_set_affinity(current_thread(), &zero);
-
+/* The timestamp's own cost, then the primitives on one CPU (P). */
+static void local_benches(void)
+{
     run_on(cpu_p, bench_stamp, NULL);
     result("timestamp cost (subtracted from all below)", samples, SAMPLES);
     uint64_t step_ps = cycles_to_ps(stamp_step);
@@ -1360,7 +1352,12 @@ void bench_run(void)
     context_switch();
     wakeup(cpu_p);
     chan_call(cpu_p);
+}
 
+/* P against each of P2, HT and E that exists: cache lines, wakeups, IPIs,
+ * interrupts, channel calls, placement. */
+static void cross_cpu_benches(void)
+{
     int others[] = { cpu_p2, cpu_ht, cpu_e };
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
@@ -1382,6 +1379,12 @@ void bench_run(void)
         chan_call_placed();
     if (cpu_count > 2)
         placement();
+}
+
+/* Serial output, sleep accuracy, TLB shootdown, address-space switches,
+ * FPU state and the ring-3 benchmarks. */
+static void system_benches(void)
+{
     serial_output();
     if (lapic_timer_has_oneshot()) {
         sleep_accuracy(100);
@@ -1398,8 +1401,33 @@ void bench_run(void)
     as_switch();
     fpu_state();
     user_benches();
+}
+
+void bench_run(void)
+{
+    samples = kmalloc(SAMPLES * sizeof(uint64_t));
+    samples_off = kmalloc(SAMPLES * sizeof(uint64_t));
+    samples_on = kmalloc(SAMPLES * sizeof(uint64_t));
+    if (!samples || !samples_off || !samples_on) {
+        kprintf("bench: out of memory\n");
+        free_samples();
+        return;
+    }
+    sw_save();
+    ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
+    pick_cpus();
+    print_header();
+
+    /* The orchestrating thread stays on CPU 0, away from every measured CPU,
+     * so it can't be starved by (or compete with) a busy benchmark thread. */
+    cpumask_t zero, all;
+    cpumask_one(&zero, 0);
+    cpumask_all(&all);
+    thread_set_affinity(current_thread(), &zero);
+
+    local_benches();
+    cross_cpu_benches();
+    system_benches();
     thread_set_affinity(current_thread(), &all);
-    kfree(samples);
-    kfree(samples_off);
-    kfree(samples_on);
+    free_samples();
 }
