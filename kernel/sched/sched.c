@@ -580,6 +580,19 @@ static uint32_t select_cpu_pair(struct thread *t, uint32_t waker)
 
 static void thread_wake_common(struct thread *t, bool sync);
 
+/* Queue t, READY and on no run queue, on `cpu` and tell that CPU if t
+ * should run before what it is running now. */
+static void place_on(struct thread *t, uint32_t cpu)
+{
+    struct runqueue *rq = &rqs[cpu];
+    uint64_t f = spin_lock_irqsave(&rq->lock);
+    enqueue(rq, t, cpu);
+    bool kick = t->prio > rq_cur_prio(rq);   /* -1 when idle: see struct runqueue */
+    spin_unlock_irqrestore(&rq->lock, f);
+    if (kick)
+        sched_kick(cpu);
+}
+
 void thread_wake(struct thread *t)
 {
     thread_wake_common(t, false);
@@ -663,13 +676,7 @@ static void thread_wake_common(struct thread *t, bool sync)
         cpu = select_cpu_pair(t, w.cpu);
     else
         cpu = select_cpu(t);
-    struct runqueue *rq = &rqs[cpu];
-    uint64_t f = spin_lock_irqsave(&rq->lock);
-    enqueue(rq, t, cpu);
-    bool kick = t->prio > rq_cur_prio(rq);   /* -1 when idle: see struct runqueue */
-    spin_unlock_irqrestore(&rq->lock, f);
-    if (kick)
-        sched_kick(cpu);
+    place_on(t, cpu);
 }
 
 /* ---- idle, work stealing ---------------------------------------------------- */
