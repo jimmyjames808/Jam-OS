@@ -56,9 +56,9 @@
  * Every call is bounded: USB requests USB_TIMEOUT, input calls
  * INPUT_TIMEOUT (a late console costs that event, logged, not the
  * driver). */
-#include "hid.h"
 #include <idl/input.h>
 #include <idl/usb.h>
+#include "hid.h"
 
 #define USB_TIMEOUT   (2000 * NS_PER_MS)
 #define INPUT_TIMEOUT (2000 * NS_PER_MS)

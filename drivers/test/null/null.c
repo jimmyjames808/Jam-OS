@@ -1,8 +1,8 @@
 /* null: the test driver (drv/null in bootfs). It serves the `null`
  * protocol (abi/idl/null.idl: ping, add, reverse, make_vmo) on its
  * DR_SERVE channel until the client closes it, then exits 0. */
-#include <jam/driver.h>
 #include <idl/null.h>
+#include <jam/driver.h>
 
 struct null_state {
     uint64_t calls;   /* requests served */

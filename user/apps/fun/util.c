@@ -1,6 +1,6 @@
 /* libfun: maths without libm, memory, console output, arguments (fun.h). */
-#include "fun.h"
 #include <idl/console.h>
+#include "fun.h"
 
 /* ---- maths ----------------------------------------------------------------------------- */
 

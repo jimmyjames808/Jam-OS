@@ -28,9 +28,9 @@
  *   - exit 0 otherwise: finished (a non-boot interface it skipped);
  *   - a crash, a kill, an error exit: restarted with backoff
  *     (supervise.c), given up on after 5 in a minute. */
-#include "internal.h"
 #include <idl/console.h>
 #include <idl/usbbus.h>
+#include "internal.h"
 
 #define CONNECT_WAIT (2 * NS_PER_S)   /* console.connect_input */
 

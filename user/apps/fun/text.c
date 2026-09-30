@@ -1,6 +1,6 @@
 /* libfun: proportional text from the 8x16 console font, and the FPS counter (fun.h). */
-#include "fun.h"
 #include <font.h>
+#include "fun.h"
 
 /* ---- text ---------------------------------------------------------------------------- */
 

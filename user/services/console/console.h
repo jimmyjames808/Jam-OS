@@ -9,10 +9,10 @@
  *   main.c     the kernel log, startup and the event loop */
 #pragma once
 
-#include <os.h>
 #include <font.h>
 #include <idl/console.h>
 #include <idl/input.h>
+#include <os.h>
 
 #define GW 8
 #define GH 16

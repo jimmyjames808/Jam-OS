@@ -34,9 +34,6 @@ struct attach {
     uint8_t iproduct;      /* the product string's index, from the device descriptor */
 };
 
-/* A step of the enumeration: false if the device can't go on. */
-typedef bool attach_step(struct attach *a);
-
 static bool failed(struct attach *a, const char *step, uint32_t cc)
 {
     a->failed_at = step;
@@ -308,7 +305,9 @@ static bool setup_hub(struct attach *a)
     return true;
 }
 
-static attach_step *const steps[] = {
+/* The steps of the enumeration, in order; each is false if the device
+ * can't go on. */
+static bool (*const steps[])(struct attach *a) = {
     enable_slot,
     alloc_contexts,
     address_device,

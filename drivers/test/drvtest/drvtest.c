@@ -4,9 +4,9 @@
  * null server (role DRVTEST_NULL), calls it through the generated client,
  * including requests the server must reject. Exit code 0 if every check
  * passed (drv_exit), and one RESULTS line. */
-#include <jam/driver.h>
 #include <idl/edu.h>
 #include <idl/null.h>
+#include <jam/driver.h>
 
 #define DRVTEST_NULL 0x40   /* this test's own role: a channel to a null server */
 #define PAGE         4096u

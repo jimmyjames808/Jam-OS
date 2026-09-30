@@ -5,9 +5,9 @@
  * <devmgr.h>. */
 #pragma once
 
-#include <os.h>
 #include <devmgr.h>
 #include <jam/driver.h>
+#include <os.h>
 
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
 /* How long a driver gets to end by itself when asked to stop, before its

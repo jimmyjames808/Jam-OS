@@ -25,8 +25,8 @@
  * 1 device -> RAM, bit 2 raise DMA_IRQ when done). The device's DMA buffer
  * is at device address 0x40000, 4 KiB; a transfer takes ~100 ms of QEMU
  * time. DMA addresses must be below 4 GiB (qemu-test.sh sets dma_mask). */
-#include <jam/driver.h>
 #include <idl/edu.h>
+#include <jam/driver.h>
 
 #define R_ID        0x00
 #define R_LIVE      0x04

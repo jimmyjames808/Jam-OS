@@ -1,6 +1,6 @@
 /* libfun: the screen borrowed from the console, and drawing on surfaces (fun.h). */
-#include "fun.h"
 #include <idl/console.h>
+#include "fun.h"
 
 /* ---- the screen -------------------------------------------------------------------- */
 
