@@ -17,6 +17,9 @@
 #include <jam/string.h>
 #include <jam/trap.h>
 #include <jam/x86.h>
+#include <jam/cmdline.h>
+#include <jam/console_svc.h>
+#include <jam/time.h>
 
 #define MAX_FRAMES   24
 #define TAIL_BYTES   2048
@@ -143,8 +146,26 @@ _Noreturn static void panic_end(void)
     /* Written directly: the tail is longer than kprintf's line buffer. */
     kprintf("\nlast log lines:\n");
     klog_write_raw(start, strlen(start));
-    kprintf("\n\nsystem halted.\n");
-    halt_forever();
+
+    uint64_t wait_time = cmdline_get_u64("panic_reboot", 0, 0);
+    if (!wait_time || !tsc_hz) {
+        kprintf("\n\nsystem halted.\n");
+        halt_forever();
+    }
+    if (wait_time > 3600)
+        wait_time = 3600;
+
+    kprintf("\n\nrebooting in %4lu s (panic_reboot)", (unsigned long)wait_time);
+    for (uint64_t i = wait_time; i > 0; i--) {
+        uint64_t end = rdtsc() + tsc_hz;   /* one second */
+        while (rdtsc() < end)
+            cpu_relax();
+        /* back over "NNNN s (panic_reboot)" (21 characters) */
+        kprintf("\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b%4lu s (panic_reboot)",
+                (unsigned long)(i - 1));
+    }
+    kprintf("\n");
+    machine_reboot();
 }
 
 _Noreturn void panic(const char *fmt, ...)

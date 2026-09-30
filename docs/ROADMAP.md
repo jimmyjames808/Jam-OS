@@ -103,8 +103,6 @@ Offered or noticed, not scheduled into a milestone yet:
   them needs internal headers).
 - The rest of the shell was not covered by the cleanup's review (only the
   segment fix and `kill` were): review it next time.
-- A `panic_reboot=<s>` boot option (reboot N seconds after a panic), or
-  wait for the M8.5 crash kernel: the owner's call.
 - A pluggable scheduler interface (`sched_ops`): not until a second
   policy is needed.
 
