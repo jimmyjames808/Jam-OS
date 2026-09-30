@@ -183,6 +183,12 @@ int text_width(int scale, const char *str)
     return w * (scale < 1 ? 1 : scale);
 }
 
+void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str)
+{
+    text(s, r->x + (r->w - text_width(scale, str)) / 2, r->y + (r->h - TEXT_H(scale)) / 2, scale,
+         c, str);
+}
+
 void fps_frame(struct fps *f)
 {
     uint64_t t = now();
