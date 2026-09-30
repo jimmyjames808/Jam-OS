@@ -65,6 +65,7 @@ const char *startup_role_name(uint32_t role)
     case SR_DEVMGR:       return "devmgr";
     case SR_CONSOLE:      return "console";
     case SR_DEVMGR_CTL:   return "devmgr-ctl";
+    case SR_NS:           return "ns";
     }
     return role >= SR_USER ? "user" : "?";
 }

@@ -109,7 +109,17 @@ struct spawn_handle {
 };
 
 struct spawn_args {
-    const char                *path;     /* in bootfs, e.g. "bin/utest" */
+    /* The program: a bootfs name ("bin/utest"), or an absolute path read
+     * through our namespace ("/data/x"; see files below). With `vmo` set,
+     * the program is bytes [offset, offset + size) of it instead, and path
+     * only names it. Code runs only from a VMO whose handle has RIGHT_EXEC,
+     * which only the bootfs image's has: a program from anywhere else is
+     * refused (ERR_ACCESS_DENIED) until the kernel can make a VMO
+     * executable. */
+    const char                *path;
+    handle_t                   vmo;      /* 0: path says where the program is */
+    uint64_t                   offset;   /* of the program in vmo, page-aligned */
+    uint64_t                   size;     /* its bytes */
     const char                *name;     /* process name; NULL: the path's last part */
     int                        argc;     /* entries in argv */
     const char *const         *argv;     /* argv[0] is the program's name as it sees it */
@@ -123,13 +133,23 @@ struct spawn_args {
     /* NULL, or a NULL-terminated list of "KEY=value" strings: the child's
      * environment (environ). */
     const char *const         *envp;
+    /* Its namespace (SR_NS): NULL gives it none; else these mount points of
+     * ours, NULL-terminated (NS_ALL: every one), sent as its first ns
+     * message right after the start. */
+    const char *const         *ns;
+    /* NULL: our end of its SR_NS channel is closed once that message is
+     * sent (its namespace never changes). Else our end goes here after a
+     * successful spawn, for ns_send later. */
+    handle_t                  *ns_out;
 };
 
-/* Load a program from bootfs into a new process and start it. Its startup
- * message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a duplicate
- * of a->job with JOB_RIGHTS_OWN: the child can't change its own limits),
- * BOOTFS (a duplicate of ours) and the extras, which are
- * consumed whatever happens. *proc gets the process handle. */
+/* Load a program (spawn_args.path) into a new process and start it. Its
+ * startup message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a
+ * duplicate of a->job with JOB_RIGHTS_OWN: the child can't change its own
+ * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set) and the
+ * extras, which are consumed whatever happens. *proc gets the process
+ * handle. ERR_OUT_OF_RANGE: too many extras (STARTUP_MAX_HANDLES - 6 fit
+ * next to a namespace, one more without). */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
 /* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
@@ -144,12 +164,31 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
                       size_t stack_size, handle_t *out);
 
 /* files ---------------------------------------------------------------------------
- * The namespace (M8): every program gets mount points (SR_NS, set up by
- * whoever starts it; init gives /boot, /esp and /data) and these calls
- * resolve a path to the longest matching mount, then talk to that mount's
- * `fs` service (abi/idl/fs.idl, file.idl). Paths are absolute, at most
- * FS_PATH_MAX - 1 bytes. Errors are the servers' ERR_* (fs.idl lists them);
- * a path under no mount is ERR_NOT_FOUND. */
+ * The namespace: the mount points a program was given, each with its `fs`
+ * channel (abi/idl/fs.idl, file.idl). A mount point is "/" and one name
+ * ("/boot", "/data"). The calls below take absolute paths of at most
+ * FS_PATH_MAX - 1 bytes (longer, or not starting with '/':
+ * ERR_INVALID_ARGS), find the mount by the path's first name and send the
+ * rest to its `fs` service. Inside a mount "." and ".." are resolved here,
+ * and ".." stops at the mount's root: "/data/../boot/x" is /data/boot/x,
+ * never /boot/x. "/" itself is a directory that lists the mount points.
+ * Errors: a path under no mount is ERR_NOT_FOUND; a mount whose service
+ * died gives ERR_PEER_CLOSED; a call the service doesn't answer within
+ * FS_CALL_TIMEOUT is ERR_TIMED_OUT; the rest are the service's ERR_*
+ * (fs.idl lists them).
+ *
+ * SR_NS, the encoding: a channel end. Whoever started the program holds
+ * the other end and writes struct ns_msg messages on it; an NS_MOUNT's
+ * handles are the `fs` channels, one per path, in order. The first message
+ * (an NS_MOUNT, possibly of nothing) comes right after the start; libos
+ * waits for it (up to NS_FIRST_WAIT) before its first lookup. Later ones
+ * change the running program's namespace: NS_MOUNT adds mounts, or
+ * replaces those with the same path; NS_UNMOUNT (no handles) removes
+ * them. Files already open stay open either way: each has its own channel.
+ * A starter that closes its end leaves the namespace as it is. A malformed
+ * message is dropped and its handles closed.
+ *
+ * The namespace may be used from several threads at once. */
 
 #define FS_PATH_MAX 256
 #define FS_READ     1u    /* fs.open flags (fs.idl) */
@@ -157,12 +196,62 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
 #define FS_CREATE   4u    /* create it if missing */
 #define FS_TRUNCATE 8u    /* empty it on open */
 #define FS_APPEND   16u   /* every write goes to the end */
+#define FS_FLAGS    31u   /* all of them: any other bit is ERR_INVALID_ARGS */
+#define FS_CALL_TIMEOUT (60 * NS_PER_S)
+
+#define NS_NAME_MAX   16  /* a mount point with its slash and its NUL: "/data" */
+#define NS_MAX_MOUNTS 8   /* in one namespace, and in one ns_msg */
+#define NS_FIRST_WAIT (5 * NS_PER_S)
+#define NS_MOUNT      1u
+#define NS_UNMOUNT    2u
+
+struct ns_msg {
+    uint32_t txid;                             /* 0: not a call */
+    uint32_t kind;                             /* NS_MOUNT or NS_UNMOUNT */
+    uint32_t count;                            /* paths used, at most NS_MAX_MOUNTS */
+    uint32_t reserved;                         /* 0 */
+    char     path[NS_MAX_MOUNTS][NS_NAME_MAX]; /* mount points, NUL-terminated */
+};
+/* An ns_msg is sent only as long as the paths it uses. */
+#define NS_MSG_SIZE(count) (16u + (count) * NS_NAME_MAX)
+
+/* "Every mount point we have": for spawn_args.ns and ns_send. */
+extern const char *const NS_ALL[];
+
+/* Mount the `fs` channel fs (consumed, whatever happens) at path in our
+ * own namespace, replacing what was mounted there (its channel is closed).
+ * ERR_INVALID_ARGS: path isn't "/name" (a name of 1 to NS_NAME_MAX - 2
+ * bytes without '/', not "." or ".."); ERR_NO_RESOURCES: NS_MAX_MOUNTS
+ * mounts already. */
+status_t ns_mount(const char *path, handle_t fs);
+/* ERR_NOT_FOUND if nothing is mounted there. */
+status_t ns_unmount(const char *path);
+/* Our i-th mount point (in the order they were mounted) into out; false
+ * past the last. */
+bool     ns_mount_at(unsigned i, char out[NS_NAME_MAX]);
+/* A duplicate of the `fs` channel mounted at path ("/data"), for calls of
+ * one's own (the caller closes it). ERR_NOT_FOUND: no such mount. */
+status_t ns_channel(const char *path, handle_t *out);
+/* On `to` (our end of another program's SR_NS channel): an NS_MOUNT of
+ * our own mounts listed in paths (NULL-terminated; NS_ALL: every one; a
+ * path we don't have is left out), each with a duplicate of our channel. */
+status_t ns_send(handle_t to, const char *const *paths);
+/* The same for one channel of the caller's (consumed, whatever happens)
+ * at path; fs HANDLE_INVALID sends an NS_UNMOUNT of path instead. */
+status_t ns_send_one(handle_t to, const char *path, handle_t fs);
+/* For fs services: a path inside a mount (fs.idl's 256-byte field, which
+ * must hold a NUL) as the names it walks, joined by '/' with none leading
+ * or trailing ("" for the mount's root): "/a/./b/../c" is "a/c", and ".."
+ * at the root stays there. out has FS_PATH_MAX bytes. ERR_INVALID_ARGS: no
+ * NUL in the field. */
+status_t fs_path_clean(const uint8_t path[FS_PATH_MAX], char out[FS_PATH_MAX]);
 
 struct jfile {
     handle_t ch;          /* the file protocol channel */
     handle_t buf_vmo;     /* the transfer buffer */
-    uint8_t *buf;         /* ... mapped */
+    uint8_t *buf;         /* ... mapped (read-only unless opened FS_WRITE) */
     uint32_t buf_size;    /* its size in bytes */
+    uint32_t flags;       /* the FS_* flags it was opened with */
     uint64_t size;        /* the file's size at open (file_stat for now) */
 };
 
@@ -172,12 +261,20 @@ struct fs_entry {
     uint64_t size;                /* bytes; 0 for a directory */
 };
 
+/* Open a file (FS_* flags), not a directory. *out is ours until file_close. */
 status_t file_open(const char *path, uint32_t flags, struct jfile *out);
 /* Read / write up to n bytes at offset; *done gets how many (a read short
- * of n only at the end of the file). Split into buffer-sized calls. */
+ * of n only at the end of the file). Split into buffer-sized calls. A file
+ * not opened FS_READ / FS_WRITE: ERR_ACCESS_DENIED; a closed one:
+ * ERR_BAD_STATE. */
 status_t file_read(struct jfile *f, uint64_t offset, void *dst, size_t n, size_t *done);
 status_t file_write(struct jfile *f, uint64_t offset, const void *src, size_t n, size_t *done);
 status_t file_sync(struct jfile *f);
+/* The file's size now and its modification time (either may be NULL). */
+status_t file_stat(struct jfile *f, uint64_t *size, uint64_t *mtime);
+/* Cut the file to size bytes, or grow it with zeros. */
+status_t file_truncate(struct jfile *f, uint64_t size);
+/* Close it and unmap its buffer; *f is zeroed. */
 void     file_close(struct jfile *f);
 /* A path's size, whether it is a directory, and its modification time
  * (Unix seconds; 0 if unknown). Any of the outputs may be NULL. */
@@ -187,8 +284,19 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
 status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out);
 status_t fs_mkdir(const char *path);
 status_t fs_unlink(const char *path);
-status_t fs_rename(const char *from, const char *to);   /* both on one mount */
-status_t fs_sync(const char *path);                      /* the mount holding path */
+/* Both on one mount, else ERR_NOT_SUPPORTED. */
+status_t fs_rename(const char *from, const char *to);
+/* Everything written to the mount holding path is on its medium. */
+status_t fs_sync(const char *path);
+/* The same, giving up at deadline_ns (ERR_TIMED_OUT). */
+status_t fs_sync_by(const char *path, uint64_t deadline_ns);
+/* The mount holding path: its size and free space in bytes, whether it is
+ * read-only, and its volume label (NUL-terminated). Outputs may be NULL. */
+status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool *read_only,
+                   char label[17]);
+/* The whole file at path in a new VMO (whole pages, the rest zero) and its
+ * size in bytes. ERR_OUT_OF_RANGE: bigger than max_size. */
+status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint64_t *size);
 
 /* devices ------------------------------------------------------------------------ */
 
