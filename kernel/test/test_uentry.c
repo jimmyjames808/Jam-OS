@@ -9,9 +9,9 @@
  * by utest_syscall() (installed on uentry_test_syscall, consulted before
  * the real syscall_dispatch). Everything here compiles out with KTESTS=0. */
 #include <jam/cpu.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/lapic.h>
-#include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>

@@ -50,8 +50,8 @@
 #include <jam/percpu.h>
 #include <jam/serial.h>
 #include <jam/spinlock.h>
-#include <jam/x86.h>
 #include <jam/status.h>
+#include <jam/x86.h>
 
 #define COM1 0x3f8
 #define REG_DATA 0

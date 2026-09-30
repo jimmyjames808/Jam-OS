@@ -6,10 +6,10 @@
  * caused it, or panics if it happened in the kernel. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
-#include <jam/percpu.h>
-#include <jam/sched.h>
 #include <jam/kprintf.h>
 #include <jam/panic.h>
+#include <jam/percpu.h>
+#include <jam/sched.h>
 #include <jam/trap.h>
 #include <jam/uentry.h>
 #include <jam/uentry_test.h>

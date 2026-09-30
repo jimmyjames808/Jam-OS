@@ -1,8 +1,8 @@
 /* Limine glue: the ONLY file that includes limine.h. Converts Limine's
  * responses into a struct boot_info and jumps to kmain. */
 #include <stdbool.h>
-#include <limine.h>
 #include <jam/boot.h>
+#include <limine.h>
 
 #define REQ __attribute__((used, section(".limine_requests")))
 

@@ -39,20 +39,20 @@
  *     CPU includes the hardware's wake-from-halt time). */
 #include <jam/aspace.h>
 #include <jam/bootfs.h>
-#include <jam/irq.h>
 #include <jam/channel.h>
 #include <jam/cpu.h>
 #include <jam/interrupt.h>
 #include <jam/interrupt_test.h>
 #include <jam/ipi.h>
+#include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
-#include <jam/report.h>
 #include <jam/port.h>
 #include <jam/process.h>
+#include <jam/report.h>
 #include <jam/sched.h>
 #include <jam/serial.h>
 #include <jam/spinlock.h>

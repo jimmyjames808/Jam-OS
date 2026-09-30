@@ -4,15 +4,15 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <jam/fbcon.h>
+#include <jam/ipi.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
-#include <jam/serial.h>
 #include <jam/ksyms.h>
 #include <jam/mm.h>
-#include <jam/ipi.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
+#include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/trap.h>

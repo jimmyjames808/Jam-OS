@@ -7,22 +7,22 @@
  *     each of which must end on the panic screen with the right message
  *     (bp must come back instead). */
 #include <stdint.h>
+#include <jam/cmdline.h>
+#include <jam/ipi.h>
+#include <jam/irq.h>
 #include <jam/kprintf.h>
-#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
-#include <jam/cmdline.h>
-#include <jam/irq.h>
-#include <jam/ipi.h>
+#include <jam/report.h>
 #include <jam/sched.h>
 #include <jam/selftest.h>
+#include <jam/smp.h>
 #include <jam/spinlock.h>
 #include <jam/status.h>
+#include <jam/string.h>
 #include <jam/time.h>
 #include <jam/x86.h>
-#include <jam/smp.h>
-#include <jam/string.h>
 
 #define CHECK(cond)                                                     \
     do {                                                                \

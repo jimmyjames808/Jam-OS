@@ -29,8 +29,8 @@
 #include <jam/abi.h>
 #include <jam/list.h>
 #include <jam/object.h>
-#include <jam/status.h>
 #include <jam/sched.h>
+#include <jam/status.h>
 
 /* struct port_packet, the PORT_PACKET_* types and the PORT_BIND_* flags
  * are in <jam/abi.h> (user code needs them too). */

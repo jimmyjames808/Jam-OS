@@ -5,9 +5,9 @@
  * reset or started: only its MSI-X table and enable bits are touched, with
  * every entry masked. */
 #include <jam/fbcon.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
-#include <jam/kprintf.h>
 #include <jam/pci.h>
 #include <jam/string.h>
 

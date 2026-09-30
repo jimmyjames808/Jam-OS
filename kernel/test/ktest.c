@@ -8,10 +8,10 @@
  * change the global counts, and tests marked KT_SKIP_LIVE are skipped. */
 #include <jam/interrupt.h>
 #include <jam/kprintf.h>
-#include <jam/report.h>
-#include <jam/resource_impl.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
+#include <jam/report.h>
+#include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>

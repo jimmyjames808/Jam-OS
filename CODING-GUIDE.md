@@ -134,8 +134,12 @@ be compatible with that.
 
 - The header comment first, then `#pragma once` (as `port.h` does): what
   the module is, its lock order, and who owns what.
-- Include order: `<std*.h>` compiler headers first, then `<jam/...>`,
-  then the program's own headers.
+- Include order: `<std*.h>` compiler headers first, then the other
+  `<...>` headers (`<jam/...>`, `<idl/...>`, `<os.h>`), then the program's
+  own `"..."` headers, alphabetical within each group. Don't sort by hand:
+  `make includes` does it (`tools/sortincludes.py`), and `make check`
+  fails when a run of `#include` lines is out of order. A blank line
+  between includes starts a new run, for grouping on purpose.
 - **Public** headers (`kernel/include/jam/`, `drivers/include/jam/driver.h`,
   `user/include/`) declare the API, with each function's contract on its
   declaration: what it does, which errors it returns, what context it needs
@@ -601,7 +605,8 @@ the exact commands and each script's QEMU setup are in
 
 ## 9. Before you commit
 
-- [ ] `make`, `make KTESTS=0` and `make check` pass (no warnings).
+- [ ] `make`, `make KTESTS=0` and `make check` pass (no warnings); run
+      `make includes` if the check lists files.
 - [ ] Generated code regenerated and committed (`make syscalls`, `make idl`).
 - [ ] The tests for my area pass in QEMU, at 4 and 8 CPUs for kernel code.
 - [ ] A bug fix has a test that failed before the fix.
