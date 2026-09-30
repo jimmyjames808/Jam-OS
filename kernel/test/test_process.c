@@ -299,6 +299,14 @@ KTEST(proc_job_kill_tree)
     KT_EQ(killed, 0);
     job_unref(subsub);
     job_unref(sub);
+    /* Dead is not yet freed: a killed thread's last switch away, which
+     * drops its process and with it the address space's pages and the
+     * handles, can come a moment later on a busy CPU (soak seed 1006: 9-12
+     * pages still charged about 1 run in 40 under load). */
+    uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    for (uint32_t k = 1; k < JOB_LIMIT_COUNT && uptime_ns() < end; k++)
+        while (job_used(j, k) && uptime_ns() < end)
+            thread_sleep_ms(1);
     kt_job_is_empty(j);
     job_unref(j);
 }
