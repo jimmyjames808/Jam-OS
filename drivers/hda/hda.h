@@ -13,14 +13,15 @@
  * (the readable lines).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
- * Audio Specification, revision 1.0a (2010): section 3.3 (controller
- * registers), 4 (programming model), 7.3 (verbs and parameters). The
- * section is cited next to each group. */
+ * Audio Specification, revision 1.0a (2010): chapter 3 (controller
+ * registers), 4 (programming model), 7 (codecs: verbs and parameters in
+ * 7.3). Each group below names its register, verb or parameter as the
+ * spec does, so it can be looked up there. */
 #pragma once
 
 #include <jam/driver.h>
 
-/* ---- controller registers (spec 3.3) --------------------------------------- */
+/* ---- controller registers (spec chapter 3) ----------------------------------- */
 
 #define HDA_GCAP       0x00   /* 16: bit 0 64-bit OK, 2:1 SDOs, 7:3 BSS, 11:8 ISS, 15:12 OSS */
 #define HDA_VMIN       0x02   /* 8 */
@@ -91,7 +92,7 @@
 #define AMP_GET_OUT      (1u << 15)
 #define AMP_GET_LEFT     (1u << 13)
 
-/* Parameters (spec 7.3.4). */
+/* Parameters (spec 7.3, Get Parameter). */
 #define P_VENDOR         0x00
 #define P_REVISION       0x02
 #define P_NODES          0x04    /* 23:16 first node, 7:0 count */
@@ -109,7 +110,7 @@
 
 #define FG_AUDIO         0x01
 
-/* Widget capabilities (spec 7.3.4.6). */
+/* Audio Widget Capabilities (spec 7.3, parameters). */
 #define WCAP_TYPE(c)     (((c) >> 20) & 0xf)
 #define WCAP_STEREO      (1u << 0)
 #define WCAP_IN_AMP      (1u << 1)
@@ -127,7 +128,7 @@ enum wtype {
     W_KNOB = 6, W_BEEP = 7, W_VENDOR = 0xf,
 };
 
-/* Pin capabilities (spec 7.3.4.9). */
+/* Pin Capabilities (spec 7.3, parameters). */
 #define PINCAP_IMPEDANCE (1u << 0)
 #define PINCAP_TRIGGER   (1u << 1)
 #define PINCAP_PRESENCE  (1u << 2)

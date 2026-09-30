@@ -1,6 +1,7 @@
-/* hda: the controller. Reset (spec 4.2.2 and 4.3), the command rings
- * CORB and RIRB (spec 4.4.1 and 4.4.2), the immediate command interface
- * (spec 3.4 ICOI/ICII/ICIS) as a fallback, and the stop at exit.
+/* hda: the controller. Reset and codec discovery, the command rings
+ * CORB and RIRB (spec chapter 4, the programming model), the immediate
+ * command interface (the ICOI/ICII/ICIS registers, spec chapter 3) as a
+ * fallback, and the stop at exit.
  *
  * Commands normally go through the rings: the CORB is a ring of 32-bit
  * commands in memory the controller reads by DMA, the RIRB a ring of
@@ -107,7 +108,7 @@ static status_t stop_engines(struct hda *h)
     return st;
 }
 
-/* CRST 0 then 1 (spec 4.2.2), then the codecs' state-change bits. */
+/* CRST 0 then 1 (spec chapter 4, controller reset), then the codecs' state-change bits. */
 static status_t reset(struct hda *h)
 {
     if (rd32(h, HDA_GCTL) & GCTL_CRST) {
@@ -118,13 +119,13 @@ static status_t reset(struct hda *h)
         if (wait32(h, HDA_GCTL, GCTL_CRST, 0, "enter reset") != OK)
             return ERR_TIMED_OUT;
     }
-    /* The link's reset is held for at least 100 us (spec 4.3). */
+    /* The link's reset is held for at least 100 us (spec chapter 4, codec discovery). */
     drv_sleep_until(drv_clock_ns() + NS_PER_MS);
     wr32(h, HDA_GCTL, rd32(h, HDA_GCTL) | GCTL_CRST);
     if (wait32(h, HDA_GCTL, GCTL_CRST, GCTL_CRST, "leave reset") != OK)
         return ERR_TIMED_OUT;
     /* Codecs ask for attention within 25 frames (521 us) of the reset's
-     * end (spec 4.3); some take longer, so wait for the first one up to
+     * end (spec chapter 4, codec discovery); some take longer, so wait for the first one up to
      * CODEC_WAIT, then a little more for the rest. */
     uint64_t start = drv_clock_ns();
     drv_sleep_until(start + NS_PER_MS);
@@ -171,7 +172,7 @@ static status_t ring_page(struct hda *h, uint64_t *addr)
     return OK;
 }
 
-/* CORBRP's reset (spec 3.3.21): write 1 and see it read back 1, then
+/* CORBRP's reset (spec chapter 3, CORBRP): write 1 and see it read back 1, then
  * write 0 and see 0. Some controllers (and QEMU) never show the 1, so
  * only the 0 is required. */
 static status_t corb_rp_reset(struct hda *h)
@@ -192,7 +193,7 @@ static status_t corb_rp_reset(struct hda *h)
     return OK;
 }
 
-/* Both rings set up and running (spec 4.4.1.3, 4.4.2). */
+/* Both rings set up and running (spec chapter 4, CORB and RIRB). */
 static status_t rings_start(struct hda *h)
 {
     uint64_t addr;
@@ -294,7 +295,7 @@ static status_t imm_cmd(struct hda *h, uint32_t cmd, uint32_t *out)
 
 /* A GET verb: 12-bit verbs 0xf00-0xfff, or the 4-bit GET verbs 0xa
  * (converter format) and 0xb (amplifier gain/mute). Everything else sets
- * something in the codec (spec 7.3.3), and this driver sets nothing. */
+ * something in the codec (spec 7.3), and this driver sets nothing. */
 static bool is_get(uint32_t verb, uint32_t payload)
 {
     if (verb >= 0xf00 && verb <= 0xfff)

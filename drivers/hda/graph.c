@@ -1,4 +1,4 @@
-/* hda: reading a codec's graph (spec 7.1 and 7.3). A codec is a tree of
+/* hda: reading a codec's graph (spec chapter 7). A codec is a tree of
  * nodes: the root (node 0) names the codec and lists its function groups;
  * the audio function group (AFG) lists its widgets, and holds the
  * defaults (PCM rates, amplifier steps) widgets use unless they override
@@ -49,7 +49,7 @@ static void conn_entry(struct widget *w, unsigned *n, uint16_t *prev, uint16_t e
     *prev = nid;
 }
 
-/* The connection list (spec 7.3.3.3): GET_CONNECTION_LIST_ENTRY at index
+/* The connection list (spec 7.3, Get Connection List Entry): asked at index
  * i answers the entries from i rounded down, four 8-bit ones (short form)
  * or two 16-bit ones (long form). An entry with its top bit set is the
  * end of a range: every node from the entry before it up to this one. */

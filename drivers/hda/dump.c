@@ -3,8 +3,8 @@
  * default, capabilities and current state), and a last line naming the
  * front-panel headphone jack if the configuration defaults show one.
  * Every number the codec gave is printed in hex next to the words decoded
- * from it (spec 7.3.4 for the parameters, 7.3.3.31 for the configuration
- * default), so the dump can be read without the spec and checked against
+ * from it (spec 7.3: the parameters, and the Configuration Default
+ * verb), so the dump can be read without the spec and checked against
  * it.
  *
  * The lines go to the kernel log, which the console shows and logd saves
@@ -89,7 +89,7 @@ static const char *const rates[12] = {
 };
 static const unsigned sizes[5] = { 8, 16, 20, 24, 32 };
 
-/* The 6-bit location (spec 7.3.3.31, table 110): a few special values,
+/* The 6-bit location (spec 7.3, Configuration Default): a few special values,
  * else gross location and side. */
 static void add_location(struct sb *b, unsigned loc)
 {
@@ -124,7 +124,7 @@ static void add_pcm(struct sb *b, uint32_t pcm, uint32_t formats)
     add(b, "k%s%s", formats & 2 ? " float" : "", formats & 4 ? " ac3" : "");
 }
 
-/* Amplifier capabilities (spec 7.3.4.10): steps 0..n of (s+1)/4 dB, 0 dB
+/* Amplifier Capabilities (spec 7.3, parameters): steps 0..n of (s+1)/4 dB, 0 dB
  * at step `offset`, and whether it mutes. */
 static void add_ampcaps(struct sb *b, const char *which, uint32_t caps)
 {

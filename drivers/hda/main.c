@@ -17,7 +17,7 @@
  * only (ctrl.c's hda_get refuses any other), so it makes no sound and
  * changes no routing, gain, pin control, EAPD or power state; what the
  * firmware set up is still set up afterwards, except what the link reset
- * itself resets (spec 4.3). A restart is a bind from scratch. */
+ * itself resets. A restart is a bind from scratch. */
 #include <idl/hda.h>
 #include "hda.h"
 
