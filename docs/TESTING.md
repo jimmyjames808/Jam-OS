@@ -51,6 +51,11 @@ that a bug fix comes with a test is in
 tools/qemu-test.sh <outdir> <name> [kernel command line...]
 ```
 
+**Build the image first.** Plain `make` does not rebuild `build/jamos.img`,
+and the scripts boot whatever image is there, so run `make -s image` (and
+`make -s KTESTS=0 image` for `QEMU_IMAGE=build/noktests/jamos.img`) before
+any QEMU test: a stale image fails tests that the new code would pass.
+
 Copies `build/jamos.img`, sets the boot entry's command line, boots it
 headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device),
 waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
@@ -87,12 +92,12 @@ make debug                                                # the same, stopped fo
 
 | Entry | Command line | What it does |
 |---|---|---|
-| Jam OS | (empty) | init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB drivers; it mounts the stick's `/esp` and `/data`), logd and the shell |
+| Jam OS | (empty) | init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), logd and the shell. A panic halts with its screen up |
 | Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; a panic's screen stays 15 s, then the PC restarts by itself |
-| Jam OS (safe mode) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
-| Tests / All tests | `ktest` | every in-kernel test at boot, strict |
-| Tests / Stress test (2 minutes) | `selftest stress=120` | after each fix |
-| Tests / Stress test (10 minutes) | `selftest stress=600` | milestone sign-off |
+| Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
+| Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
+| Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
+| Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
 | Tests / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure halts on the panic screen; a pass ends with the SOAK RESULTS box and a prompt |
 | Tests / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
 | Tests / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
@@ -119,6 +124,12 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
 - `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting.
+
+The tests at boot (All tests, the stress test, the benchmark, the timer
+fallback) run before user space, so nothing of them reaches the stick:
+their RESULTS box on the screen is the only record. Runs from the shell
+(and the Soak entry, which is a plain boot) are in the boot log that logd
+writes to `/data/logs/`.
 
 ## From the shell
 
@@ -159,10 +170,22 @@ an idle machine and says so: `KT_NEEDS_IDLE("why")` skips it (the log line
 reads `skipped (busy machine: why)`), `KT_IDLE_EQ` / `KT_IDLE_ASSERT` leave
 out one such check. With `load` the run is also "live" (the load makes
 channels, processes and pages), so `KT_SKIP_LIVE` tests are skipped and
-global counts are not checked. Of 221 tests, 202 run under load: 10 need an
-idle machine and 9 more are skipped live. Never mark a test that is only
+global counts are not checked. Most tests run under load; the run's
+summary says how many were skipped and why. Never mark a test that is only
 slow under load; a wait that is only there so a broken kernel fails instead
 of hanging takes `kt_patience_ms`.
+
+Which marker to use (all in `kernel/include/jam/ktest.h`; the rules a test
+follows are in [CODING-GUIDE.md](../CODING-GUIDE.md#add-a-kernel-test)):
+
+| The check | Use | From the shell or under load |
+|---|---|---|
+| on the test's own objects | `KT_EQ`, `KT_ASSERT` | always made |
+| on a system-wide count (free pages, live channels, port stats) | `KT_GLOBAL_EQ`, `KT_GLOBAL_ASSERT` | not made (counted as relaxed) |
+| a test whose whole point is a system-wide count, or that runs the machine out of memory | `KT_SKIP_LIVE("why")` at the top | skipped: `skipped (live system: why)` |
+| one check on exact timing, exact placement or an idle CPU | `KT_IDLE_EQ`, `KT_IDLE_ASSERT` | made from the shell, not under load |
+| a test that is nothing but such checks | `KT_NEEDS_IDLE("why")` at the top | run from the shell, skipped under load: `skipped (busy machine: why)` |
+| a wait that only guards against a hang | a deadline of `kt_patience_ms(ms)` | 30 times longer under load |
 
 **`soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]`** in the shell is the
 whole thing in one command (default 3 minutes; Ctrl+C ends it after the
@@ -190,7 +213,7 @@ step in progress):
 `halt` leaves out `keep`: the first failed check panics, as the boot menu's
 Soak entry does. `idle` leaves out both loads.
 
-**A failure.** Every panic screen now carries a note under its message
+**A failure.** Every panic screen carries a note under its message
 (whatever kind of panic: a failed check, an exception, the watchdog):
 
 ```
@@ -259,16 +282,39 @@ matters `QEMU_XHCI`) pass through.
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot |
 | `tools/data-test.sh <outdir>` | the stick's filesystems end to end, three boots of one stick image (`data-1.txt` to `data-3.txt`): written, rebooted, read back; QEMU quit in the middle of writes and the dirty volume mounted again; then the boot logs read off the image with mtools, as the Mac reads the real stick |
-| `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back; PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
+| `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back (`SOAK_LOAD`: the kernel load workers, default one per CPU); PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
 | `tools/ktest-keep-test.sh <outdir>` | the test runner's own failure paths, with three tests that exist for it (`ktest=review_ktest`): with `keep` both failures are recorded and the run goes on; without it the first panics and the panic screen names loop, seed and test |
 | `tools/hda-test.sh <outdir>` | the HD Audio driver (`hda.txt`): two emulated controllers (intel-hda with hda-duplex and hda-output, ich9-intel-hda with hda-micro), each codec's graph in the log, `hda` from the shell, `kill hda` and devmgr's restart; QEMU's codecs trace every verb they get and every one must be a GET; then the `init` run with the same devices, where each driver must stop cleanly (the `init` run's "run complete" line is reported, not required: see the known race in [ROADMAP.md](ROADMAP.md#smaller-follow-ups)) |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
+
+## The other tools
+
+The rest of `tools/` builds, checks and flashes; the tests above use some
+of them. Each file's header says more.
+
+| Tool | What |
+|---|---|
+| `tools/serial-feed.py` | types a shell script into QEMU's serial port (`QEMU_INPUT`) |
+| `tools/mkstick.py` | disk images standing in for other people's sticks (`tools/sticks-test.sh`, `tools/soak-test.sh`) |
+| `tools/fat-label.py` | checks, or with `--fix` repairs, a FAT volume's label in an image the way other systems read it (the Makefile runs it on every image; `tools/data-test.sh` checks with it) |
+| `tools/checkdocs.py` | the docs check of `make check` |
+| `tools/checkdriver.py`, `tools/checkdriver-selftest.sh` | the driver build check, and the proof that it still rejects what it must (`tools/checkdriver-tests/`) |
+| `tools/sortincludes.py` | the include-order check of `make check`; `make includes` runs it with `--fix` |
+| `tools/gensyscalls.py`, `tools/genidl.py`, `tools/gensyms.py` | the syscall glue, the IDL headers and the kernel symbol table |
+| `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
+| `tools/write-usb.sh`, `tools/mbr-grow.py` | `make usb`: the image onto a stick, the data partition grown to its end and left blank |
+| `tools/flash-usb.sh` | `make flash`: a new kernel, boot image and boot menu onto a stick's ESP |
+| `tools/bdf2c.py`, `tools/compdb.py` | `make font` (the console font from Spleen's BDF), `make compdb` |
 
 ## Known noise
 
 - 4-CPU stress throughput under QEMU is bimodal (context switches from
   thousands to millions in 10 s): CPU-hog threads on 4 vCPUs, not a
   regression. Don't chase it.
+- The `init` run ends "with problems" about one run in three: a fat
+  service still mounting when devmgr shuts down
+  ([ROADMAP.md](ROADMAP.md#smaller-follow-ups) has the details). Look at
+  which line the RESULTS box names before taking it for a regression.
 - QEMU can't measure page-allocator scaling or anything that depends on
   which physical pages a run lands on ([BENCH.md](BENCH.md) has the
   details). Performance is measured on the PC.
