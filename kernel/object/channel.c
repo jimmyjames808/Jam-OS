@@ -469,6 +469,17 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
     return st;
 }
 
+void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)
+{
+    uint64_t sum = 0;
+    uint64_t f = spin_lock_irqsave(&ch->base.lock);
+    for (struct list_node *n = ch->queue.next; n != &ch->queue; n = n->next)
+        sum += container_of(n, struct chan_msg, node)->charge;
+    *msgs = ch->nqueued;
+    spin_unlock_irqrestore(&ch->base.lock, f);
+    *charged = sum;
+}
+
 /* ---- call ---------------------------------------------------------------------- */
 
 status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khandle *wh,

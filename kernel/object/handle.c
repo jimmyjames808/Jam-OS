@@ -396,6 +396,25 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     return st;
 }
 
+uint32_t handle_table_objects(struct handle_table *t, enum obj_type type, struct kobject **out,
+                              uint32_t cap)
+{
+    uint32_t n = 0;
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    for (uint32_t i = 0; i < t->capacity && n < cap; i++) {
+        struct kobject *o = t->slots[i].obj;
+        bool seen = !o || o->type != type;
+        for (uint32_t k = 0; k < n && !seen; k++)
+            seen = out[k] == o;
+        if (seen)
+            continue;
+        kobject_ref(o);   /* the handle's reference keeps it alive until here */
+        out[n++] = o;
+    }
+    spin_unlock_irqrestore(&t->lock, f);
+    return n;
+}
+
 #ifndef JAM_NO_KTESTS
 uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_t *out,
                              uint32_t cap)

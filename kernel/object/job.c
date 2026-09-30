@@ -44,6 +44,7 @@
  * job) still kills everything before its own wait is cancelled. A child
  * job it holds a reference on stays listed, so the walk continues from its
  * list node. */
+#include <jam/channel.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -329,6 +330,34 @@ void job_uncharge(struct job *j, uint32_t kind, uint64_t n)
 /* ---- listing (the shell's `ps`, through debug_command) --------------------- */
 
 #define PRINT_MAX 32   /* processes / child jobs shown per job */
+#define ENDS_MAX  64   /* channel ends of one process looked at */
+
+/* What waits unread on p's channel ends: messages whose readers are slow
+ * or never read show up here (the charge is the senders'). Printed only
+ * when something is queued. */
+static void print_queued(struct process *p, const char *pad)
+{
+    struct kobject *ends[ENDS_MAX];
+    uint32_t n = handle_table_objects(process_handles(p), OBJ_CHANNEL, ends, ENDS_MAX);
+    uint32_t msgs = 0, most = 0;
+    uint64_t bytes = 0, most_bytes = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t m;
+        uint64_t b;
+        channel_queued((struct channel *)ends[i], &m, &b);
+        msgs += m;
+        bytes += b;
+        if (b > most_bytes) {
+            most_bytes = b;
+            most = m;
+        }
+        kobject_unref(ends[i]);
+    }
+    if (msgs)
+        kprintf("%s    queued on its %u channel end%s: %u message%s, %lu bytes (the most on one: "
+                "%u, %lu bytes)\n", pad, n, n == 1 ? "" : "s", msgs, msgs == 1 ? "" : "s", bytes,
+                most, most_bytes);
+}
 
 void job_print_tree(struct job *j, unsigned depth)
 {
@@ -336,9 +365,9 @@ void job_print_tree(struct job *j, unsigned depth)
     unsigned w = depth < JOB_MAX_DEPTH ? depth * 2 : 2 * JOB_MAX_DEPTH;
     memset(pad, ' ', w);
     pad[w] = '\0';
-    kprintf("%sjob %lu: %lu pages, %lu handles, %lu threads\n", pad, j->base.koid,
-            job_used(j, JOB_LIMIT_PAGES), job_used(j, JOB_LIMIT_HANDLES),
-            job_used(j, JOB_LIMIT_THREADS));
+    kprintf("%sjob %lu: %lu pages, %lu handles, %lu threads, %lu message bytes\n", pad,
+            j->base.koid, job_used(j, JOB_LIMIT_PAGES), job_used(j, JOB_LIMIT_HANDLES),
+            job_used(j, JOB_LIMIT_THREADS), job_used(j, JOB_LIMIT_MSG_BYTES));
 
     /* References taken under the lock, used outside it (as job_kill does). */
     struct kobject *procs[PRINT_MAX];
@@ -369,6 +398,7 @@ void job_print_tree(struct job *j, unsigned depth)
         kprintf("%s  process %lu %-16s %-8s %u thread%s\n", pad, info.koid, process_name(p),
                 info.state < 4 ? states[info.state] : "?", info.threads,
                 info.threads == 1 ? "" : "s");
+        print_queued(p, pad);
         kobject_unref(procs[i]);
     }
     for (unsigned i = 0; i < nk; i++) {
