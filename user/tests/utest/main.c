@@ -547,6 +547,17 @@ static const struct {
     { "fat_not_formatted", t_fat_not_formatted },
     { "fat_dirty_volume", t_fat_dirty_volume },
     { "fat_disk_gone", t_fat_disk_gone },
+    { "ns_boot_mount", t_ns_boot_mount },
+    { "ns_boot_read_only", t_ns_boot_read_only },
+    { "ns_path_rules", t_ns_path_rules },
+    { "ns_mount_point_names", t_ns_mount_point_names },
+    { "ns_read_write", t_ns_read_write },
+    { "ns_server_dies", t_ns_server_dies },
+    { "ns_child_sees_only_its_mounts", t_ns_child_sees_only_its_mounts },
+    { "ns_mounts_reach_a_running_child", t_ns_mounts_reach_a_running_child },
+    { "ns_malformed_messages", t_ns_malformed_messages },
+    { "ns_fat_mount", t_ns_fat_mount },
+    { "spawn_from_vmo", t_spawn_from_vmo },
 };
 
 int main(int argc, char **argv)

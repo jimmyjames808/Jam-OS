@@ -73,6 +73,36 @@ bool t_edu_process(void);
 bool t_devmgr_query_channel(void);
 bool t_edu_killed_mid_dma(void);
 
+/* ns.c: the file namespace, against the bootfs server and bin/ramfs. */
+bool t_ns_boot_mount(void);
+bool t_ns_boot_read_only(void);
+bool t_ns_path_rules(void);
+bool t_ns_mount_point_names(void);
+bool t_ns_read_write(void);
+bool t_ns_server_dies(void);
+bool t_ns_child_sees_only_its_mounts(void);
+bool t_ns_mounts_reach_a_running_child(void);
+bool t_ns_malformed_messages(void);
+bool t_spawn_from_vmo(void);
+/* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
+ * and "utest fat-shell", the namespace tests' children. */
+int ns_child(int argc, char **argv);
+#define NS_HELLO "hello from utest\n"   /* what the children expect in <mount>/hello */
+/* text into a new file at path. */
+status_t ns_put(const char *path, const char *text);
+/* The file at path holds exactly text. */
+bool ns_holds(const char *path, const char *text);
+/* A utest child (mode, arg) in a fresh job with the mounts `ns` (NULL: no
+ * namespace) and one extra handle (extra.h 0: none); *ns_out as spawn's. */
+status_t ns_child_start(const char *mode, const char *arg, const char *const *ns,
+                        struct spawn_handle extra, handle_t *ns_out, handle_t *proc);
+/* The child ended by itself with this code (its handle is closed). */
+bool ns_child_exits(handle_t proc, int64_t code);
+
+/* nsfat.c: the namespace over the real fat service on a RAM disk. */
+bool t_ns_fat_mount(void);
+int fat_shell(void);
+
 /* supervise.c */
 bool t_supervised_restart(void);
 bool t_supervised_backoff(void);
