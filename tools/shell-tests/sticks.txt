@@ -1,0 +1,141 @@
+# Other people's USB sticks (tools/sticks-test.sh makes the images a, b, c,
+# d and f and checks them afterwards): mounted read-only at /usb0, /usb1,
+# made writable and read-only again with `mount`, pulled while in use, and
+# never formatted. The sticks are plugged in here, one at a time, so which
+# one is /usb0 is known.
+# QEMU_INPUT=this file, command line "shell", the drives aimg, bimg, cimg,
+# dimg and fimg. As in cmds.txt, the text waited for is built from $T, so
+# it never appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+send T=s
+wait jam>
+send mount | grep -c /usb | grep ^0$ && echo ok-$T-none
+wait ok-s-none
+
+# ---- a: an MBR, one FAT32 partition: read-only at /usb0 -----------------------------------
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send ls /usb0 | grep -c ^hello.txt$ | grep ^1$ && cat /usb0/hello.txt /usb0/photos/nested.txt
+wait hello from stick a
+wait a nested file
+send mount | grep /usb0 | grep read-only | grep -c STICK-A | grep ^1$ && echo ok-$T-listed
+wait ok-s-listed
+send df | grep /usb0 | grep -c "(read-only)" | grep ^1$ && echo ok-$T-df
+wait ok-s-df
+send cp /usb0/hello.txt /data/from-usb.txt && cat /data/from-usb.txt | grep -c "from stick a" | grep ^1$ && echo ok-$T-cp
+wait ok-s-cp
+send write /usb0/refused.txt not on a read-only stick; echo st-$T=$?
+wait write: /usb0/refused.txt: read-only
+wait st-s=1
+send mkdir /usb0/newdir; echo st2-$T=$?
+wait mkdir: /usb0/newdir: read-only
+wait st2-s=1
+send rm /usb0/hello.txt; echo st3-$T=$?
+wait rm: /usb0/hello.txt: read-only
+wait st3-s=1
+send cp /data/from-usb.txt /usb0/refused2.txt; echo st4-$T=$?
+wait st4-s=1
+send write -a /usb0/hello.txt more; echo st5-$T=$?
+wait st5-s=1
+
+# ---- mount -w, a write, mount -r -----------------------------------------------------------
+send mount -w /usb0; echo mw-$T=$?
+wait mount: /usb0 is now read-write
+wait mw-s=0
+send mount | grep /usb0 | grep -c read-write | grep ^1$ && echo ok-$T-rw
+wait ok-s-rw
+send write /usb0/new.txt written while writable-$T && cat /usb0/new.txt
+wait written while writable-s
+send mount -w /usb0
+wait mount: /usb0 is read-write already
+send mount -r /usb0; echo mr-$T=$?
+wait mount: /usb0 is now read-only
+wait mr-s=0
+send write /usb0/refused.txt not again; echo st6-$T=$?
+wait write: /usb0/refused.txt: read-only
+wait st6-s=1
+send cat /usb0/new.txt | grep -c "while writable" | grep ^1$ && echo ok-$T-kept
+wait ok-s-kept
+
+# ---- what `mount` refuses ------------------------------------------------------------------
+send mount -w /boot; echo b-$T=$?
+wait mount: /boot is the boot image in memory: always read-only
+wait b-s=1
+send mount -w /esp; echo e-$T=$?
+wait mount: /esp holds the boot files: never writable
+wait e-s=1
+send mount -r /data; echo d-$T=$?
+wait mount: /data is the system's own: always writable
+wait d-s=1
+send mount -w /data; echo d2-$T=$?
+wait d2-s=1
+send mount -w /usb7; echo n-$T=$?
+wait mount: /usb7: not mounted
+wait n-s=1
+send write /data/still.txt writable-$T && cat /data/still.txt && write /esp/no.txt x; echo e2-$T=$?
+wait writable-s
+wait write: /esp/no.txt: read-only
+wait e2-s=1
+
+# ---- b: no partition table, one FAT32 volume: /usb1 beside /usb0 ---------------------------
+monitor device_add usb-storage,id=sb,bus=xhci.0,port=3,drive=bimg
+wait 60 init: /usb1 mounted
+send cat /usb1/floppy.txt && mount | grep ^/usb | grep -c read-only | grep ^2$ && echo ok-$T-two
+wait hello from the superfloppy
+wait ok-s-two
+send write /usb1/refused.txt no; echo st7-$T=$?
+wait write: /usb1/refused.txt: read-only
+wait st7-s=1
+
+# ---- a pulled while a file on it is being read ---------------------------------------------
+send cp /usb0/big.bin /data/big.bin; echo read-$T-over=$?
+sleep 3
+monitor device_del sa
+wait 30 init: /usb0 is gone
+seen 60 read-s-over=1
+send rm /data/big.bin
+send ls /usb0; echo st8-$T=$?
+wait ls: /usb0: no such file or directory
+wait st8-s=1
+send cat /usb1/floppy.txt | grep -c superfloppy | grep ^1$ && echo ok-$T-b-stays
+wait ok-s-b-stays
+
+# ---- f takes the free name /usb0; writable; pulled in the middle of a copy onto it ----------
+monitor device_add usb-storage,id=sf,bus=xhci.0,port=2,drive=fimg
+wait 60 init: /usb0 mounted
+send cat /usb0/f.txt
+wait stick f was here
+send mount -w /usb0
+wait mount: /usb0 is now read-write
+send cp /usb0/big.bin /usb0/copy.bin; echo copy-$T-over=$?
+sleep 3
+monitor device_del sf
+wait 30 init: /usb0 is gone
+seen 120 copy-s-over=1
+send df | grep -c ^/usb0 | grep ^0$ && echo ok-$T-f-gone
+wait ok-s-f-gone
+
+# ---- c and d: nothing Jam OS can mount: no mount, nothing written --------------------------
+monitor device_add usb-storage,id=sc,bus=xhci.0,port=2,drive=cimg
+seen 60 holds no FAT volume bin/fat can read: left alone
+seen 10 type 07 is not FAT: left alone
+monitor device_add usb-storage,id=sd,bus=xhci.0,port=4,drive=dimg
+seen 60 no FAT partition to mount: left alone
+send mount | grep -c /usb | grep ^1$ && echo ok-$T-only-b
+wait ok-s-only-b
+monitor device_del sc
+monitor device_del sd
+
+# ---- the system is whole: nothing left of the pulled sticks' services ------------------------
+send ps | grep -c fat-usb | grep ^1$ && echo ok-$T-one-fat
+wait ok-s-one-fat
+send run utest env still-$T
+wait arg: still-s
+wait run: bin/utest exited with code 0
+send cat /usb1/floppy.txt | grep -c superfloppy | grep ^1$ && echo ok-$T-end
+wait ok-s-end
+send reboot
+wait init: /data synced
+wait reboot: resetting
