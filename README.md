@@ -86,7 +86,7 @@ update a stick, and the PC it was built for are in
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
-| `user/services/` | init, console, devmgr, serialin, shell, fat (the FAT filesystem, on FatFs) |
+| `user/services/` | init, console, devmgr, serialin, shell, fat (the FAT filesystem, on FatFs), logd (the boot log files) |
 | `user/apps/` | fractal, life, tetris, demo, and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, contest |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |

@@ -428,6 +428,7 @@ Every driver and service is a userspace process from the start.
 | hid | a `usb` interface | `input` events (boot keyboard and mouse, keyboard layout) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
+| logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | USB mass storage (BOT, later UAS) | `usb` | `block` | no |
 | fat32 | `block` | `fs` (FAT32 + LFN, read/write) | no |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
@@ -590,6 +591,10 @@ Not built yet.
   channel, supervised like a driver; init gets the mounts' `fs` channels
   from devmgr (`DEVMGR_MOUNTS` in `user/include/devmgr.h`), with a
   generation that moves whenever a mount comes, goes or is restarted.
+- logd follows the kernel log from its first byte into
+  `/data/logs/boot-NNNN.txt`, the next free number each boot, syncing at
+  most once a second. Without `/data` it waits and tries again; what the
+  kernel's ring drops meanwhile is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
 
