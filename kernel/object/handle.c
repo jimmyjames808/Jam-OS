@@ -391,6 +391,7 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     return st;
 }
 
+#ifndef JAM_NO_KTESTS
 uint32_t handle_table_rights(struct handle_table *t, enum obj_type type, rights_t *out,
                              uint32_t cap)
 {
@@ -423,6 +424,7 @@ status_t handle_table_find(struct handle_table *t, enum obj_type type, struct ko
     *out = o;
     return OK;
 }
+#endif
 
 /* The reserved slot for an in-transit handle h, if h names one that was taken
  * and not yet committed or restored. */
