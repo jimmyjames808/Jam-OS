@@ -289,18 +289,41 @@ static bool check_big_file(const struct fatrun *r)
     return true;
 }
 
-/* An open file is locked: no second writer, no unlink, no rename; and the
- * table of open files has an end. */
+/* An open file is locked: no second writer, no unlink, no rename; a reader
+ * next to the writer sees what it has written so far; and the table of
+ * open files has an end. */
 static bool check_open_files(const struct fatrun *r)
 {
     static struct tfile many[40];
     struct tfile f, g;
     unsigned n = 0;
     status_t st = OK;
-    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
-    CHECK_ST(t_open(r, "/hello.txt", FS_READ, &g), ERR_BAD_STATE);
+    struct tfile w;
+    char back[16] = "";
+    uint32_t done = 0;
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE | FS_TRUNCATE, &f), OK);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_open(r, "/HELLO.TXT", FS_READ | FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_write(&f, 0, "so far", 6, &done), OK);
+    CHECK_ST(t_open(r, "/Hello.txt", FS_READ, &g), OK);   /* one file, whatever the case */
+    CHECK_EQ(g.size, 6);
+    CHECK_ST(t_write(&f, 6, ", more", 6, &done), OK);     /* not synced: still seen */
+    CHECK_ST(t_read(&g, 0, back, sizeof(back), &done), OK);
+    CHECK_EQ(done, 12);
+    CHECK(!memcmp(back, "so far, more", 12));
+    CHECK_ST(t_write(&g, 0, "no", 2, &done), ERR_ACCESS_DENIED);   /* the reader can't write */
     CHECK_ST(t_unlink(r, "/hello.txt"), ERR_BAD_STATE);
     CHECK_ST(t_rename(r, "/hello.txt", "/other.txt"), ERR_BAD_STATE);
+    /* The writer goes first: the reader keeps the file, and nobody may
+     * write it until the reader has gone too. */
+    t_close(&f);
+    CHECK_ST(t_read(&g, 6, back, 6, &done), OK);
+    CHECK_EQ(done, 6);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
+    t_close(&g);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
+    CHECK_ST(t_open(r, "/hello.txt", FS_READ, &g), OK);
+    t_close(&g);
     t_close(&f);
     /* Closed: the very next call finds it so. Two readers are fine. */
     CHECK_ST(t_open(r, "/hello.txt", FS_READ, &f), OK);

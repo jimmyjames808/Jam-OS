@@ -62,17 +62,24 @@ struct fat_vol {
 
 extern struct fat_vol vol;
 
-/* One open file: a slot of the table in fileops.c. */
+/* A file that is open, once however many fs.open calls share it. */
+struct fat_open {
+    unsigned refs;            /* slots of files[] that use it; 0: free */
+    bool     unsynced;        /* written since its last f_sync */
+    char     path[FS_PATH_MAX];/* its resolved path: what makes two opens one file */
+    FIL      fil;             /* FatFs's file, opened to read (and to write, if its first
+                               * open asked) */
+};
+
+/* One fs.open: a slot of the table in fileops.c. */
 struct fat_file {
     bool     used;            /* the slot holds an open file */
     bool     armed;           /* ch is bound to the port (ONCE) */
-    bool     unsynced;        /* written since its last f_sync */
     uint32_t gen;             /* bumped on every open of this slot */
     uint32_t flags;           /* FS_* it was opened with */
     handle_t ch;              /* our end of its `file` channel */
     handle_t vmo;             /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
-    char     path[FS_PATH_MAX];/* its resolved path, for stat's mtime */
-    FIL      fil;             /* FatFs's file */
+    struct fat_open *o;       /* the file */
 };
 
 /* ---- disk.c ---------------------------------------------------------------------- */
@@ -106,6 +113,8 @@ status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX]);
 bool     path_is_root(const char *p);
 /* Is `p` below directory `dir` (compared without case, as FAT does)? */
 bool     path_inside(const char *p, const char *dir);
+/* Are two resolved paths the same, compared without case? */
+bool     path_same(const char *a, const char *b);
 /* The generic FRESULT -> ERR_* mapping (the methods refine FR_DENIED). */
 status_t fr_status(FRESULT r);
 /* A FAT date and time (the clock's own zone) as seconds since 1970 counted
