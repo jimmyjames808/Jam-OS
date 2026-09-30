@@ -7,7 +7,11 @@
  * kills them at random moments (before they run, while they spin in user
  * mode, while they are blocked in channel_call), then checks that each
  * one's job ends with nothing charged. Without a bootfs holding bin/utest
- * those workers count instead. */
+ * those workers count instead.
+ *
+ * The same workers also run as a background load (stress_load_start and
+ * stress_load_stop) while something else is tested: the kernel tests under
+ * `ktest load` and the shell's `soak`. */
 #include <jam/bootfs.h>
 #include <jam/channel.h>
 #include <jam/dbghook.h>
@@ -473,4 +477,58 @@ bool stress_run(uint64_t seconds)
     report("stress: %s after %lu s (%lu failures)", failed ? "FAILED" : "PASSED",
             (uptime_ns() - start) / 1000000000, failed);
     return failed == 0;
+}
+
+/* ---- the background load ------------------------------------------------------- */
+
+#define LOAD_ROUND_MS 250   /* a TLB shootdown round this often */
+
+static struct thread *load_thread;
+static bool load_stop;
+static uint64_t load_start_ns;
+
+/* What stress_run's own loop does once a second, four times as often:
+ * shootdown rounds (IPIs to every CPU), and the starvation check. */
+static void load_main(void *arg)
+{
+    (void)arg;
+    uint64_t round = 0;
+    while (!__atomic_load_n(&load_stop, __ATOMIC_ACQUIRE)) {
+        thread_sleep_ms(LOAD_ROUND_MS);
+        shootdown_round((uint64_t)shoot_va, ++round);
+        if (__atomic_exchange_n(&shoot_bad, 0, __ATOMIC_RELAXED)) {
+            report("stress: FAILED TLB shootdown: a CPU saw a stale mapping (load round %lu)",
+                   round);
+            __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
+        }
+        if (round % (1000 / LOAD_ROUND_MS) == 0 && uptime_ns() - load_start_ns > 10000000000ull)
+            check_progress(workers, nworkers);
+    }
+}
+
+bool stress_load_start(void)
+{
+    if (load_thread || workers)
+        return false;
+    uint32_t n = cpu_count * 2;
+    kprintf("stress: background load: %u threads on %u CPUs (counters, allocations, sleeps, "
+            "migrations, thread and process churn, TLB shootdowns)\n", n, cpu_count);
+    workers_begin(n);
+    load_start_ns = uptime_ns();
+    __atomic_store_n(&load_stop, false, __ATOMIC_RELEASE);
+    load_thread = thread_create("stress-load", load_main, NULL, PRIO_DEFAULT + 4);
+    return true;
+}
+
+uint64_t stress_load_stop(void)
+{
+    if (!load_thread)
+        return 0;
+    __atomic_store_n(&load_stop, true, __ATOMIC_RELEASE);
+    thread_join(load_thread);
+    load_thread = NULL;
+    print_progress((uptime_ns() - load_start_ns) / 1000000000);
+    uint64_t failed = workers_end();
+    kprintf("stress: background load stopped: %lu failures\n", failed);
+    return failed;
 }
