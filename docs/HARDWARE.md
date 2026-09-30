@@ -42,6 +42,12 @@ So the keyboard is on a root port (it needs no Transaction Translator), and
 storage talks to the stick through the high-speed hub. The shell's hid
 process for the keyboard is `hid-10:0`.
 
+A second USB stick, plugged in at any time, is mounted read-only at
+`/usb0` if it holds a FAT volume (in an MBR partition, or over the whole
+stick with no partition table; not GPT): `mount` lists it, `mount -w /usb0`
+makes it writable, `mount -r /usb0` read-only again. It is never formatted.
+Not tried on the PC yet.
+
 ## Other devices
 
 | Function | Device | Notes |

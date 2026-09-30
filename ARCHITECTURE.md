@@ -604,15 +604,35 @@ Not built yet.
   sync, the last written file closed, a clean stop). A volume found dirty
   is mounted anyway and logged: there is no fsck. Every sync sends SCSI
   SYNCHRONIZE CACHE.
-- Only a blank data partition (no boot signature) is formatted; one that
-  holds another filesystem or a damaged FAT is left alone.
-- devmgr is the only client of a disk's `storage` channel. It mounts one
-  disk, the one Jam OS booted from: partition 1 of type 0xEF holding
-  boot/jamos.elf (it looks through a read-only fat service), partition 2
-  of type 0x0C. Each mount is a fat service holding one partition's `block`
-  channel, supervised like a driver; init gets the mounts' `fs` channels
-  from devmgr (`DEVMGR_MOUNTS` in `user/include/devmgr.h`), with a
-  generation that moves whenever a mount comes, goes or is restarted.
+- Only the boot disk's blank data partition (no boot signature) is
+  formatted; one that holds another filesystem or a damaged FAT is left
+  alone. fat formats only when it is started with an explicit flag
+  (`FAT_ARG_FORMAT` in `user/include/fatsvc.h`), and devmgr gives the flag
+  to that one partition; on any other partition of any disk fat writes
+  nothing it wasn't asked to write through the `fs` protocol.
+- devmgr is the only client of a disk's `storage` channel. The disk Jam OS
+  booted from is the one with partition 1 of type 0xEF holding
+  boot/jamos.elf (it looks through a read-only fat service) and partition
+  2 of type 0x0C: they are `/esp` and `/data`. Each mount is a fat service
+  holding one partition's `block` channel, supervised like a driver; init
+  gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
+  `user/include/devmgr.h`), with a generation that moves whenever a mount
+  comes, goes or is restarted.
+- Any other stick: each partition whose MBR type says FAT (01 04 06 0B 0C
+  0E EF) gets a fat service and the lowest free `/usbN`, one at a time so
+  the numbers follow the order found; a stick with no partition table
+  whose block 0 is a FAT boot sector is served by usb-storage as one
+  partition over the whole disk. GPT is not read. A partition that turns
+  out to hold no FAT volume is left alone and said so in the log.
+- Read-only is enforced below the filesystem: a `/usbN` partition's
+  `block` channel is opened read-only, and usb-storage refuses every write
+  on such a channel, so a bug in fat or FatFs can't change someone's
+  stick. `mount -w /usbN` (the shell asks init, init asks devmgr:
+  `DEVMGR_REMOUNT`) stops that fat and starts a new one on a channel
+  opened read-write; `mount -r` syncs it and goes back. The mount is gone
+  for a moment either way, and files open on it are closed. `/boot` and
+  `/esp` can never be made writable and `/data` never read-only: init
+  passes on nothing but `/usbN`, and devmgr remounts nothing else.
 - logd follows the kernel log from its first byte into
   `/data/logs/boot-NNNN.txt`, the next free number each boot, syncing at
   most once a second. Without `/data` it waits and tries again; what the

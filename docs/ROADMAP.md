@@ -20,7 +20,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M6 | PCI core, MSI/MSI-X, interrupt objects, resources, DMA, devmgr, drivers as processes | done |
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
-| **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell and a log per boot work in QEMU; other sticks, the review and the PC are still to do |
+| **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
 | A1, A2 | Audio | right after M8 |
 | M8.5 | Crash kernel and kexec | later |
 | M9 | Networking | later |
@@ -60,15 +60,22 @@ Implemented, and passing in QEMU at 4 and 8 CPUs:
 - logd writes each boot's kernel log to `/data/logs/boot-NNNN.txt`;
   `reboot` and Ctrl+Alt+Del sync `/data` first.
 - `kill` goes through init and devmgr (`debug_command` no longer has it).
+- Other sticks: each FAT volume of any other USB stick (an MBR's FAT
+  partitions, or a stick with no partition table that is one FAT volume)
+  is mounted read-only at `/usb0`, `/usb1`, ... in the order found, on a
+  `block` channel usb-storage itself refuses writes on. `mount` lists the
+  mounts and which are writable; `mount -w /usb0` reopens one read-write,
+  `mount -r /usb0` read-only again. Nothing but the boot stick's own blank
+  data partition is ever formatted. GPT sticks are not read yet.
 - Tests: the file namespace in utest, the storage checks in usbtest,
   `tools/storage-test.sh`, and `tools/data-test.sh` (three boots of one
   stick: a file kept across a reboot, QEMU quit in the middle of writes,
   the logs read back with mtools); the stick unplugged and replugged while
-  the system runs.
+  the system runs; `tools/sticks-test.sh` (other sticks plugged, written
+  after `mount -w`, pulled while in use, and the images of the ones that
+  were only read or held nothing to mount compared byte for byte).
 
 Still to do:
-- Other sticks (the plan's Phase 2b): any other FAT stick read-only at
-  `/usb0`, `/usb1`, ...; `mount -w` to write; never formatted.
 - The independent review of the whole milestone, and its fixes.
 - The PC: the stick flashed once with the two-partition layout
   (`make usb`, which erases it), then read-only checks first (`ls /esp`,
