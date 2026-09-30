@@ -204,9 +204,13 @@ static struct thread *pick_stealable(struct runqueue *rq, uint32_t cpu)
 
 /* ---- placement ------------------------------------------------------------- */
 
+/* Queued + running. The queued count first, with acquire: schedule() marks
+ * the CPU busy before the count drops, so a reader that sees the drop sees
+ * the busy flag too, and a CPU taking its next thread never reads as 0. */
 static uint32_t load_of(uint32_t cpu)
 {
-    return rq_ready(&rqs[cpu]) + rq_busy(&rqs[cpu]);
+    uint32_t ready = __atomic_load_n(&rqs[cpu].nr_ready, __ATOMIC_ACQUIRE);
+    return ready + rq_busy(&rqs[cpu]);
 }
 
 /* Word w of the CPUs t may run on that are in service. */
@@ -287,6 +291,11 @@ static uint32_t select_cpu(const struct thread *t)
 }
 
 #ifndef JAM_NO_KTESTS
+uint32_t sched_cpu_load(uint32_t cpu)
+{
+    return load_of(cpu);
+}
+
 uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
                              const uint8_t *type, const uint32_t *load, uint32_t last,
                              bool order)
@@ -460,7 +469,19 @@ void schedule(void)
     /* T_BLOCKED / T_DEAD: not queued. T_READY: a waker already queued it. */
     DBG_HOOK(DBG_SCHED_PREV, prev);
 
+    /* Busy BEFORE the queued count drops: taken off the queue and not yet
+     * marked running, the thread would be counted nowhere, and a placement
+     * reading the CPU then would see load 0 and take it for an idle core
+     * (a second thread queued behind the first, then stolen by whatever
+     * CPU looks first). The release fence orders this store before
+     * dequeue's store of nr_ready, which load_of reads first (acquire).
+     * (test: repro_picked_cpu_looks_idle) */
+    if (rq->bitmap && !rq_busy(rq)) {
+        __atomic_store_n(&rq->busy, 1, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+    }
     struct thread *next = pick_best(rq);
+    DBG_HOOK(DBG_SCHED_PICKED, next);
     if (!next)
         next = rq->idle;
     if (next == prev) {
@@ -580,6 +601,19 @@ static uint32_t select_cpu_pair(struct thread *t, uint32_t waker)
 
 static void thread_wake_common(struct thread *t, bool sync);
 
+/* Queue t, READY and on no run queue, on `cpu` and tell that CPU if t
+ * should run before what it is running now. */
+static void place_on(struct thread *t, uint32_t cpu)
+{
+    struct runqueue *rq = &rqs[cpu];
+    uint64_t f = spin_lock_irqsave(&rq->lock);
+    enqueue(rq, t, cpu);
+    bool kick = t->prio > rq_cur_prio(rq);   /* -1 when idle: see struct runqueue */
+    spin_unlock_irqrestore(&rq->lock, f);
+    if (kick)
+        sched_kick(cpu);
+}
+
 void thread_wake(struct thread *t)
 {
     thread_wake_common(t, false);
@@ -663,19 +697,35 @@ static void thread_wake_common(struct thread *t, bool sync)
         cpu = select_cpu_pair(t, w.cpu);
     else
         cpu = select_cpu(t);
-    struct runqueue *rq = &rqs[cpu];
-    uint64_t f = spin_lock_irqsave(&rq->lock);
-    enqueue(rq, t, cpu);
-    bool kick = t->prio > rq_cur_prio(rq);   /* -1 when idle: see struct runqueue */
-    spin_unlock_irqrestore(&rq->lock, f);
-    if (kick)
-        sched_kick(cpu);
+    place_on(t, cpu);
 }
 
 /* ---- idle, work stealing ---------------------------------------------------- */
 
-/* With interrupts off: move one waiting thread from a busy CPU to us. Two
- * run queue locks are always taken lower CPU index first. */
+/* Where a thread stolen by idle CPU `me` should run: `me`, unless the
+ * placement order finds a better class of CPU for it (me is the idle HT
+ * sibling of a busy core, or an E-core, and a whole idle core is free, or
+ * an idle E-core beats our half core). Ties go to me: it is awake now. */
+static uint32_t steal_dest(const struct thread *t, uint32_t me)
+{
+    if (!__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
+        return me;
+    int sib = topo[me].sibling;
+    if ((sib < 0 || !load_of((uint32_t)sib)) && topo[me].type != CORE_EFFICIENCY)
+        return me;   /* a whole idle core: nothing is better */
+    cpumask_t cand;
+    for (unsigned w = 0; w < MAX_CPUS / 64; w++)
+        cand.bits[w] = usable_word(t, w);
+    uint32_t best = pick_cpu(&cand, topo, NULL, me, true);
+    return best == UINT32_MAX ? me : best;
+}
+
+/* With interrupts off: move one waiting thread from a busy CPU to us, or,
+ * if we are only half a core (or an E-core) and a better idle CPU is free,
+ * to that one, as placement would (steal_dest). Whoever is idle first
+ * finds the thread; this sends it where it should be. Two run queue locks
+ * are always taken lower CPU index first; a thread sent elsewhere is READY
+ * and on no queue between our unlock and place_on, as in a wake. */
 static void try_steal(uint32_t me)
 {
     for (uint32_t k = 1; k < cpu_count; k++) {
@@ -686,13 +736,20 @@ static void try_steal(uint32_t me)
         spin_lock(&a->lock);
         spin_lock_nested(&b->lock, 1);
         struct thread *t = pick_stealable(&rqs[v], me);
+        uint32_t dest = me;
         if (t) {
-            enqueue(&rqs[me], t, me);
+            dest = steal_dest(t, me);
+            if (dest == me)
+                enqueue(&rqs[me], t, me);
             struct cpu *c = this_cpu();
             COUNTER_ADD(&c->steals, 1);
         }
         spin_unlock_no_resched(&b->lock);
         spin_unlock_no_resched(&a->lock);
+        if (t && dest != me) {
+            COUNTER_ADD(&this_cpu()->steals_sent, 1);
+            place_on(t, dest);
+        }
         if (t)
             return;
     }
@@ -958,11 +1015,13 @@ void sched_irq_exit(uint64_t interrupted_rflags)
 
 void sched_print_stats(void)
 {
-    uint64_t sw = 0, steals = 0;
+    uint64_t sw = 0, steals = 0, sent = 0;
     for (uint32_t i = 0; i < cpu_count; i++) {
         sw += __atomic_load_n(&cpus[i]->switches, __ATOMIC_RELAXED);
         steals += __atomic_load_n(&cpus[i]->steals, __ATOMIC_RELAXED);
+        sent += __atomic_load_n(&cpus[i]->steals_sent, __ATOMIC_RELAXED);
     }
-    kprintf("sched: %lu context switches, %lu steals, %lu starvation boosts across %u CPUs\n",
-            sw, steals, sched_boost_count(), cpu_count);
+    kprintf("sched: %lu context switches, %lu steals (%lu sent on to a better CPU), "
+            "%lu starvation boosts across %u CPUs\n",
+            sw, steals, sent, sched_boost_count(), cpu_count);
 }

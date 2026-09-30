@@ -358,8 +358,12 @@ Every driver and service is a userspace process from the start.
   use, from a read-mostly topology table (sibling, core type) and each run
   queue's own line (`nr_ready`, `busy`, `cur_prio`), never another CPU's
   `struct cpu`: scanning every CPU's struct costs ~2 x 28 cache-line reads
-  per call round trip. Idle CPUs steal the best waiting thread from busy
-  ones (two run queue locks, always lower CPU index first). 256-bit
+  per call round trip. A CPU is marked busy before its next thread leaves
+  the queue, so a CPU starting work never reads as idle. Idle CPUs steal
+  the best waiting thread from busy ones (two run queue locks, always lower
+  CPU index first); a stealer that is only half a core (its sibling busy)
+  or an E-core sends the thread on to a better idle CPU if placement finds
+  one, so a steal lands where placement would put the thread. 256-bit
   affinity masks; `thread_create_on` sets the mask before the thread first
   runs. Switch `sched_place_order`, boot `noplaceorder`.
 - **Anti-starvation**: once a second each CPU boosts threads that have waited
