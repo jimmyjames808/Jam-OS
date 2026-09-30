@@ -83,6 +83,11 @@ status_t disk_open(handle_t block);
 /* Is the partition blank: no boot signature (0x55 0xAA) in its first
  * sector? */
 status_t disk_is_blank(bool *out);
+/* Around f_mkfs: keep its write of sector 0 (the boot sector) back, then
+ * write it last, flushed before and after. Until the commit the partition
+ * is still blank. ERR_BAD_STATE: nothing wrote sector 0. */
+void     disk_hold_boot(void);
+status_t disk_commit_boot(void);
 /* After a mount: find the FATs, log a volume found dirty, and (writable
  * FAT16/32) start keeping the dirty flag. */
 void     disk_watch(void);

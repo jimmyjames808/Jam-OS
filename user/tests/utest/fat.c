@@ -69,7 +69,8 @@ static bool gives_up(struct ramdisk *rd, bool read_only)
 /* ---- tests ---------------------------------------------------------------------------- */
 
 /* A blank partition is formatted (FAT32, one volume over the whole
- * partition, label JAMOS-DATA), once: the next fat finds the volume. */
+ * partition, label JAMOS-DATA), once: the next fat finds the volume. A
+ * format cut short leaves the partition blank, to be formatted again. */
 bool t_fat_format(void)
 {
     struct fatrun r;
@@ -77,7 +78,17 @@ bool t_fat_format(void)
     uint8_t ro = 9, label[16];
     unsigned n = 9;
     bool dir = false;
-    if (!ramdisk_create(&disk, 40 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+    if (!ramdisk_create(&disk, 40 * MIB_SECTORS))
+        return false;
+    ramdisk_fail_after(&disk, 6);   /* the disk fails in the middle of the FATs */
+    if (!fat_start(&r, &disk, false) || !fat_wait(&r, 1) || !ramdisk_join(&disk))
+        return false;
+    CHECK_ST(jam_handle_close(r.fs), OK);
+    CHECK_EQ(ramdisk_writes(&disk), 6);
+    CHECK_EQ(fat_kind(&disk), 0);   /* no boot sector yet: still blank */
+    ramdisk_fail_after(&disk, 0);
+
+    if (!fat_start(&r, &disk, false))
         return false;
     CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, &total, &free_bytes, &ro, label), OK);
     CHECK(!strcmp((const char *)label, "JAMOS-DATA"));

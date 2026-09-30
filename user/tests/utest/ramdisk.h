@@ -28,6 +28,7 @@ struct ramdisk {
     /* Shared with the serving thread: RELAXED atomics. */
     bool     stop;          /* the server is to close its end (an unplug) */
     bool     fail_writes;   /* every write fails ERR_IO (a disk error) */
+    uint32_t fail_after;    /* not 0: writes fail once this many were served */
     uint32_t reads;         /* requests served, by kind */
     uint32_t writes;
     uint32_t syncs;
@@ -48,3 +49,5 @@ bool     ramdisk_destroy(struct ramdisk *rd);
 uint32_t ramdisk_writes(const struct ramdisk *rd);
 uint32_t ramdisk_syncs(const struct ramdisk *rd);
 void     ramdisk_fail_writes(struct ramdisk *rd, bool on);
+/* Writes fail ERR_IO once `writes` of them were served in all (0: never). */
+void     ramdisk_fail_after(struct ramdisk *rd, uint32_t writes);

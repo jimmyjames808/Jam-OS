@@ -66,7 +66,9 @@ static status_t op_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offse
     status_t st = range(rd, lba, count, offset);
     if (st != OK)
         return st;
-    if (__atomic_load_n(&rd->fail_writes, __ATOMIC_RELAXED))
+    uint32_t limit = __atomic_load_n(&rd->fail_after, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&rd->fail_writes, __ATOMIC_RELAXED) ||
+        (limit && __atomic_load_n(&rd->writes, __ATOMIC_RELAXED) >= limit))
         return ERR_IO;
     memcpy(rd->mem + lba * RAMDISK_SECTOR, rd->buf + offset, (size_t)count * RAMDISK_SECTOR);
     __atomic_add_fetch(&rd->writes, 1, __ATOMIC_RELAXED);
@@ -167,4 +169,9 @@ uint32_t ramdisk_syncs(const struct ramdisk *rd)
 void ramdisk_fail_writes(struct ramdisk *rd, bool on)
 {
     __atomic_store_n(&rd->fail_writes, on, __ATOMIC_RELAXED);
+}
+
+void ramdisk_fail_after(struct ramdisk *rd, uint32_t writes)
+{
+    __atomic_store_n(&rd->fail_after, writes, __ATOMIC_RELAXED);
 }

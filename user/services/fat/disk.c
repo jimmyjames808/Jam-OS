@@ -20,7 +20,14 @@
  * unwritten is found dirty at the next mount (and logged; there is no
  * fsck). FatFs caches FAT sector 0 and writes it back with whatever bit it
  * read, so every write of that sector has the bit patched to the current
- * state on its way out. */
+ * state on its way out.
+ *
+ * Formatting. f_mkfs writes the boot sector first and the FATs after it,
+ * so a format cut short (the stick pulled, the power gone) would leave a
+ * boot sector that mounts over FATs full of whatever was there. Between
+ * disk_hold_boot and disk_commit_boot the write of sector 0 is kept back
+ * in memory and goes out last, after a flush: until then the partition is
+ * still blank, and the next start formats it again. */
 #include <ff.h>
 
 #include <diskio.h>
@@ -32,6 +39,11 @@
 /* Where the clean-shutdown bit is in FAT sector 0 (byte offset, mask). */
 static unsigned clean_off;
 static uint8_t  clean_mask;
+
+/* A format's boot sector, kept back until disk_commit_boot. */
+static uint8_t boot[FAT_SECTOR];
+static bool    boot_holding;   /* writes of sector 0 go into boot[] */
+static bool    boot_held;      /* boot[] holds one */
 
 static uint64_t deadline(void)
 {
@@ -86,6 +98,28 @@ status_t disk_is_blank(bool *out)
         return failed("read", 0, 1, st);
     *out = !(vol.bbuf[510] == 0x55 && vol.bbuf[511] == 0xaa);
     return OK;
+}
+
+void disk_hold_boot(void)
+{
+    boot_holding = true;
+    boot_held = false;
+}
+
+status_t disk_commit_boot(void)
+{
+    boot_holding = false;
+    if (!boot_held)
+        return ERR_BAD_STATE;
+    status_t st = block_sync_until(vol.block, deadline());
+    if (st != OK)
+        return failed("sync", 0, 0, st);
+    memcpy(vol.bbuf, boot, FAT_SECTOR);
+    st = block_write_until(vol.block, deadline(), 0, 1, 0);
+    if (st != OK)
+        return failed("write", 0, 1, st);
+    st = block_sync_until(vol.block, deadline());
+    return st == OK ? OK : failed("sync", 0, 0, st);
 }
 
 /* ---- the dirty flag ---------------------------------------------------------------- */
@@ -201,6 +235,13 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         return RES_WRPRT;
     if (vol.track_dirty && vol.clean_on_disk && mark(false) != OK)
         return RES_ERROR;
+    if (boot_holding && sector == 0) {
+        memcpy(boot, buff, FAT_SECTOR);
+        boot_held = true;
+        buff += FAT_SECTOR;
+        sector++;
+        count--;
+    }
     uint32_t per = vol.bbuf_size / FAT_SECTOR;
     while (count) {
         uint32_t n = count < per ? count : per;

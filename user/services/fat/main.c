@@ -32,7 +32,9 @@ static const char *type_name(void)
     return vol.fs.fs_type == FS_FAT32 ? "FAT32" : vol.fs.fs_type == FS_FAT16 ? "FAT16" : "FAT12";
 }
 
-/* A new volume over the whole partition (no partition table inside it). */
+/* A new volume over the whole partition (no partition table inside it).
+ * Its boot sector is written last (disk.c), so a format cut short leaves
+ * the partition blank. */
 static FRESULT format(void)
 {
     static const MKFS_PARM fat32 = { .fmt = FM_FAT32 | FM_SFD, .n_fat = 2 };
@@ -41,10 +43,14 @@ static FRESULT format(void)
     if (!work)
         return FR_NOT_ENOUGH_CORE;
     printf("fat %s: the partition is blank: formatting it\n", vol.name);
+    disk_hold_boot();
     FRESULT fr = f_mkfs("", &fat32, work, FORMAT_WORK);
     if (fr == FR_MKFS_ABORTED)   /* too few clusters for FAT32 */
         fr = f_mkfs("", &small, work, FORMAT_WORK);
     free(work);
+    status_t st = disk_commit_boot();
+    if (fr == FR_OK && st != OK)
+        fr = FR_DISK_ERR;
     if (fr == FR_OK)
         fr = f_mount(&vol.fs, "", 1);
     if (fr == FR_OK)
