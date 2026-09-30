@@ -21,7 +21,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (a read-only probe that logs the codecs' widget graphs) works in QEMU; the PC's dump is next ([A1-PLAN.md](A1-PLAN.md)) |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (a read-only probe that logs the codecs' widget graphs) works in QEMU and on the PC (Realtek ALC897); stage 2 (one output stream: the ring, period interrupts over MSI, clear-behind) passes in QEMU, sample for sample; stages 1, 3, 4 next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol | after A1 |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
