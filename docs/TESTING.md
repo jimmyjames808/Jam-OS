@@ -124,8 +124,8 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 
 | Script | What it covers | Extra setup |
 |---|---|---|
-| `basic.txt` | line editing, history, console protocol levels, restarting serialin and the console | |
-| `cmds.txt` | the everyday commands: information, date and time zones, files, pipes and text, variables and aliases, programs, Tab and Ctrl+C | `QEMU_EXTRA="-rtc base=2026-01-15T01:02:03"` (the date checks), `QEMU_SMP=4` |
+| `basic.txt` | line editing, history, console protocol levels, restarting serialin and the console; `contest flood` (a client that floods the console must not stop Ctrl+C or other clients) | |
+| `cmds.txt` | the everyday commands: information, date and time zones, files, pipes and text, variables and aliases, programs, Tab and Ctrl+C; `contest junk` and `contest spew` (oversized or handle-carrying pipe output is dropped with its handles closed; a flooding program still stops on Ctrl+C) | `QEMU_EXTRA="-rtc base=2026-01-15T01:02:03"` (the date checks), `QEMU_SMP=4` |
 | `system.txt` | the System and Tests commands through the command table: argv, status, pipes, help, aliases | |
 | `commands.txt` | utest, usbtest, pci, memmap, the crash list, demo, Ctrl+C past a program, orphans killed with their job, devmgr restarted by init; ends with a real crash | |
 | `extras.txt` | bench and a short stress from the shell, scrollback, clear; ends with a panic over the console | |

@@ -11,7 +11,7 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 - The M7.5 cleanup is done in QEMU, with no behaviour change (the version
   string is still 0.0.24-m7): the five tracks, an independent review, two
   CODING-GUIDE.md style passes (kernel; drivers and user), a docs overhaul
-  and two bug-fix rounds. 219 ktests at 4 and 8 CPUs, utest 30, usbtest
+  and two bug-fix rounds. 221 ktests at 4 and 8 CPUs, utest 30, usbtest
   12, every shell and area script, 60 s stress at 4 and 8 CPUs.
 - Public on GitHub: https://github.com/jimmyjames808/Jam-OS, BSD-2-Clause.
   `origin` is set; `main` and `learn` are pushed.

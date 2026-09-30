@@ -74,6 +74,14 @@ keyboard, needs a screen of at least 320x200 and names its threads
 "worker"; `sys_pci_enum`'s `dma_quarantined` also counts batches that are
 mid-release.
 
+The last fix round of the day: the flaky devmgr ktest (it read devmgr's
+job usage before devmgr was back asleep), an unbounded HPET calibration
+loop that could hang the boot, `stress` failures that stuck across runs,
+a devmgr handle leak, the console letting one flooding client starve Ctrl+C
+and the others, the console ignoring failed port binds, and the shell's
+pipe drain (no limit, deaf to Ctrl+C, stuck on an oversized message).
+ktests 219 -> 221.
+
 ## M7: USB, console, shell
 
 *2026-09-29, 0.0.18-m7a to 0.0.24-m7.*
