@@ -86,13 +86,13 @@ update a stick, and the PC it was built for are in
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
-| `user/services/` | init, console, devmgr, serialin, shell |
+| `user/services/` | init, console, devmgr, serialin, shell, fat (the FAT filesystem, on FatFs) |
 | `user/apps/` | fractal, life, tetris, demo, and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, contest |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer |
-| `third_party/` | Limine and `limine.h`, the Spleen font |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs |
 | `docs/` | the documentation below |
 
 ## Documentation
@@ -115,4 +115,4 @@ changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 ## Licence
 
 Jam OS is released under the [BSD 2-Clause License](LICENSE). The
-third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause).
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence).

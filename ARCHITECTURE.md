@@ -576,9 +576,13 @@ Not built yet.
   `/data` for everything writable. A bug in the FAT32 writer can't make the
   stick unbootable.
 - Write ordering: file data, then both FATs, then the directory entry.
-- The FAT "clean shutdown" bit is cleared while mounted and set on unmount;
-  a dirty volume is checked on mount. `sync` and unmount send SCSI
+- The FAT "clean shutdown" bit is cleared on the stick before the first
+  sector written after a sync, and set again once everything is flushed (a
+  sync, the last written file closed, a clean stop). A volume found dirty
+  is mounted anyway and logged: there is no fsck. Every sync sends SCSI
   SYNCHRONIZE CACHE.
+- Only a blank data partition (no boot signature) is formatted; one that
+  holds another filesystem or a damaged FAT is left alone.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
 
