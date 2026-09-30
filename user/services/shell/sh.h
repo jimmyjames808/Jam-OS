@@ -28,7 +28,7 @@
  *   sh_complete.c  Tab
  *   sh_vars.c      variables and aliases
  *   sh_handles.c   the handles init gives the shell (root, devmgr, ...)
- *   sh_program.c   starting programs from /boot/bin (run, utest, ...)
+ *   sh_program.c   starting programs (run, utest, ...)
  *   sh_kernel.c    the kernel's debug commands and its log
  *   sh_vfs.c       paths and files
  *   sh_num.c       numbers, sizes, seconds
@@ -129,12 +129,16 @@ handle_t sh_root(void);
 handle_t sh_pci(void);          /* RES_PCI, for pci_enum (`devices`), or 0 */
 handle_t sh_devmgr(void);       /* devmgr's query channel (the newest), or 0 */
 handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
+/* init's control channel (abi/idl/initctl.idl: kill, sync, reboot), or 0
+ * (a shell that init didn't start has none). */
+handle_t sh_initctl(void);
 
 /* ---- programs (sh_program.c) ------------------------------------------------------- */
 
-/* Start argv[0] (bin/<name>, or a bootfs path), wait for it, say how it
- * ended; its status. It gets a PROGRAM-level console channel and nothing
- * of devmgr's; its job is killed when it ends. */
+/* Start argv[0] (a name: /boot/bin/<name>; else a path on any mount),
+ * wait for it, say how it ended; its status. It gets the shell's
+ * namespace, a PROGRAM-level console channel and nothing of devmgr's; its
+ * job is killed when it ends. */
 int sh_run_program(int argc, char **argv);
 /* A test program (utest, usbtest): run it with devmgr's channels, then
  * show its result line from the kernel log; its status. */
@@ -211,27 +215,46 @@ bool sh_count_opt(int argc, char **argv, int *i, uint64_t *n);
 
 /* ---- files (sh_vfs.c) -------------------------------------------------------------- */
 
-/* Absolute, normalised paths; /boot is the bootfs (read-only). Storage
- * mounts /data next to it. */
-#define SH_PATH_MAX 128
-#define SH_DIR_MAX  256   /* entries ls and find read from one directory */
+/* Absolute, normalised paths over the shell's namespace (<os.h> "files"):
+ * /boot is the boot image (read-only), /data the stick's data partition,
+ * /esp its boot partition (read-only); the last two only while the stick's
+ * filesystems are up. */
+#define SH_PATH_MAX FS_PATH_MAX
+#define SH_DIR_MAX  256           /* entries ls and find read from one directory */
+#define SH_FILE_MAX (4u << 20)    /* the biggest file a command reads whole */
 struct sh_dirent {
-    char     name[64];   /* the entry's name, without the directory */
-    bool     dir;        /* a directory */
-    uint64_t size;       /* a file's bytes */
+    char     name[FS_PATH_MAX];   /* the entry's name, without the directory */
+    bool     dir;                 /* a directory */
+    uint64_t size;                /* a file's bytes */
 };
 const char *sh_cwd(void);
 bool        sh_chdir(const char *path);
 /* in relative to the cwd -> out absolute and normalised; false if too long. */
 bool        sh_resolve(const char *in, char *out, size_t cap);
-/* ERR_NOT_FOUND, or OK and *dir / *size. */
+/* dir + "/" + name into out; false if it doesn't fit. */
+bool        sh_join(const char *dir, const char *name, char *out, size_t cap);
+/* The last name of a path ("c" of "/a/b/c"). */
+const char *sh_basename(const char *path);
+/* OK and *dir / *size, or the mount's error (ERR_NOT_FOUND: no such path). */
 status_t    sh_stat(const char *abs, bool *dir, uint64_t *size);
 /* Entries of directory abs (sorted, at most cap); -1 if not a directory. */
 int         sh_readdir(const char *abs, struct sh_dirent *out, int cap);
-/* A whole file's bytes (read-only, stay valid). */
+/* A whole file's bytes and a NUL after them: valid until the next sh_read.
+ * ERR_OUT_OF_RANGE: more than SH_FILE_MAX. */
 status_t    sh_read(const char *abs, const void **data, uint64_t *size);
-/* A bootfs path for abs ("/boot/bin/x" -> "bin/x"), or NULL if abs isn't on bootfs. */
+/* n bytes into the file at abs, created if missing. how: FS_TRUNCATE (its
+ * new contents), FS_APPEND (after what it has), or 0 (over its start). */
+status_t    sh_write(const char *abs, const void *data, size_t n, uint32_t how);
+/* The bootfs name of a file on /boot ("/boot/bin/x" -> "bin/x"), or NULL
+ * if abs is elsewhere. */
 const char *sh_bootfs_name(const char *abs);
+/* Where `mv from to` and `cp from to` put it: to, or inside to under
+ * from's own name if to is a directory. false if the path is too long. */
+bool        sh_dest(const char *from_abs, const char *to, char *out, size_t cap);
+/* abs is "/" or a mount point itself ("/data"). */
+bool        sh_is_mount(const char *abs);
+/* Why a file call failed, in words ("no such file or directory"). */
+const char *sh_why(status_t st);
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
 
@@ -240,7 +263,9 @@ SH_CMD(uname); SH_CMD(version); SH_CMD(uptime); SH_CMD(date); SH_CMD(lscpu); SH_
 SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD(log);
 SH_CMD(sysmon);
 /* files and text */
-SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(cat); SH_CMD(hexdump); SH_CMD(wc);
+SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
+SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync);
+SH_CMD(cat); SH_CMD(hexdump); SH_CMD(wc);
 SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq);
 /* shell */
 SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(unset);

@@ -19,11 +19,11 @@ int sh_status(void)
 static int exec_unknown(int argc, char **argv)
 {
     char path[SH_PATH_MAX];
-    const void *d;
+    bool dir;
     uint64_t n;
     if (!strchr(argv[0], '/')) {
         snprintf(path, sizeof(path), "/boot/bin/%s", argv[0]);
-        if (sh_read(path, &d, &n) == OK)
+        if (sh_stat(path, &dir, &n) == OK && !dir)
             return sh_run_program(argc, argv);
     }
     sh_tty("%s: unknown command (try help)\n", argv[0]);

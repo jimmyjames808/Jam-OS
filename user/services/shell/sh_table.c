@@ -6,7 +6,8 @@
 enum { C_INFO, C_FILES, C_TEXT, C_SHELL, C_SYSTEM, C_TESTS, C_COUNT };
 
 const char *const sh_categories[C_COUNT] = {
-    "Information", "Files (/boot is the boot image, read-only)", "Text (read a file or a pipe)",
+    "Information", "Files (/boot: the boot image, read-only; /data: the stick)",
+    "Text (read a file or a pipe)",
     "Shell", "System", "Tests",
 };
 const unsigned sh_ncategories = C_COUNT;
@@ -43,13 +44,17 @@ static const struct sh_cmd cmds[] = {
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
     C(mem, C_SYSTEM, "mem", "physical memory from the kernel, and the shell's job"),
-    C(kill, C_SYSTEM, "kill <name>", "kill the first process with that name (see ps)"),
+    C(kill, C_SYSTEM, "kill <name>",
+      "kill the first process with that name (see ps): a service init runs or a\n"
+      "  USB driver (hid-6.1:0); whoever supervises it starts it again"),
     C(clear, C_SHELL, "clear", "clear the screen (also Ctrl+L)"),
-    C(reboot, C_SYSTEM, "reboot", "restart the machine"),
-    C(run, C_SYSTEM, "run <prog> [args]",
+    C(reboot, C_SYSTEM, "reboot",
+      "restart the machine (what was written to /data is synced first)"),
+    C(run, C_SYSTEM, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
-      "  in a pipe its printf output goes down the pipe: run utest | grep passed"),
+      "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
+      "  It sees the mounts the shell has. Only programs in /boot can run so far"),
     C(ktest, C_TESTS, "ktest [prefix]", "kernel tests (as the boot menu's All tests)"),
     C(bench, C_TESTS, "bench", "kernel benchmark"),
     C(stress, C_TESTS, "stress <seconds>", "stress test (1..600)"),
@@ -65,6 +70,17 @@ static const struct sh_cmd cmds[] = {
     C(cd, C_FILES, "cd [dir]", "change directory (no argument: $HOME)"),
     C(ls, C_FILES, "ls [-l] [path...]", "list a directory (-l: sizes)"),
     C(find, C_FILES, "find [dir] [-name text]", "every file below dir (names containing text)"),
+    C(mkdir, C_FILES, "mkdir [-p] <dir>...", "make directories (-p: and the ones above them)"),
+    C(touch, C_FILES, "touch <file>...", "make an empty file where there is none"),
+    C(write, C_FILES, "write [-a] <file> <text...>",
+      "put the text (and a newline) into a file, replacing it; -a: add to it.\n"
+      "  Without text, the pipe's input: ls -l | write /data/list.txt"),
+    C(cp, C_FILES, "cp <from> <to>", "copy a file, to a new name or into a directory"),
+    C(mv, C_FILES, "mv <from> <to>", "rename, or move into a directory (within one mount)"),
+    C(rm, C_FILES, "rm [-r] <path>...",
+      "remove files and empty directories (-r: a directory with all it holds)"),
+    C(df, C_FILES, "df", "the mounts: size, used, free, volume label"),
+    C(sync, C_FILES, "sync", "make sure everything written is on the stick"),
     C(cat, C_TEXT, "cat [file...]", "print files (or the pipe)"),
     C(hexdump, C_TEXT, "hexdump [-s offset] [-n bytes] [file]",
       "hex and ASCII, 16 bytes a line (also hd)"),

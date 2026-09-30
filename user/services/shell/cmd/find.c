@@ -21,7 +21,8 @@ static void find_in(const char *abs, const char *name_part, int depth)
     int n = sh_readdir(abs, e, SH_DIR_MAX);
     for (int i = 0; i < n; i++) {
         char path[SH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s%s%s", abs, strcmp(abs, "/") ? "/" : "", e[i].name);
+        if (!sh_join(abs, e[i].name, path, sizeof(path)))
+            continue;   /* longer than any path can be */
         if (!name_part || name_has(e[i].name, name_part))
             sh_say("%s%s\n", path, e[i].dir ? "/" : "");
         if (e[i].dir)

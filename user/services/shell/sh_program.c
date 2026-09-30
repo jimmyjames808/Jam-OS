@@ -1,7 +1,14 @@
-/* Starting programs from /boot/bin: `run`, a program's name typed as a
- * command, demo, and the test programs (utest, usbtest).
+/* Starting programs: `run`, a program's name typed as a command, demo,
+ * and the test programs (utest, usbtest).
  *
- * What a program gets: a PROGRAM-level console channel of its own
+ * Where a program is: a bare name is /boot/bin/<name>; anything with a '/'
+ * is a bootfs name ("bin/x") or a path on any mount. A program on /boot is
+ * started from the boot image itself (libos's spawn maps its code from the
+ * image); one on another mount is read through the namespace, and the
+ * kernel refuses its code for now (<os.h>, spawn_args.path).
+ *
+ * What a program gets: the shell's namespace as it is then (every mount
+ * the shell has), a PROGRAM-level console channel of its own
  * (console.new_client: write, keys while it runs, the screen; no input
  * sources, no new channels), and nothing of devmgr's unless `test` (the
  * utest and usbtest commands: test suites that kill and rebind drivers get
@@ -71,21 +78,36 @@ static bool drain(handle_t out)
     return true;
 }
 
-/* The bootfs path of argv0: "utest" -> bin/utest; "bin/x" as it is; else
- * a path through the cwd ("/boot/bin/x", "../drv/x"). */
-static void bootfs_path(const struct bootfs_view *fs, const char *argv0, char *path, size_t cap)
+/* What spawn should be given for argv0, into path: "utest" -> bin/utest;
+ * "bin/x" (a bootfs name) as it is; else a path through the cwd, as a
+ * bootfs name if it is on /boot ("/boot/bin/x", "../drv/x") and absolute
+ * otherwise ("/data/x"). false (said) if there is no such program. */
+static bool find_program(const char *argv0, char *path, size_t cap)
 {
+    const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
+    bool boot = bootfs_default(&fs) == OK, dir = false;
     if (!strchr(argv0, '/')) {
         snprintf(path, cap, "bin/%s", argv0);
-    } else if (bootfs_lookup(fs, argv0, &data, &size) == OK) {
+    } else if (boot && bootfs_lookup(fs, argv0, &data, &size) == OK) {
         snprintf(path, cap, "%s", argv0);
     } else {
         char abs[SH_PATH_MAX];
         const char *name = sh_resolve(argv0, abs, sizeof(abs)) ? sh_bootfs_name(abs) : NULL;
-        snprintf(path, cap, "%s", name ? name : argv0);
+        snprintf(path, cap, "%s", name ? name : abs);
     }
+    if (path[0] != '/') {
+        if (!boot)
+            sh_tty("run: no bootfs\n");
+        else if (bootfs_lookup(fs, path, &data, &size) != OK)
+            sh_tty("run: no %s in bootfs\n", path);
+        return boot && bootfs_lookup(fs, path, &data, &size) == OK;
+    }
+    status_t st = sh_stat(path, &dir, &size);
+    if (st != OK || dir)
+        sh_tty("run: %s: %s\n", path, st == OK ? "is a directory" : sh_why(st));
+    return st == OK && !dir;
 }
 
 /* The handles it starts with (see the top); *out_r: its stdout's read end
@@ -174,18 +196,8 @@ static void clean_job(handle_t job, const char *path)
 static int run_program(int argc, char **argv, bool test)
 {
     char path[SH_PATH_MAX];
-    const struct bootfs_view *fs;
-    const void *data;
-    uint64_t size;
-    if (bootfs_default(&fs) != OK) {
-        sh_tty("run: no bootfs\n");
+    if (!find_program(argv[0], path, sizeof(path)))
         return 127;
-    }
-    bootfs_path(fs, argv[0], path, sizeof(path));
-    if (bootfs_lookup(fs, path, &data, &size) != OK) {
-        sh_tty("run: no %s in bootfs\n", path);
-        return 127;
-    }
     handle_t job, proc, out_r = HANDLE_INVALID;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
@@ -203,13 +215,16 @@ static int run_program(int argc, char **argv, bool test)
     args[n] = NULL;
     struct spawn_args a = {
         .path = path, .argc = n, .argv = args, .job = job, .extra = x, .nextra = nx,
-        .envp = (const char *const *)env,
+        .envp = (const char *const *)env, .ns = NS_ALL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);
     sh_free_env(env);
     if (st != OK) {
         sh_tty("run: can't start %s (%s)\n", path, status_str(st));
+        if (st == ERR_ACCESS_DENIED && path[0] == '/')
+            sh_tty("run: only programs in /boot can run: the kernel makes no other memory "
+                   "executable yet\n");
         if (out_r)
             jam_handle_close(out_r);
         jam_handle_close(job);

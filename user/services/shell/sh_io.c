@@ -130,12 +130,26 @@ bool sh_input(const char *who, int argc, char **argv, int i, const char **data, 
         const void *d;
         uint64_t n;
         bool dir = false;
-        if (!sh_resolve(argv[i], abs, sizeof(abs)) || sh_stat(abs, &dir, &n) != OK) {
+        status_t st = sh_resolve(argv[i], abs, sizeof(abs)) ? sh_stat(abs, &dir, &n)
+                                                            : ERR_NOT_FOUND;
+        if (st == ERR_NOT_FOUND) {
             sh_tty("%s: %s: no such file\n", who, argv[i]);
             return false;
         }
-        if (dir || sh_read(abs, &d, &n) != OK) {
+        if (st == OK && dir) {
             sh_tty("%s: %s: is a directory\n", who, argv[i]);
+            return false;
+        }
+        if (st == OK)
+            st = sh_read(abs, &d, &n);
+        if (st == ERR_BAD_STATE) {
+            /* fat: one writer, or readers, never both (logd's current log). */
+            sh_tty("%s: %s: open for writing by another program: not readable until it is "
+                   "closed\n", who, argv[i]);
+            return false;
+        }
+        if (st != OK) {
+            sh_tty("%s: %s: can't read it (%s)\n", who, argv[i], sh_why(st));
             return false;
         }
         *data = d;

@@ -11,11 +11,13 @@
  *                 again (with its drivers) and sends the new client ends
  *                 here (INIT_SHELL_DEVMGR, <devmgr.h>); every command that
  *                 talks to devmgr takes the newest first
+ *   SR_USER + 3   init's control channel (abi/idl/initctl.idl): `kill`,
+ *                 and `reboot` with /data synced first
  * Programs the shell starts get none of these (sh_program.c). */
 #include <devmgr.h>
 #include "sh_core.h"
 
-static handle_t root, pci, devmgr, devmgr_ctl, from_init;
+static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl;
 
 void sh_handles_init(void)
 {
@@ -24,6 +26,12 @@ void sh_handles_init(void)
     devmgr = startup_handle(SR_DEVMGR);
     devmgr_ctl = startup_handle(SR_DEVMGR_CTL);
     from_init = startup_handle(SR_USER + 2);
+    initctl = startup_handle(SR_USER + 3);
+}
+
+handle_t sh_initctl(void)
+{
+    return initctl;
 }
 
 handle_t sh_root(void)

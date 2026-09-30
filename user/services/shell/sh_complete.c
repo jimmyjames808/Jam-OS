@@ -35,11 +35,12 @@ static void command_cands(struct cands *c, const char *word)
     for (int i = 0; i < SH_MAX_ALIAS; i++)
         if (sh_alias_at(i, &name, &value) && !strncmp(name, word, wl))
             cand_add(c, name, false);
-    struct sh_dirent ents[64];
-    int n = sh_readdir("/boot/bin", ents, 64);
+    struct sh_dirent *ents = calloc(64, sizeof(*ents));
+    int n = ents ? sh_readdir("/boot/bin", ents, 64) : -1;
     for (int i = 0; i < n; i++)
         if (!strncmp(ents[i].name, word, wl))
             cand_add(c, ents[i].name, false);
+    free(ents);
 }
 
 /* A path: list the directory part, match the last part. Returns that last

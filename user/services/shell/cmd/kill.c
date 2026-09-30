@@ -1,6 +1,10 @@
-/* kill: kill the first process with that name (the kernel's kill reaches
- * the whole job tree), except init. */
+/* kill: kill a process by name, through init (abi/idl/initctl.idl): the
+ * services init runs and the USB class drivers devmgr runs. Both are
+ * started again by whoever supervises them. */
+#include <idl/initctl.h>
 #include "sh.h"
+
+#define KILL_WAIT (20 * NS_PER_S)   /* devmgr waits for a driver to die */
 
 SH_CMD(kill)
 {
@@ -16,10 +20,21 @@ SH_CMD(kill)
         sh_say("kill: %s is not restarted by anyone: not killing it\n", argv[1]);
         return 0;
     }
-    char cmd[64];
-    snprintf(cmd, sizeof(cmd), "kill %s", argv[1]);
-    int64_t r = sh_kcmd(cmd);
-    if (r >= 0)
-        sh_say("shell: killed process %ld (%s)\n", (long)r, argv[1]);
+    uint8_t name[32] = { 0 };
+    uint64_t koid = 0;
+    status_t st = strlen(argv[1]) < sizeof(name) ? OK : ERR_INVALID_ARGS;
+    if (st == OK && !sh_initctl())
+        st = ERR_BAD_HANDLE;   /* a shell init didn't start */
+    if (st == OK) {
+        memcpy(name, argv[1], strlen(argv[1]));
+        sh_flush();
+        st = initctl_kill_until(sh_initctl(), now() + KILL_WAIT, name, &koid);
+    }
+    if (st == OK)
+        sh_say("shell: killed process %lu (%s)\n", (unsigned long)koid, argv[1]);
+    else if (st == ERR_NOT_FOUND)
+        sh_say("kill: no process called \"%s\"\n", argv[1]);
+    else
+        sh_say("kill %s: %s\n", argv[1], status_str(st));
     return 0;
 }

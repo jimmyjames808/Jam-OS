@@ -1,14 +1,15 @@
-/* Paths for the shell's file commands (ls cd cat find ...).
+/* Paths and files for the shell's commands: a thin layer over libos's
+ * namespace (<os.h> "files"), which holds the mounts init gave the shell
+ * (/boot, and /data and /esp once the stick's filesystems are up) and
+ * takes the ones init sends later.
  *
- * One tree: "/" holds mount points, each a small set of operations. Today
- * there is one, /boot = the bootfs image (bin/..., drv/..., init.cfg; files
- * only, read-only, directories implied by the '/' in the names). A disk's
- * filesystem mounts /data beside it: a new entry in `mounts` with the same
- * three operations (stat, readdir, read) over its channel protocol. */
-#include <jam/bootfs.h>
+ * What the shell adds is its own: a current directory, "~", and paths
+ * relative to it. Those are resolved here as text ("cd /data; cd .." is
+ * "/"), so what reaches libos is always absolute and free of "..". */
 #include "sh.h"
 
 static char cwd[SH_PATH_MAX] = "/boot";
+static void *held;   /* the file sh_read last handed out */
 
 const char *sh_cwd(void)
 {
@@ -59,143 +60,65 @@ bool sh_resolve(const char *in, char *out, size_t cap)
     return true;
 }
 
-/* ---- /boot: the bootfs ----------------------------------------------------------- */
-
-static const struct bootfs_entry *boot_entries(uint32_t *count)
+bool sh_join(const char *dir, const char *name, char *out, size_t cap)
 {
-    const struct bootfs_view *fs;
-    if (bootfs_default(&fs) != OK) {
-        *count = 0;
-        return NULL;
-    }
-    *count = fs->count;
-    return (const struct bootfs_entry *)(fs->base + sizeof(struct bootfs_header));
+    int n = snprintf(out, cap, "%s%s%s", dir, strcmp(dir, "/") ? "/" : "", name);
+    return n > 0 && (size_t)n < cap;
 }
 
-static status_t boot_stat(const char *rel, bool *dir, uint64_t *size)
+const char *sh_basename(const char *path)
 {
-    uint32_t n;
-    const struct bootfs_entry *e = boot_entries(&n);
-    size_t rl = strlen(rel);
-    if (!rl) {
-        *dir = true;
-        *size = 0;
-        return OK;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        if (strnlen(e[i].name, BOOTFS_NAME_MAX) == BOOTFS_NAME_MAX)
-            continue;
-        if (!strcmp(e[i].name, rel)) {
-            *dir = false;
-            *size = e[i].size;
-            return OK;
-        }
-        if (!strncmp(e[i].name, rel, rl) && e[i].name[rl] == '/') {
-            *dir = true;
-            *size = 0;
-            return OK;
-        }
-    }
-    return ERR_NOT_FOUND;
-}
-
-static void add_ent(struct sh_dirent *out, int *n, int cap, const char *name, size_t l, bool dir,
-                    uint64_t size)
-{
-    if (l >= sizeof(out[0].name))
-        return;
-    for (int i = 0; i < *n; i++)
-        if (strlen(out[i].name) == l && !strncmp(out[i].name, name, l))
-            return;
-    if (*n >= cap)
-        return;
-    memcpy(out[*n].name, name, l);
-    out[*n].name[l] = '\0';
-    out[*n].dir = dir;
-    out[*n].size = size;
-    (*n)++;
-}
-
-static int boot_readdir(const char *rel, struct sh_dirent *out, int cap)
-{
-    bool dir;
-    uint64_t size;
-    if (boot_stat(rel, &dir, &size) != OK || !dir)
-        return -1;
-    uint32_t count;
-    const struct bootfs_entry *e = boot_entries(&count);
-    size_t rl = strlen(rel);
-    int n = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        const char *name = e[i].name;
-        if (strnlen(name, BOOTFS_NAME_MAX) == BOOTFS_NAME_MAX)
-            continue;
-        if (rl) {
-            if (strncmp(name, rel, rl) || name[rl] != '/')
-                continue;
-            name += rl + 1;
-        }
-        const char *slash = strchr(name, '/');
-        if (slash)
-            add_ent(out, &n, cap, name, (size_t)(slash - name), true, 0);
-        else
-            add_ent(out, &n, cap, name, strlen(name), false, e[i].size);
-    }
-    return n;
-}
-
-static status_t boot_read(const char *rel, const void **data, uint64_t *size)
-{
-    const struct bootfs_view *fs;
-    status_t st = bootfs_default(&fs);
-    return st == OK ? bootfs_lookup(fs, rel, data, size) : st;
-}
-
-/* ---- the mount table -------------------------------------------------------------- */
-
-struct mount {
-    const char *path;   /* "/boot" */
-    /* rel: the path inside the mount, "" for its root */
-    status_t  (*stat)(const char *rel, bool *dir, uint64_t *size);   /* sh_stat */
-    int       (*readdir)(const char *rel, struct sh_dirent *out, int cap);   /* sh_readdir */
-    status_t  (*read)(const char *rel, const void **data, uint64_t *size);  /* sh_read_file */
-};
-
-static const struct mount mounts[] = {
-    { "/boot", boot_stat, boot_readdir, boot_read },
-};
-#define NMOUNTS (sizeof(mounts) / sizeof(mounts[0]))
-
-/* The mount abs is on and the path inside it ("" for its root). */
-static const struct mount *mount_of(const char *abs, const char **rel)
-{
-    for (size_t i = 0; i < NMOUNTS; i++) {
-        size_t l = strlen(mounts[i].path);
-        if (!strncmp(abs, mounts[i].path, l) && (abs[l] == '/' || !abs[l])) {
-            *rel = abs[l] ? abs + l + 1 : abs + l;
-            return &mounts[i];
-        }
-    }
-    return NULL;
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/' && p[1])
+            base = p + 1;
+    return base;
 }
 
 const char *sh_bootfs_name(const char *abs)
 {
-    const char *rel;
-    const struct mount *m = mount_of(abs, &rel);
-    return m == &mounts[0] ? rel : NULL;
+    return !strncmp(abs, "/boot/", 6) && abs[6] ? abs + 6 : NULL;
+}
+
+bool sh_dest(const char *from_abs, const char *to, char *out, size_t cap)
+{
+    char abs[SH_PATH_MAX];
+    bool dir;
+    uint64_t size;
+    if (!sh_resolve(to, abs, sizeof(abs)))
+        return false;
+    if (sh_stat(abs, &dir, &size) == OK && dir)
+        return sh_join(abs, sh_basename(from_abs), out, cap);
+    if (strlen(abs) + 1 > cap)
+        return false;
+    memcpy(out, abs, strlen(abs) + 1);
+    return true;
+}
+
+bool sh_is_mount(const char *abs)
+{
+    return !strchr(abs + 1, '/');
+}
+
+const char *sh_why(status_t st)
+{
+    switch (st) {
+    case ERR_NOT_FOUND:      return "no such file or directory";
+    case ERR_ALREADY_EXISTS: return "it exists already";
+    case ERR_ACCESS_DENIED:  return "read-only";
+    case ERR_NO_SPACE:       return "no space left";
+    case ERR_PEER_CLOSED:    return "its filesystem is gone";
+    case ERR_INVALID_ARGS:   return "not a valid name";
+    case ERR_WRONG_TYPE:     return "is a directory";
+    case ERR_BAD_STATE:      return "in use, or a directory with entries";
+    case ERR_CANCELED:       return "interrupted";
+    default:                 return status_str(st);
+    }
 }
 
 status_t sh_stat(const char *abs, bool *dir, uint64_t *size)
 {
-    if (!strcmp(abs, "/")) {
-        *dir = true;
-        *size = 0;
-        return OK;
-    }
-    const char *rel;
-    const struct mount *m = mount_of(abs, &rel);
-    return m ? m->stat(rel, dir, size) : ERR_NOT_FOUND;
+    return fs_stat(abs, size, dir, NULL);
 }
 
 static void sort_ents(struct sh_dirent *e, int n)
@@ -213,26 +136,66 @@ static void sort_ents(struct sh_dirent *e, int n)
 
 int sh_readdir(const char *abs, struct sh_dirent *out, int cap)
 {
-    int n;
-    if (!strcmp(abs, "/")) {
-        n = 0;
-        for (size_t i = 0; i < NMOUNTS; i++)
-            add_ent(out, &n, cap, mounts[i].path + 1, strlen(mounts[i].path + 1), true, 0);
-    } else {
-        const char *rel;
-        const struct mount *m = mount_of(abs, &rel);
-        n = m ? m->readdir(rel, out, cap) : -1;
+    bool dir;
+    uint64_t size;
+    if (sh_stat(abs, &dir, &size) != OK || !dir)
+        return -1;
+    int n = 0;
+    for (uint32_t i = 0; n < cap; i++) {
+        struct fs_entry e;
+        if (fs_readdir(abs, i, &e) != OK)
+            break;   /* past the last, or the mount is gone: what we have */
+        memcpy(out[n].name, e.name, sizeof(out[n].name));
+        out[n].dir = e.is_dir;
+        out[n].size = e.size;
+        n++;
     }
-    if (n > 0)
-        sort_ents(out, n);
+    sort_ents(out, n);
     return n;
 }
 
 status_t sh_read(const char *abs, const void **data, uint64_t *size)
 {
-    const char *rel;
-    const struct mount *m = mount_of(abs, &rel);
-    return m && *rel ? m->read(rel, data, size) : ERR_NOT_FOUND;
+    struct jfile f;
+    status_t st = file_open(abs, FS_READ, &f);
+    if (st != OK)
+        return st;
+    uint64_t n = 0;
+    size_t got = 0;
+    st = file_stat(&f, &n, NULL);
+    if (st == OK && n > SH_FILE_MAX)
+        st = ERR_OUT_OF_RANGE;
+    char *buf = st == OK ? malloc(n + 1) : NULL;
+    if (st == OK && !buf)
+        st = ERR_NO_MEMORY;
+    if (st == OK)
+        st = file_read(&f, 0, buf, n, &got);
+    file_close(&f);
+    if (st != OK) {
+        free(buf);
+        return st;
+    }
+    buf[got] = '\0';
+    free(held);
+    held = buf;
+    *data = buf;
+    *size = got;
+    return OK;
+}
+
+status_t sh_write(const char *abs, const void *data, size_t n, uint32_t how)
+{
+    struct jfile f;
+    size_t done = 0;
+    status_t st = file_open(abs, FS_WRITE | FS_CREATE | how, &f);
+    if (st != OK)
+        return st;
+    if (n)
+        st = file_write(&f, 0, data, n, &done);
+    if (st == OK && done < n)
+        st = ERR_NO_SPACE;
+    file_close(&f);
+    return st;
 }
 
 bool sh_chdir(const char *path)

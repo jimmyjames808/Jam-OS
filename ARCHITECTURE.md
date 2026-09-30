@@ -498,8 +498,9 @@ Not built yet; these rules bind every future path that can transmit.
 ## Userland
 
 - **libos** (`user/lib/`): startup, syscall wrappers, malloc, printf,
-  channel/port helpers, `spawn()`, threads, the ELF loader, and the
-  implementation of `<jam/driver.h>`. **libfun** (`user/apps/fun/`): the
+  channel/port helpers, `spawn()`, threads, the ELF loader, the file
+  namespace and its file calls, and the implementation of
+  `<jam/driver.h>`. **libfun** (`user/apps/fun/`): the
   apps' screen, drawing, keys and thread pool.
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
   starts init from bootfs under a root job, waits for it and reports its
@@ -513,32 +514,49 @@ Not built yet; these rules bind every future path that can transmit.
 - **Startup message**: every process starts with one channel message holding
   argv, environment, and handles by role (`kernel/include/jam/startup.h`):
   SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
-  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE and program-specific
-  ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
+  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE, NS (the namespace)
+  and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
   one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
-  handles they need: on a plain boot the console, serialin, devmgr and the
-  shell, restarting any that die (killing devmgr takes its drivers with its
-  job); for the regression run the programs in `boot/init.cfg`.
-- **Namespace** (not built yet beyond the shell's mount table): each
-  process gets a table of path → channel handle (`/boot`, `/data`,
-  `/svc/net`, `/dev/console`). No global kernel VFS. A future POSIX
-  `open()` is built on this. Namespaces are the only permission system.
+  handles they need: on a plain boot the bootfs server, the console,
+  serialin, devmgr, logd (once `/data` is there) and the shell, restarting
+  any that die (killing devmgr takes its drivers with its job); for the
+  regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
+  and `/esp` when devmgr reports their filesystem services) and gives it
+  to what it starts; the shell and logd are sent every later change (a
+  mount gone, or back with a new service). Its control channel (`abi/idl/initctl.idl`) serves
+  `kill <name>` and `reboot`, which syncs `/data` first (2 s at most); the
+  shell holds one end, the console another that answers only `reboot`
+  (Ctrl+Alt+Del).
+- **Namespace**: each process has a table of mount point → `fs` channel
+  (`/boot`, `/data`, `/esp`), given by whoever started it (startup role
+  NS: a channel on which the starter sends the mounts, and later ones to
+  a program that is already running). libos finds a path's mount and calls
+  that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
+  through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
+  bootfs image served by a process (`user/services/bootfs/`). No global
+  kernel VFS: a program reaches only the mounts it was given, which is the
+  only permission system for files. Not built yet: services as paths
+  (`/svc/net`, `/dev/console`) and a POSIX `open()` on top.
 - **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
   editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
   `sh_vars.c` holds variables ($NAME, export -> the environment of `run`)
   and aliases, `sh_exec.c` runs a line (pipes: stages run in turn, each
   one's output captured in memory as the next one's input, by `sh_io.c`; a
   program in a pipe gets an SR_STDOUT channel), `sh_table.c` is the one
-  command table (with help), `sh_complete.c` Tab completion, `sh_vfs.c` a
-  mount table with /boot = bootfs; `cmd/<name>.c` is one file per command.
+  command table (with help), `sh_complete.c` Tab completion, `sh_vfs.c`
+  paths and files over libos's namespace (the current directory is the
+  shell's own); `cmd/<name>.c` is one file per command.
   System information comes from dedicated syscalls (`sys_info`,
   `cpu_stat`, `proc_list`, `rtc_read`; `RIGHT_READ` on the root resource);
   CPU time is counted per thread and CPU at every switch. The kernel tests
   are shell commands too (`ktest`, `stress 600`), so a test run needs no
   reboot; rebooting is only for loading a new kernel from the stick.
-- **Executables**: static ELF64 at 0x400000; no `fork`.
+- **Executables**: static ELF64 at 0x400000; no `fork`. `spawn()` loads a
+  program from a range of a VMO; code is mapped executable only from a VMO
+  handle with `RIGHT_EXEC`, which only the bootfs image's has, so a program
+  outside `/boot` can't run yet.
 
 ## Graphics
 
