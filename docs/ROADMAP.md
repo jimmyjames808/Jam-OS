@@ -84,9 +84,9 @@ agents, like the [earlier plans](history/)):
 
 Offered or noticed, not scheduled into a milestone yet:
 
-- usb-bus looks at a failed port again only on a port status change (3
-  tries per port, reset on unplug); a timed retry was offered, not
-  requested.
+- usb-bus retries a failed root port after 1 s, then 5 s; ports on hubs
+  are still looked at again only on a port status change (the same
+  pattern would fit `hub->port_fail` in hub.c).
 - devmgr's protocol is hand-written, not IDL.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.

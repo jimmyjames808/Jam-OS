@@ -536,6 +536,9 @@ bool hub_setup(struct usbdev *d);         /* after SET_CONFIGURATION; false: not
 void hub_work(struct usbdev *hub);        /* one unit: the hub's own change, or one port */
 void root_port(struct hc *h, uint32_t p);
 void root_ports_reset(void);
+/* Due retries of failed root ports become port changes; the next
+ * retry time (UINT64_MAX: none). */
+uint64_t root_retries(struct hc *h);
 
 /* ---- work.c ---------------------------------------------------------------- */
 

@@ -542,6 +542,9 @@ static void run(struct hc *h)
         uint64_t next = answer_waiters(is_settled, now, now + 1000 * NS_PER_MS);
         if (!g_first_report_done && next > now + 100 * NS_PER_MS)
             next = now + 100 * NS_PER_MS;
+        uint64_t retry = root_retries(h);   /* a failed port's retry, if sooner */
+        if (retry < next)
+            next = retry;
         if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
             break;
         if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */

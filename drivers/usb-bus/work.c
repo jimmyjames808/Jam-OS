@@ -47,6 +47,7 @@ bool usb_work(struct hc *h)
 {
     if (!started || h->dead)
         return false;
+    root_retries(h);
     /* Endpoint upkeep first: cheap, and keeps input flowing. */
     bool did = intr_upkeep(h);
     /* Then ONE port (a root port, or a hub's): enumerating takes a while,
@@ -72,9 +73,11 @@ bool usb_work(struct hc *h)
     return did;
 }
 
-/* Shutdown: every endpoint stopped, every slot disabled (the controller
- * is reset right after, but this keeps the DMA story simple: nothing is
- * queued when the halt comes). */
+/* Shutdown: detach every device, so class drivers see their interfaces
+ * close. No commands are sent: slots and endpoints stay as they are until
+ * hc_shutdown halts and resets the controller right after, which clears
+ * them all (a Disable Slot per device could outlast devmgr's STOP_WAIT).
+ * Their DMA pages are kept, not reused, until then (dev_free). */
 void usb_stop_all(const struct hc *h)
 {
     (void)h;
