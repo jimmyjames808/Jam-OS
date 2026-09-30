@@ -18,13 +18,9 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 
 ## Next step
 
-1. M8, storage: the plan is [docs/M8-PLAN.md](docs/M8-PLAN.md) (written 2026-09-30; the owner answers its open questions, then the foundation and four tracks) (like the
-   [earlier plans](docs/history/)); notes for it are in the
-   [roadmap](docs/ROADMAP.md#next-m8-storage). Decided: the USB stick and
-   FAT32 only, through a FatFs port. The review's design items go in: a
-   system-wide file namespace (a new fs protocol, not the shell's mount
-   table), bulk data in IDL (usb.idl has no bulk transfers), and
-   debug_command's `kill <name>` moving to init. Then the audio track.
+1. M8, storage: the plan is [docs/M8-PLAN.md](docs/M8-PLAN.md), written
+   2026-09-30. The owner answers its three open questions, then the
+   foundation lands on main and four tracks start. Then the audio track.
 2. Smaller deferred items: [roadmap](docs/ROADMAP.md#smaller-follow-ups).
 
 ## Open questions for the owner
