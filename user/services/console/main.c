@@ -126,7 +126,9 @@ int main(int argc, char **argv)
 
     uint64_t last = 0;
     for (;;) {
-        uint64_t deadline = dirty ? last + RENDER_NS : DEADLINE_NEVER;
+        /* A client with requests left over: take what else is queued (a
+         * key, another client) without sleeping, then give it another round. */
+        uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st == OK) {
@@ -135,6 +137,7 @@ int main(int argc, char **argv)
             printf("console: port_wait: %s\n", status_str(st));
             return 1;
         }
+        clients_serve_pending();
         uint64_t t = now();
         if (dirty && t >= last + RENDER_NS) {
             render();

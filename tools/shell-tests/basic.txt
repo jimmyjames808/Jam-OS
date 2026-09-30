@@ -49,6 +49,19 @@ wait contest: type s now
 type s
 wait 60 run: bin/contest exited with code 0
 wait jam>
+# a program writing to the console flat out: the console serves it a
+# bounded round at a time, so Ctrl+C (a key) and the shell's own output
+# still get through
+send run contest flood
+wait 30 contest: flood: writing flat out
+sleep 2
+type \x03
+wait 10 ^C: killing bin/contest
+wait 10 run: bin/contest was killed
+wait jam>
+send help
+wait Commands:
+wait jam>
 send run bin/utest
 wait 240 run: bin/utest exited with code 0
 wait jam>

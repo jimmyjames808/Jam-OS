@@ -25,6 +25,11 @@
 #define MAX_FOCUS   8
 #define PENDING_KEYS 128
 #define RENDER_NS  16000000ull
+/* One round of one client's requests: a count and a time, so a client
+ * writing flat out can't hold up the keys (Ctrl+C), the other clients or
+ * the render. */
+#define CLIENT_BUDGET    64
+#define CLIENT_BUDGET_NS (20 * NS_PER_MS)
 #define KLOG_BUF   16384
 
 /* Palette indices (screen.c has the colours). */
@@ -131,5 +136,10 @@ void source_event(unsigned i);
 /* Startup's client channels (SR_USER + 0..7): ADMIN, on the port. */
 void clients_init(void);
 unsigned client_count(void);
-/* Client i's channel is readable (or gone). */
+/* Client i's channel is readable (or gone): serve one round of its
+ * requests, at most CLIENT_BUDGET of them or CLIENT_BUDGET_NS. */
 void client_event(unsigned i);
+/* Some client still had requests queued when its round ended: the main
+ * loop must not sleep, and calls clients_serve_pending for another round. */
+bool clients_pending(void);
+void clients_serve_pending(void);

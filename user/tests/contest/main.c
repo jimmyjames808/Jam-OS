@@ -176,10 +176,38 @@ static int steal(void)
     return 0;
 }
 
+/* ---- probe `run contest flood`: write to the console flat out, keeping our
+ * channel's queue full (requests sent without waiting for their replies),
+ * until killed. The console serves a client a bounded round at a time, so
+ * the keys still get through: Ctrl+C must reach the shell, which kills us
+ * (tools/shell-tests/basic.txt). Empty writes, so nothing floods the log. */
+static int flood(handle_t con)
+{
+    static struct console_write_req q = { .ordinal = CONSOLE_WRITE };
+    if (!con)
+        return 1;
+    printf("contest: flood: writing flat out\n");
+    for (;;) {
+        while (jam_channel_write(con, &q, sizeof(q), NULL, 0) == OK)
+            ;
+        /* The queue is full: throw the replies away and fill it again. */
+        _Alignas(8) uint8_t rep[64];
+        uint32_t n = 0, nh = 0;
+        struct channel_read_args a = {
+            .h = con, .bytes_cap = sizeof(rep), .bytes = (uint64_t)(uintptr_t)rep,
+            .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        };
+        while (jam_channel_read(&a) == OK)
+            ;
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "steal"))
         return steal();
+    if (argc > 1 && !strcmp(argv[1], "flood"))
+        return flood(startup_handle(SR_CONSOLE));
     handle_t con = startup_handle(SR_CONSOLE), k, k2, src;
 
     if (!con) {

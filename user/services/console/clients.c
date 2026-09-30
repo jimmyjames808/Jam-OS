@@ -99,16 +99,45 @@ unsigned client_count(void)
     return n;
 }
 
+/* Clients whose last round ended on the budget, with requests maybe left:
+ * bit i is clients[i]. Their channels stay readable, so the PERSISTENT
+ * binding (it fires on an edge) won't fire again: the main loop comes back
+ * for them. */
+static uint32_t pending;
+_Static_assert(MAX_CLIENTS <= 32, "pending is a 32-bit mask");
+
 void client_event(unsigned i)
 {
-    if (i >= MAX_CLIENTS || !clients[i])
+    if (i >= MAX_CLIENTS)
         return;
-    status_t st;
-    while ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) == OK)
-        ;
+    pending &= ~(1u << i);
+    if (!clients[i])
+        return;
+    uint64_t t0 = now();
+    status_t st = OK;
+    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++)
+        if ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) != OK)
+            break;
+    if (st == OK) {
+        pending |= 1u << i;   /* the budget ran out first */
+        return;
+    }
     if (st != ERR_SHOULD_WAIT) {   /* ERR_PEER_CLOSED: that client end is gone */
         jam_port_unbind(port, clients[i], KEY(K_CLIENT, i));
         jam_handle_close(clients[i]);
         clients[i] = HANDLE_INVALID;
     }
+}
+
+bool clients_pending(void)
+{
+    return pending != 0;
+}
+
+void clients_serve_pending(void)
+{
+    uint32_t p = pending;   /* one round each, even for those that stay pending */
+    for (unsigned i = 0; i < MAX_CLIENTS; i++)
+        if (p & 1u << i)
+            client_event(i);
 }
