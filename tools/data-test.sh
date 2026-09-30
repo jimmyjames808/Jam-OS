@@ -39,6 +39,9 @@ if [ $ok = 1 ]; then
     want mdir -i "$data" ::/after.txt
     mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data mounted" ||
         { echo "$name: boot-0001.txt on the stick doesn't hold the first boot's log"; ok=0; }
+    # boot 1 ended with `reboot`: its log holds the shutdown's own lines
+    mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced in" ||
+        { echo "$name: boot-0001.txt on the stick ends before the reboot's sync line"; ok=0; }
     mtype -i "$data" ::/after.txt 2>/dev/null | grep -q "after the pull-c" ||
         { echo "$name: after.txt on the stick doesn't hold what boot 3 wrote"; ok=0; }
 fi

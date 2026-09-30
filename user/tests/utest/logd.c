@@ -8,11 +8,13 @@
  *
  * Covered: what was logged before logd started comes first, then what
  * follows; the file is the next free boot-NNNN.txt in /logs (made if
- * missing); syncs come at most once a second; with /data refusing or gone
+ * missing); syncs come at most four times a second; a flush asked for on
+ * the control channel saves what was logged up to then; with /data refusing or gone
  * logd keeps running and tries again rarely. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <idl/logctl.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
@@ -20,6 +22,7 @@
 /* logd's startup handles (user/services/logd/logd.h has the same numbers). */
 #define LOGD_SR_FS  (SR_USER + 0)
 #define LOGD_SR_LOG (SR_USER + 1)
+#define LOGD_SR_CTL (SR_USER + 2)
 
 #define DISK_SECTORS (16 * MIB_SECTORS)
 #define LOG1         "/logs/boot-0001.txt"   /* the first log on a blank /data */
@@ -31,6 +34,7 @@ static struct ramdisk disk;
 struct logd {
     handle_t job, proc;   /* its job (alone in it) and process */
     handle_t feed;        /* where its log is written; 0: it reads the kernel log */
+    handle_t ctl;         /* its control channel (logctl), our end */
 };
 
 static bool have_logd(void)
@@ -49,18 +53,20 @@ static bool have_logd(void)
  * (l->feed), or the kernel log read through `root` if that is given. */
 static bool logd_start(struct logd *l, handle_t fs, handle_t root)
 {
-    handle_t dup, second;
+    handle_t dup, second, ctl;
     const char *argv[] = { "bin/logd" };
     *l = (struct logd){ 0 };
+    CHECK_ST(jam_channel_create(&l->ctl, &ctl), OK);
     CHECK_ST(jam_handle_duplicate(fs, RIGHT_SAME, &dup), OK);
     if (root)
         CHECK_ST(jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &second), OK);
     else
         CHECK_ST(jam_channel_create(&l->feed, &second), OK);
     CHECK_ST(new_job(&l->job), OK);
-    struct spawn_handle x[] = { { LOGD_SR_FS, dup }, { root ? SR_RESOURCE : LOGD_SR_LOG, second } };
+    struct spawn_handle x[] = { { LOGD_SR_FS, dup }, { root ? SR_RESOURCE : LOGD_SR_LOG, second },
+                                { LOGD_SR_CTL, ctl } };
     struct spawn_args a = {
-        .path = "bin/logd", .argc = 1, .argv = argv, .job = l->job, .extra = x, .nextra = 2,
+        .path = "bin/logd", .argc = 1, .argv = argv, .job = l->job, .extra = x, .nextra = 3,
     };
     CHECK_ST(spawn(&a, &l->proc), OK);   /* consumes the extras */
     return true;
@@ -81,6 +87,7 @@ static bool logd_end(struct logd *l)
         CHECK_EQ(ji.used[k], 0);
     CHECK_ST(jam_handle_close(l->proc), OK);
     CHECK_ST(jam_handle_close(l->job), OK);
+    CHECK_ST(jam_handle_close(l->ctl), OK);
     return true;
 }
 
@@ -130,25 +137,34 @@ bool t_logd_writes_the_log(void)
         if (!say_line(&l, i, all, sizeof(all)))
             return false;
     jam_nanosleep(now() + 500 * NS_PER_MS);   /* the file is made; the first sync is done */
-    /* then one every 100 ms for 2.5 s: a file.sync a second, so 2 or 3.
-     * What the disk sees is fat's: up to 4 block.sync per file.sync (the
-     * volume marked dirty, the file flushed, the volume marked clean). A
-     * sync per line would be 25 file.syncs, 50 block.syncs or more. */
+    /* then one every 50 ms for 2.5 s: a file.sync every 250 ms, so about
+     * 10, each one block.sync at the disk. A sync per line would be 50. */
     uint32_t syncs = ramdisk_syncs(&disk);
-    for (unsigned i = 3; i < 28; i++) {
+    for (unsigned i = 3; i < 53; i++) {
         if (!say_line(&l, i, all, sizeof(all)))
             return false;
-        jam_nanosleep(now() + 100 * NS_PER_MS);
+        jam_nanosleep(now() + 50 * NS_PER_MS);
     }
     syncs = ramdisk_syncs(&disk) - syncs;
-    if (syncs < 2 || syncs > 12)
-        FAIL("%u block syncs in 2.5 s of steady logging, want one file sync a second", syncs);
+    if (syncs < 6 || syncs > 14)
+        FAIL("%u block syncs in 2.5 s of steady logging, want one file sync every 250 ms",
+             syncs);
     if (!logd_end(&l) || !file_is(&fat, "/logs/boot-0004.txt", all))
         return false;
     CHECK_ST(t_stat(&fat, "/logs/boot-0005.txt", NULL, NULL, NULL), ERR_NOT_FOUND);
 
-    /* the next boot: boot-0005, and boot-0004 stays as it is */
+    /* the next boot: boot-0005, and boot-0004 stays as it is. A flush
+     * asked for right behind a line (what init does before a reboot) has
+     * the line in the file and on the disk when it answers. */
     if (!logd_start(&l, fat.fs, HANDLE_INVALID) || !say_line(&l, 100, second, sizeof(second)))
+        return false;
+    jam_nanosleep(now() + 400 * NS_PER_MS);   /* the file is made, its first sync done */
+    if (!say_line(&l, 101, second, sizeof(second)))
+        return false;
+    syncs = ramdisk_syncs(&disk);
+    CHECK_ST(logctl_flush_until(l.ctl, now() + FAT_CALL_NS), OK);
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);
+    if (!file_is(&fat, "/logs/boot-0005.txt", second))
         return false;
     if (!logd_end(&l) || !file_is(&fat, "/logs/boot-0005.txt", second) ||
         !file_is(&fat, "/logs/boot-0004.txt", all))
@@ -309,6 +325,7 @@ bool t_logd_kernel_log(void)
     CHECK_ST(jam_job_kill(l.job), OK);   /* the kernel log never ends */
     CHECK_ST(spawn_wait(l.proc, END_NS, &info), OK);
     CHECK_ST(jam_handle_close(l.proc), OK);
+    CHECK_ST(jam_handle_close(l.ctl), OK);
     CHECK_ST(jam_handle_close(l.job), OK);
     /* the marker is among the last bytes of the file */
     for (uint64_t until = now() + 10 * NS_PER_S; !contains(got, n, marker);) {
