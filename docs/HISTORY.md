@@ -218,6 +218,11 @@ with 27 clients at 836,077 calls/s (M4: 492,673), worst call 37 us,
 Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
+- 2026-09-30: storage stays as planned: the USB stick and FAT32 only. An
+  NVMe driver (easier, and the owner has a FAT partition on the internal
+  Crucial drive from an earlier attempt) and other filesystems (exFAT,
+  ext2, littlefs, an own copy-on-write one) were discussed and declined.
+  The repository went public under BSD-2-Clause; no GPL code may be copied.
 - 2026-09-30: the kernel build of drivers is removed (nothing used it once
   devmgr ran every driver as a process).
 - 2026-09-29, after M7: the audio track comes right after M8. SSH was

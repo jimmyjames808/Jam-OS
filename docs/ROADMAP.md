@@ -51,6 +51,13 @@ agents, like the [earlier plans](history/)):
 - Design work the cleanup left for this plan: a system file namespace
   protocol (an `fs` IDL), bulk data through shared VMOs in IDL, and shrinking
   `debug_command`.
+- FAT names: the 2025 attempt's hand-written FAT made naming files
+  painful (no spaces from its shell; `notes.txt` shown as `NOTES.TXT`
+  because the lowercase flags were never set; long names cut to 8.3, or
+  every alias `~1` so aliases collided; forbidden characters accepted).
+  Get long names, the case flags, `~N` numbering and the character rules
+  right, or port FatFs (BSD-style licence) instead of writing FAT32 again:
+  decide in the plan.
 
 ## Later
 
