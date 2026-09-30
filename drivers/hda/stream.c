@@ -267,8 +267,8 @@ status_t stream_open(struct hda *h, struct stream *s, handle_t *ring)
     s->played = s->cleared = 0;
     s->iocs = s->fifo_errors = s->lpib_diff_max = 0;
     drv_log("stream: open on descriptor %u, tag %u, format %#06x, converter %u/%02x; ring %u "
-            "bytes in %u periods", s->sd, STREAM_TAG, STREAM_FORMAT, s->cad, s->dac, RING_BYTES,
-            PERIODS);
+            "bytes in %u periods; FIFO %u bytes", s->sd, STREAM_TAG, STREAM_FORMAT, s->cad, s->dac,
+            RING_BYTES, PERIODS, drv_read16(h->regs, s->sd_regs + SD_FIFOS));
     return OK;
 }
 

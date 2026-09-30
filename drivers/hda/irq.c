@@ -151,9 +151,12 @@ static void wait_check(struct loop *l)
 static void wait_begin(struct loop *l, const struct hda_wait_period_req *q)
 {
     uint64_t pf = PERIOD_BYTES / FRAME_BYTES;
-    if (l->waiting || !l->st.running || q->after > UINT64_MAX - pf) {
-        idl_reply_status(l->stream_ch, q, sizeof(*q), l->waiting ? ERR_BAD_STATE
-                         : l->st.running ? ERR_INVALID_ARGS : ERR_BAD_STATE);
+    if (l->waiting || !l->st.running) {
+        idl_reply_status(l->stream_ch, q, sizeof(*q), ERR_BAD_STATE);
+        return;
+    }
+    if (q->after > UINT64_MAX - pf) {
+        idl_reply_status(l->stream_ch, q, sizeof(*q), ERR_INVALID_ARGS);
         return;
     }
     l->waiting = true;
