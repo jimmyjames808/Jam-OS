@@ -22,6 +22,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
 | A1, A2 | Audio | right after M8 |
+| AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
 | M9 | Networking | later |
 | M10 | ACPI power | later |
@@ -98,6 +99,7 @@ Known limits, for the review:
 |---|---|---|
 | A1 | HD Audio driver + `beep`: controller reset, command rings, codec widget graph, the front-panel headphone pin, one output stream from a pinned DMA32 buffer, jack detection | `beep` in the shell plays a tone in the headphones on the real PC; unplugging and replugging them is logged |
 | A2 | `audio` protocol + mixer service: streams through shared VMO rings, volume from the shell, WAV playback from `/data` | two programs play at once |
+| AS | Boot splash, at the end of the audio track. A splash program is the first thing init starts: it takes the screen and plays the boot animation with its sound while the services start, holds the last frame until the shell is ready, then hands the screen back. The animation is made outside the repository (1920x1080 with alpha); `make` converts it with ffmpeg to MPEG-1 at 1280x720 over the dark background (about 0.5 MB, drawn 2x to fill 2560x1440) and puts it in the boot image. Decoded by pl_mpeg (MIT, in `third_party/`), sound through A2's mixer. A key skips it; a `verbose` boot word shows the text log instead; a panic always draws over it. With it, alpha blending in libfun (premultiplied alpha, blended fills and images, anti-aliased shapes) | the PC boots into the animation with its sound, and the shell comes up when it ends |
 | A3 | Microphone input, HDMI/DP audio on the RTX, USB audio devices | (not planned in detail) |
 | M8.5 | Crash kernel, the Linux kdump approach: reserve RAM at boot and load a second Jam OS there; on a panic jump into it (kexec, one CPU, controllers reset before use), save the crashed kernel's log ring as `/data/logs/boot-NNNN-crash.txt`, reboot. The same kexec gives `reboot` a fast path, which needs the kernel's own AP startup (INIT-SIPI-SIPI) so all 28 CPUs come back without Limine. A RAM log kept across a warm reset (pstore) only as a fallback | a deliberate panic on the PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
 | M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
