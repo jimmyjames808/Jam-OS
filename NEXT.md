@@ -6,13 +6,11 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 
 ## Current state (2026-09-30)
 
-- M0 to M7 are done and confirmed on the PC. The stick has 0.0.24-m7
-  (ab4e106).
-- The M7.5 cleanup is done in QEMU, with no behaviour change (the version
-  string is still 0.0.24-m7): the five tracks, an independent review, two
-  CODING-GUIDE.md style passes (kernel; drivers and user), a docs overhaul
-  and two bug-fix rounds. 221 ktests at 4 and 8 CPUs, utest 30, usbtest
-  12, every shell and area script, 60 s stress at 4 and 8 CPUs.
+- M0 to M7.5 are done and confirmed on the PC. The M7.5 cleanup's
+  sign-off: All tests 221/221 from the boot menu, `ktest` from the shell
+  212 passed (9 skipped live), and the 10-minute stress passed. The stick
+  has 095a49a (the version string is still 0.0.24-m7: the cleanup changed
+  no output).
 - Public on GitHub: https://github.com/jimmyjames808/Jam-OS, BSD-2-Clause.
   `origin` is set; `main` and `learn` are pushed.
 - The owner reads and experiments in `~/jamos-learn` (a worktree of the
@@ -20,17 +18,14 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 
 ## Next step
 
-1. The PC round on the cleanup build: flash, All tests, then the 2-minute
-   stress. The scheduler's `volatile` -> atomics change and the usb-bus
-   splits need real hardware (TCG has no PCIDs or TSC-deadline, and not
-   the Intel xHCI's timing).
-2. M8, storage: write the plan as docs/M8-PLAN.md first (like the
+1. M8, storage: write the plan as docs/M8-PLAN.md first (like the
    [earlier plans](docs/history/)); notes for it are in the
-   [roadmap](docs/ROADMAP.md#next-m8-storage). The review's design items
-   go in: a system-wide file namespace (a new fs protocol, not the shell's mount
+   [roadmap](docs/ROADMAP.md#next-m8-storage). Decided: the USB stick and
+   FAT32 only, through a FatFs port. The review's design items go in: a
+   system-wide file namespace (a new fs protocol, not the shell's mount
    table), bulk data in IDL (usb.idl has no bulk transfers), and
    debug_command's `kill <name>` moving to init. Then the audio track.
-3. Smaller deferred items: [roadmap](docs/ROADMAP.md#smaller-follow-ups).
+2. Smaller deferred items: [roadmap](docs/ROADMAP.md#smaller-follow-ups).
 
 ## Open questions for the owner
 

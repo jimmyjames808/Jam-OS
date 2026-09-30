@@ -19,7 +19,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M5.5 | Performance pass, measured on the PC ([BENCH.md](BENCH.md)) | done |
 | M6 | PCI core, MSI/MSI-X, interrupt objects, resources, DMA, devmgr, drivers as processes | done |
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
-| M7.5 | Cleanup, no behaviour change | done in QEMU; independent review of the last step and the PC round (All tests, 2-minute stress) pending |
+| M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | **M8** | **Storage** | **next** |
 | A1, A2 | Audio | right after M8 |
 | M8.5 | Crash kernel and kexec | later |

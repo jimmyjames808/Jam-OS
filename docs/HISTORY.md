@@ -82,6 +82,15 @@ and the others, the console ignoring failed port binds, and the shell's
 pipe drain (no limit, deaf to Ctrl+C, stuck on an oversized message).
 ktests 219 -> 221.
 
+Signed off on the PC the same day: All tests 221/221, the shell's `ktest`
+212 passed, the 10-minute stress passed. The PC round found two tests that
+were wrong, not the code: `stress_failure_does_not_stick` saw 4 pages kept
+(the first stress run on 28 CPUs grows per-CPU caches to a high-water
+mark; the test now checks a third, identical run gives every page back,
+through the new `KT_OWN_LEAK_CHECK`), and `serial_irq_drains_ring` expected
+the shared COM1 ring to empty while the console kept it full from the shell
+(its counts are now boot-menu-only checks).
+
 ## M7: USB, console, shell
 
 *2026-09-29, 0.0.18-m7a to 0.0.24-m7.*
