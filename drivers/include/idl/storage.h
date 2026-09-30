@@ -88,7 +88,8 @@ static inline status_t storage_info(handle_t ch, uint8_t out_vendor[8], uint8_t 
 }
 
 /* Partition `index` (0-based, in table order): the MBR type byte (0xEF: EFI
- * System; 0x0C / 0x0B: FAT32), its first block and length. Past the last:
+ * System; 0x0C / 0x0B: FAT32; 0x00: no table, the whole disk is one FAT
+ * volume), its first block and length. Past the last:
  * ERR_OUT_OF_RANGE. */
 static inline status_t storage_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
 {
@@ -117,7 +118,8 @@ static inline status_t storage_partition(handle_t ch, uint8_t index, uint8_t *ou
 
 /* A `block` channel limited to partition `index`: every request outside
  * its blocks fails ERR_OUT_OF_RANGE. `read_only` 1 makes it refuse writes
- * (ERR_ACCESS_DENIED); devmgr opens the ESP that way. */
+ * (ERR_ACCESS_DENIED); devmgr opens the ESP that way, and every
+ * partition of a disk that isn't the boot disk until `mount -w` asks. */
 static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t read_only, handle_t *out_block)
 {
     struct storage_open_partition_req idl_q;

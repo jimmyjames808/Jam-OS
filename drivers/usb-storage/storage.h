@@ -9,6 +9,9 @@
 #include <jam/driver.h>
 
 #define MAX_PARTS  4        /* an MBR's primary partitions */
+#define PART_WHOLE 0x00     /* a partition's type when the disk has no table: block 0 is a
+                             * FAT boot sector and the one partition is the whole disk
+                             * (storage.idl) */
 #define MAX_BLKS   8        /* `block` channels open at once */
 #define MAX_SILENT 3        /* commands in a row without an answer: the driver gives up */
 #define BLOCK_BUF  65536u   /* a block channel's buffer (block.idl: 64 KiB) */
