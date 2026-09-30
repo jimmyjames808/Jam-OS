@@ -229,6 +229,18 @@ wait arg: two
 wait run: bin/utest exited with code 0
 send run utest env | grep ^env:.USER=jam$ && echo ok-$T-pipe
 wait ok-x-pipe
+# in a pipe, messages printf never sends (over 4096 bytes, carrying
+# handles) are dropped, their handles closed, and the output after them
+# still arrives; a program writing flat out still yields to Ctrl+C
+send run contest junk | grep "9 of 9 handles closed" && echo ok-$T-junk
+wait 30 ok-x-junk
+wait jam>
+send run contest spew | wc -l
+sleep 3
+type \x03
+wait 10 ^C: killing bin/contest
+wait 10 run: bin/contest was killed
+wait jam>
 send utest exit7; echo code=$?
 wait code=7
 wait jam>

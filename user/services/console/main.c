@@ -115,7 +115,12 @@ int main(int argc, char **argv)
     }
     st = jam_klog_open(root, &klog);
     if (st == OK) {
-        jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
+        /* Unbound, new kernel lines show only when a program writes (each
+         * write pulls them in first): say so, it's worth knowing. */
+        st = jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
+        if (st != OK)
+            printf("console: kernel log: port_bind: %s; its lines show only with program "
+                   "output\n", status_str(st));
         klog_event();   /* the boot log so far */
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
@@ -126,7 +131,9 @@ int main(int argc, char **argv)
 
     uint64_t last = 0;
     for (;;) {
-        uint64_t deadline = dirty ? last + RENDER_NS : DEADLINE_NEVER;
+        /* A client with requests left over: take what else is queued (a
+         * key, another client) without sleeping, then give it another round. */
+        uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st == OK) {
@@ -135,6 +142,7 @@ int main(int argc, char **argv)
             printf("console: port_wait: %s\n", status_str(st));
             return 1;
         }
+        clients_serve_pending();
         uint64_t t = now();
         if (dirty && t >= last + RENDER_NS) {
             render();

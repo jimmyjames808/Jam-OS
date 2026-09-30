@@ -47,6 +47,16 @@ static status_t op_clear(void *ctx)
     return OK;
 }
 
+/* Watch client channel h (slot i) on the port; a failure is logged. */
+static status_t bind_client(unsigned i, handle_t h)
+{
+    status_t st = jam_port_bind(port, h, KEY(K_CLIENT, i), SIG_READABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_PERSISTENT);
+    if (st != OK)
+        printf("console: client %u: port_bind: %s; channel refused\n", i, status_str(st));
+    return st;
+}
+
 static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
 {
     const struct client *c = ctx;
@@ -63,9 +73,7 @@ static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
         return st;
-    st = jam_port_bind(port, mine, KEY(K_CLIENT, i), SIG_READABLE | SIG_PEER_CLOSED,
-                       PORT_BIND_PERSISTENT);
-    if (st != OK) {
+    if ((st = bind_client(i, mine)) != OK) {   /* refused: the caller gets the error */
         jam_handle_close(mine);
         jam_handle_close(theirs);
         return st;
@@ -84,10 +92,13 @@ void clients_init(void)
 {
     for (unsigned i = 0; i < START_CLIENTS; i++) {
         client_info[i].level = L_ADMIN;
-        clients[i] = startup_handle(SR_USER + i);
-        if (clients[i])
-            jam_port_bind(port, clients[i], KEY(K_CLIENT, i), SIG_READABLE | SIG_PEER_CLOSED,
-                          PORT_BIND_PERSISTENT);
+        handle_t h = startup_handle(SR_USER + i);
+        /* Unbound, nothing would ever serve it: close it instead, so its
+         * client sees ERR_PEER_CLOSED rather than waiting forever. */
+        if (h && bind_client(i, h) != OK)
+            jam_handle_close(h);
+        else
+            clients[i] = h;
     }
 }
 
@@ -99,16 +110,45 @@ unsigned client_count(void)
     return n;
 }
 
+/* Clients whose last round ended on the budget, with requests maybe left:
+ * bit i is clients[i]. Their channels stay readable, so the PERSISTENT
+ * binding (it fires on an edge) won't fire again: the main loop comes back
+ * for them. */
+static uint32_t pending;
+_Static_assert(MAX_CLIENTS <= 32, "pending is a 32-bit mask");
+
 void client_event(unsigned i)
 {
-    if (i >= MAX_CLIENTS || !clients[i])
+    if (i >= MAX_CLIENTS)
         return;
-    status_t st;
-    while ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) == OK)
-        ;
+    pending &= ~(1u << i);
+    if (!clients[i])
+        return;
+    uint64_t t0 = now();
+    status_t st = OK;
+    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++)
+        if ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) != OK)
+            break;
+    if (st == OK) {
+        pending |= 1u << i;   /* the budget ran out first */
+        return;
+    }
     if (st != ERR_SHOULD_WAIT) {   /* ERR_PEER_CLOSED: that client end is gone */
         jam_port_unbind(port, clients[i], KEY(K_CLIENT, i));
         jam_handle_close(clients[i]);
         clients[i] = HANDLE_INVALID;
     }
+}
+
+bool clients_pending(void)
+{
+    return pending != 0;
+}
+
+void clients_serve_pending(void)
+{
+    uint32_t p = pending;   /* one round each, even for those that stay pending */
+    for (unsigned i = 0; i < MAX_CLIENTS; i++)
+        if (p & 1u << i)
+            client_event(i);
 }

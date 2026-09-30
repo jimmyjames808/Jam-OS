@@ -285,13 +285,16 @@ static void get_driver(const struct binding *b, bool known, struct devmgr_rep *r
         return;
     }
     r->a = b->index;
-    if ((r->status = jam_handle_duplicate(b->proc, RIGHTS_BASIC, &hs[0])) == OK &&
-        (r->status = jam_handle_duplicate(b->job, RIGHTS_BASIC, &hs[1])) == OK) {
-        *nh = 2;
-        if (b->kind == BIND_PCI &&
-            (r->status = jam_handle_duplicate(b->dev, RIGHTS_BASIC | RIGHT_READ, &hs[2])) == OK)
-            *nh = 3;
-    }
+    const handle_t src[3] = { b->proc, b->job, b->dev };
+    const rights_t rights[3] = { RIGHTS_BASIC, RIGHTS_BASIC, RIGHTS_BASIC | RIGHT_READ };
+    uint32_t want = b->kind == BIND_PCI ? 3 : 2;   /* only a PCI binding has a function */
+    uint32_t got = 0;
+    while (got < want && (r->status = jam_handle_duplicate(src[got], rights[got], &hs[got])) == OK)
+        got++;
+    if (r->status != OK)   /* all or nothing: close what was duplicated */
+        while (got > 0)
+            jam_handle_close(hs[--got]);
+    *nh = got;
 }
 
 /* SUPERVISION: b's state, restarts, backoff, and its DMA quarantine. */
