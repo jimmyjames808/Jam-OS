@@ -13,6 +13,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <fatsvc.h>
+#include <idl/fsctl.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
@@ -374,6 +375,23 @@ bool t_fat_files(void)
     CHECK_EQ(fat_kind(&disk), 16);
     if (!check_reads(&r) || !check_open_flags(&r) || !check_growth(&r) || !check_big_file(&r) ||
         !check_open_files(&r) || !check_shrunk_buffer(&r))
+        return false;
+    /* fsctl.stop (what devmgr asks before a remount): a file still open
+     * with unsynced writes is closed and flushed, the volume is clean, and
+     * fat exits 0 with its fs channel's client still there. */
+    struct tfile late;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&r, "/late.txt", FS_WRITE | FS_CREATE, &late), OK);
+    CHECK_ST(t_write(&late, 0, "not synced", 10, &done), OK);
+    CHECK_ST(fsctl_stop_until(r.ctl, now() + FAT_CALL_NS), OK);
+    CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
+    CHECK_ST(t_write(&late, 10, "!", 1, &done), ERR_PEER_CLOSED);
+    t_close(&late);
+    if (!fat_wait(&r, 0))
+        return false;
+    CHECK_ST(jam_handle_close(r.fs), OK);
+    if (!ramdisk_join(&disk) || !fat_start(&r, &disk, false) ||
+        !file_is(&r, "/late.txt", "not synced"))
         return false;
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }

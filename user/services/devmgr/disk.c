@@ -42,8 +42,9 @@
  * Read-only below the filesystem: an other disk's partition is opened
  * read-only (storage.open_partition), so usb-storage refuses every write
  * on that channel whatever fat does. DEVMGR_REMOUNT (disk_remount; the
- * shell's `mount -w /usbN`) syncs and stops the service and starts it
- * again on a new channel opened read-write, or back.
+ * shell's `mount -w /usbN`) has the service stop in order (fsctl.stop:
+ * files closed, everything flushed, the volume clean) and starts it again
+ * on a new channel opened read-write, or back.
  *
  * A filesystem service (bin/fat, <fatsvc.h>; a BIND_FS binding in devs[])
  * is supervised like a driver (supervise.c): a crash or an error exit is
@@ -63,6 +64,7 @@
  * test never takes /data away. */
 #include <fatsvc.h>
 #include <fs_idl.h>
+#include <idl/fsctl.h>
 #include <idl/storage.h>
 #include "internal.h"
 
@@ -184,8 +186,16 @@ const char *fs_mount_path(const struct binding *b)
     return test ? "/data-test" : "/data";
 }
 
+void fs_ctl_close(struct binding *b)
+{
+    if (b->ctl)
+        jam_handle_close(b->ctl);
+    b->ctl = HANDLE_INVALID;
+}
+
 void fs_retire(struct binding *b)
 {
+    fs_ctl_close(b);
     struct disk *d = disk_of(b);
     if (d && d->fs[b->part] == (uint32_t)(b - devs) + 1)
         d->fs[b->part] = 0;
@@ -220,6 +230,16 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
     xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;   /* not to be passed on */
+    /* Its control channel: ours alone, a new one for every start. Without
+     * one the service can still be synced and killed. */
+    handle_t theirs;
+    fs_ctl_close(b);
+    if (jam_channel_create(&b->ctl, &theirs) == OK) {
+        x[*n] = (struct spawn_handle){ FAT_SR_CTL, theirs };
+        xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;
+    } else {
+        b->ctl = HANDLE_INVALID;
+    }
     return OK;
 }
 
@@ -632,14 +652,14 @@ status_t disk_remount(unsigned n, bool test, bool writable)
         return OK;
     char path[16];
     snprintf(path, sizeof(path), "%s", fs_mount_path(b));
-    if (b->rw) {
-        /* What was written goes to the stick before the service does. */
-        status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
-        if (st != OK)
-            say(false, "devmgr: %s: not synced before it goes read-only (%s)", path,
-                status_str(st));
-    }
-    stop_driver(b, true, true);
+    /* The service stops in order (fsctl.stop): its files closed, what was
+     * written on the stick, the volume clean; a write that comes later
+     * fails instead of being lost. Only one that doesn't answer is killed. */
+    status_t stopped = b->ctl ? fsctl_stop_until(b->ctl, now() + SYNC_WAIT) : ERR_NOT_SUPPORTED;
+    if (stopped != OK)
+        say(false, "devmgr: %s: its filesystem service did not stop in order (%s): killed%s",
+            path, status_str(stopped), b->rw ? "; what it had not synced is lost" : "");
+    stop_driver(b, stopped != OK, true);
     b->state = DEVMGR_SUP_NONE;
     sup_reset(b);
     b->rw = writable;

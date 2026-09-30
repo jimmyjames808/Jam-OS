@@ -639,7 +639,11 @@ through a shared VMO ring.
   on such a channel, so a bug in fat or FatFs can't change someone's
   stick. `mount -w /usbN` (the shell asks init, init asks devmgr:
   `DEVMGR_REMOUNT`) stops that fat and starts a new one on a channel
-  opened read-write; `mount -r` syncs it and goes back. The mount is gone
+  opened read-write; `mount -r` goes back. The stop is in order (devmgr's
+  own `fsctl` channel to each fat, `abi/idl/fsctl.idl`): files closed and
+  flushed, the volume marked clean, then the exit, so a program writing
+  at that moment gets an error for the write that came too late and loses
+  none that was answered. The mount is gone
   for a moment either way, and files open on it are closed. `/boot` and
   `/esp` can never be made writable and `/data` never read-only: init
   passes on nothing but `/usbN`, and devmgr remounts nothing else.

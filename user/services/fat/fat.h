@@ -34,6 +34,7 @@
  * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart). */
 #define FAT_KEY_FS          1ull
 #define FAT_KEY_BLOCK       2ull
+#define FAT_KEY_CTL         3ull
 #define FAT_KEY_FILE_BIT    (1ull << 62)
 #define FAT_KEY_FILE(s, g)  (FAT_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))

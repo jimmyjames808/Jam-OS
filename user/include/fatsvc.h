@@ -8,6 +8,9 @@
  *                  (abi/idl/fs.idl): SR_DRIVER(DR_SERVE), as a driver's.
  *                  When its client end closes, fat closes every file, syncs
  *                  and exits 0.
+ *   FAT_SR_CTL     optional: the server end of an `fsctl` channel
+ *                  (abi/idl/fsctl.idl): its holder can have fat stop in
+ *                  order (files closed, volume clean, exit 0).
  *   SR_RESOURCE    optional: the root resource, used only to read the
  *                  real-time clock for file timestamps. Without it every
  *                  timestamp is 2026-01-01 00:00:00.
@@ -32,6 +35,7 @@
 
 #define FAT_SR_BLOCK (SR_USER + 0)
 #define FAT_SR_SERVE (SR_USER + 2)   /* SR_DRIVER(DR_SERVE) */
+#define FAT_SR_CTL   (SR_USER + 3)
 
 #define FAT_ARG_FORMAT     "format-if-blank"
 #define FAT_EXIT_NO_VOLUME 2
