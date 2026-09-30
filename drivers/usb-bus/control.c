@@ -180,6 +180,19 @@ void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual)
     h->ctl.done = true;
 }
 
+status_t cc_status(uint32_t cc)
+{
+    switch (cc) {
+    case CC_SUCCESS: return OK;
+    case CC_STALL: return ERR_NOT_SUPPORTED;   /* the device refused the request */
+    case CC_TIMEOUT: return ERR_TIMED_OUT;
+    case CC_GONE: return ERR_PEER_CLOSED;
+    case CC_PARAMETER: return ERR_INVALID_ARGS;
+    case CC_BANDWIDTH: case CC_RESOURCE: return ERR_NO_RESOURCES;
+    default: return ERR_INTERNAL;              /* a transfer error (logged) */
+    }
+}
+
 /* ---- descriptors ------------------------------------------------------------ */
 
 uint32_t get_desc(struct usbdev *d, uint8_t type, uint8_t index, uint16_t lang, void *buf,

@@ -146,6 +146,10 @@ void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, u
     }
     if (!d || dci >= 32 || !d->eps[dci].dci)
         return;
+    if (h->bulk.busy && h->bulk.slot == slot && h->bulk.dci == dci) {
+        bulk_event(h, trb, cc, residual);
+        return;
+    }
     intr_event(d, &d->eps[dci], trb, cc, residual);
 }
 

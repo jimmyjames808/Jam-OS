@@ -48,6 +48,14 @@ static uint32_t hub_port_status(struct usbdev *d, uint8_t port, uint16_t *status
     return cc;
 }
 
+bool hub_port_lost(struct usbdev *hub, uint8_t port)
+{
+    uint16_t ps = 0, chg = 0;
+    if (hub_port_status(hub, port, &ps, &chg) != CC_SUCCESS)
+        return false;
+    return !(ps & 1) || (chg & 1);
+}
+
 bool hub_setup(struct usbdev *d)
 {
     struct hc *h = &g_hc;

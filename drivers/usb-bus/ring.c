@@ -7,7 +7,10 @@
  * A ring is one pool page of RING_TRBS TRBs whose last is a Link TRB back
  * to the first (Toggle Cycle set). ring_push fills a TRB and then flips
  * its cycle bit to the producer's cycle state: that last write hands it to
- * the controller, so the fences keep it after the other three words. */
+ * the controller, so the fences keep it after the other three words. A
+ * transfer whose TRBs run past the end chains through the Link TRB: its
+ * Chain bit copies the last TRB's (xHCI 4.11.5.1), so the TD goes on at
+ * the first. */
 #include "usbbus.h"
 
 /* ---- the DMA page pool ---------------------------------------------------------- */
@@ -53,12 +56,19 @@ bool ring_init(struct hc *h, struct ring *r)
         return false;
     r->t = pool_va(h, r->page);
     r->dev = pool_dev(h, r->page);
+    ring_reset(r);
+    return true;
+}
+
+void ring_reset(struct ring *r)
+{
+    zero((void *)r->t, PAGE);
     r->t[RING_TRBS - 1].d0 = lo32(r->dev);
     r->t[RING_TRBS - 1].d1 = hi32(r->dev);
     r->t[RING_TRBS - 1].d3 = TRB_TYPE(TRB_LINK) | TRB_TC;
     r->enq = 0;
     r->cycle = 1;
-    return true;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
 void ring_free(struct hc *h, struct ring *r)
@@ -82,7 +92,7 @@ uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32
     if (++r->enq == RING_TRBS - 1) {
         volatile struct trb *l = &r->t[RING_TRBS - 1];
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        l->d3 = (l->d3 & ~TRB_C) | r->cycle;
+        l->d3 = (l->d3 & ~(TRB_C | TRB_CH)) | (d3 & TRB_CH) | r->cycle;
         r->enq = 0;
         r->cycle ^= 1;
     }

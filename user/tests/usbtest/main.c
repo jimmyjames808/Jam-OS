@@ -19,6 +19,9 @@
  *   set_interface  its interrupt IN endpoint opened, then usb.set_interface
  *                  (0): usb-bus drops the endpoint (the reports channel
  *                  closes) and adds it back; it opens and polls again
+ * on a mass-storage device (the boot stick; storage.c has the list):
+ *   storage_...    bulk transfers, and drv/usb-storage's `storage` and
+ *                  `block` protocols
  * and, when a keyboard with serial "jamos-keys" is attached (the
  * tools/usb-test.sh scenario, which types through the QEMU monitor), through
  * the real chain usb-bus -> devmgr -> drv/hid (hid owns the
@@ -37,39 +40,21 @@
  * The marker lines ("usbtest: ready for keys", ...) are what the QEMU
  * monitor script waits for. Exit 0 if nothing failed; the summary goes to
  * the RESULTS box. */
-#define CHECK_PROG "usbtest"
-#define CHECK_CUR  cur
-#include <check.h>
 #include <devmgr.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
-#include <os.h>
+#include "usbtest.h"
 
-#define MAX_DEV 48
+const char *cur;
+unsigned skipped;
+handle_t bus;
+struct dev devs[MAX_DEV];
+unsigned ndevs;
 
-static const char *cur;                    /* the test running */
-static unsigned passed, failed, skipped;    /* tests so far */
-static handle_t bus;                        /* usb-bus's DR_SERVE (usbbus), from devmgr */
+static unsigned passed, failed;   /* tests so far */
 
-static uint64_t in(uint64_t ns) { return now() + ns; }
-static uint64_t soon(void) { return in(5 * NS_PER_S); }   /* a usb-bus or usb call's deadline */
-
-/* One device as usbbus.device reports it (the same fields). */
-struct dev {
-    uint32_t id, parent;             /* usb-bus's ids: its own, its hub's (0: a root port) */
-    uint16_t vid, pid, bcd, mps0;    /* USB ids, bcdUSB, EP0 max packet */
-    uint8_t speed, address, slot;    /* USB speed, address, xHCI slot */
-    uint8_t root_port, port, level;  /* root port, port on its hub, tier (1: root port) */
-    uint8_t tt_slot, tt_port;        /* its TT's hub slot and port, 0: none */
-    uint8_t cls, sub, proto;         /* device class, subclass, protocol */
-    uint8_t nconfigs, config;        /* configurations; the one set (0: unconfigured) */
-    uint8_t nifs, hub_ports;         /* interfaces; a hub's ports (0: not a hub) */
-    uint32_t route;                  /* route string */
-    char path[25], name[41], serial[25];   /* "9.1", product, serial: NUL-terminated */
-};
-
-static struct dev devs[MAX_DEV];
-static unsigned ndevs;
+uint64_t in(uint64_t ns) { return now() + ns; }
+uint64_t soon(void) { return in(5 * NS_PER_S); }
 
 /* usbbus.status's results. */
 struct bus_status {
@@ -91,7 +76,7 @@ static status_t wait_settled(uint32_t ms, struct bus_status *b)
                                      &b->settled);
 }
 
-static status_t load(void)
+status_t load(void)
 {
     ndevs = 0;
     for (uint32_t i = 0; i < MAX_DEV; i++) {
@@ -126,7 +111,7 @@ static struct dev *by_id(uint32_t id)
     return NULL;
 }
 
-static struct dev *by_serial(const char *s)
+struct dev *by_serial(const char *s)
 {
     for (unsigned i = 0; i < ndevs; i++)
         if (!strcmp(devs[i].serial, s))
@@ -612,7 +597,7 @@ static bool find_bus(void)
     return false;
 }
 
-static void run(const char *name, bool (*fn)(void))
+void run(const char *name, bool (*fn)(void))
 {
     cur = name;
     uint64_t t0 = now();
@@ -644,6 +629,7 @@ int main(int argc, char **argv)
     run("access", t_access);
     run("stall_recovered", t_stall_recovered);
     run("set_interface", t_set_interface);
+    storage_tests();
     bool interactive = load() == OK && by_serial("jamos-keys");
     if (interactive) {
         run("keys", t_keys);

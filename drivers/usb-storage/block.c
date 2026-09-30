@@ -1,0 +1,259 @@
+/* usb-storage: the partition table, and the `block` protocol
+ * (abi/idl/block.idl), one channel per opened partition.
+ *
+ * Authority: a block channel reaches its partition's blocks and nothing
+ * else. Every request's range is checked against the partition here
+ * (check_range), before the partition's start is added; a read-only
+ * channel refuses writes before anything else is looked at. Nothing
+ * serves the whole disk, so the partition table and the space outside the
+ * partitions can't be reached by any client.
+ *
+ * Data: the client maps a 64 KiB buffer VMO of its channel (map_buffer)
+ * and names offsets in it. usb-storage moves data between that VMO and
+ * usb-bus's bulk buffer with drv_vmo_read / drv_vmo_write and never maps
+ * the client's VMO: a client that shrinks its buffer gets an error back
+ * instead of a fault in here. A request moves at most the buffer's 64 KiB;
+ * it becomes as many READ(10) / WRITE(10) commands as the bulk buffer
+ * needs.
+ *
+ * The table is the MBR's four primary entries (block 0, signature 55 AA
+ * at 510): the used ones, in table order. An entry that doesn't fit on
+ * the disk, or overlaps an earlier one (two channels would share blocks),
+ * is left out. Extended and GPT-protective entries are listed as
+ * they are (types 05 / 0F / EE): nobody mounts them. */
+#include <idl/block.h>
+#include "storage.h"
+
+/* An open block channel. */
+struct blk {
+    handle_t ch;         /* our end; HANDLE_INVALID: a free slot */
+    struct disk *k;      /* the disk */
+    uint8_t part;        /* index into k->parts */
+    bool ro;             /* refuses writes */
+    bool pending;        /* may have requests queued */
+    uint16_t gen;        /* bumped at every open and close: in its port key */
+    handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
+};
+
+static struct blk blks[MAX_BLKS];
+
+/* ---- the partition table ----------------------------------------------------------- */
+
+status_t parts_read(struct disk *k)
+{
+    k->nparts = 0;
+    if (!k->block_size)
+        return OK;   /* no medium */
+    status_t st = scsi_rw(k, false, 0, 1);
+    if (st != OK)
+        return st;
+    const uint8_t *s = k->xbuf;
+    if (s[510] != 0x55 || s[511] != 0xaa)
+        return OK;   /* no partition table */
+    for (int i = 0; i < MAX_PARTS; i++) {
+        const uint8_t *e = s + 446 + 16 * i;
+        uint64_t start = le32(e + 8), count = le32(e + 12);
+        if (!e[4] || !count)
+            continue;   /* an unused entry */
+        if (!start || start >= k->blocks || count > k->blocks - start) {
+            drv_log("usb-storage %04x:%04x: partition entry %d (type %02x, %lu + %lu) is not "
+                    "inside the disk: left out", k->vid, k->pid, i, e[4], (unsigned long)start,
+                    (unsigned long)count);
+            continue;
+        }
+        bool overlaps = false;
+        for (int j = 0; j < k->nparts; j++)
+            overlaps |= start < k->parts[j].start + k->parts[j].blocks &&
+                        k->parts[j].start < start + count;
+        if (overlaps) {
+            drv_log("usb-storage %04x:%04x: partition entry %d overlaps an earlier one: left out",
+                    k->vid, k->pid, i);
+            continue;
+        }
+        k->parts[k->nparts++] = (struct part){ .type = e[4], .start = start, .blocks = count };
+    }
+    return OK;
+}
+
+/* ---- the block protocol ------------------------------------------------------------- */
+
+static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_t *read_only)
+{
+    const struct blk *b = ctx;
+    *block_size = b->k->block_size;
+    *blocks = b->k->parts[b->part].blocks;
+    *read_only = b->ro;
+    return OK;
+}
+
+static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
+{
+    struct blk *b = ctx;
+    if (b->vmo != HANDLE_INVALID)
+        return ERR_BAD_STATE;
+    handle_t vmo, theirs;
+    status_t st = drv_vmo_create(BLOCK_BUF, 0, &vmo);
+    if (st != OK)
+        return st;
+    /* The client's handle: to map, read and write, and no more. */
+    st = drv_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER, &theirs);
+    if (st != OK) {
+        drv_handle_close(vmo);
+        return st;
+    }
+    b->vmo = vmo;
+    *buffer = theirs;
+    *size = BLOCK_BUF;
+    return OK;
+}
+
+/* Is [lba, lba + count) inside the partition, and count blocks at
+ * `offset` inside the buffer? Written so nothing can wrap. */
+static status_t check_range(const struct blk *b, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    const struct part *p = &b->k->parts[b->part];
+    uint32_t bs = b->k->block_size;
+    if (b->vmo == HANDLE_INVALID)
+        return ERR_BAD_STATE;   /* no buffer yet */
+    if (!count)
+        return ERR_INVALID_ARGS;
+    if (count > BLOCK_BUF / bs || offset > BLOCK_BUF || count * bs > BLOCK_BUF - offset)
+        return ERR_OUT_OF_RANGE;
+    if (lba >= p->blocks || count > p->blocks - lba)
+        return ERR_OUT_OF_RANGE;
+    return OK;
+}
+
+/* The checked request, one command per bulk buffer's worth. */
+static status_t transfer(struct blk *b, bool write, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    struct disk *k = b->k;
+    uint32_t bs = k->block_size, most = k->data_max / bs;
+    lba += k->parts[b->part].start;
+    while (count) {
+        uint32_t n = count < most ? count : most;
+        status_t st = OK;
+        if (write)
+            st = drv_vmo_read(b->vmo, offset, k->xbuf, (uint64_t)n * bs);
+        if (st == OK)
+            st = scsi_rw(k, write, lba, n);
+        if (st == OK && !write)
+            st = drv_vmo_write(b->vmo, offset, k->xbuf, (uint64_t)n * bs);
+        if (st != OK)
+            return st;
+        lba += n;
+        count -= n;
+        offset += n * bs;
+    }
+    return OK;
+}
+
+static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    struct blk *b = ctx;
+    status_t st = check_range(b, lba, count, offset);
+    return st == OK ? transfer(b, false, lba, count, offset) : st;
+}
+
+static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    struct blk *b = ctx;
+    if (b->ro)
+        return ERR_ACCESS_DENIED;
+    status_t st = check_range(b, lba, count, offset);
+    return st == OK ? transfer(b, true, lba, count, offset) : st;
+}
+
+static status_t b_sync(void *ctx)
+{
+    struct blk *b = ctx;
+    return scsi_sync(b->k);
+}
+
+static const struct block_ops block_ops = {
+    .info = b_info,
+    .map_buffer = b_map_buffer,
+    .read = b_read,
+    .write = b_write,
+    .sync = b_sync,
+};
+
+/* ---- the channels -------------------------------------------------------------------- */
+
+static void blk_close(struct blk *b)
+{
+    if (b->ch == HANDLE_INVALID)
+        return;
+    drv_handle_close(b->ch);
+    if (b->vmo != HANDLE_INVALID)
+        drv_handle_close(b->vmo);
+    b->ch = b->vmo = HANDLE_INVALID;
+    b->pending = false;
+    b->gen++;
+}
+
+status_t blk_open(struct disk *k, handle_t port, uint8_t index, bool read_only, handle_t *out)
+{
+    if (index >= k->nparts)
+        return ERR_OUT_OF_RANGE;
+    struct blk *b = NULL;
+    for (int i = 0; i < MAX_BLKS && !b; i++)
+        if (blks[i].ch == HANDLE_INVALID)
+            b = &blks[i];
+    if (!b)
+        return ERR_NO_RESOURCES;
+    handle_t ours, theirs;
+    status_t st = drv_channel_create(&ours, &theirs);
+    if (st != OK)
+        return st;
+    b->gen++;
+    uint64_t key = KEY_BLK | ((uint64_t)b->gen << 8) | (uint64_t)(b - blks);
+    st = drv_port_bind(port, ours, key, SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        drv_handle_close(ours);
+        drv_handle_close(theirs);
+        return st;
+    }
+    b->ch = ours;
+    b->k = k;
+    b->part = index;
+    b->ro = read_only;
+    b->vmo = HANDLE_INVALID;
+    b->pending = true;   /* look once: a request may be there already */
+    *out = theirs;
+    return OK;
+}
+
+void blk_packet(const struct port_packet *p)
+{
+    unsigned i = p->key & 0xff, gen = (p->key >> 8) & 0xffff;
+    if (i < MAX_BLKS && blks[i].ch != HANDLE_INVALID && blks[i].gen == gen)
+        blks[i].pending = true;
+}
+
+bool blk_serve(void)
+{
+    bool any = false;
+    for (int i = 0; i < MAX_BLKS; i++) {
+        struct blk *b = &blks[i];
+        if (b->ch == HANDLE_INVALID || !b->pending)
+            continue;
+        any = true;
+        b->pending = false;
+        /* A few at a time, so one busy client doesn't starve the others. */
+        status_t st = OK;
+        for (int guard = 0; guard < 16 && st == OK && !b->k->gone; guard++)
+            st = block_serve_one(b->ch, &block_ops, b);
+        if (st == OK)
+            b->pending = true;   /* maybe more: the port won't say so again */
+        else if (st != ERR_SHOULD_WAIT)
+            blk_close(b);        /* the client is gone */
+    }
+    return any;
+}
+
+void blk_close_all(void)
+{
+    for (int i = 0; i < MAX_BLKS; i++)
+        blk_close(&blks[i]);
+}

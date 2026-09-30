@@ -84,7 +84,7 @@ update a stick, and the PC it was built for are in
 | `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
-| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
+| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
 | `user/services/` | init, console, devmgr, serialin, shell, fat (the FAT filesystem, on FatFs) |
 | `user/apps/` | fractal, life, tetris, demo, and `fun/` (the apps library) |

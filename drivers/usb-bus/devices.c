@@ -86,6 +86,9 @@ struct usbdev *dev_alloc(void)
 
 void dev_free(struct usbdev *d, bool slot_disabled)
 {
+    /* Bulk buffers: unpinned only if the controller has let go. */
+    for (int i = 0; i < d->nifs; i++)
+        bulk_release(d, &d->ifs[i], slot_disabled || g_hc.dead);
     if (!slot_disabled && !g_hc.dead) {
         /* Disable Slot failed, or was skipped because the driver is
          * stopping: the controller may still own the slot and run its

@@ -4,7 +4,8 @@
  * up again on every request, so a device that went away answers
  * ERR_PEER_CLOSED. A client reaches only its own interface and endpoints,
  * and of the standard requests only the ones that can't change what
- * usb-bus keeps (check_request). serve.c reads the requests. */
+ * usb-bus keeps (check_request). The bulk methods' work is in bulk.c;
+ * serve.c reads the requests. */
 #include <idl/usb.h>
 #include "usbbus.h"
 
@@ -14,19 +15,6 @@ static struct usbdev *ctx_dev(void *ctx, struct iface **f)
     struct usbdev *d = dev_find(c->dev_id);
     *f = d ? usb_iface(d, c->a) : NULL;
     return *f ? d : NULL;
-}
-
-static status_t cc_status(uint32_t cc)
-{
-    switch (cc) {
-    case CC_SUCCESS: return OK;
-    case CC_STALL: return ERR_NOT_SUPPORTED;   /* the device refused the request */
-    case CC_TIMEOUT: return ERR_TIMED_OUT;
-    case CC_GONE: return ERR_PEER_CLOSED;
-    case CC_PARAMETER: return ERR_INVALID_ARGS;
-    case CC_BANDWIDTH: case CC_RESOURCE: return ERR_NO_RESOURCES;
-    default: return ERR_INTERNAL;              /* a transfer error (logged) */
-    }
 }
 
 static status_t u_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *speed,
@@ -217,6 +205,45 @@ static status_t u_set_interface(void *ctx, uint8_t alt)
     return cc_status(dev_set_interface(d, f, alt));
 }
 
+static status_t u_open_bulk(void *ctx, uint8_t ep_in, uint8_t ep_out, handle_t *buffer,
+                            uint32_t *size)
+{
+    struct iface *f;
+    struct usbdev *d = ctx_dev(ctx, &f);
+    if (!d)
+        return ERR_PEER_CLOSED;
+    return bulk_open(d, f, chan_slot(ctx), ep_in, ep_out, buffer, size);
+}
+
+static status_t u_bulk_in(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms,
+                          uint32_t *actual)
+{
+    struct iface *f;
+    struct usbdev *d = ctx_dev(ctx, &f);
+    if (!d)
+        return ERR_PEER_CLOSED;
+    return bulk_transfer(d, f, chan_slot(ctx), true, offset, length, timeout_ms, actual);
+}
+
+static status_t u_bulk_out(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms,
+                           uint32_t *actual)
+{
+    struct iface *f;
+    struct usbdev *d = ctx_dev(ctx, &f);
+    if (!d)
+        return ERR_PEER_CLOSED;
+    return bulk_transfer(d, f, chan_slot(ctx), false, offset, length, timeout_ms, actual);
+}
+
+static status_t u_clear_halt(void *ctx, uint8_t endpoint)
+{
+    struct iface *f;
+    struct usbdev *d = ctx_dev(ctx, &f);
+    if (!d)
+        return ERR_PEER_CLOSED;
+    return bulk_clear_halt(d, f, chan_slot(ctx), endpoint);
+}
+
 static const struct usb_ops usb_ops = {
     .info = u_info,
     .get_descriptor = u_get_descriptor,
@@ -225,6 +252,10 @@ static const struct usb_ops usb_ops = {
     .open_interrupt_in = u_open_interrupt_in,
     .endpoint_stats = u_endpoint_stats,
     .set_interface = u_set_interface,
+    .open_bulk = u_open_bulk,
+    .bulk_in = u_bulk_in,
+    .bulk_out = u_bulk_out,
+    .clear_halt = u_clear_halt,
 };
 
 status_t iface_serve_one(struct chan *c)

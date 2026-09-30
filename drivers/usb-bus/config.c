@@ -3,8 +3,10 @@
  *
  * parse_config reads the active configuration: its interfaces (alternate
  * setting 0 is the active one; the others are only counted) and each
- * one's endpoints, keyed by DCI. usb-bus configures only interrupt-IN
- * endpoints in the controller (Configure Endpoint, configure_eps); class
+ * one's endpoints, keyed by DCI. With the configuration usb-bus configures
+ * only the interrupt-IN endpoints in the controller (Configure Endpoint,
+ * configure_eps); a bulk pair is added when a class driver opens it
+ * (bulk.c), and the other kinds never. Class
  * drivers ask for other alternate settings with dev_set_interface, which
  * keeps the controller and usb-bus in agreement whatever fails. Both read
  * an alternate setting through read_alt, so an endpoint gets the same
@@ -48,7 +50,7 @@ static uint8_t ep_interval(uint8_t speed, uint8_t xfer, uint8_t b)
 struct ep_desc {
     uint8_t  dci;        /* its Device Context Index */
     uint8_t  addr, attr; /* bEndpointAddress, bmAttributes */
-    uint8_t  type;       /* EPT_INTR_IN, or 0: usb-bus doesn't configure it */
+    uint8_t  type;       /* EPT_INTR_IN, EPT_BULK_*, or 0: usb-bus doesn't configure it */
     uint8_t  binterval;  /* bInterval */
     uint8_t  interval;   /* xHCI Interval field */
     uint8_t  burst;      /* xHCI Max Burst Size */
@@ -79,10 +81,15 @@ static void ep_from_desc(struct ep_desc *e, uint8_t speed, const uint8_t *p)
     e->binterval = p[6];
     e->mps = w & 0x7ff;
     e->burst = speed == SPEED_HIGH && periodic ? (uint8_t)((w >> 11) & 3) : 0;
-    e->esit = (uint16_t)(e->mps * (e->burst + 1));
+    e->esit = periodic ? (uint16_t)(e->mps * (e->burst + 1)) : 0;
     e->interval = ep_interval(speed, xfer, p[6]);
-    /* usb-bus configures interrupt IN endpoints only */
-    e->type = xfer == 3 && (addr & 0x80) ? EPT_INTR_IN : 0;
+    /* usb-bus runs interrupt IN and bulk endpoints only */
+    if (xfer == 3 && (addr & 0x80))
+        e->type = EPT_INTR_IN;
+    else if (xfer == 2)
+        e->type = (addr & 0x80) ? EPT_BULK_IN : EPT_BULK_OUT;
+    else
+        e->type = 0;
 }
 
 /* The SuperSpeed Endpoint Companion at p (6 bytes or more) of endpoint e
@@ -244,20 +251,26 @@ static void slot_set_hub(struct usbdev *d)
         s[2] = (s[2] & ~(3u << 16)) | ((uint32_t)d->ttt << 16);
 }
 
+/* The endpoint context (xHCI 6.2.3): CErr 3, no streams. A bulk endpoint
+ * has no interval and no ESIT payload; its Average TRB Length is the
+ * 3 KiB the specification suggests (4.14.1.1). */
 static void ep_ctx_fill(volatile uint32_t *c, const struct ep *e)
 {
-    uint32_t esit = e->esit ? e->esit : e->mps;
+    bool bulk = e->type == EPT_BULK_IN || e->type == EPT_BULK_OUT;
+    uint32_t esit = bulk ? 0 : e->esit ? e->esit : e->mps;
     c[0] = ((uint32_t)e->interval << 16) | ((esit >> 16) << 24);
     c[1] = (3u << 1) | ((uint32_t)e->type << 3) | ((uint32_t)e->burst << 8) |
            ((uint32_t)e->mps << 16);
     c[2] = (uint32_t)e->ring.dev | 1;   /* DCS = 1 */
     c[3] = (uint32_t)(e->ring.dev >> 32);
-    c[4] = (esit & 0xffff) | ((esit & 0xffff) << 16);   /* average TRB length, max ESIT lo */
+    /* average TRB length, max ESIT lo */
+    c[4] = bulk ? 3072u : (esit & 0xffff) | ((esit & 0xffff) << 16);
 }
 
-/* Configure Endpoint: add every interrupt-IN endpoint in `add`, drop
- * those in `drop` (DCI bitmaps), with the slot's Context Entries and hub
- * fields. */
+/* Configure Endpoint: add every endpoint in `add`, drop those in `drop`
+ * (DCI bitmaps), with the slot's Context Entries and hub fields. An
+ * endpoint in both is dropped and added again with the ring it has
+ * (which the caller has emptied): the controller starts it afresh. */
 uint32_t configure_eps(struct usbdev *d, uint32_t add, uint32_t drop)
 {
     in_reset(d);
@@ -351,6 +364,7 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt)
     struct alt_desc a;
     if (alt >= f->num_alts || !read_alt(d, f->number, alt, &a))
         return CC_PARAMETER;
+    bulk_release(d, f, false);   /* its bulk endpoints go with the old setting */
     uint32_t cc = drop_iface_eps(d, f, alt);
     if (cc != CC_SUCCESS)
         return cc;
