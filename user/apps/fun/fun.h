@@ -1,9 +1,10 @@
 /* libfun: the fun apps' shared code (user/apps/fun).
  *
  * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
- * bin/fractal, bin/demo), one object per job: gfx.c (the screen and
- * drawing), text.c, keys.c, pool.c (CPUs and the thread pool), util.c
- * (maths, memory, output, arguments, self-tests).
+ * bin/fractal, bin/demo, ...), one object per job: gfx.c (the screen and
+ * drawing), text.c, keys.c (the key channel), mouse.c (the pointer and its
+ * arrow), pool.c (CPUs and the thread pool), util.c (maths, memory, output,
+ * arguments, self-tests).
  *
  * The screen: the apps draw real pixels. gfx_open borrows the framebuffer
  * from the console (console.lend_screen through SR_CONSOLE: a
@@ -26,8 +27,10 @@
  * an FPS counter, a little maths without libm, the CPU count (CPUID; there
  * is no system call for it), a thread pool that runs `items` of work on
  * every CPU (workers spin briefly between jobs, then sleep on an event),
- * and key decoding for both key sources (a USB keyboard: HID usages; a
- * serial terminal: codepoints). */
+ * key decoding for both key sources (a USB keyboard: HID usages; a
+ * serial terminal: codepoints), and the mouse for the apps that ask for it
+ * (gfx_mouse_open): a pointer position, the buttons and the wheel, and an
+ * arrow drawn over the app's frame. */
 #pragma once
 
 #include <os.h>
@@ -102,6 +105,31 @@ void blit_key(const struct surf *dst, int x, int y, const struct surf *src, uint
 /* A surface of its own memory (zeroed); px NULL on failure. */
 struct surf surf_new(int w, int h);
 
+/* A rectangle on a surface: what a layout hands out and a click is tested
+ * against. */
+struct rect {
+    int x, y, w, h;     /* top-left corner and size, pixels */
+};
+static inline bool rect_has(const struct rect *r, int x, int y)
+{
+    return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h;
+}
+/* A block of colour c with an edge e pixels wide, lit from the top left so
+ * it stands out of the surface (e < 0: lit from the bottom right, so it is
+ * sunk into it), and a soft gradient down its face. */
+void bevel(const struct surf *s, const struct rect *r, int e, uint32_t c);
+/* A soft glow of colour c round r, fading out over `reach` pixels: what a
+ * playing field sits in. Drawn before the field itself. */
+void glow(const struct surf *s, const struct rect *r, int reach, uint32_t c);
+/* A dark card with rounded corners and a lighter outline: the panel that
+ * numbers and help sit on. */
+void card(const struct surf *s, const struct rect *r, int radius);
+/* A filled circle of radius rad around (cx, cy), blended at alpha a. */
+static inline void disc(const struct surf *s, int cx, int cy, int rad, uint32_t c, uint32_t a)
+{
+    panel(s, cx - rad, cy - rad, 2 * rad, 2 * rad, rad, c, a);
+}
+
 /* Text: the 8x16 font, proportional (each glyph as wide as its ink, digits
  * all the same width), scale 1..8 (smoothed above 1). text() returns the x
  * after the text; text_shadow draws a soft dark shadow first (for text over
@@ -115,6 +143,8 @@ int  textf(const struct surf *s, int x, int y, int scale, uint32_t c, const char
          __attribute__((format(printf, 6, 7)));
 int  text_width(int scale, const char *str);
 #define TEXT_H(scale) (16 * (scale))
+/* The text centred in r, both ways. */
+void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str);
 
 /* Frames per second over the last half second or so, x10. */
 struct fps {
@@ -129,17 +159,62 @@ enum {
     KEY_NONE = 0,
     KEY_UP = 0x100, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_PGUP, KEY_PGDN, KEY_HOME,
     KEY_QUIT,   /* Esc or Ctrl+C */
+    KEY_MOUSE,  /* not a key: the mouse did something (gfx_mouse says what) */
 };
 /* The next key press (DOWN or REPEAT) before deadline: a KEY_* code or a
  * character; KEY_NONE on timeout (deadline 0: don't wait). KEY_QUIT too if
- * the key channel broke. */
+ * the key channel broke. After gfx_mouse_open it is also how the mouse is
+ * waited for: KEY_MOUSE when it moved (the movement queued so far, merged)
+ * or when a button or the wheel changed (one such change at a time). */
 int      gfx_key(uint64_t deadline);
 /* One key event decoded (KEY_NONE for a release or a bare modifier). */
 int      key_decode(const struct input_key_event *ev);
 /* The next key event itself (down, repeat or up) before deadline: OK;
  * ERR_TIMED_OUT when none came (deadline 0: don't wait); another error
- * when the key channel broke. */
+ * when the key channel broke. Mouse reports that come meanwhile are kept
+ * for gfx_mouse (and the next gfx_key says KEY_MOUSE). */
 status_t gfx_key_event(uint64_t deadline, struct input_key_event *ev);
+
+/* ---- the mouse ------------------------------------------------------------------------- */
+
+enum { MOUSE_LEFT = 1, MOUSE_RIGHT = 2, MOUSE_MIDDLE = 4 };   /* = INPUT_BTN_* */
+
+struct mouse {
+    int      x, y;       /* the pointer (the arrow's tip), screen pixels */
+    uint8_t  buttons;    /* MOUSE_* held down now */
+    uint8_t  pressed;    /* ... that went down since the last gfx_mouse */
+    uint8_t  released;   /* ... that came up since */
+    int      wheel;      /* notches turned since (+: away from the user) */
+    bool     moved;      /* the pointer moved since */
+    uint32_t reports;    /* mouse reports ever seen: 0 means no mouse has stirred yet */
+};
+
+/* Ask the console for the mouse (after gfx_open; gfx_close ends it). The
+ * pointer starts at the middle of the screen; its arrow shows from the
+ * first report on. accel: quick movement goes further (false: one pixel
+ * a count whatever the speed, which the tests need). */
+status_t gfx_mouse_open(bool accel);
+/* The mouse now, and what it did since the last call. */
+void     gfx_mouse(struct mouse *out);
+/* Hide or show the arrow (shown by default once the mouse has moved). */
+void     gfx_pointer_show(bool on);
+/* Only the arrow moved: present just its rows (much cheaper than
+ * gfx_present when the frame is unchanged). */
+void     gfx_present_pointer(void);
+
+/* A pointer position from relative mouse counts: what gfx_mouse keeps,
+ * here by itself so it can be tested. */
+struct pointer {
+    int32_t x256, y256;   /* the position in 1/256 pixel, inside the screen */
+    int     w, h;         /* the screen it is clamped to */
+    bool    accel;        /* quick movement is amplified (mouse.c says how) */
+};
+/* In the middle of a w x h screen. */
+void pointer_init(struct pointer *p, int w, int h, bool accel);
+/* One report's movement. */
+void pointer_move(struct pointer *p, int dx, int dy);
+static inline int pointer_x(const struct pointer *p) { return p->x256 >> 8; }
+static inline int pointer_y(const struct pointer *p) { return p->y256 >> 8; }
 
 /* ---- CPUs and the thread pool ---------------------------------------------------------- */
 

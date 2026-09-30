@@ -33,3 +33,9 @@ _Static_assert(sizeof(struct proc_stat) == 80, "proc_stat layout");
 _Static_assert(sizeof(struct rtc_time) == 16, "rtc_time layout");
 _Static_assert(CPU_TYPE_PERFORMANCE == CORE_PERFORMANCE && CPU_TYPE_EFFICIENCY == CORE_EFFICIENCY,
                "cpu_stat.type is enum core_type");
+
+/* The messages of a console.open_keys channel are told apart by size. */
+_Static_assert(sizeof(struct input_key_event) == 8, "input_key_event layout");
+_Static_assert(sizeof(struct input_mouse_event) == 12, "input_mouse_event layout");
+_Static_assert(offsetof(struct input_mouse_event, buttons) == 9, "input_mouse_event layout");
+_Static_assert(sizeof(struct input_want) == 8, "input_want layout");

@@ -1,0 +1,190 @@
+# The mouse, end to end: run by tools/mouse-test.sh (QEMU_USB = a usb-kbd
+# on xhci port 2 and a usb-mouse on port 3; the command line "shell", at
+# OVMF's 1280x800). QEMU's monitor moves the mouse and presses its buttons
+# (`mouse_move dx dy [dz]`, `mouse_button <bits>`: 1 left, 2 right); the
+# reports go usb-bus -> drv/hid -> console, and from there only to a
+# focused client that asked for them.
+#
+# The pointer is put somewhere exact by pushing it into the top-left
+# corner (it is clamped there) and moving on from (0, 0); mines runs with
+# `noaccel`, so a count is a pixel. At 1280x800 the Intermediate board's
+# cells are 38 pixels and its top-left corner is at (336, 96): cell (c, r)
+# has its middle at (355 + 38 c, 115 + 38 r). With seed=5 and the first
+# reveal on (8, 8), cell (7, 8) shows a 1 whose mine is at (6, 7).
+wait 120 Jam OS shell
+wait jam>
+seen 30 boot mouse ready
+# The shell never asked for the mouse: moving it, clicking and turning the
+# wheel sends it nothing (its line editor would misread any message), and
+# the wheel scrolls the console back as before.
+send help
+wait Commands:
+wait jam>
+monitor mouse_move 60 -40
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 2
+sleep 0.2
+monitor mouse_button 0
+monitor mouse_move 0 0 1
+monitor mouse_move 0 0 1
+sleep 0.7
+shot mouse-scrollback
+send echo mouse-$HOME
+wait mouse-/boot
+wait jam>
+# An app that didn't ask either (tetris) plays on under a busy mouse.
+send run tetris
+wait run: bin/tetris started
+sleep 1
+monitor mouse_move 200 100
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+monitor mouse_move -90 40 1
+type \x20
+sleep 0.5
+type q
+wait 30 tetris: score
+wait run: bin/tetris exited with code 0
+wait jam>
+# The wire format, checked by a client of its own (contest mouse says what
+# each step expects): the mouse moves, then a key ends the step.
+send run contest mouse
+wait 30 contest: mouse: step 1
+monitor mouse_move 20 20
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+type a
+wait 30 contest: mouse: step 2
+monitor mouse_move 7 -3
+sleep 0.2
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 3
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+type b
+wait 30 contest: mouse: step 3
+monitor mouse_move -5 9
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+type c
+wait 30 contest: mouse: step 4
+monitor mouse_move 11 11
+sleep 0.3
+type d
+wait 30 contest: mouse: step 5
+monitor mouse_move 1 1
+wait 30 contest: mouse: all held
+wait run: bin/contest exited with code 0
+wait jam>
+# mines asked: the pointer starts in the middle of the screen, the corner
+# of cell (8, 8); 10 pixels in, a left click reveals that cell.
+send run mines level=2 seed=5 noaccel trace
+wait run: bin/mines started
+wait mines: new game: Intermediate 16x16, 40 mines
+sleep 1
+monitor mouse_move 10 10
+sleep 0.3
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 8,8: 39 opened, playing
+# A right click on the 1 at (7, 8) with no flag round it reveals nothing:
+# while the button is down the three closed cells it covers are dimmed.
+monitor mouse_move -2000 -2000
+sleep 0.4
+monitor mouse_move 621 419
+sleep 0.4
+monitor mouse_button 2
+wait 10 mines: right 7,8: peek, 39 opened, 40 left, playing
+sleep 0.5
+shot mouse-mines-peek
+monitor mouse_button 0
+# A right click on the closed cell (6, 7) flags it ...
+monitor mouse_move -38 -38
+sleep 0.4
+monitor mouse_button 2
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: right 6,7: flag, 39 opened, 39 left, playing
+# ... and now the 1 has its flag: a right click on it opens the other two.
+monitor mouse_move 38 38
+sleep 0.4
+monitor mouse_button 2
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: right 7,8: chord, 41 opened, 39 left, playing
+sleep 0.5
+shot mouse-mines-chord
+# The flag protects its cell from a left click; without it the mine goes off.
+monitor mouse_move -38 -38
+sleep 0.4
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 6,7: 0 opened, playing
+monitor mouse_button 2
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: right 6,7: flag, 41 opened, 40 left, playing
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 6,7: 0 opened, lost
+sleep 0.5
+shot mouse-mines-lost
+# The face is the new-game button; the buttons under the board set the level.
+monitor mouse_move -2000 -2000
+sleep 0.4
+monitor mouse_move 640 52
+sleep 0.4
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: new game: Intermediate 16x16, 40 mines
+monitor mouse_move -270 683
+sleep 0.4
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: new game: Beginner 9x9, 10 mines
+sleep 0.5
+shot mouse-mines-beginner
+type q
+wait 30 mines: 1 game(s) finished, 0 won
+wait run: bin/mines exited with code 0
+wait jam>
+# With acceleration (the default) a quick push goes three times as far:
+# 100 counts to the right of the middle lands in column 15, not column 10.
+send run mines level=2 seed=5 trace
+wait run: bin/mines started
+wait mines: new game: Intermediate 16x16, 40 mines
+sleep 1
+monitor mouse_move 100 0
+sleep 0.4
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 mines: reveal 15,8:
+type q
+wait run: bin/mines exited with code 0
+wait jam>
+# mines is gone: the first report after it finds its key channel closed,
+# and the keys and the wheel are the shell's again.
+monitor mouse_move 30 30
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+send echo after-$HOME
+wait after-/boot
+wait jam>
+send reboot
+wait reboot: resetting

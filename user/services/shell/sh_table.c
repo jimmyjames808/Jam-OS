@@ -32,6 +32,7 @@ static const struct sh_cmd cmds[] = {
       "  -k: the kernel's own listing (jobs with pages, handles, threads) in the log"),
     C(top, C_INFO, "top [-d seconds] [-n frames]",
       "live CPU use per CPU and per process, and memory; q or Ctrl+C quits"),
+    C(sysmon, C_INFO, "sysmon", "the graphical system monitor (bin/sysmon); q quits"),
     C(whoami, C_INFO, "whoami", "the user (there is one: jam)"),
     C(hostname, C_INFO, "hostname", "this machine's name"),
     C(dmesg, C_INFO, "dmesg", "the whole kernel log (64 KiB); pipe it: dmesg | grep usb"),

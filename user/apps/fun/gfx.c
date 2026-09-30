@@ -1,6 +1,6 @@
 /* libfun: the screen borrowed from the console, and drawing on surfaces (fun.h). */
 #include <idl/console.h>
-#include "fun.h"
+#include "internal.h"
 
 /* ---- the screen -------------------------------------------------------------------- */
 
@@ -74,6 +74,7 @@ void gfx_close(void)
     if (!scr.open)
         return;
     scr.open = false;
+    mouse_close();
     jam_handle_close(scr.lease);   /* the console redraws its text screen */
     jam_handle_close(scr.keys);    /* and the keys go back to the shell */
     scr.lease = scr.keys = HANDLE_INVALID;
@@ -116,10 +117,17 @@ static void convert_px(uint32_t *f, const uint32_t *b, int n)
     }
 }
 
-static void present_band(uint32_t band, uint32_t me, void *arg)
+/* One present: bands `first` .. of the screen, everything or what changed. */
+struct present_job {
+    bool     all;     /* write every piece, not only the changed ones */
+    uint32_t first;   /* the first band */
+};
+
+static void present_band(uint32_t item, uint32_t me, void *arg)
 {
-    bool all = arg != NULL;
-    int y0 = (int)band * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
+    const struct present_job *job = arg;
+    bool all = job->all;
+    int y0 = (int)(job->first + item) * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
     uint64_t bytes = 0;
     for (int y = y0; y < y1; y++) {
         const uint32_t *b = scr.s.px + (uint64_t)y * scr.w;
@@ -140,20 +148,28 @@ static void present_band(uint32_t band, uint32_t me, void *arg)
     present_bytes[me] += bytes;
 }
 
-static void present(bool all)
+/* Rows y0 .. y1 - 1 to the screen, with the mouse's arrow over them: it is
+ * in the back buffer only for as long as the copy takes. */
+static void present(bool all, int y0, int y1)
 {
-    if (!scr.open)
+    y0 = y0 < 0 ? 0 : y0;
+    y1 = y1 > scr.h ? scr.h : y1;
+    if (!scr.open || y0 >= y1)
         return;
+    struct present_job job = { all, (uint32_t)y0 / PBAND };
     for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
         present_bytes[i] = 0;
-    pool_run(present_band, all ? (void *)1 : NULL, (uint32_t)(scr.h + PBAND - 1) / PBAND);
+    pointer_paint();
+    pool_run(present_band, &job, (uint32_t)(y1 + PBAND - 1) / PBAND - job.first);
+    pointer_unpaint();
     for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
         scr.bytes += present_bytes[i];
     scr.presents++;
 }
 
-void gfx_present(void) { present(false); }
-void gfx_present_all(void) { present(true); }
+void gfx_present(void) { present(false, 0, scr.h); }
+void gfx_present_all(void) { present(true, 0, scr.h); }
+void gfx_present_rows(int y0, int y1) { present(false, y0, y1); }
 
 /* ---- drawing ----------------------------------------------------------------------- */
 
@@ -229,6 +245,38 @@ void frame(const struct surf *s, int x, int y, int w, int h, int t, uint32_t c)
     fill(s, x, y + h - t, w, t, c);
     fill(s, x, y + t, t, h - 2 * t, c);
     fill(s, x + w - t, y + t, t, h - 2 * t, c);
+}
+
+void bevel(const struct surf *s, const struct rect *r, int e, uint32_t c)
+{
+    bool sunk = e < 0;
+    e = sunk ? -e : e;
+    uint32_t light = mixc(c, 0xffffff, 110), soft = mixc(c, 0xffffff, 56);
+    uint32_t dark = scalec(c, 118), shade = scalec(c, 164);
+    uint32_t top = sunk ? dark : light, left = sunk ? shade : soft;
+    uint32_t bottom = sunk ? light : dark, right = sunk ? soft : shade;
+    vgrad(s, r->x, r->y, r->w, r->h, mixc(c, 0xffffff, 26), scalec(c, 214));
+    /* Ring i of the edge: each side one pixel, the corners mitred. */
+    for (int i = 0; i < e && 2 * i < r->w && 2 * i < r->h; i++) {
+        fill(s, r->x + i, r->y + i, r->w - 2 * i, 1, top);
+        fill(s, r->x + i, r->y + i + 1, 1, r->h - 2 * i - 1, left);
+        fill(s, r->x + i + 1, r->y + r->h - 1 - i, r->w - 2 * i - 1, 1, bottom);
+        fill(s, r->x + r->w - 1 - i, r->y + i + 1, 1, r->h - 2 * i - 2, right);
+    }
+}
+
+void glow(const struct surf *s, const struct rect *r, int reach, uint32_t c)
+{
+    int step = reach / 5 > 1 ? reach / 5 : 1;
+    for (int g = 5; g >= 1; g--)
+        panel(s, r->x - g * step, r->y - g * step, r->w + 2 * g * step, r->h + 2 * g * step,
+              2 * step + g * step, c, 22);
+}
+
+void card(const struct surf *s, const struct rect *r, int radius)
+{
+    panel(s, r->x - 2, r->y - 2, r->w + 4, r->h + 4, radius + 2, 0x3b4c86, 170);
+    panel(s, r->x, r->y, r->w, r->h, radius, 0x0c1022, 240);
 }
 
 void vgrad(const struct surf *s, int x, int y, int w, int h, uint32_t c0, uint32_t c1)

@@ -12,11 +12,13 @@
  * `contest trap` holds the keys forever: Ctrl+C must still reach the shell,
  * which kills it. Exit code 0 when all hold. The other words are probes
  * the shell-test scripts run: `flood` (console writes flat out), `spew` and
- * `junk` (a program's output in a pipe), `cad` and `steal` (authority). */
+ * `junk` (a program's output in a pipe), `cad` and `steal` (authority),
+ * `mouse` (the mouse on a key channel: mouse.c). */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <idl/input.h>
 #include <os.h>
+#include "contest.h"
 
 
 static int checks, failed;
@@ -293,6 +295,8 @@ int main(int argc, char **argv)
         printf("contest: no console channel (SR_CONSOLE)\n");
         return 1;
     }
+    if (argc > 1 && !strcmp(argv[1], "mouse"))
+        return contest_mouse(con);
     /* Probe (`run contest cad`): a program with no root resource, only the
      * console channel the shell hands it, tries to play a keyboard and send
      * Ctrl+Alt+Del. It must fail: that channel can't connect a source. */
