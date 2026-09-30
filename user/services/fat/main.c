@@ -53,7 +53,7 @@ static FRESULT format(void)
     if (fr == FR_MKFS_ABORTED)   /* too few clusters for FAT32 */
         fr = f_mkfs("", &small, work, FORMAT_WORK);
     free(work);
-    status_t st = disk_commit_boot();
+    status_t st = disk_commit_boot(LABEL);
     if (fr == FR_OK && st != OK)
         fr = FR_DISK_ERR;
     if (fr == FR_OK)

@@ -128,19 +128,41 @@ void disk_hold_boot(void)
     boot_held = false;
 }
 
-status_t disk_commit_boot(void)
+/* Where a boot sector keeps its label (BS_VolLab) and, on FAT32, which
+ * sector holds its backup copy (BPB_BkBootSec; 0: none). */
+static unsigned boot_label_at(const uint8_t *b, uint32_t *backup)
+{
+    bool fat32 = !memcmp(b + 82, "FAT32", 5);
+    *backup = fat32 ? b[50] | (uint32_t)b[51] << 8 : 0;
+    return fat32 ? 71 : 43;
+}
+
+status_t disk_commit_boot(const char *label)
 {
     boot_holding = false;
     if (!boot_held)
         return ERR_BAD_STATE;
+    /* FatFs writes "NO NAME" here and f_setlabel only makes the root
+     * directory's entry; the specification wants the two to agree, and
+     * some systems show this one. */
+    uint32_t backup = 0;
+    unsigned at = boot_label_at(boot, &backup);
+    memset(boot + at, ' ', 11);
+    memcpy(boot + at, label, strnlen(label, 11));
     status_t st = flush();
     if (st != OK)
         return st;
-    memcpy(vol.bbuf, boot, FAT_SECTOR);
-    flushed = false;
-    st = block_write_until(vol.block, deadline(), 0, 1, 0);
-    if (st != OK)
-        return failed("write", 0, 1, st);
+    /* The backup first: the partition stays blank until sector 0 is there. */
+    for (int i = 0; i < 2; i++) {
+        uint32_t sector = i == 0 ? backup : 0;
+        if (i == 0 && (!backup || backup >= vol.blocks))
+            continue;
+        memcpy(vol.bbuf, boot, FAT_SECTOR);
+        flushed = false;
+        st = block_write_until(vol.block, deadline(), sector, 1, 0);
+        if (st != OK)
+            return failed("write", sector, 1, st);
+    }
     return flush();
 }
 

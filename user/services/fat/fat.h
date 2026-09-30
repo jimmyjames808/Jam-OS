@@ -91,10 +91,12 @@ status_t disk_open(handle_t block);
  * sector? */
 status_t disk_is_blank(bool *out);
 /* Around f_mkfs: keep its write of sector 0 (the boot sector) back, then
- * write it last, flushed before and after. Until the commit the partition
- * is still blank. ERR_BAD_STATE: nothing wrote sector 0. */
+ * write it last, flushed before and after, with `label` (at most 11
+ * characters, as f_setlabel will get) in its label field and in its
+ * backup copy's. Until the commit the partition is still blank.
+ * ERR_BAD_STATE: nothing wrote sector 0. */
 void     disk_hold_boot(void);
-status_t disk_commit_boot(void);
+status_t disk_commit_boot(const char *label);
 /* After a mount: find the FATs, log a volume found dirty, and (writable
  * FAT16/32) start keeping the dirty flag. */
 void     disk_watch(void);

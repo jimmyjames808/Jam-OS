@@ -137,6 +137,9 @@ bool t_fat_format(void)
     CHECK(free_bytes > total - (1u << 20));
     CHECK_EQ(fat_kind(&disk), 32);
     CHECK(disk.mem[0] == 0xeb);   /* a boot sector at sector 0: no partition table inside */
+    /* the label is in the boot sector and its backup too, not only the root directory */
+    CHECK(!memcmp(disk.mem + 71, "JAMOS-DATA ", 11));
+    CHECK(!memcmp(disk.mem + 6 * RAMDISK_SECTOR + 71, "JAMOS-DATA ", 11));
     CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
     CHECK_ST(t_stat(&r, "/", NULL, &dir, NULL), OK);
     CHECK(dir);
