@@ -187,14 +187,6 @@ void kobject_observe(struct kobject *obj, struct observer *o)
     spin_unlock_irqrestore(&obj->lock, f);
 }
 
-void kobject_unobserve(struct kobject *obj, struct observer *o)
-{
-    uint64_t f = spin_lock_irqsave(&obj->lock);
-    if (o->node.next)
-        list_del(&o->node);
-    spin_unlock_irqrestore(&obj->lock, f);
-}
-
 /* ---- object_wait_one ------------------------------------------------------ */
 
 struct one_waiter {

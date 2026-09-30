@@ -238,11 +238,6 @@ struct aspace *process_aspace(struct process *p)
     return as;
 }
 
-struct job *process_job(struct process *p)
-{
-    return p->job;
-}
-
 const char *process_name(struct process *p)
 {
     return p->name;
@@ -509,11 +504,6 @@ status_t uthread_create(struct process *p, const char *name, struct uthread **ou
     }
     *out = u;
     return OK;
-}
-
-struct process *uthread_process(struct uthread *u)
-{
-    return u->proc;
 }
 
 status_t uthread_set_priority(struct uthread *u, int prio)

@@ -22,7 +22,7 @@
  *     thread itself once it is awake (on whatever CPU it runs on now), under
  *     the queue lock of the CPU it slept on (t->sleep_cpu, written only by
  *     t when it queues itself). A removal can only make the head later, so
- *     the armed timer may fire for nothing: harmless (lapic_early_irqs).
+ *     the armed timer may fire for nothing: harmless.
  *   - The expiring interrupt calls thread_wake(t) with the lock held, and t
  *     takes the same lock before it returns from its wait, so t can't
  *     return, exit and be freed while its waker is still in thread_wake.

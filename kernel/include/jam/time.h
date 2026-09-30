@@ -23,9 +23,8 @@ static inline uint64_t rdtsc(void)
 }
 
 /* Measure the TSC against the HPET or ACPI PM timer, cross-checked with
- * CPUID 0x15 and the loader's estimate. Needs acpi_init first. */
-void tsc_calibrate(void);
-/* Same, also printing the loader's estimate (0 if none) for comparison. */
+ * CPUID 0x15 and the loader's estimate (0 if none), which is printed for
+ * comparison. Needs acpi_init first. */
 void tsc_calibrate_with_loader(uint64_t loader_hz);
 /* The TSC frequency measured against an HPET whose registers are at `regs`
  * (it enables the counter), or 0 if its period is out of range or its

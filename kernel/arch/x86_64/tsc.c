@@ -110,11 +110,6 @@ void tsc_calibrate_with_loader(uint64_t loader_hz)
             hpet ? "HPET" : pm ? "PM timer" : cpuid ? "CPUID 15h" : "loader");
 }
 
-void tsc_calibrate(void)
-{
-    tsc_calibrate_with_loader(0);
-}
-
 void udelay(uint64_t us)
 {
     uint64_t end = rdtsc() + tsc_hz / 1000000 * us;

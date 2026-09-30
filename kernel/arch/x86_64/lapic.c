@@ -72,7 +72,6 @@ static int timer_mode = TMR_MODE_PERIODIC;
 static uint32_t apic_ticks_per_sec;   /* with divide-by-16 */
 static uint64_t tsc_period;           /* TSC cycles per tick */
 bool lapic_oneshot = true;
-static uint64_t lapic_early_irqs;            /* one-shot interrupts that found nothing due */
 
 static uint32_t rd(uint32_t reg)
 {
@@ -85,11 +84,6 @@ static void wr(uint32_t reg, uint32_t v)
         wrmsr(0x800 + reg / 16, v);
     else
         mmio[reg / 4] = v;
-}
-
-bool lapic_x2apic_mode(void)
-{
-    return x2;
 }
 
 void lapic_init_bsp(bool x2apic)
@@ -139,11 +133,6 @@ static void send_icr(uint32_t dest, uint32_t low)
 void lapic_send_ipi(uint32_t apic_id, uint8_t vector)
 {
     send_icr(apic_id, ICR_ASSERT | vector);
-}
-
-void lapic_send_ipi_others(uint8_t vector)
-{
-    send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | vector);
 }
 
 void lapic_send_nmi(uint32_t apic_id)
@@ -225,9 +214,9 @@ static void on_timer(struct trap_frame *f)
             c->tick_deadline = now + tsc_period;
     }
     lapic_eoi();
-    if (!sched_timer_expire() && !tick)
-        /* e.g. the APIC count rounded short: re-armed below */
-        __atomic_add_fetch(&lapic_early_irqs, 1, __ATOMIC_RELAXED);
+    /* Finding nothing due (e.g. the APIC count rounded short) is harmless:
+     * the timer is re-armed below. */
+    (void)sched_timer_expire();
     if (tick)
         sched_tick();
     timer_program(c);

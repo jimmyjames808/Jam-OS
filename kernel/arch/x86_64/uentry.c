@@ -44,13 +44,8 @@ void fpu_save(void *area);
 #ifndef JAM_NO_KTESTS
 bool (*uentry_test_syscall)(struct syscall_frame *f, int64_t *ret);
 uint64_t (*uentry_test_cr3)(struct thread *t);
-void (*uentry_test_fault)(struct thread *t, uint64_t vector, uint64_t rip,
-                                   uint64_t addr);
 bool (*uentry_test_nmi)(struct trap_frame *f);
 #endif
-
-/* Not an exception vector: the kill came from the exit path's checks. */
-#define KILL_BAD_RETURN 256
 
 /* RFLAGS bits user code may carry back through sysret. IOPL, NT, RF, VM
  * and friends are never the user's to set; IF is always on. */
@@ -126,8 +121,7 @@ static void return_to_user_work(void)
  * are no exception channels). Runs on its kernel stack at the bottom (nothing
  * of the kernel's below it, no locks), so leaving from here is like leaving
  * from a syscall. */
-_Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t rip,
-                                   uint64_t addr)
+_Noreturn static void kill_current(const char *why, uint64_t rip, uint64_t addr)
 {
     struct thread *t = current_thread();
     irq_enable();
@@ -142,14 +136,6 @@ _Noreturn static void kill_current(const char *why, uint64_t vector, uint64_t ri
         kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx\n", t->name,
                 t->id, why, rip, addr);
     }
-#ifndef JAM_NO_KTESTS
-    void (*h)(struct thread *, uint64_t, uint64_t, uint64_t) =
-        __atomic_load_n(&uentry_test_fault, __ATOMIC_ACQUIRE);
-    if (h)
-        h(t, vector, rip, addr);
-#else
-    (void)vector;
-#endif
     leave_user();
 }
 
@@ -157,7 +143,7 @@ _Noreturn void user_fault_kill(struct trap_frame *f, const char *why)
 {
     if (!(f->cs & 3))
         panic("user_fault_kill (%s) for a kernel-mode frame at %lx", why, f->rip);
-    kill_current(why, f->vector, f->rip, f->vector == 14 ? read_cr2() : 0);
+    kill_current(why, f->rip, f->vector == 14 ? read_cr2() : 0);
 }
 
 /* The C half of syscall_entry. Interrupts are off on entry and on return;
@@ -179,7 +165,7 @@ int64_t syscall_entry_c(struct syscall_frame *f)
      * the user's RSP and GS loaded; nothing legitimate returns at or above
      * USER_TOP (that page is never mapped). */
     if (f->user_rip >= USER_TOP)
-        kill_current("sysret to a bad address", KILL_BAD_RETURN, f->user_rip, 0);
+        kill_current("sysret to a bad address", f->user_rip, 0);
     f->user_rflags = (f->user_rflags & USER_RFLAGS_OK) | RFLAGS_IF | 2;
     return r;
 }
@@ -191,7 +177,7 @@ void user_trap_return(struct trap_frame *f)
     return_to_user_work();
     /* iretq to a non-canonical RIP would #GP in ring 0 after the swapgs. */
     if (f->rip >= USER_TOP || f->cs != (GDT_USER_CODE | 3) || f->ss != (GDT_USER_DATA | 3))
-        kill_current("iret to a bad frame", KILL_BAD_RETURN, f->rip, 0);
+        kill_current("iret to a bad frame", f->rip, 0);
 }
 
 /* ---- page faults and user copies ------------------------------------------- */
@@ -242,16 +228,15 @@ bool trap_page_fault(struct trap_frame *f)
         if (s == OK)
             return true;   /* retry the access */
         if (!fix && s == ERR_NO_MEMORY)
-            kill_current("page fault: out of memory (or the job's page limit)", 14, f->rip,
-                         addr);
+            kill_current("page fault: out of memory (or the job's page limit)", f->rip, addr);
         if (!fix && s == ERR_OUT_OF_RANGE)
-            kill_current("bus error: page past the end of a shrunk VMO", 14, f->rip, addr);
+            kill_current("bus error: page past the end of a shrunk VMO", f->rip, addr);
     }
     if (fix) {
         f->rip = fix->fixup;
         return true;
     }
-    kill_current("page fault", 14, f->rip, addr);
+    kill_current("page fault", f->rip, addr);
 }
 
 /* The copies may sleep (a page fault commits a page), so they need a
@@ -344,7 +329,7 @@ _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, ui
     irq_disable();
     return_to_user_work();
     if (entry >= USER_TOP)
-        kill_current("entry at a bad address", KILL_BAD_RETURN, entry, 0);
+        kill_current("entry at a bad address", entry, 0);
     struct cpu *c = this_cpu();
     c->tss.rsp[0] = (uint64_t)t->stack_top;
     c->kernel_rsp = (uint64_t)t->stack_top;

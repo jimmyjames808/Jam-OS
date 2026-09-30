@@ -150,11 +150,6 @@ void fpu_reset_and_load(struct thread *t)
     fpu_load(t);
 }
 
-bool fpu_has_xsaveopt(void)
-{
-    return has_xsaveopt;
-}
-
 uint32_t fpu_area_size(void)
 {
     return area_size;
@@ -182,9 +177,4 @@ void fpu_ustate_free(struct thread *t)
         return;
     t->ustate = NULL;
     kmem_cache_free(area_cache, area);
-}
-
-uint64_t fpu_xcr0(void)
-{
-    return xcr0;
 }

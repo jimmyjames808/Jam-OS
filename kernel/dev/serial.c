@@ -91,7 +91,7 @@ static bool rx_on;               /* someone reads: drain the FIFO */
 static uint8_t rx_ier;           /* IER_RDA while rx_on and the IRQ is routed (tx_lock) */
 static void (*rx_notify)(void *);
 static void *rx_ctx;
-static uint64_t serial_rx_bytes, serial_rx_errors;
+static uint64_t serial_rx_errors;
 static uint64_t rx_errors_seen, rx_polls;
 static bool rx_storm;
 
@@ -186,7 +186,6 @@ static void rx_drain(void)
             __atomic_add_fetch(&serial_rx_errors, 1, __ATOMIC_RELAXED);
             continue;
         }
-        __atomic_add_fetch(&serial_rx_bytes, 1, __ATOMIC_RELAXED);
         serial_ring_put(&rx, (char)c);
         got = true;
     }
@@ -451,9 +450,4 @@ void serial_rx_inject(const char *s, size_t len)
 uint64_t serial_rx_dropped(void)
 {
     return rx.dropped;
-}
-
-bool serial_rx_storm(void)
-{
-    return rx_storm;
 }

@@ -64,7 +64,7 @@ struct pcid_cpu {
      * must flush, or kernel threads would keep translations to user pages
      * that later unmaps no longer shoot down here. */
     bool     zero_dirty;
-    uint64_t kept, flushed;    /* statistics */
+    uint64_t flushed;          /* statistics: loads that flushed */
 } __attribute__((aligned(64)));
 
 static struct pcid_cpu pcpu[MAX_CPUS];
@@ -139,9 +139,7 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const uint64_t
         pc->id[slot] = id;
     }
     pc->gen[slot] = g;
-    if (*keep)
-        pc->kept++;
-    else
+    if (!*keep)
         pc->flushed++;
     return slot + 1;
 }
@@ -171,11 +169,6 @@ uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw)
     return pcid | (keep ? PCID_TEST_KEEP : 0);
 }
 #endif
-
-uint64_t pcid_kept_loads(uint32_t cpu)
-{
-    return cpu < MAX_CPUS ? __atomic_load_n(&pcpu[cpu].kept, __ATOMIC_RELAXED) : 0;
-}
 
 uint64_t pcid_flushed_loads(uint32_t cpu)
 {

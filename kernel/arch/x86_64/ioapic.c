@@ -65,14 +65,6 @@ void ioapic_init(void)
     }
 }
 
-uint32_t ioapic_isa_to_gsi(uint8_t irq)
-{
-    for (uint32_t i = 0; i < acpi.iso_count; i++)
-        if (acpi.isos[i].irq == irq)
-            return acpi.isos[i].gsi;
-    return irq;
-}
-
 /* MADT interrupt-source-override flags: bits 0-1 polarity (0 = bus
  * default, 1 = active high, 3 = active low), bits 2-3 trigger (0 = bus
  * default, 1 = edge, 3 = level). ISA's default is edge, active high. */
