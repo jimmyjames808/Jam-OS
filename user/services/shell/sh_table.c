@@ -78,6 +78,9 @@ static const struct sh_cmd cmds[] = {
     C(stress, C_TESTS, "stress <seconds>", "stress test (1..600)"),
     C(utest, C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),
     C(usbtest, C_TESTS, "usbtest", "the USB checks (bin/usbtest) and their result line"),
+    C(hdatest, C_TESTS, "hdatest",
+      "the HD Audio output stream checks (bin/hdatest) and their result line; it kills\n"
+      "  and restarts the hda driver once"),
     C(demo, C_TESTS, "demo [seconds]",
       "the visual demo: fractals on every CPU (default 76 s; any key stops it)"),
     C(crash, C_TESTS, "crash [name [yes]]",
