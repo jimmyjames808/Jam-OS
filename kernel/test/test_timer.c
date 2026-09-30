@@ -42,7 +42,7 @@ static void sleeper(void *arg)
 
 /* Five threads on one CPU sleep to deadlines queued out of order: they wake
  * in deadline order, and (with one-shot timers) each within ONESHOT_BOUND of its
- * deadline, where CPU 0's 10 ms tick used to be the resolution. */
+ * deadline, far finer than the 10 ms tick a sleeper waits for without them. */
 KTEST(oneshot_timer_order_and_accuracy)
 {
     uint32_t cpu = cpu_count > 1 ? 1 : 0;
@@ -62,7 +62,7 @@ KTEST(oneshot_timer_order_and_accuracy)
     waitqueue_wake_all(&sleep_wq);
     for (uint32_t i = 0; i < NSLEEP; i++)
         thread_join(th[i]);
-    bool oneshot = lapic_timer_has_oneshot() && lapic_oneshot;
+    bool oneshot = lapic_timer_has_oneshot() && __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < NSLEEP; i++)
         kprintf("oneshot: %lu ms sleeper woke %ld us late (rank %u)%s\n", sleep_ms[i],
                 sleep_err[i] / 1000, sleep_rank[i], oneshot ? "" : " (tick resolution)");
@@ -121,11 +121,11 @@ KTEST(oneshot_timer_early_wake_leaves_queue)
                                         &m);
     thread_join(s);
     KT_ASSERT(sleep_err[1] >= 0);
-    if (lapic_timer_has_oneshot() && lapic_oneshot)
+    if (lapic_timer_has_oneshot() && __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED))
         KT_ASSERT(sleep_err[1] < (int64_t)ONESHOT_BOUND);
 }
 
-/* Review repro: a far-future deadline (anything whose TSC value overflows
+/* A far-future deadline (anything whose TSC value overflows
  * 64 bits: INT64_MAX on a >2 GHz TSC, UINT64_MAX-1 even at 1 GHz) must not
  * wrap to the past. User code reaches this through nanosleep, object/port
  * waits and timer_set (which parks the prio-28 timer service on it). */
@@ -146,8 +146,8 @@ static void far_sleeper(void *arg)
 KTEST(oneshot_far_deadline_does_not_wrap)
 {
     uint64_t now = rdtsc();
-    /* The unsaturated conversion, exactly (128-bit) and as the old code
-     * computed it (wrapping mod 2^64). */
+    /* The unsaturated conversion, exactly (128-bit) and as a plain 64-bit
+     * computation gets it (wrapping mod 2^64). */
     uint64_t ns = UINT64_MAX - 1;
     /* uptime_to_tsc(0) = the boot TSC */
     unsigned __int128 exact = (unsigned __int128)(ns / 1000000000ull) * tsc_hz + uptime_to_tsc(0);

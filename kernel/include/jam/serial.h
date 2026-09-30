@@ -1,3 +1,11 @@
+/* COM1 (dev/serial.c): the kernel log's first output and, while a process
+ * reads it, a line of input.
+ *
+ * Output goes through a ring drained by the transmit interrupt once one is
+ * routed, and synchronously before that, after a panic, or when the IRQ
+ * never arrives. Input is a second ring filled by the receive interrupt.
+ * The ring has no lock of its own: tx_lock and rx_lock in serial.c guard
+ * the two rings. */
 #pragma once
 
 #include <stdbool.h>
@@ -21,8 +29,8 @@ void serial_start_irq(void);
 void serial_poll(void);
 void serial_panic(void);
 void serial_set_async(bool on);   /* the benchmark's switch; off drains the ring first */
-extern volatile bool serial_async;
-extern volatile uint64_t serial_dropped, serial_irqs, serial_rescues;
+extern bool serial_async;
+extern uint64_t serial_dropped, serial_irqs, serial_rescues;
 /* Bytes queued, not yet in the UART; whether output is interrupt-driven
  * (UART present, IRQ routed and working); whether the IRQ was given up on. */
 uint32_t serial_pending(void);
@@ -35,10 +43,10 @@ void serial_test_hold(bool on);
  * of two; head/tail count bytes ever put/taken; put drops (and counts) when
  * full; get returns -1 when empty. No locking of its own. */
 struct serial_ring {
-    char    *buf;
-    uint32_t size;
-    uint32_t head, tail;
-    uint64_t dropped;
+    char    *buf;          /* size bytes */
+    uint32_t size;         /* a power of two */
+    uint32_t head, tail;   /* bytes ever put / taken */
+    uint64_t dropped;      /* bytes dropped because it was full */
 };
 bool     serial_ring_put(struct serial_ring *r, char c);
 int      serial_ring_get(struct serial_ring *r);
@@ -59,4 +67,3 @@ size_t   serial_rx_read(char *buf, size_t cap, void (*empty)(void *), void *ctx)
 void     serial_rx_inject(const char *s, size_t len);
 uint64_t serial_rx_dropped(void);
 bool     serial_rx_storm(void);   /* too many bad bytes: receive is polled */
-extern volatile uint64_t serial_rx_bytes, serial_rx_errors;

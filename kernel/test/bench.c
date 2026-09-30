@@ -231,13 +231,13 @@ static uint64_t sw_boot[SW_COUNT];
 static uint64_t sw_get(enum sw s)
 {
     switch (s) {
-    case SW_SPINIDLE:   return sched_idle_spin_ns;
-    case SW_PLACEORDER: return sched_place_order;
-    case SW_AFFINEPAIR: return sched_affine_pair;
-    case SW_KMCACHE:    return heap_percpu;
-    case SW_ONESHOT:    return lapic_oneshot;
-    case SW_SERIALIRQ:  return serial_async;
-    case SW_FPUOPT:     return fpu_opt;
+    case SW_SPINIDLE:   return __atomic_load_n(&sched_idle_spin_ns, __ATOMIC_RELAXED);
+    case SW_PLACEORDER: return __atomic_load_n(&sched_place_order, __ATOMIC_RELAXED);
+    case SW_AFFINEPAIR: return __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED);
+    case SW_KMCACHE:    return __atomic_load_n(&heap_percpu, __ATOMIC_RELAXED);
+    case SW_ONESHOT:    return __atomic_load_n(&lapic_oneshot, __ATOMIC_RELAXED);
+    case SW_SERIALIRQ:  return __atomic_load_n(&serial_async, __ATOMIC_RELAXED);
+    case SW_FPUOPT:     return __atomic_load_n(&fpu_opt, __ATOMIC_RELAXED);
     case SW_PCID:       return pcid_is_on();
     default:            break;
     }
@@ -247,13 +247,13 @@ static uint64_t sw_get(enum sw s)
 static void sw_put(enum sw s, uint64_t v)
 {
     switch (s) {
-    case SW_SPINIDLE:   sched_idle_spin_ns = v; break;
-    case SW_PLACEORDER: sched_place_order = v; break;
-    case SW_AFFINEPAIR: sched_affine_pair = v; break;
-    case SW_KMCACHE:    heap_percpu = v; break;
-    case SW_ONESHOT:    lapic_oneshot = v; break;
+    case SW_SPINIDLE:   __atomic_store_n(&sched_idle_spin_ns, v, __ATOMIC_RELAXED); break;
+    case SW_PLACEORDER: __atomic_store_n(&sched_place_order, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_AFFINEPAIR: __atomic_store_n(&sched_affine_pair, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_KMCACHE:    __atomic_store_n(&heap_percpu, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_ONESHOT:    __atomic_store_n(&lapic_oneshot, (bool)v, __ATOMIC_RELAXED); break;
     case SW_SERIALIRQ:  serial_set_async(v); break;
-    case SW_FPUOPT:     fpu_opt = v; break;
+    case SW_FPUOPT:     __atomic_store_n(&fpu_opt, (bool)v, __ATOMIC_RELAXED); break;
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     default:            break;
     }
@@ -497,12 +497,12 @@ static void yield_timer(void *arg)
         thread_yield();
     struct cpu *c = cpus[cpu_p];
     for (unsigned i = 0; i < SAMPLES; i++) {
-        uint64_t sw0 = c->switches;
+        uint64_t sw0 = __atomic_load_n(&c->switches, __ATOMIC_RELAXED);
         uint64_t t0 = stamp();
         for (unsigned k = 0; k < BATCH; k++)
             thread_yield();
         uint64_t t1 = stamp();
-        uint64_t sw = c->switches - sw0;
+        uint64_t sw = __atomic_load_n(&c->switches, __ATOMIC_RELAXED) - sw0;
         yield_switches += sw;
         samples[i] = sw ? span_ps(t0, t1, sw) : 0;
     }
@@ -578,10 +578,10 @@ static void cache_line(int other)
 }
 
 struct wake_pp {
-    spinlock_t       lock;
-    struct waitqueue wq;
+    spinlock_t       lock;   /* guards turn */
+    struct waitqueue wq;     /* each side waits here for its move */
     volatile int     turn;   /* 0: initiator's move, 1: responder's */
-    volatile bool    stop;
+    volatile bool    stop;   /* set by the initiator when done */
 };
 
 static struct wake_pp wpp;
@@ -933,11 +933,12 @@ static void serial_output(void)
         report("bench: serial: no COM1, or its interrupt is off/not working: line skipped");
         return;
     }
-    uint64_t drop0 = serial_dropped;
+    uint64_t drop0 = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
     off_on(SW_SERIALIRQ, "serial_write of a 100-character line (P)", serial_measure, 0,
            SERIAL_SAMPLES);
-    if (serial_dropped != drop0)
-        report("bench: serial: %lu characters dropped meanwhile", serial_dropped - drop0);
+    if (__atomic_load_n(&serial_dropped, __ATOMIC_RELAXED) != drop0)
+        report("bench: serial: %lu characters dropped meanwhile",
+               __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED) - drop0);
 }
 
 /* ---- placement of busy threads ---------------------------------------------
@@ -1137,8 +1138,8 @@ static void as_switch(void)
 #define USAMPLES 4000   /* user/tests/utest/bench.c SAMPLES */
 
 struct ubench_result {
-    uint32_t txid, n, batch, reserved;
-    uint64_t cycles[USAMPLES];
+    uint32_t txid, n, batch, reserved;   /* txid, samples (USAMPLES), calls per sample, 0 */
+    uint64_t cycles[USAMPLES];           /* one timing per sample, TSC cycles */
 };
 
 static struct process *uspawn(struct job *j, const char *what, int cpu,
@@ -1232,9 +1233,9 @@ static void user_bench(const char *what, int cpu, int server_cpu, const char *la
 
 /* The same, measured with switch s off and then on. */
 static struct {
-    const char *what, *label;
-    int cpu, server_cpu;
-    bool ok;
+    const char *what, *label;   /* the result line's name and the switch's label */
+    int cpu, server_cpu;        /* client and server CPUs */
+    bool ok;                    /* every run so far succeeded */
 } ub;
 
 static void user_bench_measure(int unused)
@@ -1304,21 +1305,16 @@ static void user_benches(void)
 
 /* ---- driver --------------------------------------------------------------- */
 
-void bench_run(void)
+static void free_samples(void)
 {
-    samples = kmalloc(SAMPLES * sizeof(uint64_t));
-    samples_off = kmalloc(SAMPLES * sizeof(uint64_t));
-    samples_on = kmalloc(SAMPLES * sizeof(uint64_t));
-    if (!samples || !samples_off || !samples_on) {
-        kprintf("bench: out of memory\n");
-        kfree(samples);
-        kfree(samples_off);
-        kfree(samples_on);
-        return;
-    }
-    sw_save();
-    ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
-    pick_cpus();
+    kfree(samples);
+    kfree(samples_off);
+    kfree(samples_on);
+}
+
+/* The header: the CPU, the TSC, which CPUs play P/P2/HT/E. */
+static void print_header(void)
+{
     const char *brand = cpu_features.brand;
     while (*brand == ' ')
         brand++;
@@ -1327,14 +1323,11 @@ void bench_run(void)
     report("bench: kernel threads, then ring 3 ('user:' lines, bin/utest), lock checker on, "
            "median and p99 of %u samples", SAMPLES);
     kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
+}
 
-    /* The orchestrating thread stays on CPU 0, away from every measured CPU,
-     * so it can't be starved by (or compete with) a busy benchmark thread. */
-    cpumask_t zero, all;
-    cpumask_one(&zero, 0);
-    cpumask_all(&all);
-    thread_set_affinity(current_thread(), &zero);
-
+/* The timestamp's own cost, then the primitives on one CPU (P). */
+static void local_benches(void)
+{
     run_on(cpu_p, bench_stamp, NULL);
     result("timestamp cost (subtracted from all below)", samples, SAMPLES);
     uint64_t step_ps = cycles_to_ps(stamp_step);
@@ -1359,7 +1352,12 @@ void bench_run(void)
     context_switch();
     wakeup(cpu_p);
     chan_call(cpu_p);
+}
 
+/* P against each of P2, HT and E that exists: cache lines, wakeups, IPIs,
+ * interrupts, channel calls, placement. */
+static void cross_cpu_benches(void)
+{
     int others[] = { cpu_p2, cpu_ht, cpu_e };
     for (unsigned i = 0; i < 3; i++)
         if (others[i] >= 0)
@@ -1381,6 +1379,12 @@ void bench_run(void)
         chan_call_placed();
     if (cpu_count > 2)
         placement();
+}
+
+/* Serial output, sleep accuracy, TLB shootdown, address-space switches,
+ * FPU state and the ring-3 benchmarks. */
+static void system_benches(void)
+{
     serial_output();
     if (lapic_timer_has_oneshot()) {
         sleep_accuracy(100);
@@ -1397,8 +1401,33 @@ void bench_run(void)
     as_switch();
     fpu_state();
     user_benches();
+}
+
+void bench_run(void)
+{
+    samples = kmalloc(SAMPLES * sizeof(uint64_t));
+    samples_off = kmalloc(SAMPLES * sizeof(uint64_t));
+    samples_on = kmalloc(SAMPLES * sizeof(uint64_t));
+    if (!samples || !samples_off || !samples_on) {
+        kprintf("bench: out of memory\n");
+        free_samples();
+        return;
+    }
+    sw_save();
+    ps_per_cycle_x1024 = (1000000000000ull << 10) / tsc_hz;
+    pick_cpus();
+    print_header();
+
+    /* The orchestrating thread stays on CPU 0, away from every measured CPU,
+     * so it can't be starved by (or compete with) a busy benchmark thread. */
+    cpumask_t zero, all;
+    cpumask_one(&zero, 0);
+    cpumask_all(&all);
+    thread_set_affinity(current_thread(), &zero);
+
+    local_benches();
+    cross_cpu_benches();
+    system_benches();
     thread_set_affinity(current_thread(), &all);
-    kfree(samples);
-    kfree(samples_off);
-    kfree(samples_on);
+    free_samples();
 }

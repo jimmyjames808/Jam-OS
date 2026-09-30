@@ -1,3 +1,6 @@
+/* The C library's memory and string functions, for the freestanding
+ * kernel (lib/string.c). The compiler also emits calls to memcpy, memmove
+ * and memset on its own, so these names must exist. */
 #pragma once
 
 #include <stddef.h>

@@ -17,7 +17,7 @@ struct syscall_frame {
     uint64_t args[SYSCALL_MAX_ARGS];  /* rdi rsi rdx r10 r8 r9 */
     uint64_t user_rip;                /* rcx */
     uint64_t user_rflags;             /* r11 */
-    uint64_t user_rsp;
+    uint64_t user_rsp;                /* rsp */
     /* The callee-saved registers, so the frame holds the whole
      * user register state (restored on sysret; rcx/r11 are clobbered). */
     uint64_t rbx, rbp, r12, r13, r14, r15;

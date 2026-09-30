@@ -1,3 +1,6 @@
+/* Event objects: signals that user code sets and clears itself
+ * (SIG_SIGNALED and the SIG_USER_ALL bits), for one thread or process to
+ * wake another. An event holds no state beyond its kobject's signals. */
 #include <jam/event.h>
 #include <jam/mm.h>
 

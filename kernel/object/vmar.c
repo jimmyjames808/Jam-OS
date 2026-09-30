@@ -8,8 +8,8 @@
 #include <jam/vmar.h>
 
 struct vmar {
-    struct kobject base;
-    struct aspace *as;
+    struct kobject base;   /* OBJ_VMAR */
+    struct aspace *as;     /* the address space (a reference) */
 };
 
 static void vmar_destroy(struct kobject *obj)

@@ -90,8 +90,8 @@ KTEST(ist_stack_guards)
  * shared each line and the first PC run (274 ns avg on 28 CPUs) measured
  * that line bouncing between cores, not the checker. */
 static struct {
-    spinlock_t outer, inner;
-    uint64_t   ns;
+    spinlock_t outer, inner;   /* a nested pair, one pair per CPU */
+    uint64_t   ns;             /* this CPU's measured time */
 } __attribute__((aligned(64))) speed[MAX_CPUS];
 
 static void lock_speed_worker(void *arg)

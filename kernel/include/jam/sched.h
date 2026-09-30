@@ -28,7 +28,7 @@
 #define PRIO_USER_MAX 24
 
 typedef struct {
-    uint64_t bits[MAX_CPUS / 64];
+    uint64_t bits[MAX_CPUS / 64];   /* one bit per CPU index */
 } cpumask_t;
 
 static inline void cpumask_all(cpumask_t *m)
@@ -62,40 +62,40 @@ struct process;
 struct uthread;
 
 struct waitqueue {
-    spinlock_t       lock;
-    struct list_node waiters;
+    spinlock_t       lock;      /* guards waiters */
+    struct list_node waiters;   /* threads waiting, oldest first */
 };
 
 struct thread {
     uint64_t          rsp;           /* saved stack pointer while switched out */
-    uint64_t          id;
-    char              name[24];
-    volatile int      state;
+    uint64_t          id;            /* unique, never reused */
+    char              name[24];      /* for logs and panics, NUL-terminated */
+    int               state;         /* T_* */
     int               prio;          /* effective priority (base or boosted) */
-    int               base_prio;
+    int               base_prio;     /* priority without a boost */
     int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
-    uint64_t          boosts;
-    volatile bool     on_cpu;        /* its stack is still in use by a CPU */
-    bool              is_idle;
+    uint64_t          boosts;        /* starvation boosts it has had */
+    bool              on_cpu;        /* its stack is still in use by a CPU */
+    bool              is_idle;       /* a CPU's idle thread */
     uint32_t          cpu;           /* CPU it runs on / is queued on */
-    uint32_t          slice;
-    cpumask_t         affinity;
+    uint32_t          slice;         /* ticks left of its time slice */
+    cpumask_t         affinity;      /* CPUs it may run on */
 
     struct list_node  rq_node;       /* run queue */
     struct list_node  wait_node;     /* wait queue */
     uint64_t          mutex_since;   /* waiting for a mutex since (uptime ns), 0 = not */
     struct list_node  sleep_node;    /* a CPU's sleeper queue (sched.c) */
-    uint64_t          wake_at_ns;
+    uint64_t          wake_at_ns;    /* deadline of its sleep (uptime ns) */
     uint64_t          wake_at_tsc;   /* the same deadline as a TSC value */
     uint32_t          sleep_cpu;     /* whose queue sleep_node is on */
 
-    void             *stack_top;
-    volatile uint32_t refs;
-    volatile bool     exited;
-    struct waitqueue  exit_wq;
+    void             *stack_top;     /* top of its kernel stack */
+    uint32_t          refs;          /* references: creator's and its own */
+    bool              exited;        /* has run thread_exit; exit_wq.lock */
+    struct waitqueue  exit_wq;       /* thread_join waits here */
 
-    uint64_t          switches_in;
+    uint64_t          switches_in;   /* times it was switched in */
     /* CPU time: TSC cycles on a CPU up to its last switch out
      * (written by the CPU running it; thread_cpu_tsc adds the current run). */
     uint64_t          run_tsc;
@@ -124,7 +124,7 @@ struct thread {
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */
-    volatile bool     cancel_pending;
+    bool              cancel_pending;
 
     /* Lock checker: mutexes this thread holds, innermost last. */
     uint32_t          sleep_depth;
@@ -148,8 +148,6 @@ struct thread *thread_create_capped(const char *name, void (*fn)(void *), void *
  * for, and the timer service). */
 struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *arg, int prio,
                                     const cpumask_t *mask);
-struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
-                                        int prio, const cpumask_t *mask, int prio_cap);
 /* Same, but the thread doesn't run until the caller thread_wake()s it: for
  * callers that must publish the thread somewhere first (process_start). */
 struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
@@ -238,23 +236,20 @@ void sched_stack_trim(void);
 unsigned sched_stack_cache_set_limit(unsigned limit);
 /* Stacks freed (unmapped, pages returned) since boot. */
 uint64_t sched_stacks_freed(void);
-/* Tell `cpu` to look at its run queue soon (IPI if remote and not polling
- * in idle). */
-void sched_kick(uint32_t cpu);
 
 /* Spin before idle: how long an idle CPU polls for work before it
  * halts, in ns (0 = halt at once). Boot: "idlespin=<us>", "nospinidle". The
  * benchmark flips it at run time. */
 #define SCHED_IDLE_SPIN_NS 10000
-extern volatile uint64_t sched_idle_spin_ns;
+extern uint64_t sched_idle_spin_ns;
 /* Hybrid placement order: idle whole P-core > idle E-core > idle HT
  * sibling of a busy core > least loaded (sched.c, select_cpu). Off: the
  * plain least-loaded rule. Boot: "noplaceorder". */
-extern volatile bool sched_place_order;
+extern bool sched_place_order;
 /* Client/server pairs on sibling hyperthreads: two threads that
  * keep waking each other are placed on one core's two hyperthreads when
  * the waker keeps running. Boot: "noaffinepair". */
-extern volatile bool sched_affine_pair;
+extern bool sched_affine_pair;
 #ifndef JAM_NO_KTESTS
 /* Tests: run the placement rule on a made-up topology (arrays indexed by
  * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */
@@ -292,11 +287,25 @@ void waitqueue_wake_all(struct waitqueue *wq);
  * mutex_unlock hands the mutex straight to the longest waiter instead, so
  * no thread can be starved by others barging in ahead of it. */
 #define MUTEX_HANDOFF_NS 1000000ull
-extern volatile uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter */
+extern uint64_t mutex_handoffs;   /* times a mutex was handed to a waiter (atomic) */
+/* A thread's state (T_*). It changes under the lock of the run queue or
+ * wait queue the thread is on, and other CPUs read it without that lock,
+ * so every access is atomic: relaxed, as the locks and on_cpu's
+ * release/acquire order everything else. */
+static inline int thread_state(const struct thread *t)
+{
+    return __atomic_load_n(&t->state, __ATOMIC_RELAXED);
+}
+
+static inline void thread_set_state(struct thread *t, int state)
+{
+    __atomic_store_n(&t->state, state, __ATOMIC_RELAXED);
+}
+
 struct mutex {
-    spinlock_t       lock;
-    struct thread   *owner;
-    struct waitqueue wq;
+    spinlock_t       lock;      /* guards owner and the hand-off */
+    struct thread   *owner;     /* the holder, NULL if free */
+    struct waitqueue wq;        /* threads waiting for it */
     uint16_t         dep_cls;   /* lock checker class + 1, 0 until first use */
 };
 void mutex_init(struct mutex *m, const char *name);

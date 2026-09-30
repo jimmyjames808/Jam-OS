@@ -1,3 +1,9 @@
+/* trap_dispatch: where every interrupt and exception from isr.S lands.
+ *
+ * Vectors 32 and up are interrupts (irq_dispatch); below 32 are CPU
+ * exceptions. A page fault may be demand paging or a user copy, handled
+ * by trap_page_fault. Any other exception kills the user thread that
+ * caused it, or panics if it happened in the kernel. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/percpu.h>
@@ -36,7 +42,8 @@ void trap_dispatch(struct trap_frame *f)
         /* Never schedules or touches the user return path: NMIs stay
          * blocked until this handler's iretq. */
 #ifndef JAM_NO_KTESTS
-        if (uentry_test_nmi && uentry_test_nmi(f))
+        bool (*h)(struct trap_frame *) = __atomic_load_n(&uentry_test_nmi, __ATOMIC_ACQUIRE);
+        if (h && h(f))
             return;
 #endif
         nmi_handler(f);

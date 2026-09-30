@@ -33,32 +33,34 @@
 #define PF_W          2u
 #define PF_R          4u
 
+/* The file header (ELF-64 Object File Format, version 1.5, section 3). */
 struct elf64_ehdr {
-    uint8_t  e_ident[EI_NIDENT];
-    uint16_t e_type;
-    uint16_t e_machine;
-    uint32_t e_version;
-    uint64_t e_entry;
-    uint64_t e_phoff;
-    uint64_t e_shoff;
-    uint32_t e_flags;
-    uint16_t e_ehsize;
-    uint16_t e_phentsize;
-    uint16_t e_phnum;
-    uint16_t e_shentsize;
-    uint16_t e_shnum;
-    uint16_t e_shstrndx;
+    uint8_t  e_ident[EI_NIDENT];   /* magic, class, byte order, version, OS ABI */
+    uint16_t e_type;               /* ET_* */
+    uint16_t e_machine;            /* EM_X86_64 */
+    uint32_t e_version;            /* EV_CURRENT */
+    uint64_t e_entry;              /* entry point */
+    uint64_t e_phoff;              /* file offset of the program headers */
+    uint64_t e_shoff;              /* file offset of the section headers */
+    uint32_t e_flags;              /* processor flags (0 on x86-64) */
+    uint16_t e_ehsize;             /* size of this header */
+    uint16_t e_phentsize;          /* size of one program header */
+    uint16_t e_phnum;              /* number of program headers */
+    uint16_t e_shentsize;          /* size of one section header */
+    uint16_t e_shnum;              /* number of section headers */
+    uint16_t e_shstrndx;           /* section holding the section names */
 };
 
+/* A program header: one segment (same spec, section 6). */
 struct elf64_phdr {
-    uint32_t p_type;
-    uint32_t p_flags;
-    uint64_t p_offset;
-    uint64_t p_vaddr;
-    uint64_t p_paddr;
-    uint64_t p_filesz;
-    uint64_t p_memsz;
-    uint64_t p_align;
+    uint32_t p_type;     /* PT_* */
+    uint32_t p_flags;    /* PF_R / PF_W / PF_X */
+    uint64_t p_offset;   /* where its bytes are in the file */
+    uint64_t p_vaddr;    /* where it goes in memory */
+    uint64_t p_paddr;    /* physical address (unused) */
+    uint64_t p_filesz;   /* bytes in the file */
+    uint64_t p_memsz;    /* bytes in memory (the rest is zero) */
+    uint64_t p_align;    /* alignment of p_vaddr and p_offset */
 };
 
 _Static_assert(sizeof(struct elf64_ehdr) == 64, "ELF64 header layout");

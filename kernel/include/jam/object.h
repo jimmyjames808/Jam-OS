@@ -49,7 +49,7 @@ enum obj_type {
 struct kobject;
 
 struct kobject_ops {
-    const char *name;
+    const char *name;   /* type name for logs and the lock checker */
     /* The last reference went away: free the object. Required. */
     void (*destroy)(struct kobject *obj);
     /* The last handle went away (references may remain). Optional. */
@@ -61,20 +61,20 @@ struct kobject_ops {
  * registered, and once from kobject_observe if they already match. It is
  * told the current signals; it decides for itself whether they matter. */
 struct observer {
-    struct list_node node;
-    signals_t        mask;
-    void (*fire)(struct observer *o, signals_t current);
+    struct list_node node;                                 /* on the object's observer list */
+    signals_t        mask;                                 /* signals it cares about */
+    void (*fire)(struct observer *o, signals_t current);   /* called under the object's lock */
 };
 
 struct kobject {
-    const struct kobject_ops *ops;
-    enum obj_type     type;
-    volatile uint32_t refs;
-    volatile uint32_t handles;
-    signals_t         signals;
-    spinlock_t        lock;
-    struct list_node  observers;
-    uint64_t          koid;        /* unique id, never reused */
+    const struct kobject_ops *ops;  /* destroy / on_zero_handles */
+    enum obj_type     type;         /* OBJ_* */
+    uint32_t          refs;         /* kernel references; the last destroys it */
+    uint32_t          handles;      /* handles to it; the last calls on_zero_handles */
+    signals_t         signals;      /* SIG_* now; lock */
+    spinlock_t        lock;         /* guards signals and observers */
+    struct list_node  observers;    /* struct observer */
+    uint64_t          koid;         /* unique id, never reused */
     /* Iterative teardown: when the last handle or last reference goes while a
      * teardown is already running on this CPU, the object is pushed onto a
      * per-CPU pending list (td_next) with the work still owed (td_pending)

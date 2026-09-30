@@ -1,3 +1,6 @@
+/* The kernel command line: a boot word is a whole space-separated word;
+ * a value is key=N in decimal. The string comes from the loader and is
+ * never written, so reading it needs no lock. */
 #include <jam/cmdline.h>
 #include <jam/string.h>
 

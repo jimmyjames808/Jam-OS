@@ -33,22 +33,22 @@ KTEST(serial_ring_drops_when_full)
  * COM1 and its IRQ 4). */
 KTEST(serial_irq_drains_ring)
 {
-    if (!serial_is_async() || !serial_async)
+    if (!serial_is_async() || !__atomic_load_n(&serial_async, __ATOMIC_RELAXED))
         return;
     static const char line[] = "serial: this line was sent by the transmit interrupt\n";
     serial_test_hold(true);
     uint32_t before = serial_pending();
     serial_write(line, sizeof(line) - 1);
     uint32_t queued = serial_pending() - before;
-    uint64_t irqs0 = serial_irqs;
+    uint64_t irqs0 = __atomic_load_n(&serial_irqs, __ATOMIC_RELAXED);
     serial_test_hold(false);
     uint64_t deadline = uptime_ns() + 2000 * NS_PER_MS;
     while (serial_pending() && uptime_ns() < deadline)
         thread_sleep_ms(1);
     uint32_t left = serial_pending();   /* before our own kprintf queues more */
-    uint64_t irqs = serial_irqs - irqs0;
+    uint64_t irqs = __atomic_load_n(&serial_irqs, __ATOMIC_RELAXED) - irqs0;
     kprintf("serial: %u bytes queued, drained with %lu interrupts (%lu tick rescues so far)\n",
-            queued, irqs, serial_rescues);
+            queued, irqs, __atomic_load_n(&serial_rescues, __ATOMIC_RELAXED));
     KT_EQ(queued, sizeof(line));   /* the newline went out as \r\n */
     KT_EQ(left, 0);
     KT_ASSERT(irqs > 0);

@@ -22,7 +22,7 @@
 #define TAIL_BYTES   2048
 #define KERNEL_SPACE 0xffff800000000000ull
 
-volatile int panic_in_progress;
+int panic_in_progress;   /* set once, by the first CPU to panic */
 static char tail[TAIL_BYTES + 1];
 
 static const char *const exception_names[32] = {
@@ -126,7 +126,7 @@ static void panic_begin(void)
     kprintf("\n  *** JAM OS KERNEL PANIC *** on cpu %u", this_cpu()->index);
     if (this_cpu()->current)
         kprintf(", thread \"%s\"", this_cpu()->current->name);
-    if (ipi_ready)
+    if (__atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE))
         kprintf(" (other CPUs halted: %u)", halted);
     kprintf("\n\n");
 }

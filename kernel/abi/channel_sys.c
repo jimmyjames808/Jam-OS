@@ -104,6 +104,31 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
     return st;
 }
 
+/* Write the taken handles khs with their new rights: each arrives with
+ * rights[i], a subset of what it has (as handle_duplicate), or RIGHT_SAME.
+ * Checked before anything changes, restored if the write fails. */
+static status_t write_narrowed(struct channel *ch, const void *bytes, uint32_t nbytes,
+                               struct khandle *khs, const rights_t *rights, uint32_t nhandles)
+{
+    rights_t had[CHANNEL_MAX_HANDLES];
+    status_t st = OK;
+    for (uint32_t i = 0; i < nhandles; i++) {
+        had[i] = khs[i].rights;
+        if (rights[i] != RIGHT_SAME && (rights[i] & ~had[i]))
+            st = ERR_INVALID_ARGS;
+    }
+    if (st != OK)
+        return st;
+    for (uint32_t i = 0; i < nhandles; i++)
+        if (rights[i] != RIGHT_SAME)
+            khs[i].rights = rights[i];
+    st = channel_write(ch, bytes, nbytes, khs, nhandles);
+    if (st != OK)
+        for (uint32_t i = 0; i < nhandles; i++)
+            khs[i].rights = had[i];
+    return st;
+}
+
 status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
                                   uint32_t nbytes, const handle_t *handles,
                                   const rights_t *rights, uint32_t nhandles)
@@ -115,26 +140,9 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
     if (st != OK)
         return st;
     struct khandle khs[CHANNEL_MAX_HANDLES];
-    rights_t had[CHANNEL_MAX_HANDLES];
     st = take_all(t, handles, khs, nhandles);
     if (st == OK) {
-        /* Each arrives with rights[i]: a subset of what it has (as
-         * handle_duplicate), or RIGHT_SAME. Checked before anything
-         * changes, restored if the write fails. */
-        for (uint32_t i = 0; i < nhandles; i++) {
-            had[i] = khs[i].rights;
-            if (rights[i] != RIGHT_SAME && (rights[i] & ~had[i]))
-                st = ERR_INVALID_ARGS;
-        }
-        if (st == OK) {
-            for (uint32_t i = 0; i < nhandles; i++)
-                if (rights[i] != RIGHT_SAME)
-                    khs[i].rights = rights[i];
-            st = channel_write(ch, bytes, nbytes, khs, nhandles);
-            if (st != OK)
-                for (uint32_t i = 0; i < nhandles; i++)
-                    khs[i].rights = had[i];
-        }
+        st = write_narrowed(ch, bytes, nbytes, khs, rights, nhandles);
         if (st != OK)
             untake_all(t, handles, khs, nhandles);
         else

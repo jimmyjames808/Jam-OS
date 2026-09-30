@@ -1,9 +1,23 @@
+/* x86-64 instructions the C code needs (port I/O, MSRs, CPUID, control
+ * registers, TLB and cache control) as inline functions, and the MSR,
+ * control-register and RFLAGS bit numbers they are used with (Intel SDM
+ * Vol. 3A, chapters 2 and 4; Vol. 4 for the MSRs). */
 #pragma once
 
 #include <stdint.h>
 
-static inline void outb(uint16_t port, uint8_t v) { __asm__ volatile("outb %0, %1" :: "a"(v), "Nd"(port)); }
-static inline uint8_t inb(uint16_t port) { uint8_t v; __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port)); return v; }
+static inline void outb(uint16_t port, uint8_t v)
+{
+    __asm__ volatile("outb %0, %1" :: "a"(v), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t v;
+    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
 static inline void cli(void) { __asm__ volatile("cli" ::: "memory"); }
 static inline void hlt(void) { __asm__ volatile("hlt"); }
 static inline void cpu_relax(void) { __asm__ volatile("pause"); }

@@ -1,3 +1,12 @@
+/* Timer objects: a timer asserts SIG_SIGNALED once uptime reaches its
+ * deadline.
+ *
+ * One kernel thread, "timer service", serves every timer: armed timers sit
+ * on one list sorted by deadline, and the service sleeps until the earliest.
+ * Arming an earlier timer wakes it to re-plan. service_lock guards the list
+ * and each timer's `armed` and `deadline_ns`; it is taken before the timer's
+ * own object lock (kobject_signal), never after. The service thread starts
+ * with the first timer_create, so it costs nothing until a timer exists. */
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/sched.h>
@@ -9,7 +18,7 @@
 static spinlock_t service_lock = SPINLOCK_INIT("timer service");
 static struct list_node armed = LIST_INIT(armed);   /* by deadline, earliest first */
 static struct thread *service;                      /* NULL until it is running */
-static volatile bool service_started;
+static bool service_started;
 
 /* With service_lock held. Ties keep arming order. */
 static void insert_sorted(struct ktimer *t)

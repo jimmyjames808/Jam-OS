@@ -187,17 +187,17 @@ KTEST(sysinfo_process_cpu_time)
     thread_sleep_ms(200);
     uint64_t live = tsc_to_ns(process_cpu_tsc(p));
 
-    struct proc_stat st[4];
+    struct proc_stat ps[4];
     uint32_t n = 0;
-    job_list_processes(root, 0, st, 4, &n);
+    job_list_processes(root, 0, ps, 4, &n);
     KT_EQ(n, 1);
-    KT_ASSERT(!strcmp(st[0].name, "utest"));
-    KT_EQ(st[0].depth, 1);
-    KT_EQ(st[0].job_koid, job_kobject(j)->koid);
-    KT_EQ(st[0].state, PROCESS_RUNNING);
-    KT_EQ(st[0].threads, 1);
-    KT_ASSERT(st[0].cpu_ns >= live);
-    KT_ASSERT(st[0].job_pages > 0);
+    KT_ASSERT(!strcmp(ps[0].name, "utest"));
+    KT_EQ(ps[0].depth, 1);
+    KT_EQ(ps[0].job_koid, job_kobject(j)->koid);
+    KT_EQ(ps[0].state, PROCESS_RUNNING);
+    KT_EQ(ps[0].threads, 1);
+    KT_ASSERT(ps[0].cpu_ns >= live);
+    KT_ASSERT(ps[0].job_pages > 0);
 
     process_kill(p, PROCESS_KILLED_CODE, true);
     KT_EQ(object_wait_one(process_kobject(p), SIG_TERMINATED, uptime_ns() + 10 * NS_PER_S, NULL),
@@ -208,7 +208,7 @@ KTEST(sysinfo_process_cpu_time)
     KT_ASSERT(live >= 50 * NS_PER_MS && live <= 1000 * NS_PER_MS);
     KT_ASSERT(dead >= live);
     n = 0;
-    job_list_processes(root, 0, st, 4, &n);
+    job_list_processes(root, 0, ps, 4, &n);
     KT_EQ(n, 0);   /* dead processes are off the list */
     kobject_unref(process_kobject(p));
     job_unref(j);

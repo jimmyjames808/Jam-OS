@@ -105,8 +105,9 @@
  * lock-free atomics, fine under pt_lock.
  *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
- * kernel CR3, with PCIDs a cheap load that keeps the user entries); one decommit batch holds the VMO lock (with
- * interrupts off) for up to 512 pages times the number of mappings of the
+ * kernel CR3, with PCIDs a cheap load that keeps the user entries); one
+ * decommit batch holds the VMO lock (with interrupts off) for up to 512
+ * pages times the number of mappings of the
  * VMO that overlap them, so a VMO mapped thousands of times makes that
  * latency grow. The region lock must never be held across a user copy:
  * the copy's fault would take it again. */
@@ -150,31 +151,31 @@ _Static_assert(ASPACE_CAN_READ == ASPACE_READ << CAN_SHIFT &&
                ASPACE_CAN_EXEC == ASPACE_EXEC << CAN_SHIFT, "CAN bits mirror the permissions");
 
 struct mapping {
-    struct list_node node;      /* as->maps, sorted by base (region lock) */
-    struct vmo_umap  umap;      /* on the VMO's reverse map (VMO lock) */
-    struct vmo      *vmo;
-    uint64_t         base, len; /* bytes, page-aligned */
-    uint64_t         vmo_off;   /* VMO offset of base */
-    unsigned         flags;     /* current ASPACE_READ/WRITE/EXEC */
-    unsigned         max;       /* what aspace_protect may grant */
+    struct list_node node;       /* as->maps, sorted by base (region lock) */
+    struct vmo_umap  umap;       /* on the VMO's reverse map (VMO lock) */
+    struct vmo      *vmo;        /* the VMO mapped (a reference) */
+    uint64_t         base, len;  /* bytes, page-aligned */
+    uint64_t         vmo_off;    /* VMO offset of base */
+    unsigned         flags;      /* current ASPACE_READ/WRITE/EXEC */
+    unsigned         max;        /* what aspace_protect may grant */
 };
 
 struct aspace {
     struct mutex      lock;       /* region lock (see the file header) */
     spinlock_t        pt_lock;    /* page-table entries */
     uint64_t          pml4;       /* physical */
-    uint64_t         *pml4v;
+    uint64_t         *pml4v;      /* pml4 through the HHDM */
     struct list_node  maps;       /* struct mapping */
-    uint32_t          nmaps;
+    uint32_t          nmaps;      /* entries on maps */
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
-    volatile uint32_t refs;
+    uint32_t          refs;       /* references (atomic once published) */
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
     /* PCIDs (pcid.h): a never-reused id, and the TLB generation,
      * bumped by every change that must reach TLBs (gather_note). */
     uint64_t          pcid_id;
-    volatile uint64_t tlb_gen;
+    uint64_t          tlb_gen;
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -290,7 +291,7 @@ static uint64_t leaf_bits(unsigned perms, unsigned cache)
 }
 
 /* pt_lock held: the leaf entry for va, NULL if a table is missing. */
-static uint64_t *pte_find(struct aspace *as, uint64_t va)
+static uint64_t *pte_find(const struct aspace *as, uint64_t va)
 {
     uint64_t *t = as->pml4v;
     for (int l = 4; l > 1; l--) {
@@ -337,47 +338,58 @@ static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct t
     tlb_gather_page(g, virt_to_page(t));
 }
 
+/* What walk_leaves does to each page table: `fn` edits the leaves in
+ * [va, stop) of one page table; with `detach` (region lock held), tables
+ * left empty are unlinked onto g. */
+struct leaf_walk {
+    /* Edits one page table's leaves in [va, stop). */
+    void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms);
+    unsigned           perms;    /* passed to fn */
+    bool               detach;   /* unlink the tables left empty */
+    struct tlb_gather *g;        /* gets the unlinked tables, then the range */
+};
+
+/* pt_lock held: apply w to the page table covering va (up to end), if there
+ * is one. Returns where the next page table's range starts. */
+static uint64_t walk_one(struct aspace *as, uint64_t va, uint64_t end,
+                         const struct leaf_walk *w)
+{
+    uint64_t *e4 = &as->pml4v[ix(va, 4)];
+    if (!(*e4 & PTE_P))
+        return ALIGN_UP(va + 1, SIZE_512G);
+    uint64_t *pdpt = tbl(*e4), *e3 = &pdpt[ix(va, 3)];
+    if (!(*e3 & PTE_P))
+        return ALIGN_UP(va + 1, SIZE_1G);
+    uint64_t *pd = tbl(*e3), *e2 = &pd[ix(va, 2)];
+    uint64_t next = ALIGN_UP(va + 1, SIZE_2M);
+    if (!(*e2 & PTE_P))
+        return next;
+    uint64_t *pt = tbl(*e2);
+    w->fn(pt, va, next < end ? next : end, w->perms);
+    if (!w->detach || !table_empty(pt))
+        return next;
+    table_drop(as, e2, pt, w->g);
+    if (!table_empty(pd))
+        return next;
+    table_drop(as, e3, pd, w->g);
+    if (table_empty(pdpt))
+        table_drop(as, e4, pdpt, w->g);
+    return next;
+}
+
 /* Walk [va, end) one page table (2 MiB) at a time under pt_lock, skipping
- * missing tables. `fn` edits the leaves in [va, stop) of one page table.
- * With `detach` (region lock held), tables left empty are unlinked onto g.
- * Then g gets the range and as's active CPUs. */
-static void walk_leaves(struct aspace *as, uint64_t va, uint64_t end, bool detach,
-                        struct tlb_gather *g,
-                        void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms),
-                        unsigned perms)
+ * missing tables (see struct leaf_walk). Then w->g gets the range and as's
+ * active CPUs. */
+static void walk_leaves(struct aspace *as, uint64_t va, uint64_t end, const struct leaf_walk *w)
 {
     uint64_t start = va;
     while (va < end) {
         uint64_t f = spin_lock_irqsave(&as->pt_lock);
-        uint64_t next;
-        uint64_t *e4 = &as->pml4v[ix(va, 4)];
-        if (!(*e4 & PTE_P)) {
-            next = ALIGN_UP(va + 1, SIZE_512G);
-        } else {
-            uint64_t *pdpt = tbl(*e4), *e3 = &pdpt[ix(va, 3)];
-            if (!(*e3 & PTE_P)) {
-                next = ALIGN_UP(va + 1, SIZE_1G);
-            } else {
-                uint64_t *pd = tbl(*e3), *e2 = &pd[ix(va, 2)];
-                next = ALIGN_UP(va + 1, SIZE_2M);
-                if (*e2 & PTE_P) {
-                    uint64_t *pt = tbl(*e2);
-                    fn(pt, va, next < end ? next : end, perms);
-                    if (detach && table_empty(pt)) {
-                        table_drop(as, e2, pt, g);
-                        if (table_empty(pd)) {
-                            table_drop(as, e3, pd, g);
-                            if (table_empty(pdpt))
-                                table_drop(as, e4, pdpt, g);
-                        }
-                    }
-                }
-            }
-        }
+        uint64_t next = walk_one(as, va, end, w);
         spin_unlock_irqrestore(&as->pt_lock, f);
         va = next;
     }
-    gather_note(g, as, start, end);
+    gather_note(w->g, as, start, end);
 }
 
 static void leaves_clear(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
@@ -399,7 +411,8 @@ static void leaves_protect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned pe
 
 static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struct tlb_gather *g)
 {
-    walk_leaves(as, va, end, detach, g, leaves_clear, 0);
+    const struct leaf_walk w = { leaves_clear, 0, detach, g };
+    walk_leaves(as, va, end, &w);
 }
 
 void aspace_zap_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g)
@@ -420,6 +433,27 @@ void aspace_set_pte_locked(struct aspace *as, uint64_t va, uint64_t pa, unsigned
     spin_unlock_irqrestore(&as->pt_lock, f);
 }
 
+/* Free the page tables a PDPT points to (not the PDPT itself); returns how
+ * many pages that was. */
+static uint64_t free_under_pdpt(const uint64_t *pdpt)
+{
+    uint64_t freed = 0;
+    for (unsigned j = 0; j < 512; j++) {
+        if (!(pdpt[j] & PTE_P))
+            continue;
+        const uint64_t *pd = tbl(pdpt[j]);
+        for (unsigned k = 0; k < 512; k++) {
+            if (pd[k] & PTE_P) {
+                pmm_free_page_phys(pd[k] & PTE_ADDR);
+                freed++;
+            }
+        }
+        pmm_free_page_phys(pdpt[j] & PTE_ADDR);
+        freed++;
+    }
+    return freed;
+}
+
 /* Last reference: free every user table. Nothing else can reach them. */
 static uint64_t free_tables(struct aspace *as)
 {
@@ -428,20 +462,7 @@ static uint64_t free_tables(struct aspace *as)
         uint64_t e4 = as->pml4v[i];
         if (!(e4 & PTE_P))
             continue;
-        uint64_t *pdpt = tbl(e4);
-        for (unsigned j = 0; j < 512; j++) {
-            if (!(pdpt[j] & PTE_P))
-                continue;
-            uint64_t *pd = tbl(pdpt[j]);
-            for (unsigned k = 0; k < 512; k++) {
-                if (pd[k] & PTE_P) {
-                    pmm_free_page_phys(pd[k] & PTE_ADDR);
-                    freed++;
-                }
-            }
-            pmm_free_page_phys(pdpt[j] & PTE_ADDR);
-            freed++;
-        }
+        freed += free_under_pdpt(tbl(e4));
         pmm_free_page_phys(e4 & PTE_ADDR);
         freed++;
         as->pml4v[i] = 0;
@@ -551,7 +572,7 @@ void aspace_unref(struct aspace *as)
 /* ---- mappings ----------------------------------------------------------- */
 
 /* Region lock held: the mapping containing addr, or NULL. */
-static struct mapping *find(struct aspace *as, uint64_t addr)
+static struct mapping *find(const struct aspace *as, uint64_t addr)
 {
     for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
         struct mapping *m = container_of(n, struct mapping, node);
@@ -563,7 +584,7 @@ static struct mapping *find(struct aspace *as, uint64_t addr)
     return NULL;
 }
 
-static struct mapping *next_of(struct aspace *as, struct mapping *m)
+static struct mapping *next_of(const struct aspace *as, const struct mapping *m)
 {
     return m->node.next == &as->maps ? NULL : container_of(m->node.next, struct mapping, node);
 }
@@ -808,10 +829,12 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     tlb_gather_init(&g);
     for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
         m->flags = flags;
-        if (flags & ASPACE_READ)
-            walk_leaves(as, m->base, mend(m), false, &g, leaves_protect, flags);
-        else
+        if (flags & ASPACE_READ) {
+            const struct leaf_walk w = { leaves_protect, flags, false, &g };
+            walk_leaves(as, m->base, mend(m), &w);
+        } else {
             zap(as, m->base, mend(m), true, &g);   /* no access: x86 can't say "present" */
+        }
     }
     tlb_gather_finish(&g);
     mutex_unlock(&as->lock);

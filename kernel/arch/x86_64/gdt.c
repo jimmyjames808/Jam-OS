@@ -1,3 +1,8 @@
+/* The GDT and TSS. Each CPU has its own GDT (the TSS descriptor differs)
+ * and TSS, whose RSP0 is the kernel stack for entries from user mode and
+ * whose IST slots are the NMI, #DB, double-fault and machine-check stacks.
+ * The BSP runs on static early tables until its per-CPU ones exist. The
+ * segment order is fixed by SYSCALL/SYSRET (see build()). */
 #include <stdint.h>
 #include <jam/cpu.h>
 #include <jam/mm.h>
@@ -8,8 +13,8 @@
 #define IST_STACK_SIZE (16 * 1024)
 
 struct __attribute__((packed)) gdtr {
-    uint16_t limit;
-    uint64_t base;
+    uint16_t limit;   /* bytes of the table - 1 */
+    uint64_t base;    /* its linear address */
 };
 
 /* Early BSP tables, used only until gdt_init_cpu runs on the BSP. */
@@ -37,7 +42,7 @@ static void build(uint64_t *gdt, struct tss *tss)
     gdt[8] = 0;
 }
 
-static void load(uint64_t *gdt, size_t size)
+static void load(const uint64_t *gdt, size_t size)
 {
     struct gdtr gdtr = { size - 1, (uint64_t)gdt };
     __asm__ volatile(

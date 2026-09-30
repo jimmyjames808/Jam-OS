@@ -31,13 +31,13 @@
  * In the periodic timer mode, or with lapic_oneshot off, each CPU's tick
  * expires its own queue. */
 struct sleepq {
-    spinlock_t       lock;
+    spinlock_t       lock;   /* guards list */
     struct list_node list;   /* struct thread, by wake_at_tsc */
 } __attribute__((aligned(64)));
 static struct sleepq sleepqs[MAX_CPUS];
 
 /* The owning CPU, queue lock held: arm the timer for the head. */
-static void sleepq_arm(struct sleepq *q)
+static void sleepq_arm(const struct sleepq *q)
 {
     lapic_timer_set(list_empty(&q->list)
                         ? 0 : list_first(&q->list, struct thread, sleep_node)->wake_at_tsc);
@@ -51,7 +51,7 @@ void sleepq_init(uint32_t cpu)
 
 /* ---- blocking ----------------------------------------------------------- */
 
-static bool cancel_seen(struct thread *t)
+static bool cancel_seen(const struct thread *t)
 {
     return __atomic_load_n(&t->cancel_pending, __ATOMIC_ACQUIRE);
 }
@@ -132,14 +132,14 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
 void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
+    thread_set_state(current_thread(), T_BLOCKED);
     block_prepared(lock, irqflags, deadline_ns, false);
 }
 
 status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns)
 {
     preempt_disable();   /* re-enabled in block_prepared */
-    current_thread()->state = T_BLOCKED;
+    thread_set_state(current_thread(), T_BLOCKED);
     return block_prepared(lock, irqflags, deadline_ns, true) ? ERR_CANCELED : OK;
 }
 
@@ -208,7 +208,7 @@ static bool wq_wait(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
     if (!same)
         f = spin_lock_irqsave(&wq->lock);
     list_add_tail(&wq->waiters, &t->wait_node);
-    t->state = T_BLOCKED;   /* before the wq lock drops: wakers pop under it */
+    thread_set_state(t, T_BLOCKED);   /* before the wq lock drops: wakers pop under it */
     if (!same)
         spin_unlock_irqrestore(&wq->lock, f);
     bool cancelled = block_prepared(lock, irqflags, deadline_ns, cancellable);
@@ -268,7 +268,7 @@ void waitqueue_wake_all(struct waitqueue *wq) { wake(wq, true); }
  * owner before waking it, so nobody can take the mutex in between.
  * Waiters that are still on the queue have mutex_since set (they set it
  * under m->lock before queueing and clear it after leaving). */
-volatile uint64_t mutex_handoffs;   /* statistics */
+uint64_t mutex_handoffs;   /* statistics */
 
 static void mutex_pass_on(struct mutex *m)
 {
@@ -283,7 +283,7 @@ static void mutex_pass_on(struct mutex *m)
     if (oldest && uptime_ns() - oldest->mutex_since >= MUTEX_HANDOFF_NS) {
         list_del(&oldest->wait_node);
         m->owner = oldest;
-        mutex_handoffs++;
+        __atomic_add_fetch(&mutex_handoffs, 1, __ATOMIC_RELAXED);
         thread_wake(oldest);
     } else if (!list_empty(&wq->waiters)) {
         struct thread *t = list_first(&wq->waiters, struct thread, wait_node);

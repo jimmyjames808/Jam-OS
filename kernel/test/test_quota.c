@@ -96,8 +96,8 @@ KTEST(quota_job_chain_bounded)
 /* A VMO's own table pages (mid and leaf) are charged to its job like
  * its pages, and a commit the job refuses builds no table. The attack: a
  * job allowed 0 pages asks for one page every 2 MiB of a 64 GiB
- * VMO; each refused commit used to leave a 4 KiB leaf behind (128 MiB of
- * kernel memory per VMO handle, nothing charged). */
+ * VMO; if a refused commit left its 4 KiB leaf behind, that would be
+ * 128 MiB of kernel memory per VMO handle, nothing charged. */
 KTEST(quota_vmo_tables_charged)
 {
     struct job *j = kt_fresh_job();

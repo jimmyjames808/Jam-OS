@@ -1,3 +1,5 @@
+/* Bringing up the other CPUs (arch/x86_64/smp.c): the BSP's own per-CPU
+ * state first, then every AP released through Limine's MP request. */
 #pragma once
 
 #include <jam/boot.h>

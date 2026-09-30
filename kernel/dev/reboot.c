@@ -55,7 +55,8 @@ static void acpi_reset(void)
 void reboot_describe(char *buf, size_t size)
 {
     if (acpi.has_reset_reg)
-        ksnprintf(buf, size, "ACPI reset register (%s 0x%lx = 0x%x), then 0xCF9, 8042, triple fault",
+        ksnprintf(buf, size,
+                  "ACPI reset register (%s 0x%lx = 0x%x), then 0xCF9, 8042, triple fault",
                   acpi.reset_reg.space == 1 ? "io" : acpi.reset_reg.space == 0 ? "mem" : "pci",
                   acpi.reset_reg.address, acpi.reset_value);
     else
@@ -83,6 +84,7 @@ _Noreturn void machine_reboot(void)
     outb(0x64, 0xfe);
     delay_ms(50);
 
+    /* An empty IDT: the int3 below then triple-faults, which resets the CPU. */
     static const struct __attribute__((packed)) { uint16_t limit; uint64_t base; } none = { 0, 0 };
     __asm__ volatile("lidt %0; int3" ::"m"(none));
     for (;;)

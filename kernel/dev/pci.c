@@ -44,11 +44,11 @@
 /* ---- state ----------------------------------------------------------------- */
 
 struct ecam_seg {
-    uint64_t phys;            /* ECAM base (bus 0's address, per MCFG) */
-    uint16_t segment;
-    uint8_t  bus_start, bus_end;
-    volatile uint8_t *bus_va[256];   /* uncached 1 MiB per bus, NULL = not walked */
-    uint8_t  visited[32];            /* bus bitmap: loop guard for the walk */
+    uint64_t phys;                  /* ECAM base (bus 0's address, per MCFG) */
+    uint16_t segment;               /* PCI segment group */
+    uint8_t  bus_start, bus_end;    /* buses this ECAM range covers */
+    volatile uint8_t *bus_va[256];  /* uncached 1 MiB per bus, NULL = not walked */
+    uint8_t  visited[32];           /* bus bitmap: loop guard for the walk */
 };
 
 static struct ecam_seg segs[ACPI_MAX_ECAM];
@@ -102,7 +102,7 @@ static struct ecam_seg *seg_of(uint16_t segment)
     return NULL;
 }
 
-static volatile uint8_t *fn_cfg(struct ecam_seg *s, uint8_t bus, uint8_t dev, uint8_t fn)
+static volatile uint8_t *fn_cfg(const struct ecam_seg *s, uint8_t bus, uint8_t dev, uint8_t fn)
 {
     if (!s || bus < s->bus_start || bus > s->bus_end || !s->bus_va[bus] || dev > 31 || fn > 7)
         return NULL;
@@ -128,7 +128,7 @@ uint32_t pci_cfg_read_bdf(uint16_t segment, uint8_t bus, uint8_t dev, uint8_t fn
 /* Standard list: bounded and cycle-checked (a visited bitmap over the 64
  * dword slots), so a garbage or looping list ends. Caller holds the lock or
  * runs at init. */
-static uint16_t find_std_cap(struct pci_dev *d, uint8_t id)
+static uint16_t find_std_cap(const struct pci_dev *d, uint8_t id)
 {
     if (!(raw_read(d->cfg, CFG_STATUS, 2) & STATUS_CAPS))
         return 0;
@@ -152,7 +152,7 @@ static uint16_t find_std_cap(struct pci_dev *d, uint8_t id)
 
 /* Extended list (PCIe functions only): from 0x100, same guards over the
  * 960 dword slots of 0x100-0xfff. */
-static uint16_t find_ext_cap(struct pci_dev *d, uint16_t id)
+static uint16_t find_ext_cap(const struct pci_dev *d, uint16_t id)
 {
     if (!d->cap_pcie)
         return 0;
@@ -186,9 +186,12 @@ uint16_t pci_find_cap(struct pci_dev *d, uint32_t id)
 
 /* ---- the walk -------------------------------------------------------------- */
 
-static bool bus_seen(struct ecam_seg *s, uint8_t bus) { return s->visited[bus / 8] & (1u << (bus % 8)); }
+static bool bus_seen(const struct ecam_seg *s, uint8_t bus)
+{
+    return s->visited[bus / 8] & (1u << (bus % 8));
+}
 
-static void add_function(struct ecam_seg *s, uint8_t bus, uint8_t dev, uint8_t fn)
+static void add_function(const struct ecam_seg *s, uint8_t bus, uint8_t dev, uint8_t fn)
 {
     if (ndevs == PCI_MAX_DEVS) {
         table_full = true;
@@ -551,7 +554,7 @@ struct pci_dev *pci_get(uint32_t index)
     return index < ndevs ? &devs[index] : NULL;
 }
 
-volatile bool pci_hide_in_use;
+bool pci_hide_in_use;
 
 bool pci_in_use(const struct pci_dev *d)
 {
@@ -562,7 +565,7 @@ bool pci_in_use(const struct pci_dev *d)
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n)
 {
     for (uint32_t i = 0; i < ndevs; i++)
-        if ((!pci_hide_in_use || !pci_in_use(&devs[i])) &&
+        if ((!__atomic_load_n(&pci_hide_in_use, __ATOMIC_RELAXED) || !pci_in_use(&devs[i])) &&
             (vendor == 0xffff || devs[i].info.vendor == vendor) &&
             (device == 0xffff || devs[i].info.device == device) && n-- == 0)
             return &devs[i];

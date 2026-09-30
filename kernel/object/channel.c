@@ -23,18 +23,18 @@
 #include <jam/time.h>
 
 struct chan_pair {
-    spinlock_t        lock;
+    spinlock_t        lock;    /* "channel pair": guards both endpoints' queues and state */
     struct channel   *ep[2];   /* NULL once that endpoint has closed */
-    volatile uint32_t refs;    /* one per endpoint not yet destroyed */
+    uint32_t          refs;    /* one per endpoint not yet destroyed */
 };
 
 /* One queued message. The khandles follow the header, then the bytes. */
 struct chan_msg {
-    struct list_node node;
-    uint32_t         nbytes;
-    uint32_t         nhandles;
-    struct job      *job;      /* the sender's job, charged `charge` bytes (a reference) */
-    uint64_t         charge;
+    struct list_node node;      /* on the receiver's queue */
+    uint32_t         nbytes;    /* message bytes */
+    uint32_t         nhandles;  /* khandles carried */
+    struct job      *job;       /* the sender's job, charged `charge` bytes (a reference) */
+    uint64_t         charge;    /* bytes charged to job */
 };
 
 static inline struct khandle *msg_handles(struct chan_msg *m)
@@ -50,25 +50,25 @@ static inline uint8_t *msg_bytes(struct chan_msg *m)
 /* A thread inside channel_call, waiting on its own endpoint for the reply
  * carrying txid. The writer that delivers the reply unlinks it. */
 struct chan_waiter {
-    struct list_node node;
-    uint32_t         txid;
-    struct thread   *thread;
-    struct chan_msg *reply;
+    struct list_node node;     /* on the endpoint's callers list */
+    uint32_t         txid;     /* the reply it waits for */
+    struct thread   *thread;   /* the caller */
+    struct chan_msg *reply;    /* set by the writer that delivers it */
 };
 
 struct channel {
-    struct kobject    base;
-    struct chan_pair *pair;
+    struct kobject    base;          /* OBJ_CHANNEL */
+    struct chan_pair *pair;          /* shared with the peer */
     uint32_t          side;          /* our index in pair->ep */
     struct list_node  queue;         /* chan_msg, oldest first */
-    uint32_t          nqueued;
+    uint32_t          nqueued;       /* messages on queue (at most CHANNEL_MAX_QUEUED) */
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
 };
 
-static volatile uint64_t live_endpoints;
-static volatile uint32_t next_txid;
+static uint64_t live_endpoints;
+static uint32_t next_txid;
 
 uint64_t channel_live_count(void)
 {
@@ -173,7 +173,7 @@ static void msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *hand
 
 /* With ch->base.lock held: kick every channel_call waiting on ch so it
  * re-checks closed / peer_closed. Waiters unlink themselves. */
-static void wake_callers_locked(struct channel *ch)
+static void wake_callers_locked(const struct channel *ch)
 {
     for (struct list_node *n = ch->callers.next; n != &ch->callers; n = n->next)
         thread_wake(container_of(n, struct chan_waiter, node)->thread);
@@ -292,30 +292,14 @@ static bool queue_holds_channel(struct channel *ep)
     return found;
 }
 
-/* Queue m on ch's peer, or hand it to the channel_call there waiting for
- * its txid. On success the message belongs to the peer; on failure it is
- * still the caller's. */
-static status_t send_msg(struct channel *ch, struct chan_msg *m)
+/* ERR_NOT_SUPPORTED if m carries something that can't be sent on ch, else
+ * OK. Called with pair->lock held. */
+static status_t check_carried(struct channel *ch, struct channel *peer, struct chan_msg *m)
 {
-    struct chan_pair *pair = ch->pair;
-    status_t st = OK;
-    bool filled = false;
-    uint64_t f = spin_lock_irqsave(&pair->lock);
-    struct channel *peer = pair->ep[!ch->side];
-    if (pair->ep[ch->side] != ch) {
-        st = ERR_BAD_STATE;   /* we closed (a racing handle_close) */
-        goto out;
-    }
-    if (!peer) {
-        st = ERR_PEER_CLOSED;
-        goto out;
-    }
     for (uint32_t i = 0; i < m->nhandles; i++) {
         struct kobject *o = msg_handles(m)[i].obj;
-        if (o == &ch->base || o == &peer->base) {
-            st = ERR_NOT_SUPPORTED;
-            goto out;
-        }
+        if (o == &ch->base || o == &peer->base)
+            return ERR_NOT_SUPPORTED;
         /* Refuse to queue a channel endpoint whose own queue already holds a
          * channel endpoint. Every reference cycle among channels has to be
          * closed by an edge that carries such an endpoint (the one whose
@@ -326,24 +310,30 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
          * We take o's object lock here having only pair->lock held ("channel
          * pair" -> "channel"), and drop it before locking the peer, so no two
          * "channel" locks are ever held at once. */
-        if (o->type == OBJ_CHANNEL && queue_holds_channel((struct channel *)o)) {
-            st = ERR_NOT_SUPPORTED;
-            goto out;
-        }
+        if (o->type == OBJ_CHANNEL && queue_holds_channel((struct channel *)o))
+            return ERR_NOT_SUPPORTED;
     }
+    return OK;
+}
 
-    spin_lock(&peer->base.lock);
-    uint32_t txid = msg_txid(m);
-    struct chan_waiter *w = NULL;
-    if (txid) {
-        for (struct list_node *n = peer->callers.next; n != &peer->callers; n = n->next) {
-            struct chan_waiter *c = container_of(n, struct chan_waiter, node);
-            if (c->txid == txid) {
-                w = c;
-                break;
-            }
-        }
+/* peer's lock held: the channel_call waiting on peer for txid, or NULL. */
+static struct chan_waiter *find_caller_locked(struct channel *peer, uint32_t txid)
+{
+    for (struct list_node *n = peer->callers.next; n != &peer->callers; n = n->next) {
+        struct chan_waiter *c = container_of(n, struct chan_waiter, node);
+        if (c->txid == txid)
+            return c;
     }
+    return NULL;
+}
+
+/* peer's lock held (and the pair lock): give m to the caller waiting for
+ * its txid, or queue it. *filled: the queue just became full. */
+static status_t hand_over_locked(struct channel *ch, struct channel *peer, struct chan_msg *m,
+                                 bool *filled)
+{
+    uint32_t txid = msg_txid(m);
+    struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
     if (w) {
         w->reply = m;
         list_del(&w->node);
@@ -357,14 +347,37 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
             thread_wake_sync(w->thread);
         else
             thread_wake(w->thread);
-    } else if (peer->nqueued >= CHANNEL_MAX_QUEUED) {
-        st = ERR_SHOULD_WAIT;
-    } else {
-        list_add_tail(&peer->queue, &m->node);
-        filled = ++peer->nqueued == CHANNEL_MAX_QUEUED;
-        kobject_signal_locked(&peer->base, 0, SIG_READABLE);
+        return OK;
     }
-    spin_unlock(&peer->base.lock);
+    if (peer->nqueued >= CHANNEL_MAX_QUEUED)
+        return ERR_SHOULD_WAIT;
+    list_add_tail(&peer->queue, &m->node);
+    *filled = ++peer->nqueued == CHANNEL_MAX_QUEUED;
+    kobject_signal_locked(&peer->base, 0, SIG_READABLE);
+    return OK;
+}
+
+/* Queue m on ch's peer, or hand it to the channel_call there waiting for
+ * its txid. On success the message belongs to the peer; on failure it is
+ * still the caller's. */
+static status_t send_msg(struct channel *ch, struct chan_msg *m)
+{
+    struct chan_pair *pair = ch->pair;
+    status_t st;
+    bool filled = false;
+    uint64_t f = spin_lock_irqsave(&pair->lock);
+    struct channel *peer = pair->ep[!ch->side];
+    if (pair->ep[ch->side] != ch)
+        st = ERR_BAD_STATE;   /* we closed (a racing handle_close) */
+    else if (!peer)
+        st = ERR_PEER_CLOSED;
+    else
+        st = check_carried(ch, peer, m);
+    if (st == OK) {
+        spin_lock(&peer->base.lock);
+        st = hand_over_locked(ch, peer, m, &filled);
+        spin_unlock(&peer->base.lock);
+    }
     if (filled) {
         /* The peer's queue is full: we are not writable until a read makes
          * room. Still under the pair lock, which orders this against the
@@ -373,7 +386,6 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
         kobject_signal_locked(&ch->base, SIG_WRITABLE, 0);
         spin_unlock(&ch->base.lock);
     }
-out:
     spin_unlock_irqrestore(&pair->lock, f);
     return st;
 }

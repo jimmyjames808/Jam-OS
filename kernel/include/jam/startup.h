@@ -32,14 +32,14 @@ enum startup_role {
 };
 
 struct startup_msg {
-    uint32_t txid;       /* channel convention: first 4 bytes; 0 here */
-    uint32_t magic;      /* STARTUP_MAGIC */
-    uint32_t version;    /* STARTUP_VERSION */
-    uint32_t argc;
-    uint32_t envc;
-    uint32_t nhandles;   /* handles carried by the message, in order */
-    uint32_t roles[STARTUP_MAX_HANDLES];   /* enum startup_role of handle i */
-    uint32_t strings_len;
+    uint32_t txid;                        /* channel convention: first 4 bytes; 0 here */
+    uint32_t magic;                       /* STARTUP_MAGIC */
+    uint32_t version;                     /* STARTUP_VERSION */
+    uint32_t argc;                        /* argv strings after the struct */
+    uint32_t envc;                        /* environment strings after them */
+    uint32_t nhandles;                    /* handles carried by the message, in order */
+    uint32_t roles[STARTUP_MAX_HANDLES];  /* enum startup_role of handle i */
+    uint32_t strings_len;                 /* bytes of strings after the struct */
     /* then strings_len bytes: argc argv strings, then envc "KEY=value"
      * strings, each NUL-terminated */
 };

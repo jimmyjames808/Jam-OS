@@ -4,25 +4,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Every ACPI table starts with this (ACPI 6.5, 5.2.6). */
 struct __attribute__((packed)) acpi_header {
-    char     signature[4];
-    uint32_t length;
-    uint8_t  revision;
-    uint8_t  checksum;
-    char     oem_id[6];
-    char     oem_table_id[8];
-    uint32_t oem_revision;
-    uint32_t creator_id;
-    uint32_t creator_revision;
+    char     signature[4];       /* "APIC", "FACP", "HPET", "MCFG", ... */
+    uint32_t length;             /* bytes, header included */
+    uint8_t  revision;           /* table revision */
+    uint8_t  checksum;           /* all bytes of the table sum to 0 */
+    char     oem_id[6];          /* the firmware vendor */
+    char     oem_table_id[8];    /* the vendor's name for the table */
+    uint32_t oem_revision;       /* the vendor's table version */
+    uint32_t creator_id;         /* the tool that built the table */
+    uint32_t creator_revision;   /* that tool's version */
 };
 
 /* Generic Address Structure. */
 struct __attribute__((packed)) acpi_gas {
-    uint8_t  space;   /* 0 = memory, 1 = I/O port */
-    uint8_t  bit_width;
-    uint8_t  bit_offset;
-    uint8_t  access_size;
-    uint64_t address;
+    uint8_t  space;        /* 0 = memory, 1 = I/O port */
+    uint8_t  bit_width;    /* bits of the register (0 = not given) */
+    uint8_t  bit_offset;   /* where the value starts in it */
+    uint8_t  access_size;  /* 1 byte .. 4 qword, 0 = any */
+    uint64_t address;      /* in the address space `space` names */
 };
 
 #define ACPI_MAX_CPUS    256
@@ -33,7 +34,7 @@ struct __attribute__((packed)) acpi_gas {
 
 struct acpi_info {
     uint8_t  revision;              /* RSDP revision: 0 = ACPI 1.0 */
-    char     oem_id[7];
+    char     oem_id[7];             /* from the RSDP, NUL-terminated */
 
     /* MADT */
     uint64_t lapic_phys;

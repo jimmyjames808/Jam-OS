@@ -1,3 +1,6 @@
+/* The I/O APICs (arch/x86_64/ioapic.c) and the legacy 8259 PICs, which
+ * are masked for good. The kernel routes only legacy ISA lines through the
+ * I/O APIC (COM1); PCI devices use MSI or MSI-X (dev/pci_msi.c). */
 #pragma once
 
 #include <stdbool.h>

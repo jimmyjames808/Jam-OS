@@ -22,7 +22,8 @@ int64_t sysc_handle_replace(handle_t h, rights_t rights, uint64_t out);
 int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, uint64_t observed);
 int64_t sysc_object_signal(handle_t h, signals_t clear, signals_t set);
 int64_t sysc_channel_create(uint64_t a, uint64_t b);
-int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles, uint32_t nhandles);
+int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
+                           uint32_t nhandles);
 int64_t sysc_channel_read(const struct channel_read_args *args);
 int64_t sysc_channel_call(const struct channel_call_args *args);
 int64_t sysc_event_create(uint64_t out);
@@ -42,21 +43,27 @@ int64_t sysc_vmo_get_size(handle_t h, uint64_t size);
 int64_t sysc_vmo_set_size(handle_t h, uint64_t size);
 int64_t sysc_vmo_commit(handle_t h, uint64_t offset, uint64_t len);
 int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len);
-int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t addr);
+int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags,
+                      uint64_t addr);
 int64_t sysc_vmar_unmap(handle_t vmar, uint64_t addr, uint64_t len);
 int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags);
-int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint32_t flags, uint64_t proc_out, uint64_t vmar_out);
-int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1);
+int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint32_t flags,
+                            uint64_t proc_out, uint64_t vmar_out);
+int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack,
+                           handle_t arg0, uint64_t arg1);
 int64_t sysc_process_kill(handle_t proc);
-int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags, uint64_t out);
-int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1);
+int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,
+                           uint64_t out);
+int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
+                          uint64_t arg1);
 int64_t sysc_job_create(handle_t parent, uint32_t flags, uint64_t out);
 int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 int64_t sysc_job_get_info(handle_t job, uint64_t out);
 int64_t sysc_process_get_info(handle_t proc, uint64_t out);
 int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);
 int64_t sysc_job_kill(handle_t job);
-int64_t sysc_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size, uint64_t out);
+int64_t sysc_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size,
+                             uint64_t out);
 int64_t sysc_pci_enum(handle_t pci, uint32_t index, uint64_t out);
 int64_t sysc_pci_device_open(handle_t pci, uint32_t index, uint64_t out);
 int64_t sysc_pci_config_read(handle_t dev, uint32_t offset, uint32_t width, uint64_t value);
@@ -65,9 +72,11 @@ int64_t sysc_pci_bar_resource(handle_t dev, uint32_t bar, uint64_t out);
 int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable);
 int64_t sysc_interrupt_create_msi(handle_t dev, uint32_t index, uint32_t flags, uint64_t out);
 int64_t sysc_interrupt_ack(handle_t irq);
-int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache, uint64_t out);
+int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache,
+                                 uint64_t out);
 int64_t sysc_dma_cap_create(handle_t dev, uint64_t out);
-int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs, uint64_t pin_id);
+int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs,
+                     uint64_t pin_id);
 int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 int64_t sysc_klog_open(handle_t root, uint64_t out);
 int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap, uint64_t first);
@@ -78,7 +87,8 @@ int64_t sysc_serial_open(handle_t root, uint64_t out);
 int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap);
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len);
 int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on);
-int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles, uint64_t rights, uint32_t nhandles);
+int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
+                                  uint64_t rights, uint32_t nhandles);
 int64_t sysc_sys_info(handle_t root, uint64_t out);
 int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap);
 int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap);

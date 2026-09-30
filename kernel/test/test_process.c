@@ -23,7 +23,7 @@
 #include <jam/userboot.h>
 
 
-extern volatile uint64_t user_faults;
+extern uint64_t user_faults;
 
 /* Start "utest <mode> [arg]" in j with an optional extra handle. */
 static struct process *start(struct job *j, const char *mode, const char *arg,
@@ -156,13 +156,13 @@ KTEST(proc_exit_code_and_startup_message)
 KTEST(proc_fault_kills_the_process)
 {
     struct job *j = kt_fresh_job();
-    uint64_t faults = user_faults;
+    uint64_t faults = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
     struct process_info info = finish(start(j, "nullderef", NULL, NULL));
     KT_ASSERT(info.killed);
     KT_EQ(info.exit_code, PROCESS_KILLED_CODE);
     info = finish(start(j, "execdata", NULL, NULL));
     KT_ASSERT(info.killed);
-    KT_EQ(user_faults, faults + 2);
+    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults + 2);
     kt_job_is_empty(j);
     job_unref(j);
 }
@@ -347,8 +347,8 @@ KTEST(proc_debug_write_rate_limited)
      * while the burst is being printed. In QEMU the console is instant; on
      * the real PC every line also goes to the framebuffer and a real COM1
      * at 115200 baud (~4 ms a line), so the burst alone takes ~0.5 s and
-     * ~25 more lines are legitimately allowed (the first PC run printed
-     * more than a fixed 110 and failed). */
+     * ~25 more lines are legitimately allowed (so a fixed bound of 110
+     * fails on the PC). */
     uint64_t t0 = uptime_ns();
     size_t printed = process_debug_write(p, buf, len, false);
     uint64_t t1 = uptime_ns();
@@ -400,9 +400,9 @@ KTEST(proc_start_window_refuses_other_threads)
     struct khandle arg0 = khandle_from_new((struct kobject *)b, RIGHTS_BASIC | RIGHTS_IO);
 
     window_st = OK;
-    dbg_hooks[DBG_PROCESS_START] = window_hook;
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], window_hook, __ATOMIC_RELEASE);
     status_t st = process_start(p, u1, 0x400000, 0x800000, &arg0, 0, NULL);
-    dbg_hooks[DBG_PROCESS_START] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], NULL, __ATOMIC_RELEASE);
     KT_EQ(window_st, ERR_BAD_STATE);   /* the second start was refused */
     KT_EQ(st, ERR_NO_MEMORY);          /* the first failed "for lack of memory"... */
     KT_ASSERT(arg0.obj == (struct kobject *)b);   /* ...and gave the handle back */

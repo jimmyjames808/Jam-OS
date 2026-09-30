@@ -131,7 +131,7 @@ void vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned fla
 void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 {
     uint64_t start = va, end = va + ALIGN_UP(len, PAGE_SIZE);
-    bool kernel = start >= 0xffff800000000000ull && ipi_ready;
+    bool kernel = start >= 0xffff800000000000ull && __atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE);
     if (kernel && !irqs_enabled())
         panic("vmm: kernel unmap with interrupts off can't shoot down TLBs");
 
@@ -148,11 +148,12 @@ void vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len)
 
     /* Flush the removed range from every CPU's TLB, INCLUDING this one, with
      * preemption disabled across the whole decision. Doing the local flush
-     * and then shooting down only the OTHER CPUs (as before) let a migration
-     * in between move us to a CPU that never got flushed, so a use after
-     * unmap silently kept working. Keeping preemption off pins "this CPU" so
+     * and then shooting down only the OTHER CPUs would let a migration in
+     * between move us to a CPU that never got flushed, so a use after unmap
+     * would silently keep working. Keeping preemption off pins "this CPU" so
      * the local flush plus the remote shootdown together cover everyone
-     * (test: repro_unmap_migrate_stale_tlb). For a non-kernel or pre-SMP unmap only the local flush is needed. */
+     * (test: repro_unmap_migrate_stale_tlb). For a non-kernel or pre-SMP
+     * unmap only the local flush is needed. */
     preempt_disable();
     tlb_flush_local(start, end - start);
     if (kernel) {
@@ -222,7 +223,8 @@ uint64_t vmm_kernel_pml4(void)
     return kernel_pml4;
 }
 
-static void map_kernel_section(const struct boot_info *bi, char *start, char *end, unsigned flags)
+static void map_kernel_section(const struct boot_info *bi, const char *start, const char *end,
+                               unsigned flags)
 {
     uint64_t va = ALIGN_DOWN((uint64_t)start, PAGE_SIZE);
     uint64_t pa = va - bi->kernel_virt_base + bi->kernel_phys_base;
@@ -344,9 +346,9 @@ static uint64_t vmap_reserve_raw(uint64_t len)
  * list is unmapped (its TLB entries were shot down when it was freed) but its
  * page tables stay, so reusing it needs no new tables. Guarded by vmap_lock. */
 struct vslot {
-    struct vslot *next;
+    struct vslot *next;   /* next free slot */
     uint64_t      va;     /* lowest mapped byte (the guard page is below) */
-    uint64_t      size;
+    uint64_t      size;   /* bytes */
 };
 static struct vslot *free_slots;
 
@@ -376,7 +378,7 @@ static void slot_put(struct vslot *s)
  * Every page table is created BEFORE any leaf is written, so a failure
  * leaves no mapping behind to undo (and nothing another CPU could have
  * cached). */
-static bool map_stack_pages(uint64_t va, struct page *chain, uint64_t n, bool may_fail)
+static bool map_stack_pages(uint64_t va, const struct page *chain, uint64_t n, bool may_fail)
 {
     uint64_t f = spin_lock_irqsave(&pt_lock);
     for (uint64_t i = 0; i < n; i++)

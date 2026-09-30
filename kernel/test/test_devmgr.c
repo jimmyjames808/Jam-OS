@@ -49,15 +49,15 @@
 #define DM_MAX_HANDLES 8u
 
 struct dm_req {
-    uint32_t txid, ordinal;
-    uint16_t vendor, device;
-    uint32_t instance;
+    uint32_t txid, ordinal;    /* channel txid; DM_* request */
+    uint16_t vendor, device;   /* the device's PCI ids */
+    uint32_t instance;         /* which instance of it */
 } __attribute__((packed));
 
 struct dm_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t a, b, c, d, e;
+    uint32_t txid;            /* the request's txid */
+    int32_t  status;          /* OK or ERR_* */
+    uint32_t a, b, c, d, e;   /* the reply's values, by request */
 } __attribute__((packed));
 
 /* A devmgr of our own. */
@@ -89,7 +89,7 @@ static bool msi_on(struct pci_dev *d)
 
 /* One call; handles that come back go into hs (up to DM_MAX_HANDLES; NULL:
  * none expected). Returns the reply's status. */
-static status_t dm_call(struct dm *m, uint32_t op, struct dm_rep *r, struct khandle *hs,
+static status_t dm_call(const struct dm *m, uint32_t op, struct dm_rep *r, struct khandle *hs,
                         uint32_t *nh)
 {
     struct dm_req q = { 0, op, op == DM_STATUS ? 0 : EDU_VENDOR, op == DM_STATUS ? 0 : EDU_DEVICE,
@@ -107,9 +107,9 @@ static status_t dm_call(struct dm *m, uint32_t op, struct dm_rep *r, struct khan
 
 /* Start devmgr in a fresh job, as init does (RES_PCI, its control
  * channel), and wait for its first binding pass: edu bound. */
-static void dm_start(struct dm *m, struct pci_dev *d)
+static void dm_start(struct dm *m, const struct pci_dev *d)
 {
-    m->was_managed = d->driver_managed;
+    m->was_managed = __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
     m->job = kt_fresh_job();
     struct kobject *root = resource_root(), *pci;
     KT_EQ(resource_create(root, RES_PCI, 0, 0, &pci), OK);
@@ -139,7 +139,7 @@ static void wait_driver_up(struct pci_dev *d)
 }
 
 /* The bound driver's process (a reference), once it has set up. */
-static struct process *dm_driver(struct dm *m, struct pci_dev *d)
+static struct process *dm_driver(const struct dm *m, struct pci_dev *d)
 {
     struct khandle hs[DM_MAX_HANDLES];
     uint32_t nh = 0;
@@ -165,13 +165,14 @@ static int64_t dm_stop(struct dm *m, struct pci_dev *d)
     struct process_info info;
     process_get_info(m->proc, &info);
     kobject_unref(process_kobject(m->proc));
-    d->driver_managed = m->was_managed;   /* devmgr made it sticky */
+    /* devmgr made it sticky */
+    __atomic_store_n(&d->driver_managed, m->was_managed, __ATOMIC_RELAXED);
     return info.exit_code;
 }
 
 /* Once the test holds nothing of theirs either: devmgr's job (and every
  * driver job below it) must be charged for nothing. */
-static void dm_job_empty(struct dm *m)
+static void dm_job_empty(const struct dm *m)
 {
     kt_job_is_empty(m->job);
     job_unref(m->job);
@@ -256,7 +257,7 @@ struct refusal_ref {
 };
 
 /* After a refused start: nothing of the driver is left. */
-static void check_nothing_left(struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
+static void check_nothing_left(const struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
                                uint32_t kind, uint64_t headroom)
 {
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
@@ -288,7 +289,7 @@ static void lift_hook(void *arg)
 /* Give devmgr's job `headroom` more units of `kind` than it uses without
  * a driver and REBIND, one more unit each round, until a start gets
  * through; every refusal must leave nothing. Returns the rounds refused. */
-static unsigned sweep(struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
+static unsigned sweep(const struct dm *m, struct pci_dev *d, const struct refusal_ref *ref,
                       uint32_t kind)
 {
     struct dm_rep r;
@@ -296,9 +297,9 @@ static unsigned sweep(struct dm *m, struct pci_dev *d, const struct refusal_ref 
         KT_EQ(job_set_limit(m->job, kind, ref->used[kind] + h), OK);
         lift_job = m->job;
         lift_kind = kind;
-        dbg_hooks[DBG_PROCESS_START] = lift_hook;
+        __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], lift_hook, __ATOMIC_RELEASE);
         status_t st = dm_call(m, DM_REBIND, &r, NULL, NULL);
-        dbg_hooks[DBG_PROCESS_START] = NULL;
+        __atomic_store_n(&dbg_hooks[DBG_PROCESS_START], NULL, __ATOMIC_RELEASE);
         lift_job = NULL;
         KT_EQ(job_set_limit(m->job, kind, JOB_NO_LIMIT), OK);
         if (st == OK) {

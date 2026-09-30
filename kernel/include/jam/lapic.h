@@ -1,3 +1,7 @@
+/* The local APIC (arch/x86_64/lapic.c): x2APIC or xAPIC, IPIs and NMIs,
+ * and the per-CPU timer that drives both the scheduler tick and the
+ * one-shot sleeper deadlines. Each function works on the calling CPU's own
+ * APIC; call with interrupts off where it says so. */
 #pragma once
 
 #include <stdbool.h>
@@ -31,8 +35,7 @@ const char *lapic_timer_mode(void);
  * "nooneshot"); lapic_timer_has_oneshot says whether the mode can do them. */
 void     lapic_timer_set(uint64_t when_tsc);
 bool     lapic_timer_has_oneshot(void);
-extern volatile bool lapic_oneshot;
-extern volatile uint64_t lapic_early_irqs;
+extern bool lapic_oneshot;
 
-extern volatile uint64_t lapic_errors;
-extern volatile uint32_t lapic_last_esr;
+extern uint64_t lapic_errors;
+extern uint32_t lapic_last_esr;

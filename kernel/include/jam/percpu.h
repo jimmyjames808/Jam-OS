@@ -17,13 +17,13 @@ struct thread;
 enum core_type { CORE_UNKNOWN, CORE_PERFORMANCE, CORE_EFFICIENCY };
 
 struct __attribute__((packed)) tss {
-    uint32_t reserved0;
-    uint64_t rsp[3];
-    uint64_t reserved1;
-    uint64_t ist[7];
-    uint64_t reserved2;
-    uint16_t reserved3;
-    uint16_t iopb_offset;
+    uint32_t reserved0;     /* 0 */
+    uint64_t rsp[3];        /* stacks for entries from rings 0-2; rsp[0] = kernel_rsp */
+    uint64_t reserved1;     /* 0 */
+    uint64_t ist[7];        /* IST stacks (IST_*), picked by IDT gates */
+    uint64_t reserved2;     /* 0 */
+    uint16_t reserved3;     /* 0 */
+    uint16_t iopb_offset;   /* I/O bitmap offset; past the end = none */
 };
 
 struct cpu {
@@ -32,28 +32,28 @@ struct cpu {
      * register, at fixed offsets (jam/entry_asm.h). */
     uint64_t       user_rsp;      /* user RSP while the syscall frame is built */
     uint64_t       kernel_rsp;    /* current thread's kernel stack top (= TSS rsp0) */
-    uint32_t       index;         /* 0 = BSP, dense */
-    uint32_t       lapic_id;
-    uint32_t       acpi_uid;
-    enum core_type type;
-    uint32_t       core_id;       /* x2APIC id with the SMT bits dropped */
-    uint32_t       smt_id;
-    volatile bool  online;
-    volatile uint64_t ticks;
+    uint32_t       index;                                /* 0 = BSP, dense */
+    uint32_t       lapic_id;                             /* local APIC id (x2APIC id on the PC) */
+    uint32_t       acpi_uid;      /* ACPI processor UID (MADT), for its NMI pins */
+    enum core_type type;                                 /* P-core or E-core (CPUID 0x1a) */
+    uint32_t       core_id;                              /* x2APIC id with the SMT bits dropped */
+    uint32_t       smt_id;                               /* thread within its core (the SMT bits) */
+    bool           online;        /* running the scheduler: may take IPIs and threads */
+    uint64_t          ticks;      /* scheduler ticks on this CPU since it came up */
     /* Timer (lapic.c), absolute TSC values, touched only by this CPU
      * with interrupts off: the next scheduler tick, the earliest sleeper
      * deadline (UINT64_MAX: none), and what the timer is armed for. */
     uint64_t       tick_deadline, timer_deadline, timer_armed;
-    void          *kstack_top;
+    void          *kstack_top;    /* the stack it started on; its idle thread keeps it */
 
     /* Scheduling state. */
-    uint32_t       preempt_count;   /* >0: this CPU must not switch threads */
-    uint32_t       irq_depth;       /* >0: inside an interrupt handler */
-    volatile bool  need_resched;    /* set locally or by a reschedule IPI */
+    uint32_t       preempt_count;                        /* >0: this CPU must not switch threads */
+    uint32_t       irq_depth;                            /* >0: inside an interrupt handler */
+    bool           need_resched;                         /* set locally or by a reschedule IPI */
     /* The idle thread is polling need_resched and its run queue (spin
      * before idle): a remote wakeup needs no IPI. See idle_loop. */
-    volatile bool  idle_polling;
-    struct thread *current;
+    bool           idle_polling;
+    struct thread *current;                              /* the thread running here */
 
     /* Lock checker: locks held right now, innermost last. */
     uint32_t         held_depth;
@@ -65,16 +65,16 @@ struct cpu {
     uint32_t       wd_stale_seconds;
 
     /* Statistics. */
-    volatile uint64_t switches, steals, ipis;
-    volatile uint64_t polled_wakes;   /* wakeups that found this CPU polling: no IPI */
+    uint64_t          switches, steals, ipis;
+    uint64_t          polled_wakes;   /* wakeups that found this CPU polling: no IPI */
     /* CPU time (sched.c, for the shell): the TSC at the last switch (0 until
      * the run queue is online), the idle thread's cycles up to then, and
      * whether the idle thread runs now. Written by this CPU only. */
-    volatile uint64_t switch_tsc, idle_tsc;
-    volatile bool     idle_now;
+    uint64_t          switch_tsc, idle_tsc;
+    bool              idle_now;
 
-    uint64_t       gdt[9] __attribute__((aligned(16)));
-    struct tss     tss;
+    uint64_t       gdt[9] __attribute__((aligned(16)));  /* this CPU's GDT (gdt.c) */
+    struct tss     tss;           /* this CPU's TSS (its descriptor is in gdt) */
 };
 
 extern struct cpu *cpus[MAX_CPUS];
@@ -125,6 +125,29 @@ static inline uint32_t percpu_preempt_dec(void)
     __asm__ volatile("decl %%gs:%c1\n\tmovl %%gs:%c1, %0"
                      : "=r"(v) : "i"(PERCPU_OFF(preempt_count)) : "memory");
     return v;
+}
+
+/* Fields of a CPU that other CPUs read without a lock. `online` is set once
+ * by the CPU itself (a release store in ap_main), so it is read with an
+ * acquire; the others are relaxed, as they only decide when to look again. */
+static inline bool cpu_online(const struct cpu *c)
+{
+    return __atomic_load_n(&c->online, __ATOMIC_ACQUIRE);
+}
+
+static inline bool cpu_need_resched(const struct cpu *c)
+{
+    return __atomic_load_n(&c->need_resched, __ATOMIC_RELAXED);
+}
+
+static inline void cpu_set_need_resched(struct cpu *c, bool v)
+{
+    __atomic_store_n(&c->need_resched, v, __ATOMIC_RELAXED);
+}
+
+static inline uint64_t cpu_ticks(const struct cpu *c)
+{
+    return __atomic_load_n(&c->ticks, __ATOMIC_RELAXED);
 }
 
 /* Load this CPU's GDT/TSS/IDT and point GS at it. */

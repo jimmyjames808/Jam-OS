@@ -60,7 +60,8 @@ static int64_t call_handle_replace(const struct syscall_frame *f)
 
 static int64_t call_object_wait_one(const struct syscall_frame *f)
 {
-    return sysc_object_wait_one((handle_t)f->args[0], (signals_t)f->args[1], f->args[2], f->args[3]);
+    return sysc_object_wait_one((handle_t)f->args[0], (signals_t)f->args[1], f->args[2],
+                                f->args[3]);
 }
 
 static int64_t call_object_signal(const struct syscall_frame *f)
@@ -75,7 +76,8 @@ static int64_t call_channel_create(const struct syscall_frame *f)
 
 static int64_t call_channel_write(const struct syscall_frame *f)
 {
-    return sysc_channel_write((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3], (uint32_t)f->args[4]);
+    return sysc_channel_write((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3],
+                              (uint32_t)f->args[4]);
 }
 
 static int64_t call_channel_read(const struct syscall_frame *f)
@@ -126,7 +128,8 @@ static int64_t call_port_create(const struct syscall_frame *f)
 
 static int64_t call_port_bind(const struct syscall_frame *f)
 {
-    return sysc_port_bind((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], (signals_t)f->args[3], (uint32_t)f->args[4]);
+    return sysc_port_bind((handle_t)f->args[0], (handle_t)f->args[1], f->args[2],
+                          (signals_t)f->args[3], (uint32_t)f->args[4]);
 }
 
 static int64_t call_port_unbind(const struct syscall_frame *f)
@@ -181,7 +184,8 @@ static int64_t call_vmo_decommit(const struct syscall_frame *f)
 
 static int64_t call_vmar_map(const struct syscall_frame *f)
 {
-    return sysc_vmar_map((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3], (uint32_t)f->args[4], f->args[5]);
+    return sysc_vmar_map((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3],
+                         (uint32_t)f->args[4], f->args[5]);
 }
 
 static int64_t call_vmar_unmap(const struct syscall_frame *f)
@@ -196,12 +200,14 @@ static int64_t call_vmar_protect(const struct syscall_frame *f)
 
 static int64_t call_process_create(const struct syscall_frame *f)
 {
-    return sysc_process_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3], f->args[4], f->args[5]);
+    return sysc_process_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                               f->args[4], f->args[5]);
 }
 
 static int64_t call_process_start(const struct syscall_frame *f)
 {
-    return sysc_process_start((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3], (handle_t)f->args[4], f->args[5]);
+    return sysc_process_start((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3],
+                              (handle_t)f->args[4], f->args[5]);
 }
 
 static int64_t call_process_kill(const struct syscall_frame *f)
@@ -211,7 +217,8 @@ static int64_t call_process_kill(const struct syscall_frame *f)
 
 static int64_t call_thread_create(const struct syscall_frame *f)
 {
-    return sysc_thread_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3], f->args[4]);
+    return sysc_thread_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                              f->args[4]);
 }
 
 static int64_t call_thread_start(const struct syscall_frame *f)
@@ -251,7 +258,8 @@ static int64_t call_job_kill(const struct syscall_frame *f)
 
 static int64_t call_resource_create(const struct syscall_frame *f)
 {
-    return sysc_resource_create((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2], f->args[3], f->args[4]);
+    return sysc_resource_create((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2], f->args[3],
+                                f->args[4]);
 }
 
 static int64_t call_pci_enum(const struct syscall_frame *f)
@@ -266,12 +274,14 @@ static int64_t call_pci_device_open(const struct syscall_frame *f)
 
 static int64_t call_pci_config_read(const struct syscall_frame *f)
 {
-    return sysc_pci_config_read((handle_t)f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2], f->args[3]);
+    return sysc_pci_config_read((handle_t)f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2],
+                                f->args[3]);
 }
 
 static int64_t call_pci_config_write(const struct syscall_frame *f)
 {
-    return sysc_pci_config_write((handle_t)f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2], (uint32_t)f->args[3]);
+    return sysc_pci_config_write((handle_t)f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2],
+                                 (uint32_t)f->args[3]);
 }
 
 static int64_t call_pci_bar_resource(const struct syscall_frame *f)
@@ -286,7 +296,8 @@ static int64_t call_pci_bus_master(const struct syscall_frame *f)
 
 static int64_t call_interrupt_create_msi(const struct syscall_frame *f)
 {
-    return sysc_interrupt_create_msi((handle_t)f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2], f->args[3]);
+    return sysc_interrupt_create_msi((handle_t)f->args[0], (uint32_t)f->args[1],
+                                     (uint32_t)f->args[2], f->args[3]);
 }
 
 static int64_t call_interrupt_ack(const struct syscall_frame *f)
@@ -296,7 +307,8 @@ static int64_t call_interrupt_ack(const struct syscall_frame *f)
 
 static int64_t call_vmo_create_physical(const struct syscall_frame *f)
 {
-    return sysc_vmo_create_physical((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3], f->args[4]);
+    return sysc_vmo_create_physical((handle_t)f->args[0], f->args[1], f->args[2],
+                                    (uint32_t)f->args[3], f->args[4]);
 }
 
 static int64_t call_dma_cap_create(const struct syscall_frame *f)
@@ -306,7 +318,8 @@ static int64_t call_dma_cap_create(const struct syscall_frame *f)
 
 static int64_t call_vmo_pin(const struct syscall_frame *f)
 {
-    return sysc_vmo_pin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3], f->args[4], f->args[5]);
+    return sysc_vmo_pin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3],
+                        f->args[4], f->args[5]);
 }
 
 static int64_t call_vmo_unpin(const struct syscall_frame *f)
@@ -361,7 +374,8 @@ static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
 
 static int64_t call_channel_write_rights(const struct syscall_frame *f)
 {
-    return sysc_channel_write_rights((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3], f->args[4], (uint32_t)f->args[5]);
+    return sysc_channel_write_rights((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2],
+                                     f->args[3], f->args[4], (uint32_t)f->args[5]);
 }
 
 static int64_t call_sys_info(const struct syscall_frame *f)
@@ -371,7 +385,8 @@ static int64_t call_sys_info(const struct syscall_frame *f)
 
 static int64_t call_cpu_stat(const struct syscall_frame *f)
 {
-    return sysc_cpu_stat((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3]);
+    return sysc_cpu_stat((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2],
+                         (uint32_t)f->args[3]);
 }
 
 static int64_t call_proc_list(const struct syscall_frame *f)

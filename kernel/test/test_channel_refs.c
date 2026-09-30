@@ -126,8 +126,8 @@ KTEST(auditC_sys_channel_cycle_refused)
 /* e[i]'s queue holds e[i+1]; releasing e[0] closes the whole chain. This is a
  * legitimate (acyclic) structure, so it is built top-down -- each endpoint is
  * sent while its own queue is still empty, which is allowed (only cycles
- * are refused). channel_close used to recurse one stack frame per level
- * and overflow the 64 KiB kernel stack; now it drains iteratively. */
+ * are refused). Closing it recursively would take one stack frame per
+ * level and overflow the 64 KiB kernel stack; it must drain iteratively. */
 enum { AUDIT_DEPTH = 1000 };
 
 KTEST(auditB_channel_deep_close_iterative)
@@ -158,8 +158,8 @@ KTEST(auditB_channel_deep_close_iterative)
 /* A deep chain that alternates channel and port: channel head[i]'s queue holds
  * port p[i], and p[i] is bound to head[i+1] (so it holds the only reference to
  * it). Releasing head[0] cascades channel_close -> release port -> port_destroy
- * -> unref next channel -> ..., which used to recurse through BOTH object
- * types. It now drains iteratively too. */
+ * -> unref next channel -> ..., through BOTH object types, which must drain
+ * iteratively too. */
 enum { ALT_DEPTH = 500 };
 
 KTEST(auditB2_alternating_channel_port_iterative)

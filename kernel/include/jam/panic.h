@@ -1,3 +1,6 @@
+/* panic and ASSERT: for broken kernel invariants only, never for anything
+ * user code can cause. A panic stops every CPU, prints the reason and a
+ * backtrace on the serial port and the screen, and halts (debug/panic.c). */
 #pragma once
 
 _Noreturn void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

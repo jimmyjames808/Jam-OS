@@ -17,10 +17,10 @@
 #define PP_ROUNDS 200
 
 static struct {
-    spinlock_t       lock;
-    struct waitqueue wq;
+    spinlock_t       lock;   /* guards turn */
+    struct waitqueue wq;     /* each side waits here for its move */
     volatile int     turn;   /* 0: pinger's move, 1: ponger's */
-    volatile bool    stop;
+    volatile bool    stop;   /* set when the rounds are done */
 } pp;
 
 static volatile uint32_t pp_ran_on[MAX_CPUS];
@@ -61,7 +61,8 @@ static uint64_t pingpong_mask(uint32_t a, const cpumask_t *mb)
     for (int i = 0; i < PP_ROUNDS; i++) {
         if (pp_wait_polling) {
             uint64_t until = uptime_ns() + 10 * NS_PER_MS;
-            while (!pp_wait_polling->idle_polling && uptime_ns() < until)
+            while (!__atomic_load_n(&pp_wait_polling->idle_polling, __ATOMIC_RELAXED) &&
+               uptime_ns() < until)
                 cpu_relax();
         }
         pp.turn = 1;
@@ -84,9 +85,9 @@ static uint64_t pingpong(uint32_t a, uint32_t b)
 {
     cpumask_t m;
     cpumask_one(&m, b);
-    uint64_t polled0 = cpus[b]->polled_wakes;
+    uint64_t polled0 = __atomic_load_n(&cpus[b]->polled_wakes, __ATOMIC_RELAXED);
     pingpong_mask(a, &m);
-    return cpus[b]->polled_wakes - polled0;
+    return __atomic_load_n(&cpus[b]->polled_wakes, __ATOMIC_RELAXED) - polled0;
 }
 
 /* With a long spin window, the ponger's CPU is polling whenever it is woken:
@@ -95,15 +96,16 @@ KTEST(spin_idle_skips_ipi)
 {
     if (cpu_count < 3)
         return;
-    uint64_t keep = sched_idle_spin_ns;
-    sched_idle_spin_ns = 50 * NS_PER_MS;   /* QEMU is slow: make the window cover a round trip */
+    uint64_t keep = __atomic_load_n(&sched_idle_spin_ns, __ATOMIC_RELAXED);
+    /* QEMU is slow: make the window cover a round trip. */
+    __atomic_store_n(&sched_idle_spin_ns, 50 * NS_PER_MS, __ATOMIC_RELAXED);
     pp_wait_polling = cpus[2];      /* wake only once cpu 2 is in its window */
     uint64_t polled_on = pingpong(1, 2);
     pp_wait_polling = NULL;
-    sched_idle_spin_ns = 0;
+    __atomic_store_n(&sched_idle_spin_ns, 0, __ATOMIC_RELAXED);
     thread_sleep_ms(60);   /* let the window cpu 2 already opened run out */
     uint64_t polled_off = pingpong(1, 2);
-    sched_idle_spin_ns = keep;
+    __atomic_store_n(&sched_idle_spin_ns, keep, __ATOMIC_RELAXED);
     kprintf("spin-idle: %lu of %d wakeups polled with a 50 ms window, %lu with none\n",
             polled_on, PP_ROUNDS, polled_off);
     /* Since the spin leaves idle_polling set for schedule() to clear,
@@ -205,7 +207,7 @@ static void busy_spinner(void *arg)
  * never both hyperthreads of one core, and never cpu 0's sibling. */
 KTEST(placement_spreads_over_cores)
 {
-    if (cpu_count < 4 || !sched_place_order)
+    if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         return;
     kt_pin_self(0);
     uint32_t cores = 0;
@@ -270,21 +272,21 @@ KTEST(affine_pair_uses_sibling)
     cpumask_all(&m);
     m.bits[0] &= ~1ull;
     m.bits[a / 64] &= ~(1ull << (a % 64));
-    bool keep = sched_affine_pair;
-    sched_affine_pair = true;
+    bool keep = __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED);
+    __atomic_store_n(&sched_affine_pair, true, __ATOMIC_RELAXED);
     uint64_t pairs_on = pingpong_mask(a, &m);
     uint32_t on_sib_on = pp_ran_on[sib];
-    sched_affine_pair = false;
+    __atomic_store_n(&sched_affine_pair, false, __ATOMIC_RELAXED);
     uint64_t pairs_off = pingpong_mask(a, &m);
     uint32_t on_sib_off = pp_ran_on[sib];
-    sched_affine_pair = keep;
+    __atomic_store_n(&sched_affine_pair, keep, __ATOMIC_RELAXED);
     kprintf("affine-pair: partner of cpu %u ran on its sibling cpu %d for %u of %d rounds "
             "(%lu pair placements); switched off: %u rounds, %lu\n", a, sib, on_sib_on,
             PP_ROUNDS, pairs_on, on_sib_off, pairs_off);
     KT_ASSERT(pairs_on >= PP_ROUNDS / 2);
     KT_ASSERT(on_sib_on >= PP_ROUNDS / 2);
     KT_EQ(pairs_off, 0);
-    if (sched_place_order)
+    if (__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         KT_ASSERT(on_sib_off <= PP_ROUNDS / 4);   /* whole idle cores come first */
 }
 
@@ -345,12 +347,12 @@ static uint64_t aff_round(uint32_t ccpu, const cpumask_t *smask, uint64_t *clien
     cpumask_one(&cm, ccpu);
     struct thread *cl = thread_create_on("aff-client", aff_client, NULL, PRIO_DEFAULT, &cm);
     /* Read the counters before join drops our references. */
-    while (!cl->exited)
+    while (!__atomic_load_n(&cl->exited, __ATOMIC_ACQUIRE))
         thread_sleep_ms(1);
     *client_affine = cl->affine_wakes;
     thread_join(cl);
     kobject_unref((struct kobject *)a);   /* the server sees PEER_CLOSED */
-    while (!srv->exited)
+    while (!__atomic_load_n(&srv->exited, __ATOMIC_ACQUIRE))
         thread_sleep_ms(1);
     uint64_t sa = srv->affine_wakes;
     thread_join(srv);

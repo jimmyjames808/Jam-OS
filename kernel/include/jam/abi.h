@@ -4,9 +4,9 @@
  *
  * Shared by the kernel and user code (the user build sees this header
  * through a copy of a few allowed ones, never the kernel include tree), so
- * plain C types only and no kernel includes. The kernel headers that used
- * to define these (handle.h, object.h, port.h) include this one instead,
- * so there is only one definition.
+ * plain C types only and no kernel includes. The kernel headers that need
+ * these (handle.h, object.h, port.h) include this one rather than defining
+ * them again, so there is only one definition.
  *
  * User addresses are uint64_t, never C pointers, in the argument structs:
  * the kernel never dereferences them (it copies through usercopy.h). */
@@ -72,18 +72,18 @@ enum port_packet_type {
 };
 
 struct port_packet {
-    uint64_t key;       /* chosen by whoever bound/queued it */
-    uint32_t type;      /* enum port_packet_type */
-    int32_t  status;    /* OK; ERR_CANCELED is reserved for binding teardown */
-    union {
+    uint64_t key;                /* chosen by whoever bound/queued it */
+    uint32_t type;               /* enum port_packet_type */
+    int32_t  status;             /* OK; ERR_CANCELED is reserved for binding teardown */
+    union {                      /* which one: `type` */
         struct {
-            signals_t trigger;    /* the mask it was bound with */
-            signals_t observed;   /* the object's signals at the last edge */
-            uint64_t  count;      /* edges coalesced into this packet (>= 1) */
-        } signal;
+            signals_t trigger;   /* the mask it was bound with */
+            signals_t observed;  /* the object's signals at the last edge */
+            uint64_t  count;     /* edges coalesced into this packet (>= 1) */
+        } signal;                /* PORT_PACKET_SIGNAL */
         struct {
-            uint64_t data[4];
-        } user;
+            uint64_t data[4];    /* whatever the queuer put in */
+        } user;                  /* PORT_PACKET_USER */
     };
 };
 
@@ -132,7 +132,7 @@ struct port_packet {
 struct job_info {
     uint64_t used[JOB_LIMIT_COUNT];    /* this job and its descendants, now */
     uint64_t limit[JOB_LIMIT_COUNT];   /* this job's own limit (JOB_NO_LIMIT: none) */
-    uint64_t koid;
+    uint64_t koid;                     /* the job's kernel object id */
 };
 
 /* processes and threads ------------------------------------------------------ */
@@ -151,8 +151,8 @@ struct process_info {
     uint32_t state;       /* PROCESS_* */
     uint32_t killed;      /* 1 if it was killed rather than exiting */
     uint32_t threads;     /* live threads */
-    uint32_t reserved;
-    uint64_t koid;
+    uint32_t reserved;    /* 0 */
+    uint64_t koid;        /* the process's kernel object id */
 };
 
 /* Thread priorities: 0 (lowest) .. 31. User threads start at
@@ -167,27 +167,27 @@ struct process_info {
  * its fields are read once; the buffers they point at are user memory. */
 
 struct channel_read_args {
-    handle_t h;
-    uint32_t bytes_cap;
+    handle_t h;                /* the channel endpoint to read */
+    uint32_t bytes_cap;        /* size of the bytes buffer */
     uint64_t bytes;            /* user address: bytes_cap bytes */
     uint64_t actual_bytes;     /* user address of a uint32_t, or 0 */
     uint64_t handles;          /* user address: handles_cap handle_t */
-    uint32_t handles_cap;
+    uint32_t handles_cap;      /* entries in the handles buffer */
     uint32_t reserved;         /* 0 */
     uint64_t actual_handles;   /* user address of a uint32_t, or 0 */
 };
 
 struct channel_call_args {
-    handle_t h;
+    handle_t h;                /* the channel endpoint to call on */
     uint32_t wn;               /* request bytes (>= 4: the txid goes first) */
     uint64_t wbytes;           /* user address of the request */
     uint64_t wh;               /* user address: whn handle_t to send */
-    uint32_t whn;
+    uint32_t whn;              /* handles to send */
     uint32_t rcap;             /* reply buffer bytes */
     uint64_t rbytes;           /* user address of the reply buffer */
     uint64_t ractual;          /* user address of a uint32_t, or 0 */
     uint64_t rh;               /* user address: rhcap handle_t for the reply */
-    uint32_t rhcap;
+    uint32_t rhcap;            /* entries in the reply handle buffer */
     uint32_t reserved;         /* 0 */
     uint64_t rhactual;         /* user address of a uint32_t, or 0 */
     uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever */
@@ -220,24 +220,25 @@ struct channel_call_args {
 #define PCI_INFO_DISPLAY (1u << 1)   /* holds the boot framebuffer: never touched */
 
 struct pci_dev_info {
-    uint16_t segment;
-    uint8_t  bus, dev, fn;
-    uint8_t  header_type;
-    uint16_t vendor, device;
+    uint16_t segment;          /* PCI segment group */
+    uint8_t  bus, dev, fn;     /* the function's address on the bus */
+    uint8_t  header_type;      /* config header type (bit 7: multi-function) */
+    uint16_t vendor, device;   /* PCI vendor and device ids */
+    /* class code, subclass, programming interface, revision */
     uint8_t  class_code, subclass, prog_if, revision;
-    uint32_t flags;           /* PCI_INFO_* */
-    uint16_t msi_vectors;     /* 0 = no MSI capability */
-    uint16_t msix_vectors;    /* 0 = no MSI-X capability */
+    uint32_t flags;            /* PCI_INFO_* */
+    uint16_t msi_vectors;      /* 0 = no MSI capability */
+    uint16_t msix_vectors;     /* 0 = no MSI-X capability */
     struct {
-        uint64_t phys;
-        uint64_t size;
-        uint32_t flags;       /* PCI_BAR_* */
-        uint32_t reserved;
-    } bar[6];                 /* a 64-bit BAR fills bar[i]; bar[i + 1] is empty */
+        uint64_t phys;         /* physical base address */
+        uint64_t size;         /* bytes; 0 = no BAR or not sized */
+        uint32_t flags;        /* PCI_BAR_* */
+        uint32_t reserved;     /* 0 */
+    } bar[6];                  /* a 64-bit BAR fills bar[i]; bar[i + 1] is empty */
     /* The function's DMA quarantine (pins a dma_cap still held when it
      * closed; see abi/syscalls.def dma_cap_bus_master), in pages. */
-    uint32_t dma_quarantined; /* held right now */
-    uint32_t dma_changed;     /* since boot: released pages found written while held */
+    uint32_t dma_quarantined;  /* held right now */
+    uint32_t dma_changed;      /* since boot: released pages found written while held */
 };
 
 /* interrupt_create_msi flags */
@@ -277,12 +278,13 @@ struct input_key_event {
  * at y * pitch + x * 4, colour channels at the given bit shifts (8 bits
  * each). */
 struct fb_info {
-    uint32_t width, height;
-    uint32_t pitch;         /* bytes per line */
-    uint32_t bpp;           /* 32 */
+    uint32_t width, height;  /* pixels */
+    uint32_t pitch;          /* bytes per line */
+    uint32_t bpp;            /* 32 */
+    /* bit positions of the 8-bit colour channels; reserved is 0 */
     uint8_t  red_shift, green_shift, blue_shift, reserved;
-    uint32_t reserved2;
-    uint64_t size;          /* bytes of the VMO */
+    uint32_t reserved2;      /* 0 */
+    uint64_t size;           /* bytes of the VMO */
 };
 
 /* system information for the shell (abi/syscalls.def 130-133) ----------------
@@ -293,16 +295,16 @@ struct fb_info {
 #define SYSINFO_KTESTS  (1u << 1)   /* the kernel was built with its tests */
 
 struct sys_info {
-    char     version[32];       /* "0.0.20-m7" */
-    char     cpu_vendor[16];    /* "GenuineIntel" */
-    char     cpu_brand[48];     /* CPUID's brand string, trimmed */
-    uint64_t uptime_ns;
-    uint64_t tsc_hz;
-    uint64_t mem_total_pages;   /* 4 KiB pages the kernel manages */
-    uint64_t mem_free_pages;
-    uint64_t stack_cache_pages; /* free pages parked in the thread stack cache */
-    uint32_t cpu_count;         /* CPUs online */
-    uint32_t flags;             /* SYSINFO_* */
+    char     version[32];        /* "0.0.20-m7" */
+    char     cpu_vendor[16];     /* "GenuineIntel" */
+    char     cpu_brand[48];      /* CPUID's brand string, trimmed */
+    uint64_t uptime_ns;          /* since boot */
+    uint64_t tsc_hz;             /* TSC ticks per second */
+    uint64_t mem_total_pages;    /* 4 KiB pages the kernel manages */
+    uint64_t mem_free_pages;     /* of those, free now */
+    uint64_t stack_cache_pages;  /* free pages parked in the thread stack cache */
+    uint32_t cpu_count;          /* CPUs online */
+    uint32_t flags;              /* SYSINFO_* */
 };
 
 #define CPU_TYPE_UNKNOWN     0
@@ -313,36 +315,36 @@ struct sys_info {
  * idle the CPU halts or spins briefly), so busy = elapsed - idle. */
 struct cpu_stat {
     uint32_t index;       /* 0 = the boot CPU */
-    uint32_t apic_id;
+    uint32_t apic_id;     /* local APIC id */
     uint32_t type;        /* CPU_TYPE_* */
     uint32_t core_id;     /* APIC id without the SMT bits: HT siblings share it */
-    uint32_t smt_id;
-    uint32_t online;
-    uint64_t idle_ns;
+    uint32_t smt_id;      /* thread within its core */
+    uint32_t online;      /* 1 if the CPU is up */
+    uint64_t idle_ns;     /* time its idle thread has run */
     uint64_t switches;    /* context switches */
 };
 
 /* proc_list: one process of the caller's job tree (from its root job). */
 struct proc_stat {
-    uint64_t koid;
-    uint64_t job_koid;
+    uint64_t koid;        /* the process's kernel object id */
+    uint64_t job_koid;    /* its job's kernel object id */
     uint64_t cpu_ns;      /* CPU time of all its threads, ever */
     uint64_t job_pages;   /* pages charged to its job (and the jobs below it) */
     uint32_t state;       /* PROCESS_* */
     uint32_t threads;     /* live threads */
     uint32_t depth;       /* its job's depth below the root job */
-    uint32_t reserved;
-    char     name[32];
+    uint32_t reserved;    /* 0 */
+    char     name[32];    /* the process's name, NUL-terminated */
 };
 
 /* rtc_read: the CMOS real-time clock as it stands, converted to binary and
  * 24 hours. PCs keep it in UTC or (Windows) in local time: the RTC says
  * nothing about which. */
 struct rtc_time {
-    uint16_t year;        /* 2000..2099 */
-    uint8_t  month;       /* 1..12 */
-    uint8_t  day;         /* 1..31 */
-    uint8_t  hour, minute, second;
-    uint8_t  status_b;    /* register B as read (bit 2 binary, bit 1 24-hour) */
-    uint64_t uptime_ns;   /* when it was read */
+    uint16_t year;                  /* 2000..2099 */
+    uint8_t  month;                 /* 1..12 */
+    uint8_t  day;                   /* 1..31 */
+    uint8_t  hour, minute, second;  /* 24-hour clock */
+    uint8_t  status_b;              /* register B as read (bit 2 binary, bit 1 24-hour) */
+    uint64_t uptime_ns;             /* when it was read */
 };

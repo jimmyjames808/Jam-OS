@@ -13,8 +13,8 @@
 
 struct handle_slot {
     struct kobject *obj;        /* NULL: free or in transit */
-    rights_t        rights;
-    uint32_t        gen;
+    rights_t        rights;     /* what this handle may do */
+    uint32_t        gen;        /* bumped on each reuse: stale handles don't match */
     uint32_t        next_free;  /* slot index + 1, 0 = end */
     bool            intransit;  /* taken for a send, reserved until commit/untake */
 };
@@ -34,7 +34,7 @@ static handle_t encode(uint32_t slot, uint32_t gen)
 
 /* Returns the slot for h if it is live and current, else NULL. A free or
  * in-transit slot (obj == NULL) never matches. */
-static struct handle_slot *decode(struct handle_table *t, handle_t h)
+static struct handle_slot *decode(const struct handle_table *t, handle_t h)
 {
     uint32_t idx = h >> GEN_BITS;
     if (idx == 0 || idx > t->capacity)
@@ -88,12 +88,12 @@ void handle_table_init(struct handle_table *t)
 /* Charge n handle units to t's job (no lock needed: job counters are
  * atomic). The caller adds n to t->charged under the lock once the slots
  * are really taken, or uncharges them again. */
-static status_t charge(struct handle_table *t, uint32_t n)
+static status_t charge(const struct handle_table *t, uint32_t n)
 {
     return job_charge(t->job, JOB_LIMIT_HANDLES, n);
 }
 
-static void uncharge(struct handle_table *t, uint32_t n)
+static void uncharge(const struct handle_table *t, uint32_t n)
 {
     job_uncharge(t->job, JOB_LIMIT_HANDLES, n);
 }
@@ -276,7 +276,7 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
     }
 }
 
-static status_t check(struct handle_slot *s, enum obj_type type, rights_t need)
+static status_t check(const struct handle_slot *s, enum obj_type type, rights_t need)
 {
     if (!s)
         return ERR_BAD_HANDLE;
@@ -327,30 +327,36 @@ status_t handle_close(struct handle_table *t, handle_t h)
     return st;
 }
 
+/* t->lock held, s checked: a new handle to s's object with `rights` (a
+ * subset of s's, or RIGHT_SAME). */
+static status_t duplicate_locked(struct handle_table *t, const struct handle_slot *s,
+                                 rights_t rights, handle_t *out)
+{
+    rights_t r = rights == RIGHT_SAME ? s->rights : rights;
+    if ((r & s->rights) != r)
+        return ERR_INVALID_ARGS;   /* can't gain rights */
+    struct kobject *obj = s->obj;
+    status_t st = charge(t, 1);
+    if (st != OK)
+        return st;
+    st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
+    if (st != OK) {
+        uncharge(t, 1);
+        return st;
+    }
+    t->charged++;
+    kobject_ref(obj);
+    kobject_handle_gain(obj);
+    return OK;
+}
+
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_DUPLICATE);
-    if (st == OK) {
-        rights_t r = rights == RIGHT_SAME ? s->rights : rights;
-        if ((r & s->rights) != r) {
-            st = ERR_INVALID_ARGS;   /* can't gain rights */
-        } else {
-            struct kobject *obj = s->obj;
-            st = charge(t, 1);
-            if (st == OK) {
-                st = insert_locked(t, obj, r, out);   /* may move slots: s is stale now */
-                if (st == OK) {
-                    t->charged++;
-                    kobject_ref(obj);
-                    kobject_handle_gain(obj);
-                } else {
-                    uncharge(t, 1);
-                }
-            }
-        }
-    }
+    if (st == OK)
+        st = duplicate_locked(t, s, rights, out);
     spin_unlock_irqrestore(&t->lock, f);
     return st;
 }
@@ -420,7 +426,7 @@ status_t handle_table_find(struct handle_table *t, enum obj_type type, struct ko
 
 /* The reserved slot for an in-transit handle h, if h names one that was taken
  * and not yet committed or restored. */
-static struct handle_slot *intransit_slot(struct handle_table *t, handle_t h)
+static struct handle_slot *intransit_slot(const struct handle_table *t, handle_t h)
 {
     uint32_t idx = h >> GEN_BITS;
     if (!idx || idx > t->capacity)

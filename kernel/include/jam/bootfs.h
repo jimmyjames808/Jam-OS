@@ -15,16 +15,16 @@
 #define BOOTFS_MODULE     "bootfs.img"   /* Limine module path suffix */
 
 struct bootfs_header {
-    char     magic[8];
-    uint32_t version;
-    uint32_t count;
+    char     magic[8];   /* BOOTFS_MAGIC */
+    uint32_t version;    /* BOOTFS_VERSION */
+    uint32_t count;      /* entries after the header */
     uint64_t size;       /* whole image, bytes */
 };
 
 struct bootfs_entry {
     char     name[BOOTFS_NAME_MAX];   /* NUL-terminated, e.g. "bin/init" */
     uint64_t offset;                  /* from the image start, 4 KiB aligned */
-    uint64_t size;
+    uint64_t size;                    /* bytes */
 };
 
 struct boot_info;

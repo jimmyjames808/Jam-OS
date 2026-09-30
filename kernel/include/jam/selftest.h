@@ -1,3 +1,6 @@
+/* Checks that ship in every kernel (kernel/debug/): the boot self-tests,
+ * the deliberate crash tests, and the stress test. Unlike kernel/test, none
+ * of this is left out by `make KTESTS=0`. */
 #pragma once
 
 #include <stdbool.h>

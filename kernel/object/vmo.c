@@ -90,8 +90,8 @@ enum vmo_kind { VMO_PAGED, VMO_CONTIG, VMO_PHYS };
 enum range_kind { RANGE_MAP, RANGE_PIN };
 
 struct vmo_range {
-    struct list_node node;
-    enum range_kind  kind;
+    struct list_node node;        /* on the VMO's ranges list (VMO lock) */
+    enum range_kind  kind;        /* a kernel mapping or a pin */
     bool             busy;        /* being set up or unmapped: not findable */
     uint64_t         first, end;  /* page indices */
     uint64_t         key;         /* mapping: base va; pin: pin id */
@@ -110,21 +110,21 @@ struct vmo_range {
 };
 
 struct vmo {
-    struct kobject   base;
-    enum vmo_kind    kind;
-    uint32_t         flags;       /* VMO_CONTIGUOUS / VMO_DMA32 */
-    unsigned         cache;       /* physical: VM_UC / VM_WC / 0 */
-    uint64_t         size;        /* bytes, a page multiple */
-    uint64_t         committed;   /* pages owned right now */
-    uint64_t         tables;      /* paged: table pages (mid + leaf), charged like pages */
-    struct job      *job;         /* charged for them (a reference), or NULL */
-    uint64_t         phys;        /* contiguous / physical: first byte */
-    unsigned         order;       /* contiguous: buddy order it came from */
-    uint64_t         next_pin_id;
-    struct list_node ranges;      /* struct vmo_range: kernel mappings and pins */
-    struct list_node umaps;       /* struct vmo_umap: user mappings (reverse map) */
-    struct mutex     resize;      /* serialises vmo_set_size */
-    uint64_t       **root[ROOT_ENTRIES];   /* paged: root[r][m][l] = phys */
+    struct kobject   base;                /* OBJ_VMO; base.lock is the VMO lock */
+    enum vmo_kind    kind;                /* paged, contiguous or physical */
+    uint32_t         flags;               /* VMO_CONTIGUOUS / VMO_DMA32 */
+    unsigned         cache;               /* physical: VM_UC / VM_WC / 0 */
+    uint64_t         size;                /* bytes, a page multiple */
+    uint64_t         committed;           /* pages owned right now */
+    uint64_t         tables;              /* paged: table pages (mid + leaf), charged like pages */
+    struct job      *job;                 /* charged for them (a reference), or NULL */
+    uint64_t         phys;                /* contiguous / physical: first byte */
+    unsigned         order;               /* contiguous: buddy order it came from */
+    uint64_t         next_pin_id;         /* the next pin's id */
+    struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
+    struct list_node umaps;               /* struct vmo_umap: user mappings (reverse map) */
+    struct mutex     resize;              /* serialises vmo_set_size */
+    uint64_t       **root[ROOT_ENTRIES];  /* paged: root[r][m][l] = phys */
 };
 
 static uint64_t vlock(struct vmo *v)
@@ -222,6 +222,20 @@ static uint64_t phys_locked(struct vmo *v, uint64_t idx)
     return s ? *s : 0;
 }
 
+/* drop_from_locked's work on one leaf table, whose first entry is page
+ * `base`: drop its pages at index >= first. */
+static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, uint64_t first)
+{
+    for (uint64_t l = 0; l < LEAF_PAGES; l++) {
+        if (leaf[l] && base + l >= first) {
+            page_put(pa_page(leaf[l]));
+            leaf[l] = 0;
+            v->committed--;
+            job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+        }
+    }
+}
+
 /* Drop every page at index >= first, and free the table pages that lie
  * wholly past it, with no TLB care: for vmo_destroy (no references, so no
  * mappings and no lock needed) and the tail of a shrink (which has already
@@ -238,14 +252,7 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
             uint64_t base = r * MID_PAGES + m * LEAF_PAGES;
             if (!leaf || base + LEAF_PAGES <= first)
                 continue;
-            for (uint64_t l = 0; l < LEAF_PAGES; l++) {
-                if (leaf[l] && base + l >= first) {
-                    page_put(pa_page(leaf[l]));
-                    leaf[l] = 0;
-                    v->committed--;
-                    job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
-                }
-            }
+            drop_leaf_from_locked(v, leaf, base, first);
             if (base >= first) {
                 table_free_locked(v, leaf);
                 mid[m] = NULL;
@@ -542,7 +549,7 @@ status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len
 /* ---- size, commit, decommit -------------------------------------------- */
 
 /* With the lock held: does any mapping or pin cover a page in [first, end)? */
-static bool ranges_overlap_locked(struct vmo *v, uint64_t first, uint64_t end)
+static bool ranges_overlap_locked(const struct vmo *v, uint64_t first, uint64_t end)
 {
     for (struct list_node *n = v->ranges.next; n != &v->ranges; n = n->next) {
         struct vmo_range *r = container_of(n, struct vmo_range, node);
@@ -553,7 +560,8 @@ static bool ranges_overlap_locked(struct vmo *v, uint64_t first, uint64_t end)
 }
 
 /* With the lock held: zap pages [first, end) from every user mapping. */
-static void zap_umaps_locked(struct vmo *v, uint64_t first, uint64_t end, struct tlb_gather *g)
+static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                             struct tlb_gather *g)
 {
     for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
         struct vmo_umap *u = container_of(n, struct vmo_umap, node);
@@ -742,6 +750,29 @@ void vmo_umap_remove(struct vmo *v, struct vmo_umap *u)
     kobject_unref(&v->base);
 }
 
+/* VMO lock held, a paged VMO: *pa gets page idx's physical address. If the
+ * page isn't committed, *fresh (if any) is committed there and taken
+ * (*fresh = NULL); with no fresh page *pa is 0. ERR_NO_MEMORY if the page's
+ * table can't be charged (*fresh is still the caller's). */
+static status_t paged_pa_locked(struct vmo *v, uint64_t idx, struct page **fresh, uint64_t *pa)
+{
+    uint64_t *s = slot_locked(v, idx, false);
+    if (s && *s) {
+        *pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
+        return OK;
+    }
+    if (!*fresh) {
+        *pa = 0;
+        return OK;
+    }
+    if (!(s = charge_slot_locked(v, idx, s)))
+        return ERR_NO_MEMORY;
+    *pa = *s = page_to_phys(*fresh);   /* the table takes our reference */
+    v->committed++;
+    *fresh = NULL;
+    return OK;
+}
+
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
                        unsigned perms)
 {
@@ -758,25 +789,20 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         if (v->kind != VMO_PAGED) {
             pa = v->phys + (idx << PAGE_SHIFT);
         } else {
-            uint64_t *s = slot_locked(v, idx, false);
-            if (s && *s) {
-                pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
-            } else if (fresh) {
-                if (!(s = charge_slot_locked(v, idx, s))) {
-                    vunlock(v, f);
-                    page_put(fresh);
-                    return ERR_NO_MEMORY;
-                }
-                pa = *s = page_to_phys(fresh);   /* the table takes our reference */
-                v->committed++;
-                fresh = NULL;
-            } else {
+            status_t st = paged_pa_locked(v, idx, &fresh, &pa);
+            if (st != OK) {
                 vunlock(v, f);
-                fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
-                if (!fresh)
-                    return ERR_NO_MEMORY;
-                continue;
+                page_put(fresh);
+                return st;
             }
+        }
+        if (v->kind == VMO_PAGED && !pa) {
+            /* Not committed and no page of ours yet: get one, then retry. */
+            vunlock(v, f);
+            fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
+            if (!fresh)
+                return ERR_NO_MEMORY;
+            continue;
         }
         /* Installed under the VMO lock: a decommit that takes this page
          * later zaps this entry too (see the file header). */
@@ -839,7 +865,7 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
 }
 
 /* With the lock held: the non-busy range of `kind` with this key. */
-static struct vmo_range *range_find_locked(struct vmo *v, enum range_kind kind, uint64_t key)
+static struct vmo_range *range_find_locked(const struct vmo *v, enum range_kind kind, uint64_t key)
 {
     for (struct list_node *n = v->ranges.next; n != &v->ranges; n = n->next) {
         struct vmo_range *r = container_of(n, struct vmo_range, node);
@@ -920,31 +946,14 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
     return OK;
 }
 
-status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
-                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
+/* A pin is a kernel allocation that lives until unpin or the cap's
+ * close: one handle unit of the VMO's job, like any small object (a
+ * driver could otherwise pin one page forever and fill the kernel
+ * heap; test: m6r_pins_are_charged). A new busy pin range [first, end)
+ * on v, charged and listed. */
+static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
+                              struct vmo_range **out)
 {
-    if (!dma_cap || !pin_id)
-        return ERR_INVALID_ARGS;
-    if (dma_cap->type != OBJ_DMA_CAP)
-        return ERR_WRONG_TYPE;
-    if (len == 0 || ((offset | len) & (PAGE_SIZE - 1)))
-        return ERR_INVALID_ARGS;
-    if (offset > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
-        return ERR_OUT_OF_RANGE;
-    uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
-    if (!phys_out || phys_cap < end - first)
-        return ERR_BUFFER_TOO_SMALL;
-    /* A cap bound to a function pins only while its Bus Master Enable is
-     * on, and while it is the function's current cap (its driver turned
-     * bus mastering on with it: dma_cap_bus_master). */
-    if (!dma_cap_bus_master_on(dma_cap))
-        return ERR_BAD_STATE;
-    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
-
-    /* A pin is a kernel allocation that lives until unpin or the cap's
-     * close: one handle unit of the VMO's job, like any small object (a
-     * driver could otherwise pin one page forever and fill the kernel
-     * heap; test: m6r_pins_are_charged). */
     uint64_t jf = vlock(v);
     struct job *job = v->job;
     vunlock(v, jf);
@@ -967,10 +976,19 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         kfree(r);
         return st;
     }
+    *out = r;
+    return OK;
+}
+
+/* The pin takes a reference on the cap and goes on the cap's list from
+ * the start (busy until published), unless its last handle is already
+ * gone (ERR_BAD_STATE). */
+static status_t pin_link_cap(struct vmo_range *r, struct kobject *dma_cap)
+{
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    status_t st = OK;
     kobject_ref(dma_cap);
     r->cap = dma_cap;
-    /* On the cap's list from the start (busy until published), unless its
-     * last handle is already gone. */
     uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
     if (c->closed) {
         st = ERR_BAD_STATE;
@@ -979,31 +997,65 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         r->cap_linked = true;
     }
     spin_unlock_irqrestore(&dma_cap->lock, cf);
-    if (st == OK && v->kind == VMO_PAGED)
-        st = commit_pages(v, first, end);
-    if (st != OK) {
-        range_remove(v, r);
-        return st;
-    }
+    return st;
+}
 
-    /* Publish it, unless the cap was closed meanwhile: its close path ran
-     * (or is running) and skipped this busy pin, so the pin goes here. */
-    cf = spin_lock_irqsave(&dma_cap->lock);
+/* Publish the pin, unless the cap was closed meanwhile: its close path ran
+ * (or is running) and skipped this busy pin, so the pin goes here. */
+static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *dma_cap,
+                            uint64_t *phys_out, uint64_t *pin_id)
+{
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
     if (c->closed) {
         spin_unlock_irqrestore(&dma_cap->lock, cf);
         range_remove(v, r);
         return ERR_BAD_STATE;
     }
     uint64_t f = vlock(v);
-    for (uint64_t idx = first; idx < end; idx++) {
-        phys_out[idx - first] = phys_locked(v, idx);
-        ASSERT(phys_out[idx - first] != 0 || v->kind != VMO_PAGED);
+    for (uint64_t idx = r->first; idx < r->end; idx++) {
+        phys_out[idx - r->first] = phys_locked(v, idx);
+        ASSERT(phys_out[idx - r->first] != 0 || v->kind != VMO_PAGED);
     }
     r->busy = false;
     *pin_id = r->key;
     vunlock(v, f);
     spin_unlock_irqrestore(&dma_cap->lock, cf);
     return OK;
+}
+
+status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
+                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
+{
+    if (!dma_cap || !pin_id)
+        return ERR_INVALID_ARGS;
+    if (dma_cap->type != OBJ_DMA_CAP)
+        return ERR_WRONG_TYPE;
+    if (len == 0 || ((offset | len) & (PAGE_SIZE - 1)))
+        return ERR_INVALID_ARGS;
+    if (offset > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
+    uint64_t first = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
+    if (!phys_out || phys_cap < end - first)
+        return ERR_BUFFER_TOO_SMALL;
+    /* A cap bound to a function pins only while its Bus Master Enable is
+     * on, and while it is the function's current cap (its driver turned
+     * bus mastering on with it: dma_cap_bus_master). */
+    if (!dma_cap_bus_master_on(dma_cap))
+        return ERR_BAD_STATE;
+
+    struct vmo_range *r;
+    status_t st = pin_range_new(v, first, end, &r);
+    if (st != OK)
+        return st;
+    st = pin_link_cap(r, dma_cap);
+    if (st == OK && v->kind == VMO_PAGED)
+        st = commit_pages(v, first, end);
+    if (st != OK) {
+        range_remove(v, r);
+        return st;
+    }
+    return pin_publish(v, r, dma_cap, phys_out, pin_id);
 }
 
 /* The last pin may hold the cap's last reference; this runs from the cap's

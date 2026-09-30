@@ -33,12 +33,12 @@ struct pci_dev {
     volatile uint32_t *msix_table;  /* kernel UC mapping of the table, or NULL */
     /* RES_PCI_DEV resources made through system calls (devmgr's, for a
      * driver) that are alive: the function belongs to a driver process. */
-    volatile uint32_t proc_users;
+    uint32_t proc_users;
     /* A process opened it with RIGHT_MANAGE (devmgr binding a driver to
      * it). Sticky for the rest of the boot: while devmgr (or its driver)
      * restarts, proc_users can be 0 for a moment, and a `ktest` from the
      * shell must not grab the function in that gap. */
-    volatile bool driver_managed;
+    bool driver_managed;
 };
 
 /* Enumerate every ECAM segment in acpi.ecam[]; logs one line per function. */
@@ -54,7 +54,7 @@ struct pci_dev *pci_get(uint32_t index);            /* NULL past the end */
  * left out, so the kernel tests that drive a device skip it instead of
  * fighting its driver. */
 struct pci_dev *pci_find(uint16_t vendor, uint16_t device, uint32_t n);
-extern volatile bool pci_hide_in_use;
+extern bool pci_hide_in_use;
 /* A process holds it (proc_users), or devmgr ever opened it to bind a
  * driver (driver_managed, sticky). */
 bool pci_in_use(const struct pci_dev *d);
@@ -95,8 +95,8 @@ status_t pci_enable_memory(struct pci_dev *d);
  * it on. I/O and memory decode come back as saved (the kernel never turns
  * them off after boot, and the BARs they decode were just put back). */
 struct pci_saved_config {
-    uint16_t command;
-    uint32_t bar[6];
+    uint16_t command;   /* command register (bus mastering left off) */
+    uint32_t bar[6];    /* the six BAR registers as read */
 };
 void pci_save_config(struct pci_dev *d, struct pci_saved_config *out);
 bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in);

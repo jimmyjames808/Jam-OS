@@ -1,3 +1,10 @@
+/* Time: the TSC, its calibration, and uptime in nanoseconds.
+ *
+ * Every time in the kernel is a uint64_t in ns of uptime unless its name
+ * says otherwise (`_ms`, `_tsc`). uptime_ns() comes from the invariant TSC,
+ * calibrated once at boot (arch/x86_64/tsc.c) against the HPET or the ACPI
+ * PM timer. NS_PER_* are the shared unit constants: use them, don't redefine
+ * them. */
 #pragma once
 
 #include <stdint.h>

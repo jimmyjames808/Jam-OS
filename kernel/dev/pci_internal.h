@@ -67,8 +67,15 @@ static inline void raw_write(volatile void *cfg, uint32_t off, uint32_t width, u
     }
 }
 
-static inline uint32_t rd(struct pci_dev *d, uint32_t off, uint32_t w) { return raw_read(d->cfg, off, w); }
-static inline void wr(struct pci_dev *d, uint32_t off, uint32_t w, uint32_t v) { raw_write(d->cfg, off, w, v); }
+static inline uint32_t rd(struct pci_dev *d, uint32_t off, uint32_t w)
+{
+    return raw_read(d->cfg, off, w);
+}
+
+static inline void wr(struct pci_dev *d, uint32_t off, uint32_t w, uint32_t v)
+{
+    raw_write(d->cfg, off, w, v);
+}
 
 /* The display and every bridge: never sized, never reprogrammed. */
 static inline bool untouchable(const struct pci_dev *d)

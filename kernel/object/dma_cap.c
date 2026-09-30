@@ -69,10 +69,10 @@
 #define CMD_BME     0x04
 
 struct q_batch {
-    struct list_node node;       /* on dma_fn.batches */
-    struct list_node pins;       /* vmo.c ranges (their cap_node) */
-    uint64_t         npins, pages;
-    uint64_t         deadline;   /* uptime_ns() at which it goes */
+    struct list_node node;          /* on dma_fn.batches */
+    struct list_node pins;          /* vmo.c ranges (their cap_node) */
+    uint64_t         npins, pages;  /* pins and pages in the batch */
+    uint64_t         deadline;      /* uptime_ns() at which it goes */
 };
 
 struct dma_fn {
@@ -87,9 +87,9 @@ struct dma_fn {
 static struct dma_fn fns[PCI_MAX_DEVS];
 static spinlock_t q_lock = SPINLOCK_INIT("dma quarantine");
 static struct waitqueue q_wq;
-static volatile int q_state;   /* 0 not started, 1 starting, 2 running */
+static int q_state;            /* 0 not started, 1 starting, 2 running */
 
-static struct dma_fn *fn_of(struct pci_dev *d)
+static struct dma_fn *fn_of(const struct pci_dev *d)
 {
     return d && d->index < PCI_MAX_DEVS ? &fns[d->index] : NULL;
 }
@@ -122,11 +122,12 @@ static void release_batch(struct pci_dev *d, struct q_batch *b, const char *why)
     fn->releasing--;
     spin_unlock_irqrestore(&q_lock, f);
     if (changed)
-        kprintf("dma: %02x:%02x.%x: %lu quarantined page%s CHANGED while held: the device wrote them "
-                "after its dma_cap closed (a driver turned bus mastering on without "
-                "quiescing it?)\n", BDF(d), changed, changed == 1 ? "" : "s");
-    kprintf("dma: %02x:%02x.%x: quarantine released (%lu pin%s, %lu page%s, %s)\n", BDF(d), b->npins,
-            b->npins == 1 ? "" : "s", pages, pages == 1 ? "" : "s", why);
+        kprintf("dma: %02x:%02x.%x: %lu quarantined page%s CHANGED while held: "
+                "the device wrote them after its dma_cap closed (a driver turned bus "
+                "mastering on without quiescing it?)\n", BDF(d), changed,
+                changed == 1 ? "" : "s");
+    kprintf("dma: %02x:%02x.%x: quarantine released (%lu pin%s, %lu page%s, %s)\n", BDF(d),
+            b->npins, b->npins == 1 ? "" : "s", pages, pages == 1 ? "" : "s", why);
     kfree(b);
 }
 
@@ -148,28 +149,37 @@ static struct q_batch *take_due_locked(struct dma_fn *fn, uint64_t now, bool all
     return NULL;
 }
 
+/* q_lock held: take a batch whose time is up (*dev gets its function),
+ * or NULL; *next gets the earliest deadline of the batches still waiting
+ * on the functions looked at. */
+static struct q_batch *find_due_locked(uint64_t now, struct pci_dev **dev, uint64_t *next)
+{
+    for (uint32_t i = 0; i < pci_count() && i < PCI_MAX_DEVS; i++) {
+        struct dma_fn *fn = &fns[i];
+        if (!fn->init)
+            continue;
+        struct q_batch *due = take_due_locked(fn, now, false);
+        if (due) {
+            *dev = pci_get(i);
+            return due;
+        }
+        for (struct list_node *n = fn->batches.next; n != &fn->batches; n = n->next) {
+            struct q_batch *b = container_of(n, struct q_batch, node);
+            if (b->deadline < *next)
+                *next = b->deadline;
+        }
+    }
+    return NULL;
+}
+
 static void reaper_main(void *arg)
 {
     (void)arg;
     uint64_t f = spin_lock_irqsave(&q_lock);
     for (;;) {
         uint64_t now = uptime_ns(), next = DEADLINE_NEVER;
-        struct q_batch *due = NULL;
         struct pci_dev *dev = NULL;
-        for (uint32_t i = 0; i < pci_count() && i < PCI_MAX_DEVS && !due; i++) {
-            struct dma_fn *fn = &fns[i];
-            if (!fn->init)
-                continue;
-            if ((due = take_due_locked(fn, now, false))) {
-                dev = pci_get(i);
-                break;
-            }
-            for (struct list_node *n = fn->batches.next; n != &fn->batches; n = n->next) {
-                struct q_batch *b = container_of(n, struct q_batch, node);
-                if (b->deadline < next)
-                    next = b->deadline;
-            }
-        }
+        struct q_batch *due = find_due_locked(now, &dev, &next);
         if (due) {
             spin_unlock_irqrestore(&q_lock, f);
             release_batch(dev, due, "its time was up");
@@ -197,7 +207,7 @@ void dma_quarantine_start(void)
 
 /* Bus mastering just went on for d through its current cap: every batch
  * waiting starts its grace period. */
-static void start_grace(struct pci_dev *d)
+static void start_grace(const struct pci_dev *d)
 {
     struct dma_fn *fn = fn_of(d);
     uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS;
@@ -243,8 +253,9 @@ static void quarantine(struct dma_cap *c)
     fn->pins += b->npins;
     fn->pages += b->pages;
     spin_unlock_irqrestore(&q_lock, f);
-    kprintf("dma: %02x:%02x.%x: dma_cap closed with %lu pin%s (%lu page%s) still held: quarantined\n",
-            BDF(c->dev), b->npins, b->npins == 1 ? "" : "s", b->pages, b->pages == 1 ? "" : "s");
+    kprintf("dma: %02x:%02x.%x: dma_cap closed with %lu pin%s (%lu page%s) still held: "
+            "quarantined\n", BDF(c->dev), b->npins, b->npins == 1 ? "" : "s", b->pages,
+            b->pages == 1 ? "" : "s");
     wake_reaper();
 }
 

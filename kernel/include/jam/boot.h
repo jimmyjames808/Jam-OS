@@ -32,32 +32,32 @@ static inline int boot_mem_is_ram(enum boot_mem_type t)
 }
 
 struct boot_mem_region {
-    uint64_t base;
-    uint64_t length;
-    enum boot_mem_type type;
+    uint64_t base;             /* physical */
+    uint64_t length;           /* bytes */
+    enum boot_mem_type type;   /* what the region holds */
 };
 
 struct boot_framebuffer {
-    uint64_t phys;
-    void    *virt;          /* already mapped by the loader */
-    uint32_t width, height;
-    uint32_t pitch;         /* bytes per scanline */
-    uint16_t bpp;
-    uint8_t  red_shift, green_shift, blue_shift;
+    uint64_t phys;                                /* physical address */
+    void    *virt;                                /* already mapped by the loader */
+    uint32_t width, height;                       /* pixels */
+    uint32_t pitch;                               /* bytes per scanline */
+    uint16_t bpp;                                 /* bits per pixel (fbcon draws only 32) */
+    uint8_t  red_shift, green_shift, blue_shift;  /* bit positions of the 8-bit colour channels */
 };
 
 #define BOOT_STR_MAX 128
 
 struct boot_module {
-    uint64_t phys;
-    uint64_t size;
-    char     path[BOOT_STR_MAX];
-    char     string[BOOT_STR_MAX];
+    uint64_t phys;                   /* physical address of its bytes */
+    uint64_t size;                   /* bytes */
+    char     path[BOOT_STR_MAX];     /* the loader's path for it */
+    char     string[BOOT_STR_MAX];   /* the loader's string for it */
 };
 
 struct boot_cpu {
-    uint32_t acpi_uid;
-    uint32_t lapic_id;
+    uint32_t acpi_uid;        /* ACPI processor UID */
+    uint32_t lapic_id;        /* local APIC id */
     void    *loader_handle;   /* opaque, for boot_start_cpu; points into loader memory,
                                  * so it dangles once smp_start_aps reclaims that */
 };
@@ -65,25 +65,25 @@ struct boot_cpu {
 /* Everything in boot_info lives in kernel memory (strings are copied), so
  * loader-reclaimable memory can be freed without breaking it. */
 struct boot_info {
-    char     loader_name[BOOT_STR_MAX];
-    char     cmdline[BOOT_STR_MAX * 4];
-    uint64_t hhdm_offset;        /* virt = phys + hhdm_offset for all RAM */
-    uint64_t kernel_phys_base;   /* physical address of __kernel_start */
-    uint64_t kernel_virt_base;
-    uint64_t rsdp_phys;          /* 0 if no ACPI */
-    uint64_t tsc_hz_loader;      /* loader's TSC estimate, 0 if unknown */
-    uint32_t cpu_count;
-    uint32_t bsp_lapic_id;
-    int      x2apic;             /* loader switched the APICs to x2APIC mode */
-    struct boot_cpu cpus[BOOT_MAX_CPUS];
+    char     loader_name[BOOT_STR_MAX];  /* the loader's name and version, NUL-terminated */
+    char     cmdline[BOOT_STR_MAX * 4];              /* kernel command line, NUL-terminated */
+    uint64_t hhdm_offset;                            /* virt = phys + hhdm_offset for all RAM */
+    uint64_t kernel_phys_base;                       /* physical address of __kernel_start */
+    uint64_t kernel_virt_base;                       /* virtual address of __kernel_start */
+    uint64_t rsdp_phys;                              /* 0 if no ACPI */
+    uint64_t tsc_hz_loader;                          /* loader's TSC estimate, 0 if unknown */
+    uint32_t cpu_count;                              /* entries in cpus[] */
+    uint32_t bsp_lapic_id;                           /* the CPU running the boot code */
+    int      x2apic;                                 /* loader switched the APICs to x2APIC mode */
+    struct boot_cpu cpus[BOOT_MAX_CPUS];             /* every CPU, the BSP included */
 
-    struct boot_framebuffer fb;  /* fb.virt == NULL if none */
+    struct boot_framebuffer fb;                      /* fb.virt == NULL if none */
 
-    size_t                 memmap_count;
-    struct boot_mem_region memmap[BOOT_MAX_MEMMAP];
+    size_t                 memmap_count;             /* entries in memmap[] */
+    struct boot_mem_region memmap[BOOT_MAX_MEMMAP];  /* the physical memory map */
 
-    size_t             module_count;
-    struct boot_module modules[BOOT_MAX_MODULES];
+    size_t             module_count;                 /* entries in modules[] */
+    struct boot_module modules[BOOT_MAX_MODULES];    /* files the loader loaded (bootfs.img) */
 };
 
 /* Release an application processor parked by the loader: it calls

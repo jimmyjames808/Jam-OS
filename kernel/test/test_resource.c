@@ -600,10 +600,10 @@ KTEST(resource_kill_releases_pins)
 #define RACE_THREADS 3
 
 struct pin_race {
-    struct kobject *cap;
-    struct vmo     *v;
-    volatile bool   go;
-    uint64_t        pins;
+    struct kobject *cap;    /* the DMA capability pinned through */
+    struct vmo     *v;      /* the VMO pinned */
+    volatile bool   go;     /* start line for the racing threads */
+    uint64_t        pins;   /* pins made */
 };
 
 static void pin_racer(void *arg)
@@ -720,29 +720,29 @@ KTEST(resource_managed_function_stays_in_use)
     struct pci_dev *d = edu();   /* live: devmgr's edu driver has it, so skipped */
     if (!d)
         return;
-    bool was = d->driver_managed;
-    d->driver_managed = false;
+    bool was = __atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED);
+    __atomic_store_n(&d->driver_managed, false, __ATOMIC_RELAXED);
     struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
     t.job = j;
     handle_t dev, drv;
     KT_ASSERT(open_edu(&t, &dev));
-    KT_ASSERT(d->driver_managed);
-    KT_ASSERT(d->proc_users);
+    KT_ASSERT(__atomic_load_n(&d->driver_managed, __ATOMIC_RELAXED));
+    KT_ASSERT(__atomic_load_n(&d->proc_users, __ATOMIC_RELAXED));
     /* A narrowed copy (a driver's) is not a binding by itself. */
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
     handle_table_destroy(&t);
     job_unref(j);
-    KT_EQ(d->proc_users, 0);
+    KT_EQ(__atomic_load_n(&d->proc_users, __ATOMIC_RELAXED), 0);
     KT_ASSERT(pci_in_use(d));   /* nobody holds it: still the drivers' */
-    bool hide = pci_hide_in_use;
-    pci_hide_in_use = true;
+    bool hide = __atomic_load_n(&pci_hide_in_use, __ATOMIC_RELAXED);
+    __atomic_store_n(&pci_hide_in_use, true, __ATOMIC_RELAXED);
     KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) != d);
-    pci_hide_in_use = false;
+    __atomic_store_n(&pci_hide_in_use, false, __ATOMIC_RELAXED);
     KT_ASSERT(pci_find(EDU_VENDOR, EDU_DEVICE, 0) == d);   /* the boot menu's tests see it */
-    pci_hide_in_use = hide;
-    d->driver_managed = was;
+    __atomic_store_n(&pci_hide_in_use, hide, __ATOMIC_RELAXED);
+    __atomic_store_n(&d->driver_managed, was, __ATOMIC_RELAXED);
 }
 
 KTEST(resource_dma_close_clears_bus_master)
@@ -915,7 +915,8 @@ KTEST(m6r_filter_other_resets)
     KT_ASSERT(pci_cfg_write_changes_power(&d, 0x44, 4, 3, fake_read));
     KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x44, 2, 0x8000, fake_read));
     KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x45, 1, 3, fake_read));
-    KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x40, 4, 0x03000000, fake_read));   /* PMC, not PMCSR */
+    /* PMC, not PMCSR */
+    KT_ASSERT(!pci_cfg_write_changes_power(&d, 0x40, 4, 0x03000000, fake_read));
     KT_EQ(pci_cfg_write_allowed_as(&d, 0x54, 1, 1, fake_read, true), ERR_ACCESS_DENIED);
     put16(0x44, 3);   /* in D3hot now: back to D0 */
     KT_EQ(pci_cfg_write_allowed(&d, 0x44, 2, 0, fake_read), ERR_ACCESS_DENIED);

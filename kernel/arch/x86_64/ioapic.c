@@ -1,3 +1,8 @@
+/* The I/O APICs and the legacy 8259 PICs. At boot the 8259s are moved
+ * off the exception vectors and masked, and every I/O APIC pin is masked;
+ * ioapic_route_isa then unmasks single legacy ISA lines (COM1), applying
+ * the MADT's interrupt source overrides. Each I/O APIC is reached through
+ * its index/data register pair (IOREGSEL, IOWIN). */
 #include <jam/acpi.h>
 #include <jam/ioapic.h>
 #include <jam/irq.h>
@@ -11,20 +16,20 @@
 #define REDIR_MASKED (1u << 16)
 
 struct ioapic {
-    volatile uint32_t *mmio;
-    uint32_t gsi_base;
-    uint32_t pins;
+    volatile uint32_t *mmio;   /* IOREGSEL at [0], IOWIN at [4] */
+    uint32_t gsi_base;         /* first GSI of its pins */
+    uint32_t pins;             /* number of redirection entries */
 };
 
 static struct ioapic ioapics[ACPI_MAX_IOAPICS];
 
-static uint32_t io_read(struct ioapic *io, uint32_t reg)
+static uint32_t io_read(const struct ioapic *io, uint32_t reg)
 {
     io->mmio[0] = reg;   /* IOREGSEL */
     return io->mmio[4];  /* IOWIN at +0x10 */
 }
 
-static void io_write(struct ioapic *io, uint32_t reg, uint32_t v)
+static void io_write(const struct ioapic *io, uint32_t reg, uint32_t v)
 {
     io->mmio[0] = reg;
     io->mmio[4] = v;

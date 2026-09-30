@@ -173,8 +173,9 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest");
     sched_print_stats();
-    if (serial_dropped || serial_irq_broken())
-        report("serial: %lu characters dropped (ring full)%s", serial_dropped,
+    uint64_t dropped = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
+    if (dropped || serial_irq_broken())
+        report("serial: %lu characters dropped (ring full)%s", dropped,
                serial_irq_broken() ? "; no transmit interrupt, output synchronous" : "");
 
     report("run %s", ok ? "complete: no problems" : "FINISHED WITH PROBLEMS");

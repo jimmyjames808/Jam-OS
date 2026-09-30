@@ -103,22 +103,35 @@ static void release_all(struct khandle *khs, unsigned n)
         khandle_release(&khs[i]);
 }
 
+static void release_extra(struct userboot_handle *extra, unsigned nextra)
+{
+    for (unsigned i = 0; i < nextra; i++)
+        khandle_release(&extra[i].kh);
+}
+
+/* The handles a program's startup message carries, with their roles. */
+struct startup_handles {
+    uint32_t       roles[STARTUP_MAX_HANDLES];   /* enum startup_role of each */
+    struct khandle khs[STARTUP_MAX_HANDLES];     /* send_startup consumes them */
+    unsigned       n;                            /* entries in use */
+};
+
 /* Build the startup message and put it on a new channel; *child gets the
  * process's end. The khandles are consumed either way. */
-static status_t send_startup(const char *const *argv, unsigned argc, const uint32_t *roles,
-                             struct khandle *khs, unsigned n, struct khandle *child)
+static status_t send_startup(const char *const *argv, unsigned argc, struct startup_handles *h,
+                             struct khandle *child)
 {
     uint64_t strings = 0;
     for (unsigned i = 0; i < argc; i++)
         strings += strlen(argv[i]) + 1;
     uint64_t size = sizeof(struct startup_msg) + strings;
-    if (n > STARTUP_MAX_HANDLES || size > STARTUP_MSG_MAX) {
-        release_all(khs, n);
+    if (h->n > STARTUP_MAX_HANDLES || size > STARTUP_MSG_MAX) {
+        release_all(h->khs, h->n);
         return ERR_OUT_OF_RANGE;
     }
     uint8_t *buf = kzalloc(size);
     if (!buf) {
-        release_all(khs, n);
+        release_all(h->khs, h->n);
         return ERR_NO_MEMORY;
     }
     struct startup_msg *m = (struct startup_msg *)buf;
@@ -126,9 +139,9 @@ static status_t send_startup(const char *const *argv, unsigned argc, const uint3
     m->version = STARTUP_VERSION;
     m->argc = argc;
     m->envc = 0;
-    m->nhandles = n;
-    for (unsigned i = 0; i < n; i++)
-        m->roles[i] = roles[i];
+    m->nhandles = h->n;
+    for (unsigned i = 0; i < h->n; i++)
+        m->roles[i] = h->roles[i];
     m->strings_len = (uint32_t)strings;
     char *s = (char *)(m + 1);
     for (unsigned i = 0; i < argc; i++) {
@@ -140,7 +153,7 @@ static status_t send_startup(const char *const *argv, unsigned argc, const uint3
     struct channel *mine, *theirs;
     status_t st = channel_create(&mine, &theirs);
     if (st == OK) {
-        st = channel_write(mine, buf, (uint32_t)size, khs, n);
+        st = channel_write(mine, buf, (uint32_t)size, h->khs, h->n);
         kobject_unref((struct kobject *)mine);   /* the queued message outlives it */
         if (st == OK)
             *child = khandle_from_new((struct kobject *)theirs, RIGHTS_BASIC | RIGHTS_IO);
@@ -148,7 +161,65 @@ static status_t send_startup(const char *const *argv, unsigned argc, const uint3
             kobject_unref((struct kobject *)theirs);
     }
     kfree(buf);
-    release_all(khs, n);   /* no-ops for the ones the message took */
+    release_all(h->khs, h->n);   /* no-ops for the ones the message took */
+    return st;
+}
+
+/* The process name: argv[0] (or the path) without its directories. */
+static const char *program_name(const char *path, const char *const *argv, unsigned argc)
+{
+    const char *name = argc ? argv[0] : path;
+    for (const char *c = name; *c; c++)
+        if (*c == '/')
+            name = c + 1;   /* "bin/utest" -> "utest" */
+    return name;
+}
+
+/* The program's own handles: its process, address space, first thread, job
+ * and bootfs. ERR_NO_MEMORY if the address space's handle can't be made;
+ * the rest are added anyway (the caller releases whatever h holds). */
+static status_t add_own_handles(struct startup_handles *h, struct process *p, struct aspace *as,
+                                struct uthread *u, struct job *job)
+{
+    status_t st = OK;
+    struct vmar *vm;
+    struct vmo *image;
+    uint64_t isz;
+    h->roles[h->n] = SR_SELF_PROCESS;
+    h->khs[h->n++] = kh_ref(process_kobject(p), PROCESS_RIGHTS);
+    if (vmar_create_for(as, &vm) == OK) {
+        h->roles[h->n] = SR_SELF_VMAR;
+        h->khs[h->n++] = khandle_from_new(vmar_kobject(vm), VMAR_HANDLE_RIGHTS);
+    } else {
+        st = ERR_NO_MEMORY;
+    }
+    h->roles[h->n] = SR_SELF_THREAD;
+    h->khs[h->n++] = kh_ref(uthread_kobject(u), THREAD_RIGHTS);
+    h->roles[h->n] = SR_JOB;
+    h->khs[h->n++] = kh_ref(job_kobject(job), JOB_RIGHTS_OWN);   /* no RIGHT_MANAGE */
+    if (bootfs_image(&image, &isz) == OK) {
+        h->roles[h->n] = SR_BOOTFS;
+        h->khs[h->n++] = khandle_from_new(vmo_kobject(image), BOOTFS_RIGHTS);
+    }
+    return st;
+}
+
+/* Move the caller's extra handles into h while st is OK and they fit;
+ * the rest are released (ERR_OUT_OF_RANGE if one didn't fit). */
+static status_t add_extra_handles(struct startup_handles *h, struct userboot_handle *extra,
+                                  unsigned nextra, status_t st)
+{
+    for (unsigned i = 0; i < nextra; i++) {
+        if (st == OK && h->n < STARTUP_MAX_HANDLES) {
+            h->roles[h->n] = extra[i].role;
+            h->khs[h->n++] = extra[i].kh;
+            extra[i].kh.obj = NULL;
+        } else {
+            khandle_release(&extra[i].kh);
+            if (st == OK)
+                st = ERR_OUT_OF_RANGE;
+        }
+    }
     return st;
 }
 
@@ -167,21 +238,15 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
     if (st == OK)
         st = bootfs_find(path, &file, &fsize);
     if (st != OK) {
-        for (unsigned i = 0; i < nextra; i++)
-            khandle_release(&extra[i].kh);
+        release_extra(extra, nextra);
         return st;
     }
 
-    const char *name = argc ? argv[0] : path;
-    for (const char *c = name; *c; c++)
-        if (*c == '/')
-            name = c + 1;   /* "bin/utest" -> "utest" */
     struct process *p;
-    st = process_create(job, name, &p);
+    st = process_create(job, program_name(path, argv, argc), &p);
     if (st != OK) {
         kobject_unref(vmo_kobject(file));
-        for (unsigned i = 0; i < nextra; i++)
-            khandle_release(&extra[i].kh);
+        release_extra(extra, nextra);
         return st;
     }
     struct aspace *as = process_aspace(p);
@@ -198,47 +263,16 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
     if (st == OK)
         st = uthread_create(p, process_name(p), &u);
 
-    /* The startup handles. */
-    uint32_t roles[STARTUP_MAX_HANDLES];
-    struct khandle khs[STARTUP_MAX_HANDLES];
-    unsigned n = 0;
-    if (st == OK) {
-        struct vmar *vm;
-        struct vmo *image;
-        uint64_t isz;
-        roles[n] = SR_SELF_PROCESS;
-        khs[n++] = kh_ref(process_kobject(p), PROCESS_RIGHTS);
-        if (vmar_create_for(as, &vm) == OK) {
-            roles[n] = SR_SELF_VMAR;
-            khs[n++] = khandle_from_new(vmar_kobject(vm), VMAR_HANDLE_RIGHTS);
-        } else {
-            st = ERR_NO_MEMORY;
-        }
-        roles[n] = SR_SELF_THREAD;
-        khs[n++] = kh_ref(uthread_kobject(u), THREAD_RIGHTS);
-        roles[n] = SR_JOB;
-        khs[n++] = kh_ref(job_kobject(job), JOB_RIGHTS_OWN);   /* no RIGHT_MANAGE */
-        if (bootfs_image(&image, &isz) == OK) {
-            roles[n] = SR_BOOTFS;
-            khs[n++] = khandle_from_new(vmo_kobject(image), BOOTFS_RIGHTS);
-        }
-    }
-    for (unsigned i = 0; i < nextra; i++) {
-        if (st == OK && n < STARTUP_MAX_HANDLES) {
-            roles[n] = extra[i].role;
-            khs[n++] = extra[i].kh;
-            extra[i].kh.obj = NULL;
-        } else {
-            khandle_release(&extra[i].kh);
-            if (st == OK)
-                st = ERR_OUT_OF_RANGE;
-        }
-    }
+    struct startup_handles h;
+    h.n = 0;
+    if (st == OK)
+        st = add_own_handles(&h, p, as, u, job);
+    st = add_extra_handles(&h, extra, nextra, st);
     struct khandle child = { NULL, 0 };
     if (st == OK)
-        st = send_startup(argv, argc, roles, khs, n, &child);
+        st = send_startup(argv, argc, &h, &child);
     else
-        release_all(khs, n);
+        release_all(h.khs, h.n);
     if (st == OK)
         st = process_start(p, u, plan.entry, stack_top, &child, 0, mask);
     khandle_release(&child);   /* a no-op once the process has it */

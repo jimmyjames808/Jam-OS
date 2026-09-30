@@ -36,10 +36,10 @@
 #include <jam/x86.h>
 
 static irq_handler_t handlers[256];
-volatile uint64_t irq_unexpected;
-volatile uint8_t irq_last_unexpected;
-volatile uint64_t irq_device_unowned;
-volatile uint8_t irq_device_last_unowned;
+uint64_t irq_unexpected;
+uint8_t irq_last_unexpected;
+uint64_t irq_device_unowned;
+uint8_t irq_device_last_unowned;
 
 _Static_assert(VEC_DEVICE_FIRST == VEC_COM1 + 1, "device vectors start after COM1");
 _Static_assert(VEC_DEVICE_LAST < VEC_TIMER, "device vectors end below the timer");
@@ -48,14 +48,14 @@ _Static_assert(VEC_DEVICE_COUNT == VEC_DEVICE_LAST - VEC_DEVICE_FIRST + 1, "vect
 struct vec_slot {
     vector_fn_t       fn;      /* NULL: unowned (atomic) */
     void             *ctx;     /* written before fn is published */
-    volatile uint32_t busy;    /* handlers running now (only this CPU runs them) */
+    uint32_t          busy;    /* handlers running now (only this CPU runs them) */
     bool              used;    /* allocated, possibly still draining (alloc_lock) */
 };
 
 struct vec_table {
-    struct vec_slot s[VEC_DEVICE_COUNT];
-    uint16_t        count;     /* used slots (alloc_lock) */
-    uint16_t        cursor;    /* next-fit start (alloc_lock) */
+    struct vec_slot s[VEC_DEVICE_COUNT];  /* one per device vector */
+    uint16_t        count;                /* used slots (alloc_lock) */
+    uint16_t        cursor;               /* next-fit start (alloc_lock) */
 };
 
 static struct vec_table *vtab[MAX_CPUS];
@@ -90,7 +90,7 @@ void irq_dispatch(struct trap_frame *f)
     }
     if (v >= VEC_DEVICE_FIRST && v <= VEC_DEVICE_LAST) {
         if (!device_dispatch(v)) {
-            irq_device_last_unowned = v;
+            __atomic_store_n(&irq_device_last_unowned, v, __ATOMIC_RELAXED);
             __atomic_add_fetch(&irq_device_unowned, 1, __ATOMIC_RELAXED);
         }
         lapic_eoi();
@@ -98,7 +98,8 @@ void irq_dispatch(struct trap_frame *f)
     }
     if (v >= VEC_PIC_BASE && v < VEC_PIC_BASE + 16)
         return;   /* spurious 8259 interrupt: no EOI */
-    irq_last_unexpected = v;   /* counted, not logged: see lapic.c */
+    /* Counted, not logged: see lapic.c. */
+    __atomic_store_n(&irq_last_unexpected, v, __ATOMIC_RELAXED);
     __atomic_add_fetch(&irq_unexpected, 1, __ATOMIC_RELAXED);
     lapic_eoi();
 }
@@ -143,7 +144,7 @@ static bool apic_msi_ok(uint32_t apic_id)
 static status_t tables_ensure(void)
 {
     for (uint32_t i = 0; i < cpu_count; i++) {
-        if (__atomic_load_n(&vtab[i], __ATOMIC_ACQUIRE) || !cpus[i] || !cpus[i]->online)
+        if (__atomic_load_n(&vtab[i], __ATOMIC_ACQUIRE) || !cpus[i] || !cpu_online(cpus[i]))
             continue;
         struct vec_table *t = kzalloc(sizeof(*t));
         if (!t)
@@ -172,7 +173,7 @@ status_t vector_alloc(vector_fn_t fn, void *ctx, uint32_t *cpu, uint8_t *vec)
         struct vec_table *t = vtab[i];
         view[i] = (struct vector_cpu_view){
             .type = c ? (uint8_t)c->type : CORE_UNKNOWN,
-            .usable = c && c->online && t && apic_msi_ok(c->lapic_id),
+            .usable = c && cpu_online(c) && t && apic_msi_ok(c->lapic_id),
             .nvec = t ? t->count : 0,
         };
     }

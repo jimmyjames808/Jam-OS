@@ -46,22 +46,22 @@
 #define PTE_ADDR 0x000ffffffffff000ull
 
 struct uspace {
-    uint64_t pml4;          /* physical */
-    uint64_t code_phys, stack_phys, data_phys;
-    void    *code, *stack, *data;   /* HHDM views */
+    uint64_t pml4;                              /* physical */
+    uint64_t code_phys, stack_phys, data_phys;  /* physical pages */
+    void    *code, *stack, *data;               /* HHDM views */
 };
 
 struct uprog {
-    volatile uint64_t report[8];
-    volatile unsigned reported;
+    volatile uint64_t report[8];   /* values the program reported */
+    volatile unsigned reported;    /* how many */
 };
 
 /* thread -> (page tables, program) so the CR3 hook and the syscall handlers
  * can find them from current_thread(). */
 static struct {
-    struct thread *t;
-    uint64_t       pml4;
-    struct uprog  *prog;
+    struct thread *t;      /* the thread */
+    uint64_t       pml4;   /* its page tables */
+    struct uprog  *prog;   /* its program's report area */
 } regs[MAX_CPUS];
 static spinlock_t reg_lock = SPINLOCK_INIT("utest regs");
 
@@ -76,7 +76,7 @@ static void reg_add(struct thread *t, uint64_t pml4, struct uprog *prog)
         }
     panic("utest: reg table full");
 }
-static void reg_del(struct thread *t)
+static void reg_del(const struct thread *t)
 {
     uint64_t f = spin_lock_irqsave(&reg_lock);
     for (unsigned i = 0; i < MAX_CPUS; i++)
@@ -84,14 +84,14 @@ static void reg_del(struct thread *t)
             regs[i].t = NULL;
     spin_unlock_irqrestore(&reg_lock, f);
 }
-static struct uprog *reg_prog(struct thread *t)
+static struct uprog *reg_prog(const struct thread *t)
 {
     for (unsigned i = 0; i < MAX_CPUS; i++)
         if (regs[i].t == t)
             return regs[i].prog;
     return NULL;
 }
-static uint64_t reg_pml4(struct thread *t)
+static uint64_t reg_pml4(const struct thread *t)
 {
     for (unsigned i = 0; i < MAX_CPUS; i++)
         if (regs[i].t == t)
@@ -102,7 +102,7 @@ static uint64_t reg_pml4(struct thread *t)
 /* The PML4 each CPU currently has loaded for a test thread (0 = kernel
  * tables). Set/cleared only inside the CR3 hook, which runs with interrupts
  * off; read by uspace_destroy to know when a PML4 is safe to free. */
-static volatile uint64_t cpu_test_pml4[MAX_CPUS];
+static uint64_t cpu_test_pml4[MAX_CPUS];
 
 /* CR3 to load when switching TO `next` (see uentry_test.h). Tracks this
  * CPU's loaded test PML4 itself, so leaving a test thread always restores
@@ -176,8 +176,8 @@ static void utest_init(void)
 {
     /* Install the test hooks once. The CR3 hook must be live before any
      * user thread is created; the syscall hook before it makes a call. */
-    uentry_test_cr3 = utest_cr3;
-    uentry_test_syscall = utest_syscall;
+    __atomic_store_n(&uentry_test_cr3, utest_cr3, __ATOMIC_RELEASE);
+    __atomic_store_n(&uentry_test_syscall, utest_syscall, __ATOMIC_RELEASE);
 }
 
 /* ---- page tables ---------------------------------------------------------- */
@@ -191,7 +191,7 @@ static uint64_t table_alloc(void)
 }
 
 /* Map one 4 KiB user page (its own leaf tables created on the way). */
-static void umap(struct uspace *u, uint64_t va, uint64_t pa, bool writable, bool exec)
+static void umap(const struct uspace *u, uint64_t va, uint64_t pa, bool writable, bool exec)
 {
     uint64_t *t = phys_to_virt(u->pml4);
     for (int level = 4; level > 1; level--) {
@@ -267,6 +267,7 @@ static void uspace_destroy(struct uspace *u)
 
 /* ---- a tiny x86-64 emitter for the user programs -------------------------- */
 
+/* Machine-code writer: the next byte goes at p, never past end. */
 struct emit { uint8_t *p, *end; };
 static void eb(struct emit *e, uint8_t b)
 {
@@ -310,9 +311,9 @@ static void e_movd_to_xmm(struct emit *e, unsigned x)
 /* ---- running a user thread ------------------------------------------------- */
 
 struct urun {
-    struct uspace *u;
-    struct uprog  *prog;
-    uint64_t       entry, arg0, arg1;
+    struct uspace *u;                   /* the address space */
+    struct uprog  *prog;                /* where the program reports */
+    uint64_t       entry, arg0, arg1;   /* where it starts and its two arguments */
 };
 
 static void user_thread(void *arg)
@@ -553,11 +554,12 @@ KTEST(uentry_bad_return)
  * borrow a user address space by pointing this kernel thread's CR3 at it
  * (registered with the hook) without ever entering ring 3. */
 struct copyctx {
-    struct uspace *u;
+    struct uspace *u;                                    /* the address space borrowed */
+    /* what each copy returned */
     volatile status_t r_good, r_unmapped, r_kernel, r_noncanon, r_crosstop, r_tostack;
-    volatile bool     data_ok;
-    volatile status_t r_str_ok, r_str_nonul, r_str_bad;
-    volatile bool     str_ok;
+    volatile bool     data_ok;                           /* the bytes copied in were right */
+    volatile status_t r_str_ok, r_str_nonul, r_str_bad;  /* what each string copy returned */
+    volatile bool     str_ok;                            /* the strings were right */
 };
 
 static void copy_thread(void *arg)
@@ -671,7 +673,7 @@ KTEST(uentry_nmi_in_user)
     volatile uint64_t *counter = u.data;
     *counter = 0;
     nmi_seen = 0;
-    uentry_test_nmi = count_nmi;
+    __atomic_store_n(&uentry_test_nmi, count_nmi, __ATOMIC_RELEASE);
 
     struct urun r = { &u, &prog, UCODE, 0, 0 };
     struct thread *t = user_spawn(&r, 1);
@@ -689,6 +691,6 @@ KTEST(uentry_nmi_in_user)
 
     thread_cancel(t);
     user_join(t);
-    uentry_test_nmi = NULL;
+    __atomic_store_n(&uentry_test_nmi, NULL, __ATOMIC_RELEASE);
     uspace_destroy(&u);
 }

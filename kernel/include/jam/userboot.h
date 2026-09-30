@@ -17,8 +17,8 @@
 /* An extra handle for the startup message: role (enum startup_role) and
  * the khandle, which the spawn consumes (moves or releases) either way. */
 struct userboot_handle {
-    uint32_t       role;
-    struct khandle kh;
+    uint32_t       role;   /* enum startup_role */
+    struct khandle kh;     /* the handle to give */
 };
 
 /* Load bootfs file `path` (a static ELF) into a new process in `job` and

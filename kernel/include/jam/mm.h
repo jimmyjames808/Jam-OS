@@ -40,12 +40,12 @@ static inline uint64_t virt_to_phys(const void *va) { return (uint64_t)va - hhdm
 enum { ZONE_DMA32, ZONE_NORMAL, ZONE_COUNT };   /* DMA32 = below 4 GiB */
 
 struct page {
-    struct list_node node;
-    uint16_t flags;
-    uint8_t  order;
-    uint8_t  zone;
-    uint32_t refcount;
-    uint64_t private;
+    struct list_node node;   /* free lists, slab lists, gathers */
+    uint16_t flags;          /* PG_* */
+    uint8_t  order;          /* block size is 2^order pages (buddy blocks) */
+    uint8_t  zone;           /* ZONE_* */
+    uint32_t refcount;       /* references; the last one frees it (vmo.c) */
+    uint64_t private;        /* owner's word: slab header, next page of a chain, ... */
 };
 _Static_assert(sizeof(struct page) == 32, "struct page should stay 32 bytes");
 
@@ -60,7 +60,10 @@ static inline struct page *pfn_to_page(uint64_t pfn) { return &vmemmap[pfn]; }
 static inline uint64_t page_to_pfn(const struct page *p) { return (uint64_t)(p - vmemmap); }
 static inline uint64_t page_to_phys(const struct page *p) { return page_to_pfn(p) << PAGE_SHIFT; }
 static inline void *page_to_virt(const struct page *p) { return phys_to_virt(page_to_phys(p)); }
-static inline struct page *virt_to_page(const void *va) { return pfn_to_page(virt_to_phys(va) >> PAGE_SHIFT); }
+static inline struct page *virt_to_page(const void *va)
+{
+    return pfn_to_page(virt_to_phys(va) >> PAGE_SHIFT);
+}
 
 void         pmm_early_init(const struct boot_info *bi);
 /* Bump allocator used only while building the first page tables. */
@@ -154,7 +157,7 @@ void               kmem_cache_free(struct kmem_cache *c, void *obj);
  * Until then every allocation takes the cache lock. */
 void               heap_percpu_init(void);
 /* The switch (boot "nokmcache"); the benchmark flips it. */
-extern volatile bool heap_percpu;
+extern bool heap_percpu;
 /* Return every CPU's magazined objects to their slabs (pmm_stats does this
  * first, so its count is exact). Returns how many moved. */
 uint64_t           kmem_drain_all(void);

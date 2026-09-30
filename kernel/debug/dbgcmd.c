@@ -51,12 +51,12 @@
 #define CMD_MAX 64
 
 struct run {
-    char           cmd[CMD_MAX];
-    struct job    *scope;     /* a reference, or NULL */
-    struct job    *caller;    /* a reference, or NULL: "kill" spares its ancestors */
-    struct event  *done;      /* SIG_SIGNALED when result is set */
-    int64_t        result;
-    volatile int   refs;      /* the thread and the caller */
+    char           cmd[CMD_MAX];  /* the command line, NUL-terminated */
+    struct job    *scope;         /* a reference, or NULL */
+    struct job    *caller;        /* a reference, or NULL: "kill" spares its ancestors */
+    struct event  *done;          /* SIG_SIGNALED when result is set */
+    int64_t        result;        /* exec's return value */
+    int            refs;          /* the thread and the caller (atomic once it runs) */
 };
 
 static spinlock_t busy_lock = SPINLOCK_INIT("dbgcmd");
@@ -140,7 +140,7 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
 #ifndef JAM_NO_KTESTS
     if (is(cmd, n, "ktest")) {
         /* Devices devmgr gave to drivers are theirs: the tests skip them. */
-        pci_hide_in_use = true;
+        __atomic_store_n(&pci_hide_in_use, true, __ATOMIC_RELAXED);
         uint32_t busy = 0;
         for (uint32_t i = 0; i < pci_count(); i++)
             busy += pci_in_use(pci_get(i));
@@ -150,7 +150,7 @@ static int64_t exec(const char *cmd, struct job *scope, struct job *caller)
         ktest_live = true;
         int r = ktest_run(rest);
         ktest_live = false;
-        pci_hide_in_use = false;
+        __atomic_store_n(&pci_hide_in_use, false, __ATOMIC_RELAXED);
         return r;
     }
     if (is(cmd, n, "bench")) {

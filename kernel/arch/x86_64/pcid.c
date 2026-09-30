@@ -55,31 +55,32 @@
 #define PCID_SLOTS 8
 
 struct pcid_cpu {
-    uint64_t id[PCID_SLOTS];
-    uint64_t gen[PCID_SLOTS];
-    uint32_t victim;
-    uint32_t epoch;
+    uint64_t id[PCID_SLOTS];   /* address-space id each slot holds, 0 = empty */
+    uint64_t gen[PCID_SLOTS];  /* its TLB generation when last loaded */
+    uint32_t victim;           /* round-robin cursor for the next slot to reuse */
+    uint32_t epoch;            /* last epoch seen: a change forgets every slot */
     /* PCID 0 may hold user entries: a user address space was loaded as
      * PCID 0 (the switch off). The next PCID-0 load with the switch on
      * must flush, or kernel threads would keep translations to user pages
      * that later unmaps no longer shoot down here. */
     bool     zero_dirty;
-    uint64_t kept, flushed;   /* statistics */
+    uint64_t kept, flushed;    /* statistics */
 } __attribute__((aligned(64)));
 
 static struct pcid_cpu pcpu[MAX_CPUS];
-static volatile int usable = -1;          /* -1: not decided yet */
-static volatile bool on;
-static volatile uint32_t epoch = 1;       /* pcpu[].epoch starts at 0: a reset */
-static volatile uint64_t next_id = 1;
+static int usable = -1;                   /* -1: not decided yet */
+static bool on;                           /* the run-time switch (pcid_set) */
+static uint32_t epoch = 1;                /* pcpu[].epoch starts at 0: a reset */
+static uint64_t next_id = 1;
 
 bool pcid_usable(void)
 {
-    if (usable < 0) {
-        usable = cpu_features.pcid && cpu_features.pge && !cmdline_has("nopcid");
-        on = usable;
+    if (__atomic_load_n(&usable, __ATOMIC_RELAXED) < 0) {
+        int u = cpu_features.pcid && cpu_features.pge && !cmdline_has("nopcid");
+        __atomic_store_n(&usable, u, __ATOMIC_RELAXED);
+        __atomic_store_n(&on, u, __ATOMIC_RELAXED);
     }
-    return usable;
+    return __atomic_load_n(&usable, __ATOMIC_RELAXED);
 }
 
 uint64_t pcid_new_id(void)
@@ -99,13 +100,13 @@ void pcid_set(bool want)
 
 bool pcid_is_on(void)
 {
-    return pcid_usable() && on;
+    return pcid_usable() && __atomic_load_n(&on, __ATOMIC_SEQ_CST);
 }
 
 /* The decision for one load on the CPU whose slots are *pc: the PCID to
  * use and whether its entries may be kept. `gen` is only read (after the
  * caller's active-bit RMW) when a user slot is involved. */
-static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const volatile uint64_t *gen,
+static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const uint64_t *gen,
                        bool *keep)
 {
     uint32_t e = __atomic_load_n(&epoch, __ATOMIC_ACQUIRE);
@@ -145,9 +146,9 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const volatile
     return slot + 1;
 }
 
-void pcid_load(uint64_t pml4, uint64_t id, const volatile uint64_t *gen)
+void pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen)
 {
-    if (usable <= 0) {
+    if (__atomic_load_n(&usable, __ATOMIC_RELAXED) <= 0) {
         write_cr3(pml4);
         return;
     }

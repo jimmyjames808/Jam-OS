@@ -81,7 +81,8 @@ void tsc_calibrate_with_loader(uint64_t loader_hz)
         cpuid = (uint64_t)cpu_features.crystal_hz * cpu_features.tsc_ratio_num /
                 cpu_features.tsc_ratio_den;
 
-    kprintf("tsc: frequency sources%s:\n", cpu_features.tsc_invariant ? "" : " (TSC NOT invariant)");
+    kprintf("tsc: frequency sources%s:\n",
+            cpu_features.tsc_invariant ? "" : " (TSC NOT invariant)");
     show("HPET", hpet);
     show("PM timer", pm);
     show("CPUID 15h", cpuid);

@@ -72,26 +72,26 @@
 
 static bool present;
 static bool irq_routed;          /* the interrupt is wired: async possible */
-volatile bool serial_async;      /* the switch */
-static volatile bool broken;     /* no interrupt ever came: synchronous for good */
+bool serial_async;               /* the switch */
+static bool broken;              /* no interrupt ever came: synchronous for good */
 
 static char tx_buf[SERIAL_RING];
 static struct serial_ring tx = { tx_buf, SERIAL_RING, 0, 0, 0 };
 static spinlock_t tx_lock = SPINLOCK_INIT("serial tx");
 static bool thre_on;             /* transmit interrupt enabled (tx_lock) */
-static volatile bool hold;       /* tests: don't drain */
-volatile uint64_t serial_dropped, serial_irqs, serial_rescues;
+static bool hold;                /* tests: don't drain */
+uint64_t serial_dropped, serial_irqs, serial_rescues;
 static uint64_t last_irqs;
 static uint32_t last_tail;
 
 static char rx_buf[RX_RING];
 static struct serial_ring rx = { rx_buf, RX_RING, 0, 0, 0 };
 static spinlock_t rx_lock = SPINLOCK_INIT("serial rx");
-static volatile bool rx_on;      /* someone reads: drain the FIFO */
+static bool rx_on;               /* someone reads: drain the FIFO */
 static uint8_t rx_ier;           /* IER_RDA while rx_on and the IRQ is routed (tx_lock) */
 static void (*rx_notify)(void *);
 static void *rx_ctx;
-volatile uint64_t serial_rx_bytes, serial_rx_errors;
+static uint64_t serial_rx_bytes, serial_rx_errors;
 static uint64_t rx_errors_seen, rx_polls;
 static bool rx_storm;
 
@@ -151,7 +151,7 @@ static void put_sync(char c)
 /* tx_lock held: if the FIFO is empty, move up to FIFO_LEN bytes into it. */
 static void fill_fifo_locked(void)
 {
-    if (hold || !(inb(COM1 + REG_LSR) & LSR_THRE))
+    if (__atomic_load_n(&hold, __ATOMIC_RELAXED) || !(inb(COM1 + REG_LSR) & LSR_THRE))
         return;
     for (int i = 0; i < FIFO_LEN; i++) {
         int c = serial_ring_get(&tx);
@@ -164,7 +164,7 @@ static void fill_fifo_locked(void)
 /* tx_lock held: the transmit interrupt on exactly while bytes are queued. */
 static void set_thre_locked(void)
 {
-    bool want = serial_ring_used(&tx) && !hold;
+    bool want = serial_ring_used(&tx) && !__atomic_load_n(&hold, __ATOMIC_RELAXED);
     if (want != thre_on) {
         thre_on = want;
         outb(COM1 + REG_IER, (want ? IER_THRE : 0) | rx_ier);
@@ -175,7 +175,7 @@ static void set_thre_locked(void)
  * context (interrupts off inside). */
 static void rx_drain(void)
 {
-    if (!rx_on)
+    if (!__atomic_load_n(&rx_on, __ATOMIC_RELAXED))
         return;
     uint64_t f = spin_lock_irqsave(&rx_lock);
     bool got = false;
@@ -183,10 +183,10 @@ static void rx_drain(void)
     for (int n = 0; n < RX_BURST && ((lsr = inb(COM1 + REG_LSR)) & LSR_DR); n++) {
         uint8_t c = inb(COM1 + REG_DATA);
         if (lsr & LSR_RXERR) {
-            serial_rx_errors++;
+            __atomic_add_fetch(&serial_rx_errors, 1, __ATOMIC_RELAXED);
             continue;
         }
-        serial_rx_bytes++;
+        __atomic_add_fetch(&serial_rx_bytes, 1, __ATOMIC_RELAXED);
         serial_ring_put(&rx, (char)c);
         got = true;
     }
@@ -199,7 +199,7 @@ static void on_com1(struct trap_frame *f)
 {
     (void)f;
     spin_lock(&tx_lock);   /* interrupt handler: interrupts are off */
-    serial_irqs++;
+    __atomic_add_fetch(&serial_irqs, 1, __ATOMIC_RELAXED);
     (void)inb(COM1 + REG_IIR);   /* acknowledges a transmit-empty interrupt */
     fill_fifo_locked();
     set_thre_locked();
@@ -218,7 +218,7 @@ void serial_start_irq(void)
         return;
     }
     irq_routed = true;
-    serial_async = true;
+    __atomic_store_n(&serial_async, true, __ATOMIC_RELAXED);
 }
 
 static void write_sync(const char *s, size_t len)
@@ -234,7 +234,8 @@ void serial_write(const char *s, size_t len)
 {
     if (!present)
         return;
-    if (!serial_async || broken || !irq_routed) {
+    if (!__atomic_load_n(&serial_async, __ATOMIC_RELAXED) ||
+        __atomic_load_n(&broken, __ATOMIC_RELAXED) || !irq_routed) {
         write_sync(s, len);
         return;
     }
@@ -245,7 +246,7 @@ void serial_write(const char *s, size_t len)
             serial_ring_put(&tx, '\r');
         serial_ring_put(&tx, s[i]);
     }
-    serial_dropped += tx.dropped - lost;
+    __atomic_add_fetch(&serial_dropped, tx.dropped - lost, __ATOMIC_RELAXED);
     /* Kick: enabling the transmit-empty interrupt while the transmitter
      * is empty raises it at once (16550; QEMU too), and the handler fills
      * the FIFO. So the writer pays one port write, not sixteen (port I/O
@@ -261,8 +262,9 @@ void serial_write(const char *s, size_t len)
 void serial_poll(void)
 {
     rx_drain();
-    if (rx_on && ++rx_polls % 100 == 0) {   /* once a second (CPU 0's tick) */
-        uint64_t e = serial_rx_errors;
+    /* Once a second (CPU 0's tick). */
+    if (__atomic_load_n(&rx_on, __ATOMIC_RELAXED) && ++rx_polls % 100 == 0) {
+        uint64_t e = __atomic_load_n(&serial_rx_errors, __ATOMIC_RELAXED);
         if (e - rx_errors_seen > RX_STORM && rx_ier) {
             spin_lock(&tx_lock);   /* the tick: interrupts are off */
             rx_ier = 0;
@@ -274,20 +276,21 @@ void serial_poll(void)
         }
         rx_errors_seen = e;
     }
-    if (!irq_routed || broken || !serial_ring_used(&tx))
+    if (!irq_routed || __atomic_load_n(&broken, __ATOMIC_RELAXED) || !serial_ring_used(&tx))
         return;
     spin_lock(&tx_lock);
-    uint64_t irqs = serial_irqs;
-    bool stalled = !hold && thre_on && irqs == last_irqs && tx.tail == last_tail &&
+    uint64_t irqs = __atomic_load_n(&serial_irqs, __ATOMIC_RELAXED);
+    bool stalled = !__atomic_load_n(&hold, __ATOMIC_RELAXED) && thre_on && irqs == last_irqs &&
+                   tx.tail == last_tail &&
                    (inb(COM1 + REG_LSR) & LSR_THRE);
     if (stalled) {
-        serial_rescues++;
+        __atomic_add_fetch(&serial_rescues, 1, __ATOMIC_RELAXED);
         fill_fifo_locked();
         set_thre_locked();
-        if (!irqs && serial_rescues >= SERIAL_RESCUES_MAX)
-            broken = true;
+        if (!irqs && __atomic_load_n(&serial_rescues, __ATOMIC_RELAXED) >= SERIAL_RESCUES_MAX)
+            __atomic_store_n(&broken, true, __ATOMIC_RELAXED);
     }
-    if (broken) {
+    if (__atomic_load_n(&broken, __ATOMIC_RELAXED)) {
         /* Write out what is queued, synchronously, before anyone writes
          * synchronously after it, with this lock held so other CPUs' log
          * lines wait (and keep their order). At most BROKEN_FLUSH bytes
@@ -301,7 +304,7 @@ void serial_poll(void)
         int c;
         for (int n = 0; n < BROKEN_FLUSH && (c = serial_ring_get(&tx)) >= 0; n++)
             put_sync((char)c);
-        serial_dropped += serial_ring_used(&tx);
+        __atomic_add_fetch(&serial_dropped, serial_ring_used(&tx), __ATOMIC_RELAXED);
         tx.tail = tx.head;
     }
     last_irqs = irqs;
@@ -311,7 +314,7 @@ void serial_poll(void)
 
 bool serial_irq_broken(void)
 {
-    return broken;
+    return __atomic_load_n(&broken, __ATOMIC_RELAXED);
 }
 
 void serial_panic(void)
@@ -319,10 +322,10 @@ void serial_panic(void)
     if (!present)
         return;
     spin_force_unlock(&tx_lock);   /* a halted CPU may have held it */
-    serial_async = false;
+    __atomic_store_n(&serial_async, false, __ATOMIC_RELAXED);
     outb(COM1 + REG_IER, 0);
     thre_on = false;
-    hold = false;
+    __atomic_store_n(&hold, false, __ATOMIC_RELAXED);
     int c;
     while ((c = serial_ring_get(&tx)) >= 0)
         put_sync((char)c);
@@ -337,14 +340,14 @@ void serial_set_async(bool on)
     if (!present)
         return;
     uint64_t f = spin_lock_irqsave(&tx_lock);
-    if (!on && serial_async) {
+    if (!on && __atomic_load_n(&serial_async, __ATOMIC_RELAXED)) {
         outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
         int c;
         while ((c = serial_ring_get(&tx)) >= 0)
             put_sync((char)c);
     }
-    serial_async = on;
+    __atomic_store_n(&serial_async, on, __ATOMIC_RELAXED);
     if (on)
         set_thre_locked();
     spin_unlock_no_resched(&tx_lock);
@@ -358,13 +361,13 @@ uint32_t serial_pending(void)
 
 bool serial_is_async(void)
 {
-    return present && irq_routed && !broken;
+    return present && irq_routed && !__atomic_load_n(&broken, __ATOMIC_RELAXED);
 }
 
 void serial_test_hold(bool on)
 {
     uint64_t f = spin_lock_irqsave(&tx_lock);
-    hold = on;
+    __atomic_store_n(&hold, on, __ATOMIC_RELAXED);
     if (!on)
         fill_fifo_locked();
     set_thre_locked();
@@ -384,7 +387,7 @@ status_t serial_rx_start(void (*notify)(void *), void *ctx)
     if (!present)
         return ERR_NOT_FOUND;
     uint64_t f = spin_lock_irqsave(&rx_lock);
-    if (rx_on) {
+    if (__atomic_load_n(&rx_on, __ATOMIC_RELAXED)) {
         spin_unlock_irqrestore(&rx_lock, f);
         return ERR_BAD_STATE;
     }
@@ -393,8 +396,8 @@ status_t serial_rx_start(void (*notify)(void *), void *ctx)
     rx_ctx = ctx;
     while (inb(COM1 + REG_LSR) & LSR_DR)   /* whatever came before: stale */
         (void)inb(COM1 + REG_DATA);
-    rx_on = true;
-    rx_errors_seen = serial_rx_errors;
+    __atomic_store_n(&rx_on, true, __ATOMIC_RELAXED);
+    rx_errors_seen = __atomic_load_n(&serial_rx_errors, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&rx_lock, f);
     f = spin_lock_irqsave(&tx_lock);
     rx_ier = irq_routed && !rx_storm ? IER_RDA : 0;
@@ -413,7 +416,7 @@ void serial_rx_stop(void)
     spin_unlock_no_resched(&tx_lock);
     irq_restore(f);
     f = spin_lock_irqsave(&rx_lock);
-    rx_on = false;
+    __atomic_store_n(&rx_on, false, __ATOMIC_RELAXED);
     rx_notify = NULL;
     rx_ctx = NULL;
     rx.head = rx.tail = 0;
@@ -436,7 +439,7 @@ size_t serial_rx_read(char *buf, size_t cap, void (*empty)(void *), void *ctx)
 void serial_rx_inject(const char *s, size_t len)
 {
     uint64_t f = spin_lock_irqsave(&rx_lock);
-    if (rx_on) {
+    if (__atomic_load_n(&rx_on, __ATOMIC_RELAXED)) {
         for (size_t i = 0; i < len; i++)
             serial_ring_put(&rx, s[i]);
         if (len && rx_notify)

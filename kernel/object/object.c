@@ -1,10 +1,19 @@
+/* The kernel object core: reference counts, handle counts, signals and
+ * the observers that wait on them, shared by every object type.
+ *
+ * An object has two counts: `refs` (kernel references; the last one
+ * destroys it) and `handles` (handle-table entries; the last one calls
+ * on_zero_handles, e.g. a channel endpoint tells its peer). Both drops can
+ * cascade through other objects, so they run through td_run's per-CPU
+ * pending list instead of recursing (see "iterative teardown" below).
+ * Signals and the observer list are guarded by the object's own lock. */
 #include <jam/kprintf.h>
 #include <jam/object.h>
 #include <jam/panic.h>
 #include <jam/sched.h>
 #include <jam/time.h>
 
-static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
+static uint64_t next_koid = 1024;            /* small numbers reserved */
 
 /* ---- iterative teardown --------------------------------------------------
  *
@@ -25,8 +34,8 @@ static volatile uint64_t next_koid = 1024;   /* small numbers reserved */
 #define TD_DESTROY      2u
 
 static struct td_cpu {
-    unsigned        depth;
-    struct kobject *head;
+    unsigned        depth;   /* >0 while a drainer runs on this CPU */
+    struct kobject *head;    /* pending objects, linked by td_next */
 } td[MAX_CPUS];
 
 static void td_run(struct kobject *obj, uint8_t what)
@@ -189,9 +198,9 @@ void kobject_unobserve(struct kobject *obj, struct observer *o)
 /* ---- object_wait_one ------------------------------------------------------ */
 
 struct one_waiter {
-    struct observer obs;
-    struct thread  *thread;
-    bool            hit;
+    struct observer obs;      /* registered on the object */
+    struct thread  *thread;   /* the waiter */
+    bool            hit;      /* the signals matched */
 };
 
 static void one_waiter_fire(struct observer *o, signals_t current)

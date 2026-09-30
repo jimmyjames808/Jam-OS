@@ -35,9 +35,9 @@
 #define F_IRQS_ON 2u   /* acquired with interrupts enabled */
 
 struct lock_class {
-    const char *name;
-    uint8_t     subclass;
-    bool        sleeping;
+    const char *name;                  /* the lock's class name */
+    uint8_t     subclass;              /* spin_lock_nested's level, 0 = plain */
+    bool        sleeping;              /* a mutex class (may sleep) */
     uint8_t     flags;                 /* F_*, set-only */
     uint16_t    sub[MAX_SUBCLASSES];   /* subclass -> class index + 1 */
 };
@@ -45,8 +45,8 @@ struct lock_class {
 static struct lock_class classes[MAX_CLASSES];
 static uint64_t deps[MAX_CLASSES][WORDS];
 static unsigned class_count;
-static volatile bool graph_busy;
-static volatile bool disabled;
+static bool graph_busy;   /* the graph lock: __atomic_test_and_set / __atomic_clear */
+static bool disabled;     /* lockdep_off: the panic path, no more checks */
 
 /* Interrupts must be off while the graph flag is held: an interrupt
  * handler that takes any spinlock re-enters the checker, and would spin on
@@ -77,7 +77,7 @@ unsigned lockdep_class_count(void)
 
 void lockdep_off(void)
 {
-    disabled = true;
+    __atomic_store_n(&disabled, true, __ATOMIC_RELAXED);
 }
 
 /* With the graph lock held: find or add (name, subclass, sleeping). */
@@ -129,6 +129,26 @@ static unsigned class_of(spinlock_t *l, unsigned subclass)
     return i;
 }
 
+/* One breadth-first step over the dependency graph: every class in
+ * frontier not seen yet is marked seen and its dependencies go into next.
+ * False if none was new. */
+static bool bfs_step(const uint64_t *frontier, uint64_t *seen, uint64_t *next)
+{
+    bool any = false;
+    for (unsigned w = 0; w < WORDS; w++) {
+        uint64_t fresh = frontier[w] & ~seen[w];
+        seen[w] |= fresh;
+        while (fresh) {
+            unsigned b = w * 64 + (unsigned)__builtin_ctzll(fresh);
+            fresh &= fresh - 1;
+            any = true;
+            for (unsigned x = 0; x < WORDS; x++)
+                next[x] |= deps[b][x];
+        }
+    }
+    return any;
+}
+
 /* With the graph lock held: can `to` be reached from `from`? */
 static bool reachable(unsigned from, unsigned to)
 {
@@ -137,19 +157,7 @@ static bool reachable(unsigned from, unsigned to)
     memcpy(frontier, deps[from], sizeof(frontier));
     for (;;) {
         uint64_t next[WORDS] = { 0 };
-        bool any = false;
-        for (unsigned w = 0; w < WORDS; w++) {
-            uint64_t fresh = frontier[w] & ~seen[w];
-            seen[w] |= fresh;
-            while (fresh) {
-                unsigned b = w * 64 + (unsigned)__builtin_ctzll(fresh);
-                fresh &= fresh - 1;
-                any = true;
-                for (unsigned x = 0; x < WORDS; x++)
-                    next[x] |= deps[b][x];
-            }
-        }
-        if (!any)
+        if (!bfs_step(frontier, seen, next))
             break;
         memcpy(frontier, next, sizeof(frontier));
     }
@@ -230,7 +238,7 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
 
 static void acquire_checks(spinlock_t *l, unsigned subclass)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     bool irqs_on = irqs_enabled();   /* as the caller had them */
     uint64_t f = irq_save();
@@ -272,9 +280,9 @@ static void acquire_checks_locked(spinlock_t *l, unsigned subclass, bool irqs_on
     c->held_depth++;
 }
 
-static void release_checks(spinlock_t *l)
+static void release_checks(const spinlock_t *l)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     uint64_t f = irq_save();
     struct cpu *c = this_cpu();
@@ -297,7 +305,7 @@ static void release_checks(spinlock_t *l)
 
 void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     struct thread *t = current_thread();
     uint64_t f = irq_save();
@@ -326,7 +334,7 @@ void lockdep_sleep_acquire(const void *lock, const char *name, uint16_t *cache)
 
 void lockdep_sleep_release(const void *lock)
 {
-    if (disabled)
+    if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     struct thread *t = current_thread();
     for (unsigned i = t->sleep_depth; i-- > 0;) {
@@ -344,18 +352,18 @@ void lockdep_sleep_release(const void *lock)
 
 /* ---- the lock itself ---------------------------------------------------- */
 
-static void wait_turn(spinlock_t *l, uint16_t ticket)
+static void wait_turn(const spinlock_t *l, uint16_t ticket)
 {
     uint64_t start = 0;
     for (uint32_t spins = 0;; spins++) {
         if (__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE) == ticket)
             return;
         cpu_relax();
-        if ((spins & 0xffff) == 0 && tsc_hz && !disabled) {
+        if ((spins & 0xffff) == 0 && tsc_hz && !__atomic_load_n(&disabled, __ATOMIC_RELAXED)) {
             if (!start)
                 start = rdtsc();
             else if (rdtsc() - start > tsc_hz * STUCK_SECONDS) {
-                uint16_t h = l->holder;
+                uint16_t h = __atomic_load_n(&l->holder, __ATOMIC_RELAXED);
                 panic("spinlock \"%s\" stuck for %d s on cpu %u, held by cpu %d", l->name,
                       STUCK_SECONDS, this_cpu()->index, (int)h - 1);
             }
@@ -369,7 +377,7 @@ static void lock_common(spinlock_t *l, unsigned subclass)
     acquire_checks(l, subclass);   /* before spinning: report, don't hang */
     uint16_t ticket = __atomic_fetch_add(&l->next, 1, __ATOMIC_RELAXED);
     wait_turn(l, ticket);
-    l->holder = (uint16_t)(this_cpu()->index + 1);
+    __atomic_store_n(&l->holder, (uint16_t)(this_cpu()->index + 1), __ATOMIC_RELAXED);
 }
 
 void spin_lock(spinlock_t *l)
@@ -393,15 +401,15 @@ bool spin_trylock(spinlock_t *l)
         return false;
     }
     acquire_checks(l, 0);
-    l->holder = (uint16_t)(this_cpu()->index + 1);
+    __atomic_store_n(&l->holder, (uint16_t)(this_cpu()->index + 1), __ATOMIC_RELAXED);
     return true;
 }
 
 static void unlock_common(spinlock_t *l)
 {
     release_checks(l);
-    l->holder = 0;
-    __atomic_store_n(&l->owner, (uint16_t)(l->owner + 1), __ATOMIC_RELEASE);
+    __atomic_store_n(&l->holder, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&l->owner, (uint16_t)(l->owner + 1), __ATOMIC_RELEASE);   /* ours to write */
 }
 
 void spin_unlock(spinlock_t *l)
@@ -418,6 +426,6 @@ void spin_unlock_no_resched(spinlock_t *l)
 
 void spin_force_unlock(spinlock_t *l)
 {
-    l->holder = 0;
+    __atomic_store_n(&l->holder, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&l->owner, l->next, __ATOMIC_RELEASE);
 }

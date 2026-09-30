@@ -62,43 +62,43 @@ enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
 #define OUT_PER_S       50    /* ...and then per second (the rest are dropped, counted) */
 
 struct process {
-    struct kobject      base;        /* OBJ_PROCESS */
-    struct handle_table handles;
-    struct mutex        setup;       /* process_start's insert vs. teardown */
+    struct kobject      base;                    /* OBJ_PROCESS */
+    struct handle_table handles;                 /* the process's handles */
+    struct mutex        setup;                   /* process_start's insert vs. teardown */
     struct job         *job;         /* a reference; NULL once torn down (cleared under L;
                                         read unlocked only by p's own live threads) */
-    struct aspace      *as;          /* (L) a reference; NULL once torn down */
-    int                 state;       /* (L) PROCESS_* */
-    bool                killed;      /* (L) */
-    bool                finished;    /* (L) teardown done */
+    struct aspace      *as;                      /* (L) a reference; NULL once torn down */
+    int                 state;                   /* (L) PROCESS_* */
+    bool                killed;                  /* (L) */
+    bool                finished;                /* (L) teardown done */
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
-    bool                starting;    /* (L) process_start is making the first thread */
-    bool                listed;      /* on job's list (job_link); cleared at teardown */
-    struct job_link     job_link;    /* (the job's lock) */
-    int64_t             exit_code;   /* (L) */
-    uint32_t            nthreads;    /* (L) started threads that haven't left */
-    uint64_t            cpu_done;    /* (L) CPU time (TSC) of the threads that left */
-    struct list_node    threads;     /* (L) struct uthread, every one not destroyed */
-    char                name[PROCESS_NAME_MAX];
+    bool                starting;                /* (L) process_start is making the first thread */
+    bool                listed;                  /* on job's list (job_link); cleared at teardown */
+    struct job_link     job_link;                /* (the job's lock) */
+    int64_t             exit_code;               /* (L) */
+    uint32_t            nthreads;                /* (L) started threads that haven't left */
+    uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
+    struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
+    char                name[PROCESS_NAME_MAX];  /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
      * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;
     uint32_t            out_len;
-    uint32_t            out_tokens;    /* lines that may be printed now */
-    uint32_t            out_dropped;   /* lines dropped since the last one printed */
-    uint64_t            out_refill_ns; /* when out_tokens was last topped up */
+    uint32_t            out_tokens;              /* lines that may be printed now */
+    uint32_t            out_dropped;             /* lines dropped since the last one printed */
+    uint64_t            out_refill_ns;           /* when out_tokens was last topped up */
     char                out[OUT_LINE];
 };
 
 struct uthread {
-    struct kobject    base;          /* OBJ_THREAD */
-    struct process   *proc;          /* a reference */
-    struct list_node  node;          /* on proc->threads (process lock) */
+    struct kobject    base;                      /* OBJ_THREAD */
+    struct process   *proc;                      /* a reference */
+    struct list_node  node;                      /* on proc->threads (process lock) */
     struct thread    *t;             /* (process lock) once started; our join reference */
-    int               state;         /* (process lock) enum ut_state */
-    int               prio;
-    uint64_t          entry, stack, arg0, arg1;
-    char              name[24];
+    int               state;                     /* (process lock) enum ut_state */
+    int               prio;                      /* priority its thread starts at */
+    uint64_t          entry, stack, arg0, arg1;  /* thread_start's arguments */
+    char              name[24];                  /* NUL-terminated */
 };
 
 static void copy_name(char *dst, size_t cap, const char *src)
@@ -317,8 +317,34 @@ static bool out_allow_locked(struct process *p, uint32_t *dropped)
     return true;
 }
 
+/* out_lock held: append buf[*pi..n) to p's line, up to a newline or a full
+ * line. Returns `mine` once a line is complete (*pi then steps past its
+ * newline), else OUT_NONE. */
+static enum out_kind out_add_locked(struct process *p, const char *buf, size_t n, size_t *pi,
+                                    enum out_kind mine)
+{
+    enum out_kind kind = OUT_NONE;
+    size_t i = *pi;
+    for (; i < n && kind == OUT_NONE; i++) {
+        char c = buf[i];
+        if (c == '\n') {
+            kind = mine;
+            break;
+        }
+        if ((c < 0x20 && c != '\t') || c >= 0x7f)
+            c = '?';   /* no escape sequences on the console */
+        p->out[p->out_len++] = c;
+        if (p->out_len == OUT_LINE - 1)
+            kind = mine;   /* too long: split (the loop's i++ steps past c) */
+    }
+    if (kind != OUT_NONE && i < n && buf[i] == '\n')
+        i++;
+    *pi = i;
+    return kind;
+}
+
 /* No lock held. */
-static void out_print(struct process *p, const char *line, enum out_kind kind,
+static void out_print(const struct process *p, const char *line, enum out_kind kind,
                       uint32_t dropped)
 {
     if (dropped)
@@ -331,7 +357,7 @@ static void out_print(struct process *p, const char *line, enum out_kind kind,
 
 size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
 {
-    static volatile uint32_t reports;
+    static uint32_t reports;
     if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX)
         report_it = false;   /* the RESULTS box is for a few lines */
     enum out_kind mine = report_it ? OUT_REPORT : OUT_PRINT;
@@ -350,20 +376,7 @@ size_t process_debug_write(struct process *p, const char *buf, size_t n, bool re
             }
         }
         if (kind == OUT_NONE) {
-            for (; i < n && kind == OUT_NONE; i++) {
-                char c = buf[i];
-                if (c == '\n') {
-                    kind = mine;
-                    break;
-                }
-                if ((c < 0x20 && c != '\t') || c >= 0x7f)
-                    c = '?';   /* no escape sequences on the console */
-                p->out[p->out_len++] = c;
-                if (p->out_len == OUT_LINE - 1)
-                    kind = mine;   /* too long: split (the loop's i++ steps past c) */
-            }
-            if (kind != OUT_NONE && i < n && buf[i] == '\n')
-                i++;
+            kind = out_add_locked(p, buf, n, &i, mine);
             if (kind == OUT_NONE && report_it && p->out_len)
                 kind = OUT_REPORT;   /* a report is always a whole line */
             if (kind != OUT_NONE)

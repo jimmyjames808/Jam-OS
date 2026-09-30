@@ -471,9 +471,9 @@ KTEST(aspace_decommit_two_cpus)
     uint64_t me_before = tlb_mask_flush_count(0);
     uint64_t other_before = cpu_count > 3 ? tlb_mask_flush_count(3) : 0;
     two_hook_ran = two_hook_ok = 0;
-    dbg_hooks[DBG_GATHER_PRE_FREE] = two_hook;
+    __atomic_store_n(&dbg_hooks[DBG_GATHER_PRE_FREE], two_hook, __ATOMIC_RELEASE);
     KT_EQ(vmo_decommit(v, 0, PG), OK);
-    dbg_hooks[DBG_GATHER_PRE_FREE] = NULL;
+    __atomic_store_n(&dbg_hooks[DBG_GATHER_PRE_FREE], NULL, __ATOMIC_RELEASE);
 
     KT_EQ(two_hook_ran, 1);
     KT_ASSERT(two_hook_ok);   /* both shot down while the page was still held */
@@ -650,8 +650,8 @@ static volatile uint64_t st_ops[ST_MAX_THREADS];
 static volatile int st_bad;
 
 struct st_map {
-    struct aspace *as;
-    uint64_t       addr, off, len;
+    struct aspace *as;               /* the address space all workers share */
+    uint64_t       addr, off, len;   /* a mapping: where, VMO offset, bytes */
 };
 static struct st_map st_maps[ST_MAX_THREADS][ST_SLOTS];
 
@@ -659,6 +659,102 @@ static void st_bad_result(const char *what, status_t st)
 {
     kprintf("aspace stress: %s returned %d\n", what, st);
     __atomic_add_fetch(&st_bad, 1, __ATOMIC_RELAXED);
+}
+
+/* Map into an empty slot. */
+static void st_op_map(struct st_map *m, uint64_t *s)
+{
+    if (m->as)
+        return;
+    m->as = st_as[kt_rng(s) % ST_AS];
+    m->len = (1 + kt_rng(s) % 8) * PG;
+    m->off = (kt_rng(s) % (ST_PAGES - 8)) * PG;
+    m->addr = 0;
+    status_t st = aspace_map(m->as, st_vmo, m->off, m->len,
+                             (kt_rng(s) & 1 ? RW : R) | ASPACE_CAN_WRITE, &m->addr);
+    if (st != OK) {
+        if (st != ERR_OUT_OF_RANGE)   /* the VMO may be shrunk right now */
+            st_bad_result("map", st);
+        m->as = NULL;
+    }
+}
+
+/* Fault a page of one of ours. */
+static void st_op_fault(const struct st_map *m, uint64_t *s)
+{
+    if (!m->as)
+        return;
+    status_t st = aspace_fault(m->as, m->addr + (kt_rng(s) % (m->len / PG)) * PG + 8,
+                               kt_rng(s) & 1 ? ASPACE_WRITE : ASPACE_READ);
+    if (st != OK && st != ERR_ACCESS_DENIED && st != ERR_OUT_OF_RANGE)
+        st_bad_result("fault", st);
+}
+
+/* Protect part of one of ours. */
+static void st_op_protect(const struct st_map *m, uint64_t *s)
+{
+    if (!m->as)
+        return;
+    status_t st = aspace_protect(m->as, m->addr + (kt_rng(s) % (m->len / PG)) * PG, PG,
+                                 kt_rng(s) & 1 ? RW : R);
+    if (st != OK)
+        st_bad_result("protect", st);
+}
+
+/* Unmap one of ours. */
+static void st_op_unmap(struct st_map *m)
+{
+    if (!m->as)
+        return;
+    status_t st = aspace_unmap(m->as, m->addr, m->len);
+    if (st != OK)
+        st_bad_result("unmap", st);
+    m->as = NULL;
+}
+
+/* Decommit a random range. */
+static void st_op_decommit(uint64_t *s)
+{
+    uint64_t first = kt_rng(s) % ST_PAGES, n = 1 + kt_rng(s) % 16;
+    status_t st = vmo_decommit(st_vmo, first * PG, n * PG);
+    if (st != OK && st != ERR_OUT_OF_RANGE)
+        st_bad_result("decommit", st);
+}
+
+/* Commit through a write. */
+static void st_op_write(uint64_t *s)
+{
+    uint64_t val = kt_rng(s);
+    status_t st = vmo_write(st_vmo, (kt_rng(s) % ST_PAGES) * PG + 16, &val, 8);
+    if (st != OK && st != ERR_OUT_OF_RANGE)
+        st_bad_result("write", st);
+}
+
+/* Shrink and grow back (thread 0 only). */
+static void st_op_resize(uint32_t id, uint64_t *s)
+{
+    if (id != 0 || kt_rng(s) % 8)
+        return;
+    if (vmo_set_size(st_vmo, (ST_PAGES / 2) * PG) != OK ||
+        vmo_set_size(st_vmo, ST_PAGES * PG) != OK)
+        st_bad_result("set_size", ERR_INTERNAL);
+}
+
+/* Run on an address space for a moment, so shootdowns hit us. */
+static void st_op_run_on(uint64_t *s)
+{
+    struct aspace *as = st_as[kt_rng(s) % ST_AS];
+    preempt_disable();
+    uint64_t f = irq_save();
+    aspace_switch(NULL, as);
+    irq_restore(f);
+    uint64_t until = uptime_ns() + 20000;
+    while (uptime_ns() < until)
+        cpu_relax();
+    f = irq_save();
+    aspace_switch(as, NULL);
+    irq_restore(f);
+    preempt_enable();
 }
 
 static void st_worker(void *arg)
@@ -669,86 +765,35 @@ static void st_worker(void *arg)
     __atomic_add_fetch(&st_started, 1, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&st_stop, __ATOMIC_ACQUIRE)) {
         struct st_map *m = &maps[kt_rng(&s) % ST_SLOTS];
-        status_t st;
         switch (kt_rng(&s) % 12) {
-        case 0: case 1:   /* map into an empty slot */
-            if (m->as)
-                break;
-            m->as = st_as[kt_rng(&s) % ST_AS];
-            m->len = (1 + kt_rng(&s) % 8) * PG;
-            m->off = (kt_rng(&s) % (ST_PAGES - 8)) * PG;
-            m->addr = 0;
-            st = aspace_map(m->as, st_vmo, m->off, m->len,
-                            (kt_rng(&s) & 1 ? RW : R) | ASPACE_CAN_WRITE, &m->addr);
-            if (st != OK) {
-                if (st != ERR_OUT_OF_RANGE)   /* the VMO may be shrunk right now */
-                    st_bad_result("map", st);
-                m->as = NULL;
-            }
-            break;
-        case 2: case 3: case 4: case 5:   /* fault a page of one of ours */
-            if (!m->as)
-                break;
-            st = aspace_fault(m->as, m->addr + (kt_rng(&s) % (m->len / PG)) * PG + 8,
-                              kt_rng(&s) & 1 ? ASPACE_WRITE : ASPACE_READ);
-            if (st != OK && st != ERR_ACCESS_DENIED && st != ERR_OUT_OF_RANGE)
-                st_bad_result("fault", st);
-            break;
-        case 6:   /* protect part of one of ours */
-            if (!m->as)
-                break;
-            st = aspace_protect(m->as, m->addr + (kt_rng(&s) % (m->len / PG)) * PG, PG,
-                                kt_rng(&s) & 1 ? RW : R);
-            if (st != OK)
-                st_bad_result("protect", st);
-            break;
-        case 7:   /* unmap one of ours */
-            if (!m->as)
-                break;
-            st = aspace_unmap(m->as, m->addr, m->len);
-            if (st != OK)
-                st_bad_result("unmap", st);
-            m->as = NULL;
-            break;
-        case 8: {   /* decommit a random range */
-            uint64_t first = kt_rng(&s) % ST_PAGES, n = 1 + kt_rng(&s) % 16;
-            st = vmo_decommit(st_vmo, first * PG, n * PG);
-            if (st != OK && st != ERR_OUT_OF_RANGE)
-                st_bad_result("decommit", st);
-            break;
-        }
-        case 9: {   /* commit through a write */
-            uint64_t val = kt_rng(&s);
-            st = vmo_write(st_vmo, (kt_rng(&s) % ST_PAGES) * PG + 16, &val, 8);
-            if (st != OK && st != ERR_OUT_OF_RANGE)
-                st_bad_result("write", st);
-            break;
-        }
-        case 10:   /* shrink and grow back (thread 0 only) */
-            if (id != 0 || kt_rng(&s) % 8)
-                break;
-            if (vmo_set_size(st_vmo, (ST_PAGES / 2) * PG) != OK ||
-                vmo_set_size(st_vmo, ST_PAGES * PG) != OK)
-                st_bad_result("set_size", ERR_INTERNAL);
-            break;
-        case 11: {   /* run on an address space for a moment, so shootdowns hit us */
-            struct aspace *as = st_as[kt_rng(&s) % ST_AS];
-            preempt_disable();
-            uint64_t f = irq_save();
-            aspace_switch(NULL, as);
-            irq_restore(f);
-            uint64_t until = uptime_ns() + 20000;
-            while (uptime_ns() < until)
-                cpu_relax();
-            f = irq_save();
-            aspace_switch(as, NULL);
-            irq_restore(f);
-            preempt_enable();
-            break;
-        }
+        case 0: case 1:                 st_op_map(m, &s); break;
+        case 2: case 3: case 4: case 5: st_op_fault(m, &s); break;
+        case 6:                         st_op_protect(m, &s); break;
+        case 7:                         st_op_unmap(m); break;
+        case 8:                         st_op_decommit(&s); break;
+        case 9:                         st_op_write(&s); break;
+        case 10:                        st_op_resize(id, &s); break;
+        case 11:                        st_op_run_on(&s); break;
         }
         st_ops[id]++;
     }
+}
+
+/* The entries of m still present name the VMO's current pages; returns how
+ * many there were. */
+static uint64_t st_check_map(const struct st_map *m)
+{
+    uint64_t present = 0;
+    if (!m->as)
+        return 0;
+    for (uint64_t p = 0; p < m->len; p += PG) {
+        uint64_t pa = pte_pa(m->as, m->addr + p);
+        if (pa) {
+            KT_EQ(pa, vmo_page_phys(st_vmo, m->off + p));
+            present++;
+        }
+    }
+    return present;
 }
 
 KTEST(aspace_stress)
@@ -782,20 +827,9 @@ KTEST(aspace_stress)
 
     /* Every entry still present names the VMO's current page for it. */
     uint64_t present = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        for (unsigned k = 0; k < ST_SLOTS; k++) {
-            struct st_map *m = &st_maps[i][k];
-            if (!m->as)
-                continue;
-            for (uint64_t p = 0; p < m->len; p += PG) {
-                uint64_t pa = pte_pa(m->as, m->addr + p);
-                if (pa) {
-                    KT_EQ(pa, vmo_page_phys(st_vmo, m->off + p));
-                    present++;
-                }
-            }
-        }
-    }
+    for (uint32_t i = 0; i < n; i++)
+        for (unsigned k = 0; k < ST_SLOTS; k++)
+            present += st_check_map(&st_maps[i][k]);
     kprintf("aspace stress: %lu entries checked\n", present);
 
     for (int i = 0; i < ST_AS; i++) {

@@ -69,8 +69,8 @@ static bool vector_cpu(uint32_t i)
 {
     uint32_t usable = 0;
     for (uint32_t k = 0; k < cpu_count; k++)
-        usable += cpus[k]->online && cpus[k]->lapic_id < 0xff;
-    return cpus[i]->online && cpus[i]->lapic_id < 0xff && (i != 0 || usable == 1);
+        usable += cpu_online(cpus[k]) && cpus[k]->lapic_id < 0xff;
+    return cpu_online(cpus[i]) && cpus[i]->lapic_id < 0xff && (i != 0 || usable == 1);
 }
 
 /* Wait (bounded) until *v >= want. */
@@ -213,8 +213,8 @@ KTEST(interrupt_vector_alloc_fill_and_free)
 }
 
 struct hit {
-    volatile uint32_t cpu;
-    volatile uint64_t n;
+    volatile uint32_t cpu;   /* the CPU the handler ran on */
+    volatile uint64_t n;     /* times it ran */
 };
 
 static void record(void *ctx)
@@ -242,11 +242,11 @@ KTEST(interrupt_vector_ipi_delivery_and_unowned)
     for (uint32_t k = 0; k < 8; k++)
         KT_EQ(hits[k].n, 1);   /* nobody else's IPI landed on it */
     /* Unowned: free one, then send its vector. */
-    uint64_t before = irq_device_unowned;
+    uint64_t before = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
     vector_free(cpus_used[0], vecs[0]);
     ipi_send(cpus_used[0], vecs[0]);
     KT_ASSERT(wait_at_least(&irq_device_unowned, before + 1, 1000));
-    KT_EQ(irq_device_last_unowned, vecs[0]);
+    KT_EQ(__atomic_load_n(&irq_device_last_unowned, __ATOMIC_RELAXED), vecs[0]);
     KT_EQ(hits[0].n, 1);
     /* The CPU still takes interrupts after it (the EOI was sent). */
     ipi_send(cpus_used[1], vecs[1]);
@@ -394,10 +394,10 @@ KTEST(interrupt_masked_until_ack)
 
 /* The consumer: reads packets and acks until told to stop. */
 struct consumer {
-    struct port      *port;
-    struct kobject   *irq;
-    volatile uint64_t sum, packets;
-    volatile bool     stop;
+    struct port      *port;           /* where the packets arrive */
+    struct kobject   *irq;            /* the interrupt it acks */
+    volatile uint64_t sum, packets;   /* packet counts added up; packets read */
+    volatile bool     stop;           /* set by the test to end it */
 };
 
 static void consume(void *arg)
@@ -453,9 +453,9 @@ KTEST(interrupt_concurrent_fires_all_counted)
 
 /* The real vector path wakes a thread blocked in port_wait. */
 struct waiter {
-    struct port     *port;
-    volatile uint64_t got;
-    struct port_packet pkt;
+    struct port     *port;    /* the port it blocks on */
+    volatile uint64_t got;    /* packets received */
+    struct port_packet pkt;   /* the last one */
 };
 
 static void port_waiter(void *arg)
@@ -486,9 +486,9 @@ KTEST(interrupt_vector_wakes_port_waiter)
 }
 
 struct firer {
-    struct kobject   *irq;
-    volatile bool    *stop;
-    volatile uint64_t n;
+    struct kobject   *irq;    /* the interrupt it fires */
+    volatile bool    *stop;   /* set by the test to end it */
+    volatile uint64_t n;      /* fires made */
 };
 
 static void fire_loop(void *arg)
@@ -588,10 +588,10 @@ KTEST(interrupt_destroy_under_vector_storm)
     if (cpu_count < 3)
         return;
     uint64_t live = interrupt_live_count();
-    uint64_t unowned = irq_device_unowned;
+    uint64_t unowned = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
     uint64_t ticks[MAX_CPUS];
     for (uint32_t i = 0; i < cpu_count; i++)
-        ticks[i] = cpus[i]->ticks;
+        ticks[i] = cpu_ticks(cpus[i]);
     kt_pin_self(0);
     storm_stop = false;
     storm_cpu = UINT32_MAX;
@@ -625,13 +625,14 @@ KTEST(interrupt_destroy_under_vector_storm)
     }
     storm_stop = true;
     thread_join(s);
-    KT_ASSERT(irq_device_unowned > unowned);
+    uint64_t unowned_now = __atomic_load_n(&irq_device_unowned, __ATOMIC_RELAXED);
+    KT_ASSERT(unowned_now > unowned);
     /* No CPU was lost: every one still ticks. */
     thread_sleep_ns(50 * NS_PER_MS);
     for (uint32_t i = 0; i < cpu_count; i++)
-        KT_ASSERT(cpus[i]->ticks > ticks[i]);
+        KT_ASSERT(cpu_ticks(cpus[i]) > ticks[i]);
     kprintf("interrupt: storm sent %lu vectors, %lu unowned after teardown\n", storm_sent,
-            irq_device_unowned - unowned);
+            unowned_now - unowned);
     kt_unpin_self();
 }
 

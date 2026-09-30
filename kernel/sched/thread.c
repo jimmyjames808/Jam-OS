@@ -17,7 +17,7 @@
 #define STACK_SIZE  THREAD_STACK_SIZE
 
 static struct kmem_cache *thread_cache;
-static volatile uint64_t next_id = 1;
+static uint64_t next_id = 1;
 
 /* Stacks of exited threads. Up to stack_cache_limit are kept mapped and
  * reused (no TLB shootdown, no page allocation). Stacks over the limit must
@@ -35,8 +35,9 @@ static spinlock_t stack_lock = SPINLOCK_INIT("stack cache");
 static void *stack_cache[SCHED_STACK_CACHE_MAX];
 static unsigned stack_cache_n, stack_cache_limit = SCHED_STACK_CACHE_MAX;
 static void *stack_doomed;
-static volatile unsigned stack_doomed_n;
-static volatile uint64_t stacks_freed;
+static unsigned stack_doomed_n;   /* stacks on stack_doomed; stack_lock (stored atomically:
+                                     sched_stack_trim reads it without) */
+static uint64_t stacks_freed;
 
 /* May this context free stacks (kstack_free shoots down TLBs, which needs
  * interrupts on and no spinlock held: see check_callable in ipi.c)? */
@@ -70,7 +71,7 @@ static void trim_to(unsigned limit)
             tail = (void **)((char *)*tail - STACK_SIZE);
         *tail = stack_doomed;
         stack_doomed = NULL;
-        stack_doomed_n = 0;
+        __atomic_store_n(&stack_doomed_n, 0, __ATOMIC_RELAXED);
     }
     spin_unlock_irqrestore(&stack_lock, f);
     while (list) {
@@ -134,7 +135,7 @@ static void stack_put(void *top)
     } else {
         *(void **)((char *)top - STACK_SIZE) = stack_doomed;
         stack_doomed = top;
-        stack_doomed_n++;
+        __atomic_store_n(&stack_doomed_n, stack_doomed_n + 1, __ATOMIC_RELAXED);
     }
     spin_unlock_irqrestore(&stack_lock, f);
 }
@@ -193,6 +194,18 @@ _Noreturn void thread_entry(void (*fn)(void *), void *arg)
     thread_exit();
 }
 
+/* The fallible form every other create goes through: NULL when out of
+ * memory, else the thread, already runnable. */
+static struct thread *thread_try_create_capped(const char *name, void (*fn)(void *),
+                                               void *arg, int prio, const cpumask_t *mask,
+                                               int prio_cap)
+{
+    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
+    if (t)
+        thread_wake(t);
+    return t;
+}
+
 struct thread *thread_create(const char *name, void (*fn)(void *), void *arg, int prio)
 {
     return thread_create_on(name, fn, arg, prio, NULL);
@@ -220,15 +233,6 @@ struct thread *thread_try_create_on(const char *name, void (*fn)(void *), void *
                                     const cpumask_t *mask)
 {
     return thread_try_create_capped(name, fn, arg, prio, mask, PRIO_MAX);
-}
-
-struct thread *thread_try_create_capped(const char *name, void (*fn)(void *), void *arg,
-                                        int prio, const cpumask_t *mask, int prio_cap)
-{
-    struct thread *t = thread_try_create_suspended(name, fn, arg, prio, mask, prio_cap);
-    if (t)
-        thread_wake(t);
-    return t;
 }
 
 struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *), void *arg,
@@ -259,7 +263,7 @@ struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *),
     *--sp = 0;                /* r15 */
     t->rsp = (uint64_t)sp;
 
-    t->state = T_BLOCKED;
+    thread_set_state(t, T_BLOCKED);
     t->cpu = percpu_index();   /* placement hint only: "last ran here" */
     return t;
 }
@@ -268,12 +272,12 @@ _Noreturn void thread_exit(void)
 {
     struct thread *t = current_thread();
     uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    t->exited = true;
+    __atomic_store_n(&t->exited, true, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     waitqueue_wake_all(&t->exit_wq);
     sched_stack_trim();   /* stacks of threads reaped before us (see above) */
     irq_disable();
-    t->state = T_DEAD;
+    thread_set_state(t, T_DEAD);
     schedule();
     panic("sched: dead thread \"%s\" was scheduled", t->name);
 }
@@ -281,7 +285,7 @@ _Noreturn void thread_exit(void)
 void thread_join(struct thread *t)
 {
     uint64_t f = spin_lock_irqsave(&t->exit_wq.lock);
-    while (!t->exited)
+    while (!__atomic_load_n(&t->exited, __ATOMIC_ACQUIRE))
         waitqueue_wait(&t->exit_wq, &t->exit_wq.lock, &f);
     spin_unlock_irqrestore(&t->exit_wq.lock, f);
     thread_put(t);

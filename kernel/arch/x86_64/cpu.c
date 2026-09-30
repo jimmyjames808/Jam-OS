@@ -1,3 +1,7 @@
+/* CPU feature detection (CPUID) and the per-CPU control register setup
+ * that depends on it: NX, SMEP, SMAP, UMIP, PGE, PCIDs and the PAT. cpu_detect
+ * runs once on the BSP; every CPU then enables the same features, so the
+ * features are the same everywhere. */
 #include <jam/cpu.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>

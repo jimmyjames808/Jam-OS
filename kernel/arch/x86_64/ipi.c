@@ -1,3 +1,11 @@
+/* Inter-processor interrupts: reschedule kicks, cross-CPU function calls
+ * (smp_call_on / smp_call_others), TLB shootdowns, the watchdog NMI and
+ * the panic stop.
+ *
+ * A cross-CPU call puts a slot on the target's inbox (inboxes[], one lock
+ * per target) and waits, spinning, until every target has run it: the
+ * slots live on the caller's stack, so the caller must not return before
+ * `pending` reaches 0. Waiting is bounded: after 5 s it panics. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
@@ -12,38 +20,38 @@
 #include <jam/x86.h>
 
 struct call {
-    void (*fn)(void *);
-    void *arg;
-    volatile uint32_t pending;
+    void (*fn)(void *);          /* runs on each target CPU */
+    void *arg;                   /* fn's argument */
+    uint32_t pending;            /* targets that have not run fn yet */
 };
 
 /* One request per (target CPU, caller) at a time: each target has a small
  * inbox protected by its own lock. */
 struct call_slot {
-    struct list_node node;
-    struct call     *call;
+    struct list_node node;   /* on the target's inbox */
+    struct call     *call;   /* the request (on the caller's stack) */
 };
 
 struct inbox {
-    spinlock_t       lock;
-    struct list_node items;
+    spinlock_t       lock;    /* guards items */
+    struct list_node items;   /* struct call_slot, oldest first */
 };
 
 static struct inbox inboxes[MAX_CPUS];
-volatile int ipi_ready;
-static volatile int watchdog_target = -1;
-static volatile uint32_t halted;
+int ipi_ready;
+static int watchdog_target = -1;   /* the CPU the watchdog NMI is for, -1: none */
+static uint32_t halted;            /* CPUs that took the panic NMI */
 
 void ipi_send(uint32_t cpu, uint8_t vector)
 {
-    cpus[cpu]->ipis++;
+    __atomic_add_fetch(&cpus[cpu]->ipis, 1, __ATOMIC_RELAXED);
     lapic_send_ipi(cpus[cpu]->lapic_id, vector);
 }
 
 static void on_reschedule(struct trap_frame *f)
 {
     (void)f;
-    this_cpu()->need_resched = true;
+    cpu_set_need_resched(this_cpu(), true);
     lapic_eoi();
 }
 
@@ -107,13 +115,14 @@ static void post(uint32_t cpu, struct call_slot *slot, struct call *c)
     ipi_send(cpu, VEC_CALL);
 }
 
-static void wait_done(struct call *c)
+static void wait_done(const struct call *c)
 {
     uint64_t start = rdtsc();
     while (__atomic_load_n(&c->pending, __ATOMIC_ACQUIRE)) {
         cpu_relax();
         if (rdtsc() - start > tsc_hz * 5)
-            panic("smp_call: %u CPU(s) did not answer in 5 s", c->pending);
+            panic("smp_call: %u CPU(s) did not answer in 5 s",
+                  __atomic_load_n(&c->pending, __ATOMIC_RELAXED));
     }
 }
 
@@ -146,7 +155,7 @@ static void call_others_chunked(void (*fn)(void *), void *arg)
     for (uint32_t next = 0; next < cpu_count;) {
         uint32_t targets[CHUNK], n = 0;
         for (; next < cpu_count && n < CHUNK; next++)
-            if (next != me && cpus[next]->online)
+            if (next != me && cpu_online(cpus[next]))
                 targets[n++] = next;
         if (!n)
             continue;
@@ -170,11 +179,11 @@ void smp_call_others(void (*fn)(void *), void *arg)
     uint32_t me = this_cpu()->index, n = 0;
     struct call c = { fn, arg, 0 };
     for (uint32_t i = 0; i < cpu_count; i++)
-        if (i != me && cpus[i]->online)
+        if (i != me && cpu_online(cpus[i]))
             n++;
     c.pending = n;
     for (uint32_t i = 0; i < cpu_count; i++)
-        if (i != me && cpus[i]->online)
+        if (i != me && cpu_online(cpus[i]))
             post(i, &slots[i], &c);
     preempt_enable();
     wait_done(&c);
@@ -192,7 +201,7 @@ void smp_call_all(void (*fn)(void *), void *arg)
 /* ---- TLB shootdown -------------------------------------------------------- */
 
 struct flush_range {
-    uint64_t va, len;
+    uint64_t va, len;   /* virtual range to flush, bytes */
 };
 
 static void flush_local(void *arg)
@@ -211,7 +220,7 @@ static void flush_local(void *arg)
 
 void tlb_shootdown(uint64_t va, uint64_t len)
 {
-    if (!ipi_ready)
+    if (!__atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE))
         return;
     struct flush_range r = { va, len };
     smp_call_others(flush_local, &r);
@@ -219,7 +228,7 @@ void tlb_shootdown(uint64_t va, uint64_t len)
 
 /* Per-CPU count of masked shootdowns handled (for tests: which CPUs an
  * address-space unmap actually interrupted). */
-static volatile uint64_t mask_flushes[MAX_CPUS];
+static uint64_t mask_flushes[MAX_CPUS];
 
 static void flush_masked(void *arg)
 {
@@ -242,13 +251,13 @@ void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len)
 {
     enum { CHUNK = 16 };
     struct flush_range r = { va, len };
-    if (ipi_ready)
+    if (__atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE))
         check_callable();
     preempt_disable();
     uint32_t me = this_cpu()->index;
     if (cpumask_has(mask, me))
         flush_masked(&r);
-    if (!ipi_ready) {
+    if (!__atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE)) {
         preempt_enable();
         return;
     }
@@ -257,7 +266,7 @@ void tlb_shootdown_mask(const cpumask_t *mask, uint64_t va, uint64_t len)
     for (uint32_t next = 0; next < cpu_count;) {
         uint32_t n = 0;
         for (; next < cpu_count && n < CHUNK; next++)
-            if (next != me && cpumask_has(mask, next) && cpus[next]->online)
+            if (next != me && cpumask_has(mask, next) && cpu_online(cpus[next]))
                 targets[n++] = next;
         if (!n)
             continue;
@@ -287,36 +296,37 @@ void tlb_flush_local(uint64_t va, uint64_t len)
 
 uint32_t ipi_halt_others(void)
 {
-    if (!ipi_ready)
+    if (!__atomic_load_n(&ipi_ready, __ATOMIC_ACQUIRE))
         return 0;
     uint32_t others = 0;
     for (uint32_t i = 0; i < cpu_count; i++)
-        others += cpus[i]->online && cpus[i] != this_cpu();
+        others += cpu_online(cpus[i]) && cpus[i] != this_cpu();
     lapic_send_nmi_others();
     uint64_t start = rdtsc();
-    while (halted < others && rdtsc() - start < tsc_hz / 10)
+    while (__atomic_load_n(&halted, __ATOMIC_ACQUIRE) < others && rdtsc() - start < tsc_hz / 10)
         cpu_relax();
-    return halted;
+    return __atomic_load_n(&halted, __ATOMIC_ACQUIRE);
 }
 
 void watchdog_fire(uint32_t cpu)
 {
-    if (watchdog_target >= 0)
+    if (__atomic_load_n(&watchdog_target, __ATOMIC_RELAXED) >= 0)
         return;
-    watchdog_target = (int)cpu;
+    /* Published before the NMI: send_icr fences, the handler reads it. */
+    __atomic_store_n(&watchdog_target, (int)cpu, __ATOMIC_RELEASE);
     lapic_send_nmi(cpus[cpu]->lapic_id);
 }
 
-extern volatile int panic_in_progress;
+extern int panic_in_progress;
 
 void nmi_handler(struct trap_frame *f)
 {
-    if (panic_in_progress) {
+    if (__atomic_load_n(&panic_in_progress, __ATOMIC_ACQUIRE)) {
         __atomic_add_fetch(&halted, 1, __ATOMIC_RELEASE);
         halt_forever();
     }
-    if (watchdog_target == (int)this_cpu()->index) {
-        watchdog_target = -1;
+    if (__atomic_load_n(&watchdog_target, __ATOMIC_ACQUIRE) == (int)this_cpu()->index) {
+        __atomic_store_n(&watchdog_target, -1, __ATOMIC_RELAXED);
         panic_watchdog(f);
     }
     panic_trap(f);   /* an NMI nobody asked for: usually a hardware error */

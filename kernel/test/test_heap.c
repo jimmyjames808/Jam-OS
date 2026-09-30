@@ -30,7 +30,7 @@ static void free_it(void *arg)
 
 KTEST(kmag_refill_drain_accounting)
 {
-    if (!heap_percpu)
+    if (!__atomic_load_n(&heap_percpu, __ATOMIC_RELAXED))
         return;
     struct kmem_cache *c = private_cache(&mag_cache, "kt magazine");
     uint32_t me = kt_pin_self(cpu_count > 1 ? 1 : 0);
@@ -92,7 +92,7 @@ static void park_16(void *arg)
 KTEST(kmag_oom_drains_magazines)
 {
     KT_SKIP_LIVE("takes every free page");
-    if (!heap_percpu || cpu_count < 3)
+    if (!__atomic_load_n(&heap_percpu, __ATOMIC_RELAXED) || cpu_count < 3)
         return;
     struct kmem_cache *c = private_cache(&oom_cache, "kt magazine oom");
     uint64_t free0 = kt_free_and_cached_pages();
