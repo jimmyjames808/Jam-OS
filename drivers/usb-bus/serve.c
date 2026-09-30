@@ -5,15 +5,16 @@
  * DR_SERVE channel (the `usbbus` protocol, abi/idl/usbbus.idl; devmgr
  * holds the other end), and every channel it serves: one `usb` channel
  * per interface handed out (abi/idl/usb.idl) and one report channel per
- * open interrupt-IN endpoint. Packets for channels only mark them
+ * open interrupt-IN endpoint. (Bulk data has no channel: it moves through
+ * a buffer the class driver shares, bulk.c.) Packets for channels only mark them
  * pending, so a wait deep inside an enumeration (hc_wait) never runs a
  * request; the main loop serves them between steps.
  *
  * Files: hc.c the controller (registers, bring-up, commands, events);
  * ring.c the DMA page pool and transfer rings; devices.c the device table
  * and contexts; control.c control transfers and descriptors; intr.c
- * interrupt-IN endpoints; config.c configurations, endpoints and
- * SET_INTERFACE; report.c log and RESULTS lines; attach.c enumeration and
+ * interrupt-IN endpoints; bulk.c bulk endpoints and transfers; config.c
+ * configurations, endpoints and SET_INTERFACE; report.c log and RESULTS lines; attach.c enumeration and
  * detach; hub.c hubs; rootport.c root ports; work.c the port work the loop
  * drives; iface.c the `usb` protocol's requests; this file the channels,
  * the `usbbus` protocol and the loop.
@@ -86,6 +87,11 @@ void chan_close(int i)
 handle_t chan_handle(int i)
 {
     return i >= 0 && i < MAX_CHANS ? chans[i].h : HANDLE_INVALID;
+}
+
+int chan_slot(const struct chan *c)
+{
+    return (int)(c - chans);
 }
 
 /* The interface channels first, then the report channels: a class driver
@@ -409,6 +415,8 @@ static void chan_peer_closed(int i)
         struct iface *f = d ? usb_iface(d, c->a) : NULL;
         if (f && f->devmgr_chan == i)
             f->devmgr_chan = -1;
+        if (f)
+            bulk_chan_closed(d, f, i);   /* the bulk pair it opened goes with it */
         chan_close(i);
     }
 }

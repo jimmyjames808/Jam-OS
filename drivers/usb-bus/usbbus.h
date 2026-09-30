@@ -2,7 +2,8 @@
  * (hc.c; ring.c: the DMA page pool and transfer rings), the USB device
  * model (devices.c: the device table and contexts; control.c: control
  * transfers and descriptors; intr.c: interrupt-IN endpoints; config.c:
- * configurations and interfaces; report.c: log and RESULTS lines),
+ * configurations and interfaces; bulk.c: bulk endpoints and transfers;
+ * report.c: log and RESULTS lines),
  * enumeration (attach.c), hubs (hub.c), root ports (rootport.c), the port
  * work the main loop drives (work.c), the `usb` protocol (iface.c), and
  * the channels, the `usbbus` protocol and the main loop (serve.c). See
@@ -31,6 +32,9 @@ static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 #define INTR_TRBS    8      /* interrupt-IN transfers kept queued per endpoint */
 #define MAX_CHANS    96     /* served channels (interfaces and report channels) */
 #define CFG_MAX      4096   /* biggest configuration descriptor we read */
+#define BULK_SIZE    65536u /* a class driver's bulk buffer (usb.open_bulk) */
+#define BULK_PAGES   (BULK_SIZE / PAGE)
+#define BULK_TRBS    (BULK_PAGES + 1)   /* a transfer's TRBs at most: one per page it touches */
 
 /* ---- xHCI registers (xHCI 1.2, chapter 5) ---------------------------------- */
 
@@ -138,6 +142,7 @@ static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 #define TRB_C           (1u << 0)
 #define TRB_TC          (1u << 1)
 #define TRB_ISP         (1u << 2)
+#define TRB_CH          (1u << 4)
 #define TRB_IOC         (1u << 5)
 #define TRB_IDT         (1u << 6)
 #define TRB_DIR_IN      (1u << 16)
@@ -195,7 +200,9 @@ static inline uint8_t ep_dci(uint8_t addr)
 }
 
 /* endpoint context types */
+#define EPT_BULK_OUT 2
 #define EPT_CONTROL  4
+#define EPT_BULK_IN  6
 #define EPT_INTR_IN  7
 
 /* ---- the controller -------------------------------------------------------- */
@@ -290,6 +297,17 @@ struct hc {
     } ctl;
     int ctl_page;                    /* the shared control bounce buffer */
 
+    /* the one outstanding bulk transfer (bulk.c) */
+    struct {
+        bool busy, done;             /* running; finished (cc says how) */
+        uint8_t slot, dci;           /* its endpoint */
+        uint32_t first;              /* ring index of its first TRB */
+        uint32_t ntrb;               /* its TRBs (at most BULK_TRBS) */
+        uint32_t len[BULK_TRBS];     /* each TRB's length */
+        uint32_t cc;                 /* completion code */
+        uint32_t actual;             /* bytes moved */
+    } bulk;
+
     uint32_t port_changed[8];        /* bitmap of root ports with a Port Status Change event */
     bool stopping;                   /* DR_SERVE closed: wind down */
     bool serve_pending;              /* DR_SERVE may have requests: the main loop reads it */
@@ -347,6 +365,19 @@ struct iface {
     uint8_t ep_addr[MAX_EPS_IF];   /* its endpoints' addresses */
     uint8_t num_alts;     /* alternate settings the configuration lists */
     int devmgr_chan;      /* the channel sent to devmgr, -1 none */
+    struct bulk *bulk;    /* its open bulk pair (drv_malloc), NULL: none */
+};
+
+/* An interface's open bulk pair (usb.open_bulk): the buffer the class
+ * driver maps, pinned with usb-bus's dma_cap, and the interface channel
+ * that opened it (the only one that may use it). */
+struct bulk {
+    handle_t vmo;                 /* our handle to the buffer */
+    uint64_t pin;                 /* its pin id */
+    bool pinned;                  /* pinned: unpin at release */
+    uint64_t addr[BULK_PAGES];    /* each page's device address */
+    uint8_t in, out;              /* the endpoints' addresses */
+    int chan;                     /* the interface channel that opened it */
 };
 
 /* A device (hubs included): an entry of g_devs. */
@@ -425,6 +456,8 @@ uint64_t pool_dev(struct hc *h, int page);
 
 bool ring_init(struct hc *h, struct ring *r);
 void ring_free(struct hc *h, struct ring *r);
+/* Empty the ring in place (only while the controller doesn't run it). */
+void ring_reset(struct ring *r);
 /* Queue one TRB (d3 without the cycle bit); its device address. */
 uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3);
 uint32_t ring_index(const struct ring *r, uint64_t trb_dev);   /* RING_TRBS if not in it */
@@ -478,6 +511,7 @@ void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
  * Endpoint; then the dequeue pointer moves past what was queued. */
 void ep_reset_tsp(struct usbdev *d, uint8_t dci, struct ring *r, bool tsp);
 void ep_stop(struct usbdev *d, uint8_t dci, struct ring *r);
+status_t cc_status(uint32_t cc);          /* a completion code as the `usb` protocol's status */
 /* GET_DESCRIPTOR, tried up to three times. */
 uint32_t get_desc(struct usbdev *d, uint8_t type, uint8_t index, uint16_t lang, void *buf,
                   uint16_t len, uint32_t *actual);
@@ -491,12 +525,29 @@ void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, u
                         uint32_t residual);
 bool intr_upkeep(struct hc *h);           /* halted and dropped endpoints; true if any */
 
+/* ---- bulk.c ---------------------------------------------------------------- */
+
+/* A transfer event on the endpoint of the outstanding bulk transfer. */
+void bulk_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
+/* Close interface f's bulk pair: drop its endpoints, unpin and free the
+ * buffer. slot_off: the controller has let go of the device's slot
+ * already (dev_free); false with the device gone: the pin is kept. */
+void bulk_release(struct usbdev *d, struct iface *f, bool slot_off);
+/* Interface channel `chan` closed: release what it opened. */
+void bulk_chan_closed(struct usbdev *d, struct iface *f, int chan);
+/* The `usb` protocol's bulk methods, for interface channel `chan`. */
+status_t bulk_open(struct usbdev *d, struct iface *f, int chan, uint8_t ep_in, uint8_t ep_out,
+                   handle_t *buffer, uint32_t *size);
+status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uint32_t offset,
+                       uint32_t length, uint32_t timeout_ms, uint32_t *actual);
+status_t bulk_clear_halt(struct usbdev *d, struct iface *f, int chan, uint8_t endpoint);
+
 /* ---- config.c -------------------------------------------------------------- */
 
 void parse_config(struct usbdev *d);
 struct iface *usb_iface(struct usbdev *d, uint8_t number);
-/* Configure Endpoint: add / drop the interrupt-IN endpoints in the DCI
- * bitmaps, with the slot's Context Entries and hub fields. */
+/* Configure Endpoint: add / drop the endpoints in the DCI bitmaps, with
+ * the slot's Context Entries and hub fields. */
 uint32_t configure_eps(struct usbdev *d, uint32_t add, uint32_t drop);
 uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
 
@@ -534,6 +585,10 @@ void detach(struct usbdev *d, const char *why, bool quiet);   /* and everything 
 
 bool hub_setup(struct usbdev *d);         /* after SET_CONFIGURATION; false: not used as a hub */
 void hub_work(struct usbdev *hub);        /* one unit: the hub's own change, or one port */
+/* Has the device on the hub's port gone (not connected, or a connect
+ * change)? Reads the port's status without clearing anything; false if
+ * it can't be read. */
+bool hub_port_lost(struct usbdev *hub, uint8_t port);
 void root_port(struct hc *h, uint32_t p);
 void root_ports_reset(void);
 /* Due retries of failed root ports become port changes; the next
@@ -571,6 +626,7 @@ struct chan {
 int  chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a);
 void chan_close(int i);
 handle_t chan_handle(int i);   /* HANDLE_INVALID for a free slot or a bad index */
+int  chan_slot(const struct chan *c);   /* c's index */
 void serve_iface_gone(uint32_t dev_id);   /* close every channel of a device */
 void serve_device_ready(struct usbdev *d); /* tell devmgr about its interfaces */
 /* A report from an interrupt IN endpoint for a client: returns false if the
