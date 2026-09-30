@@ -37,6 +37,9 @@ void            sh_stdio_set(struct sh_stdio io);
 
 /* A new line starts: forget an earlier Ctrl+C. */
 void sh_io_new_line(void);
+/* The next key that was typed while a command ran (sh_interrupted kept
+ * it); false if there is none. */
+bool sh_typeahead(struct input_key_event *ev);
 /* Ctrl+C was seen during this line (no polling, unlike sh_interrupted). */
 bool sh_cancelled(void);
 

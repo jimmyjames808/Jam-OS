@@ -56,8 +56,8 @@ bool sh_stdin(const char **data, size_t *len);
 bool sh_input(const char *who, int argc, char **argv, int i, const char **data, size_t *len);
 
 /* Ctrl+C: poll the keyboard; true once Ctrl+C was pressed during this
- * line (then every loop should stop). Other keys are dropped, except that
- * sh_poll_key returns them (top uses q). */
+ * line (then every loop should stop). Other keys are kept for the next
+ * line (typing ahead); sh_poll_key returns them instead (top uses q). */
 bool sh_interrupted(void);
 int  sh_poll_key(uint64_t deadline);   /* the next key's codepoint, -1 on timeout */
 /* Sleep up to ns; false if interrupted. */

@@ -13,8 +13,13 @@
  * so their text can't be piped. */
 #include "sh_core.h"
 
+#define TYPEAHEAD 128   /* keys kept for the next line; more are dropped */
+
 static struct sh_stdio io;   /* out NULL: the screen */
 static bool interrupted;
+/* Keys typed while a command ran, oldest first: a ring. */
+static struct input_key_event ahead[TYPEAHEAD];
+static unsigned ahead_first, ahead_n;
 
 /* ---- buffers and where output goes --------------------------------------------------- */
 
@@ -155,15 +160,22 @@ bool sh_cancelled(void)
     return interrupted;
 }
 
+/* Ctrl+C was pressed: the line stops, and what was typed before it goes. */
+static void interrupt(void)
+{
+    if (!interrupted)
+        sh_tty("^C\n");
+    interrupted = true;
+    ahead_n = 0;
+}
+
 int sh_poll_key(uint64_t deadline)
 {
     sh_flush();
     struct input_key_event ev;
     while (sh_get_key(&ev, deadline)) {
         if (sh_is_ctrl(&ev, 'c')) {
-            if (!interrupted)
-                sh_tty("^C\n");
-            interrupted = true;
+            interrupt();
             return 3;
         }
         if (ev.codepoint)
@@ -172,17 +184,44 @@ int sh_poll_key(uint64_t deadline)
     return -1;
 }
 
+/* Wait until deadline for one key that isn't the running command's:
+ * Ctrl+C stops the line, any other key waits for the line editor, so a
+ * line typed ahead is not lost. false if no key came. */
+static bool take_key(uint64_t deadline)
+{
+    struct input_key_event ev;
+    if (!sh_get_key(&ev, deadline))
+        return false;
+    if (sh_is_ctrl(&ev, 'c'))
+        interrupt();
+    else if (ahead_n < TYPEAHEAD)
+        ahead[(ahead_first + ahead_n++) % TYPEAHEAD] = ev;
+    return true;
+}
+
 bool sh_interrupted(void)
 {
-    if (!interrupted)
-        sh_poll_key(0);
+    sh_flush();
+    while (!interrupted && take_key(0))
+        ;
     return interrupted;
 }
 
 bool sh_sleep(uint64_t ns)
 {
     uint64_t deadline = now() + ns;
+    sh_flush();
     while (!interrupted && now() < deadline)
-        sh_poll_key(deadline);
+        take_key(deadline);
     return !interrupted;
+}
+
+bool sh_typeahead(struct input_key_event *ev)
+{
+    if (!ahead_n)
+        return false;
+    *ev = ahead[ahead_first];
+    ahead_first = (ahead_first + 1) % TYPEAHEAD;
+    ahead_n--;
+    return true;
 }

@@ -245,7 +245,8 @@ static void read_line(char *buf)
     sh_flush();
     for (;;) {
         struct input_key_event ev;
-        sh_get_key(&ev, DEADLINE_NEVER);
+        if (!sh_typeahead(&ev))   /* first what was typed while the last command ran */
+            sh_get_key(&ev, DEADLINE_NEVER);
         uint16_t u = ev.usage;
         if (u == U_ENTER || u == U_KP_ENTER ||
             (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {
