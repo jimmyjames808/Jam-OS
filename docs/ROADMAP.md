@@ -57,7 +57,7 @@ agents, like the [earlier plans](history/)):
   every alias `~1` so aliases collided; forbidden characters accepted).
   Decided: **port FatFs** (ChaN's FatFs, BSD-style licence) instead of
   writing FAT32 again; it gets long names, the case flags, `~N` numbering
-  and the character rules right. Vendor it in `third_party/fatfs/` with
+  and the character rules right. Vendor it in a new third_party/fatfs directory with
   its licence and a `third_party/VERSIONS.md` entry; the FAT service
   supplies FatFs's disk callbacks (read/write sectors through the block
   service) and runs as a process like any other service.
