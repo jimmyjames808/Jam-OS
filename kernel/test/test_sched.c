@@ -206,11 +206,11 @@ static void busy_spinner(void *arg)
 /* Real placement: busy threads kept off cpu 0 (where this thread runs,
  * busy too) each get a core of their own while whole cores are idle. With
  * SMT that means never both hyperthreads of one core, and never cpu 0's
- * sibling. It failed on the PC (2026-10-01, at boot: a spinner on cpu 1;
- * live: two on core 28) and 1-10 times in 100 in QEMU with threads=2: a
- * CPU taking its next thread looked idle to placement for a moment
- * (repro_picked_cpu_looks_idle), and a thread queued there was stolen by
- * whatever idle CPU looked first (steal_prefers_whole_core). */
+ * sibling. Two things it depends on have their own tests: a CPU taking its
+ * next thread must not look idle to placement (repro_picked_cpu_looks_idle),
+ * and a thread queued behind another must be stolen onto a whole core, not
+ * by whatever idle CPU looks first (steal_prefers_whole_core). Run it in a
+ * loop with -smp N,threads=2 (ktest=placement loops=300). */
 KTEST(placement_spreads_over_cores)
 {
     KT_NEEDS_IDLE("asserts which CPUs busy threads are placed on: every core must be idle");

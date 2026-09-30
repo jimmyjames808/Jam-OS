@@ -413,12 +413,12 @@ KTEST(repro_slice_not_reset)
 
 /* ---- 6. a CPU taking its next thread looks idle to placement -------------- */
 
-/* schedule() used to take the next thread off its queue (the queued count
- * drops) before marking the CPU busy, so for a moment a CPU starting work
- * had load 0: a placement on another CPU that read it then took it for a
- * whole idle core and queued a second thread behind the first (the PC,
- * 2026-10-01: two busy threads on one core, placement_spreads_over_cores).
- * The hook sits in that moment and reads the load placement would see. */
+/* schedule() takes the next thread off its queue (the queued count drops)
+ * before it marks it running. If the CPU were marked busy only then, for a
+ * moment a CPU starting work would have load 0: a placement on another CPU
+ * reading it then would take it for a whole idle core and queue a second
+ * thread behind the first (two busy threads on one core). The hook sits in
+ * that moment and reads the load placement would see. */
 static struct thread *volatile pk_marker;
 static volatile int pk_seen;
 static volatile uint32_t pk_load;
