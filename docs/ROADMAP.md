@@ -20,7 +20,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M6 | PCI core, MSI/MSI-X, interrupt objects, resources, DMA, devmgr, drivers as processes | done |
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
-| **M8** | **Storage** | **next** |
+| **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell and a log per boot work in QEMU; other sticks, the review and the PC are still to do |
 | A1, A2 | Audio | right after M8 |
 | M8.5 | Crash kernel and kexec | later |
 | M9 | Networking | later |
@@ -36,31 +36,50 @@ USB mass storage (Bulk-Only Transport; UAS later) as a class driver on
 usb-bus, and a FAT32 filesystem service, both processes. The stick gets a
 read-only boot partition (the ESP) and a writable data partition mounted at
 `/data` ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)); every boot's log
-is saved as `/data/logs/boot-NNNN.txt`.
+is saved as `/data/logs/boot-NNNN.txt`. The plan is
+[M8-PLAN.md](M8-PLAN.md).
 
 Done when: `ls /boot` and writing a file under `/data` work from a
 userspace filesystem service; the stick still boots after a pulled-plug
 test; a PC run's log can be read on the Mac from the stick.
 
-Notes for the plan ([M8-PLAN.md](M8-PLAN.md), like the
-[earlier plans](history/)):
-- The stick (058f:6387) is high-speed and sits behind the ASMedia hub, so
-  storage goes through the hub ([HARDWARE.md](HARDWARE.md#usb)).
-- The shell's mount table (`user/services/shell/sh_vfs.c`) is ready for
-  `/data`.
-- Design work the cleanup left for this plan: a system file namespace
-  protocol (an `fs` IDL), bulk data through shared VMOs in IDL, and shrinking
-  `debug_command`.
-- FAT names: the 2025 attempt's hand-written FAT made naming files
-  painful (no spaces from its shell; `notes.txt` shown as `NOTES.TXT`
-  because the lowercase flags were never set; long names cut to 8.3, or
-  every alias `~1` so aliases collided; forbidden characters accepted).
-  Decided: **port FatFs** (ChaN's FatFs, BSD-style licence) instead of
-  writing FAT32 again; it gets long names, the case flags, `~N` numbering
-  and the character rules right. Vendor it in a new third_party/fatfs directory with
-  its licence and a `third_party/VERSIONS.md` entry; the FAT service
-  supplies FatFs's disk callbacks (read/write sectors through the block
-  service) and runs as a process like any other service.
+Implemented, and passing in QEMU at 4 and 8 CPUs:
+- Bulk transfers in usb-bus and the `drivers/usb-storage` class driver
+  (Bulk-Only Transport, the partition table, a `block` channel per
+  partition).
+- FatFs (in `third_party/fatfs`) as the `fat` service: long names, lower
+  case, spaces; the ESP mounted read-only at `/esp`, the data partition at
+  `/data` (formatted on its first boot).
+- devmgr finds the disks and partitions, starts a `fat` per volume and
+  publishes the mounts; init keeps the system's file namespace (`/boot`
+  from the bootfs server, `/esp`, `/data`) and hands each program its part
+  of it; a mount comes and goes in running programs as the stick does.
+- Programs open files by path (`<os.h>`), and a program can be started
+  from a file. The shell has `ls cat cp mv rm mkdir touch write df sync`
+  on every mount.
+- logd writes each boot's kernel log to `/data/logs/boot-NNNN.txt`;
+  `reboot` and Ctrl+Alt+Del sync `/data` first.
+- `kill` goes through init and devmgr (`debug_command` no longer has it).
+- Tests: the file namespace in utest, the storage checks in usbtest,
+  `tools/storage-test.sh`, and `tools/data-test.sh` (three boots of one
+  stick: a file kept across a reboot, QEMU quit in the middle of writes,
+  the logs read back with mtools); the stick unplugged and replugged while
+  the system runs.
+
+Still to do:
+- Other sticks (the plan's Phase 2b): any other FAT stick read-only at
+  `/usb0`, `/usb1`, ...; `mount -w` to write; never formatted.
+- The independent review of the whole milestone, and its fixes.
+- The PC: the stick flashed once with the two-partition layout
+  (`make usb`, which erases it), then read-only checks first (`ls /esp`,
+  `ls /data`), writes, the boot logs read on the Mac, the pulled-plug test,
+  All tests, the 2-minute stress and the 10-minute sign-off.
+
+Known limits, for the review:
+- Only programs in `/boot` can be run: a file on `/data` or `/esp` does
+  not come with the right to execute it.
+- The boot log that logd is writing can't be read until the next boot
+  (the `fat` service gives a file open for writing to one client).
 
 ## Later
 
