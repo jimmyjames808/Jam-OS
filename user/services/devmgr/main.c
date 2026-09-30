@@ -614,24 +614,46 @@ static status_t run(handle_t chans[2], unsigned life)
 }
 
 /* Every client is gone: no more restarts; stop the drivers. True if each
- * ended cleanly and nothing went wrong while running. */
+ * ended cleanly and nothing went wrong while running.
+ *
+ * The drivers at the bottom (usb-bus) are told first and waited for: what
+ * runs on them ends because its device is gone, as when a stick is pulled.
+ * Then each is stopped and its job checked for leftovers, from the top
+ * down: the filesystem services, the USB class drivers, and last the
+ * bottom ones. A job is charged for what its driver shared with the one
+ * above until that one has ended too (usb-bus makes the bulk buffer that
+ * usb-storage maps), so checking usb-bus's job first was a race. */
 static bool stop_all(void)
 {
+    static const int order[] = { BIND_FS, BIND_USB, -1 /* every other kind */ };
     bool ok = true;
     unsigned stopped = 0;
     disk_sync_all();   /* before the drivers under the filesystems go */
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
         sup_reset(b);
-        if (b->proc) {
-            if (!stop_driver(b, false, false)) {
-                say(true, "devmgr: %s %s did not end cleanly", bdf(b), b->path);
-                ok = false;
-            }
-            stopped++;
-        }
+        if (b->kind == BIND_FS || b->kind == BIND_USB || !b->proc)
+            continue;
+        signals_t seen;
         close_client(b);
+        /* One that doesn't end is reported, and killed, by stop_driver below. */
+        (void)jam_object_wait_one(b->proc, SIG_TERMINATED, now() + STOP_WAIT, &seen);
     }
+    for (unsigned k = 0; k < sizeof(order) / sizeof(order[0]); k++)
+        for (unsigned i = 0; i < ndevs; i++) {
+            struct binding *b = &devs[i];
+            bool bottom = b->kind != BIND_FS && b->kind != BIND_USB;
+            if (order[k] < 0 ? !bottom : (int)b->kind != order[k])
+                continue;
+            if (b->proc) {
+                if (!stop_driver(b, false, false)) {
+                    say(true, "devmgr: %s %s did not end cleanly", bdf(b), b->path);
+                    ok = false;
+                }
+                stopped++;
+            }
+            close_client(b);
+        }
     for (unsigned i = 0; i < ndevs; i++) {
         if (devs[i].dev)
             jam_handle_close(devs[i].dev);
