@@ -253,6 +253,100 @@ KTEST(placement_spreads_over_cores)
     }
 }
 
+/* ---- work stealing and the topology ------------------------------------- */
+
+static volatile bool st_release;
+static volatile uint32_t st_started;
+
+static void st_spinner(void *arg)
+{
+    (void)arg;
+    __atomic_add_fetch(&st_started, 1, __ATOMIC_RELAXED);
+    while (!st_release)
+        cpu_relax();
+}
+
+static void st_nothing(void *arg)
+{
+    (void)arg;
+}
+
+/* Wait (busy: this thread's core must stay busy) until n spinners run. */
+static bool st_wait_started(uint32_t n)
+{
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (__atomic_load_n(&st_started, __ATOMIC_RELAXED) < n)
+        if (uptime_ns() > end)
+            return false;
+    return true;
+}
+
+/* A thread queued behind a busy one is stolen by the first idle CPU that
+ * looks, and that one may be only half a core: here cpu 0's HT sibling,
+ * with this thread busy on cpu 0. The steal must not keep it there while
+ * a whole idle core (or an idle E-core) could run it: it goes where
+ * placement would put it now. Each round: a hog on cpu v, the victim
+ * queued behind it (lower priority), its mask widened to {h, v, w}, and
+ * then h made to look for work at once (a thread that ends at once) while
+ * w, halted, waits for its next tick. */
+KTEST(steal_prefers_whole_core)
+{
+    KT_NEEDS_IDLE("asserts where a stolen thread runs: every other core must be idle");
+    if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
+        return;
+    int h = -1;
+    for (uint32_t i = 1; i < cpu_count; i++)
+        if (cpus[i]->core_id == cpus[0]->core_id)
+            h = (int)i;
+    uint32_t v = 0, w = 0;
+    for (uint32_t i = 1; i < cpu_count && !w; i++) {
+        if (cpus[i]->core_id == cpus[0]->core_id)
+            continue;
+        if (!v)
+            v = i;
+        else if (cpus[i]->core_id != cpus[v]->core_id)
+            w = i;
+    }
+    if (h < 0 || !w) {
+        kprintf("steal: needs cpu 0's HT sibling and two more cores (QEMU: -smp N,threads=2): "
+                "not tested\n");
+        return;
+    }
+    kt_pin_self(0);
+    uint32_t on_half = 0;
+    const int rounds = 5;
+    for (int r = 0; r < rounds; r++) {
+        cpumask_t mv;
+        cpumask_one(&mv, v);
+        st_release = false;
+        st_started = 0;
+        struct thread *hog = thread_create_on("kt-steal-hog", st_spinner, NULL,
+                                              PRIO_DEFAULT - 1, &mv);
+        KT_ASSERT(st_wait_started(1));
+        struct thread *victim = thread_create_on("kt-steal-victim", st_spinner, NULL,
+                                                 PRIO_DEFAULT - 2, &mv);
+        cpumask_t m = mv;
+        m.bits[h / 64] |= 1ull << (h % 64);
+        m.bits[w / 64] |= 1ull << (w % 64);
+        thread_set_affinity(victim, &m);
+        cpumask_t mh;
+        cpumask_one(&mh, (uint32_t)h);
+        struct thread *poke = thread_create_on("kt-steal-poke", st_nothing, NULL,
+                                               PRIO_DEFAULT, &mh);
+        KT_ASSERT(st_wait_started(2));
+        uint32_t ran = victim->cpu;
+        st_release = true;
+        thread_join(poke);
+        thread_join(victim);
+        thread_join(hog);
+        kprintf("steal: round %d: victim queued on cpu %u ran on cpu %u (core %u); half core "
+                "cpu %d, whole core cpu %u\n", r, v, ran, cpus[ran]->core_id, h, w);
+        on_half += ran == (uint32_t)h;
+    }
+    kt_unpin_self();
+    KT_EQ(on_half, 0);
+}
+
 /* ---- client/server pairs on sibling hyperthreads ------------------------- */
 
 /* A thread pinned to cpu a and an unpinned partner (kept off cpu 0 and a)

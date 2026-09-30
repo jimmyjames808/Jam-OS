@@ -67,6 +67,7 @@ struct cpu {
     /* Statistics. */
     uint64_t          switches, steals, ipis;
     uint64_t          polled_wakes;   /* wakeups that found this CPU polling: no IPI */
+    uint64_t          steals_sent;    /* of steals: sent on to a better CPU (try_steal) */
     /* CPU time (sched.c, for the shell): the TSC at the last switch (0 until
      * the run queue is online), the idle thread's cycles up to then, and
      * whether the idle thread runs now. Written by this CPU only. */

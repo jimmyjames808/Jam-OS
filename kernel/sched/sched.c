@@ -702,8 +702,30 @@ static void thread_wake_common(struct thread *t, bool sync)
 
 /* ---- idle, work stealing ---------------------------------------------------- */
 
-/* With interrupts off: move one waiting thread from a busy CPU to us. Two
- * run queue locks are always taken lower CPU index first. */
+/* Where a thread stolen by idle CPU `me` should run: `me`, unless the
+ * placement order finds a better class of CPU for it (me is the idle HT
+ * sibling of a busy core, or an E-core, and a whole idle core is free, or
+ * an idle E-core beats our half core). Ties go to me: it is awake now. */
+static uint32_t steal_dest(const struct thread *t, uint32_t me)
+{
+    if (!__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
+        return me;
+    int sib = topo[me].sibling;
+    if ((sib < 0 || !load_of((uint32_t)sib)) && topo[me].type != CORE_EFFICIENCY)
+        return me;   /* a whole idle core: nothing is better */
+    cpumask_t cand;
+    for (unsigned w = 0; w < MAX_CPUS / 64; w++)
+        cand.bits[w] = usable_word(t, w);
+    uint32_t best = pick_cpu(&cand, topo, NULL, me, true);
+    return best == UINT32_MAX ? me : best;
+}
+
+/* With interrupts off: move one waiting thread from a busy CPU to us, or,
+ * if we are only half a core (or an E-core) and a better idle CPU is free,
+ * to that one, as placement would (steal_dest). Whoever is idle first
+ * finds the thread; this sends it where it should be. Two run queue locks
+ * are always taken lower CPU index first; a thread sent elsewhere is READY
+ * and on no queue between our unlock and place_on, as in a wake. */
 static void try_steal(uint32_t me)
 {
     for (uint32_t k = 1; k < cpu_count; k++) {
@@ -714,13 +736,20 @@ static void try_steal(uint32_t me)
         spin_lock(&a->lock);
         spin_lock_nested(&b->lock, 1);
         struct thread *t = pick_stealable(&rqs[v], me);
+        uint32_t dest = me;
         if (t) {
-            enqueue(&rqs[me], t, me);
+            dest = steal_dest(t, me);
+            if (dest == me)
+                enqueue(&rqs[me], t, me);
             struct cpu *c = this_cpu();
             COUNTER_ADD(&c->steals, 1);
         }
         spin_unlock_no_resched(&b->lock);
         spin_unlock_no_resched(&a->lock);
+        if (t && dest != me) {
+            COUNTER_ADD(&this_cpu()->steals_sent, 1);
+            place_on(t, dest);
+        }
         if (t)
             return;
     }
@@ -986,11 +1015,13 @@ void sched_irq_exit(uint64_t interrupted_rflags)
 
 void sched_print_stats(void)
 {
-    uint64_t sw = 0, steals = 0;
+    uint64_t sw = 0, steals = 0, sent = 0;
     for (uint32_t i = 0; i < cpu_count; i++) {
         sw += __atomic_load_n(&cpus[i]->switches, __ATOMIC_RELAXED);
         steals += __atomic_load_n(&cpus[i]->steals, __ATOMIC_RELAXED);
+        sent += __atomic_load_n(&cpus[i]->steals_sent, __ATOMIC_RELAXED);
     }
-    kprintf("sched: %lu context switches, %lu steals, %lu starvation boosts across %u CPUs\n",
-            sw, steals, sched_boost_count(), cpu_count);
+    kprintf("sched: %lu context switches, %lu steals (%lu sent on to a better CPU), "
+            "%lu starvation boosts across %u CPUs\n",
+            sw, steals, sent, sched_boost_count(), cpu_count);
 }
