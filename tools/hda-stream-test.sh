@@ -15,8 +15,9 @@
 #     kill's restart ("was running: stopping it"), never found running
 #     at an open;
 #   - the codec got no SET verb but the silent ones of the path set up
-#     muted and the converter's format (0x200) and stream (0x706): no amp
-#     unmuted, no pin output on (tools/hda-verbs.awk).
+#     muted, the converter's format (0x200) and stream (0x706), and the
+#     path opened only while a stream runs and closed again (the state
+#     tools/hda-verbs.awk follows).
 # QEMU_SMP passes through. Usage: tools/hda-stream-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -46,18 +47,26 @@ if grep -q "was running at open" "$log"; then
 fi
 
 # The codec's verbs (tools/hda-verbs.awk): GETs, the silent SETs of the
-# path set up muted at start, and the converter's format and stream; none
-# that opens the path (hdatest plays, but nothing may be heard: only
-# `beep` unmutes).
+# path set up muted at start, the converter's format and stream, and the
+# path opened while hdatest's streams run: every open verb sent while the
+# converter has the stream's tag, nothing open when the tag goes back to
+# 0 (the close), and nothing open at the end (the kill mid-stream leaves
+# the path open; the restarted driver's set-up mutes it).
 trace=$(awk -f tools/hda-verbs.awk "$out/hda-stream.out")
 sets=$(echo "$trace" | grep -cE "^conv nid 2 " || true)
 [ "$sets" -ge 4 ] || { echo "hda-stream: only $sets converter SET(s) on node 2 traced"; ok=0; }
-bad=$(echo "$trace" | grep -E "^(open|bad) " || true)
+opens=$(echo "$trace" | grep -c "^open " || true)
+[ "$opens" -ge 2 ] || { echo "hda-stream: only $opens verb(s) opened the path"; ok=0; }
+bad=$(echo "$trace" | grep -E "^bad " || true)
 if [ -n "$bad" ]; then
-    echo "hda-stream: verbs other than GETs, silent SETs and the converter's format and stream:"
+    echo "hda-stream: verbs that are not on the driver's allow-list:"
     echo "$bad" | head -10
     ok=0
 fi
+state=$(echo "$trace" | tail -1)
+[ "$state" = "state untagged 0 released 0 left 0" ] ||
+    { echo "hda-stream: the path was open outside a stream ($state)"; ok=0; }
+echo "hda-stream: codec: $(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); $state"
 
 python3 - "$wav" <<'PY' || ok=0
 import struct, sys

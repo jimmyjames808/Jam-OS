@@ -390,3 +390,9 @@ void hda_dump_path(struct out *o, const struct codec *c, const struct path *p)
         add(&b, "%s%02x", i ? " " : "; pins that select a node of it too: ", p->also[i]);
     out_line(o, "%s", b.s);
 }
+
+void hda_db_str(char *buf, size_t size, int32_t cb)
+{
+    uint32_t a = cb < 0 ? (uint32_t)-cb : (uint32_t)cb;
+    drv_snprintf(buf, size, "%s%u.%u", cb < 0 ? "-" : "", a / 10, a % 10);
+}

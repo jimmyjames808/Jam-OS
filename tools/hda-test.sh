@@ -69,7 +69,7 @@ if [ -n "$bad" ]; then
 fi
 pinctl=$(echo "$trace" | grep -c "^silent .* verb 0x707 " || true)
 mutes=$(echo "$trace" | grep -c "^silent .* verb 0x300 " || true)
-counts="$(echo "$trace" | tail -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes"
+counts="$(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes"
 # 3 path set-ups (2 at boot, 1 after the restart), each one pin control
 # and at least one mute (the DAC's output amp).
 [ "$pinctl" -ge 3 ] && [ "$mutes" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }

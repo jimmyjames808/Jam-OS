@@ -9,10 +9,12 @@
  * reset, GPIOs, the subsystem id, the beep generator, digital converter
  * controls and the vendor coefficient verbs.
  *
- * The one sequence so far programs the path path.c found, silent: power
- * up, the pin's output off, every amp on the path muted, the path's
- * inputs selected. The pin's output and the unmuting come with the
- * stream; the stream tag and format of the DAC are left as they are. */
+ * The sequences: at start, the path path.c found programmed silent
+ * (power up, the pin's output off, every amp on the path muted, the
+ * path's inputs selected); while a stream runs, the same path opened
+ * (hda_output_open: its amps unmuted at the gain, the pin's output and
+ * EAPD on) and closed again as soon as it stops. The DAC's stream tag and
+ * format are stream.c's (through hda_set too). */
 #include "hda.h"
 
 /* A GET verb: 12-bit verbs 0xf00-0xfff, or the 4-bit GET verbs 0xa
@@ -164,4 +166,185 @@ void hda_path_read_back(struct hda *h, struct codec *c, const struct path *p)
         for (unsigned k = 0; k < p->n; k++)
             if (c->w[i].nid == p->nid[k])
                 hda_read_widget(h, c, &c->w[i]);
+}
+
+/* ---- the output: opened while a stream plays ---------------------------------------
+ * Steps 4-6 of the path in docs/A1-PLAN.md, and their reverse. On the
+ * PC's ALC897: mixer 0c's input 0 (from DAC 02) unmuted, DAC 02's output
+ * amp to the gain (it has no mute: step 0 is its quietest, -65.25 dB),
+ * pin 1b's output amp unmuted (it has only a mute), pin 1b's control to
+ * output + headphone amp (0xc0), EAPD on. Nothing but the path's nodes is
+ * touched, and the other inputs of its mixers stay muted. */
+
+/* An amp's 0 dB step, or its top one if it can't reach 0 dB. */
+static unsigned unity(uint32_t amp)
+{
+    unsigned off = AMPCAP_OFFSET(amp), steps = AMPCAP_STEPS(amp);
+    return off < steps ? off : steps;
+}
+
+/* The step of the volume amp nearest `cb` centibels, in [0, unity]. */
+static unsigned step_for(uint32_t amp, int32_t cb)
+{
+    int32_t size = (int32_t)AMPCAP_STEP_MDB(amp), mdb = cb * 100;
+    int32_t d = mdb >= 0 ? (mdb + size / 2) / size : -((-mdb + size / 2) / size);
+    int32_t step = (int32_t)AMPCAP_OFFSET(amp) + d, top = (int32_t)unity(amp);
+    return step < 0 ? 0 : step > top ? (unsigned)top : (unsigned)step;
+}
+
+/* Step `step` of amp in centibels, rounded half away from zero. */
+static int32_t cb_of(uint32_t amp, unsigned step)
+{
+    int32_t mdb = ((int32_t)step - (int32_t)AMPCAP_OFFSET(amp)) * (int32_t)AMPCAP_STEP_MDB(amp);
+    return mdb >= 0 ? (mdb + 50) / 100 : -((-mdb + 50) / 100);
+}
+
+void hda_output_init(struct output *o, const struct codec *c, const struct path *p)
+{
+    *o = (struct output){ 0 };
+    if (!c || !p || p->rule == PATH_NONE || !p->n)
+        return;
+    o->c = c;
+    o->p = p;
+    for (unsigned i = 0; i < p->n && !o->vol; i++) {
+        const struct widget *w = hda_widget(c, p->nid[i]);
+        if (w && (w->caps & WCAP_OUT_AMP) && AMPCAP_STEPS(w->amp_out)) {
+            o->vol = w->nid;
+            o->vol_amp = w->amp_out;
+        }
+    }
+    if (o->vol)
+        o->step = (uint8_t)step_for(o->vol_amp, GAIN_DEFAULT_CB);
+}
+
+/* The pin at the path's end, as read back after the muted set-up. */
+static const struct widget *out_pin(const struct output *o)
+{
+    return hda_widget(o->c, o->p->nid[o->p->n - 1]);
+}
+
+static const uint32_t LR = AMP_SET_LEFT | AMP_SET_RIGHT;
+
+/* One SET of the opening; on failure the step is named in the log. */
+static status_t open_set(struct hda *h, const struct output *o, unsigned nid, uint32_t verb,
+                         uint32_t payload, const char *what)
+{
+    status_t st = hda_set(h, o->c->cad, nid, verb, payload);
+    if (st != OK)
+        drv_log("output: %s of node %02x failed (%s)", what, nid, status_str(st));
+    return st;
+}
+
+status_t hda_output_open(struct hda *h, struct output *o)
+{
+    if (!o->c)
+        return ERR_NOT_FOUND;
+    const struct path *p = o->p;
+    unsigned cad = o->c->cad;
+    const struct widget *pin = out_pin(o);
+    status_t st = OK;
+    o->open = true;   /* from here on hda_output_close undoes what was done */
+    o->failed = false;
+    /* Step 4: the path's input on each mixer and selector after the DAC. */
+    for (unsigned i = 1; i < p->n && st == OK; i++) {
+        const struct widget *w = hda_widget(o->c, p->nid[i]);
+        unsigned t = WCAP_TYPE(w->caps);
+        if ((t == W_MIXER || t == W_SELECTOR) && (w->caps & WCAP_IN_AMP) && p->in[i] < 16)
+            st = open_set(h, o, w->nid, V4_SET_AMP,
+                          AMP_SET_IN | AMP_SET_INDEX(p->in[i]) | LR | unity(w->amp_in),
+                          "the input amp");
+    }
+    /* Step 5: the output amps, the volume amp at the gain, the rest at 0 dB. */
+    for (unsigned i = 0; i < p->n && st == OK; i++) {
+        const struct widget *w = hda_widget(o->c, p->nid[i]);
+        if (w->caps & WCAP_OUT_AMP)
+            st = open_set(h, o, w->nid, V4_SET_AMP,
+                          AMP_SET_OUT | LR | (w->nid == o->vol ? o->step : unity(w->amp_out)),
+                          "the output amp");
+    }
+    /* Step 6: the pin's output (and headphone amp), then EAPD. */
+    uint32_t ctl = PINCTL_OUT | (pin->pincaps & PINCAP_HP ? PINCTL_HP : 0);
+    if (st == OK)
+        st = open_set(h, o, pin->nid, V_SET_PIN_CTL, ctl, "the pin control");
+    if (st == OK && (pin->pincaps & PINCAP_EAPD))
+        st = open_set(h, o, pin->nid, V_SET_EAPD, (pin->eapd | 0x2u) & 0x7u, "EAPD");
+    if (st != OK) {
+        o->failed = true;
+        (void)hda_output_close(h, o);
+        drv_log("output: not unmuted: the path is muted again");
+        return st;
+    }
+    /* What the codec took, for the log (the PC's is the one that matters). */
+    uint32_t rc = 0, re = 0, ra = 0;
+    (void)hda_get(h, cad, pin->nid, V_GET_PIN_CTL, 0, &rc);
+    if (pin->pincaps & PINCAP_EAPD)
+        (void)hda_get(h, cad, pin->nid, V_GET_EAPD, 0, &re);
+    if (o->vol)
+        (void)hda_get(h, cad, o->vol, V4_GET_AMP, AMP_GET_OUT | AMP_GET_LEFT, &ra);
+    char at[48] = "at 0 dB (no amp on the path has gain steps)";
+    if (o->vol) {
+        char db[16];
+        hda_db_str(db, sizeof(db), cb_of(o->vol_amp, o->step));
+        drv_snprintf(at, sizeof(at), "at %s dB (node %02x step %u)", db, o->vol, o->step);
+    }
+    drv_log("output: unmuted %s; read back: pin %02x ctl %02x eapd %02x, volume amp %02x", at,
+            pin->nid, rc & 0xffu, re & 0xffu, ra & 0xffu);
+    return OK;
+}
+
+status_t hda_output_close(struct hda *h, struct output *o)
+{
+    if (!o->open)
+        return OK;
+    const struct path *p = o->p;
+    const struct widget *pin = out_pin(o);
+    status_t first = OK, st;
+#define TRY(x) do { if ((st = (x)) != OK && first == OK) first = st; } while (0)
+    if (pin->pincaps & PINCAP_EAPD)
+        TRY(hda_set(h, o->c->cad, pin->nid, V_SET_EAPD, pin->eapd & 0x5u));
+    TRY(hda_set(h, o->c->cad, pin->nid, V_SET_PIN_CTL,
+                pin->pin_ctl & ~(uint32_t)(PINCTL_OUT | PINCTL_HP) & 0xe7u));
+    for (unsigned i = p->n; i-- > 0;) {
+        const struct widget *w = hda_widget(o->c, p->nid[i]);
+        if (w->caps & WCAP_OUT_AMP)
+            TRY(hda_set(h, o->c->cad, w->nid, V4_SET_AMP, AMP_SET_OUT | LR | AMP_MUTE));
+    }
+    for (unsigned i = p->n; i-- > 1;) {
+        const struct widget *w = hda_widget(o->c, p->nid[i]);
+        unsigned t = WCAP_TYPE(w->caps);
+        if ((t == W_MIXER || t == W_SELECTOR) && (w->caps & WCAP_IN_AMP) && p->in[i] < 16)
+            TRY(hda_set(h, o->c->cad, w->nid, V4_SET_AMP,
+                        AMP_SET_IN | AMP_SET_INDEX(p->in[i]) | LR | AMP_MUTE));
+    }
+#undef TRY
+    o->open = false;
+    if (first != OK)
+        drv_log("output: muting again: a verb failed (%s)", status_str(first));
+    else if (!o->failed)
+        drv_log("output: muted again");
+    return first;
+}
+
+status_t hda_output_set_gain(struct hda *h, struct output *o, int32_t cb)
+{
+    if (!o->c)
+        return ERR_NOT_FOUND;
+    if (!o->vol)
+        return ERR_NOT_SUPPORTED;
+    o->step = (uint8_t)step_for(o->vol_amp, cb);
+    if (!o->open)
+        return OK;
+    return hda_set(h, o->c->cad, o->vol, V4_SET_AMP, AMP_SET_OUT | LR | o->step);
+}
+
+status_t hda_output_gain(const struct output *o, int32_t *cb, int32_t *min, int32_t *max)
+{
+    if (!o->c)
+        return ERR_NOT_FOUND;
+    if (!o->vol)
+        return ERR_NOT_SUPPORTED;
+    *cb = cb_of(o->vol_amp, o->step);
+    *min = cb_of(o->vol_amp, 0);
+    *max = cb_of(o->vol_amp, unity(o->vol_amp));
+    return OK;
 }

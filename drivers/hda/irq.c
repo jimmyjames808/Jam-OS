@@ -271,13 +271,13 @@ static status_t setup(struct loop *l, const struct driver_start *ds)
 }
 
 status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
-                  void *ctx, const struct path *p)
+                  void *ctx, struct output *out)
 {
     struct loop *l = drv_malloc(sizeof(*l));
     if (!l)
         return ERR_NO_MEMORY;
     *l = (struct loop){ .h = h, .ops = ops, .ctx = ctx, .serve = drv_handle(ds, DR_SERVE) };
-    stream_init(h, &l->st, drv_handle(ds, DR_PCIDEV), p);
+    stream_init(h, &l->st, drv_handle(ds, DR_PCIDEV), out);
     status_t st = setup(l, ds);
     while (st == OK) {
         if (l->serve_pending)

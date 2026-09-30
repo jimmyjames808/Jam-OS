@@ -4,13 +4,13 @@
  * each codec's widget graph, picks the path from a DAC to the front-panel
  * headphone jack (path.c, checked at start against fixtures.c) and
  * programs it with every amplifier on it muted and the pin's output off;
- * then it serves abi/idl/hda.idl (the dump, the path, and one output
- * stream on the path's DAC) until devmgr closes its channel. It makes no
- * sound: the unmuting is not built yet. Every verb goes through verbs.c,
- * which takes GET verbs and an allow-list of SET verbs (routing,
- * amplifiers, pin control, EAPD, power, converter format and stream,
- * unsolicited enable, pin sense) and refuses anything else, so the
- * board's own settings (configuration defaults, GPIOs, vendor
+ * then it serves abi/idl/hda.idl (the dump, the path, the gain and one
+ * output stream on the path's DAC) until devmgr closes its channel. The
+ * path is unmuted, at the gain, only while the stream runs. Every verb
+ * goes through verbs.c, which takes GET verbs and an allow-list of SET
+ * verbs (routing, amplifiers, pin control, EAPD, power, converter format
+ * and stream, unsolicited enable, pin sense) and refuses anything else,
+ * so the board's own settings (configuration defaults, GPIOs, vendor
  * coefficients) are never written.
  *
  * Files: main.c (start, the protocol, exit), ctrl.c (the controller:
@@ -154,6 +154,13 @@
 #define WCAP_DIGITAL     (1u << 9)
 #define WCAP_POWER       (1u << 10)
 #define WCAP_CHANS(c)    (((((c) >> 13) & 7u) << 1 | ((c) & 1u)) + 1)
+
+/* Amplifier Capabilities (spec 7.3, parameters): gain steps 0..STEPS of
+ * STEP_MDB thousandths of a dB each, 0 dB at step OFFSET; bit 31 mute. */
+#define AMPCAP_OFFSET(c)   ((c) & 0x7fu)
+#define AMPCAP_STEPS(c)    (((c) >> 8) & 0x7fu)
+#define AMPCAP_STEP_MDB(c) (((((c) >> 16) & 0x7fu) + 1) * 250)
+#define AMPCAP_MUTE        (1u << 31)
 
 enum wtype {
     W_OUT = 0, W_IN = 1, W_MIXER = 2, W_SELECTOR = 3, W_PIN = 4, W_POWER = 5,
@@ -365,6 +372,8 @@ void hda_path_str(const struct codec *c, const struct path *p, char *buf, size_t
  * programming): "afg D0; dac 02 D0 out m0; mixer 0c in m0 m0; pin 1b D0
  * ctl 20 (output off) out m0 eapd off". */
 void hda_path_state(const struct codec *c, const struct path *p, char *buf, size_t size);
+/* Centibels as dB with one decimal: "-30.0", "0.0", "-0.8". */
+void hda_db_str(char *buf, size_t size, int32_t cb);
 /* The path's line: "codec 0 path: dac 02 -> mixer 0c -> pin 1b (front
  * headphone jack); ...", or why there is none. */
 void hda_dump_path(struct out *o, const struct codec *c, const struct path *p);
@@ -374,11 +383,50 @@ void hda_dump_path(struct out *o, const struct codec *c, const struct path *p);
 /* Power up the audio function group and the path's widgets, turn the
  * pin's output off, mute every amplifier on the path (every input of a
  * mixer on it too) and select the path's inputs. No sound can come out
- * afterwards; the stream and the unmuting are not built yet. Stops at the
+ * afterwards; hda_output_open unmutes it while a stream runs. Stops at the
  * first verb that fails. */
 status_t hda_path_program_muted(struct hda *h, const struct codec *c, const struct path *p);
 /* Read the path's widgets and the AFG's power state back into c. */
 void     hda_path_read_back(struct hda *h, struct codec *c, const struct path *p);
+
+/* ---- the output: the path opened while a stream plays (verbs.c) -------------------
+ * main.c fills it once the path is set up muted; stream.c opens it just
+ * before RUN and closes it right after RUN clears; main.c's set_gain
+ * changes the gain. All on the driver's one thread. */
+
+#define GAIN_DEFAULT_CB  (-300)   /* -30 dB: quiet in headphones (docs/A1-PLAN.md, stage 3) */
+
+struct output {
+    const struct codec *c;     /* the path's codec as read back after set-up; NULL: no path */
+    const struct path  *p;
+    uint8_t  vol;              /* the node whose output amp is the volume; 0: none has steps */
+    uint32_t vol_amp;          /* its amplifier capabilities */
+    uint8_t  step;             /* the volume amp's step to play at */
+    bool     open;             /* unmuted now (hda_output_open succeeded, no close since) */
+    bool     failed;           /* the last open failed (and was muted again) */
+};
+
+/* o for path p of codec c (both NULL: no path), at GAIN_DEFAULT_CB.
+ * Sends nothing. */
+void     hda_output_init(struct output *o, const struct codec *c, const struct path *p);
+/* The path opened, in the order of docs/A1-PLAN.md's steps 4-6: the
+ * path's inputs on its mixers and selectors unmuted (the others stay
+ * muted), every output amp on it unmuted (the volume amp at o->step, the
+ * rest at 0 dB), then the pin's output on (and its headphone amp, if it
+ * has one) and EAPD on (if the pin has it). A verb that fails: logged,
+ * the path closed again, its status returned. ERR_NOT_FOUND: no path. */
+status_t hda_output_open(struct hda *h, struct output *o);
+/* The reverse: EAPD off, the pin's output off, every amp on the path
+ * muted at gain step 0. Every verb is tried even if one fails (the first
+ * failure is returned). Does nothing if o is not open. */
+status_t hda_output_close(struct hda *h, struct output *o);
+/* The volume amp to the step nearest `cb` centibels, clamped to its range
+ * and to 0 dB; sent at once if o is open. ERR_NOT_FOUND: no path;
+ * ERR_NOT_SUPPORTED: no amp with steps. */
+status_t hda_output_set_gain(struct hda *h, struct output *o, int32_t cb);
+/* The gain now in centibels, and the range the volume amp allows (to 0
+ * dB). ERR_NOT_FOUND / ERR_NOT_SUPPORTED as hda_output_set_gain. */
+status_t hda_output_gain(const struct output *o, int32_t *cb, int32_t *min, int32_t *max);
 
 /* ---- fixtures (fixtures.c) --------------------------------------------------------- */
 
@@ -453,6 +501,7 @@ struct stream {
     bool     running;          /* RUN set */
     unsigned cad, dac;         /* the output converter the stream feeds (the path's DAC) */
     bool     has_dac;          /* there is one: main.c found and set up a path */
+    struct output *out;        /* the path, opened while the stream runs */
     struct dma_buf ring;       /* the samples, shared with the client */
     struct dma_buf page;       /* the BDL at 0, the DMA position buffer at POS_OFF */
     /* the position: the byte offset read last, bytes played since the
@@ -467,9 +516,9 @@ struct stream {
 };
 
 /* stream.c. Pick the output stream descriptor (none if GCAP has no
- * output streams) and take the DAC from path p (NULL: none, and every
- * open fails ERR_NOT_FOUND); touches no register. */
-void     stream_init(struct hda *h, struct stream *s, handle_t dev, const struct path *p);
+ * output streams) and take the DAC from out's path (none: every open
+ * fails ERR_NOT_FOUND); touches no register. */
+void     stream_init(struct hda *h, struct stream *s, handle_t dev, struct output *out);
 /* Open it (the checks and results of hda.idl's open_output): DMA
  * buffers, stream reset and setup, the converter's format and stream
  * tag, the stream's interrupt enabled. *ring: the client's handle. */
@@ -488,10 +537,10 @@ void     stream_close(struct hda *h, struct stream *s, const char *why);
  * == want. ERR_TIMED_OUT. */
 status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what);
 
-/* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream (on path p's
- * DAC; NULL: no path) on the channels open_output hands out, and the
- * controller's MSI, until devmgr closes DR_SERVE (OK) or a wait fails
- * (its status); the stream is closed on the way out. */
+/* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream (on out's
+ * path) on the channels open_output hands out, and the controller's MSI,
+ * until devmgr closes DR_SERVE (OK) or a wait fails (its status); the
+ * stream is closed (and the path muted) on the way out. */
 struct hda_ops;
 status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
-                  void *ctx, const struct path *p);
+                  void *ctx, struct output *out);

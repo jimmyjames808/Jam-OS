@@ -23,8 +23,13 @@
  *
  * The converter: the DAC at the start of the path main.c chose and set
  * up muted (path.c, verbs.c) gets the stream's format and tag, through
- * verbs.c's hda_set like every other SET verb. Nothing else on the way to
- * the pin is touched here, so nothing can be heard yet.
+ * verbs.c's hda_set like every other SET verb. The path itself is opened
+ * (hda_output_open: unmuted at the gain, the pin's output and EAPD on)
+ * just before RUN is set, and closed (muted, pin output off) just after
+ * RUN clears, at stop, at the stream's close and at the driver's exit:
+ * the jack is silent whenever the stream does not run. A driver killed
+ * mid-stream can't mute; its successor's start sets the path up muted
+ * again before anything else.
  *
  * TCSEL (Intel's PCI config 0x44, bits 2:0) is the PCI Express traffic
  * class the controller tags its DMA with. It is set to TC0 before the
@@ -54,13 +59,13 @@ static void sd_wr8(struct hda *h, struct stream *s, uint32_t r, uint8_t v)
     drv_write8(h->regs, s->sd_regs + r, v);
 }
 
-void stream_init(struct hda *h, struct stream *s, handle_t dev, const struct path *p)
+void stream_init(struct hda *h, struct stream *s, handle_t dev, struct output *out)
 {
     unsigned iss = (h->gcap >> 8) & 0xfu, oss = (h->gcap >> 12) & 0xfu;
-    *s = (struct stream){ .sd = HDA_MAX_STREAMS, .dev = dev };
-    if (p && p->rule != PATH_NONE && p->n) {
-        s->cad = p->cad;
-        s->dac = p->nid[0];
+    *s = (struct stream){ .sd = HDA_MAX_STREAMS, .dev = dev, .out = out };
+    if (out && out->c) {
+        s->cad = out->c->cad;
+        s->dac = out->p->nid[0];
         s->has_dac = true;
     }
     if (!oss)
@@ -246,10 +251,16 @@ status_t stream_start(struct hda *h, struct stream *s)
         return ERR_BAD_STATE;
     if (s->running)
         return OK;
+    status_t st = hda_output_open(h, s->out);   /* the ring holds what the client wrote */
+    if (st != OK)
+        return st;
     uint8_t ctl = sd_rd8(h, s, SD_CTL0);
     sd_wr8(h, s, SD_CTL0, (uint8_t)(ctl | SDCTL_RUN));
-    if (hda_wait8(h, s->sd_regs + SD_CTL0, SDCTL_RUN, SDCTL_RUN, "stream start") != OK)
+    if (hda_wait8(h, s->sd_regs + SD_CTL0, SDCTL_RUN, SDCTL_RUN, "stream start") != OK) {
+        (void)sd_halt(h, s);
+        (void)hda_output_close(h, s->out);
         return ERR_TIMED_OUT;
+    }
     s->running = true;
     s->progress_ns = drv_clock_ns();
     return OK;
@@ -260,8 +271,9 @@ status_t stream_stop(struct hda *h, struct stream *s)
     if (!s->open)
         return ERR_BAD_STATE;
     status_t st = sd_halt(h, s);
+    status_t mute = hda_output_close(h, s->out);   /* muted even if RUN did not clear */
     stream_update(h, s);
-    return st;
+    return st != OK ? st : mute;
 }
 
 void stream_close(struct hda *h, struct stream *s, const char *why)
@@ -269,6 +281,7 @@ void stream_close(struct hda *h, struct stream *s, const char *why)
     if (!s->open)
         return;
     bool quiet = sd_halt(h, s) == OK;
+    (void)hda_output_close(h, s->out);   /* logged if a verb fails */
     if (quiet)
         quiet = sd_reset(h, s) == OK;
     uint32_t ic = drv_read32(h->regs, HDA_INTCTL) & ~(1u << s->sd);

@@ -16,8 +16,10 @@
  * put a RESULTS line out; then serve `hda.dump`, `hda.info` and the
  * output stream on the path's DAC (stream.c, irq.c) until devmgr closes
  * the channel, close the stream, stop the command rings, put the
- * controller back into reset and exit 0. It makes no sound: the unmuting
- * is not built yet. verbs.c is the only way to a codec and lets through
+ * controller back into reset and exit 0. The path is unmuted (at the
+ * gain, -30 dB unless set_gain says otherwise) only while the stream
+ * runs (stream.c, verbs.c's hda_output_*). verbs.c is the only way to a
+ * codec and lets through
  * GET verbs and an allow-list of SET verbs; nothing else the firmware set
  * up (configuration defaults, other pins, GPIOs) changes. A restart is a
  * bind from scratch. */
@@ -36,6 +38,7 @@ struct state {
     struct path   path;        /* the path chosen at start; rule PATH_NONE: none */
     bool          tested;      /* the path finder passed its self-test */
     status_t      set;         /* setting the path up: OK, or why not */
+    struct output out;         /* the path as the stream opens it, and the gain */
 };
 
 /* At start: codec c's path, checked against c's own dump parsed back,
@@ -151,9 +154,35 @@ static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint3
     return OK;
 }
 
+static status_t do_get_gain(void *ctx, int32_t *out_gain, uint32_t *out_step, int32_t *out_min,
+                            int32_t *out_max)
+{
+    struct state *s = ctx;
+    status_t st = hda_output_gain(&s->out, out_gain, out_min, out_max);
+    *out_step = s->out.step;
+    return st;
+}
+
+static status_t do_set_gain(void *ctx, int32_t centibels, int32_t *out_gain, uint32_t *out_step,
+                            int32_t *out_min, int32_t *out_max)
+{
+    struct state *s = ctx;
+    status_t st = hda_output_set_gain(&s->hda, &s->out, centibels);
+    if (st == ERR_NOT_FOUND || st == ERR_NOT_SUPPORTED)
+        return st;
+    (void)do_get_gain(ctx, out_gain, out_step, out_min, out_max);
+    char db[16];
+    hda_db_str(db, sizeof(db), *out_gain);
+    drv_log("output: gain set to %s dB (step %u)%s%s", db, *out_step,
+            st == OK ? "" : ": sending it failed: ", st == OK ? "" : status_str(st));
+    return st;
+}
+
 static const struct hda_ops ops = {
     .dump = do_dump,
     .info = do_info,
+    .set_gain = do_set_gain,
+    .get_gain = do_get_gain,
 };
 
 /* The chosen path set up muted (verbs.c), read back, and logged. */
@@ -172,6 +201,18 @@ static void set_path(struct state *s, struct out *o)
     if (pin && (pin->pin_ctl & PINCTL_OUT))
         out_line(o, "path: pin %02x kept its output on (the codec ignores its pin control): "
                  "only the path's amps keep it quiet", pin->nid);
+    hda_output_init(&s->out, s->set == OK ? s->best : NULL, s->set == OK ? &s->path : NULL);
+    int32_t cb, lo, hi;
+    if (hda_output_gain(&s->out, &cb, &lo, &hi) == OK) {
+        char db[16], dlo[16], dhi[16];
+        hda_db_str(db, sizeof(db), cb);
+        hda_db_str(dlo, sizeof(dlo), lo);
+        hda_db_str(dhi, sizeof(dhi), hi);
+        out_line(o, "path: plays at %s dB (node %02x's output amp, step %u; %s to %s dB), "
+                 "unmuted only while a stream runs", db, s->out.vol, s->out.step, dlo, dhi);
+    }
+    else if (s->set == OK)
+        out_line(o, "path: no amp on it has gain steps: it plays at 0 dB");
 }
 
 /* The first codec's ids for the RESULTS line. */
@@ -240,7 +281,7 @@ int driver_main(const struct driver_start *ds)
     }
     handle_t ch = drv_handle(ds, DR_SERVE);
     status_t st = ch == HANDLE_INVALID ? OK
-                : hda_loop(&s->hda, ds, &ops, s, s->set == OK ? &s->path : NULL);
+                : hda_loop(&s->hda, ds, &ops, s, &s->out);
     hda_ctrl_stop(&s->hda);
     drv_log("stopped: controller back in reset (%s)", st == OK ? "client closed" : status_str(st));
     return st == OK ? 0 : 1;
