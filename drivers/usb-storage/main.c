@@ -29,15 +29,18 @@
  * buffer, never a dma_cap. It serves no channel to the whole disk.
  *
  * Every wait is bounded (bot.c), so a stick that stops answering fails
- * its requests (ERR_TIMED_OUT, ERR_IO), never hangs a client.
+ * its requests (ERR_TIMED_OUT, ERR_IO), never hangs a client. After
+ * MAX_SILENT commands in a row without any answer the driver gives up
+ * (exit 3): its clients see their channels close instead of waiting out
+ * every further request's timeouts, and devmgr starts a fresh driver.
  *
  * Ending: DR_USB closed, or usb-bus answering ERR_PEER_CLOSED: the stick
  * is gone, exit 0 (devmgr binds a new driver when it comes back). DR_SERVE
  * closed: we are being stopped, exit 0. Either way the process's end
  * closes every block channel, which is how clients learn of it
  * (ERR_PEER_CLOSED). Exit 1: no DR_USB, or the port failed; 2: not a
- * Bulk-Only SCSI interface; 3: the device couldn't be brought up (devmgr
- * restarts the driver, with backoff); 4: out of memory. */
+ * Bulk-Only SCSI interface; 3: the device couldn't be brought up, or
+ * stopped answering (devmgr restarts the driver, with backoff). */
 #include <idl/storage.h>
 #include <idl/usb.h>
 #include "storage.h"
@@ -241,6 +244,11 @@ static bool serve_storage(struct disk *k)
 static int run(struct disk *k)
 {
     while (!k->gone && !serve_closed) {
+        if (k->silent >= MAX_SILENT) {
+            drv_report("usb-storage %04x:%04x: FAILED: no answer to %u commands in a row; "
+                       "giving up on it", k->vid, k->pid, k->silent);
+            return 3;
+        }
         bool did = serve_storage(k);
         if (blk_serve())
             did = true;

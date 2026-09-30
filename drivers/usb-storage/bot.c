@@ -15,7 +15,8 @@
  *     says phase error, or any step times out: reset recovery, which is
  *     the class request Bulk-Only Mass Storage Reset, then a clear halt on
  *     the IN pipe, then on the OUT pipe. The command is lost; the caller
- *     may run it again.
+ *     may run it again (scsi.c does, once, unless the command itself ran
+ *     out of time).
  * Every step is one bounded usb-bus transfer, and the recovery is three
  * bounded requests, so a command always ends.
  *
@@ -168,8 +169,11 @@ status_t bot_run(struct disk *k, const struct bot_cmd *c, uint32_t *moved, bool 
     if (k->gone)
         return ERR_PEER_CLOSED;
     status_t st = send_cbw(k, c);
-    if (st != OK)
-        return broken(k, st, "the CBW was not taken");
+    if (st != OK) {
+        k->cbw_st = st;
+        st = broken(k, st, "the CBW was not taken");
+        return st == ERR_PEER_CLOSED ? st : ERR_BAD_STATE;
+    }
     if (c->len) {
         st = data_phase(k, c, moved);
         if (st != OK)

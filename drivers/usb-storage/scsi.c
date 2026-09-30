@@ -3,10 +3,11 @@
  * CAPACITY(10), READ(10), WRITE(10), SYNCHRONIZE CACHE(10).
  *
  * run() is one command to its end: a transport failure (already reset by
- * bot.c) is tried once more; a command the device failed is followed by
- * REQUEST SENSE, and a UNIT ATTENTION (the device's one-time "something
- * changed": power on, a reset, a new medium) is tried once more too.
- * Anything else is an error, mapped from the sense key.
+ * bot.c) is tried once more, unless it was the command itself running out
+ * of time; a command the device failed is followed by REQUEST SENSE, and a
+ * UNIT ATTENTION (the device's one-time "something changed": power on, a
+ * reset, a new medium) is tried once more too. Anything else is an error,
+ * mapped from the sense key.
  *
  * Timeouts: 10 s for a write or a cache flush, 5 s otherwise. The small
  * commands keep their data in the bulk buffer's tail, so READ and WRITE
@@ -69,29 +70,51 @@ static status_t sense_status(const struct disk *k)
     }
 }
 
+/* What one try of a command came to. */
+enum outcome { PASSED, AGAIN, GIVE_UP };
+
+/* One try of c; *st: how it went. AGAIN: the transport was reset under
+ * it (or before it started), or the device had a UNIT ATTENTION to
+ * deliver: a second try is worth it. A timeout in the data or status phase
+ * is not tried again: the command had its time. */
+static enum outcome attempt(struct disk *k, const struct bot_cmd *c, uint32_t *moved,
+                            status_t *st)
+{
+    bool failed = false;
+    *st = bot_run(k, c, moved, &failed);
+    if (*st == OK && !failed)
+        return PASSED;
+    if (*st == OK)
+        *st = request_sense(k);   /* the device failed it: ask why */
+    k->unanswered = *st != OK;
+    if (*st == OK) {
+        *st = sense_status(k);
+        return k->key == KEY_UNIT_ATTENTION ? AGAIN : GIVE_UP;
+    }
+    return *st == ERR_IO || *st == ERR_BAD_STATE ? AGAIN : GIVE_UP;
+}
+
 /* c to its end; *moved: its data bytes. quiet: a failure is expected (the
- * caller probes), so it isn't logged. */
+ * caller probes), so it isn't logged. k->silent counts the commands in a
+ * row that the device didn't answer at all (main.c gives up on it). */
 static status_t run(struct disk *k, const struct bot_cmd *c, uint32_t *moved, bool quiet)
 {
     status_t st = ERR_IO;
+    enum outcome o = AGAIN;
     k->key = 0xff;
     k->asc = k->ascq = 0;
-    for (int attempt = 0; attempt < 2; attempt++) {
-        bool failed = false;
-        st = bot_run(k, c, moved, &failed);
-        if (st == ERR_IO)
-            continue;   /* the transport was reset: once more */
-        if (st != OK || !failed)
-            return st;
-        st = request_sense(k);
-        if (st != OK)
-            return st;
-        if (k->key == KEY_UNIT_ATTENTION)
-            continue;
-        break;
+    for (int i = 0; i < 2 && o == AGAIN; i++)
+        o = attempt(k, c, moved, &st);
+    if (o == PASSED) {
+        k->silent = 0;
+        return OK;
     }
-    if (st == OK)
-        st = sense_status(k);   /* the device failed it */
+    if (k->unanswered)
+        k->silent++;
+    else
+        k->silent = 0;
+    if (st == ERR_BAD_STATE)   /* the CBW was never taken: say how */
+        st = k->cbw_st == ERR_TIMED_OUT ? ERR_TIMED_OUT : ERR_IO;
     if (!quiet && ++k->failures <= 8)
         drv_log("usb-storage %04x:%04x: command %02x: %s (sense %x/%02x/%02x)", k->vid, k->pid,
                 c->cdb[0], status_str(st), k->key, k->asc, k->ascq);

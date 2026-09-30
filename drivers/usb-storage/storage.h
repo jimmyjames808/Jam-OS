@@ -10,6 +10,7 @@
 
 #define MAX_PARTS  4        /* an MBR's primary partitions */
 #define MAX_BLKS   8        /* `block` channels open at once */
+#define MAX_SILENT 3        /* commands in a row without an answer: the driver gives up */
 #define BLOCK_BUF  65536u   /* a block channel's buffer (block.idl: 64 KiB) */
 #define XFER_TAIL  4096u    /* the end of the bulk buffer, kept for the CBW, CSW and sense */
 
@@ -42,6 +43,9 @@ struct disk {
     bool     gone;            /* the device left (ERR_PEER_CLOSED from usb-bus) */
     uint32_t resets;          /* reset recoveries so far */
     uint32_t failures;        /* failed commands so far (the first few are logged) */
+    status_t cbw_st;          /* why the last CBW that wasn't taken wasn't */
+    bool     unanswered;      /* the last try of a command failed in the transport */
+    uint32_t silent;          /* commands in a row the device didn't answer */
     uint8_t  key, asc, ascq;  /* the last failed command's sense (key 0xff: unknown) */
     bool     no_sync;         /* the device refused SYNCHRONIZE CACHE: not sent again */
 
@@ -67,10 +71,12 @@ struct bot_cmd {
 
 /* Run c: CBW, data, CSW. OK: the device answered; *failed says whether it
  * failed the command (then REQUEST SENSE says why), *moved the data bytes.
- * ERR_IO: the transport broke and was reset (reset recovery): the command
- * may be tried again. ERR_TIMED_OUT: the same, after a phase timed out.
- * ERR_PEER_CLOSED: the device is gone (k->gone). Never waits longer than
- * the command's timeouts plus the recovery's. */
+ * Otherwise the transport broke and was reset (reset recovery):
+ * ERR_BAD_STATE: the device didn't take the CBW (k->cbw_st: a STALL's
+ * ERR_IO, or ERR_TIMED_OUT), so the command never started; ERR_IO: it
+ * broke in the data or status phase; ERR_TIMED_OUT: one of those timed
+ * out. ERR_PEER_CLOSED: the device is gone (k->gone). Never waits longer
+ * than the command's timeouts plus the recovery's. */
 status_t bot_run(struct disk *k, const struct bot_cmd *c, uint32_t *moved, bool *failed);
 /* GET MAX LUN: the number of logical units (1 if the device doesn't say). */
 unsigned bot_luns(struct disk *k);
