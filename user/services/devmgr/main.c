@@ -50,6 +50,11 @@
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
  *
+ * A mass-storage interface's driver makes a disk (disk.c): devmgr asks it
+ * for its partitions and, if it is the disk Jam OS booted from, starts a
+ * filesystem service on its ESP and its data partition, supervised the
+ * same way, and hands their channels out through DEVMGR_MOUNTS (mounts.c).
+ *
  * It runs until every client end of its channel is gone (init closes its
  * own at the end of the boot): then it closes each driver's client end,
  * waits for the drivers to return, kills any that don't, and exits 0 if
@@ -102,9 +107,12 @@ const char *bdf(const struct binding *b)
 {
     static char s[40];
     if (b->kind == BIND_USB) {
-        snprintf(s, sizeof(s), "usb %s", b->name + 4);   /* "hid-6.1:0" -> "usb 6.1:0" */
+        /* its name without the driver's: "hid-6.1:0" (drv/hid) -> "usb 6.1:0" */
+        snprintf(s, sizeof(s), "usb %s", b->name + (b->path ? strlen(b->path + 4) + 1 : 0));
         return s;
     }
+    if (b->kind == BIND_FS)
+        return b->name;
     if (b->kind != BIND_PCI)
         return "test";
     snprintf(s, sizeof(s), "%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
@@ -176,8 +184,12 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
     bool any_bound = q->ordinal == DEVMGR_GET_SERVICE && q->vendor == 0xffff &&
                      q->device == 0xffff;
     bool usb = q->vendor == DEVMGR_USB_IFACE;
+    if (q->vendor == DEVMGR_FS_SVC)
+        return fs_find(q->instance, q->device);
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
+        if (b->kind == BIND_FS)
+            continue;   /* filesystem services only by DEVMGR_FS_SVC */
         if (usb || b->kind == BIND_USB) {
             /* USB class drivers only by DEVMGR_USB_IFACE (id, interface) */
             if (usb && b->kind == BIND_USB && b->path && b->usb_id == q->instance &&
@@ -223,17 +235,36 @@ static status_t kill_request(struct binding *b)
     return st;
 }
 
-/* Bind b again from scratch, with a fresh restart history. */
-static status_t rebind(struct binding *b)
+/* b's driver goes and no restart is due: a fresh restart history. */
+static void unbind(struct binding *b)
 {
     if (b->proc)
         stop_driver(b, true, true);
-    /* Nothing runs now: a start that fails below must not leave it RUNNING
-     * with no process (no restart would ever come, KILL would fail). */
+    /* Nothing runs now: it must not stay RUNNING with no process (no
+     * restart would ever come, KILL would fail). */
     if (b->state == DEVMGR_SUP_RUNNING)
         b->state = DEVMGR_SUP_NONE;
     sup_reset(b);
     close_client(b);
+}
+
+/* RELEASE: b is left without a driver until REBIND. A disk's filesystems
+ * are synced first: they go with its driver. For a USB interface the
+ * caller gets the channel the driver had (hs[0]). */
+static void release(struct binding *b, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
+{
+    if (b->disk)
+        disk_sync_all();
+    unbind(b);
+    say(false, "devmgr: %s %s released: no driver until it is bound again", bdf(b), b->path);
+    if (b->kind == BIND_USB && (r->status = usb_channel(b, &hs[0])) == OK)
+        *nh = 1;
+}
+
+/* Bind b again from scratch, with a fresh restart history. */
+static status_t rebind(struct binding *b)
+{
+    unbind(b);
     b->last = start_driver(b);
     say(false, "devmgr: %s %s bound again (%s)", bdf(b), b->path, status_str(b->last));
     if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
@@ -259,12 +290,17 @@ static status_t test_driver(void)
 }
 
 /* GET_SERVICE: a duplicate of b's client end into hs[0]. known: a driver
- * was started for b. */
+ * was started for b. Never a disk's driver's or a filesystem service's: a
+ * disk's `storage` channel opens every partition for writing, so it stays
+ * devmgr's own, and a filesystem's channel is DEVMGR_MOUNTS's to hand out
+ * (the control channel's alone). */
 static void get_service(const struct binding *b, bool known, struct devmgr_rep *r, handle_t *hs,
                         uint32_t *nh)
 {
     if (!known)
         r->status = ERR_NOT_FOUND;
+    else if (b->disk)
+        r->status = ERR_ACCESS_DENIED;
     else if ((b->state != DEVMGR_SUP_RUNNING && b->state != DEVMGR_SUP_RESTARTING) ||
              !b->client)
         r->status = ERR_BAD_STATE;
@@ -364,7 +400,14 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         r->status = known ? kill_request(b) : ERR_NOT_FOUND;
         return;
     case DEVMGR_REBIND:
-        r->status = b && b->path ? rebind(b) : ERR_NOT_FOUND;
+        /* not a filesystem service: those come and go with their disk */
+        r->status = b && b->path && b->kind != BIND_FS ? rebind(b) : ERR_NOT_FOUND;
+        return;
+    case DEVMGR_RELEASE:
+        if (b && b->path && b->kind != BIND_FS)
+            release(b, r, hs, nh);
+        else
+            r->status = ERR_NOT_FOUND;
         return;
     case DEVMGR_SUPERVISION:
         supervision(b, r);
@@ -412,26 +455,36 @@ static status_t serve(handle_t ch, bool control)
         }
         if (st != OK)
             return st;
-        /* Only SET_CONSOLE carries a handle (one), and only on control. */
+        /* Only SET_CONSOLE and TEST_DISK carry a handle (one), and only on
+         * control. */
         const struct devmgr_req *q = (const struct devmgr_req *)buf;
         bool denied = n >= 8 && !control && !query_ok(q->ordinal);
-        bool set_console = !denied && n == sizeof(*q) && q->ordinal == DEVMGR_SET_CONSOLE &&
-                           nh == 1;
-        if (!set_console)
+        bool whole = !denied && n == sizeof(*q);
+        bool takes_handle = whole && nh == 1 && (q->ordinal == DEVMGR_SET_CONSOLE ||
+                                                 q->ordinal == DEVMGR_TEST_DISK);
+        if (!takes_handle)
             for (uint32_t i = 0; i < nh; i++)
                 jam_handle_close(in[i]);
         if (n < 4)
             continue;   /* no txid: nobody to answer */
+        if (whole && !nh && q->ordinal == DEVMGR_MOUNTS) {
+            mounts_request(ch, q->txid, q->instance);   /* answered now or later */
+            continue;
+        }
         struct devmgr_rep r = { .txid = q->txid, .status = ERR_INVALID_ARGS };
         handle_t hs[DEVMGR_MAX_HANDLES];
         rights_t rs[DEVMGR_MAX_HANDLES];
         uint32_t nout = 0;
         if (denied) {
             r.status = ERR_ACCESS_DENIED;
-        } else if (set_console) {
+        } else if (takes_handle && q->ordinal == DEVMGR_SET_CONSOLE) {
             usb_new_console(in[0]);
             r.status = OK;
-        } else if (n == sizeof(struct devmgr_req) && !nh) {
+        } else if (takes_handle) {
+            uint32_t id = 0;
+            r.status = disk_test(in[0], &id);
+            r.a = id;
+        } else if (whole && !nh) {
             handle(q, &r, hs, rs, &nout);
         }
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
@@ -511,7 +564,12 @@ static status_t arm_channels(const handle_t chans[2], bool armed[2])
 static status_t wait_event(bool armed[2])
 {
     struct port_packet pkt;
-    status_t st = jam_port_wait(port, sup_next_deadline(), &pkt);
+    uint64_t deadline = sup_next_deadline();
+    if (disk_next_deadline() < deadline)
+        deadline = disk_next_deadline();
+    if (mounts_next_deadline() < deadline)
+        deadline = mounts_next_deadline();
+    status_t st = jam_port_wait(port, deadline, &pkt);
     if (st != OK)
         return st;
     if (pkt.key == KEY_CHANNEL || pkt.key == KEY_CONTROL) {
@@ -520,10 +578,16 @@ static status_t wait_event(bool armed[2])
         sup_died(&devs[KEY_INDEX(pkt.key)], KEY_GEN(pkt.key));
     } else if ((pkt.key & KEY_EVENTS) && KEY_INDEX(pkt.key) < ndevs) {
         struct binding *b = &devs[KEY_INDEX(pkt.key)];
-        if (b->client_key == pkt.key)
+        if (b->client_key != pkt.key)
+            return OK;   /* stale */
+        if (b->disk)
+            disk_events(b);   /* a disk's driver, a filesystem service: answers */
+        else
             usb_driver_events(b);
     } else if (pkt.key & KEY_USBIF) {
         usb_if_closed(pkt.key);
+    } else if (pkt.key & KEY_DISK) {
+        disk_key(pkt.key);
     }
     return OK;
 }
@@ -544,6 +608,8 @@ static status_t run(handle_t chans[2], unsigned life)
         if (st != OK && st != ERR_TIMED_OUT)
             return st;
         sup_run_due();
+        disk_run_due();
+        mounts_run_due();
     }
 }
 
@@ -553,6 +619,7 @@ static bool stop_all(void)
 {
     bool ok = true;
     unsigned stopped = 0;
+    disk_sync_all();   /* before the drivers under the filesystems go */
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
         sup_reset(b);

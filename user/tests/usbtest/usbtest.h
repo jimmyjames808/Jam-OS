@@ -28,6 +28,7 @@ struct dev {
 extern const char *cur;          /* the test running */
 extern unsigned skipped;         /* tests skipped so far (a test that skips says why) */
 extern handle_t bus;             /* usb-bus's DR_SERVE (usbbus), from devmgr */
+extern handle_t dm;              /* devmgr's control channel (0: none) */
 extern struct dev devs[MAX_DEV]; /* the device list, as load() last read it */
 extern unsigned ndevs;           /* entries in devs[] */
 

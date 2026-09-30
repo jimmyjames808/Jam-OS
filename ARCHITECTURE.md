@@ -423,7 +423,7 @@ Every driver and service is a userspace process from the start.
 
 | Component | Uses | Provides | Built |
 |---|---|---|---|
-| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients | yes |
+| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; the boot disk's filesystem services and their mounts | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard and mouse, keyboard layout) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
@@ -583,6 +583,13 @@ Not built yet.
   SYNCHRONIZE CACHE.
 - Only a blank data partition (no boot signature) is formatted; one that
   holds another filesystem or a damaged FAT is left alone.
+- devmgr is the only client of a disk's `storage` channel. It mounts one
+  disk, the one Jam OS booted from: partition 1 of type 0xEF holding
+  boot/jamos.elf (it looks through a read-only fat service), partition 2
+  of type 0x0C. Each mount is a fat service holding one partition's `block`
+  channel, supervised like a driver; init gets the mounts' `fs` channels
+  from devmgr (`DEVMGR_MOUNTS` in `user/include/devmgr.h`), with a
+  generation that moves whenever a mount comes, goes or is restarted.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
 

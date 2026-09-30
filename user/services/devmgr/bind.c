@@ -104,22 +104,24 @@ static status_t pci_handles(struct binding *b, struct spawn_handle *x, rights_t 
 
 /* DR_SERVE: the end a restart kept (clients may have queued calls on it
  * already), else a new channel whose other end becomes b->client. A USB
- * class driver serves nobody. */
+ * class driver serves nobody, unless it is a disk's (usb-storage serves
+ * devmgr `storage`). A filesystem service serves `fs` under the same role
+ * (<fatsvc.h>: FAT_SR_SERVE). */
 static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
-    status_t st = OK;
-    if (!b->serve && b->kind != BIND_USB) {
+    if (b->kind == BIND_USB && !b->disk)
+        return OK;
+    if (!b->serve) {
         handle_t client;
-        if ((st = jam_channel_create(&client, &b->serve)) == OK) {
-            close_client(b);
-            b->client = client;
-        }
+        status_t st = jam_channel_create(&client, &b->serve);
+        if (st != OK)
+            return st;
+        close_client(b);
+        b->client = client;
     }
-    if (st == OK && b->kind != BIND_USB) {
-        add(x, xr, n, DR_SERVE, b->serve, RIGHT_SAME);
-        b->serve = HANDLE_INVALID;
-    }
-    return st;
+    add(x, xr, n, DR_SERVE, b->serve, RIGHT_SAME);
+    b->serve = HANDLE_INVALID;
+    return OK;
 }
 
 /* b's driver in job, with the n handles in x (arriving with xr[i]), which
@@ -127,13 +129,14 @@ static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *x
 static status_t spawn_driver(const struct binding *b, handle_t job, const struct spawn_handle *x,
                              const rights_t *xr, unsigned n, handle_t *proc)
 {
-    /* A USB class driver is named after its interface ("hid-6.1:0"):
-     * in the log, in `ps`, for the shell's `kill`. */
-    const char *name = b->kind == BIND_USB ? b->name : NULL;
-    const char *argv[] = { name ? name : b->path };
+    /* A USB class driver is named after its interface ("hid-6.1:0"), a
+     * filesystem service after its mount ("fat-data"): in the log, in
+     * `ps`, for the shell's `kill`. The service is also told its mount. */
+    const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
+    const char *argv[2] = { name ? name : b->path, b->kind == BIND_FS ? fs_mount_path(b) : NULL };
     struct spawn_args a = {
-        .path = b->path, .name = name, .argc = 1, .argv = argv, .job = job, .extra = x,
-        .nextra = n, .extra_rights = xr,
+        .path = b->path, .name = name, .argc = argv[1] ? 2 : 1, .argv = argv, .job = job,
+        .extra = x, .nextra = n, .extra_rights = xr,
     };
     return spawn(&a, proc);
 }
@@ -159,6 +162,7 @@ status_t start_driver(struct binding *b)
     handle_t job = HANDLE_INVALID, proc = HANDLE_INVALID;
     status_t st = b->kind == BIND_PCI   ? pci_handles(b, x, xr, &n)
                   : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
+                  : b->kind == BIND_FS  ? fs_handles(b, x, xr, &n)
                                         : OK;
     if (st == OK)
         st = add_serve(b, x, xr, &n);
@@ -193,6 +197,7 @@ status_t start_driver(struct binding *b)
     b->killed = false;
     b->state = DEVMGR_SUP_RUNNING;
     watch_events(b);
+    disk_started(b);
     return OK;
 }
 
@@ -244,6 +249,7 @@ void forget_driver(struct binding *b)
     if (b->job)
         jam_handle_close(b->job);
     b->proc = b->job = HANDLE_INVALID;
+    disk_stopped(b);   /* a disk's driver, or a filesystem service: its mounts went with it */
 }
 
 bool stop_driver(struct binding *b, bool kill, bool excused)

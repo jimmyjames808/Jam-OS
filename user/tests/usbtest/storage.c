@@ -4,8 +4,11 @@
  * usbtest drives a disk itself: it opens the interface (usbbus.
  * open_interface), talks Bulk-Only Transport by hand on that channel, then
  * starts a usb-storage of its own on the SAME channel, holding the
- * driver's DR_SERVE. (If another usb-storage already has the interface's
- * bulk pair, usb.open_bulk says ERR_BAD_STATE and the checks are skipped.)
+ * driver's DR_SERVE. devmgr's own usb-storage has the disk first: usbtest
+ * asks devmgr to let go of it for the checks (take_disk below) and to take
+ * the boot stick back afterwards. (If a usb-storage still has the
+ * interface's bulk pair, usb.open_bulk says ERR_BAD_STATE and the checks
+ * are skipped.)
  *
  * On the first mass-storage interface that isn't the second disk (in QEMU
  * and on the PC: the boot stick):
@@ -44,6 +47,7 @@
  *
  * A block request's deadline here is BLK_WAIT: a command's own timeouts
  * (5 s, 10 s for a write) plus its reset recovery, twice. */
+#include <devmgr.h>
 #include <idl/block.h>
 #include <idl/storage.h>
 #include <idl/usb.h>
@@ -98,6 +102,35 @@ static uint8_t save[BUF_SIZE];   /* what a write check overwrote */
 static uint64_t usb_wait(void)
 {
     return in(20 * NS_PER_S);   /* a transfer's timeout plus usb-bus stopping the endpoint */
+}
+
+/* The `usb` channel to drive disk r through. devmgr binds a usb-storage of
+ * its own to every disk (and mounts the boot stick's partitions through
+ * it), and usb-bus gives an interface's bulk endpoints to one channel
+ * only: devmgr's. So devmgr is asked to let go of the disk
+ * (DEVMGR_RELEASE: its driver stops, the mounts go) and hands out a
+ * duplicate of that channel. Where devmgr has no driver on the disk, a new
+ * channel from usb-bus does. */
+static status_t take_disk(const struct raw *r, handle_t *out)
+{
+    struct devmgr_rep rep;
+    uint32_t nh = 0;
+    if (dm && devmgr_call(dm, DEVMGR_RELEASE, DEVMGR_USB_IFACE, r->ifnum, r->dev_id, &rep, out, 1,
+                          &nh, in(60 * NS_PER_S)) == OK && nh == 1)
+        return OK;
+    return usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, out);
+}
+
+/* devmgr takes disk r back: a new driver of its own, and for the boot
+ * stick its mounts again. */
+static void give_back(const struct raw *r)
+{
+    struct devmgr_rep rep;
+    status_t st = dm ? devmgr_call(dm, DEVMGR_REBIND, DEVMGR_USB_IFACE, r->ifnum, r->dev_id, &rep,
+                                   NULL, 0, NULL, in(60 * NS_PER_S))
+                     : ERR_NOT_FOUND;
+    if (st != OK && st != ERR_NOT_FOUND)
+        printf("usbtest: storage: devmgr did not take the disk back (%s)\n", status_str(st));
 }
 
 /* ---- finding the disks ------------------------------------------------------------ */
@@ -221,7 +254,7 @@ static status_t raw_cmd(struct raw *r, const uint8_t *cdb, uint8_t n, uint32_t l
 static bool t_storage_bulk(void)
 {
     struct raw *r = &boot_raw;
-    CHECK_ST(usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, &r->ch), OK);
+    CHECK_ST(take_disk(r, &r->ch), OK);
     handle_t vmo = HANDLE_INVALID;
     uint32_t size = 0;
     status_t st = usb_open_bulk_until(r->ch, soon(), r->ep_in, r->ep_out, &vmo, &size);
@@ -613,7 +646,7 @@ static bool t_storage_disk2(void)
     struct raw r;
     CHECK(find_disk(DISK2, &r));
     handle_t usb;
-    CHECK_ST(usbbus_open_interface_until(bus, soon(), r.dev_id, r.ifnum, &usb), OK);
+    CHECK_ST(take_disk(&r, &usb), OK);
     if (!drive_start(&disk2, usb, "usb-storage-disk2"))
         return false;
     CHECK(disk2.qemu && disk2.nparts == 2);
@@ -676,7 +709,7 @@ static bool t_storage_timeout(void)
     struct raw r;
     CHECK(find_disk(SLOW, &r));
     handle_t usb;
-    CHECK_ST(usbbus_open_interface_until(bus, soon(), r.dev_id, r.ifnum, &usb), OK);
+    CHECK_ST(take_disk(&r, &usb), OK);
     if (!drive_start(&slow, usb, "usb-storage-slow"))
         return false;
     struct pch p = { 0 };
@@ -737,7 +770,10 @@ void storage_tests(void)
         }
         raw_close(&boot_raw);
         drive_stop(&boot_drive);
+        give_back(&boot_raw);
     }
+    /* These two are not given back: one is unplugged, the other is left
+     * timing out. */
     struct raw r;
     if (!find_disk(DISK2, &r) || !find_disk(SLOW, &r)) {
         printf("usbtest: storage_disk2, storage_unplug, storage_timeout: no disks with serials "

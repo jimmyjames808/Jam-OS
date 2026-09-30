@@ -71,6 +71,8 @@ void sup_died(struct binding *b, uint32_t gen)
         jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         return;   /* a stale packet, or it was handled already */
     kill_driver(b);   /* whatever else its job started */
+    if (b->kind == BIND_FS && fs_check_ended(b))
+        return;   /* the ESP of a disk that isn't ours: no restart, no problem */
     if (b->kind == BIND_USB) {
         /* A USB class driver (usb.c): its interface gone = the end of it,
          * however it ended; exit 0 because the console went = reconnect. */
@@ -156,6 +158,11 @@ void sup_run_due(void)
         }
         if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
             usb_retire(b, "device gone before its restart");
+            continue;
+        }
+        if (b->kind == BIND_FS && b->last == ERR_PEER_CLOSED) {
+            say(false, "devmgr: %s %s: its disk went before its restart", bdf(b), b->path);
+            fs_retire(b);
             continue;
         }
         b->console_wait = false;

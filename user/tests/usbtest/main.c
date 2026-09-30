@@ -369,7 +369,7 @@ static bool t_serve_backlog(void)
  * The keys themselves show up in the log as hid's "key 0x.. down" lines,
  * which tools/usb-test.sh checks. */
 
-static handle_t dm;   /* devmgr */
+handle_t dm;   /* devmgr's control channel */
 
 struct kbd {
     handle_t ch;      /* ours, to the test keyboard's interface 0 */

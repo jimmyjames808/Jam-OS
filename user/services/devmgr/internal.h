@@ -1,15 +1,18 @@
 /* devmgr's own pieces: main.c (startup, the protocol, the event
  * loop), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
- * give up), usb.c (the USB interfaces usb-bus reports). The protocol is in
- * <devmgr.h>. */
+ * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
+ * usb-storage serves: which one is the boot disk, and its filesystem
+ * services), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
+ * and the calls waiting for it to change). The protocol is in <devmgr.h>. */
 #pragma once
 
 #include <devmgr.h>
 #include <jam/driver.h>
 #include <os.h>
 
-#define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
+#define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers,
+                         * filesystem services */
 /* How long a driver gets to end by itself when asked to stop, before its
  * job is killed. usb-bus takes longest: a Disable Slot per device (1 s
  * timeout each), then its final halt and reset (about 3 s of bounded
@@ -36,6 +39,10 @@
  * its generation. */
 #define KEY_USBIF          (1ull << 34)
 #define KEY_IF_OF(i, gen)  (KEY_USBIF | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
+/* A test disk's `storage` channel has something to read, or closed: disks
+ * slot and its generation. */
+#define KEY_DISK           (1ull << 35)
+#define KEY_DISK_OF(i, gen) (KEY_DISK | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
@@ -43,6 +50,8 @@ enum bind_kind {
     BIND_PCI,    /* a PCI function (pci_enum) */
     BIND_SOFT,   /* no hardware: the crash-test driver */
     BIND_USB,    /* a USB interface usb-bus reported (usb.c); path NULL: a free slot */
+    BIND_FS,     /* a filesystem service on one partition of a disk (disk.c); path NULL: a
+                  * free slot */
 };
 
 struct binding {
@@ -74,7 +83,11 @@ struct binding {
     bool                console_wait; /* its restart waits for a (new) console */
     uint32_t            input_gen;  /* its current run got DR_INPUT from console number
                                      * input_gen (0: none) */
-    char                name[32];   /* its process name, "hid-<path>:<if>" */
+    char                name[32];   /* its process name: "hid-<path>:<if>"; BIND_FS:
+                                     * "fat-data" */
+    /* A disk's driver (a BIND_USB running STORAGE_DRIVER) and BIND_FS (disk.c). */
+    uint32_t            disk;       /* its disks slot + 1; 0: none */
+    uint8_t             part;       /* BIND_FS: the partition it serves (PART_*) */
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -85,7 +98,7 @@ extern handle_t       pci_res, port;
 extern unsigned       problems;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-const char *bdf(const struct binding *b);   /* "00:04.0", or "test" */
+const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */
 bool in_bootfs(const char *path);
 
 /* bind.c. Start b's driver (state RUNNING on success): its handles from
@@ -131,6 +144,10 @@ void usb_bus_gone(struct binding *b);
  * kept channel) and, with a console, DR_INPUT. ERR_PEER_CLOSED: the
  * interface is gone; ERR_SHOULD_WAIT: the console is restarting. */
 status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* DEVMGR_RELEASE: a duplicate of the interface channel b's driver had (the
+ * one channel usb-bus lets open the interface's bulk endpoints), for a
+ * test that drives the interface itself. ERR_PEER_CLOSED: it is gone. */
+status_t usb_channel(const struct binding *b, handle_t *out);
 /* b is a BIND_USB binding that won't run again: free its slot. */
 void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
@@ -141,6 +158,74 @@ bool usb_gone(const struct binding *b);
 void usb_new_console(handle_t ch);
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);
+
+/* disk.c: the disks usb-storage serves (and DEVMGR_TEST_DISK's), and the
+ * filesystem services of the boot disk. */
+#define STORAGE_DRIVER "drv/usb-storage"
+#define PART_ESP  DEVMGR_PART_ESP    /* the ESP, read-only, at /esp */
+#define PART_DATA DEVMGR_PART_DATA   /* the data partition, at /data */
+/* b is a BIND_USB binding about to run STORAGE_DRIVER for usb-bus device
+ * `id`: give it a disk (b->disk). False: too many disks. */
+bool disk_attach(struct binding *b, uint32_t id);
+/* b (a disk's driver) won't run again: forget its disk. */
+void disk_detach(struct binding *b);
+/* b's process started (bind.c): a disk's driver is asked what it holds; a
+ * filesystem service is a mount from now on. */
+void disk_started(struct binding *b);
+/* b's process is gone (bind.c): a disk's driver takes the disk's mounts
+ * with it; a filesystem service is no mount until it is back. */
+void disk_stopped(struct binding *b);
+/* b (a disk's driver, or a BIND_FS) has something to read on its channel:
+ * the answers to what devmgr asked without waiting. */
+void disk_events(struct binding *b);
+/* A test disk's KEY_DISK packet. */
+void disk_key(uint64_t key);
+/* DEVMGR_TEST_DISK: ch (consumed) is a `storage` channel; *id: the disk's. */
+status_t disk_test(handle_t ch, uint32_t *id);
+/* b (BIND_FS) died. True if that settles its disk's boot-disk check: the
+ * ESP's service ended before it answered, so the disk is left alone and b
+ * freed (no restart). */
+bool fs_check_ended(struct binding *b);
+/* A BIND_FS binding's handle for its service: FAT_SR_BLOCK, a new `block`
+ * channel on its partition. ERR_PEER_CLOSED: the disk is gone. */
+status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* The mount point b (BIND_FS) serves: "/data", "/esp-test". */
+const char *fs_mount_path(const struct binding *b);
+/* b (BIND_FS) won't run again: free its slot. */
+void fs_retire(struct binding *b);
+/* DEVMGR_FS_SVC: the filesystem service on partition `part` of disk `id`,
+ * or NULL. */
+struct binding *fs_find(uint32_t id, uint32_t part);
+/* devmgr is stopping: fs.sync each mounted data partition while its disk
+ * still works (the services are killed when their disk's driver goes). */
+void disk_sync_all(void);
+/* Give up on what did not answer in time. */
+void disk_run_due(void);
+/* When disk_run_due has something to do next, or DEADLINE_NEVER. */
+uint64_t disk_next_deadline(void);
+
+/* A mount: a running filesystem service of the boot disk. */
+struct mount {
+    char     path[16];   /* the mount point */
+    uint32_t bind;       /* devs index of its filesystem service */
+    uint32_t gen;        /* that binding's start generation: a restart is a new mount */
+};
+/* The mounts as they are now into out (DEVMGR_MAX_MOUNTS slots). Returns
+ * how many. */
+unsigned disk_mounts(struct mount *out);
+
+/* mounts.c: DEVMGR_MOUNTS. */
+/* Something that may have changed the mounts happened: if the list differs
+ * from the one last handed out, the generation moves on and every waiting
+ * call is answered. */
+void mounts_update(void);
+/* A DEVMGR_MOUNTS request (txid, known generation) that came on ch:
+ * answered now if the generation differs, else kept waiting. */
+void mounts_request(handle_t ch, uint32_t txid, uint32_t known);
+/* Answer the calls that waited DEVMGR_MOUNTS_WAIT (ERR_TIMED_OUT). */
+void mounts_run_due(void);
+/* When mounts_run_due has something to do next, or DEADLINE_NEVER. */
+uint64_t mounts_next_deadline(void);
 
 /* supervise.c. */
 /* b's driver process (start generation `gen`) terminated. */

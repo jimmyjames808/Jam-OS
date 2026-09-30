@@ -20,8 +20,9 @@
  * Trust: devmgr serves two channels. The QUERY channel (startup role
  * SR_DEVMGR) answers STATUS, GET_SERVICE, GET_DRIVER (read-only views) and
  * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
- * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND,
- * DRIVER_VIEW (a driver's hardware handles) and TEST_DRIVER too. devmgr
+ * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND, RELEASE,
+ * DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER, MOUNTS (the
+ * filesystems' channels) and TEST_DISK too. devmgr
  * runs until every client end of its control channel is gone.
  * Who holds what: init both (it hands devmgr new consoles); the programs
  * init runs from init.cfg (the test suites utest and usbtest) both; in
@@ -117,23 +118,90 @@
  * ended because the old console went away start again connected to it. */
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
-/* USB class drivers are named by DEVMGR_USB_IFACE as the vendor, the
- * interface number as the device and usb-bus's device id (usbbus.device's
- * `id`) as the instance, for GET_DRIVER, KILL, REBIND and SUPERVISION.
- * Such a binding exists from the interface's attach until it is gone. */
-/* (u32 known) -> u32 generation, u32 count, count struct devmgr_mount;
- * count handles: each mount's `fs` channel (abi/idl/fs.idl), in the same
- * order. Control channel only. M8: the boot disk's data partition at
- * /data (read-write) and its ESP at /esp (read-only), each served by a fat
- * service devmgr started over usb-storage's `block` channel. Answers once
- * the mounts' generation differs from `known` (at once if it already does;
- * 0 matches nothing), so init waits on it in a loop, bounded by its own
- * deadline; a mount that appears, goes, or whose fat service restarts
- * bumps the generation. */
+/* Mounts (control channel only): the boot disk's data partition at /data
+ * (read-write) and its ESP at /esp (read-only), each served by a fat
+ * service devmgr started over usb-storage's `block` channel for that
+ * partition (devmgr's storage side: disk.c, mounts.c).
+ *
+ * Request: a struct devmgr_req whose `instance` is `known`, the generation
+ * the caller has (0: none). Reply: a struct devmgr_mounts_rep (all of it
+ * when the status is OK) carrying `count` handles: each mount's `fs`
+ * channel (abi/idl/fs.idl), in the order of mounts[]. They are duplicates
+ * of devmgr's client end, to pass on as they are.
+ *
+ * devmgr answers at once when its generation differs from `known`;
+ * otherwise as soon as it changes, or with ERR_TIMED_OUT after
+ * DEVMGR_MOUNTS_WAIT, so a caller waits in a loop and a call never outlives
+ * its caller by more than that. Give each call a deadline past
+ * DEVMGR_MOUNTS_WAIT (devmgr_mounts() adds a second): a call that gives up
+ * earlier leaves its answer, handles included, queued on the channel.
+ * ERR_NO_RESOURCES: too many calls are waiting already.
+ *
+ * The generation changes whenever the list does: a mount appears, its disk
+ * goes away (unplugged, or its usb-storage died), its fat service dies
+ * (the mount is gone until the restart) or is restarted (it is back, with
+ * a new channel: calls on the old one fail ERR_PEER_CLOSED). Only the disk
+ * Jam OS booted from is ever mounted: partition 1 of type 0xEF holding
+ * boot/jamos.elf, partition 2 of type 0x0C. A mount that isn't listed has
+ * no service. A devmgr that init started again starts its generations
+ * somewhere else (from the clock), so the old one's are never mistaken for
+ * its own; asking a new devmgr with known 0 is still the simple rule. */
 #define DEVMGR_MOUNTS       0x0003000au
+#define DEVMGR_MAX_MOUNTS   4u
+#define DEVMGR_MOUNTS_WAIT  (2 * NS_PER_S)
 struct devmgr_mount {
     char path[16];   /* "/data", "/esp": NUL-terminated */
 };
+struct devmgr_mounts_rep {
+    uint32_t txid;             /* the request's */
+    int32_t  status;           /* OK: the rest follows */
+    uint32_t generation;       /* never 0 */
+    uint32_t count;            /* mounts, and handles with the reply */
+    struct devmgr_mount mounts[DEVMGR_MAX_MOUNTS];
+} __attribute__((packed));
+/* (1 handle: a client end of a `storage` channel, abi/idl/storage.idl) ->
+ * u32 id. A software disk for tests, which devmgr treats like a
+ * usb-storage disk: the same questions, the same boot-disk check, the same
+ * supervision of its filesystem services (bin/fat). One difference keeps
+ * it apart from the real one: its mounts are /data-test and /esp-test, and
+ * "the boot disk" is counted among test disks only, so a test never takes
+ * /data away. It is gone once the channel's server end is closed.
+ * ERR_NO_RESOURCES: too many disks. */
+#define DEVMGR_TEST_DISK    0x0003000bu
+/* (dev) -> (): stop the device's driver and leave the device without one
+ * until DEVMGR_REBIND, for a test that drives the device itself (usbtest
+ * and the disks). A disk's filesystems are synced first, then go with the
+ * driver: its mounts are gone until the rebind. For a USB class driver the
+ * reply carries 1 handle: a duplicate of the interface's `usb` channel the
+ * driver had (usb-bus gives an interface's bulk endpoints to that channel
+ * and no other). */
+#define DEVMGR_RELEASE      0x0003000cu
+
+/* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
+ * the partition (DEVMGR_PART_*: storage.idl's index) as the device and the
+ * disk's id as the instance (a usb-storage disk: usb-bus's device id; a
+ * test disk: TEST_DISK's result), for GET_DRIVER, KILL and SUPERVISION.
+ * GET_SERVICE is refused (ERR_ACCESS_DENIED) for them and for a disk's
+ * driver: a disk's channel is devmgr's own, and a filesystem's comes from
+ * DEVMGR_MOUNTS. */
+#define DEVMGR_FS_SVC       0xfffdu
+#define DEVMGR_PART_ESP     0u   /* partition 1 of the boot disk: the ESP */
+#define DEVMGR_PART_DATA    1u   /* partition 2: the data partition */
+
+/* A filesystem service gets what <fatsvc.h> says and nothing else (no
+ * devmgr channel, no namespace, no root resource: its file times are
+ * fixed): FAT_SR_BLOCK, a `block` channel from storage.open_partition
+ * (opened read-only for the ESP), FAT_SR_SERVE, and its mount point as
+ * argv[1]. It is supervised like a driver: exit 0 is the end of it; a
+ * crash, a kill or any other exit is restarted with backoff, each time
+ * with a new `block` channel and a new `fs` channel, and given up on after
+ * 5 restarts in a minute. */
+
+/* USB class drivers are named by DEVMGR_USB_IFACE as the vendor, the
+ * interface number as the device and usb-bus's device id (usbbus.device's
+ * `id`) as the instance, for GET_DRIVER, KILL, REBIND, RELEASE and
+ * SUPERVISION. Such a binding exists from the interface's attach until it
+ * is gone. */
 #define DEVMGR_USB_IFACE    0xfffeu
 
 #define DEVMGR_SUP_NONE       0u   /* no driver started (yet) */
@@ -216,4 +284,38 @@ static inline status_t devmgr_call(handle_t ch, uint32_t ordinal, uint16_t vendo
     if (n < DEVMGR_REP_HDR || rep->status > 0)
         return ERR_INTERNAL;
     return rep->status;
+}
+
+/* One DEVMGR_MOUNTS call on the control channel ch. OK: *out holds the
+ * generation and the mounts, and hs[i] (DEVMGR_MAX_MOUNTS slots) is
+ * out->mounts[i]'s `fs` channel, the caller's to close. ERR_TIMED_OUT:
+ * nothing changed from `known` within DEVMGR_MOUNTS_WAIT; ask again.
+ * Blocks for DEVMGR_MOUNTS_WAIT plus a second at most. */
+static inline status_t devmgr_mounts(handle_t ch, uint32_t known, struct devmgr_mounts_rep *out,
+                                     handle_t *hs)
+{
+    struct devmgr_req q = { 0, DEVMGR_MOUNTS, 0, 0, known };
+    uint32_t n = 0, got = 0;
+    struct channel_call_args a = {
+        .h = ch,
+        .wn = sizeof(q),
+        .wbytes = (uint64_t)(uintptr_t)&q,
+        .rcap = sizeof(*out),
+        .rbytes = (uint64_t)(uintptr_t)out,
+        .ractual = (uint64_t)(uintptr_t)&n,
+        .rh = (uint64_t)(uintptr_t)hs,
+        .rhcap = DEVMGR_MAX_MOUNTS,
+        .rhactual = (uint64_t)(uintptr_t)&got,
+        .deadline_ns = now() + DEVMGR_MOUNTS_WAIT + NS_PER_S,
+    };
+    status_t st = jam_channel_call(&a);
+    if (st != OK)
+        return st;
+    if (n >= DEVMGR_REP_HDR && out->status < 0 && !got)
+        return out->status;
+    if (n != sizeof(*out) || out->status != OK || out->count != got)
+        st = ERR_INTERNAL;   /* not devmgr's format: nothing of it is used */
+    for (uint32_t i = 0; st != OK && i < got; i++)
+        jam_handle_close(hs[i]);
+    return st;
 }

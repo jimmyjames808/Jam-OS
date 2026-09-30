@@ -20,6 +20,12 @@
  *             Without one hid logs each key DOWN (keytest, init + utest).
  * Both arrive without RIGHT_DUPLICATE / RIGHT_TRANSFER.
  *
+ * A mass-storage interface's driver (STORAGE_DRIVER, for the interfaces
+ * usb_match gives it) is a class driver like hid, with two differences: it
+ * serves devmgr the `storage` protocol on a DR_SERVE channel, and it gets
+ * no DR_INPUT. Its binding carries a disk (disk.c), which asks it for its
+ * partitions and mounts the boot disk's.
+ *
  * How a hid ends decides what happens:
  *   - its interface is gone (unplugged, or its usb-bus died): the binding
  *     is freed, whatever the exit code; the next attach binds a new one;
@@ -126,6 +132,8 @@ static const char *what(const struct usbbus_interface_attached_req *m)
         return "boot keyboard";
     if (m->class_code == 3 && m->subclass == 1 && m->protocol == 2)
         return "boot mouse";
+    if (m->class_code == 8)
+        return "mass storage";
     return "not a boot device: hid skips it";
 }
 
@@ -164,6 +172,7 @@ void usb_retire(struct binding *b, const char *why)
     b->state = DEVMGR_SUP_NONE;
     b->console_wait = false;
     b->input_gen = 0;
+    disk_detach(b);   /* a disk's driver: the disk is forgotten with it */
     b->path = NULL;   /* a free slot now */
 }
 
@@ -174,7 +183,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     struct usb_if *u = &usb_ifs[b->usb_if];
     b->input_gen = 0;
     handle_t in = HANDLE_INVALID;
-    if (console) {
+    if (console && !b->disk) {   /* a disk's driver has nothing to type */
         if (closed(console))
             return ERR_SHOULD_WAIT;   /* the console is restarting: wait for the new one */
         /* A connect_input that timed out earlier may have been answered
@@ -213,6 +222,14 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     return OK;
 }
 
+status_t usb_channel(const struct binding *b, handle_t *out)
+{
+    if (usb_gone(b))
+        return ERR_PEER_CLOSED;
+    drain(usb_ifs[b->usb_if].ch);   /* replies the stopped driver left behind */
+    return jam_handle_duplicate(usb_ifs[b->usb_if].ch, RIGHT_SAME, out);
+}
+
 /* Start a class driver for interface slot `slot`. */
 static void bind_interface(unsigned slot, const char *path)
 {
@@ -229,8 +246,15 @@ static void bind_interface(unsigned slot, const char *path)
                            .usb_id = m->id, .usb_ifnum = m->interface_number };
     b->info.vendor = m->vendor;
     b->info.device = m->product;
-    snprintf(b->name, sizeof(b->name), "hid-%s:%u", if_path(u), m->interface_number);
+    /* "drv/hid" on port 6.1, interface 0: "hid-6.1:0" */
+    snprintf(b->name, sizeof(b->name), "%s-%s:%u", path + 4, if_path(u), m->interface_number);
     u->bind = (int32_t)(b - devs);
+    if (strcmp(path, STORAGE_DRIVER) == 0 && !disk_attach(b, m->id)) {
+        say(true, "devmgr: usb %04x:%04x if%u -> %s: no room for another disk", m->vendor,
+            m->product, m->interface_number, path);
+        usb_retire(b, "not started");
+        return;
+    }
     b->last = start_driver(b);
     if (b->last == ERR_SHOULD_WAIT) {
         b->state = DEVMGR_SUP_RESTARTING;
@@ -248,7 +272,7 @@ static void bind_interface(unsigned slot, const char *path)
     }
     say(true, "devmgr: usb %04x:%04x if%u -> %s (%s, port %s)%s", m->vendor, m->product,
         m->interface_number, path, what(m), if_path(u),
-        b->input_gen ? "" : ", no console: to the log");
+        b->input_gen || b->disk ? "" : ", no console: to the log");
 }
 
 static void attached(struct binding *bus, const struct usbbus_interface_attached_req *m,
