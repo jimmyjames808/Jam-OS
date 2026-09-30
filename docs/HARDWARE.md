@@ -130,7 +130,7 @@ Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick
 an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). A
 test run at boot (All tests, the stress test, the benchmark) ends with a
 RESULTS box on the screen that sums it up; the `soak` command ends with a
-SOAK RESULTS box. For a clean end to a session, `reboot` from the shell:
+SOAK RESULTS box. To end a run on the PC cleanly, `reboot` from the shell:
 it syncs `/data` and has logd write the log's last lines first.
 
 ## If something goes wrong on the PC
