@@ -229,6 +229,14 @@ Any other USB stick with a FAT partition becomes usable, safely:
   files; a write refused; `mount -w`, write, `mount -r`; unplug it while
   mounted), and a non-FAT disk (no mount, nothing written).
 
+Built as planned (`tools/sticks-test.sh`, utest's disk_other and
+fat_format_off). What it settled: a stick with no partition table that is
+one FAT volume is mounted too (usb-storage lists it as one partition of
+type 00); GPT is left out; `mount -w` and `mount -r` of `/boot`, `/esp` and
+`/data` are refused; the services start one at a time so `/usbN` follows
+the order found; fat formats only with an explicit flag that devmgr gives
+to the boot disk's data partition alone.
+
 ## Done when
 - QEMU at 4 and 8 CPUs: all ktests; init + utest (with the RAM-disk fat
   tests); the end-to-end storage test; unplug mid-read; the pulled-plug

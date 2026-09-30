@@ -42,6 +42,7 @@ struct diskmock {
     uint32_t        infos;                /* storage.info calls */
     uint32_t        partitions;           /* storage.partition calls */
     uint32_t        opened[2];            /* storage.open_partition calls, per partition */
+    uint32_t        opened_rw;            /* ... of them, the ones not read-only */
     uint32_t        closed[2];            /* `block` channels whose client went, per partition */
     uint32_t        reads, writes, syncs; /* block requests answered OK */
     uint32_t        refused;              /* block requests refused (range, read-only) */

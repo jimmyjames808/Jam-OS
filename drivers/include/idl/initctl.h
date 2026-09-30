@@ -13,6 +13,7 @@
 #define INITCTL_KILL             0x00120001u
 #define INITCTL_SYNC             0x00120002u
 #define INITCTL_REBOOT           0x00120003u
+#define INITCTL_MOUNT            0x00120004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -41,6 +42,16 @@ struct initctl_reboot_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct initctl_mount_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t path[16];
+    uint8_t writable;
+} __attribute__((packed));
+struct initctl_mount_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
 
 #define INITCTL_REQ_MAX 40u   /* bytes: the biggest request */
 #define INITCTL_REP_MAX 16u   /* bytes: the biggest reply */
@@ -51,7 +62,8 @@ struct initctl_reboot_rep {
  * with its kernel object id once it is dead: a service init runs ("console",
  * "serialin", "devmgr", "bootfs", "logd", "shell"; init starts it again), or
  * what devmgr runs for a USB device: a class driver ("hid-6.1:0",
- * "usb-storage-1:0") or a disk's filesystem service ("fat-data"); devmgr
+ * "usb-storage-1:0") or a disk's filesystem service ("fat-data",
+ * "fat-usb0"); devmgr
  * restarts it. ERR_NOT_FOUND: no such process; ERR_INVALID_ARGS: not a
  * name; ERR_ACCESS_DENIED: "init" itself. */
 static inline status_t initctl_kill_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[32], uint64_t *out_koid)
@@ -76,8 +88,8 @@ static inline status_t initctl_kill(handle_t ch, const uint8_t name[32], uint64_
     return initctl_kill_until(ch, DEADLINE_NEVER, name, out_koid);
 }
 
-/* Everything written to /data is on the stick (fs.sync), waiting at most
- * 2 s. OK also when there is no /data. */
+/* Everything written to /data, and to every /usbN, is on its stick
+ * (fs.sync), waiting at most 2 s in all. OK also when there is no /data. */
 static inline status_t initctl_sync_until(handle_t ch, uint64_t deadline_ns)
 {
     struct initctl_sync_req idl_q;
@@ -115,6 +127,35 @@ static inline status_t initctl_reboot(handle_t ch)
     return initctl_reboot_until(ch, DEADLINE_NEVER);
 }
 
+/* Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
+ * again (0): devmgr restarts its filesystem service on a `block` channel
+ * opened that way (DEVMGR_REMOUNT), so the mount goes and comes back, and
+ * files open on it fail ERR_PEER_CLOSED. Answers once devmgr has started
+ * the service again; the mount is back a moment later. Only another
+ * stick's mounts (/usbN) can be changed: anything else, /boot, /esp and
+ * /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
+ * ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path. */
+static inline status_t initctl_mount_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[16], uint8_t writable)
+{
+    struct initctl_mount_req idl_q;
+    struct initctl_mount_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_MOUNT;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    idl_q.writable = writable;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t initctl_mount(handle_t ch, const uint8_t path[16], uint8_t writable)
+{
+    return initctl_mount_until(ch, DEADLINE_NEVER, path, writable);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -123,6 +164,7 @@ struct initctl_ops {
     status_t (*kill)(void *ctx, const uint8_t name[32], uint64_t *out_koid);
     status_t (*sync)(void *ctx);
     status_t (*reboot)(void *ctx);
+    status_t (*mount)(void *ctx, const uint8_t path[16], uint8_t writable);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -187,6 +229,22 @@ static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->reboot(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INITCTL_MOUNT: {
+        const struct initctl_mount_req *idl_q = (const struct initctl_mount_req *)req;
+        struct initctl_mount_rep *idl_r = (struct initctl_mount_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->mount) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->mount(ctx, idl_q->path, idl_q->writable);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

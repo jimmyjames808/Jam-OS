@@ -7,13 +7,18 @@
  * kill <name> reaches the processes init has authority over: its own
  * services (shell.c: their jobs are init's), and, through devmgr's KILL,
  * what devmgr runs for a USB device: a class driver per interface
- * ("hid-6.1:0", "usb-storage-1:0") and a filesystem service per partition
- * of the boot disk ("fat-data"). The kernel's process list says which
+ * ("hid-6.1:0", "usb-storage-1:0") and a filesystem service per mounted
+ * partition ("fat-data", "fat-usb0"). The kernel's process list says which
  * process has the name; devmgr's bindings on each USB device are then
  * asked for theirs (GET_DRIVER) until one matches, and that binding is
  * killed. devmgr's PCI drivers (usb-bus itself) are not reached this way.
  *
- * reboot and sync flush /data first, for at most 2 s (mounts_sync). */
+ * reboot and sync flush /data and every /usbN first, for at most 2 s
+ * (mounts_sync).
+ *
+ * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
+ * devmgr (DEVMGR_REMOUNT) for /usbN and refused for every other path:
+ * /boot, /esp and /data are what they are. */
 #include <devmgr.h>
 #include <idl/initctl.h>
 #include <idl/usbbus.h>
@@ -24,6 +29,8 @@
 #define MAX_PROCS   512               /* processes read from the kernel's list */
 #define MAX_DEVICES 128               /* USB devices looked at */
 #define MAX_IFACES  8                 /* interface numbers tried on each */
+#define MAX_PARTS   4                 /* partitions tried on each (an MBR's) */
+#define MOUNT_WAIT  (25 * NS_PER_S)   /* devmgr's REMOUNT: a sync, then its service's stop */
 #define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* devmgr's KILL: it waits for the driver to die */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
@@ -102,7 +109,7 @@ static status_t binding_koid(handle_t dm, uint16_t vendor, uint16_t device, uint
 static status_t kill_on_device(handle_t dm, uint32_t id, uint64_t koid)
 {
     static const struct { uint16_t vendor; uint16_t count; } kinds[] = {
-        { DEVMGR_USB_IFACE, MAX_IFACES }, { DEVMGR_FS_SVC, DEVMGR_PART_DATA + 1 },
+        { DEVMGR_USB_IFACE, MAX_IFACES }, { DEVMGR_FS_SVC, MAX_PARTS },
     };
     for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
         for (uint16_t n = 0; n < kinds[k].count; n++) {
@@ -180,7 +187,46 @@ static status_t op_reboot(void *ctx)
     return jam_reboot(shell_root());   /* comes back only if it failed */
 }
 
-static const struct initctl_ops ops = { .kill = op_kill, .sync = op_sync, .reboot = op_reboot };
+/* "/usbN" -> N; false for any other path. */
+static bool usb_mount(const uint8_t path[16], unsigned *n)
+{
+    static const char prefix[] = USB_MOUNT;
+    const char *p = (const char *)path;
+    size_t len = strnlen(p, 16), at = sizeof(prefix) - 1;
+    if (len <= at || len == 16 || strncmp(p, prefix, at) != 0)
+        return false;
+    *n = 0;
+    for (; at < len; at++) {
+        if (p[at] < '0' || p[at] > '9' || *n > 99)
+            return false;
+        *n = *n * 10 + (unsigned)(p[at] - '0');
+    }
+    return true;
+}
+
+static status_t op_mount(void *ctx, const uint8_t path[16], uint8_t writable)
+{
+    const struct ctl *c = ctx;
+    unsigned n = 0;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    if (writable > 1 || strnlen((const char *)path, 16) == 16 || path[0] != '/')
+        return ERR_INVALID_ARGS;
+    if (!usb_mount(path, &n))
+        return ERR_ACCESS_DENIED;   /* /boot, /esp, /data: not ours to change */
+    handle_t dm = shell_devmgr();
+    struct devmgr_rep r;
+    status_t st = dm ? devmgr_call(dm, DEVMGR_REMOUNT, DEVMGR_USB_MOUNT, (uint16_t)n,
+                                   writable ? DEVMGR_REMOUNT_WRITE : 0, &r, NULL, 0, NULL,
+                                   now() + MOUNT_WAIT)
+                     : ERR_NOT_FOUND;
+    printf("init: mount %s %s: %s\n", writable ? "-w" : "-r", (const char *)path, status_str(st));
+    return st;
+}
+
+static const struct initctl_ops ops = {
+    .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
+};
 
 static void ctl_close(struct ctl *c)
 {

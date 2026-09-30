@@ -20,7 +20,12 @@
  * at 510): the used ones, in table order. An entry that doesn't fit on
  * the disk, or overlaps an earlier one (two channels would share blocks),
  * is left out. Extended and GPT-protective entries are listed as
- * they are (types 05 / 0F / EE): nobody mounts them. */
+ * they are (types 05 / 0F / EE): nobody mounts them.
+ *
+ * A stick with no table at all, whose block 0 is a FAT boot sector (a
+ * "superfloppy": many sticks are sold that way), is listed as one
+ * partition of type PART_WHOLE covering the whole disk. That is the one
+ * case in which a channel reaches block 0: there is no table to protect. */
 #include <idl/block.h>
 #include "storage.h"
 
@@ -39,6 +44,35 @@ static struct blk blks[MAX_BLKS];
 
 /* ---- the partition table ----------------------------------------------------------- */
 
+static uint32_t le16(const uint8_t *p)
+{
+    return (uint32_t)p[1] << 8 | p[0];
+}
+
+/* Is s (block 0) a FAT boot sector for a volume that fits on the disk? An
+ * MBR's first bytes may be a jump too, and its boot code may hold any
+ * bytes, so every field a FAT volume needs is checked: the jump, 512 to
+ * 4096 bytes per sector, a power-of-two cluster, reserved sectors, one or
+ * two FATs, a size inside the disk, and the "FAT" of the type text (at 54
+ * for FAT12/16, at 82 for FAT32). */
+static bool fat_boot_sector(const struct disk *k, const uint8_t *s)
+{
+    if (s[0] != 0xeb && s[0] != 0xe9)
+        return false;
+    uint32_t bps = le16(s + 11), spc = s[13], total = le16(s + 19);
+    if (bps < 512 || bps > 4096 || (bps & (bps - 1)) || !spc || (spc & (spc - 1)))
+        return false;
+    if (!le16(s + 14) || s[16] < 1 || s[16] > 2)
+        return false;
+    if (!total)
+        total = le32(s + 32);
+    if (!total || (uint64_t)total * bps > k->blocks * k->block_size)
+        return false;
+    bool fat16 = s[54] == 'F' && s[55] == 'A' && s[56] == 'T';
+    bool fat32 = s[82] == 'F' && s[83] == 'A' && s[84] == 'T' && s[85] == '3' && s[86] == '2';
+    return fat16 || fat32;
+}
+
 status_t parts_read(struct disk *k)
 {
     k->nparts = 0;
@@ -50,6 +84,10 @@ status_t parts_read(struct disk *k)
     const uint8_t *s = k->xbuf;
     if (s[510] != 0x55 || s[511] != 0xaa)
         return OK;   /* no partition table */
+    if (fat_boot_sector(k, s)) {
+        k->parts[k->nparts++] = (struct part){ .type = PART_WHOLE, .start = 0, .blocks = k->blocks };
+        return OK;
+    }
     for (int i = 0; i < MAX_PARTS; i++) {
         const uint8_t *e = s + 446 + 16 * i;
         uint64_t start = le32(e + 8), count = le32(e + 12);

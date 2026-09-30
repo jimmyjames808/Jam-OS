@@ -1,5 +1,5 @@
-/* init's mounts from devmgr: /data and /esp, once devmgr's fat services
- * serve them.
+/* init's mounts from devmgr: /data and /esp, and another stick's /usbN,
+ * once devmgr's fat services serve them.
  *
  * DEVMGR_MOUNTS (<devmgr.h>) answers when the set of mounts differs from
  * the generation the caller knows, or says ERR_TIMED_OUT after two
@@ -159,11 +159,18 @@ void mounts_sync(void)
 {
     uint64_t t0 = now();
     status_t st = fs_sync_by(DATA_MOUNT, t0 + SYNC_WAIT);
-    if (st == ERR_NOT_FOUND)
-        return;   /* no /data: nothing was written */
     if (st == OK)
         printf("init: " DATA_MOUNT " synced in %lu ms\n",
                (unsigned long)((now() - t0) / NS_PER_MS));
-    else
+    else if (st != ERR_NOT_FOUND)   /* no /data: nothing was written */
         printf("init: " DATA_MOUNT " not synced (%s)\n", status_str(st));
+    /* Another stick's mounts, in what is left of the time: a read-only one
+     * answers at once, one made writable is flushed. */
+    for (unsigned n = 0; n < USB_MOUNTS; n++) {
+        char path[NS_NAME_MAX];
+        snprintf(path, sizeof(path), USB_MOUNT "%u", n);
+        st = fs_sync_by(path, t0 + SYNC_WAIT);
+        if (st != OK && st != ERR_NOT_FOUND)
+            printf("init: %s not synced (%s)\n", path, status_str(st));
+    }
 }

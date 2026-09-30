@@ -19,6 +19,7 @@
  * GET_SERVICE hands it out: clients that saw ERR_PEER_CLOSED reconnect at
  * once and their calls wait in the channel until the new driver reads
  * them (the reconnect rule, <devmgr.h>). */
+#include <fatsvc.h>
 #include "internal.h"
 
 /* Restarts within the window. */
@@ -71,12 +72,18 @@ void sup_died(struct binding *b, uint32_t gen)
         jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         return;   /* a stale packet, or it was handled already */
     kill_driver(b);   /* whatever else its job started */
-    if (b->kind == BIND_FS && fs_check_ended(b))
-        return;   /* the ESP of a disk that isn't ours: no restart, no problem */
+    bool no_volume = !info.killed && !b->killed && info.exit_code == FAT_EXIT_NO_VOLUME;
+    if (b->kind == BIND_FS && fs_check_ended(b, no_volume))
+        return;   /* no FAT volume on someone else's partition: no restart, no problem */
     if (b->kind == BIND_USB) {
         /* A USB class driver (usb.c): its interface gone = the end of it,
          * however it ended; exit 0 because the console went = reconnect. */
         if (usb_gone(b)) {
+            /* A disk's filesystem services go first: they map buffers its
+             * driver made, which stay charged to the driver's job until
+             * they are gone too (a service in the middle of a request has
+             * not ended by itself yet). */
+            disk_stopped(b);
             bool clean = job_empty(b->job, b->path);
             forget_driver(b);
             problems += !clean;

@@ -12,6 +12,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <fatsvc.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
@@ -53,20 +54,59 @@ static bool clean_bit(const struct ramdisk *rd, unsigned copy)
     return fat32 ? (fat[7] & 0x08) != 0 : (fat[3] & 0x80) != 0;
 }
 
-/* fat started over rd must give up by itself (exit 1) without writing a
- * sector. */
-static bool gives_up(struct ramdisk *rd, bool read_only)
+/* fat started over rd (with FAT_ARG_FORMAT or, `plain`, without) must
+ * give up by itself (FAT_EXIT_NO_VOLUME) without writing a sector. */
+static bool gives_up_as(struct ramdisk *rd, bool read_only, bool plain)
 {
     struct fatrun r;
     uint32_t writes = ramdisk_writes(rd);
-    if (!fat_start(&r, rd, read_only) || !fat_wait(&r, 1) || !ramdisk_join(rd))
+    if (!(plain ? fat_start_plain(&r, rd, read_only) : fat_start(&r, rd, read_only)) ||
+        !fat_wait(&r, FAT_EXIT_NO_VOLUME) || !ramdisk_join(rd))
         return false;
     CHECK_EQ(ramdisk_writes(rd), writes);
     CHECK_ST(jam_handle_close(r.fs), OK);
     return true;
 }
 
+static bool gives_up(struct ramdisk *rd, bool read_only)
+{
+    return gives_up_as(rd, read_only, false);
+}
+
 /* ---- tests ---------------------------------------------------------------------------- */
+
+/* Without FAT_ARG_FORMAT (how fat is started on every partition but the
+ * boot disk's data partition) nothing is formatted and nothing written: a
+ * blank writable partition, the very thing the flag would format, stays
+ * blank; so does one with another filesystem's boot sector. A FAT volume
+ * is served as usual, writes included. */
+bool t_fat_format_off(void)
+{
+    struct fatrun r;
+    if (!ramdisk_create(&disk, 40 * MIB_SECTORS))
+        return false;
+    if (!gives_up_as(&disk, false, true) || !gives_up_as(&disk, true, true))
+        return false;
+    for (uint32_t i = 0; i < 40 * MIB_SECTORS * RAMDISK_SECTOR; i += 4096)
+        CHECK_EQ(disk.mem[i], 0);
+    CHECK_EQ(fat_kind(&disk), 0);
+    memcpy(disk.mem + 3, "NTFS    ", 8);
+    disk.mem[510] = 0x55;
+    disk.mem[511] = 0xaa;
+    if (!gives_up_as(&disk, false, true))
+        return false;
+    CHECK(!memcmp(disk.mem + 3, "NTFS    ", 8));
+
+    memset(disk.mem, 0, RAMDISK_SECTOR);
+    if (!fat_start(&r, &disk, false) || !put_file(&r, "/a.txt", "one") || !fat_stop(&r))
+        return false;
+    if (!fat_start_plain(&r, &disk, false) || !file_is(&r, "/a.txt", "one") ||
+        !put_file(&r, "/b.txt", "two") || !fat_stop(&r))
+        return false;
+    if (!fat_start_plain(&r, &disk, true) || !file_is(&r, "/b.txt", "two") || !fat_stop(&r))
+        return false;
+    return ramdisk_destroy(&disk);
+}
 
 /* A blank partition is formatted (FAT32, one volume over the whole
  * partition, label JAMOS-DATA), once: the next fat finds the volume. A

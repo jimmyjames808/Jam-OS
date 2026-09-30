@@ -29,8 +29,13 @@ struct tfile {
     uint64_t size;          /* the size fs.open reported */
 };
 
-/* Start fat over rd (a session of the RAM disk, read-only or not). */
+/* Start fat over rd (a session of the RAM disk, read-only or not), with
+ * FAT_ARG_FORMAT: a blank writable disk is formatted, as the boot disk's
+ * data partition is. */
 bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only);
+/* The same without the flag, as fat is started on anyone else's stick:
+ * nothing is ever formatted. */
+bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only);
 /* fat must end by itself with exit code `code` within FAT_CALL_NS and
  * leave its job empty. */
 bool fat_wait(struct fatrun *r, int code);

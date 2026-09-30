@@ -87,7 +87,13 @@ struct binding {
                                      * "fat-data" */
     /* A disk's driver (a BIND_USB running STORAGE_DRIVER) and BIND_FS (disk.c). */
     uint32_t            disk;       /* its disks slot + 1; 0: none */
-    uint8_t             part;       /* BIND_FS: the partition it serves (PART_*) */
+    uint8_t             part;       /* BIND_FS: the partition it serves (storage.idl's index) */
+    /* BIND_FS on a disk that isn't the boot disk (disk.c): a /usbN mount. */
+    bool                other;      /* it is one: never given FAT_ARG_FORMAT */
+    bool                rw;         /* its `block` channel is opened read-write (`mount -w`) */
+    bool                ready;      /* it answered its first fs.stat: a mount */
+    uint8_t             usbn;       /* the N of /usbN */
+    uint32_t            probe;      /* that fs.stat's transaction id */
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -162,8 +168,8 @@ bool usb_console_gone(const struct binding *b);
 /* disk.c: the disks usb-storage serves (and DEVMGR_TEST_DISK's), and the
  * filesystem services of the boot disk. */
 #define STORAGE_DRIVER "drv/usb-storage"
-#define PART_ESP  DEVMGR_PART_ESP    /* the ESP, read-only, at /esp */
-#define PART_DATA DEVMGR_PART_DATA   /* the data partition, at /data */
+#define PART_ESP  DEVMGR_PART_ESP    /* the boot disk's ESP, read-only, at /esp */
+#define PART_DATA DEVMGR_PART_DATA   /* the boot disk's data partition, at /data */
 /* b is a BIND_USB binding about to run STORAGE_DRIVER for usb-bus device
  * `id`: give it a disk (b->disk). False: too many disks. */
 bool disk_attach(struct binding *b, uint32_t id);
@@ -182,14 +188,24 @@ void disk_events(struct binding *b);
 void disk_key(uint64_t key);
 /* DEVMGR_TEST_DISK: ch (consumed) is a `storage` channel; *id: the disk's. */
 status_t disk_test(handle_t ch, uint32_t *id);
-/* b (BIND_FS) died. True if that settles its disk's boot-disk check: the
- * ESP's service ended before it answered, so the disk is left alone and b
- * freed (no restart). */
-bool fs_check_ended(struct binding *b);
+/* b (BIND_FS) died, its process still held. True if that is the end of it
+ * (b freed, no restart): the ESP's service ended before it answered the
+ * boot-disk check, so the disk is not the boot disk; or a /usbN service
+ * ended by itself with FAT_EXIT_NO_VOLUME (`no_volume`): the partition
+ * holds no FAT volume and is left alone. */
+bool fs_check_ended(struct binding *b, bool no_volume);
+/* FAT_ARG_FORMAT for the one service that may format a blank partition
+ * (the boot disk's data partition), NULL for every other. */
+const char *fs_format_arg(const struct binding *b);
+/* DEVMGR_REMOUNT: /usbN (a test disk's: /usbN-test) read-write or
+ * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
+ * isn't serving. */
+status_t disk_remount(unsigned n, bool test, bool writable);
 /* A BIND_FS binding's handle for its service: FAT_SR_BLOCK, a new `block`
  * channel on its partition. ERR_PEER_CLOSED: the disk is gone. */
 status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
-/* The mount point b (BIND_FS) serves: "/data", "/esp-test". */
+/* The mount point b (BIND_FS) serves: "/data", "/esp-test", "/usb0". The
+ * string is good until the next call. */
 const char *fs_mount_path(const struct binding *b);
 /* b (BIND_FS) won't run again: free its slot. */
 void fs_retire(struct binding *b);
@@ -199,12 +215,14 @@ struct binding *fs_find(uint32_t id, uint32_t part);
 /* devmgr is stopping: fs.sync each mounted data partition while its disk
  * still works (the services are killed when their disk's driver goes). */
 void disk_sync_all(void);
-/* Give up on what did not answer in time. */
+/* Give up on what did not answer in time, and start the next /usbN
+ * service that waits its turn. Called after every event. */
 void disk_run_due(void);
 /* When disk_run_due has something to do next, or DEADLINE_NEVER. */
 uint64_t disk_next_deadline(void);
 
-/* A mount: a running filesystem service of the boot disk. */
+/* A mount: a running filesystem service of the boot disk, or of another
+ * disk once its volume is mounted. */
 struct mount {
     char     path[16];   /* the mount point */
     uint32_t bind;       /* devs index of its filesystem service */

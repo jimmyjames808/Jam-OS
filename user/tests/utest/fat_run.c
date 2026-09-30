@@ -21,7 +21,7 @@ static void path_field(const char *s, uint8_t out[FS_PATH_MAX])
     memcpy(out, s, strnlen(s, FS_PATH_MAX - 1));
 }
 
-bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only)
+static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format)
 {
     handle_t block, serve;
     *r = (struct fatrun){ .rd = rd };
@@ -29,13 +29,24 @@ bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only)
         return false;
     CHECK_ST(jam_channel_create(&r->fs, &serve), OK);
     CHECK_ST(new_job(&r->job), OK);
-    const char *argv[] = { "fat", "utest" };
+    const char *argv[] = { "fat", "utest", FAT_ARG_FORMAT };
     struct spawn_handle x[2] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve } };
     struct spawn_args a = {
-        .path = "bin/fat", .argc = 2, .argv = argv, .job = r->job, .extra = x, .nextra = 2,
+        .path = "bin/fat", .argc = format ? 3 : 2, .argv = argv, .job = r->job, .extra = x,
+        .nextra = 2,
     };
     CHECK_ST(spawn(&a, &r->proc), OK);
     return true;
+}
+
+bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only)
+{
+    return start(r, rd, read_only, true);
+}
+
+bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only)
+{
+    return start(r, rd, read_only, false);
 }
 
 bool fat_wait(struct fatrun *r, int code)

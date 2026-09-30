@@ -1,7 +1,8 @@
 /* utest: devmgr's storage side, against the mock usb-storage of
  * diskmock.c handed over with DEVMGR_TEST_DISK, with the real fat service
  * on its partitions: the boot disk's two partitions become mounts, a disk
- * that isn't the boot disk gets none, a killed filesystem service comes
+ * that isn't the boot disk gets read-only /usbN mounts for its FAT volumes
+ * and is never formatted, a killed filesystem service comes
  * back as a new generation with a new channel, and a disk that goes takes
  * its mounts with it. A test disk's mounts are /esp-test and /data-test;
  * whatever the real stick has mounted is left alone and ignored here.
@@ -95,10 +96,10 @@ static bool make_esp(handle_t storage, enum esp_kind kind)
              OK);
     CHECK_ST(jam_channel_create(&r.fs, &serve), OK);
     CHECK_ST(new_job(&r.job), OK);
-    const char *argv[] = { "fat", "utest-esp" };
+    const char *argv[] = { "fat", "utest-esp", FAT_ARG_FORMAT };
     struct spawn_handle x[2] = { { FAT_SR_BLOCK, blk }, { FAT_SR_SERVE, serve } };
     struct spawn_args a = {
-        .path = "bin/fat", .argc = 2, .argv = argv, .job = r.job, .extra = x, .nextra = 2,
+        .path = "bin/fat", .argc = 3, .argv = argv, .job = r.job, .extra = x, .nextra = 2,
     };
     CHECK_ST(spawn(&a, &r.proc), OK);
     if (kind == ESP_BOOT) {
@@ -218,49 +219,202 @@ bool t_disk_mounts(void)
     return detach(dm, &v);
 }
 
-/* No mounts for `kind` of ESP: devmgr looks at it (one more `block`
- * channel on partition 1, closed again) and leaves the disk alone. */
-static bool left_alone(handle_t dm, enum esp_kind kind, bool *skip)
+/* A test disk's /usbN-test mount in v (the first), or NULL. */
+static const char *usb_path(const struct view *v)
+{
+    for (uint32_t i = 0; i < v->rep.count; i++) {
+        const char *p = v->rep.mounts[i].path;
+        size_t n = strnlen(p, sizeof(v->rep.mounts[i].path));
+        if (n > 9 && !strncmp(p, "/usb", 4) && !strcmp(p + n - 5, "-test"))
+            return p;
+    }
+    return NULL;
+}
+
+/* Follow DEVMGR_MOUNTS until the test disk's /usbN-test is there and
+ * answers statfs with read_only == want (0 or 1), or, want < 0, is gone;
+ * for 15 s at most. */
+static bool wait_usb(handle_t dm, struct view *v, int want)
+{
+    uint64_t until = now() + 15 * NS_PER_S;
+    for (;;) {
+        const char *p = v->rep.generation ? usb_path(v) : NULL;
+        uint8_t ro = 0;
+        if (v->rep.generation && want < 0 && !p)
+            return true;
+        if (p && want >= 0 &&
+            fs_statfs_until(mount_of(v, p).fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL) == OK &&
+            ro == want)
+            return true;
+        if (now() > until)
+            FAIL("/usbN-test after 15 s: %s, want %s", p ? p : "none",
+                 want < 0 ? "none" : want ? "read-only" : "read-write");
+        struct view next;
+        status_t st = devmgr_mounts(dm, v->rep.generation, &next.rep, next.hs);
+        if (st == ERR_TIMED_OUT)
+            continue;
+        CHECK_ST(st, OK);
+        view_close(v);
+        *v = next;
+    }
+}
+
+static status_t remount(handle_t dm, unsigned n, bool writable)
+{
+    struct devmgr_rep r;
+    return devmgr_call(dm, DEVMGR_REMOUNT, DEVMGR_USB_MOUNT, (uint16_t)n,
+                       DEVMGR_REMOUNT_TEST | (writable ? DEVMGR_REMOUNT_WRITE : 0), &r, NULL, 0,
+                       NULL, now() + 30 * NS_PER_S);
+}
+
+/* Is the mock's data partition still blank (it starts as zeros)? */
+static bool data_blank(void)
+{
+    const uint8_t *p = mock.ram + (uint64_t)DM_DATA_START * DM_BLOCK;
+    for (uint32_t i = 0; i < DM_DATA_BLOCKS * DM_BLOCK; i++)
+        if (p[i])
+            return false;
+    return true;
+}
+
+/* A disk that isn't the boot disk and holds no FAT volume at all (both
+ * partitions blank, typed EF and 0C: what a Jam OS stick looks like before
+ * anything is on it) gets no mounts and not one write: devmgr looks at the
+ * ESP (no boot disk), then tries each partition read-only, and every
+ * filesystem service gives up by itself. Nothing is formatted, the blank
+ * FAT32-typed partition included. */
+static bool nothing_to_mount(handle_t dm, bool *skip)
 {
     struct view v = { 0 };
     uint32_t id = 0;
-    if (!attach(dm, DM_TYPE_FAT32, kind, &id, skip))
+    if (!attach(dm, DM_TYPE_FAT32, ESP_BLANK, &id, skip))
         return false;
-    uint32_t ours = kind == ESP_BLANK ? 0 : 1;   /* make_esp's own channel */
-    if (!wait_count(&mock.closed[0], ours + 1))
+    if (!wait_count(&mock.closed[0], 2) || !wait_count(&mock.closed[1], 1))
         return false;
     jam_nanosleep(now() + 300 * NS_PER_MS);   /* time to do what it must not */
-    CHECK_EQ(dm_count(&mock.opened[0]), ours + 1);   /* not started a second time */
-    CHECK_EQ(dm_count(&mock.opened[1]), 0);
+    CHECK_EQ(dm_count(&mock.opened[0]), 2);   /* the boot-disk check, then as any stick's */
+    CHECK_EQ(dm_count(&mock.opened[1]), 1);
+    CHECK_EQ(dm_count(&mock.opened_rw), 0);
+    CHECK_EQ(dm_count(&mock.writes), 0);
+    CHECK_EQ(dm_count(&mock.refused), 0);     /* nothing even tried */
+    CHECK(data_blank());
     CHECK_ST(devmgr_mounts(dm, 0, &v.rep, v.hs), OK);
-    CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
+    CHECK(!mounted(&v, ESP) && !mounted(&v, DATA) && !usb_path(&v));
     return detach(dm, &v);
 }
 
-/* A disk that isn't the boot disk gets no mounts: an ESP without
+/* A disk that isn't the boot disk is never /esp or /data: an ESP without
  * boot/jamos.elf, an ESP that is no FAT volume (the filesystem service
  * gives up on it, and devmgr does not start it again), and a second
- * partition of another type (devmgr doesn't even look at the ESP). */
+ * partition of another type (devmgr doesn't even ask the ESP for the
+ * kernel). What it holds that is FAT is a read-only /usbN instead
+ * (t_disk_other has the details). */
 bool t_disk_not_boot(void)
 {
     handle_t dm = devmgr();
     struct view v = { 0 };
     uint32_t id = 0;
+    uint8_t ro = 0;
     bool skip = false;
     if (!dm)
         return true;
-    if (!left_alone(dm, ESP_OTHER, &skip) || !left_alone(dm, ESP_BLANK, &skip))
+    if (!nothing_to_mount(dm, &skip))
         return skip;
     if (!attach(dm, 0x83, ESP_BOOT, &id, &skip))
         return skip;
-    if (!wait_count(&mock.partitions, 2))
+    if (!wait_usb(dm, &v, 1))
         return false;
-    jam_nanosleep(now() + 300 * NS_PER_MS);
-    CHECK_EQ(dm_count(&mock.opened[0]), 1);   /* make_esp's */
-    CHECK_EQ(dm_count(&mock.opened[1]), 0);
-    CHECK_ST(devmgr_mounts(dm, 0, &v.rep, v.hs), OK);
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
-    return detach(dm, &v);
+    CHECK_EQ(dm_count(&mock.opened[0]), 2);   /* make_esp's, and the /usbN service's */
+    CHECK_EQ(dm_count(&mock.opened[1]), 0);   /* type 83: not FAT, not looked at */
+    CHECK_EQ(dm_count(&mock.opened_rw), 1);   /* make_esp's */
+    struct fatrun usb = mount_of(&v, usb_path(&v));
+    CHECK_ST(fs_statfs_until(usb.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL), OK);
+    CHECK(ro);
+    if (!detach(dm, &v))
+        return false;
+    return wait_usb(dm, &v, -1);
+}
+
+/* Someone else's stick: an ESP-typed FAT volume without boot/jamos.elf and
+ * a blank FAT32-typed partition. The FAT volume is mounted read-only at
+ * /usbN-test on a `block` channel opened read-only (the disk itself would
+ * refuse a write); DEVMGR_REMOUNT reopens it read-write with a new
+ * service and a new channel, and back. The blank partition is never
+ * opened for writing, never mounted and never formatted, in either mode. */
+bool t_disk_other(void)
+{
+    handle_t dm = devmgr(), old;
+    struct view v = { 0 };
+    struct devmgr_rep r;
+    struct tfile f;
+    uint32_t id = 0;
+    bool skip;
+    if (!dm)
+        return true;
+    if (!attach(dm, DM_TYPE_FAT32, ESP_OTHER, &id, &skip))
+        return skip;
+    uint32_t writes = dm_count(&mock.writes);   /* make_esp's */
+    if (!wait_usb(dm, &v, 1) || !wait_count(&mock.closed[1], 1))
+        return false;
+    CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
+    unsigned n = (unsigned)(usb_path(&v)[4] - '0');
+    struct fatrun usb = mount_of(&v, usb_path(&v));
+    /* make_esp's channel, the boot-disk check's, the /usbN service's; the
+     * blank partition's once, read-only, and its service gave up */
+    CHECK_EQ(dm_count(&mock.opened[0]), 3);
+    CHECK_EQ(dm_count(&mock.opened[1]), 1);
+    CHECK_EQ(dm_count(&mock.opened_rw), 1);
+    if (!file_is(&usb, "/readme.txt", "someone else's stick"))
+        return false;
+    CHECK_ST(t_mkdir(&usb, "/x"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_open(&usb, "/new.txt", FS_WRITE | FS_CREATE, &f), ERR_ACCESS_DENIED);
+    CHECK_EQ(dm_count(&mock.writes), writes);
+    CHECK_EQ(dm_count(&mock.refused), 0);   /* fat refused: the disk never had to */
+
+    /* only /usbN, only on the control channel */
+    CHECK_ST(remount(dm, 9, true), ERR_NOT_FOUND);
+    CHECK_ST(devmgr_call(dm, DEVMGR_REMOUNT, DEVMGR_FS_SVC, DEVMGR_PART_ESP, id, &r, NULL, 0, NULL,
+                         now() + 10 * NS_PER_S), ERR_INVALID_ARGS);
+    if (startup_handle(SR_DEVMGR))
+        CHECK_ST(remount(startup_handle(SR_DEVMGR), n, true), ERR_ACCESS_DENIED);
+
+    /* read-write: a new service on a new channel, the old one dead */
+    CHECK_ST(jam_handle_duplicate(usb.fs, RIGHT_SAME, &old), OK);
+    CHECK_ST(remount(dm, n, true), OK);
+    if (!wait_usb(dm, &v, 0))
+        return false;
+    struct fatrun before = { .fs = old };
+    CHECK_ST(t_stat(&before, "/readme.txt", NULL, NULL, NULL), ERR_PEER_CLOSED);
+    CHECK_ST(jam_handle_close(old), OK);
+    usb = mount_of(&v, usb_path(&v));
+    CHECK_EQ(dm_count(&mock.opened_rw), 2);
+    CHECK_ST(remount(dm, n, true), OK);   /* already: nothing restarts */
+    CHECK_EQ(dm_count(&mock.opened[0]), 4);
+    if (!put_file(&usb, "/new.txt", "written after mount -w") ||
+        !file_is(&usb, "/new.txt", "written after mount -w"))
+        return false;
+    CHECK(dm_count(&mock.writes) > writes);
+
+    /* and read-only again: what was written is there, nothing more goes in */
+    CHECK_ST(remount(dm, n, false), OK);
+    if (!wait_usb(dm, &v, 1))
+        return false;
+    usb = mount_of(&v, usb_path(&v));
+    writes = dm_count(&mock.writes);
+    if (!file_is(&usb, "/new.txt", "written after mount -w"))
+        return false;
+    CHECK_ST(t_mkdir(&usb, "/y"), ERR_ACCESS_DENIED);
+    CHECK_EQ(dm_count(&mock.writes), writes);
+    CHECK_EQ(dm_count(&mock.opened_rw), 2);
+    CHECK_EQ(dm_count(&mock.refused), 0);
+
+    /* the blank partition: opened once, read-only, and still blank */
+    CHECK_EQ(dm_count(&mock.opened[1]), 1);
+    CHECK(data_blank());
+    if (!detach(dm, &v))
+        return false;
+    return wait_usb(dm, &v, -1);
 }
 
 /* Killing a filesystem service: the mount goes, then comes back under a

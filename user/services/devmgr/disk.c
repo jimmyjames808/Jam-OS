@@ -1,5 +1,5 @@
-/* devmgr: disks, and the filesystem services of the disk Jam OS booted
- * from.
+/* devmgr: disks and their filesystem services: the disk Jam OS booted
+ * from (/esp, /data) and every other stick (/usb0, /usb1, ...).
  *
  * A disk is a `storage` channel (abi/idl/storage.idl): the DR_SERVE
  * channel of a usb-storage driver devmgr bound to a mass-storage interface
@@ -11,17 +11,39 @@
  *   1. its driver starts: storage.info is asked without waiting (a stick
  *      may take seconds to spin up, and devmgr must keep serving);
  *   2. the answer comes: fewer than two partitions, or types other than
- *      0xEF then 0x0C, and the disk is left alone. Else a read-only
- *      filesystem service is started on the ESP and asked, again without
- *      waiting, for boot/jamos.elf;
+ *      0xEF then 0x0C, and the disk is not the boot disk (step 4). Else a
+ *      read-only filesystem service is started on the ESP and asked, again
+ *      without waiting, for boot/jamos.elf;
  *   3. the file is there: this is the boot disk. The data partition's
  *      service starts too, and both are mounts (DEVMGR_MOUNTS, mounts.c):
  *      /esp and /data. Without the file, or if the service ends instead
- *      of answering (the ESP holds no FAT it can read), the ESP's service
- *      is stopped and the disk left alone. One boot disk at a time: a
- *      second disk that qualifies while the first is mounted is left alone
- *      as well.
- * No answer within INFO_WAIT or ESP_WAIT also leaves the disk alone.
+ *      of answering (the ESP holds no FAT it can read), or with no answer
+ *      within ESP_WAIT, the ESP's service is stopped and the disk is not
+ *      the boot disk. One boot disk at a time: a second disk that
+ *      qualifies while the first is mounted is not it either;
+ *   4. any other disk (mount_others): a filesystem service is started on
+ *      each partition whose type says FAT (fat_type; usb-storage lists a
+ *      stick with no partition table and a FAT boot sector as one
+ *      partition of type 00), on a READ-ONLY `block` channel, and takes
+ *      the lowest free /usbN, one service at a time (others_pump) so the
+ *      numbers follow the order the volumes were found in. It is a mount
+ *      once it has answered a first fs.stat (its volume is mounted); one
+ *      that ends with
+ *      FAT_EXIT_NO_VOLUME instead is not started again: the partition is
+ *      left alone, and nothing was written to it. A GPT disk (its table
+ *      lists one partition of type EE) gets no mounts.
+ * No answer to storage.info within INFO_WAIT leaves the disk alone.
+ *
+ * Never formatted: fat formats only when it is started with
+ * FAT_ARG_FORMAT, and fs_format_arg gives that to the boot disk's data
+ * partition alone. No other partition of any disk ever gets it, in either
+ * mode.
+ *
+ * Read-only below the filesystem: an other disk's partition is opened
+ * read-only (storage.open_partition), so usb-storage refuses every write
+ * on that channel whatever fat does. DEVMGR_REMOUNT (disk_remount; the
+ * shell's `mount -w /usbN`) syncs and stops the service and starts it
+ * again on a new channel opened read-write, or back.
  *
  * A filesystem service (bin/fat, <fatsvc.h>; a BIND_FS binding in devs[])
  * is supervised like a driver (supervise.c): a crash or an error exit is
@@ -45,6 +67,8 @@
 #include "internal.h"
 
 #define MAX_DISKS      8
+#define MAX_PARTS      4                   /* an MBR's primary partitions */
+#define MAX_USB_MOUNTS 4                   /* /usb0 .. /usb3 (and as many /usbN-test) */
 #define FAT_PATH       "bin/fat"
 #define BOOT_FILE      "/boot/jamos.elf"   /* on the ESP: what makes it the boot disk */
 #define TYPE_ESP       0xef                /* MBR partition types */
@@ -61,7 +85,8 @@ enum disk_state {
     DISK_INFO,    /* storage.info asked, no answer yet */
     DISK_ESP,     /* the ESP's service asked for BOOT_FILE, no answer yet */
     DISK_BOOT,    /* the boot disk: its running services are mounts */
-    DISK_OTHER,   /* not the boot disk, or it didn't answer: left alone */
+    DISK_OTHER,   /* not the boot disk: its FAT partitions' services are mounts (/usbN) */
+    DISK_ALONE,   /* it didn't answer: left alone */
 };
 
 struct disk {
@@ -73,7 +98,10 @@ struct disk {
     uint16_t        gen;        /* bumped at every use of the slot: in its port key */
     uint32_t        txid;       /* DISK_INFO, DISK_ESP: the request not answered yet */
     uint64_t        deadline;   /* DISK_INFO, DISK_ESP: when it is given up on */
-    uint32_t        fs[2];      /* devs index + 1 of each PART_*'s service; 0: none */
+    uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
+    uint8_t         type[MAX_PARTS];   /* their MBR types */
+    uint32_t        fs[MAX_PARTS];     /* devs index + 1 of each partition's service; 0: none */
+    uint8_t         want;       /* DISK_OTHER: bit n: partition n waits for its service */
 };
 
 static struct disk disks[MAX_DISKS];
@@ -144,8 +172,13 @@ static status_t next_msg(handle_t h, void *buf, uint32_t cap, uint32_t *n)
 
 const char *fs_mount_path(const struct binding *b)
 {
+    static char usb[16];
     const struct disk *d = disk_of(b);
     bool test = d && d->test;
+    if (b->other) {
+        snprintf(usb, sizeof(usb), "/usb%u%s", b->usbn, test ? "-test" : "");
+        return usb;
+    }
     if (b->part == PART_ESP)
         return test ? "/esp-test" : "/esp";
     return test ? "/data-test" : "/data";
@@ -166,7 +199,8 @@ void fs_retire(struct binding *b)
 struct binding *fs_find(uint32_t id, uint32_t part)
 {
     for (unsigned i = 0; i < MAX_DISKS; i++)
-        if (disks[i].state != DISK_FREE && disks[i].id == id && part < 2 && disks[i].fs[part])
+        if (disks[i].state != DISK_FREE && disks[i].id == id && part < MAX_PARTS &&
+            disks[i].fs[part])
             return &devs[disks[i].fs[part] - 1];
     return NULL;
 }
@@ -177,8 +211,11 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     if (!d || d->state == DISK_FREE || d->state == DISK_DOWN)
         return ERR_PEER_CLOSED;
     handle_t blk;
-    status_t st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part,
-                                               b->part == PART_ESP, &blk);
+    /* Read-only unless it is the boot disk's data partition, or another
+     * disk's partition after `mount -w`. */
+    bool read_only = b->other ? !b->rw : b->part != PART_DATA;
+    status_t st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part, read_only,
+                                               &blk);
     if (st != OK)
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
@@ -186,10 +223,36 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     return OK;
 }
 
-/* A free BIND_FS binding (or a new one) for partition `part` of d. */
-static struct binding *fs_binding(struct disk *d, unsigned part)
+const char *fs_format_arg(const struct binding *b)
+{
+    const struct disk *d = disk_of(b);
+    bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
+    return boot_data ? FAT_ARG_FORMAT : NULL;
+}
+
+/* The lowest N no running or restarting service has as its /usbN (test
+ * disks count apart: /usbN-test), or -1. */
+static int usb_number(bool test)
+{
+    for (unsigned n = 0; n < MAX_USB_MOUNTS; n++) {
+        bool used = false;
+        for (unsigned i = 0; i < ndevs && !used; i++)
+            used = devs[i].kind == BIND_FS && devs[i].path && devs[i].other &&
+                   devs[i].test == test && devs[i].usbn == n;
+        if (!used)
+            return (int)n;
+    }
+    return -1;
+}
+
+/* A free BIND_FS binding (or a new one) for partition `part` of d; `other`:
+ * d is not the boot disk, and the service gets a /usbN. */
+static struct binding *fs_binding(struct disk *d, unsigned part, bool other)
 {
     struct binding *b = NULL;
+    int usbn = other ? usb_number(d->test) : 0;
+    if (usbn < 0)
+        return NULL;
     for (unsigned i = 0; i < ndevs && !b; i++)
         if (devs[i].kind == BIND_FS && !devs[i].path && !devs[i].proc &&
             devs[i].state == DEVMGR_SUP_NONE)
@@ -201,26 +264,28 @@ static struct binding *fs_binding(struct disk *d, unsigned part)
     uint32_t gen = b->gen;   /* kept across uses: stale port packets stay stale */
     *b = (struct binding){ .kind = BIND_FS, .path = FAT_PATH, .test = d->test, .gen = gen,
                            .usb_if = -1, .disk = (uint32_t)(d - disks) + 1,
-                           .part = (uint8_t)part };
+                           .part = (uint8_t)part, .other = other, .usbn = (uint8_t)usbn };
     snprintf(b->name, sizeof(b->name), "fat-%s", fs_mount_path(b) + 1);
     d->fs[part] = (uint32_t)(b - devs) + 1;
     return b;
 }
 
 /* Start the filesystem service on partition `part` of d. */
-static status_t fs_start(struct disk *d, unsigned part)
+static status_t fs_start(struct disk *d, unsigned part, bool other)
 {
     if (!in_bootfs(FAT_PATH)) {
         say(false, "devmgr: %s: %s is not in bootfs: no filesystem", disk_name(d), FAT_PATH);
         return ERR_NOT_FOUND;
     }
-    struct binding *b = fs_binding(d, part);
-    if (!b)
+    struct binding *b = fs_binding(d, part, other);
+    if (!b) {
+        say(false, "devmgr: %s partition %u: no room for another mount", disk_name(d), part + 1);
         return ERR_NO_RESOURCES;
+    }
     b->last = start_driver(b);
     status_t st = b->last;
     say(false, "devmgr: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
-        fs_mount_path(b), part == PART_ESP ? ", read-only" : "", status_str(st));
+        fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
     if (st != OK)
         fs_retire(b);
     return st;
@@ -233,7 +298,8 @@ static status_t fs_start(struct disk *d, unsigned part)
 static void drop_services(struct disk *d, enum disk_state state)
 {
     d->state = state;
-    for (unsigned part = 0; part < 2; part++) {
+    d->want = 0;
+    for (unsigned part = 0; part < MAX_PARTS; part++) {
         if (!d->fs[part])
             continue;
         struct binding *b = &devs[d->fs[part] - 1];
@@ -244,13 +310,87 @@ static void drop_services(struct disk *d, enum disk_state state)
     mounts_update();
 }
 
+/* May a partition of this MBR type hold a FAT volume? 00 is usb-storage's
+ * "no table: the whole disk is one FAT volume". */
+static bool fat_type(uint8_t type)
+{
+    return type == 0x00 || type == 0x01 || type == 0x04 || type == 0x06 || type == 0x0b ||
+           type == 0x0c || type == 0x0e || type == TYPE_ESP;
+}
+
+/* Start the next /usbN service that is waited for, unless one is still
+ * finding out whether its partition holds a volume. One at a time, so the
+ * numbers go to the volumes in the order they were found, with no gap
+ * where a partition turned out to hold none. */
+static void others_pump(void)
+{
+    for (unsigned i = 0; i < ndevs; i++) {
+        const struct binding *b = &devs[i];
+        bool alive = b->state == DEVMGR_SUP_RUNNING || b->state == DEVMGR_SUP_RESTARTING;
+        if (b->kind == BIND_FS && b->path && b->other && !b->ready && alive)
+            return;
+    }
+    for (unsigned i = 0; i < MAX_DISKS; i++) {
+        struct disk *d = &disks[i];
+        for (unsigned part = 0; part < MAX_PARTS && d->state == DISK_OTHER; part++) {
+            if (!(d->want & 1u << part))
+                continue;
+            d->want &= (uint8_t)~(1u << part);
+            if (fs_start(d, part, true) == OK)
+                return;
+        }
+    }
+}
+
+/* Step 4: d is not the boot disk. Each of its FAT partitions gets a
+ * read-only filesystem service and a /usbN (others_pump starts them). */
+static void mount_others(struct disk *d)
+{
+    d->state = DISK_OTHER;
+    d->want = 0;
+    for (unsigned i = 0; i < d->nparts && i < MAX_PARTS; i++) {
+        if (fat_type(d->type[i]))
+            d->want |= (uint8_t)(1u << i);
+        else
+            say(false, "devmgr: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
+                i + 1, d->type[i]);
+    }
+    if (!d->want)
+        say(false, "devmgr: %s: no FAT partition to mount: left alone", disk_name(d));
+    others_pump();
+}
+
+/* An fs.stat of `path` written to b's service without waiting for the
+ * answer (fs_answers takes it). Returns its transaction id. */
+static uint32_t ask_stat(const struct binding *b, const char *path, status_t *st)
+{
+    struct fs_stat_req q;
+    memset(&q, 0, sizeof(q));
+    if (++txids == 0)
+        txids++;
+    q.txid = txids;
+    q.ordinal = FS_STAT;
+    memcpy(q.path, path, strlen(path) + 1);
+    *st = jam_channel_write(b->client, &q, sizeof(q), NULL, 0);
+    return q.txid;
+}
+
 /* ---- the steps --------------------------------------------------------------- */
 
-/* d is not (or no longer) a disk to mount. */
+/* d's driver doesn't answer: nothing of it is mounted. */
 static void leave_alone(struct disk *d, const char *why)
 {
     say(false, "devmgr: %s: %s: left alone", disk_name(d), why);
+    drop_services(d, DISK_ALONE);
+}
+
+/* d is not the boot disk: whatever looked at its ESP goes, and its FAT
+ * partitions are mounted read-only. */
+static void not_boot(struct disk *d, const char *why)
+{
+    say(false, "devmgr: %s: %s: not the boot disk", disk_name(d), why);
     drop_services(d, DISK_OTHER);
+    mount_others(d);
 }
 
 /* Step 1: ask d's driver what it holds. */
@@ -293,17 +433,11 @@ static void inquiry_text(char *out, const uint8_t *in, unsigned n)
  * fs.stat written without waiting for the answer (fs_answers takes it). */
 static void ask_boot_file(struct disk *d)
 {
-    struct fs_stat_req q;
-    memset(&q, 0, sizeof(q));
-    if (++txids == 0)
-        txids++;
-    q.txid = txids;
-    q.ordinal = FS_STAT;
-    memcpy(q.path, BOOT_FILE, sizeof(BOOT_FILE));
-    d->txid = q.txid;
+    status_t st;
+    d->txid = ask_stat(&devs[d->fs[PART_ESP] - 1], BOOT_FILE, &st);
     d->deadline = now() + ESP_WAIT;
     d->state = DISK_ESP;
-    if (jam_channel_write(devs[d->fs[PART_ESP] - 1].client, &q, sizeof(q), NULL, 0) != OK)
+    if (st != OK)
         d->deadline = now();   /* disk_run_due gives up on it */
 }
 
@@ -314,9 +448,11 @@ static void got_info(struct disk *d, const struct storage_info_rep *r)
     char vendor[9], product[17], why[64];
     inquiry_text(vendor, r->vendor, 8);
     inquiry_text(product, r->product, 16);
-    uint8_t type[2] = { 0, 0 };
+    uint8_t *type = d->type;
     status_t st = OK;
-    for (uint8_t i = 0; st == OK && i < 2 && i < r->partitions; i++)
+    memset(d->type, 0, sizeof(d->type));
+    d->nparts = r->partitions;
+    for (uint8_t i = 0; st == OK && i < MAX_PARTS && i < r->partitions; i++)
         st = storage_partition_until(disk_ch(d), now() + CALL_WAIT, i, &type[i], NULL, NULL);
     say(false, "devmgr: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d), vendor,
         product, (unsigned long)(r->blocks * r->block_size >> 20), r->partitions, type[0], type[1]);
@@ -324,10 +460,10 @@ static void got_info(struct disk *d, const struct storage_info_rep *r)
         snprintf(why, sizeof(why), "its partitions can't be read (%s)", status_str(st));
         leave_alone(d, why);
     } else if (r->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA) {
-        leave_alone(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
+        not_boot(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
     } else if (boot_disk_taken(d)) {
-        leave_alone(d, "another disk is the boot disk already");
-    } else if ((st = fs_start(d, PART_ESP)) != OK) {
+        not_boot(d, "another disk is the boot disk already");
+    } else if ((st = fs_start(d, PART_ESP, false)) != OK) {
         snprintf(why, sizeof(why), "no filesystem service for its ESP (%s)", status_str(st));
         leave_alone(d, why);
     } else {
@@ -342,15 +478,15 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
     if (st != OK || is_dir) {
         snprintf(why, sizeof(why), "no %s on its ESP (%s)", BOOT_FILE + 1,
                  st != OK ? status_str(st) : "a directory");
-        leave_alone(d, why);
+        not_boot(d, why);
         return;
     }
     if (boot_disk_taken(d)) {
-        leave_alone(d, "another disk is the boot disk already");
+        not_boot(d, "another disk is the boot disk already");
         return;
     }
     d->state = DISK_BOOT;
-    st = fs_start(d, PART_DATA);
+    st = fs_start(d, PART_DATA, false);
     say(!d->test, "devmgr: %s is the boot disk: its ESP is mounted, its data partition %s%s",
         disk_name(d), st == OK ? "too" : "is not: ", st == OK ? "" : status_str(st));
     if (st != OK && !d->test)
@@ -386,6 +522,18 @@ static void fs_answers(struct binding *b)
     while (b->client && next_msg(b->client, buf, sizeof(buf), &n) == OK) {
         const struct fs_stat_rep *r = (const void *)buf;
         struct disk *d = disk_of(b);
+        if (b->other) {
+            /* The first fs.stat of a /usbN service: its volume is mounted. */
+            if (!d || b->ready || n < sizeof(struct idl_rep_hdr) || r->txid != b->probe)
+                continue;
+            if (idl_rep_status(buf, n, sizeof(*r)) != OK)
+                continue;   /* it can't even stat its root: no mount */
+            b->ready = true;
+            say(false, "devmgr: %s partition %u is %s, %s", disk_name(d), b->part + 1,
+                fs_mount_path(b), b->rw ? "read-write" : "read-only");
+            mounts_update();
+            continue;
+        }
         if (!d || d->state != DISK_ESP || b->part != PART_ESP ||
             n < sizeof(struct idl_rep_hdr) || r->txid != d->txid)
             continue;   /* not what we wait for: a late answer to someone's call */
@@ -426,10 +574,15 @@ void disk_detach(struct binding *b)
 
 void disk_started(struct binding *b)
 {
-    if (b->kind == BIND_FS)
+    status_t st;
+    if (b->kind == BIND_FS && b->other) {
+        b->ready = false;   /* a mount once it answers (fs_answers) */
+        b->probe = ask_stat(b, "/", &st);
+    } else if (b->kind == BIND_FS) {
         mounts_update();
-    else if (disk_of(b))
+    } else if (disk_of(b)) {
         ask_info(disk_of(b));
+    }
 }
 
 void disk_stopped(struct binding *b)
@@ -437,19 +590,68 @@ void disk_stopped(struct binding *b)
     struct disk *d = disk_of(b);
     if (!d)
         return;
-    if (b->kind == BIND_FS)
+    if (b->kind == BIND_FS) {
+        b->ready = false;
         mounts_update();
-    else
+    } else {
         drop_services(d, DISK_DOWN);
+    }
 }
 
-bool fs_check_ended(struct binding *b)
+bool fs_check_ended(struct binding *b, bool no_volume)
 {
     struct disk *d = disk_of(b);
-    if (!d || d->state != DISK_ESP || b->part != PART_ESP)
+    if (!d)
         return false;
-    leave_alone(d, "its ESP's filesystem service ended: no FAT volume it can read");
+    if (d->state == DISK_ESP && b->part == PART_ESP && !b->other) {
+        not_boot(d, "its ESP's filesystem service ended: no FAT volume it can read");
+        return true;
+    }
+    if (!b->other || !no_volume)
+        return false;
+    say(false, "devmgr: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
+        "nothing written to it", disk_name(d), b->part + 1, d->type[b->part], FAT_PATH);
+    problems += !job_empty(b->job, b->path);
+    forget_driver(b);
+    fs_retire(b);
     return true;
+}
+
+status_t disk_remount(unsigned n, bool test, bool writable)
+{
+    struct binding *b = NULL;
+    for (unsigned i = 0; i < ndevs && !b; i++)
+        if (devs[i].kind == BIND_FS && devs[i].path && devs[i].other && devs[i].test == test &&
+            devs[i].usbn == n)
+            b = &devs[i];
+    if (!b)
+        return ERR_NOT_FOUND;
+    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->ready)
+        return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
+    if (b->rw == writable)
+        return OK;
+    char path[16];
+    snprintf(path, sizeof(path), "%s", fs_mount_path(b));
+    if (b->rw) {
+        /* What was written goes to the stick before the service does. */
+        status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
+        if (st != OK)
+            say(false, "devmgr: %s: not synced before it goes read-only (%s)", path,
+                status_str(st));
+    }
+    stop_driver(b, true, true);
+    b->state = DEVMGR_SUP_NONE;
+    sup_reset(b);
+    b->rw = writable;
+    b->last = start_driver(b);   /* a new `block` channel, opened the new way */
+    status_t st = b->last;
+    say(false, "devmgr: %s: its filesystem service started again, %s (%s)", path,
+        writable ? "read-write" : "read-only", status_str(st));
+    if (st != OK) {
+        fs_retire(b);
+        mounts_update();
+    }
+    return st;
 }
 
 status_t disk_test(handle_t ch, uint32_t *id)
@@ -501,8 +703,9 @@ void disk_run_due(void)
         if (d->state == DISK_INFO)
             leave_alone(d, "its driver did not answer storage.info");
         else if (d->state == DISK_ESP)
-            leave_alone(d, "its ESP's filesystem service did not answer");
+            not_boot(d, "its ESP's filesystem service did not answer");
     }
+    others_pump();   /* whatever happened may have been what the next one waited for */
 }
 
 uint64_t disk_next_deadline(void)
@@ -519,14 +722,17 @@ void disk_sync_all(void)
 {
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         const struct disk *d = &disks[i];
-        if (d->state != DISK_BOOT || !d->fs[PART_DATA])
-            continue;
-        const struct binding *b = &devs[d->fs[PART_DATA] - 1];
-        if (b->state != DEVMGR_SUP_RUNNING || !b->client)
-            continue;
-        status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
-        say(st != OK && !d->test, "devmgr: %s: %s synced before stopping (%s)", disk_name(d),
-            fs_mount_path(b), status_str(st));
+        for (unsigned part = 0; part < MAX_PARTS; part++) {
+            if ((d->state != DISK_BOOT && d->state != DISK_OTHER) || !d->fs[part])
+                continue;
+            const struct binding *b = &devs[d->fs[part] - 1];
+            bool writable = b->other ? b->rw && b->ready : part == PART_DATA;
+            if (!writable || b->state != DEVMGR_SUP_RUNNING || !b->client)
+                continue;
+            status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
+            say(st != OK && !d->test, "devmgr: %s: %s synced before stopping (%s)", disk_name(d),
+                fs_mount_path(b), status_str(st));
+        }
     }
 }
 
@@ -534,12 +740,15 @@ unsigned disk_mounts(struct mount *out)
 {
     unsigned n = 0;
     for (unsigned i = 0; i < MAX_DISKS; i++) {
-        for (unsigned part = 0; part < 2 && disks[i].state == DISK_BOOT; part++) {
+        bool mounted = disks[i].state == DISK_BOOT || disks[i].state == DISK_OTHER;
+        for (unsigned part = 0; part < MAX_PARTS && mounted; part++) {
             if (!disks[i].fs[part] || n == DEVMGR_MAX_MOUNTS)
                 continue;
             const struct binding *b = &devs[disks[i].fs[part] - 1];
             if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->client)
                 continue;
+            if (b->other && !b->ready)
+                continue;   /* no volume mounted yet (or none at all) */
             out[n] = (struct mount){ .bind = (uint32_t)(b - devs), .gen = b->gen };
             snprintf(out[n].path, sizeof(out[n].path), "%s", fs_mount_path(b));
             n++;
