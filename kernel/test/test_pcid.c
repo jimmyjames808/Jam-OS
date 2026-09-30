@@ -20,6 +20,7 @@
  * so this is the only way it runs there). */
 KTEST(pcid_slot_bookkeeping)
 {
+    pcid_test_reset();   /* a second run in one boot starts from empty slots too */
     /* First load of an address space on a CPU: a slot, flushed. */
     KT_EQ(pcid_test_decide(0, 1000, 1, true), 1);
     KT_EQ(pcid_test_decide(0, 1000, 1, true), 1 | KEEP);   /* same generation: kept */
