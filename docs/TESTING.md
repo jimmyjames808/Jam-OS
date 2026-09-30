@@ -100,7 +100,8 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   names are in `kernel/debug/selftest.c`). Each must end on the panic
   screen with the right message; `testbp` must come back.
 - Switches for the scheduler and friends, each turning one optimisation
-  off to compare: `nopcid`, `nospinidle` (or `idlespin=<us>`),
+  off to compare: `nopcid` (and `forcepcid`: PCIDs on even where the kernel
+  leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
 - `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting.

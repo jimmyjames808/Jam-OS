@@ -12,9 +12,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The CPU has PCIDs (and PGE: the kernel's entries must be global) and
- * "nopcid" is not on the command line. Decided once, at the first call. */
+/* Are PCIDs to be used on this machine? pcid_decide says, from the CPU
+ * (cpu_features) and the boot words; decided once, at the first call. */
 bool     pcid_usable(void);
+/* What the decision looks at. */
+struct pcid_cpu_info {
+    bool     has_pcid, has_pge;   /* CPUID: PCIDs; global pages (the kernel's entries) */
+    bool     intel;               /* vendor GenuineIntel */
+    uint32_t family, model;       /* CPUID leaf 1, extended fields folded in */
+    uint32_t microcode;           /* the running revision, 0 if unknown */
+    bool     word_off, word_on;   /* boot words "nopcid", "forcepcid" */
+};
+/* The decision, and in *why a few words for the boot log. In order: no
+ * PCIDs or no PGE: off. "nopcid": off. "forcepcid": on. An Intel model
+ * whose INVLPG may leave global entries while PCIDs are on (Alder Lake,
+ * Raptor Lake, Gracemont) with microcode older than the first fixed
+ * revision: off. Otherwise on. *fixed: that revision for an affected
+ * model, else 0. */
+bool     pcid_decide(const struct pcid_cpu_info *c, const char **why, uint32_t *fixed);
+/* One boot log line: the decision and its reason. */
+void     pcid_report(void);
 /* A new address-space id (never 0, never reused). */
 uint64_t pcid_new_id(void);
 /* Interrupts off. Load CR3 for an address space: its PML4, its id (0 for
@@ -32,4 +49,6 @@ uint64_t pcid_flushed_loads(uint32_t cpu);
 #define PCID_SLOTS_PER_CPU 8
 #define PCID_TEST_KEEP 0x10000
 uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw);
+/* The fake CPUs as new: a test starts from empty slots every time it runs. */
+void     pcid_test_reset(void);
 #endif

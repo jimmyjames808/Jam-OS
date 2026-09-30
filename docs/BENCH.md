@@ -147,6 +147,8 @@ Reading:
   generation read) runs whenever the CPU has PCIDs, or CR4.PCIDE makes the
   CR3 write itself dearer. Real calls still got faster; look at it in a
   later pass (`nopcid` boot makes the CPU skip PCIDs entirely, to compare).
+  Where the kernel leaves PCIDs off for the INVLPG erratum the pcid rows
+  measure nothing: boot the benchmark with `forcepcid` to get them.
 
 Design notes. Unchanged lines (no switch): timestamp, spin_lock, page alloc (one CPU and
 all CPUs), context switch, same-CPU block+wake and channel_call, cache-line

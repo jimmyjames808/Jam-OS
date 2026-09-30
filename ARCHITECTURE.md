@@ -171,7 +171,11 @@ Every driver and service is a userspace process from the start.
   next load; CPUs that only ran it earlier are never interrupted. Kernel
   entries are global (PCIDs require PGE); INVPCID is not used. Switch
   `pcid_set`, boot `nopcid`. QEMU's TCG has no PCIDs: the PC is the only
-  place this runs for real.
+  place this runs for real. On Alder Lake and Raptor Lake CPUs whose
+  microcode is older than Intel's fix, INVLPG may leave global entries
+  while PCIDs are on (errata ADL063, RPL042), which would break the
+  kernel's own shootdowns: there PCIDs stay off (`pcid_decide`; the boot
+  log's `pcid:` line says which and why; boot `forcepcid` overrides).
 
 ## SMP
 

@@ -103,6 +103,10 @@ kernel ends every run with a RESULTS box that sums up what happened.
 - A hang during boot: the last log line names the step (`pci:` lines name
   the function being sized).
 - Anything that looks like memory corruption: boot with `nopcid` first
-  (QEMU's TCG has no PCIDs, so the PC is the only place they run).
+  (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
+  log's `cpu id:` and `pcid:` lines give the microcode revision and whether
+  PCIDs are on: the PC's CPU family has an INVLPG erratum that old
+  microcode does not fix, and the kernel then leaves them off
+  ([ARCHITECTURE.md](../ARCHITECTURE.md)).
 - The safe mode entry (`nousb`) starts no USB drivers; input then comes only
   from the serial port.

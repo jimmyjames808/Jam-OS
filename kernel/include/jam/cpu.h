@@ -16,6 +16,10 @@ struct cpu_features {
     bool smep, smap, umip;                  /* CPUID 7: supervisor-mode protections, UMIP */
     bool xsave, avx;                        /* XSAVE (CPUID 1.ECX[26]); AVX usable with it */
     bool pcid, invpcid;                     /* CPUID 1.ECX[17], 7.EBX[10] */
+    bool pku, pks, waitpkg;                 /* CPUID 7.ECX[3], [31], [5] */
+    bool cet_ss, cet_ibt, uintr;            /* CPUID 7.ECX[7], 7.EDX[20], 7.EDX[5] */
+    uint32_t family, model, stepping;       /* CPUID 1.EAX, the extended fields folded in */
+    uint32_t microcode;                     /* the running microcode revision, 0 if unknown */
     uint32_t max_leaf;                      /* highest basic CPUID leaf */
     uint32_t crystal_hz;                    /* CPUID 0x15, 0 if not reported */
     uint32_t tsc_ratio_num, tsc_ratio_den;  /* CPUID 0x15: TSC = crystal * num / den */
