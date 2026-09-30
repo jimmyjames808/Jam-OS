@@ -1,9 +1,13 @@
 /* fat: the open files. Each fs.open takes a slot of files[]: FatFs's FIL,
- * a 64 KiB transfer buffer (a VMO mapped here; the client gets a handle to
- * map it too) and a channel speaking the `file` protocol, bound to fat's
- * port. The client closing its end closes the file. The table's size
- * (FAT_MAX_FILES) bounds what clients can make fat hold: 64 KiB and two
- * handles per slot.
+ * a 64 KiB transfer buffer (a VMO; the client gets a handle to map it) and
+ * a channel speaking the `file` protocol, bound to fat's port. The client
+ * closing its end closes the file. The table's size (FAT_MAX_FILES) bounds
+ * what clients can make fat hold: 64 KiB and two handles per slot.
+ *
+ * fat never maps a transfer buffer: the client's handle can shrink the VMO
+ * (RIGHT_WRITE allows vmo_set_size), and a mapping of it would fault under
+ * FatFs. Data goes between the VMO and one buffer of fat's own (bounce)
+ * with vmo_read / vmo_write, which answer a shrunken buffer with an error.
  *
  * FatFs's f_lseek past the end of a file open for writing grows it with
  * whatever the clusters held before. Here a write or truncate past the end
@@ -18,6 +22,7 @@
 #define CLIENT_BUF_RIGHTS (RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER)
 
 static struct fat_file files[FAT_MAX_FILES];
+static uint8_t bounce[FAT_FILE_BUF];   /* between FatFs and a file's buffer VMO */
 
 bool files_unsynced(void)
 {
@@ -88,10 +93,13 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
     if (length && offset < f_size(&f->fil)) {
         FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
         if (fr == FR_OK)
-            fr = f_read(&f->fil, f->buf, length, &got);
+            fr = f_read(&f->fil, bounce, length, &got);
         if (fr != FR_OK)
             return fr_status(fr);
     }
+    status_t st = got ? jam_vmo_write(f->vmo, 0, bounce, got) : OK;
+    if (st != OK)
+        return st;
     *out_actual = got;
     return OK;
 }
@@ -107,13 +115,15 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         offset = f_size(&f->fil);
     if (offset > FAT_FILE_MAX || length > FAT_FILE_MAX - offset)
         return ERR_OUT_OF_RANGE;
-    status_t st = grow_to(f, offset);
+    status_t st = length ? jam_vmo_read(f->vmo, 0, bounce, length) : OK;
+    if (st == OK)
+        st = grow_to(f, offset);
     if (st != OK)
         return st;
     UINT put = 0;
     FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
     if (fr == FR_OK && length) {
-        fr = f_write(&f->fil, f->buf, length, &put);
+        fr = f_write(&f->fil, bounce, length, &put);
         f->unsynced = true;
     }
     if (fr != FR_OK)
@@ -166,10 +176,6 @@ static const struct file_ops file_ops = {
 /* Give the slot back: the buffer, the channel, the binding. */
 static void release(struct fat_file *f)
 {
-    /* Undoing what attach did: neither can fail, and nothing could be done. */
-    if (f->buf)
-        (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)f->buf,
-                             FAT_FILE_BUF);
     if (f->vmo != HANDLE_INVALID)
         jam_handle_close(f->vmo);
     if (f->ch != HANDLE_INVALID) {
@@ -212,15 +218,9 @@ static status_t arm(struct fat_file *f)
 static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
 {
     handle_t client = HANDLE_INVALID, buf = HANDLE_INVALID;
-    uint64_t addr = 0;
     status_t st = jam_vmo_create(FAT_FILE_BUF, 0, HANDLE_INVALID, &f->vmo);
     if (st == OK)
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), f->vmo, 0, FAT_FILE_BUF,
-                          VMAR_READ | VMAR_WRITE, &addr);
-    if (st == OK) {
-        f->buf = (uint8_t *)(uintptr_t)addr;
         st = jam_handle_duplicate(f->vmo, CLIENT_BUF_RIGHTS, &buf);
-    }
     if (st == OK)
         st = jam_channel_create(&f->ch, &client);
     if (st == OK)

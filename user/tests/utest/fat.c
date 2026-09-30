@@ -318,6 +318,26 @@ static bool check_open_files(const struct fatrun *r)
     return true;
 }
 
+/* The transfer buffer is the client's to map, and with its handle the
+ * client can also shrink it to nothing: fat must answer the next read and
+ * write with an error, not fall over it. */
+static bool check_shrunk_buffer(const struct fatrun *r)
+{
+    uint8_t p[FS_PATH_MAX] = "/hello.txt";
+    handle_t ch, vmo;
+    uint64_t size = 0;
+    uint32_t n = 0;
+    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, p, FS_READ | FS_WRITE, &ch, &vmo, &size),
+             OK);
+    CHECK_ST(jam_vmo_set_size(vmo, 0), OK);
+    CHECK_ST(file_read_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(file_write_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(jam_handle_close(vmo), OK);
+    CHECK_ST(t_stat(r, "/hello.txt", &size, NULL, NULL), OK);   /* fat is still there */
+    return true;
+}
+
 bool t_fat_files(void)
 {
     struct fatrun r;
@@ -327,7 +347,7 @@ bool t_fat_files(void)
         return false;
     CHECK_EQ(fat_kind(&disk), 16);
     if (!check_reads(&r) || !check_open_flags(&r) || !check_growth(&r) || !check_big_file(&r) ||
-        !check_open_files(&r))
+        !check_open_files(&r) || !check_shrunk_buffer(&r))
         return false;
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }

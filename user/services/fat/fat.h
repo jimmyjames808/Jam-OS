@@ -70,8 +70,7 @@ struct fat_file {
     uint32_t gen;             /* bumped on every open of this slot */
     uint32_t flags;           /* FS_* it was opened with */
     handle_t ch;              /* our end of its `file` channel */
-    handle_t vmo;             /* its transfer buffer */
-    uint8_t *buf;             /* ... mapped, FAT_FILE_BUF bytes */
+    handle_t vmo;             /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
     char     path[FS_PATH_MAX];/* its resolved path, for stat's mtime */
     FIL      fil;             /* FatFs's file */
 };
