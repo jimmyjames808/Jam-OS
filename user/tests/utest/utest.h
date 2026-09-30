@@ -1,7 +1,8 @@
 /* utest internals: the suite (main.c: helpers, the kernel's objects and
  * rights, the table of tests; threads.c; drivers.c: drivers as processes
  * and devmgr's edu driver; supervise.c: devmgr's supervision and what a
- * driver's handles can't do; hid.c: the hid driver against hidmock.c), the
+ * driver's handles can't do; hid.c: the hid driver against hidmock.c;
+ * disks.c: devmgr's disks and mounts against diskmock.c), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -25,6 +26,13 @@ bool t_hid_repeat(void);
 bool t_hid_mouse(void);
 bool t_hid_composite(void);
 bool t_hid_unplug_and_console_gone(void);
+
+/* disks.c: devmgr's disks and mounts against the mock usb-storage
+ * (diskmock.c), with the fat service on its partitions. */
+bool t_disk_mounts(void);
+bool t_disk_not_boot(void);
+bool t_disk_fs_restart(void);
+bool t_disk_vanishes(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
