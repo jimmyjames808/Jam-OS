@@ -14,7 +14,7 @@
 #include "hda.h"
 
 /* One GET into *out, counting a failure against w. */
-static uint32_t get(struct hda *h, struct codec *c, struct widget *w, uint32_t verb,
+static uint32_t get(struct hda *h, const struct codec *c, struct widget *w, uint32_t verb,
                     uint32_t payload)
 {
     uint32_t v = 0;
@@ -25,7 +25,7 @@ static uint32_t get(struct hda *h, struct codec *c, struct widget *w, uint32_t v
     return v;
 }
 
-static uint32_t param(struct hda *h, struct codec *c, struct widget *w, uint32_t p)
+static uint32_t param(struct hda *h, const struct codec *c, struct widget *w, uint32_t p)
 {
     return get(h, c, w, V_GET_PARAM, p);
 }
@@ -53,7 +53,7 @@ static void conn_entry(struct widget *w, unsigned *n, uint16_t *prev, uint16_t e
  * i answers the entries from i rounded down, four 8-bit ones (short form)
  * or two 16-bit ones (long form). An entry with its top bit set is the
  * end of a range: every node from the entry before it up to this one. */
-static void read_conn(struct hda *h, struct codec *c, struct widget *w)
+static void read_conn(struct hda *h, const struct codec *c, struct widget *w)
 {
     uint32_t len = param(h, c, w, P_CONN_LEN);
     unsigned total = len & 0x7fu, per = len & 0x80u ? 2 : 4, bits = 32 / per;
@@ -71,14 +71,14 @@ static void read_conn(struct hda *h, struct codec *c, struct widget *w)
 }
 
 /* bit 7 mute, 6:0 gain, for one amp (output or input `index`, `left`). */
-static uint8_t amp(struct hda *h, struct codec *c, struct widget *w, bool output, bool left,
+static uint8_t amp(struct hda *h, const struct codec *c, struct widget *w, bool output, bool left,
                    unsigned index)
 {
     uint32_t p = (output ? AMP_GET_OUT : 0) | (left ? AMP_GET_LEFT : 0) | (index & 0xfu);
     return (uint8_t)get(h, c, w, V4_GET_AMP, p);
 }
 
-static void read_amps(struct hda *h, struct codec *c, struct widget *w, enum wtype t)
+static void read_amps(struct hda *h, const struct codec *c, struct widget *w, enum wtype t)
 {
     bool ovr = w->caps & WCAP_AMP_OVR;
     if (w->caps & WCAP_OUT_AMP) {
@@ -98,7 +98,7 @@ static void read_amps(struct hda *h, struct codec *c, struct widget *w, enum wty
     w->nin = (uint8_t)n;
 }
 
-static void read_pin(struct hda *h, struct codec *c, struct widget *w)
+static void read_pin(struct hda *h, const struct codec *c, struct widget *w)
 {
     w->pincaps = param(h, c, w, P_PIN_CAPS);
     w->config = get(h, c, w, V_GET_CONFIG, 0);
@@ -114,7 +114,7 @@ static void read_pin(struct hda *h, struct codec *c, struct widget *w)
     }
 }
 
-static void read_widget(struct hda *h, struct codec *c, struct widget *w)
+static void read_widget(struct hda *h, const struct codec *c, struct widget *w)
 {
     w->caps = param(h, c, w, P_WIDGET_CAPS);
     enum wtype t = WCAP_TYPE(w->caps);
@@ -140,6 +140,20 @@ static void read_widget(struct hda *h, struct codec *c, struct widget *w)
     }
     if (w->caps & WCAP_UNSOL)
         w->unsol = (uint8_t)get(h, c, w, V_GET_UNSOL, 0);
+}
+
+void hda_read_widget(struct hda *h, const struct codec *c, struct widget *w)
+{
+    *w = (struct widget){ .nid = w->nid };
+    read_widget(h, c, w);
+}
+
+const struct widget *hda_widget(const struct codec *c, unsigned nid)
+{
+    for (unsigned i = 0; i < c->nw; i++)
+        if (c->w[i].nid == nid)
+            return &c->w[i];
+    return NULL;
 }
 
 /* The AFG's own parameters and its widget range. */

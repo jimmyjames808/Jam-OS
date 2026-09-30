@@ -3,8 +3,9 @@
 # shell's `hda` command is the client.
 # Format: see tools/genidl.py.
 #
-# Today the driver is a read-only probe: it reads the controller and every
-# codec's widget graph and changes nothing. The playback methods come with
+# The driver reads the controller and every codec's widget graph, picks
+# the path from a DAC to the headphones and sets it up muted, with the
+# pin's output off: it makes no sound yet. The playback methods come with
 # the rest of the audio work (docs/A1-PLAN.md).
 #
 # Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
@@ -18,3 +19,14 @@ protocol hda 21
 # to the kernel log at start, as text in a new VMO of `length` bytes
 # (lines end in \n). codecs: how many codecs answered.
 1  dump  ()  -> (handle text, u32 length, u32 codecs)
+
+# What the driver chose and set up. codec, pin, dac: the path's codec
+# address and its two ends (pin 0: there is no path, and the rest is 0).
+# pcm and formats: the DAC's Supported PCM Size/Rates and Stream Formats
+# parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
+# amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
+# minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
+# 0 unknown (jack detection is not built yet). nodes: the path's node ids
+# from the DAC to the pin, `count` of them. text: what is set on each
+# node, read back from the codec, as one line (NUL-terminated).
+2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u32 count, u8[8] nodes, u8[240] text)
