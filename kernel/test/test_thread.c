@@ -10,11 +10,21 @@
 KTEST(kstack_free_reuses_range)
 {
     KT_SKIP_LIVE("exact free pages and kernel stack ranges");
-    uint64_t free0 = kt_free_pages();
+    /* One stack made and freed first, so this test starts from the same
+     * state whatever ran before it: the stack space it uses is mapped (a
+     * first stack beyond it takes a page-table page, kept for good) and
+     * there is a free range to reuse. Then wait for the pages earlier
+     * tests are still giving back (threads reaped at a CPU's next switch). */
+    void *warm = kstack_alloc_try(64 * 1024);
+    KT_ASSERT(warm);
+    kstack_free(warm, 64 * 1024);
+    uint64_t free0 = kt_free_pages_settled();
     void *a = kstack_alloc_try(64 * 1024);
-    KT_ASSERT(a);
+    KT_ASSERT(a == warm);
     ((volatile uint64_t *)a)[-1] = 1;   /* mapped and writable */
-    KT_ASSERT(kt_free_pages() <= free0 - 16);
+    /* 16 pages taken. Reusing the range frees its list node, and with it,
+     * if it was the only object there, the node's slab page. */
+    KT_ASSERT(kt_free_pages() <= free0 - 15);
     kstack_free(a, 64 * 1024);
     KT_EQ(vmm_translate(vmm_kernel_pml4(), (uint64_t)a - 8), UINT64_MAX);
     void *b = kstack_alloc_try(64 * 1024);

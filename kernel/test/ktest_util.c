@@ -22,6 +22,19 @@ uint64_t kt_free_pages(void)
     return free;
 }
 
+uint64_t kt_free_pages_settled(void)
+{
+    uint64_t prev = kt_free_pages();
+    for (int i = 0; i < 100; i++) {
+        thread_sleep_ms(5);
+        uint64_t now = kt_free_pages();
+        if (now == prev)
+            break;
+        prev = now;
+    }
+    return prev;
+}
+
 uint64_t kt_free_and_cached_pages(void)
 {
     uint64_t total, free;

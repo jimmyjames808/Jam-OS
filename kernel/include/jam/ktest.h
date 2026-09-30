@@ -173,6 +173,10 @@ struct pci_dev;
 
 /* Free pages now (pmm_stats: drains the per-CPU caches first). */
 uint64_t kt_free_pages(void);
+/* The same once it stops changing (two readings 5 ms apart agree; at most
+ * 0.5 s): for a test that compares exact free pages and must not count
+ * what an earlier test is still giving back. */
+uint64_t kt_free_pages_settled(void);
 /* Free pages plus the pages parked in the thread stack cache, as the
  * per-test leak check counts them: a helper thread's stack just moves
  * between the two. */
