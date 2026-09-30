@@ -37,7 +37,9 @@
  *
  * The pair belongs to the interface channel that opened it. It is
  * released (endpoints dropped, buffer unpinned) when that channel closes,
- * on set_interface, and when the device goes. The same channel opening it
+ * on set_interface, and when the device goes. A buffer is unpinned only
+ * once the controller can't run a transfer into it any more; until then
+ * it is parked, still pinned. The same channel opening it
  * again gets a fresh pair: devmgr restarts a class driver that died with
  * a duplicate of the old channel, which therefore never closes, and the
  * new driver can't have the dead one's buffer. Another channel of the
@@ -45,6 +47,16 @@
 #include "usbbus.h"
 
 #define EP_STATE_HALTED 2   /* xHCI 6.2.3: the endpoint context's EP State */
+#define MAX_PARKED      16  /* buffers kept pinned until the controller is reset */
+
+/* Buffers whose endpoints the controller may still run (the device left
+ * and its slot couldn't be disabled, or usb-bus is stopping): they stay
+ * pinned until hc_shutdown has reset the controller (bulk_unpin_parked). */
+static struct {
+    handle_t vmo;   /* our handle */
+    uint64_t pin;   /* its pin id */
+} parked[MAX_PARKED];
+static unsigned nparked;
 
 /* f's endpoint `addr` if it is a bulk endpoint of the given type. */
 static struct ep *bulk_ep(struct usbdev *d, const struct iface *f, uint8_t addr, uint8_t type)
@@ -134,12 +146,27 @@ void bulk_release(struct usbdev *d, struct iface *f, bool slot_off)
             drv_log("usb %s: if%u: dropping its bulk endpoints: %s; the buffer stays pinned",
                     d->path, f->number, cc_str(cc));
     }
-    /* Not checked: a pin left is quarantined when our dma_cap closes. */
-    if (b->pinned && quiet)
-        (void)drv_vmo_unpin(b->vmo, g_hc.dma, b->pin);
-    drv_handle_close(b->vmo);
+    if (b->pinned && !quiet && nparked < MAX_PARKED) {
+        parked[nparked].vmo = b->vmo;
+        parked[nparked++].pin = b->pin;
+    } else {
+        /* Not checked: a pin left is quarantined when our dma_cap closes
+         * (so is one that found the parking full). */
+        if (b->pinned && quiet)
+            (void)drv_vmo_unpin(b->vmo, g_hc.dma, b->pin);
+        drv_handle_close(b->vmo);
+    }
     drv_free(b);
     f->bulk = NULL;
+}
+
+void bulk_unpin_parked(void)
+{
+    for (unsigned i = 0; i < nparked; i++) {
+        (void)drv_vmo_unpin(parked[i].vmo, g_hc.dma, parked[i].pin);   /* as above */
+        drv_handle_close(parked[i].vmo);
+    }
+    nparked = 0;
 }
 
 void bulk_chan_closed(struct usbdev *d, struct iface *f, int chan)

@@ -584,6 +584,8 @@ int driver_main(const struct driver_start *s)
     int q = hc_shutdown(h);
     if (r == 0)
         r = q;
+    if (q == 0)
+        bulk_unpin_parked();   /* halted and reset: nothing runs into them now */
     drv_log("stopped: %lu interrupts, %lu events, DMA pool peak %u of %u pages", h->irqs,
             h->events, h->pool_peak, POOL_PAGES);
     if (h->port != HANDLE_INVALID)

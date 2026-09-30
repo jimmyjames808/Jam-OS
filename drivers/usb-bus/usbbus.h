@@ -531,8 +531,11 @@ bool intr_upkeep(struct hc *h);           /* halted and dropped endpoints; true 
 void bulk_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
 /* Close interface f's bulk pair: drop its endpoints, unpin and free the
  * buffer. slot_off: the controller has let go of the device's slot
- * already (dev_free); false with the device gone: the pin is kept. */
+ * already (dev_free); false with the device gone: the buffer is parked. */
 void bulk_release(struct usbdev *d, struct iface *f, bool slot_off);
+/* The controller is halted and reset: unpin the buffers that had to stay
+ * pinned until now. */
+void bulk_unpin_parked(void);
 /* Interface channel `chan` closed: release what it opened. */
 void bulk_chan_closed(struct usbdev *d, struct iface *f, int chan);
 /* The `usb` protocol's bulk methods, for interface channel `chan`. */
