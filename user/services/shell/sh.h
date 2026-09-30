@@ -272,7 +272,7 @@ SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
-SH_CMD(devices); SH_CMD(usb); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
+SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(run);
 /* tests */
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(demo);

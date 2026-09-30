@@ -40,6 +40,9 @@ static const struct sh_cmd cmds[] = {
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
+    C(hda, C_SYSTEM, "hda",
+      "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
+      "  (the lines it logged at boot; pipe it: hda | grep pin)"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
