@@ -74,12 +74,38 @@ static void settle(void)
     }
 }
 
+/* Free pages plus the thread stack cache, after settle(). */
+static uint64_t accounted_pages(void)
+{
+    uint64_t total;
+    settle();
+    return free_pages_now(&total) + sched_stack_cache_pages();
+}
+
+/* The same, once it stops moving: keep reading until two readings 10 ms
+ * apart agree (at most 1 s). Used only when a test looks like it leaked:
+ * on a machine with many CPUs, work the test started elsewhere (a thread or
+ * process reaped on another CPU's next switch) can finish after settle()'s
+ * 8 ms. A real leak never comes back, so waiting for it can't hide one. */
+static uint64_t accounted_pages_stable(void)
+{
+    uint64_t total;
+    uint64_t prev = accounted_pages();
+    for (int i = 0; i < 100; i++) {
+        thread_sleep_ms(10);
+        uint64_t now = free_pages_now(&total) + sched_stack_cache_pages();
+        if (now == prev)
+            break;
+        prev = now;
+    }
+    return prev;
+}
+
 int ktest_run(const char *prefix)
 {
     size_t pl = strlen(prefix);
     int ran = 0, skipped = 0, drifted = 0, relaxed_tests = 0;
     unsigned relaxed = 0;
-    uint64_t total;
     warm_singletons();
     for (const struct ktest *t = __ktests_start; t < __ktests_end; t++) {
         if (memcmp(t->name, prefix, pl))
@@ -96,8 +122,7 @@ int ktest_run(const char *prefix)
          * conserved unless a test allocates a fresh stack (charged once) or
          * truly leaks. Measured after settling so lazily-reaped stacks of
          * threads the test already joined are back in the cache. */
-        settle();
-        uint64_t accounted_before = free_pages_now(&total) + sched_stack_cache_pages();
+        uint64_t accounted_before = accounted_pages();
         uint64_t t0 = uptime_ns();
         t->fn();
         uint64_t us = (uptime_ns() - t0) / 1000;
@@ -106,9 +131,12 @@ int ktest_run(const char *prefix)
             skipped++;
             continue;
         }
-        settle();
-        uint64_t accounted_after = free_pages_now(&total) + sched_stack_cache_pages();
+        uint64_t accounted_after = accounted_pages();
         long leaked = (long)(accounted_before - accounted_after);
+        if (leaked > LEAK_SLACK_PAGES) {
+            accounted_after = accounted_pages_stable();
+            leaked = (long)(accounted_before - accounted_after);
+        }
         if (leaked > LEAK_SLACK_PAGES) {
             if (!ktest_live)
                 panic("ktest %s: leaked %ld pages (accounted %lu -> %lu)", t->name, leaked,
