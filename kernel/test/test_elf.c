@@ -213,6 +213,33 @@ KTEST(elf_synthetic)
     fuzzbuf_free(&fb);
 }
 
+/* One random change in the first hdr_bytes of work: a random byte, a
+ * flipped bit, or a 64-bit value at (or near) an edge. */
+static void damage(uint8_t *work, uint64_t size, uint64_t hdr_bytes)
+{
+    static const uint64_t vals[] = {
+        0, 1, 8, 0x1000, 0x400000, 0x7fffffffe000ull, 0x7ffffffff000ull,
+        0x800000000000ull, 1ull << 63, ~0ull, 0xfffffffffffff000ull, 0xffffffff80000000ull,
+    };
+    uint64_t off = rng() % hdr_bytes;
+    switch (rng() % 3) {
+    case 0:
+        work[off] = (uint8_t)rng();
+        break;
+    case 1:
+        work[off] ^= (uint8_t)(1u << (rng() % 8));
+        break;
+    default: {
+        uint64_t val = vals[rng() % (sizeof(vals) / sizeof(vals[0]))];
+        if (rng() % 2)
+            val = val ? val - 1 + rng() % 3 : rng();   /* near the edge */
+        off &= ~7ull;
+        if (off + 8 <= size)
+            memcpy(work + off, &val, 8);
+    }
+    }
+}
+
 KTEST(elf_corrupt)
 {
     const void *orig;
@@ -317,34 +344,13 @@ KTEST(elf_corrupt)
 
     /* Random damage to the headers, sometimes with a truncation: never a
      * fault, and anything still accepted must pass check_plan. */
-    static const uint64_t vals[] = {
-        0, 1, 8, 0x1000, 0x400000, 0x7fffffffe000ull, 0x7ffffffff000ull,
-        0x800000000000ull, 1ull << 63, ~0ull, 0xfffffffffffff000ull, 0xffffffff80000000ull,
-    };
     unsigned accepted = 0;
     uint64_t hdr_bytes = eh.e_phoff + eh.e_phnum * sizeof(struct elf64_phdr);
     for (int it = 0; it < 600; it++) {
         memcpy(work, orig, size);
         unsigned n = 1 + rng() % 4;
-        for (unsigned k = 0; k < n; k++) {
-            uint64_t off = rng() % hdr_bytes;
-            switch (rng() % 3) {
-            case 0:
-                work[off] = (uint8_t)rng();
-                break;
-            case 1:
-                work[off] ^= (uint8_t)(1u << (rng() % 8));
-                break;
-            default: {
-                uint64_t val = vals[rng() % (sizeof(vals) / sizeof(vals[0]))];
-                if (rng() % 2)
-                    val = val ? val - 1 + rng() % 3 : rng();   /* near the edge */
-                off &= ~7ull;
-                if (off + 8 <= size)
-                    memcpy(work + off, &val, 8);
-            }
-            }
-        }
+        for (unsigned k = 0; k < n; k++)
+            damage(work, size, hdr_bytes);
         uint64_t len = size;
         if (rng() % 6 == 0)
             len = rng() % (size + 1);

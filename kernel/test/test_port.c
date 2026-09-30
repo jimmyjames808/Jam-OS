@@ -780,6 +780,24 @@ static void ch_consumer(void *arg)
     kobject_unref(&p->base);   /* often the last reference: destroys a busy port */
 }
 
+/* One pass of binding every event (ONCE or PERSISTENT by pass j), each
+ * followed by a random unbind now and then; returns the unbinds done. */
+static uint64_t churn_bindings(struct port *p, struct event **evs, uint32_t n, int j,
+                               uint64_t *seed)
+{
+    uint64_t unbound = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        KT_EQ(port_bind(p, &evs[i]->base, i, SIG_SIGNALED,
+                        (j + i) % 2 ? PORT_BIND_ONCE : PORT_BIND_PERSISTENT), OK);
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        if (*seed % 3 == 0 && port_unbind(p, &evs[*seed % n]->base, *seed % n) == OK)
+            unbound++;
+    }
+    return unbound;
+}
+
 KTEST(port_stress_churn)
 {
     struct port_stats before;
@@ -804,17 +822,8 @@ KTEST(port_stress_churn)
         struct port *p = new_port();
         kobject_ref(&p->base);
         struct thread *c = thread_create("port churn consumer", ch_consumer, p, PRIO_DEFAULT);
-        for (int j = 0; j < 8; j++) {
-            for (uint32_t i = 0; i < n; i++) {
-                KT_EQ(port_bind(p, &evs[i]->base, i, SIG_SIGNALED,
-                                (j + i) % 2 ? PORT_BIND_ONCE : PORT_BIND_PERSISTENT), OK);
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                if (seed % 3 == 0 && port_unbind(p, &evs[seed % n]->base, seed % n) == OK)
-                    unbound++;
-            }
-        }
+        for (int j = 0; j < 8; j++)
+            unbound += churn_bindings(p, evs, n, j, &seed);
         struct port_packet stop = { .key = CH_STOP };
         KT_EQ(port_queue_user(p, &stop), OK);
         kobject_unref(&p->base);   /* the consumer may still be draining */
