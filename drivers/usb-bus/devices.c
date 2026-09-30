@@ -92,7 +92,7 @@ void dev_free(struct usbdev *d, bool slot_disabled)
          * endpoints (queued TRBs into our buffers), so none of its DMA
          * pages can go back to the pool. Leaked, like a quarantine; when
          * stopping that is expected, so it isn't logged. */
-        if(!g_hc.stopping)
+        if (!g_hc.stopping)
             drv_log("usb %s: slot %u not disabled: keeping its DMA pages", d->path, d->slot);
         if (d->cfg)
             drv_free(d->cfg);

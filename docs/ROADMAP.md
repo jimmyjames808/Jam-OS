@@ -92,9 +92,6 @@ Offered or noticed, not scheduled into a milestone yet:
   arrays would fix it.
 - The address-space switch got ~20 ns dearer with PCIDs on
   ([BENCH.md](BENCH.md)); look at `pcid_load`'s bookkeeping.
-- usb-bus's shutdown can exceed devmgr's 15 s `STOP_WAIT` with many
-  unresponsive devices (1 s per Disable Slot, up to 5 s more for a
-  Command Abort): cap it as a whole.
 - Kernel waits bounded by an iteration count or not at all: the xAPIC ICR
   wait, `serial_rx_start`'s drain, interrupt teardown, `on_cpu`, the
   pmm/heap flag locks and the lockdep graph lock (from the kernel style
