@@ -777,7 +777,7 @@ void hc_release(struct hc *x, bool quiet)
 }
 
 /* The device context base address array entry for a slot. */
-void hc_set_dcbaa(struct hc *h, uint32_t slot, uint64_t addr)
+void hc_set_dcbaa(const struct hc *h, uint32_t slot, uint64_t addr)
 {
     volatile uint64_t *dcbaa = (volatile uint64_t *)(h->ctx + DMA_DCBAA);
     dcbaa[slot] = addr;

@@ -75,7 +75,7 @@ bool usb_work(struct hc *h)
 /* Shutdown: every endpoint stopped, every slot disabled (the controller
  * is reset right after, but this keeps the DMA story simple: nothing is
  * queued when the halt comes). */
-void usb_stop_all(struct hc *h)
+void usb_stop_all(const struct hc *h)
 {
     (void)h;
     for (int i = 0; g_devs && i < MAX_DEVS; i++)

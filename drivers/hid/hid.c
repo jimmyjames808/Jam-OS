@@ -288,7 +288,7 @@ static void add_collection(struct text *t, uint32_t page, uint32_t usage, uint32
 /* A one-line summary of the report descriptor in h->buf (n bytes): its
  * top-level application collections with their first report id, e.g.
  * "keyboard id 1, consumer control id 3, vendor (page 0xff00 usage 0x1) id 6". */
-static void summarise_report(struct hid *h, uint32_t n, char *out, uint32_t cap)
+static void summarise_report(const struct hid *h, uint32_t n, char *out, uint32_t cap)
 {
     const uint8_t *d = h->buf;
     struct text t = { out, 0, cap };

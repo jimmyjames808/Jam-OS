@@ -67,7 +67,7 @@ struct want {
     uint32_t cp;             /* codepoint */
 };
 
-static unsigned count_not_repeat(struct mock *m, unsigned from)
+static unsigned count_not_repeat(const struct mock *m, unsigned from)
 {
     unsigned n = 0;
     for (unsigned i = from; i < m->nev; i++)
@@ -113,7 +113,7 @@ static bool expect(struct mock *m, unsigned *at, const struct want *w, unsigned 
 }
 
 /* The LED bytes the driver sent, in order, into out; how many. */
-static unsigned leds(struct mock *m, uint8_t *out, unsigned cap)
+static unsigned leds(const struct mock *m, uint8_t *out, unsigned cap)
 {
     unsigned n = 0;
     for (unsigned i = 0; i < m->nctl && n < cap; i++)

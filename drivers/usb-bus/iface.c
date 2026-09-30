@@ -70,7 +70,7 @@ static status_t u_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_
  * one of its endpoints only; of the standard requests only the harmless
  * ones (the rest would change state usb-bus keeps: SET_INTERFACE goes
  * through set_interface, CLEAR_FEATURE(HALT) would desync the xHC). */
-static status_t check_request(struct iface *f, uint8_t rt, uint8_t req, uint16_t index)
+static status_t check_request(const struct iface *f, uint8_t rt, uint8_t req, uint16_t index)
 {
     uint8_t recip = rt & 0x1f, type = (rt >> 5) & 3;
     if (recip == 1) {
@@ -128,7 +128,7 @@ static status_t u_control_out(void *ctx, uint8_t rt, uint8_t req, uint16_t value
     return cc_status(usb_control(d, rt, req, value, index, length, buf, &n, 1000));
 }
 
-static struct ep *iface_ep(struct usbdev *d, struct iface *f, uint8_t addr)
+static struct ep *iface_ep(struct usbdev *d, const struct iface *f, uint8_t addr)
 {
     for (int i = 0; i < f->nep; i++)
         if (f->ep_addr[i] == addr) {

@@ -39,7 +39,7 @@ bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit, struct pro
 
 /* threads.c */
 /* Wait for n threads to end, closing their handles. */
-bool wait_threads(handle_t *th, unsigned n);
+bool wait_threads(const handle_t *th, unsigned n);
 bool t_fpu_state_survives_preemption(void);
 bool t_many_threads(void);
 bool t_kill_spinning_and_unstarted(void);

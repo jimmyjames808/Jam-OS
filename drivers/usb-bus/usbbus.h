@@ -439,7 +439,7 @@ void hc_wait(struct hc *h, uint64_t deadline);
 void hc_wait_idle(struct hc *h, uint64_t deadline);
 /* Sleep that keeps servicing the controller. */
 void hc_sleep(struct hc *h, uint64_t ms);
-void hc_set_dcbaa(struct hc *h, uint32_t slot, uint64_t addr);
+void hc_set_dcbaa(const struct hc *h, uint32_t slot, uint64_t addr);
 #define KEY_IRQ   0x7a60
 #define KEY_SERVE 0x5e7e
 #define KEY_CHAN  (1ull << 40)   /* | gen << 8 (16 bits) | index (8 bits) */
@@ -542,7 +542,8 @@ void root_ports_reset(void);
 bool usb_work(struct hc *h);              /* pending port and hub work; true if any was done */
 void usb_reset_state(void);
 void usb_start(struct hc *h);             /* the first scan of every root port */
-void usb_stop_all(struct hc *h);          /* shutdown: every device detached quietly */
+/* Shutdown: every device detached quietly. */
+void usb_stop_all(const struct hc *h);
 bool usb_busy(void);                      /* port or hub work pending */
 
 /* ---- serve.c --------------------------------------------------------------- */

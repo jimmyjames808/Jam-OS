@@ -244,7 +244,7 @@ static void slot_set_hub(struct usbdev *d)
         s[2] = (s[2] & ~(3u << 16)) | ((uint32_t)d->ttt << 16);
 }
 
-static void ep_ctx_fill(volatile uint32_t *c, struct ep *e)
+static void ep_ctx_fill(volatile uint32_t *c, const struct ep *e)
 {
     uint32_t esit = e->esit ? e->esit : e->mps;
     c[0] = ((uint32_t)e->interval << 16) | ((esit >> 16) << 24);

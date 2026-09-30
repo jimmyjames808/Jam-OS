@@ -109,7 +109,7 @@ static void fpu_worker(void *arg)
             __atomic_add_fetch(&fpu_preempted, 1, __ATOMIC_RELAXED);
 }
 
-bool wait_threads(handle_t *th, unsigned n)
+bool wait_threads(const handle_t *th, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
         signals_t seen;

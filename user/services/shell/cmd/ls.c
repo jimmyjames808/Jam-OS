@@ -3,7 +3,7 @@
 #include "sh.h"
 
 /* Columns, as wide as the widest name. */
-static void columns(struct sh_dirent *e, int n)
+static void columns(const struct sh_dirent *e, int n)
 {
     size_t w = 1;
     for (int i = 0; i < n; i++)

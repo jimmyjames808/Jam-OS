@@ -14,7 +14,7 @@
 
 #define INTR_STRIDE (PAGE / INTR_TRBS)
 
-static uint32_t intr_len(struct ep *e)
+static uint32_t intr_len(const struct ep *e)
 {
     uint32_t n = e->esit ? e->esit : e->mps;
     if (!n)
@@ -22,7 +22,7 @@ static uint32_t intr_len(struct ep *e)
     return n > INTR_STRIDE ? INTR_STRIDE : n;
 }
 
-static void intr_queue(struct usbdev *d, struct ep *e, uint8_t slot)
+static void intr_queue(const struct usbdev *d, struct ep *e, uint8_t slot)
 {
     (void)d;
     uint64_t b = e->buf_dev + (uint64_t)slot * INTR_STRIDE;

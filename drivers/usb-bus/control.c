@@ -16,7 +16,7 @@
 
 /* ---- endpoint recovery ------------------------------------------------------ */
 
-static void ep_set_deq(struct usbdev *d, uint8_t dci, struct ring *r)
+static void ep_set_deq(struct usbdev *d, uint8_t dci, const struct ring *r)
 {
     uint64_t p = r->dev + (uint64_t)r->enq * sizeof(struct trb);
     uint32_t cc = hc_command(&g_hc, (uint32_t)p | r->cycle, (uint32_t)(p >> 32), 0,
