@@ -3,6 +3,8 @@
  * halted with an NMI first. */
 #include <stdarg.h>
 #include <stdint.h>
+#include <jam/cmdline.h>
+#include <jam/console_svc.h>
 #include <jam/fbcon.h>
 #include <jam/ipi.h>
 #include <jam/klog.h>
@@ -15,11 +17,9 @@
 #include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
+#include <jam/time.h>
 #include <jam/trap.h>
 #include <jam/x86.h>
-#include <jam/cmdline.h>
-#include <jam/console_svc.h>
-#include <jam/time.h>
 
 #define MAX_FRAMES   24
 #define TAIL_BYTES   2048
