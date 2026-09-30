@@ -1,6 +1,7 @@
 /* kill: kill a process by name, through init (abi/idl/initctl.idl): the
- * services init runs and the USB class drivers devmgr runs. Both are
- * started again by whoever supervises them. */
+ * services init runs and the drivers devmgr runs (PCI drivers by their
+ * name, "hda"; USB class drivers, "hid-6.1:0"). Both are started
+ * again by whoever supervises them. */
 #include <idl/initctl.h>
 #include "sh.h"
 

@@ -177,6 +177,14 @@ static inline void drv_write64(volatile void *base, uint32_t off, uint64_t v)
 {
     *(volatile uint64_t *)((volatile uint8_t *)base + off) = v;
 }
+static inline uint16_t drv_read16(volatile void *base, uint32_t off)
+{
+    return *(volatile uint16_t *)((volatile uint8_t *)base + off);
+}
+static inline void drv_write16(volatile void *base, uint32_t off, uint16_t v)
+{
+    *(volatile uint16_t *)((volatile uint8_t *)base + off) = v;
+}
 static inline uint8_t drv_read8(volatile void *base, uint32_t off)
 {
     return *((volatile uint8_t *)base + off);

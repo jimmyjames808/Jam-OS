@@ -53,8 +53,8 @@ Not tried on the PC yet.
 | Function | Device | Notes |
 |---|---|---|
 | 05:00.0 | Realtek RTL8125 2.5 GbE, 10ec:8125 rev 05 | MSI (1, maskable) and MSI-X (32; table at BAR4+0x0, PBA at BAR4+0x800). BAR0 I/O 0x3000, BAR2 mem64 64 KiB (the registers), BAR4 mem64 16 KiB (MSI-X only), so the registers never share a page with the MSI-X table. An Ethernet cable is ready. Whether the switch port is a trunk (Jam OS tags VLAN 21) or an access port on 21 (the switch tags) is not known yet: ask before the network milestone |
-| 00:1f.3 | Intel HD Audio, 8086:7a50 (MSI) | front-panel headphone jack via a Realtek codec (ALC897 class; confirm its id on the PC) |
-| 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX |
+| 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. The front-panel headphone jack hangs off its codec, probably a Realtek ALC8xx: the codec's id, its widgets and how the front jack is wired come from `drv/hda`'s dump on the PC (`hda` in the shell, `[hda]` lines in the boot log) |
+| 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |
 | 02:00.0 | Crucial NVMe, c0a9:5421 | no driver planned |

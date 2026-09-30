@@ -11,7 +11,9 @@
  * partition ("fat-data", "fat-usb0"). The kernel's process list says which
  * process has the name; devmgr's bindings on each USB device are then
  * asked for theirs (GET_DRIVER) until one matches, and that binding is
- * killed. devmgr's PCI drivers (usb-bus itself) are not reached this way.
+ * killed. devmgr's PCI drivers ("usb-bus", "hda") are found the
+ * same way among the functions with a driver bound (GET_DRIVER
+ * 0xffff/0xffff); devmgr restarts them like any driver that dies.
  *
  * reboot and sync flush /data and every /usbN first, for at most 2 s
  * (mounts_sync). reboot then has logd save the log's last lines, that one
@@ -28,6 +30,7 @@
 
 #define NAME_MAX    32                /* initctl.kill's name field */
 #define MAX_PROCS   512               /* processes read from the kernel's list */
+#define MAX_PCI_DRIVERS 64            /* bound PCI functions looked through */
 #define MAX_DEVICES 128               /* USB devices looked at */
 #define MAX_IFACES  8                 /* interface numbers tried on each */
 #define MAX_PARTS   4                 /* partitions tried on each (an MBR's) */
@@ -126,18 +129,38 @@ static status_t kill_on_device(handle_t dm, uint32_t id, uint64_t koid)
     return ERR_NOT_FOUND;
 }
 
-/* Kill the process called name if devmgr runs it for a USB device: a
- * class driver ("hid-6.1:0", "usb-storage-1:0") or a disk's filesystem
- * service ("fat-data"). */
+/* devmgr's PCI drivers: kill the one whose process is `koid`.
+ * ERR_NOT_FOUND: none is. */
+static status_t kill_pci_driver(handle_t dm, uint64_t koid)
+{
+    for (uint32_t n = 0; n < MAX_PCI_DRIVERS; n++) {
+        uint64_t have = 0;
+        status_t st = binding_koid(dm, 0xffff, 0xffff, n, &have);
+        if (st == ERR_NOT_FOUND)
+            break;   /* past the last bound function */
+        if (st != OK || have != koid)
+            continue;
+        struct devmgr_rep r;
+        return devmgr_call(dm, DEVMGR_KILL, 0xffff, 0xffff, n, &r, NULL, 0, NULL,
+                           now() + KILL_WAIT);
+    }
+    return ERR_NOT_FOUND;
+}
+
+/* Kill the process called name if devmgr runs it: a PCI function's
+ * driver ("hda"), or for a USB device a class driver ("hid-6.1:0",
+ * "usb-storage-1:0") or a disk's filesystem service ("fat-data"). */
 static status_t kill_devmgr_process(const char *name, uint64_t *koid)
 {
     handle_t dm = shell_devmgr();
     if (!dm || !koid_named(name, koid))
         return ERR_NOT_FOUND;
+    status_t st = kill_pci_driver(dm, *koid);
+    if (st != ERR_NOT_FOUND)
+        return st;
     handle_t bus = find_usb_bus(dm);
     if (!bus)
         return ERR_NOT_FOUND;
-    status_t st = ERR_NOT_FOUND;
     for (uint32_t i = 0; i < MAX_DEVICES && st == ERR_NOT_FOUND; i++) {
         uint32_t id = 0;
         if (usbbus_device_until(bus, now() + CALL_WAIT, i, &id, NULL, NULL, NULL, NULL, NULL,

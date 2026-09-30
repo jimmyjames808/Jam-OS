@@ -599,12 +599,17 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 
 ## Audio
 
-Not built yet. The target is headphones in the case's front-panel
-jack, which hangs off the board's Intel HD Audio controller and its
-Realtek codec ([HARDWARE.md](docs/HARDWARE.md#other-devices)). The driver is
-a process like any other (PCI, MSI, DMA through a pinned DMA32 buffer). A
-mixer service owns the device; programs open streams and write samples
-through a shared VMO ring.
+The target is headphones in the case's front-panel jack, which hangs off
+the board's Intel HD Audio controller and its codec
+([HARDWARE.md](docs/HARDWARE.md#other-devices)). The driver, `drivers/hda`,
+is a process like any other (PCI, MSI, DMA through pinned DMA32 buffers),
+bound by devmgr to Intel's HD Audio functions (class 04 03 00). Built so
+far: a read-only probe (the controller reset, the CORB/RIRB command rings,
+each codec's widget graph read with GET verbs only and logged; `hda` in
+the shell). Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
+the path to the headphone pin, one output stream, jack detection, and a
+mixer service that owns the device, with programs opening streams and
+writing samples through a shared VMO ring.
 
 ## Storage
 

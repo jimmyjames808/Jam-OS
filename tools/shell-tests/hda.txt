@@ -1,0 +1,31 @@
+# The HD Audio probe (drivers/hda): two emulated controllers with three
+# codecs between them; use tools/hda-test.sh (it adds the devices and
+# checks the log). The driver logs each codec's graph at boot; `hda`
+# prints it again; `kill hda` kills one driver and devmgr restarts it,
+# which reads the graph from scratch. (The markers are echoed as
+# hda-""1 so the typed line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 2 codec(s) answered; 0 verb(s) timed out
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+send hda | grep answered; echo hda-""1
+wait 2 codec(s) answered; 0 verb(s) timed out
+wait hda-1
+wait jam>
+send hda | grep "c1 02 dac"; echo hda-""2
+wait c1 02 dac      caps
+wait hda-2
+wait jam>
+send kill hda
+wait shell: killed process
+wait 60 restarted (restart 1 since boot)
+wait codec(s) answered
+send echo hda-""3
+wait hda-3
+wait jam>
+send hda | grep front; echo hda-""4
+wait codec 1: front-panel headphone jack
+wait hda-4
+wait jam>
+send reboot
+wait reboot: resetting

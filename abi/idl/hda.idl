@@ -1,0 +1,20 @@
+# hda: the Intel HD Audio driver (drivers/hda), as devmgr binds it to the
+# board's HD Audio controller. Served on the driver's DR_SERVE channel; the
+# shell's `hda` command is the client.
+# Format: see tools/genidl.py.
+#
+# Today the driver is a read-only probe: it reads the controller and every
+# codec's widget graph and changes nothing. The playback methods come with
+# the rest of the audio work (docs/A1-PLAN.md).
+#
+# Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
+# fails with ERR_PEER_CLOSED means the driver died; get the channel from
+# devmgr again (DEVMGR_GET_SERVICE) and retry. The driver keeps nothing
+# across a restart.
+
+protocol hda 21
+
+# The dump, read from the codecs now: the same lines the driver printed
+# to the kernel log at start, as text in a new VMO of `length` bytes
+# (lines end in \n). codecs: how many codecs answered.
+1  dump  ()  -> (handle text, u32 length, u32 codecs)

@@ -21,7 +21,8 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
-| A1, A2 | Audio | right after M8 |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (a read-only probe that logs the codecs' widget graphs) works in QEMU; the PC's dump is next ([A1-PLAN.md](A1-PLAN.md)) |
+| A2 | Audio: mixer, `audio` protocol | after A1 |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
 | M9 | Networking | later |
@@ -97,7 +98,7 @@ Known limits, for the review:
 
 | # | What | Done when |
 |---|---|---|
-| A1 | HD Audio driver + `beep`: controller reset, command rings, codec widget graph, the front-panel headphone pin, one output stream from a pinned DMA32 buffer, jack detection | `beep` in the shell plays a tone in the headphones on the real PC; unplugging and replugging them is logged |
+| A1 | HD Audio driver + `beep`: controller reset, command rings, codec widget graph, the front-panel headphone pin, one output stream from a pinned DMA32 buffer, jack detection. The plan is [A1-PLAN.md](A1-PLAN.md) | `beep` in the shell plays a tone in the headphones on the real PC; unplugging and replugging them is logged |
 | A2 | `audio` protocol + mixer service: streams through shared VMO rings, volume from the shell, WAV playback from `/data` | two programs play at once |
 | AS | Boot splash, at the end of the audio track. A splash program is the first thing init starts: it takes the screen and plays the boot animation with its sound while the services start, holds the last frame until the shell is ready, then hands the screen back. The animation is made outside the repository (1920x1080 with alpha); `make` converts it with ffmpeg to MPEG-1 at 1280x720 over the dark background (about 0.5 MB, drawn 2x to fill 2560x1440) and puts it in the boot image. Decoded by pl_mpeg (MIT, in `third_party/`), sound through A2's mixer. A key skips it; a `verbose` boot word shows the text log instead; a panic always draws over it. With it, alpha blending in libfun (premultiplied alpha, blended fills and images, anti-aliased shapes) | the PC boots into the animation with its sound, and the shell comes up when it ends |
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
@@ -158,6 +159,12 @@ Offered or noticed, not scheduled into a milestone yet:
 - usb-bus retries a failed root port after 1 s, then 5 s; ports on hubs
   are still looked at again only on a port status change (the same
   pattern would fit `hub->port_fail` in hub.c).
+- The `init` run ends "with problems" about one run in three, on main
+  too: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
+  again, and devmgr's shutdown stops usb-bus while that fat is still
+  mounting; it exits ERR_IO and devmgr reports "fat-esp bin/fat did not
+  end cleanly". A fat that finds its disk gone while mounting could exit 0,
+  or devmgr could excuse a filesystem service whose disk went first.
 - devmgr's protocol is hand-written, not IDL.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.
