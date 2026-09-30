@@ -122,9 +122,14 @@ void handle_table_destroy(struct handle_table *t)
             break;
         khandle_release(&kh);   /* outside the lock: may run on_zero_handles */
     }
-    kfree(t->slots);
+    /* Emptied under the lock: a reader of another process's table
+     * (handle_table_objects) sees no slots rather than freed ones. */
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    struct handle_slot *slots = t->slots;
     t->slots = NULL;
     t->capacity = t->free_head = t->free_tail = 0;
+    spin_unlock_irqrestore(&t->lock, f);
+    kfree(slots);
     uncharge(t, t->charged);   /* the closed slots (and any reservation) */
     t->charged = 0;
 }
