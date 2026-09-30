@@ -513,10 +513,19 @@ fractions. User programs may use floating point and SIMD freely.
    `KT_GLOBAL_ASSERT`, so the test also runs from the shell on a live
    system. A test whose whole point is a global count, or that runs the
    machine out of memory, starts with `KT_SKIP_LIVE("why")`.
-4. Clean up everything: a test that leaks more than 2 pages fails.
-5. Races: reproduce them deterministically with a `DBG_HOOK` point, not
+4. Clean up everything: a test that leaks more than 2 pages fails. It must
+   pass on any run of a boot and in any order (`ktest loops=3 seed=1`):
+   set up the state you start from yourself (no static left from the last
+   run), and leave no thread, timer, hook or pin behind. A hook point is
+   the whole system's: count only what is yours.
+5. It runs under load too (`ktest load`, `soak`). A check on exact
+   timing, exact placement or an idle CPU is `KT_IDLE_ASSERT` /
+   `KT_IDLE_EQ`; a test that is nothing else starts with
+   `KT_NEEDS_IDLE("why")`. A wait that only guards against a hang takes
+   `kt_patience_ms`. Never skip a correctness test for being slow.
+6. Races: reproduce them deterministically with a `DBG_HOOK` point, not
    by looping and hoping.
-6. Shared helpers (pinning, fresh jobs, rng) come from the ktest helpers,
+7. Shared helpers (pinning, fresh jobs, rng) come from the ktest helpers,
    never a copy.
 
 ### Add a user program

@@ -155,9 +155,10 @@ an idle machine and says so: `KT_NEEDS_IDLE("why")` skips it (the log line
 reads `skipped (busy machine: why)`), `KT_IDLE_EQ` / `KT_IDLE_ASSERT` leave
 out one such check. With `load` the run is also "live" (the load makes
 channels, processes and pages), so `KT_SKIP_LIVE` tests are skipped and
-global counts are not checked. Of 221 tests, 8 need an idle machine and 9
-more are skipped live; the rest run. Never mark a test that is only slow
-under load.
+global counts are not checked. Of 221 tests, 202 run under load: 10 need an
+idle machine and 9 more are skipped live. Never mark a test that is only
+slow under load; a wait that is only there so a broken kernel fails instead
+of hanging takes `kt_patience_ms`.
 
 **`soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]`** in the shell is the
 whole thing in one command (default 3 minutes; Ctrl+C ends it after the

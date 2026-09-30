@@ -655,6 +655,10 @@ Not built yet.
   at boot (`ktest`, `ktest=prefix`) or from the shell. Each test fails if
   it leaks more than 2 pages; the run reports how many lock classes are in
   use. `make KTESTS=0` builds a kernel without the tests or the DBG_HOOKs.
+  The set can be repeated in one boot, shuffled from a seed and run under
+  load (`ktest loops=5 seed=42 load`; the shell's `soak` does all of it
+  and adds user-space load): a test must pass on any run and in any order.
+  Every panic screen names the loop, the seed and the test that was running.
 - **DBG_HOOK** injection points (`kernel/include/jam/dbghook.h`) let race
   regression tests stop a thread at an exact line.
 - The RESULTS box: every run ends with a box of the lines that matter
