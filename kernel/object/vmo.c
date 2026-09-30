@@ -795,13 +795,14 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
                 page_put(fresh);
                 return st;
             }
-            if (!pa) {
-                vunlock(v, f);
-                fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
-                if (!fresh)
-                    return ERR_NO_MEMORY;
-                continue;
-            }
+        }
+        if (v->kind == VMO_PAGED && !pa) {
+            /* Not committed and no page of ours yet: get one, then retry. */
+            vunlock(v, f);
+            fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
+            if (!fresh)
+                return ERR_NO_MEMORY;
+            continue;
         }
         /* Installed under the VMO lock: a decommit that takes this page
          * later zaps this entry too (see the file header). */
