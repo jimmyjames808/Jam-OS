@@ -9,8 +9,8 @@
  *
  * Files: main.c (start, the protocol, exit), ctrl.c (the controller:
  * reset, the CORB/RIRB command rings, the immediate command interface,
- * stop), graph.c (reading a codec's nodes into struct codec), dump.c
- * (the readable lines).
+ * stop), verbs.c (the verbs the driver may send), graph.c (reading a
+ * codec's nodes into struct codec), dump.c (the readable lines).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
  * Audio Specification, revision 1.0a (2010): chapter 3 (controller
@@ -176,6 +176,17 @@ struct hda {
  * command rings (the immediate interface if they don't answer). The steps
  * log what went wrong; ERR_* then. */
 status_t hda_ctrl_start(struct hda *h, handle_t bar);
+/* Send one command word `cmd` (spec 7.3) to codec `cad` and wait for its
+ * response in *out. ERR_TIMED_OUT (counted in h->timeouts) if it does not
+ * come in HDA_CMD_TIMEOUT. The raw send, unchecked: only verbs.c calls
+ * it, and everything else goes through verbs.c's checked calls. */
+status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out);
+/* Stop the rings, put the controller back in reset, unpin the ring page.
+ * Safe to call more than once and after a failed start. */
+void     hda_ctrl_stop(struct hda *h);
+
+/* ---- verbs (verbs.c) ---------------------------------------------------------- */
+
 /* One GET verb (12-bit `verb` with an 8-bit payload, or 4-bit `verb` with
  * a 16-bit payload) to node `nid` of codec `cad`; *out: the response.
  * ERR_INVALID_ARGS for anything but a GET verb (this driver sets
@@ -185,9 +196,6 @@ status_t hda_get(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint3
                  uint32_t *out);
 /* GET_PARAMETER: hda_get(V_GET_PARAM, param). */
 status_t hda_param(struct hda *h, unsigned cad, unsigned nid, uint32_t param, uint32_t *out);
-/* Stop the rings, put the controller back in reset, unpin the ring page.
- * Safe to call more than once and after a failed start. */
-void     hda_ctrl_stop(struct hda *h);
 
 /* ---- a codec's graph (graph.c) --------------------------------------------- */
 
