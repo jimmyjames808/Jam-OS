@@ -55,7 +55,19 @@ static const struct sh_cmd cmds[] = {
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
       "  It sees the mounts the shell has. Only programs in /boot can run so far"),
-    C(ktest, C_TESTS, "ktest [prefix]", "kernel tests (as the boot menu's All tests)"),
+    C(ktest, C_TESTS, "ktest [prefix] [options]",
+      "kernel tests (as the boot menu's All tests).\n"
+      "  loops=N: the set N times. seed=S: in the order shuffled from S (loop k uses\n"
+      "  S+k-1; its seed replays it). shuffle: a seed from the clock. keep: record a\n"
+      "  failure and go on (else the first one panics). load: with the stress test's\n"
+      "  threads running; tests that need an idle machine are skipped"),
+    C(soak, C_TESTS, "soak [minutes] [loops=N] [seed=S]",
+      "soak test: the kernel tests again and again in a shuffled order under load,\n"
+      "  utest between the loops, files written and read back on /data and any writable\n"
+      "  stick (pull and plug sticks while it runs); ends with SOAK RESULTS. Default 3\n"
+      "  minutes; loops=N: N loops instead. seed=S: the first loop's order (each loop\n"
+      "  prints its seed). halt: stop on the panic screen at the first failure.\n"
+      "  idle: no load. Ctrl+C ends it after the step in progress"),
     C(bench, C_TESTS, "bench", "kernel benchmark"),
     C(stress, C_TESTS, "stress <seconds>", "stress test (1..600)"),
     C(utest, C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),

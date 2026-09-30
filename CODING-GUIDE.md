@@ -86,7 +86,7 @@ syscall path returns an error.
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
 | System services (bootfs, console, devmgr, fat, init, logd, serialin, shell) | `user/services/<name>/` |
 | Apps (fractal, life, tetris, snake, mines, sysmon, demo) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
-| Test programs (utest, usbtest, contest, ramfs) | `user/tests/<name>/` |
+| Test programs (utest, usbtest, contest, ramfs, soakload) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
 | ABI sources | `abi/syscalls.def`, `abi/idl/*.idl` |
 | Build tools and test scripts | `tools/` (QEMU shell scripts in `tools/shell-tests/`) |
