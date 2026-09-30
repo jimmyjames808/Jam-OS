@@ -75,6 +75,10 @@ static const struct {
 } matches[] = {
     { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },        /* QEMU's edu test device */
     { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller */
+    /* Intel HD Audio in HDA mode (class 04 03 00). Only Intel's: other
+     * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
+     * (Intel's audio DSP) needs firmware this driver doesn't have. */
+    { 0x8086, 0xffff, 0x040300, "drv/hda" },
 };
 
 #define TEST_DRIVER_PATH "drv/crasher"
@@ -180,9 +184,13 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
 {
     uint32_t seen = 0;
     /* GET_SERVICE 0xffff/0xffff: the instance-th function with a driver
-     * running (tests find usb-bus this way). */
-    bool any_bound = q->ordinal == DEVMGR_GET_SERVICE && q->vendor == 0xffff &&
-                     q->device == 0xffff;
+     * running (tests find usb-bus this way). GET_DRIVER and KILL
+     * 0xffff/0xffff: the instance-th function with a driver bound, running
+     * or not, so the numbering holds while one restarts (init's `kill`
+     * finds a PCI driver's process this way). */
+    bool any = q->vendor == 0xffff && q->device == 0xffff;
+    bool any_running = any && q->ordinal == DEVMGR_GET_SERVICE;
+    bool any_bound = any && (q->ordinal == DEVMGR_GET_DRIVER || q->ordinal == DEVMGR_KILL);
     bool usb = q->vendor == DEVMGR_USB_IFACE;
     if (q->vendor == DEVMGR_FS_SVC)
         return fs_find(q->instance, q->device);
@@ -197,7 +205,8 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
                 return b;
             continue;
         }
-        bool hit = any_bound ? b->kind == BIND_PCI && b->proc != HANDLE_INVALID
+        bool hit = any_running ? b->kind == BIND_PCI && b->proc != HANDLE_INVALID
+                   : any_bound ? b->kind == BIND_PCI && b->path
                    : msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
                        ? b->kind == BIND_PCI && b->info.msix_vectors &&
                              !(b->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
