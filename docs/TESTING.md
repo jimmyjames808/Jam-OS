@@ -14,17 +14,20 @@ that a bug fix comes with a test is in
 | User regression | `tools/qemu-test.sh build/test init init` (utest, then usbtest: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
-| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each); on the PC `soak` in the shell, or the boot menu's Soak entry ([below](#soak)) | every change to a kernel test, and anything that keeps state from one run to the next; on the PC after each fix round |
-| 2-minute stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` | after each fix round, in QEMU and on the PC |
-| 10-minute stress | the boot menu's 10-minute entry, or `stress 600` in the shell | milestone sign-off only, on the PC |
+| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | every change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
+| 2-minute soak | `soak 2` in the shell ([below](#soak)) | after each fix round, on the PC |
+| Sign-off | the boot menu's All tests, then `soak 10` in the shell with a second stick mounted read-write and pulled and replugged during the run | milestone sign-off only, on the PC |
+| Stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` in QEMU; `stress <seconds>` in the shell | kernel work (scheduler, memory, locks), and when user space is broken: it needs none of it |
 | The PC | flash the stick and run it ([HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)) | the final judge |
 
 - QEMU passing is necessary, not sufficient: TCG has no PCIDs and no
   TSC-deadline timer, and USB timing differs. Say what still needs the PC.
 - On a busy machine (several QEMU runs at once) a timing failure may be
   load. Rerun once; a second failure is real.
-- On the PC the 2-minute stress is skipped right before a sign-off: the
-  10-minute run covers it.
+- On the PC the 2-minute soak is skipped right before a sign-off: the
+  10-minute run covers it. The soak replaced the stress test as the PC's
+  tier on 2026-10-01: it runs the stress test's workers as its load, and
+  adds the kernel tests, utest, file I/O and sticks coming and going.
 - The tiers ask different questions. All tests: does each check hold once,
   on an idle machine, in the usual order? The stress test: do the
   scheduler, locks and allocators hold under load? The soak: does every
