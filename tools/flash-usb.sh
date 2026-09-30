@@ -31,10 +31,11 @@ if [ -z "$dev" ]; then
     [ -n "$found" ] || { echo "no Jam OS stick found (a new stick needs: make usb DEV=/dev/diskN)" >&2; exit 1; }
     dev=$found
 fi
-case "$dev" in
-    /dev/disk[0-9]*) ;;
-    *) echo "DEV must look like /dev/diskN" >&2; exit 1 ;;
-esac
+# The whole disk, nothing after the number: not a partition (/dev/disk4s1).
+if ! printf '%s\n' "$dev" | grep -Eq '^/dev/disk[0-9]+$'; then
+    echo "DEV must look like /dev/diskN" >&2
+    exit 1
+fi
 
 info=$(diskutil info "$dev")
 if [ -n "$SUDO" ]; then
@@ -61,6 +62,7 @@ cleanup()
     rmdir "$mnt" 2>/dev/null || true
 }
 trap cleanup EXIT
+trap 'exit 1' INT TERM HUP   # through the EXIT trap: never leave the ESP mounted
 
 $SUDO mount -t msdos "${dev}s1" "$mnt"
 mounted=yes

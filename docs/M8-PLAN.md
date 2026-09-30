@@ -122,7 +122,7 @@ sync `/data` (bounded: 2 s) before resetting.
 **Boot logs.** logd opens a klog reader from byte 0, picks the next free
 `boot-NNNN.txt` in `/data/logs` (creating the directory), writes whatever
 the kernel logged before `/data` existed, then follows the log, syncing
-at most once a second and on every `reboot`. A panic can't be saved yet
+at most every 250 ms and on every `reboot`. A panic can't be saved yet
 (that is M8.5's crash kernel); the file then ends at the last sync.
 
 **Bounded everything.** Every SCSI command has a timeout (10 s for a

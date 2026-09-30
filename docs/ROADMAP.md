@@ -58,7 +58,8 @@ Implemented, and passing in QEMU at 4 and 8 CPUs:
   from a file. The shell has `ls cat cp mv rm mkdir touch write df sync`
   on every mount.
 - logd writes each boot's kernel log to `/data/logs/boot-NNNN.txt`;
-  `reboot` and Ctrl+Alt+Del sync `/data` first.
+  `reboot` and Ctrl+Alt+Del sync `/data` first and have logd save the
+  log's last lines.
 - `kill` goes through init and devmgr (`debug_command` no longer has it).
 - Other sticks: each FAT volume of any other USB stick (an MBR's FAT
   partitions, or a stick with no partition table that is one FAT volume)
@@ -75,8 +76,10 @@ Implemented, and passing in QEMU at 4 and 8 CPUs:
   after `mount -w`, pulled while in use, and the images of the ones that
   were only read or held nothing to mount compared byte for byte).
 
+The independent review is done ([its findings and what became of
+each](history/M8-REVIEW.md)).
+
 Still to do:
-- The independent review of the whole milestone, and its fixes.
 - The PC: the stick flashed once with the two-partition layout
   (`make usb`, which erases it), then read-only checks first (`ls /esp`,
   `ls /data`), writes, the boot logs read on the Mac, the pulled-plug test,
@@ -85,8 +88,8 @@ Still to do:
 Known limits, for the review:
 - Only programs in `/boot` can be run: a file on `/data` or `/esp` does
   not come with the right to execute it.
-- The boot log that logd is writing can't be read until the next boot
-  (the `fat` service gives a file open for writing to one client).
+- A panic's own text is not in the boot log: logd can only save what it
+  had synced before (M8.5's crash kernel is what saves a panic).
 
 ## Later
 
