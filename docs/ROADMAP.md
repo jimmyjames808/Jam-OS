@@ -99,6 +99,45 @@ Known limits, for the review:
 | G3 | Mode setting and vsync, only through the Intel iGPU (needs the monitor on the board's output and the iGPU enabled) | |
 | G4 | 3D as a stretch: a multi-core software rasterizer, or virtio-gpu under QEMU | |
 
+## Design ideas, not scheduled
+
+Larger pieces that fit the design and would be worth a milestone each.
+None has a plan yet; the order is the current preference.
+
+- **A faster call path.** A process-to-process call costs 1407 ns
+  ([BENCH.md](BENCH.md)), and most of that is not the price of isolation:
+  one call is several kernel entries, copies and handle lookups. A
+  combined reply-and-wait call, a direct hand-off to a waiting server and
+  one copy should bring it to roughly 400-600 ns (an estimate).
+- **Shared request rings.** A client and a service share a ring of
+  requests and replies in a VMO and make a system call only when the other
+  side is asleep: the third level after copied messages and shared VMOs
+  for bulk data. The ring layout would be generated from the IDL.
+- **User-space pagers.** A process (a filesystem service) supplies the
+  pages of a VMO on demand. It gives mapped files (a cached read becomes a
+  memory copy), programs loaded on demand, and the clean way to run
+  programs from `/data`.
+- **Services that outlive their process.** A service's queues and state
+  live outside the process, so a restarted service reconnects to them and
+  its clients never see the crash; with a warm spare the restart is fast
+  enough to measure as a benchmark. Today a restart is visible to every
+  client.
+- **A service dependency graph.** devmgr and init know the order by code
+  (filesystems, then USB class drivers, then the bus drivers). Declared
+  dependencies would drive start, stop and restart order instead.
+- **Leases on handles.** Handles given out for one device binding are
+  revoked together when the device or its driver goes, including the ones
+  passed on to other processes; jobs already reclaim what the dead process
+  itself held.
+- **CPU time as a capability.** A budget and period per service, so one
+  cannot starve the rest; a server can then run on its caller's budget.
+  For when audio or a compositor needs guaranteed time.
+- **Protection-key domains** (Intel PKU): a trusted-but-buggy service in
+  its caller's address space behind a protection key, a call costing tens
+  of nanoseconds. It keeps crash containment for bugs and gives up
+  protection against a malicious service, so it would be an optional mode
+  next to processes, measured side by side.
+
 ## Smaller follow-ups
 
 Offered or noticed, not scheduled into a milestone yet:
