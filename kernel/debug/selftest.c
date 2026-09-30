@@ -115,7 +115,7 @@ static void test_vmm(void)
 
 /* One thread pinned to each CPU allocates and frees at once, checking each
  * block keeps the pattern it wrote: catches allocator races. */
-static volatile uint64_t smp_failures, smp_ops;
+static uint64_t smp_failures, smp_ops;   /* added to atomically by the workers */
 
 /* p was filled with tag: check a sample of its bytes, then free it. */
 static void check_free(uint8_t *p, uint32_t size, uint8_t tag)
@@ -186,14 +186,15 @@ static void test_smp_alloc(void)
     for (uint32_t i = 0; i < cpu_count; i++)
         thread_join(ts[i]);
     pmm_stats(&total, &free_after);
-    CHECK(smp_failures == 0);
+    CHECK(__atomic_load_n(&smp_failures, __ATOMIC_RELAXED) == 0);
     report("selftest: smp alloc ok (%u CPUs, %lu ops, %ld pages still in slabs)",
-            cpu_count, smp_ops, (long)(free_before - free_after));
+            cpu_count, __atomic_load_n(&smp_ops, __ATOMIC_RELAXED),
+            (long)(free_before - free_after));
 }
 
 /* Threads + mutex: many threads increment one counter under a mutex. */
 static struct mutex count_lock;
-static volatile uint64_t shared_count;
+static uint64_t shared_count;   /* count_lock */
 
 static void counter_worker(void *arg)
 {
@@ -237,8 +238,9 @@ static void test_sleep(void)
 
 /* Priority: on one CPU, a high-priority thread runs before queued lower
  * ones even if created last. */
-static volatile uint32_t order_seq, order_of[3], order_cpu[3];
-static volatile uint64_t order_t[3], hog_end;
+/* Written by the threads, read once they are joined. */
+static uint32_t order_seq, order_of[3], order_cpu[3];
+static uint64_t order_t[3], hog_end;
 
 static void order_worker(void *arg)
 {
@@ -247,7 +249,7 @@ static void order_worker(void *arg)
     order_t[(uintptr_t)arg] = uptime_ns();
 }
 
-static volatile bool others_queued;
+static bool others_queued;   /* the hog's cue to stop */
 
 /* Keep the CPU busy until the test has queued the three threads behind it
  * (bounded, so a bug fails the check rather than hanging). */
@@ -255,7 +257,8 @@ static void hog_until_queued(void *arg)
 {
     (void)arg;
     uint64_t start = uptime_ns();
-    while (!others_queued && uptime_ns() - start < 2000000000ull)
+    while (!__atomic_load_n(&others_queued, __ATOMIC_ACQUIRE) &&
+           uptime_ns() - start < 2000000000ull)
         cpu_relax();
     hog_end = uptime_ns();
 }
@@ -267,12 +270,12 @@ static void test_priority(void)
     cpumask_one(&m, cpu);
     order_seq = 0;
     /* Hold the CPU with a busy thread so the others queue up. */
-    others_queued = false;
+    __atomic_store_n(&others_queued, false, __ATOMIC_RELEASE);
     struct thread *hog = thread_create_on("prio-hog", hog_until_queued, NULL, PRIO_MAX, &m);
     struct thread *lo = thread_create_on("prio-low", order_worker, (void *)0, 4, &m);
     struct thread *mid = thread_create_on("prio-mid", order_worker, (void *)1, 12, &m);
     struct thread *hi = thread_create_on("prio-high", order_worker, (void *)2, 28, &m);
-    others_queued = true;
+    __atomic_store_n(&others_queued, true, __ATOMIC_RELEASE);
     thread_join(hog);
     thread_join(lo);
     thread_join(mid);
@@ -289,12 +292,12 @@ static void test_priority(void)
  * every CPU must see the new page. Without the shootdown IPI, stale TLB
  * entries would keep showing the old value. */
 static volatile uint64_t *shoot_va;
-static volatile uint64_t shoot_expect, shoot_bad;
+static uint64_t shoot_expect, shoot_bad;   /* the value to see; CPUs that saw another */
 
 static void shoot_read(void *arg)
 {
     (void)arg;
-    if (*shoot_va != shoot_expect)
+    if (*shoot_va != __atomic_load_n(&shoot_expect, __ATOMIC_RELAXED))
         __atomic_add_fetch(&shoot_bad, 1, __ATOMIC_RELAXED);
 }
 
@@ -305,20 +308,21 @@ static void test_tlb_shootdown(void)
     uint64_t va = vmm_reserve(PAGE_SIZE);
     uint64_t pas[ROUNDS];
     shoot_va = (volatile uint64_t *)va;
-    shoot_bad = 0;
+    __atomic_store_n(&shoot_bad, 0, __ATOMIC_RELAXED);
     /* Old pages keep their old values until the end, so a stale TLB entry
      * would read a wrong value rather than whatever reused the page. */
     for (int round = 0; round < ROUNDS; round++) {
         pas[round] = pmm_alloc_page_phys(PMM_ZERO);
         CHECK(pas[round]);
-        *(uint64_t *)phys_to_virt(pas[round]) = shoot_expect = 0x1000 + round;
+        __atomic_store_n(&shoot_expect, 0x1000 + round, __ATOMIC_RELAXED);
+        *(uint64_t *)phys_to_virt(pas[round]) = 0x1000 + round;
         vmm_map(pml4, va, pas[round], PAGE_SIZE, VM_WRITE | VM_GLOBAL | VM_SMALL);
         smp_call_all(shoot_read, NULL);   /* every CPU caches the mapping */
         vmm_unmap(pml4, va, PAGE_SIZE);   /* ... and must drop it */
     }
     for (int round = 0; round < ROUNDS; round++)
         pmm_free_page_phys(pas[round]);
-    CHECK(shoot_bad == 0);
+    CHECK(__atomic_load_n(&shoot_bad, __ATOMIC_RELAXED) == 0);
     kprintf("selftest: TLB shootdown ok (50 remaps seen by all %u CPUs)\n", cpu_count);
 }
 
