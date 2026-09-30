@@ -192,19 +192,52 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# FatFs (third_party/fatfs, vendored unmodified), built into the fat
+# service only. Its configuration is Jam OS's
+# (user/services/fat/ffport/ffconf.h), but ff.h includes "ffconf.h" from
+# its own directory first, where the vendored default sits; so the sources
+# are copied into $(BUILD)/fatfs and compiled there, with ffport on the
+# include path (ffconf.h, and the <string.h> ff.c wants).
+FATFS_SRC   := third_party/fatfs/source
+FATFS_PORT  := user/services/fat/ffport
+FATFS_STAGE := $(BUILD)/fatfs
+FATFS_HDRS  := $(FATFS_STAGE)/ff.h $(FATFS_STAGE)/diskio.h
+FATFS_OBJS  := $(FATFS_STAGE)/ff.o $(FATFS_STAGE)/ffunicode.o
+FATFS_INC   := -I$(FATFS_STAGE) -I$(FATFS_PORT)
+
+.SECONDARY: $(FATFS_HDRS) $(FATFS_OBJS:.o=.c)
+$(FATFS_STAGE)/%.h: $(FATFS_SRC)/%.h
+	@mkdir -p $(dir $@)
+	cp $< $@
+$(FATFS_STAGE)/%.c: $(FATFS_SRC)/%.c
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(FATFS_STAGE)/%.o: $(FATFS_STAGE)/%.c $(FATFS_HDRS) | $(UINC) $(SYSCALLS_OK)
+	$(CC) $(USER_CFLAGS) $(FATFS_INC) -c $< -o $@
+
+# What a program links, includes and needs made first beyond its own
+# directory and libos.
+EXTRA_OBJS_fat   := $(FATFS_OBJS)
+EXTRA_CFLAGS_fat := $(FATFS_INC)
+EXTRA_DEPS_fat   := $(FATFS_HDRS)
+
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
 # PROG_CFLAGS: the program's own directory on the "..." include path (so
-# "sh.h" works from shell/cmd/), and for an app the apps library's <fun.h>.
+# "sh.h" works from shell/cmd/), for an app the apps library's <fun.h>,
+# and the program's EXTRA_CFLAGS.
 define USER_PROG
 $(call prog_objs,$(1)): PROG_CFLAGS := -iquote $(call prog_dir,$(1)) \
-                                       $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR))
+                                       $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR)) \
+                                       $(EXTRA_CFLAGS_$(1))
+$(call prog_objs,$(1)): | $(EXTRA_DEPS_$(1))
 
-$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
+$(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) $(EXTRA_OBJS_$(1)) \
                     $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a \
                     user/linker.ld
 	@mkdir -p $$(dir $$@)
-	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) \
+	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) $(EXTRA_OBJS_$(1)) \
 	    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a $(LIBGCC) -o $$@
 
 $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)
@@ -335,7 +368,7 @@ font:
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) \
+-include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) \
          $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d))))
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real

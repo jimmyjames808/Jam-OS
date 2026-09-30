@@ -14,10 +14,12 @@
  * <idl/edu.h>, killed in the middle of a DMA, supervision bringing
  * drivers back, and what a driver's handles can't do. The devmgr tests
  * skip themselves without devmgr or the device (edu is QEMU's). The hid
- * driver process against a mock usb-bus and a mock console (hid.c).
+ * driver process against a mock usb-bus and a mock console (hid.c). The
+ * fat service process over a RAM disk (fat.c, fat_names.c).
  *
  * This file has the helpers, the kernel tests and the table; threads.c,
- * drivers.c, supervise.c and hid.c the rest (utest.h lists them).
+ * drivers.c, supervise.c, hid.c and the fat files the rest (utest.h lists
+ * them).
  * Children are this same program started with a mode ("utest nullderef",
  * see child.c), each in a job of its own so its usage can be read exactly.
  * One line per test ("utest: <name> ok"); the summary also goes into the
@@ -528,6 +530,15 @@ static const struct {
     { "supervised_restart", t_supervised_restart },
     { "supervised_backoff", t_supervised_backoff },
     { "supervised_give_up", t_supervised_give_up },
+    { "fat_format", t_fat_format },
+    { "fat_files", t_fat_files },
+    { "fat_dirs", t_fat_dirs },
+    { "fat_names", t_fat_names },
+    { "fat_full_disk", t_fat_full_disk },
+    { "fat_read_only", t_fat_read_only },
+    { "fat_not_formatted", t_fat_not_formatted },
+    { "fat_dirty_volume", t_fat_dirty_volume },
+    { "fat_disk_gone", t_fat_disk_gone },
 };
 
 int main(int argc, char **argv)
