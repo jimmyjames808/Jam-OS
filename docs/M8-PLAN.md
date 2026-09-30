@@ -248,7 +248,8 @@ to the boot disk's data partition alone.
   /esp/boot/limine/limine.conf`; writing to `/esp` refused; `write` then
   `cat` a file in `/data`; a boot log per boot on the stick, read on the
   Mac; pulling the stick mid-write and replugging leaves it bootable;
-  All tests, the 2-minute stress, and the 10-minute sign-off.
+  All tests, then `stress 600` and `soak 10` (M8 is signed off by both;
+  from then on the soak alone, [TESTING.md](TESTING.md#the-tiers)).
 
 ## Decisions for this plan (2026-09-30)
 1. Nothing on the stick needs keeping: flashing the new layout (which

@@ -83,7 +83,8 @@ Still to do:
 - The PC: the stick flashed once with the two-partition layout
   (`make usb`, which erases it), then read-only checks first (`ls /esp`,
   `ls /data`), writes, the boot logs read on the Mac, the pulled-plug test,
-  All tests, the 2-minute stress and the 10-minute sign-off.
+  All tests, then `stress 600` and `soak 10` (M8 is signed off by both;
+  from then on the soak alone, [TESTING.md](TESTING.md#the-tiers)).
 
 Known limits, for the review:
 - Only programs in `/boot` can be run: a file on `/data` or `/esp` does
