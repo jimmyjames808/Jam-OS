@@ -102,6 +102,7 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   off to compare: `nopcid`, `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
+- `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting.
 
 ## From the shell
 
