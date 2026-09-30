@@ -22,6 +22,12 @@
  *                 reports ERR_PEER_CLOSED, the restarted driver opens and
  *                 plays a new stream, and the dead driver's pinned pages
  *                 leave the DMA quarantine unwritten
+ * The pattern is a test signal, not a sound to hear (a near full-scale
+ * sawtooth), and the path is unmuted while it plays (stage 3), so the
+ * run turns the driver's gain down to its lowest first (hda.set_gain;
+ * -65 dB on the PC's ALC897, nothing on QEMU's mixer=off codec, which has
+ * no gain) and puts it back at the end. The streams after the kill play
+ * silence only.
  * The summary goes to the RESULTS box; exit 0 if nothing failed. */
 #define CHECK_PROG "hdatest"
 #define CHECK_CUR  cur
@@ -318,10 +324,18 @@ int main(int argc, char **argv)
         return 0;
     }
     printf("hdatest: hda driver for %04x:%04x\n", vid, did);
+    int32_t gain = 0, low = 0, lo, hi;
+    uint32_t step;
+    bool lowered = hda_get_gain_until(hda, soon(), &gain, &step, &lo, &hi) == OK &&
+                   hda_set_gain_until(hda, soon(), -10000, &low, &step, &lo, &hi) == OK;
+    if (lowered)
+        printf("hdatest: the gain turned down from %d to %d centibels for the run\n", gain, low);
     run("open_close", t_open_close);
     run("pattern", t_pattern);
     run("close_stops", t_close_stops);
     run("kill", t_kill);
+    if (hda && lowered)
+        (void)hda_set_gain_until(hda, soon(), gain, &low, &step, &lo, &hi);
     if (hda)
         jam_handle_close(hda);
     int n = failed ? snprintf(line, sizeof(line), "hdatest: %u passed, %u FAILED", passed, failed)

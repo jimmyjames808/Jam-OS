@@ -40,9 +40,16 @@ static const struct sh_cmd cmds[] = {
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(hda, C_SYSTEM, "hda",
+    C(hda, C_SYSTEM, "hda [gain [dB]]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
-      "  (the lines it logged at boot; pipe it: hda | grep pin)"),
+      "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
+      "  headphones and the gain it plays at. hda gain: the gain; hda gain -20: set it\n"
+      "  (rounded to the amp's step, at most 0 dB; the driver starts at -30 dB). The\n"
+      "  path is unmuted only while a stream plays (beep)"),
+    C(beep, C_SYSTEM, "beep [hz] [ms]",
+      "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
+      "  at a quarter of full scale with 5 ms fades, through drv/hda at `hda gain`.\n"
+      "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
