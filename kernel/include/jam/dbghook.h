@@ -1,7 +1,8 @@
 /* Test injection points (DBG_HOOK), for ktests only: `make KTESTS=0`
  * compiles them away. Each hook is NULL (off) unless a race ktest installs
  * one; a hook only widens a window that the real code already has (lock
- * contention, an SMI, a preempted vCPU). */
+ * contention, an SMI, a preempted vCPU), or fakes a failed check so a test
+ * can see what follows one. */
 #pragma once
 
 enum {
@@ -15,6 +16,8 @@ enum {
                               (arg: struct dbg_process_start, process.h) */
     DBG_DMA_RELEASED,      /* dma_cap.c release_batch, the batch's pages given back, before
                               the quarantine's counters record it (arg: the pci_dev) */
+    DBG_STRESS_SHOOTDOWN,  /* stress run_seconds, a shootdown round's reads done, before they
+                              are checked (arg: uint64_t *, CPUs that saw a stale mapping) */
     DBG_N
 };
 
