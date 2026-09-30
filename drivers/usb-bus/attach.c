@@ -391,7 +391,10 @@ void detach(struct usbdev *d, const char *why, bool quiet)
         drv_log("usb %s: %04x:%04x detached (%s)", d->path, d->vid, d->pid, why);
     if (d->vid && g_first_report_done && !quiet)
         g_detached++;
-    bool off = disable_slot(d);
+    /* Stopping: no Disable Slot per device. hc_shutdown's halt and reset,
+     * right after, clear every slot; one unanswered command per device
+     * could otherwise outlast devmgr's STOP_WAIT. */
+    bool off = g_hc.stopping ? false : disable_slot(d);
     dev_free(d, off);
     g_generation++;
     g_last_change_ns = drv_clock_ns();

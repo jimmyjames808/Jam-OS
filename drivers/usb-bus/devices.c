@@ -87,10 +87,13 @@ struct usbdev *dev_alloc(void)
 void dev_free(struct usbdev *d, bool slot_disabled)
 {
     if (!slot_disabled && !g_hc.dead) {
-        /* Disable Slot failed: the controller may still own the slot and
-         * run its endpoints (queued TRBs into our buffers), so none of its
-         * DMA pages can go back to the pool. Leaked, like a quarantine. */
-        drv_log("usb %s: slot %u not disabled: keeping its DMA pages", d->path, d->slot);
+        /* Disable Slot failed, or was skipped because the driver is
+         * stopping: the controller may still own the slot and run its
+         * endpoints (queued TRBs into our buffers), so none of its DMA
+         * pages can go back to the pool. Leaked, like a quarantine; when
+         * stopping that is expected, so it isn't logged. */
+        if(!g_hc.stopping)
+            drv_log("usb %s: slot %u not disabled: keeping its DMA pages", d->path, d->slot);
         if (d->cfg)
             drv_free(d->cfg);
         d->cfg = NULL;
