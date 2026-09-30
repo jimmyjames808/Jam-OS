@@ -517,15 +517,30 @@ fractions. User programs may use floating point and SIMD freely.
    pass on any run of a boot and in any order (`ktest loops=3 seed=1`):
    set up the state you start from yourself (no static left from the last
    run), and leave no thread, timer, hook or pin behind. A hook point is
-   the whole system's: count only what is yours.
+   the whole system's: count only what is yours, and act only on what is
+   yours. A hook that makes a call fail checks that the call is its own
+   test's (its process, its thread) first; otherwise, under load, it fails
+   whoever else passes by (a process-start hook once failed the stress
+   workers' spawns on the PC). A test that legitimately grows a cache on
+   its first run measures a later, identical round instead
+   (`KT_OWN_LEAK_CHECK`).
 5. It runs under load too (`ktest load`, `soak`). A check on exact
    timing, exact placement or an idle CPU is `KT_IDLE_ASSERT` /
    `KT_IDLE_EQ`; a test that is nothing else starts with
    `KT_NEEDS_IDLE("why")`. A wait that only guards against a hang takes
    `kt_patience_ms`. Never skip a correctness test for being slow.
-6. Races: reproduce them deterministically with a `DBG_HOOK` point, not
+   Which marker for which check: [TESTING.md](docs/TESTING.md#soak).
+   Try it before you commit: `ktest <prefix> loops=5 seed=1 keep`, and the
+   same with `load`.
+6. **Dead is not yet freed.** A process that is reported dead, or a job
+   that `job_kill` has emptied, can still be giving back its address
+   space's pages on another CPU a moment later. A check that a job is
+   empty after a kill waits for it, bounded by `kt_patience_ms`
+   (`proc_job_kill_tree` does). The same goes for any count that a
+   thread's last switch away changes.
+7. Races: reproduce them deterministically with a `DBG_HOOK` point, not
    by looping and hoping.
-7. Shared helpers (pinning, fresh jobs, rng) come from the ktest helpers,
+8. Shared helpers (pinning, fresh jobs, rng) come from the ktest helpers,
    never a copy.
 
 ### Add a user program
@@ -535,7 +550,9 @@ fractions. User programs may use floating point and SIMD freely.
 2. `int main(int argc, char **argv)` on libos. Take handles from the
    startup message by role (`startup_handle(SR_*)`); the program has no
    other authority.
-3. If init starts it, add a line to `boot/init.cfg`.
+3. If the regression run (the `init` boot word) should run it, add a line
+   to `boot/init.cfg`; the services init starts on a plain boot are
+   started in `user/services/init/shell.c`, each with its handles.
 4. Big ones split by job from the start, with an internal header.
 5. An app that draws borrows the screen through the console
    (`console.lend_screen`) and uses the apps library.
@@ -589,6 +606,9 @@ the exact commands and each script's QEMU setup are in
   | commands, build targets, where code lives | [README.md](README.md) |
   | the version string | `kernel/main.c` |
 
+  Docs are written like the comments: plain English, short sentences,
+  facts rather than praise, and what is not built yet said plainly. A
+  number from the PC names its date and build.
   Update the doc in the same commit as the code that changes the fact.
   History goes to HISTORY.md, never into comments or status docs. Don't
   copy counts (tests, lines) into docs that aren't dated. `make check` runs
@@ -603,7 +623,11 @@ the exact commands and each script's QEMU setup are in
 - [ ] `make`, `make KTESTS=0` and `make check` pass (no warnings); run
       `make includes` if the check lists files.
 - [ ] Generated code regenerated and committed (`make syscalls`, `make idl`).
-- [ ] The tests for my area pass in QEMU, at 4 and 8 CPUs for kernel code.
+- [ ] `make -s image` before the QEMU tests (plain `make` does not rebuild
+      the image they boot).
+- [ ] The tests for my area pass in QEMU, at 4 and 8 CPUs for kernel code;
+      a new or changed kernel test also passes repeated, shuffled and under
+      load (`tools/soak-test.sh`).
 - [ ] A bug fix has a test that failed before the fix.
 - [ ] Every new user pointer goes through `copy_*_user`, copied once.
 - [ ] Every new handle check uses the narrowest right; new handles get
