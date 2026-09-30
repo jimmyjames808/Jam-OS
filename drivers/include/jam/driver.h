@@ -155,7 +155,12 @@ status_t drv_interrupt_ack(handle_t irq);
 status_t drv_pci_config_read(handle_t dev, uint32_t off, uint32_t width, uint32_t *value);
 status_t drv_pci_config_write(handle_t dev, uint32_t off, uint32_t width, uint32_t value);
 
-/* MMIO accessors (compiler barriers; UC mappings keep device order). */
+/* MMIO accessors: each call is exactly one load or store of that width
+ * (volatile), in program order with the other accessor calls, and a UC
+ * mapping sends them to the device in that order. They are NOT a barrier
+ * against ordinary memory: a descriptor written to a DMA buffer before a
+ * doorbell needs its own fence (__atomic_thread_fence, as usb-bus's ring.c
+ * and hc.c do) if the device must see it first. */
 static inline uint32_t drv_read32(volatile void *base, uint32_t off)
 {
     return *(volatile uint32_t *)((volatile uint8_t *)base + off);

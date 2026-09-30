@@ -6,6 +6,7 @@
  * works on the calling CPU's own APIC; the IPI senders keep interrupts off
  * across the two xAPIC ICR writes so they can't be split. */
 #include <jam/acpi.h>
+#include <jam/atomic.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/irq.h>
@@ -198,7 +199,7 @@ static void on_timer(struct trap_frame *f)
     (void)f;
     struct cpu *c = this_cpu();
     if (timer_mode == TMR_MODE_PERIODIC) {
-        __atomic_store_n(&c->ticks, c->ticks + 1, __ATOMIC_RELAXED);
+        COUNTER_ADD(&c->ticks, 1);
         lapic_eoi();
         sched_timer_expire();
         sched_tick();
@@ -208,7 +209,7 @@ static void on_timer(struct trap_frame *f)
     uint64_t now = rdtsc();
     bool tick = now >= c->tick_deadline;
     if (tick) {
-        __atomic_store_n(&c->ticks, c->ticks + 1, __ATOMIC_RELAXED);
+        COUNTER_ADD(&c->ticks, 1);
         c->tick_deadline += tsc_period;
         if (c->tick_deadline <= now)   /* missed ticks (a long stall): don't catch up */
             c->tick_deadline = now + tsc_period;

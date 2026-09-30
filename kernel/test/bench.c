@@ -987,7 +987,7 @@ static void place_busy(uint32_t n, uint32_t *shared, uint32_t *on_e)
     while (place_started < n)
         thread_yield();
     for (uint32_t k = 0; k < n; k++)
-        where[k] = th[k]->cpu;
+        where[k] = thread_cpu(th[k]);
     place_release = true;
     for (uint32_t k = 0; k < n; k++)
         thread_join(th[k]);

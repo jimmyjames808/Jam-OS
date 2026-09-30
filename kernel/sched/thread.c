@@ -3,6 +3,7 @@
  * gives back to. The scheduler proper (run queues, the switch, waking) is
  * sched.c; finish_switch there calls thread_reap for a thread that died. */
 #include <jam/aspace.h>
+#include <jam/atomic.h>
 #include <jam/irq.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -135,7 +136,7 @@ static void stack_put(void *top)
     } else {
         *(void **)((char *)top - STACK_SIZE) = stack_doomed;
         stack_doomed = top;
-        __atomic_store_n(&stack_doomed_n, stack_doomed_n + 1, __ATOMIC_RELAXED);
+        COUNTER_ADD(&stack_doomed_n, 1);
     }
     spin_unlock_irqrestore(&stack_lock, f);
 }
@@ -264,7 +265,7 @@ struct thread *thread_try_create_suspended(const char *name, void (*fn)(void *),
     t->rsp = (uint64_t)sp;
 
     thread_set_state(t, T_BLOCKED);
-    t->cpu = percpu_index();   /* placement hint only: "last ran here" */
+    thread_set_cpu(t, percpu_index());   /* placement hint only: "last ran here" */
     return t;
 }
 
@@ -305,16 +306,20 @@ void thread_set_priority(struct thread *t, int prio)
 {
     /* Takes effect the next time t is queued or switched out. Never touch
      * t->prio here: while t is queued it names t's run queue list. */
-    int cap = t->prio_cap;
-    t->base_prio = prio < PRIO_MIN ? PRIO_MIN : prio > cap ? cap : prio;
+    int cap = t->prio_cap;   /* fixed once the thread can run */
+    int base = prio < PRIO_MIN ? PRIO_MIN : prio > cap ? cap : prio;
+    /* One atomic store of the final value: schedule() reads base_prio on
+     * another CPU under a lock this caller doesn't hold, and must never see
+     * an unclamped or half-made value (it indexes the run queues with it). */
+    __atomic_store_n(&t->base_prio, base, __ATOMIC_RELAXED);
 }
 
 void thread_set_priority_cap(struct thread *t, int cap)
 {
     cap = cap < PRIO_MIN ? PRIO_MIN : cap > PRIO_MAX ? PRIO_MAX : cap;
     t->prio_cap = cap;
-    if (t->base_prio > cap)
-        t->base_prio = cap;
+    if (__atomic_load_n(&t->base_prio, __ATOMIC_RELAXED) > cap)
+        __atomic_store_n(&t->base_prio, cap, __ATOMIC_RELAXED);
 }
 
 void thread_set_affinity(struct thread *t, const cpumask_t *mask)

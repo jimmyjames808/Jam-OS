@@ -46,6 +46,7 @@
  *
  * Job charge: one JOB_LIMIT_HANDLES unit of the creator's job (like a VMO
  * struct), from creation until the memory is freed. */
+#include <jam/atomic.h>
 #include <jam/interrupt.h>
 #include <jam/interrupt_test.h>
 #include <jam/mm.h>
@@ -174,7 +175,7 @@ static void dev_release(struct kinterrupt *o)
 static void deliver_locked(struct kinterrupt *o)
 {
     /* The lock makes us the only writer; interrupt_fires reads it without. */
-    __atomic_store_n(&o->fires, o->fires + 1, __ATOMIC_RELAXED);
+    COUNTER_ADD(&o->fires, 1);
     if (o->maskable && !o->masked) {
         o->masked = true;
         dev_mask(o, true);
@@ -192,7 +193,7 @@ static void fire(void *ctx)
         panic("interrupt: fired on a freed object (%p, magic %x)", o, magic);
     uint64_t f = spin_lock_irqsave(&o->base.lock);
     if (o->dead)
-        __atomic_store_n(&o->late, o->late + 1, __ATOMIC_RELAXED);
+        COUNTER_ADD(&o->late, 1);
     else if (o->masked && o->kind == IK_VIRTUAL)
         o->pending = true;   /* what a masked MSI-X vector's pending bit does */
     else

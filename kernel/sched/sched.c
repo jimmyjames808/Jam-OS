@@ -14,6 +14,7 @@
  * blocking, sleeping, wait queues and mutexes are in wait.c.
  * sched_internal.h is what the three files share.
  */
+#include <jam/atomic.h>
 #include <jam/cmdline.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
@@ -156,14 +157,14 @@ static void enqueue(struct runqueue *rq, struct thread *t, uint32_t cpu)
 {
     if (t->rq_node.next)
         panic("sched: \"%s\" queued on cpu %u while already queued on cpu %u (state %d, on_cpu %d)",
-              t->name, cpu, t->cpu, thread_state(t),
+              t->name, cpu, thread_cpu(t), thread_state(t),
               __atomic_load_n(&t->on_cpu, __ATOMIC_RELAXED));
     thread_set_state(t, T_READY);
-    t->cpu = cpu;
+    thread_set_cpu(t, cpu);
     t->ready_since = cpu_ticks(cpus[cpu]);
     list_add_tail(&rq->queues[t->prio], &t->rq_node);
     rq->bitmap |= 1u << t->prio;
-    __atomic_store_n(&rq->nr_ready, rq->nr_ready + 1, __ATOMIC_RELAXED);
+    COUNTER_ADD(&rq->nr_ready, 1);
 }
 
 static void dequeue(struct runqueue *rq, struct thread *t)
@@ -171,7 +172,7 @@ static void dequeue(struct runqueue *rq, struct thread *t)
     list_del(&t->rq_node);
     if (list_empty(&rq->queues[t->prio]))
         rq->bitmap &= ~(1u << t->prio);
-    __atomic_store_n(&rq->nr_ready, rq->nr_ready - 1, __ATOMIC_RELAXED);
+    COUNTER_SUB(&rq->nr_ready, 1);
 }
 
 static struct thread *pick_best(struct runqueue *rq)
@@ -278,7 +279,7 @@ static uint32_t select_cpu(const struct thread *t)
     cpumask_t cand;
     for (unsigned w = 0; w < MAX_CPUS / 64; w++)
         cand.bits[w] = usable_word(t, w);
-    uint32_t best = pick_cpu(&cand, topo, NULL, t->cpu,
+    uint32_t best = pick_cpu(&cand, topo, NULL, thread_cpu(t),
                              __atomic_load_n(&sched_place_order, __ATOMIC_RELAXED));
     if (best == UINT32_MAX)
         panic("sched: thread \"%s\" has no online CPU in its affinity mask", t->name);
@@ -364,7 +365,7 @@ void finish_switch(void)
                 kprintf("  !! cpu %u also has \"%s\" as current\n", i, c->current->name);
         panic("sched: finish_switch on cpu %u with no previous thread (now running \"%s\", "
               "cpu field %u, on_cpu %d, state %d)", c->index, c->current->name,
-              c->current->cpu, __atomic_load_n(&c->current->on_cpu, __ATOMIC_RELAXED),
+              thread_cpu(c->current), __atomic_load_n(&c->current->on_cpu, __ATOMIC_RELAXED),
               thread_state(c->current));
     }
     rq->prev = NULL;
@@ -393,9 +394,9 @@ static inline void account_switch(struct cpu *c, struct thread *prev, const stru
 {
     uint64_t now = rdtsc(), last = __atomic_load_n(&c->switch_tsc, __ATOMIC_RELAXED);
     uint64_t d = last && now > last ? now - last : 0;
-    __atomic_store_n(&prev->run_tsc, prev->run_tsc + d, __ATOMIC_RELAXED);
+    COUNTER_ADD(&prev->run_tsc, d);
     if (prev->is_idle)
-        __atomic_store_n(&c->idle_tsc, c->idle_tsc + d, __ATOMIC_RELAXED);
+        COUNTER_ADD(&c->idle_tsc, d);
     __atomic_store_n(&c->switch_tsc, now, __ATOMIC_RELAXED);
     __atomic_store_n(&c->idle_now, next->is_idle, __ATOMIC_RELAXED);
 }
@@ -403,7 +404,7 @@ static inline void account_switch(struct cpu *c, struct thread *prev, const stru
 uint64_t thread_cpu_tsc(struct thread *t)
 {
     uint64_t v = __atomic_load_n(&t->run_tsc, __ATOMIC_RELAXED);
-    uint32_t i = t->cpu;
+    uint32_t i = thread_cpu(t);
     if (__atomic_load_n(&t->on_cpu, __ATOMIC_ACQUIRE) && i < cpu_count && cpus[i] &&
         cpus[i]->current == t) {
         uint64_t last = __atomic_load_n(&cpus[i]->switch_tsc, __ATOMIC_RELAXED), now = rdtsc();
@@ -448,7 +449,8 @@ void schedule(void)
         __atomic_store_n(&c->idle_polling, false, __ATOMIC_SEQ_CST);
 
     struct thread *prev = c->current;
-    prev->prio = prev->base_prio;   /* a boost lasts one turn on the CPU */
+    /* A boost lasts one turn on the CPU. */
+    prev->prio = __atomic_load_n(&prev->base_prio, __ATOMIC_RELAXED);
     if (thread_state(prev) == T_RUNNING && !prev->is_idle) {
         if (cpumask_has(&prev->affinity, c->index))
             enqueue(rq, prev, c->index);
@@ -481,14 +483,14 @@ void schedule(void)
               c->index);
     thread_set_state(next, T_RUNNING);
     __atomic_store_n(&next->on_cpu, true, __ATOMIC_RELAXED);
-    next->cpu = c->index;
+    thread_set_cpu(next, c->index);
     next->slice = SLICE_TICKS;
     next->switches_in++;
     account_switch(c, prev, next);
     c->current = next;
     __atomic_store_n(&rq->busy, !next->is_idle, __ATOMIC_RELAXED);
     __atomic_store_n(&rq->cur_prio, next->is_idle ? -1 : next->prio, __ATOMIC_RELAXED);
-    __atomic_store_n(&c->switches, c->switches + 1, __ATOMIC_RELAXED);
+    COUNTER_ADD(&c->switches, 1);
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, thread_state(prev), cpu_ticks(c) };
@@ -615,10 +617,10 @@ static void thread_wake_common(struct thread *t, bool sync)
          * queue's lock races schedule() on the real CPU and loses the thread
          * (it ends RUNNING on no CPU and no queue). (test: repro_wake_stale_cpu) */
         for (;;) {
-            uint32_t c = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
+            uint32_t c = thread_cpu(t);
             struct runqueue *own = &rqs[c];
             uint64_t f = spin_lock_irqsave(&own->lock);
-            if (__atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE) != c) {
+            if (thread_cpu(t) != c) {
                 spin_unlock_irqrestore(&own->lock, f);
                 continue;   /* migrated: relock its current run queue */
             }
@@ -687,7 +689,7 @@ static void try_steal(uint32_t me)
         if (t) {
             enqueue(&rqs[me], t, me);
             struct cpu *c = this_cpu();
-            __atomic_store_n(&c->steals, c->steals + 1, __ATOMIC_RELAXED);
+            COUNTER_ADD(&c->steals, 1);
         }
         spin_unlock_no_resched(&b->lock);
         spin_unlock_no_resched(&a->lock);
@@ -805,7 +807,7 @@ static struct thread *make_idle(uint32_t cpu)
     t->is_idle = true;
     thread_set_state(t, T_RUNNING);
     cpumask_one(&t->affinity, cpu);
-    t->cpu = cpu;
+    thread_set_cpu(t, cpu);
     return t;
 }
 
@@ -826,7 +828,7 @@ void sched_init_bsp(void)
         panic("sched: out of memory for thread main");
     thread_set_state(main, T_RUNNING);
     __atomic_store_n(&main->on_cpu, true, __ATOMIC_RELAXED);
-    main->cpu = 0;
+    thread_set_cpu(main, 0);
     main->refs = 2;   /* never joined; keep it alive */
     this_cpu()->current = main;
     __atomic_store_n(&rqs[0].busy, 1, __ATOMIC_RELAXED);
@@ -916,7 +918,7 @@ static void boost_starved(struct cpu *c)
             __atomic_add_fetch(&boost_total, 1, __ATOMIC_RELAXED);
             list_add_tail(&rq->queues[PRIO_BOOST], &t->rq_node);
             rq->bitmap |= 1u << PRIO_BOOST;
-            __atomic_store_n(&rq->nr_ready, rq->nr_ready + 1, __ATOMIC_RELAXED);
+            COUNTER_ADD(&rq->nr_ready, 1);
         }
     }
     struct thread *cur = c->current;

@@ -57,6 +57,7 @@
  *     pages. What a stash can still hold then is a page freed on a CPU that
  *     read the low-water mark just before it was crossed: at most
  *     PCP_MAX per CPU, only while memory is being freed. */
+#include <jam/atomic.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -101,7 +102,7 @@ static uint64_t zone_free[ZONE_COUNT];
  * it without the lock, so the store is atomic. */
 static void zone_free_add(unsigned z, uint64_t pages)
 {
-    __atomic_store_n(&zone_free[z], zone_free[z] + pages, __ATOMIC_RELAXED);
+    COUNTER_ADD(&zone_free[z], pages);
 }
 static spinlock_t lock = SPINLOCK_INIT("pmm");
 

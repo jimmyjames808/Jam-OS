@@ -316,9 +316,11 @@ fractions. User programs may use floating point and SIMD freely.
   refcount drop is `__ATOMIC_ACQ_REL` (`binding_put`); a flag that publishes
   data is a `RELEASE` store paired with an `ACQUIRE` load, and the comment
   names the other side. Don't use `__sync_*`.
-- Counters: with one writer, `__atomic_store_n(&c, c + 1, __ATOMIC_RELAXED)`
-  (no `lock` prefix on hot paths); with several writers,
-  `__atomic_add_fetch`. Plain stores are fine before an object is
+- Counters: with one writer, `COUNTER_ADD(&c, 1)` / `COUNTER_SUB`
+  (`jam/atomic.h`: an atomic load and an atomic store, no `lock` prefix on
+  hot paths); with several writers, `__atomic_add_fetch`. Never mix: a
+  variable another CPU reads is touched only through atomic accesses, its
+  own writer's reads included. Plain stores are fine before an object is
   published to other CPUs (initialisation).
 - Prefer a lock to a lock-free scheme unless BENCH.md shows the lock
   costs. Lock-free code comments its whole argument (as pmm.c's stash lock

@@ -72,13 +72,18 @@ struct thread {
     char              name[24];      /* for logs and panics, NUL-terminated */
     int               state;         /* T_* */
     int               prio;          /* effective priority (base or boosted) */
-    int               base_prio;     /* priority without a boost */
+    int               base_prio;     /* priority without a boost. Set from any CPU
+                                      * (thread_set_priority) while schedule()
+                                      * reads it: atomic loads and stores */
     int               prio_cap;      /* base_prio never exceeds this */
     uint64_t          ready_since;   /* tick count on its CPU when queued */
     uint64_t          boosts;        /* starvation boosts it has had */
     bool              on_cpu;        /* its stack is still in use by a CPU */
     bool              is_idle;       /* a CPU's idle thread */
-    uint32_t          cpu;           /* CPU it runs on / is queued on */
+    uint32_t          cpu;           /* CPU it runs on / is queued on. Written under
+                                      * that CPU's run queue lock; a waker reads it
+                                      * before it holds the lock (thread_cpu,
+                                      * thread_set_cpu: atomic) */
     uint32_t          slice;         /* ticks left of its time slice */
     cpumask_t         affinity;      /* CPUs it may run on */
 
@@ -300,6 +305,19 @@ static inline int thread_state(const struct thread *t)
 static inline void thread_set_state(struct thread *t, int state)
 {
     __atomic_store_n(&t->state, state, __ATOMIC_RELAXED);
+}
+
+/* t->cpu: a waker reads it to pick the run queue lock to take, then checks
+ * it again under that lock (sched.c, the task_rq_lock pattern), so the
+ * writers release what the readers acquire. */
+static inline uint32_t thread_cpu(const struct thread *t)
+{
+    return __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
+}
+
+static inline void thread_set_cpu(struct thread *t, uint32_t cpu)
+{
+    __atomic_store_n(&t->cpu, cpu, __ATOMIC_RELEASE);
 }
 
 struct mutex {
