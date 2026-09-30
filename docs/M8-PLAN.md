@@ -21,7 +21,7 @@ stick is a SuperSpeed `usb-storage` device on root port 1.
 |---|---|
 | Bulk transfers (usb-bus) | bulk-IN and bulk-OUT endpoints: transfer rings, completion, STALL and Clear Feature(ENDPOINT_HALT), and a shared DMA buffer per opened pair so data never travels in messages |
 | usb-storage (driver process) | USB mass storage, Bulk-Only Transport: CBW / data / CSW, the SCSI commands a stick needs, BOT reset recovery. Reads the partition table and serves the `block` protocol, one channel per partition, each limited to that partition's sectors |
-| fat (service process) | FatFs over one `block` channel, serving the `fs` protocol; mounted at `/data` |
+| fat (service process) | FatFs over one `block` channel, serving the `fs` protocol; mounted at `/data`, and a second, read-only instance over the ESP at `/esp` |
 | The file namespace (libos + init) | `fs` and `file` protocols; each program gets a namespace (mount point -> `fs` channel) at startup; libos `open`, `read`, `write`, `readdir`, `mkdir`, `unlink`, `rename`, `stat`, `sync`; `/boot` is served by a bootfs server under the same protocol |
 | spawn from a file | libos spawn takes a VMO (a file's contents) instead of a bootfs name, so `run /data/bin/x` works |
 | logd (service process) | follows the kernel log from its first byte and appends it to `/data/logs/boot-NNNN.txt`, syncing as it goes |
@@ -37,8 +37,10 @@ stick is a SuperSpeed `usb-storage` device on root port 1.
   any sector outside its partition (ERR_OUT_OF_RANGE). It never serves the
   whole disk to anyone, so nothing but usb-storage can touch the ESP or
   the partition table. The ESP's channel is read-only.
-- fat gets only the data partition's channel. A bug in fat or FatFs can't
-  write outside `/data`.
+- fat gets only one partition's channel. A bug in fat or FatFs can't
+  write outside `/data`; the `/esp` instance's channel is read-only, and
+  fat refuses every write on a read-only `block` channel
+  (ERR_ACCESS_DENIED) before FatFs sees it.
 - A program sees only the mounts its namespace holds. The shell and the
   programs it runs get `/boot` and `/data`; a program can be started with
   a namespace without `/data`.
@@ -73,7 +75,8 @@ fs, file):
 given by whoever starts a program; libos resolves a path to the longest
 matching mount and calls that `fs` channel. init builds the first one:
 `/boot` from the bootfs server (the bootfs image served read-only through
-`fs`), `/data` when devmgr reports the data partition's fat service up.
+`fs`; always there, even with no USB storage), `/esp` and `/data` when
+devmgr reports their fat services up.
 Mounts that arrive later (the stick replugged, fat restarted) reach
 running programs the way devmgr's new channel reaches the shell today (a
 channel from init). The shell's mount table (sh_vfs.c) becomes a thin
@@ -82,8 +85,9 @@ client of libos's namespace.
 **Who starts what.** devmgr binds usb-storage to mass-storage interfaces
 (class 08, subclass 06 SCSI, protocol 50 BOT). usb-storage reports its
 partitions to devmgr; devmgr starts fat for the partition named
-`JAMOS-DATA` (see the layout) and hands init the resulting `fs` channel;
-init mounts it at `/data`. Restarts follow devmgr's supervision (M7).
+`JAMOS-DATA` (see the layout) and a read-only fat for the ESP of the disk
+it booted from, and hands init the resulting `fs` channels; init mounts
+them at `/data` and `/esp`. Restarts follow devmgr's supervision (M7).
 
 **The stick's layout.** GPT with two partitions:
 1. the ESP (FAT32, as today: Limine, jamos.elf, bootfs.img, limine.conf),
@@ -197,20 +201,20 @@ contract; the tracks build on them.
 - QEMU at 4 and 8 CPUs: all ktests; init + utest (with the RAM-disk fat
   tests); the end-to-end storage test; unplug mid-read; the pulled-plug
   test; stress; the shell scripts.
-- The real PC: `ls /boot` and `ls /data` from the shell; `write` then
+- The real PC: `ls /boot`, `ls /esp` (Limine, the kernel, limine.conf,
+  bootfs.img) and `ls /data` from the shell; `cat
+  /esp/boot/limine/limine.conf`; writing to `/esp` refused; `write` then
   `cat` a file in `/data`; a boot log per boot on the stick, read on the
   Mac; pulling the stick mid-write and replugging leaves it bootable;
   All tests, the 2-minute stress, and the 10-minute sign-off.
 
-## Open questions for the owner (before the agents start)
-1. Flashing the new layout erases the stick once. You run `make usb`
-   yourself when the build is ready; is any file on the stick worth
-   keeping first?
-2. The data partition takes the rest of the 2 GB stick. Fine, or do you
-   want a fixed size?
-3. Should `/boot` in the shell keep showing the bootfs image (the programs
-   and drivers), or the ESP's files (the kernel, limine.conf)? The plan
-   says bootfs, since that's what programs run from.
+## The owner's answers (2026-09-30)
+1. Nothing on the stick needs keeping: flashing the new layout (which
+   erases it once) is fine.
+2. The data partition takes the rest of the 2 GB stick.
+3. Both: `/boot` is the bootfs image (the programs, in RAM, always
+   there), and `/esp` is the ESP's own files, read-only, when USB storage
+   works.
 
 ## Rules for the agents
 - Work only in your worktree and your track's files; the foundation's IDL
