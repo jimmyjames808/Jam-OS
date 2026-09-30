@@ -10,8 +10,8 @@ that a bug fix comes with a test is in
 | Tier | Command | When |
 |---|---|---|
 | Build | `make`, `make KTESTS=0`, `make check` | every commit |
-| Kernel tests | `QEMU_SMP=4 QEMU_TIMEOUT=90 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` (the full run takes ~25-30 s, too close to the 30 s default) | every kernel change |
-| User regression | `tools/qemu-test.sh build/test init init` | every change to syscalls, libos, services, drivers |
+| Kernel tests | `QEMU_SMP=4 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` (the full run takes ~25-30 s) | every kernel change |
+| User regression | `tools/qemu-test.sh build/test init init` (utest, then usbtest: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
 | 2-minute stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` | after each fix round, in QEMU and on the PC |
@@ -52,7 +52,7 @@ waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 | `QEMU_SMP` | 4 | CPUs |
 | `QEMU_MEM` | 2G | memory |
 | `QEMU_CPU` | max | CPU model, e.g. `max,-x2apic` |
-| `QEMU_TIMEOUT` | 30 | seconds before giving up |
+| `QEMU_TIMEOUT` | 150 | seconds before giving up (only a cap: a run ends when the kernel halts or QEMU goes) |
 | `QEMU_IMAGE` | build/jamos.img | another image, e.g. build/noktests/jamos.img |
 | `QEMU_XHCI` | | qemu-xhci properties, e.g. `msi=on,msix=off` (MSI-only, like the PC) |
 | `QEMU_USB` | | more USB devices; give each a `port=` (port 1 is the stick) |
