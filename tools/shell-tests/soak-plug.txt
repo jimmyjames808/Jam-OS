@@ -1,0 +1,46 @@
+# The soak test with sticks pulled and plugged while it runs (the monitor's
+# device_del / device_add). A second stick (drive "s2img", made by
+# tools/soak-test.sh) is plugged in and made writable first, so the file
+# load writes to it as well as to /data. During the soak it is pulled in
+# the middle of those writes and plugged back (read-only again: its files
+# are read), then the boot stick itself is pulled (/data and /esp go) and
+# plugged back. The soak must end PASSED: a file cycle cut short by a pull
+# is not a failure, wrong data is.
+# Use tools/soak-test.sh (it sets @SEED@ and @LOOPS@ and adds the drive).
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+monitor device_add usb-storage,id=s2,bus=xhci.0,port=2,drive=s2img
+wait 60 init: /usb0 mounted
+send mount -w /usb0; echo mw-$?
+wait mw-0
+send soak loops=@LOOPS@ seed=@SEED@
+wait 60 soak: begun on
+wait 120 ktest: loop 1 of 1:
+sleep 10
+
+# ---- the second stick pulled mid-write, and back ------------------------------------------
+monitor device_del s2
+wait 60 init: /usb0 is gone
+sleep 4
+monitor device_add usb-storage,id=s2,bus=xhci.0,port=2,drive=s2img
+wait 90 init: /usb0 mounted
+sleep 6
+
+# ---- the boot stick pulled, and back -------------------------------------------------------
+monitor device_del stick
+wait 60 init: /data is gone
+sleep 4
+monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
+wait 120 init: /data mounted
+
+# ---- the end ---------------------------------------------------------------------------------
+wait 900 SOAK RESULTS
+wait soak: PASSED after
+wait 0 FAILED
+wait shell: soak: PASSED
+wait jam>
+send mount
+wait /data
+send reboot
+wait reboot: resetting

@@ -14,6 +14,7 @@ that a bug fix comes with a test is in
 | User regression | `tools/qemu-test.sh build/test init init` (utest, then usbtest: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
+| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each); on the PC `soak` in the shell, or the boot menu's Soak entry ([below](#soak)) | every change to a kernel test, and anything that keeps state from one run to the next; on the PC after each fix round |
 | 2-minute stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` | after each fix round, in QEMU and on the PC |
 | 10-minute stress | the boot menu's 10-minute entry, or `stress 600` in the shell | milestone sign-off only, on the PC |
 | The PC | flash the stick and run it ([HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)) | the final judge |
@@ -24,6 +25,11 @@ that a bug fix comes with a test is in
   load. Rerun once; a second failure is real.
 - On the PC the 2-minute stress is skipped right before a sign-off: the
   10-minute run covers it.
+- The tiers ask different questions. All tests: does each check hold once,
+  on an idle machine, in the usual order? The stress test: do the
+  scheduler, locks and allocators hold under load? The soak: does every
+  test still hold the tenth time, in any order, next to load and user
+  space, with sticks coming and going?
 
 ## Build checks
 
@@ -84,6 +90,7 @@ make debug                                                # the same, stopped fo
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | after each fix |
 | Tests / Stress test (10 minutes) | `selftest stress=600` | milestone sign-off |
+| Tests / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure halts on the panic screen; a pass ends with the SOAK RESULTS box and a prompt |
 | Tests / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
 | Tests / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
 | Tests / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
@@ -93,6 +100,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
 - `shell`: the plain boot, spelled out (what the shell scripts use).
 - `ktest=<prefix>`: the tests whose name starts with the prefix. Tests
   named `review_...` run only when the prefix asks for them.
+- With `ktest` or `ktest=<prefix>`: `loops=<n>`, `seed=<s>`, `shuffle`,
+  `keep`, `load` ([Soak](#soak)), e.g. `ktest loops=5 seed=42`.
+- `soak=<minutes>`: what the Soak entry does, for another length.
 - `selftest`: the boot-time self-checks; `stress=<seconds>` adds the stress
   test.
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
@@ -111,10 +121,80 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
 Most tests are shell commands, so a test run needs no reboot: `ktest
 [prefix]`, `bench`, `stress <seconds>`, `utest`, `usbtest`, `crash <name>
 yes` (the deliberate panics), plus `devices`, `usb`, `pci`, `memmap`.
+`soak` is the soak test ([Soak](#soak)), and `ktest` takes its options.
 `ktest` from the shell runs "live" next to the rest of user space: checks
 on system-wide counts are not made, and tests that need the machine to
 themselves are skipped (`KT_SKIP_LIVE`, in `kernel/include/jam/ktest.h`);
 the summary line says how many.
+
+## Soak
+
+A test that passes once at boot can still fail the second time, or after
+another test, or next to other work: it kept something in a static, or
+counted on a fresh machine. (The first such bug found: a second `ktest` in
+one boot always failed `pcid_slot_bookkeeping`, whose made-up CPUs kept
+the first run's slots.) The soak looks for that class.
+
+**The options of `ktest`** (the same words on the kernel command line and
+after the shell's `ktest`; `struct ktest_opts` in
+`kernel/include/jam/ktest.h`):
+
+| Word | What |
+|---|---|
+| `loops=<n>` | the whole set n times in one boot |
+| `seed=<s>` | in an order shuffled from s. Loop k uses s + k - 1 and prints it: `ktest seed=<that>` replays that loop alone |
+| `shuffle` | a seed from the clock (printed) |
+| `keep` | a failed test is recorded and the run goes on; its report says how many FAILED. Without it the first failure panics |
+| `load` | with the stress test's workers running (two per CPU: counters, allocations, sleeps, migrations, thread and process churn) and a TLB shootdown round every 250 ms |
+
+Plain `ktest` is what it always was: once, in link order, strict.
+
+**Under load** a test must still pass if it is about correctness. One that
+asserts exact timing, exact placement or an exact system-wide count needs
+an idle machine and says so: `KT_NEEDS_IDLE("why")` skips it (the log line
+reads `skipped (busy machine: why)`), `KT_IDLE_EQ` / `KT_IDLE_ASSERT` leave
+out one such check. With `load` the run is also "live" (the load makes
+channels, processes and pages), so `KT_SKIP_LIVE` tests are skipped and
+global counts are not checked. Of 221 tests, 8 need an idle machine and 9
+more are skipped live; the rest run. Never mark a test that is only slow
+under load.
+
+**`soak [minutes] [loops=N] [seed=S] [halt] [idle]`** in the shell is the
+whole thing in one command (default 3 minutes; Ctrl+C ends it after the
+step in progress):
+
+- each loop: `ktest loops=1 seed=<S + loop> keep load`, then `utest`;
+- all the while `bin/soakload` (`user/tests/soakload/`) writes a file,
+  syncs it, reads it back, compares and deletes it on `/data` and on every
+  other writable stick (`mount -w /usb0` first), reads the files of
+  read-only mounts twice, maps and unmaps memory, makes channel calls and
+  starts programs. Pull and plug sticks while it runs: a file cycle that a
+  pull cut short is counted as such, not as a failure;
+- at the end the SOAK RESULTS box: loops and seeds, tests passed, skipped
+  and FAILED (each failure with its check, file and line, and the seed
+  that replays its loop), utest runs, file cycles, the slowest tests, and
+  what the system held before and after (free pages, channels, interrupt
+  objects, and the pages, handles and threads of the shell's job tree).
+  Those are printed, not judged: mounts and drivers move them. A figure
+  that climbs from one soak to the next is a leak to look for.
+
+`halt` leaves out `keep`: the first failed check panics, as the boot menu's
+Soak entry does. `idle` leaves out both loads.
+
+**A failure.** Every panic screen now carries a note under its message
+(whatever kind of panic: a failed check, an exception, the watchdog):
+
+```
+ktest: loop 3 of 5, seed 1236, test 57 of 221: chan_x, under load, live; before it: a, b, c, d
+```
+
+Photograph the top of the screen (the message, that note and the
+backtrace). `ktest seed=1236` (add `load` if the note says so) runs the
+same order again; to narrow it down, `ktest <prefix> seed=1236` shuffles
+only the tests the prefix selects. With `keep` a failure is one log line,
+`ktest: FAILED <test>: <check> (<file>:<line>) [loop, seed, test n of m]`,
+and the test ends there: what it left behind (objects, threads) may make
+later tests fail too, so the first failure of a run is the finding.
 
 ## Shell scripts
 
@@ -142,6 +222,8 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `apps.txt` | snake, mines and sysmon: self-tests, play, screenshots; one mouse click in mines; the `sysmon` command, and `run sysmon` refused for want of its handle | use `tools/apps-test.sh` |
 | `mouse.txt` | the mouse through QEMU's monitor: the shell and tetris undisturbed by it, the wheel's scroll-back, then mines played with clicks at exact cells (reveal, flag, chord, peek, the buttons), and acceleration | use `tools/mouse-test.sh` |
 | `ktest-all.txt` | every kernel test from the shell, live | |
+| `soak.txt` | `soak loops=2` from the shell: two shuffled loops under load with utest between them, and the SOAK RESULTS box | `QEMU_TIMEOUT=600` |
+| `soak-plug.txt` | the soak with a second, writable stick and the boot stick pulled and plugged while it runs | use `tools/soak-test.sh` |
 | `nousb.txt` | safe mode | command line `nousb` instead of `shell` |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `usb.txt` | the `usb` command | `QEMU_USB="-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"` |
@@ -167,6 +249,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot |
 | `tools/data-test.sh <outdir>` | the stick's filesystems end to end, three boots of one stick image (`data-1.txt` to `data-3.txt`): written, rebooted, read back; QEMU quit in the middle of writes and the dirty volume mounted again; then the boot logs read off the image with mtools, as the Mac reads the real stick |
+| `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back; PASS needs 0 FAILED kernel tests, utest runs and file checks, and the second stick's own files unchanged |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
 
 ## Known noise
