@@ -612,7 +612,13 @@ static bool dirty_on(unsigned megabytes, unsigned kind)
     uint32_t syncs = ramdisk_syncs(&disk);
     CHECK_ST(file_sync_until(f.ch, now() + FAT_CALL_NS), OK);
     CHECK(clean_bit(&disk, 0) && clean_bit(&disk, 1));
-    CHECK(ramdisk_syncs(&disk) > syncs);                   /* block.sync: on the medium */
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);             /* one block.sync: on the medium */
+    CHECK_ST(file_sync_until(f.ch, now() + FAT_CALL_NS), OK);
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);             /* nothing new: nothing sent */
+    CHECK_ST(t_sync(&r), OK);                              /* fs.sync: the clean mark too */
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 2);
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&disk), syncs + 2);
     CHECK_ST(t_write(&f, FAT_BUF, chunk, FAT_BUF, &done), OK);
     CHECK(!clean_bit(&disk, 0) && !clean_bit(&disk, 1));
     syncs = ramdisk_syncs(&disk);

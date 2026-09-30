@@ -180,7 +180,7 @@ int main(int argc, char **argv)
         printf("fat %s: the disk is gone: stopping\n", vol.name);
         return 0;
     }
-    status_t st2 = disk_settle();
+    status_t st2 = disk_settle(true);
     if (st == OK)
         st = st2;
     if (st != OK)

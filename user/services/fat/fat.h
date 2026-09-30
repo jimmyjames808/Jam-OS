@@ -98,9 +98,12 @@ status_t disk_commit_boot(void);
 /* After a mount: find the FATs, log a volume found dirty, and (writable
  * FAT16/32) start keeping the dirty flag. */
 void     disk_watch(void);
-/* Everything FatFs wrote is flushed (the caller synced the files): mark the
- * volume clean and flush the medium (block.sync). */
-status_t disk_settle(void);
+/* FatFs has written everything out (the caller synced the files): flush the
+ * medium if it needs it and mark the volume clean. durable: flush the mark
+ * too (fs.sync, fat's end); without it the mark goes out with the next
+ * flush, and a power cut before that finds a volume that is whole and
+ * called dirty. */
+status_t disk_settle(bool durable);
 
 /* ---- path.c ---------------------------------------------------------------------- */
 

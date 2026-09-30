@@ -52,7 +52,7 @@ static status_t sync_open(struct fat_open *o)
         return st;
     bool was = o->unsynced;
     o->unsynced = false;
-    return was && !files_unsynced() ? disk_settle() : OK;
+    return was && !files_unsynced() ? disk_settle(false) : OK;
 }
 
 status_t files_sync_all(void)
@@ -213,7 +213,7 @@ static void close_file(struct fat_file *f)
     o->unsynced = false;
     release(f);
     if (was && !vol.disk_gone && !files_unsynced())
-        (void)disk_settle();   /* failures are logged there; nobody is left to tell */
+        (void)disk_settle(false);   /* failures are logged there; nobody is left to tell */
 }
 
 void files_close_all(void)

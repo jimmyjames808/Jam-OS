@@ -22,6 +22,14 @@
  * read, so every write of that sector has the bit patched to the current
  * state on its way out.
  *
+ * What a flush costs. block.sync is SCSI SYNCHRONIZE CACHE, the dear part
+ * of a sync, so it is sent only when a sector was written since the last
+ * one (`flushed`). A file.sync is then one flush: FatFs's own, after which
+ * the clean bit is written and left for the next flush to carry. If the
+ * power goes first the volume is found dirty with everything on it: a
+ * false alarm, never a lie. fs.sync and fat's own end do flush the bit
+ * (disk_settle(true)).
+ *
  * Formatting. f_mkfs writes the boot sector first and the FATs after it,
  * so a format cut short (the stick pulled, the power gone) would leave a
  * boot sector that mounts over FATs full of whatever was there. Between
@@ -44,6 +52,7 @@ static uint8_t  clean_mask;
 static uint8_t boot[FAT_SECTOR];
 static bool    boot_holding;   /* writes of sector 0 go into boot[] */
 static bool    boot_held;      /* boot[] holds one */
+static bool    flushed = true; /* no sector written since the last block.sync */
 
 static uint64_t deadline(void)
 {
@@ -92,6 +101,18 @@ status_t disk_open(handle_t block)
     return OK;
 }
 
+/* block.sync, if anything was written since the last one. */
+static status_t flush(void)
+{
+    if (flushed)
+        return OK;
+    status_t st = block_sync_until(vol.block, deadline());
+    if (st != OK)
+        return failed("sync", 0, 0, st);
+    flushed = true;
+    return OK;
+}
+
 status_t disk_is_blank(bool *out)
 {
     status_t st = block_read_until(vol.block, deadline(), 0, 1, 0);
@@ -112,15 +133,15 @@ status_t disk_commit_boot(void)
     boot_holding = false;
     if (!boot_held)
         return ERR_BAD_STATE;
-    status_t st = block_sync_until(vol.block, deadline());
+    status_t st = flush();
     if (st != OK)
-        return failed("sync", 0, 0, st);
+        return st;
     memcpy(vol.bbuf, boot, FAT_SECTOR);
+    flushed = false;
     st = block_write_until(vol.block, deadline(), 0, 1, 0);
     if (st != OK)
         return failed("write", 0, 1, st);
-    st = block_sync_until(vol.block, deadline());
-    return st == OK ? OK : failed("sync", 0, 0, st);
+    return flush();
 }
 
 /* ---- the dirty flag ---------------------------------------------------------------- */
@@ -141,6 +162,7 @@ static status_t mark(bool clean)
         if (st != OK)
             return failed("read", vol.fat0[i], 1, st);
         patch(vol.bbuf, clean);
+        flushed = false;
         st = block_write_until(vol.block, deadline(), vol.fat0[i], 1, 0);
         if (st != OK)
             return failed("write", vol.fat0[i], 1, st);
@@ -176,16 +198,17 @@ void disk_watch(void)
     vol.track_dirty = !vol.read_only;
 }
 
-status_t disk_settle(void)
+status_t disk_settle(bool durable)
 {
     if (vol.read_only)
         return OK;
     status_t st = OK;
-    if (vol.track_dirty && !vol.clean_on_disk)
-        st = mark(true);
-    status_t st2 = block_sync_until(vol.block, deadline());
-    if (st2 != OK)
-        (void)failed("sync", 0, 0, st2);   /* logged; its status is the result */
+    if (vol.track_dirty && !vol.clean_on_disk) {
+        st = flush();   /* what the bit vouches for is on the medium first */
+        if (st == OK)
+            st = mark(true);
+    }
+    status_t st2 = durable ? flush() : OK;
     return st != OK ? st : st2;
 }
 
@@ -250,6 +273,7 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         for (unsigned i = 0; vol.track_dirty && i < vol.nfats; i++)
             if (vol.fat0[i] >= sector && vol.fat0[i] - sector < n)
                 patch(vol.bbuf + (size_t)(vol.fat0[i] - sector) * FAT_SECTOR, false);
+        flushed = false;
         status_t st = block_write_until(vol.block, deadline(), sector, n, 0);
         if (st != OK) {
             (void)failed("write", sector, n, st);   /* logged; FatFs gets RES_ERROR */
@@ -270,7 +294,7 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
     case CTRL_SYNC:
         if (vol.read_only)
             return RES_OK;
-        return block_sync_until(vol.block, deadline()) == OK ? RES_OK : RES_ERROR;
+        return flush() == OK ? RES_OK : RES_ERROR;
     case GET_SECTOR_COUNT:
         /* FatFs's LBAs are 32 bits: a bigger partition is used up to there. */
         *(LBA_t *)buff = vol.blocks > 0xffffffffull ? 0xffffffffu : (LBA_t)vol.blocks;
