@@ -1,16 +1,18 @@
 /* hda: the Intel High Definition Audio driver's own pieces (drv/hda).
  *
- * Today the driver is a read-only probe: it resets the controller, finds
- * the codecs on the link and prints each codec's widget graph, then
- * serves abi/idl/hda.idl (the dump again, on request) until devmgr closes
- * its channel. It makes no sound and sends the codecs only GET verbs
- * (hda_get refuses anything else), so nothing it does changes routing,
- * gains, pin controls, EAPD or power states.
+ * The driver resets the controller, finds the codecs on the link and
+ * prints each codec's widget graph, then serves abi/idl/hda.idl (the
+ * dump again, and one output stream) until devmgr closes its channel. It
+ * sends the codecs GET verbs (hda_get refuses anything else) and, for an
+ * open stream, a converter's format and stream tag (hda_converter_set);
+ * nothing it does changes routing, gains, pin controls, EAPD or power
+ * states, so no sound reaches a jack yet.
  *
  * Files: main.c (start, the protocol, exit), ctrl.c (the controller:
  * reset, the CORB/RIRB command rings, the immediate command interface,
  * stop), graph.c (reading a codec's nodes into struct codec), dump.c
- * (the readable lines).
+ * (the readable lines), stream.c (the output stream), irq.c (the loop:
+ * the channels and the MSI).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
  * Audio Specification, revision 1.0a (2010): chapter 3 (controller
@@ -263,3 +265,110 @@ void out_line(struct out *o, const char *fmt, ...) __attribute__((format(printf,
 void hda_dump_ctrl(struct out *o, const struct hda *h, const char *where);
 /* One codec: its header lines, then a line per widget (pins get two). */
 void hda_dump_codec(struct out *o, const struct codec *c);
+
+/* ---- the output stream (stream.c) and the driver's loop (irq.c) -------------------
+ * One output stream: the first output stream descriptor (index ISS, as
+ * GCAP counts them), stream tag 1, 48 kHz 16-bit stereo, from a 64 KiB
+ * DMA32 ring of 4 periods of 16 KiB. Its Buffer Descriptor List and the
+ * DMA position buffer share one more DMA32 page. Spec chapter 3 (stream
+ * descriptor registers, DPLBASE) and chapter 4 (stream setup). */
+
+#define SD_CTL0        0x00   /* 8: bit 0 SRST, 1 RUN, 2 IOCE, 3 FEIE, 4 DEIE */
+#define SD_CTL2        0x02   /* 8: bits 7:4 the stream tag (STRM) */
+#define SD_STS         0x03   /* 8 (RW1C): bit 2 BCIS, 3 FIFOE, 4 DESE, 5 FIFORDY */
+#define SD_LPIB        0x04   /* 32: link position in the cyclic buffer, bytes */
+#define SD_CBL         0x08   /* 32: cyclic buffer length, bytes */
+#define SD_LVI         0x0c   /* 16: last valid BDL index */
+#define SD_FIFOS       0x10   /* 16: FIFO size, bytes */
+#define SD_FMT         0x12   /* 16: stream format */
+#define SD_BDPL        0x18   /* BDL address */
+#define SD_BDPU        0x1c
+
+#define SDCTL_SRST     (1u << 0)
+#define SDCTL_IOCE     (1u << 2)   /* interrupt on completion of a buffer with IOC */
+#define SDCTL_FEIE     (1u << 3)   /* FIFO error interrupt */
+#define SDCTL_DEIE     (1u << 4)   /* descriptor error interrupt */
+#define SDSTS_BCIS     (1u << 2)   /* a buffer with IOC completed */
+#define SDSTS_FIFOE    (1u << 3)   /* FIFO under-run */
+#define SDSTS_DESE     (1u << 4)   /* descriptor error */
+#define INTCTL_GIE     (1u << 31)
+#define INTCTL_CIE     (1u << 30)
+#define INTSTS_CIS     (1u << 30)
+#define DPLBASE_ENABLE (1u << 0)
+#define PCI_TCSEL      0x44        /* Intel: bits 2:0 the traffic class of the controller's DMA */
+
+#define V_SET_STREAM   0x706       /* payload: stream tag << 4 | lowest channel */
+#define V4_SET_FORMAT  0x2         /* 4-bit verb: the converter's stream format */
+
+#define STREAM_TAG     1u
+#define STREAM_FORMAT  0x0011u     /* 48 kHz (base 48, x1, /1), 16-bit, 2 channels */
+#define STREAM_RATE    48000u
+#define FRAME_BYTES    4u
+#define RING_BYTES     (64u * 1024)
+#define PERIODS        4u
+#define PERIOD_BYTES   (RING_BYTES / PERIODS)
+#define PERIOD_NS      (PERIOD_BYTES / FRAME_BYTES * NS_PER_S / STREAM_RATE)
+#define STALL_PERIODS  4u          /* no progress this long while running: stalled */
+
+/* A contiguous DMA32 buffer, mapped and pinned. */
+struct dma_buf {
+    handle_t vmo;
+    uint8_t *map;              /* mapped read-write, or NULL */
+    uint64_t pin;              /* the pin's id, while `pinned` */
+    bool     pinned;
+    uint64_t addr;             /* the device address of its first byte */
+};
+
+struct stream {
+    unsigned sd;               /* the stream descriptor's index; HDA_MAX_STREAMS: none */
+    uint32_t sd_regs;          /* its registers: HDA_SD_BASE + sd * HDA_SD_STRIDE */
+    handle_t dev;              /* DR_PCIDEV, for TCSEL (HANDLE_INVALID: not set) */
+    bool     open;             /* a client has it */
+    bool     running;          /* RUN set */
+    unsigned cad, dac;         /* the output converter the stream feeds */
+    struct dma_buf ring;       /* the samples, shared with the client */
+    struct dma_buf page;       /* the BDL at 0, the DMA position buffer at POS_OFF */
+    /* the position: the byte offset read last, bytes played since the
+     * open, bytes zeroed behind the play position (the same after every
+     * update), and when `played` last grew */
+    uint32_t last_off;
+    uint64_t played, cleared;
+    uint64_t progress_ns;
+    uint32_t iocs;             /* buffer-completion interrupts taken */
+    uint32_t fifo_errors;      /* FIFOE/DESE seen */
+    uint32_t lpib_diff_max;    /* largest gap between the position buffer and LPIB, bytes */
+};
+
+/* stream.c. Pick the output stream descriptor (none if GCAP has no
+ * output streams); touches no register. */
+void     stream_init(struct hda *h, struct stream *s, handle_t dev);
+/* Open it (the checks and results of hda.idl's open_output): DMA
+ * buffers, stream reset and setup, the converter's format and stream
+ * tag, the stream's interrupt enabled. *ring: the client's handle. */
+status_t stream_open(struct hda *h, struct stream *s, handle_t *ring);
+status_t stream_start(struct hda *h, struct stream *s);
+status_t stream_stop(struct hda *h, struct stream *s);
+/* Read the position, count what played and zero the ring behind it. */
+void     stream_update(struct hda *h, struct stream *s);
+/* The stream's status bits, read and cleared (from the interrupt). */
+void     stream_status(struct hda *h, struct stream *s);
+/* Stop the DMA engine (RUN clear, waited for), reset the stream, point
+ * the converter at no stream, release the buffers. Safe when not open. */
+void     stream_close(struct hda *h, struct stream *s, const char *why);
+
+/* ctrl.c. The converter's stream format (V4_SET_FORMAT) or stream tag
+ * and channel (V_SET_STREAM), the only SET verbs this driver sends;
+ * anything else: ERR_INVALID_ARGS. */
+status_t hda_converter_set(struct hda *h, unsigned cad, unsigned nid, uint32_t verb,
+                           uint32_t payload);
+/* Wait (bounded, logged on a timeout) until (8-bit register reg & mask)
+ * == want. ERR_TIMED_OUT. */
+status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what);
+
+/* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream on the channels
+ * open_output hands out, and the controller's MSI, until devmgr closes
+ * DR_SERVE (OK) or a wait fails (its status); the stream is closed on
+ * the way out. */
+struct hda_ops;
+status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
+                  void *ctx);

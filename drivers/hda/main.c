@@ -7,15 +7,16 @@
  *   DR_DMA      its dma_cap: bus mastering goes on after the reset
  *   DR_PCIDEV   its function (the ids, for the log)
  *   DR_SERVE    the channel it serves abi/idl/hda.idl on
- *   DR_IRQ(0)   its MSI: not used yet (the probe polls)
+ *   DR_IRQ(0)   its MSI: the output stream's period interrupts (irq.c)
  *
- * What it does today, and all it does: reset the controller, find the
- * codecs, print each codec's widget graph to the log (dump.c) with a
- * RESULTS line, and serve `hda.dump` (the same lines, read again) until
- * devmgr closes the channel; then stop the command rings, put the
- * controller back into reset and exit 0. It sends the codecs GET verbs
- * only (ctrl.c's hda_get refuses any other), so it makes no sound and
- * changes no routing, gain, pin control, EAPD or power state; what the
+ * What it does: reset the controller, find the codecs, print each
+ * codec's widget graph to the log (dump.c) with a RESULTS line, and serve
+ * `hda.dump` (the same lines, read again) and the output stream
+ * (stream.c, irq.c) until devmgr closes the channel; then close the
+ * stream, stop the command rings, put the controller back into reset and
+ * exit 0. It sends the codecs GET verbs, and a converter's format and
+ * stream tag while a stream is open, so it changes no routing, gain, pin
+ * control, EAPD or power state and nothing reaches a jack yet; what the
  * firmware set up is still set up afterwards, except what the link reset
  * itself resets. A restart is a bind from scratch. */
 #include <idl/hda.h>
@@ -131,7 +132,7 @@ int driver_main(const struct driver_start *ds)
         return r;
     }
     handle_t ch = drv_handle(ds, DR_SERVE);
-    status_t st = ch == HANDLE_INVALID ? OK : hda_serve(ch, &ops, s);
+    status_t st = ch == HANDLE_INVALID ? OK : hda_loop(&s->hda, ds, &ops, s);
     hda_ctrl_stop(&s->hda);
     drv_log("stopped: controller back in reset (%s)", st == OK ? "client closed" : status_str(st));
     return st == OK ? 0 : 1;

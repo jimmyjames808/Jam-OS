@@ -21,10 +21,10 @@
  *
  * Bus mastering goes on only after the reset: a reset stops every DMA
  * engine (streams and rings), so nothing a previous driver of this
- * function left running reaches memory. Unsolicited responses and
- * interrupts stay off (GCTL.UNSOL = 0, INTCTL = 0). At exit the rings are
- * stopped and the controller is put back into reset, which is also how
- * firmware leaves it. */
+ * function left running reaches memory. Unsolicited responses stay off
+ * (GCTL.UNSOL = 0), and so do interrupts (INTCTL = 0) until a stream
+ * opens (stream.c). At exit the rings are stopped and the controller is
+ * put back into reset, which is also how firmware leaves it. */
 #include "hda.h"
 
 #define RIRB_OFF      2048u                   /* 256 CORB entries x 4 bytes before it */
@@ -319,6 +319,31 @@ status_t hda_get(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint3
 status_t hda_param(struct hda *h, unsigned cad, unsigned nid, uint32_t param, uint32_t *out)
 {
     return hda_get(h, cad, nid, V_GET_PARAM, param, out);
+}
+
+/* The output stream's two SET verbs (spec 7.3, Converter Format and
+ * Converter Stream, Channel): they only say which stream a converter
+ * takes samples from and how to read them, and change no routing, gain,
+ * pin or power state. */
+status_t hda_converter_set(struct hda *h, unsigned cad, unsigned nid, uint32_t verb,
+                           uint32_t payload)
+{
+    bool ok = (verb == V_SET_STREAM && payload <= 0xff) ||
+              (verb == V4_SET_FORMAT && payload <= 0xffff);
+    if (cad >= HDA_MAX_CODECS || nid > 0x7f || !ok)
+        return ERR_INVALID_ARGS;
+    uint32_t cmd = (uint32_t)cad << 28 | (uint32_t)nid << 20;
+    cmd |= verb >= 0x100 ? verb << 8 | payload : verb << 16 | payload;
+    uint32_t ignored;
+    status_t st = h->rings ? ring_cmd(h, cmd, cad, &ignored) : imm_cmd(h, cmd, &ignored);
+    if (st == ERR_TIMED_OUT)
+        h->timeouts++;
+    return st;
+}
+
+status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what)
+{
+    return wait8(h, reg, mask, want, what);
 }
 
 /* ---- start and stop ----------------------------------------------------------- */
