@@ -122,15 +122,20 @@ be compatible with that.
   became a short sequence of step functions. Long data
   tables and test bodies that are a straight list of checks are exempt, but
   prefer several short tests.
-- **At most three levels of nesting** inside a function. Use early
-  returns and helpers.
+- **At most three levels of nesting** inside a function, counted as
+  written (a macro's own `do`/`if` doesn't count). Use early returns and
+  helpers.
 - **At most six parameters.** *Why:* x86-64 passes six in registers, and
   syscalls take six. More means a struct (as `@channel_call_args` does).
+  Exempt: IDL-generated signatures, and the `sys_*` handle layer, which
+  mirrors its syscall (it may take the syscall's `@struct` instead).
 
 ### Headers
 
-- `#pragma once`, then a header comment: what the module is, its lock
-  order, and who owns what (see `port.h`).
+- The header comment first, then `#pragma once` (as `port.h` does): what
+  the module is, its lock order, and who owns what.
+- Include order: `<std*.h>` compiler headers first, then `<jam/...>`,
+  then the program's own headers.
 - **Public** headers (`kernel/include/jam/`, `drivers/include/jam/driver.h`,
   `user/include/`) declare the API, with each function's contract on its
   declaration: what it does, which errors it returns, what context it needs
@@ -148,9 +153,10 @@ be compatible with that.
 - **Never `#include` a `.c` file.** Shared code goes in a library (libos,
   libfun) or a component's own `.c` with an internal header.
 - **Shared helpers live once.** Before writing `now()`, a time constant, a
-  string builder or a test helper, look in libos, `os.h`, `jam/time.h`
-  (`NS_PER_US`, `NS_PER_MS`, `NS_PER_S`), `ktest.h`. Copy-paste across
-  components is a review failure.
+  string builder or a test helper, look first: kernel `jam/time.h` and
+  `ktest.h`; user `os.h`, libos and `check.h`; drivers `<jam/driver.h>`
+  (which has its own `NS_PER_*`, since drivers can't include kernel
+  headers). Copy-paste across components is a review failure.
 
 ### Formatting
 
@@ -178,7 +184,8 @@ comment saying why it is safe.
   `status_t`, `handle_t`, `rights_t`, `signals_t` for what they name.
 - Plain `unsigned`/`int` only for small local counters and indices.
 - No typedefs for structs (write `struct port`); typedefs only for opaque
-  scalar handles like the ones above.
+  scalar handles like the ones above, and for small value types used like
+  numbers (fractal's double-double `dd`, GCC vector types).
 - `enum` for related constants that belong together (`enum bind_kind`).
 
 ### Integer overflow and truncation (CERT INT30-C, INT31-C)
@@ -232,7 +239,8 @@ comment saying why it is safe.
 - The status variable is called `st`. Don't reuse the name for anything
   else.
 - Check every status. To ignore one on purpose, write `(void)` and a
-  comment.
+  comment. Exempt: closing a handle and sleeping, whose failure leaves
+  nothing to do (a bare `jam_handle_close(h);` is fine).
 - Pick the error that says what happened:
 
 | Error | Use for |
@@ -277,8 +285,9 @@ comment saying why it is safe.
 - Constants and function-like macros in `UPPER_CASE`; parenthesise
   arguments; multi-statement macros in `do { } while (0)`.
 - Prefer `static inline` functions and `enum` over macros.
-- No hidden control flow in new macros. The existing `SYSC_TABLE` (which
-  returns) and the `KT_*` test macros are the accepted exceptions.
+- No hidden control flow in new macros. The accepted exceptions are
+  `SYSC_TABLE` (which returns) and the test macros that end a test on
+  failure: `KT_*` in the kernel, `CHECK`/`STEP` in `user/include/check.h`.
 
 ### No floating point in the kernel
 
@@ -288,7 +297,10 @@ fractions. User programs may use floating point and SIMD freely.
 
 ### volatile, MMIO and atomics
 
-- **`volatile` is for device memory only** (MMIO, DMA-shared descriptors).
+- **`volatile` is for memory something other than this CPU's code
+  writes or reads:** device memory (MMIO, DMA-shared descriptors),
+  memory the boot loader fills in (the Limine request structs), and
+  accesses whose point is the access itself (crash tests, TLB probes).
   It is not a synchronisation tool: it gives no atomicity and no ordering
   between CPUs.
 - Drivers access registers only through `drv_read32/drv_write32` (and the
@@ -299,6 +311,10 @@ fractions. User programs may use floating point and SIMD freely.
   refcount drop is `__ATOMIC_ACQ_REL` (`binding_put`); a flag that publishes
   data is a `RELEASE` store paired with an `ACQUIRE` load, and the comment
   names the other side. Don't use `__sync_*`.
+- Counters: with one writer, `__atomic_store_n(&c, c + 1, __ATOMIC_RELAXED)`
+  (no `lock` prefix on hot paths); with several writers,
+  `__atomic_add_fetch`. Plain stores are fine before an object is
+  published to other CPUs (initialisation).
 - Prefer a lock to a lock-free scheme unless BENCH.md shows the lock
   costs. Lock-free code comments its whole argument (as pmm.c's stash lock
   does).
@@ -326,11 +342,15 @@ fractions. User programs may use floating point and SIMD freely.
 ### Every hardware wait is bounded
 
 - Every loop that waits for a device or another CPU has a **deadline in
-  time** (not an iteration count: CPU speeds differ), returns
+  time** (not an iteration count: CPU speeds differ; the one exception is
+  code that runs before the TSC is calibrated, which uses a generous
+  iteration bound), returns
   `ERR_TIMED_OUT` when it passes, and logs the last value it saw.
 - Drivers sleep between polls (`drv_sleep_until`), as `wait_op` does;
   kernel code uses `udelay` with a deadline check.
-- A driver's worst-case sum of waits stays below devmgr's `STOP_WAIT`.
+- A driver's worst-case sum of waits stays below devmgr's `STOP_WAIT`;
+  a driver with many devices caps its own shutdown time instead of
+  summing per-device timeouts.
 - Loops over lists that user code can grow are bounded by that list's cap;
   loops over hardware-provided chains (PCI capability lists, USB
   descriptors) carry a guard counter (`find_cap`'s `guard < 48`).
@@ -343,8 +363,9 @@ fractions. User programs may use floating point and SIMD freely.
 - A kernel thread has a 64 KiB stack. Keep a function's locals under ~1 KiB;
   bigger buffers come from `kmalloc` or a static/per-CPU buffer. No VLAs
   or `alloca` anywhere. The compiler enforces the outer limits: `-Wvla`
-  everywhere, and a kernel frame over 3 KiB fails the build (the largest
-  today, `sys_channel_call`'s, is about 2.4 KiB).
+  everywhere, and a kernel frame over 3 KiB fails the build. The accepted
+  exception to ~1 KiB is the channel syscalls' message buffers
+  (`sys_channel_call`, about 2.4 KiB).
 
 ---
 
@@ -388,7 +409,9 @@ fractions. User programs may use floating point and SIMD freely.
   charged to whom). pmm.c and keyboard.c are the model.
 - **Every struct field gets a short comment** unless its name says it all:
   what it holds, its unit, and which lock guards it
-  (`uint32_t nbindings; /* live bindings; bindings_lock */`).
+  (`uint32_t nbindings; /* live bindings; bindings_lock */`). A comment
+  heading a block of related fields covers the block, and a spec citation
+  covers a spec-defined layout (`/* xHCI 6.2.3 Endpoint Context */`).
 - **Public functions** are documented on their declaration in the header:
   behaviour, errors, context. A static helper gets a one-line comment when
   its name isn't enough.

@@ -9,19 +9,28 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 - M0 to M7 are done and confirmed on the PC. The stick has 0.0.24-m7
   (ab4e106).
 - The M7.5 cleanup is done in QEMU, with no behaviour change (the version
-  string is still 0.0.24-m7): 219 ktests at 4 and 8 CPUs, utest 30,
-  usbtest 12, every shell and area script, and a 60 s stress at 4 CPUs.
-- The docs were restructured: one home per fact, checked by
-  `tools/checkdocs.py` in `make check`.
+  string is still 0.0.24-m7): the five tracks, an independent review, two
+  CODING-GUIDE.md style passes (kernel; drivers and user), a docs overhaul
+  and two bug-fix rounds. 219 ktests at 4 and 8 CPUs, utest 30, usbtest
+  12, every shell and area script, 60 s stress at 4 and 8 CPUs.
+- Public on GitHub: https://github.com/jimmyjames808/Jam-OS, BSD-2-Clause.
+  `origin` is set; `main` and `learn` are pushed.
+- The owner reads and experiments in `~/jamos-learn` (a worktree of the
+  `learn` branch; `git merge main` to catch up).
 
 ## Next step
 
-1. The independent review of the cleanup's last step (the directory
-   moves, the comment sweep, the new warnings).
-2. The PC round on that build: flash, All tests, the 2-minute stress.
-3. M8, storage: write the plan as docs/M8-PLAN.md first (like the
+1. The PC round on the cleanup build: flash, All tests, then the 2-minute
+   stress. The scheduler's `volatile` -> atomics change and the usb-bus
+   splits need real hardware (TCG has no PCIDs or TSC-deadline, and not
+   the Intel xHCI's timing).
+2. M8, storage: write the plan as docs/M8-PLAN.md first (like the
    [earlier plans](docs/history/)); notes for it are in the
-   [roadmap](docs/ROADMAP.md#next-m8-storage). Then the audio track.
+   [roadmap](docs/ROADMAP.md#next-m8-storage). The review's design items
+   go in: a system-wide file namespace (a new fs protocol, not the shell's mount
+   table), bulk data in IDL (usb.idl has no bulk transfers), and
+   debug_command's `kill <name>` moving to init. Then the audio track.
+3. Smaller deferred items: [roadmap](docs/ROADMAP.md#smaller-follow-ups).
 
 ## Open questions for the owner
 
@@ -36,13 +45,14 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 
 ## Standing rules
 
-- **Commits**: no `Co-Authored-By` trailer on this repository. The git
-  author comes from the machine's own git config; the owner hasn't asked
-  to change it.
+- **Commits**: no `Co-Authored-By` trailer on this repository. The
+  author is James Graham with the GitHub no-reply address, set in the
+  repository's own git config (worktrees share it).
 - **Agents** work in their own worktree and branch, and never push, never
   touch main or `~/jamos`, never write to a USB disk (no `make usb`, no
   `dd`). Big agent-written code is merged as planned, then reviewed by a
-  separate agent. Full rules: [CODING-GUIDE.md](CODING-GUIDE.md#8-agent-workflow).
+  separate agent. **Agents never spawn agents of their own**: say so in
+  every prompt. Full rules: [CODING-GUIDE.md](CODING-GUIDE.md#8-agent-workflow).
 - **Flash as soon as the stick is in**: when the owner says it's plugged
   in and a fix is ready, build and copy it at once
   ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)); wait for the

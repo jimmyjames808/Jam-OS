@@ -82,9 +82,17 @@ Offered or noticed, not scheduled into a milestone yet:
   arrays would fix it.
 - The address-space switch got ~20 ns dearer with PCIDs on
   ([BENCH.md](BENCH.md)); look at `pcid_load`'s bookkeeping.
-- Flaky ktest, seen once in ~14 runs at 8 CPUs:
-  `devmgr_refused_start_leaves_nothing` read devmgr's job usage while a
-  message-byte charge was still settling.
+- usb-bus's shutdown can exceed devmgr's 15 s `STOP_WAIT` with many
+  unresponsive devices (1 s per Disable Slot, up to 5 s more for a
+  Command Abort): cap it as a whole.
+- Kernel waits bounded by an iteration count or not at all: the xAPIC ICR
+  wait, `serial_rx_start`'s drain, interrupt teardown, `on_cpu`, the
+  pmm/heap flag locks and the lockdep graph lock (from the kernel style
+  pass).
+- Files still over 800 lines: `vmo.c`, `sched.c`, `aspace.c` (splitting
+  them needs internal headers).
+- The rest of the shell was not covered by the cleanup's review (only the
+  segment fix and `kill` were): review it next time.
 - A `panic_reboot=<s>` boot option (reboot N seconds after a panic), or
   wait for the M8.5 crash kernel: the owner's call.
 - A pluggable scheduler interface (`sched_ops`): not until a second

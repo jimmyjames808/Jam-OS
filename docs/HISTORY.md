@@ -58,6 +58,22 @@ SuperSpeed companion, and didn't clamp `bMaxBurst`; the dma_cap quarantine
 counters could be read mid-update (an 8-CPU ktest failure); Tab completion
 ignored the line cap.
 
+After the tracks: an independent review (no High findings), then two
+style passes that brought kernel/, drivers/ and user/ in line with
+CODING-GUIDE.md (every struct field commented, nesting over 3 levels gone,
+`volatile` kept for device and loader memory with explicit atomics
+elsewhere, the long functions split into named steps) and a docs overhaul
+(one home per fact, `tools/checkdocs.py`). The repository went public on
+GitHub under the BSD-2-Clause licence.
+
+Behaviour changes accepted on the way (not bugs): usb-bus now counts every
+endpoint descriptor of an alternate setting against its 8-endpoint limit
+and uses only the first copy of a duplicated (interface, alternate)
+descriptor; the demo, rebuilt on libfun, refuses to start without the
+keyboard, needs a screen of at least 320x200 and names its threads
+"worker"; `sys_pci_enum`'s `dma_quarantined` also counts batches that are
+mid-release.
+
 ## M7: USB, console, shell
 
 *2026-09-29, 0.0.18-m7a to 0.0.24-m7.*

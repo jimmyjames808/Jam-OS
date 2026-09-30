@@ -184,10 +184,10 @@ for devmgr with a real driver process and the quarantine counters).
 
 **Bugs fixed in the round after the tracks** (each its own commit): the
 shell wrote one past its segment array for 32 segments ending in an
-unclosed quote (6fe292b); usb-bus left a slot enabled when Enable Slot
-handed out an out-of-range id (85c6abf), parsed a non-zero alternate
-setting without its SuperSpeed Endpoint Companion (c17d078), and now
-clamps a companion's bMaxBurst to 15 (350bd79); dma_cap's quarantine
+unclosed quote (d069770); usb-bus left a slot enabled when Enable Slot
+handed out an out-of-range id (6958ce3), parsed a non-zero alternate
+setting without its SuperSpeed Endpoint Companion (cda0165), and now
+clamps a companion's bMaxBurst to 15 (ab49809); dma_cap's quarantine
 counters could be read between a batch leaving one count and entering the
-other (94e8dd7, an 8-CPU ktest failure); Tab completion ignored the
-shell's screen-width line cap (350bd79).
+other (1b1ab43, an 8-CPU ktest failure); Tab completion ignored the
+shell's screen-width line cap (ab49809).
