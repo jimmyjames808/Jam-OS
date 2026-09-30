@@ -20,8 +20,8 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M6 | PCI core, MSI/MSI-X, interrupt objects, resources, DMA, devmgr, drivers as processes | done |
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
-| **M8** | **Storage** | **in progress**: the stick's `/esp` and `/data`, files from the shell, a log per boot and other sticks at `/usbN` work in QEMU; the review and the PC are still to do |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (a read-only probe that logs the codecs' widget graphs) works in QEMU; the PC's dump is next ([A1-PLAN.md](A1-PLAN.md)) |
+| M8 | Storage: USB mass storage, FAT32 (FatFs), `/esp` and `/data`, other sticks at `/usbN`, a log per boot | done (PC 2026-10-01: All tests 224, `stress 600` and `soak 10` passed) |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the read-only probe) ran on the PC (a Realtek ALC897); stages 1 and 2 done in QEMU; stage 3 (`beep`) next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol | after A1 |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
@@ -32,67 +32,22 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M13 | Self-hosting | stretch |
 | G1-G4 | Graphics | after M12 |
 
-## Next: M8, storage
+## Next: A1, audio
 
-USB mass storage (Bulk-Only Transport; UAS later) as a class driver on
-usb-bus, and a FAT32 filesystem service, both processes. The stick gets a
-read-only boot partition (the ESP) and a writable data partition mounted at
-`/data` ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)); every boot's log
-is saved as `/data/logs/boot-NNNN.txt`. The plan is
-[M8-PLAN.md](M8-PLAN.md).
+HD Audio on the PC's Realtek ALC897 (Intel 8086:7a50 controller) as a
+driver process, and `beep` in the shell playing a tone in the
+front-panel headphones. The plan is [A1-PLAN.md](A1-PLAN.md). Stage 0 (a
+read-only probe of the controller and codec) ran on the PC; stages 1
+(codec control and the path to the front headphone jack) and 2 (the
+output stream) are done in QEMU; stage 3 (`beep`) is being built.
 
-Done when: `ls /boot` and writing a file under `/data` work from a
-userspace filesystem service; the stick still boots after a pulled-plug
-test; a PC run's log can be read on the Mac from the stick.
-
-Implemented, and passing in QEMU at 4 and 8 CPUs:
-- Bulk transfers in usb-bus and the `drivers/usb-storage` class driver
-  (Bulk-Only Transport, the partition table, a `block` channel per
-  partition).
-- FatFs (in `third_party/fatfs`) as the `fat` service: long names, lower
-  case, spaces; the ESP mounted read-only at `/esp`, the data partition at
-  `/data` (formatted on its first boot).
-- devmgr finds the disks and partitions, starts a `fat` per volume and
-  publishes the mounts; init keeps the system's file namespace (`/boot`
-  from the bootfs server, `/esp`, `/data`) and hands each program its part
-  of it; a mount comes and goes in running programs as the stick does.
-- Programs open files by path (`<os.h>`), and a program can be started
-  from a file. The shell has `ls cat cp mv rm mkdir touch write df sync`
-  on every mount.
-- logd writes each boot's kernel log to `/data/logs/boot-NNNN.txt`;
-  `reboot` and Ctrl+Alt+Del sync `/data` first and have logd save the
-  log's last lines.
-- `kill` goes through init and devmgr (`debug_command` no longer has it).
-- Other sticks: each FAT volume of any other USB stick (an MBR's FAT
-  partitions, or a stick with no partition table that is one FAT volume)
-  is mounted read-only at `/usb0`, `/usb1`, ... in the order found, on a
-  `block` channel usb-storage itself refuses writes on. `mount` lists the
-  mounts and which are writable; `mount -w /usb0` reopens one read-write,
-  `mount -r /usb0` read-only again. Nothing but the boot stick's own blank
-  data partition is ever formatted. GPT sticks are not read yet.
-- Tests: the file namespace in utest, the storage checks in usbtest,
-  `tools/storage-test.sh`, and `tools/data-test.sh` (three boots of one
-  stick: a file kept across a reboot, QEMU quit in the middle of writes,
-  the logs read back with mtools); the stick unplugged and replugged while
-  the system runs; `tools/sticks-test.sh` (other sticks plugged, written
-  after `mount -w`, pulled while in use, and the images of the ones that
-  were only read or held nothing to mount compared byte for byte).
-
-The independent review is done ([its findings and what became of
-each](history/M8-REVIEW.md)).
-
-Still to do:
-- The PC: the stick flashed once with the two-partition layout
-  (`make usb`, which erases it), then read-only checks first (`ls /esp`,
-  `ls /data`), writes, the boot logs read on the Mac, the pulled-plug test,
-  All tests, then `stress 600` and `soak 10` (M8 is signed off by both;
-  from then on the soak alone, [TESTING.md](TESTING.md#the-tiers)).
-
-Known limits, for the review:
+M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
+Known limits it left:
 - Only programs in `/boot` can be run: a file on `/data` or `/esp` does
-  not come with the right to execute it.
+  not come with the right to execute it (decided: after M8).
 - A panic's own text is not in the boot log: logd can only save what it
   had synced before (M8.5's crash kernel is what saves a panic).
+- GPT sticks are not read.
 
 ## Later
 

@@ -29,6 +29,55 @@ are the kernel's version string; hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## M8: storage
+
+*2026-09-30 to 2026-10-01, 0.0.25-m8.*
+
+Plan: [M8-PLAN.md](history/M8-PLAN.md); review:
+[M8-REVIEW.md](history/M8-REVIEW.md). USB mass storage and FAT32, all in
+user processes:
+- `drivers/usb-storage` (Bulk-Only Transport over new bulk transfers in
+  usb-bus) serves a `block` channel per partition; read-only channels are
+  refused writes in the driver itself.
+- FatFs R0.16 (third_party/fatfs, with its author's patches) as the `fat`
+  service, one per volume: the ESP read-only at `/esp`, the data partition
+  at `/data`, formatted on first use (only the boot stick's own blank
+  data partition is ever formatted).
+- devmgr finds disks and partitions and publishes mounts; init keeps the
+  system's file namespace and sends each program its mounts (as one
+  whole-namespace message, so a program that never looks is never
+  flooded); programs open files by path; the shell got `ls cat cp mv rm
+  mkdir touch write df sync mount`.
+- logd saves each boot's log to `/data/logs/boot-NNNN.txt`, syncing every
+  250 ms and flushing before a reboot.
+- Other sticks mount read-only at `/usb0`, `/usb1`, ... (`mount -w` to
+  write); a stick with no partition table works too.
+- `make usb` makes the two-partition stick; `make flash` updates one in
+  place (macOS doesn't mount an MBR ESP by itself).
+
+Tracks A (usb-storage), B (fat), C (namespace, init, shell) and D (devmgr,
+logd) in parallel, a join, other sticks, then the review (28 findings;
+two High: fat mapped a client's buffer, so any program with `/data` could
+crash it; and a partitioned stick whose first sector looked like a FAT
+volume was served whole). The PC rounds found more: a second `ktest` in
+one boot always panicked (a test's static fake CPUs), the boot log lost
+its tail, two leaks (mount notices nobody read, 30 KB per utest run; the
+user heap never merged freed blocks), a global fault hook that failed
+other threads' process starts, and a placement test failing on the PC
+that turned out to be two scheduler bugs (a CPU taking its next thread
+looked idle to placement; stealing ignored the core layout). The soak
+test (`ktest loops= seed= keep load`, `soak`) was built to find this
+kind of bug, and replaced the stress test as the PC's tier.
+
+On the PC (i7-14700K class Raptor Lake, microcode 0x11f: the INVLPG/PCID
+erratum is fixed there, so PCIDs stay on): the stick's `/esp` and
+`/data`, a SanDisk at `/usb0` read and written (macOS's check clean
+afterwards), the boot stick pulled mid-soak and replugged (the soak
+passed, the volume came back dirty and was mounted), the logs read on the
+Mac; All tests 224 passed (27 clients: 975,166 calls/s), `stress 600`
+passed, `soak 10` passed (645 s, 21 loops: 4285 kernel tests, 19 utest
+runs and 1889 file cycles, 0 failed; the SanDisk pulled twice).
+
 ## M7.5: cleanup
 
 *2026-09-30.*

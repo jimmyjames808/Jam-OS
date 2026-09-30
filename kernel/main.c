@@ -35,7 +35,7 @@
 #include <jam/userboot.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.24-m7"
+#define JAMOS_VERSION   "0.0.25-m8"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
