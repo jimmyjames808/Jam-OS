@@ -86,10 +86,10 @@ update a stick, and the PC it was built for are in
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
-| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the driver API |
-| `user/services/` | init, console, devmgr, serialin, shell, fat (the FAT filesystem, on FatFs), logd (the boot log files) |
+| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, contest |
+| `user/tests/` | utest, usbtest, contest, ramfs (a RAM filesystem for the file tests) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer |
