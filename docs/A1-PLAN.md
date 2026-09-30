@@ -21,11 +21,16 @@ From the PC's own boot log ([HARDWARE.md](HARDWARE.md#other-devices)):
 | 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's 04 01 / 04 03 80). MSI (1 vector, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused in HDA mode) | **the target** |
 | 01:00.1 | NVIDIA HDMI/DP audio on the RTX, 10de:22bb | never: left without a driver, like any device devmgr has no driver for |
 
-The codec on the Intel link is not known yet (a Realtek ALC8xx is
-likely); nor is how the front-panel jack is wired to it, nor whether its
-jack detection works. **Stage 0 (below, done) is a read-only probe whose
-only job is to find that out on the PC.** Everything from stage 1 on is
-written against its dump.
+Stage 0's probe found the codec on the PC (boot log of 2026-10-01): a
+**Realtek ALC897** (10ec:0897, subsystem 1043:8841, ASUS) at codec
+address 0, every widget in D0. The front-panel headphone jack is **pin
+1b** (configuration default 02214020: jack, external front, hp-out,
+presence detection with a trigger, EAPD), and the path to it is **DAC 02
+-> mixer 0c -> pin 1b**. STATESTS also shows codec address 2, which never
+answers (most likely the disabled iGPU's HDMI codec): it is skipped. The
+dump itself is the ALC897 fixture in `drivers/hda/fixtures.c`. Whether
+the jack's presence detection and unsolicited responses work is still
+for stage 4 to find out.
 
 ## Fixed decisions
 
@@ -91,11 +96,15 @@ is stopped.
    connectivity not "none"), location external front, default device
    headphone out. If there are several, the lowest sequence in the lowest
    association. If there is none (a board whose firmware describes its
-   jacks badly), the plan asks the owner, with the dump, which node to use,
-   and a boot word `hda_pin=<nid>` overrides the choice;
+   jacks badly), any headphone-out pin, then a line-out, then a speaker
+   (QEMU's codecs have only those); if that picks the wrong jack on some
+   board, the fix starts from its dump, added as a fixture;
 2. the path: a breadth-first walk back from the pin through connection
-   lists (at most 5 widgets deep), to an analog output converter; the
-   shortest path wins, then the lowest DAC node;
+   lists (at most 5 widgets deep), across mixers and selectors only and
+   never into one whose connection list holds a pin (an input or loopback
+   mixer, like the ALC897's 0b), to an analog output converter; a DAC no
+   other pin with its output on uses wins, then the shortest path, then
+   the lowest DAC node (`drivers/hda/path.c` has the rules);
 3. power: the audio function group to D0 (SET_POWER_STATE, then
    GET_POWER_STATE until it reads D0, bounded), then every widget on the
    path that has power control;
@@ -174,7 +183,7 @@ different files and can run as two tracks at once.
 | Stage | What | Files it owns |
 |---|---|---|
 | **0. Probe** (done) | read-only: reset, rings (immediate fallback), codecs from STATESTS, each codec's graph logged (one line per widget, two for pins), RESULTS line, `hda.dump`, the shell's `hda`; devmgr binds 8086 / 04 03 00; `kill hda` reaches PCI drivers | `drivers/hda/{main,ctrl,graph,dump}.c`, `hda.h`, `abi/idl/hda.idl`, the shell's `cmd/hda.c`, `tools/hda-test.sh`, `tools/shell-tests/hda.txt` |
-| **1. Codec control** | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
+| **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
 | **2. Output stream** | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
 | **3. `beep`** (the join of 1 and 2) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
 | **4. Jacks** | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jack`, `hda` shows the jack state | drivers/hda/jack.c (new), `hda.idl` (jack) |
@@ -227,6 +236,61 @@ Known ways it could fail there, and what the lines would show:
   answer could be taken for the next verb's (the RIRB is read in order and
   only the codec address is checked); stage 1 drains the RIRB after a
   timeout if the count is not 0.
+
+## What stage 1 built and learned
+
+- **One way to a codec.** `drivers/hda/verbs.c` is the only caller of the
+  raw send (ctrl.c's `hda_command`). `hda_get` takes GET verbs;
+  `hda_set` takes, each with only the payload bits the spec defines for
+  it: connection select, power state (D0-D3, never D3cold), converter
+  stream/channel, pin widget control, unsolicited enable, pin sense,
+  EAPD/BTL, converter format (PCM only) and amp gain/mute (naming an amp
+  and a side). Anything else is refused and logged: the configuration
+  default, the function group reset, GPIOs, the subsystem id, beep,
+  digital converter controls, vendor coefficients.
+- **The path, silent.** At start the driver runs the path self-test (7
+  fixtures: QEMU's hda-output, hda-duplex and hda-micro, and the ALC897
+  with three variations: the rear line-out playing, the front jack not
+  described, a pin with no connection), finds each codec's path, checks
+  that its own dump of each live codec parses back to the same path, and
+  sets up the best one: the AFG and the path's powered widgets to D0
+  (waiting for D0), the pin's output and headphone bits off, every amp on
+  the path muted at gain step 0 (every input of a mixer on it too), the
+  path's connection selects. The DAC's stream and format are left for
+  stage 2. A failed self-test or round trip sets nothing up.
+- **The ALC897's DACs have no mute** (out-amp 0-87, 0.75 dB steps, 0 dB
+  at 87, no mute bit): at step 0 they are at -65.25 dB. What keeps the
+  path silent there is mixer 0c's input mute, pin 1b's out-amp mute and
+  the pin's output being off. Stage 3 unmutes in the order of step 5.
+- **Mixer 0c is shared.** It is the only input of the rear green
+  line-out pin 14 and the selected input of pins 18, 19 and 1a. Any of
+  them with its output on would play the headphones' sound too; all are
+  off (pin control 0x20, input only), and the driver leaves them so. The
+  path line lists them ("pins that select a node of it too").
+- **QEMU's codecs ignore SET_PIN_WIDGET_CONTROL**: their output pins read
+  back 0x40 (output on) whatever is set. The driver logs "kept its output
+  on"; tools/hda-test.sh checks from QEMU's own verb trace that the SET
+  asked for the output off. Their AFG reports no power states, but
+  GET_POWER_STATE reads D0.
+- `hda.info` returns the path's codec, pin, DAC, the DAC's PCM rates,
+  formats and amp capabilities, the node list and a line of what is set
+  on each node (read back); the shell's `hda` prints it after the dump.
+- Not built: the `hda_pin=<nid>` boot word (the PC describes its front
+  jack, so nothing needs it yet).
+
+On the PC the path is now set up, still silent. `hda` and the boot log
+should show (the first line is what the ALC897 fixture gives; the second
+is read back from the codec, so its amp values are the expected ones,
+not yet seen)
+
+```
+codec 0 path: dac 02 -> mixer 0c -> pin 1b (front headphone jack); pins that select a node of it too: 14 18 19 1a
+path: codec 0 dac 02 -> mixer 0c -> pin 1b (front headphone jack), muted: afg D0; dac 02 D0 out 0; mixer 0c in m0 m0; pin 1b D0 sel 0 ctl 20 (output off) out m0 in 0 eapd off
+```
+
+and the RESULTS line ends `path 02-0c-1b muted`. A line starting `path
+self-test:` other than "7 of 7 fixture(s) passed", or one saying a dump
+"parses back to another path", means nothing was set up.
 
 ## Done when
 

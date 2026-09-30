@@ -1,12 +1,28 @@
 /* hda: the HD Audio controller's codecs and their widget graphs, as the
  * driver (drivers/hda) reads them now: the same lines it printed to the
- * log when it started (abi/idl/hda.idl). */
+ * log when it started (abi/idl/hda.idl). Then the path to the headphones
+ * the driver set up, and what is set on each of its nodes (hda.info). */
 #include <devmgr.h>
 #include <idl/hda.h>
 #include "sh.h"
 
 #define DUMP_WAIT (10 * NS_PER_S)   /* a codec's dump is a few hundred verbs */
 #define DUMP_MAX  (64 * 1024)       /* the driver's dump buffer */
+
+/* hda.info's line: the path the driver set up, or why there is none. */
+static void print_path(handle_t ch)
+{
+    uint32_t codec, pin, dac, pcm, formats, amp, jack, count;
+    uint8_t nodes[8], text[240];
+    status_t st = hda_info_until(ch, now() + DUMP_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
+                                 &jack, &count, nodes, text);
+    if (st != OK) {
+        sh_say("hda: path: %s\n", status_str(st));
+        return;
+    }
+    text[sizeof(text) - 1] = 0;
+    sh_say("hda: path: %s\n", (const char *)text);
+}
 
 /* Ask each running PCI driver in turn for hda.dump; others answer
  * ERR_NOT_SUPPORTED. Prints each dump; returns how many answered. */
@@ -24,7 +40,8 @@ static unsigned dump_each(handle_t dm)
         if (st != OK || nh != 1)
             continue;
         st = hda_dump_until(ch, now() + DUMP_WAIT, &text, &len, &codecs);
-        jam_handle_close(ch);
+        if (st != OK)
+            jam_handle_close(ch);
         if (st == ERR_NOT_SUPPORTED)
             continue;   /* another driver's service */
         found++;
@@ -39,6 +56,8 @@ static unsigned dump_each(handle_t dm)
             sh_say("hda: can't read the dump (%u bytes)\n", len);
         free(buf);
         jam_handle_close(text);
+        print_path(ch);
+        jam_handle_close(ch);
     }
     return found;
 }

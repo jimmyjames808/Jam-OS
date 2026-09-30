@@ -1,7 +1,9 @@
 /* hda: the dump. One line for the controller, two for each codec, one
  * per widget (two for a pin: the second decodes its configuration
- * default, capabilities and current state), and a last line naming the
- * front-panel headphone jack if the configuration defaults show one.
+ * default, capabilities and current state), a line naming the
+ * front-panel headphone jack if the configuration defaults show one, and
+ * the path path.c chose, in words. fixtures.c parses these lines back, so
+ * a change to their format is a change to its parser too.
  * Every number the codec gave is printed in hex next to the words decoded
  * from it (spec 7.3: the parameters, and the Configuration Default
  * verb), so the dump can be read without the spec and checked against
@@ -298,4 +300,93 @@ void hda_dump_codec(struct out *o, const struct codec *c)
     }
     if (c->afg)
         dump_front_hp(o, c);
+}
+
+/* ---- the path in words ------------------------------------------------------------ */
+
+const char *hda_path_rule_name(unsigned rule)
+{
+    static const char *const names[] = {
+        "none", "front headphone jack", "headphone out", "line-out", "speaker",
+    };
+    return rule < sizeof(names) / sizeof(names[0]) ? names[rule] : "?";
+}
+
+static void copy_out(const struct sb *b, char *buf, size_t size)
+{
+    size_t i = 0;
+    for (; i + 1 < size && i < b->n; i++)
+        buf[i] = b->s[i];
+    buf[i] = 0;
+}
+
+static void add_nodes(struct sb *b, const struct codec *c, const struct path *p)
+{
+    for (unsigned i = 0; i < p->n; i++) {
+        const struct widget *w = hda_widget(c, p->nid[i]);
+        add(b, "%s%s %02x", i ? " -> " : "", w ? wtypes[WCAP_TYPE(w->caps)] : "?", p->nid[i]);
+    }
+}
+
+void hda_path_str(const struct codec *c, const struct path *p, char *buf, size_t size)
+{
+    struct sb b = { .n = 0 };
+    add_nodes(&b, c, p);
+    copy_out(&b, buf, size);
+}
+
+/* One node's settings: power, selection, pin control, amps, EAPD. */
+static void add_node_state(struct sb *b, const struct widget *w)
+{
+    enum wtype t = WCAP_TYPE(w->caps);
+    add(b, "; %s %02x", wtypes[t], w->nid);
+    if (w->has_power)
+        add(b, " D%u", w->power >> 4 & 0xf);
+    if (w->has_sel)
+        add(b, " sel %u", w->conn_sel);
+    if (t == W_PIN)
+        add(b, " ctl %02x (output %s)", w->pin_ctl, w->pin_ctl & PINCTL_OUT ? "on" : "off");
+    if (w->caps & WCAP_OUT_AMP) {
+        add(b, " out ");
+        add_amp(b, w->out);
+    }
+    if (w->caps & WCAP_IN_AMP) {
+        add(b, " in");
+        for (unsigned i = 0; i < w->nin; i++) {
+            add(b, " ");
+            add_amp(b, w->in[i]);
+        }
+    }
+    if (t == W_PIN && (w->pincaps & PINCAP_EAPD))
+        add(b, " eapd %s", w->eapd & 2 ? "on" : "off");
+}
+
+void hda_path_state(const struct codec *c, const struct path *p, char *buf, size_t size)
+{
+    struct sb b = { .n = 0 };
+    add(&b, "afg D%u", c->afg_power >> 4 & 0xf);
+    for (unsigned i = 0; i < p->n; i++) {
+        const struct widget *w = hda_widget(c, p->nid[i]);
+        if (w)
+            add_node_state(&b, w);
+    }
+    copy_out(&b, buf, size);
+}
+
+void hda_dump_path(struct out *o, const struct codec *c, const struct path *p)
+{
+    struct sb b = { .n = 0 };
+    add(&b, "codec %u path: ", c->cad);
+    if (p->rule == PATH_NONE) {
+        add(&b, "none (no output pin reaches an analog DAC)");
+        out_line(o, "%s", b.s);
+        return;
+    }
+    add_nodes(&b, c, p);
+    add(&b, " (%s)", hda_path_rule_name(p->rule));
+    if (p->dac_shared)
+        add(&b, "; the DAC also feeds another pin with its output on");
+    for (unsigned i = 0; i < p->nalso; i++)
+        add(&b, "%s%02x", i ? " " : "; pins that select a node of it too: ", p->also[i]);
+    out_line(o, "%s", b.s);
 }

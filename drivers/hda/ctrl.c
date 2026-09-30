@@ -293,32 +293,12 @@ static status_t imm_cmd(struct hda *h, uint32_t cmd, uint32_t *out)
     return OK;
 }
 
-/* A GET verb: 12-bit verbs 0xf00-0xfff, or the 4-bit GET verbs 0xa
- * (converter format) and 0xb (amplifier gain/mute). Everything else sets
- * something in the codec (spec 7.3), and this driver sets nothing. */
-static bool is_get(uint32_t verb, uint32_t payload)
+status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out)
 {
-    if (verb >= 0xf00 && verb <= 0xfff)
-        return payload <= 0xff;
-    return (verb == V4_GET_FORMAT || verb == V4_GET_AMP) && payload <= 0xffff;
-}
-
-status_t hda_get(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload,
-                 uint32_t *out)
-{
-    if (cad >= HDA_MAX_CODECS || nid > 0x7f || !is_get(verb, payload))
-        return ERR_INVALID_ARGS;
-    uint32_t cmd = (uint32_t)cad << 28 | (uint32_t)nid << 20;
-    cmd |= verb >= 0x100 ? verb << 8 | payload : verb << 16 | payload;
     status_t st = h->rings ? ring_cmd(h, cmd, cad, out) : imm_cmd(h, cmd, out);
     if (st == ERR_TIMED_OUT)
         h->timeouts++;
     return st;
-}
-
-status_t hda_param(struct hda *h, unsigned cad, unsigned nid, uint32_t param, uint32_t *out)
-{
-    return hda_get(h, cad, nid, V_GET_PARAM, param, out);
 }
 
 /* ---- start and stop ----------------------------------------------------------- */

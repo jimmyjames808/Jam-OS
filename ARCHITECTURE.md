@@ -604,12 +604,17 @@ the board's Intel HD Audio controller and its codec
 ([HARDWARE.md](docs/HARDWARE.md#other-devices)). The driver, `drivers/hda`,
 is a process like any other (PCI, MSI, DMA through pinned DMA32 buffers),
 bound by devmgr to Intel's HD Audio functions (class 04 03 00). Built so
-far: a read-only probe (the controller reset, the CORB/RIRB command rings,
-each codec's widget graph read with GET verbs only and logged; `hda` in
-the shell). Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
-the path to the headphone pin, one output stream, jack detection, and a
-mixer service that owns the device, with programs opening streams and
-writing samples through a shared VMO ring.
+far: the controller reset, the CORB/RIRB command rings, each codec's
+widget graph read and logged (`hda` in the shell), and the path from a
+DAC to the front headphone jack: found in the graph by a pure function
+(checked at every start against the PC's codec and QEMU's, kept as
+fixtures) and set up muted with the pin's output off. Every verb goes
+through one file with an allow-list of SET verbs, so the driver can never
+write the board's own jack descriptions, GPIOs or vendor coefficients.
+Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)): one
+output stream, the unmuting, jack detection, and a mixer service that
+owns the device, with programs opening streams and writing samples
+through a shared VMO ring.
 
 ## Storage
 

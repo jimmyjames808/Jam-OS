@@ -1,16 +1,21 @@
 /* hda: the Intel High Definition Audio driver's own pieces (drv/hda).
  *
- * Today the driver is a read-only probe: it resets the controller, finds
- * the codecs on the link and prints each codec's widget graph, then
- * serves abi/idl/hda.idl (the dump again, on request) until devmgr closes
- * its channel. It makes no sound and sends the codecs only GET verbs
- * (hda_get refuses anything else), so nothing it does changes routing,
- * gains, pin controls, EAPD or power states.
+ * The driver resets the controller, finds the codecs on the link, prints
+ * each codec's widget graph, picks the path from a DAC to the front-panel
+ * headphone jack (path.c, checked at start against fixtures.c) and
+ * programs it with every amplifier on it muted and the pin's output off;
+ * then it serves abi/idl/hda.idl until devmgr closes its channel. It makes
+ * no sound: the stream and the unmuting are not built yet. Every verb goes
+ * through verbs.c, which takes GET verbs and an allow-list of SET verbs
+ * (routing, amplifiers, pin control, EAPD, power, converter format and
+ * stream, unsolicited enable, pin sense) and refuses anything else, so the
+ * board's own settings (configuration defaults, GPIOs, vendor
+ * coefficients) are never written.
  *
  * Files: main.c (start, the protocol, exit), ctrl.c (the controller:
  * reset, the CORB/RIRB command rings, the immediate command interface,
- * stop), graph.c (reading a codec's nodes into struct codec), dump.c
- * (the readable lines).
+ * stop), verbs.c (the verbs the driver may send), graph.c (reading a
+ * codec's nodes into struct codec), dump.c (the readable lines).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
  * Audio Specification, revision 1.0a (2010): chapter 3 (controller
@@ -73,7 +78,7 @@
 /* ---- verbs (spec 7.3) ------------------------------------------------------
  * A command: bits 31:28 codec address, 26:20 node id, then either a
  * 12-bit verb and an 8-bit payload, or a 4-bit verb and a 16-bit payload.
- * Only the GET verbs are here: this driver never sends another kind. */
+ * The SET verbs listed here are the only ones verbs.c lets through. */
 
 #define V_GET_PARAM      0xf00   /* payload: parameter id */
 #define V_GET_CONN_SEL   0xf01
@@ -91,6 +96,30 @@
 
 #define AMP_GET_OUT      (1u << 15)
 #define AMP_GET_LEFT     (1u << 13)
+
+#define V_SET_CONN_SEL   0x701   /* payload: connection list index */
+#define V_SET_POWER      0x705   /* payload: D0-D3 */
+#define V_SET_STREAM     0x706   /* 7:4 stream, 3:0 channel */
+#define V_SET_PIN_CTL    0x707   /* PINCTL_* | vref */
+#define V_SET_UNSOL      0x708   /* bit 7 enable, 5:0 tag */
+#define V_SET_PIN_SENSE  0x709   /* starts a presence/impedance measurement; bit 0 right */
+#define V_SET_EAPD       0x70c   /* bit 1 EAPD, bit 0 BTL, bit 2 L/R swap */
+#define V4_SET_FORMAT    0x2     /* 4-bit verb: the converter's stream format */
+#define V4_SET_AMP       0x3     /* 4-bit verb: AMP_SET_* | index << 8 | mute | gain */
+
+#define AMP_SET_OUT      (1u << 15)
+#define AMP_SET_IN       (1u << 14)
+#define AMP_SET_LEFT     (1u << 13)
+#define AMP_SET_RIGHT    (1u << 12)
+#define AMP_SET_INDEX(i) ((uint32_t)(i) << 8)   /* 11:8 which input amp */
+#define AMP_MUTE         (1u << 7)              /* in SET and GET values: 6:0 the gain step */
+
+/* Pin Widget Control (spec 7.3, Pin Widget Control). */
+#define PINCTL_HP        (1u << 7)   /* the headphone amp */
+#define PINCTL_OUT       (1u << 6)
+#define PINCTL_IN        (1u << 5)
+
+#define PS_D0            0x0         /* power states: set in 3:0, actual in 7:4 */
 
 /* Parameters (spec 7.3, Get Parameter). */
 #define P_VENDOR         0x00
@@ -141,8 +170,21 @@ enum wtype {
 #define PINCAP_EAPD      (1u << 16)
 #define PINCAP_DP        (1u << 24)
 
-/* Configuration default bit 8: the jack has no presence detection. */
+/* Configuration Default (spec 7.3, Configuration Default): 31:30 port
+ * connectivity, 29:24 location (5:4 gross, 3:0 side), 23:20 default
+ * device, 7:4 association, 3:0 sequence; bit 8: no presence detection. */
+#define CFG_CONN(c)      ((c) >> 30)
+#define CFG_LOCATION(c)  (((c) >> 24) & 0x3fu)
+#define CFG_DEVICE(c)    (((c) >> 20) & 0xfu)
+#define CFG_ASSOC(c)     (((c) >> 4) & 0xfu)
+#define CFG_SEQ(c)       ((c) & 0xfu)
 #define CFG_NO_PRESENCE  (1u << 8)
+#define CONN_JACK        0           /* CFG_CONN */
+#define CONN_NONE        1
+#define LOC_EXT_FRONT    0x02        /* CFG_LOCATION: external, front */
+#define DEV_LINE_OUT     0x0         /* CFG_DEVICE */
+#define DEV_SPEAKER      0x1
+#define DEV_HP_OUT       0x2
 
 /* ---- the controller ----------------------------------------------------------- */
 
@@ -176,18 +218,33 @@ struct hda {
  * command rings (the immediate interface if they don't answer). The steps
  * log what went wrong; ERR_* then. */
 status_t hda_ctrl_start(struct hda *h, handle_t bar);
+/* Send one command word `cmd` (spec 7.3) to codec `cad` and wait for its
+ * response in *out. ERR_TIMED_OUT (counted in h->timeouts) if it does not
+ * come in HDA_CMD_TIMEOUT. The raw send, unchecked: only verbs.c calls
+ * it, and everything else goes through verbs.c's checked calls. */
+status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out);
+/* Stop the rings, put the controller back in reset, unpin the ring page.
+ * Safe to call more than once and after a failed start. */
+void     hda_ctrl_stop(struct hda *h);
+
+/* ---- verbs (verbs.c) ---------------------------------------------------------- */
+
 /* One GET verb (12-bit `verb` with an 8-bit payload, or 4-bit `verb` with
  * a 16-bit payload) to node `nid` of codec `cad`; *out: the response.
- * ERR_INVALID_ARGS for anything but a GET verb (this driver sets
- * nothing), ERR_TIMED_OUT if the codec does not answer in
- * HDA_CMD_TIMEOUT. */
+ * ERR_INVALID_ARGS for anything but a GET verb, ERR_TIMED_OUT if the
+ * codec does not answer in HDA_CMD_TIMEOUT. */
 status_t hda_get(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload,
                  uint32_t *out);
 /* GET_PARAMETER: hda_get(V_GET_PARAM, param). */
 status_t hda_param(struct hda *h, unsigned cad, unsigned nid, uint32_t param, uint32_t *out);
-/* Stop the rings, put the controller back in reset, unpin the ring page.
- * Safe to call more than once and after a failed start. */
-void     hda_ctrl_stop(struct hda *h);
+/* One SET verb from the allow-list (the V_SET_* and V4_SET_* above), its
+ * payload checked against the bits that verb defines. ERR_NOT_SUPPORTED
+ * for a verb not on the list (logged: a driver bug), ERR_INVALID_ARGS for
+ * a payload with bits the verb does not define, ERR_TIMED_OUT as hda_get. */
+status_t hda_set(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload);
+/* SET_POWER_STATE D0 to node `nid`, then GET_POWER_STATE until the actual
+ * state reads D0 (bounded: POWER_WAIT, logged). */
+status_t hda_power_up(struct hda *h, unsigned cad, unsigned nid);
 
 /* ---- a codec's graph (graph.c) --------------------------------------------- */
 
@@ -247,6 +304,11 @@ struct codec {
  * does not answer at all (a widget that fails is counted in its
  * `errors` and the walk goes on). */
 status_t hda_read_codec(struct hda *h, unsigned cad, struct codec *c);
+/* Read widget w (w->nid) of codec c again, from scratch, as
+ * hda_read_codec does: what is set on it now. */
+void     hda_read_widget(struct hda *h, const struct codec *c, struct widget *w);
+/* The widget with node id nid, or NULL if c has none (or did not keep it). */
+const struct widget *hda_widget(const struct codec *c, unsigned nid);
 
 /* ---- the dump (dump.c) ---------------------------------------------------------
  * Lines go to the log (and, for hda.dump, into a text buffer). */
@@ -263,3 +325,69 @@ void out_line(struct out *o, const char *fmt, ...) __attribute__((format(printf,
 void hda_dump_ctrl(struct out *o, const struct hda *h, const char *where);
 /* One codec: its header lines, then a line per widget (pins get two). */
 void hda_dump_codec(struct out *o, const struct codec *c);
+
+/* ---- the path to the headphones (path.c, pure: struct codec in, struct path out) ---- */
+
+#define PATH_MAX_NODES 6   /* the pin and at most 5 widgets behind it */
+#define PATH_MAX_ALSO  8
+
+/* How the pin was chosen, best first (path.c's header has the rules). */
+enum path_rule {
+    PATH_NONE = 0, PATH_FRONT_HP, PATH_HP, PATH_LINE_OUT, PATH_SPEAKER,
+};
+
+struct path {
+    uint8_t cad;                     /* the codec */
+    uint8_t rule;                    /* enum path_rule; PATH_NONE: no path */
+    uint8_t n;                       /* nodes on the path */
+    uint8_t nid[PATH_MAX_NODES];     /* nid[0] the DAC ... nid[n - 1] the pin */
+    uint8_t in[PATH_MAX_NODES];      /* i > 0: nid[i - 1]'s index in nid[i]'s connection list */
+    bool    dac_shared;              /* another pin with its output on reaches the DAC */
+    uint8_t nalso;                   /* other output-capable pins whose selected input is */
+    uint8_t also[PATH_MAX_ALSO];     /* a node of the path: they would carry the same sound */
+};
+
+/* The path from an analog DAC to the best output pin of codec c.
+ * ERR_NOT_FOUND (*out still written, rule PATH_NONE) if no output pin
+ * reaches one. */
+status_t hda_path_find(const struct codec *c, struct path *out);
+
+/* ---- the path in words (dump.c) ----------------------------------------------------- */
+
+/* The rule's words: "front headphone jack", "line-out", ... */
+const char *hda_path_rule_name(unsigned rule);
+/* "dac 02 -> mixer 0c -> pin 1b" into buf (always NUL-terminated). */
+void hda_path_str(const struct codec *c, const struct path *p, char *buf, size_t size);
+/* What is set on each node of the path, from c's widgets (read back after
+ * programming): "afg D0; dac 02 D0 out m0; mixer 0c in m0 m0; pin 1b D0
+ * ctl 20 (output off) out m0 eapd off". */
+void hda_path_state(const struct codec *c, const struct path *p, char *buf, size_t size);
+/* The path's line: "codec 0 path: dac 02 -> mixer 0c -> pin 1b (front
+ * headphone jack); ...", or why there is none. */
+void hda_dump_path(struct out *o, const struct codec *c, const struct path *p);
+
+/* ---- programming it (verbs.c) --------------------------------------------------- */
+
+/* Power up the audio function group and the path's widgets, turn the
+ * pin's output off, mute every amplifier on the path (every input of a
+ * mixer on it too) and select the path's inputs. No sound can come out
+ * afterwards; the stream and the unmuting are not built yet. Stops at the
+ * first verb that fails. */
+status_t hda_path_program_muted(struct hda *h, const struct codec *c, const struct path *p);
+/* Read the path's widgets and the AFG's power state back into c. */
+void     hda_path_read_back(struct hda *h, struct codec *c, const struct path *p);
+
+/* ---- fixtures (fixtures.c) --------------------------------------------------------- */
+
+/* A codec rebuilt from its dump lines (dump.c's format; other lines are
+ * skipped). ERR_INVALID_ARGS if a widget line does not parse. */
+status_t hda_codec_from_dump(const char *text, size_t len, struct codec *out);
+/* The path finder against every fixture (QEMU's codecs, the PC's): each
+ * must give its known path. Uses *scratch; logs a line per failure and
+ * one summary into o. true: all passed. */
+bool     hda_path_selftest(struct codec *scratch, struct out *o);
+/* Codec c's dump (read live) parsed back into *scratch must give the same
+ * path p the live graph gave: the parser and dump.c agree, so a fixture
+ * pasted from a log is the codec the driver saw. false: a line into o. */
+bool     hda_path_roundtrip(const struct codec *c, const struct path *p, struct codec *scratch,
+                            struct out *o);

@@ -11,6 +11,7 @@
 
 #define HDA_PROTOCOL_ID 21u
 #define HDA_DUMP             0x00150001u
+#define HDA_INFO             0x00150002u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -23,9 +24,27 @@ struct hda_dump_rep {
     uint32_t length;
     uint32_t codecs;
 } __attribute__((packed));
+struct hda_info_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_info_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t codec;
+    uint32_t pin;
+    uint32_t dac;
+    uint32_t pcm;
+    uint32_t formats;
+    uint32_t amp;
+    uint32_t jack;
+    uint32_t count;
+    uint8_t nodes[8];
+    uint8_t text[240];
+} __attribute__((packed));
 
 #define HDA_REQ_MAX 8u   /* bytes: the biggest request */
-#define HDA_REP_MAX 16u   /* bytes: the biggest reply */
+#define HDA_REP_MAX 288u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -66,12 +85,60 @@ static inline status_t hda_dump(handle_t ch, handle_t *out_text, uint32_t *out_l
     return hda_dump_until(ch, DEADLINE_NEVER, out_text, out_length, out_codecs);
 }
 
+/* What the driver chose and set up. codec, pin, dac: the path's codec
+ * address and its two ends (pin 0: there is no path, and the rest is 0).
+ * pcm and formats: the DAC's Supported PCM Size/Rates and Stream Formats
+ * parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
+ * amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
+ * minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
+ * 0 unknown (jack detection is not built yet). nodes: the path's node ids
+ * from the DAC to the pin, `count` of them. text: what is set on each
+ * node, read back from the codec, as one line (NUL-terminated). */
+static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+{
+    struct hda_info_req idl_q;
+    struct hda_info_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_INFO;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_codec)
+        *out_codec = idl_r.codec;
+    if (idl_st == OK && out_pin)
+        *out_pin = idl_r.pin;
+    if (idl_st == OK && out_dac)
+        *out_dac = idl_r.dac;
+    if (idl_st == OK && out_pcm)
+        *out_pcm = idl_r.pcm;
+    if (idl_st == OK && out_formats)
+        *out_formats = idl_r.formats;
+    if (idl_st == OK && out_amp)
+        *out_amp = idl_r.amp;
+    if (idl_st == OK && out_jack)
+        *out_jack = idl_r.jack;
+    if (idl_st == OK && out_count)
+        *out_count = idl_r.count;
+    for (uint32_t idl_i = 0; idl_st == OK && out_nodes && idl_i < 8; idl_i++)
+        out_nodes[idl_i] = idl_r.nodes[idl_i];
+    for (uint32_t idl_i = 0; idl_st == OK && out_text && idl_i < 240; idl_i++)
+        out_text[idl_i] = idl_r.text[idl_i];
+    return idl_st;
+}
+static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+{
+    return hda_info_until(ch, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
  * A NULL handler answers ERR_NOT_SUPPORTED. */
 struct hda_ops {
     status_t (*dump)(void *ctx, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs);
+    status_t (*info)(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240]);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -117,6 +184,47 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
         *rhn = 1;
         idl_r->length = out_length;
         idl_r->codecs = out_codecs;
+        return sizeof(*idl_r);
+    }
+    case HDA_INFO: {
+        const struct hda_info_req *idl_q = (const struct hda_info_req *)req;
+        struct hda_info_rep *idl_r = (struct hda_info_rep *)rep;
+        uint32_t out_codec = 0;
+        uint32_t out_pin = 0;
+        uint32_t out_dac = 0;
+        uint32_t out_pcm = 0;
+        uint32_t out_formats = 0;
+        uint32_t out_amp = 0;
+        uint32_t out_jack = 0;
+        uint32_t out_count = 0;
+        uint8_t out_nodes[8];
+        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
+            out_nodes[idl_i] = 0;
+        uint8_t out_text[240];
+        for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
+            out_text[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->info) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->info(ctx, &out_codec, &out_pin, &out_dac, &out_pcm, &out_formats, &out_amp, &out_jack, &out_count, out_nodes, out_text);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->codec = out_codec;
+        idl_r->pin = out_pin;
+        idl_r->dac = out_dac;
+        idl_r->pcm = out_pcm;
+        idl_r->formats = out_formats;
+        idl_r->amp = out_amp;
+        idl_r->jack = out_jack;
+        idl_r->count = out_count;
+        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
+            idl_r->nodes[idl_i] = out_nodes[idl_i];
+        for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
+            idl_r->text[idl_i] = out_text[idl_i];
         return sizeof(*idl_r);
     }
     }
