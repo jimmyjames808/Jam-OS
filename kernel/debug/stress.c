@@ -8,15 +8,15 @@
  * mode, while they are blocked in channel_call), then checks that each
  * one's job ends with nothing charged. Without a bootfs holding bin/utest
  * those workers count instead. */
+#include <jam/bootfs.h>
 #include <jam/channel.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/kprintf.h>
-#include <jam/report.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
-#include <jam/bootfs.h>
 #include <jam/process.h>
+#include <jam/report.h>
 #include <jam/sched.h>
 #include <jam/selftest.h>
 #include <jam/startup.h>

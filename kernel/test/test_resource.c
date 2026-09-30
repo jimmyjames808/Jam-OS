@@ -15,9 +15,9 @@
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
+#include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/sys.h>
-#include <jam/startup.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
 #include <jam/vmo.h>

@@ -10,11 +10,11 @@
 #include <jam/channel.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
-#include <jam/report.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/port.h>
+#include <jam/report.h>
 #include <jam/sched.h>
 #include <jam/sys.h>
 #include <jam/time.h>

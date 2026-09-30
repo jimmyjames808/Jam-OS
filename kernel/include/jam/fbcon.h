@@ -3,9 +3,9 @@
  * (framebuffer_take), and again after a panic, which always draws. */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 #include <jam/boot.h>
 #include <jam/status.h>
 

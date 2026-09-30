@@ -10,7 +10,7 @@ that a bug fix comes with a test is in
 | Tier | Command | When |
 |---|---|---|
 | Build | `make`, `make KTESTS=0`, `make check` | every commit |
-| Kernel tests | `QEMU_SMP=4 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` | every kernel change |
+| Kernel tests | `QEMU_SMP=4 QEMU_TIMEOUT=90 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` (the full run takes ~25-30 s, too close to the 30 s default) | every kernel change |
 | User regression | `tools/qemu-test.sh build/test init init` | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |

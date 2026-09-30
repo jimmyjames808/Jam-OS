@@ -18,15 +18,15 @@
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
+#include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
-#include <jam/klog.h>
 #include <jam/serial.h>
-#include <jam/uentry.h>
 #include <jam/smp.h>
 #include <jam/time.h>
+#include <jam/uentry.h>
 #include <jam/x86.h>
 
 #include "sched_internal.h"

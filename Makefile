@@ -56,7 +56,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb syscalls idl check compdb
+.PHONY: all image run debug clean font usb syscalls idl check compdb includes
 
 all: $(KERNEL) $(BOOTFS)
 
@@ -270,6 +270,7 @@ check: all
 	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_CFLAGS)" SURFACE="$(DRV_SURFACE)" \
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py
+	python3 tools/sortincludes.py
 
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
@@ -335,3 +336,8 @@ clean:
 # build's flags for every file, from a dry run (tools/compdb.py).
 compdb:
 	python3 tools/compdb.py
+
+# #include lines in the CODING-GUIDE order (tools/sortincludes.py; `make
+# check` fails when a run is out of order, this target fixes them).
+includes:
+	python3 tools/sortincludes.py --fix

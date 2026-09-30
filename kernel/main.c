@@ -12,26 +12,26 @@
 #include <jam/bootfs.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
+#include <jam/fbcon.h>
 #include <jam/ioapic.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
-#include <jam/percpu.h>
-#include <jam/sched.h>
-#include <jam/lapic.h>
-#include <jam/fbcon.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
-#include <jam/report.h>
+#include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pci.h>
+#include <jam/percpu.h>
+#include <jam/report.h>
+#include <jam/resource.h>
+#include <jam/sched.h>
 #include <jam/selftest.h>
 #include <jam/serial.h>
 #include <jam/smp.h>
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
-#include <jam/pci.h>
-#include <jam/resource.h>
 #include <jam/x86.h>
 
 #define JAMOS_VERSION   "0.0.24-m7"

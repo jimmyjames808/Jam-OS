@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include <jam/fbcon.h>
 #include <jam/klog.h>
-#include <jam/serial.h>
 #include <jam/kprintf.h>
+#include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/time.h>
 

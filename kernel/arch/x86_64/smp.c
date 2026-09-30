@@ -4,14 +4,14 @@
  * its timer. */
 #include <jam/cpu.h>
 #include <jam/ipi.h>
-#include <jam/sched.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
-#include <jam/report.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
+#include <jam/report.h>
+#include <jam/sched.h>
 #include <jam/smp.h>
 #include <jam/string.h>
 #include <jam/time.h>
