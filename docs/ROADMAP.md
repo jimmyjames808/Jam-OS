@@ -155,6 +155,11 @@ Offered or noticed, not scheduled into a milestone yet:
 - usb-bus retries a failed root port after 1 s, then 5 s; ports on hubs
   are still looked at again only on a port status change (the same
   pattern would fit `hub->port_fail` in hub.c).
+- Work stealing ignores the topology: an idle CPU steals a waiting busy
+  thread even when that puts it on a core whose other hyperthread is busy
+  while a whole core (or an E-core) is idle, and nothing moves it later.
+  Seen on the PC (a live `ktest`: two busy threads on core 28, none on
+  core 12). Placement at wake is right; stealing could prefer idle cores.
 - devmgr's protocol is hand-written, not IDL.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.

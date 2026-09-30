@@ -209,6 +209,11 @@ static void busy_spinner(void *arg)
 KTEST(placement_spreads_over_cores)
 {
     KT_NEEDS_IDLE("asserts which CPUs busy threads are placed on: every core must be idle");
+    /* Live, a service thread can hold a core for a moment: a spinner queued
+     * behind it is stolen by whichever CPU is idle first, its sibling's
+     * spinner included (the PC, 2026-10-01: two on core 28, none on core
+     * 12). */
+    KT_SKIP_LIVE("asserts which CPUs busy threads are placed on: services run on the cores");
     if (cpu_count < 4 || !__atomic_load_n(&sched_place_order, __ATOMIC_RELAXED))
         return;
     kt_pin_self(0);
