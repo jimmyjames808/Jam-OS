@@ -158,6 +158,8 @@ void hda_dump_ctrl(struct out *o, const struct hda *h, const char *where)
              h->codec_mask, h->rings ? "CORB/RIRB" : h->immediate_ok ? "the immediate interface"
                                                                      : "nothing",
              h->corb_entries, h->rirb_entries);
+    out_line(o, "controller %04x:%04x: pci config 40-4f %08x %08x %08x %08x", h->vendor, h->device,
+             h->cfg40[0], h->cfg40[1], h->cfg40[2], h->cfg40[3]);
 }
 
 static void dump_header(struct out *o, const struct codec *c)

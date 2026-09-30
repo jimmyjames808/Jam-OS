@@ -102,6 +102,8 @@ static int start(const struct driver_start *ds, struct state *s)
     if (dev != HANDLE_INVALID && drv_pci_config_read(dev, 0, 4, &ids) == OK) {
         h->vendor = (uint16_t)ids;
         h->device = (uint16_t)(ids >> 16);
+        for (unsigned i = 0; i < 4; i++)
+            (void)drv_pci_config_read(dev, 0x40 + 4 * i, 4, &h->cfg40[i]);   /* 0 if refused */
     }
     uint64_t t0 = drv_clock_ns();
     status_t st = hda_ctrl_start(h, bar);

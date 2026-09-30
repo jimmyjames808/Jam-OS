@@ -167,6 +167,8 @@ struct hda {
     uint32_t unsol;            /* unsolicited responses seen (none expected: UNSOL off) */
     uint32_t timeouts;         /* verbs that got no answer */
     uint16_t vendor, device;   /* the PCI ids */
+    uint32_t cfg40[4];         /* PCI config 0x40-0x4f: Intel's vendor registers (TCSEL at
+                                * 0x44, clock gating nearby), logged for the PC's dump */
 };
 
 /* ctrl.c. Map BAR 0, stop every DMA engine, reset the controller and the
