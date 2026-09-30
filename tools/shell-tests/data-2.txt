@@ -1,0 +1,32 @@
+# The stick's filesystems, second boot of the same stick
+# (tools/data-test.sh, after data-1.txt): what the first boot wrote is
+# there, its boot log can be read, and this boot has a log of its own.
+# Then the plug is pulled: QEMU quits while a program is writing a file it
+# never syncs.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0002.txt
+send T=b
+wait jam>
+send cat "/data/My Notes/first boot.txt"
+wait kept across a reboot-a
+send hexdump /boot/bin/utest | tail -n 3 | write /data/end1; hexdump /data/utest.copy | tail -n 3 | write /data/end2; echo hex-$T-done
+wait 60 hex-b-done
+send cat /data/end1 /data/end2 | sort | uniq | wc -l | grep ^3$ && echo ok-$T-copy
+wait ok-b-copy
+send ls /data/logs | grep -c ^boot-000..txt$ | grep ^2$ && echo ok-$T-logs
+wait ok-b-logs
+# the first boot's log: closed now, so it can be read; it holds that boot
+# from the kernel's first lines to its mounts
+send grep -c "init: /data mounted" /data/logs/boot-0001.txt | grep -v ^0$ && echo ok-$T-log1
+wait ok-b-log1
+send head -n 40 /data/logs/boot-0001.txt | grep -c "Jam OS" | grep -v ^0$ && echo ok-$T-head
+wait ok-b-head
+send write "/data/My Notes/second boot.txt" written on boot two-$T && sync && echo ok-$T-sync
+wait ok-b-sync
+# the pulled plug: QEMU quits while this file is open and unsynced
+send run utest fs-hold /data/pulled.bin
+wait 20 fs-hold: writing /data/pulled.bin
+sleep 0.5
+monitor quit

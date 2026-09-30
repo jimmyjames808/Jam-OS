@@ -1,0 +1,23 @@
+# The stick's filesystems, third boot of the same stick
+# (tools/data-test.sh, after data-2.txt ended with the plug pulled): the
+# stick still boots, /data is found dirty and mounted anyway, what was
+# synced before the pull is all there, and it can be written again.
+wait 120 Jam OS shell
+wait jam>
+seen 60 fat /data: the volume is dirty
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0003.txt
+send T=c
+wait jam>
+send cat "/data/My Notes/first boot.txt" "/data/My Notes/second boot.txt"
+wait kept across a reboot-a
+wait written on boot two-b
+send ls /data/logs | grep -c ^boot-000..txt$ | grep ^3$ && echo ok-$T-logs
+wait ok-c-logs
+send write /data/after.txt after the pull-$T && cat /data/after.txt
+wait after the pull-c
+send rm -r "/data/My Notes" /data/utest.copy && ls /data | grep -c Notes | grep ^0$ && ls /data | grep -c utest | grep ^0$ && echo ok-$T-rm
+wait ok-c-rm
+send reboot
+wait init: /data synced
+wait reboot: resetting

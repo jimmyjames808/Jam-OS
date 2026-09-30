@@ -1,0 +1,71 @@
+# The stick's filesystems, first boot (tools/data-test.sh boots the same
+# stick three times: data-1.txt, data-2.txt, data-3.txt). usb-bus ->
+# usb-storage -> the fat services -> devmgr's mounts -> init's namespace ->
+# the shell: /esp (read-only) and /data, a boot log, a file written for the
+# next boot, and the mounts coming back after their services are killed.
+# Command line "shell". The text waited for is built from $T, so it never
+# appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /esp mounted
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0001.txt
+send T=a
+wait jam>
+
+# ---- the mounts --------------------------------------------------------------------------
+send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^3$ && echo ok-$T-root
+wait ok-a-root
+send df
+wait /esp
+wait JAMOS (read-only)
+wait /data
+wait JAMOS-DATA
+wait jam>
+send ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && ls /esp/boot | grep -c ^bootfs.img$ | grep ^1$ && echo ok-$T-esp
+wait ok-a-esp
+send grep -c "^    protocol: limine$" /esp/boot/limine/limine.conf | grep ^1$ && echo ok-$T-conf
+wait ok-a-conf
+send write /esp/new.txt no; echo st-$T=$?
+wait write: /esp/new.txt: read-only
+wait st-a=1
+send rm /esp/boot/jamos.elf; echo st-$T=$?
+wait rm: /esp/boot/jamos.elf: read-only
+wait st-a=1
+
+# ---- /data: written now, read on the next boot ------------------------------------------
+send mkdir "/data/My Notes" && write "/data/My Notes/first boot.txt" kept across a reboot-$T
+wait jam>
+send cat "/data/My Notes/first boot.txt"
+wait kept across a reboot-a
+send cp /boot/bin/utest /data/utest.copy && hexdump -n 4 /data/utest.copy
+wait 7f 45 4c 46
+send ls /data/logs | grep -c "^boot-0001.txt$" | grep ^1$ && echo ok-$T-log
+wait ok-a-log
+# the log that is being written is logd's alone until it is closed
+send cat /data/logs/boot-0001.txt; echo st-$T=$?
+wait open for writing by another program
+wait st-a=1
+
+# ---- a filesystem service that dies is mounted again, and logd carries on ---------------
+send kill fat-data
+wait shell: killed process
+wait 20 init: /data mounted
+wait 20 logd: writing /data/logs/boot-0001.txt
+send cat "/data/My Notes/first boot.txt"
+wait kept across a reboot-a
+# devmgr dies: its drivers and both filesystems go with it, and come back
+send kill devmgr
+wait shell: killed process
+wait 30 init: devmgr and its drivers are gone
+wait 60 init: /data mounted
+wait 30 logd: writing /data/logs/boot-0001.txt
+send ls "/data/My Notes" | grep -c "^first boot.txt$" | grep ^1$ && echo ok-$T-back
+wait ok-a-back
+send df | grep -c ^/esp | grep ^1$ && df | grep -c ^/data | grep ^1$ && echo ok-$T-df
+wait ok-a-df
+
+# ---- reboot: init syncs /data first ------------------------------------------------------
+send reboot
+wait init: /data synced
+wait reboot: resetting

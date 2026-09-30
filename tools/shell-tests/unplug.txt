@@ -1,0 +1,43 @@
+# The stick pulled out while the system runs, and plugged back in (QEMU's
+# monitor: device_del / device_add of the boot stick, id "stick"). /esp and
+# /data go away and nothing hangs; /boot and the shell carry on; after the
+# replug the mounts are back in the running shell, what was synced is
+# there, and logd carries on in its file.
+# QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0001.txt
+send T=u
+wait jam>
+send write /data/keep.txt written before the pull-$T && sync && cat /data/keep.txt
+wait written before the pull-u
+
+# ---- pulled ------------------------------------------------------------------------------
+monitor device_del stick
+wait 30 init: /data is gone
+send ls /data; echo st-$T=$?
+wait ls: /data: no such file or directory
+wait st-u=1
+send write /data/lost.txt nowhere to go; echo st-$T=$?
+wait write: /data/lost.txt: no such file or directory
+wait st-u=1
+send df | grep -c ^/boot | grep ^1$ && ls /boot/bin | grep -c ^shell$ | grep ^1$ && echo ok-$T-alive
+wait ok-u-alive
+send run utest env still-$T
+wait arg: still-u
+wait run: bin/utest exited with code 0
+
+# ---- and back ----------------------------------------------------------------------------
+monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
+wait 60 init: /data mounted
+wait 30 logd: writing /data/logs/boot-0001.txt
+send cat /data/keep.txt
+wait written before the pull-u
+send write /data/again.txt written after the replug-$T && cat /data/again.txt
+wait written after the replug-u
+send ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-esp
+wait ok-u-esp
+send reboot
+wait init: /data synced
+wait reboot: resetting

@@ -1,0 +1,16 @@
+# Ctrl+Alt+Del on a USB keyboard: the console asks init (initctl.reboot),
+# init syncs /data (2 s at most) and resets the machine.
+# QEMU_USB as in tools/usbkeys-test.sh (a usb-hub on xhci port 2 with a
+# usb-kbd behind it: hid-6.1:0), command line "shell".
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
+sleep 0.5
+send write /data/cad.txt written before the reset && cat /data/cad.txt
+wait written before the reset
+monitor sendkey ctrl-alt-delete
+wait 10 console: Ctrl+Alt+Del: rebooting
+wait 10 init: /data synced
+wait 10 reboot: asked by init
+wait reboot: resetting

@@ -43,7 +43,7 @@ tools/qemu-test.sh <outdir> <name> [kernel command line...]
 ```
 
 Copies `build/jamos.img`, sets the boot entry's command line, boots it
-headless (q35, OVMF, the stick on qemu-xhci port 1, the `edu` test device),
+headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device),
 waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 (serial) and `<name>.png` (the screen; needs Pillow). Environment:
 
@@ -59,6 +59,7 @@ waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 | `QEMU_EXTRA` | | more QEMU arguments, e.g. `-rtc base=2026-01-15T01:02:03` |
 | `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`); the run passes if every `wait` matched and QEMU ended by itself |
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
+| `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
 
 Examples:
 
@@ -77,7 +78,7 @@ make debug                                                # the same, stopped fo
 
 | Entry | Command line | What it does |
 |---|---|---|
-| Jam OS | (empty) | init starts the console, serialin, devmgr (with the USB drivers) and the shell |
+| Jam OS | (empty) | init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB drivers; it mounts the stick's `/esp` and `/data`), logd and the shell |
 | Jam OS (safe mode) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | after each fix |
@@ -130,6 +131,11 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `system.txt` | the System and Tests commands through the command table: argv, status, pipes, help, aliases | |
 | `commands.txt` | utest, usbtest, pci, memmap, the crash list, demo, Ctrl+C past a program, orphans killed with their job, devmgr restarted by init; ends with a real crash | |
 | `extras.txt` | bench and a short stress from the shell, scrollback, clear; ends with a panic over the console | |
+| `files.txt` | the file namespace: `/boot` as a read-only mount, `run` with a path, the file commands (mkdir touch write cp mv rm df sync) on a writable mount (the tests' RAM filesystem, `run ramfs shell`), a mount that reaches a running shell, the bootfs server killed and mounted again | |
+| `files-fat.txt` | the file commands on a real FAT volume (`run utest fat-shell`: bin/fat over a RAM disk): names with spaces and lower case, big copies, rm -r | |
+| `unplug.txt` | the stick pulled while the system runs and plugged back in (the monitor's `device_del` / `device_add`): `/data` and `/esp` go, nothing hangs, they come back in the running shell, logd carries on | |
+| `cad.txt` | Ctrl+Alt+Del on a USB keyboard: the console asks init, which syncs `/data` and resets | the `tools/usbkeys-test.sh` `QEMU_USB` |
+| `data-1.txt`, `data-2.txt`, `data-3.txt` | three boots of one stick: `/esp` and `/data` from the stick itself, a file kept across a reboot, a boot log per boot, the fat service and devmgr killed, the plug pulled | use `tools/data-test.sh` |
 | `fun.txt` | the apps (life, tetris, fractal): self-tests, play, screenshots, kill and crash with the screen borrowed | use `tools/fun-test.sh` |
 | `apps.txt` | snake, mines and sysmon: self-tests, play, screenshots; one mouse click in mines; the `sysmon` command, and `run sysmon` refused for want of its handle | use `tools/apps-test.sh` |
 | `mouse.txt` | the mouse through QEMU's monitor: the shell and tetris undisturbed by it, the wheel's scroll-back, then mines played with clicks at exact cells (reveal, flag, chord, peek, the buttons), and acceleration | use `tools/mouse-test.sh` |
@@ -158,6 +164,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/apps-test.sh <outdir>` | snake, mines and sysmon (`apps.txt`), with a USB mouse; `APPS_HD=1` runs at 2560x1440 |
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot |
+| `tools/data-test.sh <outdir>` | the stick's filesystems end to end, three boots of one stick image (`data-1.txt` to `data-3.txt`): written, rebooted, read back; QEMU quit in the middle of writes and the dirty volume mounted again; then the boot logs read off the image with mtools, as the Mac reads the real stick |
 
 ## Known noise
 

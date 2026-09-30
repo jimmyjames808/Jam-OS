@@ -1,0 +1,216 @@
+# The file namespace from the shell: /boot as a mount (the bootfs server,
+# read-only), `run` with a path, and the file commands (mkdir touch write
+# cp mv rm df sync, with ls cat cd find) on a writable mount. The writable
+# mount is the tests' RAM filesystem: `run ramfs shell` starts a second
+# shell whose namespace is this one's plus bin/ramfs at /ram (Ctrl+C ends
+# it); the stick's /data is left alone (tools/data-test.sh has it). Then a
+# mount that reaches a running shell (`ramfs shell late`), and init sending
+# the shell a new /boot after the bootfs server is killed.
+# QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+send T=x
+wait jam>
+
+# ---- /boot: a mount like any other, and read-only ----------------------------------------
+send ls / | grep -c ^boot/$ | grep ^1$ && echo ok-$T-root
+wait ok-x-root
+send df
+wait /boot
+wait BOOTFS (read-only)
+wait jam>
+send write /boot/new.txt hello; echo st-$T=$?
+wait write: /boot/new.txt: read-only
+wait st-x=1
+send mkdir /boot/newdir; echo st-$T=$?
+wait mkdir: /boot/newdir: read-only
+wait st-x=1
+send rm /boot/init.cfg
+wait rm: /boot/init.cfg: read-only
+send mv /boot/init.cfg /boot/other.cfg
+wait mv: /boot/other.cfg: read-only
+send cp /boot/init.cfg /boot/copy.cfg
+wait cp: /boot/copy.cfg: read-only
+send touch /boot/init.cfg && echo ok-$T-touch
+wait ok-x-touch
+send touch /boot/new; echo st-$T=$?
+wait touch: /boot/new: read-only
+wait st-x=1
+send cat /nowhere/file
+wait cat: /nowhere/file: no such file
+send cat /boot/bin
+wait cat: /boot/bin: is a directory
+send ls /boot/bin/../drv/../init.cfg
+wait init.cfg
+send sync && echo ok-$T-sync
+wait ok-x-sync
+send rm /boot
+wait rm: /boot: a mount point: not removed
+wait jam>
+
+# ---- run takes a path ------------------------------------------------------------------
+send run /boot/bin/utest env one-$T
+wait arg: one-x
+wait run: bin/utest exited with code 0
+send cd /boot/drv; run ../bin/utest env two-$T; cd
+wait arg: two-x
+wait run: bin/utest exited with code 0
+send run /nowhere/prog; echo st-$T=$?
+wait run: /nowhere/prog: no such file or directory
+wait st-x=127
+send run /boot/bin; echo st-$T=$?
+wait run: no bin in bootfs
+wait st-x=127
+# a program the shell starts sees the shell's mounts
+send run utest fscat /boot/init.cfg | grep -c "fscat: # init.cfg" | grep ^1$ && echo ok-$T-ns
+wait ok-x-ns
+wait jam>
+
+# ---- a writable mount: a shell with the RAM filesystem at /ram -------------------------
+send run ramfs shell
+wait run: bin/ramfs started
+wait Jam OS shell
+wait jam>
+send T=y
+wait jam>
+send ls / | grep -c ^ram/$ | grep ^1$ && echo ok-$T-mounts
+wait ok-y-mounts
+send df | grep /ram | grep -c RAMFS | grep ^1$ && echo ok-$T-df
+wait ok-y-df
+send cd /ram && pwd | grep ^/ram$ && echo ok-$T-cd
+wait ok-y-cd
+send mkdir docs && ls -l | grep -c "<dir>  docs/" | grep ^1$ && echo ok-$T-mkdir
+wait ok-y-mkdir
+send mkdir docs; echo st-$T=$?
+wait mkdir: docs: it exists already
+wait st-y=1
+send mkdir -p a/b/c docs && cd a/b/c && pwd | grep ^/ram/a/b/c$ && echo ok-$T-mkdirp
+wait ok-y-mkdirp
+send cd ../../..; pwd | grep ^/ram$ && echo ok-$T-up
+wait ok-y-up
+# write: text from the command line, -a adds, a pipe's output
+send write docs/note.txt hello $T "two  words"
+send cat docs/note.txt
+wait hello y two  words
+send write -a docs/note.txt second line; wc -l docs/note.txt | grep -c "^ *2 " | grep ^1$ && echo ok-$T-append
+wait ok-y-append
+send tail -n 1 docs/note.txt
+wait second line
+send write docs/note.txt replaced; cat docs/note.txt | wc -l | grep ^1$ && echo ok-$T-replace
+wait ok-y-replace
+send seq 3 | write nums.txt; sort -rn nums.txt | head -1 | grep ^3$ && echo ok-$T-pipe
+wait ok-y-pipe
+send write; echo st-$T=$?
+wait usage: write [-a] <file> <text...>
+wait st-y=2
+send write docs text; echo st-$T=$?
+wait write: docs: is a directory
+wait st-y=1
+send touch empty && ls -l empty | grep -c "0 B  empty" | grep ^1$ && echo ok-$T-touch
+wait ok-y-touch
+# cp: a small file, into a directory, from another mount, and one bigger
+# than the 64 KiB transfer buffer
+send cp docs/note.txt copy.txt && cat copy.txt
+wait replaced
+send cp copy.txt docs && ls docs | grep -c ^copy.txt$ | grep ^1$ && echo ok-$T-cpdir
+wait ok-y-cpdir
+send cp /boot/init.cfg . && grep -c ^bin/utest$ init.cfg | grep ^1$ && echo ok-$T-cpboot
+wait ok-y-cpboot
+send cp /boot/bin/utest big && hexdump -n 4 big
+wait 7f 45 4c 46
+send hexdump /boot/bin/utest | tail -n 3 | write end1; hexdump big | tail -n 3 | write end2; echo hex-$T-done
+wait 60 hex-y-done
+send cat end1 end2 | sort | uniq | wc -l | grep ^3$ && echo ok-$T-cpbig
+wait ok-y-cpbig
+send rm end1 end2
+send cp docs copy2; echo st-$T=$?
+wait cp: docs: a directory
+wait st-y=1
+send cp nosuch x; echo st-$T=$?
+wait cp: nosuch: no such file or directory
+wait st-y=1
+# mv: rename, into a directory, not across mounts
+send mv copy.txt renamed.txt && ls | grep -c ^renamed.txt$ | grep ^1$ && echo ok-$T-mv
+wait ok-y-mv
+send mv renamed.txt a/b && cat a/b/renamed.txt
+wait replaced
+send mv a/b/renamed.txt /boot/x; echo st-$T=$?
+wait are on two mounts
+wait st-y=1
+send mv nosuch x; echo st-$T=$?
+wait mv: nosuch: no such file or directory
+wait st-y=1
+send find /ram -name note
+wait /ram/docs/note.txt
+send find / -name renamed
+wait /ram/a/b/renamed.txt
+# a program started here sees /ram; nothing outside /boot can run yet
+send run utest fscat /ram/docs/note.txt
+wait fscat: replaced
+wait run: bin/utest exited with code 0
+send run /ram/big env; echo st-$T=$?
+wait run: can't start /ram/big (ERR_ACCESS_DENIED)
+wait only programs in /boot can run
+wait st-y=126
+send run ./nums.txt; echo st-$T=$?
+wait run: can't start /ram/nums.txt (ERR_INVALID_ARGS)
+wait st-y=126
+# rm: files, an empty directory, -r; never a mount point
+send rm docs; echo st-$T=$?
+wait rm: docs: a directory with entries
+wait st-y=1
+send rm nums.txt empty && ls | grep -c nums | grep ^0$ && echo ok-$T-rm
+wait ok-y-rm
+send rm nosuch; echo st-$T=$?
+wait rm: nosuch: no such file or directory
+wait st-y=1
+send rm -r a docs && ls | grep -c /$ | grep ^0$ && echo ok-$T-rmr
+wait ok-y-rmr
+send cd /; rm -r /ram; echo st-$T=$?
+wait rm: /ram: a mount point: not removed
+wait st-y=1
+send cd /ram
+# a full filesystem: the copy that doesn't fit says so
+send cp big b2; cp big b3; cp big b4; cp big b5; cp big b6; cp big b7; echo st-$T=$?
+wait 30 no space left
+wait st-y=1
+send df | grep /ram
+wait RAMFS
+send sync && echo ok-$T-sync
+wait ok-y-sync
+# Ctrl+C at the inner shell's prompt: the outer shell kills the program
+type \x03
+wait 10 ^C: killing bin/ramfs
+wait 10 run: bin/ramfs was killed
+wait jam>
+send ls /ram
+wait ls: /ram: no such file or directory
+wait jam>
+
+# ---- a mount that reaches a running shell ------------------------------------------------
+send run ramfs shell late
+wait Jam OS shell
+wait jam>
+send ls /ram
+wait ls: /ram: no such file or directory
+wait 30 ramfs: /ram is mounted
+send write /ram/late.txt it came && cat /ram/late.txt
+wait it came
+type \x03
+wait 10 run: bin/ramfs was killed
+wait jam>
+
+# ---- init sends the shell its mounts again when the bootfs server restarts --------------
+send kill bootfs
+wait shell: killed process
+wait 10 bootfs: serving the boot image
+sleep 1
+send ls /boot/bin | grep -c ^utest$ | grep ^1$ && echo ok-$T-remount
+wait ok-x-remount
+send run utest env back-$T
+wait arg: back-x
+wait run: bin/utest exited with code 0
+wait jam>
+send reboot
+wait reboot: resetting

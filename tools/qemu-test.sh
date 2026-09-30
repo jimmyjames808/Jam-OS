@@ -20,6 +20,13 @@
 #     expect <text>    wait (up to the timeout) until the serial log has <text>
 #     send <command>   a monitor command: sendkey a, device_del kbd2, ...
 #     sleep <seconds>
+# QEMU_SAVE=<file> keeps the run's stick image, with what the guest wrote
+# to it, as <file> (for a later run's QEMU_IMAGE: a second boot of the
+# same stick).
+# The stick is the device "stick" on the block node "usbstick" (a
+# -blockdev, which outlives the device): a script pulls it with the monitor
+# command `device_del stick` and plugs it back with
+# `device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick`.
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -49,8 +56,9 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
-    -drive if=none,id=usbstick,format=raw,file="$img" \
-    -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
+    -blockdev driver=file,node-name=stickfile,filename="$img" \
+    -blockdev driver=raw,node-name=usbstick,file=stickfile \
+    -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
     ${QEMU_USB:-} ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
     $serial -display none -no-reboot \
@@ -99,6 +107,9 @@ if [ -n "${mpid:-}" ]; then
 fi
 python3 -c "from PIL import Image; Image.open('$out/$name.ppm').save('$out/$name.png')" \
     2>/dev/null || true
+if [ -n "${QEMU_SAVE:-}" ]; then
+    cp "$img" "$QEMU_SAVE"
+fi
 rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon" "$ser"
 if [ -n "$fpid" ]; then
     fst=0

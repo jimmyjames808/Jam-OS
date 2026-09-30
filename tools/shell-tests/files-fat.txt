@@ -1,0 +1,76 @@
+# The shell's file commands on a real FAT volume: `run utest fat-shell`
+# starts a second shell whose /data is the fat service (bin/fat) over a
+# RAM disk, freshly formatted (Ctrl+C ends it). Names with spaces and lower
+# case, names that differ only after eight characters, forbidden
+# characters, copies bigger than a transfer buffer, rm -r, df and sync.
+# files.txt has the same commands on the tests' RAM filesystem.
+# QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+send run utest fat-shell
+wait run: bin/utest started
+wait Jam OS shell
+wait jam>
+send T=f
+wait jam>
+send df | grep /data | grep -c JAMOS-DATA | grep ^1$ && echo ok-$T-df
+wait ok-f-df
+send cd /data && ls | wc -l | grep ^0$ && echo ok-$T-empty
+wait ok-f-empty
+
+# ---- names as typed ---------------------------------------------------------------------
+send touch "My Notes.txt" && ls | grep -c "^My Notes.txt$" | grep ^1$ && echo ok-$T-spaces
+wait ok-f-spaces
+send write notes.txt lower case stays && ls | grep -c ^notes.txt$ | grep ^1$ && echo ok-$T-lower
+wait ok-f-lower
+send write holiday-photos.txt one-$T; write holiday-plans.txt two-$T
+send cat holiday-photos.txt holiday-plans.txt
+wait one-f
+wait two-f
+send ls | grep -c holiday | grep ^2$ && echo ok-$T-aliases
+wait ok-f-aliases
+send touch "bad:name"; echo st-$T=$?
+wait touch: bad:name: not a valid name
+wait st-f=1
+send mkdir -p "Trip 2026/day 1" && cd "Trip 2026/day 1" && pwd | grep "^/data/Trip 2026/day 1$" && echo ok-$T-dirs
+wait ok-f-dirs
+send cd /data
+
+# ---- write, cp, mv, rm --------------------------------------------------------------------
+send write -a notes.txt second line; wc -l notes.txt | grep -c "^ *2 " | grep ^1$ && echo ok-$T-append
+wait ok-f-append
+send seq 200 | write "Trip 2026/numbers.txt"; tail -n 1 "Trip 2026/numbers.txt" | grep ^200$ && echo ok-$T-pipe
+wait ok-f-pipe
+send cp /boot/bin/utest "Trip 2026/utest copy" && hexdump -n 4 "Trip 2026/utest copy"
+wait 7f 45 4c 46
+send hexdump /boot/bin/utest | tail -n 3 | write end1; hexdump "Trip 2026/utest copy" | tail -n 3 | write end2; echo hex-$T-done
+wait 60 hex-f-done
+send cat end1 end2 | sort | uniq | wc -l | grep ^3$ && echo ok-$T-cpbig
+wait ok-f-cpbig
+send mv "My Notes.txt" "Trip 2026" && ls "Trip 2026" | grep -c "^My Notes.txt$" | grep ^1$ && echo ok-$T-mv
+wait ok-f-mv
+send mv notes.txt "Notes Again.txt" && cat "Notes Again.txt" | head -1
+wait lower case stays
+send find /data -name copy
+wait /data/Trip 2026/utest copy
+send run utest fscat "/data/Notes Again.txt"
+wait fscat: lower case stays
+wait run: bin/utest exited with code 0
+send rm "Trip 2026"; echo st-$T=$?
+wait rm: Trip 2026: a directory with entries
+wait st-f=1
+send rm -r "Trip 2026" end1 end2 && ls | grep -c Trip | grep ^0$ && ls | grep -c ^end | grep ^0$ && echo ok-$T-rmr
+wait ok-f-rmr
+send rm nosuch; echo st-$T=$?
+wait rm: nosuch: no such file or directory
+wait st-f=1
+send sync && echo ok-$T-sync
+wait ok-f-sync
+send df | grep /data
+wait JAMOS-DATA
+type \x03
+wait 10 run: bin/utest was killed
+wait jam>
+send reboot
+wait reboot: resetting
