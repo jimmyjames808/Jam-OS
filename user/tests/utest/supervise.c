@@ -231,50 +231,41 @@ bool t_supervised_give_up(void)
  * dma_cap or an interrupt object, write its MSI-X capability, reach any
  * other function (no RES_PCI, no slicing), get DMA memory or pin without
  * a dma_cap. */
-bool t_driver_handle_limits(void)
+/* The first function with MSI-X whose table and PBA BARs a driver could
+ * get (on the PC some BARs stay unsized and are never handed out, e.g.
+ * the VMD controller's): its DRIVER_VIEW handles into hs (*nh), the reply
+ * (*r) and its MSI-X capability's offset (*cap). ERR_NOT_FOUND if none. */
+static status_t msix_function(handle_t dm, handle_t *hs, uint32_t *nh, struct devmgr_rep *r,
+                              uint32_t *cap)
 {
-    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES], x, v;
-    uint32_t nh = 0;
-    struct devmgr_rep r;
-    if (!dm)
-        return true;
-    /* The first function with MSI-X whose table and PBA BARs a driver
-     * could get (on the PC some BARs stay unsized and are never handed
-     * out, e.g. the VMD controller's). */
     status_t st = ERR_NOT_FOUND;
-    uint32_t cap = 0;
     for (uint32_t inst = 0; inst < 32; inst++) {
-        nh = 0;
-        st = devmgr_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, inst, &r, hs, DEVMGR_MAX_HANDLES,
-                         &nh, now() + 30 * NS_PER_S);
+        *nh = 0;
+        st = devmgr_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, inst, r, hs, DEVMGR_MAX_HANDLES,
+                         nh, now() + 30 * NS_PER_S);
         if (st == ERR_NOT_FOUND)
             break;
         uint32_t t = 0, p = 0;
-        if (st == OK && nh >= 2 && (cap = pci_find_cap(hs[0], 0x11)) &&
-            jam_pci_config_read(hs[0], cap + 4, 4, &t) == OK &&
-            jam_pci_config_read(hs[0], cap + 8, 4, &p) == OK &&
-            (r.a & (1u << (t & 7))) && (r.a & (1u << (p & 7))))
+        if (st == OK && *nh >= 2 && (*cap = pci_find_cap(hs[0], 0x11)) &&
+            jam_pci_config_read(hs[0], *cap + 4, 4, &t) == OK &&
+            jam_pci_config_read(hs[0], *cap + 8, 4, &p) == OK &&
+            (r->a & (1u << (t & 7))) && (r->a & (1u << (p & 7))))
             break;
-        printf("utest: %s: MSI-X function #%u not usable (%s), trying the next\n", utest_cur, inst,
-               st == OK ? "table BAR not handed out" : status_str(st));
-        for (uint32_t k = 0; k < nh; k++)
+        printf("utest: %s: MSI-X function #%u not usable (%s), trying the next\n", utest_cur,
+               inst, st == OK ? "table BAR not handed out" : status_str(st));
+        for (uint32_t k = 0; k < *nh; k++)
             jam_handle_close(hs[k]);
         st = ERR_NOT_FOUND;
     }
-    if (st == ERR_NOT_FOUND) {
-        printf("utest: %s: no usable function with MSI-X: skipped\n", utest_cur);
-        return true;
-    }
-    CHECK_ST(st, OK);
-    handle_t dev = hs[0];
-    uint32_t mask = r.a, tab = 0, pba = 0, ctl = 0, cmd = 0, id = 0;
-    CHECK_ST(jam_pci_config_read(dev, 0, 4, &id), OK);
-    printf("utest: %s: using %04x:%04x\n", utest_cur, id & 0xffff, id >> 16);
-    CHECK_ST(jam_pci_config_read(dev, cap + 4, 4, &tab), OK);
-    CHECK_ST(jam_pci_config_read(dev, cap + 8, 4, &pba), OK);
-    CHECK_ST(jam_pci_config_read(dev, cap + 2, 2, &ctl), OK);
-    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
-    /* The MSI-X table and PBA pages, in whichever BAR each lives. */
+    return st;
+}
+
+/* The MSI-X table and PBA pages (tab, pba: their BIR and offset), in
+ * whichever of the BARs (hs[1..], mask: which) each lives, can't be
+ * mapped or sliced; the rest of such a BAR can. */
+static bool msix_pages_refused(const handle_t *hs, uint32_t mask, uint32_t tab, uint32_t pba)
+{
+    handle_t x;
     const uint32_t where[2] = { tab, pba };
     for (int i = 0; i < 2; i++) {
         uint32_t bir = where[i] & 7, page = where[i] & ~0xfffu;
@@ -291,6 +282,33 @@ bool t_driver_handle_limits(void)
         }
         CHECK_ST(jam_resource_create(bar, RES_MMIO, 0, 4096, &x), ERR_ACCESS_DENIED);
     }
+    return true;
+}
+
+bool t_driver_handle_limits(void)
+{
+    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES], x, v;
+    uint32_t nh = 0;
+    struct devmgr_rep r;
+    if (!dm)
+        return true;
+    uint32_t cap = 0;
+    status_t st = msix_function(dm, hs, &nh, &r, &cap);
+    if (st == ERR_NOT_FOUND) {
+        printf("utest: %s: no usable function with MSI-X: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(st, OK);
+    handle_t dev = hs[0];
+    uint32_t mask = r.a, tab = 0, pba = 0, ctl = 0, cmd = 0, id = 0;
+    CHECK_ST(jam_pci_config_read(dev, 0, 4, &id), OK);
+    printf("utest: %s: using %04x:%04x\n", utest_cur, id & 0xffff, id >> 16);
+    CHECK_ST(jam_pci_config_read(dev, cap + 4, 4, &tab), OK);
+    CHECK_ST(jam_pci_config_read(dev, cap + 8, 4, &pba), OK);
+    CHECK_ST(jam_pci_config_read(dev, cap + 2, 2, &ctl), OK);
+    CHECK_ST(jam_pci_config_read(dev, 0x04, 2, &cmd), OK);
+    if (!msix_pages_refused(hs, mask, tab, pba))
+        return false;
     /* Config: the kernel's bits and capabilities are read-only. */
     CHECK_ST(jam_pci_config_write(dev, 0x04, 2, cmd ^ CMD_BME), ERR_ACCESS_DENIED);
     CHECK_ST(jam_pci_config_write(dev, cap + 2, 2, ctl), ERR_ACCESS_DENIED);

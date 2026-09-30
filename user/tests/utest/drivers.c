@@ -216,6 +216,20 @@ bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_re
     return true;
 }
 
+/* Wait (up to 10 s) for edu's DMA quarantine to be empty; *sup: the
+ * supervision view then. */
+static bool quarantine_released(handle_t dm, struct devmgr_rep *sup)
+{
+    uint64_t until = now() + 10 * NS_PER_S;
+    for (;;) {
+        if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, sup))
+            return false;
+        if (!sup->d || now() > until)
+            return true;
+        jam_nanosleep(now() + 20 * NS_PER_MS);
+    }
+}
+
 /* Killing the edu driver process while its DMA runs, and supervision
  * bringing it back: Bus Master Enable goes off, its pinned buffer is
  * quarantined (still charged to its job), its MSI vector is free; devmgr
@@ -290,15 +304,7 @@ bool t_edu_killed_mid_dma(void)
      * after the new driver turned bus mastering on. Its count drops only
      * once the pages are back, so then the job is empty (pins, VMOs,
      * threads: gone), and nothing wrote them meanwhile. */
-    uint64_t until = now() + 10 * NS_PER_S;
-    for (;;) {
-        if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
-            return false;
-        if (!sup.d || now() > until)
-            break;
-        jam_nanosleep(now() + 20 * NS_PER_MS);
-    }
-    if (!job_is_empty(job))
+    if (!quarantine_released(dm, &sup) || !job_is_empty(job))
         return false;
     printf("utest: %s: restarts %u, quarantine %u page(s) left, %u stale page(s)\n", utest_cur,
            sup.b - restarts0, sup.d, sup.e - changed0);
