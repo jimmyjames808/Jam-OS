@@ -79,6 +79,7 @@ make debug                                                # the same, stopped fo
 | Entry | Command line | What it does |
 |---|---|---|
 | Jam OS | (empty) | init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB drivers; it mounts the stick's `/esp` and `/data`), logd and the shell |
+| Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; a panic's screen stays 15 s, then the PC restarts by itself |
 | Jam OS (safe mode) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | after each fix |
