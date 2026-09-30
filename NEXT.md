@@ -18,7 +18,7 @@ The page for whoever picks up Jam OS next, human or agent. Read this, then
 
 ## Next step
 
-1. M8, storage: write the plan as docs/M8-PLAN.md first (like the
+1. M8, storage: the plan is [docs/M8-PLAN.md](docs/M8-PLAN.md) (written 2026-09-30; the owner answers its open questions, then the foundation and four tracks) (like the
    [earlier plans](docs/history/)); notes for it are in the
    [roadmap](docs/ROADMAP.md#next-m8-storage). Decided: the USB stick and
    FAT32 only, through a FatFs port. The review's design items go in: a

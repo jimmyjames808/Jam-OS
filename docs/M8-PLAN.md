@@ -1,0 +1,227 @@
+# M8 plan: storage (USB stick, FAT32, files for every program)
+
+Goal ([roadmap](ROADMAP.md#next-m8-storage)): **`ls /boot` and writing a
+file under `/data` work from a user-space filesystem service; every boot's
+log is saved as `/data/logs/boot-NNNN.txt`; the stick still boots after a
+pulled-plug test; a PC run's log can be read on the Mac from the stick.**
+
+Decided already ([HISTORY.md](HISTORY.md#decisions)): the USB stick and
+FAT32 only (no NVMe, no other filesystem); FAT32 comes from a **FatFs**
+port, not a hand-written driver. Everything is a process; the kernel gains
+nothing but what enforcement needs.
+
+The PC's stick ([HARDWARE.md](HARDWARE.md#usb)): 058f:6387, high speed,
+behind the ASMedia hub, so every block goes through the hub (the TT is not
+involved: a high-speed device behind a high-speed hub). In QEMU the boot
+stick is a SuperSpeed `usb-storage` device on root port 1.
+
+## What M8 adds
+
+| Piece | What it is |
+|---|---|
+| Bulk transfers (usb-bus) | bulk-IN and bulk-OUT endpoints: transfer rings, completion, STALL and Clear Feature(ENDPOINT_HALT), and a shared DMA buffer per opened pair so data never travels in messages |
+| usb-storage (driver process) | USB mass storage, Bulk-Only Transport: CBW / data / CSW, the SCSI commands a stick needs, BOT reset recovery. Reads the partition table and serves the `block` protocol, one channel per partition, each limited to that partition's sectors |
+| fat (service process) | FatFs over one `block` channel, serving the `fs` protocol; mounted at `/data` |
+| The file namespace (libos + init) | `fs` and `file` protocols; each program gets a namespace (mount point -> `fs` channel) at startup; libos `open`, `read`, `write`, `readdir`, `mkdir`, `unlink`, `rename`, `stat`, `sync`; `/boot` is served by a bootfs server under the same protocol |
+| spawn from a file | libos spawn takes a VMO (a file's contents) instead of a bootfs name, so `run /data/bin/x` works |
+| logd (service process) | follows the kernel log from its first byte and appends it to `/data/logs/boot-NNNN.txt`, syncing as it goes |
+| The stick's layout | the ESP (Limine, kernel, bootfs), which Jam OS never writes, plus a data partition formatted on first boot |
+| Smaller | `debug_command`'s `kill <name>` moves to init's control channel (the cleanup review) |
+
+## Fixed decisions
+
+**Authority.** No program gets more of the disk than it needs:
+- usb-bus owns the controller and the DMA (as in M7). usb-storage gets its
+  interface's `usb` channel and a shared buffer; never a dma_cap.
+- usb-storage serves one `block` channel **per partition**, each refusing
+  any sector outside its partition (ERR_OUT_OF_RANGE). It never serves the
+  whole disk to anyone, so nothing but usb-storage can touch the ESP or
+  the partition table. The ESP's channel is read-only.
+- fat gets only the data partition's channel. A bug in fat or FatFs can't
+  write outside `/data`.
+- A program sees only the mounts its namespace holds. The shell and the
+  programs it runs get `/boot` and `/data`; a program can be started with
+  a namespace without `/data`.
+
+**Bulk data never goes through messages.** IDL messages top out at 8 KiB
+and live on a kernel stack. Every bulk path uses a **shared VMO** handed
+out once as a handle result (already supported by genidl), with messages
+carrying only offsets and lengths:
+- usb: `open_bulk(ep_in, ep_out) -> (buffer VMO, size)`, then
+  `bulk_in(offset, length)` / `bulk_out(offset, length)`. usb-bus pins the
+  buffer with its own dma_cap; the class driver maps it.
+- block: `open` gives a buffer VMO; `read(lba, count, buffer offset)`,
+  `write(...)`, `sync()`, `info() -> (block size, blocks, read-only)`.
+- file: `open` returns the file's channel plus a buffer VMO;
+  `read(offset, length)` fills the buffer, `write` takes what the client
+  put there. 64 KiB buffers; larger transfers loop.
+No new IDL feature is needed. Handle *arguments* stay refused.
+
+**The protocols** (new files under abi/idl: usb.idl grows, plus block,
+fs, file):
+- `fs`: `open(path, flags) -> (handle file, handle buffer, u64 size)`,
+  `stat(path)`, `readdir(path, cookie) -> (entries...)`, `mkdir`,
+  `unlink`, `rename(from, to)`, `sync()`. Paths are relative to the mount
+  point, `/`-separated, at most 255 bytes; `..` never escapes the mount
+  (the server resolves it). Flags: read, write, create, truncate, append.
+- `file`: `read`, `write`, `truncate`, `stat`, `sync`; closing the channel
+  closes the file.
+- Errors map FatFs's FRESULT onto ERR_* (not found, exists, no space,
+  read-only, name invalid, ...), never passed through raw.
+
+**Namespace.** A startup handle list SR_NS (mount path -> `fs` channel)
+given by whoever starts a program; libos resolves a path to the longest
+matching mount and calls that `fs` channel. init builds the first one:
+`/boot` from the bootfs server (the bootfs image served read-only through
+`fs`), `/data` when devmgr reports the data partition's fat service up.
+Mounts that arrive later (the stick replugged, fat restarted) reach
+running programs the way devmgr's new channel reaches the shell today (a
+channel from init). The shell's mount table (sh_vfs.c) becomes a thin
+client of libos's namespace.
+
+**Who starts what.** devmgr binds usb-storage to mass-storage interfaces
+(class 08, subclass 06 SCSI, protocol 50 BOT). usb-storage reports its
+partitions to devmgr; devmgr starts fat for the partition named
+`JAMOS-DATA` (see the layout) and hands init the resulting `fs` channel;
+init mounts it at `/data`. Restarts follow devmgr's supervision (M7).
+
+**The stick's layout.** GPT with two partitions:
+1. the ESP (FAT32, as today: Limine, jamos.elf, bootfs.img, limine.conf),
+   never written by Jam OS;
+2. `JAMOS-DATA`: type Microsoft basic data (so Windows and macOS mount it
+   and the Mac can read the logs), GPT partition name `JAMOS-DATA`.
+   Jam OS mounts or formats only a partition with that name **on the disk
+   it booted from** (the one holding the ESP). Size: the rest of the
+   stick; fat formats it with FatFs's f_mkfs on first boot if it holds no
+   FAT volume.
+The image build (tools/mkimage.py) writes both GPT entries. Flashing the
+new layout **erases the stick once**: the owner runs `make usb`;
+after that, updates copy files onto the ESP as now.
+
+**FatFs** (ChaN, BSD-style licence): vendored unmodified in a new
+third_party/fatfs directory with its licence and a VERSIONS.md entry.
+Configuration: long file names on (UTF-8 API), exFAT off, f_mkfs on,
+re-entrancy off (fat is single-threaded), the `diskio` callbacks
+implemented over the `block` channel, `get_fattime` from the RTC.
+
+**Write safety** ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)): FatFs
+writes data, then the FATs, then the directory entry. `sync` (and every
+`fs.sync`) flushes FatFs and sends SCSI SYNCHRONIZE CACHE. A volume found
+dirty is mounted anyway and logged (there is no fsck); the ESP is never
+written, so the stick always boots. `reboot` and Ctrl+Alt+Del ask init to
+sync `/data` (bounded: 2 s) before resetting.
+
+**Boot logs.** logd opens a klog reader from byte 0, picks the next free
+`boot-NNNN.txt` in `/data/logs` (creating the directory), writes whatever
+the kernel logged before `/data` existed, then follows the log, syncing
+at most once a second and on every `reboot`. A panic can't be saved yet
+(that is M8.5's crash kernel); the file then ends at the last sync.
+
+**Bounded everything.** Every SCSI command has a timeout (10 s for a
+write, 5 s otherwise) and BOT reset recovery on failure; a stick that
+stops answering makes usb-storage fail its requests with ERR_TIMED_OUT,
+never hang fat, logd or the shell. Unplugging the stick at any time must
+leave the system running (`/data` goes away; files return
+ERR_PEER_CLOSED).
+
+## Tracks
+
+Phase 1: four agents in parallel, each in its own worktree. The protocol
+files (usb.idl changes, block, fs, file) land on main first as the
+contract; the tracks build on them.
+
+### Foundation (on main, before the tracks)
+- The IDL files above, generated, with the error mapping written down.
+- The SR_NS startup handle and the namespace helpers' declarations in
+  os.h (empty implementations so everything builds).
+- The stick layout in tools/mkimage.py (both partitions; a small
+  JAMOS-DATA in the QEMU image, formatted by mformat, so every track can
+  test against a real FAT volume from day one).
+
+### Track A: bulk transfers + usb-storage (agent 1)
+- usb-bus: bulk endpoints in the endpoint-context fill (config.c), bulk
+  transfer rings and completion (a new file beside intr.c), STALL and
+  Clear Feature(ENDPOINT_HALT) recovery, the `open_bulk` / `bulk_in` /
+  `bulk_out` methods with the pinned shared buffer.
+- The usb-storage driver: GET MAX LUN, CBW/CSW with tag checks, INQUIRY,
+  TEST UNIT READY (with retries while the stick spins up), READ
+  CAPACITY(10), READ(10), WRITE(10), REQUEST SENSE, SYNCHRONIZE CACHE; BOT
+  reset recovery (Bulk-Only Mass Storage Reset, clear both halts); GPT
+  (and MBR) parsing; the `block` protocol per partition, with the range
+  check.
+- QEMU: the boot stick itself (usb-storage), a second usb-storage disk
+  behind the usb-hub, unplug mid-read, a STALL on an unknown command.
+
+### Track B: FatFs + the fat service (agent 2)
+- Vendor FatFs; the diskio glue over `block`; the `fs` and `file`
+  protocols; FRESULT -> ERR_* mapping; f_mkfs on an unformatted
+  JAMOS-DATA.
+- Built and tested against a **RAM-disk block server** in utest (a mock
+  usb-storage), so it doesn't wait for Track A: format, create, write,
+  read back, long names with spaces and lowercase (the 2025 attempt's
+  failures as tests: `touch "My Notes.txt"`, `notes.txt` stays lowercase,
+  `holiday-photos.txt` and `holiday-plans.txt` get distinct aliases,
+  forbidden characters refused), a full disk, a dirty volume.
+
+### Track C: the namespace, spawn from a file, the shell (agent 3)
+- libos: SR_NS, path resolution to a mount, the file calls; spawn from a
+  VMO (spawn.c loads from any VMO range; bootfs becomes one caller).
+- A bootfs server (the image served read-only through `fs`) so `/boot` is
+  a mount like any other; init builds the namespace and passes it on.
+- The shell: sh_vfs.c on the namespace; `ls`, `cat`, `cd`, `find` work on
+  every mount; new commands `mkdir`, `rm`, `mv`, `cp`, `touch`, `write`
+  (text from the command line into a file), `df`, `sync`; `run` takes a
+  path.
+- Tested against the bootfs server and Track B's RAM-disk fat.
+
+### Track D: logd, reboot sync, debug_command (agent 4, smaller)
+- logd: the boot log files as above.
+- init: sync `/data` on `reboot` / Ctrl+Alt+Del (bounded).
+- `debug_command`'s `kill <name>` moves to init's control channel; the
+  kernel keeps only the test entry points (ktest, bench, stress, crash,
+  panic).
+- Tested with the RAM-disk fat until Track A lands.
+
+### Phase 2: join, then the PC
+- devmgr's match table (08/06/50 -> usb-storage), partitions -> fat for
+  JAMOS-DATA -> init mounts `/data`. End to end in QEMU: boot, `ls /data`,
+  write a file, reboot, read it back; a boot log per boot.
+- The pulled-plug test in QEMU: kill QEMU while logd writes; the next boot
+  still boots and mounts `/data` (dirty volume logged).
+- Independent review of the whole milestone (not by the track agents).
+- PC rounds: **read-only first** (the partition list and `ls /data` on a
+  stick flashed with the new layout), then writes, then the boot logs,
+  then the pulled-plug test on the real stick.
+
+## Done when
+- QEMU at 4 and 8 CPUs: all ktests; init + utest (with the RAM-disk fat
+  tests); the end-to-end storage test; unplug mid-read; the pulled-plug
+  test; stress; the shell scripts.
+- The real PC: `ls /boot` and `ls /data` from the shell; `write` then
+  `cat` a file in `/data`; a boot log per boot on the stick, read on the
+  Mac; pulling the stick mid-write and replugging leaves it bootable;
+  All tests, the 2-minute stress, and the 10-minute sign-off.
+
+## Open questions for the owner (before the agents start)
+1. Flashing the new layout erases the stick once. You run `make usb`
+   yourself when the build is ready; is any file on the stick worth
+   keeping first?
+2. The data partition takes the rest of the 2 GB stick. Fine, or do you
+   want a fixed size?
+3. Should `/boot` in the shell keep showing the bootfs image (the programs
+   and drivers), or the ESP's files (the kernel, limine.conf)? The plan
+   says bootfs, since that's what programs run from.
+
+## Rules for the agents
+- Work only in your worktree and your track's files; the foundation's IDL
+  files and headers are the contract. If one must change, say so in the
+  report instead of changing another track's side.
+- Follow [CODING-GUIDE.md](../CODING-GUIDE.md): bounded waits, handles
+  with the narrowest rights, a test for every fix, no GPL code (FatFs is
+  BSD-style; Linux's usb-storage may be read for facts, never copied).
+- Every commit leaves the tree building with the existing tests passing at
+  4 and 8 CPUs. `make check` passes (docs and include order too).
+- **Do not spawn subagents or other agents.** No `Co-Authored-By` trailer.
+  Don't push, don't touch main, **never write to a USB disk**.
+- Anything only the real PC can show goes in the report with what the PC
+  run should print.
