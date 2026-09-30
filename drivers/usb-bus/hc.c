@@ -583,8 +583,10 @@ static void check_status(struct hc *h, uint32_t sts)
 static void irq(struct hc *h)
 {
     h->irqs++;
-    /* Re-arm first: a fire from here on is a new packet. */
-    drv_interrupt_ack(h->irq);
+    /* Re-arm first: a fire from here on is a new packet. (Ignored: an ack
+     * that fails leaves the interrupt masked, and the event ring is polled
+     * at least every 50 ms anyway.) */
+    (void)drv_interrupt_ack(h->irq);
     ir_wr(h, IR_IMAN, IMAN_IE | IMAN_IP);
     uint32_t sts = op_rd(h, OP_USBSTS);
     op_wr(h, OP_USBSTS, sts & (STS_EINT | STS_PCD));
@@ -731,7 +733,7 @@ int hc_bring_up(struct hc *x)
     st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK)
         return FAIL(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));
-    drv_interrupt_ack(x->irq);
+    (void)drv_interrupt_ack(x->irq);   /* as in irq(): polling covers a failure */
     if ((r = run(x)))
         return r;
     power_ports(x);
@@ -751,28 +753,30 @@ int hc_shutdown(struct hc *x)
     return r ? r : reset(x, "final reset");
 }
 
+/* The unpins and unmaps here are not checked: the process exits next,
+ * and a pin still held then is quarantined when the dma_cap closes. */
 void hc_release(struct hc *x, bool quiet)
 {
     if (x->pool_pinned && quiet)
-        drv_vmo_unpin(x->pool_vmo, x->dma, x->pool_pin);
+        (void)drv_vmo_unpin(x->pool_vmo, x->dma, x->pool_pin);
     if (x->pool)
-        drv_vmo_unmap(x->pool, (uint64_t)POOL_PAGES * PAGE);
+        (void)drv_vmo_unmap(x->pool, (uint64_t)POOL_PAGES * PAGE);
     if (x->pool_vmo != HANDLE_INVALID)
         drv_handle_close(x->pool_vmo);
     if (x->pool_addr)
         drv_free(x->pool_addr);
     if (x->ctx_pinned && quiet)
-        drv_vmo_unpin(x->ctx_vmo, x->dma, x->ctx_pin);
+        (void)drv_vmo_unpin(x->ctx_vmo, x->dma, x->ctx_pin);
     if (x->sp_pinned && quiet)
-        drv_vmo_unpin(x->sp_vmo, x->dma, x->sp_pin);
+        (void)drv_vmo_unpin(x->sp_vmo, x->dma, x->sp_pin);
     if (x->ctx)
-        drv_vmo_unmap(x->ctx, (uint64_t)x->ctx_pages * PAGE);
+        (void)drv_vmo_unmap(x->ctx, (uint64_t)x->ctx_pages * PAGE);
     if (x->ctx_vmo != HANDLE_INVALID)
         drv_handle_close(x->ctx_vmo);
     if (x->sp_vmo != HANDLE_INVALID)
         drv_handle_close(x->sp_vmo);
     for (unsigned i = 0; i < x->nmap; i++)
-        drv_vmo_unmap((void *)x->map[i].va, PAGE);
+        (void)drv_vmo_unmap((void *)x->map[i].va, PAGE);
     x->nmap = 0;
 }
 

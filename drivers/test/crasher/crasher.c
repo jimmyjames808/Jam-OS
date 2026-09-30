@@ -86,7 +86,7 @@ int driver_main(const struct driver_start *s)
         switch (q.ordinal) {
         case CRASHER_PING: {
             struct ping_rep r = { q.txid, OK, started };
-            drv_channel_write(ch, &r, sizeof(r), NULL, 0);
+            (void)drv_channel_write(ch, &r, sizeof(r), NULL, 0);   /* a gone client: no reply */
             break;
         }
         case CRASHER_CRASH:
@@ -98,7 +98,7 @@ int driver_main(const struct driver_start *s)
             return n >= 12 ? (int)q.arg : 0;
         default: {
             struct { uint32_t txid; int32_t status; } r = { q.txid, ERR_NOT_SUPPORTED };
-            drv_channel_write(ch, &r, sizeof(r), NULL, 0);
+            (void)drv_channel_write(ch, &r, sizeof(r), NULL, 0);   /* as for PING */
             break;
         }
         }

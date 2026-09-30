@@ -321,7 +321,7 @@ static void reply_waiter(int i)
     r.problems = np;
     r.generation = g_generation;
     r.settled = settled();
-    drv_channel_write(g_hc.serve, &r, sizeof(r), NULL, 0);
+    (void)drv_channel_write(g_hc.serve, &r, sizeof(r), NULL, 0);   /* devmgr gone: no one waits */
     waiters[i].used = false;
 }
 
@@ -336,7 +336,7 @@ static void serve_bus(struct hc *h)
         uint32_t n = 0, nh = 0;
         status_t st = drv_channel_read(h->serve, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
         if (st == ERR_BUFFER_TOO_SMALL) {
-            idl_drain(h->serve, n, nh);
+            (void)idl_drain(h->serve, n, nh);   /* the next read says what is left */
             continue;
         }
         if (st == ERR_PEER_CLOSED) {
