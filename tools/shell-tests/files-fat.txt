@@ -9,9 +9,11 @@
 wait 120 Jam OS shell
 wait jam>
 send run utest fat-shell
-wait run: bin/utest started
-wait Jam OS shell
-wait jam>
+# (the outer shell's "started" line, the second shell's banner and fat's
+# lines in the kernel log have no fixed order on the serial port: `seen`)
+seen 60 run: bin/utest started
+seen 60 fat utest: mounted
+sleep 1
 send T=f
 wait jam>
 send df | grep /data | grep -c JAMOS-DATA | grep ^1$ && echo ok-$T-df

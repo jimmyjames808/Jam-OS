@@ -96,6 +96,42 @@ stat calls on its own names, not by walking the directory. `rm -r` stops
 at the first entry it cannot remove. Nothing assumes /data holds only
 Jam OS's files.
 
+### Found later (the PC's runs, and while fixing)
+
+| # | Sev | Where | What |
+|---|---|---|---|
+| 23 | Medium | `user/services/fat/main.c` (format) | The boot sector held back during a format was written even when f_mkfs had failed: after a write error the disk recovered from, a boot sector over unfinished FATs. |
+| 24 | Medium | `kernel/arch/x86_64/pcid.c` (pcid_test_decide), `kernel/test/test_pcid.c:24` | A second `ktest` from the shell in one boot panics: the test's fake CPUs keep their slots from the first run. Seen on the PC. |
+| 25 | Medium | `user/services/logd/main.c` | The PC's log of a run that panicked stops about half a second before the panic, and a burst during `ktest` leaves "[logd: N bytes of the log were lost]". |
+| 26 | Low | `user/services/devmgr/supervise.c:106` | After a warm reboot with slow USB devices: "drv/hid left 55 units of job kind 4 ... did not end cleanly" for a hid that exited because its device was unusable. |
+| 27 | Low | `Makefile` (the IDL rules) | The first `make -j8` after a new file appears in abi/idl spins at 100% CPU and never ends; killed and run again it builds. Seen twice while adding protocols. Not looked into. |
+| 28 | Low | `tools/shell-tests/files-fat.txt:12` | The script waited for the outer shell's "run: bin/utest started" and then for the second shell's banner; the two have no fixed order, and on a fast boot the banner came first (2 failures in 5 runs). |
+
 ## Outcomes
 
-Filled in as the fixes land.
+| # | Outcome |
+|---|---|
+| 1 | Fixed in 0521f40: one FatFs file per open file, shared by every open of it. Tests: utest fat_files (check_open_files), data-1.txt. |
+| 2 | Fixed in 13ca06c (a file.sync is one block.sync; none when nothing was written; utest fat_dirty_volume counts them) and a53f19c (logd's flush before a reboot, 250 ms cadence; utest logd_writes_the_log, data-test.sh). |
+| 3 | Fixed in dbc8cc2 (fat writes the label into the boot sector and its backup; utest fat_format) and d7d4901 (tools/fat-label.py removes mformat's long-name entry; data-test.sh checks the image and the stick). Whether macOS then shows the name was not checked: it showed NO NAME for a volume its own newfs_msdos made. |
+| 4 | Fixed in 6ed72ed. Test: ktest pcid_decision_table. |
+| 5 | Fixed in 48da8e3: fat serves `fsctl.stop` to devmgr alone. Test: utest fat_files; disk_other and sticks-test.sh for devmgr's side. |
+| 6 | Fixed in 1144d96. Test: files-fat.txt. |
+| 7 | Fixed in 8b85cce. No test (the commit says why). |
+| 8 | Not fixed: bounded as it is. Design question (asynchronous bulk transfers in usb-bus; asynchronous storage calls in devmgr). |
+| 9 | Not fixed: design question (a right or a resource kind per use of the root: the log, the serial port, the process list). |
+| 10 | Fixed in 8086fae. Test: sticks-test.sh (stick a's MBR carries its partition's BPB). It also showed that mtools writes a whole-disk table entry into a volume that has no table: an entry starting at block 0 is not a table's. |
+| 11 | b6b175e: the device pattern and the signal trap. Copy-then-rename is left: reported. |
+| 12 | "Not built yet." removed (b6b175e). The two scripts' `seen` is right (above). Not done: removing `job_find_process` and its ktest, `kill` reaching PCI drivers, the mouse test at 2560x1440. |
+| 13 | No change needed. |
+| 14 | Fixed in a50f28e. Test: utest fat_files (check_shrunk_buffer), which found fat dead before. |
+| 15 | Design question: tell devmgr which disk the machine booted from (Limine reports the boot volume's MBR disk id). |
+| 16 | Left: design note. |
+| 17 | Fixed in dcdbb1a. No test. |
+| 18-22 | Not fixed: Low. |
+| 23 | Fixed in 517fe4a. No test (the commit says why). |
+| 24 | Fixed in 1b3b659. Test: ktest-all.txt runs `ktest` three times in one boot; it panicked at the second before. No other test failed its second or third run in QEMU at 4 and 8 CPUs. |
+| 25 | The tail: a53f19c (a sync every 250 ms, so a sudden stop loses at most that plus the write in flight; a panic's own text is never saved, that is the crash kernel's job). The burst: not fixed. The lines lost on the PC were in ktest console_klog_read_after_gap, which writes more than the kernel's 64 KiB ring holds at once, on purpose; no reader in user space can follow that. |
+| 26 | Not fixed. Read, not reproduced: a driver whose call to usb-bus timed out leaves its request queued there, charged to the driver's job until usb-bus reads it; devmgr checks the job the moment the driver exits. A later re-check of the job before it counts as a problem would cover it. |
+| 27 | Not fixed: reported. |
+| 28 | Fixed with the review's last commit: `seen` for both lines. The expectation was wrong, not the shell: two programs write those lines. |
