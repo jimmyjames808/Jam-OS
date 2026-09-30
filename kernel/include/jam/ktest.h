@@ -67,6 +67,10 @@ extern const char *ktest_current;
 extern bool ktest_live;
 extern unsigned ktest_relaxed;          /* global checks not made, this test */
 extern const char *ktest_skip_reason;   /* set by KT_SKIP_LIVE */
+extern const char *ktest_own_leak_check; /* set by KT_OWN_LEAK_CHECK */
+/* Free plus stack-cached pages once they stop changing (settled; at most
+ * about 1 s): what the leak check compares. */
+uint64_t ktest_accounted_pages(void);
 
 #define KT_GLOBAL_EQ(a, b)                                                       \
     do {                                                                         \
@@ -86,6 +90,16 @@ extern const char *ktest_skip_reason;   /* set by KT_SKIP_LIVE */
         else if (!_gc)                                                           \
             panic("ktest %s: %s failed (%s:%d)", ktest_current, #cond, __FILE__, \
                   __LINE__);                                                     \
+    } while (0)
+
+/* KT_OWN_LEAK_CHECK("why"): the harness's per-test page check is replaced
+ * by the test's own. For a test whose first run legitimately grows caches
+ * to a high-water mark (one stress run touches every CPU's caches): the
+ * test measures a later, identical round instead, which must give every
+ * page back. The harness logs the reason and the unchecked difference. */
+#define KT_OWN_LEAK_CHECK(why)                                                   \
+    do {                                                                         \
+        ktest_own_leak_check = (why);                                            \
     } while (0)
 
 #define KT_SKIP_LIVE(why)                                                        \

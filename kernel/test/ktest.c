@@ -24,6 +24,7 @@ const char *ktest_current = "?";
 bool ktest_live;
 unsigned ktest_relaxed;
 const char *ktest_skip_reason;
+const char *ktest_own_leak_check;
 
 /* A test may leave a slab partially filled (a page held until the last
  * object on that slab is freed), so allow a small slack before calling it a
@@ -87,7 +88,7 @@ static uint64_t accounted_pages(void)
  * on a machine with many CPUs, work the test started elsewhere (a thread or
  * process reaped on another CPU's next switch) can finish after settle()'s
  * 8 ms. A real leak never comes back, so waiting for it can't hide one. */
-static uint64_t accounted_pages_stable(void)
+uint64_t ktest_accounted_pages(void)
 {
     uint64_t total;
     uint64_t prev = accounted_pages();
@@ -117,6 +118,7 @@ int ktest_run(const char *prefix)
         ktest_current = t->name;
         ktest_relaxed = 0;
         ktest_skip_reason = NULL;
+        ktest_own_leak_check = NULL;
         /* Account pages held by the reusable thread stack cache alongside free
          * pages: a stack just moves between the two, so free + cached is
          * conserved unless a test allocates a fresh stack (charged once) or
@@ -134,8 +136,13 @@ int ktest_run(const char *prefix)
         uint64_t accounted_after = accounted_pages();
         long leaked = (long)(accounted_before - accounted_after);
         if (leaked > LEAK_SLACK_PAGES) {
-            accounted_after = accounted_pages_stable();
+            accounted_after = ktest_accounted_pages();
             leaked = (long)(accounted_before - accounted_after);
+        }
+        if (ktest_own_leak_check) {
+            kprintf("ktest: %s: harness page check replaced by the test's own (%s); "
+                    "%ld page(s) kept\n", t->name, ktest_own_leak_check, leaked);
+            leaked = 0;
         }
         if (leaked > LEAK_SLACK_PAGES) {
             if (!ktest_live)

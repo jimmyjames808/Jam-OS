@@ -4,7 +4,10 @@
  *   stress_failure_does_not_stick
  *       A run that fails (here a faked stale TLB shootdown read) is
  *       FAILED, and the next run, with nothing wrong, is PASSED: each run
- *       starts from zero failures. */
+ *       starts from zero failures. A third, identical run then gives back
+ *       every page it took: on a 28-CPU machine the first run grows
+ *       per-CPU caches to a high-water mark (4 pages on the PC), which
+ *       the harness's before/after check would count as a leak. */
 #include <jam/dbghook.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -26,4 +29,14 @@ KTEST(stress_failure_does_not_stick)
     __atomic_store_n(&dbg_hooks[DBG_STRESS_SHOOTDOWN], NULL, __ATOMIC_RELEASE);
     KT_ASSERT(!first);
     KT_ASSERT(stress_run(1));
+
+    KT_OWN_LEAK_CHECK("stress's first run grows per-CPU caches");
+    uint64_t before = ktest_accounted_pages();
+    KT_ASSERT(stress_run(1));
+    uint64_t after = ktest_accounted_pages();
+    kprintf("ktest %s: a third stress run: accounted %lu -> %lu pages\n", ktest_current,
+            before, after);
+    if (after + 2 < before)   /* the harness's slack: a partly used slab */
+        panic("ktest %s: a third stress run leaked %lu pages (accounted %lu -> %lu)",
+              ktest_current, before - after, before, after);
 }
