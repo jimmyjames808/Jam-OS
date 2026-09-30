@@ -158,6 +158,14 @@ switch; the others stay as booted (all on), so an "off" half is M5 for that
 feature only (e.g. the channel_call P->P2 "spinidle off" half already has
 the placement fix). Compare each on half with its off half.
 
+Since 2026-10-01 (after this run) `placeorder` also covers work stealing:
+an idle CPU that is only half a core, or an E-core, sends a stolen thread
+on to a whole idle core if one is free (ARCHITECTURE.md, Scheduler), and a
+CPU taking its next thread no longer reads as idle to placement for a
+moment. The placement line should stay at 0 share; the stats line after
+the run counts the steals sent on. QEMU (16 vCPUs, threads=2): the line is
+"off 7 share, on 0" before and after.
+
 Investigations:
 - (b) Pinned cross-CPU channel_call +8-11% in M5: the M5 wake-affine code
   (select_cpu_affine) found the waker's HT sibling by scanning every CPU's
