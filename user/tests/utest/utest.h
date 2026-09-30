@@ -2,7 +2,7 @@
  * rights, the table of tests; threads.c; drivers.c: drivers as processes
  * and devmgr's edu driver; supervise.c: devmgr's supervision and what a
  * driver's handles can't do; hid.c: the hid driver against hidmock.c;
- * disks.c: devmgr's disks and mounts against diskmock.c), the
+ * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -33,6 +33,12 @@ bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
 bool t_disk_fs_restart(void);
 bool t_disk_vanishes(void);
+
+/* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
+bool t_logd_writes_the_log(void);
+bool t_logd_without_data(void);
+bool t_logd_data_goes_away(void);
+bool t_logd_kernel_log(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
