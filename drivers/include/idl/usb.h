@@ -393,8 +393,10 @@ static inline status_t usb_set_interface(handle_t ch, uint8_t alt_setting)
  * without bit 7; each one of this interface's bulk endpoints). usb-bus makes
  * a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
  * hands the class driver a VMO of it to map: transfers move data in and out
- * of this buffer, never through messages. Once per interface: a second call
- * is ERR_BAD_STATE until the channel is closed. */
+ * of this buffer, never through messages. One pair per interface: a second
+ * call on the SAME channel replaces the pair (a restarted class driver gets
+ * a duplicate of the old channel, which never closes); on another channel
+ * it is ERR_BAD_STATE. */
 static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
 {
     struct usb_open_bulk_req idl_q;
