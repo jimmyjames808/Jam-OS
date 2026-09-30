@@ -338,47 +338,57 @@ static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct t
     tlb_gather_page(g, virt_to_page(t));
 }
 
+/* What walk_leaves does to each page table: `fn` edits the leaves in
+ * [va, stop) of one page table; with `detach` (region lock held), tables
+ * left empty are unlinked onto g. */
+struct leaf_walk {
+    void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms);
+    unsigned           perms;    /* passed to fn */
+    bool               detach;   /* unlink the tables left empty */
+    struct tlb_gather *g;        /* gets the unlinked tables, then the range */
+};
+
+/* pt_lock held: apply w to the page table covering va (up to end), if there
+ * is one. Returns where the next page table's range starts. */
+static uint64_t walk_one(struct aspace *as, uint64_t va, uint64_t end,
+                         const struct leaf_walk *w)
+{
+    uint64_t *e4 = &as->pml4v[ix(va, 4)];
+    if (!(*e4 & PTE_P))
+        return ALIGN_UP(va + 1, SIZE_512G);
+    uint64_t *pdpt = tbl(*e4), *e3 = &pdpt[ix(va, 3)];
+    if (!(*e3 & PTE_P))
+        return ALIGN_UP(va + 1, SIZE_1G);
+    uint64_t *pd = tbl(*e3), *e2 = &pd[ix(va, 2)];
+    uint64_t next = ALIGN_UP(va + 1, SIZE_2M);
+    if (!(*e2 & PTE_P))
+        return next;
+    uint64_t *pt = tbl(*e2);
+    w->fn(pt, va, next < end ? next : end, w->perms);
+    if (!w->detach || !table_empty(pt))
+        return next;
+    table_drop(as, e2, pt, w->g);
+    if (!table_empty(pd))
+        return next;
+    table_drop(as, e3, pd, w->g);
+    if (table_empty(pdpt))
+        table_drop(as, e4, pdpt, w->g);
+    return next;
+}
+
 /* Walk [va, end) one page table (2 MiB) at a time under pt_lock, skipping
- * missing tables. `fn` edits the leaves in [va, stop) of one page table.
- * With `detach` (region lock held), tables left empty are unlinked onto g.
- * Then g gets the range and as's active CPUs. */
-static void walk_leaves(struct aspace *as, uint64_t va, uint64_t end, bool detach,
-                        struct tlb_gather *g,
-                        void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms),
-                        unsigned perms)
+ * missing tables (see struct leaf_walk). Then w->g gets the range and as's
+ * active CPUs. */
+static void walk_leaves(struct aspace *as, uint64_t va, uint64_t end, const struct leaf_walk *w)
 {
     uint64_t start = va;
     while (va < end) {
         uint64_t f = spin_lock_irqsave(&as->pt_lock);
-        uint64_t next;
-        uint64_t *e4 = &as->pml4v[ix(va, 4)];
-        if (!(*e4 & PTE_P)) {
-            next = ALIGN_UP(va + 1, SIZE_512G);
-        } else {
-            uint64_t *pdpt = tbl(*e4), *e3 = &pdpt[ix(va, 3)];
-            if (!(*e3 & PTE_P)) {
-                next = ALIGN_UP(va + 1, SIZE_1G);
-            } else {
-                uint64_t *pd = tbl(*e3), *e2 = &pd[ix(va, 2)];
-                next = ALIGN_UP(va + 1, SIZE_2M);
-                if (*e2 & PTE_P) {
-                    uint64_t *pt = tbl(*e2);
-                    fn(pt, va, next < end ? next : end, perms);
-                    if (detach && table_empty(pt)) {
-                        table_drop(as, e2, pt, g);
-                        if (table_empty(pd)) {
-                            table_drop(as, e3, pd, g);
-                            if (table_empty(pdpt))
-                                table_drop(as, e4, pdpt, g);
-                        }
-                    }
-                }
-            }
-        }
+        uint64_t next = walk_one(as, va, end, w);
         spin_unlock_irqrestore(&as->pt_lock, f);
         va = next;
     }
-    gather_note(g, as, start, end);
+    gather_note(w->g, as, start, end);
 }
 
 static void leaves_clear(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
@@ -400,7 +410,8 @@ static void leaves_protect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned pe
 
 static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struct tlb_gather *g)
 {
-    walk_leaves(as, va, end, detach, g, leaves_clear, 0);
+    const struct leaf_walk w = { leaves_clear, 0, detach, g };
+    walk_leaves(as, va, end, &w);
 }
 
 void aspace_zap_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g)
@@ -421,6 +432,27 @@ void aspace_set_pte_locked(struct aspace *as, uint64_t va, uint64_t pa, unsigned
     spin_unlock_irqrestore(&as->pt_lock, f);
 }
 
+/* Free the page tables a PDPT points to (not the PDPT itself); returns how
+ * many pages that was. */
+static uint64_t free_under_pdpt(const uint64_t *pdpt)
+{
+    uint64_t freed = 0;
+    for (unsigned j = 0; j < 512; j++) {
+        if (!(pdpt[j] & PTE_P))
+            continue;
+        const uint64_t *pd = tbl(pdpt[j]);
+        for (unsigned k = 0; k < 512; k++) {
+            if (pd[k] & PTE_P) {
+                pmm_free_page_phys(pd[k] & PTE_ADDR);
+                freed++;
+            }
+        }
+        pmm_free_page_phys(pdpt[j] & PTE_ADDR);
+        freed++;
+    }
+    return freed;
+}
+
 /* Last reference: free every user table. Nothing else can reach them. */
 static uint64_t free_tables(struct aspace *as)
 {
@@ -429,20 +461,7 @@ static uint64_t free_tables(struct aspace *as)
         uint64_t e4 = as->pml4v[i];
         if (!(e4 & PTE_P))
             continue;
-        uint64_t *pdpt = tbl(e4);
-        for (unsigned j = 0; j < 512; j++) {
-            if (!(pdpt[j] & PTE_P))
-                continue;
-            uint64_t *pd = tbl(pdpt[j]);
-            for (unsigned k = 0; k < 512; k++) {
-                if (pd[k] & PTE_P) {
-                    pmm_free_page_phys(pd[k] & PTE_ADDR);
-                    freed++;
-                }
-            }
-            pmm_free_page_phys(pdpt[j] & PTE_ADDR);
-            freed++;
-        }
+        freed += free_under_pdpt(tbl(e4));
         pmm_free_page_phys(e4 & PTE_ADDR);
         freed++;
         as->pml4v[i] = 0;
@@ -809,10 +828,12 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     tlb_gather_init(&g);
     for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
         m->flags = flags;
-        if (flags & ASPACE_READ)
-            walk_leaves(as, m->base, mend(m), false, &g, leaves_protect, flags);
-        else
+        if (flags & ASPACE_READ) {
+            const struct leaf_walk w = { leaves_protect, flags, false, &g };
+            walk_leaves(as, m->base, mend(m), &w);
+        } else {
             zap(as, m->base, mend(m), true, &g);   /* no access: x86 can't say "present" */
+        }
     }
     tlb_gather_finish(&g);
     mutex_unlock(&as->lock);
