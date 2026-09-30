@@ -30,7 +30,7 @@ built yet, it says so.
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
-| Ported code | Limine; uACPI and lwIP when power management and networking land |
+| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service); uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows |
 | IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
@@ -65,12 +65,15 @@ Every driver and service is a userspace process from the start.
 
 ```
  Userland: init · shell · apps                                 ring 3
- libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader)
+ libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader,
+   the file namespace)
  ─────────────────────────────────────────────────────────────
- Services (processes): devmgr · console · serialin
-   later: fat32 · netstack (lwIP) · power · audio mixer
- Drivers (processes): usb-bus (xHCI + hubs) → hid
-   later: USB mass storage · NIC · HD Audio
+ Services (processes): devmgr · console · serialin · bootfs ·
+   fat (one per volume) · logd
+   later: netstack (lwIP) · power · audio mixer
+ Drivers (processes): usb-bus (xHCI + hubs) → hid, usb-storage
+   hda (HD Audio)
+   later: NIC
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
    scheduler · VMOs & address spaces · PCI core · IRQ routing
@@ -309,8 +312,11 @@ Every driver and service is a userspace process from the start.
   can start processes and child jobs in it but can't lift the limits its
   parent set (init gets the root job the same way). **Kill**: `job_kill`
   kills every process in the job and all jobs below it (orphans too),
-  returns once they are all dead, and the killed jobs take no new
-  processes or jobs; init uses it when a program times out, userboot when
+  returns once each has been taken off its job's list, and the killed jobs
+  take no new processes or jobs. That happens in the teardown just before
+  the process drops its address space, so the address space's pages can
+  still be on their way back for a moment after `job_kill` returns (a test
+  that checks the job is empty waits for them, bounded); init uses it when a program times out, userboot when
   init does. Each job lists its child jobs and live processes under its
   object lock for this. Any allocation a syscall can reach returns an
   error instead of panicking (thread structs and stacks, handle tables,
@@ -340,8 +346,13 @@ Every driver and service is a userspace process from the start.
 - **Protocols** are written in a small IDL (`abi/idl/*.idl`), turned into C
   structs, client stubs and server dispatch by `tools/genidl.py`
   (`drivers/include/idl/`). Today: `null` and `edu` (tests), `usbbus` and
-  `usb` (usb-bus to devmgr and to class drivers), `input` and `console`.
-  Planned: `block`, `fs`, `netdev`, `socket`, `power`, `audio`. Bulk data
+  `usb` (usb-bus to devmgr and to class drivers), `input` and `console`,
+  `storage` and `block` (usb-storage to devmgr and to a filesystem),
+  `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
+  filesystem), `initctl` and `logctl` (init's and logd's control
+  channels), `hda` (the HD Audio driver). devmgr's own protocol is still
+  written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,
+  `power`, `audio`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
@@ -431,14 +442,16 @@ Every driver and service is a userspace process from the start.
 
 | Component | Uses | Provides | Built |
 |---|---|---|---|
-| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; the boot disk's filesystem services and their mounts | yes |
+| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard and mouse, keyboard layout) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
+| usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
+| fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
+| bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
-| USB mass storage (BOT, later UAS) | `usb` | `block` | no |
-| fat32 | `block` | `fs` (FAT32 + LFN, read/write) | no |
+| hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | in progress |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
 | netstack | lwIP + `netdev` | `socket` | no |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
@@ -479,6 +492,11 @@ Rules for userspace drivers:
   serve, and calls on it wait for the new driver. Drivers keep no state
   across a restart; each protocol's IDL says what a client must set up
   again (`input` and `console` define theirs).
+- **Kill**: the shell's `kill <name>` asks init (`initctl.kill`), which
+  kills its own services itself and asks devmgr to kill what devmgr runs:
+  a USB class driver, a filesystem service or a PCI driver (usb-bus, hda),
+  found by name through devmgr's bindings. Whoever supervises it starts it
+  again. The shell refuses to kill init.
 - **Authority**: devmgr has two channels, a query channel (look things up)
   and a control channel (change bindings); console clients have a level
   (ADMIN, SHELL, PROGRAM), and a program started from the shell gets a
@@ -508,7 +526,11 @@ Not built yet; these rules bind every future path that can transmit.
 - **libos** (`user/lib/`): startup, syscall wrappers, malloc, printf,
   channel/port helpers, `spawn()`, threads, the ELF loader, the file
   namespace and its file calls, and the implementation of
-  `<jam/driver.h>`. **libfun** (`user/apps/fun/`): the
+  `<jam/driver.h>`. malloc (`user/lib/heap.c`) serves blocks from one VMO
+  mapped on first use: freed blocks go on a free list kept in address
+  order and merge with free neighbours (or go back to the end of the
+  heap), and an allocation takes the lowest block that fits, so a
+  long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
   apps' screen, drawing, keys and thread pool.
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
   starts init from bootfs under a root job, waits for it and reports its
@@ -535,11 +557,13 @@ Not built yet; these rules bind every future path that can transmit.
   to what it starts; the shell and logd are sent every later change (a
   mount gone, or back with a new service), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
-  `kill <name>` and `reboot`, which syncs `/data` first (2 s at most); the
-  shell holds one end, the console another that answers only `reboot`
-  (Ctrl+Alt+Del).
+  `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,
+  `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr) and `reboot`,
+  which syncs `/data` and every `/usbN` first (2 s at most) and has logd
+  write out the log's last lines before the reset; the shell holds one
+  end, the console another that answers only `reboot` (Ctrl+Alt+Del).
 - **Namespace**: each process has a table of mount point → `fs` channel
-  (`/boot`, `/data`, `/esp`), given by whoever started it (startup role
+  (`/boot`, `/esp`, `/data`, `/usbN`), given by whoever started it (startup role
   NS: a channel on which the starter sends the mounts, and later ones to
   a program that is already running). A program reads that channel only
   when it next looks up a path, and some never do again (logd), so a
@@ -547,13 +571,18 @@ Not built yet; these rules bind every future path that can transmit.
   duplicate of the program's end and sends each change as the whole
   namespace (`NS_SET`) after taking back the one not read yet
   (`ns_update`): the program's end holds at most one message however
-  often the mounts change, and its next lookup sees the latest
+  often the mounts change, and its next lookup sees the latest. `NS_SET`
+  replaces only what the starter gave; mounts the program made itself
+  (`ns_mount`) stay unless the set has one of the same path
   (`user/include/os.h`, "files", has the protocol). libos finds a path's mount and calls
   that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
   through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
   bootfs image served by a process (`user/services/bootfs/`). No global
   kernel VFS: a program reaches only the mounts it was given, which is the
-  only permission system for files. Not built yet: services as paths
+  only permission system for files. Today init gives the shell every
+  mount and the shell passes all of them on to what it runs, so every
+  program can write `/data`; a narrower namespace is possible, nothing
+  uses one yet. Not built yet: services as paths
   (`/svc/net`, `/dev/console`) and a POSIX `open()` on top.
 - **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
   editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
@@ -570,9 +599,14 @@ Not built yet; these rules bind every future path that can transmit.
   are shell commands too (`ktest`, `stress 600`), so a test run needs no
   reboot; rebooting is only for loading a new kernel from the stick.
 - **Executables**: static ELF64 at 0x400000; no `fork`. `spawn()` loads a
-  program from a range of a VMO; code is mapped executable only from a VMO
-  handle with `RIGHT_EXEC`, which only the bootfs image's has, so a program
-  outside `/boot` can't run yet.
+  program from the bootfs image, from a range of any VMO, or from a file
+  read through the namespace into a VMO; code is mapped executable only
+  from a VMO handle with `RIGHT_EXEC`, which only the bootfs image's has,
+  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`). Running
+  programs from `/data` is a policy decision still to be made (anything
+  written to the stick could then run); user-space pagers
+  ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
+  clean way.
 
 ## Graphics
 
@@ -616,7 +650,11 @@ writing samples through a shared VMO ring.
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
   bootfs), which Jam OS never writes, and a **data partition** mounted at
   `/data` for everything writable. A bug in the FAT32 writer can't make the
-  stick unbootable.
+  stick unbootable. Only the Mac writes the ESP: `make usb` lays out a new
+  stick (the data partition grown to the end of it and left blank for
+  Jam OS to format), `make flash` copies a new kernel, boot image and boot
+  menu onto the ESP of one that has the layout
+  ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)).
 - Write ordering: file data, then both FATs, then the directory entry.
 - The FAT "clean shutdown" bit is cleared on the stick before the first
   sector written after a sync, and set again once everything is flushed (a
@@ -639,7 +677,10 @@ writing samples through a shared VMO ring.
 - devmgr is the only client of a disk's `storage` channel. The disk Jam OS
   booted from is the one with partition 1 of type 0xEF holding
   boot/jamos.elf (it looks through a read-only fat service) and partition
-  2 of type 0x0C: they are `/esp` and `/data`. Each mount is a fat service
+  2 of type 0x0C: they are `/esp` and `/data`. It is the first such disk
+  found, not necessarily the one the machine booted from: with two Jam OS
+  sticks plugged in, the order they enumerate in decides (not settled yet;
+  Limine could say which volume it booted from). Each mount is a fat service
   holding one partition's `block` channel, supervised like a driver; init
   gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
   `user/include/devmgr.h`), with a generation that moves whenever a mount
@@ -680,8 +721,9 @@ writing samples through a shared VMO ring.
 ## Debugging
 
 - Framebuffer klog from the first instruction, 64 KiB ring buffer, readable
-  from user space through a klog reader handle (the console follows it).
-  COM1 too when present.
+  from user space through a klog reader handle (the console follows it,
+  and logd saves it to `/data/logs/`, [Storage](#storage)). COM1 too when
+  present.
 - Panic screen: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, and the log tail. Symbols come from a
