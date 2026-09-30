@@ -213,6 +213,21 @@ If the probe fails on the PC, the lines to bring back are the same; a
 failed reset or a codec that doesn't answer says so in them, and the
 RESULTS line says `start failed` with the reason.
 
+Known ways it could fail there, and what the lines would show:
+- **No codec in STATESTS** (`codecs 0x0000`): newer Intel PCH controllers
+  have dynamic clock gating and power gating controls in their vendor PCI
+  registers that some drivers turn off around the link reset. The probe
+  logs PCI config 0x40-0x4f (the `pci config 40-4f` line) so stage 1 can
+  check them against Intel's PCH datasheet before writing anything there.
+- **The rings don't answer** but the immediate interface does: the
+  controller line says `commands through the immediate interface`; stage 1
+  then looks at the CORB/RIRB setup (sizes, RINTCNT) before building on
+  it, since jack detection needs the RIRB.
+- **A verb times out** now and then: the last line counts them. A late
+  answer could be taken for the next verb's (the RIRB is read in order and
+  only the codec address is checked); stage 1 drains the RIRB after a
+  timeout if the count is not 0.
+
 ## Done when
 
 `beep` in the shell plays a tone in the front-panel headphones on the
