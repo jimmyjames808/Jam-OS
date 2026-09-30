@@ -31,6 +31,7 @@ bool t_hid_unplug_and_console_gone(void);
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
+bool t_disk_other(void);
 bool t_disk_fs_restart(void);
 bool t_disk_vanishes(void);
 
@@ -118,5 +119,6 @@ bool t_fat_names(void);
 bool t_fat_full_disk(void);
 bool t_fat_read_only(void);
 bool t_fat_not_formatted(void);
+bool t_fat_format_off(void);
 bool t_fat_dirty_volume(void);
 bool t_fat_disk_gone(void);

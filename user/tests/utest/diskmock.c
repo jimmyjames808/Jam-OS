@@ -186,6 +186,8 @@ static status_t s_open_partition(void *ctx, uint8_t index, uint8_t read_only, ha
     }
     m->blk[slot] = (struct dm_block){ .m = m, .ch = ours, .part = index, .ro = read_only != 0 };
     bump(&m->opened[index]);
+    if (!read_only)
+        bump(&m->opened_rw);
     return OK;
 }
 

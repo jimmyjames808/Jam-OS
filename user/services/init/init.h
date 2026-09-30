@@ -13,6 +13,8 @@
 
 #define BOOT_MOUNT "/boot"
 #define DATA_MOUNT "/data"
+#define USB_MOUNT  "/usb"    /* another stick's mounts: /usb0, /usb1, ... */
+#define USB_MOUNTS 8         /* ... the N that are tried */
 #define BOOTFS_PATH "bin/bootfs"   /* the bootfs server, in bootfs */
 
 /* One line into the kernel's RESULTS box (and the log). */

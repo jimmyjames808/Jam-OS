@@ -129,7 +129,7 @@ handle_t sh_root(void);
 handle_t sh_pci(void);          /* RES_PCI, for pci_enum (`devices`), or 0 */
 handle_t sh_devmgr(void);       /* devmgr's query channel (the newest), or 0 */
 handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
-/* init's control channel (abi/idl/initctl.idl: kill, sync, reboot), or 0
+/* init's control channel (abi/idl/initctl.idl: kill, sync, reboot, mount), or 0
  * (a shell that init didn't start has none). */
 handle_t sh_initctl(void);
 
@@ -264,7 +264,7 @@ SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD
 SH_CMD(sysmon);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
-SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync);
+SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);
 SH_CMD(cat); SH_CMD(hexdump); SH_CMD(wc);
 SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq);
 /* shell */

@@ -22,7 +22,7 @@
  * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
  * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND, RELEASE,
  * DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER, MOUNTS (the
- * filesystems' channels) and TEST_DISK too. devmgr
+ * filesystems' channels), TEST_DISK and REMOUNT too. devmgr
  * runs until every client end of its control channel is gone.
  * Who holds what: init both (it hands devmgr new consoles); the programs
  * init runs from init.cfg (the test suites utest and usbtest) both; in
@@ -119,9 +119,10 @@
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
 /* Mounts (control channel only): the boot disk's data partition at /data
- * (read-write) and its ESP at /esp (read-only), each served by a fat
- * service devmgr started over usb-storage's `block` channel for that
- * partition (devmgr's storage side: disk.c, mounts.c).
+ * (read-write) and its ESP at /esp (read-only), and each FAT partition of
+ * any other disk at /usb0, /usb1, ... (read-only until DEVMGR_REMOUNT),
+ * each served by a fat service devmgr started over usb-storage's `block`
+ * channel for that partition (devmgr's storage side: disk.c, mounts.c).
  *
  * Request: a struct devmgr_req whose `instance` is `known`, the generation
  * the caller has (0: none). Reply: a struct devmgr_mounts_rep (all of it
@@ -140,14 +141,19 @@
  * The generation changes whenever the list does: a mount appears, its disk
  * goes away (unplugged, or its usb-storage died), its fat service dies
  * (the mount is gone until the restart) or is restarted (it is back, with
- * a new channel: calls on the old one fail ERR_PEER_CLOSED). Only the disk
- * Jam OS booted from is ever mounted: partition 1 of type 0xEF holding
- * boot/jamos.elf, partition 2 of type 0x0C. A mount that isn't listed has
- * no service. A devmgr that init started again starts its generations
+ * a new channel: calls on the old one fail ERR_PEER_CLOSED; REMOUNT is
+ * such a restart). /esp and /data are the disk Jam OS booted from:
+ * partition 1 of type 0xEF holding boot/jamos.elf, partition 2 of type
+ * 0x0C. Any other disk's FAT partitions (MBR types 01 04 06 0B 0C 0E EF,
+ * or a disk with no table that is one FAT volume) take the lowest free
+ * /usbN when they are found and give it back when the stick goes; a
+ * partition with no FAT volume is never listed, and never written: only
+ * the boot disk's blank data partition is ever formatted. A mount that
+ * isn't listed has no service. A devmgr that init started again starts its generations
  * somewhere else (from the clock), so the old one's are never mistaken for
  * its own; asking a new devmgr with known 0 is still the simple rule. */
 #define DEVMGR_MOUNTS       0x0003000au
-#define DEVMGR_MAX_MOUNTS   4u
+#define DEVMGR_MAX_MOUNTS   8u
 #define DEVMGR_MOUNTS_WAIT  (2 * NS_PER_S)
 struct devmgr_mount {
     char path[16];   /* "/data", "/esp": NUL-terminated */
@@ -177,8 +183,24 @@ struct devmgr_mounts_rep {
  * and no other). */
 #define DEVMGR_RELEASE      0x0003000cu
 
+/* (DEVMGR_USB_MOUNT, N, flags) -> (): the mount /usbN read-write (flags
+ * DEVMGR_REMOUNT_WRITE) or read-only again (0); with DEVMGR_REMOUNT_TEST
+ * a test disk's /usbN-test. Its fat service is synced and stopped, and
+ * started again on a new `block` channel opened the new way (read-only:
+ * usb-storage refuses every write on it), so the mount's channel is a new
+ * one and files open on the old one fail ERR_PEER_CLOSED; it is listed
+ * again once its volume is mounted (a new generation). Nothing is ever
+ * formatted, in either mode. OK at once if it is that way already.
+ * ERR_NOT_FOUND: no such mount (only /usbN can be asked for: /esp and
+ * /data are what they are); ERR_BAD_STATE: its service isn't serving. */
+#define DEVMGR_REMOUNT      0x0003000du
+#define DEVMGR_USB_MOUNT    0xfffcu
+#define DEVMGR_REMOUNT_WRITE 1u
+#define DEVMGR_REMOUNT_TEST  2u
+
 /* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
- * the partition (DEVMGR_PART_*: storage.idl's index) as the device and the
+ * the partition (storage.idl's index, 0 to 3; DEVMGR_PART_* on the boot
+ * disk) as the device and the
  * disk's id as the instance (a usb-storage disk: usb-bus's device id; a
  * test disk: TEST_DISK's result), for GET_DRIVER, KILL and SUPERVISION.
  * GET_SERVICE is refused (ERR_ACCESS_DENIED) for them and for a disk's
@@ -191,8 +213,9 @@ struct devmgr_mounts_rep {
 /* A filesystem service gets what <fatsvc.h> says and nothing else (no
  * devmgr channel, no namespace, no root resource: its file times are
  * fixed): FAT_SR_BLOCK, a `block` channel from storage.open_partition
- * (opened read-only for the ESP), FAT_SR_SERVE, and its mount point as
- * argv[1]. It is supervised like a driver: exit 0 is the end of it; a
+ * (opened read-only for the ESP and for every /usbN not remounted),
+ * FAT_SR_SERVE, its mount point as argv[1], and FAT_ARG_FORMAT as argv[2]
+ * for the boot disk's data partition only. It is supervised like a driver: exit 0 is the end of it; a
  * crash, a kill or any other exit is restarted with backoff, each time
  * with a new `block` channel and a new `fs` channel, and given up on after
  * 5 restarts in a minute. */

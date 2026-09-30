@@ -387,6 +387,13 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         r->status = test_driver();
         return;
     }
+    if (q->ordinal == DEVMGR_REMOUNT) {
+        bool valid = q->vendor == DEVMGR_USB_MOUNT && !(q->instance & ~3u);
+        r->status = valid ? disk_remount(q->device, q->instance & DEVMGR_REMOUNT_TEST,
+                                         q->instance & DEVMGR_REMOUNT_WRITE)
+                          : ERR_INVALID_ARGS;
+        return;
+    }
     struct binding *b = find(q, q->ordinal == DEVMGR_DRIVER_VIEW);
     bool known = b && b->path && b->state != DEVMGR_SUP_NONE;   /* a driver was started */
     switch (q->ordinal) {

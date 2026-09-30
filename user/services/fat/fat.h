@@ -48,6 +48,7 @@ struct fat_vol {
     uint32_t    bbuf_size;    /* ... in bytes (whole pages) */
     uint64_t    blocks;       /* sectors in the partition */
     bool        read_only;    /* block.info said so: every write is refused */
+    bool        may_format;   /* started with FAT_ARG_FORMAT: a blank partition is formatted */
     bool        disk_gone;    /* a block call saw ERR_PEER_CLOSED */
     handle_t    rtc_root;     /* SR_RESOURCE or HANDLE_INVALID */
     FATFS       fs;           /* FatFs's volume */

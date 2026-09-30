@@ -81,6 +81,9 @@ static const struct sh_cmd cmds[] = {
       "remove files and empty directories (-r: a directory with all it holds)"),
     C(df, C_FILES, "df", "the mounts: size, used, free, volume label"),
     C(sync, C_FILES, "sync", "make sure everything written is on the stick"),
+    C(mount, C_FILES, "mount [-w|-r /usbN]",
+      "the mounts, and which can be written. Another USB stick shows up\n"
+      "  read-only at /usb0, /usb1, ...: -w makes it writable, -r read-only again"),
     C(cat, C_TEXT, "cat [file...]", "print files (or the pipe)"),
     C(hexdump, C_TEXT, "hexdump [-s offset] [-n bytes] [file]",
       "hex and ASCII, 16 bytes a line (also hd)"),

@@ -6,15 +6,20 @@
  * <fatsvc.h> has the startup handles, fat.h the map of the files.
  *
  * Mounting: a volume is mounted as it is, dirty or not (disk.c logs a dirty
- * one). A writable, blank partition is formatted (FAT32 when it is big
- * enough for one, label JAMOS-DATA): that is how a freshly flashed stick
- * gets its /data. Nothing else is: not a disk that fails, not a partition
- * holding another filesystem or a damaged FAT, not a read-only one.
+ * one). Formatting is off unless fat was started with FAT_ARG_FORMAT
+ * (<fatsvc.h>; devmgr gives it to the boot disk's data partition and to
+ * nothing else). With it a writable, blank partition is formatted (FAT32
+ * when it is big enough for one, label JAMOS-DATA): that is how a freshly
+ * flashed stick gets its /data. Nothing else ever is: not a disk that
+ * fails, not a partition holding another filesystem or a damaged FAT, not
+ * a read-only one, and nothing at all on someone else's stick. format()
+ * is reached from one place, mount_blank, behind vol.may_format.
  *
  * Exit: 0 once there is nothing left to serve (the fs channel's client
  * closed it, after every file is closed and the volume settled; or the
- * disk went away); 1 when the volume can't be served (no handles, a
- * disk that doesn't answer, no FAT volume and nothing to format). */
+ * disk went away); 1 when the volume can't be served but might be later
+ * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
+ * partition holds no FAT volume fat can serve and nothing was formatted. */
 #include "fat.h"
 
 #define LABEL       "JAMOS-DATA"
@@ -58,13 +63,19 @@ static FRESULT format(void)
     return fr;
 }
 
-/* FatFs found no FAT volume. Only a blank partition is formatted: one
- * whose first sector has no boot signature (tools/mbr-grow.py wipes a new
- * data partition's start). A boot sector FatFs can't use is someone's
- * filesystem, another kind or a damaged FAT, and is left alone. */
+/* FatFs found no FAT volume. Without FAT_ARG_FORMAT that is the end of
+ * it. With it, only a blank partition is formatted: one whose first sector
+ * has no boot signature (tools/mbr-grow.py wipes a new data partition's
+ * start). A boot sector FatFs can't use is someone's filesystem, another
+ * kind or a damaged FAT, and is left alone. ERR_NOT_FOUND: nothing was
+ * formatted. */
 static status_t mount_blank(void)
 {
     bool blank = false;
+    if (!vol.may_format) {
+        printf("fat %s: no FAT volume (formatting is off: nothing written)\n", vol.name);
+        return ERR_NOT_FOUND;
+    }
     status_t st = vol.read_only ? OK : disk_is_blank(&blank);
     if (st != OK)
         return st;
@@ -79,18 +90,22 @@ static status_t mount_blank(void)
     return fr_status(fr);
 }
 
-static status_t mount(void)
+/* Mount the volume. *no_volume: the partition holds none fat can serve
+ * (the exit code FAT_EXIT_NO_VOLUME). */
+static status_t mount(bool *no_volume)
 {
     FRESULT fr = f_mount(&vol.fs, "", 1);
     status_t st = fr == FR_NO_FILESYSTEM ? mount_blank() : fr_status(fr);
     if (st != OK) {
         if (fr != FR_NO_FILESYSTEM)
             printf("fat %s: can't mount: FatFs error %d\n", vol.name, (int)fr);
+        *no_volume = fr == FR_NO_FILESYSTEM && st == ERR_NOT_FOUND;
         return st;
     }
     if (vol.fs.fsize >= FAT_SECTORS_MAX) {
         printf("fat %s: a FAT of %u sectors: not a volume to trust, not mounted\n", vol.name,
                (unsigned)vol.fs.fsize);
+        *no_volume = true;
         return ERR_IO;
     }
     disk_watch();
@@ -141,6 +156,8 @@ static status_t run(handle_t serve)
 int main(int argc, char **argv)
 {
     vol.name = argc >= 2 ? argv[1] : "fat";
+    vol.may_format = argc >= 3 && !strcmp(argv[2], FAT_ARG_FORMAT);
+    bool no_volume = false;
     handle_t serve = startup_handle(FAT_SR_SERVE), block = startup_handle(FAT_SR_BLOCK);
     if (serve == HANDLE_INVALID || block == HANDLE_INVALID) {
         printf("fat %s: no %s channel: nothing to do\n", vol.name,
@@ -152,10 +169,10 @@ int main(int argc, char **argv)
     if (st == OK)
         st = disk_open(block);
     if (st == OK)
-        st = mount();
+        st = mount(&no_volume);
     if (st != OK) {
         printf("fat %s: not serving: %s\n", vol.name, status_str(st));
-        return 1;
+        return no_volume ? FAT_EXIT_NO_VOLUME : 1;
     }
     st = run(serve);
     files_close_all();
