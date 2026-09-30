@@ -1,8 +1,9 @@
 /* init: the first user process, started by the kernel's userboot with the
  * root job, the root resource and the bootfs image.
  *
- * With "shell" (a plain boot) or "shell-nousb" (the safe mode entry:
- * devmgr leaves USB controllers alone) it starts and supervises the bootfs
+ * With "shell" (a plain boot), "shell-nousb" (the safe mode entry:
+ * devmgr leaves USB controllers alone) or "soak=<minutes>" (a plain boot
+ * whose shell starts the soak test) it starts and supervises the bootfs
  * server, the console, serial input, devmgr and the shell (shell.c) and
  * never exits. Otherwise it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
@@ -373,7 +374,13 @@ int main(int argc, char **argv)
     /* A plain boot: the console, devmgr (connected to it), serial
      * input and the shell; the safe mode entry: the same without USB. */
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
-        init_shell(!strcmp(argv[1], "shell-nousb"));
+        init_shell(!strcmp(argv[1], "shell-nousb"), NULL);
+        return 1;
+    }
+    /* The boot word soak[=minutes]: a plain boot whose first shell runs the
+     * soak test by itself (the shell's main.c reads the argument). */
+    if (argc > 1 && !strncmp(argv[1], "soak=", 5)) {
+        init_shell(false, argv[1]);
         return 1;
     }
 

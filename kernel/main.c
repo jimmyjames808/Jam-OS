@@ -179,6 +179,7 @@ _Noreturn static void kmain_stage2(void *arg)
         struct ktest_opts o;
         ktest_parse_opts(boot->cmdline, true, &o);
         ktest_run_opts(&o);
+        ok &= ktest_last_failed() == 0;
     }
     if (cmdline_has("bench"))
         bench_run();
@@ -195,9 +196,17 @@ _Noreturn static void kmain_stage2(void *arg)
      * benchmark and crash entries don't start it. */
     bool nousb = cmdline_has("nousb");
     bool shell = cmdline_has("shell") || nousb || !mode_word_given();
+    /* soak[=minutes] (the Soak test entry): a plain boot whose shell runs
+     * `soak <minutes> halt` by itself. An option, like panic_reboot: it
+     * is not a mode word. */
+    static char soak_arg[16];
+    uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
+    if (soak_min && !nousb)
+        ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
-                                shell ? (nousb ? "shell-nousb" : "shell") : NULL);
+                                !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg
+                                                                                   : "shell");
     /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))

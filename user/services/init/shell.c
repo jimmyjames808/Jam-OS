@@ -408,6 +408,9 @@ static status_t start_logd(void)
     return start1(LOGD, x, 1);
 }
 
+/* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
+static const char *first_arg;
+
 static status_t start_shell(void)
 {
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
@@ -443,7 +446,11 @@ static status_t start_shell(void)
     for (unsigned k = 0; k < 7; k++)
         if (x[k].h)
             y[n++] = x[k];
-    st = start1(SHELL, y, n);
+    /* The boot's first shell gets the boot word's command (shell_first_arg);
+     * one init restarts later is an ordinary shell. */
+    const char *argv[] = { svcs[SHELL].path, first_arg };
+    st = start(SHELL, first_arg ? 2 : 1, argv, y, n);
+    first_arg = NULL;
     if (st != OK) {
         if (mine)
             jam_handle_close(mine);
@@ -562,10 +569,11 @@ static uint64_t start_due(uint64_t t)
     return deadline;
 }
 
-bool init_shell(bool no_usb)
+bool init_shell(bool no_usb, const char *shell_arg)
 {
     root = startup_handle(SR_RESOURCE);
     nousb = no_usb;
+    first_arg = shell_arg;
     status_t st = jam_port_create(&port);
     if (st != OK) {
         init_say("init: shell mode: no port (%s)", status_str(st));
