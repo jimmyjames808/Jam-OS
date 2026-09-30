@@ -64,3 +64,15 @@ bool t_supervised_restart(void);
 bool t_supervised_backoff(void);
 bool t_supervised_give_up(void);
 bool t_driver_handle_limits(void);
+
+/* fat.c, fat_names.c: the fat service process over a RAM-disk `block`
+ * server. */
+bool t_fat_format(void);
+bool t_fat_files(void);
+bool t_fat_dirs(void);
+bool t_fat_names(void);
+bool t_fat_full_disk(void);
+bool t_fat_read_only(void);
+bool t_fat_not_formatted(void);
+bool t_fat_dirty_volume(void);
+bool t_fat_disk_gone(void);
