@@ -161,8 +161,8 @@ type q
 wait 30 mines: 1 game(s) finished, 0 won
 wait run: bin/mines exited with code 0
 wait jam>
-# With acceleration (the default) a quick push goes three times as far:
-# 100 counts to the right of the middle lands in column 15, not column 10.
+# With acceleration (the default) a quick push goes twice as far: 100
+# counts to the right of the middle lands in column 13, not column 10.
 send run mines level=2 seed=5 trace
 wait run: bin/mines started
 wait mines: new game: Intermediate 16x16, 40 mines
@@ -172,7 +172,7 @@ sleep 0.4
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-wait 10 mines: reveal 15,8:
+wait 10 mines: reveal 13,8:
 type q
 wait run: bin/mines exited with code 0
 wait jam>
