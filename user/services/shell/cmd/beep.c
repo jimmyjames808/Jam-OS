@@ -1,21 +1,17 @@
-/* beep: a tone in the headphones (docs/A1-PLAN.md, stage 3). It opens
- * the hda driver's output stream (abi/idl/hda.idl), writes a sine into
- * the ring with a 5 ms fade in and out (no click), starts the stream
- * (which unmutes the path at the driver's gain: `hda gain`), keeps a
- * ring's worth written ahead of the play position with wait_period until
- * the tone and a period of silence after it have played, then stops
- * (which mutes the path again) and closes. The samples are made here, in
- * floating point; the driver never makes sound of its own. Ctrl+C stops
- * it at once. */
-#include <idl/hda.h>
+/* beep: a tone in the headphones (docs/A1-PLAN.md, stage 3). A sine with
+ * a 5 ms fade in and out (no click), made here in floating point, written
+ * through <audio.h> as 48 kHz mono (the library makes it stereo and keeps
+ * the device's ring written ahead); the device plays at its gain (`hda
+ * gain`) and its path is unmuted only while the stream runs. Ctrl+C stops
+ * it within a period, with audio_close's 5 ms fade. */
+#include <audio.h>
 #include "sh.h"
 
 #define RATE       48000u
 #define AMPLITUDE  8192.0     /* -12 dBFS: a quarter of full scale, before the codec's gain */
 #define FADE       240u       /* frames: 5 ms */
 #define MAX_MS     5000u
-#define OPEN_WAIT  (15 * NS_PER_S)
-#define SOON       (5 * NS_PER_S)
+#define BLOCK      1024u      /* frames written at a time */
 
 /* sin and cos of x in [-pi, pi] by their series (x^25 and x^24 terms are
  * below 1e-15 there): enough for one oscillator step, set up once. */
@@ -76,19 +72,6 @@ static int16_t next(struct tone *t)
     return (int16_t)(v < 0 ? v - 0.5 : v + 0.5);
 }
 
-/* The tone's frames [from, to) into the ring of `ring` frames. */
-static void fill(struct tone *t, int16_t *ring, uint64_t ring_frames, uint64_t to)
-{
-    if (to > t->frames)
-        to = t->frames;
-    while (t->at < to) {
-        uint64_t i = t->at % ring_frames;
-        int16_t v = next(t);
-        ring[2 * i] = v;
-        ring[2 * i + 1] = v;
-    }
-}
-
 static bool number(const char *s, uint64_t lo, uint64_t hi, uint32_t *out)
 {
     uint64_t v;
@@ -98,37 +81,22 @@ static bool number(const char *s, uint64_t lo, uint64_t hi, uint32_t *out)
     return true;
 }
 
-/* Play t on the open stream (channel ch, ring mapped at va). */
-static status_t play(handle_t ch, int16_t *ring, uint32_t size, uint32_t period, struct tone *t)
+/* Play t, BLOCK frames at a time (Ctrl+C is looked at between them), then
+ * wait until it and a period of silence have played. */
+static status_t play(struct audio_out *a, struct tone *t)
 {
-    uint64_t ring_frames = size / 4, tail = period / 4;
-    fill(t, ring, ring_frames, ring_frames);
-    status_t st = hda_start_until(ch, now() + SOON);
-    if (st != OK) {
-        sh_say("beep: the stream did not start (%s): the path stays muted; the log's "
-               "\"[hda] output:\" lines say why\n", status_str(st));
-        return st;
+    static int16_t buf[BLOCK];
+    while (t->at < t->frames) {
+        if (sh_interrupted())
+            return ERR_CANCELED;
+        size_t n = 0;
+        while (n < BLOCK && t->at < t->frames)
+            buf[n++] = next(t);
+        long w = audio_write(a, buf, n);
+        if (w < 0)
+            return (status_t)w;
     }
-    uint64_t frames = 0;
-    uint32_t off;
-    while (frames < t->frames + tail) {
-        if (sh_interrupted()) {
-            st = ERR_CANCELED;
-            break;
-        }
-        st = hda_wait_period_until(ch, now() + SOON, frames, &frames, &off);
-        if (st != OK) {
-            sh_say("beep: waiting for the stream: %s\n", status_str(st));
-            break;
-        }
-        fill(t, ring, ring_frames, frames + ring_frames);
-    }
-    status_t stop = hda_stop_until(ch, now() + SOON);
-    if (stop != OK && st == OK) {
-        sh_say("beep: stopping the stream: %s\n", status_str(stop));
-        st = stop;
-    }
-    return st;
+    return audio_drain(a);
 }
 
 SH_CMD(beep)
@@ -140,50 +108,33 @@ SH_CMD(beep)
                MAX_MS);
         return 2;
     }
-    handle_t hda = sh_hda();
-    if (hda == HANDLE_INVALID) {
+    struct audio_out a;
+    status_t st = audio_open(&a, RATE, 1);
+    if (st == ERR_NOT_FOUND) {
         sh_say("beep: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
         return 1;
     }
-    handle_t ch, vmo;
-    uint32_t size = 0, period = 0;
-    status_t st = hda_open_output_until(hda, now() + OPEN_WAIT, RATE, 2, 16, &ch, &vmo, &size,
-                                        &period);
     if (st == ERR_BAD_STATE) {
         sh_say("beep: the audio output is busy: another program has its stream open\n");
-        jam_handle_close(hda);
         return 1;
     }
     if (st != OK) {
         sh_say("beep: can't open the audio output: %s\n", status_str(st));
-        jam_handle_close(hda);
         return 1;
     }
-    uint64_t va = 0;
-    st = size && period && size % period == 0
-        ? jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, VMAR_READ | VMAR_WRITE, &va)
-        : ERR_BAD_STATE;
-    if (st == OK) {
-        struct tone t;
-        tone_init(&t, hz, (uint64_t)ms * RATE / 1000);
-        st = play(ch, (int16_t *)(uintptr_t)va, size, period, &t);
-        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), va, size);
-    } else {
-        sh_say("beep: can't map the ring: %s\n", status_str(st));
+    struct tone t;
+    tone_init(&t, hz, (uint64_t)ms * RATE / 1000);
+    st = play(&a, &t);
+    if (st != OK && st != ERR_CANCELED)
+        sh_say("beep: playing: %s (the log's \"[hda] output:\" lines say why)\n", status_str(st));
+    int gain = 0;
+    bool have_gain = st == OK && audio_get_volume(&a, &gain) == OK;
+    audio_close(&a);   /* stops (mutes) and releases the stream */
+    if (have_gain) {
+        uint32_t g = gain < 0 ? (uint32_t)-gain : (uint32_t)gain;
+        sh_say("beep: %u Hz for %u ms at %s%u.%u dB\n", hz, ms, gain < 0 ? "-" : "", g / 10, g % 10);
+    } else if (st == OK) {
+        sh_say("beep: %u Hz for %u ms\n", hz, ms);
     }
-    jam_handle_close(vmo);
-    jam_handle_close(ch);   /* the driver stops (mutes) and releases the stream */
-    if (st == OK) {
-        int32_t gain = 0, min, max;
-        uint32_t step;
-        if (hda_get_gain_until(hda, now() + SOON, &gain, &step, &min, &max) == OK) {
-            uint32_t a = gain < 0 ? (uint32_t)-gain : (uint32_t)gain;
-            sh_say("beep: %u Hz for %u ms at %s%u.%u dB\n", hz, ms, gain < 0 ? "-" : "", a / 10,
-                   a % 10);
-        } else {
-            sh_say("beep: %u Hz for %u ms\n", hz, ms);
-        }
-    }
-    jam_handle_close(hda);
     return st == OK ? 0 : st == ERR_CANCELED ? 130 : 1;
 }

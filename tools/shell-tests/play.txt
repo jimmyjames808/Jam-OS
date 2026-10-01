@@ -1,0 +1,66 @@
+# `play` (the shell's cmd/play.c, <audio.h>, <wav.h>): WAV files on /data
+# played through QEMU's hda-output codec into a WAV capture; use
+# tools/play-test.sh (it makes the files, puts them on the stick, adds the
+# devices and checks the capture). Four files play in order, three are
+# refused, then a long one is stopped with Ctrl+C. (The markers are
+# echoed as pl-""1 so the typed line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+seen 60 init: /data mounted
+send ls -l /data; echo pl-""0
+wait long.wav
+wait pl-0
+wait jam>
+send play /data/s48.wav; echo pl-""1 $?
+wait 30 play: /data/s48.wav: 48000 Hz, 16-bit, 2 ch, 0:02
+wait 30 pl-1 0
+wait jam>
+send cd /data; play m44.wav; echo pl-""2 $?
+wait 30 play: m44.wav: 44100 Hz, 16-bit, 1 ch, 0:01
+wait 30 pl-2 0
+wait jam>
+send play u8.wav; echo pl-""3 $?
+wait 30 play: u8.wav: 22050 Hz, 8-bit, 1 ch, 0:01
+wait 30 pl-3 0
+wait jam>
+send play -v -20 x24.wav; echo pl-""4 $?
+wait 30 play: x24.wav: 96000 Hz, 24-bit, 2 ch, 0:01
+wait 30 pl-4 0
+wait jam>
+send hda gain; echo pl-""5
+wait hda: gain -30.0 dB (step 44;
+wait pl-5
+wait jam>
+send play garbage.wav; echo pl-""6 $?
+wait play: garbage.wav: not a WAV file (no RIFF/WAVE header)
+wait pl-6 1
+wait jam>
+send play cut.wav; echo pl-""7 $?
+wait play: cut.wav: cut off in its format chunk
+wait pl-7 1
+wait jam>
+send play float.wav; echo pl-""8 $?
+wait play: float.wav: floating-point samples: only PCM (convert it to 16-bit PCM)
+wait pl-8 1
+wait jam>
+send play nope.wav; echo pl-""9 $?
+wait play: nope.wav: no such file
+wait pl-9 1
+wait jam>
+send play -v loud x24.wav; echo pl-""10 $?
+wait usage: play [-v dB] <file.wav>
+wait pl-10 2
+wait jam>
+# Ctrl+C ends the whole line, so $? is asked for on the next one.
+send play long.wav
+wait 30 play: long.wav: 48000 Hz, 16-bit, 1 ch, 0:10
+sleep 2
+type \x03
+wait 10 play: long.wav: stopped at 0:0
+wait jam>
+send echo pl-""11 $?
+wait pl-11 130
+wait jam>
+send reboot
+wait reboot: resetting
