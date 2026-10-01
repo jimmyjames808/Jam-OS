@@ -25,6 +25,8 @@
 #include "music.h"
 
 #define CHUNK    1024u   /* frames read and written at a time: 21-128 ms of sound */
+#define SCAN_SYNC (500 * NS_PER_MS)   /* `start` reads the folder this long before answering */
+#define SCAN_STEP 16u    /* directory entries read between looks at the channel */
 #define IO_FAILS 3u
 #define REOPENS  3u
 #define SOON     (2 * NS_PER_S)
@@ -52,6 +54,9 @@ static void title_of(struct player *p, uint32_t i, char *out, size_t size)
 
 void player_stop(struct player *p, const char *note)
 {
+    if (p->scanning)
+        tracks_free(&p->t);   /* a list half read is no use */
+    p->scanning = false;
     close_src(p);
     if (p->a_open)
         audio_close(&p->a);   /* what is queued fades out over 5 ms */
@@ -78,22 +83,14 @@ static status_t open_stream(struct player *p)
     return OK;
 }
 
-status_t player_start(struct player *p, const char *folder, uint32_t *found)
+static void stopped_by_itself(struct player *p, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+/* The folder is read: play it. */
+static status_t play_list(struct player *p)
 {
-    *found = 0;
-    if (p->playing) {
-        printf("music: stopping %s for %s\n", p->folder, folder);
-        player_stop(p, NULL);
-    }
-    p->note[0] = '\0';
-    p->started = 0;
-    status_t st = tracks_scan(&p->t, folder);
-    if (st != OK) {
-        p->folder[0] = '\0';
-        return st;
-    }
-    snprintf(p->folder, sizeof(p->folder), "%s", folder);
-    *found = p->t.count;
+    const char *folder = p->folder;
+    status_t st;
     if (!p->t.count) {
         snprintf(p->note, sizeof(p->note), "no .mp3 or .wav files in %s", folder);
         printf("music: %s: nothing to play\n", p->note);
@@ -119,6 +116,57 @@ status_t player_start(struct player *p, const char *folder, uint32_t *found)
     printf("music: playing %s: %u track%s in shuffle\n", folder, p->t.count,
            p->t.count == 1 ? "" : "s");
     return OK;
+}
+
+status_t player_start(struct player *p, const char *folder, uint32_t *found, bool *scanning)
+{
+    *found = 0;
+    *scanning = false;
+    if (p->playing || p->scanning) {
+        printf("music: stopping %s for %s\n", p->folder, folder);
+        player_stop(p, NULL);
+    }
+    p->note[0] = '\0';
+    p->started = 0;
+    status_t st = tracks_scan_begin(&p->t, folder);
+    if (st != OK) {
+        p->folder[0] = '\0';
+        return st;
+    }
+    snprintf(p->folder, sizeof(p->folder), "%s", folder);
+    /* A small folder is read here and the answer says how many tracks;
+     * a big one goes on in the loop, between the channel's calls. */
+    uint64_t until = now() + SCAN_SYNC;
+    while ((st = tracks_scan_step(&p->t, SCAN_STEP)) == ERR_SHOULD_WAIT && now() < until) {
+    }
+    *found = p->t.count;
+    if (st == ERR_SHOULD_WAIT) {
+        p->scanning = true;
+        *scanning = true;
+        printf("music: reading %s (%u track%s so far): it plays once it is read\n", folder,
+               p->t.count, p->t.count == 1 ? "" : "s");
+        return OK;
+    }
+    if (st != OK) {
+        p->folder[0] = '\0';
+        return st;
+    }
+    return play_list(p);
+}
+
+void player_scan(struct player *p)
+{
+    status_t st = tracks_scan_step(&p->t, SCAN_STEP);
+    if (st == ERR_SHOULD_WAIT)
+        return;
+    p->scanning = false;
+    if (st != OK) {
+        stopped_by_itself(p, "reading %s failed (%s)", p->folder, status_str(st));
+        return;
+    }
+    printf("music: %s read: %u track%s\n", p->folder, p->t.count, p->t.count == 1 ? "" : "s");
+    if ((st = play_list(p)) != OK)
+        printf("music: can't play %s (%s)\n", p->folder, status_str(st));
 }
 
 static void mark(struct player *p, uint32_t track, int64_t start, uint64_t length_ms)

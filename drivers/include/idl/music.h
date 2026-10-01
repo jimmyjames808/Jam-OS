@@ -26,6 +26,7 @@ struct music_start_rep {
     uint32_t txid;
     int32_t  status;
     uint32_t found;
+    uint8_t reading;
 } __attribute__((packed));
 struct music_stop_req {
     uint32_t txid;
@@ -84,13 +85,16 @@ struct music_set_volume_rep {
  * left out) in shuffle, back to back, until `stop`. Answers once the
  * folder has been read and the player's mixer stream is open, with the
  * number of files found; 0 files: nothing plays (the player stays
- * stopped). Already playing: the old folder stops (5 ms fade) and the new
- * one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
+ * stopped). A folder that takes longer than half a second to read is read
+ * on after the answer, between the player's other calls: `reading` 1 and
+ * `found` the files so far; it plays once the folder is read (or stops,
+ * with a note, if there is nothing to play). Already playing (or
+ * reading): the old folder stops (5 ms fade) and the new one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
  * or no audio output (the mixer's open_output: the shell's `music`
  * checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it
  * is a file; ERR_INVALID_ARGS: not an absolute path; the mixer's other
  * errors from opening a stream. */
-static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], uint32_t *out_found)
+static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
 {
     struct music_start_req idl_q;
     struct music_start_rep idl_r;
@@ -105,11 +109,13 @@ static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, cons
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_found)
         *out_found = idl_r.found;
+    if (idl_st == OK && out_reading)
+        *out_reading = idl_r.reading;
     return idl_st;
 }
-static inline status_t music_start(handle_t ch, const uint8_t folder[256], uint32_t *out_found)
+static inline status_t music_start(handle_t ch, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
 {
-    return music_start_until(ch, DEADLINE_NEVER, folder, out_found);
+    return music_start_until(ch, DEADLINE_NEVER, folder, out_found, out_reading);
 }
 
 /* Stop playing, with the 5 ms fade. `was_playing`: 1 if it was. */
@@ -153,7 +159,8 @@ static inline status_t music_next(handle_t ch)
     return music_next_until(ch, DEADLINE_NEVER);
 }
 
-/* What the player is doing. `playing`: 1 or 0. `tracks`: files in the
+/* What the player is doing. `playing`: 1, 0, or 2 while it reads the
+ * folder `start` was given (`tracks` then counts so far). `tracks`: files in the
  * folder's list; `bad`: how many of them were refused (not WAV or MP3
  * inside) and are skipped; `started`: tracks started since `start`.
  * The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
@@ -230,7 +237,7 @@ static inline status_t music_set_volume(handle_t ch, int32_t centibels, int32_t 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
  * A NULL handler answers ERR_NOT_SUPPORTED. */
 struct music_ops {
-    status_t (*start)(void *ctx, const uint8_t folder[256], uint32_t *out_found);
+    status_t (*start)(void *ctx, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading);
     status_t (*stop)(void *ctx, uint8_t *out_was_playing);
     status_t (*next)(void *ctx);
     status_t (*status)(void *ctx, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128]);
@@ -259,17 +266,19 @@ static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, co
         const struct music_start_req *idl_q = (const struct music_start_req *)req;
         struct music_start_rep *idl_r = (struct music_start_rep *)rep;
         uint32_t out_found = 0;
+        uint8_t out_reading = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->start) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->start(ctx, idl_q->folder, &out_found);
+        status_t idl_st = ops->start(ctx, idl_q->folder, &out_found, &out_reading);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->found = out_found;
+        idl_r->reading = out_reading;
         return sizeof(*idl_r);
     }
     case MUSIC_STOP: {

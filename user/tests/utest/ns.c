@@ -34,12 +34,8 @@ static bool have_boot(void)
     return false;
 }
 
-struct ram {
-    handle_t job, proc;   /* bin/ramfs */
-};
-
 /* Start bin/ramfs and mount it at point. */
-static bool ram_start(const char *point, struct ram *r)
+bool ram_start(const char *point, struct ram *r)
 {
     handle_t mine, theirs;
     CHECK_ST(new_job(&r->job), OK);
@@ -55,7 +51,7 @@ static bool ram_start(const char *point, struct ram *r)
 }
 
 /* Unmount it: with its last client gone it exits 0 and leaves nothing. */
-static bool ram_stop(const char *point, struct ram *r)
+bool ram_stop(const char *point, struct ram *r)
 {
     struct process_info info;
     CHECK_ST(ns_unmount(point), OK);

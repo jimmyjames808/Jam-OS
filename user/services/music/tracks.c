@@ -3,7 +3,8 @@
  * The list: every file below the folder whose name ends in .mp3 or .wav
  * (any case), at most MAX_DEPTH folders down; names starting with '.'
  * (macOS's .DS_Store and ._ files, .Spotlight-V100) are left out, files
- * and folders alike. The names are only ever bytes in a path handed to
+ * and folders alike. It is read a few entries at a time (tracks_scan_step),
+ * so the player answers its channel while a big folder is read. The names are only ever bytes in a path handed to
  * the file calls: spaces, quotes, '$' and UTF-8 never pass through
  * anything that parses them.
  *
@@ -25,9 +26,11 @@ static void free_paths(struct tracks *t)
     free(t->path);
     free(t->bad);
     free(t->order);
+    free(t->scan);
     t->path = NULL;
     t->bad = NULL;
     t->order = NULL;
+    t->scan = NULL;
     t->count = t->nbad = 0;
 }
 
@@ -71,44 +74,21 @@ static status_t add(struct tracks *t, const char *path)
     return OK;
 }
 
-/* dir's files into t, and its folders' (depth: how far down dir is). */
-static status_t walk(struct tracks *t, char *dir, unsigned depth)
-{
-    struct fs_entry *e = malloc(sizeof(*e));
-    if (!e)
-        return ERR_NO_MEMORY;
-    size_t len = strlen(dir);
-    status_t st = OK;
-    for (uint32_t i = 0; st == OK; i++) {
-        status_t r = fs_readdir(len ? dir : "/", i, e);
-        if (r == ERR_NOT_FOUND)
-            break;   /* past the last */
-        if (r != OK) {
-            printf("music: %s: can't read the folder (%s)\n", dir, status_str(r));
-            break;   /* what it had so far stays */
-        }
-        if (e->name[0] == '.' || (!e->is_dir && !track_wanted(e->name)))
-            continue;
-        size_t n = strlen(e->name);
-        if (len + 1 + n >= FS_PATH_MAX) {
-            printf("music: %s/%s: the path is too long: left out\n", dir, e->name);
-            continue;
-        }
-        dir[len] = '/';
-        memcpy(dir + len + 1, e->name, n + 1);
-        if (!e->is_dir)
-            st = add(t, dir);
-        else if (depth + 1 > MAX_DEPTH)
-            printf("music: %s: more than %u folders down: left out\n", dir, MAX_DEPTH);
-        else
-            st = walk(t, dir, depth + 1);
-        dir[len] = '\0';
-    }
-    free(e);
-    return st;
-}
+/* The walk, a folder at a time, as a stack: level k is the folder
+ * dir[0 .. len[k]) (dir holds the deepest one), read up to entry idx[k].
+ * One step reads one entry (fs_readdir by index: on FAT each costs more
+ * the further into a folder it is), so a big folder is read across many
+ * steps and the player answers its channel between them. */
+struct scan {
+    char     dir[FS_PATH_MAX];
+    size_t   len[MAX_DEPTH + 1];
+    uint32_t idx[MAX_DEPTH + 1];
+    unsigned depth;                  /* the level being read; stack empty: done */
+    bool     done;
+    struct fs_entry e;
+};
 
-status_t tracks_scan(struct tracks *t, const char *folder)
+status_t tracks_scan_begin(struct tracks *t, const char *folder)
 {
     tracks_free(t);
     bool is_dir = false;
@@ -118,20 +98,74 @@ status_t tracks_scan(struct tracks *t, const char *folder)
     if (!is_dir)
         return ERR_WRONG_TYPE;
     t->path = malloc(MAX_TRACKS * sizeof(*t->path));
-    char *dir = malloc(FS_PATH_MAX);
-    if (!t->path || !dir) {
-        free(dir);
+    struct scan *sc = t->scan = calloc(1, sizeof(*sc));
+    if (!t->path || !sc) {
         tracks_free(t);
         return ERR_NO_MEMORY;
     }
-    size_t n = strlen(folder);
-    memcpy(dir, folder, n + 1);
-    while (n > 1 && dir[n - 1] == '/')
-        dir[--n] = '\0';   /* "/data/music/" */
+    size_t n = strnlen(folder, FS_PATH_MAX - 1);
+    memcpy(sc->dir, folder, n);
+    sc->dir[n] = '\0';
+    while (n > 1 && sc->dir[n - 1] == '/')
+        sc->dir[--n] = '\0';   /* "/data/music/" */
     if (n == 1)
-        dir[0] = '\0';     /* "/": its entries are "/data", ... */
-    st = walk(t, dir, 0);
-    free(dir);
+        sc->dir[--n] = '\0';   /* "/": its entries are "/data", ... */
+    sc->len[0] = n;
+    return OK;
+}
+
+/* One entry of the folder being read (the stack's top). */
+static status_t scan_one(struct tracks *t, struct scan *sc)
+{
+    unsigned k = sc->depth;
+    size_t len = sc->len[k];
+    char *dir = sc->dir;
+    struct fs_entry *e = &sc->e;
+    dir[len] = '\0';
+    status_t r = fs_readdir(len ? dir : "/", sc->idx[k]++, e);
+    if (r != OK) {
+        if (r != ERR_NOT_FOUND)   /* past the last; else what it had so far stays */
+            printf("music: %s: can't read the folder (%s)\n", len ? dir : "/", status_str(r));
+        if (k == 0)
+            sc->done = true;
+        else
+            sc->depth--;
+        return OK;
+    }
+    if (e->name[0] == '.' || (!e->is_dir && !track_wanted(e->name)))
+        return OK;
+    size_t n = strlen(e->name);
+    if (len + 1 + n >= FS_PATH_MAX) {
+        printf("music: %s/%s: the path is too long: left out\n", dir, e->name);
+        return OK;
+    }
+    dir[len] = '/';
+    memcpy(dir + len + 1, e->name, n + 1);
+    status_t st = OK;
+    if (!e->is_dir) {
+        st = add(t, dir);
+    } else if (k + 1 > MAX_DEPTH) {
+        printf("music: %s: more than %u folders down: left out\n", dir, MAX_DEPTH);
+    } else {
+        sc->depth = k + 1;   /* into it; its own entries from 0 */
+        sc->len[k + 1] = len + 1 + n;
+        sc->idx[k + 1] = 0;
+    }
+    return st;
+}
+
+status_t tracks_scan_step(struct tracks *t, unsigned entries)
+{
+    struct scan *sc = t->scan;
+    if (!sc)
+        return ERR_BAD_STATE;
+    status_t st = OK;
+    for (unsigned i = 0; i < entries && !sc->done && st == OK; i++)
+        st = scan_one(t, sc);
+    if (st == OK && !sc->done)
+        return ERR_SHOULD_WAIT;
+    free(t->scan);
+    t->scan = NULL;
     if (st == OK && t->count) {
         t->bad = calloc(t->count, 1);
         t->order = malloc(t->count * sizeof(*t->order));
