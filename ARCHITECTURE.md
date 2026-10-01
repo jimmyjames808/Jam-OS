@@ -109,10 +109,18 @@ Every driver and service is a userspace process from the start.
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played. The splash borrows the screen
-  like any app, starts the video and its sound together once the mixer is
-  up (2 s at most, then silently), holds the last frame at least 0.5 s and
-  until the shell calls `initctl.shell_ready`, and fades into the
-  console's text. Any key skips it (the sound fades out).
+  like any app (but not the keys), starts the video and its sound together
+  once the mixer is up (2 s at most, then silently), plays to the end,
+  holds the last frame at least 0.5 s and until the shell calls
+  `initctl.shell_ready`, and fades into the console's text. No key skips
+  it: what is typed meanwhile waits in the console (keys typed before
+  anyone listens go to the first to open the keys) and reaches the shell
+  once it is up. `run splash` from the shell takes the keys, and there a
+  key skips it.
+- **The timer check** (every CPU's ticks counted over 1 s): the test,
+  benchmark and regression entries run it before anything else; a plain
+  boot runs it in a kernel thread next to user space, so the second is not
+  spent before init starts (its lines come in the log when it ends).
 
 ## Memory
 
@@ -142,7 +150,7 @@ Every driver and service is a userspace process from the start.
   the highest, is taken out of the memory map right after the early
   allocator starts (`pmm_early_alloc_low`) and never given back; after the
   startup it holds a halt stub.
-- **The stored kernel's region** (128 MiB below 4 GiB by default,
+- **The stored kernel's region** (32 MiB below 4 GiB by default,
   `crashkernel=<MiB>`) is taken out of the memory map before the PMM
   starts and typed `BOOT_MEM_FOREIGN`: RAM nobody may map as MMIO, but not
   the PMM's, not in the HHDM and in no other mapping
@@ -272,8 +280,7 @@ Every driver and service is a userspace process from the start.
   microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
-  releases each), kept as a fallback (the kernel's own startup was signed
-  off on the PC with M8.5). After a kexec there is no loader: the kernel's
+  releases each), kept for troubleshooting. After a kexec there is no loader: the kernel's
   startup is the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
@@ -487,7 +494,7 @@ Every driver and service is a userspace process from the start.
 | Component | Uses | Provides | Built |
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
-| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (`drivers/usb-bus/task.c`) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
@@ -960,7 +967,7 @@ boot saves the panicked boot's log first and the shell prints one line
 about it. Code in `kernel/kexec/`; the plan, with the layout and the
 decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 
-- **The region** (128 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
+- **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write
   can't reach it. It is written only through a 2 MiB window mapped,
   written and unmapped with a TLB shootdown (`region.c`).
@@ -996,7 +1003,10 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   bootstrap processor: an INIT to the BSP would start the firmware or
   reset the board, so the BSP, halted like the rest, waits for a jump
   decided on an AP and makes it itself; the next kernel always starts on
-  the BSP and starts every AP. Without a stored kernel
+  the BSP and starts every AP. A jump decided and then not made (the AP
+  never hands it over within 10 s, or the panicking CPU faults again)
+  resets through the firmware: the screen is dark by then, and a reset
+  beats a dark hang. Without a stored kernel
   (`crashkernel=0`, no region, a damaged one) or in a crash loop the panic
   screen is drawn as before M8.5, with the reason, and the machine halts.
 - **The next boot after a panic** checks the record and the ring as

@@ -324,7 +324,35 @@ static status_t op_text(void *ctx, uint16_t length, const uint8_t bytes[64])
     return OK;
 }
 
-static const struct input_ops input_ops = { op_key, op_mouse, op_text };
+/* When the first keyboard and the first mouse became usable (ns since the
+ * kernel started; 0: none yet), for the boot log. */
+static uint64_t first_ready[3];
+
+static status_t op_ready(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    (void)ctx;
+    if (kind != INPUT_READY_KEYBOARD && kind != INPUT_READY_MOUSE)
+        return ERR_INVALID_ARGS;
+    uint64_t t = now();
+    bool first = !first_ready[kind];
+    if (first)
+        first_ready[kind] = t;
+    printf("console: %s %04x:%04x ready %lu.%03lu s after the kernel started%s\n",
+           kind == INPUT_READY_KEYBOARD ? "keyboard" : "mouse", vendor, product,
+           (unsigned long)(t / NS_PER_S), (unsigned long)(t % NS_PER_S / NS_PER_MS),
+           first ? (kind == INPUT_READY_KEYBOARD ? " (the first keyboard)" : " (the first mouse)")
+                 : "");
+    uint64_t k = first_ready[INPUT_READY_KEYBOARD], m = first_ready[INPUT_READY_MOUSE];
+    if (first && k && m) {
+        uint64_t both = k > m ? k : m;
+        printf("console: input ready: the first keyboard and mouse %lu.%03lu s after the kernel "
+               "started\n", (unsigned long)(both / NS_PER_S),
+               (unsigned long)(both % NS_PER_S / NS_PER_MS));
+    }
+    return OK;
+}
+
+static const struct input_ops input_ops = { op_key, op_mouse, op_text, op_ready };
 
 status_t op_connect_input(void *ctx, handle_t *out)
 {

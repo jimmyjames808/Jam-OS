@@ -3,7 +3,7 @@
  * "Revision 2").
  *
  * At boot the kernel reserves a physically contiguous region of RAM
- * (crashkernel=<MiB>, default 128, below 4 GiB) and unmaps it: the HHDM
+ * (crashkernel=<MiB>, default 32, below 4 GiB) and unmaps it: the HHDM
  * skips it (BOOT_MEM_FOREIGN) and nothing else maps it, so no wild write
  * can reach it. Into it goes the stored kernel, a ready-to-run copy of
  * the kernel and bootfs this boot started from (the boot modules: Limine
@@ -31,7 +31,11 @@
 #include <jam/boot.h>
 #include <jam/status.h>
 
-#define KEXEC_DEFAULT_MIB 128
+/* The region's size: the stored kernel needs about 12 MiB (kernel 4 MiB
+ * with its bss, bootfs 4.3, the kernel file again 3.3, tables and stack
+ * 0.6, measured in QEMU), so 32 leaves room for a bigger log ring and
+ * a bigger bootfs. ktest kexec_region_has_room says when it gets tight. */
+#define KEXEC_DEFAULT_MIB 32
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
 /* A panic this soon after a start that was itself a panic's halts on its
  * panic screen instead of jumping again (a crash loop). */
@@ -73,6 +77,11 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size);
  * INIT, the screen filled with the splash background, the jump. */
 bool           kexec_panic_begin(void);
 void           kexec_panic_message(const char *msg);
+/* A panic's text as the crash record's message: at most size - 1 bytes,
+ * a newline as a space and every other byte outside printable ASCII (a
+ * tab, UTF-8) as '?', so the next kernel, which shows it, gets plain text.
+ * Pure: the panic path uses it. */
+void           kexec_message_clean(char *dst, size_t size, const char *src);
 const char    *kexec_panic_why_not(void);
 _Noreturn void kexec_panic_jump(void);
 /* A CPU halted by the panic's (or kexec_reboot's) NMI (arch/x86_64/ipi.c).
@@ -84,6 +93,11 @@ _Noreturn void kexec_panic_jump(void);
  * CPU that decides: it makes the jump if that one is an AP, or halts. */
 bool           kexec_halted_will_wait(void);
 _Noreturn void kexec_halted_wait(void);
+/* The panicking CPU faulted (a nested panic) after kexec_panic_begin said
+ * it would jump: the screen is dark already, so rather than halt there
+ * with nothing on it, reset through the firmware (debug/panic.c). The
+ * BSP's wait in kexec_halted_wait is bounded for the same reason. */
+_Noreturn void kexec_panic_failed(void);
 /* Is a panic now a crash loop? This boot started after a panic
  * (after_panic) and has run for uptime_ns. */
 bool kexec_crash_loop(bool after_panic, uint64_t uptime_ns);
@@ -115,6 +129,13 @@ status_t kexec_reboot(void);
  * kernel (the crash test kexecbad: the next panic must refuse it). */
 bool     kexec_verify(void);
 status_t kexec_test_corrupt(void);
+/* The bytes the stored kernel takes from the region's start, 0 if none. */
+uint64_t kexec_stored_bytes(void);
+/* Crash tests: break the next panic's jump after its decision. STALL: an
+ * AP never hands the jump to the BSP (kexecstall); FAULT: the panicking
+ * CPU faults (kexecfault). Either must end in a firmware reset. */
+enum { KEXEC_TEST_NONE, KEXEC_TEST_STALL, KEXEC_TEST_FAULT };
+void     kexec_test_break(int how);
 
 /* Memory maps (kernel/kexec/memmap.c). Give [base, base + len) the type
  * `type` in map[0..*n): every entry it overlaps is split (at most two more
@@ -132,8 +153,14 @@ void     kexec_memmap_merge(struct boot_mem_region *map, size_t *n);
  * stored kernel: read the previous kernel's crash record (bi->kexec_record)
  * and, if it panicked, copy its log ring into a VMO for init
  * (SR_CRASHLOG); then free the CRASH_LOG pages. Logs what it found. Every
- * byte of it is untrusted. */
+ * byte of it is untrusted. A record whose own checks pass (place, magic,
+ * version, size, checksum, kind) says how the previous kernel ended, and a
+ * panic counts for the crash-loop rule even if its log can't be used. */
 void crashlog_init(const struct boot_info *bi);
+/* Tests: crashlog_init's reading of bi->kexec_record, with none of its
+ * effects. NULL if the record says how the previous kernel ended, else why
+ * not; then *panicked (it was a panic) and *log_ok (its log can be saved). */
+const char *crashlog_check(const struct boot_info *bi, bool *panicked, bool *log_ok);
 /* This boot was started by a kernel that panicked. */
 bool crashlog_after_panic(void);
 /* Panics in a row before this boot (0 if it wasn't started by one). */

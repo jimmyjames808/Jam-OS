@@ -5,16 +5,18 @@
 # prompt instead). The panic starts the stored kernel: its boot's shell
 # says what happened ("the last boot panicked: ..."), and `reboot -f` ends
 # the run. kexecbad damages the stored kernel first, so its panic must
-# halt on the panic screen instead. The boot words (testpf, ...) still run
+# halt on the panic screen instead; kexecstall and kexecfault break the jump
+# after it was decided, and must end in a firmware reset (QEMU's
+# -no-reboot ends the run there), not a dark hang. The boot words (testpf, ...) still run
 # them at boot: tools/qemu-test.sh <outdir> <name> testpf.
-# QEMU_SMP passes through (lockirq, stuck and watchdog need 2 CPUs).
+# QEMU_SMP passes through (lockirq, stuck, watchdog and kexecstall need 2 CPUs).
 # Usage: tools/crash-test.sh <outdir> [name ...]  (default: all of them);
 # exit 0 if every one did what it must.
 set -u
 out=$1
 shift
 all="bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog
-     smap smep kexecread kexecbad"
+     smap smep kexecread kexecbad kexecstall kexecfault"
 names=${*:-$all}
 mkdir -p "$out"
 fails=0
@@ -35,6 +37,14 @@ for n in $names; do
             echo "wait 60 KERNEL PANIC"
             echo "wait 30 no restart: the stored kernel's checksum no longer matches"
             echo "wait 30 system halted" ;;
+        kexecstall)
+            echo "wait 60 KERNEL PANIC"
+            echo "wait 30 didn't hand the jump over within 10 s: a firmware reboot instead"
+            echo "wait 10 reboot: resetting" ;;
+        kexecfault)
+            echo "wait 60 KERNEL PANIC"
+            echo "wait 30 a fault on the panicking CPU after it decided to start the stored kernel: a firmware reboot instead"
+            echo "wait 10 reboot: resetting" ;;
         *)
             echo "wait 60 KERNEL PANIC"
             echo "wait 30 starting the stored kernel"

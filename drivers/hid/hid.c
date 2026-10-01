@@ -495,6 +495,20 @@ static const char *kind_name(const struct hid *h)
     return h->report_mode ? "report mouse" : "boot mouse";
 }
 
+/* Tell the console that this keyboard or mouse works from now on (it logs
+ * when). A console that doesn't know the call is fine: it is only for the
+ * log. */
+static void tell_ready(struct hid *h)
+{
+    if (h->input == HANDLE_INVALID)
+        return;
+    uint8_t kind = h->kind == HID_KEYBOARD ? INPUT_READY_KEYBOARD : INPUT_READY_MOUSE;
+    status_t st = input_ready_until(h->input, deadline(INPUT_TIMEOUT), kind, h->vendor,
+                                    h->product);
+    if (st != OK && st != ERR_NOT_SUPPORTED)
+        input_result(h, st, "ready");
+}
+
 /* 0..: the driver ends with that code; -1: serve reports. */
 static int setup(struct hid *h)
 {
@@ -530,6 +544,7 @@ static int setup(struct hid *h)
     /* Short: the RESULTS box is 120 columns. */
     say_result("hid %04x:%04x if %u: %s ready%s", h->vendor, h->product, h->iface, what,
                h->input == HANDLE_INVALID ? " (no console: keys go to the log)" : "");
+    tell_ready(h);
     return -1;
 }
 

@@ -27,7 +27,7 @@
 #define START_CLIENTS 8
 #define MAX_SOURCES 16
 #define MAX_FOCUS   8
-#define PENDING_KEYS 128
+#define PENDING_KEYS 256
 #define RENDER_NS  16000000ull
 /* One round of one client's requests: a count and a time, so a client
  * writing flat out can't hold up the keys (Ctrl+C), the other clients or

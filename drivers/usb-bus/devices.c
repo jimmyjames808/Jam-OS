@@ -7,10 +7,17 @@
  * go of the slot (disable_slot): until then the controller may still
  * write into them.
  *
+ * A device that goes (detach) is marked gone at once, and its entry is
+ * freed by dev_reap once no task holds it (dev_hold, dev_put): a task
+ * that waits in the middle of a request to the device finds the entry
+ * still there, gone, when it wakes. A hub's entry is freed after every
+ * entry below it, so a used entry's parent entry is always in use too.
+ *
  * Each device has two pool pages of context (xHCI 6.2): the input context
  * a command reads (index 0 the control context, 1 the slot, dci + 1 an
  * endpoint) and the output (device) context the controller keeps (index 0
- * the slot, dci an endpoint). Both are g_hc.csz bytes per entry. */
+ * the slot, dci an endpoint), both g_hc.csz bytes per entry; and a third
+ * page for its control transfers' data (control.c). */
 #include "usbbus.h"
 
 struct usbdev *g_devs;
@@ -55,9 +62,18 @@ struct usbdev *dev_find(uint32_t id)
 struct usbdev *child_at(int parent, uint8_t port)
 {
     for (int i = 0; i < MAX_DEVS; i++)
-        if (g_devs[i].used && g_devs[i].parent == parent && g_devs[i].port == port)
+        if (g_devs[i].used && !g_devs[i].gone && g_devs[i].parent == parent &&
+            g_devs[i].port == port)
             return &g_devs[i];
     return NULL;
+}
+
+bool port_entry_left(int parent, uint8_t port)
+{
+    for (int i = 0; i < MAX_DEVS; i++)
+        if (g_devs[i].used && g_devs[i].parent == parent && g_devs[i].port == port)
+            return true;
+    return false;
 }
 
 struct usbdev *dev_alloc(void)
@@ -70,7 +86,7 @@ struct usbdev *dev_alloc(void)
         d->used = true;
         d->id = ++next_id;
         d->parent = -1;
-        d->out_page = d->in_page = -1;
+        d->out_page = d->in_page = d->ctl.page = -1;
         d->ep0.page = -1;
         for (int k = 0; k < 32; k++) {
             d->eps[k].ring.page = -1;
@@ -119,11 +135,59 @@ void dev_free(struct usbdev *d, bool slot_disabled)
         pool_free(&g_hc, d->out_page);
     if (d->in_page >= 0)
         pool_free(&g_hc, d->in_page);
-    d->out_page = d->in_page = -1;
+    if (d->ctl.page >= 0)
+        pool_free(&g_hc, d->ctl.page);
+    d->out_page = d->in_page = d->ctl.page = -1;
     if (d->cfg)
         drv_free(d->cfg);
     d->cfg = NULL;
     d->used = false;
+}
+
+void dev_hold(struct usbdev *d)
+{
+    d->holds++;
+}
+
+void dev_put(struct usbdev *d)
+{
+    if (d->holds)
+        d->holds--;
+    if (!d->holds && d->gone)
+        dev_reap();
+}
+
+/* A gone entry nobody holds, with no entry below it left: the next to free. */
+static struct usbdev *reapable(void)
+{
+    for (int i = 0; i < MAX_DEVS; i++) {
+        struct usbdev *d = &g_devs[i];
+        if (!d->used || !d->gone || d->holds || d->reaping)
+            continue;
+        bool below = false;
+        for (int k = 0; k < MAX_DEVS && !below; k++)
+            below = g_devs[k].used && g_devs[k].parent == i;
+        if (!below)
+            return d;
+    }
+    return NULL;
+}
+
+void dev_reap(void)
+{
+    /* Each round frees one entry; Disable Slot waits, and other tasks may
+     * free (or hold) entries meanwhile, so the next is looked up afresh. */
+    for (int guard = 0; g_devs && guard < MAX_DEVS; guard++) {
+        struct usbdev *d = reapable();
+        if (!d)
+            return;
+        d->reaping = true;
+        /* Stopping: no Disable Slot per device. hc_shutdown's halt and
+         * reset, right after, clear every slot; one unanswered command
+         * per device could otherwise outlast devmgr's STOP_WAIT. */
+        bool off = g_hc.stopping ? false : disable_slot(d);
+        dev_free(d, off);
+    }
 }
 
 bool disable_slot_id(const char *path, uint32_t slot)

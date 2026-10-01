@@ -1,7 +1,7 @@
 /* usb-bus: attaching a device (enumeration) and detaching it (xHCI 1.2
  * chapter 4, USB 2.0 chapter 9).
  *
- * Enumeration, one device at a time: port connect -> debounce -> reset
+ * Enumeration, a task per port (task.c): port connect -> debounce -> reset
  * (USB 2 root ports: PORTSC.PR; USB 3 root ports train by themselves, warm
  * reset if stuck; hub ports: SET_FEATURE(PORT_RESET)) -> speed; that much
  * is rootport.c's and hub.c's. Then enumerate(), here: Enable Slot ->
@@ -19,8 +19,8 @@
  * supports), so MTT is 0 for them and for the devices behind them.
  *
  * Every wait is bounded; a device that fails is logged with the step and
- * the completion code, its slot is disabled, and the port is tried at
- * most three times until it disconnects. Nothing here can hang the
+ * the completion code, its slot is disabled, and the port is tried again
+ * a few times, sooner at first (PORT_TRIES), until it disconnects. Nothing here can hang the
  * driver: commands abort after their timeout, control transfers stop
  * their endpoint after theirs. */
 #include "usbbus.h"
@@ -32,6 +32,8 @@ struct attach {
     const char *failed_at; /* the step that failed, NULL while none has */
     uint32_t cc;           /* that step's completion code */
     uint8_t iproduct;      /* the product string's index, from the device descriptor */
+    bool addr0;            /* still holding the root port's default address (addr0_take) */
+    uint64_t t0;           /* when enumerate started (ns), for the Address Device log */
 };
 
 static bool failed(struct attach *a, const char *step, uint32_t cc)
@@ -108,28 +110,37 @@ static bool enable_slot(struct attach *a)
     return true;
 }
 
-/* The input and output contexts and EP0's ring; the output context goes
- * into the DCBAA. */
+/* The input and output contexts, EP0's ring and its control transfers'
+ * bounce page; the output context goes into the DCBAA. */
 static bool alloc_contexts(struct attach *a)
 {
     struct hc *h = &g_hc;
     struct usbdev *d = a->d;
     d->out_page = pool_alloc(h);
     d->in_page = pool_alloc(h);
-    if (d->out_page < 0 || d->in_page < 0 || !ring_init(h, &d->ep0))
+    d->ctl.page = pool_alloc(h);
+    if (d->out_page < 0 || d->in_page < 0 || d->ctl.page < 0 || !ring_init(h, &d->ep0))
         return failed(a, "memory for the contexts", CC_RESOURCE);
     hc_set_dcbaa(h, d->slot, pool_dev(h, d->out_page));
     return true;
 }
 
-/* Address Device: the slot context and EP0 (its max packet guessed from
- * the speed), tried twice. */
-static bool address_device(struct attach *a)
+/* Address Device (BSR=0): the controller sends the device SET_ADDRESS.
+ * USB 2.0 9.2.6.3 gives a device 50 ms to finish SET_ADDRESS's status
+ * stage, and the xHCI command has no timeout of its own: a device that
+ * keeps NAKing it keeps the command, and with it the whole command ring,
+ * busy until software aborts it (xHCI 4.6.1.2). So each try gets
+ * ADDRESS_MS, five times the device's allowance, and a second try after a
+ * short pause; a device still not answering fails the attempt, and the
+ * port is tried again from its reset (rootport.c, hub.c). */
+#define ADDRESS_MS    250
+#define ADDRESS_TRIES 2
+
+/* The slot context and EP0 (its max packet guessed from the speed). */
+static void address_context(struct usbdev *d)
 {
-    struct hc *h = &g_hc;
-    struct usbdev *d = a->d;
     d->mps0 = d->speed >= SPEED_SUPER ? 512 : d->speed == SPEED_HIGH ? 64 : 8;
-    zero(pool_va(h, d->in_page), PAGE);
+    zero(pool_va(&g_hc, d->in_page), PAGE);
     volatile uint32_t *ctl = in_ctx(d, 0), *sc = in_ctx(d, 1), *e0 = in_ctx(d, 2);
     ctl[1] = 3;   /* A0 | A1 */
     sc[0] = (d->route & 0xfffff) | ((uint32_t)d->speed << 20) | ((uint32_t)d->tt_mtt << 25) |
@@ -142,14 +153,29 @@ static bool address_device(struct attach *a)
     e0[2] = (uint32_t)d->ep0.dev | 1;
     e0[3] = (uint32_t)(d->ep0.dev >> 32);
     e0[4] = 8;
+}
+
+/* What the port says now, for the log of a failed try: on a root port its
+ * PORTSC (connected, enabled, a connect change since the reset). */
+static uint32_t port_now(const struct usbdev *d)
+{
+    return d->parent < 0 ? hc_portsc(&g_hc, d->port) : 0;
+}
+
+static bool address_device(struct attach *a)
+{
+    struct hc *h = &g_hc;
+    struct usbdev *d = a->d;
+    address_context(d);
     uint32_t cc = CC_TIMEOUT;
-    for (int attempt = 0; attempt < 2 && !h->stopping; attempt++) {
+    for (int attempt = 0; attempt < ADDRESS_TRIES && !h->stopping && !d->gone; attempt++) {
         cc = hc_command(h, (uint32_t)in_dev(d), (uint32_t)(in_dev(d) >> 32), 0,
-                        TRB_TYPE(TRB_ADDRESS_DEV) | ((uint32_t)d->slot << 24), NULL, 3000);
+                        TRB_TYPE(TRB_ADDRESS_DEV) | ((uint32_t)d->slot << 24), NULL, ADDRESS_MS);
         if (cc == CC_SUCCESS)
             break;
-        drv_log("usb %s: Address Device: %s; %s", d->path, cc_str(cc),
-                attempt ? "giving up" : "trying again");
+        drv_log("usb %s: Address Device: %s, %lu ms into the attempt (PORTSC %08x); %s", d->path,
+                cc_str(cc), (unsigned long)((drv_clock_ns() - a->t0) / NS_PER_MS), port_now(d),
+                attempt + 1 < ADDRESS_TRIES ? "trying again" : "giving up");
         hc_sleep(h, 20);
     }
     if (cc != CC_SUCCESS)
@@ -252,6 +278,48 @@ static bool strings(struct attach *a)
     return true;
 }
 
+/* For the tests only: a device whose serial number is TEST_SLOW_SERIAL
+ * (QEMU gives a device one with `serial=`) behaves like the PC's gaming
+ * mouse at its worst: each of its first TEST_SLOW_FAILS attempts on a
+ * port takes TEST_SLOW_MS and fails, as if the device didn't answer. So
+ * tools/usb-early-test.sh can show that it holds up nobody but itself,
+ * and that its port is tried again until it attaches. */
+#define TEST_SLOW_SERIAL "jamos-test-slow"
+#define TEST_SLOW_FAILS  2
+#define TEST_SLOW_MS     1000
+
+static bool same(const char *x, const char *y)
+{
+    while (*x && *x == *y)
+        x++, y++;
+    return *x == *y;
+}
+
+static bool test_slow(struct attach *a)
+{
+    static struct {
+        char path[24];   /* the port ("" free) */
+        uint8_t fails;   /* attempts failed there so far */
+    } seen[4];
+    struct usbdev *d = a->d;
+    if (!same(d->serial, TEST_SLOW_SERIAL))
+        return true;
+    unsigned i = 0;
+    while (i < 4 && seen[i].path[0] && !same(seen[i].path, d->path))
+        i++;
+    if (i == 4)
+        return true;
+    if (!seen[i].path[0])
+        copy(seen[i].path, d->path, sizeof(seen[i].path));
+    if (seen[i].fails >= TEST_SLOW_FAILS)
+        return true;
+    seen[i].fails++;
+    drv_log("usb %s: the test's slow device: attempt %u takes %u ms and fails", d->path,
+            seen[i].fails, TEST_SLOW_MS);
+    hc_sleep(&g_hc, TEST_SLOW_MS);
+    return failed(a, "the test's slow device", CC_TIMEOUT);
+}
+
 /* A hub by its device or first interface class, unless it would be one
  * tier too many. Never fails. */
 static bool hub_or_not(struct attach *a)
@@ -315,6 +383,7 @@ static bool (*const steps[])(struct attach *a) = {
     device_descriptor,
     configuration,
     strings,
+    test_slow,
     hub_or_not,
     set_configuration,
     setup_hub,
@@ -335,10 +404,8 @@ static void attach_failed(struct usbdev *d, const char *step, uint32_t cc)
     if (d->tt_slot)
         drv_log("usb %s: slot context had TT hub slot %u, TT port %u, MTT %u, route %05x",
                 d->path, d->tt_slot, d->tt_port, d->tt_mtt, d->route);
-    d->gone = true;
+    d->gone = true;   /* freed by enumerate's dev_put */
     serve_iface_gone(d->id);
-    bool off = disable_slot(d);
-    dev_free(d, off);
     g_last_change_ns = drv_clock_ns();
 }
 
@@ -358,44 +425,63 @@ static void attached(struct usbdev *d)
 }
 
 /* The steps in order. The first that fails ends it: the failure is
- * reported with the step and completion code, the slot disabled and the
- * entry freed. */
+ * reported with the step and completion code, and the entry goes (its
+ * slot disabled) once nothing holds it. The default address is given
+ * back as soon as the device has its own (or has failed). */
 bool enumerate(int parent, uint8_t port, uint8_t speed)
 {
     struct usbdev *d = dev_alloc();
+    uint8_t rp = parent >= 0 ? g_devs[parent].root_port : port;
     if (!d) {
+        addr0_give(rp);
         g_failed++;
         drv_report("usb: port %u: more than %u devices; not enumerated", port, MAX_DEVS);
         return false;
     }
+    dev_hold(d);
     dev_place(d, parent, port, speed);
-    struct attach a = { .d = d };
-    for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++)
-        if (!steps[i](&a)) {
-            attach_failed(d, a.failed_at, a.cc);
-            return false;
+    struct attach a = { .d = d, .addr0 = true, .t0 = drv_clock_ns() };
+    bool ok = true;
+    for (unsigned i = 0; ok && i < sizeof(steps) / sizeof(steps[0]); i++) {
+        ok = steps[i](&a);
+        if (a.addr0 && (steps[i] == address_device || !ok)) {
+            addr0_give(rp);
+            a.addr0 = false;
         }
-    attached(d);
-    return d->configured;
+    }
+    if (ok && d->gone)
+        ok = failed(&a, "the hub above it went away", CC_GONE);
+    if (ok)
+        attached(d);
+    else
+        attach_failed(d, a.failed_at, a.cc);
+    bool configured = ok && d->configured;
+    dev_put(d);
+    return configured;
 }
 
-void detach(struct usbdev *d, const char *why, bool quiet)
+/* d and every device below it: gone, their channels closed, logged. No
+ * waits, so the whole branch is gone before any task runs again. */
+static void mark_gone(struct usbdev *d, const char *why, bool quiet)
 {
     int me = dev_index(d);
     d->gone = true;
     for (int i = 0; i < MAX_DEVS; i++)
-        if (g_devs[i].used && g_devs[i].parent == me)
-            detach(&g_devs[i], "its hub went away", quiet);
+        if (g_devs[i].used && !g_devs[i].gone && g_devs[i].parent == me)
+            mark_gone(&g_devs[i], "its hub went away", quiet);
     serve_iface_gone(d->id);   /* its interface and report channels: the peers see PEER_CLOSED */
     if (!quiet)
         drv_log("usb %s: %04x:%04x detached (%s)", d->path, d->vid, d->pid, why);
     if (d->vid && g_first_report_done && !quiet)
         g_detached++;
-    /* Stopping: no Disable Slot per device. hc_shutdown's halt and reset,
-     * right after, clear every slot; one unanswered command per device
-     * could otherwise outlast devmgr's STOP_WAIT. */
-    bool off = g_hc.stopping ? false : disable_slot(d);
-    dev_free(d, off);
     g_generation++;
     g_last_change_ns = drv_clock_ns();
+}
+
+void detach(struct usbdev *d, const char *why, bool quiet)
+{
+    if (d->gone)
+        return;
+    mark_gone(d, why, quiet);
+    dev_reap();
 }

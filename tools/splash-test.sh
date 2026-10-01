@@ -17,10 +17,10 @@
 #            `run splash --selftest` passes; `run splash --alpha` draws the
 #            logo with libfun's anti-aliased discs (their colours, a partly
 #            covered edge).
-#   skip     at the PC's 2560x1440 (QEMU's VGA; the video at 2x): a
-#            screenshot is a frame at 2x; a key typed while it plays skips
-#            it (the mixer takes far less than the whole sound) and doesn't
-#            reach the shell.
+#   keys     at the PC's 2560x1440 (QEMU's VGA; the video at 1:1): a
+#            screenshot is a frame at 1:1; lines typed while it plays don't
+#            skip it (it plays to the end, the mixer takes its whole sound)
+#            and reach the shell once it is up, which runs them.
 #   verbose, nosplash   the boot words: the kernel's text log is on the
 #            screen as init starts, no splash runs, the shell comes up.
 #   panic    `shell testpf`: a panic at boot with the screen quiet draws
@@ -84,25 +84,27 @@ check alpha "$out/splash-alpha.png"
 need "$log" "splash: alpha demo drawn"
 if [ -n "$join" ]; then check sound "$out/splash.wav" "$join"; else ok=0; fi
 
-# ---- skip: a key, at 2560x1440 -------------------------------------------------
-rm -f "$out/skip.wav"
+# ---- keys: typed while it plays, at 2560x1440 ----------------------------------
+rm -f "$out/keys.wav"
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
-    QEMU_EXTRA="$(snd "$out/skip.wav") -vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64" \
-    QEMU_INPUT=tools/shell-tests/splash-skip.txt tools/qemu-test.sh "$out" skip shell \
-    > "$out/skip.out" 2>&1 || { echo "skip: the script failed"; tail -3 "$out/skip.out"; ok=0; }
-need "$out/skip.log" "at 1:1 on 2560x1440" "splash: skipped by a key" "console: the screen is back"
+    QEMU_EXTRA="$(snd "$out/keys.wav") -vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64" \
+    QEMU_INPUT=tools/shell-tests/splash-keys.txt tools/qemu-test.sh "$out" keys shell \
+    > "$out/keys.out" 2>&1 || { echo "keys: the script failed"; tail -3 "$out/keys.out"; ok=0; }
+need "$out/keys.log" "at 1:1 on 2560x1440" "splash: played at" "typed-kept" \
+    "console: the screen is back"
+if grep -aqF "skipped by a key" "$out/keys.log"; then echo "keys: a key skipped the splash"; ok=0; fi
 check frame "$out/splash-hd.png" 2560
-# The sound cut short: the mixer took far less than the track's 6.5 s
-# (the capture itself isn't checked here: at 2560x1440 QEMU's emulation is
-# too busy to keep its own audio timing, which the guest's stats rule out).
-taken=$(grep -aE "\(splash\) closed .*: [0-9]+ frames taken" "$out/skip.log" | head -1 |
+# The whole sound: the mixer took (nearly) all of the track (the capture
+# itself isn't checked here: at 2560x1440 QEMU's emulation is too busy to
+# keep its own audio timing).
+taken=$(grep -aE "\(splash\) closed .*: [0-9]+ frames taken" "$out/keys.log" | head -1 |
         sed -n 's/.*: \([0-9]*\) frames taken.*/\1/p')
-long=$(grep -aE "splash: first frame .* [0-9]+ ms long" "$out/skip.log" | head -1 |
+long=$(grep -aE "splash: first frame .* [0-9]+ ms long" "$out/keys.log" | head -1 |
        sed -n 's/.* \([0-9]*\) ms long.*/\1/p')
 whole=$(( ${long:-0} * 48 ))
-echo "skip: the mixer took ${taken:-?} frames of the splash's sound (the whole track: $whole)"
-[ -n "$taken" ] && [ "$taken" -lt $((whole - 48000)) ] ||
-    { echo "skip: the sound wasn't cut short"; ok=0; }
+echo "keys: the mixer took ${taken:-?} frames of the splash's sound (the whole track: $whole)"
+[ -n "$taken" ] && [ "$taken" -ge $((whole * 9 / 10)) ] ||
+    { echo "keys: the sound was cut short"; ok=0; }
 
 # ---- verbose and nosplash: the text log --------------------------------------
 for word in verbose nosplash; do

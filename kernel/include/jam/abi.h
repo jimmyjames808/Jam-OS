@@ -250,6 +250,10 @@ struct pci_dev_info {
 #define INPUT_KEY_DOWN   1
 #define INPUT_KEY_REPEAT 2
 
+/* input.ready's kind */
+#define INPUT_READY_KEYBOARD 1
+#define INPUT_READY_MOUSE    2
+
 /* The HID boot report's modifier byte. */
 #define INPUT_MOD_LCTRL  (1u << 0)
 #define INPUT_MOD_LSHIFT (1u << 1)

@@ -20,7 +20,8 @@ status_t gfx_open(void)
     return gfx_open_on(0);
 }
 
-status_t gfx_open_on(uint32_t bg)
+/* The screen, and with `keys` the keyboard focus. */
+static status_t open_screen(uint32_t bg, bool keys)
 {
     memset(&scr, 0, sizeof(scr));
     scr.con = startup_handle(SR_CONSOLE);
@@ -28,7 +29,7 @@ status_t gfx_open_on(uint32_t bg)
         return ERR_NOT_FOUND;
     /* Keys first: then the screen (the console lends it to anyone who asks
      * on a PROGRAM channel; the focus makes the keys ours while we run). */
-    status_t st = console_open_keys(scr.con, &scr.keys);
+    status_t st = keys ? console_open_keys(scr.con, &scr.keys) : OK;
     if (st != OK)
         return st;
     uint32_t w, h, pitch;
@@ -37,7 +38,8 @@ status_t gfx_open_on(uint32_t bg)
     handle_t vmo;
     st = console_lend_screen(scr.con, &w, &h, &pitch, &rs, &gs, &bs, &size, &vmo, &scr.lease);
     if (st != OK) {
-        jam_handle_close(scr.keys);
+        if (scr.keys)
+            jam_handle_close(scr.keys);
         return st;
     }
     void *p = NULL;
@@ -55,7 +57,8 @@ status_t gfx_open_on(uint32_t bg)
     }
     if (st != OK) {
         jam_handle_close(scr.lease);
-        jam_handle_close(scr.keys);
+        if (scr.keys)
+            jam_handle_close(scr.keys);
         return st;
     }
     scr.fb = p;
@@ -76,6 +79,16 @@ status_t gfx_open_on(uint32_t bg)
     return OK;
 }
 
+status_t gfx_open_on(uint32_t bg)
+{
+    return open_screen(bg, true);
+}
+
+status_t gfx_open_screen(uint32_t bg)
+{
+    return open_screen(bg, false);
+}
+
 void gfx_close(void)
 {
     if (!scr.open)
@@ -83,7 +96,8 @@ void gfx_close(void)
     scr.open = false;
     mouse_close();
     jam_handle_close(scr.lease);   /* the console redraws its text screen */
-    jam_handle_close(scr.keys);    /* and the keys go back to the shell */
+    if (scr.keys)
+        jam_handle_close(scr.keys);   /* and the keys go back to the shell */
     scr.lease = scr.keys = HANDLE_INVALID;
 }
 

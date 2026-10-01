@@ -231,6 +231,14 @@ bool kexec_verify(void)
     return ok;
 }
 
+uint64_t kexec_stored_bytes(void)
+{
+    mutex_lock(&kx_lock);
+    uint64_t n = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE) == KX_ARMED ? kx.loaded : 0;
+    mutex_unlock(&kx_lock);
+    return n;
+}
+
 status_t kexec_test_corrupt(void)
 {
     mutex_lock(&kx_lock);

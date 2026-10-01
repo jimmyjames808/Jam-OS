@@ -1,9 +1,10 @@
 /* usb-bus: control transfers on endpoint 0, endpoint recovery commands,
  * and descriptors.
  *
- * One control transfer runs at a time, controller-wide (g_hc.ctl, with one
- * shared bounce page): Setup, optional Data, Status, then a bounded wait
- * that keeps servicing the controller. ctl_event matches the transfer
+ * One control transfer runs at a time per device (d->ctl, with the
+ * device's own bounce page; a task wanting EP0 while another task's
+ * transfer or its recovery runs there waits its turn): Setup, optional
+ * Data, Status, then a bounded wait that keeps servicing the controller. ctl_event matches the transfer
  * events to the stages. A transfer that never finishes stops its endpoint;
  * one that fails halts it and is reset here, so the next transfer starts
  * clean. A failed transfer to a full/low-speed device behind a high-speed
@@ -76,6 +77,7 @@ static void clear_tt_buffer(struct usbdev *d, uint32_t cc)
     struct usbdev *hub = dev_by_slot(d->tt_slot);
     if (!hub || hub->gone)
         return;
+    dev_hold(hub);
     uint16_t tt = d->tt_mtt ? d->tt_port : 1;
     uint32_t r[2] = { CC_SUCCESS, CC_SUCCESS };
     for (int in = 0; in < 2; in++) {
@@ -87,59 +89,72 @@ static void clear_tt_buffer(struct usbdev *d, uint32_t cc)
     if (++d->tt_clears <= 4)
         drv_log("usb %s: control transfer failed (%s): CLEAR_TT_BUFFER on hub %s port %u: %s, %s",
                 d->path, cc_str(cc), hub->path, tt, cc_str(r[0]), cc_str(r[1]));
+    dev_put(hub);
 }
 
-uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
-                     uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms)
+/* Wait until no other task uses d's EP0, then take it. False if d went
+ * or the driver is stopping meanwhile. */
+static bool ep0_take(struct usbdev *d)
 {
     struct hc *h = &g_hc;
-    if (actual)
-        *actual = 0;
-    if (d->gone || !d->slot || d->ep0.page < 0)
-        return CC_GONE;
-    if (h->dead)
-        return CC_GONE;
-    if (length > PAGE)
-        return CC_TRB;
+    while (d->ctl.locked && !d->gone && !h->dead && !h->stopping && in_task())
+        task_wait(drv_clock_ns() + 50 * NS_PER_MS);
+    if (d->ctl.locked || d->gone || h->dead || h->stopping)
+        return false;
+    d->ctl.locked = true;
+    return true;
+}
+
+static void ep0_give(struct usbdev *d)
+{
+    d->ctl.locked = false;
+    task_kick();
+}
+
+/* One control transfer, with d's EP0 taken. */
+static uint32_t control_locked(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value,
+                               uint16_t index, uint16_t length, void *data, uint32_t *actual,
+                               uint64_t timeout_ms)
+{
+    struct hc *h = &g_hc;
     bool in = rt & 0x80;
-    uint8_t *buf = pool_va(h, h->ctl_page);
-    uint64_t bdev = pool_dev(h, h->ctl_page);
+    uint8_t *buf = pool_va(h, d->ctl.page);
+    uint64_t bdev = pool_dev(h, d->ctl.page);
     if (!in && length)
         copy(buf, data, length);
-    h->ctl.busy = true;
-    h->ctl.done = false;
-    h->ctl.slot = d->slot;
-    h->ctl.cc = 0;
-    h->ctl.residual = 0;
-    h->ctl.short_seen = false;
-    h->ctl.data_trb = 0;
+    d->ctl.busy = true;
+    d->ctl.done = false;
+    d->ctl.cc = 0;
+    d->ctl.residual = 0;
+    d->ctl.short_seen = false;
+    d->ctl.data_trb = 0;
     uint32_t trt = length ? (in ? 3u : 2u) : 0u;
-    h->ctl.setup_trb = ring_push(&d->ep0, rt | (uint32_t)req << 8 | (uint32_t)value << 16,
+    d->ctl.setup_trb = ring_push(&d->ep0, rt | (uint32_t)req << 8 | (uint32_t)value << 16,
                                  index | (uint32_t)length << 16, 8,
                                  TRB_TYPE(TRB_SETUP) | TRB_IDT | trt << 16);
     if (length)
-        h->ctl.data_trb = ring_push(&d->ep0, (uint32_t)bdev, (uint32_t)(bdev >> 32), length,
+        d->ctl.data_trb = ring_push(&d->ep0, (uint32_t)bdev, (uint32_t)(bdev >> 32), length,
                                     TRB_TYPE(TRB_DATA) | (in ? TRB_DIR_IN | TRB_ISP : 0));
-    h->ctl.status_trb = ring_push(&d->ep0, 0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC |
+    d->ctl.status_trb = ring_push(&d->ep0, 0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC |
                                   ((in && length) ? 0 : TRB_DIR_IN));
     hc_doorbell(h, d->slot, 1);
     uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
-    while (!h->ctl.done && !d->gone && !h->dead && drv_clock_ns() < deadline)
+    while (!d->ctl.done && !d->gone && !h->dead && !h->stopping && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
     /* Not busy from here: on a timeout, the events of the transfer that
      * Stop Endpoint cuts short must not count as a result. */
-    h->ctl.busy = false;
+    d->ctl.busy = false;
     uint32_t cc;
-    if (h->ctl.done) {
-        cc = h->ctl.cc;
+    if (d->ctl.done) {
+        cc = d->ctl.cc;
     } else {
-        cc = d->gone || h->dead ? CC_GONE : CC_TIMEOUT;
-        if (!h->dead)
+        cc = d->gone || h->dead || h->stopping ? CC_GONE : CC_TIMEOUT;
+        if (cc == CC_TIMEOUT)
             ep_stop(d, 1, &d->ep0);
     }
     if (cc == CC_SUCCESS) {
-        uint32_t n = h->ctl.short_seen
-                         ? length - (h->ctl.residual < length ? h->ctl.residual : length)
+        uint32_t n = d->ctl.short_seen
+                         ? length - (d->ctl.residual < length ? d->ctl.residual : length)
                          : length;
         if (in && n)
             copy(data, buf, n);
@@ -155,29 +170,45 @@ uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, 
     return cc;
 }
 
-void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual)
+uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
+                     uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms)
 {
-    if (!h->ctl.busy || h->ctl.done)
+    if (actual)
+        *actual = 0;
+    if (d->gone || !d->slot || d->ep0.page < 0 || d->ctl.page < 0 || g_hc.dead)
+        return CC_GONE;
+    if (length > PAGE)
+        return CC_TRB;
+    if (!ep0_take(d))
+        return CC_GONE;
+    uint32_t cc = control_locked(d, rt, req, value, index, length, data, actual, timeout_ms);
+    ep0_give(d);
+    return cc;
+}
+
+void ctl_event(struct usbdev *d, uint64_t trb, uint32_t cc, uint32_t residual)
+{
+    if (!d->ctl.busy || d->ctl.done)
         return;
-    if (trb && trb == h->ctl.data_trb) {
+    if (trb && trb == d->ctl.data_trb) {
         if (cc == CC_SHORT_PACKET) {
-            h->ctl.short_seen = true;
-            h->ctl.residual = residual;
+            d->ctl.short_seen = true;
+            d->ctl.residual = residual;
             return;   /* the status stage follows */
         }
         if (cc == CC_SUCCESS)
             return;
-    } else if (trb && trb == h->ctl.status_trb) {
+    } else if (trb && trb == d->ctl.status_trb) {
         if (cc == CC_SUCCESS || cc == CC_SHORT_PACKET) {
-            h->ctl.cc = CC_SUCCESS;
-            h->ctl.done = true;
+            d->ctl.cc = CC_SUCCESS;
+            d->ctl.done = true;
             return;
         }
-    } else if (trb && trb != h->ctl.setup_trb && cc == CC_SUCCESS) {
+    } else if (trb && trb != d->ctl.setup_trb && cc == CC_SUCCESS) {
         return;   /* a leftover of an earlier transfer */
     }
-    h->ctl.cc = cc;
-    h->ctl.done = true;
+    d->ctl.cc = cc;
+    d->ctl.done = true;
 }
 
 status_t cc_status(uint32_t cc)
