@@ -1,4 +1,4 @@
-/* play_src: `play`'s sources (play_src.h). A WAV file: the header with
+/* play_src: the sources of `play` and the music player (<play_src.h>). A WAV file: the header with
  * <wav.h>, then the samples straight from the file, 8-, 24- and 32-bit
  * ones made 16-bit. An MPEG audio file (MP3, and MP2/MP1): decoded by
  * <mp3.h> (dr_mp3), which reads the file 64 KiB at a time. A file is a
@@ -6,9 +6,8 @@
  * frames (after any ID3v2 tag), else neither. */
 #include <audio.h>
 #include <mp3.h>
+#include <play_src.h>
 #include <wav.h>
-#include "play_src.h"
-#include "sh.h"
 
 struct play_src_ops {
     long (*read)(struct play_src *s, int16_t *out, size_t frames);
@@ -148,38 +147,6 @@ static status_t mp3_src_open(struct play_src *s, uint64_t size, const char **why
     s->ops = &mp3_ops;
     s->state = m;
     return OK;
-}
-
-/* ---- play -n ------------------------------------------------------------- */
-
-int play_src_time(const char *name, struct play_src *s)
-{
-    enum { CHUNK = 4096 };
-    int16_t *pcm = malloc((size_t)CHUNK * s->channels * sizeof(int16_t));
-    if (!pcm) {
-        sh_tty("play: %s: out of memory\n", name);
-        return 1;
-    }
-    uint64_t frames = 0, t0 = now();
-    long n = 0;
-    bool stopped = false;
-    while (!(stopped = sh_interrupted()) && (n = play_src_read(s, pcm, CHUNK)) > 0)
-        frames += (uint64_t)n;
-    uint64_t ns = now() - t0;
-    free(pcm);
-    if (n < 0) {
-        sh_tty("play: %s: stopped: %s\n", name, sh_why((status_t)n));
-        return 1;
-    }
-    /* Microseconds of decoding per second of audio. */
-    uint64_t us = frames ? ns * s->rate / frames / 1000 : 0;
-    char t[24];
-    sh_say("play: %s: %s%s (%lu frames) decoded in %lu.%03lu s: %lu.%03lu ms per second of "
-           "audio\n", name, stopped ? "stopped: " : "", play_mss(frames, s->rate, t, sizeof(t)),
-           (unsigned long)frames, (unsigned long)(ns / NS_PER_S),
-           (unsigned long)(ns % NS_PER_S / NS_PER_MS), (unsigned long)(us / 1000),
-           (unsigned long)(us % 1000));
-    return stopped ? 130 : 0;
 }
 
 /* ---- the choice --------------------------------------------------------- */

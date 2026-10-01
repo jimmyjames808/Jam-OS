@@ -131,6 +131,16 @@ long audio_write(struct audio_out *a, const void *frames, size_t nframes);
  * gets past the sound's end). The output can be written again
  * afterwards. */
 int  audio_drain(struct audio_out *a);
+/* From now on the caller writes frames of `rate` Hz and `channels`
+ * instead (a player's next file): what the old resampler still owes is
+ * written first, so the two meet without a gap. The same rate and
+ * channels: nothing changes (the resampler carries on). ERR_NOT_SUPPORTED:
+ * out of range (the output stays as it was). */
+int  audio_set_input(struct audio_out *a, unsigned rate, unsigned channels);
+/* Drop what was written and the mixer has not taken yet, with the 5 ms
+ * fade (as audio_close), and keep the output open for what comes next (a
+ * player skipping a track). Returns once the fade has been heard. */
+int  audio_discard(struct audio_out *a);
 /* The output's volume in centibels (tenths of a dB, 0 at most):
  * audio_set_volume sets this stream's own (in the mixer: -96 dB and below
  * is silence; other programs are not affected); audio_get_volume answers

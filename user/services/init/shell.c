@@ -1,7 +1,7 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises seven services, each in a job of its own
+ * init starts and then supervises eight services, each in a job of its own
  * under init's (and, first, the boot splash: splash.c):
  *   bootfs    bin/bootfs: the boot image as a mount, with the server end of
  *             its `fs` channel (SR_USER + 0); init mounts the client end at
@@ -40,6 +40,13 @@
  *             it is down wait for it) and nobody needs new client ends;
  *             init closes them only if it gives up on the mixer. The mixer
  *             ends when devmgr does and is started again with the new one
+ *   music     bin/music, the background music player, after the mixer: the
+ *             server end of the `music` channel (SR_USER + 0;
+ *             abi/idl/music.idl), a client end of the mixer's `audio`
+ *             channel (SR_AUDIO) and init's namespace (SR_NS, followed
+ *             like the shell's). init makes the `music` channel once and
+ *             keeps both ends, as the mixer's, so a restarted player
+ *             serves the same channel and the shell's end stays good
  *   logd      bin/logd, once /data is mounted: root with READ (the kernel
  *             log), a namespace holding only /data (SR_NS) and the server
  *             end of a `logctl` channel (SR_USER + 2; init keeps the client
@@ -54,8 +61,8 @@
  *             new devmgr's pair (INIT_SHELL_DEVMGR, <devmgr.h>), init's
  *             control channel (SR_USER + 3, ctl.c: kill, sync, reboot),
  *             init's namespace (SR_NS) and client ends of the mixer's
- *             channels (SR_AUDIO, SR_AUDIO_CTL)
- * init keeps its end of the shell's and logd's SR_NS channels and sends
+ *             channels (SR_AUDIO, SR_AUDIO_CTL) and of the music player's (SR_USER + 4)
+ * init keeps its end of the shell's, the music player's and logd's SR_NS channels and sends
  * them every later change of its mounts (logd: of /data), with ns_update:
  * each change takes back the one they haven't read yet (logd never looks
  * up a path again after it opens its file), so however often the mounts
@@ -94,7 +101,7 @@
 #define GIVE_UP_COUNT  10
 #define GIVE_UP_WINDOW (60 * NS_PER_S)
 
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, LOGD, SHELL, NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSVC };
 
 /* Port keys: a service's index (its process ended), or one of these. */
 #define KEY_MOUNTS 0x100u   /* the mounts watcher changed the namespace */
@@ -116,8 +123,8 @@ struct svc {
 static struct svc svcs[NSVC] = {
     [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
     [SERIALIN] = { "bin/serialin" },
-    [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [LOGD] = { "bin/logd" },
-    [SHELL] = { "bin/shell" },
+    [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
+    [LOGD] = { "bin/logd" }, [SHELL] = { "bin/shell" },
 };
 
 /* A service that has a namespace, kept in step with init's. */
@@ -129,7 +136,7 @@ struct follower {
 
 static const char *const logd_mounts[] = { DATA_MOUNT, NULL };
 static struct follower followers[NSVC] = {
-    [LOGD] = { .only = logd_mounts }, [SHELL] = { .only = NS_ALL },
+    [MUSIC] = { .only = NS_ALL }, [LOGD] = { .only = logd_mounts }, [SHELL] = { .only = NS_ALL },
 };
 static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
@@ -141,6 +148,8 @@ static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) *
  * duplicates) and client ends (the shell gets duplicates). [0] `audio`,
  * [1] `audioctl`; 0: none (no bin/mixer, or given up on). */
 static handle_t audio_srv[2], audio_cli[2];
+/* The music player's channel, made once in the same way (0: none). */
+static handle_t music_srv, music_cli;
 static bool nousb;
 static bool quiet_console;   /* the next console starts quiet (the splash's first one) */
 
@@ -519,6 +528,29 @@ static status_t start_mixer(void)
     return start1(MIXER, x, x[2].h ? 3 : 2);   /* no devmgr: it answers "no output" */
 }
 
+/* The music player: its server end again (the same channel as any player
+ * before it) and a client end of the mixer's `audio` channel. */
+static status_t start_music(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (!music_srv || bootfs_default(&fs) != OK ||
+        bootfs_lookup(fs, svcs[MUSIC].path, &data, &size) != OK) {
+        printf("init: no %s (or no channel for it): no music player\n", svcs[MUSIC].path);
+        svcs[MUSIC].given_up = true;
+        return OK;
+    }
+    struct spawn_handle x[] = { { SR_USER + 0, dup_of(music_srv) },
+                                { SR_AUDIO, dup_of(audio_cli[0]) } };
+    if (!x[0].h) {
+        if (x[1].h)
+            jam_handle_close(x[1].h);
+        return ERR_NO_RESOURCES;
+    }
+    return start1(MUSIC, x, x[1].h ? 2 : 1);   /* no mixer: it answers "no output" */
+}
+
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
 
@@ -527,7 +559,7 @@ static status_t start_shell(void)
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
     handle_t p2 = HANDLE_INVALID, mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
     handle_t ctl = HANDLE_INVALID;
-    handle_t au = dup_of(audio_cli[0]), auc = dup_of(audio_cli[1]);
+    handle_t au = dup_of(audio_cli[0]), auc = dup_of(audio_cli[1]), mu = dup_of(music_cli);
     /* A SHELL-level console channel: no input sources of its own. */
     status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 1, &c);
     if (st != OK) {
@@ -535,6 +567,8 @@ static status_t start_shell(void)
             jam_handle_close(au);
         if (auc)
             jam_handle_close(auc);
+        if (mu)
+            jam_handle_close(mu);
         return st;
     }
     if (devmgr) {
@@ -558,11 +592,12 @@ static status_t start_shell(void)
         { SR_USER + 3, ctl },
         { SR_AUDIO, au },
         { SR_AUDIO_CTL, auc },
+        { SR_USER + 4, mu },
     };
     /* Leave out the ones we don't have. */
-    struct spawn_handle y[9];
+    struct spawn_handle y[10];
     unsigned n = 0;
-    for (unsigned k = 0; k < 9; k++)
+    for (unsigned k = 0; k < 10; k++)
         if (x[k].h)
             y[n++] = x[k];
     /* The boot's first shell gets the boot word's command (shell_first_arg);
@@ -659,6 +694,10 @@ static void ended(unsigned i)
             jam_handle_close(audio_srv[k]);   /* calls waiting for a mixer fail now */
             audio_srv[k] = HANDLE_INVALID;
         }
+        if (i == MUSIC && music_srv) {
+            jam_handle_close(music_srv);   /* the shell's `music` fails now */
+            music_srv = HANDLE_INVALID;
+        }
         init_say("init: %s ended %u times in a minute: not restarting it", s->path, s->ends);
         return;
     }
@@ -687,6 +726,8 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for devmgr (started just before it) */
         if (i == SHELL && !splash_played())
             continue;   /* waits for the splash: its packet wakes the loop */
+        if (i == MUSIC && !svcs[MIXER].running && !svcs[MIXER].given_up)
+            continue;   /* after the mixer (it opens its stream only on `music start`) */
         if (t < s->next_try) {
             deadline = s->next_try < deadline ? s->next_try : deadline;
             continue;
@@ -697,6 +738,7 @@ static uint64_t start_due(uint64_t t)
                       : i == SERIALIN ? start_serialin()
                       : i == DEVMGR   ? start_devmgr()
                       : i == MIXER    ? start_mixer()
+                      : i == MUSIC    ? start_music()
                       : i == LOGD     ? start_logd()
                                       : start_shell();
         if (st != OK) {
@@ -727,9 +769,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         return false;
     }
     make_audio_channels();
+    if (jam_channel_create(&music_cli, &music_srv) != OK)
+        music_cli = music_srv = HANDLE_INVALID;
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
-           "devmgr, the mixer, logd and the shell\n", nousb ? " (safe mode: nousb)" : "",
-           splash ? " the boot splash," : "");
+           "devmgr, the mixer, the music player, logd and the shell\n",
+           nousb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t deadline = start_due(now());
         struct port_packet pkt;
