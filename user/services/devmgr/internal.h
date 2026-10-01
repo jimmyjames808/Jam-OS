@@ -29,6 +29,7 @@
  * (binding index and start generation, so a stale packet is recognised). */
 #define KEY_CHANNEL        1ull   /* the query channel (SR_DEVMGR) */
 #define KEY_CONTROL        2ull   /* the control channel (SR_DEVMGR_CTL) */
+#define KEY_AUDIO          3ull   /* the audio channel (SR_DEVMGR_AUDIO) */
 #define KEY_DRIVER         (1ull << 32)
 #define KEY_OF(i, gen)     (KEY_DRIVER | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* A driver wrote on its DR_SERVE channel by itself (usb-bus:
@@ -46,6 +47,15 @@
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
+/* What a channel of devmgr's may ask (main.c): the query channel the
+ * queries, the audio channel the queries and an exclusive driver's
+ * service too, the control channel everything (<devmgr.h> "Trust"). */
+enum level {
+    LEVEL_QUERY,
+    LEVEL_AUDIO,
+    LEVEL_CONTROL,
+};
+
 enum bind_kind {
     BIND_PCI,    /* a PCI function (pci_enum) */
     BIND_SOFT,   /* no hardware: the crash-test driver */
@@ -60,6 +70,8 @@ struct binding {
     struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT, BIND_USB: vendor/device
                                      * only (BIND_USB: the USB ids) */
     const char         *path;       /* the driver; NULL: none for it */
+    bool                exclusive;  /* BIND_PCI: its service only to the audio and control
+                                     * channels (main.c's matches[]) */
     bool                test;       /* its deaths and giving up are expected (not problems) */
     handle_t            dev;        /* BIND_PCI: ours, with RIGHT_MANAGE (0 until started once) */
     /* The driver while it runs. */

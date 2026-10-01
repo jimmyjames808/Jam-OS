@@ -1,7 +1,8 @@
 /* utest: drivers as processes. The null and drvtest drivers run as
  * processes started from here and talk through <idl/null.h>; with devmgr
  * (its control channel, SR_DEVMGR_CTL): the edu driver process it bound,
- * called through <idl/edu.h>, what the query channel may not do, and edu
+ * called through <idl/edu.h>, what the query channel may not do (hda's
+ * channel included: it is the mixer's), and edu
  * killed in the middle of a DMA (the device's pages quarantined, the
  * driver restarted). Tests that need devmgr or the edu device (QEMU's)
  * skip themselves without it. */
@@ -9,6 +10,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <devmgr.h>
+#include <idl/hda.h>
 #include <idl/null.h>
 #include <os.h>
 #include "edu_check.h"
@@ -207,6 +209,56 @@ bool t_devmgr_query_channel(void)
     signals_t seen = 0;
     CHECK_ST(jam_object_wait_one(a, SIG_PEER_CLOSED, now() + 5 * NS_PER_S, &seen), OK);
     jam_handle_close(a);
+    return true;
+}
+
+/* An exclusive driver's service (hda's: its one output stream is the
+ * mixer's) is refused on the query channel, whichever way it is named;
+ * the control channel (the tests') hands it out, and the query channel
+ * still hands out the others'. Skipped without an hda driver. */
+bool t_devmgr_query_refuses_hda(void)
+{
+    handle_t q = svc_get(SVC_DEVMGR), dm = devmgr();
+    struct devmgr_rep r;
+    unsigned hdas = 0;
+    if (!q || !dm)
+        return true;
+    for (uint32_t n = 0; n < 32; n++) {
+        handle_t ch = HANDLE_INVALID;
+        uint32_t nh = 0;
+        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
+                                  now() + 10 * NS_PER_S);
+        if (st == ERR_NOT_FOUND)
+            break;
+        if (st != OK)
+            continue;
+        uint32_t codec, pin, dac, pcm, formats, amp, jack, count;
+        uint8_t nodes[8], text[240];
+        st = hda_info_until(ch, now() + 10 * NS_PER_S, &codec, &pin, &dac, &pcm, &formats, &amp,
+                            &jack, &count, nodes, text);
+        CHECK_ST(jam_handle_close(ch), OK);
+        bool hda = st != ERR_NOT_SUPPORTED;   /* another driver's service */
+        hdas += hda;
+        nh = 0;
+        ch = HANDLE_INVALID;
+        CHECK_ST(devmgr_call(q, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
+                             now() + 10 * NS_PER_S), hda ? ERR_ACCESS_DENIED : OK);
+        CHECK_EQ(nh, hda ? 0u : 1u);
+        if (ch)
+            CHECK_ST(jam_handle_close(ch), OK);
+    }
+    /* By its ids too: QEMU's intel-hda (ICH6) and ich9-intel-hda. */
+    static const uint16_t ids[][2] = { { 0x8086, 0x2668 }, { 0x8086, 0x293e } };
+    for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        handle_t ch = HANDLE_INVALID;
+        uint32_t nh = 0;
+        status_t st = devmgr_call(q, DEVMGR_GET_SERVICE, ids[i][0], ids[i][1], 0, &r, &ch, 1,
+                                  &nh, now() + 10 * NS_PER_S);
+        CHECK(st == ERR_NOT_FOUND || st == ERR_ACCESS_DENIED);
+        CHECK_EQ(nh, 0);
+    }
+    if (!hdas)
+        printf("utest: %s: no hda driver: only the ids checked\n", utest_cur);
     return true;
 }
 

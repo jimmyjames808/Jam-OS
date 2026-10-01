@@ -27,16 +27,19 @@
  *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
- *             server ends of its control and query channels (SR_DEVMGR_CTL,
- *             SR_DEVMGR; init keeps a client end of each and publishes
- *             them as /svc/devmgr and /svc/devmgr-ctl) and a copy of
+ *             server ends of its control, query and audio channels
+ *             (SR_DEVMGR_CTL, SR_DEVMGR, SR_DEVMGR_AUDIO; init keeps a
+ *             client end of each, publishes the first two as
+ *             /svc/devmgr-ctl and /svc/devmgr and gives the third to the
+ *             mixer alone) and a copy of
  *             init's (ADMIN) console client end (SR_CONSOLE), so its HID
  *             drivers type into the console. init waits
  *             for its first binding pass (up to 30 s). "nousb" (the safe
  *             mode boot entry) is passed on: no USB controller driver.
  *             Its mounts (/data, /esp) are followed from then on (mounts.c)
- *   mixer     bin/mixer, once devmgr runs: a duplicate of devmgr's query
- *             client end (SR_DEVMGR: it finds the hda driver), and the
+ *   mixer     bin/mixer, once devmgr runs: a duplicate of devmgr's audio
+ *             client end (SR_DEVMGR_AUDIO: the one channel that hands out
+ *             the hda driver's, <devmgr.h>), and the
  *             server ends of the `audio` and `audioctl` channels (SR_AUDIO,
  *             SR_AUDIO_CTL; abi/idl/audio.idl, audioctl.idl). init makes
  *             those two channels once, publishes their client ends as
@@ -112,6 +115,7 @@ static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
+static handle_t devmgr_a;   /* its audio channel, client end (the mixer's) */
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) */
 /* The mixer's channels, made once: server ends (each mixer gets
@@ -282,17 +286,19 @@ static status_t start_devmgr(void)
         return OK;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
-    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID, aa = HANDLE_INVALID, ab = HANDLE_INVALID;
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_channel_create(&a, &b);
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK)
+        st = jam_channel_create(&aa, &ab);
+    if (st == OK)
         st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK) {
-        handle_t left[] = { pci, a, b, qa, qb };
-        for (unsigned k = 0; k < 5; k++)
+        handle_t left[] = { pci, a, b, qa, qb, aa, ab };
+        for (unsigned k = 0; k < 7; k++)
             if (left[k])
                 jam_handle_close(left[k]);
         return st;
@@ -304,15 +310,17 @@ static status_t start_devmgr(void)
     if (init_hidboot)
         argv[argc++] = "hidboot";
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                { SR_CONSOLE, c } };
-    st = svc_start(DEVMGR, argc, argv, x, 4);   /* consumes pci, b, qb and c */
+                                { SR_DEVMGR_AUDIO, ab }, { SR_CONSOLE, c } };
+    st = svc_start(DEVMGR, argc, argv, x, 5);   /* consumes pci, b, qb, ab and c */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
+        jam_handle_close(aa);
         return st;
     }
     devmgr = a;
     devmgr_q = qa;
+    devmgr_a = aa;
     publish(SVC_DEVMGR, devmgr_q, false);
     publish(SVC_DEVMGR_CTL, devmgr, false);
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
@@ -421,7 +429,7 @@ static void make_audio_channels(void)
 }
 
 /* The mixer: its server ends again (the same channels as any mixer
- * before it), and devmgr's query channel to find the hda driver. */
+ * before it), and devmgr's audio channel to find the hda driver. */
 static status_t start_mixer(void)
 {
     const struct bootfs_view *fs;
@@ -435,7 +443,7 @@ static status_t start_mixer(void)
     }
     struct spawn_handle x[] = { { SR_AUDIO, dup_of(audio_srv[0]) },
                                 { SR_AUDIO_CTL, dup_of(audio_srv[1]) },
-                                { SR_DEVMGR, dup_of(devmgr_q) } };
+                                { SR_DEVMGR_AUDIO, dup_of(devmgr_a) } };
     if (!x[0].h || !x[1].h) {
         for (unsigned k = 0; k < 3; k++)
             if (x[k].h)
@@ -551,7 +559,8 @@ void services_closed(unsigned i)
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
-        devmgr = devmgr_q = HANDLE_INVALID;
+        jam_handle_close(devmgr_a);
+        devmgr = devmgr_q = devmgr_a = HANDLE_INVALID;
         publish(SVC_DEVMGR, HANDLE_INVALID, false);
         publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */

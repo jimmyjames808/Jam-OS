@@ -503,7 +503,7 @@ Every driver and service is a userspace process from the start.
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
-| mixer | `hda`, through devmgr's query channel | `audio` and `audioctl`: every program's sound mixed into the one output ([Audio](#audio)) | yes |
+| mixer | `hda`, through devmgr's audio channel | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
 | netstack | lwIP + `netdev` | `socket` | no |
@@ -550,8 +550,11 @@ Rules for userspace drivers:
   a USB class driver, a filesystem service or a PCI driver (usb-bus, hda),
   found by name through devmgr's bindings. Whoever supervises it starts it
   again. The shell refuses to kill init.
-- **Authority**: devmgr has two channels, a query channel (look things up)
-  and a control channel (change bindings); console clients have a level
+- **Authority**: devmgr has three channels, a query channel (look things
+  up), a control channel (change bindings) and an audio channel for the
+  mixer alone. An *exclusive* driver (its match table marks hda, whose one
+  output stream is the mixer's) is handed out only on the audio and
+  control channels; the query channel gets `ERR_ACCESS_DENIED`; console clients have a level
   (ADMIN, SHELL, PROGRAM), and a program started from the shell gets a
   PROGRAM channel and nothing of devmgr's.
 
@@ -600,8 +603,8 @@ Not built yet; these rules bind every future path that can transmit.
 - **Startup message**: every process starts with one channel message holding
   argv, environment, and handles by role (`kernel/include/jam/startup.h`):
   SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
-  never write), RESOURCE, DEVMGR and DEVMGR_CTL (devmgr's own server ends,
-  and the mixer's query end), CONSOLE, NS (the namespace: mounts and
+  never write), RESOURCE, DEVMGR, DEVMGR_CTL and DEVMGR_AUDIO (devmgr's
+  own server ends, and the mixer's audio end), CONSOLE, NS (the namespace: mounts and
   services, below), AUDIO and AUDIO_CTL (the mixer's server ends), CRASHLOG
   (init and logd on the boot after a panic: the panicked boot's log) and
   program-specific ones (SR_USER + n). A program reaches a service by its
@@ -805,7 +808,14 @@ while playing stops nothing. `hda jacks` (`hda.jacks`) shows each jack's
 state and how it is watched.
 
 **The mixer** (`user/services/mixer`, [docs/A2-PLAN.md](docs/A2-PLAN.md))
-is the driver's only client while anything plays: every program's sound
+is the driver's only client but for the tests (`hdatest` holds devmgr's
+control channel): devmgr hands the driver's channel out only on the
+audio channel init makes for the mixer. Everyone else reaches the driver
+through `audioctl.device`: the mixer asks the driver for a *query
+channel* (`hda.query`), which answers the dump, info, jacks, gain and bits
+but refuses `open_output`, so the shell's `hda` can look and set the gain
+but never take the output stream. The mixer is the driver's only client
+while anything plays: every program's sound
 goes through it, so several play at once. init starts it after devmgr
 and makes its two channels once, keeping their server ends, so a
 restarted mixer serves the same channels: `audio`
