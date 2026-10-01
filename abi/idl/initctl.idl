@@ -32,3 +32,7 @@ protocol initctl 18
 # /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
 # ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path.
 4  mount  (u8[16] path, u8 writable) -> ()
+# The shell is up: it has written its banner and reads its keys. init
+# tells the boot splash (bin/splash) to hand the screen back to the
+# console; nothing to do if no splash is waiting (a later shell's call).
+5  shell_ready  () -> ()

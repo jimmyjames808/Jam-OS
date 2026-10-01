@@ -21,7 +21,10 @@
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
  * devmgr (DEVMGR_REMOUNT) for /usbN and refused for every other path:
- * /boot, /esp and /data are what they are. */
+ * /boot, /esp and /data are what they are.
+ *
+ * shell_ready (the shell, once it is up) lets the boot splash give the
+ * screen back (splash.c). */
 #include <devmgr.h>
 #include <idl/initctl.h>
 #include <idl/usbbus.h>
@@ -253,8 +256,19 @@ static status_t op_mount(void *ctx, const uint8_t path[16], uint8_t writable)
     return st;
 }
 
+static status_t op_shell_ready(void *ctx)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    printf("init: the shell is up\n");   /* the boot's time to a shell (splash-test.sh) */
+    splash_shell_ready();
+    return OK;
+}
+
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
+    .shell_ready = op_shell_ready,
 };
 
 static void ctl_close(struct ctl *c)

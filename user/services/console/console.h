@@ -114,6 +114,11 @@ bool screen_init(void);
 bool screen_alloc(void);
 /* Draw the cells that changed since the last render. */
 void render(void);
+/* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
+ * until a lent screen comes back, or until `until` (uptime ns) if nobody
+ * borrows it, so the kernel's dark splash background stays up with no
+ * text on it. */
+void screen_quiet(uint64_t until);
 status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, uint8_t *rs,
                         uint8_t *gs, uint8_t *bs, uint64_t *size, handle_t *screen,
                         handle_t *out_lease);
