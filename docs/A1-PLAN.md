@@ -126,16 +126,17 @@ Everything else is left as the link reset left it. The order at stop is
 the reverse: pin output off, amps muted, stream stopped.
 
 **Jack detection by unsolicited responses** (the Unsolicited Response and Pin Sense verbs):
-GCTL.UNSOL on, the pin's SET_UNSOLICITED_ENABLE with a tag, the RIRB
-interrupt on. An unsolicited response carries the tag in bits 31:26; the
-driver then reads GET_PIN_SENSE (bit 31) and logs `hda: headphones
-plugged (node xx)` or `unplugged`. A pin that needs a trigger (pin caps
-bit 1) gets SET_PIN_SENSE first. If the dump shows the front pin has no
-presence detection, or the PC shows no unsolicited responses (a front
-panel wired AC'97-style has no sense line), the fallback is to read the
-pin sense every 500 ms and log changes; which one runs is in the log.
-QEMU's codecs have neither presence detection nor unsolicited responses,
-so this is proven on the PC only.
+GCTL.UNSOL on, each jack pin's SET_UNSOLICITED_ENABLE with a tag of its
+own, the RIRB interrupt on. An unsolicited response carries the tag in
+bits 31:26; the driver then reads GET_PIN_SENSE (bit 31), debounces it and
+logs `headphones plugged in (front, pin 1b)` or `headphones unplugged
+(front, pin 1b)`. A pin that needs a trigger (pin caps bit 1) gets
+SET_PIN_SENSE first. If a pin can't send unsolicited responses, or the PC
+shows a change without one (a front panel wired AC'97-style has no sense
+line), the fallback is to read the pin sense every 500 ms and log changes;
+which one runs is in the log. QEMU's codecs have neither presence
+detection nor unsolicited responses, so this is proven on the PC only
+(QEMU checks the logic against fixtures and a fake codec).
 
 **Supervision.** A driver that dies is restarted by devmgr like any other.
 Its dma_cap closing turns Bus Master Enable off, so a running stream can
@@ -170,7 +171,7 @@ to be its only client, so it is designed as the mixer needs it now:
 | `position() -> (u64 frames played, u32 ring offset)` | 2 (done) | from the position buffer |
 | `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 (done) | answers once the period holding frame `after` has played: the client's write-ahead clock |
 | `set_gain(i32 centibels)`, `get_gain` | 3 (done) | the codec's output amp on the path (the DAC's), rounded to its step, clamped to its range and to 0 dB; both answer the gain, the step and the range |
-| `jack() -> (u8 state, u64 changes)` | 4 | plugged / unplugged / unknown, and a change count |
+| `jacks() -> (count, state, changes, pins, states, text)` | 4 (done) | every jack with presence detection: plugged / unplugged / unknown, how it is watched; the path's pin's state and change count (also `info`'s `jack`) |
 
 A2 then adds the `audio` protocol (programs' streams, each its own shared
 VMO ring) served by a mixer service that holds the one `hda` output stream,
@@ -191,7 +192,7 @@ different files and can run as two tracks at once.
 | **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
 | **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
 | **3. `beep`** (the join of 1 and 2, done) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
-| **4. Jacks** | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jack`, `hda` shows the jack state | drivers/hda/jack.c (new), `hda.idl` (jack) |
+| **4. Jacks** (done in QEMU) | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jacks`, `hda` shows the jack state | drivers/hda/jack.c (new), `ctrl.c` (the RIRB's demultiplexer), `irq.c`, `hda.idl` (jacks) |
 | **5. Review** | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
 
 ## Stage 2: what was built and learned
@@ -257,7 +258,7 @@ programmed until stage 3.
 | 1 | the path self-test on every fixture (QEMU's in QEMU; the PC's fixture too, since it is data); the chosen path for hda-output is DAC 02 -> pin 03; the codec trace shows only allow-listed SETs and no amp unmuted | the path found on the real codec is the front headphone jack (the owner reads it off the `hda` output) |
 | 2 | `hdatest`: a known pattern through the stream, captured by QEMU's wav backend (`-audiodev wav,id=snd0,path=<file>`, available in this QEMU; the codec with `mixer=off`), compared sample for sample after the leading silence; position advances at 48 kHz within 2 %; the client closing mid-stream stops it; kill mid-stream: restart, quarantine released, no stale DMA | interrupts and the position buffer on the real controller |
 | 3 | tools/beep-test.sh (new): `beep 440 500` into the wav file; its zero crossings give 440 Hz within 1 % over 500 ms within 30 ms, fades present, silence afterwards | **the tone in the headphones** (done-when) |
-| 4 | the tag -> pin logic against fixtures; the fallback poller with a fake sense source | **unplug/replug logged** (done-when) |
+| 4 | the jack self-test at every driver start: the tag -> pin table on the fixtures, the RIRB's demultiplexer on a fake RIRB, the debounce, unsolicited responses and the fallback poller against a fake codec (which also checks jack code sends only 0x708, 0x709 and GET_PIN_SENSE); tools/hda-test.sh: no jack verb to QEMU's codecs, the RIRB interrupt taken while dumps stay right | **unplug/replug logged** (done-when) |
 | all | `make`, `make KTESTS=0`, `make check`; the `init` run clean; `tools/usb-test.sh` and `tools/storage-test.sh` (devmgr changes) | `soak 2` after each round |
 
 The ktests do not change (the driver is a process); they are run once per
@@ -417,6 +418,88 @@ the head, near enough to hear.
 4. If nothing is heard: the read-back line says what the codec took (ctl
    should be c0, eapd 02, volume amp 2f); `hdatest` checks the stream
    itself (now quiet: it turns the gain down).
+
+## What stage 4 built and learned
+
+- **One demultiplexer for the RIRB** (ctrl.c, `hda_rirb_sort`). Every
+  entry goes through it, whether a command reads it while waiting for its
+  answer or the RIRB interrupt drains it: an unsolicited entry (the high
+  word's bit 4) is queued for jack.c (32 deep; overflow counted) and is
+  never an answer; a solicited one is the answer only if a command to its
+  codec waits, else it is counted late and dropped. Every command first
+  drains what is already in the RIRB, so a late answer to a command that
+  timed out is dropped before the next command goes out (stage 1's open
+  item). What can still be confused: an answer later than the 100 ms
+  timeout landing between the next command's send and its answer.
+- **Commands stay polled; the RIRB interrupt is for the rest.** When the
+  loop starts with the rings and the MSI bound, GCTL.UNSOL and INTCTL.CIE
+  go on (also in QEMU and with no jack, so every test runs this way).
+  RINTCNT stays 1, so the interrupt also fires for every answer, which the
+  drain then finds taken: a wake per verb, and it proves the interrupt
+  works before any jack needs it. An interrupt with no status bit while
+  CIE is on counts as the RIRB's (a polling command cleared RINTFL first).
+- **The jacks** (jack.c): every pin whose configuration default says a
+  jack (connectivity jack, or jack and fixed), with no "no presence
+  detection" bit, and whose pin capabilities have Presence Detect. On the
+  PC that is seven, with tags in node order: 14 rear green line-out (1),
+  15 rear black line-out (2), 16 rear orange line-out (3), 18 rear mic (4),
+  19 front mic (5), 1a rear line-in (6), 1b front headphones (7). The
+  S/PDIF pin 1e says "no detect" and is not one. All seven have Unsol
+  Capable and Trigger Required, none impedance sensing.
+- **The trigger.** The spec ties SET_PIN_SENSE (Execute) to the impedance
+  measurement and gives no settle time; presence is a level the codec
+  samples by itself. The driver triggers every trigger pin of a read at
+  once, waits 1 ms, then reads them all (the debounce re-reads anyway).
+- **The debounce**: a read that differs from the jack's state is held;
+  it is read again 80 ms later and kept only if it still differs; a read
+  that agrees in between cancels it. A 20 ms flicker gives no line.
+- **Polling, per jack**: a pin without unsolicited responses is read
+  every 500 ms. One with them is polled too until its first unsolicited
+  response, with the RIRB interrupt seen working, proves them ("jack: pin
+  1b sends unsolicited responses: no longer polled"). A change the poll
+  finds with no response from that pin since its last change means they
+  don't work there: it is polled for good ("... changed without an
+  unsolicited response: polled every 500 ms from now on"). So the log says
+  which mode each jack ended in; **on the PC the front headphones should
+  end in unsolicited responses** (Realtek codecs send them, and the front
+  panel's sense line is wired: the configuration default says presence
+  detection); polling is the fallback if the panel is wired AC'97-style.
+- **Nothing else changes on a plug.** An unplug while playing is logged
+  and nothing more: the stream and the mixer keep running, and no amp or
+  pin control is touched by jack code (the self-test's fake codec
+  refuses anything but 0x708, 0x709 and GET_PIN_SENSE).
+- At a clean exit unsolicited responses are turned off on each pin, then
+  GCTL.UNSOL and CIE; the exit line counts the stream's and the RIRB's
+  interrupts, the unsolicited responses and the late answers.
+- `hda.jacks` (IDL 11) answers each jack's state and a text line per jack;
+  `info`'s `jack` is now the path's pin's state; `hda` ends with the
+  `hda: jack ...` lines and `hda jacks` prints only them.
+
+**On the PC** (the owner, after `make flash`; boot the everyday entry):
+1. Boot with the headphones out of the front jack. `dmesg | grep jack`
+   should show `[hda] jacks: 7 with presence detection; unsolicited
+   responses on for all; polled every 500 ms until each one's first
+   response`, then one line per jack, e.g. `[hda] jack:
+   headphones (front, pin 1b): unplugged; unsolicited responses on, polled
+   until one comes, tag 7`.
+2. Plug the headphones into the front jack: within about 0.1 s `[hda]
+   jack: pin 1b sends unsolicited responses: no longer polled` (first time
+   only) and `[hda] headphones plugged in (front, pin 1b)`. Pull them out:
+   `[hda] headphones unplugged (front, pin 1b)`. Do it twice more.
+3. `hda jacks`: the first line counts the unsolicited responses received
+   and the RIRB interrupts; the pin 1b line should say `plugged in` or
+   `unplugged` as they are, `6 change(s)` (or more) and `unsolicited
+   responses, tag 7`. `dmesg | grep plugged` lists every change.
+4. If instead `jack: pin 1b changed without an unsolicited response:
+   polled every 500 ms from now on` appears, the plug is still logged (up
+   to 0.6 s late): bring that line and `hda jacks` back. If no plug line
+   appears at all, bring `hda jacks` and `hda | grep "c0 1b"` back (the
+   dump should end `unsol on tag 7`).
+5. Optional: plug and pull the front mic (19) or a rear jack; each logs
+   its own line (`microphone plugged in (front, pin 19)`, `line-out
+   unplugged (rear green, pin 14)`).
+6. Optional: `play` something and pull the headphones mid-song: the line
+   is logged and the song plays on (to nothing).
 
 ## Done when
 

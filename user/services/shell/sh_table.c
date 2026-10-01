@@ -47,7 +47,7 @@ static const struct sh_cmd cmds[] = {
       "  -20: set it (rounded to the amp's step, at most 0 dB; the driver starts at\n"
       "  -30 dB). The path is unmuted only while a stream plays (beep). hda bits 16:\n"
       "  the largest sample size. hda jacks: each jack plugged in or not (the driver\n"
-      "  logs every change: log | grep plugged)"),
+      "  logs every change: dmesg | grep plugged)"),
     C(beep, C_SYSTEM, "beep [hz] [ms]",
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
       "  at a quarter of full scale with 5 ms fades, through the mixer at `hda gain`.\n"

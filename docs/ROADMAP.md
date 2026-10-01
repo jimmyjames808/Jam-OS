@@ -21,7 +21,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | M8 | Storage: USB mass storage, FAT32 (FatFs), `/esp` and `/data`, other sticks at `/usbN`, a log per boot | done (PC 2026-10-01: All tests 224, `stress 600` and `soak 10` passed) |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`). The tone on the PC, stage 4 (jacks) and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`); sound works on the PC. Stage 4 (jacks): unsolicited responses with a tag per jack pin, the RIRB interrupt, an 80 ms debounce and a 500 ms polling fallback, `hda jacks`; checked in QEMU against fixtures and a fake codec (QEMU's codecs have no presence detection). The plug/unplug lines on the PC and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol, WAV playback | **in progress** ([A2-PLAN.md](A2-PLAN.md)): in QEMU, programs play at once through the mixer service (each its own stream in a shared ring, mixed two periods ahead of the play position), `vol` sets each stream's volume and the master, `<audio.h>` (blocking writes, mono to stereo, any rate to 48 kHz) and `play <file.wav>` and `beep` go through it. Two sounds at once on the PC and the review are next |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
@@ -39,8 +39,9 @@ driver process, and `beep` in the shell playing a tone in the
 front-panel headphones. The plan is [A1-PLAN.md](A1-PLAN.md). Stage 0 (a
 read-only probe of the controller and codec) ran on the PC; stages 1
 (codec control and the path to the front headphone jack), 2 (the output
-stream) and 3 (`beep`, `hda gain`) work in QEMU. Next: the tone on the
-PC, stage 4 (jack detection) and the review.
+stream) and 3 (`beep`, `hda gain`) work in QEMU, and sound plays on the
+PC; stage 4 (jack detection) is built and checked in QEMU against
+fixtures. Next: the plug/unplug lines on the PC, and the review.
 
 M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
 Known limits it left:
