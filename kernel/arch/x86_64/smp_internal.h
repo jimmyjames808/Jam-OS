@@ -57,9 +57,7 @@ bool apboot_prepare(struct cpu *const *aps, uint32_t n);
 /* INIT to every AP, 10 ms, SIPI to every AP, 200 us, SIPI again, 200 us.
  * `skip` (a struct cpu index, 0 = none) gets no IPIs: a test. */
 void apboot_kick(struct cpu *const *aps, uint32_t n, uint32_t skip);
-/* Stop a CPU the BSP has given up on: INIT leaves it waiting for a SIPI. */
-void apboot_stop(const struct cpu *c);
-/* After the wait: let any INIT from apboot_stop land, park the trampoline
+/* After the wait: let any INIT that stopped a CPU land, park the trampoline
  * (a stray SIPI only halts its CPU), free the transition tables. */
 void apboot_finish(bool stopped_any);
 

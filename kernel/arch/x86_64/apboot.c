@@ -17,7 +17,7 @@
  * identity-mapped, plus the kernel half), freed once every AP is in or has
  * been stopped.
  *
- * A late CPU: an AP the BSP gave up on is sent INIT (apboot_stop), which
+ * A late CPU: an AP the BSP gave up on is sent INIT (smp.c), which
  * stops it wherever it is. Before its claim (smp.c) an AP writes nothing
  * but its own registers and struct cpu, so being stopped half way breaks
  * nothing, and the tables are freed only after the INIT has landed. */
@@ -214,12 +214,6 @@ void apboot_kick(struct cpu *const *aps, uint32_t n, uint32_t skip)
     uint32_t esr = lapic_read_esr();
     if (esr)
         kprintf("smp: APIC error status %x after the startup IPIs\n", esr);
-}
-
-void apboot_stop(const struct cpu *c)
-{
-    if (used && reachable(c) && !lapic_send_init(c->lapic_id))
-        kprintf("smp: INIT to stop lapic %u: the APIC never reported it sent\n", c->lapic_id);
 }
 
 void apboot_finish(bool stopped_any)

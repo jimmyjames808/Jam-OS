@@ -256,7 +256,9 @@ Every driver and service is a userspace process from the start.
   It sets NX/WP/PGE/PAT, its per-CPU state, its APIC (in the BSP's mode),
   then **claims** its start (a compare-and-swap); the BSP gives up on a CPU
   after 1 s with the same compare-and-swap and sends it INIT, so a CPU that
-  comes late parks itself and changes nothing shared. Each AP compares its
+  comes late parks itself and changes nothing shared; the CPUs that came up
+  are then numbered densely, so one that did not leaves no hole in
+  `cpus[]`. Each AP compares its
   microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`

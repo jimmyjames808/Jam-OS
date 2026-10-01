@@ -23,15 +23,17 @@
     .code16
 ap_tramp_start:
     cli
-    /* After INIT the caches are in CR0.CD = NW = 1 mode and still hold
-     * what was there before; write them back before turning them on. */
+    /* INIT leaves the caches and CR0.CD/NW as they were (SDM vol. 3A,
+     * 10.1); from a reset CD and NW are set. Write the caches back before
+     * CR0 is rewritten below, whatever mode they were in (as Linux's
+     * trampoline does). */
     wbinvd
     mov     %cs, %ax
     mov     %ax, %ds
     movzwl  %ax, %ebx
     shll    $4, %ebx                     /* EBX = the page's physical address */
     lgdtl   TR_GDTR
-    movl    $CR0_PE, %eax                /* protected mode; CD and NW cleared */
+    movl    $CR0_PE, %eax                /* protected mode, CD and NW clear: caches on */
     movl    %eax, %cr0
     ljmpl   *TR_FAR32
 

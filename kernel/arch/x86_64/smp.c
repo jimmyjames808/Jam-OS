@@ -9,15 +9,20 @@
  *     fallback until the kernel's own startup is signed off on the PC.
  * Either way the AP ends in smp_ap_main on its own kernel stack and the
  * kernel's page tables: its per-CPU state, its APIC, its topology, then
- * the claim, then its timer, then online.
+ * the claim, then (once numbered) its firmware check, its timer, online.
  *
- * The claim. A CPU's start state (start_state[index]) goes from STARTING
- * to ONLINE by the AP, or to ABANDONED by the BSP when it gives up, each
- * with one compare-and-swap, so exactly one side wins. An AP that loses
- * parks itself, and with the kernel's own startup the BSP also sends it
- * INIT. Before its claim an AP writes only its own struct cpu and its own
- * registers, so one that comes late breaks nothing; the BSP never frees
- * the struct cpu of a CPU that did not start. */
+ * The claim. A CPU's start state (start_state[]) goes from STARTING to
+ * CLAIMED by the AP, or to ABANDONED by the BSP when it gives up after
+ * AP_TIMEOUT_US, each with one compare-and-swap, so exactly one side wins.
+ * An AP that loses parks itself, and the BSP also sends it INIT. Before
+ * its claim an AP writes only its own struct cpu and its own registers, so
+ * one that comes late breaks nothing; the BSP never frees the struct cpu
+ * of a CPU that did not start.
+ *
+ * Then the BSP numbers the CPUs that claimed densely (renumber), so a CPU
+ * that did not start leaves no hole in cpus[], and lets them go on: each
+ * compares its firmware state with the BSP's, starts its timer and counts
+ * itself online. */
 #include <jam/acpi.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
@@ -38,7 +43,7 @@
 
 #define KERNEL_STACK_SZ (64 * 1024)
 #define AP_TIMEOUT_US   1000000
-#define CLAIMED_WAIT_US 100000   /* from its claim to online is a few stores */
+#define CLAIMED_WAIT_US 1000000  /* from being numbered to online: MTRRs, the timer */
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 
@@ -48,10 +53,16 @@ uint32_t cpu_count;
 static uint32_t online_count;   /* CPUs up; the APs add themselves (release) */
 static const struct boot_cpu *boot_cpu_of[MAX_CPUS];
 
-enum { AP_STARTING, AP_ONLINE, AP_ABANDONED };
-static uint32_t start_state[MAX_CPUS];   /* AP_*, by compare-and-swap only */
-/* Each AP's firmware state against the BSP's (cpu_match_bsp), written by
- * the AP before it sets online (release), read by the BSP after. */
+enum { AP_STARTING, AP_CLAIMED, AP_ABANDONED };
+/* Indexed by the CPU's place in the list (before renumber). AP_*, changed
+ * by compare-and-swap only. */
+static uint32_t start_state[MAX_CPUS];
+static uint32_t claimed_count;   /* APs that claimed their start */
+static bool     numbered;        /* renumber is done: the APs may go on (release) */
+static uint32_t listed_count;    /* CPUs in the list (up to MAX_CPUS), the BSP included */
+/* Each AP's firmware state against the BSP's (cpu_match_bsp), by its final
+ * index: written by the AP before it sets online (release), read by the
+ * BSP after. */
 static uint32_t ap_microcode[MAX_CPUS];
 static uint8_t  ap_diff[MAX_CPUS];
 
@@ -93,7 +104,7 @@ void smp_init_bsp(const struct boot_info *bi)
     cpu_bringup(c);
     if (lapic_id() != c->lapic_id)
         panic("smp: BSP reports lapic %u, loader said %u", lapic_id(), c->lapic_id);
-    start_state[0] = AP_ONLINE;
+    start_state[0] = AP_CLAIMED;
     __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
     online_count = 1;
 }
@@ -159,16 +170,31 @@ _Noreturn static void park(void)
         __asm__ volatile("cli; hlt");
 }
 
+/* Wait for the BSP to number the CPUs that came up (renumber). It always
+ * does, right after its own bounded wait, so not seeing it for 10 s is a
+ * broken kernel. */
+static void wait_numbered(const struct cpu *c)
+{
+    uint64_t end = rdtsc() + 10 * tsc_hz;
+    while (!__atomic_load_n(&numbered, __ATOMIC_ACQUIRE))
+        if (rdtsc() > end)
+            panic("smp: lapic %u claimed its start, but the BSP never numbered it", c->lapic_id);
+        else
+            cpu_relax();
+}
+
 _Noreturn void smp_ap_main(struct cpu *c)
 {
     cpu_bringup(c);
     test_late_wait(c);
     uint32_t want = AP_STARTING;
-    if (!__atomic_compare_exchange_n(&start_state[c->index], &want, AP_ONLINE, false,
+    if (!__atomic_compare_exchange_n(&start_state[c->index], &want, AP_CLAIMED, false,
                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
         test_late_refused(c);
         park();   /* the BSP gave up on this CPU (and may send it INIT) */
     }
+    __atomic_add_fetch(&claimed_count, 1, __ATOMIC_RELEASE);
+    wait_numbered(c);   /* c->index is final from here on */
     uint32_t ucode;
     ap_diff[c->index] = (uint8_t)cpu_match_bsp(&ucode);
     ap_microcode[c->index] = ucode;
@@ -234,45 +260,61 @@ static enum how choose(struct cpu *const *aps, uint32_t n)
     return HOW_NONE;
 }
 
-/* Give up on a CPU that is not online. True if it was stopped; false if
- * it claimed its start meanwhile and is coming online after all. */
-static bool give_up(struct cpu *c, enum how how)
+/* INIT stops a CPU wherever it is (loader code, the trampoline, kernel
+ * code before its claim, the park loop) and leaves it waiting for a SIPI,
+ * where it takes no interrupt and no NMI: the panic path's NMI to all
+ * other CPUs can't reach a CPU that is not part of the system. */
+static void stop_cpu(const struct cpu *c)
 {
-    uint32_t want = AP_STARTING;
-    if (!__atomic_compare_exchange_n(&start_state[c->index], &want, AP_ABANDONED, false,
-                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-        return false;
-    test_late_seen(c);
-    if (how == HOW_OWN)
-        apboot_stop(c);
-    return true;
+    if (!lapic_x2apic() && c->lapic_id >= 0xff)
+        return;   /* never started either: xAPIC can't address it */
+    if (!lapic_send_init(c->lapic_id))
+        kprintf("smp: INIT to stop lapic %u: the APIC never reported it sent\n", c->lapic_id);
 }
 
-static bool wait_online(const struct cpu *c, uint64_t us)
-{
-    uint64_t end = rdtsc() + tsc_hz / 1000000 * us;
-    while (!cpu_online(c) && rdtsc() < end)
-        cpu_relax();
-    return cpu_online(c);
-}
-
-/* After the wait: stop every CPU still not online. Returns how many. */
-static uint32_t stop_stragglers(enum how how)
+/* After the wait: stop every CPU that has not claimed its start. A CPU
+ * whose claim beats the BSP's compare-and-swap counts as started. Returns
+ * how many were stopped. */
+static uint32_t stop_stragglers(void)
 {
     uint32_t stopped = 0;
     for (uint32_t i = 1; i < cpu_count; i++) {
         struct cpu *c = cpus[i];
-        if (cpu_online(c))
-            continue;
-        if (give_up(c, how)) {
-            stopped++;
-            kprintf("smp: cpu %u (lapic %u) did not start\n", i, c->lapic_id);
-        } else if (!wait_online(c, CLAIMED_WAIT_US)) {
-            kprintf("smp: cpu %u (lapic %u) claimed its start but is not online\n", i,
-                    c->lapic_id);
-        }
+        uint32_t want = AP_STARTING;
+        if (!__atomic_compare_exchange_n(&start_state[i], &want, AP_ABANDONED, false,
+                                         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            continue;   /* claimed */
+        test_late_seen(c);
+        stop_cpu(c);
+        stopped++;
+        kprintf("smp: lapic %u (cpu list entry %u) did not start\n", c->lapic_id, i);
     }
     return stopped;
+}
+
+/* Every AP has claimed its start or been stopped. Give the started ones
+ * dense indices 1..n-1, in list order, so a CPU that did not start leaves
+ * no hole: everything indexed by CPU (run queues, per-CPU arrays, tests
+ * that pin a thread to each CPU) sees only CPUs that run. A stopped CPU's
+ * struct cpu and stacks stay allocated and unused (it may have run on
+ * them). The APs wait in smp_ap_main until this is done. */
+static void renumber(void)
+{
+    uint32_t n = 1;
+    for (uint32_t i = 1; i < cpu_count; i++) {
+        if (start_state[i] != AP_CLAIMED)
+            continue;
+        cpus[i]->index = n;
+        cpus[n] = cpus[i];
+        boot_cpu_of[n] = boot_cpu_of[i];
+        n++;
+    }
+    for (uint32_t i = n; i < cpu_count; i++) {
+        cpus[i] = NULL;
+        boot_cpu_of[i] = NULL;
+    }
+    cpu_count = n;
+    __atomic_store_n(&numbered, true, __ATOMIC_RELEASE);
 }
 
 /* The firmware state each AP compared with the BSP's. */
@@ -308,8 +350,17 @@ static const char *how_name(enum how how)
     }
 }
 
-/* Start the APs and wait for them. Returns the time it took. */
-static uint64_t start_and_wait(enum how how)
+static void wait_until(const uint32_t *count, uint32_t want, uint64_t us)
+{
+    uint64_t end = rdtsc() + tsc_hz / 1000000 * us;
+    while (__atomic_load_n(count, __ATOMIC_ACQUIRE) < want && rdtsc() < end)
+        cpu_relax();
+}
+
+/* Start the APs, wait (bounded) for each to claim its start or stop it,
+ * number the ones that came up and let them go online. Returns the TSC
+ * cycles it took. */
+static uint64_t start_all(enum how how)
 {
     struct cpu *const *aps = &cpus[1];
     uint32_t n = cpu_count - 1;
@@ -320,10 +371,13 @@ static uint64_t start_and_wait(enum how how)
         for (uint32_t i = 0; i < n; i++)
             if (aps[i]->index != test_skip)
                 boot_start_cpu(boot_cpu_of[aps[i]->index], loader_ap_entry, aps[i]);
-    uint64_t end = t0 + tsc_hz / 1000000 * AP_TIMEOUT_US;
-    while (how != HOW_NONE && __atomic_load_n(&online_count, __ATOMIC_ACQUIRE) < cpu_count &&
-           rdtsc() < end)
-        cpu_relax();
+    if (how != HOW_NONE)
+        wait_until(&claimed_count, n, AP_TIMEOUT_US);
+    uint32_t stopped = stop_stragglers();
+    if (how == HOW_OWN)
+        apboot_finish(stopped != 0);
+    renumber();
+    wait_until(&online_count, cpu_count, CLAIMED_WAIT_US);
     return rdtsc() - t0;
 }
 
@@ -338,29 +392,31 @@ void smp_start_aps(const struct boot_info *bi)
             break;
         new_cpu(&bi->cpus[i], cpu_count++);
     }
+    listed_count = cpu_count;
     enum how how = HOW_NONE;
     uint64_t took = 0;
     if (cpu_count > 1) {
         cpu_snapshot_bsp();
         how = choose(&cpus[1], cpu_count - 1);
-        took = start_and_wait(how);
+        took = start_all(how);
     }
-    uint32_t stopped = stop_stragglers(how);
-    if (how == HOW_OWN)
-        apboot_finish(stopped != 0);
 
     uint32_t online = __atomic_load_n(&online_count, __ATOMIC_ACQUIRE);
     uint64_t us = took / (tsc_hz / 1000000);
-    if (cpu_count == 1)
+    if (listed_count == 1)
         kprintf("smp: 1 of 1 CPUs online (the CPU list has no other)\n");
     else
-        kprintf("smp: %u of %u CPUs online in %lu.%03lu ms (%s)\n", online, cpu_count,
+        kprintf("smp: %u of %u CPUs online in %lu.%03lu ms (%s)\n", online, listed_count,
                 us / 1000, us % 1000, how_name(how));
+    for (uint32_t i = 1; i < cpu_count; i++)
+        if (!cpu_online(cpus[i]))
+            kprintf("smp: cpu %u (lapic %u) claimed its start but is not online\n", i,
+                    cpus[i]->lapic_id);
     report_firmware_state();
     __atomic_store_n(&ipi_ready, 1, __ATOMIC_RELEASE);
     sched_topology_init();
     heap_percpu_init();
-    if (online != cpu_count) {
+    if (online != listed_count) {
         /* A CPU that never answered might still be in the loader's code. */
         kprintf("smp: NOT reclaiming loader memory\n");
         return;
@@ -420,6 +476,11 @@ bool smp_report(uint64_t window_ms)
     report("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s",
             lapic_timer_mode(), TICK_HZ, expect, measured_us / 1000, measured_us % 1000,
             bad ? "MISMATCH" : "all ok");
+    if (listed_count > cpu_count) {
+        report("smp: %u of %u CPUs did not start (the boot log names them)",
+               listed_count - cpu_count, listed_count);
+        bad++;
+    }
     uint64_t errors = __atomic_load_n(&lapic_errors, __ATOMIC_RELAXED);
     uint64_t unexpected = __atomic_load_n(&irq_unexpected, __ATOMIC_RELAXED);
     if (errors || unexpected)
