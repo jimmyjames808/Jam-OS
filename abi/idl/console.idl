@@ -41,3 +41,9 @@ protocol console 12
 # client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
 # below it (the shell that ran it kills it): a program can't trap the keys.
 7  new_client     (u8 level) -> (handle client)
+# Blank the screen (on 1): fill it with the boot splash's background and
+# draw nothing more (the text, the kernel log and the serial mirror keep
+# going), or draw again (on 0). For a reboot by kexec: the screen stays
+# that colour until the next boot's splash. ADMIN and SHELL channels
+# only: ERR_ACCESS_DENIED for a PROGRAM one.
+8  blank          (u8 on) -> ()

@@ -137,9 +137,14 @@ static status_t sc_new_client(void *ctx, uint8_t level, handle_t *out)
     (void)ctx, (void)level, (void)out;
     return ERR_NOT_SUPPORTED;
 }
+static status_t sc_blank(void *ctx, uint8_t on)
+{
+    (void)ctx, (void)on;
+    return ERR_NOT_SUPPORTED;
+}
 static const struct console_ops st_console = { sc_write, sc_size, sc_clear, sc_open_keys,
                                                sc_connect_input, sc_lend_screen,
-                                               sc_new_client };
+                                               sc_new_client, sc_blank };
 
 static int steal(void)
 {
