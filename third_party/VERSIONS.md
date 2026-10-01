@@ -15,6 +15,19 @@ Vendored third-party code:
   count checks; sha256 5cd39f1fc299f0f1...). ff.c's banner reads "R0.16
   w/patch 2". BSD-style, one clause. Jam OS's
   configuration is user/services/fat/ffport/ffconf.h, not source/ffconf.h.
+- dr_mp3/: dr_mp3 v0.7.4 (unreleased, "TBD" in its banner) by David Reid,
+  based on minimp3 by lieff; dr_mp3.h from https://github.com/mackron/dr_libs
+  at commit 51e61d308dde6b437fce0c5fabb32cd86b40f4d7 (2026-08-30, the last
+  commit to touch dr_mp3.h; master was dfe8377 when fetched on 2026-10-01
+  with the same file), sha256 997b7ee18de6e6b8...; unmodified. Chosen over
+  the last release, v0.7.3 (tag mp3-0.7.3, 2026-01-17), because four of the
+  six commits since fix an out-of-bounds read and overflows in its Xing/Info
+  tag parsing, which every LAME-encoded file reaches. Its LICENSE (the
+  repository's, sha256 dd1c647e6f767f8f...) is kept beside it; the same
+  text ends dr_mp3.h: public domain (Unlicense) or MIT No Attribution, the
+  user's choice. Jam OS's configuration (no stdio, SSE2 on, 16-bit
+  output, Layers I-III) is user/lib/mp3port/dr_mp3_impl.c, built into
+  libos for <mp3.h>.
 - pl_mpeg/: PL_MPEG (MPEG-1 video, MP2 audio, MPEG-PS demuxer) by Dominic
   Szablewski, https://github.com/phoboslab/pl_mpeg at commit c871f2b
   (2025-12-30, "Fix corrupt slice check"): pl_mpeg.h exactly as released

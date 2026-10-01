@@ -28,13 +28,10 @@ Pure helpers, tested in utest without hardware (`audio_formats`,
 `audio_resample`, `wav_parse`): `audio_rs_*` (the resampler),
 `audio_s16_from_u8/s24le/s32le`.
 
-**The resampler** is linear interpolation between neighbouring input
-frames, with the position kept exactly as a count of 1/48000ths of an
-input frame (no fixed-point step, so no drift on long files), rounded to
-nearest; 48000 Hz input is copied untouched. It is clean for the common
-case, upsampling 44100 to 48000; downsampling (96 kHz files) has no
-low-pass filter, so anything above 24 kHz in the file aliases. A
-windowed-sinc or polyphase filter is the upgrade if that is ever heard.
+**The resampler** was linear interpolation; the sound quality pass
+(below) replaced it with a polyphase windowed-sinc filter (flat to
+20 kHz, 100 dB down from 22.05 kHz; the position still kept exactly, no
+drift). 48000 Hz input is copied untouched.
 
 **The backend today** (all of it in audio.c): finds the first hda driver
 with a path through devmgr's GET_SERVICE, `open_output` (48 kHz 16-bit
@@ -85,6 +82,7 @@ it may be named NO NAME instead of JAMOS-DATA.)
 Then on the PC, headphones in the front jack: `play /data/song.wav`
 (`hda gain -20` first if -30 dB is too quiet). 44.1 kHz files
 (`LEI16@44100`, or any WAV a CD ripper writes) play too, resampled.
+MP3s need no conversion: copy them as they are ([MP3](#mp3) below).
 
 ### Tests
 
@@ -286,6 +284,89 @@ Two programs play at once through the mixer in QEMU (above), `vol` works
 from the shell, beep and play go through the mixer, and on the PC two
 sounds are heard at once.
 
+### The sound quality pass (branch `audio-quality`)
+
+After the owner's first song on the PC ("smooth ... a little bit not
+perfect", build 11dfa9a, `play` straight to the driver), every source of
+imperfection that could be measured was, in QEMU with
+`tools/audio-quality-test.sh` (numpy over the wav capture).
+
+| What | Before | After |
+|---|---|---|
+| Output sample size | 16-bit always | the DAC's best: 24-bit on the PC (32-bit containers), 16-bit in QEMU; `hda bits` caps it |
+| Mixing | each stream rounded to 16 bits, then saturated | Q8 sums (24-bit resolution through volumes), a lookahead limiter instead of clipping, TPDF dither only where a 16-bit output drops a fraction; one stream at 0 dB bit-exact |
+| 1 kHz at -40/-60 dB of volume (16-bit QEMU output) | all error in harmonics (undithered) | harmonics at the noise; on the PC the 24-bit output keeps the arithmetic's error ~48 dB lower still |
+| 44.1 kHz resampling, 20 kHz tone | -6.3 dB, image -3.2 dB | -0.000 dB, nothing above -101 dB |
+| 44.1 kHz, 1 kHz tone | image at 4.9 kHz, -65 dB | nothing above -104 dB |
+| Driver periods | 4 x 4096 frames (85 ms) | 8 x 2048 frames (42.7 ms) |
+| Mixer lead | 2 periods: 85-170 ms ahead | 4 periods: 128-171 ms ahead (QEMU: never under 118 ms) |
+| Client ring (a program's read-ahead) | 16384 frames, 341 ms | 65536 frames, 1.37 s |
+| Underruns, late periods, a 20 s tone read from the stick | 0, not measured, no dropout | 0, 0, no 10 ms window off by 0.01 dB |
+| Seeing it on the PC | the mixer's close line had underruns | `play -s`, the mixer's close lines, the driver's DPIB/LPIB gaps |
+
+Findings that needed no change:
+- **Clear-behind** needs no margin behind the position: the position
+  buffer, LPIB and Intel's DPIB all trail the DMA engine's fetch, so the
+  bytes behind them were read already (stream.c's header). The margin is
+  the writer's: the mixer counts a period end with under 256 frames
+  written ahead as late (`LATE_GUARD`), more than a FIFO.
+- **Gain staging**: the path's only gain is the DAC's own amp (0.75 dB
+  steps; the pin's amp is 0-0). Attenuation there, below the DAC's
+  input, keeps a 16-bit source bit-exact into the DAC; with the 24-bit
+  stream a mixer volume costs nothing either. So the default stays:
+  -30 dB at the DAC (`hda gain`), the mixer at 0 dB. Not made louder.
+- **Codec**: the loopback mixer 0b and the other inputs of mixer 0c stay
+  muted (only 0c's input from DAC 02 opens), pin 1b drives its
+  headphone amp (ctl 0xc0) with EAPD on, all while a stream plays only.
+  Unused DACs and pins were left as the firmware set them (the driver
+  writes nothing off its path). Untested: whether the pin and EAPD
+  switching at each stream's start and end pops; if `play` makes a pop
+  at its start or end, that is it (a fix would keep the path open a
+  little after the last stream, which bends "muted unless a stream
+  plays", so it is the owner's call).
+
+**On the PC** (headphones off the head for the first play after
+flashing: the output is 24-bit now):
+
+    hda bits                    # "the DAC takes 16, 20, 24"
+    play -s /data/audio/tone1k.wav
+    play -s /usb0/big-poppa.wav
+
+Perfect is: `0 underruns, 0 late periods`, `mixer >= ` about 120-128 ms
+(under 100 means the mixer ran late at some point), `slowest read`
+well under 1000 ms (above about 1200 ms the ring runs dry: an
+underrun), `0 limited`, `out 48 kHz 24-bit`; and `log` shows the
+driver's `stream: closed ... 0 FIFO error(s)`. A pure tone is the
+hardest test: any gap clicks. To compare by ear, `hda bits 16` then
+play again (`hda bits 24` back).
+
+The test files (on the Mac; copy them to the stick's data partition's
+`audio` folder):
+
+    python3 - <<'PY'
+    import math, struct, wave
+    def write(name, rate, secs, phase, amp=0.25):
+        w = wave.open(name, "wb")
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
+        n, fade, out = int(rate * secs), int(rate * 0.01), bytearray()
+        for k in range(n):
+            env = min(1.0, k / fade, (n - 1 - k) / fade)
+            v = int(round(amp * env * 32767 * math.sin(phase(k / rate))))
+            out += struct.pack("<hh", v, v)
+        w.writeframes(bytes(out)); w.close()
+    write("tone1k.wav", 48000, 60, lambda t: 2 * math.pi * 1000 * t)
+    write("tone1k-44.wav", 44100, 60, lambda t: 2 * math.pi * 1000 * t)
+    K = 20.0 / math.log(1000.0)    # 20 Hz to 20 kHz in 20 s
+    write("sweep-44.wav", 44100, 20, lambda t: 2 * math.pi * 20 * K * (math.exp(t / K) - 1))
+    PY
+
+`tone1k` (48 kHz, no resampling: the driver and mixer alone) and
+`tone1k-44` (the resampler too) are a steady 1 kHz at -12 dBFS for a
+minute: any tick, dropout or warble is a fault. `sweep-44` rises from
+20 Hz to 20 kHz: it should rise smoothly and fade into inaudibility at
+the top, with no second tone falling while it rises (that would be
+aliasing).
+
 ### For AS (the boot splash)
 
 The splash gets `SR_AUDIO` from init. Its `open_output` may come before
@@ -293,3 +374,134 @@ the mixer has found the driver: the call waits for the mixer (init holds
 the channel), and the mixer opens the driver when the splash starts its
 stream. For lip sync it uses `position().played` (the mixer's estimate
 of what is heard, to within a period's interpolation), not what it wrote.
+
+## MP3
+
+Status: done in QEMU (branch `a2-mp3`); not yet heard on the PC.
+
+`play song.mp3` plays an MPEG audio file the way it plays a WAV file:
+the same `<audio.h>` stream (resampled to 48 kHz), Ctrl+C with the 5 ms
+fade, `-v`.
+
+### The decoder: dr_mp3
+
+`third_party/dr_mp3` (third_party/VERSIONS.md): dr_mp3 by David Reid,
+public domain or MIT-0, one header, vendored unmodified at dr_libs commit
+51e61d3 (v0.7.4, unreleased: the commits after v0.7.3 fix an
+out-of-bounds read in its Xing/Info tag parsing). Chosen over minimp3
+(CC0), which it is a fork of, because minimp3 has been unmaintained
+since 2021 and dr_mp3 carries the fixes since, and because dr_mp3 already
+does what a player needs around the decoder: read/seek callbacks with a
+no-stdio build, its own allocation callbacks, ID3v2/ID3v1/APE tags,
+Xing/Info frames and LAME's encoder delay and padding (so a file plays
+exactly as long as its source). libmad and mpg123 are GPL/LGPL: out.
+
+It decodes MPEG-1, MPEG-2 and MPEG-2.5 (8000 to 48000 Hz), Layers I, II
+and III, CBR, VBR and free format, mono and stereo, into 16-bit samples
+(its float synthesis rounded and saturated inside it). SSE2 is on (user
+programs may use SSE; the kernel saves each thread's FPU state). Its
+configuration is `user/lib/mp3port/dr_mp3_impl.c`, compiled into libos
+with that directory's string.h and stdlib.h (onto libos's memcpy,
+memmove, memset, malloc and free); libos has no realloc, so the
+allocation callbacks leave it out and dr_mp3 grows its buffer with
+malloc, a copy and free. It needs no maths library. About 35 KiB of
+code, linked only into programs that call `mp3_open` (the shell, utest);
+while a file plays, ~33 KiB of decoder state and a 64 KiB read buffer
+on the heap and at most ~1.2 KiB of stack.
+
+### `<mp3.h>` (user/lib/mp3.c, libos)
+
+- `mp3_header_parse`: one frame header (version, layer, rate, bitrate,
+  frame length), from the standard's tables.
+- `mp3_sniff` (pure apart from its read callback): skips ID3v2 tags
+  (up to 8 in a row, footers included), finds an ID3v1 tag (the last 128
+  bytes, "TAG") and an APEv2 tag before it (its "APETAGEX" footer), then
+  looks in the first 8 KiB of what is left for a frame header followed
+  by a second one where the first frame ends (same version, layer and
+  rate), or by the end of the audio (a one-frame file). A file without
+  one is refused at once: dr_mp3 alone would search a 15 MB file to its
+  end for a frame. It also reads a VBRI (Fraunhofer) header.
+- `mp3_open`/`mp3_decode`/`mp3_close`: dr_mp3 through read/seek/tell
+  callbacks over the caller's reader, 64 KiB at a time, never the whole
+  file; `mp3_decode` gives interleaved 16-bit frames, 0 at the end, or
+  the reader's error. The length: a Xing/Info header's frame count less
+  LAME's delay and padding (exact), else VBRI's count, else the audio's
+  bytes at the first frame's bitrate (CBR: right to a frame), else
+  unknown.
+- **A dr_mp3 bug, worked around, not patched**: after it reads a
+  Xing/Info frame, dr_mp3 sets its stream cursor back to that frame's end
+  although it has already read up to 64 KiB further, so the clamp that
+  keeps it out of the ID3v1 tag lets it read the tag after the last
+  frame; the last frame then fails its "ends where the data ends" check
+  and is dropped (a LAME file with an ID3v1 tag played 26 ms short, its
+  tag bytes fed to the decoder). `mp3_open` gives dr_mp3 the file without
+  its end tags, so the cursor's error never reaches them. Worth reporting
+  upstream.
+
+### `play`
+
+The shell's `cmd/play_src.c` is a small source interface (open, read
+16-bit frames, close, a description for the first line) with a WAV
+source (what play.c did before) and an MP3 source; play.c's loop reads
+from whichever was opened. The format is chosen by content, not the
+name: `RIFF` at the start is WAV, else MP3 if `mp3_sniff` finds frames,
+else `not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)`.
+
+    play: song.mp3: MP3, 44100 Hz, 2 ch, 192 kbps, 4:22
+
+(`MP2`/`MP1` for Layers II and I; `VBR` when a Xing or VBRI header says
+so, `free format` when the bitrate isn't in the header; `?` when the
+length is unknown.) Frames the decoder can't decode are skipped (that
+bit of the music is missing; no silence is put in); a file cut off
+mid-frame ends at its last whole frame; a read error (the stick pulled)
+stops it with the error once dr_mp3's 64 KiB buffer has played.
+
+`play -n <file>` decodes (or for a WAV, reads) the whole file as fast as
+it goes and prints how long that took per second of audio: the CPU cost
+of a file, for the PC.
+
+### Getting MP3s onto the stick
+
+Copy them as they are to the stick's data partition from the Mac, then
+eject: `cp song.mp3 /Volumes/JAMOS-DATA/` (or NO NAME). Then
+`play /data/song.mp3`. Album art in the ID3 tag is skipped, not read.
+
+### CPU
+
+QEMU (TCG emulation on the Mac, `play -n`, including reading the file
+from the emulated stick): a 30 s 44.1 kHz stereo file at 320 kbps CBR
+1.14 s, 38 ms per second of audio (48 kHz 320 kbps: 40 ms; VBR -q:a 0:
+25 ms; 128 kbps: 24-28 ms). Reading a WAV of the same 30 s costs more
+(115 ms per second: its 5.3 MB through emulated USB), so most of the MP3
+figure is the emulator. The same decoder on the Mac natively: 0.22 ms per
+second of audio. On the PC (Raptor Lake) it should be well under 1 ms per
+second of audio (under 0.1 % of one core): `play -n` there gives the real
+number.
+
+### Tests
+
+- utest `mp3_header` (versions, layers, rates, lengths, free format,
+  every reserved value refused), `mp3_sniff` (ID3v2 with footer, two
+  tags, junk, APEv2 + ID3v1 at the end, one-frame and cut files; a
+  mismatched second header, a lone header, a tag alone, noise, a WAV,
+  empty: refused), `mp3_decode` (silent frames built in memory decode to
+  1152 zero frames each; a Xing frame: VBR, exact, not played; VBRI;
+  mono with tags at both ends; a read error past dr_mp3's first 64 KiB;
+  noise).
+- `tools/mp3-test.sh` ([TESTING.md](TESTING.md#area-scripts)) in QEMU.
+  Numbers on 2026-10-01: 44.1 kHz stereo 192 kbps CBR 2490.0 ms for a
+  2.49 s tone (LAME's delay and padding dropped exactly), 440.00/660.00
+  Hz; 48 kHz mono VBR 1000.0 ms, 1000.00 Hz; 22.05 kHz MPEG-2 without a
+  Xing tag 1500.8 ms; ID3 art + ID3v1 1000.0 ms; Layer II 1002.0 ms,
+  300.00 Hz; 3000 bytes of noise mid-file: 2333 ms (frames lost, played
+  on), cut at 60 %: 1464 ms, clean end; Ctrl+C with a fade; `play -n`:
+  441000 of 441000 frames.
+- Also checked on the Mac (not committed): mp3.c and dr_mp3 built for
+  the host with AddressSanitizer and UBSan, 400 mutated files (bytes
+  changed, cut, noise spliced in, headers fuzzed): no error.
+
+### Left for later
+
+- Heard on the PC: a real song; `play -n` there.
+- Seeking, a progress line, playing several files or a directory.
+- Upstream: the stream-cursor bug above.

@@ -4,22 +4,42 @@
  *
  * Memory, all pinned DMA32 while the stream is open, made fresh at each
  * open and released at its close:
- *   the ring    64 KiB contiguous, 4 periods of 16 KiB (4096 frames,
- *               85 ms each at 48 kHz 16-bit stereo); the client maps it
- *               and writes samples ahead of the play position
- *   one page    the Buffer Descriptor List at 0 (4 entries, one per
- *               period, each with IOC: an interrupt per period) and the
- *               DMA position buffer at POS_OFF (the controller writes
- *               each stream's position there, 8 bytes per descriptor)
+ *   the ring    RING_FRAMES frames (341 ms) contiguous: 64 KiB at 16-bit,
+ *               128 KiB in 32-bit containers; 8 periods of 2048 frames
+ *               (42.7 ms each); the client maps it and writes samples
+ *               ahead of the play position
+ *   one page    the Buffer Descriptor List at 0 (one entry per period,
+ *               each with IOC: an interrupt per period) and the DMA
+ *               position buffer at POS_OFF (the controller writes each
+ *               stream's position there, 8 bytes per descriptor)
  *
- * The position comes from the position buffer, with LPIB read beside it
- * as a check (the largest gap is in the close line). It is read at every
+ * The samples: 48 kHz stereo at the size the client asked for and the
+ * DAC takes (the DAC's P_PCM sizes; `hda bits` caps them): 16-bit in
+ * 16-bit containers, 20-, 24- and 32-bit in 32-bit containers, each
+ * sample left-justified in its container (the DAC takes the top bits,
+ * spec 4.5.1), so a client writing full 32-bit samples is right for all
+ * three.
+ *
+ * The position comes from the position buffer, with LPIB (and, on Intel
+ * controllers that have it, the vendor DPIB register) read beside it as
+ * a check (the largest gaps are in the close line). It is read at every
  * interrupt and at least once a period (irq.c's deadline), so it can
  * never wrap unseen. At every read the driver zeroes the ring behind the
  * position (clear-behind): a client that stops writing gives silence
  * within one ring, never a loop of the last 341 ms, and a client may
  * write anywhere in [position, position + ring) since everything behind
  * the position it was told has already been zeroed.
+ *
+ * Clear-behind needs no safety margin: every position the controller
+ * reports (the position buffer, LPIB, DPIB) is at or behind the DMA
+ * engine's fetch pointer, because the engine fetches a sample from
+ * memory into its FIFO before the link sends it, and the samples in the
+ * FIFO and on the link are copies. So the bytes behind any of them have
+ * been read already and zeroing them can't change what is heard. The
+ * margin belongs on the writing side: the engine reads up to a FIFO
+ * (SD_FIFOS, logged at open) ahead of the position, so a frame written
+ * less than that ahead of it may be fetched before it lands (the mixer
+ * keeps a period or more ahead and counts anything closer as late).
  *
  * The converter: the DAC at the start of the path main.c chose and set
  * up muted (path.c, verbs.c) gets the stream's format and tag, through
@@ -97,7 +117,9 @@ static void tcsel(struct stream *s)
  * period of 4 pages). */
 static status_t dma_buf_make(struct hda *h, struct dma_buf *b, uint64_t size)
 {
-    uint64_t addrs[RING_BYTES / PAGE];
+    uint64_t addrs[RING_BYTES_MAX / PAGE];
+    if (size > RING_BYTES_MAX)
+        return ERR_INVALID_ARGS;
     void *m = NULL;
     status_t st = drv_vmo_create(size, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &b->vmo);
     if (st == OK)
@@ -135,7 +157,7 @@ static void dma_buf_free(struct hda *h, struct dma_buf *b, uint64_t size)
  * them. */
 static status_t buffers_make(struct hda *h, struct stream *s)
 {
-    status_t st = dma_buf_make(h, &s->ring, RING_BYTES);
+    status_t st = dma_buf_make(h, &s->ring, s->ring_bytes);
     if (st == OK)
         st = dma_buf_make(h, &s->page, PAGE);
     if (st != OK) {
@@ -144,8 +166,8 @@ static status_t buffers_make(struct hda *h, struct stream *s)
     }
     volatile struct bdl_entry *bdl = (volatile struct bdl_entry *)s->page.map;
     for (unsigned i = 0; i < PERIODS; i++) {
-        bdl[i].addr = s->ring.addr + (uint64_t)i * PERIOD_BYTES;
-        bdl[i].len = PERIOD_BYTES;
+        bdl[i].addr = s->ring.addr + (uint64_t)i * s->period_bytes;
+        bdl[i].len = s->period_bytes;
         bdl[i].flags = 1;   /* IOC */
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);   /* the list before the registers point at it */
@@ -189,12 +211,12 @@ static status_t sd_program(struct hda *h, struct stream *s)
 {
     uint32_t r = s->sd_regs;
     sd_wr8(h, s, SD_STS, SDSTS_BCIS | SDSTS_FIFOE | SDSTS_DESE);   /* RW1C: nothing stale */
-    drv_write32(h->regs, r + SD_CBL, RING_BYTES);
+    drv_write32(h->regs, r + SD_CBL, s->ring_bytes);
     drv_write16(h->regs, r + SD_LVI, PERIODS - 1);
-    drv_write16(h->regs, r + SD_FMT, STREAM_FORMAT);
+    drv_write16(h->regs, r + SD_FMT, s->fmt);
     sd_wr8(h, s, SD_CTL2, (uint8_t)(STREAM_TAG << 4));
     sd_wr8(h, s, SD_CTL0, SDCTL_IOCE | SDCTL_FEIE | SDCTL_DEIE);
-    status_t st = hda_set(h, s->cad, s->dac, V4_SET_FORMAT, STREAM_FORMAT);
+    status_t st = hda_set(h, s->cad, s->dac, V4_SET_FORMAT, s->fmt);
     if (st == OK)
         st = hda_set(h, s->cad, s->dac, V_SET_STREAM, STREAM_TAG << 4);
     if (st != OK) {
@@ -209,7 +231,21 @@ static status_t sd_program(struct hda *h, struct stream *s)
 
 /* ---- open, start, stop, close ------------------------------------------------- */
 
-status_t stream_open(struct hda *h, struct stream *s, handle_t *ring)
+/* The stream's format for `bits` per sample, or ERR_NOT_SUPPORTED. */
+static status_t stream_format(struct stream *s, uint32_t bits)
+{
+    uint32_t code = bits == 16 ? 1 : bits == 20 ? 2 : bits == 24 ? 3 : bits == 32 ? 4 : 0;
+    if (!code || !s->out || !(hda_output_pcm(s->out) & PCM_SIZE(bits)))
+        return ERR_NOT_SUPPORTED;
+    s->bits = bits;
+    s->fmt = (uint16_t)(FMT_48K_STEREO | FMT_BITS(code));
+    s->frame_bytes = bits == 16 ? 4 : 8;
+    s->ring_bytes = RING_FRAMES * s->frame_bytes;
+    s->period_bytes = s->ring_bytes / PERIODS;
+    return OK;
+}
+
+status_t stream_open(struct hda *h, struct stream *s, uint32_t bits, handle_t *ring)
 {
     if (s->sd >= HDA_MAX_STREAMS || !h->codec_mask || (!h->rings && !h->immediate_ok))
         return ERR_NOT_SUPPORTED;
@@ -219,6 +255,8 @@ status_t stream_open(struct hda *h, struct stream *s, handle_t *ring)
         drv_log("stream: no path to a jack was set up: nothing to play to");
         return ERR_NOT_FOUND;
     }
+    if (stream_format(s, bits) != OK)
+        return ERR_NOT_SUPPORTED;
     tcsel(s);
     status_t st;
     s->open = true;   /* from here on stream_close undoes what was done */
@@ -238,10 +276,12 @@ status_t stream_open(struct hda *h, struct stream *s, handle_t *ring)
     }
     s->last_off = 0;
     s->played = s->cleared = 0;
-    s->iocs = s->fifo_errors = s->lpib_diff_max = 0;
-    drv_log("stream: open on descriptor %u, tag %u, format %#06x, converter %u/%02x; ring %u "
-            "bytes in %u periods; FIFO %u bytes", s->sd, STREAM_TAG, STREAM_FORMAT, s->cad, s->dac,
-            RING_BYTES, PERIODS, drv_read16(h->regs, s->sd_regs + SD_FIFOS));
+    s->iocs = s->fifo_errors = s->lpib_diff_max = s->dpib_diff_max = 0;
+    s->dpib_seen = false;
+    drv_log("stream: open on descriptor %u, tag %u, format %#06x (48 kHz %u-bit stereo), "
+            "converter %u/%02x; ring %u bytes in %u periods of %u frames; FIFO %u bytes", s->sd,
+            STREAM_TAG, s->fmt, s->bits, s->cad, s->dac, s->ring_bytes, PERIODS, PERIOD_FRAMES,
+            drv_read16(h->regs, s->sd_regs + SD_FIFOS));
     return OK;
 }
 
@@ -291,16 +331,16 @@ void stream_close(struct hda *h, struct stream *s, const char *why)
     (void)hda_set(h, s->cad, s->dac, V_SET_STREAM, 0);   /* stream 0: none */
     if (quiet) {
         dma_buf_free(h, &s->page, PAGE);
-        dma_buf_free(h, &s->ring, RING_BYTES);
+        dma_buf_free(h, &s->ring, s->ring_bytes);
     } else {
         drv_log("stream: the DMA engine did not stop: its buffers stay pinned");
     }
     s->open = false;
     if (why)
         drv_log("stream: closed (%s): %lu frames played, %u period interrupt(s), %u FIFO "
-                "error(s), position buffer vs LPIB up to %u bytes", why,
-                (unsigned long)(s->played / FRAME_BYTES), s->iocs, s->fifo_errors,
-                s->lpib_diff_max);
+                "error(s), position buffer vs LPIB up to %u bytes, vs DPIB %s%u bytes", why,
+                (unsigned long)(s->played / s->frame_bytes), s->iocs, s->fifo_errors,
+                s->lpib_diff_max, s->dpib_seen ? "up to " : "(none) ", s->dpib_diff_max);
 }
 
 /* ---- position and status ------------------------------------------------------- */
@@ -308,11 +348,12 @@ void stream_close(struct hda *h, struct stream *s, const char *why)
 /* Zero ring bytes [from, to) (absolute counts, at most a ring apart). */
 static void clear_ring(struct stream *s, uint64_t from, uint64_t to)
 {
-    if (to - from > RING_BYTES)
-        from = to - RING_BYTES;
+    uint32_t ring = s->ring_bytes;
+    if (to - from > ring)
+        from = to - ring;
     while (from < to) {
-        uint32_t off = (uint32_t)(from % RING_BYTES);
-        uint32_t n = RING_BYTES - off;
+        uint32_t off = (uint32_t)(from % ring);
+        uint32_t n = ring - off;
         if (n > to - from)
             n = (uint32_t)(to - from);
         __builtin_memset(s->ring.map + off, 0, n);
@@ -320,18 +361,33 @@ static void clear_ring(struct stream *s, uint64_t from, uint64_t to)
     }
 }
 
+/* How far apart two offsets in a ring are, either way round. */
+static uint32_t ring_gap(uint32_t a, uint32_t b, uint32_t ring)
+{
+    uint32_t gap = (a - b + ring) % ring;
+    return gap > ring / 2 ? ring - gap : gap;
+}
+
 void stream_update(struct hda *h, struct stream *s)
 {
     if (!s->open || !s->page.map || !s->ring.map)
         return;
-    uint32_t pos = *(volatile uint32_t *)(s->page.map + POS_OFF + 8 * s->sd) % RING_BYTES;
-    uint32_t lpib = drv_read32(h->regs, s->sd_regs + SD_LPIB) % RING_BYTES;
-    uint32_t gap = (pos - lpib + RING_BYTES) % RING_BYTES;
-    if (gap > RING_BYTES / 2)
-        gap = RING_BYTES - gap;
+    uint32_t ring = s->ring_bytes;
+    uint32_t pos = *(volatile uint32_t *)(s->page.map + POS_OFF + 8 * s->sd) % ring;
+    uint32_t lpib = drv_read32(h->regs, s->sd_regs + SD_LPIB) % ring;
+    uint32_t gap = ring_gap(pos, lpib, ring);
     if (s->running && gap > s->lpib_diff_max)   /* stopped, LPIB may not be reset yet (QEMU) */
         s->lpib_diff_max = gap;
-    uint32_t delta = (pos - s->last_off + RING_BYTES) % RING_BYTES;
+    if (h->dpib_ok && s->running) {
+        uint32_t dpib = drv_read32(h->regs, HDA_SD_DPIB(s->sd));
+        if (dpib && dpib != 0xffffffffu) {   /* 0 or all ones: not there (QEMU has none) */
+            s->dpib_seen = true;
+            gap = ring_gap(pos, dpib % ring, ring);
+            if (gap > s->dpib_diff_max)
+                s->dpib_diff_max = gap;
+        }
+    }
+    uint32_t delta = (pos - s->last_off + ring) % ring;
     s->last_off = pos;
     if (!delta)
         return;

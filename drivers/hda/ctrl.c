@@ -331,7 +331,12 @@ static status_t choose_path(struct hda *h)
 
 status_t hda_ctrl_start(struct hda *h, handle_t bar)
 {
-    status_t st = drv_mmio_map(bar, 0, PAGE, VMO_CACHE_UC, &h->regs);
+    /* Two pages for Intel's DPIB registers (stream.c, the log only); one,
+     * the spec's registers, if the BAR is that small. */
+    status_t st = drv_mmio_map(bar, 0, HDA_BAR_MAP, VMO_CACHE_UC, &h->regs);
+    h->dpib_ok = st == OK;
+    if (st != OK)
+        st = drv_mmio_map(bar, 0, PAGE, VMO_CACHE_UC, &h->regs);
     if (st != OK) {
         drv_log("can't map BAR 0 (%s)", status_str(st));
         return st;

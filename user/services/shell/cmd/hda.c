@@ -4,7 +4,7 @@
  * the driver set up, what is set on each of its nodes (hda.info), and the
  * gain it plays at. `hda gain [dB]` shows or sets the gain (hda.set_gain:
  * the driver rounds to the amp's step and clamps to its range, never
- * above 0 dB). */
+ * above 0 dB); `hda bits [n]` the largest sample size (hda.set_bits). */
 #include <devmgr.h>
 #include <idl/hda.h>
 #include "sh.h"
@@ -96,6 +96,47 @@ static int gain_cmd(int argc, char **argv)
     return st == OK ? 0 : 1;
 }
 
+/* The sizes in a P_PCM word: "16, 20, 24". */
+static void pcm_sizes(uint32_t pcm, char *buf, size_t size)
+{
+    static const unsigned bits[] = { 8, 16, 20, 24, 32 };
+    size_t len = 0;
+    buf[0] = 0;
+    for (unsigned i = 0; i < 5; i++)
+        if (pcm & (1u << (16 + i)))
+            len += (size_t)snprintf(buf + len, size - len, "%s%u", len ? ", " : "", bits[i]);
+}
+
+/* `hda bits [16|20|24|32]`: the largest sample size the output uses from
+ * the next stream on (hda.set_bits). */
+static int bits_cmd(int argc, char **argv)
+{
+    uint64_t bits = 0;
+    if (argc == 3 && !sh_parse_u64(argv[2], &bits))
+        bits = 1;
+    if (argc > 3 || (argc == 3 && bits != 16 && bits != 20 && bits != 24 && bits != 32)) {
+        sh_tty("usage: hda bits [16|20|24|32]   (the largest sample size the output uses)\n");
+        return 2;
+    }
+    handle_t ch = sh_hda();
+    if (ch == HANDLE_INVALID) {
+        sh_say("hda: no HD Audio driver with a path to a jack\n");
+        return 1;
+    }
+    uint32_t cap = 0, pcm = 0;
+    status_t st = hda_set_bits_until(ch, now() + DUMP_WAIT, (uint32_t)bits, &cap, &pcm);
+    jam_handle_close(ch);
+    if (st != OK) {
+        sh_say("hda: bits: %s\n", status_str(st));
+        return 1;
+    }
+    char sizes[32];
+    pcm_sizes(pcm, sizes, sizeof(sizes));
+    sh_say("hda: bits: at most %u; the DAC takes %s (the mixer uses the largest from its next "
+           "open)\n", cap, sizes[0] ? sizes : "none");
+    return 0;
+}
+
 /* Ask each running PCI driver in turn for hda.dump; others answer
  * ERR_NOT_SUPPORTED. Prints each dump; returns how many answered. */
 static unsigned dump_each(handle_t dm)
@@ -139,8 +180,10 @@ SH_CMD(hda)
 {
     if (argc >= 2 && !strcmp(argv[1], "gain"))
         return gain_cmd(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "bits"))
+        return bits_cmd(argc, argv);
     if (argc != 1) {
-        sh_tty("usage: hda [gain [dB]]\n");
+        sh_tty("usage: hda [gain [dB] | bits [16|20|24|32]]\n");
         return 2;
     }
     handle_t dm = sh_devmgr();

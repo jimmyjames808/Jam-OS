@@ -17,6 +17,7 @@
 #define AUDIO_STREAM_POSITION  0x00160005u
 #define AUDIO_STREAM_SET_VOLUME 0x00160006u
 #define AUDIO_STREAM_LEVELS    0x00160007u
+#define AUDIO_STREAM_STATS     0x00160008u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct audio_open_output_req {
@@ -91,9 +92,23 @@ struct audio_stream_levels_rep {
     int32_t master;
     int32_t device;
 } __attribute__((packed));
+struct audio_stream_stats_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct audio_stream_stats_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t underruns;
+    uint32_t late;
+    uint32_t min_lead;
+    uint32_t limited;
+    uint32_t bits;
+    uint64_t played;
+} __attribute__((packed));
 
 #define AUDIO_REQ_MAX 30u   /* bytes: the biggest request */
-#define AUDIO_REP_MAX 32u   /* bytes: the biggest reply */
+#define AUDIO_REP_MAX 36u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -309,6 +324,46 @@ static inline status_t audio_stream_levels(handle_t ch, int32_t *out_volume, int
     return audio_stream_levels_until(ch, DEADLINE_NEVER, out_volume, out_master, out_device);
 }
 
+/* On a stream channel: how its playing has gone, for `play -s` (the owner
+ * judging the sound on real hardware): `underruns`, periods it had too
+ * few frames for (it wrote too slowly); `late`, periods the mixer itself
+ * was late for while it played (scheduled too late: the device may have
+ * played silence); `min_lead`, the least the mixer had written ahead of
+ * the play position at a period's end while it played (frames;
+ * 0xffffffff: no period ended yet); `limited`, periods the mixer's
+ * limiter turned down to keep the sum inside full scale; `bits`, the
+ * output's sample size now (0: the output is closed); `played`, its
+ * frames heard (estimated, as stream_position). */
+static inline status_t audio_stream_stats_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
+{
+    struct audio_stream_stats_req idl_q;
+    struct audio_stream_stats_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIO_STREAM_STATS;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_underruns)
+        *out_underruns = idl_r.underruns;
+    if (idl_st == OK && out_late)
+        *out_late = idl_r.late;
+    if (idl_st == OK && out_min_lead)
+        *out_min_lead = idl_r.min_lead;
+    if (idl_st == OK && out_limited)
+        *out_limited = idl_r.limited;
+    if (idl_st == OK && out_bits)
+        *out_bits = idl_r.bits;
+    if (idl_st == OK && out_played)
+        *out_played = idl_r.played;
+    return idl_st;
+}
+static inline status_t audio_stream_stats(handle_t ch, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
+{
+    return audio_stream_stats_until(ch, DEADLINE_NEVER, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -321,6 +376,7 @@ struct audio_ops {
     status_t (*stream_position)(void *ctx, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played);
     status_t (*stream_set_volume)(void *ctx, int32_t centibels, int32_t *out_centibels);
     status_t (*stream_levels)(void *ctx, int32_t *out_volume, int32_t *out_master, int32_t *out_device);
+    status_t (*stream_stats)(void *ctx, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -484,6 +540,33 @@ static inline uint32_t audio_dispatch(const struct audio_ops *ops, void *ctx, co
         idl_r->volume = out_volume;
         idl_r->master = out_master;
         idl_r->device = out_device;
+        return sizeof(*idl_r);
+    }
+    case AUDIO_STREAM_STATS: {
+        const struct audio_stream_stats_req *idl_q = (const struct audio_stream_stats_req *)req;
+        struct audio_stream_stats_rep *idl_r = (struct audio_stream_stats_rep *)rep;
+        uint32_t out_underruns = 0;
+        uint32_t out_late = 0;
+        uint32_t out_min_lead = 0;
+        uint32_t out_limited = 0;
+        uint32_t out_bits = 0;
+        uint64_t out_played = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stream_stats) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stream_stats(ctx, &out_underruns, &out_late, &out_min_lead, &out_limited, &out_bits, &out_played);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->underruns = out_underruns;
+        idl_r->late = out_late;
+        idl_r->min_lead = out_min_lead;
+        idl_r->limited = out_limited;
+        idl_r->bits = out_bits;
+        idl_r->played = out_played;
         return sizeof(*idl_r);
     }
     }

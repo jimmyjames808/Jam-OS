@@ -3,7 +3,7 @@
  * and devmgr's edu driver; supervise.c: devmgr's supervision and what a
  * driver's handles can't do; hid.c: the hid driver against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
- * mix.c: the mixer's arithmetic), the
+ * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -46,6 +46,11 @@ bool t_logd_kernel_log(void);
 bool t_audio_formats(void);
 bool t_audio_resample(void);
 bool t_wav_parse(void);
+
+/* mp3.c: <mp3.h>: frame headers, sniffing, decoding through dr_mp3. */
+bool t_mp3_header(void);
+bool t_mp3_sniff(void);
+bool t_mp3_decode(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
@@ -139,4 +144,5 @@ bool t_fat_disk_gone(void);
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);
 bool t_mix_volume_and_master(void);
-bool t_mix_saturates(void);
+bool t_mix_dither(void);
+bool t_mix_limits(void);

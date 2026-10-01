@@ -73,10 +73,15 @@ descriptor registers and the Buffer Descriptor List, spec chapters 3
 and 4):
 - the first output stream descriptor (index ISS), stream tag 1;
 - 48 kHz, 16-bit, stereo (format 0x0011): every HDA codec has it, and the
-  mixer (A2) converts;
-- a 64 KiB contiguous DMA32 ring (341 ms), pinned for the stream's life;
-  a Buffer Descriptor List of 4 entries of 16 KiB, each with IOC (a period
-  every 85 ms), in a second DMA32 page with the position buffer;
+  mixer (A2) converts. Since the audio quality pass: 16, 20, 24 or 32
+  bits as the client asks and the DAC's P_PCM allows (20-32 in 32-bit
+  containers, left-justified; the mixer asks the largest: 24 on the PC,
+  format 0x0031), capped by `hda bits`;
+- a contiguous DMA32 ring of 16384 frames (341 ms: 64 KiB at 16-bit,
+  128 KiB in 32-bit containers), pinned for the stream's life; a Buffer
+  Descriptor List of 8 entries (2048 frames each, with IOC: a period
+  every 42.7 ms; it was 4 of 85 ms before the quality pass), in a second
+  DMA32 page with the position buffer;
 - setup: SRST 1 then 0 (each read back, bounded), CBL, LVI, BDL address,
   format, tag, then the codec's converter (SET_STREAM_CHANNEL,
   SET_CONVERTER_FORMAT), then RUN;
@@ -236,8 +241,9 @@ different files and can run as two tracks at once.
 
 **What only the PC can show** (hdatest from the shell, or `hdatest` in
 the log after it): the MSI arriving (the close lines count "period
-interrupt(s)": about one per 85 ms), the position buffer against LPIB
-("position buffer vs LPIB up to N bytes": expect a FIFO's worth or less),
+interrupt(s)": about one per 42.7 ms), the position buffer against LPIB
+("position buffer vs LPIB up to N bytes": expect a FIFO's worth or less)
+and against Intel's DPIB register ("vs DPIB up to N bytes"),
 the FIFO size (the open line), TCSEL (a "TCSEL was TCn" line only if the
 firmware left it non-zero), the rate hdatest measures (48 kHz within
 2 %) and the kill test's quarantine line. Nothing is heard: no path is

@@ -147,6 +147,14 @@ UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
+# dr_mp3 (third_party/dr_mp3, vendored unmodified) is compiled once, from
+# user/lib/mp3port/dr_mp3_impl.c (its configuration; the directory also
+# holds the string.h and stdlib.h it includes), into libos for <mp3.h>
+# (user/lib/mp3.c). A program that never calls mp3_open doesn't link it.
+DRMP3_OBJ   := $(UOBJ)/user/lib/mp3port/dr_mp3_impl.c.o
+LIBOS_OBJS  += $(DRMP3_OBJ)
+$(DRMP3_OBJ): PROG_CFLAGS := -Iuser/lib/mp3port -Ithird_party/dr_mp3
+$(UOBJ)/user/lib/mp3.c.o: PROG_CFLAGS := -Ithird_party/dr_mp3
 # The programs, by role: user/services/<name> (init, console, devmgr, ...),
 # user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
 # directory there with a .c file is the program bin/<name> in bootfs, except

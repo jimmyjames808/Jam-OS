@@ -44,22 +44,87 @@ bool t_audio_formats(void)
 }
 
 #define RAMP 1000u
+#define TWO_PI 6.283185307179586
+
+/* sin by its series after range reduction (utest has no libm). */
+static double usin(double x)
+{
+    x -= TWO_PI * (double)(int64_t)(x / TWO_PI);
+    if (x > TWO_PI / 2)
+        x -= TWO_PI;
+    else if (x < -TWO_PI / 2)
+        x += TWO_PI;
+    double term = x, sum = x;
+    for (int k = 1; k < 20; k++) {
+        term *= -x * x / ((2 * k) * (2 * k + 1));
+        sum += term;
+    }
+    return sum;
+}
+
+/* in_frames of a sine at hz (amp) on each channel (ch 1 uses hz2), at rate. */
+static void sine(int16_t *in, size_t frames, unsigned channels, unsigned rate, double hz,
+                 double hz2, double amp)
+{
+    for (size_t k = 0; k < frames; k++)
+        for (unsigned c = 0; c < channels; c++) {
+            double v = amp * usin(TWO_PI * (c ? hz2 : hz) * (double)k / rate);
+            in[k * channels + c] = (int16_t)(v < 0 ? v - 0.5 : v + 0.5);
+        }
+}
+
+/* All of in through rs (run, then flush) into out (cap frames): how many. */
+static size_t resample_all(struct audio_rs *rs, const int16_t *in, size_t frames, int16_t *out,
+                           size_t cap, size_t piece, size_t room)
+{
+    size_t got = 0, at = 0, used;
+    while (at < frames) {
+        size_t k = frames - at < piece ? frames - at : piece;
+        size_t c = cap - got < room ? cap - got : room;
+        size_t m = audio_rs_run(rs, in + at * rs->channels, k, &used, out + 2 * got, c);
+        if (!m && !used)
+            return got;   /* out is full */
+        got += m;
+        at += used;
+    }
+    size_t m;
+    while (got < cap && (m = audio_rs_flush(rs, out + 2 * got,
+                                            cap - got < room ? cap - got : room)) > 0)
+        got += m;
+    return got;
+}
+
+/* Output frames [from, to) of channel c against amp * sin(2 pi hz t) at
+ * 48 kHz: the largest difference. */
+static double worst(const int16_t *out, size_t from, size_t to, unsigned c, double hz, double amp)
+{
+    double w = 0;
+    for (size_t o = from; o < to; o++) {
+        double d = out[2 * o + c] - amp * usin(TWO_PI * hz * (double)o / 48000);
+        if (d < 0)
+            d = -d;
+        if (d > w)
+            w = d;
+    }
+    return w;
+}
 
 bool t_audio_resample(void)
 {
-    static int16_t in[2 * RAMP], out[2 * 2 * RAMP], again[2 * 2 * RAMP];
+    static int16_t in[2 * 9600], out[2 * 9800], again[2 * 9800];
     struct audio_rs rs;
     size_t used;
 
     /* The same rate: the frames as they are; mono becomes both channels. */
     for (unsigned k = 0; k < 8; k++)
         in[k] = (int16_t)(k * 100 - 300);
-    audio_rs_init(&rs, 48000, 48000, 2);
+    CHECK_ST(audio_rs_init(&rs, 48000, 48000, 2), OK);
     CHECK_EQ(audio_rs_run(&rs, in, 4, &used, out, 16), 4);
     CHECK_EQ(used, 4);
     for (unsigned k = 0; k < 8; k++)
         CHECK_EQ(out[k], in[k]);
-    audio_rs_init(&rs, 48000, 48000, 1);
+    CHECK_EQ(audio_rs_flush(&rs, out, 16), 0);
+    CHECK_ST(audio_rs_init(&rs, 48000, 48000, 1), OK);
     CHECK_EQ(audio_rs_run(&rs, in, 8, &used, out, 5), 5);   /* only 5 fit */
     CHECK_EQ(used, 5);
     for (unsigned k = 0; k < 5; k++) {
@@ -67,62 +132,81 @@ bool t_audio_resample(void)
         CHECK_EQ(out[2 * k + 1], in[k]);
     }
 
-    /* 44100 -> 48000 of a ramp: linear interpolation of a straight line is
-     * the line, so output frame o is 10 * o * 44100 / 48000, to a step. */
-    for (unsigned k = 0; k < RAMP; k++)
-        in[k] = (int16_t)(k * 10);
-    audio_rs_init(&rs, 44100, 48000, 1);
-    size_t n = audio_rs_run(&rs, in, RAMP, &used, out, 2 * RAMP);
-    CHECK_EQ(used, RAMP);
-    size_t want = (size_t)(RAMP - 1) * 48000 / 44100 + 1;
-    if (n + 1 < want || n > want + 1)
-        FAIL("%lu frames out of %u, want %lu (+-1)", (unsigned long)n, RAMP, (unsigned long)want);
-    for (size_t o = 0; o < n; o++) {
-        int64_t exact = (int64_t)o * 10 * 44100 * 2 / 48000;   /* twice the value */
-        int64_t got = 2 * (int64_t)out[2 * o];
-        if (got - exact > 2 || exact - got > 2 || out[2 * o] != out[2 * o + 1])
-            FAIL("frame %lu is %d/%d, want %ld.%ld", (unsigned long)o, out[2 * o],
-                 out[2 * o + 1], (long)(exact / 2), (long)(exact % 2 * 5));
+    /* 44100 -> 48000: 1 kHz and 20 kHz sines come out as the same sines at
+     * 48 kHz, on time (output frame o is at o / 48000 s), to the dither's
+     * +-1 and the passband's ripple; the start's step rings for the
+     * filter's half length, so the comparison starts after it. */
+    static const double hzs[] = { 1000, 20000 };
+    for (unsigned t = 0; t < 2; t++) {
+        sine(in, 4410, 1, 44100, hzs[t], 0, 10000);
+        CHECK_ST(audio_rs_init(&rs, 44100, 48000, 1), OK);
+        CHECK_EQ(rs.L, 160);
+        CHECK_EQ(rs.M, 147);
+        size_t n = resample_all(&rs, in, 4410, out, 9800, 4410, 9800);
+        if (n < 4800 || n > 4802)
+            FAIL("%lu frames from 4410 at 44.1 kHz, want 4800-4802", (unsigned long)n);
+        double w = worst(out, 200, 4600, 0, hzs[t], 10000);
+        if (w > 2.5)
+            FAIL("%.0f Hz from 44.1 kHz: off the sine by %.2f", hzs[t], w);
+        for (size_t o = 0; o < n; o++)
+            CHECK_EQ(out[2 * o], out[2 * o + 1]);
+        /* The same input in odd pieces into a small buffer: the same frames. */
+        audio_rs_reset(&rs);
+        rs.seed = 0x2545f491u;
+        size_t m = resample_all(&rs, in, 4410, again, 9800, 7, 5);
+        CHECK_EQ(m, n);
+        CHECK(!memcmp(again, out, n * 4));
+        audio_rs_free(&rs);
     }
 
-    /* The same input in odd pieces into a small buffer gives the same frames. */
-    audio_rs_init(&rs, 44100, 48000, 1);
-    size_t got = 0, at = 0;
-    while (at < RAMP) {
-        size_t piece = RAMP - at < 7 ? RAMP - at : 7;
-        size_t m = audio_rs_run(&rs, in + at, piece, &used, again + 2 * got, 5);
-        CHECK(m || used);
-        got += m;
-        at += used;
-    }
-    CHECK_EQ(got, n);
-    CHECK(!memcmp(again, out, n * 4));
+    /* 96000 -> 48000 stereo: 1 kHz left comes through; 30 kHz right (it
+     * would alias to 18 kHz) is gone: nothing above the dither. */
+    sine(in, 9600, 2, 96000, 1000, 30000, 10000);
+    CHECK_ST(audio_rs_init(&rs, 96000, 48000, 2), OK);
+    size_t n = resample_all(&rs, in, 9600, out, 9800, 9600, 9800);
+    if (n < 4800 || n > 4802)
+        FAIL("%lu frames from 9600 at 96 kHz", (unsigned long)n);
+    double w = worst(out, 200, 4600, 0, 1000, 10000);
+    if (w > 2.5)
+        FAIL("1 kHz from 96 kHz: off by %.2f", w);
+    w = worst(out, 200, 4600, 1, 0, 0);
+    if (w > 2)
+        FAIL("30 kHz from 96 kHz: %.2f left (an alias at 18 kHz)", w);
+    audio_rs_free(&rs);
 
-    /* 96000 -> 48000: every other frame exactly (stereo kept apart). */
-    for (unsigned k = 0; k < RAMP; k++) {
-        in[2 * k] = (int16_t)k;
-        in[2 * k + 1] = (int16_t)-k;
-    }
-    audio_rs_init(&rs, 96000, 48000, 2);
-    n = audio_rs_run(&rs, in, RAMP, &used, out, RAMP);
-    CHECK_EQ(used, RAMP);
-    CHECK_EQ(n, RAMP / 2);
-    for (size_t o = 0; o < n; o++) {
-        CHECK_EQ(out[2 * o], 2 * o);
-        CHECK_EQ(out[2 * o + 1], -2 * (int64_t)o);
+    /* 8000 -> 48000 and an odd rate whose phases are interpolated. */
+    static const unsigned rates[] = { 8000, 44056 };
+    for (unsigned t = 0; t < 2; t++) {
+        unsigned r = rates[t];
+        size_t frames = r / 10;
+        sine(in, frames, 1, r, 1000, 0, 10000);
+        CHECK_ST(audio_rs_init(&rs, r, 48000, 1), OK);
+        n = resample_all(&rs, in, frames, out, 9800, frames, 9800);
+        if (n < 4800 || n > 4800 + 48000 / r)   /* the flush ends at the next input frame */
+            FAIL("%lu frames from %lu at %u Hz", (unsigned long)n, (unsigned long)frames, r);
+        w = worst(out, 300, 4500, 0, 1000, 10000);
+        if (w > 2.5)
+            FAIL("1 kHz from %u Hz: off by %.2f", r, w);
+        audio_rs_free(&rs);
     }
 
-    /* 8000 -> 48000: six frames per input frame, the first one exact. */
-    in[0] = 0;
-    in[1] = 600;
-    in[2] = 0;
-    audio_rs_init(&rs, 8000, 48000, 1);
-    n = audio_rs_run(&rs, in, 3, &used, out, 64);
-    CHECK_EQ(n, 12);
-    for (unsigned o = 0; o < 6; o++) {
-        CHECK_EQ(out[2 * o], o * 100);
-        CHECK_EQ(out[2 * (6 + o)], 600 - o * 100);
+    /* The cost: a second of 44.1 kHz stereo. */
+    sine(in, 4410, 2, 44100, 1000, 1500, 10000);
+    CHECK_ST(audio_rs_init(&rs, 44100, 48000, 2), OK);
+    unsigned taps = rs.taps;
+    uint64_t t0 = now();
+    for (unsigned k = 0; k < 10; k++) {
+        size_t at = 0;
+        while (at < 4410) {
+            size_t m = audio_rs_run(&rs, in + 2 * at, 4410 - at, &used, out, 9800);
+            (void)m;
+            at += used;
+        }
     }
+    uint64_t ns = now() - t0;
+    audio_rs_free(&rs);
+    printf("utest: audio_resample: 1 s of 44.1 kHz stereo in %lu.%03lu ms (%u taps)\n",
+           (unsigned long)(ns / NS_PER_MS), (unsigned long)(ns % NS_PER_MS / 1000), taps);
     return true;
 }
 
