@@ -19,16 +19,17 @@
 #define DRVTEST_NULL 0x40   /* drvtest's role for its channel to a null server */
 
 /* Start bootfs driver drv/<name> in job, handing it h under driver role
- * `role` (h is consumed). */
+ * `role` (h is consumed). drvtest also gets the args "alpha beta". */
 static status_t driver(const char *name, handle_t job, uint32_t role, handle_t h,
                        handle_t *proc)
 {
     char path[32];
     snprintf(path, sizeof(path), "drv/%s", name);
-    const char *argv[] = { path };
+    const char *argv[] = { path, "alpha", "beta" };
     struct spawn_handle x = { SR_DRIVER(role), h };
     struct spawn_args a = {
-        .path = path, .argc = 1, .argv = argv, .job = job, .extra = &x, .nextra = 1,
+        .path = path, .argc = strcmp(name, "drvtest") ? 1 : 3, .argv = argv, .job = job,
+        .extra = &x, .nextra = 1,
     };
     return spawn(&a, proc);
 }

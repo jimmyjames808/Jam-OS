@@ -30,6 +30,14 @@ handle_t drv_handle(const struct driver_start *s, uint32_t role)
     return HANDLE_INVALID;
 }
 
+bool drv_has_arg(const struct driver_start *s, const char *word)
+{
+    for (uint32_t i = 0; i < s->nargs && i < DRV_MAX_ARGS; i++)
+        if (s->args[i] && !strcmp(s->args[i], word))
+            return true;
+    return false;
+}
+
 /* ---- basics ------------------------------------------------------------------ */
 
 static void out(bool report_it, const char *fmt, va_list ap)
