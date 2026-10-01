@@ -87,12 +87,16 @@ static const struct block_ops ops = {
     .sync = op_sync,
 };
 
-/* The serving thread: until the client is gone, or `stop`. */
+/* The serving thread: until the client is gone, `stop`, or pull_after
+ * requests answered. */
 static void serve(void *arg)
 {
     struct ramdisk *rd = arg;
+    uint32_t pull = __atomic_load_n(&rd->pull_after, __ATOMIC_RELAXED);
     for (;;) {
         status_t st = block_serve_one(rd->ch, &ops, rd);
+        if (st == OK && pull && ++rd->served >= pull)
+            break;   /* pulled right after that answer */
         if (st == OK)
             continue;
         if (st != ERR_SHOULD_WAIT || __atomic_load_n(&rd->stop, __ATOMIC_RELAXED))
@@ -120,6 +124,7 @@ bool ramdisk_serve(struct ramdisk *rd, bool read_only, handle_t *out_client)
     uint64_t addr = 0;
     rd->read_only = read_only;
     rd->buf_given = false;
+    rd->served = 0;
     __atomic_store_n(&rd->stop, false, __ATOMIC_RELAXED);
     CHECK_ST(jam_vmo_create(RAMDISK_BUF, 0, HANDLE_INVALID, &rd->buf_vmo), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), rd->buf_vmo, 0, RAMDISK_BUF,
@@ -179,4 +184,9 @@ void ramdisk_fail_writes(struct ramdisk *rd, bool on)
 void ramdisk_fail_after(struct ramdisk *rd, uint32_t writes)
 {
     __atomic_store_n(&rd->fail_after, writes, __ATOMIC_RELAXED);
+}
+
+void ramdisk_pull_after(struct ramdisk *rd, uint32_t requests)
+{
+    __atomic_store_n(&rd->pull_after, requests, __ATOMIC_RELAXED);
 }

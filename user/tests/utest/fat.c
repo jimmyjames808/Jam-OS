@@ -676,6 +676,28 @@ bool t_fat_dirty_volume(void)
     return dirty_on(16, 16) && dirty_on(40, 32);
 }
 
+/* A disk that goes while fat is still mounting it (devmgr stopping
+ * usb-bus just after it started fat, or a stick pulled as it was plugged
+ * in) ends fat as a disk gone later does: exit 0, its job empty. Pulled
+ * after the info (map_buffer finds it gone), and after the buffer too (the
+ * first read does). */
+bool t_fat_gone_mounting(void)
+{
+    static const uint32_t pulls[] = { 1, 2 };
+    struct fatrun r;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false) ||
+        !fat_stop(&r))
+        return false;   /* formatted: a volume to mount */
+    for (unsigned i = 0; i < sizeof(pulls) / sizeof(pulls[0]); i++) {
+        ramdisk_pull_after(&disk, pulls[i]);
+        if (!fat_start(&r, &disk, false) || !fat_wait(&r, 0) || !ramdisk_join(&disk))
+            return false;
+        CHECK_ST(jam_handle_close(r.fs), OK);
+    }
+    ramdisk_pull_after(&disk, 0);
+    return ramdisk_destroy(&disk);
+}
+
 /* A disk error is ERR_IO; a disk that goes away ends fat (exit 0) and
  * with it every channel it served. */
 bool t_fat_disk_gone(void)

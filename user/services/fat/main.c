@@ -17,7 +17,7 @@
  *
  * Exit: 0 once there is nothing left to serve (the fs channel's client
  * closed it, after every file is closed and the volume settled; or the
- * disk went away); 1 when the volume can't be served but might be later
+ * disk went away, mounted or not yet); 1 when the volume can't be served but might be later
  * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
  * partition holds no FAT volume fat can serve and nothing was formatted. */
 #include <fsview.h>
@@ -196,6 +196,13 @@ int main(int argc, char **argv)
         st = disk_open(block);
     if (st == OK)
         st = mount(&no_volume);
+    if (st != OK && vol.disk_gone) {
+        /* As a disk gone while serving: nothing is left to serve, and
+         * nothing failed (devmgr stops usb-bus first at shutdown, which
+         * can be while a new disk's fat is still mounting). */
+        printf("fat %s: the disk went while mounting: stopping\n", vol.name);
+        return 0;
+    }
     if (st != OK) {
         printf("fat %s: not serving: %s\n", vol.name, status_str(st));
         return no_volume ? FAT_EXIT_NO_VOLUME : 1;

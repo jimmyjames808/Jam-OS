@@ -611,6 +611,7 @@ static const struct {
     { "fat_format_off", t_fat_format_off },
     { "fat_dirty_volume", t_fat_dirty_volume },
     { "fat_disk_gone", t_fat_disk_gone },
+    { "fat_gone_mounting", t_fat_gone_mounting },
     { "fat_cache", t_fat_cache },
     { "ns_boot_mount", t_ns_boot_mount },
     { "ns_boot_read_only", t_ns_boot_read_only },
