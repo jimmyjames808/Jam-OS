@@ -70,6 +70,9 @@ run_kexec() {
         fail kexec "a firmware reset happened before the last one"
     grep -aq "kexec_load\|reading /esp" "$log" && fail kexec "a file was read"
     grep -aq "the last boot panicked" "$log" && fail kexec "a reboot was taken for a panic"
+    sed -n '/kexec: \/esp unchanged/,/kexec: starting the stored kernel/p' "$log" |
+        grep -aq "screen: back to the kernel's log" &&
+        fail kexec "the kernel took the screen back during the reboot (its log flashes on the PC)"
     ms=$(grep -ao "devmgr stopped in [0-9]* ms" "$log" | head -1 | tr -dc 0-9)
     [ -n "$ms" ] && [ "$ms" -lt 2000 ] ||
         fail kexec "devmgr took ${ms:-?} ms to stop (a driver left waiting for its clients?)"
