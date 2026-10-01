@@ -1,9 +1,9 @@
 /* jamjar: the self-test (`run jamjar --selftest`): names, UTF-8, the
  * library and the search on a fixture laid out like the owner's (UTF-8
  * names, '_' for spaces, years before albums, files at odd depths), the
- * jar labels, the ID3 tags and the cover decoder, the spectrum analyser,
- * the roulette, the layout for screens QEMU doesn't
- * have, and whole frames drawn at each of them. It needs no handle and no
+ * jar labels, the ID3 tags and the cover decoder, the stereo bars, the
+ * roulette, the layout and the sunburst for screens QEMU doesn't have,
+ * and whole frames (the main screen and the big view) drawn at each. It needs no handle and no
  * screen: it draws into memory of its own. */
 #include "jamjar.h"
 
@@ -198,48 +198,113 @@ static void test_art(void)
     free(room);
 }
 
+/* Steps of 1/60 s toward these bands. */
+static void steps(struct bars *b, const uint8_t *l, const uint8_t *r, bool live, int n)
+{
+    for (int i = 0; i < n; i++)
+        bars_step(b, l, r, live, 1.0f / 60);
+}
+
+static int loudest_bar(const float *v)
+{
+    int best = 0;
+    for (int i = 1; i < BARS; i++)
+        best = v[i] > v[best] ? i : best;
+    return best;
+}
+
+static float most(const float *v)
+{
+    return v[loudest_bar(v)];
+}
+
 static void test_bars(void)
 {
     static struct bars b;
-    uint8_t tone[BARS] = { 0 }, quiet[BARS] = { 0 };
+    uint8_t tone[BARS] = { 0 }, quiet[BARS] = { 0 }, high[BARS] = { 0 };
     tone[34] = 240;
     tone[33] = tone[35] = 120;
+    high[49] = 240;
+    high[48] = high[50] = 120;
     bars_init(&b);
-    for (int i = 0; i < 30; i++)   /* half a second at 60 frames a second */
-        bars_step(&b, tone, true, 1.0f / 60);
-    int best = 0;
-    for (int i = 1; i < BARS; i++)
-        best = b.v[i] > b.v[best] ? i : best;
-    fun_check(best == 34 && b.v[34] > 0.7f && b.v[10] < 0.01f && b.peak[34] >= b.v[34],
-              "bars: a tone's bar rises fast and alone, its cap on top");
-    float top = b.peak[34];
-    for (int i = 0; i < 18; i++)   /* 0.3 s of quiet: the bar falls, the cap holds */
-        bars_step(&b, quiet, true, 1.0f / 60);
-    /* (The cap may have begun to fall a little: the normalisation eased
-     * the tone's bar down a touch while it played, so its hold began then.) */
-    bool ok = b.v[34] < top - 0.2f && b.peak[34] > top - 0.05f;
-    for (int i = 0; i < 60; i++)   /* a second more: the cap has fallen too */
-        bars_step(&b, quiet, true, 1.0f / 60);
-    fun_check(ok && b.peak[34] < top - 0.3f,
-              "  ... it falls at a steady rate; the cap holds half a second, then falls");
-    for (int i = 0; i < 30; i++)
-        bars_step(&b, tone, true, 1.0f / 60);
+    steps(&b, tone, quiet, true, 30);   /* half a second of 1 kHz on the left */
+    fun_check(loudest_bar(b.v[CH_LEFT]) == 34 && b.v[CH_LEFT][34] > 0.7f &&
+                  b.v[CH_LEFT][10] < 0.01f && most(b.v[CH_RIGHT]) < 0.01f,
+              "bars: a left-only tone: its left bar rises fast and alone, no right bar");
+    float top = b.v[CH_LEFT][34];
+    steps(&b, quiet, quiet, true, 18);   /* 0.3 s of quiet */
+    bool ok = b.v[CH_LEFT][34] < top - 0.2f && b.v[CH_LEFT][34] > top - 0.5f;
+    steps(&b, quiet, quiet, true, 60);
+    fun_check(ok && most(b.v[CH_LEFT]) == 0.0f, "  ... it falls at a steady rate, to 0");
+    steps(&b, quiet, high, true, 30);
+    fun_check(loudest_bar(b.v[CH_RIGHT]) == 49 && b.v[CH_RIGHT][49] > 0.7f &&
+                  most(b.v[CH_LEFT]) < 0.01f,
+              "  ... a right-only tone: its right bar alone, no left bar");
+    steps(&b, tone, high, true, 30);
     float last = 2.0f;
-    ok = true;
-    for (int i = 0; i < 120 && bars_busy(&b); i++) {   /* paused: everything to zero */
-        bars_step(&b, tone, false, 1.0f / 60);
-        ok &= b.v[34] <= last;
-        last = b.v[34];
+    ok = b.speed > 0.1f;
+    for (int i = 0; i < 600 && bars_busy(&b); i++) {   /* paused: everything to zero */
+        bars_step(&b, tone, high, false, 1.0f / 60);
+        ok &= b.v[CH_LEFT][34] <= last;
+        last = b.v[CH_LEFT][34];
     }
-    fun_check(ok && !bars_busy(&b), "  ... nothing heard: every bar and cap falls to 0, smoothly");
+    fun_check(ok && !bars_busy(&b) && b.speed == 0.0f,
+              "  ... nothing heard: every bar falls to 0 smoothly, the sunburst stops turning");
     bars_init(&b);
     uint8_t tilt[BARS];
     for (int i = 0; i < BARS; i++)
         tilt[i] = (uint8_t)(i < 48 ? 150 : 60);   /* the top octave always quieter */
-    for (int i = 0; i < 60 * 30; i++)
-        bars_step(&b, tilt, true, 1.0f / 60);
-    fun_check(b.gain[60] > 1.2f && b.gain[10] < 1.0f && b.v[60] > 60.0f / 255 * 1.2f,
+    steps(&b, tilt, tilt, true, 60 * 30);
+    fun_check(b.gain[60] > 1.2f && b.gain[10] < 1.0f && b.v[CH_RIGHT][60] > 60.0f / 255 * 1.2f,
               "  ... a band that is always quiet gets a gain (bounded), so it moves");
+}
+
+/* Pixels of column x, rows [y0, y1), that aren't the background. */
+static int lit_rows(const struct surf *s, int x, int y0, int y1)
+{
+    int n = 0;
+    for (int y = y0; y < y1; y++)
+        n += s->px[(uint64_t)y * s->stride + x] != C_BG;
+    return n;
+}
+
+/* The strip drawn with a tone on one channel: its bar goes up from the
+ * line for the left, down for the right, and nothing on the other side. */
+static bool strip_shows(struct bars *b, const struct surf *s, const struct rect *r, int ch, int i)
+{
+    fill(s, 0, 0, s->w, s->h, C_BG);
+    bars_draw(b, s, r);
+    int x0, x1, mid, other = 0;
+    bars_where(r, i, &x0, &x1, &mid);
+    int up = lit_rows(s, (x0 + x1) / 2, r->y, mid), down = lit_rows(s, (x0 + x1) / 2, mid + 1,
+                                                                        r->y + r->h);
+    for (int k = 0; k < BARS; k++) {
+        bars_where(r, k, &x0, &x1, &mid);
+        for (int x = x0; x < x1; x++)
+            other += ch == CH_LEFT ? lit_rows(s, x, mid + 1, r->y + r->h)
+                                   : lit_rows(s, x, r->y, mid);
+    }
+    int mine = ch == CH_LEFT ? up : down, theirs = ch == CH_LEFT ? down : up;
+    return mine > r->h / 4 && theirs == 0 && other == 0;
+}
+
+static void test_strip(void)
+{
+    static uint32_t px[1280 * 200];
+    static struct bars b;
+    struct surf s = { px, 1280, 200, 1280 };
+    struct rect r = { 0, 20, 1280, 168 };
+    uint8_t tone[BARS] = { 0 }, quiet[BARS] = { 0 }, high[BARS] = { 0 };
+    tone[34] = high[49] = 255;
+    tone[33] = tone[35] = high[48] = high[50] = 255;
+    scr.ui = 1;
+    bars_init(&b);
+    steps(&b, tone, quiet, true, 30);
+    bool left = strip_shows(&b, &s, &r, CH_LEFT, 34);
+    bars_init(&b);
+    steps(&b, quiet, high, true, 30);
+    bool right = strip_shows(&b, &s, &r, CH_RIGHT, 49);
+    fun_check(left && right, "  ... drawn: a left-only tone lights up bars only, a right one down");
 }
 
 static void test_roulette(void)
@@ -343,12 +408,12 @@ static void test_frame(int w, int h)
     for (int i = 0; i < BARS; i++)
         bands[i] = (uint8_t)(230 - 2 * i);
     for (int i = 0; i < 40; i++)
-        bars_step(&a->bars, bands, true, 1.0f / 30);
+        bars_step(&a->bars, bands, bands, true, 1.0f / 30);
     uint64_t t0 = now();
     draw_frame(a, t0);
     uint64_t us = (now() - t0) / 1000;
-    /* A row low in the bars: more than a third of it is bars (not the
-     * background at its left edge). */
+    /* A row in the right channel's half of the bars: more than a third of
+     * it is bars (not the background at its left edge). */
     const uint32_t *row = frame_px + (uint64_t)(a->lo.jam.y + a->lo.jam.h * 70 / 100) * w;
     int bars = 0;
     for (int x = 0; x < w; x++)
@@ -359,6 +424,82 @@ static void test_frame(int w, int h)
     snprintf(what, sizeof(what), "  ... a whole frame at %dx%d in %lu us", w, h,
              (unsigned long)us);
     fun_check(bars > w / 3 && centre == C_BERRY0, what);
+    a->full = true;
+    a->full_t = 1.0f;
+    t0 = now();
+    draw_frame(a, t0);
+    us = (now() - t0) / 1000;
+    const struct rect *ar = &a->lo.big_art;
+    uint32_t art = frame_px[(uint64_t)(ar->y + ar->h / 2) * w + ar->x + ar->w / 2];
+    snprintf(what, sizeof(what), "  ... the big view at %dx%d in %lu us", w, h, (unsigned long)us);
+    fun_check(art != frame_px[(uint64_t)(ar->y + ar->h / 2) * w + 2], what);
+    a->full = false;
+    a->full_t = 0.0f;
+}
+
+/* The sunburst drawn alone on black with these bars, turned to angle 0:
+ * the lit pixels' furthest distance from its centre, and how many lie
+ * further than `far` on its left and on its right. */
+static float burst_alone(const struct layout *l, const struct bars *b, float far, int *left,
+                         int *right)
+{
+    struct surf s = { frame_px, l->w, l->h, l->w };
+    memset(frame_px, 0, (uint64_t)l->w * l->h * 4);
+    burst_draw(b, &s, l->burst_x, l->burst_y, l->burst_r, 1.0f);
+    float most = 0;
+    *left = *right = 0;
+    for (int y = 0; y < l->h; y++)
+        for (int x = 0; x < l->w; x++) {
+            if (!frame_px[(uint64_t)y * l->w + x])
+                continue;
+            float dx = (float)x + 0.5f - (float)l->burst_x;
+            float dy = (float)y + 0.5f - (float)l->burst_y;
+            float d = sqrtf_(dx * dx + dy * dy);
+            most = d > most ? d : most;
+            if (d > far)
+                *(dx < 0 ? left : right) += 1;
+        }
+    return most;
+}
+
+/* The big view on one screen: the sunburst's circle on the screen, clear
+ * of the cover, the names and the mark; at full strength it reaches its
+ * circle and no further; the left channel alone lights only its half. */
+static void test_burst(const struct layout *l)
+{
+    int u = l->u;
+    const struct rect mark = { l->w - 56 * u, 16 * u, 40 * u, 40 * u };
+    const struct rect screen = { 0, 0, l->w, l->h };
+    const struct rect *rs[] = { &l->big_art, &l->big_text, &mark };
+    bool ok = l->burst_r > 100 && l->burst_x - l->burst_r >= 0 && l->burst_y - l->burst_r >= 0 &&
+              l->burst_x + l->burst_r <= l->w && l->burst_y + l->burst_r <= l->h &&
+              inside(&l->big_art, &screen) && inside(&l->big_text, &screen) &&
+              apart(&l->big_art, &l->big_text) && l->big_art.w >= l->h / 5;
+    for (int i = 0; i < 3; i++) {   /* the circle against each box: its nearest point */
+        int nx = l->burst_x < rs[i]->x ? rs[i]->x : l->burst_x > rs[i]->x + rs[i]->w ?
+                 rs[i]->x + rs[i]->w : l->burst_x;
+        int ny = l->burst_y < rs[i]->y ? rs[i]->y : l->burst_y > rs[i]->y + rs[i]->h ?
+                 rs[i]->y + rs[i]->h : l->burst_y;
+        int64_t dx = nx - l->burst_x, dy = ny - l->burst_y;
+        ok &= dx * dx + dy * dy > (int64_t)l->burst_r * l->burst_r;
+    }
+    if ((uint64_t)l->w * l->h <= 2560ull * 1440 && frame_px) {
+        static struct bars b;
+        bars_init(&b);
+        int left, right;
+        for (int i = 0; i < BARS; i++)
+            b.v[CH_LEFT][i] = b.v[CH_RIGHT][i] = 1.0f;
+        float most = burst_alone(l, &b, 0.0f, &left, &right);
+        ok &= most <= (float)l->burst_r && most > 0.9f * (float)l->burst_r;
+        for (int i = 0; i < BARS; i++)
+            b.v[CH_RIGHT][i] = 0.0f;
+        (void)burst_alone(l, &b, 0.45f * (float)l->burst_r, &left, &right);
+        ok &= left > 0 && right == 0;
+    }
+    char what[96];
+    snprintf(what, sizeof(what), "  ... the sunburst at %dx%d: radius %d, clear of the rest", l->w,
+             l->h, l->burst_r);
+    fun_check(ok, what);
 }
 
 /* One screen: the layout, then a whole frame drawn on it. */
@@ -388,6 +529,8 @@ static void test_screen(int w, int h)
     fun_check(ok, what);
     if ((uint64_t)w * h <= 2560ull * 1440)
         test_frame(w, h);
+    scr.ui = ui;
+    test_burst(&l);
 }
 
 int jamjar_selftest(void)
@@ -400,6 +543,7 @@ int jamjar_selftest(void)
     test_art();
     test_covers();
     test_bars();
+    test_strip();
     test_roulette();
     test_stale();
     test_screen(1280, 720);

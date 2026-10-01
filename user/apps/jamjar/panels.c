@@ -1,5 +1,5 @@
 /* jamjar: the panels of the frame: the top bar, the library's three
- * columns and the help card. Now playing is in nowplaying.c, the jam in
+ * columns and the help card. Now playing is in nowplaying.c, the bars in
  * bars.c, and draw.c puts them together. Everything here reads the app
  * and draws; nothing changes state. */
 #include "jamjar.h"
@@ -202,7 +202,7 @@ static const char *const help_keys[][2] = {
     { "s", "shuffle or in order" },
     { "r", "jam roulette: spin for an album" },
     { "z", "sleep timer: 15, 30, 60, 90 min, off" },
-    { "f", "the big view: the cover and the bars, full screen" },
+    { "f", "the big view: the cover and the sunburst" },
     { "l", "show the track playing" },
     { "?  h", "this help" },
     { "q  Esc", "quit (the music plays on)" },

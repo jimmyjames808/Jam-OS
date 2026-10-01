@@ -83,7 +83,8 @@ screen, nothing overlapping, at least a few rows in each list.
 
 (As first built; revision 2, at the end, replaced the simmer with a
 spectrum analyser, gave the albums their real covers and took the ring
-off the roulette.)
+off the roulette; revision 3 made the analyser stereo and the big view a
+sunburst.)
 
 1. **The simmer** (the visualizer): the bottom of the screen is jam in a
    pot. Its surface is a smooth curve through sixteen frequency bands of
@@ -114,6 +115,7 @@ off the roulette.)
 | 6 | `prev () -> ()` | more than 3 s into the track heard: it starts over; else the track heard before it (the last 64 are kept); the one skipped back from plays next, then the shuffle goes on. ERR_BAD_STATE: not playing |
 | 7 | `play (u8[256] folder, u8[256] first, u8 order) -> (u32 found, u8 reading)` | `start` with options: `first` (a file under the folder, "" none) plays first; `order` 1: name order instead of shuffle |
 | 11 | `spectrum ()` | `levels` with 64 bands (revision 2) |
+| 12 | `stereo ()` | `spectrum` for each channel: `left` and `right`, 64 bands each (revision 3) |
 | 8 | `levels () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[16] bands, u8 level)` | what a view polls many times a second: the state, a number that changes with each track heard, the times, and the sixteen bands and the loudness of what is heard now |
 | 9 | `pause (u8 on) -> (u8 paused)` | stop the mixer stream where it is (the ring keeps its frames), or go on |
 | 10 | `sleep (u32 seconds) -> (u32 seconds)` | stop after that long playing, the last 30 s fading out; 0: off |
@@ -255,3 +257,80 @@ which take the lower 70 % of the screen.
 
 **The roulette lands without a ring** round the album it chose: it lands,
 shows the name, and plays.
+
+## Revision 3: stereo bars and the sunburst
+
+The owner chose two looks from a browser demo of visualisers (its modes
+`stereo` and `r-sunburst`), and asked for both, without the demo's peak
+dots on the rays.
+
+**The player's `stereo` call** (music.idl 12): what `spectrum` answers,
+for each channel: `left` and `right`, 64 bands each, the same dB scale
+and tilt; a mono file gives both the same. `spectrum` and `levels` are
+unchanged (the mono mix). spectrum.c keeps a window per channel and takes
+one 2048-point complex FFT a hop, the left channel as its real part and
+the right as its imaginary part, then takes the two spectra apart from
+bins k and N - k (a real signal's spectrum is conjugate-symmetric); the
+mono mix's bins are their mean. So both channels and the mono mix cost
+one FFT, as the mono mix alone did (about 130 kFLOP a hop). The ring of
+results is 104 KiB, the whole analysis about 170 KiB.
+
+**The main screen's strip** (bars.c): one line across the middle; the
+left channel's 64 bars grow up from it (crimson at the foot to gold at
+80 % of the full height, as before), the right's grow down from it (a
+deep crimson `#7A1E47` at the line to crimson `#C8264A` at full depth);
+a gap of 3 units each side of the line, rounded far ends (a radius of
+half the bar's width, or its height if less), a faint "L" and "R" by the
+line at the left. The smoothing is as before (neighbours blended, fast
+attack, a fall of 1.25 heights a second, everything to zero on pause or
+stop), per channel, with one normalising gain a band for both channels,
+so a quieter channel stays quieter. The caps and the reflection are gone.
+
+**The big view** (`f`, burst.c): the sunburst in the middle of the screen
+right of a column (30 % of the width) that holds the album's cover (up to
+36 % of the height: 518 px at 2560x1440, 288 px at 1280x800) and, under
+it, the title, the artist and the album, centred and cut short with
+"..." if too long; the mark stays at the top right. The sunburst is as
+big as the height allows (a reach of 656 px at 2560x1440, 368 px at
+1280x800). A translucent gold disc whose radius (12 % to 17 % of the
+unit) and alpha (0.15 to 0.65) follow the bass (bands 2-5 of both
+channels); 128 rays from just outside it, the left channel's 64 round the
+left half and the right's mirrored round the right, so bass meets bass
+at the bottom and the highs meet at the top; each ray a line with round
+ends whose length is the bar's height (30 % of the unit at full), its
+width 70 % of its share of the disc's rim, coloured crimson at its foot
+to gold at its tip. The whole turns at 0.15 radians a second plus 0.6
+times the mean of all bars, easing to a stop when nothing is heard. As
+the view comes, the panels and the strip fade into the background and
+the sunburst grows from its centre. It is drawn across the thread pool by
+bands of rows (every worker draws every ray clipped to its rows, so no
+pixel is touched by two), each ray only over the pixels near it on each
+row.
+
+### As built (2026-10-01, branch `jamjar-viz`)
+
+- QEMU (TCG, 4 CPUs), whole frames drawn and presented while playing:
+  42-44 ms at 2560x1440 (`jamjar-hd.txt`, which ends in the big view;
+  the same run before this revision: 37 ms), 13 ms at 1280x800. The self-test (one CPU) draws the
+  main screen at 2560x1440 in 68 ms and the big view in 109 ms; at
+  1280x800 in 16 and 74 ms.
+- The self-test: each channel's bars alone for a tone on that channel,
+  the fall to zero (and the sunburst stopping) with nothing heard, the
+  strip drawn with a left-only tone (only up bars) and a right-only one
+  (only down bars), and at 1024x600, 1280x720, 1280x800, 1920x1080,
+  2560x1440 and 3840x2160 the sunburst's circle on the screen and clear
+  of the cover, the names and the mark; up to 2560x1440 it is drawn at
+  full strength (it reaches 90-100 % of its circle and never past it)
+  and with the left channel alone (nothing far out on the right half).
+- utest `music_stereo`: 1 kHz on the left alone lands in the left's band
+  34 and leaves the right at zero; 4 kHz on the right alone, in the
+  right's 49; both at once, each in its own; a mono file gives equal
+  channels and a mono mix equal to them.
+- `tools/jamjar-test.sh`: the made-up songs are stereo (hats lean right,
+  the arpeggio left), and the calibration track is 1 kHz on the left and
+  4 kHz on the right: jamjar's trace must say the loudest bars are the
+  left's 34 and the right's 49, and in the shot of it, bar 34 stands up
+  from the line with nothing below it and bar 49 hangs down with nothing
+  above.
+- What only the PC can show: smoothness at 2560x1440 on 28 CPUs, and how
+  the stereo picture looks with real music.

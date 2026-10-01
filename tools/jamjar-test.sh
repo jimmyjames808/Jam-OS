@@ -7,13 +7,17 @@
 # Song_Name.mp3, UTF-8 names): six made-up songs (a kick, a bass line,
 # chords, hats and an arpeggio, 20 s each, as MP3) with made-up covers in
 # their ID3 tags (PNG in 2.3 and 2.4 tags, one 611x640, and a JPEG), a
-# 1 kHz test tone (WAV, no cover), and two MP3s whose covers must be
+# calibration track (WAV, no cover: 1 kHz on the left alone, 4 kHz on the
+# right alone; the songs lean their hats right and arpeggios left), and two MP3s whose covers must be
 # refused (a PNG said to be 5000x5000, a garbled JPEG). tools/shell-tests/jamjar.txt (JAMJAR_HD=1:
 # tools/shell-tests/jamjar-hd.txt, at the PC's 2560x1440) runs the
 # self-test, jamjar without the player (`run jamjar`), then with it (the
 # shell's `jamjar`, `trace` on, so it says each command and what the
 # bands show): plays an album by keys, next, back, pause, volume, search,
-# the 1 kHz tone (the loudest bar must be bar 34, 0.96-1.05 kHz), help,
+# the calibration track (the loudest bars must be the left's 34, 0.96-1.05
+# kHz, and the right's 49, 3.93-4.32 kHz; in the shot jamjar-tone, bar
+# 34 must stand up from the line with nothing below it, and bar 49 hang
+# down with nothing above), help,
 # roulette, the full jar, the sleep timer, mouse clicks on a button, the
 # volume, the jam and a track row; quits, and the music must still be
 # playing (`music status`). Screenshots: <outdir>/jamjar-*.png.
@@ -46,9 +50,10 @@ import math, struct, sys
 import numpy as np
 out, rate = sys.argv[1], 44100
 
-def wav(name, x):
+def wav(name, x, right=None):
     x = np.clip(x, -1, 1)
-    data = (np.stack([x, x], axis=1) * 32767).astype("<i2").tobytes()
+    y = x if right is None else np.clip(right, -1, 1)
+    data = (np.stack([x, y], axis=1) * 32767).astype("<i2").tobytes()
     fmt = struct.pack("<HHIIHH", 1, 2, rate, rate * 4, 4, 16)
     body = b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt + b"data" + \
         struct.pack("<I", len(data)) + data
@@ -63,6 +68,7 @@ def song(seed, secs=20.0):
     root = 41.2 * 2 ** (rng.integers(0, 7) / 12)        # E1 and up
     prog = [0, 5, 3, 7] if seed % 2 else [0, 8, 3, 10]
     x = np.zeros(n)
+    side = np.zeros(n)                                    # + right, - left
     for k in range(int(secs / beat)):                     # the kick
         s = int(k * beat * rate)
         m = min(n - s, int(0.25 * rate))
@@ -76,7 +82,10 @@ def song(seed, secs=20.0):
             continue
         noise = np.diff(rng.standard_normal(m + 1))
         loud = 0.5 if (k % 4 == 2) else 0.12
-        x[s:s + m] += loud * noise * np.exp(-np.arange(m) / rate * (18 if loud > 0.2 else 60))
+        hat = loud * noise * np.exp(-np.arange(m) / rate * (18 if loud > 0.2 else 60))
+        x[s:s + m] += hat
+        if loud < 0.2:                                    # the hats lean right
+            side[s:s + m] += 0.6 * hat
     bar = 4 * beat
     for k in range(int(secs / bar) + 1):                  # bass and chords per bar
         s, e = int(k * bar * rate), min(n, int((k + 1) * bar * rate))
@@ -95,13 +104,18 @@ def song(seed, secs=20.0):
                 continue
             f = r * 2 ** ((24 + [0, 7, 12, 16, 19, 16, 12, 7][j]) / 12)
             ta = np.arange(m) / rate
-            x[s + a:s + a + m] += 0.07 * np.sin(2 * np.pi * f * ta) * np.exp(-ta * 6)
-    return 0.6 * x / np.abs(x).max()
+            arp = 0.07 * np.sin(2 * np.pi * f * ta) * np.exp(-ta * 6)
+            x[s + a:s + a + m] += arp
+            side[s + a:s + a + m] -= 0.8 * arp            # the arpeggio leans left
+    k = 0.6 / np.abs(x).max()
+    return (x - side) * k, (x + side) * k
 
 for i in range(6):
-    wav("song%d.wav" % i, song(i + 1))
+    l, r = song(i + 1)
+    wav("song%d.wav" % i, l, r)
+# The calibration track: 1 kHz on the left alone, 4 kHz on the right alone.
 t = np.arange(int(rate * 30)) / rate
-wav("tone.wav", 0.3 * np.sin(2 * np.pi * 1000 * t))
+wav("tone.wav", 0.3 * np.sin(2 * np.pi * 1000 * t), 0.3 * np.sin(2 * np.pi * 4000 * t))
 PY
 # The covers: made-up pictures (PIL), as the owner's MP3s carry theirs:
 # PNG, about 640x640 (one 611x640), and one JPEG.
@@ -194,7 +208,7 @@ put song2.mp3 "¥\$/2024_Vultures_1/Carnival.mp3"
 put song3.mp3 "Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy/Runaway.mp3"
 put song4.mp3 "Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy/Dark_Fantasy.mp3"
 put song5.mp3 "Daft_Punk/2001_Discovery/One_More_Time.mp3"
-put tone.wav "Test_Tones/2020_Calibration/1000_Hz_Tone.wav"
+put tone.wav "Test_Tones/2020_Calibration/1000_Hz_Left_4000_Hz_Right.wav"
 put oversized.mp3 "Broken/2019_Oversized/Too_Big.mp3"
 put garbled.mp3 "Broken/2019_Garbled/Garbled.mp3"
 rm -rf "$tmp"
@@ -211,6 +225,35 @@ rm -f "$stick"
 log="$out/$name.log"
 # What the trace said, for the report.
 tr -d '\r' < "$log" | grep -aE "jamjar: (spectrum|frames|library|cover)" | head -20 || true
+# The calibration shot: the bars' place from the trace; the left's 1 kHz
+# bar (34) up only, the right's 4 kHz bar (49) down only.
+tone="$out/jamjar-tone.png"
+if [ $ok = 1 ] && [ -f "$tone" ]; then
+    where=$(tr -d '\r' < "$log" | grep -a "jamjar: the bars: " | head -1)
+    python3 - "$tone" "$where" <<'PY' || { echo "jamjar: the calibration shot is wrong"; ok=0; }
+import re, sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+m = re.search(r"line at y (\d+), bar 0 at x (\d+)-(\d+), bar 63 at x (\d+)-(\d+)", sys.argv[2])
+if not m:
+    sys.exit("no 'the bars' line in the log")
+mid, a0, a1, b0 = (int(m.group(k)) for k in (1, 2, 3, 4))
+pitch = (b0 - a0) / 63.0
+bg = im.getpixel((2, mid - 20))
+def lit(x, ys):
+    return sum(1 for y in ys if max(abs(p - q) for p, q in zip(im.getpixel((x, y)), bg)) > 24)
+def col(i):
+    return int(a0 + i * pitch + (a1 - a0) / 2)
+up = range(mid - 60, mid - 2)
+down = range(mid + 3, mid + 61)
+l_up, l_down = lit(col(34), up), lit(col(34), down)
+r_up, r_down = lit(col(49), up), lit(col(49), down)
+print("jamjar: calibration shot: bar 34 lit %d up, %d down; bar 49 %d up, %d down" %
+      (l_up, l_down, r_up, r_down))
+if not (l_up > 20 and l_down == 0 and r_down > 20 and r_up == 0):
+    sys.exit(1)
+PY
+fi
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

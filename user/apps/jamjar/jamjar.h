@@ -1,8 +1,8 @@
 /* jamjar: what its files share. The library (library.c) and its names
  * (names.c), what the columns show (view.c), the player as last heard
  * (link.c, a thread of its own), where everything goes (layout.c), the
- * spectrum analyser at the bottom (bars.c), the album art (art.c, cover.c,
- * id3.c, stbi.c), the roulette
+ * stereo bars at the bottom (bars.c) and the sunburst of the big view
+ * (burst.c), the album art (art.c, cover.c, id3.c, stbi.c), the roulette
  * (roulette.c), the picture (draw.c, panels.c, nowplaying.c), keys and the mouse
  * (input.c), the loop (main.c) and the self-test (selftest.c).
  * docs/history/MUSIC-GUI.md is the design. */
@@ -26,7 +26,7 @@
 #define C_ROSE    0xf06483u   /* the jam's lit rim, a focused row's edge */
 #define C_GOLD    0xd9a032u
 
-#define BARS 64   /* the spectrum analyser's bars: the player's spectrum bands */
+#define BARS 64   /* bars a channel: the bands of the player's `stereo` */
 
 /* ---- names (names.c) -------------------------------------------------------------------- */
 
@@ -152,7 +152,7 @@ bool view_locate(struct view *v, const struct library *l, uint32_t t);
 
 /* ---- the player (link.c) ------------------------------------------------------------------ */
 
-/* The player as last heard: music.idl's `spectrum` many times a second and
+/* The player as last heard: music.idl's `stereo` many times a second and
  * its `status` when the track changes. */
 struct snap {
     bool     link;                 /* there is a player to ask */
@@ -163,7 +163,8 @@ struct snap {
     uint64_t at;                   /* when elapsed_ms was true (uptime ns) */
     int32_t  volume;               /* centibels */
     uint32_t sleep_s;              /* 0: off */
-    uint8_t  bands[BARS], level;
+    uint8_t  left[BARS], right[BARS];   /* what each channel has in each band, 0..255 */
+    uint8_t  level;
     char     path[FS_PATH_MAX];    /* the track heard ("" none) */
     char     folder[FS_PATH_MAX];
     char     note[128];            /* why it stopped by itself */
@@ -206,30 +207,54 @@ struct layout {
     int         row_h, rows;        /* a list row's height; rows that fit */
     struct rect now, art, title, progress, btn[NBTNS], vol, mode;
     struct rect info;               /* the folder playing and a hint (h 0: no room) */
-    struct rect jam;                /* the spectrum analyser */
+    struct rect jam;                /* the stereo bars */
+    /* The big view (f): the sunburst in a circle, the cover and the names
+     * in a column at its left. */
+    struct rect big_art, big_text;  /* the cover; the title, artist and album */
+    int         burst_x, burst_y;   /* the sunburst's centre ... */
+    int         burst_r;            /* ... and how far it may reach */
 };
 /* Everything on a w x h screen at UI scale ui. Nothing overlaps or leaves
  * the screen, from 1024x600 up. */
 void layout_make(struct layout *l, int w, int h, int ui);
 
-/* ---- the spectrum analyser (bars.c) -------------------------------------------------- */
+/* ---- the bars (bars.c) and the sunburst (burst.c) --------------------------------------- */
+
+enum { CH_LEFT, CH_RIGHT, NCH };
 
 struct bars {
-    float v[BARS];      /* each bar's height now, 0..1 */
-    float peak[BARS];   /* its cap */
-    float hold[BARS];   /* seconds the cap still holds */
-    float pv[BARS];     /* the cap's extra fall speed */
-    float avg[BARS];    /* each band's long average (normalisation) */
-    float gain[BARS];   /* ... and the gain it gets from it */
+    float v[NCH][BARS];  /* each bar's height now, 0..1, per channel */
+    float avg[BARS];     /* each band's long average, both channels (normalisation) */
+    float gain[BARS];    /* ... and the gain it gets from it */
+    float spin;          /* the sunburst's turn, radians */
+    float speed;         /* ... and how fast it turns now, radians a second */
 };
 
 void bars_init(struct bars *b);
-/* dt seconds on, toward the player's bands (live false: toward zero). */
-void bars_step(struct bars *b, const uint8_t bands[BARS], bool live, float dt);
-/* Into r of the screen. */
+/* dt seconds on, toward the player's bands of each channel (live false:
+ * toward zero, and the sunburst slows to a stop). */
+void bars_step(struct bars *b, const uint8_t left[BARS], const uint8_t right[BARS], bool live,
+               float dt);
+/* Into r of the screen: the left channel's bars up from the middle, the
+ * right's down. */
 void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r);
 /* Still moving (frames needed even with nothing heard). */
 bool bars_busy(const struct bars *b);
+/* The bass (the mean of bands 2-5, both channels) and the mean of every
+ * bar, 0..1. */
+float bars_bass(const struct bars *b);
+float bars_energy(const struct bars *b);
+/* The self-test: where bar i of the strip in r is, [x0, x1) across, and
+ * the y of the line between the channels. */
+void bars_where(const struct rect *r, int i, int *x0, int *x1, int *mid);
+
+/* The sunburst: a disc pulsing with the bass and 128 rays, the left
+ * channel's 64 bands round one half and the right's round the other
+ * (bass meets bass at the bottom, the highs at the top, before it turns),
+ * centred on (cx, cy) and never further than `reach` from it; `grow`
+ * 0..1 scales it (the big view coming). */
+void burst_draw(const struct bars *b, const struct surf *dst, int cx, int cy, int reach,
+                float grow);
 
 /* ---- album art (art.c) ------------------------------------------------------------------- */
 
@@ -383,10 +408,8 @@ int32_t vol_at(const struct layout *lo, int x);
 /* A volume in centibels as "-12.5 dB" (the sign kept above -1 dB too). */
 void    vol_text(int32_t cb, char *out, size_t cap);
 
-/* draw.c: the frame for time t into scr.s; where the bars are now (they
- * grow to 70 % of the screen in the big view). */
+/* draw.c: the frame for time t into scr.s. */
 void draw_frame(struct app *a, uint64_t t);
-struct rect app_jam(const struct app *a);
 /* panels.c and nowplaying.c: the parts of the frame. */
 void draw_top(struct app *a);
 void draw_library(struct app *a);

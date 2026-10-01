@@ -1,23 +1,23 @@
-/* jamjar: the whole frame, back to front: the background, the panels
- * (faded out as the big view comes), the spectrum analyser (its rect
- * growing from the layout's place to the lower 70 % of the screen in the
- * big view), the cover and the names over the big view, then the
- * overlays: the roulette and the help. The frame is drawn whole each time
- * into scr.s; gfx_present sends only the pixels that changed. */
+/* jamjar: the whole frame, back to front: the background, the panels and
+ * the stereo bars (faded out as the big view comes), the big view's
+ * sunburst (growing from its centre as it comes), the cover and the names
+ * beside it, then the overlays: the roulette and the help. The frame is
+ * drawn whole each time into scr.s; gfx_present sends only the pixels
+ * that changed. */
 #include "jamjar.h"
 
-struct rect app_jam(const struct app *a)
+/* The text centred in r across (cut short with "..." if it is wider). */
+static void line_in(const struct rect *r, int scale, uint32_t c, const char *str)
 {
-    struct rect r = a->lo.jam;
-    float t = a->full_t, k = t * t * (3 - 2 * t);   /* smoothstep */
-    int top = r.y + (int)((float)(a->lo.h * 30 / 100 - r.y) * k);
-    r.h += r.y - top;
-    r.y = top;
-    return r;
+    int w = text_width(scale, str);
+    if (w <= r->w)
+        text(&scr.s, r->x + (r->w - w) / 2, r->y, scale, c, str);
+    else
+        text_clip(&scr.s, r->x, r->y, scale, c, r->w, str);
 }
 
-/* Over the big view: the album's cover, and the title, the artist and the
- * album, big, in the middle. */
+/* Beside the sunburst: the album's cover, and the title, the artist and
+ * the album under it; the mark at the top right. */
 static void big_title(const struct app *a)
 {
     const struct layout *lo = &a->lo;
@@ -26,57 +26,70 @@ static void big_title(const struct app *a)
     const char *slash = strrchr(a->snap.path, '/');
     if (!a->snap.path[0] || !slash)
         return;
-    int art = lo->h * 16 / 100, y = lo->h * 5 / 100;
-    art_cover(&scr.s, (lo->w - art) / 2, y, art,
-              album_hash(a->snap.path, (size_t)(slash - a->snap.path)), a->snap.path, C_BG);
-    y += art + 18 * u;
+    const struct rect *ar = &lo->big_art;
+    /* Its rounded corners over the background's colour at its middle. */
+    uint32_t bg = mixc(C_BG, C_BG2, (uint32_t)((ar->y + ar->h / 2) * 256 / lo->h));
+    art_cover(&scr.s, ar->x, ar->y, ar->w,
+              album_hash(a->snap.path, (size_t)(slash - a->snap.path)), a->snap.path, bg);
     const struct track_names *n = &a->now;
-    int ts = text_width(3 * u, n->title) > lo->w - 80 * u ? 2 * u : 3 * u;
-    struct rect r = { 40 * u, y, lo->w - 80 * u, TEXT_H(ts) };
-    text_in(&scr.s, &r, ts, C_CREAM, n->title);
-    r.y += TEXT_H(ts) + 12 * u;
-    r.h = TEXT_H(u);
-    text_in(&scr.s, &r, u, C_GOLD, n->artist);
+    struct rect r = lo->big_text;
+    line_in(&r, 2 * u, C_CREAM, n->title);
+    r.y += TEXT_H(2 * u) + 12 * u;
+    line_in(&r, u, C_GOLD, n->artist);
     r.y += TEXT_H(u) + 6 * u;
-    text_in(&scr.s, &r, u, C_DIM, n->album);
+    line_in(&r, u, C_DIM, n->album);
 }
 
-/* The background, a band of rows per pool item: the screen's biggest fill. */
+/* The background, a band of rows per pool item: the screen's biggest
+ * fill. Over what is drawn already at alpha `fade` (0..255) when it is
+ * less than 255: the panels fading out as the big view comes. */
 #define BANDS 32
+
+struct bg {
+    const struct layout *lo;
+    uint32_t fade;
+};
 
 static void bg_band(uint32_t item, uint32_t worker, void *arg)
 {
     (void)worker;
-    const struct layout *lo = arg;
-    int y0 = lo->h * (int)item / BANDS, y1 = lo->h * ((int)item + 1) / BANDS;
-    for (int y = y0; y < y1; y++)
-        fill(&scr.s, 0, y, lo->w, 1, mixc(C_BG, C_BG2, (uint32_t)(y * 256 / lo->h)));
+    const struct bg *b = arg;
+    int w = b->lo->w, h = b->lo->h;
+    int y0 = h * (int)item / BANDS, y1 = h * ((int)item + 1) / BANDS;
+    for (int y = y0; y < y1; y++) {
+        uint32_t c = mixc(C_BG, C_BG2, (uint32_t)(y * 256 / h));
+        if (b->fade >= 255)
+            fill(&scr.s, 0, y, w, 1, c);
+        else
+            fill_pm(&scr.s, 0, y, w, 1, argb_pm(c, b->fade));
+    }
 }
 
-static void background(const struct layout *lo)
+static void background(const struct layout *lo, uint32_t fade)
 {
+    struct bg b = { lo, fade };
     if (pool_threads() > 1) {
-        pool_run(bg_band, (void *)lo, BANDS);
+        pool_run(bg_band, &b, BANDS);
         return;
     }
     for (uint32_t i = 0; i < BANDS; i++)
-        bg_band(i, 0, (void *)lo);
+        bg_band(i, 0, &b);
 }
 
 void draw_frame(struct app *a, uint64_t t)
 {
     const struct layout *lo = &a->lo;
-    background(lo);
+    float k = a->full_t * a->full_t * (3 - 2 * a->full_t);   /* smoothstep */
+    background(lo, 255);
     if (a->full_t < 1.0f) {
         draw_top(a);
         draw_library(a);
         draw_now(a, t);
+        bars_draw(&a->bars, &scr.s, &lo->jam);
         if (a->full_t > 0.0f)   /* fading out: the background over them */
-            fill_pm(&scr.s, 0, 0, lo->w, lo->jam.y,
-                    argb_pm(C_BG, (uint32_t)(a->full_t * 255.0f)));
+            background(lo, (uint32_t)(k * 255.0f));
     }
-    struct rect jr = app_jam(a);
-    bars_draw(&a->bars, &scr.s, &jr);
+    burst_draw(&a->bars, &scr.s, lo->burst_x, lo->burst_y, lo->burst_r, k);
     if (a->full_t > 0.6f)
         big_title(a);
     roulette_draw(&a->roul, &a->lib, lo, &scr.s);
