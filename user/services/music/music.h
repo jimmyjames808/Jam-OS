@@ -1,7 +1,7 @@
 /* music: what the player's files share (main.c: the loop and the control
  * channel; tracks.c: the folder's list, the shuffle and the titles;
  * player.c: playing it through <audio.h>; spectrum.c: the bands of what is
- * heard, for `spectrum` and `levels`). */
+ * heard, for `spectrum`, `stereo` and `levels`). */
 #pragma once
 
 #include <audio.h>
@@ -71,13 +71,15 @@ struct mark {
 /* spectrum.c: the bands of what is written, kept by stream frame. */
 #define SPEC_N     2048u   /* the FFT's size, samples */
 #define SPEC_HOP   512u    /* samples between results at 48 kHz or below */
-#define SPEC_BANDS 64u    /* music.idl `spectrum`; `levels` has them four to a band */
+#define SPEC_BANDS 64u    /* music.idl `spectrum` and `stereo`; `levels` has them four to a band */
 #define SPEC_RING  512u    /* results kept: 2.7 s and more, past the stream's 1.37 s ring */
 #define SPEC_STALE (AUDIO_RATE / 5)   /* a result older than 0.2 s is not what is heard */
 
 struct spec_entry {
     int64_t at;                   /* the stream frame of its window's middle */
-    uint8_t band[SPEC_BANDS];     /* 0..255, low first (music.idl `spectrum`) */
+    uint8_t band[SPEC_BANDS];     /* 0..255, low first: the mono mix (music.idl `spectrum`) */
+    uint8_t left[SPEC_BANDS];     /* ... each channel alone (music.idl `stereo`) */
+    uint8_t right[SPEC_BANDS];
     uint8_t level;                /* 0..255 */
 };
 
@@ -85,8 +87,9 @@ struct spectrum {
     float    win[SPEC_N];         /* the Hann window */
     float    cosv[SPEC_N / 2], sinv[SPEC_N / 2];   /* the FFT's twiddles */
     uint16_t rev[SPEC_N];         /* bit reversal */
-    float    re[SPEC_N], im[SPEC_N];   /* the FFT's work */
-    float    in[SPEC_N];          /* the last SPEC_N mono samples, a ring from pos */
+    float    re[SPEC_N], im[SPEC_N];   /* the FFT's work: left in re, right in im */
+    float    pl[SPEC_N / 2], pr[SPEC_N / 2], pm[SPEC_N / 2];   /* bin powers: left, right, mono */
+    float    inl[SPEC_N], inr[SPEC_N];   /* each channel's last SPEC_N samples, rings from pos */
     uint32_t pos, fill;           /* where the next goes; how many are valid */
     uint32_t since, hop;          /* samples since the last result; between results */
     float    sq;                  /* sum of squares since the last result ... */
@@ -150,7 +153,7 @@ struct player {
     uint32_t hist[HIST_MAX], nhist;
     uint32_t ahead[HIST_MAX], nahead;
     int16_t *pcm;                 /* a chunk */
-    struct spectrum *spec;        /* the bands (malloc'd once: about 85 KiB) */
+    struct spectrum *spec;        /* the bands (malloc'd once: about 170 KiB) */
 };
 
 /* player.c */

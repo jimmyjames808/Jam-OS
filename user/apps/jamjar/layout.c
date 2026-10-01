@@ -3,7 +3,9 @@
  * right); then the library on the left (three columns: artists, albums,
  * tracks) and now playing on the right (the album's jar label, the title,
  * the progress bar, the buttons, the volume and the play order); and the
- * jam across the bottom, a fifth of the height. Sizes are in units of the
+ * stereo bars across the bottom, a fifth of the height. The big view (f)
+ * has its own places: a column at the left for the cover and the names,
+ * and the sunburst's circle in the middle of the rest. Sizes are in units of the
  * UI scale (1 up to 1080 lines, 2 above), the big parts in shares of the
  * screen, so 1280x720 and 2560x1440 look the same. Pure arithmetic: the
  * self-test checks it for screens QEMU doesn't have. */
@@ -74,6 +76,28 @@ static void place_now(struct layout *l)
         l->info = (struct rect){ n->x + pad, iy, n->w - 2 * pad, ih };
 }
 
+/* The big view: the column takes BIG_COL % of the width; the sunburst is
+ * as big as the height allows, centred in what is left; the cover and the
+ * names (title, artist, album) are centred in the column, one block. */
+#define BIG_COL    30
+#define BIG_MARGIN 32
+#define BIG_ART    36   /* percent of the height: the cover at most */
+
+static void place_big(struct layout *l)
+{
+    int u = l->u, m = BIG_MARGIN * u, col = l->w * BIG_COL / 100;
+    int r = (l->h - 2 * m) / 2, rw = (l->w - col) / 2 - m;
+    l->burst_r = r < rw ? r : rw;
+    l->burst_x = col + (l->w - col) / 2;
+    l->burst_y = l->h / 2;
+    int inner = col - 2 * m, art = l->h * BIG_ART / 100;
+    art = art < inner ? art : inner;
+    int text_h = TEXT_H(2 * u) + 12 * u + TEXT_H(u) + 6 * u + TEXT_H(u);
+    int y = (l->h - art - 24 * u - text_h) / 2;
+    l->big_art = (struct rect){ m + (inner - art) / 2, y, art, art };
+    l->big_text = (struct rect){ m, y + art + 24 * u, inner, text_h };
+}
+
 void layout_make(struct layout *l, int w, int h, int ui)
 {
     memset(l, 0, sizeof(*l));
@@ -92,4 +116,5 @@ void layout_make(struct layout *l, int w, int h, int ui)
     l->now = (struct rect){ m + lw + gap, y0, w - m - (m + lw + gap), y1 - y0 };
     place_library(l);
     place_now(l);
+    place_big(l);
 }

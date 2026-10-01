@@ -620,6 +620,7 @@ static const struct {
     { "music_scan", t_music_scan },
     { "music_order", t_music_order },
     { "music_spectrum", t_music_spectrum },
+    { "music_stereo", t_music_stereo },
     { "mp3_header", t_mp3_header },
     { "mp3_sniff", t_mp3_sniff },
     { "mp3_decode", t_mp3_decode },

@@ -1,20 +1,25 @@
-/* music: what is heard, in 64 frequency bands (music.idl's `spectrum`;
- * `levels` has sixteen, the loudest of each four), for a view such as
- * jamjar to draw.
+/* music: what is heard, in 64 frequency bands, for a view such as jamjar
+ * to draw: each channel's (music.idl's `stereo`) and the mono mix's
+ * (`spectrum`; `levels` has sixteen, the loudest of each four).
  *
  * The player hands every chunk it writes to spec_feed with the stream
- * frame (48 kHz) its first sample lands on. The chunk is mixed to mono and
- * kept in a window of SPEC_N samples; every hop (SPEC_HOP samples at
- * 48 kHz, more at higher rates so a hop is always about 11 ms) the window
- * gets a Hann taper and a 2048-point FFT, and the power of its bins is
- * summed into SPEC_BANDS (64) bands log-spaced from 40 Hz to 16 kHz, a
- * sixth of an octave each. The low bands are narrower than a bin (21.5 Hz
- * at 44.1 kHz): such a band reads the power at its middle between the two
- * nearest bins, times its width in bins, so neighbours differ smoothly
- * rather than repeating one bin. Each band's energy is in dB against a
- * full-scale sine's, plus a tilt of 3 dB an octave from 1 kHz (music has
- * much more energy low than high), and -76..-16 dB maps to 0..255. The
- * hop's RMS, -60..0 dBFS, is the overall `level`.
+ * frame (48 kHz) its first sample lands on. Each channel is kept in a
+ * window of SPEC_N samples (a mono file is both); every hop (SPEC_HOP
+ * samples at 48 kHz, more at higher rates so a hop is always about 11 ms)
+ * the windows get a Hann taper and one 2048-point complex FFT, with the
+ * left channel as the real part and the right as the imaginary part: the
+ * FFT is linear and a real signal's spectrum is conjugate-symmetric, so
+ * the two channels' spectra come apart again from bins k and N - k (see
+ * split), and the mono mix's is their mean. Two real FFTs for the price
+ * of one. The power of the bins is summed into SPEC_BANDS (64) bands
+ * log-spaced from 40 Hz to 16 kHz, a sixth of an octave each. The low
+ * bands are narrower than a bin (21.5 Hz at 44.1 kHz): such a band reads
+ * the power at its middle between the two nearest bins, times its width
+ * in bins, so neighbours differ smoothly rather than repeating one bin.
+ * Each band's energy is in dB against a full-scale sine's, plus a tilt of
+ * 3 dB an octave from 1 kHz (music has much more energy low than high),
+ * and -76..-16 dB maps to 0..255. The hop's RMS of the mono mix, -60..0
+ * dBFS, is the overall `level`.
  *
  * The player writes up to 1.37 s ahead of what is heard, so each result
  * goes into a ring with the stream frame of its window's middle, and
@@ -24,7 +29,7 @@
  *
  * Plain float arithmetic, no libm: the twiddles come from a rotation
  * whose step is a Taylor series, the logarithm from the float's exponent
- * and a short series. About 110 kFLOP a hop, about 10 MFLOP a second. */
+ * and a short series. About 130 kFLOP a hop, about 12 MFLOP a second. */
 #include "music.h"
 
 #define FULL_SCALE 32767.0f
@@ -131,22 +136,22 @@ static void set_rate(struct spectrum *s, uint32_t rate)
     }
 }
 
-/* The power in band b: the bins inside summed; a narrow band's middle read
- * between bins, times its width in bins (so both are the band's energy). */
-static float band_power(const struct spectrum *s, uint32_t b)
+/* The power in band b of the bin powers p: the bins inside summed; a
+ * narrow band's middle read between bins, times its width in bins (so
+ * both are the band's energy). */
+static float band_power(const struct spectrum *s, const float *p, uint32_t b)
 {
     if (!s->narrow[b]) {
         float sum = 0.0f;
         for (uint32_t k = s->bin0[b]; k <= s->bin1[b]; k++)
-            sum += s->re[k] * s->re[k] + s->im[k] * s->im[k];
+            sum += p[k];
         return sum;
     }
     float kc = s->kc[b];
     uint32_t k = (uint32_t)kc;
     k = k >= SPEC_N / 2 - 1 ? SPEC_N / 2 - 2 : k;
-    float t = kc - (float)k, p0 = s->re[k] * s->re[k] + s->im[k] * s->im[k];
-    float p1 = s->re[k + 1] * s->re[k + 1] + s->im[k + 1] * s->im[k + 1];
-    return (p0 + (p1 - p0) * t) * (float)s->wide[b];
+    float t = kc - (float)k;
+    return (p[k] + (p[k + 1] - p[k]) * t) * (float)s->wide[b];
 }
 
 /* In-place radix-2 FFT of s->re/s->im (bit-reversed copy already made). */
@@ -176,20 +181,48 @@ static void push(struct spectrum *s, const struct spec_entry *e)
         s->count++;
 }
 
-/* The window as it is now (ending at the sample just taken), analysed. */
+/* The FFT Z of left + i right, taken apart: with Z[k] = a + ib and
+ * Z[N - k] = c + id, left's bin k is (Z[k] + conj Z[N - k]) / 2 =
+ * ((a + c) + i(b - d)) / 2 and right's is (Z[k] - conj Z[N - k]) / 2i =
+ * ((b + d) + i(c - a)) / 2; the mono mix's is their mean. Each bin's
+ * power into pl, pr and pm. */
+static void split(struct spectrum *s)
+{
+    for (uint32_t k = 0; k < SPEC_N / 2; k++) {
+        uint32_t j = (SPEC_N - k) % SPEC_N;
+        float a = s->re[k], b = s->im[k], c = s->re[j], d = s->im[j];
+        float lr = (a + c) * 0.5f, li = (b - d) * 0.5f;
+        float rr = (b + d) * 0.5f, ri = (c - a) * 0.5f;
+        float mr = (lr + rr) * 0.5f, mi = (li + ri) * 0.5f;
+        s->pl[k] = lr * lr + li * li;
+        s->pr[k] = rr * rr + ri * ri;
+        s->pm[k] = mr * mr + mi * mi;
+    }
+}
+
+static uint8_t band_byte(const struct spectrum *s, const float *p, uint32_t b)
+{
+    /* A full-scale sine's bins sum to 3/32 N^2 A^2 (Hann, one side). */
+    const float ref = 3.0f / 32.0f * (float)SPEC_N * (float)SPEC_N * FULL_SCALE * FULL_SCALE;
+    return to_byte(db10(band_power(s, p, b) / ref) + s->tilt[b], DB_LOW, DB_HIGH);
+}
+
+/* The windows as they are now (ending at the sample just taken), analysed. */
 static void analyse(struct spectrum *s, int64_t at)
 {
     for (uint32_t n = 0; n < SPEC_N; n++) {
-        uint32_t r = s->rev[n];
-        s->re[r] = s->in[(s->pos + n) % SPEC_N] * s->win[n];
-        s->im[r] = 0.0f;
+        uint32_t r = s->rev[n], i = (s->pos + n) % SPEC_N;
+        s->re[r] = s->inl[i] * s->win[n];
+        s->im[r] = s->inr[i] * s->win[n];
     }
     fft(s);
-    /* A full-scale sine's bins sum to 3/32 N^2 A^2 (Hann, one side). */
-    const float ref = 3.0f / 32.0f * (float)SPEC_N * (float)SPEC_N * FULL_SCALE * FULL_SCALE;
+    split(s);
     struct spec_entry e = { .at = at };
-    for (uint32_t b = 0; b < SPEC_BANDS; b++)
-        e.band[b] = to_byte(db10(band_power(s, b) / ref) + s->tilt[b], DB_LOW, DB_HIGH);
+    for (uint32_t b = 0; b < SPEC_BANDS; b++) {
+        e.band[b] = band_byte(s, s->pm, b);
+        e.left[b] = band_byte(s, s->pl, b);
+        e.right[b] = band_byte(s, s->pr, b);
+    }
     float rms2 = s->sq / (float)(s->nsq ? s->nsq : 1) / (FULL_SCALE * FULL_SCALE);
     e.level = to_byte(db10(rms2), LEVEL_LOW, 0.0f);
     s->sq = 0.0f;
@@ -205,9 +238,10 @@ void spec_feed(struct spectrum *s, const int16_t *pcm, size_t frames, unsigned c
     if (rate != s->rate)
         set_rate(s, rate);
     for (size_t k = 0; k < frames; k++) {
-        float x = channels == 2 ? ((float)pcm[2 * k] + (float)pcm[2 * k + 1]) * 0.5f
-                                : (float)pcm[k];
-        s->in[s->pos] = x;
+        float l = channels == 2 ? (float)pcm[2 * k] : (float)pcm[k];
+        float r = channels == 2 ? (float)pcm[2 * k + 1] : l, x = (l + r) * 0.5f;
+        s->inl[s->pos] = l;
+        s->inr[s->pos] = r;
         s->pos = (s->pos + 1) % SPEC_N;
         s->sq += x * x;
         s->nsq++;

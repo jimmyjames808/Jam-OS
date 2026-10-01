@@ -21,6 +21,7 @@
 #define MUSIC_PAUSE            0x00180009u
 #define MUSIC_SLEEP            0x0018000au
 #define MUSIC_SPECTRUM         0x0018000bu
+#define MUSIC_STEREO           0x0018000cu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct music_start_req {
@@ -151,6 +152,23 @@ struct music_spectrum_rep {
     int32_t volume;
     uint32_t sleep_s;
     uint8_t bands[64];
+    uint8_t level;
+} __attribute__((packed));
+struct music_stereo_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct music_stereo_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t playing;
+    uint32_t serial;
+    uint64_t elapsed_ms;
+    uint64_t length_ms;
+    int32_t volume;
+    uint32_t sleep_s;
+    uint8_t left[64];
+    uint8_t right[64];
     uint8_t level;
 } __attribute__((packed));
 
@@ -503,6 +521,46 @@ static inline status_t music_spectrum(handle_t ch, uint8_t *out_playing, uint32_
     return music_spectrum_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
 }
 
+/* `spectrum` for each channel: `left` and `right`, what each of the two
+ * channels has in the same 64 bands (0..255 as `spectrum`'s, the same
+ * tilt; a mono file gives both the same); the rest as `levels` (`level`
+ * is the mono mix's). A stereo view asks this instead of `spectrum`. */
+static inline status_t music_stereo_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+{
+    struct music_stereo_req idl_q;
+    struct music_stereo_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_STEREO;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_playing)
+        *out_playing = idl_r.playing;
+    if (idl_st == OK && out_serial)
+        *out_serial = idl_r.serial;
+    if (idl_st == OK && out_elapsed_ms)
+        *out_elapsed_ms = idl_r.elapsed_ms;
+    if (idl_st == OK && out_length_ms)
+        *out_length_ms = idl_r.length_ms;
+    if (idl_st == OK && out_volume)
+        *out_volume = idl_r.volume;
+    if (idl_st == OK && out_sleep_s)
+        *out_sleep_s = idl_r.sleep_s;
+    for (uint32_t idl_i = 0; idl_st == OK && out_left && idl_i < 64; idl_i++)
+        out_left[idl_i] = idl_r.left[idl_i];
+    for (uint32_t idl_i = 0; idl_st == OK && out_right && idl_i < 64; idl_i++)
+        out_right[idl_i] = idl_r.right[idl_i];
+    if (idl_st == OK && out_level)
+        *out_level = idl_r.level;
+    return idl_st;
+}
+static inline status_t music_stereo(handle_t ch, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+{
+    return music_stereo_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -519,6 +577,7 @@ struct music_ops {
     status_t (*pause)(void *ctx, uint8_t on, uint8_t *out_paused);
     status_t (*sleep)(void *ctx, uint32_t seconds, uint32_t *out_seconds);
     status_t (*spectrum)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level);
+    status_t (*stereo)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -791,6 +850,45 @@ static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, co
         idl_r->sleep_s = out_sleep_s;
         for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
             idl_r->bands[idl_i] = out_bands[idl_i];
+        idl_r->level = out_level;
+        return sizeof(*idl_r);
+    }
+    case MUSIC_STEREO: {
+        const struct music_stereo_req *idl_q = (const struct music_stereo_req *)req;
+        struct music_stereo_rep *idl_r = (struct music_stereo_rep *)rep;
+        uint8_t out_playing = 0;
+        uint32_t out_serial = 0;
+        uint64_t out_elapsed_ms = 0;
+        uint64_t out_length_ms = 0;
+        int32_t out_volume = 0;
+        uint32_t out_sleep_s = 0;
+        uint8_t out_left[64];
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            out_left[idl_i] = 0;
+        uint8_t out_right[64];
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            out_right[idl_i] = 0;
+        uint8_t out_level = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stereo) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stereo(ctx, &out_playing, &out_serial, &out_elapsed_ms, &out_length_ms, &out_volume, &out_sleep_s, out_left, out_right, &out_level);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->playing = out_playing;
+        idl_r->serial = out_serial;
+        idl_r->elapsed_ms = out_elapsed_ms;
+        idl_r->length_ms = out_length_ms;
+        idl_r->volume = out_volume;
+        idl_r->sleep_s = out_sleep_s;
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            idl_r->left[idl_i] = out_left[idl_i];
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            idl_r->right[idl_i] = out_right[idl_i];
         idl_r->level = out_level;
         return sizeof(*idl_r);
     }

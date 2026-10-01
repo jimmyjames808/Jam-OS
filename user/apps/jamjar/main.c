@@ -6,7 +6,8 @@
  *                              there is one, else /data/music)
  *   ... hz=60                  frames a second while anything moves
  *   ... trace                  say every command, every cover read, and once a
- *                              second the loudest bar (the QEMU test reads it)
+ *                              second each channel's loudest bar (the QEMU
+ *                              test reads it)
  *   ... noaccel                the mouse without acceleration (tests)
  *   ... nocovers               jar labels only: no covers read from the tags
  *   run jamjar --selftest      the library, names, search, art and layout
@@ -18,7 +19,7 @@
  *
  * The loop: read a little more of the library while it is being read, take
  * the player's latest snapshot (link.c's thread does the calls), move the
- * jam on, draw, present, and wait for a key, a mouse report or the next
+ * bars on, draw, present, and wait for a key, a mouse report or the next
  * frame: every 1/hz s while anything moves, four times a second when
  * nothing does (the clock of the progress bar). */
 #include "jamjar.h"
@@ -69,11 +70,13 @@ static void hear(struct app *a, uint64_t t)
     if (link_result(msg, sizeof(msg)))
         app_toast(a, "%s", msg);
     if (a->trace && a->snap.playing == 1 && t - a->trace_at > NS_PER_S) {
-        int best = 0;
-        for (int i = 1; i < BARS; i++)
-            best = a->snap.bands[i] > a->snap.bands[best] ? i : best;
-        say("jamjar: spectrum: loudest bar %d (%u), level %u\n", best, a->snap.bands[best],
-            a->snap.level);
+        int l = 0, r = 0;
+        for (int i = 1; i < BARS; i++) {
+            l = a->snap.left[i] > a->snap.left[l] ? i : l;
+            r = a->snap.right[i] > a->snap.right[r] ? i : r;
+        }
+        say("jamjar: spectrum: loudest bars: left %d, right %d (%u, %u), level %u\n", l, r,
+            a->snap.left[l], a->snap.right[r], a->snap.level);
         a->trace_at = t;
     }
 }
@@ -83,7 +86,7 @@ static bool animate(struct app *a, uint64_t t, float dt)
 {
     static const uint8_t quiet[BARS];
     bool heard = a->snap.playing == 1 && !snap_stale(&a->snap, t);   /* else the bars fall */
-    bars_step(&a->bars, heard ? a->snap.bands : quiet, heard, dt);
+    bars_step(&a->bars, heard ? a->snap.left : quiet, heard ? a->snap.right : quiet, heard, dt);
     float goal = a->full ? 1.0f : 0.0f;
     if (a->full_t != goal) {
         float step = dt / 0.6f;
@@ -145,6 +148,13 @@ static int run(int argc, char **argv)
     if (a->trace)   /* the cover test reads where now playing's cover goes */
         say("jamjar: %dx%d, reading %s; now playing's cover at %d,%d, %d px\n", scr.w, scr.h,
             a->lib.root, a->lo.art.x, a->lo.art.y, a->lo.art.w);
+    if (a->trace) {   /* ... and jamjar-test.sh where the bars are */
+        int x0, x1, y, x2, x3;
+        bars_where(&a->lo.jam, 0, &x0, &x1, &y);
+        bars_where(&a->lo.jam, BARS - 1, &x2, &x3, &y);
+        say("jamjar: the bars: the line at y %d, bar 0 at x %d-%d, bar %d at x %d-%d\n", y, x0,
+            x1, BARS - 1, x2, x3);
+    }
     uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0;
     while (!a->quit) {
         uint64_t t = now();
