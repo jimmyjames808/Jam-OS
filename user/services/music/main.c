@@ -15,8 +15,8 @@
  * whatever is queued on the channel, so `stop` and `next` take effect
  * within about 50 ms; while it reads a big folder, each step reads a few
  * entries of it. Stopped or paused, it waits on the channel (and for the
- * sleep timer's end, if it is set). A view (jamjar) asks `levels` many
- * times a second: it is answered from what the player keeps, plus one
+ * sleep timer's end, if it is set). A view (jamjar) asks `spectrum` many
+ * times a second (`spectrum`): it is answered from what the player keeps, plus one
  * position call to the mixer. Each track's
  * start is one line in the log ("[music] music: track 3: Artist -
  * Title (3:45)"), which the console shows above the prompt. */
@@ -120,30 +120,53 @@ static uint32_t sleep_left(const struct player *p)
     return p->sleep_at > t ? (uint32_t)((p->sleep_at - t + NS_PER_S - 1) / NS_PER_S) : 0;
 }
 
-static status_t on_levels(void *ctx, uint8_t *playing, uint32_t *serial, uint64_t *elapsed_ms,
-                          uint64_t *length_ms, int32_t *volume, uint32_t *sleep_s,
-                          uint8_t bands[16], uint8_t *level)
+/* What `levels` and `spectrum` share: the state, and the bands heard now
+ * (zeros if none). */
+static void heard(struct player *p, uint8_t *playing, uint32_t *serial, uint64_t *elapsed_ms,
+                  uint64_t *length_ms, int32_t *volume, uint32_t *sleep_s, struct spec_entry *e)
 {
-    struct player *p = ctx;
     *playing = state(p);
     *volume = p->volume;
     *sleep_s = sleep_left(p);
     *serial = 0;
     *length_ms = 0;
-    *level = 0;
-    memset(bands, 0, SPEC_BANDS);
+    memset(e, 0, sizeof(*e));
     const struct mark *m = player_heard(p, elapsed_ms);
     if (!m)
-        return OK;
+        return;
     *serial = m->serial;
     *length_ms = m->length_ms;
+    if (!p->paused && p->spec && !spec_at(p->spec, (int64_t)p->heard_at, e))
+        memset(e, 0, sizeof(*e));
+}
+
+static status_t on_levels(void *ctx, uint8_t *playing, uint32_t *serial, uint64_t *elapsed_ms,
+                          uint64_t *length_ms, int32_t *volume, uint32_t *sleep_s,
+                          uint8_t bands[16], uint8_t *level)
+{
     struct spec_entry e;
-    if (!p->paused && p->spec && spec_at(p->spec, (int64_t)p->heard_at, &e)) {
-        memcpy(bands, e.band, SPEC_BANDS);
-        *level = e.level;
+    heard(ctx, playing, serial, elapsed_ms, length_ms, volume, sleep_s, &e);
+    for (unsigned i = 0; i < 16; i++) {
+        const uint8_t *q = e.band + 4 * i;
+        uint8_t a = q[0] > q[1] ? q[0] : q[1], b = q[2] > q[3] ? q[2] : q[3];
+        bands[i] = a > b ? a : b;
     }
+    *level = e.level;
     return OK;
 }
+
+static status_t on_spectrum(void *ctx, uint8_t *playing, uint32_t *serial,
+                            uint64_t *elapsed_ms, uint64_t *length_ms, int32_t *volume,
+                            uint32_t *sleep_s, uint8_t bands[64], uint8_t *level)
+{
+    struct spec_entry e;
+    heard(ctx, playing, serial, elapsed_ms, length_ms, volume, sleep_s, &e);
+    memcpy(bands, e.band, 64);
+    *level = e.level;
+    return OK;
+}
+
+_Static_assert(SPEC_BANDS == 64, "music.idl's spectrum has 64 bands, levels 16 of four each");
 
 static status_t on_status(void *ctx, uint8_t *playing, uint32_t *tracks, uint32_t *bad,
                           uint32_t *started, uint64_t *elapsed_ms, uint64_t *length_ms,
@@ -181,7 +204,7 @@ static status_t on_volume(void *ctx, int32_t cb, int32_t *out)
 static const struct music_ops ops = {
     .start = on_start, .stop = on_stop, .next = on_next, .status = on_status,
     .set_volume = on_volume, .prev = on_prev, .play = on_play, .levels = on_levels,
-    .pause = on_pause, .sleep = on_sleep,
+    .pause = on_pause, .sleep = on_sleep, .spectrum = on_spectrum,
 };
 
 int main(int argc, char **argv)

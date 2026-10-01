@@ -69,15 +69,15 @@ struct mark {
 };
 
 /* spectrum.c: the bands of what is written, kept by stream frame. */
-#define SPEC_N     1024u   /* the FFT's size, samples */
+#define SPEC_N     2048u   /* the FFT's size, samples */
 #define SPEC_HOP   512u    /* samples between results at 48 kHz or below */
-#define SPEC_BANDS 16u
+#define SPEC_BANDS 64u    /* music.idl `spectrum`; `levels` has them four to a band */
 #define SPEC_RING  512u    /* results kept: 2.7 s and more, past the stream's 1.37 s ring */
 #define SPEC_STALE (AUDIO_RATE / 5)   /* a result older than 0.2 s is not what is heard */
 
 struct spec_entry {
     int64_t at;                   /* the stream frame of its window's middle */
-    uint8_t band[SPEC_BANDS];     /* 0..255, low first (music.idl `levels`) */
+    uint8_t band[SPEC_BANDS];     /* 0..255, low first (music.idl `spectrum`) */
     uint8_t level;                /* 0..255 */
 };
 
@@ -93,6 +93,9 @@ struct spectrum {
     uint32_t nsq;                 /* ... of this many samples */
     uint32_t rate;                /* the input's, which the bins below are for */
     uint16_t bin0[SPEC_BANDS], bin1[SPEC_BANDS];   /* each band's bins, inclusive */
+    bool     narrow[SPEC_BANDS];  /* ... or, narrower than a bin or so, read at its middle */
+    float    kc[SPEC_BANDS];      /* the middle, in bins */
+    double   wide[SPEC_BANDS];    /* the width, in bins */
     float    tilt[SPEC_BANDS];    /* dB added to each band */
     struct spec_entry ring[SPEC_RING];   /* the results, oldest first from head - count */
     uint32_t head, count;

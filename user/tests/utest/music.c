@@ -203,18 +203,25 @@ static int loudest(const struct spec_entry *e)
     return best;
 }
 
-/* Each tone in its band: 300 Hz in band 5 (259-377 Hz), 1 kHz in 8,
- * 5 kHz in 12; far bands much lower; the level of a -12 dBFS sine. */
+/* Each tone in its band (64 of a sixth of an octave from 40 Hz): 300 Hz
+ * in band 21 (285-313 Hz, narrower than a bin: read between bins), 1 kHz
+ * in 34, 5 kHz in 51; bands far from it much lower; the level of a
+ * -12 dBFS sine. */
 static bool tone_lands(struct spectrum *s, uint32_t rate, double hz, int band)
 {
     spec_reset(s);
     feed_tone(s, rate, hz, 0.25);
     struct spec_entry e;
     CHECK(spec_at(s, 24000, &e));   /* half a second in */
-    CHECK_EQ(loudest(&e), band);
+    /* Below about 300 Hz a band is narrower than an FFT bin (21.5 Hz at
+     * 44.1 kHz): read between two bins, a tone may show in the band next
+     * to its own. Above, exactly its own. */
+    int got = loudest(&e), off = got > band ? got - band : band - got;
+    CHECK(off <= (band < 22 ? 1 : 0));
+    band = got;
     CHECK(e.band[band] > 150);
     for (int b = 0; b < (int)SPEC_BANDS; b++)
-        if (b < band - 2 || b > band + 2)
+        if (b < band - 6 || b > band + 6)
             CHECK(e.band[b] + 60 < e.band[band]);
     CHECK(e.level > 180 && e.level < 200);   /* -15 dBFS RMS: 191 */
     return true;
@@ -225,8 +232,9 @@ bool t_music_spectrum(void)
     struct spectrum *s = malloc(sizeof(*s));
     CHECK(s);
     spec_init(s);
-    bool ok = tone_lands(s, 44100, 300, 5) && tone_lands(s, 48000, 1000, 8) &&
-              tone_lands(s, 22050, 5000, 12) && tone_lands(s, 96000, 1000, 8);
+    bool ok = tone_lands(s, 44100, 300, 21) && tone_lands(s, 48000, 1000, 34) &&
+              tone_lands(s, 22050, 5000, 51) && tone_lands(s, 96000, 1000, 34) &&
+              tone_lands(s, 44100, 60, 4);
     struct spec_entry e;
     if (ok) {
         /* Silence: zeros; nothing yet (or nothing near): no entry. */

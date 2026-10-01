@@ -72,7 +72,8 @@ protocol music 24
 # each 0..255 (about 0: -70 dB, 255: -10 dB below full scale, with a tilt
 # of +3 dB an octave so that every band of ordinary music moves), and
 # `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
-# scale). All zero while nothing is heard.
+# scale). All zero while nothing is heard. (`spectrum` has the same in 64
+# bands; each of these is the loudest of four of those.)
 8  levels  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[16] bands, u8 level)
 # Pause (`on` 1): the mixer stops taking the stream's frames where it is
 # (what it took is still heard, about 0.1 s) and the player stops reading;
@@ -84,3 +85,9 @@ protocol music 24
 # a new `start` or `play` keeps it. Answers the seconds set.
 # ERR_OUT_OF_RANGE: more than 86400 (a day).
 10 sleep  (u32 seconds) -> (u32 seconds)
+# `levels` with the finer picture a spectrum display wants: `bands`, what
+# is heard in 64 bands log-spaced from 40 Hz to 16 kHz (a sixth of an
+# octave each, low first), each 0..255 as in `levels` (about 0: -76 dB,
+# 255: -16 dB below full scale, the same tilt); the rest as `levels`.
+# (`levels`' sixteen bands are these, the loudest of each four.)
+11 spectrum  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[64] bands, u8 level)

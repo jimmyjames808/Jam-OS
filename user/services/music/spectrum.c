@@ -5,12 +5,15 @@
  * frame (48 kHz) its first sample lands on. The chunk is mixed to mono and
  * kept in a window of SPEC_N samples; every hop (SPEC_HOP samples at
  * 48 kHz, more at higher rates so a hop is always about 11 ms) the window
- * gets a Hann taper and a 1024-point FFT, and the power of its bins is
- * summed into sixteen bands log-spaced from 40 Hz to 16 kHz (a band too
- * narrow to hold a bin centre takes the nearest bin). Each band's sum is
- * in dB against a full-scale sine's, plus a tilt of 3 dB an octave from
- * 1 kHz (music has much more energy low than high), and -70..-10 dB maps
- * to 0..255. The hop's RMS, -60..0 dBFS, is the overall `level`.
+ * gets a Hann taper and a 2048-point FFT, and the power of its bins is
+ * summed into SPEC_BANDS (64) bands log-spaced from 40 Hz to 16 kHz, a
+ * sixth of an octave each. The low bands are narrower than a bin (21.5 Hz
+ * at 44.1 kHz): such a band reads the power at its middle between the two
+ * nearest bins, times its width in bins, so neighbours differ smoothly
+ * rather than repeating one bin. Each band's energy is in dB against a
+ * full-scale sine's, plus a tilt of 3 dB an octave from 1 kHz (music has
+ * much more energy low than high), and -76..-16 dB maps to 0..255. The
+ * hop's RMS, -60..0 dBFS, is the overall `level`.
  *
  * The player writes up to 1.37 s ahead of what is heard, so each result
  * goes into a ring with the stream frame of its window's middle, and
@@ -20,12 +23,13 @@
  *
  * Plain float arithmetic, no libm: the twiddles come from a rotation
  * whose step is a Taylor series, the logarithm from the float's exponent
- * and a short series. About 50 kFLOP a hop, under 5 MFLOP a second. */
+ * and a short series. About 110 kFLOP a hop, about 10 MFLOP a second. */
 #include "music.h"
 
 #define FULL_SCALE 32767.0f
-#define DB_LOW     (-70.0f)   /* a band at 0 */
-#define DB_HIGH    (-10.0f)   /* ... and at 255 */
+#define DB_LOW     (-76.0f)   /* a band at 0 */
+#define DB_HIGH    (-16.0f)   /* ... and at 255 */
+#define NARROW     1.5        /* bins: a band narrower is read at its middle */
 #define LEVEL_LOW  (-60.0f)   /* the level at 0 (0 dBFS is 255) */
 #define TILT_DB    3.0f       /* per octave above 1 kHz (below: less) */
 #define F_LOW      40.0
@@ -90,7 +94,9 @@ void spec_init(struct spectrum *s)
     }
 }
 
-/* The bins each band sums, for this rate. */
+/* Each band's bins for this rate: the bins whose centres are inside it,
+ * or, for a band narrower than NARROW bins (the low ones), its middle,
+ * where the power is read between the two nearest bins. */
 static void set_rate(struct spectrum *s, uint32_t rate)
 {
     s->rate = rate;
@@ -109,21 +115,37 @@ static void set_rate(struct spectrum *s, uint32_t rate)
     }
     step = lo;
     for (uint32_t b = 0; b < SPEC_BANDS; b++) {
-        double f0 = F_LOW * ratio, f1 = f0 * step, mid = (f0 + f1) / 2;
+        double f0 = F_LOW * ratio, f1 = f0 * step;
         ratio *= step;
         uint32_t k0 = (uint32_t)(f0 / bw + 0.999999), k1 = (uint32_t)(f1 / bw);
-        if (k1 >= SPEC_N / 2)
-            k1 = SPEC_N / 2 - 1;
-        if (k0 > k1) {   /* no bin centre inside: the nearest one */
-            k0 = k1 = (uint32_t)(mid / bw + 0.5);
-            k0 = k1 = k0 >= SPEC_N / 2 ? SPEC_N / 2 - 1 : k0 ? k0 : 1;
-        }
+        k1 = k1 >= SPEC_N / 2 ? SPEC_N / 2 - 1 : k1;
+        s->wide[b] = (f1 - f0) / bw;
+        s->narrow[b] = s->wide[b] < NARROW || k0 > k1;
+        s->kc[b] = (float)((f0 + f1) / 2 / bw);
         s->bin0[b] = (uint16_t)k0;
         s->bin1[b] = (uint16_t)k1;
         /* The tilt, from the band's middle (geometric) in octaves from 1 kHz. */
         s->tilt[b] = TILT_DB * (log2_approx((float)(f0 / 1000.0)) +
                                 0.5f * log2_approx((float)step));
     }
+}
+
+/* The power in band b: the bins inside summed; a narrow band's middle read
+ * between bins, times its width in bins (so both are the band's energy). */
+static float band_power(const struct spectrum *s, uint32_t b)
+{
+    if (!s->narrow[b]) {
+        float sum = 0.0f;
+        for (uint32_t k = s->bin0[b]; k <= s->bin1[b]; k++)
+            sum += s->re[k] * s->re[k] + s->im[k] * s->im[k];
+        return sum;
+    }
+    float kc = s->kc[b];
+    uint32_t k = (uint32_t)kc;
+    k = k >= SPEC_N / 2 - 1 ? SPEC_N / 2 - 2 : k;
+    float t = kc - (float)k, p0 = s->re[k] * s->re[k] + s->im[k] * s->im[k];
+    float p1 = s->re[k + 1] * s->re[k + 1] + s->im[k + 1] * s->im[k + 1];
+    return (p0 + (p1 - p0) * t) * (float)s->wide[b];
 }
 
 /* In-place radix-2 FFT of s->re/s->im (bit-reversed copy already made). */
@@ -165,12 +187,8 @@ static void analyse(struct spectrum *s, int64_t at)
     /* A full-scale sine's bins sum to 3/32 N^2 A^2 (Hann, one side). */
     const float ref = 3.0f / 32.0f * (float)SPEC_N * (float)SPEC_N * FULL_SCALE * FULL_SCALE;
     struct spec_entry e = { .at = at };
-    for (uint32_t b = 0; b < SPEC_BANDS; b++) {
-        float sum = 0.0f;
-        for (uint32_t k = s->bin0[b]; k <= s->bin1[b]; k++)
-            sum += s->re[k] * s->re[k] + s->im[k] * s->im[k];
-        e.band[b] = to_byte(db10(sum / ref) + s->tilt[b], DB_LOW, DB_HIGH);
-    }
+    for (uint32_t b = 0; b < SPEC_BANDS; b++)
+        e.band[b] = to_byte(db10(band_power(s, b) / ref) + s->tilt[b], DB_LOW, DB_HIGH);
     float rms2 = s->sq / (float)(s->nsq ? s->nsq : 1) / (FULL_SCALE * FULL_SCALE);
     e.level = to_byte(db10(rms2), LEVEL_LOW, 0.0f);
     s->sq = 0.0f;
