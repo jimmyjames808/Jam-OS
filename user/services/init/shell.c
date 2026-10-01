@@ -174,6 +174,11 @@ handle_t shell_devmgr(void)
     return devmgr;
 }
 
+handle_t shell_console(void)
+{
+    return cons;
+}
+
 static handle_t root_with(rights_t rights)
 {
     handle_t h = HANDLE_INVALID;

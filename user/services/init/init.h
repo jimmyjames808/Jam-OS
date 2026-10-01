@@ -87,6 +87,8 @@ void     splash_shell_ready(void);
 handle_t shell_root(void);
 /* devmgr's control channel, or 0 while none runs. */
 handle_t shell_devmgr(void);
+/* init's (ADMIN) console channel, or 0 while no console runs. */
+handle_t shell_console(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
  * until deadline at most. Nothing to do without a logd. */
 void     shell_flush_log(uint64_t deadline);

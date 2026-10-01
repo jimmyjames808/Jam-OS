@@ -1032,6 +1032,12 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it. M9's `update` is meant to call
   `kexec_load` with what it fetched.
+- **A stick whose files don't load** (a flash pulled half way, a damaged
+  copy): the kernel refuses them and keeps the stored copy armed, so
+  `reboot` starts that one, the last good build, after a short notice on
+  the screen ("the stick's kernel didn't load (...): restarting the one in
+  memory"); `kernel load` says so and changes nothing. Only with no
+  stored copy at all (`crashkernel=0`) does `reboot` use the firmware.
 - **`kernel load`** (the shell; initctl.kernel_load, so init, which holds
   `kexec_load`'s right, does the work): `/esp`'s kernel and boot image
   read and made the stored copy now, and noted as what the stored copy
