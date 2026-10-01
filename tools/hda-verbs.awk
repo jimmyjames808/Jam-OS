@@ -9,6 +9,10 @@
 #           headphone bits clear (0x707), an amp SET with the mute bit
 #           (0x300, bit 7), EAPD off (0x70c, bit 1 clear)
 #   conv    the converter's stream format (0x200) or stream tag (0x706)
+#   jack    the jacks' verbs (drivers/hda/jack.c): unsolicited response
+#           enable (0x708) and the pin sense trigger (0x709); neither can
+#           make sound, but they are counted apart so a test can say which
+#           nodes got them
 #   open    a SET that lets sound out: an amp SET without the mute bit,
 #           pin control with the output or headphone bit, EAPD on
 #   bad     anything else (the allow-list should make this impossible)
@@ -51,6 +55,8 @@ function hex(s,   i, c, v) {
         c = int(p / 2) % 2 == 0 ? "silent" : "open"
     else if (v == 512 || v == 1798)                             # 0x200, 0x706
         c = "conv"
+    else if (v == 1800 || v == 1801)                            # 0x708, 0x709
+        c = "jack"
     else
         c = "bad"
     # the state the SETs leave
@@ -82,7 +88,7 @@ function hex(s,   i, c, v) {
     printf "%s nid %d verb %#x payload %#x\n", c, nid, v, p
 }
 END {
-    printf "total get %d silent %d conv %d open %d bad %d\n",
-        n["get"], n["silent"], n["conv"], n["open"], n["bad"]
+    printf "total get %d silent %d conv %d open %d bad %d jack %d\n",
+        n["get"], n["silent"], n["conv"], n["open"], n["bad"], n["jack"]
     printf "state untagged %d released %d left %d\n", untagged, released, nopen
 }

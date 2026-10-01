@@ -532,6 +532,20 @@ static bool check(const struct fixture *f, struct codec *c, struct out *o)
     return false;
 }
 
+status_t hda_fixture(const char *name, struct codec *out)
+{
+    for (unsigned i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        const struct fixture *f = &fixtures[i];
+        if (!same(f->name, name))
+            continue;
+        status_t st = hda_codec_from_dump(f->text, f->len, out);
+        if (st == OK && f->change)
+            f->change(out);
+        return st;
+    }
+    return ERR_NOT_FOUND;
+}
+
 bool hda_path_selftest(struct codec *scratch, struct out *o)
 {
     unsigned n = sizeof(fixtures) / sizeof(fixtures[0]), passed = 0;
