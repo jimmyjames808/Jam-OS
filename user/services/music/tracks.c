@@ -204,14 +204,15 @@ int64_t tracks_next(struct tracks *t, bool *new_pass)
     }
 }
 
-/* A leading track number and its separator: "1. ", "01 - ", "7-", "3 . ".
+/* A leading track number and its separator: "1. ", "01 - ", "7-", "3 . ",
+ * also marked with '~' or '#' ("~9. Runaway": the owner's library has one).
  * A number followed by a space alone ("99 Problems") is part of the title. */
 static const char *skip_number(const char *s)
 {
-    const char *p = s;
+    const char *p = s + (*s == '~' || *s == '#'), *digits = p;
     while (*p >= '0' && *p <= '9')
         p++;
-    if (p == s || p - s > 3)
+    if (p == digits || p - digits > 3)
         return s;
     while (*p == ' ')
         p++;
