@@ -136,7 +136,14 @@ head, tail = seg[12000:28800], seg[-24000:-480]
 near("segment 2: 1000 Hz at the start / 440 Hz", amp(head, 1000) / amp(head, 440), 0.50119, 0.05)
 if amp(tail, 1000) > 0.01 * AMP:
     fails.append("segment 2: 1000 Hz still there at the end (%.1f)" % amp(tail, 1000))
-low = [k for k in range(480, len(seg) - 960, 480) if amp(seg[k:k + 480], 440) < 0.9 * AMP]
+# The two programs' starts race to a closed output: the one that comes
+# second is mixed a lead (4 periods, ~170 ms) behind. So the gap check
+# starts where 440 Hz is first at full level, which must be within 250 ms.
+first = next((k for k in range(480, 12000, 480) if amp(seg[k:k + 480], 440) >= 0.9 * AMP), None)
+if first is None:
+    fails.append("segment 2: 440 Hz not at full level within 250 ms of the start")
+    first = 480
+low = [k for k in range(first, len(seg) - 960, 480) if amp(seg[k:k + 480], 440) < 0.9 * AMP]
 if low:
     fails.append("segment 2: 440 Hz below 90 %% in %d window(s) of 10 ms, the first at %d ms"
                  % (len(low), low[0] * 1000 // RATE))
