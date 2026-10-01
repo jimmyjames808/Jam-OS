@@ -31,11 +31,19 @@ int key_decode(const struct input_key_event *ev)
     case 0x4b: return KEY_PGUP;
     case 0x4e: return KEY_PGDN;
     case 0x4a: return KEY_HOME;
+    case 0x4d: return KEY_END;
+    case 0x2a: return KEY_BACKSPACE;
+    case 0x2b: return KEY_TAB;
+    case 0x4c: return KEY_DELETE;
     case 0x57: return '+';   /* keypad */
     case 0x56: return '-';
     }
     if (cp == '\n' || cp == '\r')
         return KEY_ENTER;
+    if (cp == 8 || cp == 0x7f)   /* a serial terminal's Backspace */
+        return KEY_BACKSPACE;
+    if (cp == '\t')
+        return KEY_TAB;
     if (cp >= 0x20 && cp < 0x7f)
         return (int)cp;
     return KEY_NONE;

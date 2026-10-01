@@ -128,6 +128,12 @@ void blit_pm(const struct surf *dst, int x, int y, const struct surf *src);
 void disc_aa(const struct surf *s, float cx, float cy, float r, uint32_t rgb, uint32_t a);
 void line_aa(const struct surf *s, float x0, float y0, float x1, float y1, float width,
              uint32_t rgb, uint32_t a);
+/* The same: a circle's outline `width` pixels wide centred on radius r;
+ * and a convex polygon of n (3..16) corners, xy[2 * i], xy[2 * i + 1],
+ * either winding. */
+void ring_aa(const struct surf *s, float cx, float cy, float r, float width, uint32_t rgb,
+             uint32_t a);
+void poly_aa(const struct surf *s, const float *xy, int n, uint32_t rgb, uint32_t a);
 
 /* A rectangle on a surface: what a layout hands out and a click is tested
  * against. */
@@ -155,10 +161,13 @@ static inline void disc(const struct surf *s, int cx, int cy, int rad, uint32_t 
 }
 
 /* Text: the 8x16 font, proportional (each glyph as wide as its ink, digits
- * all the same width), scale 1..8 (smoothed above 1). text() returns the x
- * after the text; text_shadow draws a soft dark shadow first (for text over
- * pictures). A '\a' in the text switches to the colour `alt` until the next
- * '\a' (textf takes it as a normal character). */
+ * all the same width), scale 1..8 (smoothed above 1). The text is UTF-8:
+ * ASCII and U+00A0 .. U+017F (Latin-1 and Latin Extended-A) have glyphs;
+ * any other code point, and each malformed byte, draws one box. text()
+ * returns the x after the text; text_shadow draws a soft dark shadow first
+ * (for text over pictures). A '\a' in the text switches to the colour `alt`
+ * until the next '\a' (textf takes it as a normal character). text_clip
+ * draws at most max_w pixels of it, cut short with "..." if it is wider. */
 int  text(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str);
 int  text_shadow(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str);
 int  text2(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t alt, bool shadow,
@@ -166,6 +175,12 @@ int  text2(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t a
 int  textf(const struct surf *s, int x, int y, int scale, uint32_t c, const char *fmt, ...)
          __attribute__((format(printf, 6, 7)));
 int  text_width(int scale, const char *str);
+int  text_clip(const struct surf *s, int x, int y, int scale, uint32_t c, int max_w,
+               const char *str);
+/* The code point at *s, moving *s past it (past one byte, with UTF8_BAD,
+ * when it is malformed; 0 at the end, not moving). */
+#define UTF8_BAD 0xfffdu
+uint32_t utf8_next(const char **s);
 #define TEXT_H(scale) (16 * (scale))
 /* The text centred in r, both ways. */
 void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str);
@@ -184,6 +199,7 @@ enum {
     KEY_UP = 0x100, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_PGUP, KEY_PGDN, KEY_HOME,
     KEY_QUIT,   /* Esc or Ctrl+C */
     KEY_MOUSE,  /* not a key: the mouse did something (gfx_mouse says what) */
+    KEY_BACKSPACE, KEY_TAB, KEY_END, KEY_DELETE,
 };
 /* The next key press (DOWN or REPEAT) before deadline: a KEY_* code or a
  * character; KEY_NONE on timeout (deadline 0: don't wait). KEY_QUIT too if

@@ -84,3 +84,23 @@ char *strchr(const char *s, int c)
             return NULL;
     }
 }
+
+char *strrchr(const char *s, int c)
+{
+    const char *last = NULL;
+    for (;; s++) {
+        if (*s == (char)c)
+            last = s;
+        if (!*s)
+            return (char *)last;
+    }
+}
+
+char *strstr(const char *hay, const char *needle)
+{
+    size_t n = strlen(needle);
+    for (; *hay; hay++)
+        if (!strncmp(hay, needle, n))
+            return (char *)hay;
+    return n ? NULL : (char *)hay;
+}

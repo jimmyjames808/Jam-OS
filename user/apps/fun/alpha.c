@@ -191,3 +191,68 @@ void line_aa(const struct surf *s, float x0, float y0, float x1, float y1, float
             plot(s, x, y, rgb,
                  cover(half - seg_dist((float)x + 0.5f, (float)y + 0.5f, x0, y0, x1, y1), a));
 }
+
+void ring_aa(const struct surf *s, float cx, float cy, float r, float width, uint32_t rgb,
+             uint32_t a)
+{
+    a = a > 255 ? 255 : a;
+    float half = width / 2.0f, out = r + half + 1.0f;
+    int x0 = (int)floord(cx - out), x1 = (int)(cx + out);
+    int y0 = (int)floord(cy - out), y1 = (int)(cy + out);
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 >= s->w ? s->w - 1 : x1;
+    y1 = y1 >= s->h ? s->h - 1 : y1;
+    for (int y = y0; y <= y1; y++) {
+        float dy = (float)y + 0.5f - cy;
+        for (int x = x0; x <= x1; x++) {
+            float dx = (float)x + 0.5f - cx, d = sqrtf_(dx * dx + dy * dy) - r;
+            plot(s, x, y, rgb, cover(half - (d < 0 ? -d : d), a));
+        }
+    }
+}
+
+#define POLY_MAX 16
+
+void poly_aa(const struct surf *s, const float *xy, int n, uint32_t rgb, uint32_t a)
+{
+    if (n < 3 || n > POLY_MAX)
+        return;
+    a = a > 255 ? 255 : a;
+    /* Each edge's inward unit normal (nx, ny) and offset: inside where
+     * nx * x + ny * y - off > 0. The winding decides which side is in. */
+    float area = 0.0f, nx[POLY_MAX], ny[POLY_MAX], off[POLY_MAX];
+    float lx = xy[0], hx = xy[0], ly = xy[1], hy = xy[1];
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        area += xy[2 * i] * xy[2 * j + 1] - xy[2 * j] * xy[2 * i + 1];
+        lx = xy[2 * i] < lx ? xy[2 * i] : lx;
+        hx = xy[2 * i] > hx ? xy[2 * i] : hx;
+        ly = xy[2 * i + 1] < ly ? xy[2 * i + 1] : ly;
+        hy = xy[2 * i + 1] > hy ? xy[2 * i + 1] : hy;
+    }
+    float sign = area > 0.0f ? 1.0f : -1.0f;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        float ex = xy[2 * j] - xy[2 * i], ey = xy[2 * j + 1] - xy[2 * i + 1];
+        float len = sqrtf_(ex * ex + ey * ey);
+        len = len > 0.0f ? len : 1.0f;
+        nx[i] = -ey / len * sign;
+        ny[i] = ex / len * sign;
+        off[i] = nx[i] * xy[2 * i] + ny[i] * xy[2 * i + 1];
+    }
+    int x0 = (int)floord(lx - 1), x1 = (int)(hx + 1), y0 = (int)floord(ly - 1), y1 = (int)(hy + 1);
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 >= s->w ? s->w - 1 : x1;
+    y1 = y1 >= s->h ? s->h - 1 : y1;
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            float px = (float)x + 0.5f, py = (float)y + 0.5f, d = 1e9f;
+            for (int i = 0; i < n; i++) {
+                float e = nx[i] * px + ny[i] * py - off[i];
+                d = e < d ? e : d;
+            }
+            plot(s, x, y, rgb, cover(d, a));
+        }
+}

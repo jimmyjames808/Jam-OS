@@ -1,28 +1,97 @@
-/* libfun: proportional text from the 8x16 console font, and the FPS counter (fun.h). */
+/* libfun: proportional text from the 8x16 console font, and the FPS counter (fun.h).
+ *
+ * Text is UTF-8. The glyphs: ASCII from the console's font (<font.h>),
+ * U+00A0 .. U+017F (Latin-1 and Latin Extended-A: "Fünf", "JAŸ-Z", "¥")
+ * from the same font's table here (font_latin.c, `make font`), and one
+ * fallback box for any other code point and for each malformed byte, so a
+ * name in another script shows one box per character, never one per byte.
+ * Control characters draw as '?'. */
 #include <font.h>
-#include "fun.h"
+#include "internal.h"
 
 /* ---- text ---------------------------------------------------------------------------- */
 
+#define LATIN_FIRST 0xa0u
+#define LATIN_N     224u                 /* U+00A0 .. U+017F */
+#define G_LATIN     128u                 /* glyph number of U+00A0 */
+#define G_BOX       (G_LATIN + LATIN_N)  /* the fallback */
+#define NGLYPHS     (G_BOX + 1)
+
 /* Per glyph: the first ink column and the advance at scale 1; and the
  * glyph at twice the size smoothed by scale2x (EPX), for scales >= 2. */
-static struct { int8_t left; uint8_t adv; } gm[128];
-static uint16_t big_glyph[128][32];
+static struct { int8_t left; uint8_t adv; } gm[NGLYPHS];
+static uint16_t big_glyph[NGLYPHS][32];
 static bool text_ready;
 
-static inline int gbit(uint8_t c, int x, int y)
+/* The fallback: a box the height of a capital. */
+static const uint8_t box_rows[16] = { 0, 0, 0, 0x7c, 0x44, 0x44, 0x44, 0x44, 0x44,
+                                      0x44, 0x44, 0x7c, 0, 0, 0, 0 };
+
+static const uint8_t *rows_of(unsigned g)
+{
+    if (g < G_LATIN)
+        return font_8x16[g];
+    if (g < G_BOX)
+        return font_latin[g - G_LATIN];
+    return box_rows;
+}
+
+uint32_t utf8_next(const char **s)
+{
+    const uint8_t *p = (const uint8_t *)*s;
+    uint32_t c = p[0];
+    if (c < 0x80) {
+        *s += c != 0;
+        return c;
+    }
+    unsigned n = c >= 0xf0 && c < 0xf5 ? 3 : c >= 0xe0 ? 2 : c >= 0xc2 && c < 0xe0 ? 1 : 0;
+    if (c >= 0xf5)
+        n = 0;
+    uint32_t cp = c & (0x3f >> n);
+    for (unsigned i = 1; i <= n; i++) {
+        if ((p[i] & 0xc0) != 0x80) {
+            n = 0;   /* cut short: the lead byte alone is the bad one */
+            break;
+        }
+        cp = cp << 6 | (p[i] & 0x3f);
+    }
+    /* Overlong forms, surrogates and beyond U+10FFFF are malformed. */
+    if (!n || (n == 2 && (cp < 0x800 || (cp >= 0xd800 && cp < 0xe000))) ||
+        (n == 3 && (cp < 0x10000 || cp > 0x10ffff))) {
+        *s += 1;
+        return UTF8_BAD;
+    }
+    *s += n + 1;
+    return cp;
+}
+
+/* The glyph for code point cp. */
+static unsigned glyph_of(uint32_t cp)
+{
+    if (cp >= 32 && cp < 127)
+        return cp;
+    if (cp == 0xa0)
+        return ' ';
+    if (cp >= LATIN_FIRST && cp < LATIN_FIRST + LATIN_N)
+        return G_LATIN + cp - LATIN_FIRST;
+    if (cp < 0xa0)   /* C0 and C1 controls, DEL */
+        return '?';
+    return G_BOX;
+}
+
+static inline int gbit(unsigned g, int x, int y)
 {
     if (x < 0 || x > 7 || y < 0 || y > 15)
         return 0;
-    return font_8x16[c][y] >> (7 - x) & 1;
+    return rows_of(g)[y] >> (7 - x) & 1;
 }
 
-/* The columns glyph c's ink spans: *lo..*hi (8, -1 for a blank glyph). */
-static void ink_span(int c, int *lo, int *hi)
+/* The columns glyph g's ink spans: *lo..*hi (8, -1 for a blank glyph). */
+static void ink_span(unsigned g, int *lo, int *hi)
 {
     for (int y = 0; y < 16; y++)
         for (int x = 0; x < 8; x++)
-            if (gbit((uint8_t)c, x, y)) {
+            if (gbit(g, x, y)) {
                 *lo = x < *lo ? x : *lo;
                 *hi = x > *hi ? x : *hi;
             }
@@ -30,13 +99,13 @@ static void ink_span(int c, int *lo, int *hi)
 
 /* scale2x: each pixel P becomes 4, a corner taking a neighbour's value
  * where two neighbours agree (rounds the diagonals). Into big_glyph[c]. */
-static void scale2x(int c)
+static void scale2x(unsigned c)
 {
     for (int y = 0; y < 16; y++)
         for (int x = 0; x < 8; x++) {
-            int p = gbit((uint8_t)c, x, y), a = gbit((uint8_t)c, x, y - 1);
-            int b = gbit((uint8_t)c, x + 1, y), l = gbit((uint8_t)c, x - 1, y);
-            int d = gbit((uint8_t)c, x, y + 1);
+            int p = gbit(c, x, y), a = gbit(c, x, y - 1);
+            int b = gbit(c, x + 1, y), l = gbit(c, x - 1, y);
+            int d = gbit(c, x, y + 1);
             int e0 = p, e1 = p, e2 = p, e3 = p;
             if (l == a && l != d && a != b)
                 e0 = a;
@@ -54,7 +123,9 @@ static void scale2x(int c)
 static void text_init(void)
 {
     int digit_w = 0;
-    for (int c = 32; c < 127; c++) {
+    for (unsigned c = 32; c < NGLYPHS; c++) {
+        if (c == 127)
+            c = G_LATIN;
         int lo = 8, hi = -1;
         ink_span(c, &lo, &hi);
         if (hi < 0) {   /* space */
@@ -85,7 +156,7 @@ static void glyph_row1(uint32_t *row, int x, int w, uint8_t bits, uint32_t c)
             row[x + i] = c;
 }
 
-static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, uint8_t ch)
+static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, unsigned ch)
 {
     int left = gm[ch].left, w = (gm[ch].adv - 1) * scale;
     for (int j = 0; j < 16 * scale; j++) {
@@ -94,8 +165,8 @@ static void glyph(const struct surf *s, int x, int y, int scale, uint32_t c, uin
             continue;
         uint32_t *row = s->px + (uint64_t)yy * s->stride;
         if (scale == 1) {
-            uint8_t bits = (uint8_t)(left >= 0 ? font_8x16[ch][j] << left
-                                               : font_8x16[ch][j] >> -left);
+            uint8_t bits = (uint8_t)(left >= 0 ? rows_of(ch)[j] << left
+                                               : rows_of(ch)[j] >> -left);
             glyph_row1(row, x, s->w, bits, c);
             continue;
         }
@@ -118,25 +189,25 @@ static int draw_text(const struct surf *s, int x, int y, int scale, uint32_t c, 
     if (shadow) {   /* a darkened halo one step down-right */
         int o = scale > 1 ? scale / 2 + 1 : 1;
         int xx = x;
-        for (const char *p = str; *p; p++) {
-            uint8_t ch = (uint8_t)*p;
-            if (ch == '\a' || ch < 32 || ch > 126)
+        for (const char *p = str; *p;) {
+            uint32_t cp = utf8_next(&p);
+            if (cp == '\a')
                 continue;
-            glyph(s, xx + o, y + o, scale, 0x000000, ch);
-            xx += gm[ch].adv * scale;
+            unsigned g = glyph_of(cp);
+            glyph(s, xx + o, y + o, scale, 0x000000, g);
+            xx += gm[g].adv * scale;
         }
     }
     bool use_alt = false;
-    for (; *str; str++) {
-        uint8_t ch = (uint8_t)*str;
-        if (ch == '\a') {
+    for (const char *p = str; *p;) {
+        uint32_t cp = utf8_next(&p);
+        if (cp == '\a') {
             use_alt = !use_alt;
             continue;
         }
-        if (ch < 32 || ch > 126)
-            ch = '?';
-        glyph(s, x, y, scale, use_alt ? alt : c, ch);
-        x += gm[ch].adv * scale;
+        unsigned g = glyph_of(cp);
+        glyph(s, x, y, scale, use_alt ? alt : c, g);
+        x += gm[g].adv * scale;
     }
     return x;
 }
@@ -172,15 +243,35 @@ int text_width(int scale, const char *str)
     if (!text_ready)
         text_init();
     int w = 0;
-    for (; *str; str++) {
-        uint8_t ch = (uint8_t)*str;
-        if (ch == '\a')
-            continue;
-        if (ch < 32 || ch > 126)
-            ch = '?';
-        w += gm[ch].adv;
+    for (const char *p = str; *p;) {
+        uint32_t cp = utf8_next(&p);
+        if (cp != '\a')
+            w += gm[glyph_of(cp)].adv;
     }
     return w * (scale < 1 ? 1 : scale);
+}
+
+int text_clip(const struct surf *s, int x, int y, int scale, uint32_t c, int max_w,
+              const char *str)
+{
+    if (text_width(scale, str) <= max_w)
+        return text(s, x, y, scale, c, str);
+    /* As many whole characters as fit before "...". */
+    int dots = text_width(scale, "..."), w = 0;
+    const char *p = str, *end = str;
+    while (*p) {
+        uint32_t cp = utf8_next(&p);
+        int cw = cp == '\a' ? 0 : gm[glyph_of(cp)].adv * (scale < 1 ? 1 : scale);
+        if (w + cw + dots > max_w)
+            break;
+        w += cw;
+        end = p;
+    }
+    char buf[512];
+    size_t n = (size_t)(end - str) < sizeof(buf) - 4 ? (size_t)(end - str) : sizeof(buf) - 4;
+    memcpy(buf, str, n);
+    memcpy(buf + n, "...", 4);
+    return text(s, x, y, scale, c, buf);
 }
 
 void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str)
