@@ -15,7 +15,10 @@
  * usbtest, hdatest and mixtest commands: test suites that kill and rebind
  * drivers get the query and control channels, and the mixer's control
  * channel; mixtest, which kills the mixer, also init's control channel as
- * SR_USER + 3, the shell's own number for it). Ctrl+C reaches the shell even while the
+ * SR_USER + 3, the shell's own number for it), and nothing of the music
+ * player's unless it is jamjar, the player's window, which gets a
+ * duplicate of the shell's client end as SR_USER + 4 (the `jamjar`
+ * command; `run jamjar` doesn't). Ctrl+C reaches the shell even while the
  * program holds the keys (the console sees to that) and kills it. When it
  * ends its job is killed: anything it started goes with it, so its console
  * channel never outlives it in the foreground. */
@@ -115,6 +118,7 @@ static bool find_program(const char *argv0, char *path, size_t cap)
 
 #define RUN_TEST    1u   /* devmgr's channels and the mixer's control channel */
 #define RUN_INITCTL 2u   /* init's control channel too */
+#define RUN_MUSIC   4u   /* the music player's channel (jamjar) */
 #define RUN_HANDLES 8    /* the most program_handles gives */
 
 /* A duplicate of h as `role` into x[*nx], if there is an h. */
@@ -137,6 +141,8 @@ static unsigned program_handles(struct spawn_handle *x, unsigned how, handle_t *
         give(x, &nx, SR_AUDIO_CTL, sh_audio_ctl());
     if (how & RUN_INITCTL)
         give(x, &nx, SR_USER + 3, sh_initctl());
+    if (how & RUN_MUSIC)
+        give(x, &nx, SR_USER + 4, sh_music());
     if (test && sh_devmgr() && jam_handle_duplicate(sh_devmgr(), RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
     if (test && sh_devmgr_ctl() && jam_handle_duplicate(sh_devmgr_ctl(), RIGHT_SAME, &h) == OK)
@@ -265,6 +271,11 @@ static int run_program(int argc, char **argv, unsigned how)
 int sh_run_program(int argc, char **argv)
 {
     return run_program(argc, argv, 0);
+}
+
+int sh_run_program_music(int argc, char **argv)
+{
+    return run_program(argc, argv, RUN_MUSIC);
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which

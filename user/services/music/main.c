@@ -14,7 +14,10 @@
  * about a mixer period while the stream's ring is full) and then answers
  * whatever is queued on the channel, so `stop` and `next` take effect
  * within about 50 ms; while it reads a big folder, each step reads a few
- * entries of it. Stopped, it waits on the channel. Each track's
+ * entries of it. Stopped or paused, it waits on the channel (and for the
+ * sleep timer's end, if it is set). A view (jamjar) asks `levels` many
+ * times a second: it is answered from what the player keeps, plus one
+ * position call to the mixer. Each track's
  * start is one line in the log ("[music] music: track 3: Artist -
  * Title (3:45)"), which the console shows above the prompt. */
 #include <idl/music.h>
@@ -29,17 +32,37 @@ static void put(uint8_t *out, size_t size, const char *s)
     memset(out + n, 0, size - n);
 }
 
+/* A path from the wire: NUL-terminated within its 256 bytes, and absolute
+ * (or empty, if `empty` may be). */
+static bool path_arg(const uint8_t in[256], char out[FS_PATH_MAX], bool empty)
+{
+    if (strnlen((const char *)in, FS_PATH_MAX) == FS_PATH_MAX)
+        return false;
+    memcpy(out, in, FS_PATH_MAX);
+    return out[0] == '/' || (empty && !out[0]);
+}
+
 static status_t on_start(void *ctx, const uint8_t folder[256], uint32_t *found, uint8_t *reading)
 {
     struct player *p = ctx;
     char path[FS_PATH_MAX];
-    if (strnlen((const char *)folder, FS_PATH_MAX) == FS_PATH_MAX)
-        return ERR_INVALID_ARGS;
-    memcpy(path, folder, FS_PATH_MAX);
-    if (path[0] != '/')
+    if (!path_arg(folder, path, false))
         return ERR_INVALID_ARGS;
     bool scanning = false;
     status_t st = player_start(p, path, found, &scanning);
+    *reading = scanning;
+    return st;
+}
+
+static status_t on_play(void *ctx, const uint8_t folder[256], const uint8_t first[256],
+                        uint8_t order, uint32_t *found, uint8_t *reading)
+{
+    struct player *p = ctx;
+    char path[FS_PATH_MAX], file[FS_PATH_MAX];
+    if (!path_arg(folder, path, false) || !path_arg(first, file, true) || order > 1)
+        return ERR_INVALID_ARGS;
+    bool scanning = false;
+    status_t st = player_play(p, path, file, order, found, &scanning);
     *reading = scanning;
     return st;
 }
@@ -48,6 +71,7 @@ static status_t on_stop(void *ctx, uint8_t *was_playing)
 {
     struct player *p = ctx;
     *was_playing = p->playing || p->scanning;
+    player_sleep(p, 0);
     if (*was_playing) {
         player_stop(p, NULL);
         printf("music: stopped\n");
@@ -60,13 +84,74 @@ static status_t on_next(void *ctx)
     return player_next(ctx);
 }
 
+static status_t on_prev(void *ctx)
+{
+    return player_prev(ctx);
+}
+
+static status_t on_pause(void *ctx, uint8_t on, uint8_t *paused)
+{
+    struct player *p = ctx;
+    if (on > 1)
+        return ERR_INVALID_ARGS;
+    status_t st = player_pause(p, on);
+    *paused = p->paused;
+    return st;
+}
+
+static status_t on_sleep(void *ctx, uint32_t seconds, uint32_t *out)
+{
+    if (seconds > SLEEP_MAX_S)
+        return ERR_OUT_OF_RANGE;
+    player_sleep(ctx, seconds);
+    *out = seconds;
+    return OK;
+}
+
+/* playing as `status` and `levels` say it. */
+static uint8_t state(const struct player *p)
+{
+    return p->scanning ? 2 : p->paused ? 3 : p->playing;
+}
+
+static uint32_t sleep_left(const struct player *p)
+{
+    uint64_t t = now();
+    return p->sleep_at > t ? (uint32_t)((p->sleep_at - t + NS_PER_S - 1) / NS_PER_S) : 0;
+}
+
+static status_t on_levels(void *ctx, uint8_t *playing, uint32_t *serial, uint64_t *elapsed_ms,
+                          uint64_t *length_ms, int32_t *volume, uint32_t *sleep_s,
+                          uint8_t bands[16], uint8_t *level)
+{
+    struct player *p = ctx;
+    *playing = state(p);
+    *volume = p->volume;
+    *sleep_s = sleep_left(p);
+    *serial = 0;
+    *length_ms = 0;
+    *level = 0;
+    memset(bands, 0, SPEC_BANDS);
+    const struct mark *m = player_heard(p, elapsed_ms);
+    if (!m)
+        return OK;
+    *serial = m->serial;
+    *length_ms = m->length_ms;
+    struct spec_entry e;
+    if (!p->paused && p->spec && spec_at(p->spec, (int64_t)p->heard_at, &e)) {
+        memcpy(bands, e.band, SPEC_BANDS);
+        *level = e.level;
+    }
+    return OK;
+}
+
 static status_t on_status(void *ctx, uint8_t *playing, uint32_t *tracks, uint32_t *bad,
                           uint32_t *started, uint64_t *elapsed_ms, uint64_t *length_ms,
                           int32_t *volume, uint8_t folder[256], uint8_t path[256],
                           uint8_t title[128], uint8_t note[128])
 {
     struct player *p = ctx;
-    *playing = p->scanning ? 2 : p->playing;
+    *playing = state(p);
     *tracks = p->t.count;
     *bad = p->t.nbad;
     *started = p->started;
@@ -95,7 +180,8 @@ static status_t on_volume(void *ctx, int32_t cb, int32_t *out)
 
 static const struct music_ops ops = {
     .start = on_start, .stop = on_stop, .next = on_next, .status = on_status,
-    .set_volume = on_volume,
+    .set_volume = on_volume, .prev = on_prev, .play = on_play, .levels = on_levels,
+    .pause = on_pause, .sleep = on_sleep,
 };
 
 int main(int argc, char **argv)
@@ -105,6 +191,9 @@ int main(int argc, char **argv)
     struct player *p = &P;
     p->ctl = startup_handle(SR_USER + 0);
     p->cur = -1;
+    /* The bands are a nicety: without the memory `levels` answers zeros. */
+    if ((p->spec = malloc(sizeof(*p->spec))) != NULL)
+        spec_init(p->spec);
     if (!p->ctl) {
         printf("music: started without its channel (SR_USER + 0): nothing to serve\n");
         return 1;
@@ -119,16 +208,21 @@ int main(int argc, char **argv)
             player_stop(p, NULL);
             return 1;
         }
+        player_sleep_tick(p);
         if (p->scanning) {
             player_scan(p);
             continue;
         }
-        if (p->playing) {
+        if (p->playing && !p->paused) {
             player_step(p);
             continue;
         }
+        /* Stopped or paused: the channel, or the sleep timer's end. */
         signals_t seen = 0;
-        st = jam_object_wait_one(p->ctl, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen);
+        uint64_t until = p->sleep_at ? p->sleep_at : DEADLINE_NEVER;
+        st = jam_object_wait_one(p->ctl, SIG_READABLE | SIG_PEER_CLOSED, until, &seen);
+        if (st == ERR_TIMED_OUT)
+            continue;
         if (st != OK) {
             printf("music: waiting on its channel: %s: ending\n", status_str(st));
             return 1;

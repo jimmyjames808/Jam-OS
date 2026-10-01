@@ -578,7 +578,9 @@ Not built yet; these rules bind every future path that can transmit.
   heap), and an allocation takes the lowest block that fits, so a
   long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
   apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
-  `alpha.c`), keys and thread pool.
+  `alpha.c`), text (UTF-8: the console font's ASCII and Latin-1 and
+  Latin Extended-A glyphs, one box for any other character), keys and
+  thread pool.
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
   starts init from bootfs under a root job, waits for it and reports its
   exit code and whether the root job ended with nothing charged.
@@ -795,9 +797,10 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start, stop, next, status,
-set_volume) once and keeps both ends, as the mixer's; the shell holds a
-client end (SR_USER + 4) for `music start [folder] | stop | next |
-status | vol`. It walks the folder for `.mp3` and `.wav` files, shuffles
+set_volume, prev, play, levels, pause, sleep) once and keeps both ends, as
+the mixer's; the shell holds a client end (SR_USER + 4) for `music start
+[folder] | stop | next | prev | pause | status | vol | sleep`, and hands a
+duplicate to bin/jamjar, the player's window, as the same role. It walks the folder for `.mp3` and `.wav` files, shuffles
 them (every track once per pass, never the same twice in a row) and
 plays them back to back through one mixer stream, reading each with
 `<play_src.h>` and switching the resampler between files with
@@ -806,7 +809,11 @@ plays them back to back through one mixer stream, reading each with
 between chunks of about 20 ms. A file it can't read, three in a row (the
 stick pulled), a pass that plays nothing, or the mixer stream failing
 three times in a row stops it with a line in the log; a refused file is
-skipped for good.
+skipped for good. It keeps the last 64 tracks for `prev`, a sleep timer
+(the last 30 s fade out), and for `levels` the loudness of what is heard
+in sixteen frequency bands: an FFT of each ~11 ms of what it writes, kept
+by stream frame because it writes up to 1.37 s ahead
+(`user/services/music/spectrum.c`).
 
 ## Storage
 

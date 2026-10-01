@@ -614,6 +614,8 @@ static const struct {
     { "audio_resample", t_audio_resample },
     { "wav_parse", t_wav_parse },
     { "music_scan", t_music_scan },
+    { "music_order", t_music_order },
+    { "music_spectrum", t_music_spectrum },
     { "mp3_header", t_mp3_header },
     { "mp3_sniff", t_mp3_sniff },
     { "mp3_decode", t_mp3_decode },

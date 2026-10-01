@@ -1,0 +1,58 @@
+# jamjar at the PC's 2560x1440 (tools/jamjar-test.sh with JAMJAR_HD=1):
+# the same library and player as jamjar.txt, by keys only, for the
+# screenshots at the PC's size (UI scale 2): the library, playing, the
+# search, the help, the roulette and the full jar; then q, and the music
+# plays on.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 music: ready
+send jamjar trace
+wait 30 jamjar: 2560x1440, reading /data/music
+wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+sleep 1
+shot jamjar-hd-idle
+# Kanye West (the fourth artist) and his album, in order this time
+type \e[B
+type \e[B
+type \e[B
+type \t
+type s
+type \r
+wait jamjar: play My Beautiful Dark Twisted Fantasy (in order)
+wait 30 jamjar: hearing /data/music/OnTheSpot/Kanye_West/
+wait 20 jamjar: levels: loudest band
+sleep 3
+shot jamjar-hd-playing
+type /
+type jay
+sleep 1
+shot jamjar-hd-search
+type \e
+type \e
+type ?
+sleep 1
+shot jamjar-hd-help
+type ?
+type r
+sleep 2.5
+shot jamjar-hd-roulette
+wait 20 jamjar: play
+wait 30 jamjar: hearing
+sleep 2
+type f
+sleep 3
+shot jamjar-hd-full
+type f
+sleep 1
+type q
+wait 30 run: bin/jamjar exited with code 0
+wait jam>
+send music status | grep -c "music: playing"; echo jj-""1 $?
+wait jj-1 0
+wait jam>
+send music stop
+wait music: stopped
+wait jam>
+send reboot -f
+wait reboot: resetting

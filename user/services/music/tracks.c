@@ -10,7 +10,8 @@
  *
  * The shuffle: Fisher-Yates over the list with a seed from the clock;
  * every track is played once before the next shuffle, and a new shuffle
- * never starts with the track just played (with two or more tracks).
+ * never starts with the track just played (with two or more tracks). Or,
+ * for `play` with order 1, the paths in byte order, over and over.
  *
  * The title: from the path, as music libraries lay files out
  * (Artist/Album/N. Title.mp3): the file's name without its ending and
@@ -199,6 +200,10 @@ static uint32_t below(uint64_t *s, uint32_t n)
 
 static void shuffle(struct tracks *t)
 {
+    if (t->ordered) {   /* in order: the same order again */
+        t->pos = 0;
+        return;
+    }
     for (uint32_t i = t->count; i > 1; i--) {
         uint32_t j = below(&t->rng, i), x = t->order[i - 1];
         t->order[i - 1] = t->order[j];
@@ -217,7 +222,52 @@ void tracks_shuffle(struct tracks *t, uint64_t seed)
 {
     t->rng = seed;
     t->last = -1;
+    t->ordered = false;
     shuffle(t);
+}
+
+/* Shell sort of order[] by path: no recursion, no extra memory, and
+ * 4096 paths take well under a millisecond. */
+void tracks_sort(struct tracks *t)
+{
+    static const uint32_t gaps[] = { 1750, 701, 301, 132, 57, 23, 10, 4, 1 };
+    for (uint32_t i = 0; i < t->count; i++)
+        t->order[i] = i;
+    for (unsigned g = 0; g < sizeof(gaps) / sizeof(gaps[0]); g++)
+        for (uint32_t i = gaps[g]; i < t->count; i++) {
+            uint32_t x = t->order[i], j = i;
+            for (; j >= gaps[g] && strcmp(t->path[t->order[j - gaps[g]]], t->path[x]) > 0;
+                 j -= gaps[g])
+                t->order[j] = t->order[j - gaps[g]];
+            t->order[j] = x;
+        }
+    t->ordered = true;
+    t->pos = 0;
+    t->last = -1;
+}
+
+void tracks_first(struct tracks *t, uint32_t i)
+{
+    for (uint32_t k = 0; k < t->count; k++) {
+        if (t->order[k] != i)
+            continue;
+        if (t->ordered) {
+            t->pos = k;
+        } else {
+            t->order[k] = t->order[0];
+            t->order[0] = i;
+            t->pos = 0;
+        }
+        return;
+    }
+}
+
+int64_t tracks_find(const struct tracks *t, const char *path)
+{
+    for (uint32_t i = 0; i < t->count; i++)
+        if (!strcmp(t->path[i], path))
+            return i;
+    return -1;
 }
 
 int64_t tracks_next(struct tracks *t, bool *new_pass)

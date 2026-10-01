@@ -559,6 +559,9 @@ the background: the shell stays free for other commands meanwhile.
 | `music next` | skips the track heard now |
 | `music status` | `music: playing Artist - Title  1:23 / 3:45`, the file's path, the folder with its track count (and how many were unplayable), tracks started, the volume; stopped: why, if it stopped by itself |
 | `music vol <dB>` | its stream's volume (0 dB the most); kept across tracks, stops and starts; `music vol` alone shows it |
+| `music prev` | back: the track before the one heard (or the same from its start, after 3 s) |
+| `music pause` | pause, or go on (the mixer stream stops where it is) |
+| `music sleep <min>` | stop after that many minutes, the last 30 s fading out; `off` turns it off |
 | `music` | usage (exit 2) |
 
 **The shuffle**: Fisher-Yates over the list, seeded from the clock (ns

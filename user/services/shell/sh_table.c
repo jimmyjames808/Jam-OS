@@ -62,13 +62,21 @@ static const struct sh_cmd cmds[] = {
       "the mixer's volumes: alone, the master and every stream playing (id, volume,\n"
       "  state, underruns, name); vol 3 -6: stream 3 at -6 dB; vol master -10: all of\n"
       "  them. 0 dB is the most, -96 dB is silence. hda gain is the codec's level below"),
-    C(music, C_SYSTEM, "music start [folder] | stop | next | status | vol <dB>",
+    C(music, C_SYSTEM,
+      "music start [folder] | stop | next | prev | pause | status | vol <dB> | sleep <min>",
       "the background music player: plays every .mp3 and .wav under a folder\n"
       "  (default /data/music, any depth) in shuffle, forever, while the shell goes on.\n"
       "  start again: the new folder instead. stop: stops it (Ctrl+C doesn't). next:\n"
-      "  skip the track playing. status: the track (Artist - Title, from its path),\n"
-      "  how far in, the folder, how many tracks. vol -10: its volume (0 dB the most).\n"
+      "  skip the track playing; prev: back one (or to its start after 3 s); pause:\n"
+      "  pause or go on. status: the track (Artist - Title, from its path), how far\n"
+      "  in, the folder, how many tracks. vol -10: its volume (0 dB the most). sleep\n"
+      "  30: stop in 30 minutes, fading out (sleep off). jamjar: the same in a window.\n"
       "  Each track's start is a line in the log. e.g. music start /data/music/OnTheSpot"),
+    C(jamjar, C_SYSTEM, "jamjar [root=<folder>]",
+      "the music player's window (bin/jamjar): the library (artists, albums, tracks)\n"
+      "  from /usb0/music or /data/music, search, play, pause, next, back, volume, a\n"
+      "  sleep timer, jam roulette; keys and the mouse, ? for the keys. q quits it and\n"
+      "  the music plays on (it drives the same player as `music`)"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),

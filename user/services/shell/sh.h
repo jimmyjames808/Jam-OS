@@ -157,6 +157,9 @@ int sh_run_program(int argc, char **argv);
 int sh_run_test_program(int argc, char **argv);
 /* The same, with init's control channel as SR_USER + 3 too (mixtest). */
 int sh_run_test_program_initctl(int argc, char **argv);
+/* A plain program with the music player's channel as SR_USER + 4 too (the
+ * shell's own number for it): bin/jamjar, the player's window. */
+int sh_run_program_music(int argc, char **argv);
 
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 
@@ -280,7 +283,7 @@ const char *sh_why(status_t st);
 /* information */
 SH_CMD(uname); SH_CMD(version); SH_CMD(uptime); SH_CMD(date); SH_CMD(lscpu); SH_CMD(free);
 SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD(log);
-SH_CMD(sysmon);
+SH_CMD(sysmon); SH_CMD(jamjar);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
 SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);

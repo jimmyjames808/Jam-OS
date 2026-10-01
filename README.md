@@ -43,7 +43,10 @@ a real desktop PC, which is where every milestone is tested.
   `play /data/song.mp3` plays an MP3 (CBR or VBR, ID3 tags skipped, decoded
   by dr_mp3) copied straight from the Mac; a mixer service plays several
   programs at once, `vol` sets their volumes; `music start` plays a folder
-  of MP3s and WAVs in shuffle in the background while the shell goes on.
+  of MP3s and WAVs in shuffle in the background while the shell goes on,
+  and `jamjar` is the same player in a window: the library by artist and
+  album, search, the controls with keys and the mouse, a sleep timer, and
+  jam at the bottom of the screen that moves with the music.
 - A boot splash: the logo animation with its sound while Jam OS starts
   (a key skips it; the `verbose` boot entry shows the text log instead).
 
@@ -116,7 +119,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3) |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player) |
-| `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, splash (the boot splash), and `fun/` (the apps library) |
+| `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
