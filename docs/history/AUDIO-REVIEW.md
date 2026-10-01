@@ -67,9 +67,17 @@ The failure seen here was QEMU's (item 1). To be sure of it the test now
 runs QEMU with `-trace hda_audio_overrun`; in 12 more runs here no
 overrun happened and all passed. See the outcome.
 
+### Found later (the PC)
+
+| # | Sev | Where | What |
+|---|---|---|---|
+| 17 | High | `drivers/hda/verbs.c:250-338` (hda_output_open) | The owner hears a thump at the boot splash's first sound, never with `run splash` later. That stream is the first after the driver reset the controller: the amps were unmuted, then the pin's output and headphone amp (`707 1b c0`) and EAPD went on within microseconds of the first samples, on an output stage never powered since the reset (its DC-blocking capacitor charging). The splash's file starts with ~100 ms of near-silence, so it is not the content. Item 3 is the same cause at every stream, quieter once the stage has been on. |
+
 ## Design questions
 
-**A. The path-open pop (item 3, known item 1).** Recommendation: keep
+**A. The path-open pop (item 3, known item 1).** Done for the PC's path
+by item 17's fix (the stage on for good, the amps as the mute); what
+follows was the recommendation. Recommendation: keep
 the pin's output, its headphone amp and EAPD on from the first stream
 until the driver stops (or for a hold time, say 2 s, after the last
 stream), and keep "silent when nothing plays" with the amps alone: the
@@ -126,13 +134,14 @@ shell's command.
 
 | # | Outcome |
 |---|---|
-| 1 | |
-| 2 | |
-| 3 | Design question A. |
+| 1 | Fixed in 785d90d (the test): QEMU runs with `-trace hda_audio_overrun`; with drops logged, segment 2's dip windows above half the amplitude (at most two per drop) are let through, with a line. Test: the checker fails the failing run's WAV with 0 drops and passes it with 1; a passing run's WAV with 2048 frames zeroed in segment 2 still fails with 1 drop. mixer-test then passed 5 runs in a row. |
+| 2 | Fixed in 51cbd63: the walk is stepped (tracks_scan_begin/step); `start` reads for up to 0.5 s and answers, a bigger folder is read on between the player's calls (`reading` in music.idl, `music status` shows the count) and plays when read. Test: utest music_scan (stepped and whole walks agree, the rules, a stop half way); music-test passes. The asynchronous answer is not run in QEMU (the commit says why). |
+| 3 | Fixed with 17 for paths whose amps can mute (the PC's): the stage no longer switches per stream. Design question A is answered by that commit; the hold-time option is moot. |
 | 4 | Design question E. |
 | 5 | Design question B. |
-| 6 | |
-| 7 | |
-| 8 | Not fixed: Low (reported). |
+| 6 | Fixed in fd0aa9a (a spinlock; the VMO calls outside it). No test (the commit says why). |
+| 7 | Fixed in 6feaf13 (fbcon_unquiet once init has returned). No test (the commit says why). |
+| 8 | Not fixed: Low. A deadline (start the shell anyway after, say, 30 s past the splash's start) is a few lines in init's loop. |
 | 9 | Design question C. |
 | 10-16 | Not fixed: Low (reported). |
+| 17 | Fixed in 4295173: on a path whose amps can mute, the output stage (pin output, headphone amp, EAPD) goes on once right after the muted set-up and stays on until the driver exits; streams unmute and mute the amps only, the first unmute at least 400 ms after the stage went on (OUTPUT_SETTLE_NS). Amp-less paths (QEMU mixer=off) keep switching the pin. Test: beep-test.sh (stage on before the first stream tag, never off, the first unmute found it on 401 ms: the beep came 230 ms after the driver's start and waited); hda-test (8 fixtures, one new without amps), hda-stream-test and mixer-test pass. On the PC: the boot splash's first hit with no thump. |
