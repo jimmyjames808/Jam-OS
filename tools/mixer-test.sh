@@ -33,6 +33,14 @@
 #   - the codec's verbs (tools/hda-verbs.awk): only allow-listed ones, the
 #     path opened only while the converter has the stream's tag and
 #     nothing left open at the end: muted whenever nothing plays.
+# QEMU's hda-codec drops its whole buffer (2048 frames at 16-bit stereo)
+# when its audio backend falls behind on a busy host: the WAV then skips
+# 2048 frames with no silence, a phase jump the guest never made (seen as
+# one 10 ms window at about 75 % in segment 2). QEMU runs with the trace
+# event hda_audio_overrun, so such a drop is known; segment 2's gap check
+# then lets through windows still above half the amplitude, as many as
+# twice the drops, and says so. A real gap is a mixer period (42.7 ms) of
+# silence or more, so at least three windows near zero: still a failure.
 # QEMU_SMP passes through. Usage: tools/mixer-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -40,7 +48,7 @@ mkdir -p "$out"
 wav="$out/mixer.wav"
 rm -f "$wav"
 devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16 \
--device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0,mixer=off,debug=3"
+-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0,mixer=off,debug=3 -trace hda_audio_overrun"
 ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/mixer.txt \
@@ -75,9 +83,13 @@ state=$(echo "$trace" | tail -1)
     { echo "mixer: the path was open outside a stream ($state)"; ok=0; }
 echo "mixer: codec: $(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); $state"
 
-python3 - "$wav" <<'PY' || ok=0
+drops=$(grep -ac "hda_audio_overrun" "$out/mixer.out" || true)
+[ "$drops" = 0 ] || echo "mixer: QEMU dropped its codec buffer $drops time(s) (the host was late)"
+
+python3 - "$wav" "$drops" <<'PY' || ok=0
 import math, struct, sys
 data = open(sys.argv[1], "rb").read()
+drops = int(sys.argv[2])
 i = data.find(b"data")
 if data[:4] != b"RIFF" or i < 0:
     sys.exit("mixer: %s is not a WAV file" % sys.argv[1])
@@ -144,6 +156,13 @@ if first is None:
     fails.append("segment 2: 440 Hz not at full level within 250 ms of the start")
     first = 480
 low = [k for k in range(first, len(seg) - 960, 480) if amp(seg[k:k + 480], 440) < 0.9 * AMP]
+# QEMU's own drops (see the top): a window straddling one is still above
+# half the amplitude; silence is not.
+if low and drops and len(low) <= 2 * drops and \
+        all(amp(seg[k:k + 480], 440) >= 0.5 * AMP for k in low):
+    print("mixer: segment 2: %d window(s) of 10 ms at a QEMU buffer drop (the first at %d ms), "
+          "no silence: not counted" % (len(low), low[0] * 1000 // RATE))
+    low = []
 if low:
     fails.append("segment 2: 440 Hz below 90 %% in %d window(s) of 10 ms, the first at %d ms"
                  % (len(low), low[0] * 1000 // RATE))
