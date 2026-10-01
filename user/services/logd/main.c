@@ -27,6 +27,10 @@
  * away. It says what happened once per change, not once per try: its own
  * lines go into the log it is saving.
  *
+ * Once its file is open it gives the kernel the file's name (klog_name),
+ * so a crash kernel can save this boot's log next to it as
+ * <name>-crash.txt. `logd crash` is that crash kernel's save (crash.c).
+ *
  * logd.h has the two startup handles that replace the namespace and the
  * kernel log for tests. */
 #include <idl/logctl.h>
@@ -172,6 +176,9 @@ static status_t try_open(void)
     if (st != OK)
         return st;
     printf("logd: writing %s\n", logfile_path());
+    /* The kernel keeps the name for a crash kernel (<name>-crash.txt). */
+    if (src.klog && jam_klog_name(src.h, logfile_name(), strlen(logfile_name())) != OK)
+        printf("logd: the kernel didn't take the log's name\n");
     up = true;
     said = OK;
     backoff = RETRY_FIRST;
@@ -261,8 +268,8 @@ static void lost_data(status_t st)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && !strcmp(argv[1], "crash"))
+        return logd_crash();
     handle_t fs = startup_handle(LOGD_SR_FS);
     store = fs ? store_fs(fs) : &store_ns;
     if (!open_source())

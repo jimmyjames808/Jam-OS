@@ -44,7 +44,13 @@
  *
  * The argument "nousb" (init passes it on for the safe mode boot entry)
  * leaves USB host controllers (class 0c03xx) without a driver: no USB at
- * all, the console's input is the serial port alone.
+ * all, the console's input is the serial port alone. "storage" (a crash
+ * kernel's boot, which only saves a log) binds the PCI drivers as always,
+ * so every controller is reset, but of the USB interfaces only mass
+ * storage: no hid.
+ *
+ * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
+ * control client leaving does, without waiting for the shell's copies.
  *
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
@@ -88,6 +94,8 @@ unsigned ndevs, problems;
 handle_t pci_res, port;
 static unsigned nbound, nfailed, nskipped;
 static bool nousb;
+bool storage_only;
+static bool shutdown_asked;   /* DEVMGR_SHUTDOWN: answered, then stop as if every client left */
 
 void say(bool report_it, const char *fmt, ...)
 {
@@ -392,6 +400,10 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
         r->c = nskipped;
         return;
     }
+    if (q->ordinal == DEVMGR_SHUTDOWN) {
+        shutdown_asked = true;   /* run() sees it once this reply is sent */
+        return;
+    }
     if (q->ordinal == DEVMGR_TEST_DRIVER) {
         r->status = test_driver();
         return;
@@ -615,6 +627,8 @@ static status_t run(handle_t chans[2], unsigned life)
     bool armed[2] = { false, false };
     for (;;) {
         status_t st = serve_channels(chans, armed, life);
+        if (shutdown_asked)
+            return ERR_PEER_CLOSED;   /* as if every client had gone */
         if (st != ERR_SHOULD_WAIT)
             return st;
         st = arm_channels(chans, armed);
@@ -686,8 +700,10 @@ static bool stop_all(void)
 
 int main(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++) {
         nousb |= !strcmp(argv[i], "nousb");
+        storage_only |= !strcmp(argv[i], "storage");
+    }
     /* chans[0]: control (SR_DEVMGR_CTL), chans[1]: queries (SR_DEVMGR).
      * devmgr runs until the control channel's clients are all gone (with
      * no control channel: the query channel's); a query channel whose

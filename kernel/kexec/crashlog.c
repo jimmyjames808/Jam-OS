@@ -26,6 +26,7 @@
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/report.h>
+#include <jam/serial.h>
 #include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/vmo.h>
@@ -149,6 +150,7 @@ struct vmo *crashlog_vmo(void)
 
 _Noreturn void crashlog_finish(void)
 {
+    serial_set_async(false);   /* COM1 written out, then synchronous: no interrupts from here */
     cli();   /* the last screen: nothing else runs on this, the only CPU */
     fbcon_set_colors(0xffffff, 0x8b0000);
     fbcon_clear();

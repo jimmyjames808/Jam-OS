@@ -1,4 +1,9 @@
-/* logd: this boot's log file, /data/logs/boot-NNNN.txt (NNNN from 0001).
+/* logd: this boot's log file, /data/logs/boot-NNNN.txt (NNNN from 0001),
+ * and a crash kernel's copy of a crashed boot's log, boot-NNNN-crash.txt.
+ *
+ * A number is taken when either file has it: a crash kernel that saves the
+ * log of a boot that had no file of its own (no /data then) takes the
+ * next free number for it, and the next boot must not take it again.
  *
  * The number is the first free one after the files already there, found
  * with a handful of stat calls instead of a walk through the directory
@@ -23,20 +28,28 @@ static char     path[64];            /* the file, once a number is chosen */
 static bool     is_open;
 static uint64_t offset;              /* where the next write goes: its end */
 
-static void name_of(char *out, size_t size, unsigned number)
+static char base[16];   /* the file's name without ".txt": "boot-0042" */
+
+static void name_of(char *out, size_t size, unsigned number, const char *kind)
 {
-    snprintf(out, size, "%s" LOG_DIR "/boot-%04u.txt", store->root, number);
+    snprintf(out, size, "%s" LOG_DIR "/boot-%04u%s.txt", store->root, number, kind);
 }
 
-/* Does file `number` exist? Anything but a clear yes or no is *st. */
+/* Does file `number` (or its crash log) exist? Anything but a clear yes
+ * or no is *st. */
 static bool taken(unsigned number, status_t *st)
 {
-    char name[64];
-    name_of(name, sizeof(name), number);
-    status_t s = store->stat(name);
-    if (s != OK && s != ERR_NOT_FOUND)
-        *st = s;
-    return s == OK;
+    static const char *const kinds[] = { "", "-crash" };
+    for (unsigned k = 0; k < 2; k++) {
+        char name[64];
+        name_of(name, sizeof(name), number, kinds[k]);
+        status_t s = store->stat(name);
+        if (s != OK && s != ERR_NOT_FOUND)
+            *st = s;
+        if (s != ERR_NOT_FOUND)
+            return s == OK;
+    }
+    return false;
 }
 
 /* The first free number (see the top of the file). */
@@ -65,14 +78,21 @@ static status_t next_number(unsigned *out)
     return OK;
 }
 
-status_t logfile_open(const struct store *s)
+/* /data/logs, made if it isn't there. */
+static status_t make_dir(void)
 {
     char dir[32];
-    uint64_t size = 0;
-    store = s;
     snprintf(dir, sizeof(dir), "%s" LOG_DIR, store->root);
     status_t st = store->mkdir(dir);
-    if (st != OK && st != ERR_ALREADY_EXISTS)
+    return st == ERR_ALREADY_EXISTS ? OK : st;
+}
+
+status_t logfile_open(const struct store *s)
+{
+    uint64_t size = 0;
+    store = s;
+    status_t st = make_dir();
+    if (st != OK)
         return st;
     st = ERR_NOT_FOUND;
     if (path[0])   /* the file of this boot, if it is still there */
@@ -82,7 +102,8 @@ status_t logfile_open(const struct store *s)
         st = next_number(&number);
         if (st != OK)
             return st;
-        name_of(path, sizeof(path), number);
+        name_of(path, sizeof(path), number, "");
+        snprintf(base, sizeof(base), "boot-%04u", number);
         st = store->open(path, FS_WRITE | FS_CREATE | FS_APPEND, &size);
     }
     if (st != OK)
@@ -115,4 +136,26 @@ void logfile_close(void)
 const char *logfile_path(void)
 {
     return path;
+}
+
+const char *logfile_name(void)
+{
+    return base;
+}
+
+status_t logfile_crash_path(const struct store *s, const char *name, char *out, size_t size)
+{
+    store = s;
+    status_t st = make_dir();
+    if (st != OK)
+        return st;
+    if (name[0]) {
+        snprintf(out, size, "%s" LOG_DIR "/%s-crash.txt", store->root, name);
+        return OK;
+    }
+    unsigned number;
+    st = next_number(&number);
+    if (st == OK)
+        name_of(out, size, number, "-crash");
+    return st;
 }

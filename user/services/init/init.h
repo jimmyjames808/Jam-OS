@@ -1,5 +1,6 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
- * keytest); shell.c is the shell mode, where init starts and supervises
+ * keytest); crash.c is a crash kernel's boot, which saves a log; reboot.c
+ * a reboot by kexec; shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the console, serialin, devmgr and the shell; splash.c
  * the boot splash that plays first in shell mode; mounts.c
  * keeps init's namespace in step with devmgr's mounts; ctl.c serves
@@ -25,6 +26,17 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * controllers alone (the safe mode boot entry); splash: the boot splash
  * plays first (splash.c). */
 bool init_shell(bool nousb, bool splash, const char *shell_arg);
+
+/* main.c: devmgr in a job of its own (RES_PCI from the root, a console
+ * client end if not 0 (consumed), an argument if not NULL), its first
+ * binding pass waited for and its mounts followed (mounts.c); and its stop
+ * (its channels closed, its exit waited for, its job checked). True if
+ * all went well. Not in shell mode (shell.c supervises its own). */
+bool init_start_devmgr(handle_t console, const char *arg);
+bool init_stop_devmgr(void);
+
+/* crash.c: a crash kernel's boot (argv[1] "crash"): the exit code. */
+int  init_crash(void);
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 
@@ -83,6 +95,17 @@ handle_t shell_devmgr(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
  * until deadline at most. Nothing to do without a logd. */
 void     shell_flush_log(uint64_t deadline);
+/* For a kexec reboot (reboot.c): devmgr stops every driver in order and
+ * exits (DEVMGR_SHUTDOWN), waited for until deadline; if it doesn't, its
+ * job is killed. It is not started again. OK, or what went wrong. */
+status_t shell_stop_devmgr(uint64_t deadline);
+
+/* ---- reboot.c -------------------------------------------------------------------- */
+
+/* Reboot by kexec into the kernel and boot image on /esp. Returns only if
+ * that failed (said in the log); the caller resets through the firmware. */
+status_t init_reboot_kexec(void);
+
 /* Kill the service init runs under this name ("console", ...): its whole
  * job; init's loop then starts it again. *koid: its process's id.
  * ERR_NOT_FOUND: not a service of init's, or not running. */

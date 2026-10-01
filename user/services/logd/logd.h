@@ -51,5 +51,16 @@ status_t logfile_open(const struct store *s);
 status_t logfile_write(const void *data, uint32_t n);
 status_t logfile_sync(void);
 void     logfile_close(void);
-/* Its path, for messages ("" before the first open). */
+/* Its path, for messages ("" before the first open), and its name without
+ * the directory and ".txt" ("boot-0042"), which logd gives the kernel
+ * (klog_name) for a crash kernel to name its copy after. */
 const char *logfile_path(void);
+const char *logfile_name(void);
+/* Where a crash kernel saves a crashed boot's log: <name>-crash.txt for a
+ * boot that named its log (name, e.g. "boot-0042"), else the next free
+ * number's boot-NNNN-crash.txt. Makes /data/logs if needed. */
+status_t logfile_crash_path(const struct store *s, const char *name, char *out, size_t size);
+
+/* crash.c: `logd crash`, in a crash kernel's boot: save the crashed
+ * kernel's log (SR_CRASHLOG) and say where. The exit code. */
+int logd_crash(void);
