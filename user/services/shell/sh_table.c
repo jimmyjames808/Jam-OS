@@ -40,9 +40,16 @@ static const struct sh_cmd cmds[] = {
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(hda, C_SYSTEM, "hda",
+    C(hda, C_SYSTEM, "hda [gain [dB]]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
-      "  (the lines it logged at boot; pipe it: hda | grep pin)"),
+      "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
+      "  headphones and the gain it plays at. hda gain: the gain; hda gain -20: set it\n"
+      "  (rounded to the amp's step, at most 0 dB; the driver starts at -30 dB). The\n"
+      "  path is unmuted only while a stream plays (beep)"),
+    C(beep, C_SYSTEM, "beep [hz] [ms]",
+      "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
+      "  at a quarter of full scale with 5 ms fades, through drv/hda at `hda gain`.\n"
+      "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
@@ -78,6 +85,9 @@ static const struct sh_cmd cmds[] = {
     C(stress, C_TESTS, "stress <seconds>", "stress test (1..600)"),
     C(utest, C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),
     C(usbtest, C_TESTS, "usbtest", "the USB checks (bin/usbtest) and their result line"),
+    C(hdatest, C_TESTS, "hdatest",
+      "the HD Audio output stream checks (bin/hdatest) and their result line; it kills\n"
+      "  and restarts the hda driver once"),
     C(demo, C_TESTS, "demo [seconds]",
       "the visual demo: fractals on every CPU (default 76 s; any key stops it)"),
     C(crash, C_TESTS, "crash [name [yes]]",

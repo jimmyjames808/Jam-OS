@@ -1,16 +1,24 @@
 /* hda: the Intel High Definition Audio driver's own pieces (drv/hda).
  *
- * Today the driver is a read-only probe: it resets the controller, finds
- * the codecs on the link and prints each codec's widget graph, then
- * serves abi/idl/hda.idl (the dump again, on request) until devmgr closes
- * its channel. It makes no sound and sends the codecs only GET verbs
- * (hda_get refuses anything else), so nothing it does changes routing,
- * gains, pin controls, EAPD or power states.
+ * The driver resets the controller, finds the codecs on the link, prints
+ * each codec's widget graph, picks the path from a DAC to the front-panel
+ * headphone jack (path.c, checked at start against fixtures.c) and
+ * programs it with every amplifier on it muted and the pin's output off;
+ * then it serves abi/idl/hda.idl (the dump, the path, the gain and one
+ * output stream on the path's DAC) until devmgr closes its channel. The
+ * path is unmuted, at the gain, only while the stream runs. Every verb
+ * goes through verbs.c, which takes GET verbs and an allow-list of SET
+ * verbs (routing, amplifiers, pin control, EAPD, power, converter format
+ * and stream, unsolicited enable, pin sense) and refuses anything else,
+ * so the board's own settings (configuration defaults, GPIOs, vendor
+ * coefficients) are never written.
  *
  * Files: main.c (start, the protocol, exit), ctrl.c (the controller:
  * reset, the CORB/RIRB command rings, the immediate command interface,
- * stop), graph.c (reading a codec's nodes into struct codec), dump.c
- * (the readable lines).
+ * stop), verbs.c (the verbs the driver may send), graph.c (reading a
+ * codec's nodes into struct codec), dump.c (the readable lines), path.c
+ * (the path finder), fixtures.c (its test codecs), stream.c (the output
+ * stream), irq.c (the loop: the channels and the MSI).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
  * Audio Specification, revision 1.0a (2010): chapter 3 (controller
@@ -73,7 +81,7 @@
 /* ---- verbs (spec 7.3) ------------------------------------------------------
  * A command: bits 31:28 codec address, 26:20 node id, then either a
  * 12-bit verb and an 8-bit payload, or a 4-bit verb and a 16-bit payload.
- * Only the GET verbs are here: this driver never sends another kind. */
+ * The SET verbs listed here are the only ones verbs.c lets through. */
 
 #define V_GET_PARAM      0xf00   /* payload: parameter id */
 #define V_GET_CONN_SEL   0xf01
@@ -91,6 +99,30 @@
 
 #define AMP_GET_OUT      (1u << 15)
 #define AMP_GET_LEFT     (1u << 13)
+
+#define V_SET_CONN_SEL   0x701   /* payload: connection list index */
+#define V_SET_POWER      0x705   /* payload: D0-D3 */
+#define V_SET_STREAM     0x706   /* 7:4 stream, 3:0 channel */
+#define V_SET_PIN_CTL    0x707   /* PINCTL_* | vref */
+#define V_SET_UNSOL      0x708   /* bit 7 enable, 5:0 tag */
+#define V_SET_PIN_SENSE  0x709   /* starts a presence/impedance measurement; bit 0 right */
+#define V_SET_EAPD       0x70c   /* bit 1 EAPD, bit 0 BTL, bit 2 L/R swap */
+#define V4_SET_FORMAT    0x2     /* 4-bit verb: the converter's stream format */
+#define V4_SET_AMP       0x3     /* 4-bit verb: AMP_SET_* | index << 8 | mute | gain */
+
+#define AMP_SET_OUT      (1u << 15)
+#define AMP_SET_IN       (1u << 14)
+#define AMP_SET_LEFT     (1u << 13)
+#define AMP_SET_RIGHT    (1u << 12)
+#define AMP_SET_INDEX(i) ((uint32_t)(i) << 8)   /* 11:8 which input amp */
+#define AMP_MUTE         (1u << 7)              /* in SET and GET values: 6:0 the gain step */
+
+/* Pin Widget Control (spec 7.3, Pin Widget Control). */
+#define PINCTL_HP        (1u << 7)   /* the headphone amp */
+#define PINCTL_OUT       (1u << 6)
+#define PINCTL_IN        (1u << 5)
+
+#define PS_D0            0x0         /* power states: set in 3:0, actual in 7:4 */
 
 /* Parameters (spec 7.3, Get Parameter). */
 #define P_VENDOR         0x00
@@ -123,6 +155,13 @@
 #define WCAP_POWER       (1u << 10)
 #define WCAP_CHANS(c)    (((((c) >> 13) & 7u) << 1 | ((c) & 1u)) + 1)
 
+/* Amplifier Capabilities (spec 7.3, parameters): gain steps 0..STEPS of
+ * STEP_MDB thousandths of a dB each, 0 dB at step OFFSET; bit 31 mute. */
+#define AMPCAP_OFFSET(c)   ((c) & 0x7fu)
+#define AMPCAP_STEPS(c)    (((c) >> 8) & 0x7fu)
+#define AMPCAP_STEP_MDB(c) (((((c) >> 16) & 0x7fu) + 1) * 250)
+#define AMPCAP_MUTE        (1u << 31)
+
 enum wtype {
     W_OUT = 0, W_IN = 1, W_MIXER = 2, W_SELECTOR = 3, W_PIN = 4, W_POWER = 5,
     W_KNOB = 6, W_BEEP = 7, W_VENDOR = 0xf,
@@ -141,8 +180,21 @@ enum wtype {
 #define PINCAP_EAPD      (1u << 16)
 #define PINCAP_DP        (1u << 24)
 
-/* Configuration default bit 8: the jack has no presence detection. */
+/* Configuration Default (spec 7.3, Configuration Default): 31:30 port
+ * connectivity, 29:24 location (5:4 gross, 3:0 side), 23:20 default
+ * device, 7:4 association, 3:0 sequence; bit 8: no presence detection. */
+#define CFG_CONN(c)      ((c) >> 30)
+#define CFG_LOCATION(c)  (((c) >> 24) & 0x3fu)
+#define CFG_DEVICE(c)    (((c) >> 20) & 0xfu)
+#define CFG_ASSOC(c)     (((c) >> 4) & 0xfu)
+#define CFG_SEQ(c)       ((c) & 0xfu)
 #define CFG_NO_PRESENCE  (1u << 8)
+#define CONN_JACK        0           /* CFG_CONN */
+#define CONN_NONE        1
+#define LOC_EXT_FRONT    0x02        /* CFG_LOCATION: external, front */
+#define DEV_LINE_OUT     0x0         /* CFG_DEVICE */
+#define DEV_SPEAKER      0x1
+#define DEV_HP_OUT       0x2
 
 /* ---- the controller ----------------------------------------------------------- */
 
@@ -176,18 +228,33 @@ struct hda {
  * command rings (the immediate interface if they don't answer). The steps
  * log what went wrong; ERR_* then. */
 status_t hda_ctrl_start(struct hda *h, handle_t bar);
+/* Send one command word `cmd` (spec 7.3) to codec `cad` and wait for its
+ * response in *out. ERR_TIMED_OUT (counted in h->timeouts) if it does not
+ * come in HDA_CMD_TIMEOUT. The raw send, unchecked: only verbs.c calls
+ * it, and everything else goes through verbs.c's checked calls. */
+status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out);
+/* Stop the rings, put the controller back in reset, unpin the ring page.
+ * Safe to call more than once and after a failed start. */
+void     hda_ctrl_stop(struct hda *h);
+
+/* ---- verbs (verbs.c) ---------------------------------------------------------- */
+
 /* One GET verb (12-bit `verb` with an 8-bit payload, or 4-bit `verb` with
  * a 16-bit payload) to node `nid` of codec `cad`; *out: the response.
- * ERR_INVALID_ARGS for anything but a GET verb (this driver sets
- * nothing), ERR_TIMED_OUT if the codec does not answer in
- * HDA_CMD_TIMEOUT. */
+ * ERR_INVALID_ARGS for anything but a GET verb, ERR_TIMED_OUT if the
+ * codec does not answer in HDA_CMD_TIMEOUT. */
 status_t hda_get(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload,
                  uint32_t *out);
 /* GET_PARAMETER: hda_get(V_GET_PARAM, param). */
 status_t hda_param(struct hda *h, unsigned cad, unsigned nid, uint32_t param, uint32_t *out);
-/* Stop the rings, put the controller back in reset, unpin the ring page.
- * Safe to call more than once and after a failed start. */
-void     hda_ctrl_stop(struct hda *h);
+/* One SET verb from the allow-list (the V_SET_* and V4_SET_* above), its
+ * payload checked against the bits that verb defines. ERR_NOT_SUPPORTED
+ * for a verb not on the list (logged: a driver bug), ERR_INVALID_ARGS for
+ * a payload with bits the verb does not define, ERR_TIMED_OUT as hda_get. */
+status_t hda_set(struct hda *h, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload);
+/* SET_POWER_STATE D0 to node `nid`, then GET_POWER_STATE until the actual
+ * state reads D0 (bounded: POWER_WAIT, logged). */
+status_t hda_power_up(struct hda *h, unsigned cad, unsigned nid);
 
 /* ---- a codec's graph (graph.c) --------------------------------------------- */
 
@@ -247,6 +314,11 @@ struct codec {
  * does not answer at all (a widget that fails is counted in its
  * `errors` and the walk goes on). */
 status_t hda_read_codec(struct hda *h, unsigned cad, struct codec *c);
+/* Read widget w (w->nid) of codec c again, from scratch, as
+ * hda_read_codec does: what is set on it now. */
+void     hda_read_widget(struct hda *h, const struct codec *c, struct widget *w);
+/* The widget with node id nid, or NULL if c has none (or did not keep it). */
+const struct widget *hda_widget(const struct codec *c, unsigned nid);
 
 /* ---- the dump (dump.c) ---------------------------------------------------------
  * Lines go to the log (and, for hda.dump, into a text buffer). */
@@ -263,3 +335,212 @@ void out_line(struct out *o, const char *fmt, ...) __attribute__((format(printf,
 void hda_dump_ctrl(struct out *o, const struct hda *h, const char *where);
 /* One codec: its header lines, then a line per widget (pins get two). */
 void hda_dump_codec(struct out *o, const struct codec *c);
+
+/* ---- the path to the headphones (path.c, pure: struct codec in, struct path out) ---- */
+
+#define PATH_MAX_NODES 6   /* the pin and at most 5 widgets behind it */
+#define PATH_MAX_ALSO  8
+
+/* How the pin was chosen, best first (path.c's header has the rules). */
+enum path_rule {
+    PATH_NONE = 0, PATH_FRONT_HP, PATH_HP, PATH_LINE_OUT, PATH_SPEAKER,
+};
+
+struct path {
+    uint8_t cad;                     /* the codec */
+    uint8_t rule;                    /* enum path_rule; PATH_NONE: no path */
+    uint8_t n;                       /* nodes on the path */
+    uint8_t nid[PATH_MAX_NODES];     /* nid[0] the DAC ... nid[n - 1] the pin */
+    uint8_t in[PATH_MAX_NODES];      /* i > 0: nid[i - 1]'s index in nid[i]'s connection list */
+    bool    dac_shared;              /* another pin with its output on reaches the DAC */
+    uint8_t nalso;                   /* other output-capable pins whose selected input is */
+    uint8_t also[PATH_MAX_ALSO];     /* a node of the path: they would carry the same sound */
+};
+
+/* The path from an analog DAC to the best output pin of codec c.
+ * ERR_NOT_FOUND (*out still written, rule PATH_NONE) if no output pin
+ * reaches one. */
+status_t hda_path_find(const struct codec *c, struct path *out);
+
+/* ---- the path in words (dump.c) ----------------------------------------------------- */
+
+/* The rule's words: "front headphone jack", "line-out", ... */
+const char *hda_path_rule_name(unsigned rule);
+/* "dac 02 -> mixer 0c -> pin 1b" into buf (always NUL-terminated). */
+void hda_path_str(const struct codec *c, const struct path *p, char *buf, size_t size);
+/* What is set on each node of the path, from c's widgets (read back after
+ * programming): "afg D0; dac 02 D0 out m0; mixer 0c in m0 m0; pin 1b D0
+ * ctl 20 (output off) out m0 eapd off". */
+void hda_path_state(const struct codec *c, const struct path *p, char *buf, size_t size);
+/* Centibels as dB with one decimal: "-30.0", "0.0", "-0.8". */
+void hda_db_str(char *buf, size_t size, int32_t cb);
+/* The path's line: "codec 0 path: dac 02 -> mixer 0c -> pin 1b (front
+ * headphone jack); ...", or why there is none. */
+void hda_dump_path(struct out *o, const struct codec *c, const struct path *p);
+
+/* ---- programming it (verbs.c) --------------------------------------------------- */
+
+/* Power up the audio function group and the path's widgets, turn the
+ * pin's output off, mute every amplifier on the path (every input of a
+ * mixer on it too) and select the path's inputs. No sound can come out
+ * afterwards; hda_output_open unmutes it while a stream runs. Stops at the
+ * first verb that fails. */
+status_t hda_path_program_muted(struct hda *h, const struct codec *c, const struct path *p);
+/* Read the path's widgets and the AFG's power state back into c. */
+void     hda_path_read_back(struct hda *h, struct codec *c, const struct path *p);
+
+/* ---- the output: the path opened while a stream plays (verbs.c) -------------------
+ * main.c fills it once the path is set up muted; stream.c opens it just
+ * before RUN and closes it right after RUN clears; main.c's set_gain
+ * changes the gain. All on the driver's one thread. */
+
+#define GAIN_DEFAULT_CB  (-300)   /* -30 dB: quiet in headphones (docs/A1-PLAN.md, stage 3) */
+
+struct output {
+    const struct codec *c;     /* the path's codec as read back after set-up; NULL: no path */
+    const struct path  *p;
+    uint8_t  vol;              /* the node whose output amp is the volume; 0: none has steps */
+    uint32_t vol_amp;          /* its amplifier capabilities */
+    uint8_t  step;             /* the volume amp's step to play at */
+    bool     open;             /* unmuted now (hda_output_open succeeded, no close since) */
+    bool     failed;           /* the last open failed (and was muted again) */
+};
+
+/* o for path p of codec c (both NULL: no path), at GAIN_DEFAULT_CB.
+ * Sends nothing. */
+void     hda_output_init(struct output *o, const struct codec *c, const struct path *p);
+/* The path opened, in the order of docs/A1-PLAN.md's steps 4-6: the
+ * path's inputs on its mixers and selectors unmuted (the others stay
+ * muted), every output amp on it unmuted (the volume amp at o->step, the
+ * rest at 0 dB), then the pin's output on (and its headphone amp, if it
+ * has one) and EAPD on (if the pin has it). A verb that fails: logged,
+ * the path closed again, its status returned. ERR_NOT_FOUND: no path. */
+status_t hda_output_open(struct hda *h, struct output *o);
+/* The reverse: EAPD off, the pin's output off, every amp on the path
+ * muted at gain step 0. Every verb is tried even if one fails (the first
+ * failure is returned). Does nothing if o is not open. */
+status_t hda_output_close(struct hda *h, struct output *o);
+/* The volume amp to the step nearest `cb` centibels, clamped to its range
+ * and to 0 dB; sent at once if o is open. ERR_NOT_FOUND: no path;
+ * ERR_NOT_SUPPORTED: no amp with steps. */
+status_t hda_output_set_gain(struct hda *h, struct output *o, int32_t cb);
+/* The gain now in centibels, and the range the volume amp allows (to 0
+ * dB). ERR_NOT_FOUND / ERR_NOT_SUPPORTED as hda_output_set_gain. */
+status_t hda_output_gain(const struct output *o, int32_t *cb, int32_t *min, int32_t *max);
+
+/* ---- fixtures (fixtures.c) --------------------------------------------------------- */
+
+/* A codec rebuilt from its dump lines (dump.c's format; other lines are
+ * skipped). ERR_INVALID_ARGS if a widget line does not parse. */
+status_t hda_codec_from_dump(const char *text, size_t len, struct codec *out);
+/* The path finder against every fixture (QEMU's codecs, the PC's): each
+ * must give its known path. Uses *scratch; logs a line per failure and
+ * one summary into o. true: all passed. */
+bool     hda_path_selftest(struct codec *scratch, struct out *o);
+/* Codec c's dump (read live) parsed back into *scratch must give the same
+ * path p the live graph gave: the parser and dump.c agree, so a fixture
+ * pasted from a log is the codec the driver saw. false: a line into o. */
+bool     hda_path_roundtrip(const struct codec *c, const struct path *p, struct codec *scratch,
+                            struct out *o);
+
+/* ---- the output stream (stream.c) and the driver's loop (irq.c) -------------------
+ * One output stream: the first output stream descriptor (index ISS, as
+ * GCAP counts them) feeding the DAC of the path main.c chose, stream tag 1, 48 kHz 16-bit stereo, from a 64 KiB
+ * DMA32 ring of 4 periods of 16 KiB. Its Buffer Descriptor List and the
+ * DMA position buffer share one more DMA32 page. Spec chapter 3 (stream
+ * descriptor registers, DPLBASE) and chapter 4 (stream setup). */
+
+#define SD_CTL0        0x00   /* 8: bit 0 SRST, 1 RUN, 2 IOCE, 3 FEIE, 4 DEIE */
+#define SD_CTL2        0x02   /* 8: bits 7:4 the stream tag (STRM) */
+#define SD_STS         0x03   /* 8 (RW1C): bit 2 BCIS, 3 FIFOE, 4 DESE, 5 FIFORDY */
+#define SD_LPIB        0x04   /* 32: link position in the cyclic buffer, bytes */
+#define SD_CBL         0x08   /* 32: cyclic buffer length, bytes */
+#define SD_LVI         0x0c   /* 16: last valid BDL index */
+#define SD_FIFOS       0x10   /* 16: FIFO size, bytes */
+#define SD_FMT         0x12   /* 16: stream format */
+#define SD_BDPL        0x18   /* BDL address */
+#define SD_BDPU        0x1c
+
+#define SDCTL_SRST     (1u << 0)
+#define SDCTL_IOCE     (1u << 2)   /* interrupt on completion of a buffer with IOC */
+#define SDCTL_FEIE     (1u << 3)   /* FIFO error interrupt */
+#define SDCTL_DEIE     (1u << 4)   /* descriptor error interrupt */
+#define SDSTS_BCIS     (1u << 2)   /* a buffer with IOC completed */
+#define SDSTS_FIFOE    (1u << 3)   /* FIFO under-run */
+#define SDSTS_DESE     (1u << 4)   /* descriptor error */
+#define INTCTL_GIE     (1u << 31)
+#define INTCTL_CIE     (1u << 30)
+#define INTSTS_CIS     (1u << 30)
+#define DPLBASE_ENABLE (1u << 0)
+#define PCI_TCSEL      0x44        /* Intel: bits 2:0 the traffic class of the controller's DMA */
+
+#define STREAM_TAG     1u
+#define STREAM_FORMAT  0x0011u     /* 48 kHz (base 48, x1, /1), 16-bit, 2 channels */
+#define STREAM_RATE    48000u
+#define FRAME_BYTES    4u
+#define RING_BYTES     (64u * 1024)
+#define PERIODS        4u
+#define PERIOD_BYTES   (RING_BYTES / PERIODS)
+#define PERIOD_NS      (PERIOD_BYTES / FRAME_BYTES * NS_PER_S / STREAM_RATE)
+#define STALL_PERIODS  4u          /* no progress this long while running: stalled */
+
+/* A contiguous DMA32 buffer, mapped and pinned. */
+struct dma_buf {
+    handle_t vmo;
+    uint8_t *map;              /* mapped read-write, or NULL */
+    uint64_t pin;              /* the pin's id, while `pinned` */
+    bool     pinned;
+    uint64_t addr;             /* the device address of its first byte */
+};
+
+struct stream {
+    unsigned sd;               /* the stream descriptor's index; HDA_MAX_STREAMS: none */
+    uint32_t sd_regs;          /* its registers: HDA_SD_BASE + sd * HDA_SD_STRIDE */
+    handle_t dev;              /* DR_PCIDEV, for TCSEL (HANDLE_INVALID: not set) */
+    bool     open;             /* a client has it */
+    bool     running;          /* RUN set */
+    unsigned cad, dac;         /* the output converter the stream feeds (the path's DAC) */
+    bool     has_dac;          /* there is one: main.c found and set up a path */
+    struct output *out;        /* the path, opened while the stream runs */
+    struct dma_buf ring;       /* the samples, shared with the client */
+    struct dma_buf page;       /* the BDL at 0, the DMA position buffer at POS_OFF */
+    /* the position: the byte offset read last, bytes played since the
+     * open, bytes zeroed behind the play position (the same after every
+     * update), and when `played` last grew */
+    uint32_t last_off;
+    uint64_t played, cleared;
+    uint64_t progress_ns;
+    uint32_t iocs;             /* buffer-completion interrupts taken */
+    uint32_t fifo_errors;      /* FIFOE/DESE seen */
+    uint32_t lpib_diff_max;    /* largest gap between the position buffer and LPIB, bytes */
+};
+
+/* stream.c. Pick the output stream descriptor (none if GCAP has no
+ * output streams) and take the DAC from out's path (none: every open
+ * fails ERR_NOT_FOUND); touches no register. */
+void     stream_init(struct hda *h, struct stream *s, handle_t dev, struct output *out);
+/* Open it (the checks and results of hda.idl's open_output): DMA
+ * buffers, stream reset and setup, the converter's format and stream
+ * tag, the stream's interrupt enabled. *ring: the client's handle. */
+status_t stream_open(struct hda *h, struct stream *s, handle_t *ring);
+status_t stream_start(struct hda *h, struct stream *s);
+status_t stream_stop(struct hda *h, struct stream *s);
+/* Read the position, count what played and zero the ring behind it. */
+void     stream_update(struct hda *h, struct stream *s);
+/* The stream's status bits, read and cleared (from the interrupt). */
+void     stream_status(struct hda *h, struct stream *s);
+/* Stop the DMA engine (RUN clear, waited for), reset the stream, point
+ * the converter at no stream, release the buffers. Safe when not open. */
+void     stream_close(struct hda *h, struct stream *s, const char *why);
+
+/* Wait (bounded, logged on a timeout) until (8-bit register reg & mask)
+ * == want. ERR_TIMED_OUT. */
+status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what);
+
+/* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream (on out's
+ * path) on the channels open_output hands out, and the controller's MSI,
+ * until devmgr closes DR_SERVE (OK) or a wait fails (its status); the
+ * stream is closed (and the path muted) on the way out. */
+struct hda_ops;
+status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
+                  void *ctx, struct output *out);

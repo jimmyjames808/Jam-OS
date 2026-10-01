@@ -1,12 +1,135 @@
 /* hda: the HD Audio controller's codecs and their widget graphs, as the
  * driver (drivers/hda) reads them now: the same lines it printed to the
- * log when it started (abi/idl/hda.idl). */
+ * log when it started (abi/idl/hda.idl). Then the path to the headphones
+ * the driver set up, what is set on each of its nodes (hda.info), and the
+ * gain it plays at. `hda gain [dB]` shows or sets the gain (hda.set_gain:
+ * the driver rounds to the amp's step and clamps to its range, never
+ * above 0 dB). */
 #include <devmgr.h>
 #include <idl/hda.h>
 #include "sh.h"
 
 #define DUMP_WAIT (10 * NS_PER_S)   /* a codec's dump is a few hundred verbs */
 #define DUMP_MAX  (64 * 1024)       /* the driver's dump buffer */
+
+/* hda.info's line: the path the driver set up, or why there is none. */
+static void print_path(handle_t ch)
+{
+    uint32_t codec, pin, dac, pcm, formats, amp, jack, count;
+    uint8_t nodes[8], text[240];
+    status_t st = hda_info_until(ch, now() + DUMP_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
+                                 &jack, &count, nodes, text);
+    if (st != OK) {
+        sh_say("hda: path: %s\n", status_str(st));
+        return;
+    }
+    text[sizeof(text) - 1] = 0;
+    sh_say("hda: path: %s\n", (const char *)text);
+}
+
+/* Centibels as "-30.0". */
+static const char *db(int32_t cb, char *buf, size_t size)
+{
+    uint32_t a = cb < 0 ? (uint32_t)-cb : (uint32_t)cb;
+    snprintf(buf, size, "%s%u.%u", cb < 0 ? "-" : "", a / 10, a % 10);
+    return buf;
+}
+
+/* "hda: gain -30.0 dB (step 47; -65.3 to 0.0 dB)", or why there is none. */
+static void say_gain(status_t st, int32_t gain, uint32_t step, int32_t min, int32_t max)
+{
+    char a[16], b[16], c[16];
+    if (st == ERR_NOT_FOUND)
+        sh_say("hda: gain: no path was set up\n");
+    else if (st == ERR_NOT_SUPPORTED)
+        sh_say("hda: gain: no amp on the path has gain steps (it plays at 0 dB)\n");
+    else if (st != OK)
+        sh_say("hda: gain: %s\n", status_str(st));
+    else
+        sh_say("hda: gain %s dB (step %u; %s to %s dB), heard only while a stream plays\n",
+               db(gain, a, sizeof(a)), step, db(min, b, sizeof(b)), db(max, c, sizeof(c)));
+}
+
+static void print_gain(handle_t ch)
+{
+    int32_t gain = 0, min = 0, max = 0;
+    uint32_t step = 0;
+    status_t st = hda_get_gain_until(ch, now() + DUMP_WAIT, &gain, &step, &min, &max);
+    say_gain(st, gain, step, min, max);
+}
+
+handle_t sh_hda(void)
+{
+    handle_t dm = sh_devmgr();
+    for (uint32_t n = 0; dm && n < 32; n++) {
+        struct devmgr_rep r;
+        handle_t ch;
+        uint32_t nh = 0;
+        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
+                                  now() + 5 * NS_PER_S);
+        if (st == ERR_NOT_FOUND)
+            break;
+        if (st != OK || nh != 1)
+            continue;
+        uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
+        uint8_t nodes[8], text[240];
+        st = hda_info_until(ch, now() + DUMP_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
+                            &jack, &count, nodes, text);
+        if (st == OK && pin)
+            return ch;
+        jam_handle_close(ch);
+    }
+    return HANDLE_INVALID;
+}
+
+/* "-20", "-20.5", "0": tenths of a dB into *cb (at most 1000.0 either way). */
+static bool parse_db(const char *s, int32_t *cb)
+{
+    bool neg = *s == '-';
+    if (*s == '-' || *s == '+')
+        s++;
+    int32_t v = 0;
+    bool digits = false;
+    for (; *s >= '0' && *s <= '9'; s++, digits = true)
+        if ((v = v * 10 + (*s - '0')) > 1000)
+            return false;
+    v *= 10;
+    if (*s == '.') {
+        s++;
+        if (*s >= '0' && *s <= '9') {
+            v += *s++ - '0';
+            digits = true;
+        }
+        while (*s >= '0' && *s <= '9')
+            s++;   /* hundredths and beyond: the amp's steps are coarser */
+    }
+    if (*s || !digits)
+        return false;
+    *cb = neg ? -v : v;
+    return true;
+}
+
+static int gain_cmd(int argc, char **argv)
+{
+    int32_t cb = 0;
+    if (argc > 3 || (argc == 3 && !parse_db(argv[2], &cb))) {
+        sh_tty("usage: hda gain [dB]   (e.g. hda gain -20; 0 dB is the most)\n");
+        return 2;
+    }
+    handle_t ch = sh_hda();
+    if (ch == HANDLE_INVALID) {
+        sh_say("hda: no HD Audio driver with a path to a jack\n");
+        return 1;
+    }
+    int32_t gain = 0, min = 0, max = 0;
+    uint32_t step = 0;
+    status_t st = argc == 3
+        ? hda_set_gain_until(ch, now() + DUMP_WAIT, cb, &gain, &step, &min, &max)
+        : hda_get_gain_until(ch, now() + DUMP_WAIT, &gain, &step, &min, &max);
+    jam_handle_close(ch);
+    say_gain(st, gain, step, min, max);
+    return st == OK ? 0 : 1;
+}
 
 /* Ask each running PCI driver in turn for hda.dump; others answer
  * ERR_NOT_SUPPORTED. Prints each dump; returns how many answered. */
@@ -24,7 +147,8 @@ static unsigned dump_each(handle_t dm)
         if (st != OK || nh != 1)
             continue;
         st = hda_dump_until(ch, now() + DUMP_WAIT, &text, &len, &codecs);
-        jam_handle_close(ch);
+        if (st != OK)
+            jam_handle_close(ch);
         if (st == ERR_NOT_SUPPORTED)
             continue;   /* another driver's service */
         found++;
@@ -39,14 +163,21 @@ static unsigned dump_each(handle_t dm)
             sh_say("hda: can't read the dump (%u bytes)\n", len);
         free(buf);
         jam_handle_close(text);
+        print_path(ch);
+        print_gain(ch);
+        jam_handle_close(ch);
     }
     return found;
 }
 
 SH_CMD(hda)
 {
-    (void)argc;
-    (void)argv;
+    if (argc >= 2 && !strcmp(argv[1], "gain"))
+        return gain_cmd(argc, argv);
+    if (argc != 1) {
+        sh_tty("usage: hda [gain [dB]]\n");
+        return 2;
+    }
     handle_t dm = sh_devmgr();
     if (!dm) {
         sh_say("hda: no devmgr\n");

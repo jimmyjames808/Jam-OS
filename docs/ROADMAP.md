@@ -21,7 +21,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | M8 | Storage: USB mass storage, FAT32 (FatFs), `/esp` and `/data`, other sticks at `/usbN`, a log per boot | done (PC 2026-10-01: All tests 224, `stress 600` and `soak 10` passed) |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the read-only probe) ran on the PC (a Realtek ALC897); stages 1 and 2 done in QEMU; stage 3 (`beep`) next ([A1-PLAN.md](A1-PLAN.md)) |
+| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`). The tone on the PC, stage 4 (jacks) and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol | after A1 |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
@@ -38,8 +38,9 @@ HD Audio on the PC's Realtek ALC897 (Intel 8086:7a50 controller) as a
 driver process, and `beep` in the shell playing a tone in the
 front-panel headphones. The plan is [A1-PLAN.md](A1-PLAN.md). Stage 0 (a
 read-only probe of the controller and codec) ran on the PC; stages 1
-(codec control and the path to the front headphone jack) and 2 (the
-output stream) are done in QEMU; stage 3 (`beep`) is being built.
+(codec control and the path to the front headphone jack), 2 (the output
+stream) and 3 (`beep`, `hda gain`) work in QEMU. Next: the tone on the
+PC, stage 4 (jack detection) and the review.
 
 M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
 Known limits it left:

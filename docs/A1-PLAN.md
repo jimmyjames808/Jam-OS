@@ -21,11 +21,16 @@ From the PC's own boot log ([HARDWARE.md](HARDWARE.md#other-devices)):
 | 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's 04 01 / 04 03 80). MSI (1 vector, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused in HDA mode) | **the target** |
 | 01:00.1 | NVIDIA HDMI/DP audio on the RTX, 10de:22bb | never: left without a driver, like any device devmgr has no driver for |
 
-The codec on the Intel link is not known yet (a Realtek ALC8xx is
-likely); nor is how the front-panel jack is wired to it, nor whether its
-jack detection works. **Stage 0 (below, done) is a read-only probe whose
-only job is to find that out on the PC.** Everything from stage 1 on is
-written against its dump.
+Stage 0's probe found the codec on the PC (boot log of 2026-10-01): a
+**Realtek ALC897** (10ec:0897, subsystem 1043:8841, ASUS) at codec
+address 0, every widget in D0. The front-panel headphone jack is **pin
+1b** (configuration default 02214020: jack, external front, hp-out,
+presence detection with a trigger, EAPD), and the path to it is **DAC 02
+-> mixer 0c -> pin 1b**. STATESTS also shows codec address 2, which never
+answers (most likely the disabled iGPU's HDMI codec): it is skipped. The
+dump itself is the ALC897 fixture in `drivers/hda/fixtures.c`. Whether
+the jack's presence detection and unsolicited responses work is still
+for stage 4 to find out.
 
 ## Fixed decisions
 
@@ -91,11 +96,15 @@ is stopped.
    connectivity not "none"), location external front, default device
    headphone out. If there are several, the lowest sequence in the lowest
    association. If there is none (a board whose firmware describes its
-   jacks badly), the plan asks the owner, with the dump, which node to use,
-   and a boot word `hda_pin=<nid>` overrides the choice;
+   jacks badly), any headphone-out pin, then a line-out, then a speaker
+   (QEMU's codecs have only those); if that picks the wrong jack on some
+   board, the fix starts from its dump, added as a fixture;
 2. the path: a breadth-first walk back from the pin through connection
-   lists (at most 5 widgets deep), to an analog output converter; the
-   shortest path wins, then the lowest DAC node;
+   lists (at most 5 widgets deep), across mixers and selectors only and
+   never into one whose connection list holds a pin (an input or loopback
+   mixer, like the ALC897's 0b), to an analog output converter; a DAC no
+   other pin with its output on uses wins, then the shortest path, then
+   the lowest DAC node (`drivers/hda/path.c` has the rules);
 3. power: the audio function group to D0 (SET_POWER_STATE, then
    GET_POWER_STATE until it reads D0, bounded), then every widget on the
    path that has power control;
@@ -150,12 +159,12 @@ to be its only client, so it is designed as the mixer needs it now:
 | Method (abi/idl/hda.idl) | Stage | What |
 |---|---|---|
 | `dump() -> (text VMO, length, codecs)` | 0 (done) | the graph, read now |
-| `info() -> (rates, formats, pin, dac, gain steps, jack state)` | 1 | what the driver chose and can do |
-| `open_output(rate, channels, bits) -> (ring VMO, size, period)` | 2 | the ring above; one stream at a time (a second open: ERR_BAD_STATE); closing the channel that opened it closes the stream |
-| `start()`, `stop()` | 2 | RUN on/off (with the mute ordering) |
-| `position() -> (u64 frames played, u32 ring offset)` | 2 | from the position buffer |
-| `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 | answers once a period past `after` has played: the client's write-ahead clock |
-| `set_gain(i32 centibels)`, `get_gain` | 3 | the codec's output amp on the path, clamped to its steps |
+| `info() -> (rates, formats, pin, dac, gain steps, jack state)` | 1 (done) | what the driver chose and can do |
+| `open_output(rate, channels, bits) -> (stream channel, ring VMO, size, period)` | 2 (done) | the ring above; one stream at a time (a second open: ERR_BAD_STATE); the stream methods below are served on the `stream` channel it returns, and closing that channel closes the stream |
+| `start()`, `stop()` | 2, 3 (done) | RUN on/off; the path unmuted just before RUN and muted again right after it clears (stage 3) |
+| `position() -> (u64 frames played, u32 ring offset)` | 2 (done) | from the position buffer |
+| `wait_period(u64 after) -> (u64 frames played, u32 ring offset)` | 2 (done) | answers once the period holding frame `after` has played: the client's write-ahead clock |
+| `set_gain(i32 centibels)`, `get_gain` | 3 (done) | the codec's output amp on the path (the DAC's), rounded to its step, clamped to its range and to 0 dB; both answer the gain, the step and the range |
 | `jack() -> (u8 state, u64 changes)` | 4 | plugged / unplugged / unknown, and a change count |
 
 A2 then adds the `audio` protocol (programs' streams, each its own shared
@@ -174,11 +183,65 @@ different files and can run as two tracks at once.
 | Stage | What | Files it owns |
 |---|---|---|
 | **0. Probe** (done) | read-only: reset, rings (immediate fallback), codecs from STATESTS, each codec's graph logged (one line per widget, two for pins), RESULTS line, `hda.dump`, the shell's `hda`; devmgr binds 8086 / 04 03 00; `kill hda` reaches PCI drivers | `drivers/hda/{main,ctrl,graph,dump}.c`, `hda.h`, `abi/idl/hda.idl`, the shell's `cmd/hda.c`, `tools/hda-test.sh`, `tools/shell-tests/hda.txt` |
-| **1. Codec control** | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
-| **2. Output stream** | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
-| **3. `beep`** (the join of 1 and 2) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
+| **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
+| **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
+| **3. `beep`** (the join of 1 and 2, done) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
 | **4. Jacks** | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jack`, `hda` shows the jack state | drivers/hda/jack.c (new), `hda.idl` (jack) |
 | **5. Review** | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
+
+## Stage 2: what was built and learned
+
+- **The stream has a channel of its own.** devmgr hands every client a
+  duplicate of the one DR_SERVE channel, so "the channel that opened it"
+  can't be told apart from the others and its close is never seen.
+  `open_output` therefore returns a new channel (`stream`) with the ring;
+  start, stop, position and wait_period are served on it (refused on
+  DR_SERVE), and its peer closing (the client closes it, or dies) stops
+  and releases the stream. A2's mixer holds it.
+- **Clear-behind is per byte, at every position read** (every interrupt,
+  every request, and at least once a period), not per period: the driver
+  zeroes exactly what has played since the last read, before it tells
+  anyone the new position. So a client may write anywhere in
+  [position, position + ring) and its data is never zeroed; clearing
+  whole periods would wipe what a client wrote into the played part of
+  the period in progress.
+- **The converter's format and stream tag are the only SET verbs**
+  (`hda_converter_set`, which refused any other), sent at `open_output`
+  (and stream 0 at the close) to the first analog DAC of the first codec
+  that has one: DAC 02 on QEMU's codecs and on the PC's ALC897, the same
+  DAC the path finder is expected to choose. At the join (stage 3) the
+  stream took the DAC from stage 1's path and its two SETs moved onto
+  `hda_set`'s allow-list, so there is one command gate. The probe itself still sends only GETs (`tools/hda-test.sh`,
+  unchanged, 524 verbs).
+- **MSI for the stream only.** INTCTL gets GIE and the stream's bit while
+  a stream is open; CIE (the RIRB's interrupt) stays off, since commands
+  are polled and answered in microseconds. Stage 4 turns CIE on for jack
+  events; irq.c is where they will arrive.
+- **The stop order** at a close and at the driver's exit: RUN clear
+  (waited for), SRST 1/0, the stream's interrupt off, DPLBASE off, the
+  converter to stream 0, then the pins released. If RUN never clears the
+  pins are kept (logged): the dma_cap's close quarantines them.
+- **A kill mid-stream** (QEMU): the dma_cap's close turns bus mastering
+  off and quarantines the ring, the BDL page and the command-ring page
+  (3 pins, 18 pages); the restarted driver's reset finds the stream
+  descriptor still running ("stream 4 was running: stopping it") and
+  stops it before turning bus mastering on; the quarantine is released
+  1 s later with no page written.
+- **In QEMU** the capture is exact (the one-second pattern, sample for
+  sample), the position advances at 48.17 kHz by the guest's clock, the
+  position buffer and LPIB agree while running (QEMU does not reset LPIB
+  at SRST, only at RUN, so the gap is sampled while running only), and
+  there is one interrupt per period. QEMU's codec keeps its converter's
+  stream tag across the link reset; a real codec resets it.
+
+**What only the PC can show** (hdatest from the shell, or `hdatest` in
+the log after it): the MSI arriving (the close lines count "period
+interrupt(s)": about one per 85 ms), the position buffer against LPIB
+("position buffer vs LPIB up to N bytes": expect a FIFO's worth or less),
+the FIFO size (the open line), TCSEL (a "TCSEL was TCn" line only if the
+firmware left it non-zero), the rate hdatest measures (48 kHz within
+2 %) and the kill test's quarantine line. Nothing is heard: no path is
+programmed until stage 3.
 
 ## Tests
 
@@ -227,6 +290,127 @@ Known ways it could fail there, and what the lines would show:
   answer could be taken for the next verb's (the RIRB is read in order and
   only the codec address is checked); stage 1 drains the RIRB after a
   timeout if the count is not 0.
+
+## What stage 1 built and learned
+
+- **One way to a codec.** `drivers/hda/verbs.c` is the only caller of the
+  raw send (ctrl.c's `hda_command`). `hda_get` takes GET verbs;
+  `hda_set` takes, each with only the payload bits the spec defines for
+  it: connection select, power state (D0-D3, never D3cold), converter
+  stream/channel, pin widget control, unsolicited enable, pin sense,
+  EAPD/BTL, converter format (PCM only) and amp gain/mute (naming an amp
+  and a side). Anything else is refused and logged: the configuration
+  default, the function group reset, GPIOs, the subsystem id, beep,
+  digital converter controls, vendor coefficients.
+- **The path, silent.** At start the driver runs the path self-test (7
+  fixtures: QEMU's hda-output, hda-duplex and hda-micro, and the ALC897
+  with three variations: the rear line-out playing, the front jack not
+  described, a pin with no connection), finds each codec's path, checks
+  that its own dump of each live codec parses back to the same path, and
+  sets up the best one: the AFG and the path's powered widgets to D0
+  (waiting for D0), the pin's output and headphone bits off, every amp on
+  the path muted at gain step 0 (every input of a mixer on it too), the
+  path's connection selects. The DAC's stream and format are left for
+  stage 2. A failed self-test or round trip sets nothing up.
+- **The ALC897's DACs have no mute** (out-amp 0-87, 0.75 dB steps, 0 dB
+  at 87, no mute bit): at step 0 they are at -65.25 dB. What keeps the
+  path silent there is mixer 0c's input mute, pin 1b's out-amp mute and
+  the pin's output being off. Stage 3 unmutes in the order of step 5.
+- **Mixer 0c is shared.** It is the only input of the rear green
+  line-out pin 14 and the selected input of pins 18, 19 and 1a. Any of
+  them with its output on would play the headphones' sound too; all are
+  off (pin control 0x20, input only), and the driver leaves them so. The
+  path line lists them ("pins that select a node of it too").
+- **QEMU's codecs ignore SET_PIN_WIDGET_CONTROL**: their output pins read
+  back 0x40 (output on) whatever is set. The driver logs "kept its output
+  on"; tools/hda-test.sh checks from QEMU's own verb trace that the SET
+  asked for the output off. Their AFG reports no power states, but
+  GET_POWER_STATE reads D0.
+- `hda.info` returns the path's codec, pin, DAC, the DAC's PCM rates,
+  formats and amp capabilities, the node list and a line of what is set
+  on each node (read back); the shell's `hda` prints it after the dump.
+- Not built: the `hda_pin=<nid>` boot word (the PC describes its front
+  jack, so nothing needs it yet).
+
+On the PC the path is now set up, still silent. `hda` and the boot log
+should show (the first line is what the ALC897 fixture gives; the second
+is read back from the codec, so its amp values are the expected ones,
+not yet seen)
+
+```
+codec 0 path: dac 02 -> mixer 0c -> pin 1b (front headphone jack); pins that select a node of it too: 14 18 19 1a
+path: codec 0 dac 02 -> mixer 0c -> pin 1b (front headphone jack), muted: afg D0; dac 02 D0 out 0; mixer 0c in m0 m0; pin 1b D0 sel 0 ctl 20 (output off) out m0 in 0 eapd off
+```
+
+and the RESULTS line ends `path 02-0c-1b muted`. A line starting `path
+self-test:` other than "7 of 7 fixture(s) passed", or one saying a dump
+"parses back to another path", means nothing was set up.
+
+## What stage 3 built and learned
+
+- **The join.** Stage 2's stream now plays to the DAC of stage 1's path
+  (no path set up: `open_output` fails ERR_NOT_FOUND), and its two
+  converter SETs go through `hda_set`'s allow-list: `hda_converter_set`
+  is gone, so verbs.c is the one gate for every verb.
+- **The path is open only while the stream runs.** `start` opens it just
+  before RUN (verbs.c `hda_output_open`, steps 4-6 above); `stop`, the
+  stream's close and the driver's exit close it right after RUN clears.
+  On the PC's ALC897 the opening is, in order: mixer 0c input 0 unmuted
+  (`3 0c 7000`: its amp has only a mute), DAC 02 output amp to the gain
+  (`3 02 b02f`, step 47: -30 dB), pin 1b output amp unmuted (`3 1b b000`),
+  pin 1b control 0xc0 (`707 1b c0`: output + headphone amp, since its pin
+  caps have HP drive) and EAPD on (`70c 1b 02`). The closing: EAPD off
+  (`70c 1b 00`), pin control back to what the muted set-up left (0x20,
+  input only), every output amp muted at step 0 (`3 1b b080`, `3 02 b080`:
+  the DAC has no mute, so step 0, -65.25 dB) and mixer 0c input 0 muted
+  (`3 0c 7080`). The other inputs of the mixer are never unmuted. After
+  opening, the driver reads back the pin control, EAPD and the DAC amp and
+  logs them.
+- **If a verb fails while opening**, it is logged by name, the path is
+  muted again (every closing verb tried) and `start` fails with its
+  status; `beep` says the path stayed muted.
+- **The gain**: -30 dB at every driver start (on the ALC897 DAC 02 step
+  47 of 0-87, 0.75 dB steps, 0 dB at 87; on QEMU's codecs step 44 of
+  0-74). `set_gain` takes centibels, rounds to the nearest step and clamps
+  to the amp's range and never above 0 dB; it is sent at once if a stream
+  plays. The volume amp is the first on the path with gain steps (the
+  DAC's on both codecs); the path self-test checks which one, its default
+  step, its range and the clamping on every fixture.
+- **`beep` writes at -12 dBFS** (a quarter of full scale) with 5 ms linear
+  fades, so with the default gain a beep leaves the DAC at about -42 dBFS.
+  The sine comes from a rotating phasor in doubles (renormalised every
+  1024 frames), set up with a series for sin and cos: no libm.
+- **hdatest turns the gain to its lowest** for its run (its pattern is a
+  near full-scale sawtooth, a test signal) and puts it back; on QEMU's
+  mixer=off codec there is no gain, so nothing changes there.
+- **In QEMU** (tools/beep-test.sh, the codec's mixer on, so its amp
+  scales the samples): `beep 440 500` gives 440.00 Hz, 500.0 ms, peak
+  4850 (a quarter of full scale at QEMU's linear volume for step 44),
+  fades (the first and last 2.5 ms reach about a third of the peak), no
+  clicks, silence after; the codec got only allow-listed verbs, the path
+  opened only while the converter had the stream's tag, closed before it
+  was released, and nothing open at the end. A driver killed mid-stream
+  can't mute: its successor's set-up does, before anything else.
+
+**On the PC** (the owner, after `make flash`). The first beep is loud
+enough to hear and not more, but a first beep on new code is still a
+first: headphones' own volume (if they have one) down, headphones off
+the head, near enough to hear.
+1. Plug the headphones into the front jack. `hda | grep -E "path|gain"`
+   should end with `hda: path: codec 0 dac 02 -> mixer 0c -> pin 1b (front
+   headphone jack), muted: ...` and `hda: gain -30.0 dB (step 47; -65.3
+   to 0.0 dB), heard only while a stream plays`.
+2. `beep`: a 440 Hz tone for 0.3 s; the shell says `beep: 440 Hz for 300
+   ms at -30.0 dB`. The log (`log 6`) shows `[hda] stream: open on
+   descriptor 7, tag 1, format 0x0011, converter 0/02`, `[hda] output:
+   unmuted at -30.0 dB (node 02 step 47); read back: pin 1b ctl c0 eapd
+   02, volume amp 2f`, `[hda] output: muted again` and the stream's close
+   line.
+3. Louder or quieter: `hda gain -20` (or -40), then `beep` again. 0 dB is
+   the most the driver allows; `hda gain` alone shows it.
+4. If nothing is heard: the read-back line says what the codec took (ctl
+   should be c0, eapd 02, volume amp 2f); `hdatest` checks the stream
+   itself (now quiet: it turns the gain down).
 
 ## Done when
 

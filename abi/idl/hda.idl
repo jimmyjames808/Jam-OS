@@ -3,9 +3,12 @@
 # shell's `hda` command is the client.
 # Format: see tools/genidl.py.
 #
-# Today the driver is a read-only probe: it reads the controller and every
-# codec's widget graph and changes nothing. The playback methods come with
-# the rest of the audio work (docs/A1-PLAN.md).
+# The driver reads the controller and every codec's widget graph, picks
+# the path from a DAC to the headphones and sets it up muted, with the
+# pin's output off, and serves one output stream on that path's DAC. The
+# path is unmuted (at the gain below) only while the stream runs: start
+# opens it, stop, the stream's close and the driver's exit mute it again,
+# so the jack is silent whenever nothing plays (docs/A1-PLAN.md).
 #
 # Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
 # fails with ERR_PEER_CLOSED means the driver died; get the channel from
@@ -18,3 +21,66 @@ protocol hda 21
 # to the kernel log at start, as text in a new VMO of `length` bytes
 # (lines end in \n). codecs: how many codecs answered.
 1  dump  ()  -> (handle text, u32 length, u32 codecs)
+
+# What the driver chose and set up. codec, pin, dac: the path's codec
+# address and its two ends (pin 0: there is no path, and the rest is 0).
+# pcm and formats: the DAC's Supported PCM Size/Rates and Stream Formats
+# parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
+# amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
+# minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
+# 0 unknown (jack detection is not built yet). nodes: the path's node ids
+# from the DAC to the pin, `count` of them. text: what is set on each
+# node, read back from the codec, as one line (NUL-terminated).
+2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u32 count, u8[8] nodes, u8[240] text)
+
+# ---- the output stream (docs/A1-PLAN.md) ----
+# One output stream, 48 kHz, 16-bit, 2 channels: rate 48000, channels 2,
+# bits 16 (anything else: ERR_NOT_SUPPORTED); a second open while one is
+# open: ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
+# protocol for start/stop/position/wait_period (they are refused on the
+# driver's own channel, which devmgr shares among clients); `ring`, the
+# sample ring as a VMO to map (read, write, map: nothing else), `size`
+# bytes (65536) in `period`-byte periods (16384: 4096 frames, 85 ms).
+# Frames are 4 bytes (left, right: little-endian s16). The stream starts
+# stopped at frame 0, offset 0, with the ring all zeros. Closing `stream`
+# (or dying) stops the stream and releases it. The driver zeroes the ring
+# behind the play position, so a client may write any frame in
+# [frames, frames + size / 4) (from the last position it was given) and
+# one that stops writing plays silence within one ring. Write a period or
+# more ahead: the controller fetches a little ahead of the position.
+# Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
+# the stream is gone; get the service again and open a new one.
+3  open_output  (u32 rate, u8 channels, u8 bits) -> (handle stream, handle ring, u32 size, u32 period)
+# On the stream channel: the path is unmuted at the gain (get_gain), then
+# the DMA engine runs (RUN set) from where it was. If a step of the
+# unmuting fails, the path is muted again, the stream stays stopped and
+# start fails with that step's status (the log names the step).
+4  start  ()  -> ()
+# On the stream channel: the DMA engine stops (RUN clear, waited for),
+# then the path is muted again (pin output off, EAPD off, every amp on
+# it muted); the position stays. A wait_period in progress is answered
+# ERR_BAD_STATE.
+5  stop  ()  -> ()
+# On the stream channel: frames played since the open, and the play
+# position as a byte offset into the ring.
+6  position  ()  -> (u64 frames, u32 offset)
+# On the stream channel: answers once the period holding frame `after`
+# has played (frames >= the next multiple of period / 4 above `after`),
+# with position's results. ERR_BAD_STATE if the stream is stopped (or is
+# stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
+# periods (the DMA engine stalled).
+7  wait_period  (u64 after)  -> (u64 frames, u32 offset)
+
+# ---- the gain (docs/A1-PLAN.md, stage 3) ----
+# The path's volume: the output amp of the first node on the path that
+# has gain steps (the DAC's on the PC's ALC897 and QEMU's codecs), in
+# centibels (tenths of a dB; 0 is 0 dB, the amp's own unity step). The
+# other amps on the path open at 0 dB. set_gain rounds `centibels` to the
+# nearest step and clamps it to the amp's range, never above 0 dB; it
+# applies at once if a stream is playing, else at the next start. Both
+# answer the gain now: `gain` (rounded to a centibel), the amp's `step`,
+# and the range [min, max] in centibels. ERR_NOT_FOUND: no path was set
+# up; ERR_NOT_SUPPORTED: no amp on it has gain steps. Every driver start
+# begins at -30 dB (-300), whatever was set before.
+8  set_gain  (i32 centibels)  -> (i32 gain, u32 step, i32 min, i32 max)
+9  get_gain  ()  -> (i32 gain, u32 step, i32 min, i32 max)

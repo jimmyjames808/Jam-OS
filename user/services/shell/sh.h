@@ -129,6 +129,9 @@ handle_t sh_root(void);
 handle_t sh_pci(void);          /* RES_PCI, for pci_enum (`devices`), or 0 */
 handle_t sh_devmgr(void);       /* devmgr's query channel (the newest), or 0 */
 handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
+/* The first hda driver (abi/idl/hda.idl) with a path to a jack set up:
+ * a channel to it the caller closes, or HANDLE_INVALID (cmd/hda.c). */
+handle_t sh_hda(void);
 /* init's control channel (abi/idl/initctl.idl: kill, sync, reboot, mount), or 0
  * (a shell that init didn't start has none). */
 handle_t sh_initctl(void);
@@ -272,8 +275,8 @@ SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
-SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
+SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(run);
 /* tests */
-SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(demo);
-SH_CMD(crash); SH_CMD(panic);
+SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
+SH_CMD(demo); SH_CMD(crash); SH_CMD(panic);
