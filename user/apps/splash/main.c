@@ -21,7 +21,8 @@
  * Without init's channel (`run splash` from the shell) it holds the last
  * frame for a second or until a key.
  *
- * `run splash --selftest`: selftest.c. Anything that goes wrong on the way
+ * `run splash --selftest`: selftest.c; `run splash --alpha`: demo.c.
+ * Anything that goes wrong on the way
  * ends it early (the console then draws at once); a panic draws over it
  * whatever it is doing (the kernel's). */
 #include "splash_int.h"
@@ -135,12 +136,14 @@ int main(int argc, char **argv)
     size_t len = 0;
     init_ch = startup_handle(SR_USER + SPLASH_INIT_ROLE);
     pool_start(0);
-    status_t st = find_video(&mpg, &len);
     if (has_arg(argc, argv, "--selftest"))
-        return splash_selftest(st == OK ? mpg : NULL, len);
-    if (st == OK)
-        st = gfx_open_on(SPLASH_BG);
-    if (st == OK && (st = video_open(mpg, len)) != OK)
+        return splash_selftest(find_video(&mpg, &len) == OK ? mpg : NULL, len);
+    if (has_arg(argc, argv, "--alpha"))
+        return splash_alpha_demo();
+    /* The screen first: the console stays quiet until it gets it back, so
+     * a missing or bad video gives it back at once. */
+    status_t st = gfx_open_on(SPLASH_BG);
+    if (st == OK && ((st = find_video(&mpg, &len)) != OK || (st = video_open(mpg, len)) != OK))
         gfx_close();
     if (st != OK) {
         printf("splash: not playing (%s)\n", status_str(st));

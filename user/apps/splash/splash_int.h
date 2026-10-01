@@ -7,11 +7,12 @@
  *   sound.c    the sound on a thread of its own, and the media clock: the
  *              timer until the sound plays, then the sound's position
  *   selftest.c `run splash --selftest`: alpha blending, and the file decoded
+ *   demo.c     `run splash --alpha`: the logo drawn with libfun's alpha calls
  *   plmpeg.c   pl_mpeg's implementation (third_party/pl_mpeg)
  *
  * Media time is in ns from the first frame (frame n is due at
- * n / FPS); the sound's frame f is at f / 48000 s of it: the video and its
- * sound start together in the file (tools/mksplash.sh). */
+ * n / FPS); the sound's frame f is at f / 48000 s of it (sound_decode
+ * lines the two up by the file's time stamps). */
 #pragma once
 
 #define PLM_NO_STDIO
@@ -63,3 +64,7 @@ status_t sound_decode(const uint8_t *mpg, size_t len, int16_t **out, size_t *fra
 /* ---- selftest.c ------------------------------------------------------------------- */
 
 int splash_selftest(const uint8_t *mpg, size_t len);
+
+/* ---- demo.c ------------------------------------------------------------------------ */
+
+int splash_alpha_demo(void);

@@ -177,7 +177,8 @@ static void play(struct audio_out *a, const int16_t *pcm, uint64_t from, uint64_
                                         &played) != OK)
             return;
         if (played && !__atomic_load_n(&live, __ATOMIC_ACQUIRE)) {
-            uint64_t timer = now() - t0, heard = (from + played) * NS_PER_S / SPLASH_RATE;
+            uint64_t timer = now() - __atomic_load_n(&t0, __ATOMIC_ACQUIRE);
+            uint64_t heard = (from + played) * NS_PER_S / SPLASH_RATE;
             printf("splash: the sound is heard from %lu ms: the clock now (the timer was %s by "
                    "%lu ms)\n", (unsigned long)(heard / NS_PER_MS),
                    timer > heard ? "ahead" : "behind",
