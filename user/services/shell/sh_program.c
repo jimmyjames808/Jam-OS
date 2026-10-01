@@ -54,13 +54,15 @@ static void drop(handle_t out, uint32_t n, uint32_t nh)
  * one round of it. A message printf wouldn't send (over 4096 bytes, or
  * carrying handles) is dropped, its handles closed: left at the head of the
  * queue it would fail every later read. True if more may be queued; false
- * once the queue is empty or gone, or Ctrl+C was pressed. */
-static bool drain(handle_t out)
+ * once the queue is empty or gone, or Ctrl+C was pressed (unless
+ * past_ctrl_c: a helper asked to stop still has its last lines to say,
+ * and Ctrl+C stays pressed for the rest of the line). */
+static bool drain(handle_t out, bool past_ctrl_c)
 {
     char buf[4096];
     uint64_t t0 = now();
     for (unsigned i = 0; i < DRAIN_BUDGET && now() - t0 < DRAIN_BUDGET_NS; i++) {
-        if (sh_interrupted())
+        if (!past_ctrl_c && sh_interrupted())
             return false;
         handle_t hs[DRAIN_HANDLES];
         uint32_t n = 0, nh = 0;
@@ -183,7 +185,7 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
     bool killed = false;
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
         if (out_r)
-            drain(out_r);
+            drain(out_r, false);
         if (sh_interrupted() && !killed) {
             sh_tty("^C: killing %s\n", path);
             sh_flush();
@@ -195,7 +197,7 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
         /* What is left: the queue is capped (1024 messages), so this ends
          * unless something the program left running keeps writing, which
          * the guard (and Ctrl+C) cut short. */
-        for (unsigned guard = 0; guard < 64 && drain(out_r); guard++)
+        for (unsigned guard = 0; guard < 64 && drain(out_r, false); guard++)
             ;
         jam_handle_close(out_r);
     }
@@ -309,6 +311,104 @@ static int run_program(int argc, char **argv)
 int sh_run_program(int argc, char **argv)
 {
     return run_program(argc, argv);
+}
+
+/* ---- helpers: a program that does one job for a command ----------------------------- */
+
+#define STOP_GRACE (3 * NS_PER_S)   /* a stopped helper's time to wind down */
+
+/* Wait for the helper to end, copying its output; on Ctrl+C ask it to
+ * stop (a byte on stop), and kill its job if it hasn't ended in time. */
+static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_t stop,
+                            struct process_info *info)
+{
+    status_t st;
+    uint64_t kill_at = DEADLINE_NEVER;
+    while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
+        drain(out_r, true);
+        if (sh_interrupted() && kill_at == DEADLINE_NEVER) {
+            uint8_t go = 1;
+            if (jam_channel_write(stop, &go, 1, NULL, 0) != OK)
+                kill_at = 0;
+            else
+                kill_at = now() + STOP_GRACE;
+        }
+        if (now() >= kill_at) {
+            jam_job_kill(job);
+            kill_at = DEADLINE_NEVER - 1;   /* once */
+        }
+    }
+    for (unsigned guard = 0; guard < 64 && drain(out_r, true); guard++)
+        ;
+    return st;
+}
+
+/* Our ends of a helper's output and stop channels, and its job; with the
+ * helper's ends added to x (2 more entries). */
+struct helper {
+    handle_t job, out_r, stop_w;
+};
+
+static status_t helper_setup(struct helper *h, struct spawn_handle *x, unsigned *nx)
+{
+    handle_t out_w, stop_r;
+    *h = (struct helper){ 0 };
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &h->job);
+    if (st == OK && (st = jam_channel_create(&h->out_r, &out_w)) == OK)
+        x[(*nx)++] = (struct spawn_handle){ SR_STDOUT, out_w };
+    if (st == OK && (st = jam_channel_create(&h->stop_w, &stop_r)) == OK)
+        x[(*nx)++] = (struct spawn_handle){ SR_USER + 2, stop_r };
+    return st;
+}
+
+static void helper_done(struct helper *h)
+{
+    handle_t *hs[] = { &h->out_r, &h->stop_w, &h->job };
+    struct job_info ji;
+    /* Anything it left running goes with it (an empty job is left alone:
+     * a kill is a log line). */
+    if (h->job && (jam_job_get_info(h->job, &ji) != OK || ji.used[JOB_LIMIT_THREADS]))
+        jam_job_kill(h->job);
+    for (unsigned i = 0; i < 3; i++)
+        if (*hs[i])
+            jam_handle_close(*hs[i]);
+}
+
+int sh_run_helper(const char *path, int argc, const char *const *argv, struct spawn_handle *x,
+                  unsigned nx)
+{
+    static struct wants w;
+    handle_t vmo, proc;
+    uint64_t size;
+    struct helper h;
+    (void)program_wants(path, &w, &vmo, &size);   /* a bootfs name: never fails */
+    const char *grants[WANTS_MAX + 1];
+    for (unsigned i = 0; i < w.n; i++)
+        grants[i] = w.grant[i];
+    grants[w.n] = NULL;
+    status_t st = helper_setup(&h, x, &nx);
+    struct spawn_args a = {
+        .path = path, .argc = argc, .argv = argv, .job = h.job, .extra = x, .nextra = nx,
+        .ns = w.n ? grants : NULL,
+    };
+    if (st == OK) {
+        st = spawn(&a, &proc);   /* the extras go, whatever happens */
+    } else {
+        for (unsigned i = 0; i < nx; i++)
+            jam_handle_close(x[i].h);
+    }
+    if (st != OK) {
+        helper_done(&h);
+        sh_tty("%s: can't start %s (%s)\n", argv[0], path, status_str(st));
+        return 126;
+    }
+    struct process_info info;
+    st = wait_helper(proc, h.job, h.out_r, h.stop_w, &info);
+    helper_done(&h);
+    jam_handle_close(proc);
+    if (st != OK || info.killed)
+        return 137;
+    return info.exit_code < 0 ? 1 : info.exit_code > 255 ? 255 : (int)info.exit_code;
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which

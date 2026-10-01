@@ -1,0 +1,23 @@
+# jamcover: an album cover's picture decoded in a program of its own
+# (user/apps/jamcover, <jamcover.h>). jamjar starts bin/jamcover with
+# nothing but this channel and two VMOs: the picture's bytes (read-only to
+# it) and the pixels (for it to write), and calls decode for each cover.
+# The picture is untrusted (a file on a stick): a decoder bug costs the
+# helper's process, never jamjar's.
+# Reconnect: jamjar kills a helper that doesn't answer within its timeout
+# or whose channel closed (ERR_PEER_CLOSED: it crashed), marks that album
+# "no cover", and starts a new helper for the next cover.
+# Format: see tools/genidl.py.
+
+protocol jamcover 26
+
+# The picture in the input VMO's first `len` bytes (PNG or JPEG), cropped
+# to its middle square and scaled, premultiplied 0xAARRGGBB, into the
+# output VMO: JAMCOVER_SMALL squared at JAMCOVER_SMALL_AT, and with
+# `large` (non-zero) JAMCOVER_LARGE squared at JAMCOVER_LARGE_AT too.
+# w and h: the picture's own size.
+# ERR_INVALID_ARGS: len is 0 or past the input VMO, or the picture
+# doesn't decode; ERR_NOT_SUPPORTED: it is not a PNG or JPEG it can read;
+# ERR_OUT_OF_RANGE: it is too big to decode (JAMCOVER_MAX_SIDE,
+# JAMCOVER_MAX_PIXELS).
+1  decode  (u64 len, u32 large) -> (u32 w, u32 h)

@@ -108,7 +108,9 @@ Every driver and service is a userspace process from the start.
   from then on (quiet: the log still goes to the ring and serial; a panic
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
-  shell only once the animation has played. The splash borrows the screen
+  shell only once the animation has played, or 20 s after the splash's
+  start, whichever comes first: a splash that hangs is killed then (the
+  console gets the screen back) and the log says so. The splash borrows the screen
   like any app (but not the keys), starts the video and its sound together
   once the mixer is up (2 s at most, then silently), plays to the end,
   holds the last frame at least 0.5 s and until the shell calls
@@ -864,8 +866,15 @@ afterwards) use it.
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
 source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
-16-bit frames, close), which the music player uses too. MP3s are decoded in the shell's own process by
-`<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
+16-bit frames, close), which the music player uses too. The shell's
+`play` only checks its arguments and opens the file: the file is decoded
+and played by `bin/play` (`user/apps/play`), a program of its own that
+holds nothing but that open file (handed over with `file_give` and
+`file_adopt`), its list's `/svc/audio` and a channel for its lines, so a
+crafted file on someone's stick reaches the sound output and nothing
+else. Ctrl+C sends it a byte on a stop channel: it fades out and says
+where it stopped, and its job is killed if it hasn't ended 3 s later.
+MP3s are decoded there by `<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
 domain or MIT-0, a fork of minimp3, vendored unmodified, SSE2 on): MPEG-1,
 2 and 2.5, Layers I to III, CBR and VBR, into 16-bit frames at the
 file's rate, which `<audio.h>` resamples like any other. libos's
@@ -910,12 +919,19 @@ by stream frame because it writes up to 1.37 s ahead
 is the player's window, an app whose list asks for the player (it opens
 `/svc/music`, a channel of its own), `/data` and the other sticks
 read-only; it plays nothing itself. It reads the library through those
-and decodes the albums' covers itself, on a thread
-of its own: the ID3v2 picture frame found by its own bounded parser,
-then PNG or JPEG through stb_image, only after `stbi_info` has said the
-size (at most 2048 on a side and 2048x1600 pixels), with all of
-stb_image's memory from one 40 MiB arena. The pictures it keeps are
-capped at 8 MiB.
+and the albums' covers on a thread of its own: the ID3v2 picture frame
+found by its own bounded parser. The picture is decoded by
+`bin/jamcover` (`user/apps/jamcover`, `abi/idl/jamcover.idl`), a helper
+jamjar starts in a job of its own with nothing but a channel, the
+picture's bytes (a VMO it may only read) and a VMO for the pixels: no
+namespace, no console, no services. There PNG or JPEG goes through
+stb_image, only after `stbi_info` has said the size (at most 2048 on a
+side and 2048x1600 pixels), with all of stb_image's memory from one
+40 MiB arena, and is cropped square and scaled to 256 and 512 pixels.
+jamjar reads the pixels back with `vmo_read` and never maps them. A
+picture that crashes the helper, or keeps it busy past 5 s, costs that
+album its cover: jamjar kills the helper and starts another for the next
+cover. The pictures it keeps are capped at 8 MiB.
 
 ## Storage
 

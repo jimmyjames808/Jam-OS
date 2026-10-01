@@ -273,7 +273,8 @@ static status_t start_splash(void)
     if (st != OK)
         return st;
     struct spawn_handle x[] = { { SR_CONSOLE, c }, { SR_USER + SPLASH_INIT_ROLE, theirs } };
-    return svc_start1(SPLASH, x, 2);   /* no /svc/audio: it plays silently */
+    const char *argv[] = { svcs[SPLASH].path, "--hang", NULL };
+    return svc_start(SPLASH, init_splashhang ? 2 : 1, argv, x, 2);   /* no /svc/audio: silent */
 }
 
 static status_t start_serialin(void)

@@ -233,8 +233,16 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for /data: a mount's packet wakes the loop */
         if (i == MIXER && !services_devmgr_up() && !svcs[DEVMGR].given_up)
             continue;   /* waits for devmgr (started just before it) */
-        if (i == SHELL && !splash_played())
-            continue;   /* waits for the splash: its packet wakes the loop */
+        if (i == SHELL && !splash_played() && t < splash_deadline()) {
+            /* waits for the splash (its packet wakes the loop), at most until then */
+            deadline = splash_deadline() < deadline ? splash_deadline() : deadline;
+            continue;
+        }
+        if (i == SHELL && !splash_played()) {
+            splash_overdue();
+            if (svcs[SPLASH].running)
+                jam_job_kill(svcs[SPLASH].job);   /* its lease ends: the console draws */
+        }
         if (i == SHELL && lastboot_wait_until(t) != DEADLINE_NEVER) {
             /* waits for logd's answer (its packet wakes the loop), at most until then */
             uint64_t until = lastboot_wait_until(t);

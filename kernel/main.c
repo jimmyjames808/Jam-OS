@@ -271,11 +271,12 @@ _Noreturn static void kmain_stage2(void *arg)
     uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
     if (soak_min && !nousb)
         ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
-    /* init's option words: "splash" (decided above), `hidboot`, which
+    /* init's option words: "splash" (decided above); `hidboot`, which
      * init passes on to devmgr and devmgr to every hid (mice stay in the
-     * boot protocol), and bootdisk=0x<id>, which init passes on to devmgr
-     * (the boot disk). */
-    const char *words[3];
+     * boot protocol); bootdisk=0x<id>, which init passes on to devmgr (the
+     * boot disk); `splashhang` (a test's: the splash never finishes, and
+     * init must start the shell anyway). */
+    const char *words[4];
     unsigned nwords = 0;
     if (shell && splash_boot())
         words[nwords++] = "splash";
@@ -286,6 +287,8 @@ _Noreturn static void kmain_stage2(void *arg)
         ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
         words[nwords++] = disk_word;
     }
+    if (shell && splash_boot() && cmdline_has("splashhang"))
+        words[nwords++] = "splashhang";
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg

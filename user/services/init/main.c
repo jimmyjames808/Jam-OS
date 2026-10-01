@@ -38,6 +38,7 @@ static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs 
 
 bool init_hidboot;
 const char *init_bootdisk;
+bool init_splashhang;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -398,6 +399,7 @@ int main(int argc, char **argv)
         init_hidboot |= !strcmp(argv[i], "hidboot");
         if (!strncmp(argv[i], "bootdisk=", 9))
             init_bootdisk = argv[i];
+        init_splashhang |= !strcmp(argv[i], "splashhang");
     }
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);

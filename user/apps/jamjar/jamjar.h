@@ -2,13 +2,15 @@
  * (names.c), what the columns show (view.c), the player as last heard
  * (link.c, a thread of its own), where everything goes (layout.c), the
  * stereo bars at the bottom (bars.c) and the sunburst of the big view
- * (burst.c), the album art (art.c, cover.c, id3.c, stbi.c), the roulette
+ * (burst.c), the album art (art.c, cover.c, id3.c; decoder.c starts the
+ * helper that decodes the pictures, bin/jamcover), the roulette
  * (roulette.c), the picture (draw.c, panels.c, nowplaying.c), keys and the mouse
  * (input.c), the loop (main.c) and the self-test (selftest.c).
  * docs/history/MUSIC-GUI.md is the design. */
 #pragma once
 
 #include <fun.h>
+#include <jamcover.h>
 
 /* ---- the palette (docs/logo/) ------------------------------------------------------- */
 
@@ -276,7 +278,7 @@ size_t art_cache_bytes(void);
  * covers' state at exactly that point. */
 void art_test_hook(void (*between)(void));
 
-/* ---- album covers (id3.c, cover.c, stbi.c) ------------------------------------------- */
+/* ---- album covers (id3.c, cover.c, decoder.c) ---------------------------------------- */
 
 /* id3.c: the picture in an MP3's ID3v2 tag. */
 #define ID3_HEADER 10
@@ -294,28 +296,28 @@ size_t id3_tag_size(const uint8_t h[ID3_HEADER]);
  * changed in place (unsynchronisation undone). false: none. */
 bool   id3_cover(uint8_t *tag, size_t n, struct id3_pic *out);
 
-/* stbi.c: stb_image, PNG and JPEG, its memory from one bounded arena. */
-#define COVER_MAX_SIDE   2048u         /* a picture wider or taller is refused */
-#define COVER_MAX_PIXELS (2048u * 1600u)
-bool     stbi_size(const uint8_t *data, size_t n, int *w, int *h);
-/* RGBA pixels (in the arena; NULL: it doesn't decode or doesn't fit). */
-uint8_t *stbi_rgba(const uint8_t *data, size_t n, int *w, int *h);
-/* Empty the arena (every image decoded so far is gone). */
-void     stbi_arena_reset(void);
-/* n bytes of the arena for the caller (the tag read): NULL if they don't fit. */
-void    *stbi_arena_take(size_t n);
-/* cover.c: src (sw x sh of premultiplied 0xAARRGGBB, `stride` a row) to
- * dw x dh: area averaging to make smaller, bilinear to make bigger. */
-void     cover_scale(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
-                     int dh);
+/* decoder.c: the cover helper (bin/jamcover, <jamcover.h>), started on
+ * the first decode. The input buffer, JAMCOVER_IN_BYTES (NULL: no
+ * memory): put the picture at its start. */
+uint8_t *decoder_buffer(void);
+/* The picture in the buffer's first len bytes decoded by the helper into
+ * small_px (COVER_SMALL squared) and, with large, large_px (COVER_LARGE
+ * squared); *w, *h its own size. jamcover.idl's decode errors; any other
+ * (ERR_TIMED_OUT: no answer in JAMCOVER_TIMEOUT, ERR_PEER_CLOSED: it
+ * crashed) means the helper was killed: the next call starts another. */
+status_t decoder_decode(size_t len, bool large, uint32_t *small_px, uint32_t *large_px, int *w,
+                        int *h);
+/* The self-test: stop the helper; the next one is started with arg
+ * (--crash, --hang or NULL), and decodes may take timeout ns (0: the
+ * usual). How many helpers were started so far. */
+void     decoder_test(const char *arg, uint64_t timeout);
+unsigned decoder_test_starts(void);
 
 /* cover.c: covers read and decoded by a thread of its own, kept scaled
  * per album. */
-#define COVER_SMALL 256u   /* every album's cover is kept this big ... */
-#define COVER_LARGE 512u   /* ... and the few drawn bigger at this size too */
+#define COVER_SMALL JAMCOVER_SMALL   /* every album's cover is kept this big ... */
+#define COVER_LARGE JAMCOVER_LARGE   /* ... and the few drawn bigger at this size too */
 enum { COVER_NONE, COVER_SMALL_KIND, COVER_LARGE_KIND };
-/* A picture of w x h may be decoded (COVER_MAX_SIDE, COVER_MAX_PIXELS). */
-bool cover_size_ok(int w, int h);
 /* Start the thread (trace: say each cover read). */
 void cover_start(bool trace);
 /* Album `hash`'s cover, from the track at `path`, for drawing `size` wide:

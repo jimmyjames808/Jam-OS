@@ -28,6 +28,8 @@
  * frame for a second or until a key.
  *
  * `run splash --selftest`: selftest.c; `run splash --alpha`: demo.c.
+ * `--hang` (init, on the test word `splashhang`): borrow the screen and
+ * never finish, so init's deadline for the splash is tested.
  * Anything that goes wrong on the way
  * ends it early (the console then draws at once); a panic draws over it
  * whatever it is doing (the kernel's). */
@@ -205,6 +207,11 @@ int main(int argc, char **argv)
         printf("splash: not playing (%s)\n", status_str(st));
         tell_init(SPLASH_PLAYED);
         return 1;
+    }
+    if (init_ch && has_arg(argc, argv, "--hang")) {
+        printf("splash: hanging, as asked (--hang)\n");
+        for (;;)
+            jam_nanosleep(DEADLINE_NEVER);
     }
     bool skipped = play(mpg, len, since);
     if (skipped)

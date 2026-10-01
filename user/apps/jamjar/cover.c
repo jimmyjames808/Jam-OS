@@ -7,10 +7,10 @@
  * every album of the library is put on it once at the back (reading ahead,
  * so the roulette and the lists fill in). The thread takes the newest
  * request first (the albums on the screen now), reads the first ID3_HEADER
- * bytes of the track, then the whole tag (at most TAG_MAX), finds the
- * picture (id3.c), checks its size before decoding it (COVER_MAX_SIDE,
- * COVER_MAX_PIXELS), decodes it (stbi.c's bounded arena), crops it to its
- * middle square and scales it down by area averaging, in premultiplied
+ * bytes of the track, then the whole tag (at most JAMCOVER_IN_BYTES) into
+ * the decoder's input buffer, finds the picture (id3.c), and has the
+ * helper (decoder.c, bin/jamcover) check its size, decode it, crop it to
+ * its middle square and scale it down by area averaging, in premultiplied
  * alpha, to COVER_SMALL (kept for every album: SMALL_SLOTS of them, the
  * least recently drawn going first) and, for an album drawn bigger than
  * that (now playing, the full jar), to COVER_LARGE too (LARGE_SLOTS).
@@ -26,7 +26,6 @@
 #define ALBUMS      1024u            /* albums known at once: the table */
 #define SMALL_SLOTS 128u
 #define LARGE_SLOTS 2u
-#define TAG_MAX     (6u << 20)       /* a tag bigger than this is not read */
 #define STACK       (64u * 1024)
 
 enum { ST_FREE, ST_WANTED, ST_LOADING, ST_READY, ST_NONE };
@@ -65,82 +64,6 @@ static void lock(void)
 static void unlock(void)
 {
     __atomic_clear(&C.lock, __ATOMIC_RELEASE);
-}
-
-/* ---- scaling (premultiplied 0xAARRGGBB) ------------------------------------------- */
-
-/* src (sw x sh, `stride` pixels a row) to dst (dw x dh): each output pixel
- * the average of the source area it covers, partial pixels weighted by how
- * much of them it covers. For making smaller; cover_scale picks. */
-static void box(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
-{
-    float fx = (float)sw / (float)dw, fy = (float)sh / (float)dh;
-    for (int y = 0; y < dh; y++) {
-        float y0 = (float)y * fy, y1 = y0 + fy;
-        for (int x = 0; x < dw; x++) {
-            float x0 = (float)x * fx, x1 = x0 + fx, acc[4] = { 0, 0, 0, 0 }, wsum = 0;
-            for (int sy = (int)y0; sy < sh && (float)sy < y1; sy++) {
-                float wy = ((float)(sy + 1) < y1 ? (float)(sy + 1) : y1) -
-                           ((float)sy > y0 ? (float)sy : y0);
-                for (int sx = (int)x0; sx < sw && (float)sx < x1; sx++) {
-                    float w = wy * (((float)(sx + 1) < x1 ? (float)(sx + 1) : x1) -
-                                    ((float)sx > x0 ? (float)sx : x0));
-                    uint32_t p = src[(size_t)sy * stride + sx];
-                    for (int c = 0; c < 4; c++)
-                        acc[c] += w * (float)(p >> (8 * c) & 0xff);
-                    wsum += w;
-                }
-            }
-            uint32_t o = 0;
-            for (int c = 0; c < 4; c++)
-                o |= (uint32_t)(acc[c] / (wsum > 0 ? wsum : 1) + 0.5f) << (8 * c);
-            dst[(size_t)y * dw + x] = o;
-        }
-    }
-}
-
-/* Bilinear, for making bigger (pixel centres line up). */
-static void bilinear(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
-                     int dh)
-{
-    for (int y = 0; y < dh; y++) {
-        float fy = ((float)y + 0.5f) * (float)sh / (float)dh - 0.5f;
-        fy = fy < 0 ? 0 : fy;
-        int y0 = (int)fy, y1 = y0 + 1 < sh ? y0 + 1 : y0;
-        float ty = fy - (float)y0;
-        for (int x = 0; x < dw; x++) {
-            float fx = ((float)x + 0.5f) * (float)sw / (float)dw - 0.5f;
-            fx = fx < 0 ? 0 : fx;
-            int x0 = (int)fx, x1 = x0 + 1 < sw ? x0 + 1 : x0;
-            float tx = fx - (float)x0;
-            uint32_t a = src[(size_t)y0 * stride + x0], b = src[(size_t)y0 * stride + x1];
-            uint32_t c = src[(size_t)y1 * stride + x0], d = src[(size_t)y1 * stride + x1], o = 0;
-            for (int k = 0; k < 32; k += 8) {
-                float top = (float)(a >> k & 0xff) * (1 - tx) + (float)(b >> k & 0xff) * tx;
-                float bot = (float)(c >> k & 0xff) * (1 - tx) + (float)(d >> k & 0xff) * tx;
-                o |= (uint32_t)(top * (1 - ty) + bot * ty + 0.5f) << k;
-            }
-            dst[(size_t)y * dw + x] = o;
-        }
-    }
-}
-
-void cover_scale(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
-{
-    if (dw <= sw && dh <= sh)
-        box(src, sw, sh, stride, dst, dw, dh);
-    else
-        bilinear(src, sw, sh, stride, dst, dw, dh);
-}
-
-/* stb_image's RGBA bytes, in place, as premultiplied 0xAARRGGBB. */
-static void premultiply(uint8_t *p, size_t pixels)
-{
-    for (size_t i = 0; i < pixels; i++, p += 4) {
-        uint32_t a = p[3], r = p[0] * a / 255, g = p[1] * a / 255, b = p[2] * a / 255;
-        uint32_t v = a << 24 | r << 16 | g << 8 | b;
-        memcpy(p, &v, 4);
-    }
 }
 
 /* ---- the table ------------------------------------------------------------------------ */
@@ -234,7 +157,7 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        cover_scale(src, side, side, side, dst->px, size, size);
+        scale_pm(src, side, side, side, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;
@@ -280,14 +203,8 @@ static int next_job(bool *for_large)
     return best;
 }
 
-bool cover_size_ok(int w, int h)
-{
-    return w >= 1 && h >= 1 && w <= (int)COVER_MAX_SIDE && h <= (int)COVER_MAX_SIDE &&
-           (uint64_t)w * (uint64_t)h <= COVER_MAX_PIXELS;
-}
-
-/* The whole tag of the file at path, in the arena: its length, 0 (with
- * *why) if there is none or it can't be read. */
+/* The whole tag of the file at path, in the decoder's input buffer: its
+ * length, 0 (with *why) if there is none or it can't be read. */
 static size_t read_tag(const char *path, uint8_t **out, const char **why)
 {
     struct jfile f;
@@ -299,25 +216,45 @@ static size_t read_tag(const char *path, uint8_t **out, const char **why)
     *why = "has no ID3v2 tag";
     if (file_read(&f, 0, h, sizeof(h), &got) == OK && got == sizeof(h))
         n = id3_tag_size(h);
-    if (n > TAG_MAX) {
+    if (n > JAMCOVER_IN_BYTES) {
         *why = "has a tag too big to read";
         n = 0;
     }
-    uint8_t *tag = n ? stbi_arena_take(n) : NULL;
+    uint8_t *tag = n ? decoder_buffer() : NULL;
     size_t at = 0;
     while (tag && at < n && file_read(&f, at, tag + at, n - at, &got) == OK && got)
         at += got;
     file_close(&f);
     if (!tag || at < n) {
-        *why = tag ? "can't be read" : *why;
+        *why = tag ? "can't be read" : n ? "can't be read (no memory)" : *why;
         return 0;
     }
     *out = tag;
     return n;
 }
 
-/* Decode the picture of the track at path, crop it square and scale it
- * into the thread's buffers. NULL on success, else why not. */
+/* Why a picture gave no cover, from the helper's answer. */
+static const char *decode_why(status_t st)
+{
+    switch (st) {
+    case ERR_NOT_SUPPORTED:
+        return "has a picture that is not a PNG or JPEG it can read";
+    case ERR_OUT_OF_RANGE:
+        return "has a picture too big to decode";
+    case ERR_INVALID_ARGS:
+        return "has a picture that doesn't decode";
+    case ERR_PEER_CLOSED:
+        return "has a picture that crashed the decoder (started again)";
+    case ERR_TIMED_OUT:
+        return "has a picture the decoder hung on (killed, started again)";
+    default:
+        return "has a picture the decoder couldn't take";
+    }
+}
+
+/* The picture of the track at path decoded by the helper (decoder.c),
+ * cropped square and scaled into the thread's buffers. NULL on success,
+ * else why not. */
 static const char *decode(const char *path, bool large, int *w, int *h)
 {
     uint8_t *tag;
@@ -328,21 +265,9 @@ static const char *decode(const char *path, bool large, int *w, int *h)
         return why;
     if (!id3_cover(tag, n, &pic))
         return "has no picture in its tag";
-    if (!stbi_size(pic.data, pic.len, w, h))
-        return "has a picture that is not a PNG or JPEG it can read";
-    if (!cover_size_ok(*w, *h))
-        return "has a picture too big to decode";
-    uint8_t *rgba = stbi_rgba(pic.data, pic.len, w, h);
-    if (!rgba)
-        return "has a picture that doesn't decode";
-    premultiply(rgba, (size_t)*w * (size_t)*h);
-    const uint32_t *px = (const uint32_t *)rgba;
-    int side = *w < *h ? *w : *h, ox = (*w - side) / 2, oy = (*h - side) / 2;
-    const uint32_t *sq = px + (size_t)oy * *w + ox;
-    cover_scale(sq, side, side, *w, tmp_small, COVER_SMALL, COVER_SMALL);
-    if (large)
-        cover_scale(sq, side, side, *w, tmp_large, COVER_LARGE, COVER_LARGE);
-    return NULL;
+    memmove(tag, pic.data, pic.len);   /* the helper reads it from the start */
+    status_t st = decoder_decode(pic.len, large, tmp_small, tmp_large, w, h);
+    return st == OK ? NULL : decode_why(st);
 }
 
 /* A slot for entry `owner`: a free one, else the least recently drawn
@@ -428,7 +353,6 @@ static bool work(void)
         fake_decode(path);
     else
         why = decode(path, want_large, &w, &h);
-    stbi_arena_reset();
     store(i, large, !why);
     if (C.trace && why)
         say("jamjar: cover: %s %s: no cover\n", path, why);

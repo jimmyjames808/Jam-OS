@@ -65,6 +65,29 @@ status_t file_open(const char *path, uint32_t flags, struct jfile *out)
     return OK;
 }
 
+void file_give(struct jfile *f, handle_t *ch, handle_t *buf)
+{
+    if (f->buf)
+        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)f->buf, f->buf_size);
+    *ch = f->ch;
+    *buf = f->buf_vmo;
+    memset(f, 0, sizeof(*f));
+}
+
+status_t file_adopt(handle_t ch, handle_t buf, uint32_t flags, struct jfile *out)
+{
+    struct jfile f = { .ch = ch, .buf_vmo = buf, .flags = flags };
+    status_t st = flags & ~FS_FLAGS ? ERR_INVALID_ARGS : map_buffer(&f, flags & FS_WRITE);
+    if (st == OK)
+        st = file_stat(&f, &f.size, NULL);
+    if (st != OK) {
+        file_close(&f);   /* closes both handles, unmaps what was mapped */
+        return st;
+    }
+    *out = f;
+    return OK;
+}
+
 /* The next piece of an n-byte transfer of which `done` bytes are through. */
 static uint32_t piece(const struct jfile *f, size_t n, size_t done)
 {

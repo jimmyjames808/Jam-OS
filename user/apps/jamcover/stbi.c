@@ -1,17 +1,18 @@
-/* jamjar: stb_image's implementation (third_party/stb_image, public domain
- * or MIT), compiled once, here, for the album covers (cover.c): PNG and
+/* jamcover: stb_image's implementation (third_party/stb_image, public
+ * domain or MIT), compiled once, here, for jamjar's album covers: PNG and
  * JPEG only, from memory, no stdio, no HDR.
  *
- * The data is untrusted (a file on a stick), so it goes through stb_image
- * only after cover.c has checked the image's size (stbi_info), and every
+ * The data is untrusted (a file on a stick): it is decoded only in this
+ * process, which holds nothing else (main.c), only after decode.c has
+ * checked the image's size (stbi_info), and every
  * byte stb_image allocates comes from one arena: a VMO of ARENA bytes,
  * mapped once, bump-allocated, emptied before each image (stbi_arena_reset).
  * A picture that needs more fails to decode (stb_image checks what its
  * allocator returns) and the album keeps its berries. The arena's pages
  * are committed as they are first touched, so memory is the biggest image
- * decoded so far, never more than ARENA. One thread (cover.c's) decodes. */
+ * decoded so far, never more than ARENA. One thread decodes. */
 #include <os.h>
-#include "jamjar.h"
+#include "jamcover_int.h"
 
 #define ARENA (40u << 20)
 #define ALIGN 16u
@@ -58,26 +59,21 @@ void stbi_arena_reset(void)
     used = 0;
 }
 
-void *stbi_arena_take(size_t n)
-{
-    return arena_alloc(n);
-}
-
 #define STBI_NO_STDIO
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
 #define STBI_NO_FAILURE_STRINGS
-#define STBI_MAX_DIMENSIONS (1 << 14)   /* cover.c refuses far less (COVER_MAX_SIDE) */
+#define STBI_MAX_DIMENSIONS (1 << 14)   /* decode.c refuses far less (JAMCOVER_MAX_SIDE) */
 #define STBI_ASSERT(x) ((void)0)
 #define STBI_MALLOC(n)       arena_alloc(n)
 #define STBI_REALLOC(p, n)   arena_realloc(p, n)
 #define STBI_FREE(p)         ((void)(p))   /* the arena is emptied whole */
 /* Jam OS threads have no thread-local storage (no TLS block, FS base 0):
  * stb_image's few per-thread settings (flipping, premultiplying) are left
- * at their defaults and are plain variables here. Only cover.c's thread
- * decodes (and the self-test, which has no such thread). */
+ * at their defaults and are plain variables here. The process has one
+ * thread. */
 #define STBI_NO_THREAD_LOCALS
 #define STB_IMAGE_IMPLEMENTATION
 
