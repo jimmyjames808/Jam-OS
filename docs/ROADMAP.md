@@ -24,13 +24,19 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`); sound works on the PC. Stage 4 (jacks): unsolicited responses with a tag per jack pin, the RIRB interrupt, an 80 ms debounce and a 500 ms polling fallback, `hda jacks`; checked in QEMU against fixtures and a fake codec (QEMU's codecs have no presence detection). The plug/unplug lines on the PC and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol, WAV playback | **in progress** ([A2-PLAN.md](A2-PLAN.md)): in QEMU, programs play at once through the mixer service (each its own stream in a shared ring, mixed two periods ahead of the play position), `vol` sets each stream's volume and the master, `<audio.h>` (blocking writes, mono to stereo, any rate to 48 kHz) and `play <file.wav>` and `beep` go through it. Two sounds at once on the PC and the review are next |
 | AS | Boot splash: the logo animation with its sound, alpha blending | **in progress** ([AS-PLAN.md](AS-PLAN.md)): in QEMU a plain boot is the splash's dark background from the kernel's start, the animation from bootfs's `splash.mpg` (pl_mpeg) with its sound through the mixer, the sound the clock once heard, the last frame held until the shell is up, then faded into the text; a key skips it, `verbose` or `nosplash` shows the log; libfun has premultiplied alpha and anti-aliased shapes. Seen on the PC at 720p ("lower quality"); now 2560x1440 (drawn 1:1, scaled down on smaller screens), picture and sound starting together, the logo lingering 2 s. The PC and the review are next |
-| M8.5 | Crash kernel and kexec | later |
+| M8.5 | Crash kernel and kexec | **in progress**: the crash kernel and kexec, and the kernel's own CPU startup, are being built |
+| M8.6 | Cleanup: the code checked against the coding guide, the queued design fixes | later |
 | M9 | Networking | later |
-| M10 | ACPI power | later |
+| M10 | ACPI power, tickless idle | later |
+| M10.5 | S3 sleep | later |
 | M11 | IOMMU | later |
-| M12 | Own loader, POSIX, stable ABI | stretch |
-| M13 | Self-hosting | stretch |
-| G1-G4 | Graphics | after M12 |
+| M12 | Own UEFI loader | later |
+| M13 | Interface review, before anything is frozen | later |
+| G1 | A compositor that speaks Wayland | after M13 |
+| M14 | POSIX on musl | stretch |
+| M15 | Stable syscall ABI | stretch |
+| M16 | Self-hosting | stretch |
+| G2-G4 | Toolkit and fonts, mode setting, 3D | after G1 |
 
 ## Next: A1, audio
 
@@ -60,13 +66,18 @@ Known limits it left:
 | AS | Boot splash, at the end of the audio track. A splash program is the first thing init starts: it takes the screen and plays the boot animation with its sound while the services start, holds the last frame until the shell is ready, then hands the screen back. The animation is made outside the repository (2560x1440 with alpha); `make` converts it with ffmpeg to MPEG-1 at 2560x1440 over the dark background (about 1.7 MB, drawn 1:1 on the PC) and puts it in the boot image. Decoded by pl_mpeg (MIT, in `third_party/`), sound through A2's mixer. A key skips it; a `verbose` boot word shows the text log instead; a panic always draws over it. With it, alpha blending in libfun (premultiplied alpha, blended fills and images, anti-aliased shapes) | the PC boots into the animation with its sound, and the shell comes up when it ends |
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
 | M8.5 | Crash kernel, the Linux kdump approach: reserve RAM at boot and load a second Jam OS there; on a panic jump into it (kexec, one CPU, controllers reset before use), save the crashed kernel's log ring as `/data/logs/boot-NNNN-crash.txt`, reboot. The same kexec gives `reboot` a fast path, which needs the kernel's own AP startup (INIT-SIPI-SIPI) so all 28 CPUs come back without Limine. Done properly or not at all: the crash kernel's RAM is unmapped from the running kernel and checksummed before the jump, the panic path takes no locks and allocates nothing, the panicking kernel never writes to the stick itself, every device is reset rather than assumed idle, and nothing relies on firmware keeping RAM across a reset (no pstore) | a deliberate panic on the PC ends with its full log as a file on the stick; `reboot` kexecs into the kernel on the stick with all CPUs up, without a firmware reboot |
+| M8.6 | Cleanup, as M7.5 was: fresh agents check the kernel, the drivers, user space and the tools against CODING-GUIDE.md and ARCHITECTURE.md (findings first, no edits), the owner and the main session sort them, then fixes in batches with behaviour-preserving changes kept apart. With it the audio review's open design questions: service channels in the namespace (`/svc/...`) in place of the shell's startup handles, well-formed UTF-8 through the kernel log, `play` as its own program holding only the audio service and the file; and the decision on running programs from `/data` | the findings fixed or written into the guide; All tests and `soak 10` on the PC |
 | M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
+| M10.5 | S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |
 | M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
-| M12 | S3 sleep, own UEFI loader, POSIX on musl, stable syscall ABI | stretch |
-| M13 | Self-hosting: the build tools rewritten in C, then make, binutils and GCC ported onto M12's POSIX layer; a small compiler (TCC/cproc) may come first | Jam OS rebuilds itself on the PC and boots the result, with no Mac involved |
-| G1 | A compositor on the firmware framebuffer: apps draw into their own surface VMOs, input routed to the focused client, software rendering | |
-| G2 | Toolkit, TrueType fonts, GUI apps | |
+| M12 | Own UEFI loader in place of Limine: a third filler of `struct boot_info` (after Limine's and M8.5's kexec) | the PC boots Jam OS with no Limine on the stick |
+| M13 | Interface review: the system calls and the service protocols reviewed and reshaped while changing them is cheap, before POSIX builds on them and M15 freezes them. The second cleanup point after M8.6, by fresh agents | the review's findings fixed; nothing frozen yet |
+| M14 | POSIX on musl: file descriptors over handles, `posix_spawn` (no `fork`), paths through the namespace, then ported programs | unmodified POSIX programs (shell utilities, a small C program) build and run |
+| M15 | Stable syscall ABI: frozen only after POSIX has put its weight on it; versioned and documented | old binaries keep running on new kernels |
+| M16 | Self-hosting: the build tools rewritten in C, then make, binutils and GCC ported onto M14's POSIX layer; a small compiler (TCC/cproc) may come first | Jam OS rebuilds itself on the PC and boots the result, with no Mac involved |
+| G1 | A compositor of our own on the firmware framebuffer that speaks the Wayland protocol: Wayland's model (surfaces, buffers, `xdg_toplevel`, a seat for input) with its wire format carried over channels, handles where Linux passes file descriptors, `wl_shm` pools as VMOs, the code generated from Wayland's XML protocol files as the IDL is. Apps draw into their own surfaces, input goes only to the focused client, a crashed app takes only its own window down, software rendering. The console becomes a client (a terminal window). Not a port: Weston and wlroots need Linux's DRM/KMS, Mesa, libinput and udev | windows from several programs on the PC's screen, the shell in one of them |
+| G2 | Toolkit, TrueType fonts, GUI apps: ported leaf libraries (stb_truetype or FreeType, microui/Nuklear or LVGL, stb_image). After M14, libwayland ported with a shim from sockets and file descriptors to channels and handles, so Wayland programs that draw in software (foot, SDL) run unchanged; GTK and Qt are a later porting project of their own | |
 | G3 | Mode setting and vsync, only through the Intel iGPU (needs the monitor on the board's output and the iGPU enabled) | |
 | G4 | 3D as a stretch: a multi-core software rasterizer, or virtio-gpu under QEMU | |
 

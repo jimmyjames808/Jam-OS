@@ -24,7 +24,7 @@ built yet, it says so.
 | SMP | From day one |
 | Native API | Capability handles; a POSIX layer (musl) possible later |
 | Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
-| Syscall ABI | Unstable until M12; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
+| Syscall ABI | Unstable until M15; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
@@ -637,7 +637,10 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 - A future compositor process owns the framebuffer VMO; apps draw into
   their own surface VMOs and send damage rectangles over a channel; input
   goes to the compositor, which routes it to the focused client. Rendering
-  is in software (28 cores and AVX are plenty for 2D at 2560x1440).
+  is in software (28 cores and AVX are plenty for 2D at 2560x1440). It
+  speaks the Wayland protocol (G1 in the roadmap): Wayland's model and
+  wire format over channels, handles where Linux passes file descriptors,
+  `wl_shm` pools as VMOs; our own compositor, not a port.
 - Mode setting and vsync only through the Intel iGPU (documented by
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
