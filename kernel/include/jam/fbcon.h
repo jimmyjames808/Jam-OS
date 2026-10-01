@@ -39,3 +39,7 @@ bool     fbcon_geometry(struct boot_framebuffer *out);
 status_t fbcon_take(void);
 void     fbcon_release(void);
 bool     fbcon_is_taken(void);
+/* The splash's quiet ends: the kept text is drawn now (unless a process
+ * owns the screen). For a run whose user space ended before the console
+ * took the screen, so its RESULTS are seen. */
+void     fbcon_unquiet(void);

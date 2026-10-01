@@ -236,6 +236,10 @@ _Noreturn static void kmain_stage2(void *arg)
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", NULL);
+    /* init has ended (in shell mode only if something went wrong): if the
+     * console never took the screen the splash's quiet is still on, and
+     * the RESULTS below would not be drawn. */
+    fbcon_unquiet();
     sched_print_stats();
     uint64_t dropped = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
     if (dropped || serial_irq_broken())
