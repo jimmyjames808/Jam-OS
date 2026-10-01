@@ -16,13 +16,14 @@
  *   SR_AUDIO      the mixer's `audio` channel (abi/idl/audio.idl): every
  *                 program the shell runs gets a duplicate
  *   SR_AUDIO_CTL  its `audioctl` channel (`vol`; test programs get it too)
- * init keeps both mixer channels across a mixer's restart: they never
- * change. Programs the shell starts get none of the others
+ *   SR_USER + 4   the music player's channel (abi/idl/music.idl): `music`
+ * init keeps both mixer channels across a mixer's restart, and the
+ * player's across the player's: they never change. Programs the shell starts get none of the others
  * (sh_program.c). */
 #include <devmgr.h>
 #include "sh_core.h"
 
-static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl, audio, audio_ctl;
+static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl, audio, audio_ctl, music;
 
 void sh_handles_init(void)
 {
@@ -34,6 +35,12 @@ void sh_handles_init(void)
     initctl = startup_handle(SR_USER + 3);
     audio = startup_handle(SR_AUDIO);
     audio_ctl = startup_handle(SR_AUDIO_CTL);
+    music = startup_handle(SR_USER + 4);
+}
+
+handle_t sh_music(void)
+{
+    return music;
 }
 
 handle_t sh_audio(void)

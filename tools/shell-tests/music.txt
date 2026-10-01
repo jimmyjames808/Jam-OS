@@ -1,0 +1,129 @@
+# The background music player (bin/music, the shell's `music`; docs/A2-PLAN.md
+# "Music player"): use tools/music-test.sh (it makes the folder tree on the
+# stick and a second stick, adds the audio devices and checks the capture).
+# Markers are echoed as mu-""N so the typed line itself never matches.
+#   1. usage, status while stopped, a missing folder, a folder without files
+#   2. music start (default /data/music) while the shell runs ls, beep, vol,
+#      music status, music vol, music next; past one whole shuffle; music
+#      stop; then a 1000 Hz beep alone as the capture's end marker
+#   3. it plays on through Ctrl+C in the shell, a restart of the shell and
+#      a restart of the mixer; music stop
+#   4. a second stick's folder, the stick pulled mid-song: it stops itself
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 music: ready
+send music; echo mu-""0 $?
+wait usage: music start [folder] | stop | next | status | vol [dB]
+wait mu-0 2
+wait jam>
+send music status; echo mu-""1 $?
+wait music: stopped
+wait mu-1 0
+wait jam>
+send music start /data/nothere; echo mu-""2 $?
+wait music: /data/nothere: no such folder
+wait mu-2 1
+wait jam>
+send music start /data/music/Empty; echo mu-""3 $?
+wait music: no .mp3 or .wav files in /data/music/Empty
+wait mu-3 1
+wait jam>
+send music next; echo mu-""4 $?
+wait music: not playing
+wait mu-4 1
+wait jam>
+
+# ---- 2: the shuffle, analysed in the capture --------------------------------------------
+send music start; echo mu-""5 $?
+wait 60 music: playing 7 tracks from /data/music in shuffle
+wait mu-5 0
+wait jam>
+seen 30 music: track 1:
+send ls /data/music | grep -c Loose.Mp3; echo mu-""6 $?
+wait mu-6 0
+wait jam>
+seen 30 music: track 2:
+send beep 1500 400; echo mu-""7 $?
+wait mu-7 0
+wait jam>
+send music status; echo mu-""8 $?
+wait music: playing
+wait folder /data/music: 7 tracks
+wait mu-8 0
+wait jam>
+send vol | grep -c music; echo mu-""9 $?
+wait mu-9 0
+wait jam>
+send music vol -6; music vol 0; echo mu-""10 $?
+wait music: volume -6.0 dB
+wait music: volume 0.0 dB
+wait mu-10 0
+wait jam>
+seen 30 music: track 3:
+sleep 1
+send music next; echo mu-""11 $?
+wait music: next
+wait mu-11 0
+wait jam>
+seen 60 music: track 8:
+seen music: /data/music/Bad/x/garbage.mp3: not a WAV or MP3 file
+send music stop; echo mu-""12 $?
+wait music: stopped
+wait mu-12 0
+wait jam>
+send music status; echo mu-""13 $?
+wait music: stopped
+wait mu-13 0
+wait jam>
+sleep 2
+send beep 1000 300; echo mu-""14 $?
+wait mu-14 0
+wait jam>
+sleep 1
+
+# ---- 3: it outlives Ctrl+C, the shell and the mixer --------------------------------------
+send music start /data/music/A; echo mu-""15 $?
+wait 60 music: playing 2 tracks from /data/music/A in shuffle
+wait mu-15 0
+wait jam>
+send sleep 5
+sleep 1
+type \x03
+wait jam>
+send music status | grep -c "music: playing"; echo mu-""16 $?
+wait mu-16 0
+wait jam>
+send kill shell
+wait 60 Jam OS shell
+wait jam>
+send music status | grep -c "music: playing"; echo mu-""17 $?
+wait mu-17 0
+wait jam>
+send kill mixer
+wait 30 music: the mixer stream failed
+wait 30 music: track
+send music status | grep -c "music: playing"; echo mu-""18 $?
+wait mu-18 0
+wait jam>
+send music stop; echo mu-""19 $?
+wait music: stopped
+wait mu-19 0
+wait jam>
+
+# ---- 4: a second stick, pulled mid-song ----------------------------------------------------
+monitor device_add usb-storage,id=sp,bus=xhci.0,port=2,drive=pimg
+wait 60 init: /usb0 mounted
+send music start /usb0/music; echo mu-""20 $?
+wait 60 music: playing 3 tracks from /usb0/music in shuffle
+wait mu-20 0
+wait jam>
+sleep 4
+monitor device_del sp
+wait 30 music: stopped: 3 files in a row could not be read
+send music status; echo mu-""21 $?
+wait music: stopped: 3 files in a row could not be read
+wait mu-21 0
+wait jam>
+send reboot
+wait reboot: resetting
