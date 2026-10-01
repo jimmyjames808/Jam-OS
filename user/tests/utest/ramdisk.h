@@ -29,6 +29,9 @@ struct ramdisk {
     bool     stop;          /* the server is to close its end (an unplug) */
     bool     fail_writes;   /* every write fails ERR_IO (a disk error) */
     uint32_t fail_after;    /* not 0: writes fail once this many were served */
+    uint32_t pull_after;    /* not 0: the server closes its end once this many requests
+                               of the session were answered (a stick pulled mid-mount) */
+    uint32_t served;        /* requests of the session answered (the server's) */
     uint32_t reads;         /* requests served, by kind */
     uint32_t writes;
     uint32_t syncs;
@@ -52,3 +55,6 @@ uint32_t ramdisk_syncs(const struct ramdisk *rd);
 void     ramdisk_fail_writes(struct ramdisk *rd, bool on);
 /* Writes fail ERR_IO once `writes` of them were served in all (0: never). */
 void     ramdisk_fail_after(struct ramdisk *rd, uint32_t writes);
+/* Every later session ends from the server's side once it has answered
+ * `requests` requests (0: never), as a stick pulled at that moment. */
+void     ramdisk_pull_after(struct ramdisk *rd, uint32_t requests);

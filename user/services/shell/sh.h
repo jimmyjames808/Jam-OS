@@ -205,8 +205,9 @@ status_t sh_allow_remove(const char *name, unsigned *removed);
 /* A kernel debug command; its output arrives as kernel log lines. < 0: an
  * error (said, as "<cmd>: <status>"). */
 int64_t  sh_kcmd(const char *cmd);
-/* The kernel log from position `from` on (up to 64 KiB, malloc'd, the
- * caller frees): *got bytes, *first the position of its first byte. */
+/* The kernel log from position `from` to its end (as much of it as the
+ * kernel's ring still holds, 8 MiB at most; malloc'd, the caller frees):
+ * *got bytes, *first the position of its first byte. */
 status_t sh_klog_read(uint64_t from, char **buf, size_t *got, uint64_t *first);
 /* Where the kernel log ends now. */
 uint64_t sh_klog_end(void);

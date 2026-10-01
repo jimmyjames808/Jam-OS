@@ -1,4 +1,4 @@
-/* dmesg: the whole kernel log (what the kernel still holds, up to 64 KiB). */
+/* dmesg: the whole kernel log (what the kernel's ring still holds, up to 4 MiB). */
 #include "sh.h"
 
 SH_CMD(dmesg)

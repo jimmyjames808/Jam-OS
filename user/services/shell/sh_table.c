@@ -38,7 +38,7 @@ static const struct sh_cmd cmds[] = {
     C(sysmon, C_INFO, "sysmon", "the graphical system monitor (bin/sysmon); q quits"),
     C(whoami, C_INFO, "whoami", "the user (there is one: jam)"),
     C(hostname, C_INFO, "hostname", "this machine's name"),
-    C(dmesg, C_INFO, "dmesg", "the whole kernel log (64 KiB); pipe it: dmesg | grep usb"),
+    C(dmesg, C_INFO, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),

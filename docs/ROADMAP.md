@@ -132,12 +132,6 @@ kernel log ring and the block cache for the slow `/esp` read. The first
 ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
-- **logd loses lines during the klog flood test**: the kernel test
-  `console_klog_read_after_gap` writes more than the 64 KiB kernel log
-  ring holds, on purpose, and no reader can follow it; each live `ktest`
-  leaves a "[logd: N bytes of the log were lost]" line. Skip that test
-  live, or accept it (M8.6's bigger ring covers the log written while
-  the boot stick is out, not this test).
 - **GPT sticks** are not read (their partitions are not mounted).
 - One bulk transfer at a time inside usb-bus's loop, and devmgr's
   bounded waits (up to 2 s) on a slow usb-storage: both block other work
@@ -162,11 +156,6 @@ ones below are the design questions M8 left open
 
 The rest:
 
-- The `init` QEMU run ends "with problems" about one run in three: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
-  again, and devmgr's shutdown stops usb-bus while that fat is still
-  mounting; it exits ERR_IO and devmgr reports "fat-esp bin/fat did not
-  end cleanly". A fat that finds its disk gone while mounting could exit 0,
-  or devmgr could excuse a filesystem service whose disk went first.
 - devmgr's protocol is hand-written, not IDL.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.

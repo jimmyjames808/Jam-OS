@@ -37,6 +37,13 @@ size_t   klog_reader_read(struct kobject *reader, uint64_t pos, char *buf, size_
 typedef status_t (*klog_sink_t)(void *ctx, uint64_t off, const char *text, size_t n);
 status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap, klog_sink_t sink,
                              void *ctx, uint64_t *first, uint64_t *done);
+#ifndef JAM_NO_KTESTS
+/* Tests: the reader sees the log as if the ring kept only its last `keep`
+ * bytes (klog_read_kept), so a gap takes a little log to make, not the
+ * whole ring; other readers (logd, the console) are not affected. Set
+ * before the reader is shared. */
+void klog_reader_test_keep(struct kobject *reader, uint64_t keep);
+#endif
 
 /* COM1 input. ERR_NOT_FOUND: no UART; ERR_BAD_STATE: someone reads it. */
 status_t serial_in_create(struct job *job, struct kobject **out);

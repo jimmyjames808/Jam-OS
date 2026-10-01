@@ -409,7 +409,7 @@ Every driver and service is a userspace process from the start.
   `usb` (usb-bus to devmgr and to class drivers), `input` and `console`,
   `storage` and `block` (usb-storage to devmgr and to a filesystem),
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
-  filesystem), `initctl` and `logctl` (init's and logd's control
+  filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
   mixer). devmgr's own protocol is still
   written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,
@@ -1022,7 +1022,7 @@ cover. The pictures it keeps are capped at 8 MiB.
   ([Kexec: reboot and panic](#kexec-reboot-and-panic)). logd gives the
   kernel its file's name (`klog_name`) for that, and counts a number as
   taken when either file has it. Without `/data` it waits and tries again; what
-  the kernel's 64 KiB ring drops meanwhile, or in a burst faster than the
+  the kernel's 4 MiB ring drops meanwhile, or in a burst faster than the
   stick takes it, is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
@@ -1149,7 +1149,7 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 
 ## Debugging
 
-- Framebuffer klog from the first instruction, 64 KiB ring buffer, readable
+- Framebuffer klog from the first instruction, 4 MiB ring buffer, readable
   from user space through a klog reader handle (the console follows it,
   and logd saves it to `/data/logs/`, [Storage](#storage)). COM1 too when
   present. The log is text whoever wrote it: printable ASCII, tabs,

@@ -110,14 +110,12 @@ if grep -E "drv/hda (did not end cleanly|crashed|was killed)|process \"hda\" kil
     ok=0
 fi
 grep -q "root job afterwards: .*(clean)" "$log" || { echo "hda-init: init's root job not clean"; ok=0; }
-# The run's own verdict is reported, not required: it ends "with problems"
-# about one run in three on main too, from a fat-esp shutdown race
-# (docs/ROADMAP.md, smaller follow-ups).
 if grep -q "run complete: no problems" "$log"; then
     echo "hda-init: run complete: no problems"
 else
-    echo "hda-init: note: the run had problems:"
+    echo "hda-init: the run had problems:"
     grep "devmgr: .* did not end cleanly" "$log" | head -3
+    ok=0
 fi
 
 if [ $ok = 1 ]; then

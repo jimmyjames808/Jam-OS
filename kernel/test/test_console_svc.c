@@ -91,8 +91,13 @@ KTEST(console_klog_reader)
  * was about to copy, between two 512-byte steps) returns the text up to
  * the gap, and the reader's SIG_READABLE comes from where THAT ends: more
  * log after it, so readable. The next read resumes at the oldest text
- * kept, and reading to the end clears it. The sink writes more than the
- * whole ring (KLOG_SIZE) after the first step. */
+ * kept, and reading to the end clears it. The test's reader sees only the
+ * last GAP_KEEP bytes of the ring (klog_reader_test_keep), so the sink
+ * makes the gap with GAP_KEEP + 4 KiB of filler after the first step, not
+ * the whole ring's worth: a live run or a soak loop puts little into
+ * /data/logs, and logd (which sees the whole ring) loses none of it. */
+#define GAP_KEEP (64u << 10)   /* as wide as live logging between two reads needs */
+
 struct gap_sink {
     char    *buf;     /* where the sink copies text to */
     unsigned calls;   /* times the sink was called */
@@ -104,7 +109,7 @@ static status_t flood_sink(void *ctx, uint64_t off, const char *text, size_t n)
     memcpy(g->buf + off, text, n);
     if (g->calls++ == 0) {
         uint64_t h0 = klog_head();
-        for (unsigned i = 0; klog_head() - h0 < KLOG_SIZE + 4096; i++)
+        for (unsigned i = 0; klog_head() - h0 < GAP_KEEP + 4096; i++)
             kprintf("console_klog_read_after_gap: filler line %4u "
                     "................................................................\n", i);
     }
@@ -121,6 +126,7 @@ KTEST(console_klog_read_after_gap)
 {
     struct kobject *r;
     KT_EQ(klog_reader_create(NULL, &r), OK);
+    klog_reader_test_keep(r, GAP_KEEP);
     uint64_t pos = klog_head();
     for (int i = 0; i < 8; i++)   /* > 512 bytes: the first step is full */
         kprintf("console_klog_read_after_gap: before the gap, line %d ..................\n", i);

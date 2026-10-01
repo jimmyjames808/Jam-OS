@@ -87,6 +87,8 @@ status_t disk_open(handle_t block)
     }
     if (st == OK)
         st = block_map_buffer_until(block, deadline(), &vmo, &size);
+    if (st == ERR_PEER_CLOSED)
+        vol.disk_gone = true;   /* pulled (or its driver stopped) before we got going */
     if (st != OK)
         return st;
     size -= size % PAGE_SIZE;

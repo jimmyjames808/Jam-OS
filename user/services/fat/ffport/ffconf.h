@@ -71,6 +71,6 @@
 #define FF_NORTC_YEAR  2026
 #define FF_FS_CRTIME   0
 #define FF_FS_NOFSINFO 1     /* count the free clusters, don't trust FSInfo's number */
-#define FF_FS_LOCK     34    /* FAT_MAX_FILES (fat.h) + 2 */
+#define FF_FS_LOCK     42    /* FAT_MAX_FILES + FAT_DIR_CURSORS (fat.h) + 2 */
 #define FF_FS_REENTRANT 0
 #define FF_FS_TIMEOUT  1000

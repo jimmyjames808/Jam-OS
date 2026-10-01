@@ -11,6 +11,7 @@
 
 #define FSCTL_PROTOCOL_ID 20u
 #define FSCTL_STOP             0x00140001u
+#define FSCTL_STATS            0x00140002u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct fsctl_stop_req {
@@ -21,9 +22,22 @@ struct fsctl_stop_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct fsctl_stats_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct fsctl_stats_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t entries_read;
+    uint64_t cache_hits;
+    uint64_t cache_fills;
+    uint64_t cache_bypassed;
+    uint64_t cache_updated;
+} __attribute__((packed));
 
 #define FSCTL_REQ_MAX 8u   /* bytes: the biggest request */
-#define FSCTL_REP_MAX 8u   /* bytes: the biggest reply */
+#define FSCTL_REP_MAX 48u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -51,12 +65,46 @@ static inline status_t fsctl_stop(handle_t ch)
     return fsctl_stop_until(ch, DEADLINE_NEVER);
 }
 
+/* What the service has done so far, for tests and diagnostics (it changes
+ * nothing): directory entries read (fs.readdir's work: one per entry
+ * listed when listings go forward), and its block cache's sector reads
+ * answered from a line, lines read from the disk, big reads past it and
+ * sectors written that a line held. */
+static inline status_t fsctl_stats_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
+{
+    struct fsctl_stats_req idl_q;
+    struct fsctl_stats_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FSCTL_STATS;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_entries_read)
+        *out_entries_read = idl_r.entries_read;
+    if (idl_st == OK && out_cache_hits)
+        *out_cache_hits = idl_r.cache_hits;
+    if (idl_st == OK && out_cache_fills)
+        *out_cache_fills = idl_r.cache_fills;
+    if (idl_st == OK && out_cache_bypassed)
+        *out_cache_bypassed = idl_r.cache_bypassed;
+    if (idl_st == OK && out_cache_updated)
+        *out_cache_updated = idl_r.cache_updated;
+    return idl_st;
+}
+static inline status_t fsctl_stats(handle_t ch, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
+{
+    return fsctl_stats_until(ch, DEADLINE_NEVER, out_entries_read, out_cache_hits, out_cache_fills, out_cache_bypassed, out_cache_updated);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
  * A NULL handler answers ERR_NOT_SUPPORTED. */
 struct fsctl_ops {
     status_t (*stop)(void *ctx);
+    status_t (*stats)(void *ctx, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -91,6 +139,31 @@ static inline uint32_t fsctl_dispatch(const struct fsctl_ops *ops, void *ctx, co
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case FSCTL_STATS: {
+        const struct fsctl_stats_req *idl_q = (const struct fsctl_stats_req *)req;
+        struct fsctl_stats_rep *idl_r = (struct fsctl_stats_rep *)rep;
+        uint64_t out_entries_read = 0;
+        uint64_t out_cache_hits = 0;
+        uint64_t out_cache_fills = 0;
+        uint64_t out_cache_bypassed = 0;
+        uint64_t out_cache_updated = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stats) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stats(ctx, &out_entries_read, &out_cache_hits, &out_cache_fills, &out_cache_bypassed, &out_cache_updated);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->entries_read = out_entries_read;
+        idl_r->cache_hits = out_cache_hits;
+        idl_r->cache_fills = out_cache_fills;
+        idl_r->cache_bypassed = out_cache_bypassed;
+        idl_r->cache_updated = out_cache_updated;
         return sizeof(*idl_r);
     }
     }

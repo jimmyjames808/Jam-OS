@@ -145,10 +145,17 @@ size_t klog_ring_copy(const char *r, uint64_t size, uint64_t h, uint64_t pos, ch
     return (size_t)n;
 }
 
-size_t klog_read_at(uint64_t pos, char *buf, size_t cap, uint64_t *first)
+size_t klog_read_kept(uint64_t pos, uint64_t keep, char *buf, size_t cap, uint64_t *first)
 {
     uint64_t f = spin_lock_irqsave(&ring_lock);
+    if (keep < KLOG_SIZE && head > keep && pos < head - keep)
+        pos = head - keep;
     size_t n = klog_ring_copy(ring, KLOG_SIZE, head, pos, buf, cap, first);
     spin_unlock_irqrestore(&ring_lock, f);
     return n;
+}
+
+size_t klog_read_at(uint64_t pos, char *buf, size_t cap, uint64_t *first)
+{
+    return klog_read_kept(pos, KLOG_SIZE, buf, cap, first);
 }

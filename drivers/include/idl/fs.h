@@ -195,7 +195,8 @@ static inline status_t fs_stat(handle_t ch, const uint8_t path[256], uint64_t *o
 
 /* Entry `index` (0-based) of directory `path`, "." and ".." left out.
  * Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
- * between calls. */
+ * between calls. Asked in order (0, 1, 2, ...), a listing costs the service
+ * one entry read per entry: fat keeps a cursor per directory being listed. */
 static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
 {
     struct fs_readdir_req idl_q;

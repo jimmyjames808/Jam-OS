@@ -179,7 +179,7 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   and the shell's first line says what the panic was and where its log
   went (`the last boot panicked: ... (saved as
   /data/logs/boot-NNNN-crash.txt)`), or why it was not saved. Read that
-  file on the Mac: the last 64 KiB of the log, the panic with its
+  file on the Mac: the last 4 MiB of the log, the panic with its
   registers, backtrace and note line (a kernel test's loop, seed and test,
   when tests were running; [TESTING.md](TESTING.md#soak) says how to
   replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
