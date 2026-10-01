@@ -9,7 +9,13 @@
  * framebuffer_take system call). While it is taken the cell grid is still
  * kept up to date but nothing is drawn; fbcon_release redraws the grid, so
  * the screen shows the latest log again. A panic (fbcon_force_unlock)
- * takes the screen back for good. */
+ * takes the screen back for good.
+ *
+ * Quiet (a plain boot that shows the boot splash, fbcon_init): the screen
+ * is filled with the splash's dark background at once and no text is
+ * drawn on it, from the first kernel line until the console takes the
+ * screen; the cells are kept as usual, so a panic or a released screen
+ * shows the whole log. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <jam/fbcon.h>
@@ -38,6 +44,8 @@ static spinlock_t lock = SPINLOCK_INIT("fbcon");
 /* A process owns the screen (the console, through framebuffer_take): keep
  * the cells, draw nothing. */
 static bool taken;   /* fbcon_take: a process owns the screen, draw nothing */
+/* The boot splash is coming: draw nothing (until a release or a panic). */
+static bool quiet;
 
 static uint32_t native(uint32_t rgb)
 {
@@ -46,9 +54,16 @@ static uint32_t native(uint32_t rgb)
            ((rgb & 0xff) << fb.blue_shift);
 }
 
+/* Drawing now: nobody owns the screen and it isn't the splash's. */
+static bool drawing(void)
+{
+    return !__atomic_load_n(&taken, __ATOMIC_RELAXED) &&
+           !__atomic_load_n(&quiet, __ATOMIC_RELAXED);
+}
+
 static void draw_cell(uint32_t col, uint32_t row)
 {
-    if (__atomic_load_n(&taken, __ATOMIC_RELAXED))
+    if (!drawing())
         return;
     const struct cell *c = &cells[row][col];
     const uint8_t *glyph = font_8x16[(uint8_t)c->ch & 0x7f];
@@ -64,7 +79,7 @@ static void draw_cell(uint32_t col, uint32_t row)
 
 static void redraw_all(void)
 {
-    if (__atomic_load_n(&taken, __ATOMIC_RELAXED))
+    if (!drawing())
         return;
     for (uint32_t r = 0; r < rows; r++)
         for (uint32_t c = 0; c < cols; c++)
@@ -132,7 +147,19 @@ uint64_t fbcon_phys(uint64_t *len)
     return fb_phys;
 }
 
-void fbcon_init(const struct boot_framebuffer *f)
+/* The whole framebuffer (the margins past the last cell too) in one colour. */
+static void fill_screen(uint32_t rgb)
+{
+    uint32_t px = native(rgb);
+    for (uint32_t y = 0; y < fb.height; y++) {
+        volatile uint32_t *line =
+            (volatile uint32_t *)((uint8_t *)fb.virt + (uint64_t)y * fb.pitch);
+        for (uint32_t x = 0; x < fb.width; x++)
+            line[x] = px;
+    }
+}
+
+void fbcon_init(const struct boot_framebuffer *f, bool splash)
 {
     if (f->virt) {
         fb_phys = f->phys;
@@ -150,6 +177,10 @@ void fbcon_init(const struct boot_framebuffer *f)
     cur_fg = native(0xd0d0d0);
     cur_bg = native(0x101018);
     ready = true;
+    if (splash) {
+        __atomic_store_n(&quiet, true, __ATOMIC_RELAXED);
+        fill_screen(FBCON_SPLASH_BG);
+    }
     fbcon_clear();
 }
 
@@ -199,6 +230,7 @@ void fbcon_force_unlock(void)
 {
     spin_force_unlock(&lock);
     __atomic_store_n(&taken, false, __ATOMIC_RELAXED);   /* a panic always draws */
+    __atomic_store_n(&quiet, false, __ATOMIC_RELAXED);
 }
 
 bool fbcon_geometry(struct boot_framebuffer *out)
@@ -226,6 +258,7 @@ void fbcon_release(void)
         return;
     uint64_t f = spin_lock_irqsave(&lock);
     __atomic_store_n(&taken, false, __ATOMIC_RELAXED);
+    __atomic_store_n(&quiet, false, __ATOMIC_RELAXED);   /* the console is gone: show the log */
     redraw_all();
     spin_unlock_irqrestore(&lock, f);
 }

@@ -319,7 +319,7 @@ status_t userboot_root_job(struct job **out)
     return OK;
 }
 
-bool userboot_run_init(uint64_t timeout_s, const char *arg)
+bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *arg2)
 {
     const void *img;
     uint64_t size;
@@ -332,7 +332,7 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg)
         report("init: no memory for the root job");
         return false;
     }
-    const char *const argv[] = { "init", arg };
+    const char *const argv[] = { "init", arg, arg2 };
     /* init holds the root of hardware authority (SR_RESOURCE) and slices
      * it for devmgr. */
     struct userboot_handle extra[1];
@@ -344,7 +344,8 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg)
         nextra = 1;
     }
     struct process *p;
-    status_t st = userboot_spawn("bin/init", argv, arg ? 2 : 1, root, extra, nextra, NULL, &p);
+    status_t st = userboot_spawn("bin/init", argv, !arg ? 1 : arg2 ? 3 : 2, root, extra, nextra,
+                                 NULL, &p);
     if (st != OK) {
         report("init: could not start bin/init (%s)", status_str(st));
         job_unref(root);

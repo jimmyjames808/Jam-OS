@@ -1,6 +1,7 @@
 /* The kernel's text console on the boot framebuffer (dev/fbcon.c). It
  * draws the kernel log until the console process takes the screen
- * (framebuffer_take), and again after a panic, which always draws. */
+ * (framebuffer_take), and again after a panic, which always draws. On a
+ * boot with the splash it draws nothing until then (quiet). */
 #pragma once
 
 #include <stdbool.h>
@@ -9,7 +10,13 @@
 #include <jam/boot.h>
 #include <jam/status.h>
 
-void fbcon_init(const struct boot_framebuffer *fb);
+/* The boot splash's background (bin/splash, <splash.h>'s SPLASH_BG). */
+#define FBCON_SPLASH_BG 0x1e1a1du
+
+/* splash: the boot splash will play: the screen is filled with
+ * FBCON_SPLASH_BG and stays so (the log is kept, not drawn) until the
+ * console takes it; fbcon_release and a panic draw the log again. */
+void fbcon_init(const struct boot_framebuffer *fb, bool splash);
 void fbcon_write(const char *s, size_t len);
 void fbcon_set_colors(uint32_t fg_rgb, uint32_t bg_rgb);
 void fbcon_clear(void);
