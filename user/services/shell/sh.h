@@ -135,6 +135,9 @@ handle_t sh_hda(void);
 /* init's control channel (abi/idl/initctl.idl: kill, sync, reboot, mount), or 0
  * (a shell that init didn't start has none). */
 handle_t sh_initctl(void);
+/* The mixer's `audio` and `audioctl` channels, or 0 (no mixer). */
+handle_t sh_audio(void);
+handle_t sh_audio_ctl(void);
 
 /* ---- programs (sh_program.c) ------------------------------------------------------- */
 
@@ -143,9 +146,12 @@ handle_t sh_initctl(void);
  * namespace, a PROGRAM-level console channel and nothing of devmgr's; its
  * job is killed when it ends. */
 int sh_run_program(int argc, char **argv);
-/* A test program (utest, usbtest): run it with devmgr's channels, then
- * show its result line from the kernel log; its status. */
+/* A test program (utest, usbtest): run it with devmgr's channels and the
+ * mixer's control channel, then show its result line from the kernel log;
+ * its status. */
 int sh_run_test_program(int argc, char **argv);
+/* The same, with init's control channel as SR_USER + 3 too (mixtest). */
+int sh_run_test_program_initctl(int argc, char **argv);
 
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 
@@ -280,8 +286,9 @@ SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
-SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
+SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(vol); SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(run);
 /* tests */
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
+SH_CMD(mixtest);
 SH_CMD(demo); SH_CMD(crash); SH_CMD(panic);
