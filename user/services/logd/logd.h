@@ -57,6 +57,10 @@ void     logfile_close(void);
  * panics. */
 const char *logfile_path(void);
 const char *logfile_name(void);
+/* "<what> at Thu 1 Oct 2026 14:03:20 AEST (UTC+10:00)": the time the
+ * kernel started (what: "the kernel started") into out, by the wall clock
+ * (<wallclock.h>), or why it isn't known. */
+void        logfile_date(char *out, size_t cap, const char *what);
 /* Where a panicked boot's log is saved: <name>-crash.txt for a boot that
  * named its log (name, e.g. "boot-0042"), else the next free number's
  * boot-NNNN-crash.txt. Makes /data/logs if needed. */
