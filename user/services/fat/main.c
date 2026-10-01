@@ -138,7 +138,23 @@ static status_t op_stop(void *ctx)
     return vol.disk_gone ? ERR_PEER_CLOSED : disk_settle(true);
 }
 
-static const struct fsctl_ops ctl_ops = { .stop = op_stop };
+/* fsctl.stats: the counters, as they are. */
+static status_t op_stats(void *ctx, uint64_t *out_entries_read, uint64_t *out_cache_hits,
+                         uint64_t *out_cache_fills, uint64_t *out_cache_bypassed,
+                         uint64_t *out_cache_updated)
+{
+    (void)ctx;
+    struct fat_cache_stats cs;
+    cache_stats(&cs);
+    *out_entries_read = dirs_entries_read();
+    *out_cache_hits = cs.hits;
+    *out_cache_fills = cs.fills;
+    *out_cache_bypassed = cs.bypassed;
+    *out_cache_updated = cs.updated;
+    return OK;
+}
+
+static const struct fsctl_ops ctl_ops = { .stop = op_stop, .stats = op_stats };
 
 /* Serve until the fs channel's client is gone, the disk is, or fsctl.stop
  * was asked (OK), or something fails (its status). Each channel gets

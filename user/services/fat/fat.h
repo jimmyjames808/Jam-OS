@@ -11,8 +11,8 @@
  * Files: main.c the startup, mount and event loop; disk.c FatFs's disk
  * callbacks over `block`, the volume's dirty flag and get_fattime;
  * cache.c the write-through block cache under them;
- * fsops.c the `fs` methods; fileops.c the open-file table and the `file`
- * methods; views.c the narrower `fs` channels (fs.view); path.c paths,
+ * fsops.c the `fs` methods; dirs.c the cursors that make listing a
+ * directory linear; fileops.c the open-file table and the `file` methods; views.c the narrower `fs` channels (fs.view); path.c paths,
  * names, times and the FRESULT -> ERR_* mapping. */
 #pragma once
 
@@ -23,7 +23,9 @@
 #include <fs_idl.h>
 #include <os.h>
 
-#define FAT_MAX_FILES  32          /* open files at once; FF_FS_LOCK is this + 2 */
+#define FAT_MAX_FILES  32          /* open files at once */
+#define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c); FF_FS_LOCK
+                                      is FAT_MAX_FILES + this + 2 */
 #define FAT_FILE_BUF   (64u << 10) /* each open file's transfer buffer, bytes */
 #define FAT_SECTOR     512u        /* the only sector size (FF_MAX_SS) */
 #define FAT_FILE_MAX   0xffffffffull /* FAT's largest file, bytes */
@@ -161,6 +163,18 @@ uint64_t fat_unix_time(WORD date, WORD time);
 /* ---- fsops.c --------------------------------------------------------------------- */
 
 extern const struct fs_ops fat_fs_ops;
+
+/* ---- dirs.c ---------------------------------------------------------------------- */
+
+/* Entry `index` of directory `path` (resolved) into *fi, as a walk from
+ * its start would find it, from a cursor where one can go on.
+ * ERR_NOT_FOUND: past the end; ERR_WRONG_TYPE: path is a file. */
+status_t dirs_read(const char *path, uint32_t index, FILINFO *fi);
+/* Close every cursor: before anything that adds, removes or renames an
+ * entry. */
+void     dirs_forget(void);
+/* f_readdir calls so far (fsctl.stats). */
+uint64_t dirs_entries_read(void);
 
 /* ---- views.c --------------------------------------------------------------------- */
 

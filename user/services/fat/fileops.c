@@ -263,6 +263,8 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
     /* Always readable: a later reader shares this FIL. */
     BYTE mode = FA_READ | (flags & FS_WRITE ? FA_WRITE : 0) |
                 (exists ? FA_OPEN_EXISTING : FA_CREATE_NEW);
+    if (!exists)
+        dirs_forget();   /* a new entry: listings start again */
     FRESULT fr = f_open(&f->fil, path, mode);
     if (fr == FR_DENIED)
         return exists ? ERR_ACCESS_DENIED : ERR_NO_SPACE;

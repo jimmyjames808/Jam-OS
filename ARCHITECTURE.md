@@ -399,7 +399,7 @@ Every driver and service is a userspace process from the start.
   `usb` (usb-bus to devmgr and to class drivers), `input` and `console`,
   `storage` and `block` (usb-storage to devmgr and to a filesystem),
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
-  filesystem), `initctl` and `logctl` (init's and logd's control
+  filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
   mixer). devmgr's own protocol is still
   written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,

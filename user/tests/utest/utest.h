@@ -178,6 +178,8 @@ bool t_fat_format_off(void);
 bool t_fat_dirty_volume(void);
 bool t_fat_disk_gone(void);
 bool t_fat_gone_mounting(void);
+bool t_fat_dir_linear(void);
+bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */

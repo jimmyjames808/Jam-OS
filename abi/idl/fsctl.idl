@@ -14,3 +14,9 @@ protocol fsctl 20
 # closed (ERR_PEER_CLOSED). Nothing is lost between the two, which a sync
 # followed by a kill can't promise.
 1  stop  () -> ()
+# What the service has done so far, for tests and diagnostics (it changes
+# nothing): directory entries read (fs.readdir's work: one per entry
+# listed when listings go forward), and its block cache's sector reads
+# answered from a line, lines read from the disk, big reads past it and
+# sectors written that a line held.
+2  stats  () -> (u64 entries_read, u64 cache_hits, u64 cache_fills, u64 cache_bypassed, u64 cache_updated)

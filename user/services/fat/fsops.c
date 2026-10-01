@@ -8,8 +8,6 @@
  * has unwritten changes. */
 #include "fat.h"
 
-#define READDIR_MAX 65536u   /* a FAT directory holds at most this many entries */
-
 /* A changing method on a read-only volume. */
 static status_t writable(void)
 {
@@ -74,36 +72,18 @@ static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
     return OK;
 }
 
-/* The protocol has no directory handle: each call walks from the start to
- * entry `index`. */
+/* From a cursor (dirs.c): a listing costs one entry read per entry. */
 static status_t op_readdir(void *ctx, const uint8_t path[256], uint32_t index,
                            uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
 {
     (void)ctx;
     char p[FS_PATH_MAX];
-    DIR dir;
     FILINFO fi;
     status_t st = path_resolve(path, p);
+    if (st == OK)
+        st = dirs_read(p, index, &fi);
     if (st != OK)
         return st;
-    if (index >= READDIR_MAX)
-        return ERR_NOT_FOUND;
-    FRESULT fr = f_opendir(&dir, p);
-    if (fr == FR_NO_PATH && f_stat(p, &fi) == FR_OK)
-        return ERR_WRONG_TYPE;   /* a file */
-    if (fr != FR_OK)
-        return fr_status(fr);
-    fi.fname[0] = '\0';
-    for (uint32_t i = 0; i <= index && fr == FR_OK; i++) {
-        fr = f_readdir(&dir, &fi);
-        if (fr == FR_OK && fi.fname[0] == '\0')
-            break;   /* the end */
-    }
-    (void)f_closedir(&dir);   /* it only gives FatFs's lock back */
-    if (fr != FR_OK)
-        return fr_status(fr);
-    if (fi.fname[0] == '\0')
-        return ERR_NOT_FOUND;
     size_t n = strnlen(fi.fname, FS_PATH_MAX - 1);
     memcpy(out_name, fi.fname, n);   /* out_name came zeroed */
     *out_is_dir = (fi.fattrib & AM_DIR) ? 1 : 0;
@@ -122,6 +102,7 @@ static status_t op_mkdir(void *ctx, const uint8_t path[256])
         return st;
     if (path_is_root(p))
         return ERR_ALREADY_EXISTS;
+    dirs_forget();
     FRESULT fr = f_mkdir(p);
     /* FR_DENIED: no free cluster, or no room in a fixed root directory. */
     return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
@@ -138,6 +119,7 @@ static status_t op_unlink(void *ctx, const uint8_t path[256])
         return st;
     if (path_is_root(p))
         return ERR_ACCESS_DENIED;
+    dirs_forget();
     FRESULT fr = f_unlink(p);
     /* FR_DENIED: a directory that is not empty, or a read-only file. */
     if (fr == FR_DENIED && is_dir(p))
@@ -160,6 +142,7 @@ static status_t op_rename(void *ctx, const uint8_t from[256], const uint8_t to[2
      * path reaches. */
     if (path_is_root(pf) || path_is_root(pt) || path_inside(pt, pf))
         return ERR_INVALID_ARGS;
+    dirs_forget();
     FRESULT fr = f_rename(pf, pt);
     /* FR_DENIED: no room for the new entry. */
     return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
