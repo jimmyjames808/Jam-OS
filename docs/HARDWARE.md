@@ -55,7 +55,8 @@ the protocol it chose (report protocol for a mouse with a wheel).
 
 Seen in the boot logs, all harmless so far:
 - The mouse on port 11 sometimes fails its first Address Device; usb-bus
-  tries the root port again and it attaches.
+  tries the root port again and it attaches, but the retry costs about
+  3 s of the boot (M8.6 looks for the cause).
 - The HAF700 on port 8 detaches and comes back once during enumeration,
   and after a warm reboot devmgr can log that its hid "did not end
   cleanly" (a follow-up in [ROADMAP.md](ROADMAP.md#smaller-follow-ups)).
