@@ -7,7 +7,8 @@
  *   1  a client that didn't ask gets no mouse message: the key comes first
  *   2  after a struct input_want it gets struct input_mouse_event messages
  *      (12 bytes, kind INPUT_EVENT_MOUSE) that add up to what the mouse did,
- *      and keys still come as 8 bytes
+ *      the wheel included (+: a notch away from the user), and keys still
+ *      come as 8 bytes
  *   3  a newer focus that didn't ask gets none, and the older one that did
  *      gets none either: the mouse goes with the keys
  *   4  an input_want without the mouse bit stops them
@@ -30,6 +31,7 @@ union msg {
 struct seen {
     int      reports;        /* mouse messages */
     int      dx, dy;         /* their movement, summed */
+    int      wheel;          /* their wheel notches, summed */
     uint8_t  pressed;        /* every button seen down */
     uint8_t  last;           /* the buttons in the last one */
     bool     wellformed;     /* each had the right kind and a zero reserved field */
@@ -70,6 +72,7 @@ static bool step(handle_t k, int number, struct seen *s)
         s->reports++;
         s->dx += m.mouse.dx;
         s->dy += m.mouse.dy;
+        s->wheel += m.mouse.wheel;
         s->pressed |= m.mouse.buttons;
         s->last = m.mouse.buttons;
         s->wellformed &= m.mouse.kind == INPUT_EVENT_MOUSE && !m.mouse.reserved;
@@ -103,6 +106,7 @@ static bool mouse_checks(handle_t con)
     CHECK(s.reports >= 2 && s.wellformed && s.key == 'b');
     CHECK_EQ(s.dx, 7);
     CHECK_EQ(s.dy, -3);
+    CHECK_EQ(s.wheel, 1);   /* two notches away from the user, one back */
     CHECK(s.pressed == (INPUT_BTN_LEFT | INPUT_BTN_RIGHT) && s.last == 0);
 
     CHECK_ST(console_open_keys(con, &k2), OK);

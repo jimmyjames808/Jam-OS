@@ -49,7 +49,9 @@ What usb-bus finds on it (root port numbers):
 
 So the keyboard is on a root port (it needs no Transaction Translator), and
 storage talks to the stick through the high-speed hub. The shell's hid
-process for the keyboard is `hid-10:0`.
+process for the keyboard is `hid-10:0`. Each hid of a boot mouse interface
+logs that interface's report descriptor in hex, the layout it found and
+the protocol it chose (report protocol for a mouse with a wheel).
 
 Seen in the boot logs, all harmless so far:
 - The mouse on port 11 sometimes fails its first Address Device; usb-bus

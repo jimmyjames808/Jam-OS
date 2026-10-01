@@ -13,7 +13,9 @@
 # reveal on (8, 8), cell (7, 8) shows a 1 whose mine is at (6, 7).
 wait 120 Jam OS shell
 wait jam>
-seen 30 boot mouse ready
+# "report mouse ready", or with hidboot "boot mouse ready" (mouse-test.sh
+# checks which).
+seen 30 mouse ready
 # The shell never asked for the mouse: moving it, clicking and turning the
 # wheel sends it nothing (its line editor would misread any message), and
 # the wheel scrolls the console back as before.
@@ -60,6 +62,11 @@ sleep 0.3
 type a
 wait 30 contest: mouse: step 2
 monitor mouse_move 7 -3
+monitor mouse_move 0 0 1
+sleep 0.1
+monitor mouse_move 0 0 1
+sleep 0.1
+monitor mouse_move 0 0 -1
 sleep 0.2
 monitor mouse_button 1
 sleep 0.2

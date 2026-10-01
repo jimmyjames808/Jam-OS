@@ -488,7 +488,7 @@ Every driver and service is a userspace process from the start.
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
-| hid | a `usb` interface | `input` events (boot keyboard and mouse, keyboard layout) to the console | yes |
+| hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
@@ -682,7 +682,13 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
 - The HID driver handles a mouse as well as a keyboard and sends events
-  through a protocol a compositor can take over. Until there is one, the
+  through a protocol a compositor can take over. Keyboards stay in the
+  boot protocol. A mouse whose report descriptor has a wheel is driven in
+  the report protocol, decoded with the layout a small bounded parser
+  (`drivers/hid/report.c`) finds in the descriptor, since a real mouse's
+  boot protocol has no wheel; the boot word `hidboot` keeps every mouse
+  in the boot protocol. The horizontal wheel is parsed but not sent: the
+  `input` protocol has no field for it. Until there is one, the
   console passes mouse reports on to the client that has the key focus, on
   its key channel, and only if that client asked for them (the wire format
   is in `<jam/abi.h>` with the key event's); the apps library turns them

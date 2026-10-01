@@ -257,6 +257,8 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "nopcid verbose crashkernel=64 idlespin=5 smp=loader"));
     kexec_next_cmdline("shell nosplash crashtest=lockorder", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "shell nosplash testlockorder"));
+    kexec_next_cmdline("hidboot keytest", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "hidboot"));
     kexec_next_cmdline("", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
     /* Cut to fit, still terminated. */

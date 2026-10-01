@@ -322,7 +322,8 @@ status_t userboot_root_job(struct job **out)
     return OK;
 }
 
-bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *arg2)
+bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *const *words,
+                       unsigned nwords)
 {
     const void *img;
     uint64_t size;
@@ -335,7 +336,10 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *arg2)
         report("init: no memory for the root job");
         return false;
     }
-    const char *const argv[] = { "init", arg, arg2 };
+    const char *argv[2 + USERBOOT_MAX_WORDS] = { "init", arg };
+    unsigned argc = arg ? 2 : 1;
+    for (unsigned i = 0; arg && i < nwords && i < USERBOOT_MAX_WORDS; i++)
+        argv[argc++] = words[i];
     /* init holds the root of hardware authority (SR_RESOURCE) and slices
      * it for devmgr. */
     struct userboot_handle extra[2];
@@ -353,8 +357,7 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *arg2)
         extra[nextra++].kh = khandle_from_new(vmo_kobject(crashlog), CRASHLOG_RIGHTS);
     }
     struct process *p;
-    status_t st = userboot_spawn("bin/init", argv, !arg ? 1 : arg2 ? 3 : 2, root, extra, nextra,
-                                 NULL, &p);
+    status_t st = userboot_spawn("bin/init", argv, argc, root, extra, nextra, NULL, &p);
     if (st != OK) {
         report("init: could not start bin/init (%s)", status_str(st));
         job_unref(root);

@@ -132,13 +132,16 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     /* A USB class driver is named after its interface ("hid-6.1:0"), a
      * filesystem service after its mount ("fat-data"): in the log, in
      * `ps`, for the shell's `kill`. The service is also told its mount,
-     * and the one that may format a blank partition is told so. */
+     * and the one that may format a blank partition is told so; a hid,
+     * "hidboot" when devmgr was. */
     const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
     char mount[16] = "";
     if (b->kind == BIND_FS)
         snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
     const char *argv[3] = { name ? name : b->path, b->kind == BIND_FS ? mount : NULL,
                             b->kind == BIND_FS ? fs_format_arg(b) : NULL };
+    if (b->kind == BIND_USB)
+        argv[1] = usb_driver_arg(b);   /* "hidboot" or none */
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argv[2] ? 3 : argv[1] ? 2 : 1, .argv = argv,
         .job = job,

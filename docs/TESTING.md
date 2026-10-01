@@ -128,6 +128,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   test.
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
   `memmap`, `init_timeout=<s>` (how long the `init` run may take).
+- `hidboot`: hid keeps every mouse in the boot protocol (no wheel on
+  most real mice) instead of the report protocol it uses for a mouse
+  whose report descriptor has a wheel: the way back if a mouse misbehaves
+  in report protocol (no movement, or nonsense). A reboot keeps it.
 - `test<name>`: a crash test at boot (`testpf`, `testlockorder`, ...; the
   names are in `kernel/debug/selftest.c`). Each must panic with the right
   message; `testbp` must come back. The early ones run before the stored
@@ -286,7 +290,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `apps.txt` | snake, mines and sysmon: self-tests, play, screenshots; one mouse click in mines; the `sysmon` command, and `run sysmon` refused for want of its handle | use `tools/apps-test.sh` |
 | `jamjar.txt` | jamjar (the music player's window): its self-test; `run jamjar` without the player; the `jamjar` command: an album played by keys, next, back, pause, volume, search, a 1 kHz tone whose loudest band must be band 8, help, roulette, the full jar, the sleep timer; mouse clicks on a button, the volume, the jam and a track row; the music still playing after q | use `tools/jamjar-test.sh` |
 | `jamjar-hd.txt` | jamjar at 2560x1440 by keys, for screenshots at the PC's size | use `JAMJAR_HD=1 tools/jamjar-test.sh` |
-| `mouse.txt` | the mouse through QEMU's monitor: the shell and tetris undisturbed by it, the wheel's scroll-back, then mines played with clicks at exact cells (reveal, flag, chord, peek, the buttons), and acceleration | use `tools/mouse-test.sh` |
+| `mouse.txt` | the mouse through QEMU's monitor: the shell and tetris undisturbed by it, the wheel's scroll-back, contest's client getting the movement, buttons and wheel, then mines played with clicks at exact cells (reveal, flag, chord, peek, the buttons), and acceleration | use `tools/mouse-test.sh` |
 | `ktest-all.txt` | every kernel test from the shell, live, three times in one boot (a test that leaves something behind fails its next run) | |
 | `soak.txt` | `soak loops=2` from the shell: two shuffled loops under load with utest between them, and the SOAK RESULTS box | `QEMU_TIMEOUT=600` |
 | `soak-plug.txt` | the soak with a second, writable stick and the boot stick pulled and plugged while it runs | use `tools/soak-test.sh` |
@@ -321,7 +325,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/fun-test.sh <outdir>` | the apps (`fun.txt`); `FUN_HD=1` runs at the PC's 2560x1440 |
 | `tools/apps-test.sh <outdir>` | snake, mines and sysmon (`apps.txt`), with a USB mouse; `APPS_HD=1` runs at 2560x1440 |
 | `tools/jamjar-test.sh <outdir>` | jamjar (`jamjar.txt`), with a USB keyboard and mouse and an hda-output capture, on a library the script makes (six made-up songs as MP3 under owner-style UTF-8 names, and a 1 kHz tone); `JAMJAR_HD=1` runs `jamjar-hd.txt` at 2560x1440; screenshots `jamjar-*.png` |
-| `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse; 1280x800 only (the clicks are at pixel positions) |
+| `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse, driven in the report protocol (its descriptor has a wheel); `MOUSE_HIDBOOT=1` adds the boot word `hidboot` and checks the boot protocol instead; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot; each panic starts the stored kernel, whose shell says what happened (`kexecbad`: refused, the panic screen stays up) |
 | `tools/kdump-test.sh <outdir> [case...]` | a panic starts the stored kernel, each case a fresh boot of a stick image read afterwards with mtools: `save` (`crash panic yes`: no panic screen, the next boot comes up on every CPU, saves `/data/logs/boot-0001-crash.txt` with the panic and the lines before it, logs to `boot-0002` and its shell says so), `loop` (`crashtest=lockorder`: the next boot panics at once, a crash loop, and halts on the red panic screen), `bad` (`crash kexecbad yes`: the damaged stored kernel is refused, red panic screen, nothing saved), `nostick` (the stick pulled first: the shell says the log was not saved and why), `screen` (with the splash: the screen as the next kernel starts is all the splash background) |
 | `tools/kexec-reboot-test.sh <outdir> [run...]` | `reboot` by kexec: `kexec` (an unchanged stick: no file read, no firmware reset, the screen all the splash background as the next kernel starts, which brings up every CPU, plays the splash and reaches the shell and `/data`; the old boot's log ends with the reboot's sync), `changed` (the stick swapped for one whose kernel file is longer: both files read and loaded first, the screen blanked meanwhile), `firmware` (`reboot -f`), `fallback` (`crashkernel=0`: `reboot` falls back to the firmware) |

@@ -1,7 +1,8 @@
 /* utest internals: the suite (main.c: helpers, the kernel's objects and
  * rights, the table of tests; threads.c; drivers.c: drivers as processes
  * and devmgr's edu driver; supervise.c: devmgr's supervision and what a
- * driver's handles can't do; hid.c: the hid driver against hidmock.c;
+ * driver's handles can't do; hid.c and hidmouse.c: the hid driver
+ * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
  * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
@@ -27,6 +28,11 @@ bool t_hid_repeat(void);
 bool t_hid_mouse(void);
 bool t_hid_composite(void);
 bool t_hid_unplug_and_console_gone(void);
+/* hidmouse.c: mice in report protocol, and the report descriptor parser. */
+bool t_hid_report_parser(void);
+bool t_hid_mouse_report_protocol(void);
+bool t_hid_mouse_report_ids(void);
+bool t_hid_mouse_boot_kept(void);
 
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */

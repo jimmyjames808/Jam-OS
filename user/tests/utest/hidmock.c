@@ -47,6 +47,37 @@ static const uint8_t rd_media[] = {
     0x75, 0x08, 0x95, 0x07, 0x81, 0x02, 0xc0,
 };
 
+/* HID 1.11 appendix B.2's boot mouse: 3 buttons, X, Y, no wheel. */
+static const uint8_t rd_plain_mouse[] = {
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01,
+    0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01,
+    0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f,
+    0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xc0, 0xc0,
+};
+/* A gaming mouse in report protocol: 16 buttons, X/Y 16 bits, wheel, AC
+ * Pan: 8-byte reports, no report id. */
+static const uint8_t rd_gaming[] = {
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01,
+    0x29, 0x10, 0x15, 0x00, 0x25, 0x01, 0x95, 0x10, 0x75, 0x01, 0x81, 0x02, 0x05, 0x01,
+    0x16, 0x01, 0x80, 0x26, 0xff, 0x7f, 0x75, 0x10, 0x95, 0x02, 0x09, 0x30, 0x09, 0x31,
+    0x81, 0x06, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01, 0x09, 0x38, 0x81, 0x06,
+    0x05, 0x0c, 0x0a, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xc0, 0xc0,
+};
+/* A receiver: keyboard id 1, mouse id 2 (12-bit X/Y), consumer id 3. */
+static const uint8_t rd_receiver[] = {
+    0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7,
+    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08,
+    0x81, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x26, 0xff, 0x00, 0x05, 0x07, 0x19,
+    0x00, 0x2a, 0xff, 0x00, 0x81, 0x00, 0xc0,
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x85, 0x02, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09,
+    0x19, 0x01, 0x29, 0x10, 0x15, 0x00, 0x25, 0x01, 0x95, 0x10, 0x75, 0x01, 0x81, 0x02,
+    0x05, 0x01, 0x16, 0x01, 0xf8, 0x26, 0xff, 0x07, 0x75, 0x0c, 0x95, 0x02, 0x09, 0x30,
+    0x09, 0x31, 0x81, 0x06, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01, 0x09, 0x38,
+    0x81, 0x06, 0x05, 0x0c, 0x0a, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xc0, 0xc0,
+    0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x03, 0x75, 0x10, 0x95, 0x02, 0x15, 0x01,
+    0x26, 0xff, 0x02, 0x19, 0x01, 0x2a, 0xff, 0x02, 0x81, 0x00, 0xc0,
+};
+
 #define IF(num, cls, sub, proto, ep, maxp, rd) { num, cls, sub, proto, ep, maxp, rd, sizeof(rd) }
 
 static const struct mock_if kbd_ifs[] = { IF(0, 3, 1, 1, 0x81, 8, rd_keyboard) };
@@ -56,9 +87,17 @@ static const struct mock_if combo_ifs[] = {
     IF(1, 3, 0, 0, 0x82, 16, rd_media),
     IF(2, 8, 6, 0x50, 0x83, 64, rd_media),   /* not HID at all (a mass storage one) */
 };
-const struct mock_dev dev_kbd = { 0x0627, 0x0001, kbd_ifs, 1 };      /* QEMU usb-kbd */
-const struct mock_dev dev_mouse = { 0x0627, 0x0001, mouse_ifs, 1 };
-const struct mock_dev dev_combo = { 0x258a, 0x0033, combo_ifs, 3 };  /* the PC's */
+const struct mock_dev dev_kbd = { 0x0627, 0x0001, kbd_ifs, 1, false };      /* QEMU usb-kbd */
+const struct mock_dev dev_mouse = { 0x0627, 0x0001, mouse_ifs, 1, false };
+const struct mock_dev dev_combo = { 0x258a, 0x0033, combo_ifs, 3, false };  /* the PC's */
+
+static const struct mock_if plain_mouse_ifs[] = { IF(0, 3, 1, 2, 0x81, 4, rd_plain_mouse) };
+static const struct mock_if gaming_ifs[] = { IF(0, 3, 1, 2, 0x81, 8, rd_gaming) };
+static const struct mock_if receiver_ifs[] = { IF(1, 3, 1, 2, 0x82, 16, rd_receiver) };
+const struct mock_dev dev_plain_mouse = { 0x0001, 0x0002, plain_mouse_ifs, 1, false };
+const struct mock_dev dev_gaming = { 0x258a, 0x0033, gaming_ifs, 1, false };
+const struct mock_dev dev_gaming_stubborn = { 0x258a, 0x0033, gaming_ifs, 1, true };
+const struct mock_dev dev_receiver = { 0x046d, 0xc52b, receiver_ifs, 1, false };
 
 /* The configuration descriptor of dev: config, then per interface its
  * interface, HID (for class 3) and endpoint descriptors. */
@@ -153,6 +192,8 @@ static status_t m_control_out(void *ctx, uint8_t type, uint8_t request, uint16_t
                                           length ? data[0] : 0 };
     if (request == 0x0a)
         return ERR_NOT_SUPPORTED;   /* SET_IDLE stalls, as on many real keyboards */
+    if (request == 0x0b && value == 1 && m->dev->no_report_protocol)
+        return ERR_NOT_SUPPORTED;   /* SET_PROTOCOL(report) stalls */
     return OK;
 }
 
@@ -300,10 +341,8 @@ static bool ready(struct mock *m, unsigned want_leds)
     return false;
 }
 
-/* Start drv/hid on interface `ifn` of dev, with a console unless
- * !with_console, and wait until it serves reports (unless !wait_ready). */
-bool mock_start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool with_console,
-                  bool wait_ready)
+static bool start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool with_console,
+                  bool wait_ready, const char *arg)
 {
     *m = (struct mock){ .dev = dev, .itf = &dev->ifs[ifn] };
     m->config_len = build_config(dev, m->config);
@@ -318,11 +357,11 @@ bool mock_start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool w
     if (with_console)
         CHECK_ST(jam_port_bind(m->port, m->input, KEY_INPUT, SIG_READABLE | SIG_PEER_CLOSED,
                                PORT_BIND_PERSISTENT), OK);
-    const char *argv[] = { "drv/hid" };
+    const char *argv[] = { "drv/hid", arg };
     struct spawn_handle x[2] = { { SR_DRIVER(DR_USB), usb_drv },
                                  { SR_DRIVER(DR_INPUT), input_drv } };
     struct spawn_args a = {
-        .path = "drv/hid", .argc = 1, .argv = argv, .job = m->job, .extra = x,
+        .path = "drv/hid", .argc = arg ? 2 : 1, .argv = argv, .job = m->job, .extra = x,
         .nextra = with_console ? 2 : 1,
     };
     CHECK_ST(spawn(&a, &m->proc), OK);
@@ -331,6 +370,17 @@ bool mock_start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool w
         FAIL("the driver never opened its endpoint (%u control requests, dead %d)", m->nctl,
              dead(m));
     return true;
+}
+
+bool mock_start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool with_console,
+                bool wait_ready)
+{
+    return start(m, dev, ifn, with_console, wait_ready, NULL);
+}
+
+bool mock_start_arg(struct mock *m, const struct mock_dev *dev, unsigned ifn, const char *arg)
+{
+    return start(m, dev, ifn, true, true, arg);
 }
 
 /* Close what we still hold of the unplugged device: DR_USB and/or reports. */

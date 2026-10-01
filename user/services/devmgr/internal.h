@@ -103,6 +103,9 @@ extern handle_t       pci_res, port;
 /* Problems for the exit code: real drivers that crashed or were given up
  * on, and drivers that didn't end cleanly. */
 extern unsigned       problems;
+/* The argument "hidboot": passed on to every hid (mice stay in the boot
+ * protocol). */
+extern bool           hidboot;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */
@@ -151,6 +154,9 @@ void usb_bus_gone(struct binding *b);
  * kept channel) and, with a console, DR_INPUT. ERR_PEER_CLOSED: the
  * interface is gone; ERR_SHOULD_WAIT: the console is restarting. */
 status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* The word a BIND_USB binding's driver is started with after its name:
+ * "hidboot" for drv/hid when devmgr was given it, else NULL. */
+const char *usb_driver_arg(const struct binding *b);
 /* DEVMGR_RELEASE: a duplicate of the interface channel b's driver had (the
  * one channel usb-bus lets open the interface's bulk endpoints), for a
  * test that drives the interface itself. ERR_PEER_CLOSED: it is gone. */

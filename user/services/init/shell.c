@@ -419,10 +419,15 @@ static status_t start_devmgr(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[] = { "bin/devmgr", "nousb" };
+    const char *argv[3] = { "bin/devmgr" };
+    int argc = 1;
+    if (nousb)
+        argv[argc++] = "nousb";
+    if (init_hidboot)
+        argv[argc++] = "hidboot";
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
                                 { SR_CONSOLE, c } };
-    st = start(DEVMGR, nousb ? 2 : 1, argv, x, 4);   /* consumes pci, b, qb and c */
+    st = start(DEVMGR, argc, argv, x, 4);   /* consumes pci, b, qb and c */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);

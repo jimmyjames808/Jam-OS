@@ -5,8 +5,10 @@
  * devmgr leaves USB controllers alone) or "soak=<minutes>" (a plain boot
  * whose shell starts the soak test) it starts and supervises the bootfs
  * server, the console, serial input, devmgr and the shell (shell.c) and
- * never exits; a second word "splash" plays the boot splash first
- * (splash.c). Otherwise it starts the bootfs server (bin/bootfs: the boot
+ * never exits; an option word "splash" after it plays the boot splash
+ * first (splash.c). The option word "hidboot" (with any mode) is passed
+ * on to devmgr, which passes it to every hid: mice stay in the boot
+ * protocol. Otherwise it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -30,6 +32,8 @@
  * "Trust"); the programs init runs are the test suites: they get both. */
 static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
+
+bool init_hidboot;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -171,11 +175,12 @@ static bool start_devmgr(handle_t console)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[] = { "bin/devmgr" };
+        const char *argv[] = { "bin/devmgr", "hidboot" };
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
-            .path = "bin/devmgr", .argc = 1, .argv = argv, .job = devmgr_job, .extra = x,
+            .path = "bin/devmgr", .argc = init_hidboot ? 2 : 1, .argv = argv, .job = devmgr_job,
+            .extra = x,
             .nextra = console ? 4 : 3,
         };
         st = spawn(&sa, &devmgr_proc);   /* consumes pci, b, qb and console */
@@ -376,7 +381,11 @@ int main(int argc, char **argv)
      * input and the shell; the safe mode entry: the same without USB. */
     /* argv[2] "splash" (the kernel's choice: a plain boot without
      * `verbose` or `nosplash`): the boot splash plays first. */
-    bool splash = argc > 2 && !strcmp(argv[2], "splash");
+    bool splash = false;
+    for (int i = 2; i < argc; i++) {
+        splash |= !strcmp(argv[i], "splash");
+        init_hidboot |= !strcmp(argv[i], "hidboot");
+    }
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);
         return 1;
