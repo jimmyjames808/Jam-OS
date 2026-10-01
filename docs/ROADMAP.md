@@ -41,12 +41,13 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 
 ## Next: M8.6, cleanup and polish
 
-The row below has the whole list. In order: the independent review of
-M8.5's code; keyboard and mouse ready early in boot and the block cache;
-`/svc` with per-program views, `play` and jamjar's cover decoding split
-into small programs, UTF-8 in the log, running programs from `/data`;
-the log off the screen, `kernel load` and the small items; the code
-check last.
+The row below has the whole list. First the independent review of
+M8.5's code; then three tracks at once: A (keyboard and mouse ready early
+in boot, the block cache, the boot disk and the other small items), B
+(`/svc` with per-program views, `allow` for programs on `/data`, `play`
+and jamjar's cover decoding split into small programs, the root
+resource's `RIGHT_READ` split), C (the log off the screen, UTF-8 in the
+log, `kernel load`, the date and time, settings); the code check last.
 
 The audio track (A1, A2, AS) and M8.5 are done:
 [what they delivered](HISTORY.md#audio-a1-a2-as-and-m85-kexec).
@@ -54,21 +55,17 @@ The audio track (A1, A2, AS) and M8.5 are done:
 M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
 Known limits it left:
 - Only programs in `/boot` can be run: a file on `/data` or `/esp` does
-  not come with the right to execute it (decided: after M8).
-- A panic's own text is not in the boot log: logd can only save what it
-  had synced before. Since M8.5 the next boot saves it next to the boot
-  log (Revision 2 not yet on the PC).
+  not come with the right to execute it (M8.6 adds `allow`).
+- A panic's own text is not in that boot's log file: logd can only save
+  what it had synced. Since M8.5 the next boot saves the whole log next
+  to it as `boot-NNNN-crash.txt`.
 - GPT sticks are not read.
 
 ## Later
 
 | # | What | Done when |
 |---|---|---|
-| A1 | HD Audio driver + `beep`: controller reset, command rings, codec widget graph, the front-panel headphone pin, one output stream from a pinned DMA32 buffer, jack detection. The plan is [A1-PLAN.md](A1-PLAN.md) | `beep` in the shell plays a tone in the headphones on the real PC; unplugging and replugging them is logged |
-| A2 | `audio` protocol + mixer service: streams through shared VMO rings, volume from the shell, WAV playback from `/data` | two programs play at once |
-| AS | Boot splash, at the end of the audio track. A splash program is the first thing init starts: it takes the screen and plays the boot animation with its sound while the services start, holds the last frame until the shell is ready, then hands the screen back. The animation is made outside the repository (2560x1440 with alpha); `make` converts it with ffmpeg to MPEG-1 at 2560x1440 over the dark background (about 1.7 MB, drawn 1:1 on the PC) and puts it in the boot image. Decoded by pl_mpeg (MIT, in `third_party/`), sound through A2's mixer. A key skips it; a `verbose` boot word shows the text log instead; a panic always draws over it. With it, alpha blending in libfun (premultiplied alpha, blended fills and images, anti-aliased shapes) | the PC boots into the animation with its sound, and the shell comes up when it ends |
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
-| M8.5 | Kexec for reboot and panic (the owner's Revision 2 of a Linux kdump-style crash kernel): reserve RAM at boot and store a fresh copy of the same Jam OS there; `reboot` and a panic both jump into it (every CPU, all of RAM, every controller reset by its normal driver), so either looks like switching the PC on, except that after a panic the next boot saves the dead boot's log ring as `/data/logs/boot-NNNN-crash.txt` and the shell says so. Needs the kernel's own AP startup (INIT-SIPI-SIPI) so all 28 CPUs come back without Limine. Done properly or not at all: the stored kernel's RAM is unmapped from the running kernel and checksummed before the jump, the panic path takes no locks and allocates nothing, the panicking kernel never writes to the stick itself, bus mastering is off before the jump, a crash loop halts, and nothing relies on firmware keeping RAM across a reset (no pstore) | a deliberate panic on the PC comes back to the shell with its full log as a file on the stick; `reboot` kexecs with all CPUs up, without a firmware reboot or a file read when the stick is unchanged |
 | M8.6 | Cleanup and polish, in the order of [M8.6-PLAN.md](M8.6-PLAN.md): the independent review of M8.5's code; track A (keyboard and mouse ready early in boot, keys during the splash queued, a write-through block cache, the boot disk from Limine, Ctrl+Alt+Del's wait, a safe `make flash`, a bigger log ring); track B (`/svc` with per-program views, a program's list of what it wants approved by the owner with `allow`, which also marks programs on `/data` runnable, `play` and jamjar's cover decoding in programs of their own, the root resource's `RIGHT_READ` split); track C (the log and the RESULTS boxes off the screen with a short list of useful notices, UTF-8 in the log, `kernel load`, the real date and time from the RTC, settings in `/data/etc/settings`); last, the code check against CODING-GUIDE.md and ARCHITECTURE.md by fresh agents, findings first | keyboard and mouse ready within about 2 s of the kernel's start (the boot log says); the code check's findings fixed or written into the guide; All tests and `soak 10` on the PC with the SanDisk pulled and replugged |
 | M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
@@ -127,22 +124,14 @@ None has a plan yet; the order is the current preference.
 
 ## Smaller follow-ups
 
-Offered or noticed, not scheduled into a milestone yet. The first ones
-are the design questions M8 left open
+Offered or noticed, not scheduled into a milestone yet. M8.6 took
+several that were here (its plan has them): running programs from
+`/data`, which disk is the boot disk, a narrower namespace per program,
+the root resource's `RIGHT_READ` split, a safe `make flash`, a bigger
+kernel log ring and the block cache for the slow `/esp` read. The first
+ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
-- **Running programs from `/data`**: decided to wait until after M8, so
-  due now. Code runs only from a VMO with `RIGHT_EXEC`, which only the
-  boot image's has; the choice is who may make a file executable (and
-  whether the answer is user-space pagers, under Design ideas).
-- **Which disk is the boot disk.** devmgr takes the first disk with Jam
-  OS's layout and kernel, not the one the machine booted from: with two
-  Jam OS sticks in, enumeration order decides which becomes `/data` (and
-  is formatted if blank). Limine reports the boot volume's MBR disk id;
-  devmgr could be told it.
-- **Every program gets every mount read-write**: init gives the shell all
-  of them and the shell passes them all on. A narrower namespace per
-  program (no `/data`, or read-only) is possible and unused.
 - **devmgr's job check at a driver's exit** can report a driver that ended
   cleanly as "did not end cleanly" (seen on the PC for a hid after a warm
   reboot: a request it left queued at usb-bus is still charged to its
@@ -151,36 +140,30 @@ are the design questions M8 left open
 - **logd loses lines during the klog flood test**: the kernel test
   `console_klog_read_after_gap` writes more than the 64 KiB kernel log
   ring holds, on purpose, and no reader can follow it; each live `ktest`
-  leaves a "[logd: N bytes of the log were lost]" line. Skip that test live, or accept
-  it. A bigger ring would also cover the log written while the boot stick
-  is out.
+  leaves a "[logd: N bytes of the log were lost]" line. Skip that test
+  live, or accept it (M8.6's bigger ring covers the log written while
+  the boot stick is out, not this test).
 - **GPT sticks** are not read (their partitions are not mounted).
 - One bulk transfer at a time inside usb-bus's loop, and devmgr's
   bounded waits (up to 2 s) on a slow usb-storage: both block other work
   meanwhile. Asynchronous transfers would be a redesign of the serve loop.
-- `RIGHT_READ` on the root resource is one right for the kernel log, the
-  serial port, the process list and the clock: sysmon and logd each get
-  more than they use.
-- `make flash` copies the three files in place, so a stick pulled half
-  way does not boot (copy to a new name, then rename, would not).
 - The first `make -j8` after a new file in `abi/idl/` can spin forever;
   run again, it builds. Not looked into.
 - Names and volume labels from someone else's stick are printed as they
   are, escape sequences included; `ls` and `find` show a directory's
   first 256 entries and say nothing about the rest; init's loop waits up
   to 25 s for a `mount` and 15 s for a `kill`.
-- Reading a big file from `/esp` is slow: the ESP is FAT32 on 63 MiB, so
-  its clusters are one sector, and FatFs reads a file a cluster (one bulk
-  transfer) at a time. A kexec `reboot` after the stick's kernel changed
-  reads 7.8 MB from it: about 10 s in QEMU, 10-20 s on the PC (an
-  unchanged stick reads nothing). M8.6's block cache in fat with a
-  read-ahead would fix it.
-- The mouse wheel on the PC: hid drives a mouse whose report descriptor
-  has a wheel in the report protocol (real mice send no wheel in the boot
-  protocol); not yet confirmed on the PC. The boot log has each mouse's
-  descriptor in hex, to add to `drivers/hid/fixtures.c`. The horizontal
-  wheel is not sent (no field in `input`). The mouse test runs at
-  1280x800 only.
+- The mouse wheel works on the PC (2026-10-01: hid drives a mouse whose
+  report descriptor has a wheel in the report protocol; real mice send no
+  wheel in the boot protocol). The boot log has each mouse's descriptor
+  in hex, to add to `drivers/hid/fixtures.c`. The horizontal wheel is not
+  sent (no field in `input`). The mouse test runs at 1280x800 only.
+- The audio reviews' findings that were not fixed: an hda driver that
+  dies mid-stream leaves the codec path open until its restart resets
+  the link, init waits for the splash with no deadline, and the Lows
+  ([AUDIO-REVIEW.md](history/AUDIO-REVIEW.md)); jamjar shares the shell's
+  end of the player's channel, and its own Lows
+  ([JAMJAR-REVIEW.md](history/JAMJAR-REVIEW.md)).
 
 The rest:
 
