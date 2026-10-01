@@ -22,7 +22,8 @@
  * gfx_close.
  *
  * Also here: drawing (rectangles, blending, gradients, lines, blits;
- * premultiplied alpha and anti-aliased shapes in alpha.c), a
+ * premultiplied alpha and anti-aliased shapes in alpha.c, scaling in
+ * scale.c), a
  * proportional text renderer made from the 8x16 console font (each glyph's
  * ink width, fixed-width digits, integer scaling smoothed with scale2x),
  * an FPS counter, a little maths without libm, the CPU count (CPUID; there
@@ -126,6 +127,10 @@ uint32_t px_over(uint32_t dst, uint32_t src);
 void fill_pm(const struct surf *s, int x, int y, int w, int h, uint32_t src);
 /* An image whose pixels are premultiplied 0xAARRGGBB, over dst at x, y. */
 void blit_pm(const struct surf *dst, int x, int y, const struct surf *src);
+/* src (sw x sh premultiplied pixels, `stride` a row) to dw x dh at dst
+ * (dw a row): area averaging to make smaller, bilinear to make bigger
+ * (scale.c). */
+void scale_pm(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh);
 /* Anti-aliased (each edge pixel's coverage as alpha), in rgb at alpha a
  * (0..255), positions in pixels (a pixel's centre is at +0.5): a filled
  * circle of radius r, and a line `width` pixels wide with round ends. */

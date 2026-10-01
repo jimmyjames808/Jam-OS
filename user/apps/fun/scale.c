@@ -1,0 +1,71 @@
+/* libfun: scaling an image of premultiplied 0xAARRGGBB pixels (fun.h
+ * "alpha"): area averaging to make it smaller (each output pixel the
+ * average of the source area it covers, partial pixels weighted by their
+ * share), bilinear to make it bigger. Premultiplied, so a transparent
+ * pixel's colour never bleeds into its neighbours. jamjar draws its album
+ * covers with it, and bin/jamcover makes them. */
+#include "internal.h"
+
+/* src (sw x sh, `stride` pixels a row) to dst (dw x dh): each output pixel
+ * the average of the source area it covers, partial pixels weighted by how
+ * much of them it covers. For making smaller; scale_pm picks. */
+static void box(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
+{
+    float fx = (float)sw / (float)dw, fy = (float)sh / (float)dh;
+    for (int y = 0; y < dh; y++) {
+        float y0 = (float)y * fy, y1 = y0 + fy;
+        for (int x = 0; x < dw; x++) {
+            float x0 = (float)x * fx, x1 = x0 + fx, acc[4] = { 0, 0, 0, 0 }, wsum = 0;
+            for (int sy = (int)y0; sy < sh && (float)sy < y1; sy++) {
+                float wy = ((float)(sy + 1) < y1 ? (float)(sy + 1) : y1) -
+                           ((float)sy > y0 ? (float)sy : y0);
+                for (int sx = (int)x0; sx < sw && (float)sx < x1; sx++) {
+                    float w = wy * (((float)(sx + 1) < x1 ? (float)(sx + 1) : x1) -
+                                    ((float)sx > x0 ? (float)sx : x0));
+                    uint32_t p = src[(size_t)sy * stride + sx];
+                    for (int c = 0; c < 4; c++)
+                        acc[c] += w * (float)(p >> (8 * c) & 0xff);
+                    wsum += w;
+                }
+            }
+            uint32_t o = 0;
+            for (int c = 0; c < 4; c++)
+                o |= (uint32_t)(acc[c] / (wsum > 0 ? wsum : 1) + 0.5f) << (8 * c);
+            dst[(size_t)y * dw + x] = o;
+        }
+    }
+}
+
+/* Bilinear, for making bigger (pixel centres line up). */
+static void bilinear(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
+                     int dh)
+{
+    for (int y = 0; y < dh; y++) {
+        float fy = ((float)y + 0.5f) * (float)sh / (float)dh - 0.5f;
+        fy = fy < 0 ? 0 : fy;
+        int y0 = (int)fy, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        float ty = fy - (float)y0;
+        for (int x = 0; x < dw; x++) {
+            float fx = ((float)x + 0.5f) * (float)sw / (float)dw - 0.5f;
+            fx = fx < 0 ? 0 : fx;
+            int x0 = (int)fx, x1 = x0 + 1 < sw ? x0 + 1 : x0;
+            float tx = fx - (float)x0;
+            uint32_t a = src[(size_t)y0 * stride + x0], b = src[(size_t)y0 * stride + x1];
+            uint32_t c = src[(size_t)y1 * stride + x0], d = src[(size_t)y1 * stride + x1], o = 0;
+            for (int k = 0; k < 32; k += 8) {
+                float top = (float)(a >> k & 0xff) * (1 - tx) + (float)(b >> k & 0xff) * tx;
+                float bot = (float)(c >> k & 0xff) * (1 - tx) + (float)(d >> k & 0xff) * tx;
+                o |= (uint32_t)(top * (1 - ty) + bot * ty + 0.5f) << k;
+            }
+            dst[(size_t)y * dw + x] = o;
+        }
+    }
+}
+
+void scale_pm(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
+{
+    if (dw <= sw && dh <= sh)
+        box(src, sw, sh, stride, dst, dw, dh);
+    else
+        bilinear(src, sw, sh, stride, dst, dw, dh);
+}

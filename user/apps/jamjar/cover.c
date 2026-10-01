@@ -10,8 +10,8 @@
  * bytes of the track, then the whole tag (at most TAG_MAX), finds the
  * picture (id3.c), checks its size before decoding it (COVER_MAX_SIDE,
  * COVER_MAX_PIXELS), decodes it (stbi.c's bounded arena), crops it to its
- * middle square and scales it down by area averaging, in premultiplied
- * alpha, to COVER_SMALL (kept for every album: SMALL_SLOTS of them, the
+ * middle square and scales it down by area averaging (libfun's scale_pm), in
+ * premultiplied alpha, to COVER_SMALL (kept for every album: SMALL_SLOTS of them, the
  * least recently drawn going first) and, for an album drawn bigger than
  * that (now playing, the full jar), to COVER_LARGE too (LARGE_SLOTS).
  * An album with no picture, or one that fails, is marked so and keeps its
@@ -65,72 +65,6 @@ static void lock(void)
 static void unlock(void)
 {
     __atomic_clear(&C.lock, __ATOMIC_RELEASE);
-}
-
-/* ---- scaling (premultiplied 0xAARRGGBB) ------------------------------------------- */
-
-/* src (sw x sh, `stride` pixels a row) to dst (dw x dh): each output pixel
- * the average of the source area it covers, partial pixels weighted by how
- * much of them it covers. For making smaller; cover_scale picks. */
-static void box(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
-{
-    float fx = (float)sw / (float)dw, fy = (float)sh / (float)dh;
-    for (int y = 0; y < dh; y++) {
-        float y0 = (float)y * fy, y1 = y0 + fy;
-        for (int x = 0; x < dw; x++) {
-            float x0 = (float)x * fx, x1 = x0 + fx, acc[4] = { 0, 0, 0, 0 }, wsum = 0;
-            for (int sy = (int)y0; sy < sh && (float)sy < y1; sy++) {
-                float wy = ((float)(sy + 1) < y1 ? (float)(sy + 1) : y1) -
-                           ((float)sy > y0 ? (float)sy : y0);
-                for (int sx = (int)x0; sx < sw && (float)sx < x1; sx++) {
-                    float w = wy * (((float)(sx + 1) < x1 ? (float)(sx + 1) : x1) -
-                                    ((float)sx > x0 ? (float)sx : x0));
-                    uint32_t p = src[(size_t)sy * stride + sx];
-                    for (int c = 0; c < 4; c++)
-                        acc[c] += w * (float)(p >> (8 * c) & 0xff);
-                    wsum += w;
-                }
-            }
-            uint32_t o = 0;
-            for (int c = 0; c < 4; c++)
-                o |= (uint32_t)(acc[c] / (wsum > 0 ? wsum : 1) + 0.5f) << (8 * c);
-            dst[(size_t)y * dw + x] = o;
-        }
-    }
-}
-
-/* Bilinear, for making bigger (pixel centres line up). */
-static void bilinear(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
-                     int dh)
-{
-    for (int y = 0; y < dh; y++) {
-        float fy = ((float)y + 0.5f) * (float)sh / (float)dh - 0.5f;
-        fy = fy < 0 ? 0 : fy;
-        int y0 = (int)fy, y1 = y0 + 1 < sh ? y0 + 1 : y0;
-        float ty = fy - (float)y0;
-        for (int x = 0; x < dw; x++) {
-            float fx = ((float)x + 0.5f) * (float)sw / (float)dw - 0.5f;
-            fx = fx < 0 ? 0 : fx;
-            int x0 = (int)fx, x1 = x0 + 1 < sw ? x0 + 1 : x0;
-            float tx = fx - (float)x0;
-            uint32_t a = src[(size_t)y0 * stride + x0], b = src[(size_t)y0 * stride + x1];
-            uint32_t c = src[(size_t)y1 * stride + x0], d = src[(size_t)y1 * stride + x1], o = 0;
-            for (int k = 0; k < 32; k += 8) {
-                float top = (float)(a >> k & 0xff) * (1 - tx) + (float)(b >> k & 0xff) * tx;
-                float bot = (float)(c >> k & 0xff) * (1 - tx) + (float)(d >> k & 0xff) * tx;
-                o |= (uint32_t)(top * (1 - ty) + bot * ty + 0.5f) << k;
-            }
-            dst[(size_t)y * dw + x] = o;
-        }
-    }
-}
-
-void cover_scale(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
-{
-    if (dw <= sw && dh <= sh)
-        box(src, sw, sh, stride, dst, dw, dh);
-    else
-        bilinear(src, sw, sh, stride, dst, dw, dh);
 }
 
 /* stb_image's RGBA bytes, in place, as premultiplied 0xAARRGGBB. */
@@ -234,7 +168,7 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        cover_scale(src, side, side, side, dst->px, size, size);
+        scale_pm(src, side, side, side, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;
@@ -339,9 +273,9 @@ static const char *decode(const char *path, bool large, int *w, int *h)
     const uint32_t *px = (const uint32_t *)rgba;
     int side = *w < *h ? *w : *h, ox = (*w - side) / 2, oy = (*h - side) / 2;
     const uint32_t *sq = px + (size_t)oy * *w + ox;
-    cover_scale(sq, side, side, *w, tmp_small, COVER_SMALL, COVER_SMALL);
+    scale_pm(sq, side, side, *w, tmp_small, COVER_SMALL, COVER_SMALL);
     if (large)
-        cover_scale(sq, side, side, *w, tmp_large, COVER_LARGE, COVER_LARGE);
+        scale_pm(sq, side, side, *w, tmp_large, COVER_LARGE, COVER_LARGE);
     return NULL;
 }
 

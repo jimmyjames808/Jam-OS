@@ -304,10 +304,6 @@ uint8_t *stbi_rgba(const uint8_t *data, size_t n, int *w, int *h);
 void     stbi_arena_reset(void);
 /* n bytes of the arena for the caller (the tag read): NULL if they don't fit. */
 void    *stbi_arena_take(size_t n);
-/* cover.c: src (sw x sh of premultiplied 0xAARRGGBB, `stride` a row) to
- * dw x dh: area averaging to make smaller, bilinear to make bigger. */
-void     cover_scale(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
-                     int dh);
 
 /* cover.c: covers read and decoded by a thread of its own, kept scaled
  * per album. */

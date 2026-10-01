@@ -270,9 +270,9 @@ static void test_decode(void)
     uint32_t src[16], dst[4];
     for (int i = 0; i < 16; i++)
         src[i] = i % 4 < 2 ? 0xffff0000u : 0x80000080u;
-    cover_scale(src, 4, 4, 4, dst, 2, 2);
+    scale_pm(src, 4, 4, 4, dst, 2, 2);
     ok = dst[0] == 0xffff0000u && dst[1] == 0x80000080u && dst[2] == dst[0] && dst[3] == dst[1];
-    cover_scale(src, 4, 4, 4, dst, 1, 1);   /* half and half */
+    scale_pm(src, 4, 4, 4, dst, 1, 1);   /* half and half */
     ok &= dst[0] == 0xc0800040u;
     fun_check(ok, "  ... scaling down averages areas (premultiplied)");
 }
