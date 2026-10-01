@@ -109,7 +109,7 @@ SH_CMD(beep)
         return 2;
     }
     struct audio_out a;
-    status_t st = audio_open(&a, RATE, 1);
+    status_t st = audio_open_as(&a, RATE, 1, "beep");
     if (st == ERR_NOT_FOUND) {
         sh_say("beep: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
         return 1;

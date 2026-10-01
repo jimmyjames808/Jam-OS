@@ -135,7 +135,7 @@ SH_CMD(play)
            mss(w.frames, w.rate, t, sizeof(t)));
     sh_flush();
     struct audio_out a;
-    st = audio_open(&a, w.rate, w.channels);
+    st = audio_open_as(&a, w.rate, w.channels, "play");
     if (st != OK) {
         if (st == ERR_NOT_FOUND)
             sh_tty("play: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
