@@ -47,3 +47,15 @@ protocol console 12
 # that colour until the next boot's splash. ADMIN and SHELL channels
 # only: ERR_ACCESS_DENIED for a PROGRAM one.
 8  blank          (u8 on) -> ()
+# Ask for the kernel log on the screen (on 1), or stop asking (on 0). A
+# console started with the argument "nolog" (init's, on a plain boot with
+# the splash) keeps the log off the screen but for a few notices, and
+# shows it only while some channel asks: the shell asks while a command
+# whose output is the log runs (the kernel's commands, `ktest`, `ps -k`,
+# ...; the test programs; a program it runs). `only` (NUL-padded) names a
+# process: then just its lines ("[name] ...") and the kernel's own are
+# shown, so a program's run doesn't bring the background services' lines;
+# empty: every line. A channel that closes stops asking. Without "nolog"
+# the log is always on the screen and this changes nothing. ADMIN and
+# SHELL channels only: ERR_ACCESS_DENIED for a PROGRAM one.
+9  show_log       (u8 on, u8[32] only) -> ()

@@ -1,0 +1,8 @@
+# tools/screen-test.sh's second boot, `verbose`: the kernel log on the
+# shell's screen as before (the screenshot is checked by the script).
+wait 120 Jam OS shell
+wait 60 jam>
+sleep 2
+shot screen-verbose
+send reboot -f
+wait reboot: resetting

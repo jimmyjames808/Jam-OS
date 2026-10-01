@@ -6,9 +6,12 @@
  *   screen.c   drawing the cells on the framebuffer, and lending it out
  *   keys.c     the focus stack of key channels, and the input sources
  *   clients.c  the console protocol's clients and their levels
+ *   notices.c  the few things worth a line while the kernel log is off
+ *              the screen
  *   main.c     the kernel log, startup and the event loop */
 #pragma once
 
+#include <stdarg.h>
 #include <font.h>
 #include <idl/console.h>
 #include <idl/input.h>
@@ -54,8 +57,11 @@ enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
 
 /* Client levels (console.idl new_client): see main.c. */
 enum { L_ADMIN, L_SHELL, L_PROGRAM };
+#define LOG_ONLY_MAX 32
 struct client {
-    uint8_t level;      /* L_* */
+    uint8_t level;                   /* L_* */
+    bool    show_log;                /* console.show_log: it asks for the log on the screen */
+    char    log_only[LOG_ONLY_MAX];  /* ... only this process's lines ("": all of them) */
 };
 
 /* Port keys: the kind in the high half, an index in the low. */
@@ -65,7 +71,8 @@ enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE };
 /* main.c */
 extern handle_t root;              /* SR_RESOURCE */
 extern handle_t port;              /* everything we wait for */
-/* Kernel log lines logged so far go into the scrollback. */
+/* Kernel log lines logged so far go into the scrollback (or, while the
+ * log is off the screen, to notices.c). */
 void klog_event(void);
 
 /* ---- text.c: the text model -------------------------------------------------- */
@@ -151,11 +158,41 @@ status_t op_connect_input(void *ctx, handle_t *out);
 /* Input source i is readable (or gone). */
 void source_event(unsigned i);
 
+/* ---- notices.c: while the kernel log is off the screen ---------------------------- */
+
+/* A kernel log line (without its newline): follow what it says, and turn
+ * it into a notice if announce (the log is not on the screen) and it is
+ * one. */
+void     notice_take(const char *s, size_t n, bool announce);
+/* When notice_tick has something to do next (uptime ns), or DEADLINE_NEVER. */
+uint64_t notice_deadline(void);
+/* Announce what has settled; nothing while the log is shown. */
+void     notice_tick(bool shown);
+/* What was read so far is known (the log before the console started):
+ * only what changes from now on is news. */
+void     notice_settle(void);
+/* For the selftest (selftest.c): the last notice put on the screen ("" if
+ * none), and everything forgotten (no log lines from then on). */
+const char *notice_last(void);
+void        notice_reset(void);
+
+/* ---- selftest.c ------------------------------------------------------------------ */
+
+/* `run console selftest`: the notices made of log lines, checked without
+ * a screen; the exit code is the number of failures. */
+int console_selftest(void);
+
 /* ---- clients.c ------------------------------------------------------------------ */
 
 /* Startup's client channels (SR_USER + 0..7): ADMIN, on the port. */
 void clients_init(void);
 unsigned client_count(void);
+/* Some client asks for the kernel log on the screen (console.show_log)
+ * and a line from process `name` (n bytes; n 0: the kernel's own line) is
+ * one it wants. */
+bool clients_show_line(const char *name, size_t n);
+/* Some client asks for every line of the log. */
+bool clients_show_all(void);
 /* Client i's channel is readable (or gone): serve one round of its
  * requests, at most CLIENT_BUDGET of them or CLIENT_BUDGET_NS. */
 void client_event(unsigned i);

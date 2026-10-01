@@ -120,6 +120,12 @@ bool        sh_alias_at(int i, const char **name, const char **value);
 /* ---- the console and history (main.c) ---------------------------------------------- */
 
 handle_t    sh_console(void);
+/* The kernel log on the screen while a command whose output is the log
+ * runs (console.show_log): true before it, false after; `only` a process
+ * name (its lines and the kernel's), or NULL for every line. Nested pairs
+ * count once (the outermost's `only`); on a console that shows the log
+ * anyway it changes nothing. */
+void        sh_show_log(bool on, const char *only);
 unsigned    sh_history_count(void);            /* lines ever remembered */
 const char *sh_history_at(unsigned i);         /* i-th of the last 32, NULL if gone */
 

@@ -32,7 +32,7 @@ built yet, it says so.
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers); uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
-| Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows |
+| Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
 | IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame on VLAN 21 only ([Networking](#networking)) |
@@ -489,7 +489,7 @@ Every driver and service is a userspace process from the start.
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
-| console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
+| console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
 | fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
@@ -993,7 +993,24 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 - Framebuffer klog from the first instruction, 64 KiB ring buffer, readable
   from user space through a klog reader handle (the console follows it,
   and logd saves it to `/data/logs/`, [Storage](#storage)). COM1 too when
-  present.
+  present. The log is text whoever wrote it: printable ASCII, tabs,
+  newlines and well-formed UTF-8 go in as they are (a song's "JAŸ-Z"),
+  any other control character and each bad piece of ill-formed UTF-8
+  (Unicode's maximal-subpart rule) as one `?` (`kernel/debug/klog.c`).
+- **The log and the screen**: on a plain boot (the splash plays) the
+  console keeps the kernel log off the shell's screen (init starts it
+  with "nolog"); `log` and `dmesg` show it, and the shell asks for it on
+  the screen (`console.show_log`) while a command whose output is the log
+  runs: the kernel's commands (`ktest`, `ps -k`, `pci`, ...) and the test
+  programs with every line, a program `run` starts with its own lines and
+  the kernel's. A few things the log says still get a line of their own,
+  in yellow (`user/services/console/notices.c`): another stick plugged
+  in or pulled out, the Jam OS stick pulled out and back, `/data` full or
+  not mounted, a service or driver that crashed and is being started
+  again or was given up on. Each is announced once things have settled
+  (a remount says nothing), never twice within 30 s, at most four in
+  10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
+  comes, and the boot tests draw it from the kernel.
 - Panic screen: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, and the log tail: drawn only when there

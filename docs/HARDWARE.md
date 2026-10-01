@@ -164,8 +164,9 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   stick is out.
 - A hang during boot: the last line on the screen names the step (`pci:`
   lines name the function being sized). The plain entry shows the boot
-  splash instead of the log: boot `Jam OS (text log, no splash)`
-  (`verbose`) to see it.
+  splash instead of the log, and the shell after it shows only notices
+  of it: boot `Jam OS (text log, no splash)` (`verbose`) to see the log
+  as it comes; `log 40` shows its last lines from the shell.
 - Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
   kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
   `smp:` lines name each CPU that did not start; boot `Jam OS (Limine
