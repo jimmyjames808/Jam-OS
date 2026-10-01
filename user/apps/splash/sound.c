@@ -208,7 +208,7 @@ static void sound_main(void *arg)
     /* When it will be heard: at boot the splash's is the only stream, and
      * the mixer opens the output with it, its first frames first: heard as
      * soon as the driver's stream runs (15 ms in QEMU; HEARD_IN). (With the
-     * output already running it would be the mixer's lead, 170 ms, later.)
+     * output already running it would be the mixer's lead later.)
      * A wrong guess costs one jump of the video when the clock becomes the
      * sound's position. */
     uint64_t from = (clock_now() + HEARD_IN) * SPLASH_RATE / NS_PER_S;

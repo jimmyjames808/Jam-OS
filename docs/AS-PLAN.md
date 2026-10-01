@@ -73,7 +73,7 @@ is where the owner's WAV had it.
 - Once the mixer's `stream_position` says frames are heard (`played`,
   which the mixer interpolates from the driver's position), media time is
   the frame being heard: the position is asked every 20 ms (or after each
-  write, at most 85 ms apart) and moved on by the timer in between. The
+  write, at most a mixer period apart) and moved on by the timer in between. The
   log says how far the timer was off at the switch (one jump of the video,
   that once).
 - The video shows a frame when the clock reaches it; a frame whose next
