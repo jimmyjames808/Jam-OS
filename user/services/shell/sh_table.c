@@ -19,12 +19,14 @@ static const struct sh_cmd cmds[] = {
     C(uname, C_INFO, "uname [-a]", "the system's name (-a: with version, machine and CPU)"),
     C(version, C_INFO, "version", "the Jam OS version"),
     C(uptime, C_INFO, "uptime", "the time, how long since boot, CPU use since boot"),
-    C(date, C_INFO, "date [-u] [-r] [-d @secs]",
-      "the date and time from the real-time clock, in $TZ (default Australia/Sydney).\n"
-      "  -u: UTC. -r: the raw clock and how it was read. -d @secs: that Unix time.\n"
-      "  TZ: Australia/Sydney (AEST/AEDT),\n"
-      "  UTC, or an offset like +10, +9:30, -5. RTC=local (default: the clock keeps\n"
-      "  local time, as Windows sets it) or RTC=utc. Example: TZ=UTC date"),
+    C(date, C_INFO, "date [-u] [-d @secs] | -r | -z <zone>",
+      "the date and time, in $TZ or else the system's zone (the setting timezone).\n"
+      "  -u: UTC. -d @secs: that Unix time. -r: the real-time clock as it reads, and\n"
+      "  the system's clock (init sets it from the RTC at boot; the setting rtc says\n"
+      "  whether the RTC keeps local time, as Windows sets it, or UTC). -z: the\n"
+      "  system's zone from now on, kept in /data/etc/settings. Zones: Australia/Sydney\n"
+      "  (AEST/AEDT), Australia/Perth, Europe/London, ..., UTC, or an offset like +10,\n"
+      "  +9:30, -5. Example: TZ=UTC date"),
     C(lscpu, C_INFO, "lscpu [-e]",
       "the CPU: model, P-cores, E-cores, threads (-e: one line per CPU)"),
     C(free, C_INFO, "free", "memory: total, used, free"),

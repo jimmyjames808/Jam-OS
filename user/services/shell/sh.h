@@ -192,14 +192,20 @@ const char *sh_db(int32_t cb, char *buf, size_t size);
  * centibels into *cb; at most 1000.0 dB either way. */
 bool sh_parse_db(const char *s, int32_t *cb);
 
+/* ---- settings (sh_time.c: /data/etc/settings, <settings.h>) ------------------------ */
+
+/* key = value into the settings file; a failure is said (naming `who`),
+ * the change itself stands until the next boot. */
+void sh_keep_setting(const char *who, const char *key, const char *value);
+
 /* ---- time (sh_time.c) -------------------------------------------------------------- */
 
-/* $TZ as a zone (<wallclock.h>); if it isn't understood, says so (naming
- * `who`) and gives UTC. */
+/* $TZ as a zone (<wallclock.h>), or the system's zone if $TZ isn't set;
+ * if it isn't understood, says so (naming `who`) and gives UTC. */
 bool sh_local_tz(struct tz *tz, const char *who);
-/* The time now (UTC seconds) from the RTC ($RTC says whether it keeps
- * local time or UTC), and the raw reading; false (said) if unreadable. */
-bool sh_clock_now(int64_t *utc, struct rtc_time *raw, const char *who);
+/* The time now (UTC seconds) from the system's clock; false (said) if
+ * there is none. */
+bool sh_clock_now(int64_t *utc, const char *who);
 /* "3 days, 4:05", "1:02:03", "5 min 3 s" */
 void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap);
 

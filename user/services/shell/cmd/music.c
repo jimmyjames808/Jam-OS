@@ -2,12 +2,18 @@
  * player is bin/music, a service init runs, docs/A2-PLAN.md "Music
  * player"). The shell only asks: the player plays in its own job, so the
  * shell goes on meanwhile and Ctrl+C here never reaches it.
- *   music start [folder]   default /data/music; a relative folder is the
- *                          shell's (cd); already playing: the new folder
+ *   music start [folder]   a relative folder is the shell's (cd); already
+ *                          playing: the new folder. A folder given is kept
+ *                          (/data/etc/settings, music.folder) and is the
+ *                          one played without a folder; the first time,
+ *                          /data/music. `music vol` is kept too
+ *                          (music.volume): init gives it to the player
+ *                          when it starts
  *   music stop | next | prev | pause | status | vol [dB]
  *   music sleep [minutes | <seconds>s | off]
  * (bin/jamjar is the same player in a window.) */
 #include <idl/music.h>
+#include <settings.h>
 #include "sh.h"
 
 #define DEFAULT_FOLDER "/data/music"
@@ -21,7 +27,9 @@ static const char *mss(uint64_t ms, char *buf, size_t size)
     return buf;
 }
 
-static int start(handle_t ch, const char *arg)
+/* Play folder `arg`; `keep`: it was given, so it is the one `music start`
+ * plays from now on (the setting music.folder). */
+static int start(handle_t ch, const char *arg, bool keep)
 {
     char abs[SH_PATH_MAX];
     bool dir = false;
@@ -56,6 +64,8 @@ static int start(handle_t ch, const char *arg)
     if (reading) {
         sh_say("music: reading %s (%u track%s so far): it plays once it is read "
                "(music status)\n", abs, found, found == 1 ? "" : "s");
+        if (keep)
+            sh_keep_setting("music", "music.folder", abs);
         return 0;
     }
     if (!found) {
@@ -64,6 +74,8 @@ static int start(handle_t ch, const char *arg)
     }
     sh_say("music: playing %u track%s from %s in shuffle (music stop stops it)\n", found,
            found == 1 ? "" : "s", abs);
+    if (keep)
+        sh_keep_setting("music", "music.folder", abs);
     return 0;
 }
 
@@ -190,8 +202,14 @@ SH_CMD(music)
         sh_tty("music: there is no music player (init didn't start bin/music)\n");
         return 1;
     }
-    if (!strcmp(cmd, "start"))
-        return start(ch, argc == 3 ? argv[2] : DEFAULT_FOLDER);
+    if (!strcmp(cmd, "start") && argc == 3)
+        return start(ch, argv[2], true);
+    if (!strcmp(cmd, "start")) {
+        char folder[SETTINGS_VALUE_MAX];
+        if (settings_get(SETTINGS_FILE, "music.folder", folder, sizeof(folder)) != OK)
+            snprintf(folder, sizeof(folder), "%s", DEFAULT_FOLDER);
+        return start(ch, folder, false);
+    }
     if (!strcmp(cmd, "status") || (!strcmp(cmd, "vol") && argc == 2))
         return status(ch);
     if (!strcmp(cmd, "sleep"))
@@ -214,6 +232,8 @@ SH_CMD(music)
         char v[16];
         if (st == OK)
             sh_say("music: volume %s dB\n", sh_db(got, v, sizeof(v)));
+        if (st == OK)
+            sh_keep_setting("music", "music.volume", v);
     }
     if (st != OK) {
         sh_tty("music: the player doesn't answer (%s)\n", status_str(st));

@@ -27,9 +27,8 @@ SH_CMD(uptime)
     char up[40], now[16] = "";
     sh_fmt_uptime(s.uptime_ns, up, sizeof(up));
     int64_t utc;
-    struct rtc_time r;
     struct tz tz;
-    if (sh_clock_now(&utc, &r, "uptime")) {
+    if (sh_clock_now(&utc, "uptime")) {
         sh_local_tz(&tz, "uptime");
         time_format(utc, &tz, now, sizeof(now), false);
     }
