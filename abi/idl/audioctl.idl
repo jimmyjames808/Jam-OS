@@ -1,0 +1,23 @@
+# audioctl: the mixer's control channel (user/services/mixer), for the
+# shell's `vol` and the test programs: every stream's volume and the
+# master volume. A program holds it as its startup role SR_AUDIO_CTL; init
+# gives it to the shell, the shell to its test programs only.
+# Format: see tools/genidl.py. The plan is docs/A2-PLAN.md.
+#
+# Reconnect: init holds this channel across mixer restarts, so a call
+# made while the mixer is down waits (bounded by the caller's deadline)
+# for the restarted mixer. Volumes are not kept across a restart: a new
+# mixer starts with every volume at 0 dB.
+
+protocol audioctl 23
+
+# Every stream open now, in the order opened: `count` entries of struct
+# mixer_stream_info (<mixer.h>, 40 bytes each) at the start of `list`,
+# the rest zero; `master`, the master volume in centibels.
+1  streams  ()  -> (u32 count, i32 master, u8[640] list)
+# Stream `id`'s volume in centibels, clamped to [-960, 0] (-960 and below:
+# silence), as audio.set_volume on its own channel. Answers the volume
+# set. ERR_NOT_FOUND: no such stream.
+2  set_volume  (u32 id, i32 centibels)  -> (i32 centibels)
+# The master volume, applied after the streams are summed, the same way.
+3  set_master  (i32 centibels)  -> (i32 centibels)

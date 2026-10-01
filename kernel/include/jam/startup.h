@@ -29,6 +29,10 @@ enum startup_role {
                      * init, and the test programs init or the shell runs */
     SR_NS,          /* the file namespace (M8): the mount points and their
                      * `fs` channels, as libos's fs.c defines the encoding */
+    SR_AUDIO,       /* the mixer's `audio` channel (abi/idl/audio.idl; the
+                     * mixer: its server end): open a sound stream */
+    SR_AUDIO_CTL,   /* the mixer's `audioctl` channel (every stream's
+                     * volume): the shell and its test programs */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };
