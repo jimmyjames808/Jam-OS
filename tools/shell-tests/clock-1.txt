@@ -51,6 +51,6 @@ wait AWST (UTC+08:00)
 send vol
 wait master -12.0 dB
 send music status
-wait -6.0 dB
+wait 30 volume -6.0 dB
 send reboot -f
 wait reboot: resetting
