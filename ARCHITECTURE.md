@@ -576,7 +576,9 @@ Not built yet; these rules bind every future path that can transmit.
   heap), and an allocation takes the lowest block that fits, so a
   long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
   apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
-  `alpha.c`), keys and thread pool.
+  `alpha.c`), text (UTF-8: the console font's ASCII and Latin-1 and
+  Latin Extended-A glyphs, one box for any other character), keys and
+  thread pool.
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
   starts init from bootfs under a root job, waits for it and reports its
   exit code and whether the root job ended with nothing charged.

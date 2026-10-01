@@ -1,0 +1,169 @@
+# jamjar, the music player's window (user/apps/jamjar): use
+# tools/jamjar-test.sh (it makes the library on /data/music, adds the
+# audio devices, a USB keyboard and mouse). At OVMF's 1280x800: the mouse
+# targets below are that layout's (`noaccel`: a pixel a count).
+#   1. the self-test; `run jamjar` has no player: it says so, shows the library
+#   2. the shell's `jamjar`: play an album by keys, next, back, pause and
+#      on, volume; search for the 1 kHz tone and play it: the bands' loudest
+#      is band 8; help, the roulette, the full jar, the sleep timer
+#   3. the mouse: the next button, a volume drag, a splash, a double-click
+#   4. q: the music plays on
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 music: ready
+seen 30 boot mouse ready
+send run jamjar --selftest
+wait 60 jamjar: selftest PASSED
+wait run: bin/jamjar exited with code 0
+wait jam>
+
+# ---- 1: no player -----------------------------------------------------------------------
+send run jamjar trace
+wait jamjar: no player channel
+wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+sleep 1
+shot jamjar-noplayer
+type x
+wait jamjar: no player: start jamjar with the shell's jamjar command
+type q
+wait 30 run: bin/jamjar exited with code 0
+wait jam>
+
+# ---- 2: keys ----------------------------------------------------------------------------
+send jamjar trace noaccel
+wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+sleep 1
+shot jamjar-idle
+# artists: All, Daft Punk, JAY-Z, ...: down twice is JAY-Z; Tab to its album; Enter plays it
+type \e[B
+type \e[B
+type \t
+sleep 0.3
+type \r
+wait jamjar: play 4-44 (shuffle)
+wait 30 jamjar: hearing /data/music/OnTheSpot/JA
+wait 20 jamjar: levels: loudest band
+sleep 2
+shot jamjar-playing
+type n
+wait jamjar: next
+wait 20 jamjar: hearing
+type p
+wait jamjar: back
+seen 20 music: back to
+type \x20
+wait jamjar: pause
+seen 10 music: paused
+sleep 1
+shot jamjar-paused
+type \x20
+wait jamjar: play on
+seen 10 music: playing on
+type -
+type -
+type -
+sleep 1
+# search: "1000" finds the test tone; Enter plays its album from it
+type /
+type 1000
+sleep 1
+shot jamjar-search
+type \r
+wait jamjar: play Calibration (shuffle)
+wait 30 jamjar: hearing /data/music/OnTheSpot/Test_Tones/2020_Calibration/1000_Hz_Tone.wav
+wait 20 jamjar: levels: loudest band 8
+wait 20 jamjar: levels: loudest band 8
+type /
+type \e
+type \e
+type ?
+sleep 1
+shot jamjar-help
+type ?
+# the roulette spins and plays what it lands on
+type r
+sleep 2
+shot jamjar-roulette
+wait 20 jamjar: play
+wait 30 jamjar: hearing
+# the full jar
+sleep 2
+type f
+sleep 2
+shot jamjar-full
+type f
+# the sleep timer: 15 minutes, then round to off
+type z
+wait jamjar: sleep in 15 minutes
+seen 10 music: the sleep timer stops it in 15 min
+type z
+type z
+type z
+type z
+wait jamjar: sleep timer off
+sleep 1
+
+# ---- 3: the mouse ------------------------------------------------------------------------
+# Each target is reached from the top-left corner (the pointer is clamped
+# there), a pixel a count. QEMU's mouse sends at most 127 counts a report
+# and merges moves not sent yet, so each move gets time to arrive before
+# the next. The next button's middle is (1064,411).
+monitor mouse_move -3000 -3000
+sleep 1
+monitor mouse_move 1064 411
+sleep 0.6
+monitor mouse_button 1
+sleep 0.15
+monitor mouse_button 0
+wait 10 jamjar: click 1064,411
+wait jamjar: next
+# the volume slider (770..998 x 467..479): a drag from 900 to 840
+monitor mouse_move -3000 -3000
+sleep 1
+monitor mouse_move 900 473
+sleep 0.6
+monitor mouse_button 1
+sleep 0.15
+monitor mouse_move -60 0
+sleep 0.3
+monitor mouse_button 0
+wait 10 jamjar: click 900,473
+# the jam (from y 632): a splash
+monitor mouse_move -3000 -3000
+sleep 1
+monitor mouse_move 640 760
+sleep 0.6
+monitor mouse_button 1
+sleep 0.1
+monitor mouse_button 0
+wait 10 jamjar: click 640,760
+sleep 0.3
+shot jamjar-splash
+# a double-click on the first track row (tracks: x 462..696, row 0 y 114..139)
+monitor mouse_move -3000 -3000
+sleep 1
+monitor mouse_move 560 127
+sleep 0.6
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+wait 10 jamjar: click 560,127
+wait 10 jamjar: play
+sleep 2
+shot jamjar-mouse
+
+# ---- 4: quit; the music plays on ----------------------------------------------------------
+type q
+wait 30 jamjar:
+wait run: bin/jamjar exited with code 0
+wait jam>
+send music status | grep -c "music: playing"; echo jj-""1 $?
+wait jj-1 0
+wait jam>
+send music stop
+wait music: stopped
+wait jam>
+send reboot -f
+wait reboot: resetting

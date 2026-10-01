@@ -72,6 +72,11 @@ static const struct sh_cmd cmds[] = {
       "  in, the folder, how many tracks. vol -10: its volume (0 dB the most). sleep\n"
       "  30: stop in 30 minutes, fading out (sleep off). jamjar: the same in a window.\n"
       "  Each track's start is a line in the log. e.g. music start /data/music/OnTheSpot"),
+    C(jamjar, C_SYSTEM, "jamjar [root=<folder>]",
+      "the music player's window (bin/jamjar): the library (artists, albums, tracks)\n"
+      "  from /usb0/music or /data/music, search, play, pause, next, back, volume, a\n"
+      "  sleep timer, jam roulette; keys and the mouse, ? for the keys. q quits it and\n"
+      "  the music plays on (it drives the same player as `music`)"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
