@@ -3,43 +3,13 @@
  * tag and of one frame; a data length indicator; UTF-16 descriptions; the
  * front cover chosen over another picture), tags that are broken in every
  * way it guards against, and a few thousand randomly damaged ones; then
- * stb_image on a 4x4 PNG with alpha and a 16x16 JPEG (made by Python's
- * zlib and ffmpeg), a truncated PNG, a PNG whose header says 5000x5000,
- * and the scaling; and the covers' states as cover.c's thread moves them
+ * the cover helper (decoder.c, bin/jamcover, whose own self-test checks
+ * stb_image): a PNG decoded, a non-picture refused by the same helper, a
+ * helper that crashes and one that hangs replaced; the scaling; and the
+ * covers' states as cover.c's thread moves them
  * (a fake decoder, no thread), with art.c drawing over them. */
+#include <testpics.h>
 #include "jamjar.h"
-
-/* A 4x4 PNG: the left half red, the right half blue at alpha 128. */
-static const uint8_t png4[78] = {
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
-    0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00,
-    0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
-    0x1f, 0x84, 0x81, 0xa8, 0x01, 0x8c, 0x49, 0x17, 0x00, 0x00, 0xbb, 0x25,
-    0x1b, 0xe9, 0xed, 0x50, 0x8f, 0xf9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
-    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-};
-/* A 16x16 JPEG of one colour, (200, 120, 40) before compression. */
-static const uint8_t jpg16[208] = {
-    0xff, 0xd8, 0xff, 0xfe, 0x00, 0x10, 0x4c, 0x61, 0x76, 0x63, 0x36, 0x32,
-    0x2e, 0x32, 0x38, 0x2e, 0x31, 0x30, 0x30, 0x00, 0xff, 0xdb, 0x00, 0x43,
-    0x00, 0x08, 0x04, 0x04, 0x04, 0x04, 0x04, 0x05, 0x05, 0x05, 0x05, 0x05,
-    0x05, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
-    0x06, 0x06, 0x07, 0x07, 0x07, 0x08, 0x08, 0x08, 0x07, 0x07, 0x07, 0x06,
-    0x06, 0x07, 0x07, 0x08, 0x08, 0x08, 0x08, 0x09, 0x09, 0x09, 0x08, 0x08,
-    0x08, 0x08, 0x09, 0x09, 0x0a, 0x0a, 0x0a, 0x0c, 0x0c, 0x0b, 0x0b, 0x0e,
-    0x0e, 0x0e, 0x11, 0x11, 0x14, 0xff, 0xc4, 0x00, 0x4c, 0x00, 0x01, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x10,
-    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
-    0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x12, 0x00,
-    0x02, 0x12, 0x00, 0x03, 0x12, 0x00, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01,
-    0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0xb8, 0x89, 0x15, 0xc0,
-    0x00, 0x3f, 0xff, 0xd9,
-};
 
 static uint8_t buf[4096], plain[2048];
 
@@ -134,15 +104,15 @@ static bool v23(void)
 {
     static uint8_t body[1024], d[512];
     size_t o = mkframe(body, 3, "TIT2", (const uint8_t *)"\0Song", 5, 0);
-    size_t n = apic(d, 3, 0, 4, (const uint8_t *)"back", 5, jpg16, sizeof(jpg16));
+    size_t n = apic(d, 3, 0, 4, (const uint8_t *)"back", 5, test_jpg16, sizeof(test_jpg16));
     o += mkframe(body + o, 3, "APIC", d, n, 0);
-    n = apic(d, 3, 0, 3, (const uint8_t *)"Cover", 6, png4, sizeof(png4));
+    n = apic(d, 3, 0, 3, (const uint8_t *)"Cover", 6, test_png4, sizeof(test_png4));
     o += mkframe(body + o, 3, "APIC", d, n, 0);
     memset(body + o, 0, 64);   /* padding */
     size_t t = tag(buf, 3, 0, body, o + 64);
     struct id3_pic p;
     return id3_tag_size(buf) == t && id3_cover(buf, t, &p) && p.type == 3 && p.png &&
-           is(&p, png4, sizeof(png4));
+           is(&p, test_png4, sizeof(test_png4));
 }
 
 /* 2.4, a UTF-16 description (with a BOM); and 2.2's PIC. */
@@ -150,29 +120,29 @@ static bool v24_v22(void)
 {
     static uint8_t body[1024], d[512];
     static const uint8_t desc[] = { 0xff, 0xfe, 'a', 0, 0, 0 };
-    size_t n = apic(d, 4, 1, 3, desc, sizeof(desc), jpg16, sizeof(jpg16));
+    size_t n = apic(d, 4, 1, 3, desc, sizeof(desc), test_jpg16, sizeof(test_jpg16));
     size_t t = tag(buf, 4, 0, body, mkframe(body, 4, "APIC", d, n, 0));
     struct id3_pic p;
-    bool ok = id3_cover(buf, t, &p) && p.jpeg && is(&p, jpg16, sizeof(jpg16));
-    n = apic(d, 2, 0, 3, (const uint8_t *)"", 1, png4, sizeof(png4));
+    bool ok = id3_cover(buf, t, &p) && p.jpeg && is(&p, test_jpg16, sizeof(test_jpg16));
+    n = apic(d, 2, 0, 3, (const uint8_t *)"", 1, test_png4, sizeof(test_png4));
     t = tag(buf, 2, 0, body, mkframe(body, 2, "PIC", d, n, 0));
-    return ok && id3_cover(buf, t, &p) && p.png && is(&p, png4, sizeof(png4));
+    return ok && id3_cover(buf, t, &p) && p.png && is(&p, test_png4, sizeof(test_png4));
 }
 
 /* Unsynchronisation: 2.3's whole tag; 2.4's one frame with a length indicator. */
 static bool unsynced(void)
 {
     static uint8_t body[1024], d[512], f[1024];
-    size_t n = apic(d, 3, 0, 3, (const uint8_t *)"", 1, jpg16, sizeof(jpg16));
+    size_t n = apic(d, 3, 0, 3, (const uint8_t *)"", 1, test_jpg16, sizeof(test_jpg16));
     size_t o = mkframe(plain, 3, "APIC", d, n, 0);
     size_t t = tag(buf, 3, 0x80, body, unsync(body, plain, o));
     struct id3_pic p;
-    bool ok = id3_cover(buf, t, &p) && is(&p, jpg16, sizeof(jpg16));
-    n = apic(d, 4, 0, 3, (const uint8_t *)"", 1, jpg16, sizeof(jpg16));
+    bool ok = id3_cover(buf, t, &p) && is(&p, test_jpg16, sizeof(test_jpg16));
+    n = apic(d, 4, 0, 3, (const uint8_t *)"", 1, test_jpg16, sizeof(test_jpg16));
     size_t fn = ss32(f, n);
     fn += unsync(f + fn, d, n);
     t = tag(buf, 4, 0, body, mkframe(body, 4, "APIC", f, fn, 0x03));
-    return ok && fn > n + 4 && id3_cover(buf, t, &p) && is(&p, jpg16, sizeof(jpg16));
+    return ok && fn > n + 4 && id3_cover(buf, t, &p) && is(&p, test_jpg16, sizeof(test_jpg16));
 }
 
 /* What must give nothing (and not crash). */
@@ -180,7 +150,7 @@ static bool broken(void)
 {
     static uint8_t body[1024], d[512];
     struct id3_pic p;
-    size_t n = apic(d, 4, 0, 3, (const uint8_t *)"", 1, png4, sizeof(png4));
+    size_t n = apic(d, 4, 0, 3, (const uint8_t *)"", 1, test_png4, sizeof(test_png4));
     size_t t = tag(buf, 4, 0, body, mkframe(body, 4, "APIC", d, n, 0x08));   /* compressed */
     bool ok = !id3_cover(buf, t, &p);
     t = tag(buf, 4, 0, body, mkframe(body, 4, "APIC", d, n, 0));
@@ -210,7 +180,8 @@ static bool broken(void)
 static bool fuzz(void)
 {
     static uint8_t body[1024], d[512], good[2048];
-    size_t n = apic(d, 4, 1, 3, (const uint8_t *)"\xff\xfe" "a\0\0\0", 6, png4, sizeof(png4));
+    size_t n = apic(d, 4, 1, 3, (const uint8_t *)"\xff\xfe" "a\0\0\0", 6, test_png4,
+                    sizeof(test_png4));
     size_t o = mkframe(body, 4, "TIT2", (const uint8_t *)"\0x", 2, 0);
     o += mkframe(body + o, 4, "APIC", d, n, 0x02);
     size_t t = tag(good, 4, 0, body, o);
@@ -237,35 +208,58 @@ static void test_id3(void)
     fun_check(fuzz(), "  ... 4000 randomly damaged tags: no crash, nothing outside the tag");
 }
 
-static void test_decode(void)
+/* ---- the helper (decoder.c, bin/jamcover) ------------------------------------------------ */
+
+static uint32_t *hsmall, *hlarge;
+
+/* The PNG through the helper: OK, and its pixels at both sizes. */
+static status_t helper_png(void)
 {
+    uint8_t *in = decoder_buffer();
     int w = 0, h = 0;
-    uint8_t *px = stbi_rgba(png4, sizeof(png4), &w, &h);
-    bool ok = px && w == 4 && h == 4 && px[0] == 255 && px[1] == 0 && px[3] == 255 &&
-              px[12] == 0 && px[14] == 255 && px[15] == 128;
-    stbi_arena_reset();
-    fun_check(ok, "decode: a PNG with alpha");
-    px = stbi_rgba(jpg16, sizeof(jpg16), &w, &h);
-    ok = px && w == 16 && h == 16;
-    for (int i = 0; ok && i < 16 * 16; i++) {
-        const uint8_t *q = px + 4 * i;
-        ok &= q[0] > 190 && q[0] < 210 && q[1] > 110 && q[1] < 130 && q[2] > 30 && q[2] < 50;
+    if (!in)
+        return ERR_NO_MEMORY;
+    memcpy(in, test_png4, sizeof(test_png4));
+    status_t st = decoder_decode(sizeof(test_png4), true, hsmall, hlarge, &w, &h);
+    if (st != OK)
+        return st;
+    bool ok = w == 4 && h == 4 && hsmall[0] == 0xffff0000u &&
+              hsmall[COVER_SMALL - 1] == 0x80000080u && hlarge[0] == 0xffff0000u &&
+              hlarge[COVER_LARGE * COVER_LARGE - 1] == 0x80000080u;
+    return ok ? OK : ERR_INTERNAL;
+}
+
+static void test_helper(void)
+{
+    if (!hsmall)
+        hsmall = big_alloc((uint64_t)COVER_SMALL * COVER_SMALL * 4);
+    if (!hlarge)
+        hlarge = big_alloc((uint64_t)COVER_LARGE * COVER_LARGE * 4);
+    if (!hsmall || !hlarge || !decoder_buffer()) {
+        fun_check(false, "helper: no memory for the pixels");
+        return;
     }
-    stbi_arena_reset();
-    fun_check(ok, "  ... a JPEG");
-    static uint8_t bad[sizeof(png4)];
-    memcpy(bad, png4, sizeof(bad));
-    ok = !stbi_rgba(bad, 50, &w, &h);   /* cut off in its IDAT */
-    bad[16] = bad[17] = 0;   /* IHDR: 5000 x 5000 (the CRC is not checked by stb) */
-    bad[18] = 0x13;
-    bad[19] = 0x88;
-    bad[20] = bad[21] = 0;
-    bad[22] = 0x13;
-    bad[23] = 0x88;
-    ok &= stbi_size(bad, sizeof(bad), &w, &h) && w == 5000 && !cover_size_ok(w, h);
-    ok &= cover_size_ok(640, 640) && cover_size_ok(611, 640) && !cover_size_ok(0, 10);
-    stbi_arena_reset();
-    fun_check(ok, "  ... a cut-off PNG fails; one said to be 5000x5000 is refused unread");
+    decoder_test(NULL, 0);
+    unsigned n = decoder_test_starts();
+    bool ok = helper_png() == OK && decoder_test_starts() == n + 1;
+    fun_check(ok, "helper: bin/jamcover decodes a PNG into both sizes");
+    static const char junk[] = "no picture at all";
+    memcpy(decoder_buffer(), junk, sizeof(junk));
+    int w, h;
+    ok = decoder_decode(sizeof(junk), false, hsmall, NULL, &w, &h) == ERR_NOT_SUPPORTED;
+    ok &= helper_png() == OK && decoder_test_starts() == n + 1;
+    fun_check(ok, "  ... refuses what is no picture, and goes on (the same helper)");
+    decoder_test("--crash", 0);
+    ok = helper_png() == ERR_PEER_CLOSED && decoder_test_starts() == n + 2;
+    decoder_test(NULL, 0);
+    ok &= helper_png() == OK && decoder_test_starts() == n + 3;
+    fun_check(ok, "  ... one that crashes on a picture: that cover lost, a new helper");
+    decoder_test("--hang", 300 * NS_PER_MS);
+    uint64_t t0 = now();
+    ok = helper_png() == ERR_TIMED_OUT && now() - t0 >= 300 * NS_PER_MS;
+    decoder_test(NULL, 0);
+    ok &= helper_png() == OK && decoder_test_starts() == n + 5;
+    fun_check(ok, "  ... one that hangs: killed at its deadline, a new helper");
     /* Scaling: the PNG, premultiplied, to 2x2 by area: red; blue at half. */
     uint32_t src[16], dst[4];
     for (int i = 0; i < 16; i++)
@@ -274,7 +268,7 @@ static void test_decode(void)
     ok = dst[0] == 0xffff0000u && dst[1] == 0x80000080u && dst[2] == dst[0] && dst[3] == dst[1];
     scale_pm(src, 4, 4, 4, dst, 1, 1);   /* half and half */
     ok &= dst[0] == 0xc0800040u;
-    fun_check(ok, "  ... scaling down averages areas (premultiplied)");
+    fun_check(ok, "scaling down averages areas (premultiplied)");
 }
 
 /* ---- the covers' states, without the thread (cover_test_*) ------------------------------- */
@@ -341,6 +335,6 @@ static void test_states(void)
 void test_covers(void)
 {
     test_id3();
-    test_decode();
+    test_helper();
     test_states();
 }

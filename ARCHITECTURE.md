@@ -898,12 +898,19 @@ by stream frame because it writes up to 1.37 s ahead
 is the player's window, an app whose list asks for the player (it opens
 `/svc/music`, a channel of its own), `/data` and the other sticks
 read-only; it plays nothing itself. It reads the library through those
-and decodes the albums' covers itself, on a thread
-of its own: the ID3v2 picture frame found by its own bounded parser,
-then PNG or JPEG through stb_image, only after `stbi_info` has said the
-size (at most 2048 on a side and 2048x1600 pixels), with all of
-stb_image's memory from one 40 MiB arena. The pictures it keeps are
-capped at 8 MiB.
+and the albums' covers on a thread of its own: the ID3v2 picture frame
+found by its own bounded parser. The picture is decoded by
+`bin/jamcover` (`user/apps/jamcover`, `abi/idl/jamcover.idl`), a helper
+jamjar starts in a job of its own with nothing but a channel, the
+picture's bytes (a VMO it may only read) and a VMO for the pixels: no
+namespace, no console, no services. There PNG or JPEG goes through
+stb_image, only after `stbi_info` has said the size (at most 2048 on a
+side and 2048x1600 pixels), with all of stb_image's memory from one
+40 MiB arena, and is cropped square and scaled to 256 and 512 pixels.
+jamjar reads the pixels back with `vmo_read` and never maps them. A
+picture that crashes the helper, or keeps it busy past 5 s, costs that
+album its cover: jamjar kills the helper and starts another for the next
+cover. The pictures it keeps are capped at 8 MiB.
 
 ## Storage
 

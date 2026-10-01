@@ -41,10 +41,11 @@ Vendored third-party code:
   taken from vcpkg's checkout of that commit, which it verified by the
   archive's SHA-512), sha256 594c2fe35d49488b...; unmodified. LICENSE
   (sha256 bebfe904b1430165...) is the repository's: MIT or public
-  domain (Unlicense), the user's choice. Built into bin/jamjar only
-  (user/apps/jamjar/stbi.c): PNG and JPEG from memory, no stdio, no HDR,
-  no thread-locals (Jam OS has no TLS); its <stdlib.h> and <string.h> are
-  user/apps/jamjar/port. stb_image is not written for hostile input, so
-  jamjar checks a picture's size with stbi_info before decoding it
+  domain (Unlicense), the user's choice. Built into bin/jamcover only
+  (user/apps/jamcover/stbi.c), jamjar's cover helper, a process that
+  holds nothing but the picture and its pixels: PNG and JPEG from memory,
+  no stdio, no HDR, no thread-locals (Jam OS has no TLS); its <stdlib.h>
+  and <string.h> are user/apps/jamcover/port. stb_image is not written
+  for hostile input, so the helper checks a picture's size with stbi_info before decoding it
   (2048x1600 pixels at most) and gives it one bounded arena (40 MiB) for
   all of its memory: a picture that needs more fails to decode.

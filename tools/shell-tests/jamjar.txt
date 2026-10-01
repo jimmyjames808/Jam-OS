@@ -2,7 +2,9 @@
 # tools/jamjar-test.sh (it makes the library on /data/music, adds the
 # audio devices, a USB keyboard and mouse). At OVMF's 1280x800: the mouse
 # targets below are that layout's (`noaccel`: a pixel a count).
-#   1. the self-test; `run jamjar noplayer` has no player: it says so, shows the library
+#   1. the self-tests (jamcover's decoder; jamjar's, whose cover helper
+#      crashes and hangs on purpose and is replaced); `run jamjar noplayer`
+#      has no player: it says so, shows the library
 #   2. the shell's `jamjar`: the covers read from the tags (PNG in 2.3 and
 #      2.4 tags, a JPEG, one 611x640; none in a WAV; an oversized and a
 #      garbled one refused); play an album by keys, next, back, pause and
@@ -17,6 +19,10 @@ wait jam>
 seen 60 init: /data mounted
 seen 60 music: ready
 seen 30 report mouse ready
+send run jamcover --selftest
+wait 60 jamcover: selftest PASSED
+wait run: bin/jamcover exited with code 0
+wait jam>
 send run jamjar --selftest
 wait 60 jamjar: selftest PASSED
 wait run: bin/jamjar exited with code 0
