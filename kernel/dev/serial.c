@@ -393,8 +393,9 @@ status_t serial_rx_start(void (*notify)(void *), void *ctx)
     rx.head = rx.tail = 0;
     rx_notify = notify;
     rx_ctx = ctx;
-    while (inb(COM1 + REG_LSR) & LSR_DR)   /* whatever came before: stale */
-        (void)inb(COM1 + REG_DATA);
+    /* What the UART holds already (its FIFO: 16 bytes) is kept, not
+     * drained: it was typed for this reader, which may start a moment after
+     * the shell's prompt is out (the next interrupt or tick moves it). */
     __atomic_store_n(&rx_on, true, __ATOMIC_RELAXED);
     rx_errors_seen = __atomic_load_n(&serial_rx_errors, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&rx_lock, f);
