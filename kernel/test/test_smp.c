@@ -5,7 +5,10 @@
  *       page-aligned, never handed to the allocator; after a startup it
  *       holds the halt stub and its transition page table is freed. The
  *       kernel's PML4 has nothing in its user half, so the trampoline is
- *       not identity-mapped there.
+ *       not identity-mapped there. The trampoline's GDT descriptors all
+ *       have the accessed bit set: the page is read-only once paging is
+ *       on, and a CPU setting the bit there faults with no IDT (a triple
+ *       fault on the PC; QEMU's TCG never sets it, so only this catches it).
  *
  *   smp_cpus_match_bsp
  *       Every online CPU, however it was started, runs with the BSP's
@@ -19,7 +22,12 @@
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/smp.h>
+#include <jam/string.h>
 #include <jam/x86.h>
+
+#include "../arch/x86_64/smp_internal.h"
+
+extern const char ap_tramp_start[];   /* trampoline.S: the blob apboot.c copies */
 
 KTEST(smp_trampoline_parked)
 {
@@ -40,6 +48,11 @@ KTEST(smp_trampoline_parked)
         KT_EQ(pml4[i], 0);
     if (pa)
         KT_EQ(vmm_translate(vmm_kernel_pml4(), pa), UINT64_MAX);
+    for (unsigned sel = TR_SEL_CODE64; sel <= TR_SEL_CODE32; sel += 8) {
+        uint64_t d;
+        memcpy(&d, ap_tramp_start + TR_GDT + sel, sizeof(d));
+        KT_ASSERT(d & (1ull << 40));   /* accessed */
+    }
 }
 
 #define MSR_MTRR_DEFTYPE 0x2ff

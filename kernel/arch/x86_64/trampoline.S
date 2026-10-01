@@ -4,7 +4,8 @@
  *
  * The trampoline goes 16 -> 32 -> 64-bit (Intel SDM vol. 3A, 10.8.5
  * "Initializing IA-32e Mode": PAE, CR3, EFER.LME, then paging). It writes
- * nothing in its page, so any number of APs can run it at once. EBX holds
+ * nothing in its page (its descriptors come with the accessed bit set, so
+ * the CPU doesn't either), so any number of APs can run it at once. EBX holds
  * the page's physical address throughout, because the code doesn't know
  * where it was copied. Its layout and the data block's offsets are in
  * smp_internal.h. After the startup apboot.c overwrites it with
@@ -66,11 +67,16 @@ tramp64:
     movq    TR_ENTRY(%rbx), %rax
     jmpq    *%rax
 
+    /* Every descriptor has its accessed bit set already. A CPU that loads
+     * a selector whose descriptor has it clear writes it into the GDT, and
+     * the 64-bit code selector is loaded with paging on, where this page is
+     * mapped read-only: on the PC that write page-faulted with no IDT, a
+     * triple fault that reset the machine (QEMU's TCG doesn't make it). */
     .org    TR_GDT
     .quad   0
-    .quad   0x00af9a000000ffff           /* 64-bit code: present, exec/read, L, G */
-    .quad   0x00cf92000000ffff           /* data: present, read/write, 4 GiB */
-    .quad   0x00cf9a000000ffff           /* 32-bit code: present, exec/read, D, 4 GiB */
+    .quad   0x00af9b000000ffff           /* 64-bit code: present, exec/read, accessed, L, G */
+    .quad   0x00cf93000000ffff           /* data: present, read/write, accessed, 4 GiB */
+    .quad   0x00cf9b000000ffff           /* 32-bit code: present, exec/read, accessed, D, 4 GiB */
     .org    TR_GDTR
     .word   4 * 8 - 1
     .long   TR_GDT                       /* + the page */
