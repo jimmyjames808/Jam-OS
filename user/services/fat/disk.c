@@ -3,6 +3,9 @@
  * partition channel fat was given. Data moves through the channel's
  * shared buffer (mapped once), a buffer's worth of sectors per call.
  *
+ * Reads go through the write-through block cache (cache.c), and every
+ * write is copied into it once it is on the disk.
+ *
  * Every block call has a deadline (BLOCK_WAIT, longer than usb-storage's
  * own command timeouts), so a disk that stops answering fails the request
  * with ERR_IO instead of hanging fat. A call that finds the channel closed
@@ -167,6 +170,7 @@ status_t disk_commit_boot(const char *label)
         st = block_write_until(vol.block, deadline(), sector, 1, 0);
         if (st != OK)
             return failed("write", sector, 1, st);
+        cache_wrote(sector, 1, vol.bbuf);
     }
     return flush();
 }
@@ -193,6 +197,7 @@ static status_t mark(bool clean)
         st = block_write_until(vol.block, deadline(), vol.fat0[i], 1, 0);
         if (st != OK)
             return failed("write", vol.fat0[i], 1, st);
+        cache_wrote(vol.fat0[i], 1, vol.bbuf);
     }
     vol.clean_on_disk = clean;
     return OK;
@@ -258,24 +263,33 @@ DSTATUS disk_status(BYTE pdrv)
     return vol.read_only ? STA_PROTECT : 0;
 }
 
-DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
+status_t disk_block_read(uint64_t sector, uint32_t count)
 {
-    if (pdrv != 0 || !in_range(sector, count))
-        return RES_PARERR;
+    status_t st = block_read_until(vol.block, deadline(), sector, count, 0);
+    return st == OK ? OK : failed("read", sector, count, st);
+}
+
+status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff)
+{
     uint32_t per = vol.bbuf_size / FAT_SECTOR;
     while (count) {
         uint32_t n = count < per ? count : per;
-        status_t st = block_read_until(vol.block, deadline(), sector, n, 0);
-        if (st != OK) {
-            (void)failed("read", sector, n, st);   /* logged; FatFs gets RES_ERROR */
-            return RES_ERROR;
-        }
+        status_t st = disk_block_read(sector, n);
+        if (st != OK)
+            return st;
         memcpy(buff, vol.bbuf, (size_t)n * FAT_SECTOR);
         buff += (size_t)n * FAT_SECTOR;
         sector += n;
         count -= n;
     }
-    return RES_OK;
+    return OK;
+}
+
+DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
+{
+    if (pdrv != 0 || !in_range(sector, count))
+        return RES_PARERR;
+    return cache_read(sector, count, buff) == OK ? RES_OK : RES_ERROR;   /* logged */
 }
 
 DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
@@ -306,6 +320,7 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
             (void)failed("write", sector, n, st);   /* logged; FatFs gets RES_ERROR */
             return RES_ERROR;
         }
+        cache_wrote(sector, n, vol.bbuf);   /* as written: the dirty bit patched */
         buff += (size_t)n * FAT_SECTOR;
         sector += n;
         count -= n;

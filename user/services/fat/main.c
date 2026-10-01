@@ -199,6 +199,11 @@ int main(int argc, char **argv)
     }
     st = run(serve, startup_handle(FAT_SR_CTL));
     files_close_all();
+    struct fat_cache_stats cs;
+    cache_stats(&cs);
+    printf("fat %s: cache: %lu reads from it, %lu lines read, %lu big reads past it, %lu "
+           "sectors written through it\n", vol.name, (unsigned long)cs.hits,
+           (unsigned long)cs.fills, (unsigned long)cs.bypassed, (unsigned long)cs.updated);
     if (vol.disk_gone) {
         printf("fat %s: the disk is gone: stopping\n", vol.name);
         return 0;
