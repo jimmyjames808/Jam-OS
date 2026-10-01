@@ -278,6 +278,48 @@ static bool strings(struct attach *a)
     return true;
 }
 
+/* For the tests only: a device whose serial number is TEST_SLOW_SERIAL
+ * (QEMU gives a device one with `serial=`) behaves like the PC's gaming
+ * mouse at its worst: each of its first TEST_SLOW_FAILS attempts on a
+ * port takes TEST_SLOW_MS and fails, as if the device didn't answer. So
+ * tools/usb-early-test.sh can show that it holds up nobody but itself,
+ * and that its port is tried again until it attaches. */
+#define TEST_SLOW_SERIAL "jamos-test-slow"
+#define TEST_SLOW_FAILS  2
+#define TEST_SLOW_MS     1000
+
+static bool same(const char *x, const char *y)
+{
+    while (*x && *x == *y)
+        x++, y++;
+    return *x == *y;
+}
+
+static bool test_slow(struct attach *a)
+{
+    static struct {
+        char path[24];   /* the port ("" free) */
+        uint8_t fails;   /* attempts failed there so far */
+    } seen[4];
+    struct usbdev *d = a->d;
+    if (!same(d->serial, TEST_SLOW_SERIAL))
+        return true;
+    unsigned i = 0;
+    while (i < 4 && seen[i].path[0] && !same(seen[i].path, d->path))
+        i++;
+    if (i == 4)
+        return true;
+    if (!seen[i].path[0])
+        copy(seen[i].path, d->path, sizeof(seen[i].path));
+    if (seen[i].fails >= TEST_SLOW_FAILS)
+        return true;
+    seen[i].fails++;
+    drv_log("usb %s: the test's slow device: attempt %u takes %u ms and fails", d->path,
+            seen[i].fails, TEST_SLOW_MS);
+    hc_sleep(&g_hc, TEST_SLOW_MS);
+    return failed(a, "the test's slow device", CC_TIMEOUT);
+}
+
 /* A hub by its device or first interface class, unless it would be one
  * tier too many. Never fails. */
 static bool hub_or_not(struct attach *a)
@@ -341,6 +383,7 @@ static bool (*const steps[])(struct attach *a) = {
     device_descriptor,
     configuration,
     strings,
+    test_slow,
     hub_or_not,
     set_configuration,
     setup_hub,

@@ -54,9 +54,21 @@ logs that interface's report descriptor in hex, the layout it found and
 the protocol it chose (report protocol for a mouse with a wheel).
 
 Seen in the boot logs, all harmless so far:
-- The mouse on port 11 sometimes fails its first Address Device; usb-bus
-  tries the root port again and it attaches, but the retry costs about
-  3 s of the boot (M8.6 looks for the cause).
+- The mouse on port 11 (258a:0033) often fails its first attempt: in the
+  boot logs of 2026-09-30 and 2026-10-01 its Address Device ended in a USB
+  Transaction Error twice, or its first GET_DESCRIPTOR did, or (boot 11)
+  the command got no completion for 3 s and the try right after the abort
+  worked at once. Each time it attached about 0.2 s after the first try
+  (after a connect change, or at the next try). Most likely the mouse
+  doesn't answer for a few hundred ms after its first bus reset (busy, or
+  dropping off the bus and coming back as the HAF700 does), and the xHC
+  retries a NAKed SET_ADDRESS for as long as software lets it. usb-bus
+  gives Address Device 250 ms a try (USB 2.0 allows a device 50 ms),
+  tries a failed port again after 100 ms, doubling, and treats a
+  reconnect during the attempt as a fresh start; since every root port is
+  attached in its own task (M8.6), the mouse can only delay itself. Each
+  failed try is logged with the PORTSC it left (connected, enabled, a
+  connect change), which tells the two causes apart.
 - The HAF700 on port 8 detaches and comes back once during enumeration,
   and after a warm reboot devmgr can log that its hid "did not end
   cleanly" (a follow-up in [ROADMAP.md](ROADMAP.md#smaller-follow-ups)).
