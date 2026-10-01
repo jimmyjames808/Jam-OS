@@ -10,9 +10,17 @@
  * own replies); each answer is the end of a period, and the mixer mixes
  * until OUT_LEAD periods are written ahead of the play position again.
  * So a frame taken from a client is heard OUT_LEAD - 1 to OUT_LEAD
- * periods (128-171 ms) later. An answer later than a whole period has cost the driver's
+ * periods (128-171 ms) later, plus the limiter's MIX_LOOKAHEAD (1 ms).
+ * An answer later than a whole period has cost the driver's
  * clear-behind silence: counted (`late`), and mixing goes on from the
  * play position.
+ *
+ * The format: the largest sample size the driver's DAC takes (hda.info's
+ * pcm, which `hda bits` caps), asked for at every open. At 20, 24 or 32
+ * bits the mix goes out with all its 24 bits (a volume below 0 dB loses
+ * nothing a DAC can play); at 16 bits it is dithered where a volume left
+ * a fraction (<mixmath.h>). Either way a stream at 0 dB alone is
+ * bit-exact.
  *
  * A driver that dies closes its stream channel: the output is closed and
  * opened again on the restarted driver (devmgr hands out the channel its
@@ -118,7 +126,7 @@ static void mix_period(struct mixer *m)
 {
     struct out *o = &m->out;
     uint32_t pf = o->period;
-    memset(m->acc, 0, 2 * pf * sizeof(m->acc[0]));
+    memset(m->acc + 2 * MIX_LOOKAHEAD, 0, 2 * pf * sizeof(m->acc[0]));
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
         struct stream *s = &m->s[i];
         if (!s->used || !s->playing)
@@ -130,11 +138,19 @@ static void mix_period(struct mixer *m)
         s->empty = n ? 0 : s->empty + 1;
         if (!n)
             continue;
-        mix_add(m->acc, m->buf, n, s->gain);
-        remember(s, o->written, from, n);
+        mix_add(m->acc + 2 * MIX_LOOKAHEAD, m->buf, n, s->gain);
+        remember(s, o->written + MIX_LOOKAHEAD, from, n);   /* the limiter's delay */
     }
+    mix_master(m->acc + 2 * MIX_LOOKAHEAD, pf, m->master_gain);
+    if (mix_limit(&o->lim, m->acc, pf))
+        for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
+            if (m->s[i].used && m->s[i].playing)
+                m->s[i].limited++;
     uint32_t off = (uint32_t)(o->written % o->frames);
-    mix_out(o->ring + 2 * (size_t)off, m->acc, pf, m->master_gain);
+    if (o->frame_bytes == 8)
+        mix_out32((int32_t *)o->ring + 2 * (size_t)off, m->acc, pf);
+    else
+        mix_out16((int16_t *)o->ring + 2 * (size_t)off, m->acc, pf, &o->seed);
     o->written += pf;
 }
 
@@ -184,8 +200,8 @@ static void period_end(struct mixer *m, uint64_t pos)
 
 static status_t map_ring(struct out *o, handle_t vmo, uint32_t size, uint32_t period)
 {
-    uint32_t frames = size / MIXER_FRAME, pf = period / MIXER_FRAME;
-    if (size % MIXER_FRAME || period % MIXER_FRAME || !pf || pf > PERIOD_MAX ||
+    uint32_t fb = o->frame_bytes, frames = size / fb, pf = period / fb;
+    if (size % fb || period % fb || !pf || pf > PERIOD_MAX ||
         frames % pf || frames < (OUT_LEAD + 1) * pf) {
         printf("mixer: the driver's ring (%u bytes, periods of %u) doesn't fit the mixer\n",
                size, period);
@@ -196,10 +212,22 @@ static status_t map_ring(struct out *o, handle_t vmo, uint32_t size, uint32_t pe
                                VMAR_READ | VMAR_WRITE, &va);
     if (st != OK)
         return st;
-    o->ring = (int16_t *)(uintptr_t)va;
+    o->ring = (void *)(uintptr_t)va;
     o->frames = frames;
     o->period = pf;
     return OK;
+}
+
+/* The largest sample size the driver's DAC takes now (hda.info's pcm:
+ * bits 17-20 are 16, 20, 24 and 32 bits), 16 if it can't say. */
+static uint32_t best_bits(struct out *o)
+{
+    uint32_t codec, pin = 0, dac, pcm = 0, formats, amp, jack, count;
+    uint8_t nodes[8], text[240];
+    if (hda_info_until(o->svc, now() + CALL_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp, &jack,
+                       &count, nodes, text) != OK)
+        return 16;
+    return pcm & (1u << 20) ? 32 : pcm & (1u << 19) ? 24 : pcm & (1u << 18) ? 20 : 16;
 }
 
 /* The driver's stream on o->svc, mapped, bound, primed and started. */
@@ -207,11 +235,19 @@ static status_t open_stream(struct mixer *m)
 {
     struct out *o = &m->out;
     handle_t ch = HANDLE_INVALID, vmo = HANDLE_INVALID;
-    uint32_t size = 0, period = 0;
-    status_t st = hda_open_output_until(o->svc, now() + OPEN_WAIT, MIXER_RATE, MIXER_CHANNELS, 16,
-                                        &ch, &vmo, &size, &period);
+    uint32_t size = 0, period = 0, bits = best_bits(o);
+    status_t st = hda_open_output_until(o->svc, now() + OPEN_WAIT, MIXER_RATE, MIXER_CHANNELS,
+                                        (uint8_t)bits, &ch, &vmo, &size, &period);
+    if (st == ERR_NOT_SUPPORTED && bits != 16) {   /* capped meanwhile: 16 is always there */
+        bits = 16;
+        st = hda_open_output_until(o->svc, now() + OPEN_WAIT, MIXER_RATE, MIXER_CHANNELS, 16, &ch,
+                                   &vmo, &size, &period);
+    }
     if (st != OK)
         return st;
+    o->bits = bits;
+    o->frame_bytes = bits == 16 ? 4 : 8;
+    mix_limit_init(&o->lim);
     o->ch = ch;
     o->vmo = vmo;
     o->written = o->played = 0;
@@ -251,8 +287,9 @@ static status_t out_open(struct mixer *m)
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->s[i].used && m->s[i].playing)
             stream_set_idle(&m->s[i], false);
-    printf("mixer: output open: periods of %u frames, %u written ahead (%u ms)\n", o->period,
-           OUT_LEAD * o->period, OUT_LEAD * o->period * 1000 / MIXER_RATE);
+    printf("mixer: output open: 48 kHz %u-bit, periods of %u frames, %u written ahead "
+           "(%u-%u ms)\n", o->bits, o->period, OUT_LEAD * o->period,
+           (OUT_LEAD - 1) * o->period * 1000 / MIXER_RATE, OUT_LEAD * o->period * 1000 / MIXER_RATE);
     return OK;
 }
 
@@ -261,7 +298,7 @@ void out_close(struct mixer *m, const char *why)
     struct out *o = &m->out;
     if (o->ring)
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)o->ring,
-                       (uint64_t)o->frames * MIXER_FRAME);
+                       (uint64_t)o->frames * o->frame_bytes);
     if (o->ch)
         jam_handle_close(o->ch);   /* the driver stops the stream and mutes the path */
     if (o->vmo)
@@ -276,8 +313,9 @@ void out_close(struct mixer *m, const char *why)
             drain_check(m, &m->s[i], 0, OK);
     }
     if (was && why)
-        printf("mixer: output closed (%s); %lu frames mixed\n", why,
-               (unsigned long)o->written);
+        printf("mixer: output closed (%s); %lu frames mixed, %lu limited, peak %d%%\n", why,
+               (unsigned long)o->written, (unsigned long)o->lim.limited,
+               (int)((int64_t)o->lim.peak * 100 / MIX_FULL));
 }
 
 static bool any_audible(const struct mixer *m)

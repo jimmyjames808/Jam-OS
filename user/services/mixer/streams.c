@@ -88,8 +88,8 @@ void stream_drop(struct mixer *m, struct stream *s, const char *why)
     jam_handle_close(s->ch);   /* its persistent binding goes with our only handle */
     jam_handle_close(s->vmo);
     jam_handle_close(s->event);
-    printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s)\n", s->id,
-           s->name, why, (unsigned long)s->read, s->underruns);
+    printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s), %u limited "
+           "period(s)\n", s->id, s->name, why, (unsigned long)s->read, s->underruns, s->limited);
     uint32_t gen = s->gen;
     *s = (struct stream){ .gen = gen };
 }
@@ -193,7 +193,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     *out_event = event;
     *out_id = s->id;
     *out_frames = RING_FRAMES;
-    *out_lead = OUT_LEAD * (m->out.period ? m->out.period : PERIOD_MAX);
+    *out_lead = OUT_LEAD * (m->out.period ? m->out.period : PERIOD_GUESS) + MIX_LOOKAHEAD;
     printf("mixer: stream %u (%s) opened\n", s->id, s->name);
     return OK;
 }
