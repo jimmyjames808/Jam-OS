@@ -362,6 +362,7 @@ of them. Each file's header says more.
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/write-usb.sh`, `tools/mbr-grow.py` | `make usb`: the image onto a stick, the data partition grown to its end and left blank |
 | `tools/flash-usb.sh` | `make flash`: a new kernel, boot image and boot menu onto a stick's ESP |
+| `tools/mksplash.sh` | `boot/splash.mpg` from the owner's animation and its sound (ffmpeg); `make` runs it only when both source files are there (`SPLASH_SRC`) and one is newer |
 | `tools/bdf2c.py`, `tools/compdb.py` | `make font` (the console font from Spleen's BDF), `make compdb` |
 
 ## Known noise
