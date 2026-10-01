@@ -1,5 +1,8 @@
 # A1 plan: HD Audio, a tone in the front-panel headphones
 
+Status: done, signed off on the PC on 2026-10-01 with A2, AS and M8.5
+([HISTORY.md](HISTORY.md#audio-a1-a2-as-and-m85-kexec)).
+
 Goal ([roadmap](ROADMAP.md#later)): **`beep` in the shell plays a tone in
 the headphones plugged into the case's front panel on the real PC, and
 unplugging and replugging them is logged.** The driver is a process like
@@ -177,7 +180,8 @@ A2 then adds the `audio` protocol (programs' streams, each its own shared
 VMO ring) served by a mixer service that holds the one `hda` output stream,
 mixes, and sets the volume through `set_gain`; `beep` and WAV playback
 move to it. devmgr then hands `hda`'s channel to the mixer only (today
-GET_SERVICE gives it to the shell). Nothing in A1's methods changes: A2 is
+GET_SERVICE gives it to the shell; not done in A2: the shell's `hda` and
+`hdatest` still use it). Nothing in A1's methods changes: A2 is
 new methods (e.g. more rates) or a new protocol, never a rework.
 
 ## Stages
@@ -192,8 +196,8 @@ different files and can run as two tracks at once.
 | **1. Codec control** (done) | `hda_set` with its allow-list; power-up; the path finder (`path.c`, a pure function over `struct codec`) with a self-test the driver runs at start against fixtures: QEMU's hda-output and hda-duplex, and **the PC's codec as the stage 0 dump showed it**; the path programmed with every amp still muted and the pin output off (no sound possible yet); `hda.info`; `hda` shows the chosen path | `drivers/hda/{verbs,path,fixtures}.c`, `hda.idl` (info) |
 | **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
 | **3. `beep`** (the join of 1 and 2, done) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
-| **4. Jacks** (done in QEMU) | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jacks`, `hda` shows the jack state | drivers/hda/jack.c (new), `ctrl.c` (the RIRB's demultiplexer), `irq.c`, `hda.idl` (jacks) |
-| **5. Review** | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
+| **4. Jacks** (done) | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jacks`, `hda` shows the jack state | drivers/hda/jack.c (new), `ctrl.c` (the RIRB's demultiplexer), `irq.c`, `hda.idl` (jacks) |
+| **5. Review** (done: [AUDIO-REVIEW.md](history/AUDIO-REVIEW.md)) | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
 
 ## Stage 2: what was built and learned
 

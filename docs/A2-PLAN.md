@@ -8,7 +8,7 @@ backend onto it. Each track keeps to its own section of this file.
 
 ## Track 1: WAV playback
 
-Status: done in QEMU (branch `a2-wav`); not yet heard on the PC.
+Status: done, heard on the PC (A2 signed off there on 2026-10-01).
 
 ### The library: `<audio.h>` (user/lib/audio.c, in libos)
 
@@ -94,12 +94,11 @@ MP3s need no conversion: copy them as they are ([MP3](#mp3) below).
 
 ### Left for later
 
-- Heard on the PC: `play` of a real song; whether 85 ms periods and a
-  341 ms ring are enough with a slow stick (underruns are counted but
-  not shown yet).
-- A low-pass filter for downsampling; float WAV (`afconvert -d LEI16`
-  avoids it); `play` of several files or a directory; a progress line.
-- Two programs at once: track 2's mixer.
+- Done since: a real song heard on the PC; underruns shown (`play -s`,
+  the sound quality pass below); a filtering resampler; two programs at
+  once (track 2's mixer).
+- Float WAV (`afconvert -d LEI16` avoids it); `play` of several files or
+  a directory; a progress line.
 
 ## Track 2: the `audio` protocol and the mixer
 
@@ -377,7 +376,7 @@ of what is heard, to within a period's interpolation), not what it wrote.
 
 ## MP3
 
-Status: done in QEMU (branch `a2-mp3`); not yet heard on the PC.
+Status: done, heard on the PC (A2 signed off there on 2026-10-01).
 
 `play song.mp3` plays an MPEG audio file the way it plays a WAV file:
 the same `<audio.h>` stream (resampled to 48 kHz), Ctrl+C with the 5 ms
@@ -503,13 +502,13 @@ number.
 
 ### Left for later
 
-- Heard on the PC: a real song; `play -n` there.
+- `play -n` on the PC (real songs have been heard there).
 - Seeking, a progress line, playing several files or a directory.
 - Upstream: the stream-cursor bug above.
 
 ## Music player
 
-Status: done in QEMU (branch `music`); not yet heard on the PC.
+Status: done, heard on the PC (A2 signed off there on 2026-10-01).
 
 `music start` plays a folder of MP3 and WAV files in shuffle, forever, in
 the background: the shell stays free for other commands meanwhile.
@@ -524,7 +523,9 @@ the background: the shell stays free for other commands meanwhile.
   `music stop` stops it (or `kill music`, after which init starts a new,
   stopped player).
 - **Its channel**: `abi/idl/music.idl` (protocol 24: `start`, `stop`,
-  `next`, `status`, `set_volume`). init makes it once and keeps both
+  `next`, `status`, `set_volume`; jamjar later added `prev`, `play`,
+  `levels`, `pause`, `sleep`, `spectrum` and `stereo`:
+  [MUSIC-GUI.md](history/MUSIC-GUI.md)). init makes it once and keeps both
   ends, as it does the mixer's, so a restarted player serves the same
   channel and the shell's end (startup role SR_USER + 4) never goes
   stale. The player gets the server end (SR_USER + 0), a client end of
@@ -634,5 +635,5 @@ folders): `cp -R ~/Music/OnTheSpot/Tracks /Volumes/JAMOS-DATA/music/OnTheSpot`
 
 - Reading titles from ID3 tags (the path is used); seeking; a queue or a
   playlist file; repeat/no-shuffle modes; resuming after a restart.
-- The scan reads the folder in `start`'s handler: a huge folder on a slow
-  stick holds the reply (the shell waits up to 60 s).
+- Done since: a folder that takes more than half a second to read is
+  read on after `start`'s answer (the audio review, item 2).

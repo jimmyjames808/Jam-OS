@@ -1,13 +1,13 @@
 # AS: the boot splash
 
-Status: on main and seen on the PC (720p, 2026-10-01: "looks good but
-lower quality"); the 2560x1440 version (branch `as-hq`) works in QEMU.
+Status: done, signed off on the PC on 2026-10-01 with A1, A2 and M8.5:
+the 2560x1440 version, its sound starting with the picture.
 
 On a plain boot the owner's logo animation plays with its sound while
 Jam OS starts: the seven drupelets drop in and assemble into the logo,
 the gold one glows, the logo slides left and "Jam OS" types out. The
 whole animation (8.5 s since the owner's 2560x1440 render) plays every
-boot; the last frame stays at least 2 s, and until the shell is ready;
+boot; the last frame stays at least 0.5 s, and until the shell is ready;
 then the picture fades into the console's text. Nothing in the code or
 the tests assumes the animation's length, size or rate: they come from
 the file.
@@ -53,7 +53,8 @@ the bootfs mapping.
 2. **init** (`user/services/init/shell.c`, `splash.c`): bootfs server,
    then the console with the argument `quiet` (it draws nothing until a
    lent screen comes back, or for 5 s if nobody borrows it), then
-   **the splash**, then serialin, devmgr, the mixer, logd. The shell waits:
+   **the splash**, then serialin, devmgr, the mixer, the music player,
+   logd. The shell waits:
    it starts once the splash says `SPLASH_PLAYED` (or ends).
 3. **The splash** (`user/apps/splash`) borrows the screen and the keys
    from the console (a PROGRAM-level console channel, `gfx_open_on`: the
