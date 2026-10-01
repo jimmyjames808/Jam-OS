@@ -30,6 +30,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define MIX_UNITY      32768u   /* Q15 gain of 0 dB */
@@ -45,6 +46,11 @@
 
 /* cb clamped to [MIX_VOLUME_MIN, MIX_VOLUME_MAX]. */
 int32_t  mix_clamp_volume(int32_t cb);
+/* A volume as people write it: "-20", "-20.5", "0" (a sign, digits, one
+ * decimal; more are ignored) as centibels into *cb; at most 1000.0 dB
+ * either way. And back: "-20.5". */
+bool     mix_parse_db(const char *s, int32_t *cb);
+const char *mix_db_str(int32_t cb, char *buf, size_t size);
 /* The Q15 gain of a volume in centibels (clamped first): 10^(cb / 200),
  * rounded; 0 at MIX_VOLUME_MIN. */
 uint32_t mix_gain(int32_t cb);
