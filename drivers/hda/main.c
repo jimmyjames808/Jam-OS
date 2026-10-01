@@ -14,8 +14,9 @@
  * controller, find the codecs, print each codec's widget graph and the
  * path it offers to the log (dump.c), set up the best path (the front
  * headphone jack's, see path.c) muted and with the pin's output off, and
- * put a RESULTS line out; then serve `hda.dump`, `hda.info` and the
- * output stream on the path's DAC (stream.c, irq.c) until devmgr closes
+ * put a RESULTS line out; then serve `hda.dump`, `hda.info`, query
+ * channels (everything but the stream: the shell's, through the mixer) and
+ * the output stream on the path's DAC (stream.c, irq.c) until devmgr closes
  * the channel, close the stream, stop the command rings, put the
  * controller back into reset and exit 0. The path is unmuted (at the
  * gain, -30 dB unless set_gain says otherwise) only while the stream
