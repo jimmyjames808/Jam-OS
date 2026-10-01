@@ -124,3 +124,9 @@ rounding is used).
   made-up picture per path) and, through a hook between asking and
   drawing, takes the album's large copy away at exactly that point, for
   a kept picture and a new one: FAILED before (the label was drawn).
+- **3 fixed.** The roulette takes the album playing and, when the label
+  it would land on is that album, lands on the next one (never the same
+  album twice in a row on the reel, so it is another). Test: 200 seeded
+  spins with an album "playing": FAILED before (about one in eight landed
+  on it), and `tools/jamjar-test.sh`'s roulette step can no longer wait
+  for a track change that never comes.

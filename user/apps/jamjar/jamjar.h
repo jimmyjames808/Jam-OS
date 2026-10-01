@@ -319,8 +319,10 @@ struct roulette {
     float    kick;                  /* the pointer's bounce, 0..1 */
 };
 
-/* Spin over the library's albums (false: none to spin). */
-bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, uint64_t t);
+/* Spin over the library's albums (false: none to spin); it doesn't land
+ * on album `avoid` (the one playing; -1: none) unless it is the only one. */
+bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, int64_t avoid,
+                    uint64_t t);
 /* On to time t: the album it chose once it has landed and shown it (else -1). */
 int64_t roulette_step(struct roulette *r, uint64_t t);
 void    roulette_draw(const struct roulette *r, const struct library *l, const struct layout *lo,

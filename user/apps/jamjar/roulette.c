@@ -4,14 +4,16 @@
  * kicking at every label that passes, lands on one album, shows its name,
  * and after LINGER the app plays that album. The reel is ROUL_TILES albums
  * picked at random (never the same twice in a row), and it lands near its
- * end, so every spin passes dozens of labels. */
+ * end, so every spin passes dozens of labels, never on the album playing
+ * (if there is another). */
 #include "jamjar.h"
 
 #define SPIN   (4200 * NS_PER_MS)
 #define LINGER (1300 * NS_PER_MS)
 #define ROUL_BG 0x120d10   /* the reel's band */
 
-bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, uint64_t t)
+bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, int64_t avoid,
+                    uint64_t t)
 {
     memset(r, 0, sizeof(*r));
     if (!l->ready || !l->nalbums)
@@ -26,6 +28,10 @@ bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, 
     }
     r->ntiles = n;
     r->target = n - 5 - (uint32_t)(rng_next(&s) % 4);
+    /* Never the album playing, when there is another: its neighbour on the
+     * reel is another album (never one twice in a row). */
+    if (avoid >= 0 && r->tile[r->target] == (uint64_t)avoid && l->nalbums > 1)
+        r->target++;
     r->t0 = t;
     r->last_tick = 0;
     r->on = true;

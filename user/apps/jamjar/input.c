@@ -127,6 +127,12 @@ static void play_pause(struct app *a)
         app_play_row(a, a->view.col, a->view.sel[a->view.col]);
 }
 
+/* The library's album playing, or -1. */
+static int64_t playing_album(const struct app *a)
+{
+    return a->now_track >= 0 ? (int64_t)a->lib.track[a->now_track].album : -1;
+}
+
 static void locate(struct app *a)
 {
     if (a->now_track < 0 || !view_locate(&a->view, &a->lib, (uint32_t)a->now_track)) {
@@ -202,7 +208,7 @@ static bool command_key(struct app *a, int k)
         app_toast(a, "next play: %s", a->ordered ? "in order" : "shuffle");
         return true;
     case 'r':
-        if (!roulette_start(&a->roul, &a->lib, now(), now()))
+        if (!roulette_start(&a->roul, &a->lib, now(), playing_album(a), now()))
             app_toast(a, "no albums to spin");
         return true;
     case 'z': sleep_next(a); return true;

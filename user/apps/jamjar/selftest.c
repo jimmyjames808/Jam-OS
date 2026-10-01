@@ -236,7 +236,7 @@ static void test_roulette(void)
 {
     static struct roulette r;
     uint64_t t0 = 1000 * NS_PER_S;
-    bool ok = roulette_start(&r, &lib, 5, t0);
+    bool ok = roulette_start(&r, &lib, 5, -1, t0);
     float last = -1;
     int64_t got = -1;
     for (uint64_t t = t0; ok && got < 0 && t < t0 + 10 * NS_PER_S; t += 20 * NS_PER_MS) {
@@ -247,6 +247,20 @@ static void test_roulette(void)
     fun_check(ok && got >= 0 && got < lib.nalbums && !r.on &&
                   (uint32_t)got == r.tile[r.target],
               "roulette: slows to the target label and picks its album");
+    /* Spins that would land on the album playing land beside it instead. */
+    unsigned would = 0;
+    ok = true;
+    for (uint64_t seed = 1; seed <= 200; seed++) {
+        (void)roulette_start(&r, &lib, seed, -1, t0);
+        uint32_t playing = r.tile[r.target];
+        (void)roulette_start(&r, &lib, seed, 3, t0);
+        would += playing == 3;
+        got = -1;
+        for (uint64_t t = t0; got < 0 && t < t0 + 10 * NS_PER_S; t += 50 * NS_PER_MS)
+            got = roulette_step(&r, t);
+        ok &= got >= 0 && got != 3;
+    }
+    fun_check(ok && would > 0, "  ... never on the album playing (200 spins)");
 }
 
 static bool apart(const struct rect *p, const struct rect *q)
