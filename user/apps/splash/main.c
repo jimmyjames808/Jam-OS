@@ -57,9 +57,11 @@ static bool play(const uint8_t *mpg, size_t len)
     clock_start();
     video_draw(f);
     gfx_present();
-    printf("splash: first frame at %lu ms of uptime: %dx%d at %dx on %dx%d\n",
-           (unsigned long)(now() / NS_PER_MS), (int)f->width, (int)f->height, video_scale(),
-           scr.w, scr.h);
+    char mode[32];
+    printf("splash: first frame at %lu ms of uptime: %dx%d at %s on %dx%d, %lu ms long\n",
+           (unsigned long)(now() / NS_PER_MS), (int)f->width, (int)f->height,
+           video_mode(mode, sizeof(mode)), scr.w, scr.h,
+           (unsigned long)(video_seconds() * 1000));
     sound_start(mpg, len, startup_handle(SR_AUDIO));
     double fps = video_fps();
     unsigned shown = 1, dropped = 0, n = 1;

@@ -1,21 +1,53 @@
-/* splash: the video (splash_int.h).
+/* splash: the video's decoder and its place on the screen (splash_int.h).
  *
  * pl_mpeg decodes the file's MPEG-1 video frame by frame (audio left to
  * sound.c's decoder of its own): each frame is Y at full size and Cb, Cr at
- * half size both ways (4:2:0). video_draw converts it to 0xRRGGBB into the
- * screen's back buffer, every pixel repeated `scale` times both ways
- * (nearest neighbour: cheap and sharp), in bands of 16 source rows on the
- * thread pool. The scale is the largest integer at which the frame fits
- * the screen (2 for 1280x720 on 2560x1440; at least 1: a smaller screen
- * shows the middle of it), and the frame is centred; the rest of the
- * screen is the background the frame has (SPLASH_BG), drawn by main.c. */
+ * half size both ways (4:2:0). draw.c turns a frame into the screen's back
+ * buffer; this file decides how. The file is made at the PC's 2560x1440
+ * (tools/mksplash.sh), so there it is drawn pixel for pixel. Otherwise:
+ *   - a screen at least twice as big: the largest integer scale that fits
+ *     (each pixel repeated; DRAW_UP);
+ *   - a smaller screen: scaled down to fit, keeping its shape: by an
+ *     integer n, an n x n box average (2560x1440 on 1280x800: n = 2;
+ *     DRAW_BOX), else bilinear (2560x1440 on 1920x1080; DRAW_BILINEAR).
+ * The picture is centred; the rest of the screen is the background the
+ * frame has (SPLASH_BG), drawn by main.c. */
 #include "splash_int.h"
 
-#define BAND 16   /* source rows a pool item converts (a macroblock row) */
-
 static plm_t *plm;
-static struct rect area;   /* the scaled frame on the screen (may be bigger than it) */
-static int scale;
+static struct video_layout lay;
+
+void video_layout_for(int w, int h, struct video_layout *out)
+{
+    struct video_layout lay = { .w = w, .h = h, .n = 1 };
+    if (w <= scr.w && h <= scr.h) {
+        int k = scr.w / w < scr.h / h ? scr.w / w : scr.h / h;
+        lay.mode = DRAW_UP;
+        lay.n = k > 8 ? 8 : k;
+        lay.ow = w * lay.n;
+        lay.oh = h * lay.n;
+    } else {
+        /* Down: the tighter of the two ratios decides (in 1/65536). */
+        uint64_t sx = ((uint64_t)scr.w << 16) / (uint64_t)w;
+        uint64_t sy = ((uint64_t)scr.h << 16) / (uint64_t)h;
+        uint64_t s = sx < sy ? sx : sy;
+        lay.ow = (int)(((uint64_t)w * s) >> 16);
+        lay.oh = (int)(((uint64_t)h * s) >> 16);
+        int n = w / (lay.ow ? lay.ow : 1);
+        if (n >= 2 && w % n == 0 && h % n == 0 && w / n <= scr.w && h / n <= scr.h &&
+            w / n >= lay.ow - 1 && h / n >= lay.oh - 1) {
+            lay.mode = DRAW_BOX;
+            lay.n = n;
+            lay.ow = w / n;
+            lay.oh = h / n;
+        } else {
+            lay.mode = DRAW_BILINEAR;
+        }
+    }
+    lay.x = (scr.w - lay.ow) / 2;
+    lay.y = (scr.h - lay.oh) / 2;
+    *out = lay;
+}
 
 status_t video_open(const uint8_t *mpg, size_t len)
 {
@@ -25,13 +57,11 @@ status_t video_open(const uint8_t *mpg, size_t len)
         return ERR_NO_MEMORY;
     plm_set_audio_enabled(plm, 0);
     int w = plm_get_width(plm), h = plm_get_height(plm);
-    if (!plm_has_headers(plm) || w < 16 || h < 16 || w > 4096 || h > 4096) {
+    if (!plm_has_headers(plm) || w < 16 || h < 16 || w > 4096 || h > 4096 || w % 2 || h % 2) {
         video_close();
         return ERR_NOT_SUPPORTED;
     }
-    scale = scr.w / w < scr.h / h ? scr.w / w : scr.h / h;
-    scale = scale < 1 ? 1 : scale > 8 ? 8 : scale;
-    area = (struct rect){ (scr.w - w * scale) / 2, (scr.h - h * scale) / 2, w * scale, h * scale };
+    video_layout_for(w, h, &lay);
     return OK;
 }
 
@@ -53,77 +83,30 @@ double video_fps(void)
     return fps > 1 && fps < 241 ? fps : 30;
 }
 
-struct rect video_area(void)
+double video_seconds(void)
 {
-    return area;
+    return plm ? plm_get_duration(plm) : 0;
 }
 
-int video_scale(void)
+const struct video_layout *video_layout(void)
 {
-    return scale;
+    return &lay;
 }
 
-static inline uint32_t clamp255(int v)
+const char *video_mode(char *buf, size_t n)
 {
-    return v < 0 ? 0 : v > 255 ? 255 : (uint32_t)v;
-}
-
-/* Studio-range BT.601 YCbCr (what MPEG-1 holds) to RGB, in 16.16 fixed
- * point: R = 1.164 (Y - 16) + 1.596 Cr', G = ... - 0.392 Cb' - 0.813 Cr',
- * B = ... + 2.017 Cb' (Cb' = Cb - 128, Cr' = Cr - 128). */
-static inline uint32_t ycc(int y, int cb, int cr)
-{
-    int l = (y - 16) * 76309;
-    cb -= 128;
-    cr -= 128;
-    return clamp255((l + cr * 104597 + 32768) >> 16) << 16 |
-           clamp255((l - cb * 25675 - cr * 53279 + 32768) >> 16) << 8 |
-           clamp255((l + cb * 132201 + 32768) >> 16);
-}
-
-uint32_t video_pixel(const plm_frame_t *f, int x, int y)
-{
-    int c = (y / 2) * (int)f->cb.width + x / 2;
-    return ycc(f->y.data[y * (int)f->y.width + x], f->cb.data[c], f->cr.data[c]);
-}
-
-/* Source row y of f into the back buffer: its first copy, pixels repeated
- * scale times, clipped to the screen. */
-static void draw_row(const plm_frame_t *f, int y, uint32_t *dst, int x0, int x1)
-{
-    const uint8_t *py = f->y.data + (uint64_t)y * f->y.width;
-    const uint8_t *pb = f->cb.data + (uint64_t)(y / 2) * f->cb.width;
-    const uint8_t *pr = f->cr.data + (uint64_t)(y / 2) * f->cr.width;
-    for (int x = x0; x < x1; x++) {
-        uint32_t c = ycc(py[x], pb[x / 2], pr[x / 2]);
-        int sx = area.x + x * scale;
-        for (int k = 0; k < scale; k++)
-            dst[sx + k] = c;
-    }
-}
-
-static void draw_band(uint32_t item, uint32_t worker, void *arg)
-{
-    (void)worker;
-    const plm_frame_t *f = arg;
-    int w = (int)f->width;
-    /* The source columns that land on the screen (all of them unless the
-     * screen is smaller than the frame). */
-    int x0 = area.x < 0 ? (-area.x + scale - 1) / scale : 0;
-    int x1 = area.x + w * scale > scr.w ? (scr.w - area.x) / scale : w;
-    for (int y = (int)item * BAND; y < (int)(item + 1) * BAND && y < (int)f->height; y++) {
-        int sy = area.y + y * scale;
-        if (sy < 0 || sy + scale > scr.h)
-            continue;
-        uint32_t *first = scr.s.px + (uint64_t)sy * scr.s.stride;
-        draw_row(f, y, first, x0, x1);
-        for (int k = 1; k < scale; k++)
-            memcpy(first + (uint64_t)k * scr.s.stride + area.x + x0 * scale,
-                   first + area.x + x0 * scale, (size_t)(x1 - x0) * scale * 4);
-    }
+    if (lay.mode == DRAW_UP && lay.n == 1)
+        snprintf(buf, n, "1:1");
+    else if (lay.mode == DRAW_UP)
+        snprintf(buf, n, "%dx", lay.n);
+    else if (lay.mode == DRAW_BOX)
+        snprintf(buf, n, "1/%d (box)", lay.n);
+    else
+        snprintf(buf, n, "%dx%d (bilinear)", lay.ow, lay.oh);
+    return buf;
 }
 
 void video_draw(const plm_frame_t *f)
 {
-    pool_run(draw_band, (void *)(uintptr_t)f, (f->height + BAND - 1) / BAND);
+    draw_frame(f, &lay);
 }
