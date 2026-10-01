@@ -6,16 +6,18 @@
  * output stream, the periods, the mixing). docs/A2-PLAN.md has the
  * design; <mixer.h> the ring.
  *
- * Time is the driver's: at the end of each period it played (85 ms) the
- * mixer mixes the next one, so OUT_LEAD periods are always written ahead
- * of the play position. Nothing here is shared between threads: there is
- * one. */
+ * Time is the driver's: at the end of each period it played (2048 frames,
+ * 42.7 ms) the mixer mixes until OUT_LEAD periods are written ahead of
+ * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
+ * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
+ * late before anything is lost. Nothing here is shared between threads:
+ * there is one. */
 #pragma once
 
 #include <mixer.h>
 #include <os.h>
 
-#define OUT_LEAD       2u      /* periods written ahead of the play position */
+#define OUT_LEAD       4u      /* periods written ahead of the play position */
 #define IDLE_PERIODS   12u     /* every playing stream empty this long: close the output */
 #define PERIOD_MAX     4096u   /* frames: the most a driver's period may hold */
 #define RING_FRAMES    16384u  /* each stream's ring: 341 ms */

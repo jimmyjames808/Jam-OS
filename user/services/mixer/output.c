@@ -9,8 +9,8 @@
  * chose, and calls made meanwhile on the same channel take only their
  * own replies); each answer is the end of a period, and the mixer mixes
  * until OUT_LEAD periods are written ahead of the play position again.
- * So a frame taken from a client is heard 1 to 2 periods (85-170 ms)
- * later. An answer later than a whole period has cost the driver's
+ * So a frame taken from a client is heard OUT_LEAD - 1 to OUT_LEAD
+ * periods (128-171 ms) later. An answer later than a whole period has cost the driver's
  * clear-behind silence: counted (`late`), and mixing goes on from the
  * play position.
  *

@@ -219,6 +219,7 @@ struct hda {
     uint32_t unsol;            /* unsolicited responses seen (none expected: UNSOL off) */
     uint32_t timeouts;         /* verbs that got no answer */
     uint16_t vendor, device;   /* the PCI ids */
+    bool     dpib_ok;          /* HDA_BAR_MAP bytes are mapped: HDA_SD_DPIB can be read */
     uint32_t cfg40[4];         /* PCI config 0x40-0x4f: Intel's vendor registers (TCSEL at
                                 * 0x44, clock gating nearby), logged for the PC's dump */
 };
@@ -404,10 +405,11 @@ struct output {
     uint8_t  step;             /* the volume amp's step to play at */
     bool     open;             /* unmuted now (hda_output_open succeeded, no close since) */
     bool     failed;           /* the last open failed (and was muted again) */
+    uint32_t max_bits;         /* the largest sample size a stream may use (`hda bits`; 32) */
 };
 
-/* o for path p of codec c (both NULL: no path), at GAIN_DEFAULT_CB.
- * Sends nothing. */
+/* o for path p of codec c (both NULL: no path), at GAIN_DEFAULT_CB, any
+ * sample size. Sends nothing. */
 void     hda_output_init(struct output *o, const struct codec *c, const struct path *p);
 /* The path opened, in the order of docs/A1-PLAN.md's steps 4-6: the
  * path's inputs on its mixers and selectors unmuted (the others stay
@@ -445,10 +447,13 @@ bool     hda_path_roundtrip(const struct codec *c, const struct path *p, struct 
 
 /* ---- the output stream (stream.c) and the driver's loop (irq.c) -------------------
  * One output stream: the first output stream descriptor (index ISS, as
- * GCAP counts them) feeding the DAC of the path main.c chose, stream tag 1, 48 kHz 16-bit stereo, from a 64 KiB
- * DMA32 ring of 4 periods of 16 KiB. Its Buffer Descriptor List and the
- * DMA position buffer share one more DMA32 page. Spec chapter 3 (stream
- * descriptor registers, DPLBASE) and chapter 4 (stream setup). */
+ * GCAP counts them) feeding the DAC of the path main.c chose, stream tag
+ * 1, 48 kHz stereo at a sample size the DAC takes (16, 20, 24 or 32 bits:
+ * the client asks; 20 and 24 travel in 32-bit containers, left-justified),
+ * from a DMA32 ring of RING_FRAMES frames in PERIODS periods. Its Buffer
+ * Descriptor List and the DMA position buffer share one more DMA32 page.
+ * Spec chapter 3 (stream descriptor registers, DPLBASE) and chapter 4
+ * (stream setup, 4.5.1 the samples in memory). */
 
 #define SD_CTL0        0x00   /* 8: bit 0 SRST, 1 RUN, 2 IOCE, 3 FEIE, 4 DEIE */
 #define SD_CTL2        0x02   /* 8: bits 7:4 the stream tag (STRM) */
@@ -475,14 +480,23 @@ bool     hda_path_roundtrip(const struct codec *c, const struct path *p, struct 
 #define PCI_TCSEL      0x44        /* Intel: bits 2:0 the traffic class of the controller's DMA */
 
 #define STREAM_TAG     1u
-#define STREAM_FORMAT  0x0011u     /* 48 kHz (base 48, x1, /1), 16-bit, 2 channels */
 #define STREAM_RATE    48000u
-#define FRAME_BYTES    4u
-#define RING_BYTES     (64u * 1024)
-#define PERIODS        4u
-#define PERIOD_BYTES   (RING_BYTES / PERIODS)
-#define PERIOD_NS      (PERIOD_BYTES / FRAME_BYTES * NS_PER_S / STREAM_RATE)
-#define STALL_PERIODS  4u          /* no progress this long while running: stalled */
+#define FMT_48K_STEREO 0x0001u     /* the stream format: 48 kHz (base 48, x1, /1), 2 channels */
+#define FMT_BITS(b)    ((b) << 4)  /* bits 6:4: 0 8-bit, 1 16, 2 20, 3 24, 4 32 */
+#define PCM_SIZE(bits) ((bits) == 16 ? 1u << 17 : (bits) == 20 ? 1u << 18 : \
+                        (bits) == 24 ? 1u << 19 : (bits) == 32 ? 1u << 20 : 0)   /* P_PCM 20:16 */
+#define RING_FRAMES    16384u      /* 341 ms */
+#define PERIODS        8u
+#define PERIOD_FRAMES  (RING_FRAMES / PERIODS)   /* 2048: 42.7 ms */
+#define RING_BYTES_MAX (RING_FRAMES * 8u)        /* 32-bit containers */
+#define PERIOD_NS      ((uint64_t)PERIOD_FRAMES * NS_PER_S / STREAM_RATE)
+#define STALL_PERIODS  8u          /* no progress this long while running (341 ms): stalled */
+/* Intel's vendor register beside the spec's: the DMA position in buffer
+ * of stream descriptor n (SDxDPIB, Intel PCH datasheets; on Skylake and
+ * later PCHs the position of the DMA engine itself). Read only for the
+ * log: where the controller's DMA is compared to the position buffer. */
+#define HDA_SD_DPIB(n) (0x1084u + 0x20u * (n))
+#define HDA_BAR_MAP    0x2000u     /* the BAR bytes mapped: the spec's registers and DPIB */
 
 /* A contiguous DMA32 buffer, mapped and pinned. */
 struct dma_buf {
@@ -504,6 +518,11 @@ struct stream {
     struct output *out;        /* the path, opened while the stream runs */
     struct dma_buf ring;       /* the samples, shared with the client */
     struct dma_buf page;       /* the BDL at 0, the DMA position buffer at POS_OFF */
+    /* the format of the open stream: its sample size, the format word, a
+     * frame's bytes (4 or 8), the ring's and a period's bytes */
+    uint32_t bits;
+    uint16_t fmt;
+    uint32_t frame_bytes, ring_bytes, period_bytes;
     /* the position: the byte offset read last, bytes played since the
      * open, bytes zeroed behind the play position (the same after every
      * update), and when `played` last grew */
@@ -513,16 +532,23 @@ struct stream {
     uint32_t iocs;             /* buffer-completion interrupts taken */
     uint32_t fifo_errors;      /* FIFOE/DESE seen */
     uint32_t lpib_diff_max;    /* largest gap between the position buffer and LPIB, bytes */
+    uint32_t dpib_diff_max;    /* ... and Intel's DPIB (bytes; dpib_seen: it ever read non-0) */
+    bool     dpib_seen;
 };
 
 /* stream.c. Pick the output stream descriptor (none if GCAP has no
  * output streams) and take the DAC from out's path (none: every open
  * fails ERR_NOT_FOUND); touches no register. */
 void     stream_init(struct hda *h, struct stream *s, handle_t dev, struct output *out);
-/* Open it (the checks and results of hda.idl's open_output): DMA
- * buffers, stream reset and setup, the converter's format and stream
- * tag, the stream's interrupt enabled. *ring: the client's handle. */
-status_t stream_open(struct hda *h, struct stream *s, handle_t *ring);
+/* Open it (the checks and results of hda.idl's open_output) at `bits`
+ * per sample (16, 20, 24 or 32; ERR_NOT_SUPPORTED if the DAC does not
+ * take it, or it is above out->max_bits): DMA buffers, stream reset and
+ * setup, the converter's format and stream tag, the stream's interrupt
+ * enabled. *ring: the client's handle. */
+status_t stream_open(struct hda *h, struct stream *s, uint32_t bits, handle_t *ring);
+/* The DAC's PCM sizes and rates (P_PCM) as open_output may use them: the
+ * sizes above out->max_bits taken out (16-bit always stays). 0: no DAC. */
+uint32_t hda_output_pcm(const struct output *o);
 status_t stream_start(struct hda *h, struct stream *s);
 status_t stream_stop(struct hda *h, struct stream *s);
 /* Read the position, count what played and zero the ring behind it. */
