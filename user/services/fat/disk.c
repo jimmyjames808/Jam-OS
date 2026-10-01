@@ -40,6 +40,7 @@
 
 #include <diskio.h>
 #include <idl/block.h>
+#include <wallclock.h>
 #include "fat.h"
 
 #define BLOCK_WAIT (30 * NS_PER_S)   /* one block call; usb-storage gives up after 10 s */
@@ -337,16 +338,17 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 }
 
 /* FatFs's clock, FAT-packed: (year - 1980) << 25 | month << 21 | day << 16 |
- * hour << 11 | minute << 5 | second / 2. With the root resource it is the
- * real-time clock as it stands (its own zone, as FAT timestamps are);
- * without it (fat is normally started without: it needs the root for
- * nothing else) every timestamp is 2026-01-01 00:00:00. */
+ * hour << 11 | minute << 5 | second / 2. FAT keeps local time (what other
+ * computers show as it is): the system's clock in the system's zone
+ * (libos clock_local, <wallclock.h>; init sets both from the real-time
+ * clock and /data/etc/settings). Before init has set it, the RTC's own
+ * reading; with no clock at all, 2026-01-01 00:00:00. */
 DWORD get_fattime(void)
 {
-    struct rtc_time t;
-    if (vol.rtc_root != HANDLE_INVALID && jam_rtc_read(vol.rtc_root, &t) == OK &&
-        t.year >= 1980 && t.year <= 2107)
-        return (DWORD)(t.year - 1980) << 25 | (DWORD)t.month << 21 | (DWORD)t.day << 16 |
-               (DWORD)t.hour << 11 | (DWORD)t.minute << 5 | (DWORD)t.second / 2;
-    return (DWORD)(2026 - 1980) << 25 | 1u << 21 | 1u << 16;
+    struct civil t;
+    (void)clock_local(&t);   /* not set: still the best date there is */
+    if (t.year < 1980 || t.year > 2107)
+        return (DWORD)(2026 - 1980) << 25 | 1u << 21 | 1u << 16;
+    return (DWORD)(t.year - 1980) << 25 | (DWORD)t.month << 21 | (DWORD)t.day << 16 |
+           (DWORD)t.hour << 11 | (DWORD)t.minute << 5 | (DWORD)t.second / 2;
 }
