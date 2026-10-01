@@ -119,7 +119,7 @@ static bool closed(handle_t h)
 
 static const char *usb_match(const struct usbbus_interface_attached_req *m)
 {
-    if (m->class_code == 3 && !storage_only)
+    if (m->class_code == 3)
         return "drv/hid";
     if (m->class_code == 8 && m->subclass == 6 && m->protocol == 0x50)
         return "drv/usb-storage";

@@ -1,29 +1,30 @@
-/* kexec's images: a kernel ELF and its bootfs laid out in the region with
- * everything the new kernel needs to start, so a jump copies nothing.
+/* kexec's image, the stored kernel: a kernel ELF and its bootfs laid out
+ * in the region with everything the new kernel needs to start, so a jump
+ * copies nothing. One image serves both ways in (a reboot and a panic).
  *
  * The layout, from the region's base (docs/M8.5-PLAN.md has the table):
  *   [0, img_end)            the kernel's segments at base + (vaddr - virt_base),
  *                           the gaps and bss zero; img_end is the span
  *                           rounded up to 2 MiB
- *   [bootfs_off, ...)       bootfs.img; a reboot image also carries
- *                           jamos.elf, so it can load its own crash kernel
+ *   [bootfs_off, ...)       bootfs.img, then jamos.elf, so the new kernel
+ *                           can store its own copy
  *   [handoff_off, end)      the handoff, KX_TABLES pages of page tables, a
  *                           KX_STACK stack: loader-reclaimable to the new
  *                           kernel, which frees them once its CPUs are up
- *   [end, size)             free: the crash kernel's memory
+ *   [end, size)             unused
  *
  * The page tables (built in a kernel buffer, then copied in) map exactly:
  * each segment at its link address with its own permissions, the
  * trampoline at T (region.c), and in the HHDM every RAM range of the new
- * memory map (2 MiB pages where they fit), the framebuffer (4 KiB,
- * write-combining) and a crash kernel's log ring and record (read-only).
- * The first mapping of a page wins, so the 4 KiB ones go first.
+ * memory map (2 MiB pages where they fit) and the framebuffer (4 KiB,
+ * write-combining). The first mapping of a page wins, so the 4 KiB ones
+ * go first.
  *
- * The new memory map is this kernel's turned into the next one's: for a
- * reboot every RAM range is usable (this kernel is about to stop); for a
- * crash kernel this kernel's RAM is foreign (devices may still hold
- * addresses in it) and the region is its only usable memory. Then the
- * image's pieces are overlaid (memmap.c). */
+ * The new memory map is this kernel's turned into the next one's: every
+ * RAM range is usable (this kernel is about to stop; bus mastering is off
+ * before the jump, so no device still writes into it), then the image's
+ * pieces are overlaid (memmap.c), and this kernel's crash record and log
+ * ring are CRASH_LOG: the next kernel reads them, then frees them. */
 #include <stddef.h>
 #include <jam/aspace.h>
 #include <jam/bootfs.h>
@@ -75,15 +76,13 @@ static status_t lay_out(const struct kx_image *im, struct elf_plan *plan, struct
     l->img_end = ALIGN_UP(span, SIZE_2M);
     l->bootfs_off = l->img_end;
     l->kfile_off = l->bootfs_off + ALIGN_UP(im->bootfs_size, PAGE_SIZE);
-    l->handoff_off = im->crash ? l->kfile_off
-                               : l->kfile_off + ALIGN_UP(im->kernel_size, PAGE_SIZE);
+    l->handoff_off = l->kfile_off + ALIGN_UP(im->kernel_size, PAGE_SIZE);
     l->tables_off = l->handoff_off + ALIGN_UP(sizeof(struct kexec_handoff), PAGE_SIZE);
     l->stack_off = l->tables_off + (uint64_t)KX_TABLES * PAGE_SIZE;
     l->end = l->stack_off + KX_STACK;
-    uint64_t need = l->end + (im->crash ? KX_MIN_FREE : 0);
-    if (need > kx.size) {
-        kprintf("kexec: the image needs %lu MiB, the region has %lu MiB\n", need >> 20,
-                kx.size >> 20);
+    if (l->end > kx.size) {
+        kprintf("kexec: the image needs %lu MiB, the region has %lu MiB\n",
+                (l->end + (1u << 20) - 1) >> 20, kx.size >> 20);
         return ERR_NO_RESOURCES;
     }
     return OK;
@@ -92,40 +91,35 @@ static status_t lay_out(const struct kx_image *im, struct elf_plan *plan, struct
 /* ---- the memory map ----------------------------------------------------------------- */
 
 /* What this kernel's type t becomes for the next kernel. */
-static enum boot_mem_type next_type(enum boot_mem_type t, bool crash)
+static enum boot_mem_type next_type(enum boot_mem_type t)
 {
     switch (t) {
     case BOOT_MEM_USABLE:
     case BOOT_MEM_LOADER_RECLAIMABLE:   /* reclaimed by now */
     case BOOT_MEM_KERNEL_AND_MODULES:   /* this kernel, about to stop */
-        return crash ? BOOT_MEM_FOREIGN : BOOT_MEM_USABLE;
     case BOOT_MEM_FOREIGN:              /* the region */
-    case BOOT_MEM_CRASH_LOG:
+    case BOOT_MEM_CRASH_LOG:            /* freed at boot */
         return BOOT_MEM_USABLE;
     default:
         return t;
     }
 }
 
-static status_t build_memmap(const struct kx_image *im, const struct layout *l,
-                             struct boot_mem_region *map, size_t *n)
+static status_t build_memmap(const struct layout *l, struct boot_mem_region *map, size_t *n)
 {
     const struct boot_info *bi = kx_boot;
     *n = 0;
     for (size_t i = 0; i < bi->memmap_count && *n < KEXEC_MAX_MEMMAP; i++)
         map[(*n)++] = (struct boot_mem_region){ bi->memmap[i].base, bi->memmap[i].length,
-                                                next_type(bi->memmap[i].type, im->crash) };
+                                                next_type(bi->memmap[i].type) };
     kexec_memmap_merge(map, n);
     const struct { uint64_t base, len; enum boot_mem_type type; } parts[] = {
         { kx.base, l->handoff_off, BOOT_MEM_KERNEL_AND_MODULES },
         { kx.base + l->handoff_off, l->end - l->handoff_off, BOOT_MEM_LOADER_RECLAIMABLE },
-        { im->crash ? kx_record_phys() : 0, im->crash ? PAGE_SIZE : 0, BOOT_MEM_CRASH_LOG },
-        { im->crash ? kx_kernel_phys(klog_ring()) : 0, im->crash ? KLOG_SIZE : 0,
-          BOOT_MEM_CRASH_LOG },
+        { kx_record_phys(), PAGE_SIZE, BOOT_MEM_CRASH_LOG },
+        { kx_kernel_phys(klog_ring()), KLOG_SIZE, BOOT_MEM_CRASH_LOG },
     };
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
-        if (!parts[i].len)
-            continue;
         status_t st = kexec_memmap_overlay(map, n, KEXEC_MAX_MEMMAP, parts[i].base, parts[i].len,
                                         parts[i].type);
         if (st != OK) {
@@ -248,19 +242,14 @@ static status_t map_segments(struct tables *t, const struct elf_plan *plan,
     return st;
 }
 
-static status_t build_tables(struct tables *t, const struct kx_image *im,
-                             const struct elf_plan *plan, const struct layout *l,
-                             const struct boot_mem_region *map, size_t n)
+static status_t build_tables(struct tables *t, const struct elf_plan *plan,
+                             const struct layout *l, const struct boot_mem_region *map,
+                             size_t n)
 {
     const struct boot_framebuffer *fb = &kx_boot->fb;
     t->n = 1;   /* the PML4 */
     t->phys = kx.base + l->tables_off;
     status_t st = map_range(t, kx_tramp_va(), kx_tramp_phys(), PAGE_SIZE, VM_EXEC, false);
-    if (st == OK && im->crash)
-        st = map_hhdm(t, kx_record_phys(), kx_record_phys() + PAGE_SIZE, 0, false);
-    if (st == OK && im->crash)
-        st = map_hhdm(t, kx_kernel_phys(klog_ring()), kx_kernel_phys(klog_ring()) + KLOG_SIZE,
-                      0, false);
     if (st == OK && fb->virt)
         st = map_hhdm(t, fb->phys, fb->phys + (uint64_t)fb->pitch * fb->height,
                       VM_WRITE | VM_WC, false);
@@ -290,13 +279,14 @@ static void fill_handoff(struct kexec_handoff *h, const struct kx_image *im,
     h->magic = KEXEC_HANDOFF_MAGIC;
     h->version = KEXEC_HANDOFF_VERSION;
     h->size = sizeof(*h);
-    h->flags = im->crash ? KEXEC_ONE_CPU : 0;
+    h->flags = 0;
     h->x2apic = bi->x2apic ? 1 : 0;
     h->hhdm_offset = hhdm_offset;
     h->kernel_phys_base = kx.base;
     h->kernel_virt_base = l->virt_base;
     h->rsdp_phys = bi->rsdp_phys;
     h->tsc_hz = tsc_hz ? tsc_hz : bi->tsc_hz_loader;
+    h->record_phys = kx_record_phys();
     if (bi->fb.virt)
         h->fb = (struct kexec_fb){
             .phys = bi->fb.phys, .width = bi->fb.width, .height = bi->fb.height,
@@ -312,12 +302,10 @@ static void fill_handoff(struct kexec_handoff *h, const struct kx_image *im,
     struct kexec_module *m = &h->modules[h->module_count++];
     *m = (struct kexec_module){ .phys = kx.base + l->bootfs_off, .size = im->bootfs_size };
     copy_str(m->path, KEXEC_STR, "kexec:/boot/" BOOTFS_MODULE);
-    if (!im->crash) {
-        m = &h->modules[h->module_count++];
-        *m = (struct kexec_module){ .phys = kx.base + l->kfile_off, .size = im->kernel_size };
-        copy_str(m->path, KEXEC_STR, "kexec:/boot/" KEXEC_KERNEL_MODULE);
-    }
-    copy_str(h->loader_name, KEXEC_STR, im->crash ? "Jam OS kexec (crash kernel)" : "Jam OS kexec");
+    m = &h->modules[h->module_count++];
+    *m = (struct kexec_module){ .phys = kx.base + l->kfile_off, .size = im->kernel_size };
+    copy_str(m->path, KEXEC_STR, "kexec:/boot/" KEXEC_KERNEL_MODULE);
+    copy_str(h->loader_name, KEXEC_STR, "Jam OS kexec");
     copy_str(h->cmdline, KEXEC_CMDLINE, im->cmdline);
     h->checksum = kexec_struct_sum(h, sizeof(*h), offsetof(struct kexec_handoff, checksum));
 }
@@ -334,8 +322,7 @@ static void write_image(const struct kx_image *im, const struct elf_plan *plan,
         kx_write(s->vaddr - l->virt_base, (const uint8_t *)im->kernel + s->file_off, s->filesz);
     }
     kx_write(l->bootfs_off, im->bootfs, im->bootfs_size);
-    if (!im->crash)
-        kx_write(l->kfile_off, im->kernel, im->kernel_size);
+    kx_write(l->kfile_off, im->kernel, im->kernel_size);
     kx_write(l->handoff_off, h, sizeof(*h));
     kx_write(l->tables_off, t->stage, (uint64_t)KX_TABLES * PAGE_SIZE);
     kx_zero(l->stack_off, KX_STACK);
@@ -354,9 +341,9 @@ status_t kx_build(const struct kx_image *im)
     size_t n = 0;
     st = map && h && t.stage ? OK : ERR_NO_MEMORY;
     if (st == OK)
-        st = build_memmap(im, &l, map, &n);
+        st = build_memmap(&l, map, &n);
     if (st == OK)
-        st = build_tables(&t, im, &plan, &l, map, n);
+        st = build_tables(&t, &plan, &l, map, n);
     if (st == OK) {
         fill_handoff(h, im, &l, map, n);
         /* Everything checked and built: only now does what was loaded go. */
@@ -369,9 +356,8 @@ status_t kx_build(const struct kx_image *im)
         kx.entry = plan.entry;
         kx.handoff = hhdm_offset + kx.base + l.handoff_off;
         kx.stack_top = hhdm_offset + kx.base + l.stack_off + KX_STACK;
-        kprintf("kexec: %s loaded: %lu KiB of %lu MiB (%u page tables, %zu memory ranges), "
-                "checksum %016lx\n", im->crash ? "crash kernel" : "reboot image", l.end >> 10,
-                kx.size >> 20, t.n, n, kx.sum);
+        kprintf("kexec: stored kernel loaded: %lu KiB of %lu MiB (%u page tables, %zu memory "
+                "ranges), checksum %016lx\n", l.end >> 10, kx.size >> 20, t.n, n, kx.sum);
     }
     kfree(map);
     kfree(h);

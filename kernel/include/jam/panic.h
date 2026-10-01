@@ -1,15 +1,14 @@
 /* panic and ASSERT: for broken kernel invariants only, never for anything
- * user code can cause. A panic stops every CPU, prints the reason and a
- * backtrace on the serial port and the screen, and halts (debug/panic.c). */
+ * user code can cause. A panic stops every CPU, logs the reason and a
+ * backtrace (the log and the serial port), and starts the stored kernel,
+ * whose boot saves the log; without one it draws all of it on a red screen
+ * and halts (debug/panic.c, kernel/kexec/). */
 #pragma once
 
 #include <stdint.h>
 
 _Noreturn void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 _Noreturn void halt_forever(void);
-/* The end of a panic screen (and of a crash kernel's): "system halted."
- * for 0 seconds, else a count down and a firmware reboot (panic_reboot). */
-_Noreturn void panic_halt_or_reboot(uint64_t seconds);
 
 /* One line every panic screen shows under its message: what the kernel was
  * in the middle of (the test runner's loop, seed and test). Set by one

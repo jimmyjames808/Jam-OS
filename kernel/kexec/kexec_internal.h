@@ -4,10 +4,11 @@
  *   memmap.c    memory maps: one range overlaid with a type, merging
  *   image.c     a kernel image laid out in the region: segments, modules,
  *               page tables, the handoff
- *   load.c      the crash kernel at boot, the reboot image (kexec_load)
+ *   load.c      the stored kernel at boot, and its replacement (kexec_load);
+ *               the next kernel's command line
  *   jump.c      the panic path and kexec_reboot: the record, the checks,
  *               bus mastering off, the jump (tramp.S)
- *   crashlog.c  a crash kernel's side
+ *   crashlog.c  the next kernel's side: the record and the log it got
  *
  * Lock: kx_lock (a mutex) around every state change and every use of the
  * window. The panic path takes nothing: it reads kx_state, and from ARMED
@@ -27,12 +28,11 @@
 #define KX_WINDOW    (2ull << 20)          /* the window: 2 MiB, one page table */
 #define KX_STACK     (64ull << 10)         /* the new kernel's first stack (Limine's size) */
 #define KX_TABLES    128u                  /* pages kept for its page tables */
-#define KX_MIN_FREE  (32ull << 20)         /* what a crash kernel must have left to run in */
 #define KX_KERNEL_LO 0xffffffff80000000ull /* a kernel's segments lie in [LO, HI] */
 #define KX_KERNEL_HI 0xfffffffffffff000ull
 #define KX_KERNEL_MAX (64ull << 20)        /* its image's span at most */
 
-enum kx_state { KX_OFF, KX_EMPTY, KX_LOADING, KX_ARMED, KX_IMAGE, KX_JUMPING };
+enum kx_state { KX_OFF, KX_EMPTY, KX_LOADING, KX_ARMED, KX_JUMPING };
 
 /* The region and what is loaded in it. Written with kx_lock held while the
  * state is LOADING; read by the panic path once it is ARMED. */
@@ -81,9 +81,6 @@ struct kx_image {
     uint64_t    kernel_size;
     const void *bootfs;        /* the bootfs image */
     uint64_t    bootfs_size;
-    bool        crash;         /* a crash kernel: one CPU, only the region as memory, the
-                                * log; else a reboot image (all memory; carries the kernel
-                                * file as a module for its own crash kernel) */
     const char *cmdline;       /* NUL-terminated, < KEXEC_CMDLINE */
 };
 
@@ -97,6 +94,6 @@ status_t kx_build(const struct kx_image *im);
 
 /* ---- jump.c ---- */
 
-/* The crash record's physical address (for the crash kernel's command
- * line and memory map), with its fixed fields filled in. */
+/* The crash record's physical address (for the next kernel's handoff and
+ * memory map), with its fixed fields filled in. */
 uint64_t kx_record_phys(void);

@@ -186,9 +186,9 @@
 117 serial_write      status    handle_t root, const void *buf, uint64_t len
 # Name the file this boot's log is saved as (logd, once it has chosen it:
 # "boot-0042"; 1..31 of A-Z a-z 0-9 - _, else ERR_INVALID_ARGS). The kernel
-# only keeps it: a crash kernel saves its copy of this boot's log as
-# <name>-crash.txt. Needs RIGHT_READ on a klog reader (whoever follows the
-# log names its copy).
+# only keeps it: if this boot panics, the next boot saves its copy of this
+# boot's log as <name>-crash.txt. Needs RIGHT_READ on a klog reader
+# (whoever follows the log names its copy).
 118 klog_name         status    handle_t reader, const char *name, uint64_t len
 
 # driver supervision and safe rebind ----------------------------------------
@@ -218,21 +218,23 @@
 # The CMOS real-time clock (waits out an update in progress, at most ~10 ms).
 133 rtc_read          status    handle_t root, struct rtc_time *out
 
-# kexec: another kernel started without the firmware (<jam/kexec.h>) -------
+# kexec: a fresh kernel started without the firmware (<jam/kexec.h>) -------
 # Both need RIGHT_MANAGE on a RES_ROOT handle, as reboot does.
-# Load the kernel ELF and the bootfs image (two VMOs with RIGHT_READ, each
-# read whole) into the region reserved at boot, with what the kernel needs
-# to start: it replaces the crash kernel until the reset. cmdline: the new
-# kernel's command line (len 0: this kernel's; at most 511 bytes). flags:
-# 0. ERR_NOT_SUPPORTED: no region (crashkernel=0); ERR_INVALID_ARGS: not a
+# Replace the stored kernel (the copy of this boot's kernel and bootfs the
+# kernel keeps ready in the region reserved at boot, for a reboot or a
+# panic) with the kernel ELF and the bootfs image in two VMOs (RIGHT_READ,
+# each read whole). cmdline: the new kernel's command line (len 0: this
+# boot's, without its one-time words; at most 511 bytes). flags: 0.
+# ERR_NOT_SUPPORTED: no region (crashkernel=0); ERR_INVALID_ARGS: not a
 # kernel ELF or a bootfs image, a bad command line or flags;
 # ERR_NO_RESOURCES: too big for the region. A refused image changes
-# nothing (a crash kernel stays loaded); after a success there is no crash
-# kernel until the next boot.
+# nothing (the old one stays stored); while the new one is written a panic
+# halts on its screen.
 140 kexec_load        status    handle_t root, handle_t kernel, handle_t bootfs, const char *cmdline, uint64_t len, uint32_t flags
-# Start what kexec_load loaded: every other CPU stopped, bus mastering off on
-# every device, the jump. Stop the drivers first (devmgr's shutdown): the
-# new kernel resets each device, but what one writes meanwhile lands in
-# memory the new kernel uses. Returns only ERR_BAD_STATE (nothing loaded)
-# or a handle error; a damaged image resets through the firmware instead.
+# Start the stored kernel: every other CPU stopped, the screen the splash
+# background, bus mastering off on every device, the jump. Stop the
+# drivers first (devmgr's shutdown): the new kernel resets each device, but
+# what one writes meanwhile lands in memory the new kernel uses. Returns
+# only ERR_NOT_SUPPORTED (no region), ERR_BAD_STATE (nothing stored) or a
+# handle error; a damaged image resets through the firmware instead.
 141 kexec_reboot      status    handle_t root

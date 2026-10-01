@@ -3,8 +3,8 @@
  *
  * The reservation (kexec_reserve) runs on the loader's memory map before
  * the memory managers exist: the highest 2 MiB-aligned range of the asked
- * size below 4 GiB (the crash kernel's drivers need DMA32 memory) and
- * above 16 MiB, cut out of one usable entry and made BOOT_MEM_FOREIGN. So
+ * size below 4 GiB and above 16 MiB, cut out of one usable entry and made
+ * BOOT_MEM_FOREIGN. So
  * the PMM never sees it, the HHDM skips it (vmm_init), and the vmemmap
  * has no pages for it; only pmm_range_has_ram still calls it RAM, so no
  * MMIO resource or physical VMO can ever cover it.
@@ -71,29 +71,28 @@ void kexec_reserve(struct boot_info *bi)
 {
     kx_boot = bi;
     mutex_init(&kx_lock, "kexec");
-    if (kexec_is_crash_kernel())
-        return;   /* a crash kernel never starts another */
     uint64_t mib = cmdline_get_u64("crashkernel", KEXEC_DEFAULT_MIB, KEXEC_DEFAULT_MIB);
     if (!mib) {
-        kprintf("kexec:       off (crashkernel=0): no crash kernel, no kexec reboot\n");
+        kprintf("kexec:       off (crashkernel=0): a panic halts, reboot goes through the "
+                "firmware\n");
         return;
     }
     mib = mib < MIB_MIN ? MIB_MIN : mib > MIB_MAX ? MIB_MAX : mib;
     uint64_t size = ALIGN_UP(mib << 20, KX_WINDOW);
     uint64_t base = pick(bi, size);
     if (!base) {
-        kprintf("kexec:       no %lu MiB free below 4 GiB: no crash kernel\n", mib);
+        kprintf("kexec:       no %lu MiB free below 4 GiB: no stored kernel\n", mib);
         return;
     }
     if (kexec_memmap_overlay(bi->memmap, &bi->memmap_count, BOOT_MAX_MEMMAP, base, size,
                           BOOT_MEM_FOREIGN) != OK) {
-        kprintf("kexec:       the memory map is full: no crash kernel\n");
+        kprintf("kexec:       the memory map is full: no stored kernel\n");
         return;
     }
     kx.base = base;
     kx.size = size;
     __atomic_store_n(&kx_state, KX_EMPTY, __ATOMIC_RELEASE);
-    kprintf("kexec:       %lu MiB at %lx-%lx reserved for the crash kernel, unmapped\n",
+    kprintf("kexec:       %lu MiB at %lx-%lx reserved for the stored kernel, unmapped\n",
             size >> 20, base, base + size);
 }
 
@@ -104,11 +103,6 @@ bool kexec_region(uint64_t *base, uint64_t *size)
     *base = kx.base;
     *size = kx.size;
     return true;
-}
-
-bool kexec_is_crash_kernel(void)
-{
-    return cmdline_has("crash");
 }
 
 /* ---- the window ------------------------------------------------------------------- */
@@ -231,7 +225,7 @@ bool kexec_verify(void)
 {
     mutex_lock(&kx_lock);
     int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
-    bool ok = (s == KX_ARMED || s == KX_IMAGE) && kx_sum_region(false) == kx.sum &&
+    bool ok = s == KX_ARMED && kx_sum_region(false) == kx.sum &&
               kx_tramp_sum() == kx.tramp_sum;
     mutex_unlock(&kx_lock);
     return ok;

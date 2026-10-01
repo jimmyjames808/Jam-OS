@@ -15,8 +15,9 @@
  * same way among the functions with a driver bound (GET_DRIVER
  * 0xffff/0xffff); devmgr restarts them like any driver that dies.
  *
- * reboot is a kexec into the kernel on the stick (reboot.c); if that
- * can't be done, and for reboot_firmware (`reboot -f`), it is a reset
+ * reboot is a kexec into a fresh copy of the system: the kernel's stored
+ * one, or the files on /esp if they changed (reboot.c); if that can't be
+ * done, and for reboot_firmware (`reboot -f`), it is a reset
  * through the firmware. Either way /data and every /usbN are flushed first,
  * for at most 2 s (mounts_sync), and logd saves the log's last lines, that
  * one included (shell_flush_log), so a boot log ends with its own

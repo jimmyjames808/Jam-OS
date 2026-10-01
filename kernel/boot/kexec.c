@@ -12,8 +12,9 @@
  *
  * Everything is copied into the static boot_info, as limine.c does: the
  * handoff's pages are loader-reclaimable and freed once the other CPUs
- * are up. No CPU has a loader handle: smp_start_aps skips those (the
- * kernel's own AP startup is what starts them). */
+ * are up. No CPU has a loader handle: the kernel's own AP startup
+ * (INIT-SIPI-SIPI) starts them, whichever CPU entered. The crash record
+ * the handoff points at is read later, with the heap up (crashlog.c). */
 #include <stddef.h>
 #include <jam/boot.h>
 #include <jam/kexec_handoff.h>
@@ -22,6 +23,10 @@
 
 #define MSR_X2APIC_ID 0x802
 #define UPPER_HALF    0xffff800000000000ull
+
+_Static_assert(KEXEC_MAX_CPUS <= BOOT_MAX_CPUS && KEXEC_MAX_MEMMAP <= BOOT_MAX_MEMMAP &&
+                   KEXEC_MAX_MODULES <= BOOT_MAX_MODULES,
+               "a valid handoff fits struct boot_info");
 
 _Noreturn void kexec_entry(const struct kexec_handoff *h);
 
@@ -147,15 +152,9 @@ static void fill_cpus(const struct kexec_handoff *h)
     uint32_t me = own_apic_id(h->x2apic);
     bi.bsp_lapic_id = me;
     bi.x2apic = (int)h->x2apic;
-    for (uint32_t i = 0; i < h->cpu_count; i++) {
-        bool mine = h->cpus[i].lapic_id == me;
-        if ((h->flags & KEXEC_ONE_CPU) && !mine)
-            continue;
+    for (uint32_t i = 0; i < h->cpu_count; i++)
         bi.cpus[bi.cpu_count++] = (struct boot_cpu){
             .acpi_uid = h->cpus[i].acpi_uid, .lapic_id = h->cpus[i].lapic_id };
-    }
-    if (!bi.cpu_count)   /* not in the list: the CPU that entered is all there is */
-        bi.cpus[bi.cpu_count++] = (struct boot_cpu){ .lapic_id = me };
 }
 
 static void fill(const struct kexec_handoff *h)
@@ -167,6 +166,7 @@ static void fill(const struct kexec_handoff *h)
     bi.kernel_virt_base = h->kernel_virt_base;
     bi.rsdp_phys = h->rsdp_phys;
     bi.tsc_hz_loader = h->tsc_hz;
+    bi.kexec_record = h->record_phys;   /* untrusted: crashlog.c checks it */
     fill_cpus(h);
     if (h->fb.phys)
         bi.fb = (struct boot_framebuffer){

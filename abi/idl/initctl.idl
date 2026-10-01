@@ -22,10 +22,12 @@ protocol initctl 18
 # Everything written to /data, and to every /usbN, is on its stick
 # (fs.sync), waiting at most 2 s in all. OK also when there is no /data.
 2  sync  () -> ()
-# Restart into the kernel on the stick: by kexec (/esp's boot/jamos.elf and
-# boot/bootfs.img loaded, everything synced, devmgr's drivers stopped, then
+# Restart: by kexec into a fresh copy of the system (the kernel's stored
+# copy, or /esp's boot/jamos.elf and boot/bootfs.img if they changed since
+# this boot noted them; everything synced, devmgr's drivers stopped, then
 # the jump), or, if any of that fails, through the firmware (sync, then a
-# reset). Answers only if both failed.
+# reset). Answers only if both failed. The caller blanks the screen first
+# (console.blank): nothing is drawn until the next boot's splash.
 3  reboot  () -> ()
 # Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
 # again (0): devmgr restarts its filesystem service on a `block` channel

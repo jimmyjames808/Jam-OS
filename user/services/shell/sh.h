@@ -140,6 +140,9 @@ handle_t sh_audio(void);
 handle_t sh_audio_ctl(void);
 /* The music player's channel (abi/idl/music.idl), or 0 (no player). */
 handle_t sh_music(void);
+/* The line init left for this shell to print at its start (what happened
+ * to the boot before, if it panicked), or "": once, then always "". */
+const char *sh_boot_note(void);
 
 /* ---- programs (sh_program.c) ------------------------------------------------------- */
 

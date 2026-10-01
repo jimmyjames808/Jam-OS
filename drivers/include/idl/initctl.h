@@ -127,10 +127,12 @@ static inline status_t initctl_sync(handle_t ch)
     return initctl_sync_until(ch, DEADLINE_NEVER);
 }
 
-/* Restart into the kernel on the stick: by kexec (/esp's boot/jamos.elf and
- * boot/bootfs.img loaded, everything synced, devmgr's drivers stopped, then
+/* Restart: by kexec into a fresh copy of the system (the kernel's stored
+ * copy, or /esp's boot/jamos.elf and boot/bootfs.img if they changed since
+ * this boot noted them; everything synced, devmgr's drivers stopped, then
  * the jump), or, if any of that fails, through the firmware (sync, then a
- * reset). Answers only if both failed. */
+ * reset). Answers only if both failed. The caller blanks the screen first
+ * (console.blank): nothing is drawn until the next boot's splash. */
 static inline status_t initctl_reboot_until(handle_t ch, uint64_t deadline_ns)
 {
     struct initctl_reboot_req idl_q;

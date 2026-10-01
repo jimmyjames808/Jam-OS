@@ -1,21 +1,23 @@
-/* kexec's jumps: the panic path into the crash kernel, and kexec_reboot
- * into a reboot image. Both end in the trampoline (tramp.S) through its
- * alias T, with interrupts off and the other CPUs halted.
+/* kexec's two ways in: a panic and kexec_reboot, both into the stored
+ * kernel. Both end in the trampoline (tramp.S) through its alias T, with
+ * interrupts off and the other CPUs halted.
  *
- * The panic path, from the decision on (kexec_panic_jump), takes no lock,
- * allocates nothing and calls only what reads memory it owns: the crash
- * record's stores, the checksum through the window's own page-table
- * entries (region.c), one config write per PCI function
- * (pci_panic_bus_master_off), an INIT to the other CPUs and the jump. The lines it prints come
- * before the decision, or after a failed check, when the panic goes on
- * as it always did.
+ * The panic path takes no lock and allocates nothing: kexec_panic_begin
+ * decides (the state, the crash-loop rule, the checksum read through the
+ * window's own page-table entries, region.c) before the panic prints a
+ * line, so a panic that will jump draws nothing (fbcon_go_dark) and one
+ * that won't draws its screen as always, with the reason. The jump itself
+ * (kexec_panic_jump) is plain stores into the crash record, one config
+ * write per PCI function (pci_panic_bus_master_off), an INIT to the other
+ * CPUs, the screen filled with the splash background, and the trampoline.
  *
- * The crash record is a page of this kernel's own, given to the crash
- * kernel read-only (its memory map's BOOT_MEM_CRASH_LOG, its command
- * line's crashlog=<phys>): where the log ring is, how far it was written,
- * where the panic's lines start, and the name logd gave this boot's log
- * file. Its fixed fields are written when a crash kernel is loaded, the
- * rest just before the jump, its checksum last. */
+ * The crash record is a page of this kernel's own, typed CRASH_LOG in the
+ * stored kernel's memory map with the log ring, its address in the
+ * handoff: how this kernel ended (a reboot or a panic), where the log ring
+ * is, how far it was written, where the panic's lines start, the panic's
+ * message, the name logd gave this boot's log file, the panics in a row
+ * and this kernel's uptime. Its fixed fields are written when a kernel is
+ * stored, the rest just before the jump, its checksum last. */
 #include <stddef.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
@@ -28,16 +30,19 @@
 #include <jam/pci.h>
 #include <jam/percpu.h>
 #include <jam/serial.h>
+#include <jam/string.h>
+#include <jam/time.h>
 #include <jam/x86.h>
 #include "kexec_internal.h"
 
-/* A page of its own: the crash kernel maps exactly this page. */
+/* A page of its own: the next kernel frees exactly this page. */
 static union {
     struct kexec_crash_record r;
     uint8_t                   page[PAGE_SIZE];
 } rec __attribute__((aligned(PAGE_SIZE)));
 
-static uint64_t panic_at, tail_at;   /* log positions the panic noted */
+static uint64_t panic_at;         /* the log's head when the panic began */
+static const char *why_not;       /* kexec_panic_begin said no: why (NULL: no stored kernel) */
 
 uint64_t kx_record_phys(void)
 {
@@ -68,23 +73,78 @@ status_t kexec_set_log_name(const char *name, size_t len)
     return OK;
 }
 
-void kexec_panic_begin(void)
+bool kexec_crash_loop(bool after_panic, uint64_t uptime)
+{
+    return after_panic && uptime < KEXEC_LOOP_NS;
+}
+
+static uint64_t uptime(void)
+{
+    return tsc_hz ? uptime_ns() : 0;   /* no clock yet: as if just started */
+}
+
+/* Is what is stored still what was stored? No lock: the other CPUs are
+ * halted (region.c). */
+static bool intact(void)
+{
+    return kx_sum_region(true) == kx.sum && kx_tramp_sum() == kx.tramp_sum;
+}
+
+bool kexec_panic_begin(void)
 {
     panic_at = klog_head();
+    int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
+    if (s == KX_OFF || s == KX_EMPTY)
+        return false;   /* there never was one: the boot log says why */
+    if (s != KX_ARMED)
+        why_not = s == KX_LOADING ? "the stored kernel was being replaced"
+                                  : "a reboot was starting the stored kernel";
+    else if (kexec_crash_loop(crashlog_after_panic(), uptime()))
+        why_not = "this boot started after a panic less than 30 s ago (a crash loop)";
+    else if (!intact())
+        why_not = "the stored kernel's checksum no longer matches (its memory was changed)";
+    return !why_not;
 }
 
-void kexec_panic_tail(void)
+const char *kexec_panic_why_not(void)
 {
-    tail_at = klog_head();
+    return why_not;
 }
 
-/* The other CPUs, halted by NMI, are sent INIT: they wait for a SIPI
- * from now on, running nothing (the next kernel may reuse the memory they
- * halted in, and starts them itself). Then into the trampoline at T,
- * which loads the new CR3 and never returns. */
+void kexec_panic_message(const char *msg)
+{
+    if (rec.r.message[0])
+        return;   /* the first one says what happened */
+    size_t i = 0;
+    for (; msg[i] && i + 1 < KEXEC_MESSAGE; i++)
+        rec.r.message[i] = msg[i] == '\n' ? ' ' : msg[i];
+    rec.r.message[i] = '\0';
+}
+
+/* The record's last fields and its checksum. */
+static void seal(uint32_t kind)
+{
+    rec.r.kind = kind;
+    rec.r.panics = kind == KEXEC_RECORD_PANIC ? crashlog_panics() + 1 : 0;
+    rec.r.uptime_ns = uptime();
+    rec.r.head = klog_head();
+    rec.r.panic_at = kind == KEXEC_RECORD_PANIC ? panic_at : rec.r.head;
+    if (kind != KEXEC_RECORD_PANIC)
+        rec.r.message[0] = '\0';
+    rec.r.checksum = kexec_struct_sum(&rec.r, sizeof(rec.r),
+                                      offsetof(struct kexec_crash_record, checksum));
+}
+
+/* Bus mastering off, then the other CPUs, halted by NMI, are sent INIT:
+ * they wait for a SIPI from now on, running nothing (the next kernel may
+ * reuse the memory they halted in, and starts them itself). The screen
+ * turns the splash background. Then into the trampoline at T, which loads
+ * the new CR3 and never returns. */
 _Noreturn static void jump(void)
 {
+    pci_panic_bus_master_off();
     lapic_send_init_others();
+    fbcon_fill_splash_bg();
     void (*tramp)(uint64_t, uint64_t, uint64_t, uint64_t) =
         (void (*)(uint64_t, uint64_t, uint64_t, uint64_t))kx_tramp_va();
     tramp(kx.cr3, kx.entry, kx.handoff, kx.stack_top);
@@ -92,59 +152,33 @@ _Noreturn static void jump(void)
         hlt();
 }
 
-/* Is what is loaded still what was loaded? No lock: the other CPUs are
- * halted (region.c). */
-static bool intact(void)
+_Noreturn void kexec_panic_jump(void)
 {
-    return kx_sum_region(true) == kx.sum && kx_tramp_sum() == kx.tramp_sum;
-}
-
-void kexec_panic_jump(void)
-{
-    int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
-    if (s == KX_OFF || s == KX_EMPTY)
-        return;   /* there never was one: the boot log says why */
-    if (s != KX_ARMED) {
-        kprintf("\ncrash kernel: none (%s): this log is not saved\n",
-                s == KX_IMAGE ? "a kexec reboot image is loaded instead" : "being replaced");
-        return;
-    }
-    kprintf("\ncrash kernel: checking it, then starting it to save this log...\n");
-
-    /* The decision: from here no lock and no allocation. */
-    rec.r.head = klog_head();
-    rec.r.panic_at = panic_at;
-    rec.r.tail_at = tail_at;
-    rec.r.checksum = kexec_struct_sum(&rec.r, sizeof(rec.r),
-                                      offsetof(struct kexec_crash_record, checksum));
-    if (!intact()) {
-        kprintf("crash kernel: checksum mismatch (its reserved memory was changed): not "
-                "used, this log is not saved\n");
-        return;
-    }
-    pci_panic_bus_master_off();
+    seal(KEXEC_RECORD_PANIC);
     jump();
 }
 
 status_t kexec_reboot(void)
 {
     mutex_lock(&kx_lock);
-    if (__atomic_load_n(&kx_state, __ATOMIC_ACQUIRE) != KX_IMAGE) {
+    int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
+    if (s != KX_ARMED) {
         mutex_unlock(&kx_lock);
-        return ERR_BAD_STATE;
+        return s == KX_OFF ? ERR_NOT_SUPPORTED : ERR_BAD_STATE;
     }
     __atomic_store_n(&kx_state, KX_JUMPING, __ATOMIC_RELEASE);
-    kprintf("kexec: starting the loaded kernel on cpu %u\n", this_cpu()->index);
+    kprintf("kexec: starting the stored kernel on cpu %u\n", this_cpu()->index);
     serial_set_async(false);   /* the ring written out: what follows is synchronous */
     cli();
     ipi_halt_others();
-    /* A halted CPU may have held the log's or the screen's lock. */
+    /* A halted CPU may have held the log's or the screen's lock; and from
+     * here the screen shows nothing but the splash background. */
     klog_force_unlock();
-    fbcon_force_unlock();
+    fbcon_go_dark();
     if (!intact()) {
-        kprintf("kexec: the loaded kernel's memory was changed: a firmware reboot instead\n");
+        kprintf("kexec: the stored kernel's memory was changed: a firmware reboot instead\n");
         machine_reboot();
     }
-    pci_panic_bus_master_off();
+    seal(KEXEC_RECORD_REBOOT);
     jump();
 }

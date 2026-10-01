@@ -40,7 +40,7 @@
 #define VMAR_HANDLE_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 /* bootfs: map it (read, execute), never write it. */
 #define BOOTFS_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP | RIGHT_EXEC)
-/* The crashed kernel's log: read it, nothing else. */
+/* The panicked kernel's log: read it, nothing else. */
 #define CRASHLOG_RIGHTS (RIGHTS_BASIC | RIGHT_READ)
 
 static status_t map_segment(struct aspace *as, struct job *job, struct vmo *file,
@@ -345,8 +345,9 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *arg2)
         extra[nextra].role = SR_RESOURCE;
         extra[nextra++].kh = khandle_from_new(res, RES_RIGHTS);
     }
-    /* A crash kernel: the crashed kernel's log, to save (kexec/crashlog.c). */
-    struct vmo *crashlog = crashlog_vmo();
+    /* A boot after a panic: the panicked kernel's log, to save
+     * (kexec/crashlog.c). The first init run gets it. */
+    struct vmo *crashlog = crashlog_take_vmo();
     if (crashlog) {
         extra[nextra].role = SR_CRASHLOG;
         extra[nextra++].kh = khandle_from_new(vmo_kobject(crashlog), CRASHLOG_RIGHTS);

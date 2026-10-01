@@ -1,24 +1,34 @@
 #!/bin/sh
-# `reboot` by kexec (docs/M8.5-PLAN.md): init reads the kernel and boot
-# image from /esp, loads them (kexec_load), syncs, flushes the log, stops
-# devmgr's drivers in order and jumps (kexec_reboot): no firmware reset,
-# so QEMU (-no-reboot) keeps running. Two runs:
-#   kexec     a plain boot, `reboot`: the new kernel says it came from
-#             kexec, arms its own crash kernel (from the kernel file the
-#             old one handed it as a module), reaches the shell, which reads
-#             /data (the old boot's log ends with the reboot's sync, the new
-#             boot logs to boot-0002); then a panic in the new kernel is
-#             saved by its crash kernel as boot-0002-crash.txt
-#   fallback  crashkernel=0 (no region to load into): `reboot` falls back
-#             to the firmware by itself; and `reboot -f` is the firmware
-#             reset on a normal boot
+# `reboot` by kexec (docs/M8.5-PLAN.md, "Revision 2"): the screen goes to
+# the splash background at once, init syncs, flushes the log, stops
+# devmgr's drivers in order and starts the kernel's stored copy of the
+# system: no firmware reset, so QEMU (-no-reboot) keeps running. Four runs:
+#   kexec     a plain boot with the splash, `reboot` with the stick
+#             unchanged: no file is read ("the stored kernel, no files
+#             read"), the screen is all the splash background as the next
+#             kernel starts (no text), the new kernel
+#             says it was started by a reboot, plays the splash, brings up
+#             every CPU and reaches the shell, which reads /data (the old
+#             boot's log ends with the reboot's sync, the new one logs to
+#             boot-0002); no banner about a panic
+#   changed   the stick swapped (the monitor) for a copy whose
+#             /esp/boot/jamos.elf is 4 KiB longer, as if flashed on the
+#             Mac: `reboot` reads both files and kexec_loads them first
+#             (the screen meanwhile all the splash background: the shell
+#             blanked the console), then the new kernel comes up
+#   firmware  `reboot -f`: the firmware reset, no kexec at all
+#   fallback  crashkernel=0 (no stored kernel): `reboot` falls back to the
+#             firmware by itself
 # The new kernel starts every CPU itself (INIT-SIPI-SIPI: there is no
 # loader to park them); QEMU_SMP and QEMU_XHCI pass through.
-# Usage: tools/kexec-reboot-test.sh <outdir>; exit 0 on PASS.
+# Usage: tools/kexec-reboot-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
 out=$1
+shift
+runs=${*:-kexec changed firmware fallback}
 mkdir -p "$out"
 fails=0
+cpus=${QEMU_SMP:-4}
 
 fail() {
     echo "kexec-reboot $1: FAILED: $2"
@@ -34,43 +44,85 @@ run() {
         > "$out/kexec-$c.out" 2>&1
 }
 
-run kexec shell "wait 120 Jam OS shell" "wait jam>" \
-    "wait 60 logd: writing /data/logs/boot-0001.txt" "send reboot" "wait 180 init: kexec: /esp/boot/jamos.elf and /esp/boot/bootfs.img" \
-    "wait 30 init: /data synced" "wait 60 driver(s) stopped; exiting" \
-    "wait 30 kexec: starting the loaded kernel" "wait 60 loader:      Jam OS kexec, cmdline" \
-    "wait 60 kexec: crash kernel armed" "wait 120 init: the shell is up" "wait jam>" \
-    "send sleep 5 && ls /data/logs && uname" "wait boot-0001.txt" "wait jam>" \
-    "seen 30 logd: writing /data/logs/boot-0002.txt" \
-    "send crash panic yes" "wait 60 KERNEL PANIC" \
-    "wait 60 loader:      Jam OS kexec (crash kernel)" \
-    "wait 120 crash: the crashed kernel's log is saved as /data/logs/boot-0002-crash.txt" \
-    "wait 60 system halted" ||
-    fail kexec "the script (see $out/kexec-kexec.log)"
-log="$out/kexec-kexec.log"
-grep -q "reboot: resetting" "$log" && fail kexec "a firmware reset happened"
-cpus=${QEMU_SMP:-4}
-[ "$(grep -c "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
-    fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
-data="$out/kexec-kexec-stick.img@@64M"
-mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" ||
-    fail kexec "boot-0001.txt doesn't end with the reboot's sync"
-mtype -i "$data" ::/logs/boot-0002-crash.txt 2>/dev/null |
-    grep -q "the end of the kernel log of boot-0002" ||
-    fail kexec "boot-0002-crash.txt isn't the kexec'd kernel's log"
+run_kexec() {
+    QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
+        "seen 30 console: the screen is back" \
+        "seen 60 logd: writing /data/logs/boot-0001.txt" \
+        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "send reboot" \
+        "wait 30 init: kexec: /esp unchanged: the stored kernel, no files read" \
+        "wait 30 init: /data synced" "wait 60 driver(s) stopped; exiting" \
+        "wait 30 kexec: starting the stored kernel" \
+        "wait 60 loader:      Jam OS kexec" "shot kexec-between" \
+        "wait 30 kexec: started by a reboot" \
+        "wait 60 kexec: stored kernel armed" "wait 120 splash: first frame" \
+        "wait 180 init: the shell is up" "wait jam>" \
+        "send sleep 5 && ls /data/logs && uname" "wait boot-0001.txt" "wait jam>" \
+        "seen 30 logd: writing /data/logs/boot-0002.txt" \
+        "send reboot -f" "wait reboot: resetting" ||
+        { fail kexec "the script (see $out/kexec-kexec.log)"; return; }
+    log="$out/kexec-kexec.log"
+    [ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
+        fail kexec "a firmware reset happened before the last one"
+    grep -aq "kexec_load\|reading /esp" "$log" && fail kexec "a file was read"
+    grep -aq "the last boot panicked" "$log" && fail kexec "a reboot was taken for a panic"
+    [ "$(grep -ac "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
+        fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
+    mtype -i "$out/kexec-kexec-stick.img@@64M" ::/logs/boot-0001.txt 2>/dev/null |
+        grep -q "init: /data synced" || fail kexec "boot-0001.txt doesn't end with the reboot's sync"
+    python3 tools/splash-check.py quiet "$out/kexec-between.png" ||
+        fail kexec "the screen between the kernels isn't all the splash background"
+}
 
-run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait jam>" \
-    "seen 60 init: /esp mounted" "send reboot" "wait 180 init: kexec: " \
-    "wait 10 ERR_NOT_SUPPORTED" \
-    "wait 10 init: rebooting through the firmware instead" "wait 30 reboot: resetting" ||
-    fail fallback "the script (see $out/kexec-fallback.log)"
-grep -q "kexec: starting" "$out/kexec-fallback.log" && fail fallback "it kexec'd anyway"
+run_changed() {
+    stick2="$out/kexec-changed-stick2.img"
+    cp build/jamos.img "$stick2"
+    cp build/jamos.elf "$out/jamos-longer.elf"
+    head -c 4096 /dev/zero >> "$out/jamos-longer.elf"
+    mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
+        { fail changed "can't write the second stick's kernel"; return; }
+    run changed shell "wait 120 Jam OS shell" "wait jam>" \
+        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "monitor device_del stick" "wait 30 init: /esp is gone" \
+        "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
+        "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
+        "wait 60 init: /esp mounted" "sleep 1" "send reboot" \
+        "wait 30 init: kexec: /esp's kernel or boot image changed: reading" \
+        "sleep 2" "shot kexec-blank" \
+        "wait 120 kexec_load: OK" "wait 60 kexec: starting the stored kernel" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "send reboot -f" "wait reboot: resetting" ||
+        fail changed "the script (see $out/kexec-changed.log)"
+    [ "$(grep -ac "reboot: resetting" "$out/kexec-changed.log")" -eq 1 ] ||
+        fail changed "a firmware reset happened before the last one"
+    python3 tools/splash-check.py quiet "$out/kexec-blank.png" ||
+        fail changed "the screen while reboot reads the files isn't all the splash background"
+    rm -f "$stick2" "$out/jamos-longer.elf"
+}
 
-run firmware shell "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
-    "wait 10 rebooting through the firmware" "wait 30 reboot: resetting" ||
-    fail firmware "the script (see $out/kexec-firmware.log)"
-grep -q "kexec_load" "$out/kexec-firmware.log" && fail firmware "reboot -f tried kexec"
+run_firmware() {
+    run firmware shell "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
+        "wait 10 rebooting through the firmware" "wait 30 reboot: resetting" ||
+        fail firmware "the script (see $out/kexec-firmware.log)"
+    grep -aq "kexec_load\|kexec: starting\|init: kexec:.*stored kernel," "$out/kexec-firmware.log" &&
+        fail firmware "reboot -f tried kexec"
+}
 
-rm -f "$out"/kexec-*-stick.img
+run_fallback() {
+    run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait jam>" \
+        "seen 60 init: /esp mounted" "send reboot" "wait 60 init: kexec: " \
+        "wait 60 the jump failed (ERR_NOT_SUPPORTED)" \
+        "wait 10 init: rebooting through the firmware instead" "wait 30 reboot: resetting" ||
+        fail fallback "the script (see $out/kexec-fallback.log)"
+    grep -aq "kexec: starting" "$out/kexec-fallback.log" && fail fallback "it kexec'd anyway"
+}
+
+for r in $runs; do
+    had=$fails
+    "run_$r"
+    [ $fails -eq $had ] && echo "kexec-reboot $r: OK"
+    rm -f "$out/kexec-$r-stick.img"
+done
 if [ $fails -eq 0 ]; then
     echo "kexec-reboot: PASS"
     exit 0

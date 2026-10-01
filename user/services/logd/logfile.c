@@ -1,9 +1,10 @@
 /* logd: this boot's log file, /data/logs/boot-NNNN.txt (NNNN from 0001),
- * and a crash kernel's copy of a crashed boot's log, boot-NNNN-crash.txt.
+ * and the copy of a panicked boot's log the boot after it saves,
+ * boot-NNNN-crash.txt.
  *
- * A number is taken when either file has it: a crash kernel that saves the
- * log of a boot that had no file of its own (no /data then) takes the
- * next free number for it, and the next boot must not take it again.
+ * A number is taken when either file has it: the log of a panicked boot
+ * that had no file of its own (no /data then) gets the next free number,
+ * and this boot's own log the one after it.
  *
  * The number is the first free one after the files already there, found
  * with a handful of stat calls instead of a walk through the directory

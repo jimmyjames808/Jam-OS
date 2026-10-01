@@ -1,63 +1,116 @@
-/* init's reboot by kexec (initctl.reboot, so also Ctrl+Alt+Del): into
- * the kernel and boot image on the stick's ESP without going through the
- * firmware, Limine and the boot menu (kernel/kexec/, <jam/kexec.h>).
+/* init's reboot by kexec (initctl.reboot, so also Ctrl+Alt+Del): a fresh
+ * copy of Jam OS started without the firmware, Limine and the boot menu
+ * (kernel/kexec/, <jam/kexec.h>).
  *
- * In order: the two files read whole into VMOs while /esp is still there,
- * kexec_load (the kernel checks them and lays the new kernel out in its
- * reserved region; the crash kernel is gone from then on), then what a
- * firmware reboot does too (/data synced, logd's last lines written, the
- * volume left clean), then devmgr's shutdown (DEVMGR_SHUTDOWN: the
+ * The kernel keeps a stored copy of the kernel and boot image this boot
+ * started from, ready to run. It is used as it is unless the stick has
+ * newer ones: when /esp is first mounted, init notes the size and
+ * modification time of /esp/boot/jamos.elf and bootfs.img; at reboot, if
+ * /esp is there and either differs (or nothing was noted), both files are
+ * read and handed to the kernel (kexec_load) in place of the stored copy.
+ * Else nothing is read at all.
+ *
+ * Then what a firmware reboot does too (/data synced, logd's last lines
+ * written, the volume left clean), devmgr's shutdown (DEVMGR_SHUTDOWN: the
  * filesystems stopped clean, the class drivers, then the bus drivers'
- * final halt and reset, so no device is left writing memory), then
+ * final halt and reset, so no device is left writing memory), and
  * kexec_reboot. Any step that fails before the jump returns, and ctl.c
- * resets through the firmware instead. */
+ * resets through the firmware instead. The screen already shows only the
+ * splash background: the shell or the console blanked it (console.blank)
+ * before asking for the reboot. */
 #include <devmgr.h>
 #include <os.h>
 #include "init.h"
 
-#define KERNEL_FILE "/esp/boot/jamos.elf"
-#define BOOTFS_FILE "/esp/boot/bootfs.img"
+#define ESP_MOUNT   "/esp"
+#define KERNEL_FILE ESP_MOUNT "/boot/jamos.elf"
+#define BOOTFS_FILE ESP_MOUNT "/boot/bootfs.img"
 #define KERNEL_MAX  (64ull << 20)
 #define BOOTFS_MAX  (256ull << 20)
 #define LOG_WAIT    NS_PER_S          /* logd's flush, as before a firmware reboot */
 #define STOP_WAIT   (30 * NS_PER_S)   /* devmgr's shutdown: every driver stopped */
 
-/* Read both files and hand them to the kernel. */
+/* A file as noted: its size and modification time. */
+struct noted {
+    uint64_t size, mtime;
+};
+
+static bool noted;                  /* /esp's files were noted (the first /esp) */
+static struct noted kernel, bootfs;
+
+static status_t stat_file(const char *path, struct noted *out)
+{
+    bool dir = false;
+    status_t st = fs_stat(path, &out->size, &dir, &out->mtime);
+    return st == OK && dir ? ERR_INVALID_ARGS : st;
+}
+
+void reboot_note_esp(void)
+{
+    if (noted || stat_file(KERNEL_FILE, &kernel) != OK || stat_file(BOOTFS_FILE, &bootfs) != OK)
+        return;
+    noted = true;
+    printf("init: kexec: the stored kernel came from " KERNEL_FILE " (%lu bytes) and "
+           BOOTFS_FILE " (%lu bytes)\n", (unsigned long)kernel.size, (unsigned long)bootfs.size);
+}
+
+/* Does /esp hold another kernel or boot image than the one stored? false
+ * also without /esp (there is nothing else to start). */
+static bool esp_changed(void)
+{
+    struct noted k, b;
+    if (stat_file(KERNEL_FILE, &k) != OK || stat_file(BOOTFS_FILE, &b) != OK) {
+        printf("init: kexec: no " KERNEL_FILE " or " BOOTFS_FILE ": the stored kernel, "
+               "no files read\n");
+        return false;
+    }
+    if (noted && k.size == kernel.size && k.mtime == kernel.mtime && b.size == bootfs.size &&
+        b.mtime == bootfs.mtime) {
+        printf("init: kexec: /esp unchanged: the stored kernel, no files read\n");
+        return false;
+    }
+    printf("init: kexec: %s: reading " KERNEL_FILE " and " BOOTFS_FILE "\n",
+           noted ? "/esp's kernel or boot image changed" : "nothing noted of /esp at its mount");
+    return true;
+}
+
+/* Read both files and hand them to the kernel in place of the stored copy. */
 static status_t load(void)
 {
     handle_t k = HANDLE_INVALID, b = HANDLE_INVALID;
     uint64_t ks = 0, bs = 0, t0 = now();
-    printf("init: kexec: reading %s and %s\n", KERNEL_FILE, BOOTFS_FILE);
     status_t st = file_read_vmo(KERNEL_FILE, KERNEL_MAX, &k, &ks);
     if (st == OK)
         st = file_read_vmo(BOOTFS_FILE, BOOTFS_MAX, &b, &bs);
     uint64_t read_ms = (now() - t0) / NS_PER_MS;
     if (st == OK)
-        st = jam_kexec_load(shell_root(), k, b, NULL, 0, 0);   /* this boot's command line */
+        st = jam_kexec_load(shell_root(), k, b, NULL, 0, 0);   /* the next kernel's usual line */
     if (k)
         jam_handle_close(k);
     if (b)
         jam_handle_close(b);
-    printf("init: kexec: %s and %s (%lu + %lu KiB) read in %lu ms: %s\n", KERNEL_FILE,
-           BOOTFS_FILE, (unsigned long)(ks >> 10), (unsigned long)(bs >> 10),
-           (unsigned long)read_ms, status_str(st));
+    printf("init: kexec: %lu + %lu KiB read in %lu ms, kexec_load: %s\n",
+           (unsigned long)(ks >> 10), (unsigned long)(bs >> 10), (unsigned long)read_ms,
+           status_str(st));
     return st;
 }
 
 status_t init_reboot_kexec(void)
 {
-    status_t st = load();
-    if (st != OK)
-        return st;
+    if (esp_changed()) {
+        status_t st = load();
+        if (st != OK)
+            return st;
+    }
     mounts_sync();
     shell_flush_log(now() + LOG_WAIT);
     mounts_settle();
     uint64_t t0 = now();
-    st = shell_stop_devmgr(now() + STOP_WAIT);
+    status_t st = shell_stop_devmgr(now() + STOP_WAIT);
     if (st != OK)   /* its drivers' DMA caps are closed either way: bus mastering is off */
         printf("init: kexec: devmgr didn't stop in order (%s): its job was killed\n",
                status_str(st));
-    /* Seen only on the serial port and the screen: logd has stopped. */
+    /* Seen only on the serial port: logd has stopped, the screen is dark. */
     printf("init: kexec: devmgr stopped in %lu ms, jumping\n",
            (unsigned long)((now() - t0) / NS_PER_MS));
     st = jam_kexec_reboot(shell_root());   /* returns only if it failed */

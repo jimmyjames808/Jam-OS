@@ -1,8 +1,11 @@
 #!/bin/sh
 # The kernel's crash tests from the shell (`crash <name> yes`; they are not
 # in the boot menu). Each one boots a plain "shell" system, runs
-# the crash test from the shell, and must end on the panic screen (bp must
-# come back to the prompt instead). The boot words (testpf, ...) still run
+# the crash test from the shell, and must panic (bp must come back to the
+# prompt instead). The panic starts the stored kernel: its boot's shell
+# says what happened ("the last boot panicked: ..."), and `reboot -f` ends
+# the run. kexecbad damages the stored kernel first, so its panic must
+# halt on the panic screen instead. The boot words (testpf, ...) still run
 # them at boot: tools/qemu-test.sh <outdir> <name> testpf.
 # QEMU_SMP passes through (lockirq, stuck and watchdog need 2 CPUs).
 # Usage: tools/crash-test.sh <outdir> [name ...]  (default: all of them);
@@ -22,19 +25,29 @@ for n in $names; do
         echo "wait jam>"
         echo "send crash $n yes"
         echo "wait crash $n: here goes"
-        if [ "$n" = bp ]; then
+        case $n in
+        bp)
             echo "wait 30 came back, as a breakpoint must"
             echo "wait jam>"
             echo "send reboot -f"
-            echo "wait reboot: resetting"
-        else
+            echo "wait reboot: resetting" ;;
+        kexecbad)
             echo "wait 60 KERNEL PANIC"
-            echo "wait 30 system halted"
-        fi
+            echo "wait 30 no restart: the stored kernel's checksum no longer matches"
+            echo "wait 30 system halted" ;;
+        *)
+            echo "wait 60 KERNEL PANIC"
+            echo "wait 30 starting the stored kernel"
+            echo "wait 60 loader:      Jam OS kexec"
+            echo "wait 120 the last boot panicked: "
+            echo "wait jam>"
+            echo "send reboot -f"
+            echo "wait reboot: resetting" ;;
+        esac
     } > "$s"
     if QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_INPUT="$s" \
         tools/qemu-test.sh "$out" "crash-$n" shell > "$out/crash-$n.out" 2>&1; then
-        why=$(grep -m1 -A2 "KERNEL PANIC" "$out/crash-$n.log" | tail -1 |
+        why=$(grep -am1 -A2 "KERNEL PANIC" "$out/crash-$n.log" | tail -1 |
               sed "s/^\[[ 0-9.]*\] *//" | cut -c1-90)
         echo "crash $n: OK${why:+ ($why)}"
     else

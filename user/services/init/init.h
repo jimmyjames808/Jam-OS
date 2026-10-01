@@ -1,10 +1,11 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
- * keytest); crash.c is a crash kernel's boot, which saves a log; reboot.c
- * a reboot by kexec; shell.c is the shell mode, where init starts and supervises
+ * keytest); shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the console, serialin, devmgr and the shell; splash.c
- * the boot splash that plays first in shell mode; mounts.c
- * keeps init's namespace in step with devmgr's mounts; ctl.c serves
- * init's control channels (abi/idl/initctl.idl).
+ * the boot splash that plays first in shell mode; lastboot.c the boot
+ * before this one, if it panicked (its log saved by logd, one line for the
+ * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
+ * step with devmgr's mounts; ctl.c serves init's control channels
+ * (abi/idl/initctl.idl).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -27,16 +28,6 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * plays first (splash.c). */
 bool init_shell(bool nousb, bool splash, const char *shell_arg);
 
-/* main.c: devmgr in a job of its own (RES_PCI from the root, a console
- * client end if not 0 (consumed), an argument if not NULL), its first
- * binding pass waited for and its mounts followed (mounts.c); and its stop
- * (its channels closed, its exit waited for, its job checked). True if
- * all went well. Not in shell mode (shell.c supervises its own). */
-bool init_start_devmgr(handle_t console, const char *arg);
-bool init_stop_devmgr(void);
-
-/* crash.c: a crash kernel's boot (argv[1] "crash"): the exit code. */
-int  init_crash(void);
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 
@@ -102,9 +93,33 @@ status_t shell_stop_devmgr(uint64_t deadline);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 
-/* Reboot by kexec into the kernel and boot image on /esp. Returns only if
- * that failed (said in the log); the caller resets through the firmware. */
+/* /esp is mounted (now or again): the first time, note the size and
+ * modification time of its kernel and boot image, which the stored kernel
+ * was loaded from. */
+void     reboot_note_esp(void);
+/* Reboot by kexec: into the stored kernel, or, if /esp's kernel or boot
+ * image changed since reboot_note_esp, into the files on /esp. Returns
+ * only if that failed (said in the log); the caller resets through the
+ * firmware. */
 status_t init_reboot_kexec(void);
+
+/* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
+
+/* At the start of shell mode: take its log (SR_CRASHLOG) if the kernel
+ * gave one; results arrive on port with key (call lastboot_event then). */
+void     lastboot_init(handle_t port, uint64_t key);
+/* For logd's start: the extra handles it gets (the log, and the channel
+ * for its answer), into x; how many (0: nothing to save, or done). */
+unsigned lastboot_logd_handles(struct spawn_handle *x);
+/* logd's answer arrived (or its end closed). */
+void     lastboot_event(void);
+/* The shell waits for the result until this time (uptime ns), or
+ * DEADLINE_NEVER: the shell may start (nothing to wait for). Past
+ * the deadline it gives up waiting and says the log was not saved. */
+uint64_t lastboot_wait_until(uint64_t t);
+/* The banner line for the boot's first shell ("" if this boot did not
+ * follow a panic); after the first call, always "". */
+const char *lastboot_banner(void);
 
 /* Kill the service init runs under this name ("console", ...): its whole
  * job; init's loop then starts it again. *koid: its process's id.

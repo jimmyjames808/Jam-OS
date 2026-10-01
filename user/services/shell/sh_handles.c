@@ -10,7 +10,9 @@
  *   SR_USER + 2   a channel from init: when devmgr dies, init starts it
  *                 again (with its drivers) and sends the new client ends
  *                 here (INIT_SHELL_DEVMGR, <devmgr.h>); every command that
- *                 talks to devmgr takes the newest first
+ *                 talks to devmgr takes the newest first. On the boot after
+ *                 a panic the first shell also finds a line to print on it
+ *                 (INIT_SHELL_NOTE: sh_boot_note)
  *   SR_USER + 3   init's control channel (abi/idl/initctl.idl): `kill`,
  *                 and `reboot` with /data synced first
  *   SR_AUDIO      the mixer's `audio` channel (abi/idl/audio.idl): every
@@ -24,6 +26,7 @@
 #include "sh_core.h"
 
 static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl, audio, audio_ctl, music;
+static char note[INIT_SHELL_NOTE_MAX + 1];   /* INIT_SHELL_NOTE's line, until taken */
 
 void sh_handles_init(void)
 {
@@ -75,24 +78,29 @@ static void drop(handle_t *h)
     *h = HANDLE_INVALID;
 }
 
-/* Take the newest client ends init sent, and forget dead ones. */
+/* Take what init sent: the newest devmgr client ends, a line to print;
+ * and forget dead ends. */
 static void devmgr_refresh(void)
 {
     while (from_init) {
-        uint32_t kind = 0, n = 0, nh = 0;
+        struct { uint32_t kind; char text[INIT_SHELL_NOTE_MAX]; } m = { 0, { 0 } };
+        uint32_t n = 0, nh = 0;
         handle_t h[2] = { HANDLE_INVALID, HANDLE_INVALID };
         struct channel_read_args a = {
-            .h = from_init, .bytes_cap = sizeof(kind), .bytes = (uint64_t)(uintptr_t)&kind,
+            .h = from_init, .bytes_cap = sizeof(m), .bytes = (uint64_t)(uintptr_t)&m,
             .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)h,
             .handles_cap = 2, .actual_handles = (uint64_t)(uintptr_t)&nh,
         };
         if (jam_channel_read(&a) != OK)
             break;   /* nothing new (or init's end is gone) */
-        if (n == sizeof(kind) && kind == INIT_SHELL_DEVMGR && nh == 2) {
+        if (n == sizeof(m.kind) && m.kind == INIT_SHELL_DEVMGR && nh == 2) {
             drop(&devmgr);
             drop(&devmgr_ctl);
             devmgr = h[0];
             devmgr_ctl = h[1];
+        } else if (n > sizeof(m.kind) && m.kind == INIT_SHELL_NOTE && nh == 0) {
+            memcpy(note, m.text, n - sizeof(m.kind));
+            note[n - sizeof(m.kind)] = '\0';
         } else {
             for (uint32_t i = 0; i < nh; i++)
                 jam_handle_close(h[i]);
@@ -105,6 +113,15 @@ static void devmgr_refresh(void)
             (seen & SIG_PEER_CLOSED))
             drop(ends[i]);
     }
+}
+
+const char *sh_boot_note(void)
+{
+    static char taken[INIT_SHELL_NOTE_MAX + 1];
+    devmgr_refresh();
+    memcpy(taken, note, sizeof(taken));
+    note[0] = '\0';
+    return taken;
 }
 
 /* 0 while there is none: a restart in progress, or no devmgr at all. */

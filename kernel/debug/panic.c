@@ -1,11 +1,13 @@
-/* Panic screen: message, registers (for exceptions), a symbolised
- * frame-pointer backtrace and the tail of the kernel log. The other CPUs are
- * halted with an NMI first. Then, if a crash kernel is loaded, it is
- * checked and started to save the log (kernel/kexec/jump.c); otherwise,
- * or if it can't be used, the machine halts (or restarts: panic_reboot). */
+/* Panic: message, registers (for exceptions), a symbolised frame-pointer
+ * backtrace and the tail of the kernel log. The other CPUs are halted with
+ * an NMI first. Then the stored kernel is started (kernel/kexec/jump.c):
+ * the next boot saves this one's log and says what happened, so nothing
+ * is drawn (the lines go to the log and the serial port). Without a
+ * stored kernel to start (none, a damaged one, or a crash loop) the
+ * screen turns red, shows all of it with the reason, and the machine
+ * halts. */
 #include <stdarg.h>
 #include <stdint.h>
-#include <jam/cmdline.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
 #include <jam/ipi.h>
@@ -29,6 +31,7 @@
 #define KERNEL_SPACE 0xffff800000000000ull
 
 #define NOTE_MAX     320
+#define KEXEC_MESSAGE_LINE 160   /* an exception's one line */
 
 int panic_in_progress;   /* set once, by the first CPU to panic */
 static char note[NOTE_MAX];   /* panic_note_set's line; its last byte stays 0 */
@@ -111,8 +114,12 @@ static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
         kprintf("       ... same frame %lu more times\n", repeats);
 }
 
-/* Common start of every panic: stop interrupts, stop recursion, grab the
- * log tail before we overwrite the screen, then paint it red. */
+static bool jumping;   /* the stored kernel will be started: draw nothing */
+
+/* Common start of every panic: stop interrupts, stop recursion, decide
+ * whether the stored kernel takes over, grab the log tail before we
+ * overwrite the screen, then paint it red (or, if it takes over, draw
+ * nothing at all). */
 static void panic_begin(void)
 {
     cli();
@@ -124,12 +131,15 @@ static void panic_begin(void)
      * lock a halted CPU (or this one) was holding. */
     uint32_t halted = ipi_halt_others();
     klog_force_unlock();
-    fbcon_force_unlock();
+    jumping = kexec_panic_begin();   /* no lock, no allocation; the panic's lines start here */
+    if (jumping)
+        fbcon_go_dark();
+    else
+        fbcon_force_unlock();
     serial_panic();   /* queued output first, then everything synchronous */
 
     size_t n = klog_tail(tail, TAIL_BYTES);
     tail[n] = '\0';
-    kexec_panic_begin();   /* the panic's own lines start here */
 
     fbcon_set_colors(0xffffff, 0x8b0000);
     fbcon_clear();
@@ -153,6 +163,12 @@ _Noreturn static void panic_end(void)
 {
     if (note[0])
         kprintf("\n  %s\n", note);
+    if (jumping) {
+        /* The log already has the lines before the panic: the next boot
+         * saves all of it. */
+        kprintf("\nstarting the stored kernel: the next boot saves this log\n");
+        kexec_panic_jump();
+    }
     /* Show the tail of the log starting at a line boundary. */
     const char *start = tail;
     for (const char *p = tail; *p; p++)
@@ -161,38 +177,12 @@ _Noreturn static void panic_end(void)
             break;
         }
     /* Written directly: the tail is longer than kprintf's line buffer. */
-    kexec_panic_tail();
     kprintf("\nlast log lines:\n");
     klog_write_raw(start, strlen(start));
-
-    kexec_panic_jump();   /* returns only without a usable crash kernel */
-    panic_halt_or_reboot(cmdline_get_u64("panic_reboot", 0, 0));
-}
-
-_Noreturn void panic_halt_or_reboot(uint64_t wait_time)
-{
-    /* A count down, then a reset instead of halting. It busy-waits on the
-     * TSC: interrupts are off and the other CPUs are halted, so nothing
-     * could wake a sleeping thread. Before the TSC is calibrated there is
-     * no clock to count with, so it halts. */
-    if (!wait_time || !tsc_hz) {
-        kprintf("\n\nsystem halted.\n");
-        halt_forever();
-    }
-    if (wait_time > 3600)
-        wait_time = 3600;
-
-    kprintf("\n\nrebooting in %4lu s (panic_reboot)", (unsigned long)wait_time);
-    for (uint64_t i = wait_time; i > 0; i--) {
-        uint64_t end = rdtsc() + tsc_hz;   /* one second */
-        while (rdtsc() < end)
-            cpu_relax();
-        /* back over "NNNN s (panic_reboot)" (21 characters) */
-        kprintf("\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b%4lu s (panic_reboot)",
-                (unsigned long)(i - 1));
-    }
-    kprintf("\n");
-    machine_reboot();
+    if (kexec_panic_why_not())
+        kprintf("\n\nno restart: %s\n", kexec_panic_why_not());
+    kprintf("\n\nsystem halted.\n");
+    halt_forever();
 }
 
 _Noreturn void panic(const char *fmt, ...)
@@ -204,6 +194,7 @@ _Noreturn void panic(const char *fmt, ...)
     va_start(ap, fmt);
     kvsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    kexec_panic_message(msg);
     kprintf("  %s\n\n", msg);
 
     backtrace_from(0, (uint64_t)__builtin_frame_address(0));
@@ -238,6 +229,7 @@ _Noreturn void panic_watchdog(const struct trap_frame *f)
 {
     uint64_t cr2 = read_cr2();
     panic_begin();
+    kexec_panic_message("watchdog: a CPU stopped taking timer interrupts for 5 s");
     kprintf("  watchdog: this CPU stopped taking timer interrupts for 5 s\n");
     kprintf("  (interrupts disabled too long, or spinning in a loop with IF=0)\n\n");
     dump_frame(f, cr2);
@@ -257,8 +249,11 @@ static void dump_frame(const struct trap_frame *f, uint64_t cr2)
     const char *name = f->vector < 32 ? exception_names[f->vector] : "interrupt";
     uint64_t off;
     const char *sym = ksym_lookup(f->rip, &off);
-    kprintf("  %s (vector %lu, error %lx) at %s+0x%lx\n\n", name, f->vector,
-            f->error, sym ? sym : "?", sym ? off : f->rip);
+    char msg[KEXEC_MESSAGE_LINE];
+    ksnprintf(msg, sizeof(msg), "%s (vector %lu, error %lx) at %s+0x%lx", name, f->vector,
+              f->error, sym ? sym : "?", sym ? off : f->rip);
+    kexec_panic_message(msg);
+    kprintf("  %s\n\n", msg);
     if (f->vector == 14)
         describe_page_fault(f, cr2);
     /* A fault on the guard page can't push its frame, so it escalates to a

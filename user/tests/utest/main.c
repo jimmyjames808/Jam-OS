@@ -185,7 +185,7 @@ static bool t_rights(void)
 /* kexec_load, kexec_reboot and klog_name refuse what they must (the rights
  * on the root resource only where we were given one: init's run gives it,
  * the shell doesn't). Nothing here loads an image or names the log: either
- * would change this boot (a crash kernel replaced, the crash log's name). */
+ * would change this boot (the stored kernel replaced, the crash log's name). */
 static bool t_kexec_refusals(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), v, rd, mapo, klog, m;

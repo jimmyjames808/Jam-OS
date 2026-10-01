@@ -67,6 +67,12 @@
 /* init -> shell, on the shell's SR_USER + 2 channel: a new devmgr's
  * client ends (the message's two handles: query, control). */
 #define INIT_SHELL_DEVMGR   1u
+/* init -> the boot's first shell, on the same channel, queued before it
+ * starts: the u32, then the one line it prints under its own, without a
+ * newline or a NUL (at most INIT_SHELL_NOTE_MAX bytes): what happened to
+ * the boot before, if it panicked (init's lastboot.c). */
+#define INIT_SHELL_NOTE     2u
+#define INIT_SHELL_NOTE_MAX 256u
 
 #define DEVMGR_PROTOCOL_ID  3u   /* next to the IDL's null (1) and edu (2) */
 /* -> u32 bound, failed, skipped. Answered once the first binding pass is

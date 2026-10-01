@@ -4,8 +4,8 @@
 # back to the prompt, Ctrl+C reaching the shell past a program holding the
 # keys, a program's orphans killed with its job, devmgr killed and
 # restarted by init (the shell's devices/usb reconnect), and last a real
-# crash test from the shell (it ends the run: qemu-test.sh sees "system
-# halted").
+# crash test from the shell: the panic starts the stored kernel, whose
+# shell says what happened.
 wait 120 Jam OS shell
 wait jam>
 send utest
@@ -78,4 +78,10 @@ wait jam>
 send crash pf yes
 wait crash pf: page fault
 wait 30 KERNEL PANIC
-wait system halted
+# The panic starts the stored kernel: the next boot's shell says what
+# happened
+wait 60 loader:      Jam OS kexec
+wait 120 the last boot panicked: page fault
+wait jam>
+send reboot -f
+wait reboot: resetting

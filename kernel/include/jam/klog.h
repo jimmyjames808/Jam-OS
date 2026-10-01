@@ -21,7 +21,7 @@ void   klog_force_unlock(void);
 #define KLOG_SIZE (64 * 1024)
 uint64_t klog_head(void);
 /* The ring itself (KLOG_SIZE bytes, page-aligned; byte h of the log is at
- * h % KLOG_SIZE): kexec hands its pages to a crash kernel. */
+ * h % KLOG_SIZE): kexec hands its pages to the next kernel. */
 const char *klog_ring(void);
 size_t   klog_read_at(uint64_t pos, char *buf, size_t cap, uint64_t *first);
 /* The copy itself, on any ring (size a power of two, h bytes ever written):

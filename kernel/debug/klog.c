@@ -13,7 +13,7 @@
 
 /* KLOG_SIZE (klog.h): a power of two */
 
-/* Page-aligned: a crash kernel is handed exactly its pages (kexec). */
+/* Page-aligned: the next kernel is handed exactly its pages (kexec). */
 static char ring[KLOG_SIZE] __attribute__((aligned(4096)));
 static uint64_t head;           /* total bytes ever written; ring_lock (klog_head reads it
                                    without, so it is stored atomically) */
