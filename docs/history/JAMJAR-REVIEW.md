@@ -105,3 +105,15 @@ rounding is used).
   player's channel. A `connect` method on music.idl (the player hands out
   a new channel per client) would give jamjar an endpoint of its own, so
   nothing it leaves behind lands in the shell.
+
+## Outcomes
+
+- **1 fixed.** The art cache counts its bytes and keeps at most 8 MiB
+  (`ART_BUDGET`, half the heap), evicting the least recently drawn until
+  a new picture fits (and until `malloc` has it); one entry per album,
+  size and background, a new kind drawn over the old one in place;
+  `cover_render` draws straight into that entry (no scratch buffer).
+  Tests: the self-test draws 40 albums at 435 px and then needs 4 MiB of
+  heap (FAILED before: the heap was full); `tools/jamjar-covers-test.sh`
+  (32 albums at 2560x1440, 16 of them heard in that run): every shot
+  shows the cover (before: the shots after skips 11-14 showed jar labels).

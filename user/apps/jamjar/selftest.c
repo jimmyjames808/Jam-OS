@@ -175,6 +175,17 @@ static void test_art(void)
     art_draw(&s1, 0, 0, 96, lib.album[0].hash, C_PANEL);   /* from the cache now */
     fun_check(diff > 96 * 96 / 8 && !memcmp(px[0], px[1], sizeof(px[0])),
               "  ... two albums' labels differ; the same one again is the same picture");
+    /* Now playing at 2560x1440 draws each album played at 435 px (757 KB):
+     * forty of them must not fill the 16 MiB heap the whole app lives in. */
+    enum { BIG = 435 };
+    uint32_t *bp = big_alloc((uint64_t)BIG * BIG * 4);
+    struct surf sb = { bp, BIG, BIG, BIG };
+    for (uint64_t i = 0; bp && i < 40; i++)
+        art_draw(&sb, 0, 0, BIG, 0x6a616d00 + i, C_PANEL);
+    void *room = malloc(4u << 20);
+    fun_check(bp && room && art_cache_bytes() <= (8u << 20) && art_cache_bytes() >= BIG * BIG * 4,
+              "  ... 40 albums drawn at 435 px: 8 MiB kept at most, the heap keeps room");
+    free(room);
 }
 
 static void test_bars(void)

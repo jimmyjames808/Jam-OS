@@ -219,11 +219,10 @@ static uint32_t times(uint32_t p, uint32_t k)
     return o;
 }
 
-bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash, int kind,
-                  uint32_t bg)
+bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
 {
-    uint32_t *px = malloc((size_t)size * (size_t)size * 4);
-    if (!px)
+    int size = dst->w;
+    if (size < 1 || dst->h != size || dst->stride != size)
         return false;
     lock();
     int i = find(hash, false);
@@ -234,21 +233,15 @@ bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash,
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        cover_scale(src, side, side, side, px, size, size);
+        cover_scale(src, side, side, side, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;
     for (int j = 0; ok && j < size; j++) {
-        if (y + j < 0 || y + j >= dst->h)
-            continue;
-        for (int k = 0; k < size; k++) {
-            if (x + k < 0 || x + k >= dst->w)
-                continue;
-            uint32_t *d = dst->px + (uint64_t)(y + j) * dst->stride + x + k;
-            *d = px_over(bg, times(px[(size_t)j * size + k], inside(k, j, size, r)));
-        }
+        uint32_t *row = dst->px + (size_t)j * size;
+        for (int k = 0; k < size; k++)
+            row[k] = px_over(bg, times(row[k], inside(k, j, size, r)));
     }
-    free(px);
     return ok;
 }
 

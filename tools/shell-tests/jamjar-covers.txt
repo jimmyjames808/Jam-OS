@@ -1,0 +1,121 @@
+# jamjar's now-playing cover over many albums at 2560x1440: use
+# tools/jamjar-covers-test.sh (it makes /data/many: 32 albums of two songs,
+# each with a teal PNG cover, and checks the shots). Everything plays in
+# shuffle; the first skips come while the covers are still being read;
+# two shots of the card after each of 18 skips.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 music: ready
+send jamjar trace root=/data/many
+wait 30 jamjar: 2560x1440, reading /data/many
+wait 30 jamjar: library /data/many: 32 artists, 32 albums, 64 tracks
+type a
+wait jamjar: play everything (shuffle)
+wait 30 jamjar: hearing
+sleep 1
+type n
+wait 20 jamjar: hearing
+sleep 1
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-00a
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-01a
+sleep 1
+shot covers-01b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-02a
+sleep 1
+shot covers-02b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-03a
+sleep 1
+shot covers-03b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-04a
+sleep 1
+shot covers-04b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-05a
+sleep 1
+shot covers-05b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-06a
+sleep 1
+shot covers-06b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-07a
+sleep 1
+shot covers-07b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-08a
+sleep 1
+shot covers-08b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-09a
+sleep 1
+shot covers-09b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-10a
+sleep 1
+shot covers-10b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-11a
+sleep 1
+shot covers-11b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-12a
+sleep 1
+shot covers-12b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-13a
+sleep 1
+shot covers-13b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-14a
+sleep 1
+shot covers-14b
+type n
+wait 20 jamjar: hearing
+sleep 3
+shot covers-15a
+sleep 1
+shot covers-15b
+type q
+wait 30 run: bin/jamjar exited with code 0
+wait jam>
+send music stop
+wait music: stopped
+wait jam>
+send reboot -f
+wait reboot: resetting

@@ -239,6 +239,8 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
                uint32_t bg);
 /* The Jam OS mark (the seven drupelets) in a box `size` wide. */
 void art_mark(const struct surf *s, int x, int y, int size);
+/* Bytes of the pictures art_draw and art_cover keep (the self-test). */
+size_t art_cache_bytes(void);
 
 /* ---- album covers (id3.c, cover.c, stbi.c) ------------------------------------------- */
 
@@ -286,10 +288,10 @@ void cover_start(bool trace);
  * which image is ready (COVER_*); not ready ones are asked for (the newest
  * asked first). `low`: ask behind everything else (reading ahead). */
 int  cover_ready(uint64_t hash, const char *path, int size, bool low);
-/* That image scaled to size x size with rounded corners over bg, into
- * dst at (x, y); false if it is gone meanwhile. */
-bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash, int kind,
-                  uint32_t bg);
+/* That image scaled to fill dst (a square, its stride its width) with
+ * rounded corners over bg; false if it is gone meanwhile, and then dst
+ * is not touched. */
+bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 
