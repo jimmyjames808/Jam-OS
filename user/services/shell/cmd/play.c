@@ -64,10 +64,14 @@ SH_CMD(play)
 {
     int cb = 0, i = 1;
     bool vol = argc > 1 && !strcmp(argv[1], "-v");
+    bool dry = argc > 1 && !strcmp(argv[1], "-n");
     if (vol)
         i = 3;
+    else if (dry)
+        i = 2;
     if (argc != i + 1 || (vol && !parse_db(argv[2], &cb))) {
-        sh_tty("usage: play [-v dB] <file.wav>   (-v -20: 20 dB down; at most 0)\n");
+        sh_tty("usage: play [-v dB | -n] <file.wav|file.mp3>   (-v -20: 20 dB down; at most 0;\n"
+               "       -n: decode only, as fast as it goes, and say how fast)\n");
         return 2;
     }
     const char *arg = argv[i];
@@ -101,6 +105,12 @@ SH_CMD(play)
     char t[24];
     sh_say("play: %s: %s\n", arg, src.desc);
     sh_flush();
+    if (dry) {
+        int rc = play_src_time(arg, &src);
+        play_src_close(&src);
+        file_close(&f);
+        return rc;
+    }
     struct audio_out a;
     st = audio_open_as(&a, src.rate, src.channels, "play");
     if (st != OK) {

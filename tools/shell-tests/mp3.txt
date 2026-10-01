@@ -1,0 +1,72 @@
+# `play` of MP3 files (the shell's cmd/play.c and play_src.c, <mp3.h>,
+# dr_mp3): files on /data played through QEMU's hda-output codec into a
+# WAV capture; use tools/mp3-test.sh (it makes the files, puts them on the
+# stick, adds the devices and checks the capture). Seven files play in
+# order, two are refused, a long one is stopped with Ctrl+C, then `play
+# -n` times its decoding. (The markers are echoed as mp-""1 so the typed
+# line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+seen 60 init: /data mounted
+send ls -l /data; echo mp-""0
+wait long.mp3
+wait mp-0
+wait jam>
+send play /data/a44.mp3; echo mp-""1 $?
+wait 30 play: /data/a44.mp3: MP3, 44100 Hz, 2 ch, 192 kbps, 0:02
+wait 30 mp-1 0
+wait jam>
+send cd /data; play v48.mp3; echo mp-""2 $?
+wait 30 play: v48.mp3: MP3, 48000 Hz, 1 ch, VBR, 0:01
+wait 30 mp-2 0
+wait jam>
+send play m22.mp3; echo mp-""3 $?
+wait 30 play: m22.mp3: MP3, 22050 Hz, 1 ch, 64 kbps, 0:02
+wait 30 mp-3 0
+wait jam>
+send play tag.mp3; echo mp-""4 $?
+wait 30 play: tag.mp3: MP3, 44100 Hz, 2 ch, 128 kbps, 0:01
+wait 30 mp-4 0
+wait jam>
+send play l2.mp2; echo mp-""5 $?
+wait 30 play: l2.mp2: MP2, 48000 Hz, 2 ch, 192 kbps, 0:01
+wait 30 mp-5 0
+wait jam>
+send play bad.mp3; echo mp-""6 $?
+wait 30 play: bad.mp3: MP3, 44100 Hz, 2 ch, 192 kbps, 0:02
+wait 30 mp-6 0
+wait jam>
+# Cut off: its Info tag still says 0:02; it ends where the file does.
+send play cut.mp3; echo mp-""7 $?
+wait 30 play: cut.mp3: MP3, 44100 Hz, 2 ch, 192 kbps, 0:02
+wait 30 mp-7 0
+wait jam>
+send play garbage.mp3; echo mp-""8 $?
+wait play: garbage.mp3: not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)
+wait mp-8 1
+wait jam>
+send play id3.mp3; echo mp-""9 $?
+wait play: id3.mp3: not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)
+wait mp-9 1
+wait jam>
+# Ctrl+C ends the whole line, so $? is asked for on the next one.
+send play long.mp3
+wait 30 play: long.mp3: MP3, 44100 Hz, 2 ch, 128 kbps, 0:10
+sleep 2
+type \x03
+wait 10 play: long.mp3: stopped at 0:0
+wait jam>
+send echo mp-""10 $?
+wait mp-10 130
+wait jam>
+send play -n long.mp3; echo mp-""11 $?
+wait 60 play: long.mp3: 0:10 (441000 frames) decoded in
+wait 30 mp-11 0
+wait jam>
+send play -x long.mp3; echo mp-""12 $?
+wait usage: play [-v dB | -n] <file.wav|file.mp3>
+wait mp-12 2
+wait jam>
+send reboot
+wait reboot: resetting
