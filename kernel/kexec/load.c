@@ -75,8 +75,9 @@ static const struct boot_module *module(const char *suffix)
     return NULL;
 }
 
-/* Load under the lock, in the state LOADING; `done` is the state on
- * success, EMPTY on a failure. */
+/* Load under the lock; `done` is the state on success. A refused image
+ * leaves the state as it was (kx_build writes nothing then): a crash
+ * kernel stays armed. */
 static status_t load(const struct kx_image *im, int done)
 {
     mutex_lock(&kx_lock);
@@ -85,10 +86,10 @@ static status_t load(const struct kx_image *im, int done)
         mutex_unlock(&kx_lock);
         return s == KX_OFF ? ERR_NOT_SUPPORTED : ERR_BAD_STATE;
     }
-    __atomic_store_n(&kx_state, KX_LOADING, __ATOMIC_RELEASE);
     status_t st = kx_build(im);
     /* Release: the panic path reads kx only once it sees ARMED. */
-    __atomic_store_n(&kx_state, st == OK ? done : KX_EMPTY, __ATOMIC_RELEASE);
+    if (st == OK)
+        __atomic_store_n(&kx_state, done, __ATOMIC_RELEASE);
     mutex_unlock(&kx_lock);
     return st;
 }

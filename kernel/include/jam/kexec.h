@@ -68,8 +68,9 @@ status_t kexec_set_log_name(const char *name, size_t len);
  * bootfs image (both whole, read-only), and the command line ("" or NULL:
  * this kernel's). ERR_NOT_SUPPORTED: no region; ERR_INVALID_ARGS: not a
  * kernel ELF, not a bootfs image, a bad command line; ERR_NO_RESOURCES:
- * it doesn't fit; ERR_NO_MEMORY. On a failure there is no image and no
- * crash kernel either (the region is EMPTY). Sleeps: thread context. */
+ * it doesn't fit; ERR_NO_MEMORY. A refused image changes nothing (the
+ * checks come before the region is written): a crash kernel stays armed.
+ * After a success the crash kernel is gone. Sleeps: thread context. */
 status_t kexec_load_image(struct vmo *kernel, struct vmo *bootfs, const char *cmdline);
 /* Start the loaded reboot image: interrupts off, the other CPUs halted,
  * the image verified, bus mastering off, the jump. Returns ERR_BAD_STATE
@@ -82,6 +83,16 @@ status_t kexec_reboot(void);
  * image (the crash test kexecbad: the next panic must refuse it). */
 bool     kexec_verify(void);
 status_t kexec_test_corrupt(void);
+
+/* Memory maps (kernel/kexec/memmap.c). Give [base, base + len) the type
+ * `type` in map[0..*n): every entry it overlaps is split (at most two more
+ * entries each); parts of the range no entry covers stay uncovered. The
+ * map stays sorted if it was. ERR_NO_RESOURCES if it would grow past cap,
+ * ERR_INVALID_ARGS if the range wraps; either way the map is unchanged.
+ * And merge neighbours (touching, of one type) into one entry. */
+status_t kexec_memmap_overlay(struct boot_mem_region *map, size_t *n, size_t cap,
+                              uint64_t base, uint64_t len, enum boot_mem_type type);
+void     kexec_memmap_merge(struct boot_mem_region *map, size_t *n);
 
 /* ---- a crash kernel ------------------------------------------------------------ */
 

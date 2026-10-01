@@ -85,7 +85,7 @@ void kexec_reserve(struct boot_info *bi)
         kprintf("kexec:       no %lu MiB free below 4 GiB: no crash kernel\n", mib);
         return;
     }
-    if (kx_memmap_overlay(bi->memmap, &bi->memmap_count, BOOT_MAX_MEMMAP, base, size,
+    if (kexec_memmap_overlay(bi->memmap, &bi->memmap_count, BOOT_MAX_MEMMAP, base, size,
                           BOOT_MEM_FOREIGN) != OK) {
         kprintf("kexec:       the memory map is full: no crash kernel\n");
         return;

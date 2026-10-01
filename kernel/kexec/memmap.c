@@ -18,7 +18,7 @@ static unsigned pieces(const struct boot_mem_region *r, uint64_t base, uint64_t 
     return 1 + (base > r->base) + (end < rend);
 }
 
-status_t kx_memmap_overlay(struct boot_mem_region *map, size_t *n, size_t cap, uint64_t base,
+status_t kexec_memmap_overlay(struct boot_mem_region *map, size_t *n, size_t cap, uint64_t base,
                            uint64_t len, enum boot_mem_type type)
 {
     uint64_t end = base + len;
@@ -50,7 +50,7 @@ status_t kx_memmap_overlay(struct boot_mem_region *map, size_t *n, size_t cap, u
     return OK;
 }
 
-void kx_memmap_merge(struct boot_mem_region *map, size_t *n)
+void kexec_memmap_merge(struct boot_mem_region *map, size_t *n)
 {
     size_t out = 0;
     for (size_t i = 0; i < *n; i++) {

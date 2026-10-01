@@ -115,7 +115,7 @@ static status_t build_memmap(const struct kx_image *im, const struct layout *l,
     for (size_t i = 0; i < bi->memmap_count && *n < KEXEC_MAX_MEMMAP; i++)
         map[(*n)++] = (struct boot_mem_region){ bi->memmap[i].base, bi->memmap[i].length,
                                                 next_type(bi->memmap[i].type, im->crash) };
-    kx_memmap_merge(map, n);
+    kexec_memmap_merge(map, n);
     const struct { uint64_t base, len; enum boot_mem_type type; } parts[] = {
         { kx.base, l->handoff_off, BOOT_MEM_KERNEL_AND_MODULES },
         { kx.base + l->handoff_off, l->end - l->handoff_off, BOOT_MEM_LOADER_RECLAIMABLE },
@@ -126,7 +126,7 @@ static status_t build_memmap(const struct kx_image *im, const struct layout *l,
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
         if (!parts[i].len)
             continue;
-        status_t st = kx_memmap_overlay(map, n, KEXEC_MAX_MEMMAP, parts[i].base, parts[i].len,
+        status_t st = kexec_memmap_overlay(map, n, KEXEC_MAX_MEMMAP, parts[i].base, parts[i].len,
                                         parts[i].type);
         if (st != OK) {
             kprintf("kexec: the next kernel's memory map has more than %u entries\n",
@@ -134,7 +134,7 @@ static status_t build_memmap(const struct kx_image *im, const struct layout *l,
             return st;
         }
     }
-    kx_memmap_merge(map, n);
+    kexec_memmap_merge(map, n);
     return OK;
 }
 
@@ -359,6 +359,8 @@ status_t kx_build(const struct kx_image *im)
         st = build_tables(&t, im, &plan, &l, map, n);
     if (st == OK) {
         fill_handoff(h, im, &l, map, n);
+        /* Everything checked and built: only now does what was loaded go. */
+        __atomic_store_n(&kx_state, KX_LOADING, __ATOMIC_RELEASE);
         write_image(im, &plan, &l, h, &t);
         kx.loaded = l.end;
         kx.sum = kx_sum_region(false);

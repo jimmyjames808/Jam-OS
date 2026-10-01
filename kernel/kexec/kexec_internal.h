@@ -73,17 +73,6 @@ uint64_t kx_tramp_sum(void);
 /* The physical address of something in this kernel's image (a static). */
 uint64_t kx_kernel_phys(const void *va);
 
-/* ---- memmap.c ---- */
-
-/* Give [base, base + len) the type `type` in map[0..*n): every entry it
- * overlaps is split (at most two more entries each). Parts of the range
- * no entry covers stay uncovered. ERR_NO_RESOURCES if the map would grow
- * past cap (then map is unchanged). The map stays sorted if it was. */
-status_t kx_memmap_overlay(struct boot_mem_region *map, size_t *n, size_t cap, uint64_t base,
-                           uint64_t len, enum boot_mem_type type);
-/* Merge neighbours (touching, same type) into one entry. */
-void     kx_memmap_merge(struct boot_mem_region *map, size_t *n);
-
 /* ---- image.c ---- */
 
 /* What goes into the region. */
@@ -98,10 +87,12 @@ struct kx_image {
     const char *cmdline;       /* NUL-terminated, < KEXEC_CMDLINE */
 };
 
-/* Check and write the image into the region and fill kx (state LOADING,
- * kx_lock held). ERR_INVALID_ARGS (a bad ELF, bootfs or command line),
- * ERR_NO_RESOURCES (too big for the region, or a memory map or page
- * tables that don't fit), ERR_NO_MEMORY. Logs why it failed. */
+/* Check the image, build what it needs, then (state LOADING from then on)
+ * write it into the region and fill kx; kx_lock held. A failure comes
+ * before anything is written, so what was loaded stays loaded:
+ * ERR_INVALID_ARGS (a bad ELF, bootfs or command line), ERR_NO_RESOURCES
+ * (too big for the region, or a memory map or page tables that don't
+ * fit), ERR_NO_MEMORY. Logs why it failed. */
 status_t kx_build(const struct kx_image *im);
 
 /* ---- jump.c ---- */
