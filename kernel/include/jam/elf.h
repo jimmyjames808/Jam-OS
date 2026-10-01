@@ -31,3 +31,10 @@ status_t elf_parse(const void *image, uint64_t size, struct elf_plan *out);
 /* The same checks without the log line: *why says what is wrong (NULL on
  * success). For callers that expect rejections, like the fuzz test. */
 status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const char **why);
+/* elf_check with another address range than the user one: every segment
+ * inside [lo, hi] (kexec checks a kernel's ELF with the kernel's range). */
+struct elf_range {
+    uint64_t lo, hi;   /* segments must lie in [lo, hi] */
+};
+status_t elf_check_range(const void *image, uint64_t size, const struct elf_range *range,
+                         struct elf_plan *out, const char **why);

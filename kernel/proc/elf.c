@@ -77,7 +77,7 @@ static const char *check_type(uint32_t type, bool *load)
 /* The reason a PT_LOAD segment is refused, or NULL; plan holds the
  * segments accepted so far. */
 static const char *check_segment(const struct elf64_phdr *ph, uint64_t size,
-                                 const struct elf_plan *plan)
+                                 const struct elf_range *range, const struct elf_plan *plan)
 {
     if (plan->nseg == ELF_MAX_SEGMENTS)
         return "too many PT_LOAD segments";
@@ -89,8 +89,9 @@ static const char *check_segment(const struct elf64_phdr *ph, uint64_t size,
         return "empty segment";
     if (ph->p_filesz > ph->p_memsz)
         return "segment file size exceeds its memory size";
-    if (!user_range_ok(ph->p_vaddr, ph->p_memsz))
-        return "segment outside the user address range";
+    if (ph->p_vaddr < range->lo || ph->p_vaddr > range->hi ||
+        ph->p_memsz > range->hi - ph->p_vaddr)
+        return "segment outside the allowed address range";
     if (ph->p_offset > size || ph->p_filesz > size - ph->p_offset)
         return "segment data outside the file";
     if (ph->p_align > 1 && (ph->p_align & (ph->p_align - 1)))
@@ -100,8 +101,8 @@ static const char *check_segment(const struct elf64_phdr *ph, uint64_t size,
     if (plan->nseg) {
         const struct elf_segment *prev = &plan->seg[plan->nseg - 1];
         /* Page-granular: two segments may not share a page, since a
-         * page has one set of permissions. user_range_ok above keeps
-         * these sums below USER_TOP. */
+         * page has one set of permissions. The range check above keeps
+         * these sums below range->hi. */
         if (ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE) < ALIGN_UP(prev->vaddr + prev->memsz, PAGE_SIZE))
             return "segments overlap, share a page or are out of order";
     }
@@ -128,7 +129,8 @@ static status_t reject(const char **why, const char *msg)
     return ERR_INVALID_ARGS;
 }
 
-status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const char **why)
+status_t elf_check_range(const void *image, uint64_t size, const struct elf_range *range,
+                         struct elf_plan *out, const char **why)
 {
     const uint8_t *img = image;
     struct elf64_ehdr eh;
@@ -147,7 +149,7 @@ status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const
             return reject(why, bad);
         if (!load)
             continue;
-        bad = check_segment(&ph, size, &plan);
+        bad = check_segment(&ph, size, range, &plan);
         if (bad)
             return reject(why, bad);
         if (add_segment(&plan, &ph, eh.e_entry))
@@ -161,6 +163,12 @@ status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const
     *out = plan;
     *why = NULL;
     return OK;
+}
+
+status_t elf_check(const void *image, uint64_t size, struct elf_plan *out, const char **why)
+{
+    static const struct elf_range user = { USER_BASE, USER_TOP };
+    return elf_check_range(image, size, &user, out, why);
 }
 
 status_t elf_parse(const void *image, uint64_t size, struct elf_plan *out)
