@@ -1,8 +1,11 @@
-/* hid: what the driver's two files share (hid.c: the device, the reports,
- * the mouse; keyboard.c: the keyboard layer). See hid.c for the driver. */
+/* hid: what the driver's files share (hid.c: the device and the reports;
+ * keyboard.c: the keyboard layer; mouse.c: the mouse layer; report.c and
+ * fixtures.c: the report descriptor parser and its self-test, report.h).
+ * See hid.c for the driver. */
 #pragma once
 
 #include <jam/driver.h>
+#include "report.h"
 
 #define REPEAT_DELAY_NS  (500 * NS_PER_MS)   /* held this long: REPEAT starts */
 #define REPEAT_PERIOD_NS (NS_PER_S / 30)     /* then 30 a second */
@@ -54,6 +57,12 @@ struct hid {
     uint8_t  interval_ms;    /* its polling interval */
     uint16_t max_packet;     /* its max packet size */
     uint16_t report_desc_len;   /* from the HID descriptor, 0: none */
+    uint16_t report_desc_read;  /* bytes of it read into buf (0: unreadable), until the
+                                 * reports reuse buf */
+    bool     force_boot;     /* the boot word hidboot (arg "hidboot"): every mouse in boot
+                              * protocol */
+    bool     report_mode;    /* a mouse in report protocol, decoded with `layout` */
+    struct rd_mouse layout;  /* its report, from the report descriptor */
     enum hid_kind kind;      /* 0 until a boot keyboard or mouse is set up */
     enum hid_stop stop;      /* why the loop ends, STOP_NONE while it runs */
     uint64_t nreports;       /* reports taken */
@@ -62,6 +71,7 @@ struct hid {
     uint64_t led_errors;     /* LED SET_REPORTs that failed */
     uint64_t keys_down;      /* key DOWN events (for the RESULTS line at the end) */
     uint8_t  mouse_buttons;  /* the buttons of the last mouse report */
+    uint64_t other_reports;  /* report protocol: reports of another report id, ignored */
     struct kbd kbd;          /* the keyboard layer (keyboard.c) */
     uint8_t *buf;            /* 1024 bytes: descriptors, reports */
 };
@@ -71,6 +81,18 @@ struct hid {
 void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
 /* hid.c: SET_REPORT(output) with the LED byte. */
 void hid_set_leds(struct hid *h, uint8_t leds);
+/* hid.c: send one mouse event to the console (or, without DR_INPUT, log
+ * the buttons when buttons_changed); sets h->stop when the console is
+ * gone. */
+void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons,
+               bool buttons_changed);
+
+/* mouse.c: boot or report protocol for this mouse, from its report
+ * descriptor (h->buf, h->report_desc_read bytes), which is logged in hex;
+ * sets h->report_mode and h->layout. */
+void mouse_choose(struct hid *h);
+/* mouse.c: one report from the mouse, in the protocol chosen. */
+void mouse_report(struct hid *h, const uint8_t *r, uint32_t n);
 
 /* keyboard.c */
 void     kbd_init(struct hid *h);

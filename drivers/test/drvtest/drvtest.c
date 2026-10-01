@@ -36,6 +36,9 @@ static unsigned checks, failures;
 static void t_basics(const struct driver_start *s)
 {
     CHECK(s->name && s->name[0]);
+    CHECK(s->nargs == 2);   /* utest starts it as "drv/drvtest alpha beta" */
+    CHECK(drv_has_arg(s, "alpha") && drv_has_arg(s, "beta"));
+    CHECK(!drv_has_arg(s, "alph") && !drv_has_arg(s, "betas") && !drv_has_arg(s, "drvtest"));
     CHECK(drv_handle(s, DR_PCIDEV) == HANDLE_INVALID);
     uint64_t t0 = drv_clock_ns();
     CHECK_ST(drv_sleep_until(t0 + 2 * NS_PER_MS), OK);

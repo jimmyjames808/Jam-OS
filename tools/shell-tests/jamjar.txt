@@ -14,7 +14,7 @@ wait 120 Jam OS shell
 wait jam>
 seen 60 init: /data mounted
 seen 60 music: ready
-seen 30 boot mouse ready
+seen 30 report mouse ready
 send run jamjar --selftest
 wait 60 jamjar: selftest PASSED
 wait run: bin/jamjar exited with code 0

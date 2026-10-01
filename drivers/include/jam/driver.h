@@ -36,9 +36,14 @@
 #define DR_IRQ(n)    (0x20 + (n)) /* interrupt object n (MSI 0, or MSI-X n) */
 
 #define DRV_MAX_HANDLES 32
+#define DRV_MAX_ARGS    4
 
 struct driver_start {
     const char *name;             /* the driver's name, for logs */
+    uint32_t    nargs;            /* entries in args[] */
+    const char *args[DRV_MAX_ARGS];   /* the words it was started with after its name:
+                                       * options (devmgr passes hid "hidboot"), or a
+                                       * test mode (utest runs "drv/hid selftest") */
     uint32_t    nhandles;         /* entries in handles[] */
     struct {
         uint32_t role;            /* DR_* */
@@ -48,6 +53,8 @@ struct driver_start {
 
 int driver_main(const struct driver_start *s);
 handle_t drv_handle(const struct driver_start *s, uint32_t role);
+/* Was the driver started with the word `word` among its args? */
+bool     drv_has_arg(const struct driver_start *s, const char *word);
 
 /* ---- basics ---------------------------------------------------------------- */
 

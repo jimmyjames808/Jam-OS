@@ -10,7 +10,7 @@
 # tools/shell-tests/mouse.txt drives the mouse further.
 wait 120 Jam OS shell
 wait jam>
-seen 30 boot mouse ready
+seen 30 report mouse ready
 send run snake --selftest
 wait 60 snake: selftest PASSED
 wait run: bin/snake exited with code 0

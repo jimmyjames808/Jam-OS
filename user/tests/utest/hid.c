@@ -395,9 +395,11 @@ bool t_hid_repeat(void)
     return mock_finish(&m, 0);
 }
 
-/* A boot mouse: buttons, deltas, the wheel; unchanged reports send nothing;
- * the reports channel closing alone ends it with 5 (restart me);
- * a 3-byte report has no wheel. */
+/* A mouse like QEMU's (its report descriptor has a wheel, so it is put in
+ * the report protocol; its report is laid out as the boot one with the
+ * wheel in a fourth byte): buttons, deltas, the wheel; unchanged reports
+ * send nothing; the reports channel closing alone ends it with 5 (restart
+ * me); a 3-byte report has no wheel. hidmouse.c has the other mice. */
 bool t_hid_mouse(void)
 {
     hcur = "hid_mouse";
@@ -406,7 +408,7 @@ bool t_hid_mouse(void)
         return false;
     for (unsigned i = 0; i < m.nctl; i++)
         CHECK(m.ctl[i].request != 0x0a && m.ctl[i].request != 0x09);   /* no SET_IDLE, LEDs */
-    CHECK(m.nctl == 1 && m.ctl[0].request == 0x0b && m.ctl[0].value == 0);
+    CHECK(m.nctl == 1 && m.ctl[0].request == 0x0b && m.ctl[0].value == 1);   /* report */
     const uint8_t r1[4] = { 0x01, 5, (uint8_t)-3, 0 };
     const uint8_t r2[4] = { 0x01, 0, 0, 0 };            /* nothing changed: no event */
     const uint8_t r3[4] = { 0x00, 0, 0, 0 };

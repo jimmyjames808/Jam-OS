@@ -126,6 +126,11 @@ static const char *usb_match(const struct usbbus_interface_attached_req *m)
     return NULL;
 }
 
+const char *usb_driver_arg(const struct binding *b)
+{
+    return hidboot && b->path && !strcmp(b->path, "drv/hid") ? "hidboot" : NULL;
+}
+
 static const char *what(const struct usbbus_interface_attached_req *m)
 {
     if (m->class_code == 3 && m->subclass == 1 && m->protocol == 1)

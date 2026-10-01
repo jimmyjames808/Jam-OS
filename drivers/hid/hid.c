@@ -12,32 +12,41 @@
  *             goes to the log instead, a bring-up aid for a PC run that
  *             has usb-bus but no console yet
  *
+ * Args (from devmgr, <jam/driver.h> drv_has_arg): "hidboot" keeps every
+ * mouse in the boot protocol (the boot word of that name); "selftest" (no
+ * handles needed) runs the report descriptor parser's self-test with
+ * fuzzing and exits 0 if it passed, 6 if not.
+ *
  * Start: usb.info (class 3, or it exits 2), the configuration descriptor
  * (this interface's HID descriptor: the report descriptor's length; its
  * interrupt IN endpoint), the report descriptor (read because some devices
  * only behave once it has been, as Windows and Linux always read it; its
  * top-level collections are logged). Then:
- *   - subclass 1 (boot), protocol 1 keyboard / 2 mouse: SET_PROTOCOL(boot),
- *     for a keyboard SET_IDLE(0) (report only on change) and the LED byte
- *     (Num Lock on), then open_interrupt_in and serve reports. A failed
- *     SET_PROTOCOL or SET_IDLE is logged and ignored (many devices stall
- *     SET_IDLE; a device that refuses SET_PROTOCOL was already in boot
- *     mode or can't leave it);
+ *   - subclass 1 (boot), protocol 1 keyboard: SET_PROTOCOL(boot),
+ *     SET_IDLE(0) (report only on change) and the LED byte (Num Lock on),
+ *     then open_interrupt_in and serve reports. A failed SET_PROTOCOL or
+ *     SET_IDLE is logged and ignored (many devices stall SET_IDLE; a
+ *     device that refuses SET_PROTOCOL was already in boot mode or can't
+ *     leave it);
+ *   - subclass 1, protocol 2 mouse: its report descriptor is logged in hex
+ *     and parsed (mouse.c, report.c). A mouse with a wheel in it goes to
+ *     the report protocol (SET_PROTOCOL(report); refused: back to boot),
+ *     since in the boot protocol a real mouse sends no wheel at all; any
+ *     other mouse, and every mouse with "hidboot", gets SET_PROTOCOL(boot)
+ *     as a keyboard does (no SET_IDLE, no LEDs);
  *   - anything else (subclass 0: consumer control, system control, a
  *     vendor interface, an NKRO keyboard in report protocol): logged as
  *     "not a boot keyboard/mouse: skipped" with its collections, exit 0.
- *     Report protocol isn't parsed: keyboards that have such a second
- *     interface still type through their boot interface (every one the
- *     PC has is boot capable: the firmware uses them), so no
- *     report-descriptor parsing is attempted even when the second
- *     interface's report looks like a plain keyboard's.
+ *     Keyboards that have such a second interface still type through
+ *     their boot interface (every one the PC has is boot capable: the
+ *     firmware uses them), so keyboards are never driven in report
+ *     protocol.
  *
  * Reports arrive as one message each on the channel open_interrupt_in
  * returns. The loop waits on a port for that channel (readable or closed),
  * DR_USB closed and DR_INPUT closed, with the next key repeat as deadline.
- * The keyboard layer is keyboard.c; a boot mouse report is buttons, dx, dy
- * and, when the report has a fourth byte, the wheel (input.mouse, sent
- * only when something changed).
+ * The keyboard layer is keyboard.c, the mouse layer mouse.c (input.mouse,
+ * sent only when something changed).
  *
  * Ending (the reconnect rule of input.idl and usb.idl): DR_USB closed =
  * "device gone", exit 0 (devmgr binds a new hid when the interface comes
@@ -51,7 +60,7 @@
  * gives DR_USB REPORTS_GRACE to follow before it decides. Exit 1: no
  * DR_USB, or a wait failed; 2: not a HID interface; 3: the device's
  * descriptors or endpoint couldn't be used; 4: out of memory; 5: reports
- * lost with the device still there.
+ * lost with the device still there; 6: the self-test ("selftest") failed.
  *
  * Every call is bounded: USB requests USB_TIMEOUT, input calls
  * INPUT_TIMEOUT (a late console costs that event, logged, not the
@@ -76,6 +85,7 @@
 #define HID_SET_PROTOCOL    0x0b
 #define HID_REPORT_OUTPUT   0x02
 #define HID_PROTOCOL_BOOT   0
+#define HID_PROTOCOL_REPORT 1
 
 #define K_REPORTS 1
 #define K_USB     2
@@ -173,20 +183,11 @@ void hid_set_leds(struct hid *h, uint8_t leds)
                 h->iface, leds, status_str(st));
 }
 
-static void mouse_report(struct hid *h, const uint8_t *r, uint32_t n)
+void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons,
+               bool buttons_changed)
 {
-    if (n < 3) {
-        h->kbd.short_reports++;
-        return;
-    }
-    uint8_t buttons = r[0] & 0x07;
-    int8_t dx = (int8_t)r[1], dy = (int8_t)r[2], wheel = n >= 4 ? (int8_t)r[3] : 0;
-    if (!dx && !dy && !wheel && buttons == h->mouse_buttons)
-        return;
-    uint8_t was = h->mouse_buttons;
-    h->mouse_buttons = buttons;
     if (h->input == HANDLE_INVALID) {
-        if (buttons != was)
+        if (buttons_changed)
             drv_log("hid %04x:%04x if %u: mouse buttons 0x%x", h->vendor, h->product, h->iface,
                     buttons);
         h->events++;
@@ -409,18 +410,43 @@ static int read_report_desc(struct hid *h, char *coll, uint32_t cap)
                                            h->iface, want, 1, &n, h->buf);
     if (gone(h, st))
         return 0;
-    if (st == OK)
+    if (st == OK) {
+        h->report_desc_read = n;
         summarise_report(h, n, coll, cap);
-    else
+    } else {
         drv_log("hid %04x:%04x if %u: report descriptor unreadable (%s): going on",
                 h->vendor, h->product, h->iface, status_str(st));
+    }
+    return -1;
+}
+
+/* A mouse mouse_choose put in report protocol: SET_PROTOCOL(report). A
+ * device refusing it may still be in the boot protocol the firmware left
+ * it in, whose reports the report layout would misread: it goes back to
+ * the boot protocol. */
+static int report_protocol(struct hid *h)
+{
+    status_t st = class_out(h, HID_SET_PROTOCOL, HID_PROTOCOL_REPORT);
+    if (gone(h, st))
+        return 0;
+    if (st != OK) {
+        drv_log("hid %04x:%04x if %u: SET_PROTOCOL(report) failed (%s): boot protocol",
+                h->vendor, h->product, h->iface, status_str(st));
+        h->report_mode = false;
+    }
     return -1;
 }
 
 /* SET_PROTOCOL(boot), and for a keyboard SET_IDLE(0): a refusal is logged
- * and ignored. */
-static int boot_protocol(struct hid *h)
+ * and ignored. A mouse in report protocol gets SET_PROTOCOL(report)
+ * instead. */
+static int set_protocol(struct hid *h)
 {
+    if (h->report_mode) {
+        int r = report_protocol(h);
+        if (r >= 0 || h->report_mode)
+            return r;
+    }
     status_t st = class_out(h, HID_SET_PROTOCOL, HID_PROTOCOL_BOOT);
     if (gone(h, st))
         return 0;
@@ -461,6 +487,14 @@ static int open_reports(struct hid *h)
     return -1;
 }
 
+/* "boot keyboard", "boot mouse" or "report mouse" (the protocol it speaks). */
+static const char *kind_name(const struct hid *h)
+{
+    if (h->kind == HID_KEYBOARD)
+        return "boot keyboard";
+    return h->report_mode ? "report mouse" : "boot mouse";
+}
+
 /* 0..: the driver ends with that code; -1: serve reports. */
 static int setup(struct hid *h)
 {
@@ -478,20 +512,23 @@ static int setup(struct hid *h)
         return 0;
     }
     h->kind = h->protocol == 1 ? HID_KEYBOARD : HID_MOUSE;
-    const char *what = h->kind == HID_KEYBOARD ? "keyboard" : "mouse";
+    const char *what = kind_name(h);
     if (!h->ep_in) {
-        drv_log("hid %04x:%04x if %u: boot %s without an interrupt IN endpoint", h->vendor,
+        drv_log("hid %04x:%04x if %u: %s without an interrupt IN endpoint", h->vendor,
                 h->product, h->iface, what);
         return 3;
     }
-    if ((r = boot_protocol(h)) >= 0 || (r = open_reports(h)) >= 0)
+    if (h->kind == HID_MOUSE)
+        mouse_choose(h);   /* before the reports reuse h->buf */
+    if ((r = set_protocol(h)) >= 0 || (r = open_reports(h)) >= 0)
         return r;
+    what = kind_name(h);
     /* In the RESULTS box too: which keyboards and mice are live. */
-    drv_log("hid %04x:%04x if %u: boot %s: endpoint 0x%x, %u-byte packets every %u ms, "
+    drv_log("hid %04x:%04x if %u: %s: endpoint 0x%x, %u-byte packets every %u ms, "
             "report descriptor %u bytes (%s)", h->vendor, h->product, h->iface, what, h->ep_in,
             h->max_packet, h->interval_ms, h->report_desc_len, coll[0] ? coll : "-");
     /* Short: the RESULTS box is 120 columns. */
-    say_result("hid %04x:%04x if %u: boot %s ready%s", h->vendor, h->product, h->iface, what,
+    say_result("hid %04x:%04x if %u: %s ready%s", h->vendor, h->product, h->iface, what,
                h->input == HANDLE_INVALID ? " (no console: keys go to the log)" : "");
     return -1;
 }
@@ -592,6 +629,10 @@ static int run(struct hid *h)
 
 int driver_main(const struct driver_start *s)
 {
+    /* `drv/hid selftest` (utest): the report descriptor parser's self-test
+     * with fuzzing, nothing else. */
+    if (drv_has_arg(s, "selftest"))
+        return hid_rd_selftest(true) ? 0 : 6;
     struct hid *h = drv_malloc(sizeof(*h));
     uint8_t *buf = drv_malloc(BUF_SIZE);
     if (!h || !buf) {
@@ -600,6 +641,7 @@ int driver_main(const struct driver_start *s)
     }
     *h = (struct hid){ 0 };
     h->buf = buf;
+    h->force_boot = drv_has_arg(s, "hidboot");
     to_results = s->name && s->name[0] == 'h' && s->name[1] == 'i' && s->name[2] == 'd' &&
                  s->name[3] == '-';
     h->usb = drv_handle(s, DR_USB);
@@ -621,11 +663,11 @@ int driver_main(const struct driver_start *s)
      * counts keys this way). */
     if (h->kind && r == 0) {
         drv_log("hid %04x:%04x if %u: %s after %lu report(s), %lu event(s) (%lu phantom, "
-                "%lu short, %lu input error(s))", h->vendor, h->product, h->iface,
-                h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone",
+                "%lu short, %lu of another id, %lu input error(s))", h->vendor, h->product,
+                h->iface, h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone",
                 (unsigned long)h->nreports, (unsigned long)h->events,
                 (unsigned long)h->kbd.rollover, (unsigned long)h->kbd.short_reports,
-                (unsigned long)h->input_errors);
+                (unsigned long)h->other_reports, (unsigned long)h->input_errors);
         const char *why =
             h->stop == STOP_CONSOLE_GONE ? "console gone" : "unplugged or usb-bus stopped";
         if (h->kind == HID_KEYBOARD)
@@ -633,8 +675,8 @@ int driver_main(const struct driver_start *s)
                        h->vendor, h->product, h->iface, (unsigned long)h->keys_down,
                        (unsigned long)h->nreports, why);
         else
-            say_result("hid %04x:%04x if %u: boot mouse: %lu report(s) (%s)", h->vendor,
-                       h->product, h->iface, (unsigned long)h->nreports, why);
+            say_result("hid %04x:%04x if %u: %s: %lu report(s) (%s)", h->vendor, h->product,
+                       h->iface, kind_name(h), (unsigned long)h->nreports, why);
     }
     if (h->port != HANDLE_INVALID)
         drv_handle_close(h->port);

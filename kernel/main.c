@@ -234,15 +234,24 @@ _Noreturn static void kmain_stage2(void *arg)
     uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
     if (soak_min && !nousb)
         ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
+    /* init's option words: "splash" (decided above) and `hidboot`, which
+     * init passes on to devmgr and devmgr to every hid (mice stay in the
+     * boot protocol). */
+    const char *words[2];
+    unsigned nwords = 0;
+    if (shell && splash_boot())
+        words[nwords++] = "splash";
+    if (cmdline_has("hidboot"))
+        words[nwords++] = "hidboot";
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg
                                                                                    : "shell",
-                                shell && splash_boot() ? "splash" : NULL);
+                                words, nwords);
     /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
-        ok &= userboot_run_init(90, "keytest", NULL);
+        ok &= userboot_run_init(90, "keytest", words, nwords);
     /* init has ended (in shell mode only if something went wrong): if the
      * console never took the screen the splash's quiet is still on, and
      * the RESULTS below would not be drawn. */

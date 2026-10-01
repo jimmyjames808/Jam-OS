@@ -25,12 +25,19 @@ struct mock_dev {
     uint16_t              vendor, product;   /* USB ids */
     const struct mock_if *ifs;               /* interfaces */
     unsigned              nifs;              /* how many */
+    bool                  no_report_protocol;   /* SET_PROTOCOL(report) stalls */
 };
 
 /* The recorded devices: a QEMU-style boot keyboard, a boot mouse with a
  * wheel, and a composite keyboard like the PC's (boot keyboard, report
- * protocol with consumer and system control, a mass storage interface). */
+ * protocol with consumer and system control, a mass storage interface).
+ * Mice for the report protocol: a boot mouse without a wheel (it stays in
+ * the boot protocol); a gaming mouse (16-bit X/Y, wheel, AC Pan, no report
+ * ids), alone and as a device that refuses SET_PROTOCOL(report); a
+ * receiver whose boot-mouse interface has a keyboard (id 1), the mouse
+ * (id 2, 12-bit X/Y) and consumer control (id 3). */
 extern const struct mock_dev dev_kbd, dev_mouse, dev_combo;
+extern const struct mock_dev dev_plain_mouse, dev_gaming, dev_gaming_stubborn, dev_receiver;
 
 /* A control request hid made (the mock's log). */
 struct ctl {
@@ -79,6 +86,9 @@ struct mock {
  * !with_console, and wait until it serves reports (unless !wait_ready). */
 bool mock_start(struct mock *m, const struct mock_dev *dev, unsigned ifn, bool with_console,
                 bool wait_ready);
+/* mock_start with a console, waiting until it serves reports, and with the
+ * word arg after the driver's name ("hidboot"; NULL: none). */
+bool mock_start_arg(struct mock *m, const struct mock_dev *dev, unsigned ifn, const char *arg);
 /* Serve the driver until done(m, arg) holds (true), the deadline passes or
  * the driver is dead without it (false). */
 bool mock_pump(struct mock *m, uint64_t deadline, bool (*done)(struct mock *, unsigned),
