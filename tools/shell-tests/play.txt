@@ -49,7 +49,7 @@ wait play: nope.wav: no such file
 wait pl-9 1
 wait jam>
 send play -v loud x24.wav; echo pl-""10 $?
-wait usage: play [-v dB] <file.wav>
+wait usage: play [-s] [-v dB] <file.wav>
 wait pl-10 2
 wait jam>
 # Ctrl+C ends the whole line, so $? is asked for on the next one.

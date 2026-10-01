@@ -64,7 +64,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
                                uint32_t *out_period)
 {
     struct loop *l = ctx;
-    if (rate != STREAM_RATE || channels != 2 || bits != 16)
+    if (rate != STREAM_RATE || channels != 2)
         return ERR_NOT_SUPPORTED;
     if (l->st.open)
         return ERR_BAD_STATE;
@@ -76,7 +76,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     st = drv_port_bind(l->port, ours, KEY_STREAM | (uint64_t)l->gen << 8,
                        SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
     if (st == OK)
-        st = stream_open(l->h, &l->st, out_ring);
+        st = stream_open(l->h, &l->st, bits, out_ring);
     if (st != OK) {
         drv_handle_close(ours);
         drv_handle_close(theirs);
@@ -84,8 +84,8 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     }
     l->stream_ch = ours;
     *out_stream = theirs;
-    *out_size = RING_BYTES;
-    *out_period = PERIOD_BYTES;
+    *out_size = l->st.ring_bytes;
+    *out_period = l->st.period_bytes;
     return OK;
 }
 
@@ -105,7 +105,7 @@ static status_t do_position(void *ctx, uint64_t *out_frames, uint32_t *out_offse
 {
     struct loop *l = ctx;
     stream_update(l->h, &l->st);
-    *out_frames = l->st.played / FRAME_BYTES;
+    *out_frames = l->st.played / l->st.frame_bytes;
     *out_offset = l->st.last_off;
     return OK;
 }
@@ -124,7 +124,7 @@ static void wait_reply(struct loop *l, status_t st)
     struct hda_wait_period_rep r = { .txid = l->wait_txid, .status = st };
     uint32_t n = sizeof(struct idl_rep_hdr);
     if (st == OK) {
-        r.frames = l->st.played / FRAME_BYTES;
+        r.frames = l->st.played / l->st.frame_bytes;
         r.offset = l->st.last_off;
         n = sizeof(r);
     }
@@ -138,7 +138,7 @@ static void wait_check(struct loop *l)
 {
     if (!l->waiting)
         return;
-    if (l->st.played / FRAME_BYTES >= l->wait_until) {
+    if (l->st.played / l->st.frame_bytes >= l->wait_until) {
         wait_reply(l, OK);
     } else if (!l->st.running) {
         wait_reply(l, ERR_BAD_STATE);
@@ -150,7 +150,7 @@ static void wait_check(struct loop *l)
 
 static void wait_begin(struct loop *l, const struct hda_wait_period_req *q)
 {
-    uint64_t pf = PERIOD_BYTES / FRAME_BYTES;
+    uint64_t pf = PERIOD_FRAMES;
     if (l->waiting || !l->st.running) {
         idl_reply_status(l->stream_ch, q, sizeof(*q), ERR_BAD_STATE);
         return;

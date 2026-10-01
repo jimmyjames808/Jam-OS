@@ -59,3 +59,14 @@ protocol audio 22
 # mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
 # gain or can't be asked now). Heard at their sum, below full scale.
 7  stream_levels  ()  -> (i32 volume, i32 master, i32 device)
+# On a stream channel: how its playing has gone, for `play -s` (the owner
+# judging the sound on real hardware): `underruns`, periods it had too
+# few frames for (it wrote too slowly); `late`, periods the mixer itself
+# was late for while it played (scheduled too late: the device may have
+# played silence); `min_lead`, the least the mixer had written ahead of
+# the play position at a period's end while it played (frames;
+# 0xffffffff: no period ended yet); `limited`, periods the mixer's
+# limiter turned down to keep the sum inside full scale; `bits`, the
+# output's sample size now (0: the output is closed); `played`, its
+# frames heard (estimated, as stream_position).
+8  stream_stats  ()  -> (u32 underruns, u32 late, u32 min_lead, u32 limited, u32 bits, u64 played)

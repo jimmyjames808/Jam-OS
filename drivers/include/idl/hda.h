@@ -19,6 +19,7 @@
 #define HDA_WAIT_PERIOD      0x00150007u
 #define HDA_SET_GAIN         0x00150008u
 #define HDA_GET_GAIN         0x00150009u
+#define HDA_SET_BITS         0x0015000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -124,6 +125,17 @@ struct hda_get_gain_rep {
     int32_t min;
     int32_t max;
 } __attribute__((packed));
+struct hda_set_bits_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t bits;
+} __attribute__((packed));
+struct hda_set_bits_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t bits;
+    uint32_t pcm;
+} __attribute__((packed));
 
 #define HDA_REQ_MAX 16u   /* bytes: the biggest request */
 #define HDA_REP_MAX 288u   /* bytes: the biggest reply */
@@ -215,15 +227,19 @@ static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_
 }
 
 /* ---- the output stream (docs/A1-PLAN.md) ----
- * One output stream, 48 kHz, 16-bit, 2 channels: rate 48000, channels 2,
- * bits 16 (anything else: ERR_NOT_SUPPORTED); a second open while one is
- * open: ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
+ * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
+ * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
+ * else: ERR_NOT_SUPPORTED); a second open while one is open:
+ * ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
  * protocol for start/stop/position/wait_period (they are refused on the
  * driver's own channel, which devmgr shares among clients); `ring`, the
  * sample ring as a VMO to map (read, write, map: nothing else), `size`
- * bytes (65536) in `period`-byte periods (16384: 4096 frames, 85 ms).
- * Frames are 4 bytes (left, right: little-endian s16). The stream starts
- * stopped at frame 0, offset 0, with the ring all zeros. Closing `stream`
+ * bytes (16384 frames, 341 ms: 65536 at 16-bit, 131072 otherwise) in
+ * `period`-byte periods (2048 frames, 42.7 ms). Frames are left, right:
+ * little-endian s16 at 16 bits (4 bytes), else s32 with the sample
+ * left-justified (the DAC takes the top `bits` bits; 8 bytes). The
+ * stream starts stopped at frame 0, offset 0, with the ring all zeros.
+ * Closing `stream`
  * (or dying) stops the stream and releases it. The driver zeroes the ring
  * behind the play position, so a client may write any frame in
  * [frames, frames + size / 4) (from the last position it was given) and
@@ -434,6 +450,35 @@ static inline status_t hda_get_gain(handle_t ch, int32_t *out_gain, uint32_t *ou
     return hda_get_gain_until(ch, DEADLINE_NEVER, out_gain, out_step, out_min, out_max);
 }
 
+/* The largest sample size open_output takes from now on: 16, 20, 24 or 32
+ * (0: just answer). It caps the DAC's sizes, so info's `pcm` and the
+ * streams opened afterwards use at most `bits` (the shell's `hda bits`, to
+ * compare 16-bit output with 24-bit by ear). Answers the cap and the
+ * sizes left (`pcm` as info's). Every driver start begins at 32 (the
+ * DAC's best). ERR_INVALID_ARGS: another number. */
+static inline status_t hda_set_bits_until(handle_t ch, uint64_t deadline_ns, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    struct hda_set_bits_req idl_q;
+    struct hda_set_bits_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_SET_BITS;
+    idl_q.bits = bits;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_bits)
+        *out_bits = idl_r.bits;
+    if (idl_st == OK && out_pcm)
+        *out_pcm = idl_r.pcm;
+    return idl_st;
+}
+static inline status_t hda_set_bits(handle_t ch, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    return hda_set_bits_until(ch, DEADLINE_NEVER, bits, out_bits, out_pcm);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -448,6 +493,7 @@ struct hda_ops {
     status_t (*wait_period)(void *ctx, uint64_t after, uint64_t *out_frames, uint32_t *out_offset);
     status_t (*set_gain)(void *ctx, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*get_gain)(void *ctx, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
+    status_t (*set_bits)(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -681,6 +727,25 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
         idl_r->step = out_step;
         idl_r->min = out_min;
         idl_r->max = out_max;
+        return sizeof(*idl_r);
+    }
+    case HDA_SET_BITS: {
+        const struct hda_set_bits_req *idl_q = (const struct hda_set_bits_req *)req;
+        struct hda_set_bits_rep *idl_r = (struct hda_set_bits_rep *)rep;
+        uint32_t out_bits = 0;
+        uint32_t out_pcm = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->set_bits) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->set_bits(ctx, idl_q->bits, &out_bits, &out_pcm);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->bits = out_bits;
+        idl_r->pcm = out_pcm;
         return sizeof(*idl_r);
     }
     }

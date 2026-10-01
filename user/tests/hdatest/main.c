@@ -158,7 +158,7 @@ static bool t_open_close(void)
     struct out o, o2;
     CHECK_ST(out_open(&o), OK);
     CHECK_EQ(o.size, 65536);
-    CHECK_EQ(o.period, 16384);
+    CHECK_EQ(o.period, 8192);
     CHECK_ST(out_open(&o2), ERR_BAD_STATE);
     handle_t a, b;
     uint32_t sz, pd;

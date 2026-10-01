@@ -139,7 +139,11 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         fails.append("%s is %.2f/%.2f Hz, want %d/%d within 1 %%" % (name, fl, fr_, hl, hr))
     if mono and l != r:
         fails.append("%s: the channels differ" % name)
-    if after < (100 if name == "long" else 2400):
+    # The stopped one is the capture's last sound: what follows it is only
+    # how long the output stayed open after its fade drained (0 to about
+    # a period, 42.7 ms), so any silence at all will do; its fade is
+    # checked below.
+    if after < (1 if name == "long" else 2400):
         fails.append("%s: only %d frames of silence after it" % (name, after))
     # No click: no step between samples bigger than the sine's own.
     jump = max(abs(x[k + 1] - x[k]) for x in (l, r) for k in range(len(x) - 1))

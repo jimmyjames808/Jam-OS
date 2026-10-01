@@ -391,7 +391,9 @@ static bool t_kill_mid_tone(const char *name, const char *who, const char *opt)
 {
     handle_t d;
     CHECK(initctl != 0);
-    CHECK_ST(tone(name, "440", "2000", "0", opt, &d), OK);
+    /* 3 s: still writing when the kill comes at 0.6 s (its ring holds
+     * 1.37 s, so a shorter tone would be waiting in its drain by then). */
+    CHECK_ST(tone(name, "440", "3000", "0", opt, &d), OK);
     struct mixer_stream_info e;
     CHECK(find_stream(name, 2000, &e));
     pause_ms(600);

@@ -145,7 +145,7 @@ static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint3
     *out_codec = p->cad;
     *out_pin = p->nid[p->n - 1];
     *out_dac = dac->nid;
-    *out_pcm = dac->pcm;
+    *out_pcm = hda_output_pcm(&s->out);
     *out_formats = dac->formats;
     *out_amp = dac->caps & WCAP_OUT_AMP ? dac->amp_out : 0;
     *out_count = p->n;
@@ -178,11 +178,26 @@ static status_t do_set_gain(void *ctx, int32_t centibels, int32_t *out_gain, uin
     return st;
 }
 
+static status_t do_set_bits(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    struct state *s = ctx;
+    if (bits && bits != 16 && bits != 20 && bits != 24 && bits != 32)
+        return ERR_INVALID_ARGS;
+    if (bits && bits != s->out.max_bits) {
+        s->out.max_bits = bits;
+        drv_log("output: streams use at most %u-bit samples from the next open", bits);
+    }
+    *out_bits = s->out.max_bits;
+    *out_pcm = hda_output_pcm(&s->out);
+    return OK;
+}
+
 static const struct hda_ops ops = {
     .dump = do_dump,
     .info = do_info,
     .set_gain = do_set_gain,
     .get_gain = do_get_gain,
+    .set_bits = do_set_bits,
 };
 
 /* The chosen path set up muted (verbs.c), read back, and logged. */

@@ -568,7 +568,8 @@ static const struct {
     { "mix_gains", t_mix_gains },
     { "mix_unity_is_exact", t_mix_unity_is_exact },
     { "mix_volume_and_master", t_mix_volume_and_master },
-    { "mix_saturates", t_mix_saturates },
+    { "mix_dither", t_mix_dither },
+    { "mix_limits", t_mix_limits },
 };
 
 int main(int argc, char **argv)

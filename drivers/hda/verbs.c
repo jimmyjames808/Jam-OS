@@ -201,7 +201,7 @@ static int32_t cb_of(uint32_t amp, unsigned step)
 
 void hda_output_init(struct output *o, const struct codec *c, const struct path *p)
 {
-    *o = (struct output){ 0 };
+    *o = (struct output){ .max_bits = 32 };
     if (!c || !p || p->rule == PATH_NONE || !p->n)
         return;
     o->c = c;
@@ -215,6 +215,18 @@ void hda_output_init(struct output *o, const struct codec *c, const struct path 
     }
     if (o->vol)
         o->step = (uint8_t)step_for(o->vol_amp, GAIN_DEFAULT_CB);
+}
+
+uint32_t hda_output_pcm(const struct output *o)
+{
+    const struct widget *dac = o->c ? hda_widget(o->c, o->p->nid[0]) : NULL;
+    if (!dac)
+        return 0;
+    uint32_t pcm = dac->pcm;
+    for (uint32_t b = 20; b <= 32; b += 4)
+        if (b > o->max_bits)
+            pcm &= ~PCM_SIZE(b);
+    return pcm;
 }
 
 /* The pin at the path's end, as read back after the muted set-up. */

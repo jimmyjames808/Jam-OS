@@ -6,19 +6,30 @@
  * output stream, the periods, the mixing). docs/A2-PLAN.md has the
  * design; <mixer.h> the ring.
  *
- * Time is the driver's: at the end of each period it played (85 ms) the
- * mixer mixes the next one, so OUT_LEAD periods are always written ahead
- * of the play position. Nothing here is shared between threads: there is
- * one. */
+ * Time is the driver's: at the end of each period it played (2048 frames,
+ * 42.7 ms) the mixer mixes until OUT_LEAD periods are written ahead of
+ * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
+ * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
+ * late before anything is lost. Nothing here is shared between threads:
+ * there is one. */
 #pragma once
 
 #include <mixer.h>
+#include <mixmath.h>
 #include <os.h>
 
-#define OUT_LEAD       2u      /* periods written ahead of the play position */
-#define IDLE_PERIODS   12u     /* every playing stream empty this long: close the output */
-#define PERIOD_MAX     4096u   /* frames: the most a driver's period may hold */
-#define RING_FRAMES    16384u  /* each stream's ring: 341 ms */
+#define OUT_LEAD       4u      /* periods written ahead of the play position */
+#define IDLE_PERIODS   24u     /* every playing stream empty this long (1 s): close the output */
+#define PERIOD_MAX     MIX_BLOCK_MAX   /* frames: the most a driver's period may hold */
+#define PERIOD_GUESS   2048u   /* frames: a period before the output was first opened */
+#define LATE_GUARD     256u    /* frames (5.3 ms): a period end with less than this
+                                * written ahead counts as late. The controller fetches
+                                * up to a FIFO (SD_FIFOS bytes, the driver's open line)
+                                * ahead of its position, so frames written closer than
+                                * that may already have been fetched as silence */
+#define RING_FRAMES    65536u  /* each stream's ring: 1.37 s, a program's read-ahead
+                                * (`play` reads its file in chunks between writes, so
+                                * a slow read is covered by what its ring holds) */
 #define HIST           4u      /* periods remembered per stream for `played` */
 
 /* Port keys: these, or a stream's slot with its generation. */
@@ -49,6 +60,9 @@ struct stream {
     uint64_t    read;              /* frames taken: ours, published to the header */
     uint64_t    written;           /* the header's `write` when last looked at */
     uint32_t    underruns;
+    uint32_t    late;              /* periods the mixer was late for while it played */
+    uint32_t    min_lead;          /* the least written ahead of the play position (frames) */
+    uint32_t    limited;           /* periods the limiter turned down while it played */
     uint32_t    empty;             /* periods in a row it gave nothing */
     bool        idle;              /* its header's `idle` is set */
     struct hist hist[HIST];        /* the last periods it gave frames to, oldest first */
@@ -63,7 +77,9 @@ struct out {
     handle_t svc;          /* the hda driver's channel from devmgr, or 0 */
     handle_t ch;           /* its stream channel while open, or 0 */
     handle_t vmo;
-    int16_t *ring;         /* mapped */
+    void    *ring;         /* mapped */
+    uint32_t bits;         /* the samples' size: 16, or 20/24/32 in 32-bit containers */
+    uint32_t frame_bytes;  /* 4 or 8 */
     uint32_t frames;       /* ring size in frames */
     uint32_t period;       /* frames per period */
     uint32_t gen;          /* port key generation */
@@ -74,7 +90,9 @@ struct out {
     uint64_t written;      /* frames mixed into the ring since the open */
     uint64_t played;       /* the play position last heard of */
     uint64_t retry_at;     /* a failed open: when to try again (0: no retry due) */
-    uint64_t opens, late;  /* times opened; frames the mixer was late for */
+    uint64_t opens, late;  /* times opened; periods the mixer was late for */
+    struct mix_limiter lim;
+    uint32_t seed;         /* the 16-bit output's dither */
 };
 
 struct mixer {
@@ -86,7 +104,7 @@ struct mixer {
     uint32_t      master_gain;     /* Q15 */
     uint32_t      next_id;
     uint32_t      next_txid;
-    int32_t       acc[2 * PERIOD_MAX];
+    int32_t       acc[2 * (MIX_LOOKAHEAD + PERIOD_MAX)];
     int16_t       buf[2 * PERIOD_MAX];
 };
 
