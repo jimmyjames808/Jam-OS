@@ -263,6 +263,16 @@ void fbcon_release(void)
     spin_unlock_irqrestore(&lock, f);
 }
 
+void fbcon_unquiet(void)
+{
+    if (!ready || !__atomic_load_n(&quiet, __ATOMIC_RELAXED))
+        return;
+    uint64_t f = spin_lock_irqsave(&lock);
+    __atomic_store_n(&quiet, false, __ATOMIC_RELAXED);
+    redraw_all();   /* nothing if a process owns the screen: its release redraws */
+    spin_unlock_irqrestore(&lock, f);
+}
+
 bool fbcon_is_taken(void)
 {
     return __atomic_load_n(&taken, __ATOMIC_RELAXED);

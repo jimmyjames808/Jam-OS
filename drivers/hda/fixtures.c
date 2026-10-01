@@ -7,9 +7,10 @@
  * the PC's Realtek ALC897 from its first boot with the probe. Each has the
  * path the finder must give, and the output verbs.c makes of it (which
  * amp is the volume, its default step at -30 dB, its range, and that
- * set_gain clamps to it); a few variations of the ALC897 (the rear
- * line-out playing, the front jack not described, no connection) check
- * the fallbacks. A codec from another board is added by pasting its
+ * set_gain clamps to it, and whether an amp on the path can mute it); a
+ * few variations (the ALC897's rear line-out playing and front jack not
+ * described, QEMU's output with no connection or no amps) check the
+ * fallbacks. A codec from another board is added by pasting its
  * `hda` lines here with the path it should get.
  *
  * The parser reads only what the finder and the programming use: each
@@ -425,6 +426,17 @@ static void no_front_jack(struct codec *c)
         w->config = 0x411111f0;
 }
 
+/* QEMU's hda-output with mixer=off (tools/mixer-test.sh): the DAC has no
+ * amplifier, so nothing on the path can mute it but the pin's output. */
+static void no_amps(struct codec *c)
+{
+    struct widget *w = find_widget(c, 0x02);
+    if (w) {
+        w->caps &= ~(uint32_t)WCAP_OUT_AMP;
+        w->amp_out = 0;
+    }
+}
+
 /* The only output pin has no connection: no path. */
 static void no_conn(struct codec *c)
 {
@@ -446,20 +458,22 @@ static const struct fixture {
 } fixtures[] = {
 #define TEXT(t) t, sizeof(t) - 1
     { "hda-output", TEXT(qemu_output), NULL, 0x1af40012, PATH_LINE_OUT, "dac 02 -> pin 03", "",
-      "vol 02 step 44 at -300 in -740..0" },
+      "vol 02 step 44 at -300 in -740..0; mutes" },
     { "hda-duplex", TEXT(qemu_duplex), NULL, 0x1af40022, PATH_LINE_OUT, "dac 02 -> pin 03", "",
-      "vol 02 step 44 at -300 in -740..0" },
+      "vol 02 step 44 at -300 in -740..0; mutes" },
     { "hda-micro", TEXT(qemu_micro), NULL, 0x1af40032, PATH_SPEAKER, "dac 02 -> pin 03", "",
-      "vol 02 step 44 at -300 in -740..0" },
+      "vol 02 step 44 at -300 in -740..0; mutes" },
     { "hda-output, no connection", TEXT(qemu_output), no_conn, 0x1af40012, PATH_NONE, "", "",
       "none" },
+    { "hda-output, no amps", TEXT(qemu_output), no_amps, 0x1af40012, PATH_LINE_OUT,
+      "dac 02 -> pin 03", "", "no steps; no mute" },
     { "alc897", TEXT(pc_alc897), NULL, 0x10ec0897, PATH_FRONT_HP,
-      "dac 02 -> mixer 0c -> pin 1b", "14 18 19 1a", "vol 02 step 47 at -300 in -653..0" },
+      "dac 02 -> mixer 0c -> pin 1b", "14 18 19 1a", "vol 02 step 47 at -300 in -653..0; mutes" },
     { "alc897, rear line-out playing", TEXT(pc_alc897), rear_playing, 0x10ec0897, PATH_FRONT_HP,
-      "dac 03 -> mixer 0d -> pin 1b", "15", "vol 03 step 47 at -300 in -653..0" },
+      "dac 03 -> mixer 0d -> pin 1b", "15", "vol 03 step 47 at -300 in -653..0; mutes" },
     { "alc897, no front jack described", TEXT(pc_alc897), no_front_jack, 0x10ec0897,
       PATH_LINE_OUT, "dac 02 -> mixer 0c -> pin 14", "18 19 1a 1b",
-      "vol 02 step 47 at -300 in -653..0" },
+      "vol 02 step 47 at -300 in -653..0; mutes" },
 #undef TEXT
 };
 
@@ -484,16 +498,20 @@ static void also_str(const struct path *p, char *buf, size_t size)
  * node, its default step, that step's gain and its range in centibels:
  * "vol 02 step 47 at -300 in -653..0" ("none": no path; "no steps").
  * Then set_gain's clamping: far above the range must give its top, far
- * below its bottom ("clamps wrong" appended if not). Sends no verb: the
- * output is not open. */
+ * below its bottom ("clamps wrong" appended if not). Then whether an amp
+ * on the path can mute it ("; mutes": the output stage stays on and the
+ * amps are the mute; "; no mute": the pin's output is). Sends no verb:
+ * the output is not open. */
 static void gain_str(const struct codec *c, const struct path *p, char *buf, size_t size)
 {
     struct output out;
     int32_t cb, lo, hi, top, bottom, x, y;
     hda_output_init(&out, p->rule == PATH_NONE ? NULL : c, p->rule == PATH_NONE ? NULL : p);
     status_t st = hda_output_gain(&out, &cb, &lo, &hi);
+    const char *mute = out.mutes ? "; mutes" : "; no mute";
     if (st != OK) {
-        drv_snprintf(buf, size, "%s", st == ERR_NOT_FOUND ? "none" : "no steps");
+        drv_snprintf(buf, size, "%s%s", st == ERR_NOT_FOUND ? "none" : "no steps",
+                     st == ERR_NOT_FOUND ? "" : mute);
         return;
     }
     unsigned step = out.step;
@@ -501,8 +519,8 @@ static void gain_str(const struct codec *c, const struct path *p, char *buf, siz
     (void)hda_output_gain(&out, &top, &x, &y);
     (void)hda_output_set_gain(NULL, &out, -100000);
     (void)hda_output_gain(&out, &bottom, &x, &y);
-    drv_snprintf(buf, size, "vol %02x step %u at %d in %d..%d%s", out.vol, step, cb, lo, hi,
-                 top == hi && bottom == lo ? "" : " clamps wrong");
+    drv_snprintf(buf, size, "vol %02x step %u at %d in %d..%d%s%s", out.vol, step, cb, lo, hi,
+                 top == hi && bottom == lo ? "" : " clamps wrong", mute);
 }
 
 /* One fixture; false (and a line into o) if it fails. */
@@ -521,7 +539,7 @@ static bool check(const struct fixture *f, struct codec *c, struct out *o)
     st = hda_path_find(c, &p);
     hda_path_str(c, &p, got, sizeof(got));
     also_str(&p, also, sizeof(also));
-    char gain[48];
+    char gain[72];
     gain_str(c, &p, gain, sizeof(gain));
     if (p.rule == f->rule && (st == OK) == (f->rule != PATH_NONE) && same(got, f->path) &&
         same(also, f->also) && same(gain, f->gain))

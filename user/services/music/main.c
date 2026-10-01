@@ -13,7 +13,8 @@
  * One thread: while it plays, every step writes a chunk (blocking at most
  * about a mixer period while the stream's ring is full) and then answers
  * whatever is queued on the channel, so `stop` and `next` take effect
- * within about 50 ms. Stopped, it waits on the channel. Each track's
+ * within about 50 ms; while it reads a big folder, each step reads a few
+ * entries of it. Stopped, it waits on the channel. Each track's
  * start is one line in the log ("[music] music: track 3: Artist -
  * Title (3:45)"), which the console shows above the prompt. */
 #include <idl/music.h>
@@ -28,7 +29,7 @@ static void put(uint8_t *out, size_t size, const char *s)
     memset(out + n, 0, size - n);
 }
 
-static status_t on_start(void *ctx, const uint8_t folder[256], uint32_t *found)
+static status_t on_start(void *ctx, const uint8_t folder[256], uint32_t *found, uint8_t *reading)
 {
     struct player *p = ctx;
     char path[FS_PATH_MAX];
@@ -37,14 +38,17 @@ static status_t on_start(void *ctx, const uint8_t folder[256], uint32_t *found)
     memcpy(path, folder, FS_PATH_MAX);
     if (path[0] != '/')
         return ERR_INVALID_ARGS;
-    return player_start(p, path, found);
+    bool scanning = false;
+    status_t st = player_start(p, path, found, &scanning);
+    *reading = scanning;
+    return st;
 }
 
 static status_t on_stop(void *ctx, uint8_t *was_playing)
 {
     struct player *p = ctx;
-    *was_playing = p->playing;
-    if (p->playing) {
+    *was_playing = p->playing || p->scanning;
+    if (*was_playing) {
         player_stop(p, NULL);
         printf("music: stopped\n");
     }
@@ -62,7 +66,7 @@ static status_t on_status(void *ctx, uint8_t *playing, uint32_t *tracks, uint32_
                           uint8_t title[128], uint8_t note[128])
 {
     struct player *p = ctx;
-    *playing = p->playing;
+    *playing = p->scanning ? 2 : p->playing;
     *tracks = p->t.count;
     *bad = p->t.nbad;
     *started = p->started;
@@ -114,6 +118,10 @@ int main(int argc, char **argv)
             printf("music: reading its channel: %s: ending\n", status_str(st));
             player_stop(p, NULL);
             return 1;
+        }
+        if (p->scanning) {
+            player_scan(p);
+            continue;
         }
         if (p->playing) {
             player_step(p);

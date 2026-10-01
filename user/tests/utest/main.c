@@ -565,6 +565,7 @@ static const struct {
     { "audio_formats", t_audio_formats },
     { "audio_resample", t_audio_resample },
     { "wav_parse", t_wav_parse },
+    { "music_scan", t_music_scan },
     { "mp3_header", t_mp3_header },
     { "mp3_sniff", t_mp3_sniff },
     { "mp3_decode", t_mp3_decode },

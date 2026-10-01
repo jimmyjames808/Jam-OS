@@ -554,7 +554,7 @@ the background: the shell stays free for other commands meanwhile.
 
 | Command | What |
 |---|---|
-| `music start [folder]` | default `/data/music`; a relative folder is the shell's (`cd`). Walks it (any depth, at most 16 folders down, 4096 files) for `.mp3` and `.wav` files, any case; names starting with `.` (`.DS_Store`, `._x.mp3`) are left out, folders too. Says `music: playing N tracks from F in shuffle`. Already playing: the old folder stops (fade) and the new one starts (chosen over "already playing": switching albums is one command) |
+| `music start [folder]` | default `/data/music`; a relative folder is the shell's (`cd`). Walks it (any depth, at most 16 folders down, 4096 files) for `.mp3` and `.wav` files, any case; names starting with `.` (`.DS_Store`, `._x.mp3`) are left out, folders too. Says `music: playing N tracks from F in shuffle`. A folder that takes more than half a second to read is read on after the answer, a few entries between the player's other calls (`music: reading F (N tracks so far): it plays once it is read`; `music status` shows the count; audio review, item 2) Already playing: the old folder stops (fade) and the new one starts (chosen over "already playing": switching albums is one command) |
 | `music stop` | stops with the 5 ms fade: `music: stopped` (or `not playing`) |
 | `music next` | skips the track heard now |
 | `music status` | `music: playing Artist - Title  1:23 / 3:45`, the file's path, the folder with its track count (and how many were unplayable), tracks started, the volume; stopped: why, if it stopped by itself |

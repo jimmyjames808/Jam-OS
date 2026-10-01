@@ -329,8 +329,8 @@ static inline status_t hda_start(handle_t ch)
 }
 
 /* On the stream channel: the DMA engine stops (RUN clear, waited for),
- * then the path is muted again (pin output off, EAPD off, every amp on
- * it muted); the position stays. A wait_period in progress is answered
+ * then the path is muted again (every amp on it muted; the pin's output
+ * off too where no amp can mute); the position stays. A wait_period in progress is answered
  * ERR_BAD_STATE. */
 static inline status_t hda_stop_until(handle_t ch, uint64_t deadline_ns)
 {

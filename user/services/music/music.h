@@ -26,17 +26,22 @@ struct tracks {
     uint32_t  pos;
     int64_t   last;        /* the track last handed out (-1: none) */
     uint64_t  rng;
+    struct scan *scan;     /* while the folder is being read (tracks.c) */
 };
 
-/* Read folder (absolute) into t: every .mp3 and .wav below it, in
- * directory order. OK with t->count possibly 0; ERR_NOT_FOUND,
- * ERR_WRONG_TYPE (a file), ERR_NO_MEMORY. Frees what t held before. */
-status_t tracks_scan(struct tracks *t, const char *folder);
+/* Start reading folder (absolute) into t: every .mp3 and .wav below it,
+ * in directory order. Frees what t held before. ERR_NOT_FOUND,
+ * ERR_WRONG_TYPE (a file), ERR_NO_MEMORY. */
+status_t tracks_scan_begin(struct tracks *t, const char *folder);
+/* Read up to `entries` more directory entries. ERR_SHOULD_WAIT: more to
+ * read; OK: the list is complete (t->count possibly 0), ready to shuffle;
+ * ERR_NO_MEMORY (t emptied). */
+status_t tracks_scan_step(struct tracks *t, unsigned entries);
 void     tracks_free(struct tracks *t);
 /* The next track to play (an index into t->path), shuffling when a pass
  * is done; -1 when every track is bad. *new_pass: a new shuffle began. */
 int64_t  tracks_next(struct tracks *t, bool *new_pass);
-/* Shuffle from scratch with this seed (tracks_scan leaves it unshuffled). */
+/* Shuffle from scratch with this seed (the scan leaves it unshuffled). */
 void     tracks_shuffle(struct tracks *t, uint64_t seed);
 /* "Artist - Title" for the file at path under folder (see tracks.c). */
 void     track_title(const char *folder, const char *path, char *out, size_t size);
@@ -55,6 +60,7 @@ struct player {
     handle_t ctl;                 /* the music channel's server end */
     struct tracks t;
     char     folder[FS_PATH_MAX];
+    bool     scanning;            /* reading the folder (playing starts after) */
     bool     playing;
     int32_t  volume;              /* centibels */
     uint32_t started;             /* tracks started since `start` */
@@ -76,7 +82,14 @@ struct player {
 };
 
 /* player.c */
-status_t player_start(struct player *p, const char *folder, uint32_t *found);
+/* Stop whatever plays and start reading folder; then up to SCAN_SYNC of
+ * the reading in this call: *scanning false and *found the tracks (it
+ * plays if there are any), or *scanning true and *found so far (the loop
+ * reads on with player_scan and plays when it is done). */
+status_t player_start(struct player *p, const char *folder, uint32_t *found, bool *scanning);
+/* While p->scanning: a few more entries; at the end, play (or stop with a
+ * note if there is nothing to play). */
+void     player_scan(struct player *p);
 void     player_stop(struct player *p, const char *note);
 status_t player_next(struct player *p);
 /* One chunk: open the next track if none is open, read it, write it.

@@ -19,7 +19,9 @@
  * the channel, close the stream, stop the command rings, put the
  * controller back into reset and exit 0. The path is unmuted (at the
  * gain, -30 dB unless set_gain says otherwise) only while the stream
- * runs (stream.c, verbs.c's hda_output_*). The jacks with presence
+ * runs (stream.c, verbs.c's hda_output_*); the output stage (the pin's
+ * output and EAPD) goes on once after the set-up, with every amp muted,
+ * and off at exit, so no stream hears it power up. The jacks with presence
  * detection (jack.c) are watched from the loop's start: each change is
  * logged ("headphones plugged in (front, pin 1b)"), found by unsolicited
  * responses or by polling, and `hda.jacks` answers their states. verbs.c
@@ -288,6 +290,17 @@ static void set_path(struct state *s, struct out *o)
     }
     else if (s->set == OK)
         out_line(o, "path: no amp on it has gain steps: it plays at 0 dB");
+    /* The output stage on now, every amp still muted, so it has settled
+     * long before a stream unmutes them (hda.h, OUTPUT_SETTLE_NS). */
+    if (s->set == OK && s->out.mutes) {
+        status_t st = hda_output_stage(&s->hda, &s->out, true);
+        out_line(o, "path: the output stage (pin %02x's output, EAPD) %s with every amp muted; "
+                 "streams unmute the amps from %u ms on", s->path.nid[s->path.n - 1],
+                 st == OK ? "on" : "not on", (unsigned)(OUTPUT_SETTLE_NS / NS_PER_MS));
+    } else if (s->set == OK) {
+        out_line(o, "path: no amp on it can mute it: the pin's output goes on only while a "
+                 "stream runs");
+    }
 }
 
 /* The first codec's ids for the RESULTS line. */
@@ -358,6 +371,8 @@ int driver_main(const struct driver_start *ds)
     handle_t ch = drv_handle(ds, DR_SERVE);
     status_t st = ch == HANDLE_INVALID ? OK
                 : hda_loop(&s->hda, ds, &ops, s, &s->out, &s->jacks);
+    if (s->out.stage)   /* the amps were muted when the stream closed */
+        (void)hda_output_stage(&s->hda, &s->out, false);
     hda_ctrl_stop(&s->hda);
     drv_log("stopped: controller back in reset (%s)", st == OK ? "client closed" : status_str(st));
     return st == OK ? 0 : 1;
