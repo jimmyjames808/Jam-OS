@@ -22,7 +22,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | M8 | Storage: USB mass storage, FAT32 (FatFs), `/esp` and `/data`, other sticks at `/usbN`, a log per boot | done (PC 2026-10-01: All tests 224, `stress 600` and `soak 10` passed) |
 | **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`). The tone on the PC, stage 4 (jacks) and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
-| A2 | Audio: mixer, `audio` protocol | after A1 |
+| A2 | Audio: mixer, `audio` protocol, WAV playback | **in progress** (track 1, [A2-PLAN.md](A2-PLAN.md)): `<audio.h>` (libos: blocking writes, mono to stereo, any rate to 48 kHz) and `play <file.wav>` work in QEMU straight on the hda driver's stream (one program at a time); the mixer (track 2) is next |
 | AS | Boot splash: the logo animation with its sound, alpha blending | right after A2 |
 | M8.5 | Crash kernel and kexec | later |
 | M9 | Networking | later |
