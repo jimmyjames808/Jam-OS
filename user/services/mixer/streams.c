@@ -256,11 +256,22 @@ static status_t do_stream_volume(void *ctx, int32_t cb, int32_t *out)
     return OK;
 }
 
+static status_t do_levels(void *ctx, int32_t *out_volume, int32_t *out_master,
+                          int32_t *out_device)
+{
+    struct call *c = ctx;
+    *out_volume = c->s->volume;
+    *out_master = c->m->master;
+    *out_device = out_device_gain(c->m);
+    return OK;
+}
+
 static const struct audio_ops stream_ops = {
     .stream_start = do_start,
     .stream_stop = do_stop,
     .stream_position = do_position,
     .stream_set_volume = do_stream_volume,
+    .stream_levels = do_levels,
 };
 
 /* stream_drain: answered from drain_check once the frames are heard. */

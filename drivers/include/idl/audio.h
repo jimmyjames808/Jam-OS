@@ -16,6 +16,7 @@
 #define AUDIO_STREAM_DRAIN     0x00160004u
 #define AUDIO_STREAM_POSITION  0x00160005u
 #define AUDIO_STREAM_SET_VOLUME 0x00160006u
+#define AUDIO_STREAM_LEVELS    0x00160007u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct audio_open_output_req {
@@ -78,6 +79,17 @@ struct audio_stream_set_volume_rep {
     uint32_t txid;
     int32_t  status;
     int32_t centibels;
+} __attribute__((packed));
+struct audio_stream_levels_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct audio_stream_levels_rep {
+    uint32_t txid;
+    int32_t  status;
+    int32_t volume;
+    int32_t master;
+    int32_t device;
 } __attribute__((packed));
 
 #define AUDIO_REQ_MAX 30u   /* bytes: the biggest request */
@@ -269,6 +281,34 @@ static inline status_t audio_stream_set_volume(handle_t ch, int32_t centibels, i
     return audio_stream_set_volume_until(ch, DEADLINE_NEVER, centibels, out_centibels);
 }
 
+/* On a stream channel: the levels it is heard at, in centibels: its own
+ * volume, the mixer's master volume, and the device's gain below the
+ * mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
+ * gain or can't be asked now). Heard at their sum, below full scale. */
+static inline status_t audio_stream_levels_until(handle_t ch, uint64_t deadline_ns, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
+{
+    struct audio_stream_levels_req idl_q;
+    struct audio_stream_levels_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIO_STREAM_LEVELS;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_volume)
+        *out_volume = idl_r.volume;
+    if (idl_st == OK && out_master)
+        *out_master = idl_r.master;
+    if (idl_st == OK && out_device)
+        *out_device = idl_r.device;
+    return idl_st;
+}
+static inline status_t audio_stream_levels(handle_t ch, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
+{
+    return audio_stream_levels_until(ch, DEADLINE_NEVER, out_volume, out_master, out_device);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -280,6 +320,7 @@ struct audio_ops {
     status_t (*stream_drain)(void *ctx, uint64_t *out_frames);
     status_t (*stream_position)(void *ctx, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played);
     status_t (*stream_set_volume)(void *ctx, int32_t centibels, int32_t *out_centibels);
+    status_t (*stream_levels)(void *ctx, int32_t *out_volume, int32_t *out_master, int32_t *out_device);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -422,6 +463,27 @@ static inline uint32_t audio_dispatch(const struct audio_ops *ops, void *ctx, co
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->centibels = out_centibels;
+        return sizeof(*idl_r);
+    }
+    case AUDIO_STREAM_LEVELS: {
+        const struct audio_stream_levels_req *idl_q = (const struct audio_stream_levels_req *)req;
+        struct audio_stream_levels_rep *idl_r = (struct audio_stream_levels_rep *)rep;
+        int32_t out_volume = 0;
+        int32_t out_master = 0;
+        int32_t out_device = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stream_levels) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stream_levels(ctx, &out_volume, &out_master, &out_device);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->volume = out_volume;
+        idl_r->master = out_master;
+        idl_r->device = out_device;
         return sizeof(*idl_r);
     }
     }

@@ -130,3 +130,5 @@ void     out_serve(struct mixer *m);
 uint64_t out_tick(struct mixer *m);
 /* The driver's play position now (a call to it), or the last one known. */
 uint64_t out_position(struct mixer *m);
+/* The driver's gain in centibels (hda.get_gain), or 0 if it can't say. */
+int32_t  out_device_gain(struct mixer *m);

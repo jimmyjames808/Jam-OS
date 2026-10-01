@@ -54,3 +54,8 @@ protocol audio 22
 # below is silence. Answers the volume set. Applies from the next period
 # mixed.
 6  stream_set_volume  (i32 centibels)  -> (i32 centibels)
+# On a stream channel: the levels it is heard at, in centibels: its own
+# volume, the mixer's master volume, and the device's gain below the
+# mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
+# gain or can't be asked now). Heard at their sum, below full scale.
+7  stream_levels  ()  -> (i32 volume, i32 master, i32 device)
