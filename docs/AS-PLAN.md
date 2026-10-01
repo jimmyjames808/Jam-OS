@@ -72,7 +72,7 @@ the bootfs mapping.
    `SPLASH_PLAYED`; init starts the shell; the shell, once its banner is
    written, calls `initctl.shell_ready`; init sends `SPLASH_GO`
    (`<splash.h>`). The last frame stays until then, and at least
-   `LINGER` (2 s) after the end of an animation that played out (a skip
+   `LINGER` (0.5 s; it was 2 s, too long on the PC) after the end of an animation that played out (a skip
    wants it gone: no linger); 30 s at most for a shell that never comes.
    The splash then fades the last frame into the console's background
    (8 steps of 30 ms, premultiplied alpha) and closes the lease; the
@@ -197,7 +197,7 @@ count of frames taken instead.
 - `splash: played at ...: N frames shown, M dropped` (0 dropped
   expected), and the picture sharp: edges and the pixel font as rendered.
 - `the shell is up N ms after the end; giving the screen back M ms after
-  it` (M at least 2000: the linger).
+  it` (M at least 500: the linger).
 - `run splash --selftest`: pl_mpeg's speed per frame on the PC.
 - `run splash` from the shell plays it again (without init it holds the
   last frame a second or until a key).

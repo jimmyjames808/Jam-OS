@@ -13,7 +13,7 @@
 #            the difference: tools/splash-check.py); the order in the log
 #            (first frame, sound, played, the shell up, the screen back);
 #            the sound waited for and started with the picture (joins at
-#            0 ms); the last frame lingers 2 s after the end;
+#            0 ms); the last frame lingers 0.5 s after the end;
 #            `run splash --selftest` passes; `run splash --alpha` draws the
 #            logo with libfun's anti-aliased discs (their colours, a partly
 #            covered edge).
@@ -70,11 +70,11 @@ python3 -c "import sys; a = [float(x) for x in sys.argv[1:]]; sys.exit(a != sort
            "screen back $t_back"; ok=0; }
 grep -aE "splash: (first frame|waited|sound joins|the sound is heard|played at|the shell is up)" \
     "$log" | sed 's/^/  /'
-# The logo lingers: the screen goes back LINGER (2 s) after the end at the
+# The logo lingers: the screen goes back LINGER (0.5 s) after the end at the
 # earliest, however soon the shell is up.
 back=$(grep -aE "giving the screen back [0-9]+ ms after it" "$log" | head -1 |
        sed -n 's/.*giving the screen back \([0-9]*\) ms after it.*/\1/p')
-[ -n "$back" ] && [ "$back" -ge 1950 ] || { echo "splash: no linger (${back:-?} ms)"; ok=0; }
+[ -n "$back" ] && [ "$back" -ge 450 ] || { echo "splash: no linger (${back:-?} ms)"; ok=0; }
 join=$(grep -aE "splash: sound joins at [0-9]+ ms" "$log" | head -1 |
        sed -n 's/.*joins at \([0-9]*\) ms.*/\1/p')
 check quiet "$out/splash-quiet.png"
