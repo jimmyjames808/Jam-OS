@@ -140,3 +140,5 @@ rounding is used).
 - **6 fixed.** `vol_text` keeps the sign (now playing and the toast).
   Test: the self-test's -0.5, -12.5 and 0 dB (the old arithmetic gave
   "0.5 dB" for -5 centibels).
+- **12 fixed.** `link` is set before the thread starts (and cleared if
+  it can't). No test: the race had no effect anyone could see.
