@@ -1,7 +1,7 @@
 /* The kernel's side of the shell: its debug commands (ktest, bench,
  * stress, ps -k, kill, mem, pci, memmap, crash, panic; RIGHT_MANAGE on the
- * root resource), which print into the kernel log, and reading that log
- * (RIGHT_READ). */
+ * root resource), which print into the kernel log (on the screen while one
+ * runs, sh_show_log), and reading that log (RIGHT_READ). */
 #include "sh.h"
 
 #define KLOG_CAP (64 * 1024)
@@ -9,7 +9,9 @@
 int64_t sh_kcmd(const char *cmd)
 {
     sh_flush();
+    sh_show_log(true, NULL);   /* its output is the log */
     int64_t r = jam_debug_command(sh_root(), cmd, strlen(cmd));
+    sh_show_log(false, NULL);
     if (r < 0)
         sh_say("%s: %s\n", cmd, status_str((status_t)r));
     return r;

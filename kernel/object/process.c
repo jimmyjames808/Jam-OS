@@ -53,6 +53,7 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
+#include <jam/utf8.h>
 
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
 
@@ -279,7 +280,10 @@ uint64_t process_cpu_tsc(struct process *p)
  * at once and OUT_PER_S a second after that (a token bucket under
  * out_lock); the rest are dropped and counted, and the count is printed
  * before the next line that gets through. debug_report lines are exempt
- * (USER_REPORT_MAX caps them for everyone together). */
+ * (USER_REPORT_MAX caps them for everyone together). Control characters
+ * become '?' here; UTF-8 is kept as it is and checked by the log itself
+ * (klog.c), so a line too long for out[] is split before a sequence that
+ * would not fit, never in the middle of one. */
 
 enum out_kind { OUT_NONE, OUT_PRINT, OUT_REPORT };
 
@@ -321,14 +325,20 @@ static enum out_kind out_add_locked(struct process *p, const char *buf, size_t n
     enum out_kind kind = OUT_NONE;
     size_t i = *pi;
     for (; i < n && kind == OUT_NONE; i++) {
-        char c = buf[i];
+        uint8_t c = (uint8_t)buf[i];
         if (c == '\n') {
             kind = mine;
             break;
         }
-        if ((c < 0x20 && c != '\t') || c >= 0x7f)
+        if ((c < 0x20 && c != '\t') || c == 0x7f)
             c = '?';   /* no escape sequences on the console */
-        p->out[p->out_len++] = c;
+        unsigned need = utf8_lead_len(c);
+        if (need > 1 && p->out_len + need > OUT_LINE - 1) {
+            kind = mine;   /* too long, and c starts a sequence: split before it */
+            *pi = i;
+            return kind;
+        }
+        p->out[p->out_len++] = (char)c;
         if (p->out_len == OUT_LINE - 1)
             kind = mine;   /* too long: split (the loop's i++ steps past c) */
     }

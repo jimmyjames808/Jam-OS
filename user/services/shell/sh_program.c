@@ -257,12 +257,16 @@ static int run_program(int argc, char **argv, unsigned how)
         jam_handle_close(job);
         return 126;
     }
+    /* What it prints goes to the log (unless piped): shown while it runs. */
+    const char *base = strrchr(path, '/');
+    sh_show_log(true, base ? base + 1 : path);
     sh_tty("run: %s started (Ctrl+C kills it)\n", path);
     sh_flush();
     struct process_info info;
     st = wait_program(proc, job, out_r, path, &info);
     int code = ended(st, &info, path, t0);
     clean_job(job, path);
+    sh_show_log(false, NULL);
     jam_handle_close(proc);
     jam_handle_close(job);
     return code;
@@ -309,7 +313,9 @@ static bool show_result_line(const char *name, const char *log, size_t got, bool
 static int run_test(int argc, char **argv, unsigned how)
 {
     uint64_t from = sh_klog_end();
+    sh_show_log(true, NULL);   /* a test's whole story: drivers, devmgr, the kernel */
     int code = run_program(argc, argv, how);
+    sh_show_log(false, NULL);
     if (argc > 1)
         return code;   /* a child mode (utest's own), not the suite: no result line */
     char *log;

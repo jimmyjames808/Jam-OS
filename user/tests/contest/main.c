@@ -144,7 +144,7 @@ static status_t sc_blank(void *ctx, uint8_t on)
 }
 static const struct console_ops st_console = { sc_write, sc_size, sc_clear, sc_open_keys,
                                                sc_connect_input, sc_lend_screen,
-                                               sc_new_client, sc_blank };
+                                               sc_new_client, sc_blank, NULL };
 
 static int steal(void)
 {
