@@ -674,7 +674,13 @@ is needed there: every reported position trails the DMA engine's
 fetch). The path is
 unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
-again as soon as it stops, so the jack is silent whenever nothing plays;
+again as soon as it stops, so the jack is silent whenever nothing plays.
+The muting is done by the path's amps where one can mute (the PC's, and
+QEMU's codecs with their mixer): the output stage (the pin's output and
+headphone amp, EAPD) goes on once, with every amp muted, at the driver's
+start, and stays on until it exits, so its power-up thump is never heard
+(the first unmute waits until it has been on 400 ms). Where no amp can
+mute, the pin's output is switched with the stream instead.
 `beep` in the shell makes the samples (the driver never makes sound of
 its own).
 

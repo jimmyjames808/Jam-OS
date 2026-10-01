@@ -8,7 +8,12 @@
 # pin's output off, and serves one output stream on that path's DAC. The
 # path is unmuted (at the gain below) only while the stream runs: start
 # opens it, stop, the stream's close and the driver's exit mute it again,
-# so the jack is silent whenever nothing plays (docs/A1-PLAN.md).
+# so the jack is silent whenever nothing plays (docs/A1-PLAN.md). Where an
+# amp on the path can mute it (the PC's ALC897, QEMU's codecs with their
+# mixer) the amps are the mute, and the output stage (the pin's output and
+# EAPD) is on from the driver's start to its exit, so its power-up thump
+# is never heard; where none can, the pin's output is the mute and goes
+# on and off with the stream.
 #
 # Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
 # fails with ERR_PEER_CLOSED means the driver died; get the channel from
@@ -62,8 +67,8 @@ protocol hda 21
 # start fails with that step's status (the log names the step).
 4  start  ()  -> ()
 # On the stream channel: the DMA engine stops (RUN clear, waited for),
-# then the path is muted again (pin output off, EAPD off, every amp on
-# it muted); the position stays. A wait_period in progress is answered
+# then the path is muted again (every amp on it muted; the pin's output
+# off too where no amp can mute); the position stays. A wait_period in progress is answered
 # ERR_BAD_STATE.
 5  stop  ()  -> ()
 # On the stream channel: frames played since the open, and the play

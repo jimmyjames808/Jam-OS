@@ -11,10 +11,12 @@
  *
  * The sequences: at start, the path path.c found programmed silent
  * (power up, the pin's output off, every amp on the path muted, the
- * path's inputs selected); while a stream runs, the same path opened
- * (hda_output_open: its amps unmuted at the gain, the pin's output and
- * EAPD on) and closed again as soon as it stops. The DAC's stream tag and
- * format are stream.c's (through hda_set too). */
+ * path's inputs selected), then, if its amps can mute it, the output
+ * stage on (the pin's output and EAPD) for as long as the driver runs;
+ * while a stream runs, the path's amps unmuted at the gain
+ * (hda_output_open) and muted again as soon as it stops. A path with no
+ * amp that mutes has only the pin: it is switched with each stream. The
+ * DAC's stream tag and format are stream.c's (through hda_set too). */
 #include "hda.h"
 
 /* A GET verb: 12-bit verbs 0xf00-0xfff, or the 4-bit GET verbs 0xa
@@ -170,11 +172,15 @@ void hda_path_read_back(struct hda *h, struct codec *c, const struct path *p)
 
 /* ---- the output: opened while a stream plays ---------------------------------------
  * Steps 4-6 of the path in docs/A1-PLAN.md, and their reverse. On the
- * PC's ALC897: mixer 0c's input 0 (from DAC 02) unmuted, DAC 02's output
- * amp to the gain (it has no mute: step 0 is its quietest, -65.25 dB),
- * pin 1b's output amp unmuted (it has only a mute), pin 1b's control to
- * output + headphone amp (0xc0), EAPD on. Nothing but the path's nodes is
- * touched, and the other inputs of its mixers stay muted. */
+ * PC's ALC897 the output stage (step 6: pin 1b's control to output +
+ * headphone amp, 0xc0, then EAPD on) goes on once at the driver's start
+ * with every amp muted and stays on; each stream then unmutes mixer 0c's
+ * input 0 (from DAC 02), DAC 02's output amp to the gain (it has no mute:
+ * step 0 is its quietest, -65.25 dB) and pin 1b's output amp (it has only
+ * a mute), at least OUTPUT_SETTLE_NS after the stage went on, and mutes
+ * them again at its end. Mixer 0c's input amp and pin 1b's output amp are
+ * the mute. Nothing but the path's nodes is touched, and the other inputs
+ * of its mixers stay muted. */
 
 /* An amp's 0 dB step, or its top one if it can't reach 0 dB. */
 static unsigned unity(uint32_t amp)
@@ -199,6 +205,27 @@ static int32_t cb_of(uint32_t amp, unsigned step)
     return mdb >= 0 ? (mdb + 50) / 100 : -((-mdb + 50) / 100);
 }
 
+/* An amp on path p that sound passes and that can mute (its capabilities'
+ * mute bit): a mixer's or selector's input amp at the path's input, or an
+ * output amp. With one, muting the amps silences the path whatever the
+ * pin does. (The ALC897's DAC amp can't mute: step 0 is only -65 dB; its
+ * mixer 0c's input amp and pin 1b's output amp can.) */
+static bool path_mutes(const struct codec *c, const struct path *p)
+{
+    for (unsigned i = 0; i < p->n; i++) {
+        const struct widget *w = hda_widget(c, p->nid[i]);
+        unsigned t = w ? WCAP_TYPE(w->caps) : 0;
+        if (!w)
+            continue;
+        if ((w->caps & WCAP_OUT_AMP) && (w->amp_out & AMPCAP_MUTE))
+            return true;
+        if (i && (t == W_MIXER || t == W_SELECTOR) && (w->caps & WCAP_IN_AMP) &&
+            p->in[i] < 16 && (w->amp_in & AMPCAP_MUTE))
+            return true;
+    }
+    return false;
+}
+
 void hda_output_init(struct output *o, const struct codec *c, const struct path *p)
 {
     *o = (struct output){ .max_bits = 32 };
@@ -215,6 +242,7 @@ void hda_output_init(struct output *o, const struct codec *c, const struct path 
     }
     if (o->vol)
         o->step = (uint8_t)step_for(o->vol_amp, GAIN_DEFAULT_CB);
+    o->mutes = path_mutes(c, p);
 }
 
 uint32_t hda_output_pcm(const struct output *o)
@@ -247,17 +275,43 @@ static status_t open_set(struct hda *h, const struct output *o, unsigned nid, ui
     return st;
 }
 
-status_t hda_output_open(struct hda *h, struct output *o)
+status_t hda_output_stage(struct hda *h, struct output *o, bool on)
 {
     if (!o->c)
         return ERR_NOT_FOUND;
-    const struct path *p = o->p;
-    unsigned cad = o->c->cad;
     const struct widget *pin = out_pin(o);
+    unsigned cad = o->c->cad;
+    status_t first = OK, st;
+#define TRY(x) do { if ((st = (x)) != OK && first == OK) first = st; } while (0)
+    if (on) {
+        /* The pin's output (and headphone amp), then EAPD: the amplifier
+         * powered last, its input already driven. */
+        uint32_t ctl = PINCTL_OUT | (pin->pincaps & PINCAP_HP ? PINCTL_HP : 0);
+        TRY(hda_set(h, cad, pin->nid, V_SET_PIN_CTL, ctl));
+        if (pin->pincaps & PINCAP_EAPD)
+            TRY(hda_set(h, cad, pin->nid, V_SET_EAPD, (pin->eapd | 0x2u) & 0x7u));
+    } else {
+        if (pin->pincaps & PINCAP_EAPD)
+            TRY(hda_set(h, cad, pin->nid, V_SET_EAPD, pin->eapd & 0x5u));
+        TRY(hda_set(h, cad, pin->nid, V_SET_PIN_CTL,
+                    pin->pin_ctl & ~(uint32_t)(PINCTL_OUT | PINCTL_HP) & 0xe7u));
+    }
+#undef TRY
+    o->stage = on && first == OK;
+    if (o->stage)
+        o->stage_at = drv_clock_ns();
+    if (first != OK)
+        drv_log("output: turning the output stage %s: a verb failed (%s)", on ? "on" : "off",
+                status_str(first));
+    return first;
+}
+
+/* Steps 4 and 5: the path's input on each mixer and selector after the
+ * DAC, then the output amps (the volume amp at the gain, the rest at 0 dB). */
+static status_t unmute_amps(struct hda *h, const struct output *o)
+{
+    const struct path *p = o->p;
     status_t st = OK;
-    o->open = true;   /* from here on hda_output_close undoes what was done */
-    o->failed = false;
-    /* Step 4: the path's input on each mixer and selector after the DAC. */
     for (unsigned i = 1; i < p->n && st == OK; i++) {
         const struct widget *w = hda_widget(o->c, p->nid[i]);
         unsigned t = WCAP_TYPE(w->caps);
@@ -266,7 +320,6 @@ status_t hda_output_open(struct hda *h, struct output *o)
                           AMP_SET_IN | AMP_SET_INDEX(p->in[i]) | LR | unity(w->amp_in),
                           "the input amp");
     }
-    /* Step 5: the output amps, the volume amp at the gain, the rest at 0 dB. */
     for (unsigned i = 0; i < p->n && st == OK; i++) {
         const struct widget *w = hda_widget(o->c, p->nid[i]);
         if (w->caps & WCAP_OUT_AMP)
@@ -274,12 +327,37 @@ status_t hda_output_open(struct hda *h, struct output *o)
                           AMP_SET_OUT | LR | (w->nid == o->vol ? o->step : unity(w->amp_out)),
                           "the output amp");
     }
-    /* Step 6: the pin's output (and headphone amp), then EAPD. */
-    uint32_t ctl = PINCTL_OUT | (pin->pincaps & PINCAP_HP ? PINCTL_HP : 0);
-    if (st == OK)
-        st = open_set(h, o, pin->nid, V_SET_PIN_CTL, ctl, "the pin control");
-    if (st == OK && (pin->pincaps & PINCAP_EAPD))
-        st = open_set(h, o, pin->nid, V_SET_EAPD, (pin->eapd | 0x2u) & 0x7u, "EAPD");
+    return st;
+}
+
+status_t hda_output_open(struct hda *h, struct output *o)
+{
+    if (!o->c)
+        return ERR_NOT_FOUND;
+    unsigned cad = o->c->cad;
+    const struct widget *pin = out_pin(o);
+    status_t st = OK;
+    o->open = true;   /* from here on hda_output_close undoes what was done */
+    o->failed = false;
+    uint64_t waited = 0, on_for = 0;
+    if (o->mutes) {
+        /* The stage first, settled, with every amp still muted. */
+        if (!o->stage)
+            st = hda_output_stage(h, o, true);
+        uint64_t t = drv_clock_ns();
+        if (st == OK && t < o->stage_at + OUTPUT_SETTLE_NS) {
+            waited = o->stage_at + OUTPUT_SETTLE_NS - t;
+            drv_sleep_until(o->stage_at + OUTPUT_SETTLE_NS);
+        }
+        on_for = drv_clock_ns() - o->stage_at;
+        if (st == OK)
+            st = unmute_amps(h, o);
+    } else {
+        /* No amp can mute: the pin's output is the mute, after the amps. */
+        st = unmute_amps(h, o);
+        if (st == OK)
+            st = hda_output_stage(h, o, true);
+    }
     if (st != OK) {
         o->failed = true;
         (void)hda_output_close(h, o);
@@ -299,8 +377,12 @@ status_t hda_output_open(struct hda *h, struct output *o)
         hda_db_str(db, sizeof(db), cb_of(o->vol_amp, o->step));
         drv_snprintf(at, sizeof(at), "at %s dB (node %02x step %u)", db, o->vol, o->step);
     }
-    drv_log("output: unmuted %s; read back: pin %02x ctl %02x eapd %02x, volume amp %02x", at,
-            pin->nid, rc & 0xffu, re & 0xffu, ra & 0xffu);
+    char stage[64] = "; the pin's output is its mute (no amp on the path can mute)";
+    if (o->mutes)
+        drv_snprintf(stage, sizeof(stage), " with the output stage on for %lu ms (waited %lu)",
+                     (unsigned long)(on_for / NS_PER_MS), (unsigned long)(waited / NS_PER_MS));
+    drv_log("output: unmuted %s%s; read back: pin %02x ctl %02x eapd %02x, volume amp %02x", at,
+            stage, pin->nid, rc & 0xffu, re & 0xffu, ra & 0xffu);
     return OK;
 }
 
@@ -309,13 +391,10 @@ status_t hda_output_close(struct hda *h, struct output *o)
     if (!o->open)
         return OK;
     const struct path *p = o->p;
-    const struct widget *pin = out_pin(o);
     status_t first = OK, st;
 #define TRY(x) do { if ((st = (x)) != OK && first == OK) first = st; } while (0)
-    if (pin->pincaps & PINCAP_EAPD)
-        TRY(hda_set(h, o->c->cad, pin->nid, V_SET_EAPD, pin->eapd & 0x5u));
-    TRY(hda_set(h, o->c->cad, pin->nid, V_SET_PIN_CTL,
-                pin->pin_ctl & ~(uint32_t)(PINCTL_OUT | PINCTL_HP) & 0xe7u));
+    if (!o->mutes)
+        TRY(hda_output_stage(h, o, false));
     for (unsigned i = p->n; i-- > 0;) {
         const struct widget *w = hda_widget(o->c, p->nid[i]);
         if (w->caps & WCAP_OUT_AMP)

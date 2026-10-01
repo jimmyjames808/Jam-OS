@@ -16,9 +16,13 @@
 #   - the codec's verbs (tools/hda-verbs.awk): only allow-listed ones; the
 #     path opened only while the converter has the stream's tag and
 #     muted again before the tag goes back to 0, nothing open at the end;
-#     the DAC's amp opened at step 44 (-30 dB) and no higher;
+#     the DAC's amp opened at step 44 (-30 dB) and no higher; the output
+#     stage (the pin's output, EAPD) on before the first stream tag and
+#     never off again while the driver runs (the amps are the mute, so the
+#     stage's power-up thump is never heard with a stream);
 #   - the driver's log: the stream opened, then the path unmuted, muted
-#     again, and the stream closed, in that order.
+#     again, and the stream closed, in that order; the first unmute came
+#     with the stage on for at least its settle time (400 ms).
 # QEMU_SMP passes through. Usage: tools/beep-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -44,7 +48,7 @@ order=$(grep -aoE "stream: open on|output: unmuted|output: muted again|stream: c
 [ "$order" = "stream: open on,output: unmuted,output: muted again,stream: closed," ] ||
     { echo "beep: the driver's lines came in the order: $order"; ok=0; }
 
-trace=$(awk -f tools/hda-verbs.awk "$out/beep.out")
+trace=$(awk -v stage=1 -f tools/hda-verbs.awk "$out/beep.out")
 bad=$(echo "$trace" | grep -E "^bad " || true)
 if [ -n "$bad" ]; then
     echo "beep: verbs that are not on the driver's allow-list:"
@@ -54,10 +58,19 @@ fi
 state=$(echo "$trace" | tail -1)
 [ "$state" = "state untagged 0 released 0 left 0" ] ||
     { echo "beep: the path was open outside the stream ($state)"; ok=0; }
+# The output stage: on before any stream, never off, still on at the end.
+power=$(echo "$trace" | grep "^power on " || true)
+echo "$power" | awk '{ g = $3 >= 1 && $5 == 0 && $7 >= 1 && $9 >= 1 } END { exit !g }' ||
+    { echo "beep: the output stage was not on before the stream and left on ($power)"; ok=0; }
+settled=$(grep -aoE "output: unmuted .* with the output stage on for [0-9]+ ms" "$log" |
+          head -1 | sed -E 's/.* on for ([0-9]+) ms/\1/')
+[ -n "$settled" ] && [ "$settled" -ge 400 ] ||
+    { echo "beep: the first unmute did not find the output stage settled (${settled:-no line})"; ok=0; }
 # The DAC's output amp (node 2, 0x300 with bit 15): opened at step 44 only.
 dac=$(echo "$trace" | grep "^open nid 2 verb 0x300 " | awk '{ print $NF }' | sort -u | tr '\n' ' ')
 [ "$dac" = "0xb02c " ] || { echo "beep: the DAC's amp opened with payload(s) $dac, want 0xb02c"; ok=0; }
-echo "beep: codec: $(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); $state"
+echo "beep: codec: $(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); $state; $power;" \
+    "stage on for ${settled:-?} ms at the first unmute"
 
 python3 - "$wav" <<'PY' || ok=0
 import struct, sys

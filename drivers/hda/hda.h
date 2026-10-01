@@ -439,21 +439,47 @@ struct output {
     bool     open;             /* unmuted now (hda_output_open succeeded, no close since) */
     bool     failed;           /* the last open failed (and was muted again) */
     uint32_t max_bits;         /* the largest sample size a stream may use (`hda bits`; 32) */
+    bool     mutes;            /* an amp on the path can mute it: the amps are its mute and the
+                                * output stage stays on (else the pin control is the mute) */
+    bool     stage;            /* the output stage is on: the pin's output (and headphone amp)
+                                * and EAPD */
+    uint64_t stage_at;         /* when it went on (ns) */
 };
+
+/* How long the output stage (the pin's output driver and headphone amp,
+ * and the amplifier EAPD powers) is left to settle, with every amp on the
+ * path muted, before the first stream unmutes it. Switching it on charges
+ * its output's DC-blocking capacitor: the thump the PC's headphones gave
+ * at the boot splash's first sound, when that came within microseconds of
+ * the stage going on. The spec gives no figure; Linux's Realtek code waits
+ * 200 ms after turning EAPD off before the pins (alc_eapd_shutup's depop
+ * delay), so twice that is taken here. It is paid once per driver start,
+ * and only the part not yet gone by when the first stream opens. */
+#define OUTPUT_SETTLE_NS (400 * NS_PER_MS)
 
 /* o for path p of codec c (both NULL: no path), at GAIN_DEFAULT_CB, any
  * sample size. Sends nothing. */
 void     hda_output_init(struct output *o, const struct codec *c, const struct path *p);
-/* The path opened, in the order of docs/A1-PLAN.md's steps 4-6: the
- * path's inputs on its mixers and selectors unmuted (the others stay
- * muted), every output amp on it unmuted (the volume amp at o->step, the
- * rest at 0 dB), then the pin's output on (and its headphone amp, if it
- * has one) and EAPD on (if the pin has it). A verb that fails: logged,
- * the path closed again, its status returned. ERR_NOT_FOUND: no path. */
+/* The output stage on (`on`: the pin's output, its headphone amp if it
+ * has one, EAPD if the pin has it) or off (the reverse order), with the
+ * path's amps left as they are. On a path whose amps can mute (o->mutes)
+ * main.c turns it on once, right after the path is set up muted, and off
+ * when the driver stops: streams then open and close the amps only, so
+ * the stage's power-up thump is never heard. Each verb is tried; the first
+ * failure is returned (on: the stage counts as off). ERR_NOT_FOUND: no
+ * path. */
+status_t hda_output_stage(struct hda *h, struct output *o, bool on);
+/* The path opened (docs/A1-PLAN.md's steps 4-6). With o->mutes: the stage
+ * on if it isn't (it should be), and OUTPUT_SETTLE_NS waited since it went
+ * on, then the path's inputs on its mixers and selectors unmuted (the
+ * others stay muted) and every output amp on it unmuted (the volume amp
+ * at o->step, the rest at 0 dB). Without: the amps as above, then the
+ * stage on, as the only mute there is. A verb that fails: logged, the path
+ * closed again, its status returned. ERR_NOT_FOUND: no path. */
 status_t hda_output_open(struct hda *h, struct output *o);
-/* The reverse: EAPD off, the pin's output off, every amp on the path
- * muted at gain step 0. Every verb is tried even if one fails (the first
- * failure is returned). Does nothing if o is not open. */
+/* The reverse: every amp on the path muted at gain step 0, and without
+ * o->mutes the stage off too. Every verb is tried even if one fails (the
+ * first failure is returned). Does nothing if o is not open. */
 status_t hda_output_close(struct hda *h, struct output *o);
 /* The volume amp to the step nearest `cb` centibels, clamped to its range
  * and to 0 dB; sent at once if o is open. ERR_NOT_FOUND: no path;
