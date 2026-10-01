@@ -138,39 +138,47 @@ static void csi(char final)
     }
 }
 
-/* UTF-8: the block elements full-screen programs draw with become glyphs
- * G_UPPER..G_DARK (drawn by draw_cell); any other non-ASCII character is
- * one '?'. */
-static uint32_t utf_cp, utf_need;
+/* UTF-8 (<utf8.h>): a character the console's font has (ASCII, the Latin
+ * letters, the block elements full-screen programs draw with) is drawn as
+ * itself (cell_glyph); any other character, a control character and each
+ * bad piece of a malformed sequence is one '?'. A sequence arrives a byte
+ * at a time: its bytes wait in useq until it is complete or turns out bad. */
+static uint8_t useq[4];
+static unsigned ulen;   /* bytes of a sequence held in useq */
 
-static uint8_t utf_glyph(uint32_t cp)
+static void put_char(uint16_t ch);
+
+/* A sequence that was cut short (by an ASCII byte or an escape): one '?'. */
+static void utf8_flush(void)
 {
-    switch (cp) {
-    case 0x2580: return G_UPPER;    /* upper half block */
-    case 0x2584: return G_LOWER;    /* lower half block */
-    case 0x2588: return G_FULL;     /* full block */
-    case 0x2591: return G_LIGHT;    /* light shade */
-    case 0x2592: return G_MEDIUM;   /* medium shade */
-    case 0x2593: return G_DARK;     /* dark shade */
-    }
-    return '?';
+    if (ulen)
+        put_char('?');
+    ulen = 0;
 }
-
-static void put_char(uint8_t ch);
 
 /* A byte of a UTF-8 sequence (ch >= 0x80). */
 static void utf8_byte(uint8_t ch)
 {
-    if (ch >= 0xc0) {   /* a lead byte */
-        utf_need = ch >= 0xf0 ? 3 : ch >= 0xe0 ? 2 : 1;
-        utf_cp = ch & (0x3fu >> utf_need);
-    } else if (utf_need) {
-        utf_cp = utf_cp << 6 | (ch & 0x3f);
-        if (--utf_need == 0)
-            put_char(utf_glyph(utf_cp));
-    } else {
-        put_char('?');   /* a stray continuation byte */
+    if (ulen) {
+        useq[ulen++] = ch;
+        uint32_t cp = 0;
+        int k = utf8_seq(useq, ulen, &cp);
+        if (k > 0) {
+            ulen = 0;
+            put_char(utf8_is_control(cp) ? '?' : cell_glyph(cp));
+            return;
+        }
+        if ((unsigned)-k == ulen)
+            return;   /* a valid start so far: wait for the rest */
+        ulen = 0;     /* the bytes before ch were a bad piece; ch starts afresh */
+        put_char('?');
     }
+    if (utf8_lead_len(ch) < 2) {
+        put_char('?');   /* a stray continuation byte, or one that never starts a sequence */
+        return;
+    }
+    useq[0] = ch;
+    ulen = 1;
 }
 
 /* A byte after ESC or inside ESC [ ...: true if it was one. */
@@ -215,7 +223,7 @@ void out_char(uint8_t ch)
         utf8_byte(ch);
         return;
     }
-    utf_need = 0;
+    utf8_flush();
     if (escape_byte(ch))
         return;
     if (alt_on) {
@@ -248,7 +256,7 @@ void out_char(uint8_t ch)
 }
 
 /* A printable character or a block glyph at the cursor. */
-static void put_char(uint8_t ch)
+static void put_char(uint16_t ch)
 {
     if (alt_on) {
         if (alt_x >= cols)

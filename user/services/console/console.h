@@ -13,6 +13,7 @@
 #include <idl/console.h>
 #include <idl/input.h>
 #include <os.h>
+#include <utf8.h>
 
 #define GW 8
 #define GH 16
@@ -40,12 +41,16 @@ enum { C_BLACK, C_RED, C_GREEN, C_YELLOW, C_BLUE, C_MAGENTA, C_CYAN, C_GREY,
 #define A_STAMP   ATTR(C_DARK, C_BLACK)
 #define A_PROC    ATTR(C_BGREEN, C_BLACK)
 #define A_OUT     ATTR(C_WHITE, C_BLACK)
+#define A_NOTICE  ATTR(C_BYELLOW, C_BLACK)
 
 struct cell {
-    uint8_t ch, attr;   /* the character (or a G_* block); ATTR(fg, bg) */
+    uint16_t ch;    /* the glyph: ASCII, a G_* block, or G_LATIN + n */
+    uint8_t  attr;  /* ATTR(fg, bg) */
 };
 /* The block elements full-screen programs draw with, as cell characters. */
 enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
+/* U+00A0 + n (n < FONT_LATIN_N, <font.h>) is glyph G_LATIN + n. */
+#define G_LATIN 128u
 
 /* Client levels (console.idl new_client): see main.c. */
 enum { L_ADMIN, L_SHELL, L_PROGRAM };
@@ -81,6 +86,11 @@ bool text_init(void);
 /* A kernel log line (without its newline), wrapped at cols, above the
  * current line. */
 void kernel_line(const char *s, size_t n);
+/* A notice (notices.c), the same way, in its own colour. */
+void notice_out(const char *s, size_t n);
+/* The glyph for code point cp (not a control character): ASCII, a Latin
+ * letter or a block element as they are, anything else '?'. */
+uint16_t cell_glyph(uint32_t cp);
 /* Commit the current line and start a new one. */
 void new_line(void);
 /* ESC [ 2 J: a screenful of blank lines. */
