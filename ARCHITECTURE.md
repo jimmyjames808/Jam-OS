@@ -30,7 +30,7 @@ built yet, it says so.
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
-| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service); uACPI and lwIP when power management and networking land |
+| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers); uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows |
 | IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
@@ -69,8 +69,8 @@ Every driver and service is a userspace process from the start.
    the file namespace)
  ─────────────────────────────────────────────────────────────
  Services (processes): devmgr · console · serialin · bootfs ·
-   fat (one per volume) · logd
-   later: netstack (lwIP) · power · audio mixer
+   fat (one per volume) · logd · mixer · music
+   later: netstack (lwIP) · power
  Drivers (processes): usb-bus (xHCI + hubs) → hid, usb-storage
    hda (HD Audio)
    later: NIC
@@ -110,9 +110,9 @@ Every driver and service is a userspace process from the start.
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played. The splash borrows the screen
   like any app, starts the video and its sound together once the mixer is
-  up (2 s at most, then silently), holds the last frame at least 2 s and
+  up (2 s at most, then silently), holds the last frame at least 0.5 s and
   until the shell calls `initctl.shell_ready`, and fades into the
-  console's text.
+  console's text. Any key skips it (the sound fades out).
 
 ## Memory
 
@@ -272,9 +272,9 @@ Every driver and service is a userspace process from the start.
   microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
-  releases each), the fallback until the kernel's own startup is signed
-  off on the PC. After a kexec there is no loader: the kernel's startup is
-  the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
+  releases each), kept as a fallback (the kernel's own startup was signed
+  off on the PC with M8.5). After a kexec there is no loader: the kernel's
+  startup is the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
@@ -495,7 +495,7 @@ Every driver and service is a userspace process from the start.
 | fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
-| hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | in progress |
+| hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
 | mixer | `hda`, through devmgr's query channel | `audio` and `audioctl`: every program's sound mixed into the one output ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
@@ -656,11 +656,14 @@ Not built yet; these rules bind every future path that can transmit.
   program from the bootfs image, from a range of any VMO, or from a file
   read through the namespace into a VMO; code is mapped executable only
   from a VMO handle with `RIGHT_EXEC`, which only the bootfs image's has,
-  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`). Running
-  programs from `/data` is a policy decision still to be made (anything
-  written to the stick could then run); user-space pagers
+  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`). Not
+  built yet: a program on `/data` runs only once the owner has marked it
+  from the interactive shell (`allow`, with a capability only that shell
+  holds, so a program can never mark a file itself), and it gets only
+  what it declared and the owner approved
+  ([M8.6-PLAN.md](docs/M8.6-PLAN.md)). User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
-  clean way.
+  clean way to map such code.
 
 ## Graphics
 
@@ -803,7 +806,8 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start, stop, next, status,
-set_volume, prev, play, levels, pause, sleep) once and keeps both ends, as
+set_volume, prev, play, levels, pause, sleep, spectrum, stereo) once and
+keeps both ends, as
 the mixer's; the shell holds a client end (SR_USER + 4) for `music start
 [folder] | stop | next | prev | pause | status | vol | sleep`, and hands a
 duplicate to bin/jamjar, the player's window, as the same role. It walks the folder for `.mp3` and `.wav` files, shuffles
@@ -822,6 +826,16 @@ in 64 frequency bands, for each channel (`stereo`) and the mono mix
 each ~11 ms of what it writes, kept
 by stream frame because it writes up to 1.37 s ahead
 (`user/services/music/spectrum.c`).
+
+**jamjar** (`user/apps/jamjar`, [the design note](docs/history/MUSIC-GUI.md))
+is the player's window, an app the shell starts with a duplicate of its
+`music` end; it plays nothing itself. It reads the library through the
+namespace it is given and decodes the albums' covers itself, on a thread
+of its own: the ID3v2 picture frame found by its own bounded parser,
+then PNG or JPEG through stb_image, only after `stbi_info` has said the
+size (at most 2048 on a side and 2048x1600 pixels), with all of
+stb_image's memory from one 40 MiB arena. The pictures it keeps are
+capped at 8 MiB.
 
 ## Storage
 
@@ -857,8 +871,8 @@ by stream frame because it writes up to 1.37 s ahead
   boot/jamos.elf (it looks through a read-only fat service) and partition
   2 of type 0x0C: they are `/esp` and `/data`. It is the first such disk
   found, not necessarily the one the machine booted from: with two Jam OS
-  sticks plugged in, the order they enumerate in decides (not settled yet;
-  Limine could say which volume it booted from). Each mount is a fat service
+  sticks plugged in, the order they enumerate in decides (not built yet:
+  the disk Limine booted from, by its MBR disk id). Each mount is a fat service
   holding one partition's `block` channel, supervised like a driver; init
   gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
   `user/include/devmgr.h`), with a generation that moves whenever a mount
@@ -962,8 +976,10 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   has another kernel or boot image than the ones it noted (size and
   modification time) when `/esp` was first mounted; then it reads both
   and calls `kexec_load` (RIGHT_MANAGE on the root resource) to replace
-  the stored kernel. It syncs and flushes the log as before, stops devmgr
-  in order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
+  the stored kernel. It syncs and flushes the log as before, stops the
+  sound's clients for good (the music player, the splash and the mixer:
+  the hda driver ends only once its client has gone), stops devmgr in
+  order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it. M9's `update` is meant to call
