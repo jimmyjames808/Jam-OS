@@ -40,7 +40,9 @@ a real desktop PC, which is where every milestone is tested.
   and plugged) and a benchmark, runnable from the boot menu or the shell.
 - Sound (in progress): `beep`, and `play /data/song.wav` plays a PCM WAV
   file (8- to 32-bit, mono or stereo, any common rate) in the headphones;
-  a mixer service plays several programs at once, `vol` sets their volumes.
+  `play /data/song.mp3` plays an MP3 (CBR or VBR, ID3 tags skipped, decoded
+  by dr_mp3) copied straight from the Mac; a mixer service plays several
+  programs at once, `vol` sets their volumes.
 
 Not yet: networking, power management, running
 programs from `/data`. Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -108,14 +110,14 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
-| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`) and WAV headers (`<wav.h>`) |
+| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3) |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |
-| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3 |
 | `docs/` | the documentation below; `docs/logo/`, the logo |
 
 ## Documentation
@@ -140,4 +142,4 @@ changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 ## Licence
 
 Jam OS is released under the [BSD 2-Clause License](LICENSE). The
-third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence).
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0).

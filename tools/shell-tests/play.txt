@@ -33,7 +33,7 @@ wait hda: gain -30.0 dB (step 44;
 wait pl-5
 wait jam>
 send play garbage.wav; echo pl-""6 $?
-wait play: garbage.wav: not a WAV file (no RIFF/WAVE header)
+wait play: garbage.wav: not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)
 wait pl-6 1
 wait jam>
 send play cut.wav; echo pl-""7 $?
@@ -49,7 +49,7 @@ wait play: nope.wav: no such file
 wait pl-9 1
 wait jam>
 send play -v loud x24.wav; echo pl-""10 $?
-wait usage: play [-s] [-v dB] <file.wav>
+wait usage: play [-s] [-v dB | -n] <file.wav|file.mp3>
 wait pl-10 2
 wait jam>
 # Ctrl+C ends the whole line, so $? is asked for on the next one.

@@ -82,6 +82,7 @@ it may be named NO NAME instead of JAMOS-DATA.)
 Then on the PC, headphones in the front jack: `play /data/song.wav`
 (`hda gain -20` first if -30 dB is too quiet). 44.1 kHz files
 (`LEI16@44100`, or any WAV a CD ripper writes) play too, resampled.
+MP3s need no conversion: copy them as they are ([MP3](#mp3) below).
 
 ### Tests
 
@@ -373,3 +374,134 @@ the mixer has found the driver: the call waits for the mixer (init holds
 the channel), and the mixer opens the driver when the splash starts its
 stream. For lip sync it uses `position().played` (the mixer's estimate
 of what is heard, to within a period's interpolation), not what it wrote.
+
+## MP3
+
+Status: done in QEMU (branch `a2-mp3`); not yet heard on the PC.
+
+`play song.mp3` plays an MPEG audio file the way it plays a WAV file:
+the same `<audio.h>` stream (resampled to 48 kHz), Ctrl+C with the 5 ms
+fade, `-v`.
+
+### The decoder: dr_mp3
+
+`third_party/dr_mp3` (third_party/VERSIONS.md): dr_mp3 by David Reid,
+public domain or MIT-0, one header, vendored unmodified at dr_libs commit
+51e61d3 (v0.7.4, unreleased: the commits after v0.7.3 fix an
+out-of-bounds read in its Xing/Info tag parsing). Chosen over minimp3
+(CC0), which it is a fork of, because minimp3 has been unmaintained
+since 2021 and dr_mp3 carries the fixes since, and because dr_mp3 already
+does what a player needs around the decoder: read/seek callbacks with a
+no-stdio build, its own allocation callbacks, ID3v2/ID3v1/APE tags,
+Xing/Info frames and LAME's encoder delay and padding (so a file plays
+exactly as long as its source). libmad and mpg123 are GPL/LGPL: out.
+
+It decodes MPEG-1, MPEG-2 and MPEG-2.5 (8000 to 48000 Hz), Layers I, II
+and III, CBR, VBR and free format, mono and stereo, into 16-bit samples
+(its float synthesis rounded and saturated inside it). SSE2 is on (user
+programs may use SSE; the kernel saves each thread's FPU state). Its
+configuration is `user/lib/mp3port/dr_mp3_impl.c`, compiled into libos
+with that directory's string.h and stdlib.h (onto libos's memcpy,
+memmove, memset, malloc and free); libos has no realloc, so the
+allocation callbacks leave it out and dr_mp3 grows its buffer with
+malloc, a copy and free. It needs no maths library. About 35 KiB of
+code, linked only into programs that call `mp3_open` (the shell, utest);
+while a file plays, ~33 KiB of decoder state and a 64 KiB read buffer
+on the heap and at most ~1.2 KiB of stack.
+
+### `<mp3.h>` (user/lib/mp3.c, libos)
+
+- `mp3_header_parse`: one frame header (version, layer, rate, bitrate,
+  frame length), from the standard's tables.
+- `mp3_sniff` (pure apart from its read callback): skips ID3v2 tags
+  (up to 8 in a row, footers included), finds an ID3v1 tag (the last 128
+  bytes, "TAG") and an APEv2 tag before it (its "APETAGEX" footer), then
+  looks in the first 8 KiB of what is left for a frame header followed
+  by a second one where the first frame ends (same version, layer and
+  rate), or by the end of the audio (a one-frame file). A file without
+  one is refused at once: dr_mp3 alone would search a 15 MB file to its
+  end for a frame. It also reads a VBRI (Fraunhofer) header.
+- `mp3_open`/`mp3_decode`/`mp3_close`: dr_mp3 through read/seek/tell
+  callbacks over the caller's reader, 64 KiB at a time, never the whole
+  file; `mp3_decode` gives interleaved 16-bit frames, 0 at the end, or
+  the reader's error. The length: a Xing/Info header's frame count less
+  LAME's delay and padding (exact), else VBRI's count, else the audio's
+  bytes at the first frame's bitrate (CBR: right to a frame), else
+  unknown.
+- **A dr_mp3 bug, worked around, not patched**: after it reads a
+  Xing/Info frame, dr_mp3 sets its stream cursor back to that frame's end
+  although it has already read up to 64 KiB further, so the clamp that
+  keeps it out of the ID3v1 tag lets it read the tag after the last
+  frame; the last frame then fails its "ends where the data ends" check
+  and is dropped (a LAME file with an ID3v1 tag played 26 ms short, its
+  tag bytes fed to the decoder). `mp3_open` gives dr_mp3 the file without
+  its end tags, so the cursor's error never reaches them. Worth reporting
+  upstream.
+
+### `play`
+
+The shell's `cmd/play_src.c` is a small source interface (open, read
+16-bit frames, close, a description for the first line) with a WAV
+source (what play.c did before) and an MP3 source; play.c's loop reads
+from whichever was opened. The format is chosen by content, not the
+name: `RIFF` at the start is WAV, else MP3 if `mp3_sniff` finds frames,
+else `not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)`.
+
+    play: song.mp3: MP3, 44100 Hz, 2 ch, 192 kbps, 4:22
+
+(`MP2`/`MP1` for Layers II and I; `VBR` when a Xing or VBRI header says
+so, `free format` when the bitrate isn't in the header; `?` when the
+length is unknown.) Frames the decoder can't decode are skipped (that
+bit of the music is missing; no silence is put in); a file cut off
+mid-frame ends at its last whole frame; a read error (the stick pulled)
+stops it with the error once dr_mp3's 64 KiB buffer has played.
+
+`play -n <file>` decodes (or for a WAV, reads) the whole file as fast as
+it goes and prints how long that took per second of audio: the CPU cost
+of a file, for the PC.
+
+### Getting MP3s onto the stick
+
+Copy them as they are to the stick's data partition from the Mac, then
+eject: `cp song.mp3 /Volumes/JAMOS-DATA/` (or NO NAME). Then
+`play /data/song.mp3`. Album art in the ID3 tag is skipped, not read.
+
+### CPU
+
+QEMU (TCG emulation on the Mac, `play -n`, including reading the file
+from the emulated stick): a 30 s 44.1 kHz stereo file at 320 kbps CBR
+1.14 s, 38 ms per second of audio (48 kHz 320 kbps: 40 ms; VBR -q:a 0:
+25 ms; 128 kbps: 24-28 ms). Reading a WAV of the same 30 s costs more
+(115 ms per second: its 5.3 MB through emulated USB), so most of the MP3
+figure is the emulator. The same decoder on the Mac natively: 0.22 ms per
+second of audio. On the PC (Raptor Lake) it should be well under 1 ms per
+second of audio (under 0.1 % of one core): `play -n` there gives the real
+number.
+
+### Tests
+
+- utest `mp3_header` (versions, layers, rates, lengths, free format,
+  every reserved value refused), `mp3_sniff` (ID3v2 with footer, two
+  tags, junk, APEv2 + ID3v1 at the end, one-frame and cut files; a
+  mismatched second header, a lone header, a tag alone, noise, a WAV,
+  empty: refused), `mp3_decode` (silent frames built in memory decode to
+  1152 zero frames each; a Xing frame: VBR, exact, not played; VBRI;
+  mono with tags at both ends; a read error past dr_mp3's first 64 KiB;
+  noise).
+- `tools/mp3-test.sh` ([TESTING.md](TESTING.md#area-scripts)) in QEMU.
+  Numbers on 2026-10-01: 44.1 kHz stereo 192 kbps CBR 2490.0 ms for a
+  2.49 s tone (LAME's delay and padding dropped exactly), 440.00/660.00
+  Hz; 48 kHz mono VBR 1000.0 ms, 1000.00 Hz; 22.05 kHz MPEG-2 without a
+  Xing tag 1500.8 ms; ID3 art + ID3v1 1000.0 ms; Layer II 1002.0 ms,
+  300.00 Hz; 3000 bytes of noise mid-file: 2333 ms (frames lost, played
+  on), cut at 60 %: 1464 ms, clean end; Ctrl+C with a fade; `play -n`:
+  441000 of 441000 frames.
+- Also checked on the Mac (not committed): mp3.c and dr_mp3 built for
+  the host with AddressSanitizer and UBSan, 400 mutated files (bytes
+  changed, cut, noise spliced in, headers fuzzed): no error.
+
+### Left for later
+
+- Heard on the PC: a real song; `play -n` there.
+- Seeking, a progress line, playing several files or a directory.
+- Upstream: the stream-cursor bug above.
