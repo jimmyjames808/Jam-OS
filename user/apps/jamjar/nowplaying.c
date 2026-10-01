@@ -109,6 +109,12 @@ int32_t vol_at(const struct layout *lo, int x)
     return cb / 5 * 5;
 }
 
+void vol_text(int32_t cb, char *out, size_t cap)
+{
+    int32_t m = cb < 0 ? -cb : cb;
+    snprintf(out, cap, "%s%d.%d dB", cb < 0 ? "-" : "", (int)(m / 10), (int)(m % 10));
+}
+
 /* A loudspeaker at (x, y) with `waves` arcs in front of it. */
 static void speaker(float x, float y, float u, int waves)
 {
@@ -147,7 +153,7 @@ static void volume(const struct app *a)
     if (cb <= -960)
         snprintf(db, sizeof(db), "muted");
     else
-        snprintf(db, sizeof(db), "%d.%d dB", cb / 10, (cb < 0 ? -cb : cb) % 10);
+        vol_text(cb, db, sizeof(db));
     text(&scr.s, r->x + r->w + 16 * u, r->y + (r->h - TEXT_H(u)) / 2, u, C_DIM, db);
 }
 

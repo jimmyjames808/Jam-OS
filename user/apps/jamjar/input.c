@@ -94,7 +94,9 @@ static void volume_by(struct app *a, int32_t d)
     a->vol_asked = cb;
     a->vol_asked_at = t;
     simple(a, CMD_VOLUME, cb, NULL);
-    app_toast(a, "volume %d.%d dB", cb / 10, (cb < 0 ? -cb : cb) % 10);
+    char db[24];
+    vol_text(cb, db, sizeof(db));
+    app_toast(a, "volume %s", db);
 }
 
 static void sleep_next(struct app *a)

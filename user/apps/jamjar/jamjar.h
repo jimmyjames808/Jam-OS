@@ -380,6 +380,8 @@ void app_play_row(struct app *a, int c, int row);
 void app_play_album(struct app *a, uint32_t album, const char *first);
 /* The volume slider's value for x, in centibels. */
 int32_t vol_at(const struct layout *lo, int x);
+/* A volume in centibels as "-12.5 dB" (the sign kept above -1 dB too). */
+void    vol_text(int32_t cb, char *out, size_t cap);
 
 /* draw.c: the frame for time t into scr.s; where the bars are now (they
  * grow to 70 % of the screen in the big view). */

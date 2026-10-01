@@ -274,6 +274,12 @@ static void test_stale(void)
     bool ok = now_elapsed(&a, t0 + NS_PER_S) == 2000 && !snap_stale(&a.snap, t0 + NS_PER_S);
     ok &= snap_stale(&a.snap, t0 + 10 * NS_PER_S) && now_elapsed(&a, t0 + 60 * NS_PER_S) < 4000;
     fun_check(ok, "link: the player stops answering: its state goes stale, its clock stops");
+    char v[3][24];
+    vol_text(-5, v[0], sizeof(v[0]));
+    vol_text(-125, v[1], sizeof(v[1]));
+    vol_text(0, v[2], sizeof(v[2]));
+    fun_check(eq(v[0], "-0.5 dB") && eq(v[1], "-12.5 dB") && eq(v[2], "0.0 dB"),
+              "volume: -0.5 dB keeps its sign");
 }
 
 static bool apart(const struct rect *p, const struct rect *q)

@@ -137,3 +137,6 @@ rounding is used).
   self-test's stale snapshot (FAILED before: the clock ran on a minute
   later). Not tested in QEMU: the shell is busy running jamjar, so
   nothing can stop the player meanwhile.
+- **6 fixed.** `vol_text` keeps the sign (now playing and the toast).
+  Test: the self-test's -0.5, -12.5 and 0 dB (the old arithmetic gave
+  "0.5 dB" for -5 centibels).
