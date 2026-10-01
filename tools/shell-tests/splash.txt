@@ -6,7 +6,7 @@
 # the shell.
 wait 120 init: hello from ring 3
 shot splash-quiet
-wait 120 splash: first frame
+wait 120 splash: waited
 sleep 1
 shot splash-a
 sleep 1

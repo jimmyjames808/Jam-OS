@@ -106,9 +106,10 @@ Every driver and service is a userspace process from the start.
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played. The splash borrows the screen
-  like any app, plays the video at once and its sound when the mixer is
-  up, holds the last frame until the shell calls `initctl.shell_ready`,
-  and fades into the console's text.
+  like any app, starts the video and its sound together once the mixer is
+  up (2 s at most, then silently), holds the last frame at least 2 s and
+  until the shell calls `initctl.shell_ready`, and fades into the
+  console's text.
 
 ## Memory
 

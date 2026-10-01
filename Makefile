@@ -323,11 +323,12 @@ check: all
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
-# in SPLASH_SRC; it is made again only when those files are there and
-# newer than it (without them the rule has no prerequisites: the
+# in SPLASH_SRC; it is made again only when both of those files are there
+# and one is newer than it (without them the rule has no prerequisites: the
 # committed file is used as it is).
 SPLASH_SRC   ?= $(HOME)/Movies/motion-graphics/jamos-boot
-SPLASH_FILES := $(wildcard $(SPLASH_SRC)/jamos-boot.mov $(SPLASH_SRC)/jamos-boot.wav)
+SPLASH_PAIR  := $(SPLASH_SRC)/jamos-boot.mov $(SPLASH_SRC)/jamos-boot.wav
+SPLASH_FILES := $(if $(filter 2,$(words $(wildcard $(SPLASH_PAIR)))),$(SPLASH_PAIR))
 
 boot/splash.mpg: $(SPLASH_FILES)
 	$(if $(SPLASH_FILES),tools/mksplash.sh $(SPLASH_SRC) $@)
