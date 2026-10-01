@@ -13,7 +13,7 @@
 #include <os.h>
 #include "logd.h"
 
-#define CHUNK 4096u
+#define CHUNK (64u << 10)   /* bytes per write: the transfer buffer's 64 KiB (file.idl) */
 
 /* The lines before the text. */
 static int intro(char *buf, size_t size, const struct crashlog_header *h)
