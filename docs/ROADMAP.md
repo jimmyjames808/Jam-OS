@@ -132,11 +132,6 @@ kernel log ring and the block cache for the slow `/esp` read. The first
 ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
-- **devmgr's job check at a driver's exit** can report a driver that ended
-  cleanly as "did not end cleanly" (seen on the PC for a hid after a warm
-  reboot: a request it left queued at usb-bus is still charged to its
-  job). A second look a moment later, before counting it as a problem,
-  would cover it.
 - **logd loses lines during the klog flood test**: the kernel test
   `console_klog_read_after_gap` writes more than the 64 KiB kernel log
   ring holds, on purpose, and no reader can follow it; each live `ktest`

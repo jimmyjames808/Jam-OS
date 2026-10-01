@@ -131,8 +131,16 @@ void forget_driver(struct binding *b);
  * with exit 0 by itself (or `excused`) and its job is empty (checked only
  * then: a killed driver's DMA pages may still be quarantined). */
 bool stop_driver(struct binding *b, bool kill, bool excused);
-/* Is the job empty? Logs what's left if not. */
+/* Is the job of a driver that has ended empty? One that isn't yet is
+ * looked at again for a while (job_run_due): true for now, and if it is
+ * still not empty then it is logged as not ended cleanly and counted in
+ * `problems`. False only if it can't be looked at again. */
 bool job_empty(handle_t job, const char *who);
+void job_run_due(void);
+uint64_t job_next_deadline(void);   /* DEADLINE_NEVER: nothing to look at again */
+/* Wait (bounded) until every job being looked at again is decided; false
+ * if any was not empty in the end. */
+bool job_settle(void);
 /* DEVMGR_DRIVER_VIEW: the function and each memory BAR as a driver gets
  * them (hs[i] to be sent with rs[i]); *mask: which BARs. */
 status_t driver_view(struct binding *b, handle_t *hs, rights_t *rs, uint32_t *nh, uint32_t *mask);

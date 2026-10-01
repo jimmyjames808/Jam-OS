@@ -533,7 +533,10 @@ Rules for userspace drivers:
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the
   driver is finished): backoff 100 ms, doubling per restart within the
   last 60 s up to 5 s; the 6th death within 60 s gives up (log + RESULTS
-  line). A restart is a bind from scratch, i.e. the safe-rebind path: the
+  line). A driver that ended by itself must leave its job empty; one
+  that hasn't quite yet (a request it sent still queued at the server it
+  called, its pages being given back on another CPU) is looked at again
+  for 2 s before it counts as not ended cleanly. A restart is a bind from scratch, i.e. the safe-rebind path: the
   function woken to D0, a new `dma_cap` (bus mastering off until the new
   driver has quiesced the device; the dead driver's pins stay quarantined
   meanwhile), a new interrupt object. A driver's hardware handles are not
