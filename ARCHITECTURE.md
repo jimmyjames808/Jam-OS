@@ -691,7 +691,9 @@ Not built yet; these rules bind every future path that can transmit.
   paths and files over libos's namespace (the current directory is the
   shell's own); `cmd/<name>.c` is one file per command.
   System information comes from dedicated syscalls (`sys_info`,
-  `cpu_stat`, `proc_list`, `rtc_read`; `RIGHT_READ` on the root resource);
+  `cpu_stat`, `proc_list`, `rtc_read`; `RIGHT_ROOT_SYSINFO` and
+  `RIGHT_ROOT_CLOCK` on the root resource: each power over the system is
+  a right of its own, `<jam/abi.h>` RIGHT_ROOT_*, held only where used);
   CPU time is counted per thread and CPU at every switch. The kernel tests
   are shell commands too (`ktest`, `stress 600`), so a test run needs no
   reboot; rebooting is only for loading a new kernel from the stick.
@@ -699,12 +701,19 @@ Not built yet; these rules bind every future path that can transmit.
   program from the bootfs image, from a range of any VMO, or from a file
   read through the namespace into a VMO; code is mapped executable only
   from a VMO handle with `RIGHT_EXEC`, which only the bootfs image's has,
-  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`). Not
-  built yet: a program on `/data` runs only once the owner has marked it
-  from the interactive shell (`allow`, with a capability only that shell
-  holds, so a program can never mark a file itself), and it gets only
-  what it declared and the owner approved
-  ([M8.6-PLAN.md](docs/M8.6-PLAN.md)). User-space pagers
+  so a program outside `/boot` is refused (`ERR_ACCESS_DENIED`), but for
+  one on `/data` the owner marked: `allow <file>` in the shell init starts
+  shows the file's list and asks y/n; a yes writes `<sha-256>\t<path>\t
+  <list>` into `/data/etc/allow` (`allow -l` lists, `allow -r <name>`
+  takes back). To run it the shell reads the file into a VMO only it
+  holds, turns that handle into one that may execute and not write
+  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX` and refuses a VMO with
+  another handle, a mapping or a pin), hashes those bytes, and starts it
+  only if a line has that path and hash, with the list read from the
+  same bytes. No program can mark one: every program's `/data` is a view
+  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. Whoever holds
+  the stick can edit the file on another computer, as they could replace
+  the kernel. User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
   clean way to map such code.
 

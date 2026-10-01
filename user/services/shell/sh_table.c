@@ -92,7 +92,12 @@ static const struct sh_cmd cmds[] = {
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
-      "  It sees the mounts the shell has. Only programs in /boot can run so far"),
+      "  It gets what its list asks for (services, mounts) and its terminal. A program\n"
+      "  on /data runs once `allow` has marked it, and only as the file was then"),
+    C(allow, C_SYSTEM, "allow <file> | -l | -r <name>",
+      "let a program on /data run: shows what it asks for (services, mounts) and\n"
+      "  asks y/n; y keeps its hash and list in /data/etc/allow. A changed file is\n"
+      "  refused until allowed again. -l: the allowed ones. -r: take one back"),
     C(ktest, C_TESTS, "ktest [prefix] [options]",
       "kernel tests (as the boot menu's All tests).\n"
       "  loops=N: the set N times. seed=S: in the order shuffled from S (loop k uses\n"

@@ -29,6 +29,7 @@
  *   sh_vars.c      variables and aliases
  *   sh_handles.c   the handles init gives the shell (root, devmgr, ...)
  *   sh_program.c   starting programs (run, utest, ...)
+ *   sh_allow.c     programs from /data: the owner's approvals
  *   sh_kernel.c    the kernel's debug commands and its log
  *   sh_vfs.c       paths and files
  *   sh_num.c       numbers, sizes, seconds
@@ -163,6 +164,31 @@ int sh_run_program(int argc, char **argv);
  * result line from the kernel log; its status. */
 int sh_run_test_program(int argc, char **argv);
 
+/* ---- programs from /data (sh_allow.c) ---------------------------------------------- */
+
+struct wants;
+/* abs is a file path on /data. */
+bool     sh_on_data(const char *abs);
+/* The program file at path read into a VMO only we hold and made
+ * executable (*vmo, *size), its SHA-256 as hex (65 bytes with the NUL) and
+ * its list (<wants.h>), all from those bytes. ERR_ACCESS_DENIED: this
+ * shell can't make code executable (not the shell init started);
+ * ERR_INVALID_ARGS: not an ELF file, or its list is broken. */
+status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
+                         struct wants *w);
+/* Ready to run if the owner allowed exactly this file (a line of
+ * /data/etc/allow with its path and hash): sh_program_file's outputs.
+ * false (said why on the screen) otherwise. */
+bool     sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct wants *w);
+/* Call fn for every approval (its hash, path and list); how many, or a
+ * negative ERR_* if the file can't be read (none at all is 0). */
+int      sh_allow_each(void (*fn)(const char *hash, const char *path, const char *text,
+                                  void *ctx), void *ctx);
+/* Write an approval for path (replacing its old one), or remove those
+ * whose path or file name is `name` (*removed: how many). */
+status_t sh_allow_add(const char *path, const char *hash_hex, const char *text);
+status_t sh_allow_remove(const char *name, unsigned *removed);
+
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 
 /* A kernel debug command; its output arrives as kernel log lines. < 0: an
@@ -289,7 +315,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
-SH_CMD(reboot); SH_CMD(run);
+SH_CMD(reboot); SH_CMD(run); SH_CMD(allow);
 /* tests */
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
 SH_CMD(mixtest);

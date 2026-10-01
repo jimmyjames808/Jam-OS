@@ -1,0 +1,88 @@
+# allow: programs on /data (docs/history/M8.6-SVC.md): a copy of bin/utest
+# on /data is refused until allowed; `allow` shows its list and asks, n
+# keeps it refused, y lets it run; `allow -l` lists it; a program (even
+# the allowed one, even with /data writable) can't change /data/etc; a
+# changed file is refused until allowed again; `allow -r` takes it back;
+# only a file on /data can be allowed, and a shell init didn't start can't.
+# Run: QEMU_INPUT=tools/shell-tests/allow.txt tools/qemu-test.sh build/test allow shell
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+send T=x
+wait jam>
+send cp /boot/bin/utest /data/u && echo ok-$T-copied
+wait ok-x-copied
+wait jam>
+send run /data/u env one; echo st-$T=$?
+wait run: /data/u is not allowed to run: `allow /data/u` first
+wait st-x=126
+wait jam>
+send allow /data/u; echo st-$T=$?
+wait allow u: devmgr, devmgr-ctl, every mount (write), the kernel's klog? y/n
+type n
+wait st-x=1
+wait jam>
+send allow /data/u; echo st-$T=$?
+wait allow u: devmgr
+type y
+wait allow: /data/u may run
+wait st-x=0
+wait jam>
+send allow -l
+wait /data/u: devmgr, devmgr-ctl, every mount (write), the kernel's klog (sha-256
+wait jam>
+send run /data/u env one; echo st-$T=$?
+wait arg: one
+wait run: /data/u exited with code 0
+wait st-x=0
+wait jam>
+# a program's /data is a view: etc can't change, the rest can
+send run /data/u fs-put /data/etc/allow x
+wait fs-put: /data/etc/allow: ERR_ACCESS_DENIED
+wait jam>
+send run utest fs-put /data/ETC/new x
+wait fs-put: /data/ETC/new: ERR_ACCESS_DENIED
+wait jam>
+send run utest fs-put /data/ok.txt fine
+wait fs-put: /data/ok.txt: OK
+wait jam>
+send cat /data/etc/allow | grep -c /data/u | grep ^1$ && echo ok-$T-unchanged
+wait ok-x-unchanged
+wait jam>
+# the file changes: refused until it is allowed again
+send write -a /data/u x; run /data/u env two; echo st-$T=$?
+wait run: /data/u changed since it was allowed: `allow /data/u` again
+wait st-x=126
+wait jam>
+send allow -r u; echo st-$T=$?
+wait allow: u may no longer run
+wait st-x=0
+wait jam>
+send allow -l
+wait allow: no program on /data is allowed to run
+wait jam>
+send allow -r u; echo st-$T=$?
+wait allow: u: not allowed
+wait st-x=1
+wait jam>
+send allow /boot/bin/utest; echo st-$T=$?
+wait allow: /boot/bin/utest: only a program on /data can be allowed
+wait st-x=1
+wait jam>
+send allow; echo st-$T=$?
+wait usage: allow
+wait st-x=2
+wait jam>
+# a second shell (run shell): no /data etc, no root: it can't
+send run shell
+wait Jam OS shell
+seen run: bin/shell started
+wait jam>
+send allow /data/u
+wait allow: /data/u: only the shell init starts can allow programs
+wait jam>
+type \x03
+wait 10 run: bin/shell was killed
+wait jam>
+send reboot -f
+wait reboot: resetting

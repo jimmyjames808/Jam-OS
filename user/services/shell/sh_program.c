@@ -4,8 +4,10 @@
  * Where a program is: a bare name is /boot/bin/<name>; anything with a '/'
  * is a bootfs name ("bin/x") or a path on any mount. A program on /boot is
  * started from the boot image itself (libos's spawn maps its code from the
- * image); one on another mount is read through the namespace, and the
- * kernel refuses its code for now (<os.h>, spawn_args.path).
+ * image); one on /data runs only if the owner allowed exactly that file
+ * (sh_allow.c), from a VMO the kernel made executable for us; one on any
+ * other mount is read through the namespace and the kernel refuses its
+ * code (<os.h>, spawn_args.path).
  *
  * What a program gets is its list (<wants.h>), which the build checked
  * for every program in the boot image: the services and mounts it names,
@@ -122,10 +124,10 @@ static bool find_program(const char *argv0, char *path, size_t cap)
 static rights_t root_rights(uint32_t want)
 {
     rights_t r = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT;
-    if (want & (WANT_RIGHT_KLOG | WANT_RIGHT_SYSINFO | WANT_RIGHT_CLOCK))
-        r |= RIGHT_READ;
-    if (want & WANT_RIGHT_DEBUG)
-        r |= RIGHT_MANAGE;
+    r |= want & WANT_RIGHT_KLOG ? RIGHT_ROOT_KLOG : 0;
+    r |= want & WANT_RIGHT_SYSINFO ? RIGHT_ROOT_SYSINFO : 0;
+    r |= want & WANT_RIGHT_CLOCK ? RIGHT_ROOT_CLOCK : 0;
+    r |= want & WANT_RIGHT_DEBUG ? RIGHT_ROOT_DEBUG : 0;
     return r;
 }
 
@@ -153,17 +155,24 @@ static unsigned program_handles(const struct wants *w, struct spawn_handle *x, r
     return nx;
 }
 
-/* The list of the program spawn will start from path (a bootfs name, or a
- * path on a mount), into *w. A program in the boot image has the list the
- * build checked; one on a mount gets nothing (its code is refused). */
-static void program_wants(const char *path, struct wants *w)
+/* The program at path (a bootfs name, or a path on a mount) and its list
+ * (*w). A program in the boot image has the list the build checked; one
+ * on /data runs only as the owner allowed it (sh_allow.c: *vmo then holds
+ * its bytes, made executable, *size of them); one anywhere else is given
+ * nothing, and the kernel refuses its code. false: it can't run (said). */
+static bool program_wants(const char *path, struct wants *w, handle_t *vmo, uint64_t *size)
 {
     const struct bootfs_view *fs;
     const void *data;
-    uint64_t size;
     memset(w, 0, sizeof(*w));
-    if (path[0] != '/' && bootfs_default(&fs) == OK && bootfs_lookup(fs, path, &data, &size) == OK)
-        (void)wants_read(data, size, w);   /* checked at build time; a bad one gives nothing */
+    *vmo = HANDLE_INVALID;
+    *size = 0;
+    if (path[0] == '/')
+        return !sh_on_data(path) || sh_allowed_program(path, vmo, size, w);
+    if (bootfs_default(&fs) == OK && bootfs_lookup(fs, path, &data, size) == OK)
+        (void)wants_read(data, *size, w);   /* checked at build time; a bad one gives nothing */
+    *size = 0;
+    return true;
 }
 
 /* Wait for it to end, copying its output and killing its job on Ctrl+C. */
@@ -236,14 +245,18 @@ static int run_program(int argc, char **argv)
     char path[SH_PATH_MAX];
     if (!find_program(argv[0], path, sizeof(path)))
         return 127;
-    handle_t job, proc, out_r = HANDLE_INVALID;
+    handle_t job, proc, out_r = HANDLE_INVALID, vmo;
+    uint64_t size;
+    static struct wants w;   /* the shell runs one program at a time */
+    if (!program_wants(path, &w, &vmo, &size))
+        return 126;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
         sh_tty("run: no job (%s)\n", status_str(st));
+        if (vmo)
+            jam_handle_close(vmo);
         return 126;
     }
-    static struct wants w;   /* the shell runs one program at a time */
-    program_wants(path, &w);
     const char *grants[WANTS_MAX + 1];
     for (unsigned i = 0; i < w.n; i++)
         grants[i] = w.grant[i];
@@ -259,17 +272,20 @@ static int run_program(int argc, char **argv)
         args[n++] = argv[i];
     args[n] = NULL;
     struct spawn_args a = {
-        .path = path, .argc = n, .argv = args, .job = job, .extra = x, .nextra = nx,
-        .extra_rights = xr, .envp = (const char *const *)env, .ns = w.n ? grants : NULL,
+        .path = path, .vmo = vmo, .size = size, .argc = n, .argv = args, .job = job,
+        .extra = x, .nextra = nx, .extra_rights = xr, .envp = (const char *const *)env,
+        .ns = w.n ? grants : NULL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);
     sh_free_env(env);
+    if (vmo)
+        jam_handle_close(vmo);   /* the program maps what it runs: it keeps it */
     if (st != OK) {
         sh_tty("run: can't start %s (%s)\n", path, status_str(st));
         if (st == ERR_ACCESS_DENIED && path[0] == '/')
-            sh_tty("run: only programs in /boot can run: the kernel makes no other memory "
-                   "executable yet\n");
+            sh_tty("run: only programs in /boot can run, and those on /data the owner "
+                   "allowed (`allow`)\n");
         if (out_r)
             jam_handle_close(out_r);
         jam_handle_close(job);

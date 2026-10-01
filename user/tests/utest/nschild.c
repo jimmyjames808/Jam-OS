@@ -1,7 +1,8 @@
-/* utest: the children of the namespace tests (ns.c, nsfat.c), started as
- * "utest ns-..." with a namespace the test chose, and "utest fscat <path>"
- * and "utest fs-hold <path>" for the shell's scripts. Each returns 0, or a
- * number that says which check failed. */
+/* utest: the children of the namespace tests (ns.c, nsfat.c, svc.c),
+ * started as "utest ns-..." with a namespace the test chose, and "utest
+ * fscat <path>", "utest fs-hold <path>" and "utest fs-put <path> <text>"
+ * for the shell's scripts. Each returns 0, or a number that says which
+ * check failed. */
 #include <os.h>
 #include "utest.h"
 
@@ -126,6 +127,15 @@ static int fscat(const char *path)
     return 0;
 }
 
+/* "fs-put <path> <text>": write the file (created or emptied) and say how
+ * it went, for the shell's scripts: a program's /data leaves etc alone. */
+static int fs_put(const char *path, const char *text)
+{
+    status_t st = ns_put(path, text);
+    printf("fs-put: %s: %s\n", path, status_str(st));
+    return st == OK ? 0 : 1;
+}
+
 /* "fs-hold <path>": write the file a piece at a time and never sync or
  * close it, until we are killed: a file that is unsynced whenever the
  * plug is pulled (tools/data-test.sh). */
@@ -168,6 +178,8 @@ int ns_child(int argc, char **argv)
         return fscat(argv[2]);
     if (!strcmp(m, "fs-hold") && argc > 2)
         return fs_hold(argv[2]);
+    if (!strcmp(m, "fs-put") && argc > 3)
+        return fs_put(argv[2], argv[3]);
     if (!strcmp(m, "fat-shell"))
         return fat_shell();
     return 127;

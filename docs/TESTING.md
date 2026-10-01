@@ -302,6 +302,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `soak-plug.txt` | the soak with a second, writable stick and the boot stick pulled and plugged while it runs | use `tools/soak-test.sh` |
 | `screen.txt`, `screen-verbose.txt` | the shell's screen on a plain boot (no log, notices) and on a `verbose` one | use `tools/screen-test.sh` |
 | `nousb.txt` | safe mode | command line `nousb` instead of `shell` |
+| `allow.txt` | programs on `/data`: a copy of bin/utest refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks` | use `tools/hda-test.sh` |
 | `hdastream.txt` | `hdatest`: the HD Audio output stream (open, a pattern played, a running stream closed, the driver killed mid-stream) | use `tools/hda-stream-test.sh` |
