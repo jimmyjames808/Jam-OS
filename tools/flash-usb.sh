@@ -3,6 +3,13 @@
 # bootfs and limine.conf onto its ESP. Nothing is erased; /data is not
 # touched. (macOS does not mount an MBR partition of type 0xEF by itself,
 # so this mounts it by hand, which needs sudo.)
+# A pull mid-way must leave a stick that boots: the three files are first
+# written under new names (<name>.new) next to the old ones, synced and
+# compared, and only then renamed over them, one after the other, which
+# rewrites a directory entry each (milliseconds, against the seconds the
+# copies take). A pull before that leaves the old files whole (and .new
+# files, which the next flash removes first); a pull during the renames
+# can leave the new kernel with the old boot image or menu for that boot.
 # Usage: tools/flash-usb.sh <kernel> <bootfs> <limine.conf> [/dev/diskN]
 # With no disk given, the one external disk with Jam OS's layout is used.
 set -eu
@@ -71,11 +78,22 @@ if [ ! -f "$mnt/boot/jamos.elf" ] || [ ! -d "$mnt/boot/limine" ]; then
     exit 1
 fi
 
+# Left over by a flash that was cut short: not booted from, removed.
+$SUDO rm -f "$mnt/boot/jamos.elf.new" "$mnt/boot/bootfs.img.new" \
+    "$mnt/boot/limine/limine.conf.new"
 # -X: no extended attributes, so no ._ files on the FAT volume.
-$SUDO cp -X "$elf" "$mnt/boot/jamos.elf"
-$SUDO cp -X "$bootfs" "$mnt/boot/bootfs.img"
-$SUDO cp -X "$conf" "$mnt/boot/limine/limine.conf"
+$SUDO cp -X "$elf" "$mnt/boot/jamos.elf.new"
+$SUDO cp -X "$bootfs" "$mnt/boot/bootfs.img.new"
+$SUDO cp -X "$conf" "$mnt/boot/limine/limine.conf.new"
 $SUDO rm -f "$mnt/boot/._"* "$mnt/boot/limine/._"*
+sync
+cmp "$elf" "$mnt/boot/jamos.elf.new"
+cmp "$bootfs" "$mnt/boot/bootfs.img.new"
+cmp "$conf" "$mnt/boot/limine/limine.conf.new"
+# All three are whole on the stick: now the renames, the menu last.
+$SUDO mv -f "$mnt/boot/jamos.elf.new" "$mnt/boot/jamos.elf"
+$SUDO mv -f "$mnt/boot/bootfs.img.new" "$mnt/boot/bootfs.img"
+$SUDO mv -f "$mnt/boot/limine/limine.conf.new" "$mnt/boot/limine/limine.conf"
 sync
 cmp "$elf" "$mnt/boot/jamos.elf"
 cmp "$bootfs" "$mnt/boot/bootfs.img"

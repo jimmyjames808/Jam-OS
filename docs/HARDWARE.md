@@ -126,15 +126,24 @@ make flash                       # or: make flash DEV=/dev/diskN
 ```
 
 `tools/flash-usb.sh` finds the one external disk with Jam OS's two
-partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`,
-compares all three, and ejects the stick. It asks for your password: macOS
-does not mount an MBR partition of type 0xEF by itself, so the script
-mounts it by hand with `sudo`. It refuses a disk whose first partition
-holds no Jam OS kernel. The files are copied in place, so pulling the
-stick in the middle of a flash can leave it unbootable: run `make flash`
-again. (A stick made before M8 has one partition that macOS mounts as
+partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`
+under new names (`jamos.elf.new`, ...), compares all three, renames them
+over the old ones, compares again, and ejects the stick. It asks for your
+password: macOS does not mount an MBR partition of type 0xEF by itself,
+so the script mounts it by hand with `sudo`. It refuses a disk whose first
+partition holds no Jam OS kernel. Pulling the stick during the copies
+leaves the old files whole (it boots as before; run `make flash` again);
+only the renames at the end, a few milliseconds, could leave the new
+kernel with the old boot image for one boot. (A stick made before M8 has one partition that macOS mounts as
 `NO NAME`: copy the three files there by hand, or remake it with
 `make usb`.)
+
+Which disk is the boot disk, with two Jam OS sticks in: the one the PC
+booted from, by the MBR disk id Limine reports
+([ARCHITECTURE.md](../ARCHITECTURE.md#storage)). `make usb` gives a stick
+a random id; a stick made before 2026-10-01 has id 0 (the boot log's
+`boot disk: no MBR disk id` line), and on it the first Jam OS disk found
+is the boot disk, as before, until it is made again with `make usb`.
 
 macOS does mount the data partition by itself (it may show it as
 `NO NAME`): the boot logs are in its `logs/` folder, `boot-0001.txt`,

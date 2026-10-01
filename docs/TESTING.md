@@ -140,6 +140,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
+- `bootdisk=<n>`: the MBR disk id (decimal) of the disk the machine booted
+  from, which a kernel started by kexec gets from the one before (Limine
+  tells the first one itself); devmgr takes the Jam OS disk with that id
+  as the boot disk.
 - `crashkernel=<MiB>`: the stored kernel's region (default 32, 32..1024); `crashkernel=0`: no
   stored kernel, so a panic halts on its screen and `reboot` falls back to the firmware.
 - `crashtest=<name>`: the stored kernel's command line gets `test<name>`, so the next boot (after
@@ -325,6 +329,7 @@ matters `QEMU_XHCI`) pass through.
 |---|---|
 | `tools/usb-test.sh <outdir>` | the `init` run with a hub, a test keyboard behind it, a CCID device, a mouse and a keyboard; the monitor script answers usbtest's markers (keys, kill hid, unplug, replug, unplug the hub) |
 | `tools/usb-early-test.sh <outdir>` | input early in boot (`usb-early.txt`): a plain boot with a hub (a keyboard, a disk and a slow keyboard behind it), a mouse and a slow keyboard on root ports; the slow ones have the serial number `jamos-test-slow`, which usb-bus treats as a device that doesn't answer (its first two attempts on a port each take a second and fail). The console's "input ready: the first keyboard and mouse" line must come under `EARLY_MAX` s (1.5) and before either slow device attached; both slow ports are tried again after 100 and 200 ms and attach on the third attempt; prints the times |
+| `tools/bootdisk-test.sh <outdir>` | the boot disk with two Jam OS sticks in (`bootdisk.txt`): a copy of the image with another MBR disk id and a file of its own on its data partition, on qemu-xhci port 2; `/data` must be the boot stick's and the copy's data partition `/usb1`, before and after a `reboot` (kexec), and the kernel must name the boot stick's id both times (the second from the kernel before) |
 | `tools/storage-test.sh <outdir>` | the `init` run with two more usb-storage disks behind a hub: usbtest's storage checks (bulk transfers, a STALL and reset recovery, usb-storage taking over a disk left mid-READ, the ESP's boot sector read through `block`, read-only and out-of-range requests refused, a write read back), the monitor script unplugging the second disk while it is being read, and READs timing out on a disk QEMU throttles to 4 KiB/s |
 | `tools/usbkeys-test.sh <outdir>` | typing into the shell through usb-bus, hid and the console (`usbkeys.txt`) |
 | `tools/fun-test.sh <outdir>` | the apps (`fun.txt`); `FUN_HD=1` runs at the PC's 2560x1440 |
@@ -366,6 +371,7 @@ of them. Each file's header says more.
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/write-usb.sh`, `tools/mbr-grow.py` | `make usb`: the image onto a stick, the data partition grown to its end and left blank |
 | `tools/flash-usb.sh` | `make flash`: a new kernel, boot image and boot menu onto a stick's ESP |
+| `tools/flash-test.sh <outdir>` | `tools/flash-usb.sh` on a copy of the image attached with `hdiutil` (never a real disk; macOS): the new files are there, no `.new` file is left (a stale one placed first included), the data partition is unchanged |
 | `tools/mksplash.sh` | `boot/splash.mpg` from the owner's animation and its sound (ffmpeg); `make` runs it only when both source files are there (`SPLASH_SRC`) and one is newer |
 | `tools/bdf2c.py`, `tools/compdb.py` | `make font` (the console font from Spleen's BDF), `make compdb` |
 
