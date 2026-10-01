@@ -13,6 +13,19 @@ struct cpu_features cpu_features;
  * exist only on CPUs with SMAP. */
 uint8_t smap_on;
 
+/* The microcode revision: the high half of IA32_BIOS_SIGN_ID, which an
+ * Intel CPU fills in when CPUID leaf 1 runs after the MSR was cleared
+ * (SDM vol. 3A 10.11.7.1). Other vendors: not read (0). */
+static uint32_t read_microcode(void)
+{
+    if (strcmp(cpu_features.vendor, "GenuineIntel"))
+        return 0;
+    uint32_t a, b, c, d;
+    wrmsr(MSR_BIOS_SIGN_ID, 0);
+    cpuid(1, 0, &a, &b, &c, &d);
+    return (uint32_t)(rdmsr(MSR_BIOS_SIGN_ID) >> 32);
+}
+
 void cpu_detect(void)
 {
     uint32_t a, b, c, d;
@@ -58,14 +71,7 @@ void cpu_detect(void)
         f->uintr   = d & (1u << 5);
         f->cet_ibt = d & (1u << 20);
     }
-    /* The microcode revision: the high half of IA32_BIOS_SIGN_ID, which an
-     * Intel CPU fills in when CPUID leaf 1 runs after the MSR was cleared
-     * (SDM vol. 3A 10.11.7.1). Other vendors: not read. */
-    if (!strcmp(f->vendor, "GenuineIntel")) {
-        wrmsr(MSR_BIOS_SIGN_ID, 0);
-        cpuid(1, 0, &a, &b, &c, &d);
-        f->microcode = (uint32_t)(rdmsr(MSR_BIOS_SIGN_ID) >> 32);
-    }
+    f->microcode = read_microcode();
     smap_on = f->smap;
 
     if (max_leaf >= 0x15) {
