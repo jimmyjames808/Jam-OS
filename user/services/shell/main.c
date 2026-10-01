@@ -14,6 +14,7 @@
  * Exits 2 when the console goes away (init restarts the console, then the
  * shell with the new console's channel). */
 #include <idl/console.h>
+#include <idl/initctl.h>
 #include "sh_core.h"
 
 #define LINE_MAX  240
@@ -318,6 +319,11 @@ int main(int argc, char **argv)
         line_max = cols - PROMPT_W - 1;
     sh_init();
     echo("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
+    sh_flush();
+    /* Up: the boot splash, if one holds the screen, gives it back now.
+     * Without init's channel (a shell run from a shell) there is none. */
+    if (sh_initctl())
+        (void)initctl_shell_ready_until(sh_initctl(), now() + 2 * NS_PER_S);
     if (argc > 1 && !strncmp(argv[1], "soak=", 5))
         boot_soak(argv[1] + 5);
     for (;;) {

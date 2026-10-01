@@ -1,6 +1,7 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
- * the bootfs server, the console, serialin, devmgr and the shell; mounts.c
+ * the bootfs server, the console, serialin, devmgr and the shell; splash.c
+ * the boot splash that plays first in shell mode; mounts.c
  * keeps init's namespace in step with devmgr's mounts; ctl.c serves
  * init's control channels (abi/idl/initctl.idl).
  *
@@ -21,8 +22,9 @@
 void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Shell mode (shell.c). Runs for as long as the system does: returns
  * (false) only when init's own port fails. nousb: devmgr leaves the USB
- * controllers alone (the safe mode boot entry). */
-bool init_shell(bool nousb, const char *shell_arg);
+ * controllers alone (the safe mode boot entry); splash: the boot splash
+ * plays first (splash.c). */
+bool init_shell(bool nousb, bool splash, const char *shell_arg);
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 
@@ -55,6 +57,22 @@ enum { CTL_SHELL, CTL_CONSOLE, CTL_COUNT };
 status_t ctl_new(unsigned who, handle_t port, uint64_t key, handle_t *client);
 /* Answer what is queued on who's channel. */
 void     ctl_serve(unsigned who);
+
+/* ---- splash.c: the boot splash (<splash.h>) --------------------------------------- */
+
+/* This boot plays the splash: the shell waits for it (splash_played). */
+void     splash_expect(void);
+/* The shell may start: no splash on this boot, or it has played, or ended. */
+bool     splash_played(void);
+/* The splash's channel: ours bound on port with key (call splash_event on
+ * its packets), *theirs to hand over as its SR_USER + SPLASH_INIT_ROLE. */
+status_t splash_channel(handle_t port, uint64_t key, handle_t *theirs);
+/* A packet on the channel: SPLASH_PLAYED, or the splash closed it. */
+void     splash_event(void);
+/* The splash process ended (it is never started again). */
+void     splash_ended(void);
+/* initctl.shell_ready: SPLASH_GO to a splash still holding the screen. */
+void     splash_shell_ready(void);
 
 /* ---- shell.c, for ctl.c ---------------------------------------------------------- */
 

@@ -99,6 +99,16 @@ Every driver and service is a userspace process from the start.
   "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
   interrupts on, the PCI core and resources; then either the boot-time
   tests (ktest, bench, stress) or userboot → init.
+- **The boot splash** ([docs/AS-PLAN.md](docs/AS-PLAN.md)): on a plain
+  boot (without `verbose`, `nosplash`, `nousb` or `soak`) fbcon's first
+  act fills the screen with the splash's background and it draws no text
+  from then on (quiet: the log still goes to the ring and serial; a panic
+  draws as always); init gets the argument `splash`, starts the console
+  quiet and then `bin/splash` before every other service, and starts the
+  shell only once the animation has played. The splash borrows the screen
+  like any app, plays the video at once and its sound when the mixer is
+  up, holds the last frame until the shell calls `initctl.shell_ready`,
+  and fades into the console's text.
 
 ## Memory
 
@@ -533,7 +543,8 @@ Not built yet; these rules bind every future path that can transmit.
   order and merge with free neighbours (or go back to the end of the
   heap), and an allocation takes the lowest block that fits, so a
   long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
-  apps' screen, drawing, keys and thread pool.
+  apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
+  `alpha.c`), keys and thread pool.
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
   starts init from bootfs under a root job, waits for it and reports its
   exit code and whether the root job ended with nothing charged.
@@ -552,7 +563,8 @@ Not built yet; these rules bind every future path that can transmit.
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
   handles they need: on a plain boot the bootfs server, the console,
-  serialin, devmgr, the mixer, logd (once `/data` is there) and the shell, restarting
+  the boot splash (once; the shell waits for it), serialin, devmgr, the
+  mixer, logd (once `/data` is there) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and gives it
@@ -560,7 +572,8 @@ Not built yet; these rules bind every future path that can transmit.
   mount gone, or back with a new service), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
   `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,
-  `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr) and `reboot`,
+  `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr), `shell_ready`
+  (the shell is up: the splash gives the screen back) and `reboot`,
   which syncs `/data` and every `/usbN` first (2 s at most) and has logd
   write out the log's last lines before the reset; the shell holds one
   end, the console another that answers only `reboot` (Ctrl+Alt+Del).

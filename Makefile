@@ -229,6 +229,10 @@ $(FATFS_STAGE)/%.o: $(FATFS_STAGE)/%.c $(FATFS_HDRS) | $(UINC) $(SYSCALLS_OK)
 EXTRA_OBJS_fat   := $(FATFS_OBJS)
 EXTRA_CFLAGS_fat := $(FATFS_INC)
 EXTRA_DEPS_fat   := $(FATFS_HDRS)
+# The boot splash: pl_mpeg (third_party/pl_mpeg, vendored unmodified, one
+# header) and the <string.h>/<stdlib.h> it includes, which are libos's
+# (user/apps/splash/port).
+EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -317,13 +321,25 @@ check: all
 	python3 tools/checkdocs.py
 	python3 tools/sortincludes.py
 
+# The boot splash's video: boot/splash.mpg, committed. It is made from the
+# owner's animation (tools/mksplash.sh), which lives outside the repository
+# in SPLASH_SRC; it is made again only when those files are there and
+# newer than it (without them the rule has no prerequisites: the
+# committed file is used as it is).
+SPLASH_SRC   ?= $(HOME)/Movies/motion-graphics/jamos-boot
+SPLASH_FILES := $(wildcard $(SPLASH_SRC)/jamos-boot.mov $(SPLASH_SRC)/jamos-boot.wav)
+
+boot/splash.mpg: $(SPLASH_FILES)
+	$(if $(SPLASH_FILES),tools/mksplash.sh $(SPLASH_SRC) $@)
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
 BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
-                $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg
+                $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
+                splash.mpg=boot/splash.mpg
 
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           tools/mkbootfs.py
+           boot/splash.mpg tools/mkbootfs.py
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
 image: $(IMAGE)

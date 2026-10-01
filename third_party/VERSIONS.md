@@ -28,3 +28,10 @@ Vendored third-party code:
   user's choice. Jam OS's configuration (no stdio, SSE2 on, 16-bit
   output, Layers I-III) is user/lib/mp3port/dr_mp3_impl.c, built into
   libos for <mp3.h>.
+- pl_mpeg/: PL_MPEG (MPEG-1 video, MP2 audio, MPEG-PS demuxer) by Dominic
+  Szablewski, https://github.com/phoboslab/pl_mpeg at commit c871f2b
+  (2025-12-30, "Fix corrupt slice check"): pl_mpeg.h exactly as released
+  (sha256 3a8cb30c83c2a114...), MIT. The header carries only an SPDX line
+  since upstream commit 16a6a11; LICENSE holds the full MIT text it
+  carried before. Built into bin/splash only (user/apps/splash/plmpeg.c,
+  PLM_NO_STDIO; its <string.h> and <stdlib.h> are user/apps/splash/port).

@@ -5,7 +5,8 @@
  * devmgr leaves USB controllers alone) or "soak=<minutes>" (a plain boot
  * whose shell starts the soak test) it starts and supervises the bootfs
  * server, the console, serial input, devmgr and the shell (shell.c) and
- * never exits. Otherwise it starts the bootfs server (bin/bootfs: the boot
+ * never exits; a second word "splash" plays the boot splash first
+ * (splash.c). Otherwise it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -373,14 +374,17 @@ int main(int argc, char **argv)
     /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
     /* A plain boot: the console, devmgr (connected to it), serial
      * input and the shell; the safe mode entry: the same without USB. */
+    /* argv[2] "splash" (the kernel's choice: a plain boot without
+     * `verbose` or `nosplash`): the boot splash plays first. */
+    bool splash = argc > 2 && !strcmp(argv[2], "splash");
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
-        init_shell(!strcmp(argv[1], "shell-nousb"), NULL);
+        init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);
         return 1;
     }
     /* The boot word soak[=minutes]: a plain boot whose first shell runs the
      * soak test by itself (the shell's main.c reads the argument). */
     if (argc > 1 && !strncmp(argv[1], "soak=", 5)) {
-        init_shell(false, argv[1]);
+        init_shell(false, splash, argv[1]);
         return 1;
     }
 

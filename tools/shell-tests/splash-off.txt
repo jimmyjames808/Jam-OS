@@ -1,0 +1,9 @@
+# A boot without the splash (`verbose` or `nosplash`; tools/splash-test.sh):
+# the kernel's text log is on the screen as init starts, and the shell
+# comes up as before.
+wait 120 init: hello from ring 3
+shot splash-off
+wait 120 Jam OS shell
+wait 60 jam>
+send reboot
+wait reboot: resetting

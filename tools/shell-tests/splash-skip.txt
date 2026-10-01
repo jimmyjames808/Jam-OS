@@ -1,0 +1,14 @@
+# The boot splash skipped with a key (tools/splash-test.sh): a key typed on
+# the serial terminal while it plays goes to the splash, not the shell
+# (which starts only after it), so the `reboot` below arrives whole.
+wait 120 splash: first frame
+sleep 1
+shot splash-hd
+sleep 0.5
+type x
+wait 30 splash: skipped by a key
+seen 60 Jam OS shell
+seen 60 jam>
+wait 60 console: the screen is back
+send reboot
+wait reboot: resetting

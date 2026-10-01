@@ -2,7 +2,7 @@
  * the command line) ends at a shell prompt on the screen.
  *
  * init starts and then supervises seven services, each in a job of its own
- * under init's:
+ * under init's (and, first, the boot splash: splash.c):
  *   bootfs    bin/bootfs: the boot image as a mount, with the server end of
  *             its `fs` channel (SR_USER + 0); init mounts the client end at
  *             /boot in its own namespace, the one the shell is given
@@ -11,7 +11,16 @@
  *             console channel (SR_USER + 0) and a control channel of init's
  *             that answers only `reboot` (SR_USER + 8, ctl.c: Ctrl+Alt+Del
  *             goes through init, which syncs /data first);
- *             init keeps the client end
+ *             init keeps the client end. With the splash (the second
+ *             argument "quiet") it draws nothing until the splash has
+ *             borrowed the screen and given it back
+ *   splash    bin/splash, once, on a plain boot (argv "splash" from the
+ *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
+ *             channel of init's (SR_USER + 0, <splash.h>) and a client end
+ *             of the mixer's `audio` channel (SR_AUDIO). It plays the boot
+ *             animation while the rest start; the shell is started only
+ *             once it has played (or ended), and it gives the screen back
+ *             when the shell says it is ready (initctl.shell_ready)
  *   serialin  bin/serialin: root with READ (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
@@ -79,16 +88,18 @@
 #include <idl/console.h>
 #include <idl/logctl.h>
 #include <os.h>
+#include <splash.h>
 #include "init.h"
 
 #define GIVE_UP_COUNT  10
 #define GIVE_UP_WINDOW (60 * NS_PER_S)
 
-enum { BOOTFS, CONSOLE, SERIALIN, DEVMGR, MIXER, LOGD, SHELL, NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, LOGD, SHELL, NSVC };
 
 /* Port keys: a service's index (its process ended), or one of these. */
 #define KEY_MOUNTS 0x100u   /* the mounts watcher changed the namespace */
 #define KEY_CTL    0x200u   /* + CTL_*: requests on a control channel */
+#define KEY_SPLASH 0x300u   /* the splash's channel (splash.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -103,7 +114,8 @@ struct svc {
 };
 
 static struct svc svcs[NSVC] = {
-    [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SERIALIN] = { "bin/serialin" },
+    [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
+    [SERIALIN] = { "bin/serialin" },
     [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [LOGD] = { "bin/logd" },
     [SHELL] = { "bin/shell" },
 };
@@ -130,6 +142,9 @@ static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) *
  * [1] `audioctl`; 0: none (no bin/mixer, or given up on). */
 static handle_t audio_srv[2], audio_cli[2];
 static bool nousb;
+static bool quiet_console;   /* the next console starts quiet (the splash's first one) */
+
+static handle_t dup_of(handle_t h);
 
 handle_t shell_root(void)
 {
@@ -322,7 +337,9 @@ static status_t start_console(void)
         { SR_USER + 0, b },
         { SR_USER + 8, ctl },
     };
-    st = start1(CONSOLE, x, ctl ? 3 : 2);
+    const char *argv[] = { svcs[CONSOLE].path, "quiet" };
+    st = start(CONSOLE, quiet_console ? 2 : 1, argv, x, ctl ? 3 : 2);
+    quiet_console = false;   /* a restarted console draws at once */
     if (st != OK) {
         jam_handle_close(a);
         return st;
@@ -332,6 +349,21 @@ static status_t start_console(void)
     cons = a;
     tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
     return OK;
+}
+
+/* The boot splash: a PROGRAM-level console channel (the screen and the
+ * keys, as any app), init's channel, and the mixer's `audio` channel. */
+static status_t start_splash(void)
+{
+    handle_t c = HANDLE_INVALID, theirs = HANDLE_INVALID;
+    status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 2, &c);
+    if (st == OK && (st = splash_channel(port, KEY_SPLASH, &theirs)) != OK)
+        jam_handle_close(c);
+    if (st != OK)
+        return st;
+    struct spawn_handle x[] = { { SR_CONSOLE, c }, { SR_USER + SPLASH_INIT_ROLE, theirs },
+                                { SR_AUDIO, dup_of(audio_cli[0]) } };
+    return start1(SPLASH, x, x[2].h ? 3 : 2);   /* no mixer channel: it plays silently */
 }
 
 static status_t start_serialin(void)
@@ -616,6 +648,11 @@ static void ended(unsigned i)
         jam_handle_close(followers[i].back);   /* its end, and what waits on it, go now */
         followers[i].back = HANDLE_INVALID;
     }
+    if (i == SPLASH) {   /* it plays once: the shell may start now */
+        splash_ended();
+        s->given_up = true;
+        return;
+    }
     if (++s->ends > GIVE_UP_COUNT) {
         s->given_up = true;
         for (unsigned k = 0; i == MIXER && k < 2; k++) {
@@ -648,12 +685,15 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for /data: a mount's packet wakes the loop */
         if (i == MIXER && !devmgr && !svcs[DEVMGR].given_up)
             continue;   /* waits for devmgr (started just before it) */
+        if (i == SHELL && !splash_played())
+            continue;   /* waits for the splash: its packet wakes the loop */
         if (t < s->next_try) {
             deadline = s->next_try < deadline ? s->next_try : deadline;
             continue;
         }
         status_t st = i == BOOTFS     ? start_bootfs()
                       : i == CONSOLE  ? start_console()
+                      : i == SPLASH   ? start_splash()
                       : i == SERIALIN ? start_serialin()
                       : i == DEVMGR   ? start_devmgr()
                       : i == MIXER    ? start_mixer()
@@ -671,19 +711,25 @@ static uint64_t start_due(uint64_t t)
     return deadline;
 }
 
-bool init_shell(bool no_usb, const char *shell_arg)
+bool init_shell(bool no_usb, bool splash, const char *shell_arg)
 {
     root = startup_handle(SR_RESOURCE);
     nousb = no_usb;
     first_arg = shell_arg;
+    quiet_console = splash;
+    if (splash)
+        splash_expect();
+    else
+        svcs[SPLASH].given_up = true;   /* `verbose`, `nosplash`, safe mode, tests */
     status_t st = jam_port_create(&port);
     if (st != OK) {
         init_say("init: shell mode: no port (%s)", status_str(st));
         return false;
     }
     make_audio_channels();
-    printf("init: shell mode%s: starting the bootfs server, the console, the serial input, "
-           "devmgr, the mixer, logd and the shell\n", nousb ? " (safe mode: nousb)" : "");
+    printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
+           "devmgr, the mixer, logd and the shell\n", nousb ? " (safe mode: nousb)" : "",
+           splash ? " the boot splash," : "");
     for (;;) {
         uint64_t deadline = start_due(now());
         struct port_packet pkt;
@@ -698,5 +744,7 @@ bool init_shell(bool no_usb, const char *shell_arg)
             tell_mounts();
         else if (pkt.key >= KEY_CTL && pkt.key < KEY_CTL + CTL_COUNT)
             ctl_serve((unsigned)(pkt.key - KEY_CTL));
+        else if (pkt.key == KEY_SPLASH)
+            splash_event();
     }
 }

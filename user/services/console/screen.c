@@ -11,7 +11,11 @@
  * geometry, and a lease channel. Meanwhile nothing is drawn (the text
  * model, the kernel log and the serial mirror keep going); when the
  * lease's other end closes (the program closed it or died), the whole
- * screen is redrawn. */
+ * screen is redrawn.
+ *
+ * Quiet (the boot splash, screen_quiet): nothing is drawn at all until the
+ * first lease ends, so the screen goes straight from the kernel's dark
+ * background to the splash and back to the text. */
 #include "console.h"
 
 /* The palette (C_* in console.h). */
@@ -27,6 +31,7 @@ static handle_t lease;             /* while the screen is lent: our end */
 static uint32_t native[16];        /* the palette in the framebuffer's format */
 static struct cell *shadow;        /* rows * cols: what each screen cell shows */
 static uint8_t *shadow_cursor;     /* rows * cols: drawn inverted */
+static uint64_t quiet_until;       /* uptime ns: draw nothing before it (0: not quiet) */
 
 static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 {
@@ -66,10 +71,17 @@ static void show_cell(uint32_t x, uint32_t y, struct cell c, uint8_t inv)
     }
 }
 
+void screen_quiet(uint64_t until)
+{
+    quiet_until = until;
+}
+
 void render(void)
 {
     if (alt_on && alt_sync && now() - alt_sync_since < 250000000ull)
         return;   /* mid-frame: stay dirty, draw once the frame is complete */
+    if (quiet_until && now() < quiet_until)
+        return;   /* stay dirty: drawn once the splash is done */
     dirty = false;
     if (!fbp || lease)
         return;   /* no screen, or lent: drawn in full when it comes back */
@@ -195,6 +207,7 @@ void lease_ended(void)
         return;
     jam_handle_close(lease);
     lease = HANDLE_INVALID;
+    quiet_until = 0;
     memset(shadow, 0, (size_t)rows * cols * sizeof(struct cell));
     memset(shadow_cursor, 0, (size_t)rows * cols);
     dirty = true;

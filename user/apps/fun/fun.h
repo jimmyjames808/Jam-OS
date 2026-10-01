@@ -21,7 +21,8 @@
  * does the same. All of the screen and key hand-off is in gfx_open /
  * gfx_close.
  *
- * Also here: drawing (rectangles, blending, gradients, lines, blits), a
+ * Also here: drawing (rectangles, blending, gradients, lines, blits;
+ * premultiplied alpha and anti-aliased shapes in alpha.c), a
  * proportional text renderer made from the 8x16 console font (each glyph's
  * ink width, fixed-width digits, integer scaling smoothed with scale2x),
  * an FPS counter, a little maths without libm, the CPU count (CPUID; there
@@ -80,6 +81,9 @@ extern struct screen scr;
 /* Take the keys and borrow the screen; fills scr. The pool (pool_start)
  * should be started first: gfx_present runs on it. */
 status_t gfx_open(void);
+/* The same with the back buffer, and so the screen, all colour bg at
+ * first (gfx_open: black): no black frame on its way to bg. */
+status_t gfx_open_on(uint32_t bg);
 /* Give the screen and the keys back (the console redraws its text). */
 void     gfx_close(void);
 /* Copy what changed in scr.s to the screen. */
@@ -104,6 +108,26 @@ void blit(const struct surf *dst, int x, int y, const struct surf *src, int sx, 
 void blit_key(const struct surf *dst, int x, int y, const struct surf *src, uint32_t key);
 /* A surface of its own memory (zeroed); px NULL on failure. */
 struct surf surf_new(int w, int h);
+
+/* Alpha blending with premultiplied alpha (alpha.c): a colour that is
+ * drawn with alpha is 0xAARRGGBB with r, g and b already multiplied by
+ * a / 255, and drawing it over a surface pixel d gives
+ * src + d * (255 - a) / 255 per channel (exact, rounded). Surfaces stay
+ * opaque 0xRRGGBB. */
+/* rgb (0xRRGGBB) at alpha a (0..255) as a premultiplied colour. */
+uint32_t argb_pm(uint32_t rgb, uint32_t a);
+/* src (premultiplied) over the opaque pixel dst. */
+uint32_t px_over(uint32_t dst, uint32_t src);
+/* src (premultiplied) over every pixel of the rectangle (SSE2). */
+void fill_pm(const struct surf *s, int x, int y, int w, int h, uint32_t src);
+/* An image whose pixels are premultiplied 0xAARRGGBB, over dst at x, y. */
+void blit_pm(const struct surf *dst, int x, int y, const struct surf *src);
+/* Anti-aliased (each edge pixel's coverage as alpha), in rgb at alpha a
+ * (0..255), positions in pixels (a pixel's centre is at +0.5): a filled
+ * circle of radius r, and a line `width` pixels wide with round ends. */
+void disc_aa(const struct surf *s, float cx, float cy, float r, uint32_t rgb, uint32_t a);
+void line_aa(const struct surf *s, float x0, float y0, float x1, float y1, float width,
+             uint32_t rgb, uint32_t a);
 
 /* A rectangle on a surface: what a layout hands out and a click is tested
  * against. */

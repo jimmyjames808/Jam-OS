@@ -137,6 +137,18 @@ static bool mode_word_given(void)
 }
 
 /* Runs on the kernel's own stack, with its own page tables. */
+/* The boot splash (bin/splash) plays on a plain boot: the shell mode
+ * without the safe mode's `nousb` or the soak test's `soak`, and without
+ * the boot words `verbose` or `nosplash`, which show the text log instead.
+ * On such a boot fbcon draws no text (quiet) and init gets "splash". */
+static bool splash_boot(void)
+{
+    if (cmdline_has("verbose") || cmdline_has("nosplash") || cmdline_has("nousb") ||
+        cmdline_get_u64("soak", 0, 3))
+        return false;
+    return cmdline_has("shell") || !mode_word_given();
+}
+
 _Noreturn static void kmain_stage2(void *arg)
 {
     (void)arg;
@@ -153,9 +165,13 @@ _Noreturn static void kmain_stage2(void *arg)
     lapic_init_bsp(boot->x2apic);
     tsc_calibrate_with_loader(boot->tsc_hz_loader);
     uint64_t redraw_us = fbcon_time_redraw(rdtsc) / (tsc_hz / 1000000);
-    kprintf("fbcon: %ux%u, full-screen redraw takes %lu.%03lu ms, mapped %s\n",
-            boot->fb.width, boot->fb.height, redraw_us / 1000, redraw_us % 1000,
-            vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
+    if (splash_boot())   /* quiet: nothing was drawn */
+        kprintf("fbcon: %ux%u, quiet for the boot splash, mapped %s\n", boot->fb.width,
+                boot->fb.height, vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
+    else
+        kprintf("fbcon: %ux%u, full-screen redraw takes %lu.%03lu ms, mapped %s\n",
+                boot->fb.width, boot->fb.height, redraw_us / 1000, redraw_us % 1000,
+                vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
     smp_init_bsp(boot);
     sched_init_bsp();   /* this code is now thread "main" */
     ipi_init();
@@ -214,11 +230,12 @@ _Noreturn static void kmain_stage2(void *arg)
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg
-                                                                                   : "shell");
+                                                                                   : "shell",
+                                shell && splash_boot() ? "splash" : NULL);
     /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
-        ok &= userboot_run_init(90, "keytest");
+        ok &= userboot_run_init(90, "keytest", NULL);
     sched_print_stats();
     uint64_t dropped = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
     if (dropped || serial_irq_broken())
@@ -237,7 +254,7 @@ _Noreturn void kmain(struct boot_info *bi)
     boot = bi;
     cmdline_set(bi->cmdline);
     int has_serial = serial_init();
-    fbcon_init(&bi->fb);
+    fbcon_init(&bi->fb, splash_boot());
 
     fbcon_set_colors(0xffb000, 0x101018);
     kprintf("Jam OS %s\n", JAMOS_VERSION);

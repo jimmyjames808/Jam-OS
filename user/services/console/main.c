@@ -7,6 +7,10 @@
  * out (a HID driver, the serial source). The parts are listed in
  * console.h.
  *
+ * Arguments: "quiet" (init, when the boot splash plays first): draw
+ * nothing until the splash has borrowed the screen and given it back
+ * (screen_quiet), at most QUIET_MAX.
+ *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_READ (klog_open),
  *                   RIGHT_WRITE (framebuffer_take, serial_write) and
@@ -30,6 +34,8 @@
  * Drawing, and lending the screen to a program: screen.c. Full-screen text
  * programs can use the alternate screen: text.c. */
 #include "console.h"
+
+#define QUIET_MAX (5 * NS_PER_S)   /* the splash borrows the screen as it starts */
 
 handle_t root, port;
 
@@ -103,9 +109,9 @@ static void port_event(const struct port_packet *pkt)
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
     root = startup_handle(SR_RESOURCE);
+    if (argc > 1 && !strcmp(argv[1], "quiet"))
+        screen_quiet(now() + QUIET_MAX);
     status_t st = jam_port_create(&port);
     if (st != OK)
         return 1;
