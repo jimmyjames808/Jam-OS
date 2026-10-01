@@ -1,20 +1,14 @@
-/* play: a WAV file in the headphones. The header is read with <wav.h>
- * (chunks skipped until "fmt " and "data"), then the samples a chunk at a
- * time (the file is never loaded whole), turned into 16-bit if they are 8,
- * 24 or 32, and written through <audio.h>, which makes mono stereo and
+/* play: a sound file in the headphones. The file is opened as a source
+ * (play_src.h: the format is chosen by what the file starts with), which
+ * hands out 16-bit frames a chunk at a time (the file is never loaded
+ * whole); they are written through <audio.h>, which makes mono stereo and
  * resamples to 48 kHz. Ctrl+C stops it within a chunk, with audio_close's
- * 5 ms fade. -v sets the volume for this file only (today the device's
- * gain, put back afterwards). */
+ * 5 ms fade. -v sets the volume for this file only (its mixer stream's). */
 #include <audio.h>
-#include <wav.h>
+#include "play_src.h"
 #include "sh.h"
 
 #define CHUNK 4096u   /* frames read and written at a time (93 ms at 44.1 kHz) */
-
-static status_t read_file(void *ctx, uint64_t offset, void *dst, size_t n, size_t *got)
-{
-    return file_read(ctx, offset, dst, n, got);
-}
 
 /* "-20", "-20.5", "0": dB into centibels (at most 100 dB either way). */
 static bool parse_db(const char *s, int *cb)
@@ -40,55 +34,29 @@ static bool parse_db(const char *s, int *cb)
     return true;
 }
 
-/* "m:ss" of frames at rate, rounded to the nearest second. */
-static const char *mss(uint64_t frames, uint32_t rate, char *buf, size_t size)
+/* The frames of src into a, CHUNK at a time. */
+static status_t stream(struct play_src *src, struct audio_out *a, uint64_t *done)
 {
-    uint64_t s = (frames + rate / 2) / rate;
-    snprintf(buf, size, "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-    return buf;
-}
-
-/* The samples of w from f into a, CHUNK frames at a time. */
-static status_t stream(struct jfile *f, const struct wav_info *w, struct audio_out *a,
-                       uint64_t *done)
-{
-    uint8_t *raw = malloc((size_t)CHUNK * w->frame_bytes);
-    int16_t *pcm = w->bits == 16 ? NULL : malloc((size_t)CHUNK * w->channels * 2);
-    status_t st = raw && (w->bits == 16 || pcm) ? OK : ERR_NO_MEMORY;
+    int16_t *pcm = malloc((size_t)CHUNK * src->channels * sizeof(int16_t));
+    status_t st = pcm ? OK : ERR_NO_MEMORY;
     *done = 0;
-    while (st == OK && *done < w->frames) {
+    while (st == OK) {
         if (sh_interrupted()) {
             st = ERR_CANCELED;
             break;
         }
-        uint64_t n = w->frames - *done;
-        if (n > CHUNK)
-            n = CHUNK;
-        size_t got = 0;
-        st = file_read(f, w->data_offset + *done * w->frame_bytes, raw, n * w->frame_bytes, &got);
-        if (st != OK)
+        long n = play_src_read(src, pcm, CHUNK);
+        if (n <= 0) {
+            st = n < 0 ? (status_t)n : OK;
             break;
-        n = got / w->frame_bytes;
-        if (!n)
-            break;   /* the file got shorter meanwhile */
-        size_t samples = n * w->channels;
-        const void *frames = raw;
-        if (w->bits == 8)
-            audio_s16_from_u8(pcm, raw, samples);
-        else if (w->bits == 24)
-            audio_s16_from_s24le(pcm, raw, samples);
-        else if (w->bits == 32)
-            audio_s16_from_s32le(pcm, raw, samples);
-        if (pcm)
-            frames = pcm;
-        long wrote = audio_write(a, frames, n);
+        }
+        long wrote = audio_write(a, pcm, (size_t)n);
         if (wrote < 0)
             st = (status_t)wrote;
         else
-            *done += n;
+            *done += (uint64_t)n;
     }
     free(pcm);
-    free(raw);
     return st;
 }
 
@@ -122,20 +90,19 @@ SH_CMD(play)
         sh_tty("play: %s: can't read it (%s)\n", arg, sh_why(st));
         return 1;
     }
-    struct wav_info w;
+    struct play_src src;
     const char *why;
-    st = wav_parse(&w, read_file, &f, size, &why);
+    st = play_src_open(&src, &f, size, &why);
     if (st != OK) {
         sh_tty("play: %s: %s\n", arg, why);
         file_close(&f);
         return 1;
     }
     char t[24];
-    sh_say("play: %s: %u Hz, %u-bit, %u ch, %s\n", arg, w.rate, w.bits, w.channels,
-           mss(w.frames, w.rate, t, sizeof(t)));
+    sh_say("play: %s: %s\n", arg, src.desc);
     sh_flush();
     struct audio_out a;
-    st = audio_open_as(&a, w.rate, w.channels, "play");
+    st = audio_open_as(&a, src.rate, src.channels, "play");
     if (st != OK) {
         if (st == ERR_NOT_FOUND)
             sh_tty("play: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
@@ -143,19 +110,21 @@ SH_CMD(play)
             sh_tty("play: the audio output is busy: another program has its stream open\n");
         else
             sh_tty("play: can't open the audio output: %s\n", status_str(st));
+        play_src_close(&src);
         file_close(&f);
         return 1;
     }
     if (vol && (st = audio_set_volume(&a, cb)) != OK)
         sh_tty("play: can't set the volume (%s): playing at `hda gain`\n", status_str(st));
     uint64_t done = 0;
-    st = stream(&f, &w, &a, &done);
+    st = stream(&src, &a, &done);
     if (st == OK)
         st = audio_drain(&a);
     audio_close(&a);
+    play_src_close(&src);
     file_close(&f);
     if (st == ERR_CANCELED) {
-        sh_say("play: %s: stopped at %s\n", arg, mss(done, w.rate, t, sizeof(t)));
+        sh_say("play: %s: stopped at %s\n", arg, play_mss(done, src.rate, t, sizeof(t)));
         return 130;
     }
     if (st != OK) {
