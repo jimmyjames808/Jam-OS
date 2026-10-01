@@ -131,6 +131,7 @@ static struct art_slot {
 } cache[ART_CACHE];
 static uint64_t draws;
 static size_t   kept;    /* bytes of the pictures in the cache */
+static void   (*between)(void);   /* the self-test's hook (art_test_hook) */
 
 static size_t bytes_of(int size)
 {
@@ -140,6 +141,11 @@ static size_t bytes_of(int size)
 size_t art_cache_bytes(void)
 {
     return kept;
+}
+
+void art_test_hook(void (*fn)(void))
+{
+    between = fn;
 }
 
 static void forget(struct art_slot *c)
@@ -201,6 +207,8 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
     if (size < 4)
         return;
     int kind = path ? cover_ready(hash, path, size, false) : COVER_NONE;
+    if (between)
+        between();
     struct art_slot *c = lookup(hash, size, bg);
     if (c && c->kind != kind) {
         struct surf o = { c->px, size, size, size };

@@ -241,6 +241,10 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
 void art_mark(const struct surf *s, int x, int y, int size);
 /* Bytes of the pictures art_draw and art_cover keep (the self-test). */
 size_t art_cache_bytes(void);
+/* The self-test: call `between` in art_cover after it has asked cover.c
+ * what is ready and before it draws that (NULL: none), to change the
+ * covers' state at exactly that point. */
+void art_test_hook(void (*between)(void));
 
 /* ---- album covers (id3.c, cover.c, stbi.c) ------------------------------------------- */
 
@@ -292,6 +296,11 @@ int  cover_ready(uint64_t hash, const char *path, int size, bool low);
  * rounded corners over bg; false if it is gone meanwhile, and then dst
  * is not touched. */
 bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg);
+/* The self-test: the covers without their thread and without files.
+ * cover_test_work does the thread's next job, with a picture of one
+ * colour (made from the path) instead of the file's; false: no job. */
+bool cover_test_start(void);
+bool cover_test_work(void);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 
