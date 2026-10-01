@@ -9,8 +9,8 @@ uint64_t now_elapsed(const struct app *a, uint64_t t)
 {
     const struct snap *s = &a->snap;
     uint64_t e = s->elapsed_ms;
-    if (s->playing == 1 && t > s->at)
-        e += (t - s->at) / NS_PER_MS;
+    if (s->playing == 1 && t > s->at)   /* a player gone quiet: the clock stops */
+        e += (t - s->at < SNAP_STALE_NS ? t - s->at : SNAP_STALE_NS) / NS_PER_MS;
     return s->length_ms && e > s->length_ms ? s->length_ms : e;
 }
 
@@ -183,7 +183,10 @@ static void names(const struct app *a)
         text_clip(&scr.s, r->x, y + 92 * u, u, C_FAINT, w, "(its `jamjar` command) to play");
         return;
     }
-    text(&scr.s, r->x, y, u, s->playing == 1 ? C_GOLD : C_FAINT, state_word(s->playing));
+    if (snap_stale(s, now()))
+        text(&scr.s, r->x, y, u, C_ROSE, "THE PLAYER DOESN'T ANSWER");
+    else
+        text(&scr.s, r->x, y, u, s->playing == 1 ? C_GOLD : C_FAINT, state_word(s->playing));
     y += 28 * u;
     if (!s->path[0]) {
         text_clip(&scr.s, r->x, y, lo->tb, C_DIM, w, "Nothing playing");

@@ -82,7 +82,7 @@ static void hear(struct app *a, uint64_t t)
 static bool animate(struct app *a, uint64_t t, float dt)
 {
     static const uint8_t quiet[BARS];
-    bool heard = a->snap.playing == 1;
+    bool heard = a->snap.playing == 1 && !snap_stale(&a->snap, t);   /* else the bars fall */
     bars_step(&a->bars, heard ? a->snap.bands : quiet, heard, dt);
     float goal = a->full ? 1.0f : 0.0f;
     if (a->full_t != goal) {

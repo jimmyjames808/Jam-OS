@@ -263,6 +263,19 @@ static void test_roulette(void)
     fun_check(ok && would > 0, "  ... never on the album playing (200 spins)");
 }
 
+/* The player stops answering while it plays (it crashed, or hangs): after
+ * SNAP_STALE_NS its last state is not shown as now any more. */
+static void test_stale(void)
+{
+    static struct app a;
+    uint64_t t0 = 50 * NS_PER_S;
+    a.snap = (struct snap){ .link = true, .answered = true, .playing = 1, .elapsed_ms = 1000,
+                            .length_ms = 200000, .at = t0 };
+    bool ok = now_elapsed(&a, t0 + NS_PER_S) == 2000 && !snap_stale(&a.snap, t0 + NS_PER_S);
+    ok &= snap_stale(&a.snap, t0 + 10 * NS_PER_S) && now_elapsed(&a, t0 + 60 * NS_PER_S) < 4000;
+    fun_check(ok, "link: the player stops answering: its state goes stale, its clock stops");
+}
+
 static bool apart(const struct rect *p, const struct rect *q)
 {
     return p->x + p->w <= q->x || q->x + q->w <= p->x || p->y + p->h <= q->y ||
@@ -372,6 +385,7 @@ int jamjar_selftest(void)
     test_covers();
     test_bars();
     test_roulette();
+    test_stale();
     test_screen(1280, 720);
     test_screen(1280, 800);
     test_screen(1024, 600);

@@ -205,6 +205,11 @@ void link_start(handle_t music)
     L.snap.link = true;
 }
 
+bool snap_stale(const struct snap *s, uint64_t t)
+{
+    return s->link && s->playing && t > s->at && t - s->at > SNAP_STALE_NS;
+}
+
 void link_get(struct snap *out)
 {
     lock();

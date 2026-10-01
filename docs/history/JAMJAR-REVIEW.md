@@ -130,3 +130,10 @@ rounding is used).
   spins with an album "playing": FAILED before (about one in eight landed
   on it), and `tools/jamjar-test.sh`'s roulette step can no longer wait
   for a track change that never comes.
+- **4 fixed.** A snapshot of a playing player that has not answered for
+  1.5 s (`SNAP_STALE_NS`; a `play` of a big folder keeps it busy for
+  about 0.5 s) is stale: the clock stops there, the bars fall, and the
+  card says "THE PLAYER DOESN'T ANSWER" until it answers again. Test: the
+  self-test's stale snapshot (FAILED before: the clock ran on a minute
+  later). Not tested in QEMU: the shell is busy running jamjar, so
+  nothing can stop the player meanwhile.

@@ -184,6 +184,11 @@ struct cmd {
  * link_get says so). */
 void link_start(handle_t music);
 void link_get(struct snap *out);
+/* A snapshot of a player that was playing and has not answered for
+ * SNAP_STALE_NS (it is down, or hangs): not to be shown as what plays now.
+ * (A `play` of a big folder keeps it busy for about 0.5 s.) */
+#define SNAP_STALE_NS (1500 * NS_PER_MS)
+bool snap_stale(const struct snap *s, uint64_t t);
 /* Queue a command (a volume replaces one still queued); false if full. */
 bool link_cmd(const struct cmd *c);
 /* The last command's outcome, once ("" none): for the toast. */
