@@ -1,6 +1,8 @@
 /* log: the last lines of the kernel log (default 20, at most 1000), grey. */
 #include "sh.h"
 
+#define TAIL (256u << 10)   /* bytes read from the log's end: 1000 lines and more */
+
 SH_CMD(log)
 {
     unsigned want = 20;
@@ -14,7 +16,8 @@ SH_CMD(log)
     char *buf;
     size_t got;
     uint64_t first;
-    status_t st = sh_klog_read(0, &buf, &got, &first);
+    uint64_t end = sh_klog_end();
+    status_t st = sh_klog_read(end > TAIL ? end - TAIL : 0, &buf, &got, &first);
     if (st == ERR_NO_MEMORY) {
         sh_say("log: out of memory\n");
         return 0;
@@ -30,6 +33,12 @@ SH_CMD(log)
         if (buf[start - 1] == '\n' && start != got && ++lines == want)
             break;
         start--;
+    }
+    if (start == 0 && first > 0) {   /* the read began mid-line: from the next one */
+        while (start < got && buf[start] != '\n')
+            start++;
+        if (start < got)
+            start++;
     }
     sh_say("\033[90m");
     sh_put(buf + start, got - start);

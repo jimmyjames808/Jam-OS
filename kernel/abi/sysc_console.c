@@ -35,7 +35,7 @@
 #define SCREEN_RIGHTS RIGHTS_BASIC
 #define FB_VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP)
 #define CHUNK         512     /* bytes copied per step (on the stack) */
-#define KLOG_READ_MAX (64 * 1024)
+#define KLOG_READ_MAX KLOG_SIZE   /* one read: the whole ring at most */
 #define SERIAL_IO_MAX 4096
 #define KLOG_NAME_MAX 32      /* klog_name: what kexec keeps (KEXEC_NAME) */
 
@@ -60,6 +60,7 @@ struct klog_reader {
     struct kobject   base;    /* OBJ_KLOG */
     struct job      *job;     /* charged one handle unit (a reference) */
     uint64_t         seen;    /* (object lock) end of the last read */
+    uint64_t         keep;    /* bytes of the ring it sees: KLOG_SIZE, less for a test */
     struct list_node node;    /* on `readers` (readers_lock) */
 };
 
@@ -93,6 +94,7 @@ status_t klog_reader_create(struct job *job, struct kobject **out)
         return st;
     }
     r->job = job;
+    r->keep = KLOG_SIZE;
     /* A new reader has read nothing: readable at once if the log has text. */
     kobject_init(&r->base, OBJ_KLOG, &reader_ops, "klog", klog_head() ? SIG_READABLE : 0);
     uint64_t f = spin_lock_irqsave(&readers_lock);
@@ -122,7 +124,7 @@ size_t klog_reader_read(struct kobject *reader, uint64_t pos, char *buf, size_t 
                         uint64_t *first)
 {
     struct klog_reader *r = (struct klog_reader *)reader;
-    size_t n = klog_read_at(pos, buf, cap, first);
+    size_t n = klog_read_kept(pos, r->keep, buf, cap, first);
     reader_update(r, *first + n);
     return n;
 }
@@ -137,7 +139,7 @@ status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap,
     do {
         uint64_t f;
         size_t want = cap - done < CHUNK ? cap - done : CHUNK;
-        size_t n = klog_read_at(pos, chunk, want, &f);
+        size_t n = klog_read_kept(pos, r->keep, chunk, want, &f);
         if (done == 0)
             start = f;
         else if (f != pos)
@@ -156,6 +158,13 @@ status_t klog_reader_read_to(struct kobject *reader, uint64_t pos, uint64_t cap,
     *done_out = done;
     return st;
 }
+
+#ifndef JAM_NO_KTESTS
+void klog_reader_test_keep(struct kobject *reader, uint64_t keep)
+{
+    ((struct klog_reader *)reader)->keep = keep < KLOG_SIZE ? keep : KLOG_SIZE;
+}
+#endif
 
 void klog_poll(void)
 {

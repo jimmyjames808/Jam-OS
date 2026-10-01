@@ -22,7 +22,7 @@
  * Without /data (not mounted, gone, its filesystem restarting, full) logd
  * keeps running and tries again after RETRY_FIRST, doubling up to
  * RETRY_MAX. While it waits it does not read the log: the ring keeps the
- * last 64 KiB, and what falls out of it is lost and marked. It holds one
+ * last 4 MiB, and what falls out of it is lost and marked. It holds one
  * piece of the log (CHUNK bytes) and nothing more, however long /data is
  * away. It says what happened once per change, not once per try: its own
  * lines go into the log it is saving.
