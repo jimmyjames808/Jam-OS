@@ -57,7 +57,7 @@ QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/splash.w
     QEMU_INPUT=tools/shell-tests/splash.txt tools/qemu-test.sh "$out" splash shell \
     > "$out/splash.out" 2>&1 || { echo "splash: the script failed"; tail -3 "$out/splash.out"; ok=0; }
 log=$out/splash.log
-need "$log" "quiet for the boot splash" "init: hello from ring 3 (3 args: init shell splash)" \
+need "$log" "quiet for the boot splash" "args: init shell splash" \
     "at 1/2 (box) on 1280x800" "they start together" "splash: sound joins at 0 ms" \
     "the shell is up" "splash: played at" "init: the splash has played: starting the shell" \
     "giving the screen back" "console: the screen is back" \
@@ -111,7 +111,11 @@ for word in verbose nosplash; do
     QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-off.txt \
         tools/qemu-test.sh "$out" "$word" shell "$word" > "$out/$word.out" 2>&1 ||
         { echo "$word: the script failed"; tail -3 "$out/$word.out"; ok=0; }
-    need "$out/$word.log" "init: hello from ring 3 (2 args: init shell)" "init: the shell is up"
+    need "$out/$word.log" "init: hello from ring 3" "init: the shell is up"
+    if grep -aq "args: init shell splash" "$out/$word.log"; then
+        echo "$word: init was told to play the splash"
+        ok=0
+    fi
     if grep -aq "\[splash\]" "$out/$word.log"; then echo "$word: the splash ran"; ok=0; fi
     mv "$out/splash-off.png" "$out/$word-text.png" 2>/dev/null || true
     check text "$out/$word-text.png"
