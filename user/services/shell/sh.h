@@ -165,6 +165,11 @@ bool sh_parse_u64(const char *s, uint64_t *out);
 bool sh_parse_seconds(const char *s, uint64_t *ns);
 /* "12.5 MiB"-style size into buf. */
 const char *sh_human(uint64_t bytes, char *buf, size_t cap);
+/* Centibels (tenths of a dB) as "-30.0" into buf. */
+const char *sh_db(int32_t cb, char *buf, size_t size);
+/* "-20", "-20.5", "0" (a sign, digits, one decimal; more are ignored) as
+ * centibels into *cb; at most 1000.0 dB either way. */
+bool sh_parse_db(const char *s, int32_t *cb);
 
 /* ---- time (sh_time.c) -------------------------------------------------------------- */
 

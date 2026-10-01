@@ -27,14 +27,6 @@ static void print_path(handle_t ch)
     sh_say("hda: path: %s\n", (const char *)text);
 }
 
-/* Centibels as "-30.0". */
-static const char *db(int32_t cb, char *buf, size_t size)
-{
-    uint32_t a = cb < 0 ? (uint32_t)-cb : (uint32_t)cb;
-    snprintf(buf, size, "%s%u.%u", cb < 0 ? "-" : "", a / 10, a % 10);
-    return buf;
-}
-
 /* "hda: gain -30.0 dB (step 47; -65.3 to 0.0 dB)", or why there is none. */
 static void say_gain(status_t st, int32_t gain, uint32_t step, int32_t min, int32_t max)
 {
@@ -47,7 +39,7 @@ static void say_gain(status_t st, int32_t gain, uint32_t step, int32_t min, int3
         sh_say("hda: gain: %s\n", status_str(st));
     else
         sh_say("hda: gain %s dB (step %u; %s to %s dB), heard only while a stream plays\n",
-               db(gain, a, sizeof(a)), step, db(min, b, sizeof(b)), db(max, c, sizeof(c)));
+               sh_db(gain, a, sizeof(a)), step, sh_db(min, b, sizeof(b)), sh_db(max, c, sizeof(c)));
 }
 
 static void print_gain(handle_t ch)
@@ -82,37 +74,10 @@ handle_t sh_hda(void)
     return HANDLE_INVALID;
 }
 
-/* "-20", "-20.5", "0": tenths of a dB into *cb (at most 1000.0 either way). */
-static bool parse_db(const char *s, int32_t *cb)
-{
-    bool neg = *s == '-';
-    if (*s == '-' || *s == '+')
-        s++;
-    int32_t v = 0;
-    bool digits = false;
-    for (; *s >= '0' && *s <= '9'; s++, digits = true)
-        if ((v = v * 10 + (*s - '0')) > 1000)
-            return false;
-    v *= 10;
-    if (*s == '.') {
-        s++;
-        if (*s >= '0' && *s <= '9') {
-            v += *s++ - '0';
-            digits = true;
-        }
-        while (*s >= '0' && *s <= '9')
-            s++;   /* hundredths and beyond: the amp's steps are coarser */
-    }
-    if (*s || !digits)
-        return false;
-    *cb = neg ? -v : v;
-    return true;
-}
-
 static int gain_cmd(int argc, char **argv)
 {
     int32_t cb = 0;
-    if (argc > 3 || (argc == 3 && !parse_db(argv[2], &cb))) {
+    if (argc > 3 || (argc == 3 && !sh_parse_db(argv[2], &cb))) {
         sh_tty("usage: hda gain [dB]   (e.g. hda gain -20; 0 dB is the most)\n");
         return 2;
     }
