@@ -127,7 +127,7 @@ void pmm_early_init(const struct boot_info *bi)
             if (end_pfn > max_pfn)
                 max_pfn = end_pfn;
         }
-        if ((boot_mem_is_ram(r->type) || r->type == BOOT_MEM_BAD) && r->length &&
+        if (boot_mem_is_any_ram(r->type) && r->length &&
             ram_count < BOOT_MAX_MEMMAP)
             ram[ram_count++] = (struct range){ ALIGN_DOWN(r->base, PAGE_SIZE),
                                                ALIGN_UP(r->base + r->length, PAGE_SIZE) };

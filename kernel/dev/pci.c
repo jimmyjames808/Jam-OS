@@ -634,6 +634,22 @@ status_t pci_enable_memory(struct pci_dev *d)
     return set_cmd_bit(d, CMD_MEMORY, true);
 }
 
+uint32_t pci_panic_bus_master_off(void)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < ndevs; i++) {
+        struct pci_dev *d = &devs[i];
+        if (untouchable(d))
+            continue;
+        uint16_t cmd = (uint16_t)rd(d, CFG_COMMAND, 2);
+        if (cmd == 0xffff || !(cmd & CMD_MASTER))
+            continue;   /* gone, or not mastering */
+        wr(d, CFG_COMMAND, 2, cmd & ~CMD_MASTER);
+        n++;
+    }
+    return n;
+}
+
 /* For the ktests: the MSI-X table / PBA physical address of a function. */
 uint64_t pci_msix_table_phys(struct pci_dev *d) { return d ? msix_table_phys[d->index] : 0; }
 uint64_t pci_msix_pba_phys(struct pci_dev *d) { return d ? msix_pba_phys[d->index] : 0; }

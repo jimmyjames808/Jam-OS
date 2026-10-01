@@ -26,7 +26,8 @@ uint64_t tlb_mask_flush_count(uint32_t cpu);
 /* Flush a range from the calling CPU's own TLB (preemption off; see ipi.c). */
 void tlb_flush_local(uint64_t va, uint64_t len);
 
-/* Stop every other CPU with an NMI (panic). Returns how many confirmed. */
+/* Stop every other CPU with an NMI (a panic, or kexec_reboot's jump): each
+ * halts for good in its NMI handler. Returns how many confirmed. */
 uint32_t ipi_halt_others(void);
 /* Watchdog: `cpu` stopped ticking. NMI it so it panics with its own stack. */
 void watchdog_fire(uint32_t cpu);

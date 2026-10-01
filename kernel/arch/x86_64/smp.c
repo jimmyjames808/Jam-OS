@@ -95,6 +95,8 @@ void smp_start_aps(const struct boot_info *bi)
     for (uint32_t i = 0; i < bi->cpu_count; i++) {
         if (bi->cpus[i].lapic_id == bi->bsp_lapic_id)
             continue;
+        if (!bi->cpus[i].loader_handle)
+            continue;   /* not parked by a loader (a kexec): not started yet */
         if (cpu_count == MAX_CPUS)
             break;
         new_cpu(&bi->cpus[i], cpu_count++);

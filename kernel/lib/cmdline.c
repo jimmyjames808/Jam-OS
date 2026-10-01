@@ -43,3 +43,18 @@ uint64_t cmdline_get_u64(const char *key, uint64_t dflt, uint64_t bare)
     }
     return dflt;
 }
+
+size_t cmdline_get_str(const char *key, char *buf, size_t size)
+{
+    size_t kl = strlen(key), n = 0;
+    for (const char *p = cmdline; *p && size; p++) {
+        if ((p != cmdline && p[-1] != ' ') || memcmp(p, key, kl) || p[kl] != '=')
+            continue;
+        for (p += kl + 1; *p && *p != ' ' && n + 1 < size; p++)
+            buf[n++] = *p;
+        break;
+    }
+    if (size)
+        buf[n] = '\0';
+    return n;
+}
