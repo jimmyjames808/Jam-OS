@@ -145,3 +145,5 @@ rounding is used).
 - **17 fixed.** `text_clip` draws nothing when not even "..." fits.
   Test: the self-test clips a title to widths 0-27 and finds no pixel
   past the width (FAILED before: the dots stuck out).
+- **7 fixed** (the comment: -76..-16 dB, as `spectrum`'s). No test: a
+  comment.
