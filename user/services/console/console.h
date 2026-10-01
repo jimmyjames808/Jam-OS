@@ -54,7 +54,7 @@ struct client {
 };
 
 /* Port keys: the kind in the high half, an index in the low. */
-enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE };
+enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE, K_REBOOT };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* main.c */
@@ -140,6 +140,13 @@ status_t op_open_keys(void *ctx, handle_t *out);
 status_t op_connect_input(void *ctx, handle_t *out);
 /* Input source i is readable (or gone). */
 void source_event(unsigned i);
+/* Ctrl+Alt+Del's request to init: its answer came (a failed reboot), or
+ * init's channel closed: reset the machine. */
+void reboot_event(void);
+/* When the console resets the machine itself if init hasn't
+ * (DEADLINE_NEVER: no reboot asked for); reboot_due does it then. */
+uint64_t reboot_deadline(void);
+void reboot_due(void);
 
 /* ---- clients.c ------------------------------------------------------------------ */
 

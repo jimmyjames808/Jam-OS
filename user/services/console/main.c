@@ -104,6 +104,9 @@ static void port_event(const struct port_packet *pkt)
     case K_LEASE:
         lease_ended();
         break;
+    case K_REBOOT:
+        reboot_event();
+        break;
     }
 }
 
@@ -142,6 +145,8 @@ int main(int argc, char **argv)
         /* A client with requests left over: take what else is queued (a
          * key, another client) without sleeping, then give it another round. */
         uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
+        if (reboot_deadline() < deadline)
+            deadline = reboot_deadline();
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st == OK) {
@@ -151,6 +156,7 @@ int main(int argc, char **argv)
             return 1;
         }
         clients_serve_pending();
+        reboot_due();
         uint64_t t = now();
         if (dirty && t >= last + RENDER_NS) {
             render();
