@@ -10,7 +10,8 @@
  * pending, so a wait deep inside an enumeration (hc_wait) never runs a
  * request; the main loop serves them between steps.
  *
- * Files: hc.c the controller (registers, bring-up, commands, events);
+ * Files: hc.c the controller (registers, bring-up, events); command.c
+ * the command ring;
  * ring.c the DMA page pool and transfer rings; devices.c the device table
  * and contexts; control.c control transfers and descriptors; intr.c
  * interrupt-IN endpoints; bulk.c bulk endpoints and transfers; config.c

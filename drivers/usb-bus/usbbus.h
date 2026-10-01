@@ -1,5 +1,6 @@
 /* usb-bus internals, shared by its files: the xHCI host controller
- * (hc.c; ring.c: the DMA page pool and transfer rings), the USB device
+ * (hc.c; command.c: the command ring; ring.c: the DMA page pool and
+ * transfer rings), the USB device
  * model (devices.c: the device table and contexts; control.c: control
  * transfers and descriptors; intr.c: interrupt-IN endpoints; config.c:
  * configurations and interfaces; bulk.c: bulk endpoints and transfers;
@@ -439,12 +440,24 @@ extern struct usbdev *g_devs;   /* MAX_DEVS of them (drv_malloc) */
 
 /* ---- hc.c ------------------------------------------------------------------ */
 
+/* The fixed DMA area's layout (hc.c allocates it): offsets of the DCBAA,
+ * the event ring segment table, the command and event rings and the
+ * scratchpad array. */
+#define DMA_DCBAA   0x0000
+#define DMA_ERST    0x0800
+#define DMA_CMDRING 0x1000
+#define DMA_EVRING  0x2000
+#define DMA_SPARRAY 0x3000
+
 int  hc_bring_up(struct hc *h);
 int  hc_shutdown(struct hc *h);
 void hc_release(struct hc *h, bool quiet);
 uint32_t hc_portsc(struct hc *h, uint32_t port);
 void hc_portsc_write(struct hc *h, uint32_t port, uint32_t set);
 bool hc_port_is_usb3(struct hc *h, uint32_t port);
+uint32_t hc_op_read(struct hc *h, uint32_t r);                 /* an operational register */
+void hc_op_write64(struct hc *h, uint32_t r, uint64_t v);      /* one, low dword first */
+void hc_poll(struct hc *h);               /* the event ring now, without waiting */
 
 /* ring.c: the page pool (hc.c sets it up) and transfer rings. */
 int   pool_alloc(struct hc *h);            /* a zeroed page, -1 if none */
@@ -460,7 +473,8 @@ void ring_reset(struct ring *r);
 uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3);
 uint32_t ring_index(const struct ring *r, uint64_t trb_dev);   /* RING_TRBS if not in it */
 
-/* Run one command; its completion code (CC_TIMEOUT: none within timeout). */
+/* command.c: run one command; its completion code (CC_TIMEOUT: none
+ * within timeout). */
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms);
 void hc_doorbell(struct hc *h, uint32_t slot, uint32_t target);
