@@ -1,5 +1,6 @@
-/* music: what is heard, in sixteen frequency bands (music.idl's `levels`),
- * for a view such as jamjar to draw.
+/* music: what is heard, in 64 frequency bands (music.idl's `spectrum`;
+ * `levels` has sixteen, the loudest of each four), for a view such as
+ * jamjar to draw.
  *
  * The player hands every chunk it writes to spec_feed with the stream
  * frame (48 kHz) its first sample lands on. The chunk is mixed to mono and

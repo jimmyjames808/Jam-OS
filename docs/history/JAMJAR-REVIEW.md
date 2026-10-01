@@ -147,3 +147,4 @@ rounding is used).
   past the width (FAILED before: the dots stuck out).
 - **7 fixed** (the comment: -76..-16 dB, as `spectrum`'s). No test: a
   comment.
+- **8 fixed** (the comments). No test: comments.
