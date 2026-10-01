@@ -1,7 +1,9 @@
 /* CPU feature detection (CPUID) and the per-CPU control register setup
  * that depends on it: NX, SMEP, SMAP, UMIP, PGE, PCIDs and the PAT. cpu_detect
  * runs once on the BSP; every CPU then enables the same features, so the
- * features are the same everywhere. */
+ * features are the same everywhere. What the kernel does not set itself
+ * (microcode, MTRRs, TSC_ADJUST) each AP compares with the BSP's at
+ * startup, and takes the BSP's MTRRs if they differ (cpu_match_bsp). */
 #include <jam/cpu.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
@@ -49,6 +51,7 @@ void cpu_detect(void)
         f->model |= (a >> 16 & 0xf) << 4;
     if (f->family == 15)
         f->family += a >> 20 & 0xff;
+    f->mtrr   = d & (1u << 12);
     f->pge    = d & (1u << 13);
     f->pat    = d & (1u << 16);
     f->x2apic = c & (1u << 21);
@@ -60,6 +63,7 @@ void cpu_detect(void)
     if (max_leaf >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
         f->hybrid = d & (1u << 15);
+        f->tsc_adjust = b & (1u << 1);
         f->smep   = b & (1u << 7);
         f->smap   = b & (1u << 20);
         f->umip   = c & (1u << 2);
@@ -170,4 +174,121 @@ void cpu_detect_topology(struct cpu *cpu)
     }
     cpu->smt_id = x2id & ((1u << smt_shift) - 1);
     cpu->core_id = x2id >> smt_shift;
+}
+
+/* ---- What every CPU must share with the BSP --------------------------- */
+
+#define MSR_MTRRCAP      0xfe
+#define MSR_MTRR_DEFTYPE 0x2ff
+#define MSR_MTRR_BASE0   0x200   /* PHYSBASEn = 0x200 + 2n, PHYSMASKn = 0x201 + 2n */
+#define MSR_TSC_ADJUST   0x3b
+#define MTRRCAP_FIXED    (1u << 8)
+#define MTRR_VAR_MAX     32      /* MTRRCAP.VCNT is 8 bits; real CPUs have about 10 */
+
+/* The fixed-range MTRRs (SDM vol. 3A, 12.11.2.2). */
+static const uint32_t mtrr_fixed[] = {
+    0x250, 0x258, 0x259, 0x268, 0x269, 0x26a, 0x26b, 0x26c, 0x26d, 0x26e, 0x26f,
+};
+#define MTRR_FIXED_N (sizeof(mtrr_fixed) / sizeof(mtrr_fixed[0]))
+
+struct fw_state {
+    uint32_t microcode;                  /* revision, 0 if not read */
+    uint32_t var_count;                  /* variable MTRR pairs read */
+    uint64_t def_type;                   /* IA32_MTRR_DEF_TYPE */
+    uint64_t fixed[MTRR_FIXED_N];        /* the fixed ranges, 0 if none */
+    uint64_t var[2 * MTRR_VAR_MAX];      /* PHYSBASEn, PHYSMASKn pairs */
+    uint64_t tsc_adjust;                 /* IA32_TSC_ADJUST, 0 if none */
+};
+
+static struct fw_state bsp_fw;
+static uint64_t bsp_mtrrcap;   /* IA32_MTRRCAP, 0 without MTRRs */
+
+static void read_fw_state(struct fw_state *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->microcode = read_microcode();
+    if (cpu_features.tsc_adjust)
+        s->tsc_adjust = rdmsr(MSR_TSC_ADJUST);
+    if (!cpu_features.mtrr)
+        return;
+    uint64_t cap = rdmsr(MSR_MTRRCAP);
+    s->def_type = rdmsr(MSR_MTRR_DEFTYPE);
+    s->var_count = (uint32_t)(cap & 0xff);
+    if (s->var_count > MTRR_VAR_MAX)
+        s->var_count = MTRR_VAR_MAX;
+    for (uint32_t i = 0; i < 2 * s->var_count; i++)
+        s->var[i] = rdmsr(MSR_MTRR_BASE0 + i);
+    if (cap & MTRRCAP_FIXED)
+        for (unsigned i = 0; i < MTRR_FIXED_N; i++)
+            s->fixed[i] = rdmsr(mtrr_fixed[i]);
+}
+
+void cpu_snapshot_bsp(void)
+{
+    read_fw_state(&bsp_fw);
+    if (cpu_features.mtrr)
+        bsp_mtrrcap = rdmsr(MSR_MTRRCAP);
+}
+
+static bool mtrrs_match(const struct fw_state *a, const struct fw_state *b)
+{
+    return a->var_count == b->var_count && a->def_type == b->def_type &&
+           !memcmp(a->fixed, b->fixed, sizeof(a->fixed)) && !memcmp(a->var, b->var, sizeof(a->var));
+}
+
+#define CR0_NW        (1ull << 29)
+#define CR0_CD        (1ull << 30)
+#define MTRR_DEF_E    (1ull << 11)   /* MTRRs enabled */
+
+/* Load the BSP's MTRRs on this CPU: the SDM's procedure for changing them
+ * (vol. 3A, 12.11.7.2 "MemTypeSet Function"), for this CPU alone: no other
+ * CPU sees its MTRRs, and it runs nothing else yet. Interrupts are off. */
+static void load_bsp_mtrrs(uint32_t var_count, bool fixed)
+{
+    uint64_t cr0 = read_cr0(), cr4 = read_cr4();
+    write_cr0((cr0 | CR0_CD) & ~CR0_NW);   /* no-fill cache mode */
+    wbinvd();
+    /* Flush the TLB, global entries too. */
+    if (cr4 & CR4_PGE)
+        write_cr4(cr4 & ~CR4_PGE);
+    else
+        write_cr3(read_cr3());
+    wrmsr(MSR_MTRR_DEFTYPE, bsp_fw.def_type & ~MTRR_DEF_E);
+    for (uint32_t i = 0; i < 2 * var_count; i++)
+        wrmsr(MSR_MTRR_BASE0 + i, bsp_fw.var[i]);
+    if (fixed)
+        for (unsigned i = 0; i < MTRR_FIXED_N; i++)
+            wrmsr(mtrr_fixed[i], bsp_fw.fixed[i]);
+    wbinvd();
+    if (cr4 & CR4_PGE)
+        write_cr4(cr4 & ~CR4_PGE);
+    else
+        write_cr3(read_cr3());
+    wrmsr(MSR_MTRR_DEFTYPE, bsp_fw.def_type);
+    write_cr0(cr0);
+    write_cr4(cr4);
+}
+
+unsigned cpu_match_bsp(uint32_t *microcode)
+{
+    struct fw_state here;
+    read_fw_state(&here);
+    *microcode = here.microcode;
+    unsigned diff = 0;
+    if (here.microcode != bsp_fw.microcode)
+        diff |= CPU_DIFF_MICROCODE;
+    if (here.tsc_adjust != bsp_fw.tsc_adjust)
+        diff |= CPU_DIFF_TSC_ADJUST;
+    if (mtrrs_match(&here, &bsp_fw))
+        return diff;
+    /* Same MTRR layout as the BSP: copy the BSP's (as Linux does for every
+     * AP). A different layout is only reported. */
+    if (here.var_count == bsp_fw.var_count &&
+        (rdmsr(MSR_MTRRCAP) & MTRRCAP_FIXED) == (bsp_mtrrcap & MTRRCAP_FIXED)) {
+        load_bsp_mtrrs(here.var_count, bsp_mtrrcap & MTRRCAP_FIXED);
+        read_fw_state(&here);
+        if (mtrrs_match(&here, &bsp_fw))
+            return diff | CPU_DIFF_MTRR_SET;
+    }
+    return diff | CPU_DIFF_MTRR;
 }
