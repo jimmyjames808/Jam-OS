@@ -8,6 +8,7 @@
  * `pending` reaches 0. Waiting is bounded: after 5 s it panics. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
+#include <jam/kexec.h>
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
@@ -326,7 +327,12 @@ void nmi_handler(struct trap_frame *f)
 {
     if (__atomic_load_n(&panic_in_progress, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&halting, __ATOMIC_ACQUIRE)) {
+        /* The BSP may be asked to make kexec's jump (kexec.h): it says
+         * so before it counts as halted. */
+        bool wait = kexec_halted_will_wait();
         __atomic_add_fetch(&halted, 1, __ATOMIC_RELEASE);
+        if (wait)
+            kexec_halted_wait();
         halt_forever();
     }
     if (__atomic_load_n(&watchdog_target, __ATOMIC_ACQUIRE) == (int)this_cpu()->index) {

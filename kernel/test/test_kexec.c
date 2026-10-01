@@ -134,7 +134,7 @@ KTEST(kexec_handoff_check)
         valid_handoff(h);
         switch (k) {
         case 0:  h->magic ^= 1; break;
-        case 1:  h->version = 2; break;
+        case 1:  h->version = KEXEC_HANDOFF_VERSION + 1; break;
         case 2:  h->size -= 8; break;
         case 3:  h->flags = 1u << 5; break;
         case 4:  h->x2apic = 2; break;

@@ -22,6 +22,7 @@
 
 #define MSR_APIC_BASE    0x1b
 #define MSR_TSC_DEADLINE 0x6e0
+#define APIC_BASE_BSP    (1ull << 8)
 #define APIC_BASE_X2     (1ull << 10)
 #define APIC_BASE_EN     (1ull << 11)
 
@@ -207,6 +208,11 @@ uint32_t lapic_read_esr(void)
 bool lapic_x2apic(void)
 {
     return x2;
+}
+
+bool lapic_is_bsp(void)
+{
+    return rdmsr(MSR_APIC_BASE) & APIC_BASE_BSP;
 }
 
 void lapic_send_init_others(void)

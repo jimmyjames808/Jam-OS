@@ -75,6 +75,15 @@ bool           kexec_panic_begin(void);
 void           kexec_panic_message(const char *msg);
 const char    *kexec_panic_why_not(void);
 _Noreturn void kexec_panic_jump(void);
+/* A CPU halted by the panic's (or kexec_reboot's) NMI (arch/x86_64/ipi.c).
+ * The jump is made on the bootstrap processor: an INIT to it would send it
+ * to the firmware (or reset the board), so it is never sent one, and a
+ * CPU left halted in this kernel's memory is not safe once the next one
+ * reuses it. So the BSP, while a stored kernel exists, says it will wait
+ * (will_wait) and then waits (wait: interrupts off, spinning) for the
+ * CPU that decides: it makes the jump if that one is an AP, or halts. */
+bool           kexec_halted_will_wait(void);
+_Noreturn void kexec_halted_wait(void);
 /* Is a panic now a crash loop? This boot started after a panic
  * (after_panic) and has run for uptime_ns. */
 bool kexec_crash_loop(bool after_panic, uint64_t uptime_ns);

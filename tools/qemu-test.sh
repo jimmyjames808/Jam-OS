@@ -30,6 +30,8 @@
 # -blockdev, which outlives the device): a script pulls it with the monitor
 # command `device_del stick` and plugs it back with
 # `device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick`.
+# A panic starts the kernel's stored copy (kexec): a run without
+# QEMU_INPUT ends there (PANIC), a scripted one goes on into that boot.
 # The boot splash (a plain boot's animation) is left out with the boot
 # word `nosplash`, so the tests see the text log as before; QEMU_SPLASH=1
 # keeps it (tools/splash-test.sh).
@@ -98,9 +100,13 @@ if [ -n "${QEMU_MONITOR:-}" ]; then
     mpid=$!
 fi
 
+# A run without a script also ends at a panic that starts the stored
+# kernel (kexec): what comes after it is another boot.
+ends="Halting|Idling|system halted"
+[ -n "${QEMU_INPUT:-}" ] || ends="$ends|starting the stored kernel: the next boot"
 i=0
 while [ $i -lt $limit ] && kill -0 $qpid 2>/dev/null &&
-      ! grep -qE "Halting|Idling|system halted" "$log" 2>/dev/null; do
+      ! grep -qE "$ends" "$log" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
 done
@@ -126,4 +132,5 @@ if [ -n "$fpid" ]; then
     [ $fst -eq 0 ] && [ $i -lt $limit ] || { echo "$name: FAILED (input script)"; exit 1; }
     exit 0
 fi
+grep -q "starting the stored kernel: the next boot" "$log" && { echo "$name: PANIC"; exit 1; }
 grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }

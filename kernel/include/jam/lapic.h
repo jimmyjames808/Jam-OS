@@ -31,8 +31,13 @@ uint32_t lapic_read_esr(void);
 bool     lapic_x2apic(void);
 /* INIT to every other CPU: each resets and waits for a SIPI, running no
  * code of anyone's (kexec's last step, after their NMI halt: the next
- * kernel starts them itself, and may reuse the memory they halted in). */
+ * kernel starts them itself, and may reuse the memory they halted in).
+ * Only from the bootstrap processor: an INIT to the BSP sends it to the
+ * firmware's reset vector (QEMU), or resets the machine on some boards. */
 void     lapic_send_init_others(void);
+/* This CPU is the bootstrap processor: the one the firmware started on
+ * (IA32_APIC_BASE.BSP, which no kexec changes). */
+bool     lapic_is_bsp(void);
 
 /* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and
  * "nodeadline" is not on the command line), else the APIC's own counter. */

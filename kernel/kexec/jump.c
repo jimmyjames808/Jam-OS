@@ -4,12 +4,22 @@
  *
  * The panic path takes no lock and allocates nothing: kexec_panic_begin
  * decides (the state, the crash-loop rule, the checksum read through the
- * window's own page-table entries, region.c) before the panic prints a
- * line, so a panic that will jump draws nothing (fbcon_go_dark) and one
- * that won't draws its screen as always, with the reason. The jump itself
- * (kexec_panic_jump) is plain stores into the crash record, one config
- * write per PCI function (pci_panic_bus_master_off), an INIT to the other
- * CPUs, the screen filled with the splash background, and the trampoline.
+ * window's own page-table entries, region.c, and the BSP waiting) before
+ * the panic prints a line, so a panic that will jump draws nothing
+ * (fbcon_go_dark) and one that won't draws its screen as always, with the
+ * reason. The jump itself (kexec_panic_jump) is plain stores into the
+ * crash record, one config write per PCI function
+ * (pci_panic_bus_master_off), an INIT to the other CPUs, the screen
+ * filled with the splash background, and the trampoline.
+ *
+ * The last three are made on the bootstrap processor. An INIT sent to the
+ * BSP doesn't park it as it does an AP: it starts the firmware's reset
+ * vector (QEMU) or resets the board, and a CPU merely left halted in this
+ * kernel's memory would run whatever the next kernel writes there after
+ * an SMI. So the BSP, halted by the NMI like the rest, waits in
+ * kexec_halted_wait while a stored kernel exists, and a jump decided on an
+ * AP is handed to it (HAND_JUMP): the next kernel always starts on the
+ * BSP, as after Limine, and starts every AP itself.
  *
  * The crash record is a page of this kernel's own, typed CRASH_LOG in the
  * stored kernel's memory map with the log ring, its address in the
@@ -43,6 +53,11 @@ static union {
 
 static uint64_t panic_at;         /* the log's head when the panic began */
 static const char *why_not;       /* kexec_panic_begin said no: why (NULL: no stored kernel) */
+
+/* The BSP's part when another CPU decides (kexec_halted_wait). */
+enum { HAND_WAIT, HAND_HALT, HAND_JUMP };
+static int bsp_waiting;           /* the BSP is in kexec_halted_wait */
+static int handover = HAND_WAIT;  /* what it is to do */
 
 uint64_t kx_record_phys(void)
 {
@@ -90,6 +105,12 @@ static bool intact(void)
     return kx_sum_region(true) == kx.sum && kx_tramp_sum() == kx.tramp_sum;
 }
 
+/* The jump's CPU, if not this one, is waiting for it (the BSP). */
+static bool bsp_ready(void)
+{
+    return lapic_is_bsp() || __atomic_load_n(&bsp_waiting, __ATOMIC_ACQUIRE);
+}
+
 bool kexec_panic_begin(void)
 {
     panic_at = klog_head();
@@ -103,6 +124,10 @@ bool kexec_panic_begin(void)
         why_not = "this boot started after a panic less than 30 s ago (a crash loop)";
     else if (!intact())
         why_not = "the stored kernel's checksum no longer matches (its memory was changed)";
+    else if (!bsp_ready())
+        why_not = "the boot CPU didn't stop for the jump";
+    if (why_not)   /* the BSP, if it waits for the jump, halts instead */
+        __atomic_store_n(&handover, HAND_HALT, __ATOMIC_RELEASE);
     return !why_not;
 }
 
@@ -135,14 +160,13 @@ static void seal(uint32_t kind)
                                       offsetof(struct kexec_crash_record, checksum));
 }
 
-/* Bus mastering off, then the other CPUs, halted by NMI, are sent INIT:
- * they wait for a SIPI from now on, running nothing (the next kernel may
- * reuse the memory they halted in, and starts them itself). The screen
- * turns the splash background. Then into the trampoline at T, which loads
- * the new CR3 and never returns. */
-_Noreturn static void jump(void)
+/* On the BSP: the other CPUs, halted by NMI, are sent INIT: they wait
+ * for a SIPI from now on, running nothing (the next kernel may reuse the
+ * memory they halted in, and starts them itself). The screen turns the
+ * splash background. Then into the trampoline at T, which loads the new
+ * CR3 and never returns. */
+_Noreturn static void jump_here(void)
 {
-    pci_panic_bus_master_off();
     lapic_send_init_others();
     fbcon_fill_splash_bg();
     void (*tramp)(uint64_t, uint64_t, uint64_t, uint64_t) =
@@ -150,6 +174,42 @@ _Noreturn static void jump(void)
     tramp(kx.cr3, kx.entry, kx.handoff, kx.stack_top);
     for (;;)
         hlt();
+}
+
+/* Bus mastering off, then the jump: here on the BSP, else by the BSP
+ * (waiting in kexec_halted_wait), which sends this CPU INIT too. */
+_Noreturn static void jump(void)
+{
+    pci_panic_bus_master_off();
+    if (lapic_is_bsp())
+        jump_here();
+    __atomic_store_n(&handover, HAND_JUMP, __ATOMIC_RELEASE);
+    for (;;) {
+        cli();
+        hlt();
+    }
+}
+
+bool kexec_halted_will_wait(void)
+{
+    int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
+    if (!lapic_is_bsp() || (s != KX_ARMED && s != KX_JUMPING))
+        return false;
+    __atomic_store_n(&bsp_waiting, 1, __ATOMIC_RELEASE);
+    return true;
+}
+
+_Noreturn void kexec_halted_wait(void)
+{
+    for (;;) {
+        cli();
+        int h = __atomic_load_n(&handover, __ATOMIC_ACQUIRE);
+        if (h == HAND_JUMP)
+            jump_here();   /* kx and the record are written before HAND_JUMP */
+        if (h == HAND_HALT)
+            halt_forever();
+        cpu_relax();
+    }
 }
 
 _Noreturn void kexec_panic_jump(void)
@@ -175,8 +235,10 @@ status_t kexec_reboot(void)
      * here the screen shows nothing but the splash background. */
     klog_force_unlock();
     fbcon_go_dark();
-    if (!intact()) {
-        kprintf("kexec: the stored kernel's memory was changed: a firmware reboot instead\n");
+    if (!intact() || !bsp_ready()) {
+        kprintf("kexec: %s: a firmware reboot instead\n",
+                bsp_ready() ? "the stored kernel's memory was changed"
+                            : "the boot CPU didn't stop for the jump");
         machine_reboot();
     }
     seal(KEXEC_RECORD_REBOOT);
