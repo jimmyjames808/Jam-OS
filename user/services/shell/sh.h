@@ -159,6 +159,16 @@ const char *sh_boot_note(void);
  * for (<wants.h>) and its terminal (a PROGRAM-level console channel); its
  * job is killed when it ends. */
 int sh_run_program(int argc, char **argv);
+/* A helper: the boot-image program at path (a bootfs name) doing one job
+ * for a command, started with its list, the extras x (moved; x has room
+ * for 2 more after them), an output channel whose lines the shell prints
+ * as its own, and a stop channel (SR_USER + 2): Ctrl+C writes a byte
+ * there and kills the helper's job only if it hasn't ended 3 s later
+ * (`play` fades out and says where it stopped). Says nothing of its own
+ * but a failure to start (126); else the helper's exit code (137: it was
+ * killed). */
+int sh_run_helper(const char *path, int argc, const char *const *argv, struct spawn_handle *x,
+                  unsigned nx);
 /* A test program (utest, usbtest, hdatest, mixtest): run it as
  * sh_run_program does (its list asks for what it tests), then show its
  * result line from the kernel log; its status. */

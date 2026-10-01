@@ -147,6 +147,9 @@ int  audio_discard(struct audio_out *a);
  * the level it is heard at: its own volume, the mixer's master volume and
  * the device's gain (`hda gain`) added up (audio.idl's stream_levels). */
 int  audio_set_volume(struct audio_out *a, int centibels);
+/* A volume as typed ("-20", "-20.5", "+3", "0": dB, one decimal kept) into
+ * centibels; false if it isn't one, or is more than 100 dB either way. */
+bool audio_parse_db(const char *s, int *centibels);
 int  audio_get_volume(struct audio_out *a, int *centibels);
 /* How it has gone so far (the mixer's audio.stream_stats, and ours). */
 int  audio_stats(struct audio_out *a, struct audio_stats *st);

@@ -843,8 +843,15 @@ afterwards) use it.
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
 source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
-16-bit frames, close), which the music player uses too. MP3s are decoded in the shell's own process by
-`<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
+16-bit frames, close), which the music player uses too. The shell's
+`play` only checks its arguments and opens the file: the file is decoded
+and played by `bin/play` (`user/apps/play`), a program of its own that
+holds nothing but that open file (handed over with `file_give` and
+`file_adopt`), its list's `/svc/audio` and a channel for its lines, so a
+crafted file on someone's stick reaches the sound output and nothing
+else. Ctrl+C sends it a byte on a stop channel: it fades out and says
+where it stopped, and its job is killed if it hasn't ended 3 s later.
+MP3s are decoded there by `<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
 domain or MIT-0, a fork of minimp3, vendored unmodified, SSE2 on): MPEG-1,
 2 and 2.5, Layers I to III, CBR and VBR, into 16-bit frames at the
 file's rate, which `<audio.h>` resamples like any other. libos's

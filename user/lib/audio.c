@@ -483,3 +483,26 @@ void audio_close(struct audio_out *a)
     audio_rs_free(&a->rs);
     memset(a, 0, sizeof(*a));
 }
+
+bool audio_parse_db(const char *s, int *centibels)
+{
+    bool neg = *s == '-';
+    if (*s == '-' || *s == '+')
+        s++;
+    int v = 0;
+    bool digits = false;
+    for (; *s >= '0' && *s <= '9'; s++, digits = true)
+        if ((v = v * 10 + (*s - '0')) > 100)
+            return false;
+    v *= 10;
+    if (*s == '.' && s[1] >= '0' && s[1] <= '9') {
+        v += s[1] - '0';
+        s += 2;
+        while (*s >= '0' && *s <= '9')
+            s++;
+    }
+    if (!digits || *s)
+        return false;
+    *centibels = neg ? -v : v;
+    return true;
+}

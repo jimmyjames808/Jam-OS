@@ -379,6 +379,14 @@ status_t file_stat(struct jfile *f, uint64_t *size, uint64_t *mtime);
 status_t file_truncate(struct jfile *f, uint64_t size);
 /* Close it and unmap its buffer; *f is zeroed. */
 void     file_close(struct jfile *f);
+/* Hand an open file to another program: its `file` channel and buffer VMO
+ * into *ch and *buf (ours no more: send them), our mapping of the buffer
+ * gone; *f is zeroed. */
+void     file_give(struct jfile *f, handle_t *ch, handle_t *buf);
+/* Take a file another program gave us (file_give's two handles, consumed
+ * whatever happens), opened with `flags` (FS_*): map its buffer and ask
+ * its size. *out is ours until file_close. */
+status_t file_adopt(handle_t ch, handle_t buf, uint32_t flags, struct jfile *out);
 /* A path's size, whether it is a directory, and its modification time
  * (Unix seconds; 0 if unknown). Any of the outputs may be NULL. */
 status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime);
