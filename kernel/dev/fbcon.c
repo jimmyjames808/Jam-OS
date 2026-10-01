@@ -130,6 +130,13 @@ static void putc_locked(char ch)
             cx--;
         return;
     }
+    /* The font is ASCII. The log's text is checked UTF-8 (klog.c): its
+     * lead byte draws one '?' for the character, its other bytes nothing. */
+    if ((uint8_t)ch >= 0x80) {
+        if ((uint8_t)ch < 0xc0)
+            return;
+        ch = '?';
+    }
     cells[cy][cx] = (struct cell){ ch, cur_fg, cur_bg };
     draw_cell(cx, cy);
     if (++cx >= cols)
