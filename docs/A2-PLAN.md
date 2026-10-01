@@ -268,6 +268,18 @@ As planned above, plus:
   stream's underruns (0 expected), the log says "frames late" if a
   period's end came too late.
 
+### Left for later
+
+- devmgr still hands the hda driver's channel to any GET_SERVICE caller
+  (the shell's `hda`, `hda gain` and `hdatest` use it): a program that
+  holds the driver's one stream (`hdatest`) makes a stream's start fail
+  `ERR_BAD_STATE` meanwhile.
+- The mixer's loop waits in its calls to the driver (an open up to 3 s,
+  finding the driver up to 2 s per service) while the driver restarts:
+  its clients' calls wait as long.
+- `played` is interpolated within a period from the driver's position;
+  nothing measures the codec's own delay.
+
 ### Done when
 
 Two programs play at once through the mixer in QEMU (above), `vol` works
