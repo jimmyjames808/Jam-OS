@@ -175,11 +175,11 @@ are the design questions M8 left open
   unchanged stick reads nothing). M8.6's block cache in fat with a
   read-ahead would fix it.
 - The mouse wheel on the PC: hid drives a mouse whose report descriptor
-  has a wheel in the report protocol (the boot protocol, which real mice
-  send without a wheel, was the cause); not yet confirmed on the PC. The
-  boot log has each mouse's descriptor in hex for the fixtures
-  (`drivers/hid/fixtures.c`). The horizontal wheel is not sent (no field
-  in `input`). The mouse test runs at 1280x800 only.
+  has a wheel in the report protocol (real mice send no wheel in the boot
+  protocol); not yet confirmed on the PC. The boot log has each mouse's
+  descriptor in hex, to add to `drivers/hid/fixtures.c`. The horizontal
+  wheel is not sent (no field in `input`). The mouse test runs at
+  1280x800 only.
 
 The rest:
 
