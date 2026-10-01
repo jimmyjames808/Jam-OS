@@ -208,9 +208,11 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
     handle_t fs;
     unsigned mount;
     status_t st = ns_resolve(path, rel, &fs, &mount);
-    if (st == OK && fs) {   /* else "/": a directory */
+    if (st == OK && fs) {   /* else "/" or "/svc": directories; a service is neither */
         st = fs_stat_until(fs, deadline(), rel, &sz, &dir, &mt);
         jam_handle_close(fs);
+    } else if (st == OK && mount == NS_AT_SVC && rel[1]) {
+        dir = 0;
     }
     if (st != OK)
         return st;
@@ -220,6 +222,35 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
         *is_dir = dir != 0;
     if (mtime)
         *mtime = mt;
+    return OK;
+}
+
+/* Entry `index` of "/": the mount points, then "svc" if we have services. */
+static status_t root_entry(uint32_t index, struct fs_entry *out)
+{
+    char point[NS_NAME_MAX], name[SVC_NAME_MAX + 1];
+    uint32_t mounts = 0;
+    while (ns_mount_at(mounts, point)) {
+        if (mounts++ == index) {
+            memcpy(out->name, point + 1, strlen(point + 1) + 1);
+            out->is_dir = true;
+            return OK;
+        }
+    }
+    if (index != mounts || !ns_svc_at(0, name))
+        return ERR_NOT_FOUND;
+    memcpy(out->name, "svc", 4);
+    out->is_dir = true;
+    return OK;
+}
+
+/* Entry `index` of "/svc": a service's name (neither file nor directory). */
+static status_t svc_entry(uint32_t index, struct fs_entry *out)
+{
+    char name[SVC_NAME_MAX + 1];
+    if (!ns_svc_at(index, name))
+        return ERR_NOT_FOUND;
+    memcpy(out->name, name, strlen(name) + 1);
     return OK;
 }
 
@@ -233,14 +264,10 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
     if (st != OK)
         return st;
     memset(out, 0, sizeof(*out));
-    if (!fs) {   /* "/": the mount points */
-        char point[NS_NAME_MAX];
-        if (!ns_mount_at(index, point))
-            return ERR_NOT_FOUND;
-        memcpy(out->name, point + 1, strlen(point + 1) + 1);
-        out->is_dir = true;
-        return OK;
-    }
+    if (!fs && mount == NS_AT_SVC)
+        return rel[1] ? ERR_WRONG_TYPE : svc_entry(index, out);
+    if (!fs)
+        return root_entry(index, out);
     st = fs_readdir_until(fs, deadline(), rel, index, (uint8_t *)out->name, &dir, &size);
     jam_handle_close(fs);
     if (st == OK && out->name[FS_PATH_MAX - 1])

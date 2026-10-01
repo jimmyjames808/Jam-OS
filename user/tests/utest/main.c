@@ -184,7 +184,8 @@ static bool t_rights(void)
 
 /* kexec_load, kexec_reboot and klog_name refuse what they must (the rights
  * on the root resource only where we were given one: init's run gives it,
- * the shell doesn't). Nothing here loads an image or names the log: either
+ * and the shell gives it for the list's `right klog`, without
+ * RIGHT_TRANSFER). Nothing here loads an image or names the log: either
  * would change this boot (the stored kernel replaced, the crash log's name). */
 static bool t_kexec_refusals(void)
 {
@@ -193,11 +194,11 @@ static bool t_kexec_refusals(void)
     CHECK_ST(jam_kexec_load(v, v, v, NULL, 0, 0), ERR_WRONG_TYPE);   /* not a resource */
     CHECK_ST(jam_kexec_load(0x7fff0000u, v, v, NULL, 0, 0), ERR_BAD_HANDLE);
     CHECK_ST(jam_kexec_reboot(v), ERR_WRONG_TYPE);
-    if (!root) {   /* run from the shell, which gives programs no root resource */
+    if (!root) {   /* started by a program that gave it no root resource */
         CHECK_ST(jam_handle_close(v), OK);
         return true;
     }
-    CHECK_ST(jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &rd), OK);
+    CHECK_ST(jam_handle_duplicate(root, RIGHT_WAIT | RIGHT_INSPECT | RIGHT_READ, &rd), OK);
     CHECK_ST(jam_kexec_load(rd, v, v, NULL, 0, 0), ERR_ACCESS_DENIED);   /* no MANAGE */
     CHECK_ST(jam_kexec_reboot(rd), ERR_ACCESS_DENIED);
 
@@ -610,6 +611,10 @@ static const struct {
     { "ns_child_sees_only_its_mounts", t_ns_child_sees_only_its_mounts },
     { "ns_mounts_reach_a_running_child", t_ns_mounts_reach_a_running_child },
     { "ns_malformed_messages", t_ns_malformed_messages },
+    { "svc_publish_and_open", t_svc_publish_and_open },
+    { "svc_connect", t_svc_connect },
+    { "svc_child_gets_its_grants", t_svc_child_gets_its_grants },
+    { "svc_child_gets_views", t_svc_child_gets_views },
     { "view_etc_names", t_view_etc_names },
     { "fat_views", t_fat_views },
     { "fat_view_limits", t_fat_view_limits },

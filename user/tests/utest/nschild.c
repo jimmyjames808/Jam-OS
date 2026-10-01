@@ -160,6 +160,10 @@ int ns_child(int argc, char **argv)
         return ns_late();
     if (!strcmp(m, "ns-sleeper"))
         return ns_sleeper();
+    if (!strcmp(m, "ns-svc") && argc > 2)
+        return ns_svc_child(argv[2]);
+    if (!strcmp(m, "ns-view") && argc > 2)
+        return ns_view_child(argv[2]);
     if (!strcmp(m, "fscat") && argc > 2)
         return fscat(argv[2]);
     if (!strcmp(m, "fs-hold") && argc > 2)

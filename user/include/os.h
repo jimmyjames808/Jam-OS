@@ -170,13 +170,15 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
 
 /* files ---------------------------------------------------------------------------
  * The namespace: the mount points a program was given, each with its `fs`
- * channel (abi/idl/fs.idl, file.idl). A mount point is "/" and one name
+ * channel (abi/idl/fs.idl, file.idl), and the services (below: "/svc").
+ * A mount point is "/" and one name
  * ("/boot", "/data"). The calls below take absolute paths of at most
  * FS_PATH_MAX - 1 bytes (longer, or not starting with '/':
  * ERR_INVALID_ARGS), find the mount by the path's first name and send the
  * rest to its `fs` service. Inside a mount "." and ".." are resolved here,
  * and ".." stops at the mount's root: "/data/../boot/x" is /data/boot/x,
- * never /boot/x. "/" itself is a directory that lists the mount points.
+ * never /boot/x. "/" itself is a directory that lists the mount points
+ * (and "svc" when there are services).
  * Errors: a path under no mount is ERR_NOT_FOUND; a mount whose service
  * died gives ERR_PEER_CLOSED; a call the service doesn't answer within
  * FS_CALL_TIMEOUT is ERR_TIMED_OUT; the rest are the service's ERR_*
@@ -184,14 +186,15 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
  *
  * SR_NS, the encoding: a channel end. Whoever started the program holds
  * the other end and writes struct ns_msg messages on it; an NS_MOUNT's or
- * NS_SET's handles are the `fs` channels, one per path, in order. The
+ * NS_SET's handles are the `fs` channels and the services' channels, one
+ * per path, in order (a path "/svc/<name>" is a service). The
  * first message (an NS_MOUNT, possibly of nothing) comes right after the
  * start; libos waits for it (up to NS_FIRST_WAIT) before its first lookup.
  * Later ones change the running program's namespace: NS_MOUNT adds mounts,
  * or replaces those with the same path; NS_UNMOUNT (no handles) removes
- * them; NS_SET makes the starter's mounts exactly the ones it lists (the
- * starter's others go; the program's own, from ns_mount, stay unless one
- * of the same path replaces them). Files already open stay open either
+ * them; NS_SET makes the starter's mounts and services exactly the ones
+ * it lists (the starter's others go; the program's own, from ns_mount and
+ * ns_svc_set, stay unless one of the same path replaces them). Files already open stay open either
  * way: each has its own channel. A starter that closes its end leaves the
  * namespace as it is. A malformed message is dropped and its handles
  * closed.
@@ -218,55 +221,127 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
 #define FS_FLAGS    31u   /* all of them: any other bit is ERR_INVALID_ARGS */
 #define FS_CALL_TIMEOUT (60 * NS_PER_S)
 
-#define NS_NAME_MAX   16  /* a mount point with its slash and its NUL: "/data" */
-#define NS_MAX_MOUNTS 8   /* in one namespace, and in one ns_msg */
-#define NS_FIRST_WAIT (5 * NS_PER_S)
-#define NS_MOUNT      1u
-#define NS_UNMOUNT    2u
-#define NS_SET        3u
+#define NS_NAME_MAX    16  /* an entry's path with its NUL: "/data", "/svc/devmgr-ctl" */
+#define NS_MAX_MOUNTS  8   /* mounts in one namespace */
+#define NS_MAX_SVCS    16  /* services in one namespace */
+#define NS_MAX_ENTRIES (NS_MAX_MOUNTS + NS_MAX_SVCS)   /* entries in one ns_msg */
+#define NS_FIRST_WAIT  (5 * NS_PER_S)
+#define NS_MOUNT       1u
+#define NS_UNMOUNT     2u
+#define NS_SET         3u
 
 struct ns_msg {
-    uint32_t txid;                             /* 0: not a call */
-    uint32_t kind;                             /* NS_MOUNT, NS_UNMOUNT or NS_SET */
-    uint32_t count;                            /* paths used, at most NS_MAX_MOUNTS */
-    uint32_t reserved;                         /* 0 */
-    char     path[NS_MAX_MOUNTS][NS_NAME_MAX]; /* mount points, NUL-terminated */
+    uint32_t txid;                              /* 0: not a call */
+    uint32_t kind;                              /* NS_MOUNT, NS_UNMOUNT or NS_SET */
+    uint32_t count;                             /* paths used, at most NS_MAX_ENTRIES */
+    uint32_t connect;                           /* bit i: service i hands out channels (svc.connect) */
+    char     path[NS_MAX_ENTRIES][NS_NAME_MAX]; /* mount points and /svc/<name>, NUL-terminated */
 };
 /* An ns_msg is sent only as long as the paths it uses. */
 #define NS_MSG_SIZE(count) (16u + (count) * NS_NAME_MAX)
 
-/* "Every mount point we have": for spawn_args.ns and ns_send. */
+/* "Everything we have, as we have it": every mount (unrestricted) and
+ * every service, for spawn_args.ns and ns_send. */
 extern const char *const NS_ALL[];
 
 /* Mount the `fs` channel fs (consumed, whatever happens) at path in our
  * own namespace, replacing what was mounted there (its channel is closed).
  * ERR_INVALID_ARGS: path isn't "/name" (a name of 1 to NS_NAME_MAX - 2
- * bytes without '/', not "." or ".."); ERR_NO_RESOURCES: NS_MAX_MOUNTS
- * mounts already. */
+ * bytes without '/', not ".", ".." or "svc"); ERR_NO_RESOURCES:
+ * NS_MAX_MOUNTS mounts already. */
 status_t ns_mount(const char *path, handle_t fs);
 /* ERR_NOT_FOUND if nothing is mounted there. */
 status_t ns_unmount(const char *path);
 /* Our i-th mount point (in the order they were mounted) into out; false
- * past the last. */
+ * past the last. Services are not mounts: ns_svc_at lists them. */
 bool     ns_mount_at(unsigned i, char out[NS_NAME_MAX]);
 /* A duplicate of the `fs` channel mounted at path ("/data"), for calls of
  * one's own (the caller closes it). ERR_NOT_FOUND: no such mount. */
 status_t ns_channel(const char *path, handle_t *out);
 /* On `to` (our end of another program's SR_NS channel): an NS_MOUNT of
- * our own mounts listed in paths (NULL-terminated; NS_ALL: every one; a
- * path we don't have is left out), each with a duplicate of our channel. */
-status_t ns_send(handle_t to, const char *const *paths);
+ * what `grants` names (NULL-terminated; see "grants" below), each mount
+ * as a duplicate of our channel or a view made for it, each service as a
+ * duplicate of ours. What we don't have is left out, and so is a mount
+ * whose view its service won't make (fail closed). */
+status_t ns_send(handle_t to, const char *const *grants);
 /* The same for one channel of the caller's (consumed, whatever happens)
- * at path; fs HANDLE_INVALID sends an NS_UNMOUNT of path instead. */
+ * at path (a mount point or /svc/<name>); fs HANDLE_INVALID sends an
+ * NS_UNMOUNT of path instead. */
 status_t ns_send_one(handle_t to, const char *path, handle_t fs);
 /* Keep a running program's namespace in step with ours: on `to` an
- * NS_SET of our mounts listed in paths (as ns_send), after taking back
+ * NS_SET of what `grants` names (as ns_send), after taking back
  * through `back` (a duplicate of the program's end: spawn_args.ns_back_out;
  * HANDLE_INVALID: none) every message the program hasn't read yet, their
  * handles closed. With `back`, the program's end holds at most one message
  * from us however often this is called, and it is our namespace as of the
  * last call. */
-status_t ns_update(handle_t to, handle_t back, const char *const *paths);
+status_t ns_update(handle_t to, handle_t back, const char *const *grants);
+
+/* services --------------------------------------------------------------------------
+ * A service is a name under /svc in the namespace, given like a mount
+ * (SR_NS, as a path "/svc/<name>") with a channel to the service. Names
+ * are 1 to SVC_NAME_MAX bytes of [a-z0-9-]. svc_open gives the caller a
+ * channel of its own when the service hands them out (the entry says so:
+ * the svc protocol's connect, abi/idl/svc.idl), else a duplicate of the
+ * shared one. "/svc" lists the names (fs_readdir), fs_stat of one says
+ * it is neither a file nor a directory (is_dir false, size 0), and
+ * file_open of one is ERR_WRONG_TYPE. Errors: ERR_NOT_FOUND, the name
+ * isn't in our namespace (not granted); ERR_INVALID_ARGS, not a name. */
+
+#define SVC_NAME_MAX   10            /* bytes of a service's name */
+/* The services init publishes (tools/checkwants.py reads this list). */
+#define SVC_AUDIO      "audio"       /* the mixer: open a sound stream (abi/idl/audio.idl) */
+#define SVC_AUDIOCTL   "audioctl"    /* the mixer's volumes (audioctl.idl) */
+#define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
+#define SVC_DEVMGR     "devmgr"      /* devmgr's queries (<devmgr.h>) */
+#define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
+#define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
+#define SVC_LOGD       "logd"        /* logd's control channel (logctl.idl) */
+
+/* A channel to service `name` for the caller, who closes it. */
+status_t svc_open(const char *name, handle_t *out);
+/* A channel to service `name` that libos keeps (don't close it), opened
+ * on first use and opened again when its peer has gone (the service
+ * restarted), so a caller that asks again after ERR_PEER_CLOSED gets the
+ * new one. HANDLE_INVALID: not in our namespace. */
+handle_t svc_get(const char *name);
+/* The i-th service of our namespace (in the order given) into out (its
+ * name, NUL-terminated); false past the last. */
+bool     ns_svc_at(unsigned i, char out[SVC_NAME_MAX + 1]);
+/* For a service that hands out a channel per opener: take one request
+ * off ch and answer it, svc.connect by calling connect(ctx, &out) (it
+ * makes the channel and keeps the server end), anything else by
+ * dispatch(ctx, ...), a wrapper of the protocol's generated
+ * <proto>_dispatch. Returns as a generated <proto>_serve_one does: OK once
+ * a message was handled, else the read's status (ERR_SHOULD_WAIT: nothing
+ * queued; ERR_PEER_CLOSED: every client is gone). One thread at a time. */
+typedef uint32_t (*svc_dispatch_fn)(void *ctx, const void *req, uint32_t n, void *rep,
+                                    handle_t *rhs, uint32_t *rhn);
+status_t svc_serve_request(handle_t ch, svc_dispatch_fn dispatch,
+                           status_t (*connect)(void *ctx, handle_t *out), void *ctx);
+/* Publish service `name` in our own namespace (h consumed, whatever
+ * happens), replacing one of the same name; connect: it hands out a
+ * channel per opener. ERR_NO_RESOURCES: NS_MAX_SVCS already. */
+status_t ns_svc_set(const char *name, handle_t h, bool connect);
+/* ERR_NOT_FOUND if there is no such service. */
+status_t ns_svc_remove(const char *name);
+
+/* grants -------------------------------------------------------------------------------
+ * What a starter gives a program (spawn_args.ns, ns_send, ns_update): a
+ * NULL-terminated list of strings, each naming part of the starter's own
+ * namespace:
+ *   "*"              everything, as the starter has it (NS_ALL)
+ *   "/svc/<name>"    that service
+ *   "/data"          that mount, as the starter has it
+ *   "/data:r"        a read-only view of it (fs.view, <fsview.h>)
+ *   "/data:w"        a view that may write, but not the top-level `etc`
+ *   "/usb*"          (with or without :r, :w) every mount whose point
+ *                    starts with "/usb"
+ *   "*:r", "*:w"     every mount, as views (no services)
+ * A view is made with a call to the mount's service at the time of the
+ * send (each waits at most NS_VIEW_WAIT). */
+#define NS_VIEW_WAIT (2 * NS_PER_S)
+
 /* For fs services: a path inside a mount (fs.idl's 256-byte field, which
  * must hold a NUL) as the names it walks, joined by '/' with none leading
  * or trailing ("" for the mount's root): "/a/./b/../c" is "a/c", and ".."

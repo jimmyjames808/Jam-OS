@@ -119,7 +119,13 @@ bool t_music_stereo(void);
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);
 
-/* views.c: views of a filesystem. */
+/* svc.c: services and grants; views.c: views of a filesystem. */
+bool t_svc_publish_and_open(void);
+bool t_svc_connect(void);
+bool t_svc_child_gets_its_grants(void);
+bool t_svc_child_gets_views(void);
+int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
+int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
 bool t_view_etc_names(void);
 bool t_fat_views(void);
 bool t_fat_view_limits(void);
