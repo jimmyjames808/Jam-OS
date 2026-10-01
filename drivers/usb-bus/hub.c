@@ -7,10 +7,15 @@
  *
  * After that the hub's work is driven by its change bitmap (hub_change:
  * bit 0 the hub itself, bit n port n), filled by the status-change
- * endpoint (intr.c) or a scan. hub_work does one unit at a time: the hub's
- * own change, or one port: read and clear its status, handle an
- * over-current, detach what left, and for a new device debounce, reset
- * (warm for a stuck SuperSpeed link), find the speed and enumerate it. */
+ * endpoint (intr.c), a scan or a retry that is due. Each bit becomes a
+ * port task (work.c), so the hub's ports go side by side; hub_port_work
+ * does one: the hub's own change, or one port: read and clear its status,
+ * handle an over-current, detach what left, and for a new device debounce,
+ * take the default address (task.c: one device of the tree at a time),
+ * reset (warm for a stuck SuperSpeed link), find the speed and enumerate
+ * it. A failed attempt is tried again as a root port's is (rootport.c):
+ * sooner at first, PORT_TRIES attempts in all, and a device that left or
+ * reconnected meanwhile starts over with its own change. */
 #include "usbbus.h"
 
 #define HUB_PORT_CONNECTION 0
@@ -179,7 +184,7 @@ static bool hub_port_wants_attach(struct usbdev *hub, uint8_t port, uint16_t ps,
         detach(c, chg & 1 ? "replugged" : "port disabled", false);
         c = NULL;
     }
-    return !c && hub->port_fail[port] < 3 && !g_hc.stopping;
+    return !c && hub->port_fail[port] < PORT_TRIES && !g_hc.stopping;
 }
 
 /* Wait (up to 800 ms) for the reset to finish, then clear its change
@@ -201,7 +206,6 @@ static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uin
         }
     }
     if (!done) {
-        hub->port_fail[port]++;
         drv_report("usb %s.%u: FAILED at hub port reset: no reset change in 800 ms (status %04x "
                    "change %04x)", hub->path, port, *ps, *chg);
         g_failed++;
@@ -215,12 +219,10 @@ static bool hub_port_reset_wait(struct usbdev *hub, uint8_t port, bool warm, uin
     return true;
 }
 
-/* A new device: debounce, reset, speed. False (with the port's failure
- * counted where it is the device's fault) if it can't be enumerated. */
+/* Reset the port's new device and find its speed. False if that failed. */
 static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
 {
     uint16_t ps = 0, chg = 0;
-    hc_sleep(&g_hc, 100);
     if (hub_port_status(hub, port, &ps, &chg) != CC_SUCCESS || !(ps & 1))
         return false;
     /* A SuperSpeed port whose link is stuck (SS.Inactive, Compliance)
@@ -229,7 +231,6 @@ static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
     bool warm = hub->ss_hub && (link == PLS_INACTIVE || link == PLS_COMPLIANCE);
     uint32_t cc = hub_feature(hub, true, warm ? HUB_BH_PORT_RESET : HUB_PORT_RESET, port);
     if (cc != CC_SUCCESS) {
-        hub->port_fail[port]++;
         drv_log("usb %s: port %u: SET_FEATURE(%s): %s", hub->path, port,
                 warm ? "BH_PORT_RESET" : "PORT_RESET", cc_str(cc));
         return false;
@@ -237,7 +238,6 @@ static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
     if (!hub_port_reset_wait(hub, port, warm, &ps, &chg))
         return false;
     if (!(ps & 2)) {
-        hub->port_fail[port]++;
         drv_report("usb %s.%u: FAILED: port not enabled after reset (status %04x)", hub->path,
                    port, ps);
         g_failed++;
@@ -254,48 +254,101 @@ static bool hub_port_reset(struct usbdev *hub, uint8_t port, uint8_t *speed)
     return true;
 }
 
+/* An attempt on the hub's port failed: as root_failed (rootport.c). */
+static void hub_port_failed(struct usbdev *hub, uint8_t port)
+{
+    uint16_t ps = 0, chg = 0;
+    if (hub->gone || g_hc.stopping)
+        return;
+    if (hub_port_status(hub, port, &ps, &chg) == CC_SUCCESS && (!(ps & 1) || (chg & 1))) {
+        drv_log("usb %s.%u: the device %s during the attempt (status %04x change %04x): "
+                "starting over", hub->path, port, ps & 1 ? "reconnected" : "went away", ps, chg);
+        hub->hub_change[port / 32] |= 1u << (port % 32);
+        return;
+    }
+    hub->port_fail[port]++;
+    uint64_t ms = port_retry_ms(hub->port_fail[port]);
+    if (ms) {
+        hub->port_retry_at[port] = drv_clock_ns() + ms * NS_PER_MS;
+        drv_log("usb %s.%u: attempt %u failed: trying again in %lu ms", hub->path, port,
+                hub->port_fail[port], (unsigned long)ms);
+    } else {
+        drv_log("usb %s.%u: %u attempts failed: the port waits for the device to be unplugged",
+                hub->path, port, hub->port_fail[port]);
+    }
+}
+
 static void hub_port(struct usbdev *hub, uint8_t port)
 {
     uint16_t ps = 0, chg = 0;
     uint8_t speed;
-    if (!hub_port_read(hub, port, &ps, &chg) || !hub_port_wants_attach(hub, port, ps, chg) ||
-        !hub_port_reset(hub, port, &speed))
+    if (!hub_port_read(hub, port, &ps, &chg) || !hub_port_wants_attach(hub, port, ps, chg))
         return;
-    hc_sleep(&g_hc, 10);
-    if (!enumerate(dev_index(hub), port, speed))
-        hub->port_fail[port]++;
+    hub->port_retry_at[port] = 0;   /* this is the retry, if one was waiting */
+    int me = dev_index(hub);
+    if (!wait_port_free(me, port)) {
+        hub->port_retry_at[port] = drv_clock_ns() + 100 * NS_PER_MS;
+        return;
+    }
+    hc_sleep(&g_hc, 100);   /* debounce (USB 2.0 7.1.7.3) */
+    if (hub_port_status(hub, port, &ps, &chg) != CC_SUCCESS || !(ps & 1))
+        return;
+    addr0_take(hub->root_port);
+    if (!hub_port_reset(hub, port, &speed)) {
+        addr0_give(hub->root_port);
+        hub_port_failed(hub, port);
+        return;
+    }
+    hc_sleep(&g_hc, 10);   /* reset recovery (USB 2.0 7.1.7.5) */
+    if (enumerate(me, port, speed) || child_at(me, port))
+        hub->port_fail[port] = 0;
+    else
+        hub_port_failed(hub, port);
 }
 
-/* One unit of a hub's work: its own status change, or one port. The
- * main loop serves channels between units, so a class driver's request
- * never waits behind a whole hub's worth of enumerations. */
-void hub_work(struct usbdev *hub)
+/* The hub's own change: clear it (local power, over-current). */
+static void hub_self(struct usbdev *hub)
 {
-    if (hub->hub_scan_all) {
-        hub->hub_scan_all = false;
-        for (uint8_t p = 1; p <= hub->hub_ports; p++)
-            hub->hub_change[p / 32] |= 1u << (p % 32);
+    uint8_t b[4];
+    uint32_t n = 0;
+    if (usb_control(hub, 0xa0, 0, 0, 0, 4, b, &n, 1000) != CC_SUCCESS || n != 4)
+        return;
+    uint16_t chg = le16(b + 2);
+    if (chg & 1)
+        usb_control(hub, 0x20, 1, 0, 0, 0, NULL, &n, 1000);   /* C_HUB_LOCAL_POWER */
+    if (chg & 2) {
+        drv_log("usb %s: hub over-current", hub->path);
+        usb_control(hub, 0x20, 1, 1, 0, 0, NULL, &n, 1000);   /* C_HUB_OVER_CURRENT */
     }
-    if (hub->hub_change[0] & 1) {
-        hub->hub_change[0] &= ~1u;
-        uint8_t b[4];
-        uint32_t n = 0;
-        if (usb_control(hub, 0xa0, 0, 0, 0, 4, b, &n, 1000) == CC_SUCCESS && n == 4) {
-            uint16_t chg = le16(b + 2);
-            if (chg & 1)
-                usb_control(hub, 0x20, 1, 0, 0, 0, NULL, &n, 1000);   /* C_HUB_LOCAL_POWER */
-            if (chg & 2) {
-                drv_log("usb %s: hub over-current", hub->path);
-                usb_control(hub, 0x20, 1, 1, 0, 0, NULL, &n, 1000);   /* C_HUB_OVER_CURRENT */
+}
+
+void hub_port_work(struct usbdev *hub, uint8_t port)
+{
+    if (hub->gone)
+        return;
+    if (port == 0)
+        hub_self(hub);
+    else if (port <= hub->hub_ports)
+        hub_port(hub, port);
+}
+
+uint64_t hub_retries(uint64_t next)
+{
+    uint64_t now = drv_clock_ns();
+    for (int i = 0; g_devs && i < MAX_DEVS; i++) {
+        struct usbdev *d = &g_devs[i];
+        if (!d->used || d->gone || !d->is_hub)
+            continue;
+        for (unsigned p = 1; p <= d->hub_ports && p < 16; p++) {
+            if (!d->port_retry_at[p])
+                continue;
+            if (d->port_retry_at[p] <= now) {
+                d->port_retry_at[p] = 0;
+                d->hub_change[p / 32] |= 1u << (p % 32);
+            } else if (d->port_retry_at[p] < next) {
+                next = d->port_retry_at[p];
             }
         }
-        return;
     }
-    for (unsigned p = 1; p < 32 * 8; p++)
-        if (hub->hub_change[p / 32] & (1u << (p % 32))) {
-            hub->hub_change[p / 32] &= ~(1u << (p % 32));
-            if (p <= hub->hub_ports)
-                hub_port(hub, (uint8_t)p);
-            return;
-        }
+    return next;
 }

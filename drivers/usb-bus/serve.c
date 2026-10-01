@@ -6,18 +6,21 @@
  * holds the other end), and every channel it serves: one `usb` channel
  * per interface handed out (abi/idl/usb.idl) and one report channel per
  * open interrupt-IN endpoint. (Bulk data has no channel: it moves through
- * a buffer the class driver shares, bulk.c.) Packets for channels only mark them
- * pending, so a wait deep inside an enumeration (hc_wait) never runs a
- * request; the main loop serves them between steps.
+ * a buffer the class driver shares, bulk.c.) Packets for channels only
+ * mark them pending; the main loop then reads DR_SERVE and the report
+ * channels itself (nothing there waits), and hands a device's interface
+ * channels to that device's task (task.c, work.c), which serves their
+ * requests while other devices' tasks wait in theirs. The main loop also
+ * starts the ports' tasks and runs every task that may go on.
  *
  * Files: hc.c the controller (registers, bring-up, events); command.c
- * the command ring;
+ * the command ring; task.c the tasks;
  * ring.c the DMA page pool and transfer rings; devices.c the device table
  * and contexts; control.c control transfers and descriptors; intr.c
  * interrupt-IN endpoints; bulk.c bulk endpoints and transfers; config.c
  * configurations, endpoints and SET_INTERFACE; report.c log and RESULTS lines; attach.c enumeration and
- * detach; hub.c hubs; rootport.c root ports; work.c the port work the loop
- * drives; iface.c the `usb` protocol's requests; this file the channels,
+ * detach; hub.c hubs; rootport.c root ports; work.c the tasks' work and
+ * starting them; iface.c the `usb` protocol's requests; this file the channels,
  * the `usbbus` protocol and the loop.
  *
  * devmgr: for each interface of a configured device (hubs aside) usb-bus
@@ -68,6 +71,7 @@ int chan_add(handle_t h, uint8_t kind, uint32_t dev_id, uint8_t a)
         c->kind = kind;
         c->a = a;
         c->dev_id = dev_id;
+        c->serving = c->close_after = false;
         c->pending = true;   /* look once: something may be there already */
         return i;
     }
@@ -79,6 +83,12 @@ void chan_close(int i)
 {
     if (i < 0 || i >= MAX_CHANS || !chans[i].h)
         return;
+    if (chans[i].serving) {
+        /* A device task is in a request on it and will write the reply
+         * to this handle: closed when that request ends (serve_chan). */
+        chans[i].close_after = true;
+        return;
+    }
     drv_handle_close(chans[i].h);
     chans[i].h = HANDLE_INVALID;
     chans[i].pending = false;
@@ -422,24 +432,70 @@ static void chan_peer_closed(int i)
     }
 }
 
-static void serve_chan(int i)
+/* Channel i's queued requests (a bounded number). On an interface
+ * channel a request can wait: that runs in the device's task. */
+static bool serve_chan(int i)
 {
     struct chan *c = &chans[i];
     c->pending = false;
     /* A time budget as well as a count: one request can take a second (a
      * device that NAKs a control transfer until the timeout), and 64 of
-     * them from one client would hold the loop -- hot-plug, the other
-     * class drivers, error recovery -- for a minute. */
+     * them from one client would hold its device's other clients for a
+     * minute. */
     uint64_t t0 = drv_clock_ns();
     for (int guard = 0; guard < 64 && c->h && drv_clock_ns() - t0 < 20 * NS_PER_MS; guard++) {
+        c->serving = true;
         status_t st = c->kind == CHAN_IFACE ? iface_serve_one(c) : drop_input(c);
+        c->serving = false;
+        if (c->close_after) {
+            c->close_after = false;
+            chan_close(i);
+            return true;
+        }
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)
             chan_peer_closed(i);
-        return;
+        return true;
     }
-    c->pending = true;   /* more than 64 queued: come back */
+    c->pending = c->h != HANDLE_INVALID;   /* more than 64 queued: come back */
+    return true;
+}
+
+bool serve_device_chans(uint32_t dev_id)
+{
+    bool did = false;
+    for (int i = 0; i < MAX_CHANS; i++)
+        if (chans[i].h && chans[i].pending && chans[i].kind == CHAN_IFACE &&
+            chans[i].dev_id == dev_id)
+            did |= serve_chan(i);
+    return did;
+}
+
+void serve_chans_dispatch(void)
+{
+    for (int i = 0; i < MAX_CHANS; i++) {
+        struct chan *c = &chans[i];
+        if (!c->h || !c->pending || c->serving)
+            continue;
+        if (c->kind == CHAN_REPORTS || !dev_find(c->dev_id)) {
+            serve_chan(i);   /* no waits: drops, or answers PEER_CLOSED at once */
+            continue;
+        }
+        if (!task_find(TASK_DEVICE, c->dev_id, 0))
+            (void)task_start(TASK_DEVICE, c->dev_id, 0, device_task);   /* no slot: next round */
+    }
+}
+
+bool serve_main_pending(void)
+{
+    for (int i = 0; i < MAX_CHANS; i++) {
+        const struct chan *c = &chans[i];
+        if (c->h && c->pending && !c->serving &&
+            (c->kind == CHAN_REPORTS || !dev_find(c->dev_id)))
+            return true;
+    }
+    return false;
 }
 
 /* ---- main --------------------------------------------------------------------------- */
@@ -455,6 +511,7 @@ static int take_handles(struct hc *h, const struct driver_start *s)
     __builtin_memset(waiters, 0, sizeof(waiters));
     serve_closed = false;
     usb_reset_state();
+    tasks_reset();
     h->name = s->name;
     h->dev = drv_handle(s, DR_PCIDEV);
     h->bar = drv_handle(s, DR_BAR(0));
@@ -514,17 +571,11 @@ static uint64_t answer_waiters(bool is_settled, uint64_t now, uint64_t next)
     return next;
 }
 
-/* Is any request waiting to be served (DR_SERVE or a channel)? */
-static bool any_pending(const struct hc *h)
-{
-    bool any = h->serve_pending;
-    for (int i = 0; i < MAX_CHANS && !any; i++)
-        any = chans[i].pending && chans[i].h;
-    return any;
-}
-
 /* The main loop, from the first scan until devmgr stops us (or, with no
- * DR_SERVE, until the list is out); then every device goes. */
+ * DR_SERVE, until the list is out); then every device goes. Each round:
+ * DR_SERVE, the channels, new tasks for the ports' and devices' work,
+ * every task that may go on; then a wait for the next packet, at most
+ * until the earliest deadline anyone has. */
 static void run(struct hc *h)
 {
     report_controller(h);
@@ -535,12 +586,11 @@ static void run(struct hc *h)
             h->serve_pending = false;
             serve_bus(h);
         }
-        if (serve_closed)
+        if (serve_closed || g_task_overflow)
             break;
-        for (int i = 0; i < MAX_CHANS; i++)
-            if (chans[i].pending && chans[i].h)
-                serve_chan(i);
-        bool did = usb_work(h);
+        serve_chans_dispatch();
+        work_dispatch(h);
+        tasks_run();
         bool is_settled = settled();
         /* The list: once settled, and not before 2 s (USB 3 links may
          * still be training after the reset). */
@@ -550,15 +600,16 @@ static void run(struct hc *h)
         uint64_t next = answer_waiters(is_settled, now, now + 1000 * NS_PER_MS);
         if (!g_first_report_done && next > now + 100 * NS_PER_MS)
             next = now + 100 * NS_PER_MS;
+        next = hub_retries(next);
         uint64_t retry = root_retries(h);   /* a failed port's retry, if sooner */
         if (retry < next)
             next = retry;
+        next = tasks_next_wake(next);
         if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
             break;
-        if (did || (usb_busy() && !h->dead))   /* dead: usb_work does nothing; don't spin */
-            next = now;
-        if (!any_pending(h))
-            hc_wait_idle(h, next);
+        if (h->serve_pending || serve_main_pending())
+            next = now;   /* more to do at once: just look at the port */
+        hc_wait_idle(h, next);
     }
     if (!g_first_report_done)
         usb_report_all(false);
@@ -588,6 +639,9 @@ int driver_main(const struct driver_start *s)
         bulk_unpin_parked();   /* halted and reset: nothing runs into them now */
     drv_log("stopped: %lu interrupts, %lu events, DMA pool peak %u of %u pages", h->irqs,
             h->events, h->pool_peak, POOL_PAGES);
+    if (g_task_overflow)
+        r = 7;
+    tasks_free();
     if (h->port != HANDLE_INVALID)
         drv_handle_close(h->port);
     hc_release(h, q == 0);

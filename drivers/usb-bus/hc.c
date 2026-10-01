@@ -606,14 +606,21 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
      * checked here too, at least every 200 ms in the idle loop. */
     if (!fired && h->running)
         check_status(h, op_rd(h, OP_USBSTS));
+    uint64_t before = h->events;
     poll_events(h, fired);
+    if (st == OK || h->events != before)
+        task_kick();   /* something happened: waiting tasks look again */
 }
 
 /* Waiting for a completion: poll the event ring at least every 50 ms, so
- * a lost interrupt costs time, not the command. */
+ * a lost interrupt costs time, not the command. In a task the main loop
+ * waits instead (it polls as often: task_wait's cap). */
 void hc_wait(struct hc *h, uint64_t deadline)
 {
-    wait_capped(h, deadline, 50);
+    if (in_task())
+        task_wait(deadline);
+    else
+        wait_capped(h, deadline, 50);
 }
 
 /* The main loop with nothing to do: 200 ms. */

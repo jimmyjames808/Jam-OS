@@ -35,10 +35,18 @@ static void abort_command(struct hc *h, volatile struct trb *t, uint32_t type,
     }
 }
 
+/* Wait for the command ring to be free (another task's command runs). */
+static bool cmd_turn(struct hc *h)
+{
+    while (h->cmd.busy && !h->dead && !h->stopping && in_task())
+        task_wait(drv_clock_ns() + 50 * NS_PER_MS);
+    return !h->cmd.busy && !h->dead && !h->stopping;
+}
+
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms)
 {
-    if (h->dead || !h->running)
+    if (h->dead || !h->running || !cmd_turn(h))
         return CC_GONE;
     struct trb *cr = (struct trb *)(h->ctx + DMA_CMDRING);
     uint64_t trb = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
@@ -61,13 +69,17 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
     h->cmd.slot = 0;
     hc_doorbell(h, 0, 0);
     uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
-    while (!h->cmd.done && !h->dead && drv_clock_ns() < deadline)
+    /* Stopping: the controller is halted and reset right after, which
+     * ends the command too; its device's pages are kept, not reused
+     * (dev_free). */
+    while (!h->cmd.done && !h->dead && !h->stopping && drv_clock_ns() < deadline)
         hc_wait(h, deadline);
-    if (!h->cmd.done && !h->dead)
+    if (!h->cmd.done && !h->dead && !h->stopping)
         abort_command(h, t, TRB_TYPE_OF(d3), timeout_ms);
     h->cmd.busy = false;
+    task_kick();   /* the next command's turn */
     if (!h->cmd.done)
-        return h->dead ? CC_GONE : CC_TIMEOUT;
+        return h->dead || h->stopping ? CC_GONE : CC_TIMEOUT;
     if (slot_out)
         *slot_out = h->cmd.slot;
     return h->cmd.cc;

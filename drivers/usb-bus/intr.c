@@ -153,7 +153,7 @@ void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, u
     intr_event(d, &d->eps[dci], trb, cc, residual);
 }
 
-/* ---- upkeep (from the main loop) -------------------------------------------- */
+/* ---- upkeep (the device's task) --------------------------------------------- */
 
 /* A halted endpoint that is still open: reset and refill it, or give up
  * on it after too many errors in a row. */
@@ -176,11 +176,11 @@ static void ep_recover(struct hc *h, struct usbdev *d, struct ep *e)
     e->halted = false;
     if (e->errors_in_row > 3)
         hc_sleep(h, 10);
-    intr_fill(d, e);
+    if (!d->gone && e->open)   /* both can change while the commands above wait */
+        intr_fill(d, e);
 }
 
-/* d's endpoints marked for a drop or a recovery; true if any was acted on. */
-static bool dev_upkeep(struct hc *h, struct usbdev *d)
+bool dev_upkeep(struct hc *h, struct usbdev *d)
 {
     bool did = false;
     for (int k = 2; k < 32 && (d->ep_recover | d->ep_drop); k++) {
@@ -196,19 +196,6 @@ static bool dev_upkeep(struct hc *h, struct usbdev *d)
             ep_recover(h, d, e);
             did = true;
         }
-    }
-    return did;
-}
-
-bool intr_upkeep(struct hc *h)
-{
-    bool did = false;
-    for (int i = 0; i < MAX_DEVS; i++) {
-        struct usbdev *d = &g_devs[i];
-        if (!d->used || d->gone)
-            continue;
-        if (dev_upkeep(h, d))
-            did = true;
     }
     return did;
 }
