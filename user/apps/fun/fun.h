@@ -84,6 +84,10 @@ status_t gfx_open(void);
 /* The same with the back buffer, and so the screen, all colour bg at
  * first (gfx_open: black): no black frame on its way to bg. */
 status_t gfx_open_on(uint32_t bg);
+/* The screen only, the keys left with whoever has them (the boot splash:
+ * what is typed meanwhile waits for the shell). gfx_key then returns
+ * KEY_QUIT at once: don't wait with it. */
+status_t gfx_open_screen(uint32_t bg);
 /* Give the screen and the keys back (the console redraws its text). */
 void     gfx_close(void);
 /* Copy what changed in scr.s to the screen. */

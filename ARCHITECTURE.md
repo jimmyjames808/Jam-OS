@@ -109,10 +109,18 @@ Every driver and service is a userspace process from the start.
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played. The splash borrows the screen
-  like any app, starts the video and its sound together once the mixer is
-  up (2 s at most, then silently), holds the last frame at least 0.5 s and
-  until the shell calls `initctl.shell_ready`, and fades into the
-  console's text. Any key skips it (the sound fades out).
+  like any app (but not the keys), starts the video and its sound together
+  once the mixer is up (2 s at most, then silently), plays to the end,
+  holds the last frame at least 0.5 s and until the shell calls
+  `initctl.shell_ready`, and fades into the console's text. No key skips
+  it: what is typed meanwhile waits in the console (keys typed before
+  anyone listens go to the first to open the keys) and reaches the shell
+  once it is up. `run splash` from the shell takes the keys, and there a
+  key skips it.
+- **The timer check** (every CPU's ticks counted over 1 s): the test,
+  benchmark and regression entries run it before anything else; a plain
+  boot runs it in a kernel thread next to user space, so the second is not
+  spent before init starts (its lines come in the log when it ends).
 
 ## Memory
 
