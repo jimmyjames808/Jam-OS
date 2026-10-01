@@ -8,7 +8,8 @@
  * never exits; an option word "splash" after it plays the boot splash
  * first (splash.c). The option word "hidboot" (with any mode) is passed
  * on to devmgr, which passes it to every hid: mice stay in the boot
- * protocol. Otherwise it starts the bootfs server (bin/bootfs: the boot
+ * protocol; so is "bootdisk=0x<id>" (the disk the machine booted from:
+ * devmgr's boot disk). Otherwise it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -34,6 +35,7 @@ static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr 
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 bool init_hidboot;
+const char *init_bootdisk;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -175,11 +177,16 @@ static bool start_devmgr(handle_t console)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[] = { "bin/devmgr", "hidboot" };
+        const char *argv[3] = { "bin/devmgr" };
+        int argc = 1;
+        if (init_hidboot)
+            argv[argc++] = "hidboot";
+        if (init_bootdisk)
+            argv[argc++] = init_bootdisk;
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
-            .path = "bin/devmgr", .argc = init_hidboot ? 2 : 1, .argv = argv, .job = devmgr_job,
+            .path = "bin/devmgr", .argc = argc, .argv = argv, .job = devmgr_job,
             .extra = x,
             .nextra = console ? 4 : 3,
         };
@@ -385,6 +392,8 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
         init_hidboot |= !strcmp(argv[i], "hidboot");
+        if (!strncmp(argv[i], "bootdisk=", 9))
+            init_bootdisk = argv[i];
     }
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);

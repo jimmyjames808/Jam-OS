@@ -208,10 +208,18 @@ static status_t s_open_partition(void *ctx, uint8_t index, uint8_t read_only, ha
     return blk_open(ctx, port, index, read_only, block);
 }
 
+static status_t s_disk_id(void *ctx, uint32_t *mbr_id)
+{
+    const struct disk *k = ctx;
+    *mbr_id = k->mbr_id;
+    return OK;
+}
+
 static const struct storage_ops storage_ops = {
     .info = s_info,
     .partition = s_partition,
     .open_partition = s_open_partition,
+    .disk_id = s_disk_id,
 };
 
 /* ---- the loop --------------------------------------------------------------------------- */

@@ -107,6 +107,7 @@ static bool mbr_table(const uint8_t *s)
 status_t parts_read(struct disk *k)
 {
     k->nparts = 0;
+    k->mbr_id = 0;
     if (!k->block_size)
         return OK;   /* no medium */
     status_t st = scsi_rw(k, false, 0, 1);
@@ -119,6 +120,7 @@ status_t parts_read(struct disk *k)
         k->parts[k->nparts++] = (struct part){ .type = PART_WHOLE, .start = 0, .blocks = k->blocks };
         return OK;
     }
+    k->mbr_id = le32(s + 440);
     for (int i = 0; i < MAX_PARTS; i++) {
         const uint8_t *e = s + 446 + 16 * i;
         uint64_t start = le32(e + 8), count = le32(e + 12);

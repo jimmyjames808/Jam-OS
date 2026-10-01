@@ -106,6 +106,11 @@ extern unsigned       problems;
 /* The argument "hidboot": passed on to every hid (mice stay in the boot
  * protocol). */
 extern bool           hidboot;
+/* The argument "bootdisk=0x<id>": the MBR disk id of the disk the machine
+ * booted from (the loader's, passed on by the kernel and init); 0: not
+ * known. disk.c takes the Jam OS disk with that id as the boot disk. */
+extern uint32_t       boot_mbr_id;
+extern uint64_t       devmgr_started;   /* when devmgr started (uptime, ns) */
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */

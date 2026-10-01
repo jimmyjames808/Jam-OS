@@ -10,7 +10,12 @@ The Makefile formats both (each with its own size: mformat -T) and copies
 the boot files in with mtools (image@@1M). On a real stick,
 tools/write-usb.sh then grows partition 2 to the end of the stick
 (tools/mbr-grow.py), and Jam OS formats it on first boot.
+The MBR gets a random, non-zero disk id (bytes 440-443): the loader tells
+the kernel the id of the disk it booted from, and devmgr takes the Jam OS
+disk with that id as the boot disk, so two sticks made with `make usb`
+are told apart.
 Usage: mkimage.py <out.img> <esp_end_mib> <size_mib>"""
+import secrets
 import struct
 import sys
 
@@ -29,6 +34,7 @@ def entry(ptype, start, count):
 mbr = bytearray(512)
 mbr[446:462] = entry(0xEF, esp_start, data_start - esp_start)
 mbr[462:478] = entry(0x0C, data_start, sectors - data_start)
+mbr[440:444] = struct.pack("<I", secrets.randbelow(0xFFFFFFFF) + 1)
 mbr[510:512] = b"\x55\xaa"
 
 with open(out, "wb") as f:

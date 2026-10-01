@@ -259,6 +259,9 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "shell nosplash testlockorder"));
     kexec_next_cmdline("hidboot keytest", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "hidboot"));
+    /* The disk the machine booted from goes on from kernel to kernel. */
+    kexec_next_cmdline("shell bootdisk=3792991605 init", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell bootdisk=3792991605"));
     kexec_next_cmdline("", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
     /* Cut to fit, still terminated. */

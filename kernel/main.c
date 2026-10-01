@@ -86,6 +86,12 @@ static void print_boot_info(const struct boot_info *bi)
 }
 
 static struct boot_info *boot;
+static uint32_t boot_disk;   /* boot_disk_id(): set once in kmain_stage2 */
+
+uint32_t boot_disk_id(void)
+{
+    return boot_disk;
+}
 
 void kmain_print_memmap(void)
 {
@@ -172,6 +178,14 @@ _Noreturn static void kmain_stage2(void *arg)
     uint64_t total, free;
     pmm_stats(&total, &free);
     kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
+    /* Before the stored kernel is armed: its command line carries it. */
+    boot_disk = boot->boot_disk_id ? boot->boot_disk_id
+                                   : (uint32_t)cmdline_get_u64("bootdisk", 0, 0);
+    if (boot_disk)
+        kprintf("boot disk:   MBR disk id %08x (%s)\n", boot_disk,
+                boot->boot_disk_id ? "from the loader" : "from the kernel before");
+    else
+        kprintf("boot disk:   no MBR disk id (devmgr takes the first Jam OS disk)\n");
     bootfs_init(boot);   /* only needs the heap; before the tests that use it */
     /* After a kexec: the previous kernel's record (did it panic?) and log,
      * before anything could panic into a stored kernel (kexec.h). */
@@ -255,15 +269,21 @@ _Noreturn static void kmain_stage2(void *arg)
     uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
     if (soak_min && !nousb)
         ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
-    /* init's option words: "splash" (decided above) and `hidboot`, which
+    /* init's option words: "splash" (decided above), `hidboot`, which
      * init passes on to devmgr and devmgr to every hid (mice stay in the
-     * boot protocol). */
-    const char *words[2];
+     * boot protocol), and bootdisk=0x<id>, which init passes on to devmgr
+     * (the boot disk). */
+    const char *words[3];
     unsigned nwords = 0;
     if (shell && splash_boot())
         words[nwords++] = "splash";
     if (cmdline_has("hidboot"))
         words[nwords++] = "hidboot";
+    static char disk_word[24];
+    if (boot_disk) {
+        ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
+        words[nwords++] = disk_word;
+    }
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
                                 !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg

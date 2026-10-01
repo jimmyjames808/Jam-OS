@@ -16,11 +16,19 @@
 #define CALL_WAIT      (2 * NS_PER_S)      /* a call to a driver that has answered info */
 #define SYNC_WAIT      (5 * NS_PER_S)      /* fs.sync before devmgr stops */
 #define TEST_ID        0x80000000u         /* a test disk's id: this | a counter */
+/* A Jam OS disk with another MBR disk id than the boot's waits for the
+ * one it booted from until HELD_FROM_START after devmgr started, and at
+ * least HELD_MIN after it came; then it may be the boot disk after all
+ * (that stick was swapped for this one, or its id changed). */
+#define HELD_FROM_START (10 * NS_PER_S)
+#define HELD_MIN        (3 * NS_PER_S)
 
 enum disk_state {
     DISK_FREE,    /* an unused slot */
     DISK_DOWN,    /* its driver isn't running (its restart is due) */
     DISK_INFO,    /* storage.info asked, no answer yet */
+    DISK_HELD,    /* a Jam OS disk, but not the one the machine booted from (its MBR
+                   * disk id): it waits a while for that one to come */
     DISK_ESP,     /* the ESP's service asked for BOOT_FILE, no answer yet */
     DISK_BOOT,    /* the boot disk: its running services are mounts */
     DISK_OTHER,   /* not the boot disk: its FAT partitions' services are mounts (/usbN) */
@@ -35,7 +43,9 @@ struct disk {
     handle_t        ch;         /* a test disk: our end of its `storage` channel */
     uint16_t        gen;        /* bumped at every use of the slot: in its port key */
     uint32_t        txid;       /* DISK_INFO, DISK_ESP: the request not answered yet */
-    uint64_t        deadline;   /* DISK_INFO, DISK_ESP: when it is given up on */
+    uint64_t        deadline;   /* DISK_INFO, DISK_ESP: when it is given up on; DISK_HELD:
+                                 * when it is looked at anyway */
+    uint32_t        mbr_id;     /* its MBR disk id (storage.disk_id), 0: none or unknown */
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
     uint32_t        fs[MAX_PARTS];     /* devs index + 1 of each partition's service; 0: none */

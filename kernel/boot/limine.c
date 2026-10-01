@@ -25,6 +25,8 @@ REQ static volatile struct limine_module_request module_req = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0 };
 REQ static volatile struct limine_executable_address_request kaddr_req = {
     .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, .revision = 0 };
+REQ static volatile struct limine_executable_file_request kfile_req = {
+    .id = LIMINE_EXECUTABLE_FILE_REQUEST_ID, .revision = 0 };
 REQ static volatile struct limine_executable_cmdline_request cmdline_req = {
     .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0 };
 /* Asking for MP makes Limine start the APs and park them until
@@ -117,6 +119,11 @@ void limine_entry(void)
 
     if (tsc_req.response)
         bi.tsc_hz_loader = tsc_req.response->frequency;
+
+    /* Which disk the kernel came from: its MBR's disk id (0 on a GPT disk,
+     * or an MBR whose id is 0). */
+    if (kfile_req.response && kfile_req.response->executable_file)
+        bi.boot_disk_id = kfile_req.response->executable_file->mbr_disk_id;
 
     if (mp_req.response) {
         struct limine_mp_response *mp = mp_req.response;

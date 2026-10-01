@@ -13,16 +13,23 @@
  *   1. its driver starts: storage.info is asked without waiting (a stick
  *      may take seconds to spin up, and devmgr must keep serving);
  *   2. the answer comes: fewer than two partitions, or types other than
- *      0xEF then 0x0C, and the disk is not the boot disk (step 4). Else a
- *      read-only filesystem service is started on the ESP and asked, again
- *      without waiting, for boot/jamos.elf;
+ *      0xEF then 0x0C, and the disk is not the boot disk (step 4). When
+ *      the boot loader named the disk the machine booted from (its MBR
+ *      disk id: devmgr's argument bootdisk=0x<id>), a disk with another id
+ *      waits (DISK_HELD) until that one has come, and is not the boot disk
+ *      then; if it never comes (the stick was swapped, or made without an
+ *      id), the waiting one goes on after HELD_FROM_START. Else (or then)
+ *      a read-only filesystem service is started on the ESP and asked,
+ *      again without waiting, for boot/jamos.elf;
  *   3. the file is there: this is the boot disk. The data partition's
  *      service starts too, and both are mounts (DEVMGR_MOUNTS, mounts.c):
  *      /esp and /data. Without the file, or if the service ends instead
  *      of answering (the ESP holds no FAT it can read), or with no answer
  *      within ESP_WAIT, the ESP's service is stopped and the disk is not
  *      the boot disk. One boot disk at a time: a second disk that
- *      qualifies while the first is mounted is not it either;
+ *      qualifies while the first is mounted is not it either. Without a
+ *      disk id from the loader the first Jam OS disk to get here is the
+ *      boot disk;
  *   4. any other disk (mount_others): a filesystem service is started on
  *      each partition whose type says FAT (fat_type; usb-storage lists a
  *      stick with no partition table and a FAT boot sector as one
@@ -198,6 +205,53 @@ static void ask_boot_file(struct disk *d)
         d->deadline = now();   /* disk_run_due gives up on it */
 }
 
+/* Start the ESP's service and ask it for BOOT_FILE (step 2's end). */
+static void look_at_esp(struct disk *d)
+{
+    char why[64];
+    status_t st = fs_start(d, PART_ESP, false);
+    if (st != OK) {
+        snprintf(why, sizeof(why), "no filesystem service for its ESP (%s)", status_str(st));
+        leave_alone(d, why);
+        return;
+    }
+    ask_boot_file(d);
+}
+
+/* Is d the disk the machine booted from, as far as the MBR disk ids can
+ * tell? A test disk, or a boot whose loader named no disk, can't tell:
+ * yes. */
+static bool booted_from(struct disk *d)
+{
+    if (d->test || !boot_mbr_id)
+        return true;
+    uint32_t id = 0;
+    status_t st = storage_disk_id_until(disk_ch(d), now() + CALL_WAIT, &id);
+    d->mbr_id = st == OK ? id : 0;
+    return d->mbr_id == boot_mbr_id;
+}
+
+/* d is a Jam OS disk, but not the one the machine booted from: it waits
+ * for that one (DISK_HELD; disk_run_due ends the wait). */
+static void hold_back(struct disk *d)
+{
+    uint64_t t = now(), until = devmgr_started + HELD_FROM_START;
+    d->state = DISK_HELD;
+    d->deadline = until > t + HELD_MIN ? until : t + HELD_MIN;
+    say(false, "devmgr: %s: disk id %08x, but the machine booted from disk id %08x: it waits "
+        "%lu ms for that one", disk_name(d), d->mbr_id, boot_mbr_id,
+        (unsigned long)((d->deadline - t) / NS_PER_MS));
+}
+
+/* The boot disk is mounted: the disks waiting for it are not the boot
+ * disk. */
+static void release_held(const struct disk *boot)
+{
+    for (unsigned i = 0; i < MAX_DISKS; i++)
+        if (disks[i].state == DISK_HELD && disks[i].test == boot->test)
+            not_boot(&disks[i], "the machine booted from another disk");
+}
+
 /* Step 2: storage.info answered. The two partition types decide whether
  * the ESP is worth a look. */
 static void got_info(struct disk *d, const struct storage_info_rep *r)
@@ -220,11 +274,10 @@ static void got_info(struct disk *d, const struct storage_info_rep *r)
         not_boot(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
     } else if (boot_disk_taken(d)) {
         not_boot(d, "another disk is the boot disk already");
-    } else if ((st = fs_start(d, PART_ESP, false)) != OK) {
-        snprintf(why, sizeof(why), "no filesystem service for its ESP (%s)", status_str(st));
-        leave_alone(d, why);
+    } else if (!booted_from(d)) {
+        hold_back(d);
     } else {
-        ask_boot_file(d);
+        look_at_esp(d);
     }
 }
 
@@ -243,6 +296,7 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
         return;
     }
     d->state = DISK_BOOT;
+    release_held(d);
     st = fs_start(d, PART_DATA, false);
     say(!d->test, "devmgr: %s is the boot disk: its ESP is mounted, its data partition %s%s",
         disk_name(d), st == OK ? "too" : "is not: ", st == OK ? "" : status_str(st));
@@ -394,6 +448,19 @@ void disk_key(uint64_t key)
     d->ch = HANDLE_INVALID;
 }
 
+/* d waited for the disk the machine booted from, which hasn't come: d
+ * may be the boot disk after all. */
+static void held_over(struct disk *d)
+{
+    if (boot_disk_taken(d)) {
+        not_boot(d, "another disk is the boot disk already");
+        return;
+    }
+    say(false, "devmgr: %s: the disk the machine booted from (id %08x) is not here: this one "
+        "(id %08x) may be the boot disk", disk_name(d), boot_mbr_id, d->mbr_id);
+    look_at_esp(d);
+}
+
 void disk_run_due(void)
 {
     uint64_t t = now();
@@ -405,6 +472,8 @@ void disk_run_due(void)
             leave_alone(d, "its driver did not answer storage.info");
         else if (d->state == DISK_ESP)
             not_boot(d, "its ESP's filesystem service did not answer");
+        else if (d->state == DISK_HELD)
+            held_over(d);
     }
     others_pump();   /* whatever happened may have been what the next one waited for */
 }
@@ -413,8 +482,8 @@ uint64_t disk_next_deadline(void)
 {
     uint64_t next = DEADLINE_NEVER;
     for (unsigned i = 0; i < MAX_DISKS; i++)
-        if ((disks[i].state == DISK_INFO || disks[i].state == DISK_ESP) &&
-            disks[i].deadline < next)
+        if ((disks[i].state == DISK_INFO || disks[i].state == DISK_ESP ||
+             disks[i].state == DISK_HELD) && disks[i].deadline < next)
             next = disks[i].deadline;
     return next;
 }

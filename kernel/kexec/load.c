@@ -11,7 +11,10 @@
  * Its command line (kexec_next_cmdline) is this boot's, keeping only the
  * words that describe the machine and how the boot looks: whichever way it
  * is started, after a reboot or after a panic in a test entry, it is a
- * plain boot to the shell. */
+ * plain boot to the shell. It also says which disk the machine booted
+ * from (bootdisk=N, the MBR disk id: <jam/boot.h>), which only the
+ * loader knew. */
+#include <jam/boot.h>
 #include <jam/bootfs.h>
 #include <jam/cmdline.h>
 #include <jam/kprintf.h>
@@ -33,7 +36,7 @@ static const char *const kept_words[] = {
     "noplaceorder", "noaffinepair", "hidboot",
 };
 /* ... and key=value words. */
-static const char *const kept_keys[] = { "crashkernel=", "idlespin=" };
+static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=" };
 
 static bool kept(const char *w, size_t n)
 {
@@ -109,6 +112,18 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size)
     }
 }
 
+/* The stored kernel's command line: kexec_next_cmdline's, and the boot
+ * disk if the loader named it (after a kexec the word is kept already). */
+static void stored_cmdline(char *buf, size_t size)
+{
+    kexec_next_cmdline(cmdline_get(), buf, size);
+    if (!boot_disk_id() || cmdline_get_u64("bootdisk", 0, 0))
+        return;
+    char w[24];
+    ksnprintf(w, sizeof(w), "bootdisk=%u", boot_disk_id());
+    (void)append_word(buf, size, strlen(buf), w, strlen(w));   /* no room: left out */
+}
+
 /* The boot module whose path ends in `suffix`, or NULL. */
 static const struct boot_module *module(const char *suffix)
 {
@@ -152,7 +167,7 @@ void kexec_load_stored(void)
         return;
     }
     static char cmd[KEXEC_CMDLINE];
-    kexec_next_cmdline(cmdline_get(), cmd, sizeof(cmd));
+    stored_cmdline(cmd, sizeof(cmd));
     struct kx_image im = {
         .kernel = phys_to_virt(k->phys), .kernel_size = k->size,
         .bootfs = phys_to_virt(b->phys), .bootfs_size = b->size, .cmdline = cmd,
@@ -184,7 +199,7 @@ status_t kexec_load_image(struct vmo *kernel, struct vmo *bootfs, const char *cm
         st = vmo_map_kernel(bootfs, 0, bs, 0, &bp);
     if (st == OK) {
         if (!cmdline || !cmdline[0]) {
-            kexec_next_cmdline(cmdline_get(), next, sizeof(next));
+            stored_cmdline(next, sizeof(next));
             cmdline = next;
         }
         struct kx_image im = {

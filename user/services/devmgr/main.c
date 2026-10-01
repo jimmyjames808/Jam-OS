@@ -94,6 +94,8 @@ handle_t pci_res, port;
 static unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
+uint32_t boot_mbr_id;
+uint64_t devmgr_started;
 static bool shutdown_asked;   /* DEVMGR_SHUTDOWN: answered, then stop as if every client left */
 
 void say(bool report_it, const char *fmt, ...)
@@ -697,11 +699,32 @@ static bool stop_all(void)
     return ok;
 }
 
+/* "0x1234abcd" (or without 0x) as a number; it stops at the first
+ * character that isn't a hex digit. */
+static uint32_t hex32(const char *s)
+{
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+        s += 2;
+    uint32_t v = 0;
+    for (int n = 0; n < 8; n++, s++) {
+        char c = *s;
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0)
+            break;
+        v = v << 4 | (uint32_t)d;
+    }
+    return v;
+}
+
 int main(int argc, char **argv)
 {
+    devmgr_started = now();
     for (int i = 1; i < argc; i++) {
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
+        if (!strncmp(argv[i], "bootdisk=", 9))
+            boot_mbr_id = hex32(argv[i] + 9);
     }
     /* chans[0]: control (SR_DEVMGR_CTL), chans[1]: queries (SR_DEVMGR).
      * devmgr runs until the control channel's clients are all gone (with

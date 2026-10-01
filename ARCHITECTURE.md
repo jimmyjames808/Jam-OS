@@ -888,10 +888,17 @@ capped at 8 MiB.
 - devmgr is the only client of a disk's `storage` channel. The disk Jam OS
   booted from is the one with partition 1 of type 0xEF holding
   boot/jamos.elf (it looks through a read-only fat service) and partition
-  2 of type 0x0C: they are `/esp` and `/data`. It is the first such disk
-  found, not necessarily the one the machine booted from: with two Jam OS
-  sticks plugged in, the order they enumerate in decides (not built yet:
-  the disk Limine booted from, by its MBR disk id). Each mount is a fat service
+  2 of type 0x0C: they are `/esp` and `/data`. With two Jam OS sticks in,
+  the one the machine booted from: Limine names the disk it read the
+  kernel from by its MBR disk id, the kernel passes it on to init and
+  devmgr (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
+  that one's command line), and usb-storage reads each disk's id
+  (`storage.disk_id`). A Jam OS disk with another id waits for that one
+  (up to 10 s after devmgr started, at least 3 s) and is then not the boot
+  disk; if that one never comes (the stick was swapped) it may be after
+  all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
+  a stick made before, whose id is 0, the first Jam OS disk found is the
+  boot disk, as before. Each mount is a fat service
   holding one partition's `block` channel, supervised like a driver; init
   gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
   `user/include/devmgr.h`), with a generation that moves whenever a mount

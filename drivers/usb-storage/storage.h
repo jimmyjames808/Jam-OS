@@ -57,6 +57,7 @@ struct disk {
     uint64_t blocks;          /* blocks on the medium */
     struct part parts[MAX_PARTS];      /* its partitions, in table order */
     uint8_t  nparts;          /* entries in parts[] */
+    uint32_t mbr_id;          /* the partition table's disk id (block 0, 440), 0: none */
 };
 
 /* ---- bot.c -------------------------------------------------------------------- */

@@ -13,6 +13,7 @@
 #define STORAGE_INFO             0x000e0001u
 #define STORAGE_PARTITION        0x000e0002u
 #define STORAGE_OPEN_PARTITION   0x000e0003u
+#define STORAGE_DISK_ID          0x000e0004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct storage_info_req {
@@ -49,6 +50,15 @@ struct storage_open_partition_req {
 struct storage_open_partition_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct storage_disk_id_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct storage_disk_id_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t mbr_id;
 } __attribute__((packed));
 
 #define STORAGE_REQ_MAX 10u   /* bytes: the biggest request */
@@ -152,6 +162,29 @@ static inline status_t storage_open_partition(handle_t ch, uint8_t index, uint8_
     return storage_open_partition_until(ch, DEADLINE_NEVER, index, read_only, out_block);
 }
 
+/* The disk's MBR disk id (bytes 440-443 of block 0, little-endian): what
+ * the boot loader names the disk it booted from by (devmgr's boot disk).
+ * 0 when the disk has no partition table, or its id is 0. */
+static inline status_t storage_disk_id_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_mbr_id)
+{
+    struct storage_disk_id_req idl_q;
+    struct storage_disk_id_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = STORAGE_DISK_ID;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_mbr_id)
+        *out_mbr_id = idl_r.mbr_id;
+    return idl_st;
+}
+static inline status_t storage_disk_id(handle_t ch, uint32_t *out_mbr_id)
+{
+    return storage_disk_id_until(ch, DEADLINE_NEVER, out_mbr_id);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -160,6 +193,7 @@ struct storage_ops {
     status_t (*info)(void *ctx, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions);
     status_t (*partition)(void *ctx, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks);
     status_t (*open_partition)(void *ctx, uint8_t index, uint8_t read_only, handle_t *out_block);
+    status_t (*disk_id)(void *ctx, uint32_t *out_mbr_id);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -253,6 +287,23 @@ static inline uint32_t storage_dispatch(const struct storage_ops *ops, void *ctx
         }
         rhs[0] = out_block;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case STORAGE_DISK_ID: {
+        const struct storage_disk_id_req *idl_q = (const struct storage_disk_id_req *)req;
+        struct storage_disk_id_rep *idl_r = (struct storage_disk_id_rep *)rep;
+        uint32_t out_mbr_id = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->disk_id) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->disk_id(ctx, &out_mbr_id);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->mbr_id = out_mbr_id;
         return sizeof(*idl_r);
     }
     }
