@@ -46,6 +46,7 @@ bool     ramdisk_join(struct ramdisk *rd);
 /* Pull the stick: the server closes its end; then as ramdisk_join. */
 bool     ramdisk_unplug(struct ramdisk *rd);
 bool     ramdisk_destroy(struct ramdisk *rd);
+uint32_t ramdisk_reads(const struct ramdisk *rd);    /* read requests served so far */
 uint32_t ramdisk_writes(const struct ramdisk *rd);
 uint32_t ramdisk_syncs(const struct ramdisk *rd);
 void     ramdisk_fail_writes(struct ramdisk *rd, bool on);

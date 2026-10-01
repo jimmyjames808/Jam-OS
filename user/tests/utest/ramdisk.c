@@ -156,6 +156,11 @@ bool ramdisk_destroy(struct ramdisk *rd)
     return true;
 }
 
+uint32_t ramdisk_reads(const struct ramdisk *rd)
+{
+    return __atomic_load_n(&rd->reads, __ATOMIC_RELAXED);
+}
+
 uint32_t ramdisk_writes(const struct ramdisk *rd)
 {
     return __atomic_load_n(&rd->writes, __ATOMIC_RELAXED);

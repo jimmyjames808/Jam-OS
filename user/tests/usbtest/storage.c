@@ -416,8 +416,17 @@ static bool part_open(const struct drive *v, uint8_t index, bool ro, struct pch 
     CHECK_ST(block_read_until(p->ch, soon(), 0, 1, 0), ERR_BAD_STATE);
     CHECK_ST(block_map_buffer_until(p->ch, soon(), &vmo, &size), OK);
     uint64_t va = 0;
+    if (ro) {
+        /* A read-only channel's buffer is only for reading: usb-storage
+         * maps it itself, so it can't be written, shrunk or decommitted
+         * from here. */
+        CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, BUF_SIZE,
+                              VMAR_READ | VMAR_WRITE, &va), ERR_ACCESS_DENIED);
+        CHECK_ST(jam_vmo_set_size(vmo, 4096), ERR_ACCESS_DENIED);
+        CHECK_ST(jam_vmo_decommit(vmo, 0, 4096), ERR_ACCESS_DENIED);
+    }
     status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, BUF_SIZE,
-                               VMAR_READ | VMAR_WRITE, &va);
+                               ro ? VMAR_READ : VMAR_READ | VMAR_WRITE, &va);
     jam_handle_close(vmo);
     CHECK(size == BUF_SIZE);
     CHECK_ST(st, OK);
@@ -469,8 +478,8 @@ static bool check_esp(const struct drive *v, struct pch *p, bool formatted)
     /* 64 KiB in one request (more than one SCSI command), the same block first */
     CHECK_ST(rd(p, 0, BUF_SIZE / v->bs, 0), OK);
     CHECK(!memcmp(save, p->buf, 512));
-    /* read-only: the write is refused and nothing changed */
-    memset(p->buf, 0xa5, 512);
+    /* read-only: the write is refused and nothing changed (the buffer
+     * can't even be written here: it is mapped read-only) */
     CHECK_ST(wr(p, 0, 1, 0), ERR_ACCESS_DENIED);
     CHECK_ST(wr(p, p->blocks, 1, 0), ERR_ACCESS_DENIED);
     CHECK_ST(rd(p, 0, 1, 512), OK);

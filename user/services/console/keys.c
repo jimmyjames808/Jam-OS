@@ -85,22 +85,90 @@ static void send_key(const struct input_key_event *ev)
         send_below(ev, at, L_SHELL, &at);
 }
 
+/* ---- Ctrl+Alt+Del -------------------------------------------------------------- */
+
+/* Ctrl+Alt+Del (a keyboard's: usage 0x4c with CTRL and ALT) reboots:
+ * through init, which syncs /data first and kexecs into the kernel on the
+ * stick (initctl.reboot answers only if that failed). The request is
+ * written without waiting for its answer, and from then on every key and
+ * mouse report is dropped at once: the console's loop goes on serving its
+ * input sources, so the keyboard drivers never wait on it while init
+ * stops them. Without init, if init's answer says it failed, or if init
+ * is still at it after REBOOT_WAIT, the console resets the machine
+ * itself. */
+static bool rebooting;              /* asked for: keys are dropped from now on */
+static uint64_t reboot_at;          /* when the console resets the machine itself */
+#define REBOOT_TXID 0x0cad0001u     /* the request's transaction id */
+
+static void reboot_now(void)
+{
+    status_t st = jam_reboot(root);
+    printf("console: reboot: %s\n", status_str(st));
+}
+
+static void ctrl_alt_del(void)
+{
+    if (rebooting)
+        return;
+    rebooting = true;
+    reboot_at = now() + REBOOT_WAIT;
+    printf("console: Ctrl+Alt+Del: rebooting\n");
+    screen_blank(true);   /* nothing drawn until the next boot's splash */
+    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    struct initctl_reboot_req q = { .txid = REBOOT_TXID, .ordinal = INITCTL_REBOOT };
+    status_t st = init ? jam_channel_write(init, &q, sizeof(q), NULL, 0) : ERR_NOT_FOUND;
+    if (st == OK)
+        st = jam_port_bind(port, init, KEY(K_REBOOT, 0), SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_ONCE);
+    if (st != OK) {
+        printf("console: init: %s\n", status_str(st));
+        reboot_now();
+    }
+}
+
+void reboot_event(void)
+{
+    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    struct initctl_reboot_rep r = { 0 };
+    uint32_t n = 0;
+    struct channel_read_args a = {
+        .h = init, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)&r,
+        .actual_bytes = (uint64_t)(uintptr_t)&n,
+    };
+    status_t st = jam_channel_read(&a);
+    if (st == OK && (n != sizeof(r) || r.txid != REBOOT_TXID)) {
+        /* Not the answer: wait on. */
+        (void)jam_port_bind(port, init, KEY(K_REBOOT, 0), SIG_READABLE | SIG_PEER_CLOSED,
+                            PORT_BIND_ONCE);
+        return;
+    }
+    printf("console: init: %s\n", status_str(st == OK ? r.status : st));
+    reboot_now();
+}
+
+uint64_t reboot_deadline(void)
+{
+    return rebooting ? reboot_at : DEADLINE_NEVER;
+}
+
+void reboot_due(void)
+{
+    if (!rebooting || now() < reboot_at)
+        return;
+    printf("console: init did not reboot in %lu s\n", (unsigned long)(REBOOT_WAIT / NS_PER_S));
+    reboot_at = DEADLINE_NEVER;
+    reboot_now();
+}
+
+/* ---- keys to the focus ----------------------------------------------------------- */
+
 static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal)
 {
-    /* Ctrl+Alt+Del (a keyboard's: usage 0x4c with CTRL and ALT) reboots:
-     * through init, which syncs /data first and kexecs into the kernel on
-     * the stick (initctl.reboot answers only if that failed). Without init, or if it is busy for REBOOT_WAIT, the
-     * console resets the machine itself. */
+    if (rebooting)
+        return;   /* the machine is going: nobody reads keys any more */
     if (usage == 0x4c && state == INPUT_KEY_DOWN && (mods & INPUT_MOD_CTRL) &&
         (mods & INPUT_MOD_ALT)) {
-        printf("console: Ctrl+Alt+Del: rebooting\n");
-        screen_blank(true);   /* nothing drawn until the next boot's splash */
-        handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-        if (init)
-            printf("console: init: %s\n",
-                   status_str(initctl_reboot_until(init, now() + REBOOT_WAIT)));
-        status_t st = jam_reboot(root);
-        printf("console: reboot: %s\n", status_str(st));
+        ctrl_alt_del();
         return;
     }
     /* Scrollback: Shift+PageUp/Down on a keyboard, PageUp/Down on a terminal. */
@@ -218,6 +286,8 @@ static bool mouse_to_focus(const struct input_mouse_event *ev)
 static status_t op_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
 {
     (void)ctx;
+    if (rebooting)
+        return OK;
     struct input_mouse_event ev = {
         .kind = INPUT_EVENT_MOUSE, .dx = dx, .dy = dy, .wheel = wheel, .buttons = buttons,
     };

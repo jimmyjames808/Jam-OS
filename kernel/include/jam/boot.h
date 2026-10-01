@@ -90,6 +90,8 @@ struct boot_info {
     uint64_t tsc_hz_loader;                          /* loader's TSC estimate, 0 if unknown */
     uint64_t kexec_record;                           /* the previous kernel's crash record
                                                       * (physical; kexec), 0 if none */
+    uint32_t boot_disk_id;                           /* the MBR disk id of the disk the
+                                                      * kernel was read from, 0: unknown */
     uint32_t cpu_count;                              /* entries in cpus[] */
     uint32_t bsp_lapic_id;                           /* the CPU running the boot code */
     int      x2apic;                                 /* loader switched the APICs to x2APIC mode */
@@ -110,6 +112,12 @@ void boot_start_cpu(const struct boot_cpu *cpu, void (*entry)(void *), void *arg
 
 /* Kernel entry after the loader-specific glue has filled in boot_info. */
 _Noreturn void kmain(struct boot_info *bi);
+
+/* The MBR disk id of the disk this kernel was booted from (main.c): the
+ * loader's, or after a kexec the boot word bootdisk=N the previous kernel
+ * passed on; 0 if unknown. init and devmgr get it as the word
+ * bootdisk=0x<hex> (devmgr's boot disk). */
+uint32_t boot_disk_id(void);
 
 /* The loader's memory map, as the "memmap" boot word prints it (main.c;
  * the shell's `memmap` through debug_command). */

@@ -533,7 +533,10 @@ Rules for userspace drivers:
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the
   driver is finished): backoff 100 ms, doubling per restart within the
   last 60 s up to 5 s; the 6th death within 60 s gives up (log + RESULTS
-  line). A restart is a bind from scratch, i.e. the safe-rebind path: the
+  line). A driver that ended by itself must leave its job empty; one
+  that hasn't quite yet (a request it sent still queued at the server it
+  called, its pages being given back on another CPU) is looked at again
+  for 2 s before it counts as not ended cleanly. A restart is a bind from scratch, i.e. the safe-rebind path: the
   function woken to D0, a new `dma_cap` (bus mastering off until the new
   driver has quiesced the device; the dead driver's pins stay quarantined
   meanwhile), a new interrupt object. A driver's hardware handles are not
@@ -907,6 +910,15 @@ capped at 8 MiB.
   menu onto the ESP of one that has the layout
   ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)).
 - Write ordering: file data, then both FATs, then the directory entry.
+- fat keeps a write-through block cache (`user/services/fat/cache.c`):
+  a miss reads 4 KiB, and twice as much as the last one when it carries
+  on where that one ended, up to a 64 KiB line (one block call); 16 lines
+  per volume, the least recently used given up first; every write still
+  goes to the
+  stick at once and is then copied into the lines that hold its sectors,
+  so the cache never holds anything the stick doesn't (sticks get
+  pulled). A big read (a whole 64 KiB) goes past it. Nobody else writes a
+  partition while its fat runs, so the cache never goes stale.
 - The FAT "clean shutdown" bit is cleared on the stick before the first
   sector written after a sync, and set again once everything is flushed (a
   sync, the last written file closed, a clean stop). A volume found dirty
@@ -928,10 +940,17 @@ capped at 8 MiB.
 - devmgr is the only client of a disk's `storage` channel. The disk Jam OS
   booted from is the one with partition 1 of type 0xEF holding
   boot/jamos.elf (it looks through a read-only fat service) and partition
-  2 of type 0x0C: they are `/esp` and `/data`. It is the first such disk
-  found, not necessarily the one the machine booted from: with two Jam OS
-  sticks plugged in, the order they enumerate in decides (not built yet:
-  the disk Limine booted from, by its MBR disk id). Each mount is a fat service
+  2 of type 0x0C: they are `/esp` and `/data`. With two Jam OS sticks in,
+  the one the machine booted from: Limine names the disk it read the
+  kernel from by its MBR disk id, the kernel passes it on to init and
+  devmgr (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
+  that one's command line), and usb-storage reads each disk's id
+  (`storage.disk_id`). A Jam OS disk with another id waits for that one
+  (up to 10 s after devmgr started, at least 3 s) and is then not the boot
+  disk; if that one never comes (the stick was swapped) it may be after
+  all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
+  a stick made before, whose id is 0, the first Jam OS disk found is the
+  boot disk, as before. Each mount is a fat service
   holding one partition's `block` channel, supervised like a driver; init
   gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
   `user/include/devmgr.h`), with a generation that moves whenever a mount

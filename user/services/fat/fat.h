@@ -10,6 +10,7 @@
  *
  * Files: main.c the startup, mount and event loop; disk.c FatFs's disk
  * callbacks over `block`, the volume's dirty flag and get_fattime;
+ * cache.c the write-through block cache under them;
  * fsops.c the `fs` methods; fileops.c the open-file table and the `file`
  * methods; views.c the narrower `fs` channels (fs.view); path.c paths,
  * names, times and the FRESULT -> ERR_* mapping. */
@@ -114,6 +115,29 @@ void     disk_watch(void);
  * flush, and a power cut before that finds a volume that is whole and
  * called dirty. */
 status_t disk_settle(bool durable);
+
+/* One block.read of `count` sectors at `sector` into the block buffer
+ * (vol.bbuf); count at most the buffer's worth. */
+status_t disk_block_read(uint64_t sector, uint32_t count);
+/* Sectors straight from the disk into buff, a buffer's worth per call. */
+status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff);
+
+/* ---- cache.c ---------------------------------------------------------------------- */
+
+struct fat_cache_stats {
+    uint64_t hits;            /* reads served from a line */
+    uint64_t fills;           /* lines read from the disk */
+    uint64_t bypassed;        /* big reads that went straight to the disk */
+    uint64_t updated;         /* sectors written that a line held (copied in) */
+};
+
+/* count sectors at `sector` (inside the partition) into buff, through
+ * the cache. */
+status_t cache_read(uint64_t sector, uint32_t count, uint8_t *buff);
+/* count sectors at `sector` have been written to the disk with `data`:
+ * the lines that hold any of them take the new bytes. */
+void     cache_wrote(uint64_t sector, uint32_t count, const uint8_t *data);
+void     cache_stats(struct fat_cache_stats *out);
 
 /* ---- path.c ---------------------------------------------------------------------- */
 

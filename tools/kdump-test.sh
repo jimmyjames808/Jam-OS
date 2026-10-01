@@ -72,7 +72,8 @@ case_save() {
     [ "$(count "$log" "smp: $cpus of $cpus CPUs online")" -ge 2 ] ||
         fail save "the next boot didn't bring up all $cpus CPUs"
     [ "$(count "$log" 'system halted')" -eq 0 ] || fail save "something halted"
-    grep -aq 'kexec: stored kernel armed, command line "shell nosplash"' "$log" ||
+    grep -aqE 'kexec: stored kernel armed, command line "shell nosplash( bootdisk=[0-9]+)?"' \
+        "$log" ||
         fail save "the stored kernel's command line isn't the plain boot's"
     f="$out/kdump-save-crash.txt"
     data="$out/kdump-save-stick.img@@64M"
@@ -109,7 +110,8 @@ case_loop() {
     unset IFS
     boot loop "shell crashtest=lockorder" "$@" || { fail loop "the script (see $out/kdump-loop.log)"; return; }
     log="$out/kdump-loop.log"
-    grep -aq 'kexec: stored kernel armed, command line "shell nosplash testlockorder"' "$log" ||
+    grep -aqE 'kexec: stored kernel armed, command line "shell nosplash testlockorder( bootdisk=[0-9]+)?"' \
+        "$log" ||
         fail loop "the stored kernel didn't get the test word"
     [ "$(count "$log" 'JAM OS KERNEL PANIC')" -eq 2 ] || fail loop "not exactly two panics"
     [ "$(count "$log" 'loader:      Jam OS kexec')" -eq 1 ] || fail loop "a third kernel started"

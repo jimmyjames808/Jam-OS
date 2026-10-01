@@ -23,3 +23,7 @@ protocol storage 14
 # (ERR_ACCESS_DENIED); devmgr opens the ESP that way, and every
 # partition of a disk that isn't the boot disk until `mount -w` asks.
 3  open_partition  (u8 index, u8 read_only) -> (handle block)
+# The disk's MBR disk id (bytes 440-443 of block 0, little-endian): what
+# the boot loader names the disk it booted from by (devmgr's boot disk).
+# 0 when the disk has no partition table, or its id is 0.
+4  disk_id  () -> (u32 mbr_id)

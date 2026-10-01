@@ -2,8 +2,8 @@
  * loop), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
  * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
- * usb-storage serves: which one is the boot disk, and its filesystem
- * services), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
+ * usb-storage serves: which one is the boot disk) and fsvc.c (their
+ * filesystem services; disk.h between the two), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
  * and the calls waiting for it to change). The protocol is in <devmgr.h>. */
 #pragma once
 
@@ -106,6 +106,11 @@ extern unsigned       problems;
 /* The argument "hidboot": passed on to every hid (mice stay in the boot
  * protocol). */
 extern bool           hidboot;
+/* The argument "bootdisk=0x<id>": the MBR disk id of the disk the machine
+ * booted from (the loader's, passed on by the kernel and init); 0: not
+ * known. disk.c takes the Jam OS disk with that id as the boot disk. */
+extern uint32_t       boot_mbr_id;
+extern uint64_t       devmgr_started;   /* when devmgr started (uptime, ns) */
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */
@@ -126,8 +131,16 @@ void forget_driver(struct binding *b);
  * with exit 0 by itself (or `excused`) and its job is empty (checked only
  * then: a killed driver's DMA pages may still be quarantined). */
 bool stop_driver(struct binding *b, bool kill, bool excused);
-/* Is the job empty? Logs what's left if not. */
+/* Is the job of a driver that has ended empty? One that isn't yet is
+ * looked at again for a while (job_run_due): true for now, and if it is
+ * still not empty then it is logged as not ended cleanly and counted in
+ * `problems`. False only if it can't be looked at again. */
 bool job_empty(handle_t job, const char *who);
+void job_run_due(void);
+uint64_t job_next_deadline(void);   /* DEADLINE_NEVER: nothing to look at again */
+/* Wait (bounded) until every job being looked at again is decided; false
+ * if any was not empty in the end. */
+bool job_settle(void);
 /* DEVMGR_DRIVER_VIEW: the function and each memory BAR as a driver gets
  * them (hs[i] to be sent with rs[i]); *mask: which BARs. */
 status_t driver_view(struct binding *b, handle_t *hs, rights_t *rs, uint32_t *nh, uint32_t *mask);
