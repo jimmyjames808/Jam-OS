@@ -124,10 +124,20 @@ again. (A stick made before M8 has one partition that macOS mounts as
 `NO NAME`: copy the three files there by hand, or remake it with
 `make usb`.)
 
+If Jam OS is running when the stick comes back to it with a new build on
+it, `kernel load` in the shell reads the new kernel and boot image into
+the stored copy at once, and the next `reboot` starts them without
+reading the stick (a panic then comes back in the new build too).
+
 macOS does mount the data partition by itself (it may show it as
 `NO NAME`): the boot logs are in its `logs/` folder, `boot-0001.txt`,
-`boot-0002.txt`, ..., one per boot, the newest with the highest number.
-Eject it before pulling it.
+`boot-0002.txt`, ..., one per boot, the newest with the highest number;
+each starts with the date and time the kernel started. The settings
+(`etc/settings`: the time zone, whether the PC's real-time clock keeps
+local time, the volumes, the music folder) can be edited there too
+([ARCHITECTURE.md](../ARCHITECTURE.md#time-and-settings)). Files Jam OS
+writes are dated in local time, as FAT keeps them. Eject it before
+pulling it.
 
 Then boot the PC from the stick in UEFI mode with Secure Boot off, and pick
 an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). A

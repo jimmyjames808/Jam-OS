@@ -901,7 +901,9 @@ capped at 8 MiB.
   `/esp` can never be made writable and `/data` never read-only: init
   passes on nothing but `/usbN`, and devmgr remounts nothing else.
 - logd follows the kernel log from its first byte into
-  `/data/logs/boot-NNNN.txt`, the next free number each boot, syncing at
+  `/data/logs/boot-NNNN.txt`, the next free number each boot, after one
+  line that dates the file (when the kernel started, by the wall clock in
+  the system's zone: [Time and settings](#time-and-settings)), syncing at
   most every 250 ms while the log flows. A reboot loses nothing: init
   syncs the mounts, has logd write out and sync the log up to that line
   (`abi/idl/logctl.idl`), and resets. A panic or a pulled plug loses what
@@ -915,6 +917,37 @@ capped at 8 MiB.
   stick takes it, is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
+
+## Time and settings
+
+- **The wall clock** is the kernel's, in UTC: an offset from the uptime
+  (`kernel/dev/wallclock.c`), so it needs no tick. At boot the kernel has
+  only the real-time clock's reading, taken as UTC until someone says
+  otherwise: a PC keeps its RTC in UTC or (Windows) in local time, and the
+  RTC can't say which. init sets it (`wallclock_set`, RIGHT_MANAGE on the
+  root resource) at the start of shell mode and again whenever `/data`
+  comes: it reads the RTC (`rtc_read`), takes it as the setting `rtc`
+  says (`local`, the default, or `utc`), and gives the kernel the time
+  zone too, a name. Any program reads the time without a handle
+  (`wallclock_get`): it is the uptime plus an offset.
+- **Time zones are libos's** (`<wallclock.h>`): the calendar, a small
+  table of named zones with their daylight-time rules (Australia's,
+  Auckland, London, New York, Los Angeles; `Australia/Sydney` the
+  default) and fixed offsets (`UTC+05:30`). The kernel keeps only the
+  zone's name. FAT stamps files in local time, as FAT does (fat's
+  `get_fattime`); the shell shows times in `$TZ` or the system's zone;
+  each log file starts with its date.
+- **Settings that survive a reboot**: `/data/etc/settings`, plain text,
+  one `key = value` a line, `#` comments (`<settings.h>` has the format
+  and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
+  `music.folder`). init reads them when `/data` comes (the clock) and when
+  the mixer and the music player start (their volumes); the shell's
+  `vol master`, `music vol`, `music start <folder>` and `date -z` write
+  them. A write goes to `settings.new`, is synced, and then takes the old
+  file's name, so a pulled stick leaves the old settings or the new ones,
+  never half of either (a lone `settings.new` is read in their place).
+  init writes a commented file with the defaults the first time `/data`
+  has none. M9's network settings are meant to live there too.
 
 ## Kexec: reboot and panic
 
@@ -987,6 +1020,11 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it. M9's `update` is meant to call
   `kexec_load` with what it fetched.
+- **`kernel load`** (the shell; initctl.kernel_load, so init, which holds
+  `kexec_load`'s right, does the work): `/esp`'s kernel and boot image
+  read and made the stored copy now, and noted as what the stored copy
+  came from, so the `reboot` after it reads nothing, and a panic before
+  that reboot comes back in the new build too.
 
 ## Debugging
 

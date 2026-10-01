@@ -49,6 +49,13 @@ a real desktop PC, which is where every milestone is tested.
   the albums' own covers (read from the MP3s' tags), stereo spectrum bars
   across the bottom of the screen (left up, right down) and a sunburst in
   the full-screen view.
+- The real date and time: the PC's real-time clock read at boot, kept in
+  UTC by the kernel and shown in the owner's time zone (Sydney, with
+  daylight time; `date -z` changes it); files on the sticks and the boot
+  logs are dated. Settings that survive a reboot live in
+  `/data/etc/settings` (the zone, the volumes, the music folder).
+- `kernel load` loads a freshly flashed kernel from the stick while Jam OS
+  runs, so the next `reboot` is instant.
 - A boot splash: the logo animation with its sound while Jam OS starts
   (a key skips it; the `verbose` boot entry shows the text log instead).
   After it the shell's screen holds the shell alone: the kernel log stays
@@ -117,7 +124,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/object/` | kernel objects and handles |
 | `kernel/abi/` | the handle-level API and the syscalls |
 | `kernel/proc/` | bootfs, the ELF parser, userboot (starts init) |
-| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC, PCI core, reboot |
+| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC and the wall clock, PCI core, reboot |
 | `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |

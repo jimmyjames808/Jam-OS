@@ -1,0 +1,13 @@
+# tools/clock-test.sh, boot 2: the same stick, its settings file given
+# `rtc = utc` on this side (mtools): the RTC's 01:02 is UTC now, 09:02 in
+# Perth; the file boot 1 wrote is still there.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: the clock: 2026-01-15 09:0
+send date
+wait Thu 15 Jan 2026 09:0
+wait AWST (UTC+08:00)
+send cat /data/stamp.txt
+wait dated
+send reboot -f
+wait reboot: resetting

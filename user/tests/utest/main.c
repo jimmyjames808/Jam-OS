@@ -631,6 +631,13 @@ static const struct {
     { "mix_limits", t_mix_limits },
     { "utf8_well_formed", t_utf8_well_formed },
     { "utf8_bad_pieces", t_utf8_bad_pieces },
+    { "time_calendar", t_time_calendar },
+    { "time_zones_switch", t_time_zones_switch },
+    { "time_zones_local", t_time_zones_local },
+    { "time_wallclock_calls", t_time_wallclock_calls },
+    { "settings_parse", t_settings_parse },
+    { "settings_edit", t_settings_edit },
+    { "settings_file", t_settings_file },
 };
 
 int main(int argc, char **argv)

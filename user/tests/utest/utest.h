@@ -4,7 +4,8 @@
  * driver's handles can't do; hid.c and hidmouse.c: the hid driver
  * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
- * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>), the
+ * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>; time.c:
+ * <wallclock.h> and <settings.h>), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -61,6 +62,16 @@ bool t_mp3_decode(void);
 /* text.c: libos's text helpers: <utf8.h>. */
 bool t_utf8_well_formed(void);
 bool t_utf8_bad_pieces(void);
+
+/* time.c: <wallclock.h> (the calendar, the zones, the clock's calls) and
+ * <settings.h> (the parser, and the file on a FAT volume). */
+bool t_time_calendar(void);
+bool t_time_zones_switch(void);
+bool t_time_zones_local(void);
+bool t_time_wallclock_calls(void);
+bool t_settings_parse(void);
+bool t_settings_edit(void);
+bool t_settings_file(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
