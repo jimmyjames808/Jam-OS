@@ -177,30 +177,50 @@ static double sine(double x)
     return sum;
 }
 
-/* A second of a sine of hz at `amp` of full scale (0: silence), rate Hz,
- * stereo, fed as the player does: 1024-frame chunks, the stream frame of
- * each chunk's start counted at 48 kHz from 0. */
-static void feed_tone(struct spectrum *s, uint32_t rate, double hz, double amp)
+/* A second of a sine of hz_l at amp_l of full scale on the left and one of
+ * hz_r at amp_r on the right (0: silence), rate Hz, `channels` 2 (or 1:
+ * the left alone, as a mono file), fed as the player does: 1024-frame
+ * chunks, the stream frame of each chunk's start counted at 48 kHz from 0. */
+static void feed_lr(struct spectrum *s, uint32_t rate, double hz_l, double amp_l, double hz_r,
+                    double amp_r, unsigned channels)
 {
     static int16_t pcm[2 * 1024];
+    const double tau = 2 * 3.14159265358979323846;
     int64_t done = 0;
     for (uint32_t chunk = 0; chunk < rate / 1024; chunk++) {
         for (uint32_t k = 0; k < 1024; k++) {
             double t = (double)(done + k) / rate;
-            pcm[2 * k] = pcm[2 * k + 1] =
-                (int16_t)(sine(2 * 3.14159265358979323846 * hz * t) * amp * 32767.0);
+            int16_t l = (int16_t)(sine(tau * hz_l * t) * amp_l * 32767.0);
+            int16_t r = (int16_t)(sine(tau * hz_r * t) * amp_r * 32767.0);
+            if (channels == 1) {
+                pcm[k] = l;
+                continue;
+            }
+            pcm[2 * k] = l;
+            pcm[2 * k + 1] = r;
         }
-        spec_feed(s, pcm, 1024, 2, rate, done * 48000 / (int64_t)rate);
+        spec_feed(s, pcm, 1024, channels, rate, done * 48000 / (int64_t)rate);
         done += 1024;
     }
 }
 
-static int loudest(const struct spec_entry *e)
+/* The same sine on both channels. */
+static void feed_tone(struct spectrum *s, uint32_t rate, double hz, double amp)
+{
+    feed_lr(s, rate, hz, amp, hz, amp, 2);
+}
+
+static int loudest_of(const uint8_t *band)
 {
     int best = 0;
     for (int b = 1; b < (int)SPEC_BANDS; b++)
-        best = e->band[b] > e->band[best] ? b : best;
+        best = band[b] > band[best] ? b : best;
     return best;
+}
+
+static int loudest(const struct spec_entry *e)
+{
+    return loudest_of(e->band);
 }
 
 /* Each tone in its band (64 of a sixth of an octave from 40 Hz): 300 Hz
@@ -254,4 +274,47 @@ bool t_music_spectrum(void)
     }
     free(s);
     return ok;
+}
+
+/* The channels apart (`stereo`): 1 kHz on the left only lands in the left
+ * bands' 34 and leaves the right at zero; 4 kHz on the right only, in the
+ * right's 49; both at once, each in its own; a mono file gives both
+ * channels the same bands, and the mono mix of identical channels is
+ * either channel. */
+bool t_music_stereo(void)
+{
+    struct spectrum *s = malloc(sizeof(*s));
+    CHECK(s);
+    spec_init(s);
+    struct spec_entry e;
+    bool ok = true;
+    spec_reset(s);
+    feed_lr(s, 44100, 1000, 0.25, 4000, 0.0, 2);
+    CHECK(spec_at(s, 24000, &e));
+    ok &= loudest_of(e.left) == 34 && e.left[34] > 150;
+    for (unsigned b = 0; b < SPEC_BANDS; b++)
+        ok &= e.right[b] == 0;
+    spec_reset(s);
+    feed_lr(s, 48000, 1000, 0.0, 4000, 0.25, 2);
+    CHECK(spec_at(s, 24000, &e));
+    ok &= loudest_of(e.right) == 49 && e.right[49] > 150;
+    for (unsigned b = 0; b < SPEC_BANDS; b++)
+        ok &= e.left[b] == 0;
+    CHECK(ok);
+    spec_reset(s);
+    feed_lr(s, 44100, 1000, 0.25, 4000, 0.25, 2);
+    CHECK(spec_at(s, 24000, &e));
+    CHECK_EQ(loudest_of(e.left), 34);
+    CHECK_EQ(loudest_of(e.right), 49);
+    CHECK(e.left[49] + 60 < e.right[49] && e.right[34] + 60 < e.left[34]);
+    spec_reset(s);
+    feed_lr(s, 44100, 300, 0.25, 0, 0.0, 1);
+    CHECK(spec_at(s, 24000, &e));
+    for (unsigned b = 0; b < SPEC_BANDS; b++) {
+        CHECK_EQ(e.left[b], e.right[b]);
+        CHECK(e.band[b] >= e.left[b] - 1 && e.band[b] <= e.left[b] + 1);
+    }
+    CHECK(e.left[loudest_of(e.left)] > 150);
+    free(s);
+    return true;
 }

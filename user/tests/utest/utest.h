@@ -114,6 +114,7 @@ bool ram_stop(const char *point, struct ram *r);
 bool t_music_scan(void);
 bool t_music_order(void);
 bool t_music_spectrum(void);
+bool t_music_stereo(void);
 /* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);

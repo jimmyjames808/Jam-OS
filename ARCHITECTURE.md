@@ -817,7 +817,9 @@ stick pulled), a pass that plays nothing, or the mixer stream failing
 three times in a row stops it with a line in the log; a refused file is
 skipped for good. It keeps the last 64 tracks for `prev`, a sleep timer
 (the last 30 s fade out), and for `levels` the loudness of what is heard
-in 64 frequency bands (`spectrum`; `levels` has 16): an FFT of each ~11 ms of what it writes, kept
+in 64 frequency bands, for each channel (`stereo`) and the mono mix
+(`spectrum`; `levels` has 16): one complex FFT of the two channels of
+each ~11 ms of what it writes, kept
 by stream frame because it writes up to 1.37 s ahead
 (`user/services/music/spectrum.c`).
 

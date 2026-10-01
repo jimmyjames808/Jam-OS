@@ -91,3 +91,8 @@ protocol music 24
 # 255: -16 dB below full scale, the same tilt); the rest as `levels`.
 # (`levels`' sixteen bands are these, the loudest of each four.)
 11 spectrum  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[64] bands, u8 level)
+# `spectrum` for each channel: `left` and `right`, what each of the two
+# channels has in the same 64 bands (0..255 as `spectrum`'s, the same
+# tilt; a mono file gives both the same); the rest as `levels` (`level`
+# is the mono mix's). A stereo view asks this instead of `spectrum`.
+12 stereo  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[64] left, u8[64] right, u8 level)
