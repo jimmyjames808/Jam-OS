@@ -723,7 +723,10 @@ is needed there: every reported position trails the DMA engine's
 fetch). The path is
 unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
-again as soon as it stops, so the jack is silent whenever nothing plays.
+again as soon as it stops, so the jack is silent whenever nothing plays
+(but for a driver killed or crashed mid-stream: no more samples are
+fetched once its bus mastering is off, but the path stays open until
+its restart resets the link).
 The muting is done by the path's amps where one can mute (the PC's, and
 QEMU's codecs with their mixer): the output stage (the pin's output and
 headphone amp, EAPD) goes on once, with every amp muted, at the driver's
