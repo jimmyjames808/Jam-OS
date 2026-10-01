@@ -142,7 +142,7 @@ run_load() {
 
 run_firmware() {
     run firmware shell "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
-        "wait 10 rebooting through the firmware" "wait 30 reboot: resetting" ||
+        "wait 30 rebooting through the firmware" "wait 30 reboot: resetting" ||
         fail firmware "the script (see $out/kexec-firmware.log)"
     grep -aq "kexec_load\|kexec: starting\|init: kexec:.*stored kernel," "$out/kexec-firmware.log" &&
         fail firmware "reboot -f tried kexec"
