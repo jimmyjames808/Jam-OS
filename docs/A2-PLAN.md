@@ -28,13 +28,10 @@ Pure helpers, tested in utest without hardware (`audio_formats`,
 `audio_resample`, `wav_parse`): `audio_rs_*` (the resampler),
 `audio_s16_from_u8/s24le/s32le`.
 
-**The resampler** is linear interpolation between neighbouring input
-frames, with the position kept exactly as a count of 1/48000ths of an
-input frame (no fixed-point step, so no drift on long files), rounded to
-nearest; 48000 Hz input is copied untouched. It is clean for the common
-case, upsampling 44100 to 48000; downsampling (96 kHz files) has no
-low-pass filter, so anything above 24 kHz in the file aliases. A
-windowed-sinc or polyphase filter is the upgrade if that is ever heard.
+**The resampler** was linear interpolation; the sound quality pass
+(below) replaced it with a polyphase windowed-sinc filter (flat to
+20 kHz, 100 dB down from 22.05 kHz; the position still kept exactly, no
+drift). 48000 Hz input is copied untouched.
 
 **The backend today** (all of it in audio.c): finds the first hda driver
 with a path through devmgr's GET_SERVICE, `open_output` (48 kHz 16-bit
@@ -285,6 +282,89 @@ As planned above, plus:
 Two programs play at once through the mixer in QEMU (above), `vol` works
 from the shell, beep and play go through the mixer, and on the PC two
 sounds are heard at once.
+
+### The sound quality pass (branch `audio-quality`)
+
+After the owner's first song on the PC ("smooth ... a little bit not
+perfect", build 11dfa9a, `play` straight to the driver), every source of
+imperfection that could be measured was, in QEMU with
+`tools/audio-quality-test.sh` (numpy over the wav capture).
+
+| What | Before | After |
+|---|---|---|
+| Output sample size | 16-bit always | the DAC's best: 24-bit on the PC (32-bit containers), 16-bit in QEMU; `hda bits` caps it |
+| Mixing | each stream rounded to 16 bits, then saturated | Q8 sums (24-bit resolution through volumes), a lookahead limiter instead of clipping, TPDF dither only where a 16-bit output drops a fraction; one stream at 0 dB bit-exact |
+| 1 kHz at -40/-60 dB of volume (16-bit QEMU output) | all error in harmonics (undithered) | harmonics at the noise; on the PC the 24-bit output keeps the arithmetic's error ~48 dB lower still |
+| 44.1 kHz resampling, 20 kHz tone | -6.3 dB, image -3.2 dB | -0.000 dB, nothing above -101 dB |
+| 44.1 kHz, 1 kHz tone | image at 4.9 kHz, -65 dB | nothing above -104 dB |
+| Driver periods | 4 x 4096 frames (85 ms) | 8 x 2048 frames (42.7 ms) |
+| Mixer lead | 2 periods: 85-170 ms ahead | 4 periods: 128-171 ms ahead (QEMU: never under 118 ms) |
+| Client ring (a program's read-ahead) | 16384 frames, 341 ms | 65536 frames, 1.37 s |
+| Underruns, late periods, a 20 s tone read from the stick | 0, not measured, no dropout | 0, 0, no 10 ms window off by 0.01 dB |
+| Seeing it on the PC | the mixer's close line had underruns | `play -s`, the mixer's close lines, the driver's DPIB/LPIB gaps |
+
+Findings that needed no change:
+- **Clear-behind** needs no margin behind the position: the position
+  buffer, LPIB and Intel's DPIB all trail the DMA engine's fetch, so the
+  bytes behind them were read already (stream.c's header). The margin is
+  the writer's: the mixer counts a period end with under 256 frames
+  written ahead as late (`LATE_GUARD`), more than a FIFO.
+- **Gain staging**: the path's only gain is the DAC's own amp (0.75 dB
+  steps; the pin's amp is 0-0). Attenuation there, below the DAC's
+  input, keeps a 16-bit source bit-exact into the DAC; with the 24-bit
+  stream a mixer volume costs nothing either. So the default stays:
+  -30 dB at the DAC (`hda gain`), the mixer at 0 dB. Not made louder.
+- **Codec**: the loopback mixer 0b and the other inputs of mixer 0c stay
+  muted (only 0c's input from DAC 02 opens), pin 1b drives its
+  headphone amp (ctl 0xc0) with EAPD on, all while a stream plays only.
+  Unused DACs and pins were left as the firmware set them (the driver
+  writes nothing off its path). Untested: whether the pin and EAPD
+  switching at each stream's start and end pops; if `play` makes a pop
+  at its start or end, that is it (a fix would keep the path open a
+  little after the last stream, which bends "muted unless a stream
+  plays", so it is the owner's call).
+
+**On the PC** (headphones off the head for the first play after
+flashing: the output is 24-bit now):
+
+    hda bits                    # "the DAC takes 16, 20, 24"
+    play -s /data/audio/tone1k.wav
+    play -s /usb0/big-poppa.wav
+
+Perfect is: `0 underruns, 0 late periods`, `mixer >= ` about 120-128 ms
+(under 100 means the mixer ran late at some point), `slowest read`
+well under 1000 ms (above about 1200 ms the ring runs dry: an
+underrun), `0 limited`, `out 48 kHz 24-bit`; and `log` shows the
+driver's `stream: closed ... 0 FIFO error(s)`. A pure tone is the
+hardest test: any gap clicks. To compare by ear, `hda bits 16` then
+play again (`hda bits 24` back).
+
+The test files (on the Mac; copy them to the stick's data partition's
+`audio` folder):
+
+    python3 - <<'PY'
+    import math, struct, wave
+    def write(name, rate, secs, phase, amp=0.25):
+        w = wave.open(name, "wb")
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
+        n, fade, out = int(rate * secs), int(rate * 0.01), bytearray()
+        for k in range(n):
+            env = min(1.0, k / fade, (n - 1 - k) / fade)
+            v = int(round(amp * env * 32767 * math.sin(phase(k / rate))))
+            out += struct.pack("<hh", v, v)
+        w.writeframes(bytes(out)); w.close()
+    write("tone1k.wav", 48000, 60, lambda t: 2 * math.pi * 1000 * t)
+    write("tone1k-44.wav", 44100, 60, lambda t: 2 * math.pi * 1000 * t)
+    K = 20.0 / math.log(1000.0)    # 20 Hz to 20 kHz in 20 s
+    write("sweep-44.wav", 44100, 20, lambda t: 2 * math.pi * 20 * K * (math.exp(t / K) - 1))
+    PY
+
+`tone1k` (48 kHz, no resampling: the driver and mixer alone) and
+`tone1k-44` (the resampler too) are a steady 1 kHz at -12 dBFS for a
+minute: any tick, dropout or warble is a fault. `sweep-44` rises from
+20 Hz to 20 kHz: it should rise smoothly and fade into inaudibility at
+the top, with no second tone falling while it rises (that would be
+aliasing).
 
 ### For AS (the boot splash)
 

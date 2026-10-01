@@ -649,10 +649,14 @@ pin's output off. Every verb goes through one file with an allow-list of
 SET verbs, so the driver can never write the board's own jack
 descriptions, GPIOs or vendor coefficients. `open_output` hands its
 client a channel of its own (closing it stops and releases the stream)
-and a 64 KiB DMA32 ring as a VMO to map, played in four periods with an
+and a DMA32 ring of 341 ms as a VMO to map, at the largest sample size
+the DAC takes (24-bit on the PC, in 32-bit containers; 16-bit in QEMU;
+`hda bits` caps it), played in eight periods of 42.7 ms with an
 interrupt (MSI, through the driver's port) at each; the position comes
 from the DMA position buffer, and the driver zeroes the ring behind it,
-so a client that stops writing gives silence, never a loop. The path is
+so a client that stops writing gives silence, never a loop (no margin
+is needed there: every reported position trails the DMA engine's
+fetch). The path is
 unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
 again as soon as it stops, so the jack is silent whenever nothing plays;
@@ -670,23 +674,29 @@ master volume, `SR_AUDIO_CTL`: the shell's `vol` and test programs).
 `open_output` gives a client a stream of its own: a channel (start,
 stop, drain, position, its volume; closing it ends the stream), a ring
 VMO (a header page with the client's `write` and the mixer's `read`
-counts, then 341 ms of 48 kHz stereo frames) and an event. The client
+counts, then 1.37 s of 48 kHz stereo frames) and an event. The client
 writes frames into its mapping with no call; the event is signalled
 only when the client waits for room or the mixer sleeps. The mixer never
 maps a client's ring (the client could shrink it): it copies frames out
 with `vmo_read`, once a period. It holds the driver's stream open only
 while a stream plays, sends `wait_period` without waiting for the answer
-(one thread, one port), and at each period's end mixes the next one, two
-periods (170 ms) ahead of the play position: each stream at its Q15
-gain, summed in 32 bits, the master gain, saturated to 16 bits. A slow
+(one thread, one port), and at each period's end mixes until four
+periods are written ahead of the play position (128-171 ms): each
+stream at its Q15 gain, summed in 32 bits with 8 bits below the 16-bit
+step, the master gain, a lookahead limiter instead of clipping (it does
+nothing below full scale), then out at 24 bits (or, to a 16-bit device,
+rounded with TPDF dither where a volume left a fraction): one stream at
+0 dB is bit-exact. A slow
 client gives silence for what it lacks (an underrun); a dead one's
 stream is dropped; a driver that restarts is reopened; a mixer that dies
 is restarted by init and its clients open new streams. Programs write
 sound through `<audio.h>` in libos (open with their own rate and
 channels, blocking writes, drain, close), a mixer stream underneath: the
-library makes mono stereo and resamples to 48 kHz (linear interpolation,
-its position kept exactly); `beep` and `play` (WAV files, parsed by
-`<wav.h>`) use it. Not built yet: jack detection
+library makes mono stereo and resamples to 48 kHz (a polyphase
+windowed-sinc filter: flat to 20 kHz, 100 dB down from 22.05 kHz, its
+position kept exactly); `beep` and `play` (WAV files, parsed by
+`<wav.h>`; `play -s` prints underruns, late periods and the least lead
+afterwards) use it. Not built yet: jack detection
 ([docs/A1-PLAN.md](docs/A1-PLAN.md), stage 4).
 
 ## Storage
