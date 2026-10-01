@@ -34,6 +34,7 @@
 #define KEXEC_MESSAGE_LINE 160   /* an exception's one line */
 
 int panic_in_progress;   /* set once, by the first CPU to panic */
+static uint32_t panic_apic;   /* that CPU's APIC id (cpuid: needs no per-CPU state) */
 static char note[NOTE_MAX];   /* panic_note_set's line; its last byte stays 0 */
 static char tail[TAIL_BYTES + 1];
 
@@ -116,6 +117,22 @@ static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
 
 static bool jumping;   /* the stored kernel will be started: draw nothing */
 
+/* This CPU's APIC id from CPUID (leaf 0Bh's x2APIC id where there is one,
+ * else leaf 1's initial id): no LAPIC mapping or GS needed, so it works at
+ * any point of a panic. */
+static uint32_t apic_id_cpuid(void)
+{
+    uint32_t a, b, c, d;
+    cpuid(0, 0, &a, &b, &c, &d);
+    if (a >= 0xb) {
+        cpuid(0xb, 0, &a, &b, &c, &d);
+        if (b)
+            return d;
+    }
+    cpuid(1, 0, &a, &b, &c, &d);
+    return b >> 24;
+}
+
 /* Common start of every panic: stop interrupts, stop recursion, decide
  * whether the stored kernel takes over, grab the log tail before we
  * overwrite the screen, then paint it red (or, if it takes over, draw
@@ -123,15 +140,23 @@ static bool jumping;   /* the stored kernel will be started: draw nothing */
 static void panic_begin(void)
 {
     cli();
-    if (__atomic_exchange_n(&panic_in_progress, 1, __ATOMIC_SEQ_CST))
-        halt_forever();   /* panic inside panic, or two CPUs at once */
+    if (__atomic_exchange_n(&panic_in_progress, 1, __ATOMIC_SEQ_CST)) {
+        /* A fault inside this CPU's own panic after it decided to start the
+         * stored kernel: the screen is dark already, so halting would
+         * leave nothing to see; reset instead. Otherwise (a fault while
+         * the panic screen is drawn, or a second CPU) halt as always. */
+        if (__atomic_load_n(&jumping, __ATOMIC_ACQUIRE) && panic_apic == apic_id_cpuid())
+            kexec_panic_failed();
+        halt_forever();
+    }
+    panic_apic = apic_id_cpuid();
     lockdep_off();
 
     /* Stop everyone else first so the screen is ours, then drop any log
      * lock a halted CPU (or this one) was holding. */
     uint32_t halted = ipi_halt_others();
     klog_force_unlock();
-    jumping = kexec_panic_begin();   /* no lock, no allocation; the panic's lines start here */
+    __atomic_store_n(&jumping, kexec_panic_begin(), __ATOMIC_RELEASE);   /* no lock, no allocation */
     if (jumping)
         fbcon_go_dark();
     else

@@ -963,7 +963,10 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   bootstrap processor: an INIT to the BSP would start the firmware or
   reset the board, so the BSP, halted like the rest, waits for a jump
   decided on an AP and makes it itself; the next kernel always starts on
-  the BSP and starts every AP. Without a stored kernel
+  the BSP and starts every AP. A jump decided and then not made (the AP
+  never hands it over within 10 s, or the panicking CPU faults again)
+  resets through the firmware: the screen is dark by then, and a reset
+  beats a dark hang. Without a stored kernel
   (`crashkernel=0`, no region, a damaged one) or in a crash loop the panic
   screen is drawn as before M8.5, with the reason, and the machine halts.
 - **The next boot after a panic** checks the record and the ring as

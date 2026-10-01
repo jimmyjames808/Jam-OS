@@ -89,6 +89,11 @@ _Noreturn void kexec_panic_jump(void);
  * CPU that decides: it makes the jump if that one is an AP, or halts. */
 bool           kexec_halted_will_wait(void);
 _Noreturn void kexec_halted_wait(void);
+/* The panicking CPU faulted (a nested panic) after kexec_panic_begin said
+ * it would jump: the screen is dark already, so rather than halt there
+ * with nothing on it, reset through the firmware (debug/panic.c). The
+ * BSP's wait in kexec_halted_wait is bounded for the same reason. */
+_Noreturn void kexec_panic_failed(void);
 /* Is a panic now a crash loop? This boot started after a panic
  * (after_panic) and has run for uptime_ns. */
 bool kexec_crash_loop(bool after_panic, uint64_t uptime_ns);
@@ -120,6 +125,11 @@ status_t kexec_reboot(void);
  * kernel (the crash test kexecbad: the next panic must refuse it). */
 bool     kexec_verify(void);
 status_t kexec_test_corrupt(void);
+/* Crash tests: break the next panic's jump after its decision. STALL: an
+ * AP never hands the jump to the BSP (kexecstall); FAULT: the panicking
+ * CPU faults (kexecfault). Either must end in a firmware reset. */
+enum { KEXEC_TEST_NONE, KEXEC_TEST_STALL, KEXEC_TEST_FAULT };
+void     kexec_test_break(int how);
 
 /* Memory maps (kernel/kexec/memmap.c). Give [base, base + len) the type
  * `type` in map[0..*n): every entry it overlaps is split (at most two more
