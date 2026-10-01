@@ -440,10 +440,11 @@ on the heap and at most ~1.2 KiB of stack.
 
 ### `play`
 
-The shell's `cmd/play_src.c` is a small source interface (open, read
-16-bit frames, close, a description for the first line) with a WAV
-source (what play.c did before) and an MP3 source; play.c's loop reads
-from whichever was opened. The format is chosen by content, not the
+`<play_src.h>` (libos's `user/lib/play_src.c`; it was the shell's
+`cmd/play_src.c` until the music player needed it too) is a small source
+interface (open, read 16-bit frames, close, a description for the first
+line) with a WAV source (what play.c did before) and an MP3 source;
+play.c's loop reads from whichever was opened. The format is chosen by content, not the
 name: `RIFF` at the start is WAV, else MP3 if `mp3_sniff` finds frames,
 else `not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)`.
 

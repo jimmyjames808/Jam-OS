@@ -702,8 +702,8 @@ afterwards) use it. Not built yet: jack detection
 **MP3** ([docs/A2-PLAN.md](docs/A2-PLAN.md#mp3)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
-source interface in the shell (`user/services/shell/cmd/play_src.c`: open, read 16-bit
-frames, close). MP3s are decoded in the shell's own process by
+source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
+16-bit frames, close), which the music player uses too. MP3s are decoded in the shell's own process by
 `<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
 domain or MIT-0, a fork of minimp3, vendored unmodified, SSE2 on): MPEG-1,
 2 and 2.5, Layers I to III, CBR and VBR, into 16-bit frames at the

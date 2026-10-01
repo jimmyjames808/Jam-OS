@@ -1,4 +1,4 @@
-# `play` of MP3 files (the shell's cmd/play.c and play_src.c, <mp3.h>,
+# `play` of MP3 files (the shell's cmd/play.c, libos's play_src.c and <mp3.h>,
 # dr_mp3): files on /data played through QEMU's hda-output codec into a
 # WAV capture; use tools/mp3-test.sh (it makes the files, puts them on the
 # stick, adds the devices and checks the capture). Seven files play in
