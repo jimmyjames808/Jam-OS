@@ -562,6 +562,10 @@ static const struct {
     { "heap_reuses_freed_space", t_heap_reuses_freed_space },
     { "ns_fat_mount", t_ns_fat_mount },
     { "spawn_from_vmo", t_spawn_from_vmo },
+    { "mix_gains", t_mix_gains },
+    { "mix_unity_is_exact", t_mix_unity_is_exact },
+    { "mix_volume_and_master", t_mix_volume_and_master },
+    { "mix_saturates", t_mix_saturates },
 };
 
 int main(int argc, char **argv)
