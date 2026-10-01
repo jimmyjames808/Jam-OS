@@ -142,3 +142,6 @@ rounding is used).
   "0.5 dB" for -5 centibels).
 - **12 fixed.** `link` is set before the thread starts (and cleared if
   it can't). No test: the race had no effect anyone could see.
+- **17 fixed.** `text_clip` draws nothing when not even "..." fits.
+  Test: the self-test clips a title to widths 0-27 and finds no pixel
+  past the width (FAILED before: the dots stuck out).

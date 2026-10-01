@@ -89,6 +89,16 @@ static void test_utf8(void)
     fun_check(text_width(1, "Ÿ") == text_width(1, "Y") && text_width(1, "\xe4\xb8\xad") > 0 &&
                   text_width(1, "\xe4\xb8\xad") < 2 * text_width(1, "?"),
               "  ... drawn one glyph a character: 'Y' with a diaeresis, one box for CJK");
+    static uint32_t tp[40 * 20];
+    struct surf ts = { tp, 40, 20, 40 };
+    bool inside = true;
+    for (int max_w = 0; max_w < 30; max_w += 3) {
+        memset(tp, 0, sizeof(tp));
+        text_clip(&ts, 0, 0, 1, 0xffffff, max_w, "Kill Jay Z");
+        for (int i = 0; i < 40 * 20; i++)
+            inside &= !tp[i] || i % 40 < max_w;
+    }
+    fun_check(inside, "  ... text cut short to fit stays inside its width, the dots too");
 }
 
 static void test_library(void)
