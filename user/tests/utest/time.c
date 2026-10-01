@@ -128,8 +128,9 @@ bool t_time_wallclock_calls(void)
     CHECK_ST(jam_wallclock_set(v, &w), ERR_WRONG_TYPE);
     CHECK_ST(jam_wallclock_set(0x7fff0000u, &w), ERR_BAD_HANDLE);
     CHECK_ST(jam_handle_close(v), OK);
-    if (root) {
-        CHECK_ST(jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &rd), OK);
+    /* A root to narrow, if this run was given one that can be duplicated
+     * (init's run is; from the shell, the program's view decides). */
+    if (root && jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &rd) == OK) {
         CHECK_ST(jam_wallclock_set(rd, &w), ERR_ACCESS_DENIED);
         CHECK_ST(jam_handle_close(rd), OK);
     }
