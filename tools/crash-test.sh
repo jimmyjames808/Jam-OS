@@ -11,7 +11,7 @@ set -u
 out=$1
 shift
 all="bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog
-     smap smep"
+     smap smep kexecread kexecbad"
 names=${*:-$all}
 mkdir -p "$out"
 fails=0

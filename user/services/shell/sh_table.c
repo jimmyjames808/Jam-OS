@@ -78,8 +78,8 @@ static const struct sh_cmd cmds[] = {
       "  USB driver (hid-6.1:0); whoever supervises it starts it again"),
     C(clear, C_SHELL, "clear", "clear the screen (also Ctrl+L)"),
     C(reboot, C_SYSTEM, "reboot [-f]",
-      "restart into the kernel on the stick, by kexec (no firmware); -f: through the\n"
-      "  firmware and the boot menu. What was written to /data is synced first"),
+      "restart the machine into the kernel on the stick, by kexec (no firmware);\n"
+      "  -f: through the firmware and the boot menu. /data is synced first"),
     C(run, C_SYSTEM, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"

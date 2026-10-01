@@ -182,17 +182,21 @@ static bool t_rights(void)
     return true;
 }
 
-/* kexec_load, kexec_reboot and klog_name refuse what they must. Nothing
- * here loads an image or names the log: either would change this boot (a
- * crash kernel replaced, the crash log's name). */
+/* kexec_load, kexec_reboot and klog_name refuse what they must (the rights
+ * on the root resource only where we were given one: init's run gives it,
+ * the shell doesn't). Nothing here loads an image or names the log: either
+ * would change this boot (a crash kernel replaced, the crash log's name). */
 static bool t_kexec_refusals(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), v, rd, mapo, klog, m;
-    CHECK(root != HANDLE_INVALID);
     CHECK_ST(jam_vmo_create(8192, 0, HANDLE_INVALID, &v), OK);
     CHECK_ST(jam_kexec_load(v, v, v, NULL, 0, 0), ERR_WRONG_TYPE);   /* not a resource */
     CHECK_ST(jam_kexec_load(0x7fff0000u, v, v, NULL, 0, 0), ERR_BAD_HANDLE);
     CHECK_ST(jam_kexec_reboot(v), ERR_WRONG_TYPE);
+    if (!root) {   /* run from the shell, which gives programs no root resource */
+        CHECK_ST(jam_handle_close(v), OK);
+        return true;
+    }
     CHECK_ST(jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &rd), OK);
     CHECK_ST(jam_kexec_load(rd, v, v, NULL, 0, 0), ERR_ACCESS_DENIED);   /* no MANAGE */
     CHECK_ST(jam_kexec_reboot(rd), ERR_ACCESS_DENIED);
@@ -206,8 +210,9 @@ static bool t_kexec_refusals(void)
     CHECK_ST(jam_handle_close(klog), OK);
     CHECK_ST(jam_handle_close(rd), OK);
 
-    /* With the root's RIGHT_MANAGE (the shell's utest; init's has only
-     * READ): the arguments. */
+    /* With the root's RIGHT_MANAGE, the arguments too. Neither init's run
+     * (READ only) nor the shell (no root) gives utest that today, so this
+     * part waits for a starter that does. */
     if (jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_MANAGE, &m) == OK) {
         CHECK_ST(jam_handle_duplicate(v, RIGHTS_BASIC | RIGHT_MAP, &mapo), OK);
         CHECK_ST(jam_kexec_load(m, v, v, NULL, 0, 1), ERR_INVALID_ARGS);            /* flags */
