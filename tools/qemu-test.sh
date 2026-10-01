@@ -30,11 +30,15 @@
 # -blockdev, which outlives the device): a script pulls it with the monitor
 # command `device_del stick` and plugs it back with
 # `device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick`.
+# The boot splash (a plain boot's animation) is left out with the boot
+# word `nosplash`, so the tests see the text log as before; QEMU_SPLASH=1
+# keeps it (tools/splash-test.sh).
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
 shift 2
 cmdline="$*"
+[ "${QEMU_SPLASH:-0}" = 1 ] || cmdline="$cmdline nosplash"
 ovmf=$(brew --prefix qemu)/share/qemu
 mkdir -p "$out"
 
