@@ -15,10 +15,21 @@
 #include <fatsvc.h>
 #include <idl/fsctl.h>
 #include <os.h>
+#include <wallclock.h>
 #include "fattest.h"
 #include "utest.h"
 
-#define FIXED_MTIME 1767225600ull   /* 2026-01-01 00:00:00: fat's clock without the RTC */
+/* mtime is about now: fat dates files by the system's clock in its zone
+ * (FAT keeps local time, and fat gives it back as if it were UTC), to
+ * FAT's 2 s. */
+static bool mtime_is_now(uint64_t mtime)
+{
+    struct civil c;
+    (void)clock_local(&c);
+    int64_t local = civil_days(c.year, c.month, c.day) * 86400 + c.hour * 3600 + c.minute * 60 +
+                    c.second;
+    return (int64_t)mtime <= local && (int64_t)mtime > local - 10;
+}
 
 static struct ramdisk disk;
 
@@ -167,7 +178,7 @@ static bool check_reads(const struct fatrun *r)
     uint64_t size = 0, mtime = 0;
     bool dir = true;
     CHECK_ST(t_stat(r, "/hello.txt", &size, &dir, &mtime), OK);
-    CHECK(size == 10 && !dir && mtime == FIXED_MTIME);
+    CHECK(size == 10 && !dir && mtime_is_now(mtime));
     CHECK_ST(t_open(r, "/hello.txt", FS_READ, &f), OK);
     CHECK_EQ(f.size, 10);
     CHECK_ST(t_read(&f, 0, got, 5, &done), OK);
@@ -183,7 +194,7 @@ static bool check_reads(const struct fatrun *r)
     CHECK_ST(file_read_until(f.ch, now() + FAT_CALL_NS, 0, FAT_BUF + 1, &done),
              ERR_INVALID_ARGS);
     CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, &mtime), OK);
-    CHECK(size == 10 && mtime == FIXED_MTIME);
+    CHECK(size == 10 && mtime_is_now(mtime));
     t_close(&f);
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
     CHECK_ST(t_read(&f, 0, got, 5, &done), ERR_ACCESS_DENIED);    /* opened FS_WRITE */
