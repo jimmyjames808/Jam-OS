@@ -39,9 +39,10 @@ a real desktop PC, which is where every milestone is tested.
   kernel tests repeated in shuffled order under load, with sticks pulled
   and plugged) and a benchmark, runnable from the boot menu or the shell.
 - Sound (in progress): `beep`, and `play /data/song.wav` plays a PCM WAV
-  file (8- to 32-bit, mono or stereo, any common rate) in the headphones.
+  file (8- to 32-bit, mono or stereo, any common rate) in the headphones;
+  a mixer service plays several programs at once, `vol` sets their volumes.
 
-Not yet: networking, the audio mixer, power management, running
+Not yet: networking, power management, running
 programs from `/data`. Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run in QEMU
@@ -108,9 +109,9 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`) and WAV headers (`<wav.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, demo, and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
+| `user/tests/` | utest, usbtest, mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |

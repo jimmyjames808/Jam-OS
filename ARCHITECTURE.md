@@ -350,9 +350,10 @@ Every driver and service is a userspace process from the start.
   `storage` and `block` (usb-storage to devmgr and to a filesystem),
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
   filesystem), `initctl` and `logctl` (init's and logd's control
-  channels), `hda` (the HD Audio driver). devmgr's own protocol is still
+  channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
+  mixer). devmgr's own protocol is still
   written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,
-  `power`, `audio`. Bulk data
+  `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
@@ -452,6 +453,7 @@ Every driver and service is a userspace process from the start.
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | in progress |
+| mixer | `hda`, through devmgr's query channel | `audio` and `audioctl`: every program's sound mixed into the one output ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
 | netstack | lwIP + `netdev` | `socket` | no |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
@@ -544,13 +546,13 @@ Not built yet; these rules bind every future path that can transmit.
 - **Startup message**: every process starts with one channel message holding
   argv, environment, and handles by role (`kernel/include/jam/startup.h`):
   SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
-  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE, NS (the namespace)
-  and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
+  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE, NS (the namespace),
+  AUDIO and AUDIO_CTL (the mixer's channels) and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
   one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
   handles they need: on a plain boot the bootfs server, the console,
-  serialin, devmgr, logd (once `/data` is there) and the shell, restarting
+  serialin, devmgr, the mixer, logd (once `/data` is there) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and gives it
@@ -655,13 +657,37 @@ unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
 again as soon as it stops, so the jack is silent whenever nothing plays;
 `beep` in the shell makes the samples (the driver never makes sound of
-its own). Programs write sound through `<audio.h>` in libos (open with
-their own rate and channels, blocking writes, drain, close): the library
-makes mono stereo, resamples to 48 kHz (linear interpolation, its
-position kept exactly) and keeps the ring written ahead of the play
-position; `beep` and `play` (WAV files, parsed by `<wav.h>`) use it. Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
-jack detection, and a mixer service that owns the device, with programs
-opening streams and writing samples through a shared VMO ring.
+its own).
+
+**The mixer** (`user/services/mixer`, [docs/A2-PLAN.md](docs/A2-PLAN.md))
+is the driver's only client while anything plays: every program's sound
+goes through it, so several play at once. init starts it after devmgr
+and makes its two channels once, keeping their server ends, so a
+restarted mixer serves the same channels: `audio`
+(`abi/idl/audio.idl`), which every program the shell runs gets as its
+startup role `SR_AUDIO`, and `audioctl` (every stream's volume and the
+master volume, `SR_AUDIO_CTL`: the shell's `vol` and test programs).
+`open_output` gives a client a stream of its own: a channel (start,
+stop, drain, position, its volume; closing it ends the stream), a ring
+VMO (a header page with the client's `write` and the mixer's `read`
+counts, then 341 ms of 48 kHz stereo frames) and an event. The client
+writes frames into its mapping with no call; the event is signalled
+only when the client waits for room or the mixer sleeps. The mixer never
+maps a client's ring (the client could shrink it): it copies frames out
+with `vmo_read`, once a period. It holds the driver's stream open only
+while a stream plays, sends `wait_period` without waiting for the answer
+(one thread, one port), and at each period's end mixes the next one, two
+periods (170 ms) ahead of the play position: each stream at its Q15
+gain, summed in 32 bits, the master gain, saturated to 16 bits. A slow
+client gives silence for what it lacks (an underrun); a dead one's
+stream is dropped; a driver that restarts is reopened; a mixer that dies
+is restarted by init and its clients open new streams. Programs write
+sound through `<audio.h>` in libos (open with their own rate and
+channels, blocking writes, drain, close), a mixer stream underneath: the
+library makes mono stereo and resamples to 48 kHz (linear interpolation,
+its position kept exactly); `beep` and `play` (WAV files, parsed by
+`<wav.h>`) use it. Not built yet: jack detection
+([docs/A1-PLAN.md](docs/A1-PLAN.md), stage 4).
 
 ## Storage
 

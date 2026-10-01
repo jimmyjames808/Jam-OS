@@ -48,7 +48,7 @@ static const struct sh_cmd cmds[] = {
       "  path is unmuted only while a stream plays (beep)"),
     C(beep, C_SYSTEM, "beep [hz] [ms]",
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
-      "  at a quarter of full scale with 5 ms fades, through drv/hda at `hda gain`.\n"
+      "  at a quarter of full scale with 5 ms fades, through the mixer at `hda gain`.\n"
       "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
     C(play, C_SYSTEM, "play [-v dB] <file.wav>",
       "play a WAV file in the headphones (e.g. play /data/song.wav), at `hda gain`.\n"

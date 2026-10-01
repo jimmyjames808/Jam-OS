@@ -128,7 +128,8 @@ Then on the PC, headphones in the front jack: `play /data/song.wav`
   its own) reports `ERR_PEER_CLOSED`, after which it opens a new one on
   the same `SR_AUDIO`. The shell gets both; every program the shell runs
   gets `SR_AUDIO`; test programs (`utest`, `usbtest`, `hdatest`,
-  `mixtest`) also get `SR_AUDIO_CTL` and init's control channel.
+  `mixtest`) also get `SR_AUDIO_CTL`, and `mixtest` init's control
+  channel (it kills the mixer and the hda driver).
 - **Rights: a client holds only its stream.** `open_output` returns a
   stream channel (start, stop, drain, position, its own volume; closing
   it ends the stream), the ring VMO (read, write, map) and an event (wait,
@@ -145,10 +146,11 @@ Then on the PC, headphones in the front jack: `play /data/song.wav`
 | Method | On | What |
 |---|---|---|
 | `open_output(rate, channels, bits, name[16]) -> (stream, ring, event, id, frames, lead)` | `SR_AUDIO` | a new stream, stopped, empty; `frames`: the ring's size; `lead`: how far ahead of the speaker the mixer reads (frames). `ERR_NO_RESOURCES`: 16 streams already; `ERR_NOT_FOUND`: no audio output (no hda driver with a path) |
-| `start`, `stop` | stream | the mixer takes frames from the ring (from the next period it mixes) or leaves them there |
+| `start`, `stop` (the stream methods are `stream_*` in the IDL, clear of `<audio.h>`'s names) | stream | the mixer takes frames from the ring (from the next period it mixes) or leaves them there |
 | `drain() -> (frames)` | stream | answers once everything written before the call has played |
 | `position() -> (written, consumed, played)` | stream | frames: in the ring, taken by the mixer, heard (estimated from the driver's position) |
 | `set_volume(cb) -> (cb)` | stream | this stream's volume |
+| `levels() -> (volume, master, device)` | stream | what it is heard at: its volume, the master, the driver's gain |
 | `streams() -> (count, master, list)` | `SR_AUDIO_CTL` | every stream: id, volume, state, underruns, frames played, name |
 | `set_volume(id, cb) -> (cb)`, `set_master(cb) -> (cb)` | `SR_AUDIO_CTL` | for `vol` |
 
@@ -226,6 +228,45 @@ master (`audioctl`).
   output, the stream plays on); a stream left empty lets the mixer close
   the output and a later write wakes it; the codec's verbs show the path
   muted at the end; `vol` from the shell.
+
+### What was built
+
+As planned above, plus:
+- **`<audio.h>` on the mixer** (after track 1 merged): `audio_open` is a
+  mixer stream on the program's `SR_AUDIO` (`audio_open_as` names it for
+  `vol`: beep and play do); the library converts to 48 kHz stereo and
+  writes with `mixer_write` (`<mixer.h>`, libos: the client side of the
+  ring); `audio_drain` is the mixer's drain, then a period of silence
+  drained too (as before: whatever records the output gets past the
+  sound's end); `audio_close` fades the frames the mixer has not taken
+  yet over 5 ms. `audio_set_volume` is now the stream's own volume (it was
+  the device's gain, put back at close), so `play -v -20` plays that file
+  20 dB below the others instead of moving `hda gain`; `audio_get_volume`
+  is the level heard (stream + master + device gain: `levels`), so
+  `beep` still says "at -30.0 dB". The weak `audio_devmgr` hook is gone.
+- **Numbers in QEMU** (tools/mixer-test.sh, 2026-10-01): 440 Hz and
+  1000 Hz at -6 dB from two programs: amplitudes 8192 and 4106, ratio
+  0.5012 (Q15 16423 / 32768 = 0.50119); a 1500 ms tone whose partner was
+  killed at 700 ms: no 10 ms window under 90 % of its amplitude; master
+  -6 dB: 4106; `audioctl` -12 dB mid-tone: 0.2512 of the start; the mixer
+  killed mid-tone: the client saw `ERR_PEER_CLOSED` and had a new stream
+  42 ms later; the hda driver killed mid-tone: the output reopened 0.25 s
+  later on its restart, the stream played to its end; an empty stream
+  let the output close after 12 periods, its next write reopened it.
+  The codec's verbs: the path open only while a stream ran.
+- Not possible from one shell: `play` and `beep` at the same time (the
+  shell runs one command at a time); `mixtest` runs two programs on
+  `<audio.h>` at once instead (a 44.1 kHz tone resampled and a 48 kHz one).
+
+### What only the PC can show
+
+- Two sounds at once in the headphones: the shell runs one command at
+  a time, so on the PC that is `mixtest` (two tone programs at once, at a
+  quarter of full scale and `hda gain`; headphones off the head first).
+  It also kills the mixer and the hda driver once, as in QEMU.
+- The mixer keeping up on the real controller: `vol` shows each
+  stream's underruns (0 expected), the log says "frames late" if a
+  period's end came too late.
 
 ### Done when
 
