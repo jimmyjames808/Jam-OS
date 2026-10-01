@@ -40,12 +40,14 @@ static const struct sh_cmd cmds[] = {
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(hda, C_SYSTEM, "hda [gain [dB]]",
+    C(hda, C_SYSTEM, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
-      "  headphones and the gain it plays at. hda gain: the gain; hda gain -20: set it\n"
-      "  (rounded to the amp's step, at most 0 dB; the driver starts at -30 dB). The\n"
-      "  path is unmuted only while a stream plays (beep)"),
+      "  headphones, the gain it plays at and the jacks. hda gain: the gain; hda gain\n"
+      "  -20: set it (rounded to the amp's step, at most 0 dB; the driver starts at\n"
+      "  -30 dB). The path is unmuted only while a stream plays (beep). hda bits 16:\n"
+      "  the largest sample size. hda jacks: each jack plugged in or not (the driver\n"
+      "  logs every change: dmesg | grep plugged)"),
     C(beep, C_SYSTEM, "beep [hz] [ms]",
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
       "  at a quarter of full scale with 5 ms fades, through the mixer at `hda gain`.\n"

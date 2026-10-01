@@ -4,7 +4,10 @@
  * the driver set up, what is set on each of its nodes (hda.info), and the
  * gain it plays at. `hda gain [dB]` shows or sets the gain (hda.set_gain:
  * the driver rounds to the amp's step and clamps to its range, never
- * above 0 dB); `hda bits [n]` the largest sample size (hda.set_bits). */
+ * above 0 dB); `hda bits [n]` the largest sample size (hda.set_bits);
+ * `hda jacks` each jack's state as the driver tracks it (hda.jacks: plugged
+ * in or not, and whether unsolicited responses or polling found it), the
+ * same lines `hda` ends with. */
 #include <devmgr.h>
 #include <idl/hda.h>
 #include "sh.h"
@@ -40,6 +43,48 @@ static void say_gain(status_t st, int32_t gain, uint32_t step, int32_t min, int3
     else
         sh_say("hda: gain %s dB (step %u; %s to %s dB), heard only while a stream plays\n",
                sh_db(gain, a, sizeof(a)), step, sh_db(min, b, sizeof(b)), sh_db(max, c, sizeof(c)));
+}
+
+/* hda.jacks's lines, each with "hda: jack " before it. */
+static void print_jacks(handle_t ch)
+{
+    uint32_t count = 0, state = 0, changes = 0;
+    uint8_t pins[16], states[16];
+    char *text = malloc(1024);
+    if (!text) {
+        sh_say("hda: jacks: no memory\n");
+        return;
+    }
+    status_t st = hda_jacks_until(ch, now() + DUMP_WAIT, &count, &state, &changes, pins, states,
+                                  (uint8_t *)text);
+    if (st != OK) {
+        sh_say("hda: jacks: %s\n", status_str(st));
+        free(text);
+        return;
+    }
+    text[1023] = 0;
+    for (char *line = text; *line;) {
+        char *end = strchr(line, '\n');
+        if (end)
+            *end = 0;
+        sh_say("hda: jack %s\n", line);
+        if (!end)
+            break;
+        line = end + 1;
+    }
+    free(text);
+}
+
+static int jacks_cmd(void)
+{
+    handle_t ch = sh_hda();
+    if (ch == HANDLE_INVALID) {
+        sh_say("hda: no HD Audio driver with a path to a jack\n");
+        return 1;
+    }
+    print_jacks(ch);
+    jam_handle_close(ch);
+    return 0;
 }
 
 static void print_gain(handle_t ch)
@@ -171,6 +216,7 @@ static unsigned dump_each(handle_t dm)
         jam_handle_close(text);
         print_path(ch);
         print_gain(ch);
+        print_jacks(ch);
         jam_handle_close(ch);
     }
     return found;
@@ -182,8 +228,10 @@ SH_CMD(hda)
         return gain_cmd(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "bits"))
         return bits_cmd(argc, argv);
+    if (argc == 2 && !strcmp(argv[1], "jacks"))
+        return jacks_cmd();
     if (argc != 1) {
-        sh_tty("usage: hda [gain [dB] | bits [16|20|24|32]]\n");
+        sh_tty("usage: hda [gain [dB] | bits [16|20|24|32] | jacks]\n");
         return 2;
     }
     handle_t dm = sh_devmgr();

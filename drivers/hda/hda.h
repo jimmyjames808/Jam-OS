@@ -6,7 +6,9 @@
  * programs it with every amplifier on it muted and the pin's output off;
  * then it serves abi/idl/hda.idl (the dump, the path, the gain and one
  * output stream on the path's DAC) until devmgr closes its channel. The
- * path is unmuted, at the gain, only while the stream runs. Every verb
+ * path is unmuted, at the gain, only while the stream runs. The jacks with
+ * presence detection are watched (unsolicited responses, or polling) and
+ * each change logged. Every verb
  * goes through verbs.c, which takes GET verbs and an allow-list of SET
  * verbs (routing, amplifiers, pin control, EAPD, power, converter format
  * and stream, unsolicited enable, pin sense) and refuses anything else,
@@ -18,7 +20,7 @@
  * stop), verbs.c (the verbs the driver may send), graph.c (reading a
  * codec's nodes into struct codec), dump.c (the readable lines), path.c
  * (the path finder), fixtures.c (its test codecs), stream.c (the output
- * stream), irq.c (the loop: the channels and the MSI).
+ * stream), jack.c (the jacks), irq.c (the loop: the channels and the MSI).
  *
  * Register offsets, bits and verbs are from the Intel High Definition
  * Audio Specification, revision 1.0a (2010): chapter 3 (controller
@@ -199,6 +201,7 @@ enum wtype {
 /* ---- the controller ----------------------------------------------------------- */
 
 #define HDA_CMD_TIMEOUT  (100 * NS_PER_MS)   /* one verb's answer */
+#define UNSOL_Q          32                  /* unsolicited responses held for jack.c */
 
 struct hda {
     volatile void *regs;       /* BAR 0, mapped uncached */
@@ -216,7 +219,17 @@ struct hda {
     bool     immediate_ok;     /* the immediate interface answered (fallback) */
     uint16_t gcap;             /* GCAP as read after reset */
     uint16_t codec_mask;       /* STATESTS after reset: the codecs present */
-    uint32_t unsol;            /* unsolicited responses seen (none expected: UNSOL off) */
+    uint32_t unsol;            /* unsolicited responses seen */
+    uint32_t unsol_dropped;    /* ... of them lost: the queue below was full */
+    uint32_t late;             /* solicited responses no command was waiting for (a late
+                                * answer to one that timed out, or a codec not asked) */
+    uint32_t overruns;         /* RIRBSTS.OIS seen: the RIRB overflowed */
+    bool     unsol_on;         /* GCTL.UNSOL and INTCTL.CIE are on */
+    /* Unsolicited responses (their codec and the response word) in arrival
+     * order, until jack.c takes them: a ring of UNSOL_Q from uq_head. */
+    uint32_t uq_resp[UNSOL_Q];
+    uint8_t  uq_cad[UNSOL_Q];
+    uint8_t  uq_head, uq_n;
     uint32_t timeouts;         /* verbs that got no answer */
     uint16_t vendor, device;   /* the PCI ids */
     bool     dpib_ok;          /* HDA_BAR_MAP bytes are mapped: HDA_SD_DPIB can be read */
@@ -237,6 +250,26 @@ status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out);
 /* Stop the rings, put the controller back in reset, unpin the ring page.
  * Safe to call more than once and after a failed start. */
 void     hda_ctrl_stop(struct hda *h);
+
+/* The RIRB's demultiplexer (ctrl.c). Every entry the controller writes
+ * goes through hda_rirb_sort, whoever reads it (a command waiting for its
+ * answer, or the RIRB interrupt): an unsolicited one (the entry's high
+ * word, bit 4) is queued for jack.c and never taken for an answer; a
+ * solicited one is the answer only if a command to its codec is waiting
+ * (`want`, -1: none), else it is counted late and dropped. true: *out is
+ * the answer. Pure but for h's counters and queue (the self-test feeds it
+ * a fake RIRB). */
+bool     hda_rirb_sort(struct hda *h, uint64_t entry, int want, uint32_t *out);
+/* Every entry the controller has written since the last read, sorted with
+ * want -1. Nothing without the rings. */
+void     hda_rirb_drain(struct hda *h);
+/* The RIRB interrupt (INTSTS.CIS): RIRBSTS read and cleared, then drained. */
+void     hda_rirb_irq(struct hda *h);
+/* The oldest queued unsolicited response: its codec and word. false: none. */
+bool     hda_unsol_pop(struct hda *h, unsigned *cad, uint32_t *resp);
+/* GCTL.UNSOL (the controller accepts unsolicited responses) and INTCTL's
+ * CIE and GIE (the RIRB interrupt) on or off. On needs the rings. */
+void     hda_unsol_enable(struct hda *h, bool on);
 
 /* ---- verbs (verbs.c) ---------------------------------------------------------- */
 
@@ -445,6 +478,95 @@ bool     hda_path_selftest(struct codec *scratch, struct out *o);
 bool     hda_path_roundtrip(const struct codec *c, const struct path *p, struct codec *scratch,
                             struct out *o);
 
+/* ---- the jacks (jack.c) ---------------------------------------------------------------
+ * Every pin whose configuration default says it is a jack and whose pin
+ * capabilities have presence detection, each with its own unsolicited
+ * response tag; its presence (GET_PIN_SENSE bit 31) debounced and logged
+ * when it changes. Spec 7.3 (Unsolicited Response, Pin Sense), 7.3.4.9 (pin
+ * capabilities: trigger, presence detect). */
+
+#define MAX_JACKS        16
+#define JACK_POLL_NS     (500 * NS_PER_MS)   /* a polled jack's presence is read this often */
+#define JACK_DEBOUNCE_NS (80 * NS_PER_MS)    /* a new presence must hold this long */
+#define JACK_SETTLE_NS   NS_PER_MS           /* after SET_PIN_SENSE, before GET_PIN_SENSE */
+#define UNSOL_TAG(resp)  ((resp) >> 26)      /* an unsolicited response: 31:26 the tag */
+
+enum jack_state { JACK_UNKNOWN = 0, JACK_OUT = 1, JACK_IN = 2 };   /* hda.idl's numbers */
+
+/* How a jack's changes are found. */
+enum jack_mode {
+    JM_POLL = 0,    /* polled: no unsolicited responses (the pin, or the controller's
+                     * interrupt, can't) */
+    JM_TRY,         /* unsolicited responses on, and polled until one proves they work */
+    JM_UNSOL,       /* proven: unsolicited responses only, not polled */
+    JM_MISSED,      /* a change came with no unsolicited response: polled for good */
+};
+
+struct jack {
+    uint8_t  cad, nid, tag;      /* the codec, the pin, its tag (1..MAX_JACKS) */
+    uint32_t config, pincaps;    /* the pin's configuration default and capabilities */
+    bool     can_unsol;          /* the pin's widget capabilities have Unsol Capable */
+    uint8_t  mode;               /* enum jack_mode */
+    uint8_t  state;              /* enum jack_state: the debounced presence */
+    bool     pending;            /* a read differed from state, at pending_at */
+    uint64_t pending_at;
+    bool     heard;              /* an unsolicited response for it since the last change */
+    uint32_t changes;            /* state changes after the first read */
+    uint32_t unsols;             /* unsolicited responses with its tag */
+    uint32_t errors;             /* presence reads that failed */
+};
+
+struct jacks {
+    unsigned n;
+    struct jack j[MAX_JACKS];
+    bool     unsol;              /* unsolicited responses were turned on at start */
+    uint32_t irq_seen;           /* RIRB interrupts since then (irq.c counts them) */
+    uint32_t stray;              /* unsolicited responses with no jack's tag */
+    uint64_t next_poll;
+};
+
+/* What jack.c sends and hears, through: hda_set/hda_get and the unsolicited
+ * queue for the driver (hda_jack_io), a fake codec for the self-test. */
+struct jack_io {
+    void    *ctx;
+    status_t (*set)(void *ctx, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload);
+    status_t (*get)(void *ctx, unsigned cad, unsigned nid, uint32_t verb, uint32_t payload,
+                    uint32_t *out);
+    bool     (*unsol)(void *ctx, unsigned *cad, uint32_t *resp);   /* the next one queued */
+    void     (*sleep)(void *ctx, uint64_t ns);
+    void     (*say)(void *ctx, const char *line);                  /* a log line */
+};
+
+/* The driver's io on controller h. */
+void     hda_jack_io(struct jack_io *io, struct hda *h);
+/* Codec c's jack pins appended to js (pure); tags in order from 1. */
+void     hda_jacks_add(struct jacks *js, const struct codec *c);
+/* The jack an unsolicited response `resp` from codec cad is for, or NULL. */
+struct jack *hda_jack_for(struct jacks *js, unsigned cad, uint32_t resp);
+/* "headphones", and "front" (with the colour if another jack of the same
+ * kind is there too: "rear green"). */
+const char *hda_jack_name(const struct jack *j);
+void     hda_jack_where(const struct jacks *js, const struct jack *j, char *buf, size_t size);
+/* How a jack's changes are found, in words (enum jack_mode). */
+const char *hda_jack_mode_str(unsigned mode);
+/* Unsolicited responses on for each jack pin that can send them (if
+ * `unsol`: the controller takes them and its interrupt works), every jack's
+ * presence read, one line each logged. */
+void     hda_jacks_start(struct jacks *js, const struct jack_io *io, bool unsol, uint64_t now);
+/* The queued unsolicited responses, the debounce reads due and the poll
+ * (if due): each change logged. */
+void     hda_jacks_run(struct jacks *js, const struct jack_io *io, uint64_t now);
+/* When hda_jacks_run next has something to do (DEADLINE_NEVER: only an
+ * unsolicited response can give it any). */
+uint64_t hda_jacks_deadline(const struct jacks *js);
+/* Unsolicited responses off on every pin they were turned on for. */
+void     hda_jacks_stop(struct jacks *js, const struct jack_io *io);
+/* The jack logic against fixtures and a fake codec (jack.c). */
+bool     hda_jack_selftest(struct codec *scratch, struct out *o);
+/* Fixture `name` (fixtures.c's table) parsed into *out, its variation
+ * applied. ERR_NOT_FOUND / the parser's status. */
+status_t hda_fixture(const char *name, struct codec *out);
+
 /* ---- the output stream (stream.c) and the driver's loop (irq.c) -------------------
  * One output stream: the first output stream descriptor (index ISS, as
  * GCAP counts them) feeding the DAC of the path main.c chose, stream tag
@@ -564,9 +686,11 @@ void     stream_close(struct hda *h, struct stream *s, const char *why);
 status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what);
 
 /* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream (on out's
- * path) on the channels open_output hands out, and the controller's MSI,
- * until devmgr closes DR_SERVE (OK) or a wait fails (its status); the
- * stream is closed (and the path muted) on the way out. */
+ * path) on the channels open_output hands out, the controller's MSI and
+ * the jacks js (started here: unsolicited responses on if the rings and
+ * the MSI are there), until devmgr closes DR_SERVE (OK) or a wait fails
+ * (its status); the stream is closed (and the path muted) and unsolicited
+ * responses turned off on the way out. */
 struct hda_ops;
 status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
-                  void *ctx, struct output *out);
+                  void *ctx, struct output *out, struct jacks *js);

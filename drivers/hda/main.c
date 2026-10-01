@@ -7,7 +7,8 @@
  *   DR_DMA      its dma_cap: bus mastering goes on after the reset
  *   DR_PCIDEV   its function (the ids, for the log)
  *   DR_SERVE    the channel it serves abi/idl/hda.idl on
- *   DR_IRQ(0)   its MSI: the output stream's period interrupts (irq.c)
+ *   DR_IRQ(0)   its MSI: the output stream's period interrupts and the
+ *               RIRB's (unsolicited responses: the jacks) (irq.c)
  *
  * What it does: check the path finder against its fixtures, reset the
  * controller, find the codecs, print each codec's widget graph and the
@@ -18,8 +19,11 @@
  * the channel, close the stream, stop the command rings, put the
  * controller back into reset and exit 0. The path is unmuted (at the
  * gain, -30 dB unless set_gain says otherwise) only while the stream
- * runs (stream.c, verbs.c's hda_output_*). verbs.c is the only way to a
- * codec and lets through
+ * runs (stream.c, verbs.c's hda_output_*). The jacks with presence
+ * detection (jack.c) are watched from the loop's start: each change is
+ * logged ("headphones plugged in (front, pin 1b)"), found by unsolicited
+ * responses or by polling, and `hda.jacks` answers their states. verbs.c
+ * is the only way to a codec and lets through
  * GET verbs and an allow-list of SET verbs; nothing else the firmware set
  * up (configuration defaults, other pins, GPIOs) changes. A restart is a
  * bind from scratch. */
@@ -39,6 +43,8 @@ struct state {
     bool          tested;      /* the path finder passed its self-test */
     status_t      set;         /* setting the path up: OK, or why not */
     struct output out;         /* the path as the stream opens it, and the gain */
+    struct jacks  jacks;       /* every codec's jacks with presence detection */
+    bool          jacks_ok;    /* the jack self-test passed: they are watched */
 };
 
 /* At start: codec c's path, checked against c's own dump parsed back,
@@ -74,8 +80,11 @@ static uint32_t dump_all(struct state *s, struct out *o, bool choosing)
         struct path p;
         (void)hda_path_find(s->codec, &p);   /* its line says when there is none */
         hda_dump_path(o, s->codec, &p);
-        if (choosing)
+        if (choosing) {
             consider(s, o, &p);
+            if (s->jacks_ok)
+                hda_jacks_add(&s->jacks, s->codec);
+        }
         answered++;
     }
     out_line(o, "%u codec(s) answered; %u verb(s) timed out, %u unsolicited response(s)", answered,
@@ -128,6 +137,18 @@ static void path_text(const struct state *s, char *buf, size_t size)
                  hda_path_rule_name(p->rule), state);
 }
 
+/* The jack at the path's pin, or NULL (no path, or the pin has no presence detection). */
+static const struct jack *path_jack(const struct state *s)
+{
+    const struct path *p = &s->path;
+    if (p->rule == PATH_NONE || s->set != OK || !p->n)
+        return NULL;
+    for (unsigned i = 0; i < s->jacks.n; i++)
+        if (s->jacks.j[i].cad == p->cad && s->jacks.j[i].nid == p->nid[p->n - 1])
+            return &s->jacks.j[i];
+    return NULL;
+}
+
 static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac,
                         uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp,
                         uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8],
@@ -138,7 +159,7 @@ static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint3
     char text[TEXT_MAX];
     path_text(s, text, sizeof(text));
     copy_text(out_text, TEXT_MAX, text);
-    *out_jack = 0;   /* unknown: jack detection is not built yet */
+    *out_jack = path_jack(s) ? path_jack(s)->state : JACK_UNKNOWN;
     const struct widget *dac = p->n ? hda_widget(s->best, p->nid[0]) : NULL;
     if (p->rule == PATH_NONE || s->set != OK || !dac)
         return OK;   /* pin 0: no path; the text says why */
@@ -192,8 +213,47 @@ static status_t do_set_bits(void *ctx, uint32_t bits, uint32_t *out_bits, uint32
     return OK;
 }
 
+#define JACK_TEXT 1024   /* hda.jacks's text */
+
+static status_t do_jacks(void *ctx, uint32_t *out_count, uint32_t *out_state,
+                         uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16],
+                         uint8_t out_text[JACK_TEXT])
+{
+    struct state *s = ctx;
+    const struct jacks *js = &s->jacks;
+    const struct jack *pj = path_jack(s);
+    char *text = drv_malloc(JACK_TEXT);
+    if (!text)
+        return ERR_NO_MEMORY;
+    size_t len = (size_t)drv_snprintf(text, JACK_TEXT, "%u jack(s) with presence detection; "
+        "unsolicited responses %s (%u received, %u RIRB interrupt(s)); a jack not shown to send "
+        "them is polled every %u ms\n",
+        js->n, !s->jacks_ok ? "unused: the jack self-test failed" : js->unsol ? "on" : "off",
+        s->hda.unsol, js->irq_seen, (unsigned)(JACK_POLL_NS / NS_PER_MS));
+    static const char *const states[3] = { "unknown", "unplugged", "plugged in" };
+    for (unsigned i = 0; i < js->n && i < 16 && len < JACK_TEXT; i++) {
+        const struct jack *j = &js->j[i];
+        char where[32];
+        hda_jack_where(js, j, where, sizeof(where));
+        out_pins[i] = j->nid;
+        out_states[i] = j->state;
+        len += (size_t)drv_snprintf(text + len, JACK_TEXT - len, "pin %02x %s (%s): %s, %u "
+                                    "change(s); %s, tag %u, %u response(s)%s\n", j->nid,
+                                    hda_jack_name(j), where, states[j->state % 3], j->changes,
+                                    hda_jack_mode_str(j->mode), j->tag, j->unsols,
+                                    j == pj ? "; the path's pin" : "");
+    }
+    copy_text(out_text, JACK_TEXT, text);
+    drv_free(text);
+    *out_count = js->n;
+    *out_state = pj ? pj->state : JACK_UNKNOWN;
+    *out_changes = pj ? pj->changes : 0;
+    return OK;
+}
+
 static const struct hda_ops ops = {
     .dump = do_dump,
+    .jacks = do_jacks,
     .info = do_info,
     .set_gain = do_set_gain,
     .get_gain = do_get_gain,
@@ -268,6 +328,7 @@ static int start(const struct driver_start *ds, struct state *s)
     }
     struct out o = { .log = true };
     s->tested = hda_path_selftest(s->scratch, &o);
+    s->jacks_ok = hda_jack_selftest(s->scratch, &o);   /* failed: no jack is watched */
     uint64_t t0 = drv_clock_ns();
     status_t st = hda_ctrl_start(h, bar);
     if (st != OK) {
@@ -296,7 +357,7 @@ int driver_main(const struct driver_start *ds)
     }
     handle_t ch = drv_handle(ds, DR_SERVE);
     status_t st = ch == HANDLE_INVALID ? OK
-                : hda_loop(&s->hda, ds, &ops, s, &s->out);
+                : hda_loop(&s->hda, ds, &ops, s, &s->out, &s->jacks);
     hda_ctrl_stop(&s->hda);
     drv_log("stopped: controller back in reset (%s)", st == OK ? "client closed" : status_str(st));
     return st == OK ? 0 : 1;

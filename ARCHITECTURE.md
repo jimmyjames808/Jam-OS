@@ -677,6 +677,22 @@ again as soon as it stops, so the jack is silent whenever nothing plays;
 `beep` in the shell makes the samples (the driver never makes sound of
 its own).
 
+**Jacks.** Every pin the configuration defaults call a jack and whose pin
+capabilities have presence detection is watched (seven on the PC's ALC897:
+the rear line-outs, the mics, the line-in and the front headphones). Each
+gets an unsolicited response tag of its own; the controller takes
+unsolicited responses (GCTL.UNSOL) and the RIRB interrupt goes on, while
+commands are still polled: one demultiplexer sorts every RIRB entry,
+whoever reads it, so an unsolicited response is never taken for an answer
+and a late answer never for the next command's. On a response the pin's
+presence is read (after SET_PIN_SENSE on pins that want the trigger),
+held 80 ms against contact bounce and logged (`headphones plugged in
+(front, pin 1b)`). A pin is also polled every 500 ms until its first
+unsolicited response proves it sends them, and for good if a change comes
+without one, so detection works either way. A change only logs: an unplug
+while playing stops nothing. `hda jacks` (`hda.jacks`) shows each jack's
+state and how it is watched.
+
 **The mixer** (`user/services/mixer`, [docs/A2-PLAN.md](docs/A2-PLAN.md))
 is the driver's only client while anything plays: every program's sound
 goes through it, so several play at once. init starts it after devmgr
@@ -710,8 +726,7 @@ library makes mono stereo and resamples to 48 kHz (a polyphase
 windowed-sinc filter: flat to 20 kHz, 100 dB down from 22.05 kHz, its
 position kept exactly); `beep` and `play` (WAV files, parsed by
 `<wav.h>`; `play -s` prints underruns, late periods and the least lead
-afterwards) use it. Not built yet: jack detection
-([docs/A1-PLAN.md](docs/A1-PLAN.md), stage 4).
+afterwards) use it.
 
 **MP3** ([docs/A2-PLAN.md](docs/A2-PLAN.md#mp3)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
