@@ -1,6 +1,10 @@
 # hda: the Intel HD Audio driver (drivers/hda), as devmgr binds it to the
-# board's HD Audio controller. Served on the driver's DR_SERVE channel; the
-# shell's `hda` command is the client.
+# board's HD Audio controller. Served on the driver's DR_SERVE channel,
+# which devmgr hands out only on its audio and control channels (the
+# driver is "exclusive", <devmgr.h>): the mixer is its client, and hdatest
+# (a test, through the control channel). Everyone else (the shell's `hda`)
+# gets a query channel (`query` below) through the mixer's
+# `audioctl.device`: every method but open_output.
 # Format: see tools/genidl.py.
 #
 # The driver reads the controller and every codec's widget graph, picks
@@ -114,3 +118,13 @@ protocol hda 21
 # then a line per jack ("pin 1b headphones (front): plugged in, ..."),
 # each ending in \n, NUL-terminated.
 11  jacks  ()  -> (u32 count, u32 state, u32 changes, u8[16] pins, u8[16] states, u8[1024] text)
+
+# ---- query channels ----
+# A new channel the driver serves with every method above but open_output
+# and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
+# and the jacks, so its holder can look and turn the gain but never take
+# the one output stream. Closing it is the end of it; it does not keep the
+# driver running (devmgr's channel does), and dies with the driver
+# (ERR_PEER_CLOSED: ask for a new one). At most 8 at once
+# (ERR_NO_RESOURCES). ERR_ACCESS_DENIED on a query channel.
+12  query  ()  -> (handle channel)

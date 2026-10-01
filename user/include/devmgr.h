@@ -18,20 +18,28 @@
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
  * function with MSI-X that isn't a bridge or the boot display".
  *
- * Trust: devmgr serves two channels. The QUERY channel (/svc/devmgr;
+ * Trust: devmgr serves three channels. The QUERY channel (/svc/devmgr;
  * devmgr's own server end is its startup role SR_DEVMGR) answers STATUS,
  * GET_SERVICE, GET_DRIVER (read-only views) and
- * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
- * (/svc/devmgr-ctl; SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND, RELEASE,
+ * SUPERVISION; anything else gets ERR_ACCESS_DENIED, and so does
+ * GET_SERVICE of an EXCLUSIVE driver (devmgr's match table marks them:
+ * hda, whose one output stream is the mixer's). The AUDIO channel
+ * (SR_DEVMGR_AUDIO, not in /svc: init makes it for the mixer alone)
+ * answers the same calls and GET_SERVICE of the exclusive drivers too.
+ * The CONTROL channel
+ * (/svc/devmgr-ctl; SR_DEVMGR_CTL) answers everything (exclusive drivers'
+ * services included, for the tests): SET_CONSOLE, KILL, REBIND, RELEASE,
  * DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER, MOUNTS (the
  * filesystems' channels), TEST_DISK and REMOUNT too. devmgr
  * runs until every client end of its control channel is gone.
- * Who holds what: init both (it hands devmgr new consoles); the programs
- * init runs from init.cfg (the test suites utest and usbtest) both; in
- * shell mode the shell both, and it passes them on only to the programs
+ * Who holds what: init all three (it hands devmgr new consoles, and the
+ * mixer a copy of AUDIO); the programs
+ * init runs from init.cfg (the test suites utest and usbtest) QUERY and
+ * CONTROL; in shell mode the shell QUERY and CONTROL, and it passes them on only to the programs
  * whose lists ask for them (<wants.h>; CONTROL: test programs only, which
- * the build checks). GET_SERVICE's channels reach drivers (usb-bus
- * hands out USB interfaces), so even QUERY is for trusted programs only.
+ * the build checks); the mixer AUDIO alone. GET_SERVICE's channels
+ * reach drivers (usb-bus hands out USB interfaces), so even QUERY is for
+ * trusted programs only.
 
  *
  * Supervision: devmgr restarts a driver that dies unexpectedly
@@ -77,7 +85,8 @@
 #define DEVMGR_STATUS       0x00030001u
 /* (dev) -> 1 handle: a channel to the driver's DR_SERVE end (a duplicate
  * of devmgr's client end). ERR_NOT_FOUND: no such device, or no driver
- * bound to it (ERR_BAD_STATE: bound, but the driver is gone for good).
+ * bound to it (ERR_BAD_STATE: bound, but the driver is gone for good;
+ * ERR_ACCESS_DENIED: an exclusive driver's, asked on the query channel).
  * While a restart is due, the channel the restarted driver will serve
  * (see the reconnect rule above). Vendor and device 0xffff name the
  * instance-th function that has a driver bound, whatever it is (a client

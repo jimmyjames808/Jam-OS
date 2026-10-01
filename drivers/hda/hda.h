@@ -711,8 +711,10 @@ void     stream_close(struct hda *h, struct stream *s, const char *why);
  * == want. ERR_TIMED_OUT. */
 status_t hda_wait8(struct hda *h, uint32_t reg, uint8_t mask, uint8_t want, const char *what);
 
-/* irq.c. Serve `ops` (ctx) on DR_SERVE, the output stream (on out's
- * path) on the channels open_output hands out, the controller's MSI and
+/* irq.c. Serve `ops` (ctx) on DR_SERVE and on the query channels
+ * hda.query hands out (there without open_output and query), the output
+ * stream (on out's path) on the channels open_output hands out, the
+ * controller's MSI and
  * the jacks js (started here: unsolicited responses on if the rings and
  * the MSI are there), until devmgr closes DR_SERVE (OK) or a wait fails
  * (its status); the stream is closed (and the path muted) and unsolicited

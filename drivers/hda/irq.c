@@ -1,7 +1,11 @@
 /* hda: the driver's loop. One thread, one port; everything it waits for
  * arrives there:
  *   KEY_SERVE   DR_SERVE (devmgr's channel, shared by every client):
- *               dump through the caller's ops, open_output here
+ *               dump through the caller's ops, open_output and query here
+ *   KEY_QUERY   a query channel (hda.query's): the caller's ops, but
+ *               open_output and query are refused, so its holder (the
+ *               shell's `hda`, through the mixer) can't take the stream.
+ *               The key carries the slot and a generation
  *   KEY_STREAM  the open stream's channel (open_output's `stream`):
  *               start, stop, position, wait_period; its peer closing
  *               closes the stream. The key carries a generation, so a
@@ -34,7 +38,22 @@
 #define KEY_SERVE  1u
 #define KEY_IRQ    2u
 #define KEY_STREAM 3u          /* | generation << 8 */
+#define KEY_QUERY  4u          /* | slot << 8 | generation << 16 */
 #define DRAIN_MAX  64          /* messages taken from one channel per turn */
+#define QUERY_MAX  8           /* query channels open at once (hda.idl) */
+
+/* Which channel a message came on: what it may ask. */
+enum chan_kind {
+    CH_SERVE,    /* DR_SERVE: everything but the stream's methods */
+    CH_STREAM,   /* the stream channel: start, stop, position, wait_period */
+    CH_QUERY,    /* a query channel: DR_SERVE's but open_output and query */
+};
+
+struct query_ch {
+    handle_t ch;               /* our end, or HANDLE_INVALID: a free slot */
+    uint64_t key;              /* its port key */
+    bool     pending;          /* it may have messages */
+};
 
 struct loop {
     struct hda   *h;
@@ -46,6 +65,8 @@ struct loop {
     handle_t      stream_ch;   /* our end of the open stream's channel, or HANDLE_INVALID */
     uint32_t      gen;         /* the stream channel's generation (its port key) */
     bool          serve_pending, stream_pending, serve_closed;
+    struct query_ch query[QUERY_MAX];   /* hda.query's channels */
+    uint32_t      query_gen;   /* the last query channel's generation (its port key) */
     /* a wait_period waiting for its period (one at a time) */
     bool          waiting;
     uint32_t      wait_txid;
@@ -120,7 +141,43 @@ static status_t do_position(void *ctx, uint64_t *out_frames, uint32_t *out_offse
     return OK;
 }
 
-static const struct hda_ops serve_ops = { .open_output = do_open_output };
+/* ---- query channels ------------------------------------------------------------ */
+
+/* hda.query: a channel of our own that answers the caller's ops alone. */
+static status_t do_query(void *ctx, handle_t *out_channel)
+{
+    struct loop *l = ctx;
+    struct query_ch *q = NULL;
+    for (unsigned i = 0; i < QUERY_MAX && !q; i++)
+        if (l->query[i].ch == HANDLE_INVALID)
+            q = &l->query[i];
+    if (!q)
+        return ERR_NO_RESOURCES;
+    handle_t ours, theirs;
+    status_t st = drv_channel_create(&ours, &theirs);
+    if (st != OK)
+        return st;
+    uint64_t key = KEY_QUERY | (uint64_t)(q - l->query) << 8 | (uint64_t)++l->query_gen << 16;
+    st = drv_port_bind(l->port, ours, key, SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        drv_handle_close(ours);
+        drv_handle_close(theirs);
+        return st;
+    }
+    *q = (struct query_ch){ .ch = ours, .key = key };
+    *out_channel = theirs;
+    return OK;
+}
+
+static void query_close(struct query_ch *q)
+{
+    if (q->ch == HANDLE_INVALID)
+        return;
+    drv_handle_close(q->ch);   /* its port binding goes with it */
+    *q = (struct query_ch){ .ch = HANDLE_INVALID };
+}
+
+static const struct hda_ops serve_ops = { .open_output = do_open_output, .query = do_query };
 static const struct hda_ops stream_ops = {
     .start = do_start,
     .stop = do_stop,
@@ -178,9 +235,11 @@ static void wait_begin(struct loop *l, const struct hda_wait_period_req *q)
 
 /* ---- serving ------------------------------------------------------------------- */
 
-/* One message from ch: OK once handled, else drv_channel_read's status. */
-static status_t serve_one(struct loop *l, handle_t ch, bool stream)
+/* One message from ch, a channel of that kind: OK once handled, else
+ * drv_channel_read's status. */
+static status_t serve_one(struct loop *l, handle_t ch, enum chan_kind kind)
 {
+    bool stream = kind == CH_STREAM;
     _Alignas(8) uint8_t q[HDA_REQ_MAX + 8];
     _Alignas(8) uint8_t r[HDA_REP_MAX];
     handle_t hs[IDL_READ_HANDLES];
@@ -202,7 +261,13 @@ static status_t serve_one(struct loop *l, handle_t ch, bool stream)
     }
     const struct hda_ops *ops = stream ? &stream_ops : l->ops;
     void *ctx = stream ? (void *)l : l->ctx;
-    if (!stream && n >= sizeof(*hdr) && hdr->ordinal == HDA_OPEN_OUTPUT) {
+    bool ours = n >= sizeof(*hdr) && (hdr->ordinal == HDA_OPEN_OUTPUT ||
+                                      hdr->ordinal == HDA_QUERY);
+    if (ours && kind == CH_QUERY) {
+        idl_reply_status(ch, q, n, ERR_ACCESS_DENIED);   /* never the stream */
+        return OK;
+    }
+    if (ours && kind == CH_SERVE) {
         ops = &serve_ops;
         ctx = l;
     }
@@ -214,18 +279,22 @@ static status_t serve_one(struct loop *l, handle_t ch, bool stream)
     return OK;
 }
 
-/* Up to DRAIN_MAX messages from DR_SERVE or the stream channel. */
-static void serve_some(struct loop *l, bool stream)
+/* Up to DRAIN_MAX messages from DR_SERVE, the stream channel or query
+ * channel q (kind CH_QUERY). */
+static void serve_some(struct loop *l, enum chan_kind kind, struct query_ch *q)
 {
-    handle_t ch = stream ? l->stream_ch : l->serve;
-    bool *pending = stream ? &l->stream_pending : &l->serve_pending;
+    handle_t ch = kind == CH_STREAM ? l->stream_ch : kind == CH_QUERY ? q->ch : l->serve;
+    bool *pending = kind == CH_STREAM ? &l->stream_pending
+                  : kind == CH_QUERY  ? &q->pending : &l->serve_pending;
     *pending = false;
     for (int i = 0; i < DRAIN_MAX; i++) {
-        status_t st = serve_one(l, ch, stream);
+        status_t st = serve_one(l, ch, kind);
         if (st == OK)
             continue;
-        if (st == ERR_PEER_CLOSED && stream)
+        if (st == ERR_PEER_CLOSED && kind == CH_STREAM)
             stream_ch_close(l, "the client closed its channel");
+        else if (st == ERR_PEER_CLOSED && kind == CH_QUERY)
+            query_close(q);
         else if (st == ERR_PEER_CLOSED)
             l->serve_closed = true;
         else if (st != ERR_SHOULD_WAIT)
@@ -233,6 +302,19 @@ static void serve_some(struct loop *l, bool stream)
         return;
     }
     *pending = true;   /* more may be queued: the binding fires on edges only */
+}
+
+/* The query channels with messages; true if any may have more. */
+static bool serve_queries(struct loop *l)
+{
+    bool more = false;
+    for (unsigned i = 0; i < QUERY_MAX; i++) {
+        struct query_ch *q = &l->query[i];
+        if (q->ch != HANDLE_INVALID && q->pending)
+            serve_some(l, CH_QUERY, q);
+        more |= q->ch != HANDLE_INVALID && q->pending;
+    }
+    return more;
 }
 
 /* ---- the loop ------------------------------------------------------------------ */
@@ -269,6 +351,10 @@ static void packet(struct loop *l, const struct port_packet *p)
         irq_take(l, p);
     else if (p->key == (KEY_STREAM | (uint64_t)l->gen << 8) && l->stream_ch != HANDLE_INVALID)
         l->stream_pending = true;
+    else if ((p->key & 0xff) == KEY_QUERY)
+        for (unsigned i = 0; i < QUERY_MAX; i++)
+            if (l->query[i].ch != HANDLE_INVALID && l->query[i].key == p->key)
+                l->query[i].pending = true;   /* else a closed one's: stale */
 }
 
 static status_t setup(struct loop *l, const struct driver_start *ds)
@@ -305,19 +391,22 @@ status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda
         return ERR_NO_MEMORY;
     *l = (struct loop){ .h = h, .ops = ops, .ctx = ctx, .serve = drv_handle(ds, DR_SERVE),
                         .js = js };
+    for (unsigned i = 0; i < QUERY_MAX; i++)
+        l->query[i].ch = HANDLE_INVALID;
     stream_init(h, &l->st, drv_handle(ds, DR_PCIDEV), out);
     status_t st = setup(l, ds);
     while (st == OK) {
         if (l->serve_pending)
-            serve_some(l, false);
+            serve_some(l, CH_SERVE, NULL);
         if (l->serve_closed)
             break;
         if (l->stream_pending)
-            serve_some(l, true);
+            serve_some(l, CH_STREAM, NULL);
+        bool queries = serve_queries(l);
         stream_update(h, &l->st);
         wait_check(l);
         hda_jacks_run(js, &l->io, drv_clock_ns());
-        if (l->serve_pending || l->stream_pending)
+        if (l->serve_pending || l->stream_pending || queries)
             continue;
         uint64_t deadline = l->st.running ? drv_clock_ns() + PERIOD_NS : DEADLINE_NEVER;
         uint64_t jd = hda_jacks_deadline(js);
@@ -331,6 +420,8 @@ status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda
             st = OK;
     }
     stream_ch_close(l, "the driver is stopping");
+    for (unsigned i = 0; i < QUERY_MAX; i++)
+        query_close(&l->query[i]);   /* their holders see ERR_PEER_CLOSED */
     if (l->io.set)
         hda_jacks_stop(js, &l->io);
     hda_unsol_enable(h, false);

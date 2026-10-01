@@ -150,3 +150,7 @@ uint64_t out_tick(struct mixer *m);
 uint64_t out_position(struct mixer *m);
 /* The driver's gain in centibels (hda.get_gain), or 0 if it can't say. */
 int32_t  out_device_gain(struct mixer *m);
+/* audioctl.device: the index-th hda driver devmgr runs, as a query channel
+ * (hda.query: everything but open_output) into *out, the caller's.
+ * ERR_NOT_FOUND: no such driver. */
+status_t out_query(struct mixer *m, uint32_t index, handle_t *out);

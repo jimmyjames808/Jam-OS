@@ -93,6 +93,7 @@ bool t_driver_killed(void);
 bool t_startup_message(void);
 bool t_edu_process(void);
 bool t_devmgr_query_channel(void);
+bool t_devmgr_query_refuses_hda(void);
 bool t_edu_killed_mid_dma(void);
 
 /* ns.c: the file namespace, against the bootfs server and bin/ramfs. */

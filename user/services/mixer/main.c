@@ -1,10 +1,12 @@
 /* mixer: every program's sound through the one output stream of the HD
  * Audio driver (docs/A2-PLAN.md). init starts it in shell mode, after
  * devmgr, with
- *   SR_DEVMGR     devmgr's query channel (a client end): to find the hda
- *                 driver (GET_SERVICE); its closing (devmgr died, with
- *                 every driver) ends the mixer, and init starts it again
- *                 with the new devmgr's
+ *   SR_DEVMGR_AUDIO  devmgr's audio channel (a client end): the one that
+ *                 hands out the hda driver's channel (GET_SERVICE; the
+ *                 query channel refuses it, <devmgr.h>), so the mixer is
+ *                 the driver's only client but for the tests; its closing
+ *                 (devmgr died, with every driver) ends the mixer, and init
+ *                 starts it again with the new devmgr's
  *   SR_AUDIO      the server end of the `audio` channel (abi/idl/audio.idl)
  *   SR_AUDIO_CTL  the server end of the `audioctl` channel
  * init keeps a duplicate of both server ends, so a restarted mixer serves
@@ -75,7 +77,7 @@ static void serve_all(struct mixer *m)
 
 static status_t setup(struct mixer *m)
 {
-    m->devmgr = startup_handle(SR_DEVMGR);
+    m->devmgr = startup_handle(SR_DEVMGR_AUDIO);
     m->svc = startup_handle(SR_AUDIO);
     m->ctl = startup_handle(SR_AUDIO_CTL);
     if (!m->svc || !m->ctl) {

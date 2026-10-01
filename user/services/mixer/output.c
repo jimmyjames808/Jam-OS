@@ -442,3 +442,36 @@ int32_t out_device_gain(struct mixer *m)
         return 0;
     return gain;
 }
+
+/* The index-th hda driver among devmgr's services (the drivers that
+ * answer hda.query; others refuse it, ERR_NOT_SUPPORTED), as a query
+ * channel: audioctl.device. The driver it plays through is not touched:
+ * a query channel can't open the output (hda.idl). */
+status_t out_query(struct mixer *m, uint32_t index, handle_t *out)
+{
+    uint32_t found = 0;
+    for (uint32_t n = 0; m->devmgr && n < 32; n++) {
+        struct devmgr_rep r;
+        handle_t ch, q;
+        uint32_t nh = 0;
+        status_t st = devmgr_call(m->devmgr, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1,
+                                  &nh, now() + FIND_WAIT);
+        if (st == ERR_NOT_FOUND || st == ERR_PEER_CLOSED)
+            break;
+        if (st != OK || nh != 1)
+            continue;
+        st = hda_query_until(ch, now() + FIND_WAIT, &q);
+        jam_handle_close(ch);
+        if (st == ERR_NOT_SUPPORTED)
+            continue;   /* another driver's service */
+        if (found++ != index) {
+            if (st == OK)
+                jam_handle_close(q);
+            continue;
+        }
+        if (st == OK)
+            *out = q;
+        return st;
+    }
+    return ERR_NOT_FOUND;
+}

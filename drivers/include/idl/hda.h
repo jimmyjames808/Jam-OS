@@ -21,6 +21,7 @@
 #define HDA_GET_GAIN         0x00150009u
 #define HDA_SET_BITS         0x0015000au
 #define HDA_JACKS            0x0015000bu
+#define HDA_QUERY            0x0015000cu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -150,6 +151,14 @@ struct hda_jacks_rep {
     uint8_t pins[16];
     uint8_t states[16];
     uint8_t text[1024];
+} __attribute__((packed));
+struct hda_query_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_query_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define HDA_REQ_MAX 16u   /* bytes: the biggest request */
@@ -535,6 +544,44 @@ static inline status_t hda_jacks(handle_t ch, uint32_t *out_count, uint32_t *out
     return hda_jacks_until(ch, DEADLINE_NEVER, out_count, out_state, out_changes, out_pins, out_states, out_text);
 }
 
+/* ---- query channels ----
+ * A new channel the driver serves with every method above but open_output
+ * and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
+ * and the jacks, so its holder can look and turn the gain but never take
+ * the one output stream. Closing it is the end of it; it does not keep the
+ * driver running (devmgr's channel does), and dies with the driver
+ * (ERR_PEER_CLOSED: ask for a new one). At most 8 at once
+ * (ERR_NO_RESOURCES). ERR_ACCESS_DENIED on a query channel. */
+static inline status_t hda_query_until(handle_t ch, uint64_t deadline_ns, handle_t *out_channel)
+{
+    struct hda_query_req idl_q;
+    struct hda_query_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_QUERY;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_channel)
+            *out_channel = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+static inline status_t hda_query(handle_t ch, handle_t *out_channel)
+{
+    return hda_query_until(ch, DEADLINE_NEVER, out_channel);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -551,6 +598,7 @@ struct hda_ops {
     status_t (*get_gain)(void *ctx, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*set_bits)(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm);
     status_t (*jacks)(void *ctx, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024]);
+    status_t (*query)(void *ctx, handle_t *out_channel);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -839,6 +887,29 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
             idl_r->states[idl_i] = out_states[idl_i];
         for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
             idl_r->text[idl_i] = out_text[idl_i];
+        return sizeof(*idl_r);
+    }
+    case HDA_QUERY: {
+        const struct hda_query_req *idl_q = (const struct hda_query_req *)req;
+        struct hda_query_rep *idl_r = (struct hda_query_rep *)rep;
+        handle_t out_channel = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->query) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->query(ctx, &out_channel);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_channel != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_channel != HANDLE_INVALID)
+                drv_handle_close(out_channel);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_channel;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }

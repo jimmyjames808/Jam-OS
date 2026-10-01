@@ -5,7 +5,9 @@
 # kills one driver and devmgr restarts it, which reads the graph from
 # scratch. `hda jacks`: QEMU's codecs have no jack with presence
 # detection, so none is watched, but unsolicited responses and the RIRB
-# interrupt are on (and the interrupt counted). (The markers are echoed as
+# interrupt are on (and the interrupt counted). `hda gain` and `hda bits`
+# set and read back. The shell reaches the drivers through the mixer's
+# query channels (audioctl.device), not devmgr. (The markers are echoed as
 # hda-""1 so the typed line itself never matches the wait.)
 wait 120 Jam OS shell
 wait jam>
@@ -38,6 +40,17 @@ wait jam>
 send hda jacks; echo hda-""6
 wait hda: jack 0 jack(s) with presence detection; unsolicited responses on
 wait hda-6
+wait jam>
+send hda gain -20; hda gain; echo hda-""7
+wait hda: gain -20.0 dB
+wait hda: gain -20.0 dB
+wait hda-7
+wait jam>
+send hda bits 16; hda bits; hda bits 32; echo hda-""8
+wait hda: bits: at most 16
+wait hda: bits: at most 16
+wait hda: bits: at most 32
+wait hda-8
 wait jam>
 send reboot -f
 wait reboot: resetting

@@ -575,6 +575,7 @@ static const struct {
     { "driver_killed", t_driver_killed },
     { "edu_process", t_edu_process },
     { "devmgr_query_channel", t_devmgr_query_channel },
+    { "devmgr_query_refuses_hda", t_devmgr_query_refuses_hda },
 
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },

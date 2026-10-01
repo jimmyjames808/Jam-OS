@@ -77,13 +77,15 @@ static const struct {
     uint16_t    vendor, device;   /* PCI ids, 0xffff: any */
     uint32_t    class_code;       /* class << 16 | subclass << 8 | prog_if, or ANY_CLASS */
     const char *path;             /* the driver in bootfs */
+    bool        exclusive;        /* GET_SERVICE on the audio and control channels only */
 } matches[] = {
-    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },        /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },     /* any xHCI controller */
+    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu", false },      /* QEMU's edu test device */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus", false },   /* any xHCI controller */
     /* Intel HD Audio in HDA mode (class 04 03 00). Only Intel's: other
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
-     * (Intel's audio DSP) needs firmware this driver doesn't have. */
-    { 0x8086, 0xffff, 0x040300, "drv/hda" },
+     * (Intel's audio DSP) needs firmware this driver doesn't have. Exclusive:
+     * its one output stream is the mixer's (<devmgr.h> "Trust"). */
+    { 0x8086, 0xffff, 0x040300, "drv/hda", true },
 };
 
 #define TEST_DRIVER_PATH "drv/crasher"
@@ -132,8 +134,10 @@ const char *bdf(const struct binding *b)
     return s;
 }
 
-static const char *match(const struct pci_dev_info *i)
+/* The driver for function i (NULL: none); *exclusive: matches[]'s flag. */
+static const char *match(const struct pci_dev_info *i, bool *exclusive)
 {
+    *exclusive = false;
     if (i->flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return NULL;   /* never a driver's */
     uint32_t cls = (uint32_t)i->class_code << 16 | (uint32_t)i->subclass << 8 | i->prog_if;
@@ -145,8 +149,10 @@ static const char *match(const struct pci_dev_info *i)
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
         if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
             (matches[k].device == 0xffff || matches[k].device == i->device) &&
-            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls))
+            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls)) {
+            *exclusive = matches[k].exclusive;
             return matches[k].path;
+        }
     return NULL;
 }
 
@@ -311,13 +317,14 @@ static status_t test_driver(void)
  * was started for b. Never a disk's driver's or a filesystem service's: a
  * disk's `storage` channel opens every partition for writing, so it stays
  * devmgr's own, and a filesystem's channel is DEVMGR_MOUNTS's to hand out
- * (the control channel's alone). */
-static void get_service(const struct binding *b, bool known, struct devmgr_rep *r, handle_t *hs,
-                        uint32_t *nh)
+ * (the control channel's alone). An exclusive driver's (hda's) only on the
+ * audio and control channels. */
+static void get_service(const struct binding *b, bool known, enum level lv, struct devmgr_rep *r,
+                        handle_t *hs, uint32_t *nh)
 {
     if (!known)
         r->status = ERR_NOT_FOUND;
-    else if (b->disk)
+    else if (b->disk || (b->exclusive && lv == LEVEL_QUERY))
         r->status = ERR_ACCESS_DENIED;
     else if ((b->state != DEVMGR_SUP_RUNNING && b->state != DEVMGR_SUP_RESTARTING) ||
              !b->client)
@@ -388,8 +395,8 @@ static void view(struct binding *b, struct devmgr_rep *r, handle_t *hs, rights_t
 
 /* Handle one request; the reply (and *nh handles in hs, each to arrive
  * with rs[i]) to send back. */
-static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *hs, rights_t *rs,
-                   uint32_t *nh)
+static void handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep *r, handle_t *hs,
+                   rights_t *rs, uint32_t *nh)
 {
     *nh = 0;
     for (uint32_t i = 0; i < DEVMGR_MAX_HANDLES; i++)
@@ -420,7 +427,7 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
     bool known = b && b->path && b->state != DEVMGR_SUP_NONE;   /* a driver was started */
     switch (q->ordinal) {
     case DEVMGR_GET_SERVICE:
-        get_service(b, known, r, hs, nh);
+        get_service(b, known, lv, r, hs, nh);
         return;
     case DEVMGR_GET_DRIVER:
         get_driver(b, known, r, hs, nh);
@@ -455,19 +462,21 @@ static void handle(const struct devmgr_req *q, struct devmgr_rep *r, handle_t *h
     }
 }
 
-/* What a query channel (SR_DEVMGR) may ask; the control channel
- * (SR_DEVMGR_CTL) may ask everything. */
+/* What the query channel (SR_DEVMGR) and the audio channel
+ * (SR_DEVMGR_AUDIO) may ask; the control channel (SR_DEVMGR_CTL) may ask
+ * everything. The two differ in GET_SERVICE alone (get_service). */
 static bool query_ok(uint32_t ordinal)
 {
     return ordinal == DEVMGR_STATUS || ordinal == DEVMGR_GET_SERVICE ||
            ordinal == DEVMGR_GET_DRIVER || ordinal == DEVMGR_SUPERVISION;
 }
 
-/* Answer everything queued on ch (control: the control channel). Returns
+/* Answer everything queued on ch, a channel of level lv. Returns
  * ERR_SHOULD_WAIT once the queue is empty, ERR_PEER_CLOSED once every
  * client is gone and nothing is left to read. */
-static status_t serve(handle_t ch, bool control)
+static status_t serve(handle_t ch, enum level lv)
 {
+    bool control = lv == LEVEL_CONTROL;
     for (;;) {
         _Alignas(8) uint8_t buf[64];
         handle_t in[4];
@@ -514,7 +523,7 @@ static status_t serve(handle_t ch, bool control)
             r.status = disk_test(in[0], &id);
             r.a = id;
         } else if (whole && !nh) {
-            handle(q, &r, hs, rs, &nout);
+            handle(q, lv, &r, hs, rs, &nout);
         }
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
         if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
@@ -540,25 +549,29 @@ static status_t enumerate(void)
         }
         b->kind = BIND_PCI;
         b->index = i;
-        b->path = match(&b->info);
+        b->path = match(&b->info, &b->exclusive);
         ndevs++;
     }
     return OK;
 }
 
-/* The port keys of chans[0] (control) and chans[1] (queries). */
-static const uint64_t chan_keys[2] = { KEY_CONTROL, KEY_CHANNEL };
+/* devmgr's channels: chans[CH_CONTROL] (SR_DEVMGR_CTL), chans[CH_QUERY]
+ * (SR_DEVMGR) and chans[CH_AUDIO] (SR_DEVMGR_AUDIO), each 0 if init gave
+ * none; their port keys and levels. */
+enum { CH_CONTROL, CH_QUERY, CH_AUDIO, NCHANS };
+static const uint64_t chan_keys[NCHANS] = { KEY_CONTROL, KEY_CHANNEL, KEY_AUDIO };
+static const enum level chan_levels[NCHANS] = { LEVEL_CONTROL, LEVEL_QUERY, LEVEL_AUDIO };
 
-/* Answer what is queued on both channels. ERR_SHOULD_WAIT once both are
- * drained; a query channel whose clients are gone is dropped, the life
- * channel's end is the result (ERR_PEER_CLOSED). */
-static status_t serve_channels(handle_t chans[2], const bool armed[2], unsigned life)
+/* Answer what is queued on every channel. ERR_SHOULD_WAIT once all are
+ * drained; a query or audio channel whose clients are gone is dropped, the
+ * life channel's end is the result (ERR_PEER_CLOSED). */
+static status_t serve_channels(handle_t chans[NCHANS], const bool armed[NCHANS], unsigned life)
 {
     status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < 2 && st == ERR_SHOULD_WAIT; c++) {
+    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
         if (!chans[c])
             continue;
-        st = serve(chans[c], c == 0);
+        st = serve(chans[c], chan_levels[c]);
         if (st == ERR_PEER_CLOSED && c != life) {
             if (armed[c])
                 jam_port_unbind(port, chans[c], chan_keys[c]);
@@ -573,10 +586,10 @@ static status_t serve_channels(handle_t chans[2], const bool armed[2], unsigned 
 /* ONCE, re-armed after it fires (it fires at once if a message came in
  * meanwhile); a driver's death arrives on the same port, and a due
  * restart ends the wait. ERR_SHOULD_WAIT when both are armed. */
-static status_t arm_channels(const handle_t chans[2], bool armed[2])
+static status_t arm_channels(const handle_t chans[NCHANS], bool armed[NCHANS])
 {
     status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < 2 && st == ERR_SHOULD_WAIT; c++) {
+    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
         if (!chans[c] || armed[c])
             continue;
         st = jam_port_bind(port, chans[c], chan_keys[c], SIG_READABLE | SIG_PEER_CLOSED,
@@ -590,7 +603,7 @@ static status_t arm_channels(const handle_t chans[2], bool armed[2])
 }
 
 /* Wait for one packet (or the next due restart) and act on it. */
-static status_t wait_event(bool armed[2])
+static status_t wait_event(bool armed[NCHANS])
 {
     struct port_packet pkt;
     uint64_t deadline = sup_next_deadline();
@@ -603,8 +616,10 @@ static status_t wait_event(bool armed[2])
     status_t st = jam_port_wait(port, deadline, &pkt);
     if (st != OK)
         return st;
-    if (pkt.key == KEY_CHANNEL || pkt.key == KEY_CONTROL) {
-        armed[pkt.key == KEY_CONTROL ? 0 : 1] = false;
+    if (pkt.key == KEY_CHANNEL || pkt.key == KEY_CONTROL || pkt.key == KEY_AUDIO) {
+        for (unsigned c = 0; c < NCHANS; c++)
+            if (chan_keys[c] == pkt.key)
+                armed[c] = false;
     } else if ((pkt.key & KEY_DRIVER) && KEY_INDEX(pkt.key) < ndevs) {
         sup_died(&devs[KEY_INDEX(pkt.key)], KEY_GEN(pkt.key));
     } else if ((pkt.key & KEY_EVENTS) && KEY_INDEX(pkt.key) < ndevs) {
@@ -625,9 +640,9 @@ static status_t wait_event(bool armed[2])
 
 /* Serve until the life channel's clients are all gone (ERR_PEER_CLOSED)
  * or something fails (its status). */
-static status_t run(handle_t chans[2], unsigned life)
+static status_t run(handle_t chans[NCHANS], unsigned life)
 {
-    bool armed[2] = { false, false };
+    bool armed[NCHANS] = { false, false, false };
     for (;;) {
         status_t st = serve_channels(chans, armed, life);
         if (shutdown_asked)
@@ -731,12 +746,13 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }
-    /* chans[0]: control (SR_DEVMGR_CTL), chans[1]: queries (SR_DEVMGR).
-     * devmgr runs until the control channel's clients are all gone (with
-     * no control channel: the query channel's); a query channel whose
-     * clients are gone is just dropped. */
-    handle_t chans[2] = { startup_handle(SR_DEVMGR_CTL), startup_handle(SR_DEVMGR) };
-    unsigned life = chans[0] ? 0 : 1;
+    /* devmgr runs until the control channel's clients are all gone (with
+     * no control channel: the query channel's); a query or audio channel
+     * whose clients are gone is just dropped. */
+    handle_t chans[NCHANS] = { [CH_CONTROL] = startup_handle(SR_DEVMGR_CTL),
+                               [CH_QUERY] = startup_handle(SR_DEVMGR),
+                               [CH_AUDIO] = startup_handle(SR_DEVMGR_AUDIO) };
+    unsigned life = chans[CH_CONTROL] ? CH_CONTROL : CH_QUERY;
 
     pci_res = startup_handle(SR_RESOURCE);
     if (!chans[life] || !pci_res) {
