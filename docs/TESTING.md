@@ -104,7 +104,6 @@ machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 | Jam OS | (empty) | the boot splash ([AS-PLAN.md](AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (a key skips it), then the shell; meanwhile init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer, the music player and logd. `reboot` and a panic look like switching the PC on: the splash background at once, then the next boot's splash; after a panic the shell's first line says what it was and where its log went |
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
-| Jam OS (Limine starts the CPUs) | `smp=loader` | the same as Jam OS, but Limine wakes the other CPUs and the kernel releases them, instead of the kernel's own INIT-SIPI-SIPI: kept as a fallback (the kernel's own startup was signed off on the PC with M8.5) |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
 | Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
@@ -145,8 +144,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   stored kernel, so a panic halts on its screen and `reboot` falls back to the firmware.
 - `crashtest=<name>`: the stored kernel's command line gets `test<name>`, so the next boot (after
   a reboot or a panic) runs that crash test: a crash loop for `tools/kdump-test.sh`.
-- `smp=loader`: Limine starts the other CPUs (see the boot menu). The
-  boot log's `smp: N of M CPUs online in T ms (...)` line says which way
+- `smp=loader`: Limine wakes the other CPUs and the kernel releases them,
+  instead of its own INIT-SIPI-SIPI: for troubleshooting (no menu entry;
+  on the PC, press E on an entry in Limine's menu and add it to its
+  `cmdline`). The boot log's `smp: N of M CPUs online in T ms (...)` line says which way
   they were started and how long it took.
 - `smp_test_skip=<cpu>` and `smp_test_late=<cpu>` (kernels with tests
   only): that CPU gets no startup IPIs, or comes late (it waits until the

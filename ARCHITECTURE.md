@@ -272,8 +272,7 @@ Every driver and service is a userspace process from the start.
   microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
-  releases each), kept as a fallback (the kernel's own startup was signed
-  off on the PC with M8.5). After a kexec there is no loader: the kernel's
+  releases each), kept for troubleshooting. After a kexec there is no loader: the kernel's
   startup is the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from

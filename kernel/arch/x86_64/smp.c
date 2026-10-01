@@ -5,8 +5,8 @@
  *     real-mode trampoline), the default on every boot, and the only way
  *     after a kexec, which has no loader;
  *   - the boot word `smp=loader`: Limine woke the APs and parked them, and
- *     each is released onto its struct cpu (boot_start_cpu). Kept as a
- *     fallback until the kernel's own startup is signed off on the PC.
+ *     each is released onto its struct cpu (boot_start_cpu). Kept for
+ *     troubleshooting.
  * Either way the AP ends in smp_ap_main on its own kernel stack and the
  * kernel's page tables: its per-CPU state, its APIC, its topology, then
  * the claim, then (once numbered) its firmware check, its timer, online.

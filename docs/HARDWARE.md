@@ -168,8 +168,10 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   (`verbose`) to see it.
 - Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
   kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
-  `smp:` lines name each CPU that did not start; boot `Jam OS (Limine
-  starts the CPUs)` (`smp=loader`) to compare.
+  `smp:` lines name each CPU that did not start. To compare, have Limine
+  start them instead: in Limine's menu press E on `Jam OS`, add
+  `cmdline: smp=loader` (or append `smp=loader` to the entry's
+  `cmdline`), then F10 to boot it.
 - Anything that looks like memory corruption: boot with `nopcid` first
   (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
   log's `cpu id:` and `pcid:` lines give the microcode revision and whether
