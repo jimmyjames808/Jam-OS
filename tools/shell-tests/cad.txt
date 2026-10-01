@@ -11,6 +11,8 @@ seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 0.5
 send write /data/cad.txt written before the reset && cat /data/cad.txt
 wait written before the reset
+# (that matched the line's echo: the prompt says the command has run)
+wait jam>
 monitor sendkey ctrl-alt-delete
 wait 10 console: Ctrl+Alt+Del: rebooting
 wait 120 init: /data synced
