@@ -139,11 +139,18 @@ Every driver and service is a userspace process from the start.
   allocation fails, every stash is drained (stolen under its own lock, no
   IPIs, so it works with spinlocks held); below 8 MiB free the stashes are
   bypassed. Details and races at the top of `kernel/mm/pmm.c`.
+- **The vmap area** holds kernel stacks, kernel mappings of VMOs
+  (`vmo_map_kernel`) and MMIO. Ranges come first-fit from an address-ordered
+  free list, else from the top; a range given back (after its unmap and TLB
+  shootdown) merges with its free neighbours and folds into the top when it
+  reaches it. Page tables made for a range are never freed but are reused
+  with it, so they grow only with the area's high-water mark, not with how
+  often things are mapped. Every range ends with a guard page that is never
+  mapped, so every mapping has an unmapped page on both sides.
 - **Kernel stacks**: `kstack_alloc` (panics) / `kstack_alloc_try` (NULL) map a
-  stack under a guard page in the vmap area; `kstack_free` unmaps it (TLB
-  shootdown), frees the pages and keeps the virtual range for the next stack
-  of the same size, so thread churn neither grows the vmap area nor strands
-  page tables.
+  stack in a vmap range; `kstack_free` unmaps it (TLB shootdown), frees the
+  pages and gives the range back, so thread churn neither grows the vmap
+  area nor strands page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
   in until INIT resets them) is reclaimed once every AP has started.
 - **The AP trampoline's page**: one page of usable RAM in [64 KiB, 640 KiB),
@@ -164,7 +171,8 @@ Every driver and service is a userspace process from the start.
   image. All 256 kernel-half PDPTs are created up front so every
   address space can share PML4 entries 256-511. Layout:
   `ffff800000000000` HHDM, `ffffc00000000000` vmemmap,
-  `ffffd00000000000` vmap (kernel stacks with guard pages, MMIO),
+  `ffffd00000000000` vmap (kernel stacks, VMO mappings and MMIO, with guard
+  pages),
   `ffffffff80000000` kernel image.
 - **Heap**: `kmem_cache` slabs (header on-slab, pages tagged `PG_SLAB`) with
   kmalloc classes 16-2048; larger requests take whole buddy blocks.

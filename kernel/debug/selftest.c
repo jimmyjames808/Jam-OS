@@ -323,6 +323,7 @@ static void test_tlb_shootdown(void)
     }
     for (int round = 0; round < ROUNDS; round++)
         pmm_free_page_phys(pas[round]);
+    vmm_release(va, PAGE_SIZE);
     CHECK(__atomic_load_n(&shoot_bad, __ATOMIC_RELAXED) == 0);
     kprintf("selftest: TLB shootdown ok (50 remaps seen by all %u CPUs)\n", cpu_count);
 }

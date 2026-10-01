@@ -4,7 +4,8 @@
  *   ffff800000000000  HHDM: all RAM mapped at phys + hhdm_offset (WB),
  *                     framebuffer mapped the same way (WC)
  *   ffffc00000000000  vmemmap: struct page array, indexed by PFN
- *   ffffd00000000000  vmap: kernel stacks (with guard pages), MMIO
+ *   ffffd00000000000  vmap: kernel stacks, kernel mappings of VMOs, MMIO
+ *                     (each with an unmapped guard page on both sides)
  *   ffffffff80000000  kernel image
  */
 #pragma once
@@ -132,12 +133,22 @@ void    *kstack_alloc(size_t size);
 /* The same, but returns NULL when out of memory (nothing is left behind). */
 void    *kstack_alloc_try(size_t size);
 /* Unmap and free a stack from kstack_alloc*: the pages go back to the
- * allocator after a TLB shootdown, and the virtual range is kept for the next
- * stack of the same size. Needs interrupts on and no spinlock held (the
+ * allocator after a TLB shootdown, and the virtual range (with its page
+ * tables) is reused. Needs interrupts on and no spinlock held (the
  * shootdown waits for other CPUs); nothing may still run on the stack. */
 void     kstack_free(void *top, size_t size);
-/* Reserve (but do not map) kernel virtual space in the vmap area. */
+/* Reserve (but do not map) len bytes of kernel virtual space in the vmap
+ * area. The page after them is never mapped, and neither is the page
+ * before: a run off either end faults. */
 uint64_t vmm_reserve(uint64_t len);
+/* Give back a range from vmm_reserve (the same len) for reuse. It must be
+ * unmapped already (vmm_unmap: shot down on every CPU). Its page tables
+ * stay for the next range there. May allocate a small node (kmalloc). */
+void     vmm_release(uint64_t va, uint64_t len);
+/* Page-table pages made for the kernel's half since the buddy allocator
+ * started: never freed, and reused with the vmap ranges, so they grow only
+ * with the vmap area's high-water mark. */
+uint64_t vmm_kernel_table_pages(void);
 /* For code that must later map pages without taking a lock or allocating
  * (kexec's panic path, kernel/kexec/region.c): the 512 leaf entries of the
  * page table that covers the 2 MiB-aligned vmap range at va, made now if

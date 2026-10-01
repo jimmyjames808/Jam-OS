@@ -39,7 +39,7 @@ static void check_file(const char *name)
     kobject_unref(vmo_kobject(v));
 }
 
-KTEST(bootfs_files)
+static void bootfs_files_round(void)
 {
     KT_ASSERT(bootfs_count() >= 3);
     KT_ASSERT(bootfs_name(bootfs_count()) == NULL);
@@ -72,6 +72,20 @@ KTEST(bootfs_files)
     KT_EQ(bootfs_validate(va, size, &why), OK);
     KT_EQ(vmo_unmap_kernel(v, va), OK);
     kobject_unref(vmo_kobject(v));
+}
+
+KTEST(bootfs_files)
+{
+    /* Mapping the whole image (megabytes) may reach vmap space no mapping
+     * used before, and the page tables made for it stay for reuse: how many
+     * depends on what ran before. So the first round only warms up, and the
+     * second, identical one must give every page back. */
+    KT_OWN_LEAK_CHECK("the first round may make vmap page tables, kept for reuse");
+    bootfs_files_round();
+    uint64_t before = ktest_accounted_pages();
+    bootfs_files_round();
+    int64_t kept = (int64_t)(before - ktest_accounted_pages());
+    KT_GLOBAL_ASSERT(kept <= 2);   /* the harness's slack: a slab page or two */
 }
 
 /* ---- corrupted images -------------------------------------------------- */

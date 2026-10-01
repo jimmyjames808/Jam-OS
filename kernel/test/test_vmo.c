@@ -324,8 +324,8 @@ KTEST(vmo_map_kernel)
     KT_EQ(vmo_decommit(v, 0, 5 * PG), OK);
     KT_EQ(vmo_set_size(v, 0), OK);
     put(v);
-    /* The vmap area never reuses addresses, but page-table pages created
-     * for it stay: allow those. */
+    /* Page-table pages made for the mapping stay (for the next range
+     * there): allow those. */
     KT_GLOBAL_ASSERT(base - kt_free_pages() <= 4);
 }
 
