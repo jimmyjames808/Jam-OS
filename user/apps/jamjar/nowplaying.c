@@ -222,7 +222,7 @@ static void info(const struct app *a)
     const struct snap *s = &a->snap;
     char line[FS_PATH_MAX + 64];
     fill(&scr.s, r->x, r->y, r->w, u, C_LINE);
-    int y = r->y + 14 * u;
+    int y = r->y + 12 * u;
     if (s->folder[0] && s->playing) {
         const char *base = strrchr(s->folder, '/');
         char name[NAME_MAX], year[5];

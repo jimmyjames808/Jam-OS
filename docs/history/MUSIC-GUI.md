@@ -83,8 +83,8 @@ screen, nothing overlapping, at least a few rows in each list.
 
 1. **The simmer** (the visualizer): the bottom of the screen is jam in a
    pot. Its surface is a smooth curve through sixteen frequency bands of
-   what is heard now (low on the left), so the bass heaves and the cymbals
-   ripple; a slow travelling wave keeps it alive between beats; its body
+   what is heard now (the bass in the middle, the highs out to both
+   edges), so the bass heaves and the cymbals ripple; a slow travelling wave keeps it alive between beats; its body
    is a crimson-to-dark gradient with a bright rim. When a band jumps
    (a beat, a snare) a bubble rises from the surface there, wobbles and
    pops; gold seeds drift in the jam. Clicking the jam splashes it.
@@ -187,3 +187,22 @@ byte) draws one fallback box per character, never one per byte.
 
 What only the PC can show: how smooth it is at 2560x1440 (no vsync), the
 mouse feel, the bands against real music, the owner's 177-file library.
+
+## As built (2026-10-01, branch `music-gui`)
+
+- As planned, with these differences: the bands are mirrored across the
+  jam (the bass in the middle); a line under the controls says which
+  folder plays and the main keys, where there is room; the full jar
+  shows the album's label and the names over the jam; the shell's `music
+  sleep` also takes seconds (`music sleep 40s`, for the test).
+- QEMU (TCG, 4 CPUs): a whole frame drawn and presented in about 17 ms
+  at 1280x800 (45-50 frames a second) and 48 ms at 2560x1440; the self-test draws one in 18 ms
+  at 1280x800 and 112 ms at 2560x1440 (one CPU). The background and the
+  jam's body are drawn on every CPU of the pool. jamjar says its frame
+  cost when it quits (`jamjar: N frames in S s, U us each`).
+- The test library is written by mtools, which gives a name that fits
+  8.3 in a DOS code page (`¥$`) a short name only, in code page 850 by
+  default; FatFs reads short names as 437, so the yen came back as
+  another character (drawn, rightly, as one box). The test sets mtools
+  to 437. Whether macOS gives such a name a long name on the owner's
+  stick is to be seen on the PC.

@@ -246,11 +246,12 @@ static void make_lut(struct simmer *s, int hgt, int u)
 }
 
 /* The body: column by column from the surface down, the top pixel at its
- * coverage, a soft haze above it. */
-static void body(struct simmer *s, const struct surf *dst, const struct rect *r, int u)
+ * coverage, a soft haze above it. Columns x0 .. x1 - 1 of the rect. */
+static void body_cols(const struct simmer *s, const struct surf *dst, const struct rect *r,
+                      int x0, int x1)
 {
-    int haze = 26 * u;
-    for (int x = 0; x < r->w; x++) {
+    int u = scr.ui > 0 ? scr.ui : 1, haze = 26 * u;
+    for (int x = x0; x < x1; x++) {
         float sy = (float)r->h * (1.0f - surface(s, ((float)x + 0.5f) / (float)r->w));
         int top = (int)sy;
         float frac = 1.0f - (sy - (float)top);
@@ -270,6 +271,32 @@ static void body(struct simmer *s, const struct surf *dst, const struct rect *r,
             *p = y == top ? mixc(*p, s->lut[0], (uint32_t)(frac * 256)) : s->lut[d];
         }
     }
+}
+
+#define STRIPS 16   /* the body's columns in this many strips, one per pool item */
+
+struct body_job {
+    const struct simmer *s;
+    const struct surf   *dst;
+    const struct rect   *r;
+};
+
+static void body_strip(uint32_t item, uint32_t worker, void *arg)
+{
+    (void)worker;
+    const struct body_job *j = arg;
+    int w = j->r->w;
+    body_cols(j->s, j->dst, j->r, w * (int)item / STRIPS, w * ((int)item + 1) / STRIPS);
+}
+
+/* The body on every CPU of the pool (all of it here if there is no pool). */
+static void body(const struct simmer *s, const struct surf *dst, const struct rect *r)
+{
+    struct body_job j = { s, dst, r };
+    if (pool_threads() > 1)
+        pool_run(body_strip, &j, STRIPS);
+    else
+        body_cols(s, dst, r, 0, r->w);
 }
 
 /* The gloss along the surface. */
@@ -301,7 +328,7 @@ void simmer_draw(struct simmer *s, const struct surf *screen, const struct rect 
         make_lut(s, r->h, u);
         s->hgt = r->h;
     }
-    body(s, dst, r, u);
+    body(s, dst, r);
     float W = (float)r->w, H = (float)r->h;
     for (int i = 0; i < SIM_SEEDS; i++) {   /* the seeds, hanging in the jam */
         const struct seed *e = &s->seed[i];

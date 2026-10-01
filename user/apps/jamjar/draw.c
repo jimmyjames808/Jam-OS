@@ -41,10 +41,32 @@ static void big_title(const struct app *a)
     text_in(&scr.s, &r, u, C_DIM, n->album);
 }
 
+/* The background, a band of rows per pool item: the screen's biggest fill. */
+#define BANDS 32
+
+static void bg_band(uint32_t item, uint32_t worker, void *arg)
+{
+    (void)worker;
+    const struct layout *lo = arg;
+    int y0 = lo->h * (int)item / BANDS, y1 = lo->h * ((int)item + 1) / BANDS;
+    for (int y = y0; y < y1; y++)
+        fill(&scr.s, 0, y, lo->w, 1, mixc(C_BG, C_BG2, (uint32_t)(y * 256 / lo->h)));
+}
+
+static void background(const struct layout *lo)
+{
+    if (pool_threads() > 1) {
+        pool_run(bg_band, (void *)lo, BANDS);
+        return;
+    }
+    for (uint32_t i = 0; i < BANDS; i++)
+        bg_band(i, 0, (void *)lo);
+}
+
 void draw_frame(struct app *a, uint64_t t)
 {
     const struct layout *lo = &a->lo;
-    vgrad(&scr.s, 0, 0, lo->w, lo->h, C_BG, C_BG2);
+    background(lo);
     if (a->full_t < 1.0f) {
         draw_top(a);
         draw_library(a);

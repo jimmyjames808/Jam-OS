@@ -79,8 +79,8 @@ static void label(const struct surf *s, int x, int y, int size, uint64_t hash, u
     panel(s, x, y, size, size, size / 7, mixc(C_BG, c0, 90), 256);
     /* A soft sheen from the top left: three discs, fainter as they grow. */
     for (int i = 0; i < 3; i++)
-        disc_aa(s, (float)x + f * 0.22f, (float)y + f * 0.18f, f * (0.25f + 0.17f * i),
-                mixc(c0, C_CREAM, 70), 14);
+        disc_aa(s, (float)x + f * 0.32f, (float)y + f * 0.28f, f * (0.12f + 0.065f * i),
+                mixc(c0, C_CREAM, 70), 16);   /* inside the rounded corners */
     int q[MAX_BERRIES], r[MAX_BERRIES];
     int n = grow(&st, 3 + (int)(mix(&st) % 7), q, r);
     /* Cell centres, turned by the hash and centred; then scaled to fit. */

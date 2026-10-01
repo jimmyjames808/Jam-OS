@@ -69,8 +69,8 @@ static void place_now(struct layout *l)
     l->vol = (struct rect){ n->x + pad + 40 * u, vy, vw, 12 * u };
     int mw = 150 * u;
     l->mode = (struct rect){ n->x + n->w - pad - mw, vy - 9 * u, mw, 30 * u };
-    int iy = l->mode.y + l->mode.h + 22 * u, ih = n->y + n->h - pad - iy;
-    if (ih >= 2 * TEXT_H(u) + 8 * u)   /* else there is no room for it */
+    int iy = l->mode.y + l->mode.h + 16 * u, ih = n->y + n->h - pad - iy;
+    if (ih >= TEXT_H(u) + 16 * u)   /* else there is no room for it */
         l->info = (struct rect){ n->x + pad, iy, n->w - 2 * pad, ih };
 }
 

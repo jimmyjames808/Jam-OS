@@ -139,7 +139,7 @@ static int run(int argc, char **argv)
         say("jamjar: no player channel: start it with the shell's `jamjar` command to play\n");
     if (a->trace)
         say("jamjar: %dx%d, reading %s\n", scr.w, scr.h, a->lib.root);
-    uint64_t last = now(), frames = 0;
+    uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0;
     while (!a->quit) {
         uint64_t t = now();
         read_library(a);
@@ -148,11 +148,15 @@ static int run(int argc, char **argv)
         last = t;
         draw_frame(a, t);
         gfx_present();
+        draw_ns += now() - t;
         frames++;
         input(a, t + (busy ? period : 250 * NS_PER_MS));
     }
     gfx_close();
-    say("jamjar: %lu frames; the music plays on (`music status`)\n", (unsigned long)frames);
+    uint64_t ms = (now() - t0) / NS_PER_MS;
+    say("jamjar: %lu frames in %lu.%lu s, %lu us each to draw and present; the music plays on "
+        "(`music status`)\n", (unsigned long)frames, (unsigned long)(ms / 1000),
+        (unsigned long)(ms % 1000 / 100), (unsigned long)(frames ? draw_ns / frames / 1000 : 0));
     return 0;
 }
 
