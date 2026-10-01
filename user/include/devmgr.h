@@ -1,6 +1,7 @@
 /* devmgr's protocol: how a program finds a driver devmgr
- * bound. init starts devmgr and hands every program it runs a client end
- * of devmgr's channel (startup role SR_DEVMGR).
+ * bound. init starts devmgr and publishes client ends of its two channels
+ * as the services /svc/devmgr (queries) and /svc/devmgr-ctl (control)
+ * (<os.h> SVC_DEVMGR, SVC_DEVMGR_CTL).
  *
  * The wire format is the IDL's (tools/genidl.py): a request is u32 txid,
  * u32 ordinal = (DEVMGR_PROTOCOL_ID << 16) | method, then the arguments; a
@@ -17,19 +18,19 @@
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
  * function with MSI-X that isn't a bridge or the boot display".
  *
- * Trust: devmgr serves two channels. The QUERY channel (startup role
- * SR_DEVMGR) answers STATUS, GET_SERVICE, GET_DRIVER (read-only views) and
+ * Trust: devmgr serves two channels. The QUERY channel (/svc/devmgr;
+ * devmgr's own server end is its startup role SR_DEVMGR) answers STATUS,
+ * GET_SERVICE, GET_DRIVER (read-only views) and
  * SUPERVISION; anything else gets ERR_ACCESS_DENIED. The CONTROL channel
- * (SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND, RELEASE,
+ * (/svc/devmgr-ctl; SR_DEVMGR_CTL) answers everything: SET_CONSOLE, KILL, REBIND, RELEASE,
  * DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER, MOUNTS (the
  * filesystems' channels), TEST_DISK and REMOUNT too. devmgr
  * runs until every client end of its control channel is gone.
  * Who holds what: init both (it hands devmgr new consoles); the programs
  * init runs from init.cfg (the test suites utest and usbtest) both; in
- * shell mode the shell both, but it passes CONTROL only to the test
- * programs its `utest` and `usbtest` commands start, and nothing of
- * devmgr's to what `run` starts (a program that needs it gets it by
- * name, as those two do). GET_SERVICE's channels reach drivers (usb-bus
+ * shell mode the shell both, and it passes them on only to the programs
+ * whose lists ask for them (<wants.h>; CONTROL: test programs only, which
+ * the build checks). GET_SERVICE's channels reach drivers (usb-bus
  * hands out USB interfaces), so even QUERY is for trusted programs only.
 
  *
@@ -55,19 +56,15 @@
  * devmgr itself: in shell mode init restarts it when it dies,
  * with its whole job (every driver it ran), so every devmgr client end
  * sees ERR_PEER_CLOSED. The new devmgr binds everything again from
- * scratch. A client that needs devmgr for good gets the new client end
- * from whoever gave it the old ones: init sends the shell each new pair on
- * the shell's SR_USER + 2 channel (a message of one u32
- * INIT_SHELL_DEVMGR carrying two handles: query, then control); the test
- * programs the shell runs get the current ones when they start. */
+ * scratch. A client that needs devmgr for good opens /svc/devmgr again:
+ * init publishes the new devmgr's channels under the same names and sends
+ * every namespace that follows its own (the shell's) the change, so
+ * libos's svc_get hands out the new one once the old one's peer is gone. */
 #pragma once
 
 #include <os.h>
 
-/* init -> shell, on the shell's SR_USER + 2 channel: a new devmgr's
- * client ends (the message's two handles: query, control). */
-#define INIT_SHELL_DEVMGR   1u
-/* init -> the boot's first shell, on the same channel, queued before it
+/* init -> the boot's first shell, on its SR_USER + 2 channel, queued before it
  * starts: the u32, then the one line it prints under its own, without a
  * newline or a NUL (at most INIT_SHELL_NOTE_MAX bytes): what happened to
  * the boot before, if it panicked (init's lastboot.c). */

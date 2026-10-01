@@ -1,0 +1,17 @@
+# svc: what a service under /svc (ARCHITECTURE.md, "Userland": the
+# namespace) may serve on its shared channel next to its own protocol: a
+# channel of the caller's own, which speaks the service's protocol and
+# goes when either end closes it. libos's svc_open calls it on a service
+# whose namespace entry says it hands them out (<os.h>, "services"); a
+# service that doesn't answers ERR_NOT_SUPPORTED, as for any other
+# protocol's method. The music player does (user/services/music).
+# Reconnect: a channel from connect sees ERR_PEER_CLOSED when the service
+# ends; open the service again (svc_open), which calls connect on the
+# shared channel the restarted service serves.
+# Format: see tools/genidl.py.
+
+protocol svc 25
+
+# A new channel to this service, for the caller alone.
+# ERR_NO_RESOURCES: the service serves as many as it can.
+1  connect  () -> (handle channel)

@@ -305,9 +305,9 @@ int audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const c
     memset(a, 0, sizeof(*a));
     if (rate < AUDIO_RATE_MIN || rate > AUDIO_RATE_MAX || (channels != 1 && channels != 2))
         return ERR_NOT_SUPPORTED;
-    handle_t svc = startup_handle(SR_AUDIO);
+    handle_t svc = svc_get(SVC_AUDIO);
     if (svc == HANDLE_INVALID)
-        return ERR_NOT_FOUND;   /* started without the mixer's channel */
+        return ERR_NOT_FOUND;   /* /svc/audio isn't ours (not on our list) */
     status_t st = mixer_open(svc, name, now() + OPEN_WAIT, &a->s);
     if (st != OK)
         return st;

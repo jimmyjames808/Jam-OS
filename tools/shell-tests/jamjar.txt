@@ -2,7 +2,7 @@
 # tools/jamjar-test.sh (it makes the library on /data/music, adds the
 # audio devices, a USB keyboard and mouse). At OVMF's 1280x800: the mouse
 # targets below are that layout's (`noaccel`: a pixel a count).
-#   1. the self-test; `run jamjar` has no player: it says so, shows the library
+#   1. the self-test; `run jamjar noplayer` has no player: it says so, shows the library
 #   2. the shell's `jamjar`: the covers read from the tags (PNG in 2.3 and
 #      2.4 tags, a JPEG, one 611x640; none in a WAV; an oversized and a
 #      garbled one refused); play an album by keys, next, back, pause and
@@ -23,13 +23,13 @@ wait run: bin/jamjar exited with code 0
 wait jam>
 
 # ---- 1: no player -----------------------------------------------------------------------
-send run jamjar trace
-wait jamjar: no player channel
+send run jamjar trace noplayer
+wait jamjar: no player (none runs, or noplayer)
 wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
 sleep 1
 shot jamjar-noplayer
 type x
-wait jamjar: no player: start jamjar with the shell's jamjar command
+wait jamjar: no player: the library only
 type q
 wait 30 run: bin/jamjar exited with code 0
 wait jam>

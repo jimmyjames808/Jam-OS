@@ -24,7 +24,7 @@ void app_toast(struct app *a, const char *fmt, ...)
 static void send(struct app *a, const struct cmd *c)
 {
     if (!a->snap.link) {
-        app_toast(a, "no player: start jamjar with the shell's jamjar command");
+        app_toast(a, "no player: the library only");
         return;
     }
     if (!link_cmd(c))

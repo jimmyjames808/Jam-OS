@@ -213,8 +213,8 @@ bool t_disk_mounts(void)
     CHECK_ST(devmgr_call(dm, DEVMGR_GET_SERVICE, DEVMGR_FS_SVC, DEVMGR_PART_DATA, id, &r, hs,
                          DEVMGR_MAX_HANDLES, &nh, now() + 10 * NS_PER_S), ERR_ACCESS_DENIED);
     CHECK_EQ(nh, 0);
-    if (startup_handle(SR_DEVMGR))
-        CHECK_ST(devmgr_mounts(startup_handle(SR_DEVMGR), 0, &same.rep, same.hs),
+    if (svc_get(SVC_DEVMGR))
+        CHECK_ST(devmgr_mounts(svc_get(SVC_DEVMGR), 0, &same.rep, same.hs),
                  ERR_ACCESS_DENIED);
     return detach(dm, &v);
 }
@@ -376,8 +376,8 @@ bool t_disk_other(void)
     CHECK_ST(remount(dm, 9, true), ERR_NOT_FOUND);
     CHECK_ST(devmgr_call(dm, DEVMGR_REMOUNT, DEVMGR_FS_SVC, DEVMGR_PART_ESP, id, &r, NULL, 0, NULL,
                          now() + 10 * NS_PER_S), ERR_INVALID_ARGS);
-    if (startup_handle(SR_DEVMGR))
-        CHECK_ST(remount(startup_handle(SR_DEVMGR), n, true), ERR_ACCESS_DENIED);
+    if (svc_get(SVC_DEVMGR))
+        CHECK_ST(remount(svc_get(SVC_DEVMGR), n, true), ERR_ACCESS_DENIED);
 
     /* read-write: a new service on a new channel, the old one dead */
     CHECK_ST(jam_handle_duplicate(usb.fs, RIGHT_SAME, &old), OK);

@@ -3,7 +3,8 @@
  * RAM filesystem.
  *
  * One thread waits on one port for the `fs` channels it serves (all of a
- * mount's clients share one by duplicating its client end) and for the
+ * mount's clients share one by duplicating its client end, and each view
+ * a client asked for with fs.view is one more, <fsview.h>) and for the
  * `file` channel of every open file. The service fills in the two ops
  * tables; its fs.open handler calls fsserver_open, which makes the file's
  * channel and its transfer buffer. A file is closed when its client closes
@@ -18,7 +19,7 @@
 
 #include <fs_idl.h>
 
-#define FSSERVER_MAX_FS    4            /* `fs` channels served at once */
+#define FSSERVER_MAX_FS    16           /* `fs` channels served at once, views included */
 #define FSSERVER_MAX_FILES 64           /* files open at once, over all clients */
 #define FSSERVER_BUF_SIZE  (64u << 10)  /* a file's transfer buffer, bytes */
 #define FSSERVER_ROUND     32           /* requests taken from one channel in a row */
@@ -39,13 +40,16 @@ struct fsserver {
     /* The loop's. */
     handle_t              port;                        /* what it waits on */
     handle_t              fs[FSSERVER_MAX_FS];         /* our ends (0: a free slot) */
+    uint32_t              fs_flags[FSSERVER_MAX_FS];   /* each one's view flags (FS_VIEW_*) */
+    bool                  fs_view[FSSERVER_MAX_FS];    /* made by fs.view, not fsserver_add_fs */
     struct fsserver_file  files[FSSERVER_MAX_FILES];   /* the open files */
 };
 
 /* Make the loop's port; the ops and ctx are set already, the rest zero. */
 status_t fsserver_init(struct fsserver *s);
 /* Serve the `fs` channel whose server end is ch (consumed, whatever
- * happens). ERR_NO_RESOURCES: FSSERVER_MAX_FS of them already. */
+ * happens): the whole filesystem. ERR_NO_RESOURCES: FSSERVER_MAX_FS of
+ * them already (views included). */
 status_t fsserver_add_fs(struct fsserver *s, handle_t ch);
 /* For the fs.open handler: a new open file with the service's state ctx.
  * *client and *client_buf are fs.open's `file` and `buffer` results (the
@@ -54,6 +58,7 @@ status_t fsserver_add_fs(struct fsserver *s, handle_t ch);
  * kept (ctx stays the caller's). */
 status_t fsserver_open(struct fsserver *s, void *ctx, bool writable, handle_t *client,
                        handle_t *client_buf, struct fsserver_file **out);
-/* Serve until no `fs` channel has a client left and no file is open (OK),
- * or the port fails (that status). */
+/* Serve until no `fs` channel from fsserver_add_fs has a client left and
+ * no file is open (OK), or the port fails (that status). The views go with
+ * the service: a view never keeps it alive. */
 status_t fsserver_run(struct fsserver *s);

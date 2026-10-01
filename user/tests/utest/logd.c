@@ -309,8 +309,9 @@ static bool file_end(const struct fatrun *r, const char *path, bool head, char *
 /* The real thing: logd on the kernel log, as init starts it. The file
  * starts where the log does (or with logd's note of what the ring had
  * dropped by then) and a line logged now arrives in it. Needs the root
- * resource with RIGHT_READ as our SR_RESOURCE; a utest started without it
- * skips this. */
+ * resource with RIGHT_READ as our SR_RESOURCE, one we may pass on (init's
+ * run gives that; the shell's copy can't be passed on); a utest started
+ * without it skips this. */
 bool t_logd_kernel_log(void)
 {
     static char got[2048];
@@ -323,11 +324,13 @@ bool t_logd_kernel_log(void)
     uint32_t n = 0;
     if (!have_logd())
         return true;
-    if (!root) {
-        printf("utest: %s: no root resource (SR_RESOURCE) to read the kernel log with: "
+    handle_t probe;
+    if (!root || jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &probe) != OK) {
+        printf("utest: %s: no root resource (SR_RESOURCE) to give logd the kernel log with: "
                "skipped\n", utest_cur);
         return true;
     }
+    CHECK_ST(jam_handle_close(probe), OK);
     if (!ramdisk_create(&disk, DISK_SECTORS) || !fat_start(&fat, &disk, false))
         return false;
     if (!logd_start(&l, fat.fs, root))

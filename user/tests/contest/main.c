@@ -148,7 +148,7 @@ static const struct console_ops st_console = { sc_write, sc_size, sc_clear, sc_o
 
 static int steal(void)
 {
-    handle_t dm = startup_handle(SR_DEVMGR), mine, theirs;
+    handle_t dm = svc_get(SVC_DEVMGR), mine, theirs;
     if (!dm) {
         /* `run` programs get no devmgr channel. */
         printf("contest: steal: no devmgr channel: nothing to steal with\n");

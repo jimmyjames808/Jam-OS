@@ -13,7 +13,11 @@
  *                        running shell
  *
  * Exits 0 when there is nobody left to serve. */
+#include <wants.h>
 #include "ramfs.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("mount * rw\n");
 
 #define LATE_S 4
 #define POINT  "/ram"   /* where the shell mode mounts us */

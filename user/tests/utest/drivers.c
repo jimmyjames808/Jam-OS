@@ -125,7 +125,7 @@ bool t_startup_message(void)
  * (with a line saying the test is skipped). */
 handle_t devmgr(void)
 {
-    handle_t dm = startup_handle(SR_DEVMGR_CTL);
+    handle_t dm = svc_get(SVC_DEVMGR_CTL);
     if (!dm)
         printf("utest: %s: no devmgr control channel (not started by init or the shell's "
                "utest?): skipped\n", utest_cur);
@@ -176,7 +176,7 @@ bool t_edu_process(void)
  * refuses everything that changes something or hands out hardware. */
 bool t_devmgr_query_channel(void)
 {
-    handle_t q = startup_handle(SR_DEVMGR);
+    handle_t q = svc_get(SVC_DEVMGR);
     struct devmgr_rep r;
     handle_t hs[DEVMGR_MAX_HANDLES];
     uint32_t nh = 0;

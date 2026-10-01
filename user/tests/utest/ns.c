@@ -522,7 +522,7 @@ bool t_ns_malformed_messages(void)
     memset(&m, 0, sizeof(m));
     CHECK_ST(jam_channel_write(to, &m, 3, NULL, 0), OK);              /* too short */
     m.kind = NS_MOUNT;
-    m.count = NS_MAX_MOUNTS + 1;
+    m.count = NS_MAX_ENTRIES + 1;
     CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);      /* too many */
     m.count = 1;
     memcpy(m.path[0], "/boot", 6);
@@ -532,10 +532,13 @@ bool t_ns_malformed_messages(void)
     m.kind = 77;
     CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), NULL, 0), OK); /* no such kind */
     m.kind = NS_MOUNT;
-    m.reserved = 1;
+    m.connect = 2;
     CHECK_ST(ns_channel(RAM, &fs), OK);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* reserved not 0 */
-    m.reserved = 0;
+    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* connect past count */
+    m.connect = 1;
+    CHECK_ST(ns_channel(RAM, &fs), OK);
+    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* a mount can't connect */
+    m.connect = 0;
     memcpy(m.path[0], "boot", 5);
     CHECK_ST(ns_channel(RAM, &fs), OK);
     CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* not "/name" */

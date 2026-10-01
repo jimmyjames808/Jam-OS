@@ -43,7 +43,11 @@
 #include <devmgr.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
+#include <wants.h>
 #include "usbtest.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc devmgr-ctl\n");
 
 const char *cur;
 unsigned skipped;
@@ -574,7 +578,7 @@ static bool t_unplug_hub(void)
 
 static bool find_bus(void)
 {
-    dm = startup_handle(SR_DEVMGR_CTL);   /* control: it kills hid */
+    dm = svc_get(SVC_DEVMGR_CTL);   /* control: it kills hid */
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {

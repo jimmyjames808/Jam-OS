@@ -7,8 +7,8 @@
  * resampler below (48000 Hz passes through untouched).
  *
  * The backend: a stream on the mixer (user/services/mixer, <mixer.h>),
- * reached through the program's SR_AUDIO startup handle (the shell gives
- * every program it runs one). The mixer plays every program's streams at
+ * reached through the service /svc/audio (<os.h> SVC_AUDIO: a program
+ * whose list asks for `svc audio` has it). The mixer plays every program's streams at
  * once through the hda driver's one output, each at its own volume
  * (`vol`); the library writes 48 kHz stereo frames into the stream's
  * ring. All of the mixer-specific code is in audio.c.

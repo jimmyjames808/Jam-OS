@@ -7,22 +7,20 @@
  * image); one on another mount is read through the namespace, and the
  * kernel refuses its code for now (<os.h>, spawn_args.path).
  *
- * What a program gets: the shell's namespace as it is then (every mount
- * the shell has), a PROGRAM-level console channel of its own
- * (console.new_client: write, keys while it runs, the screen; no input
- * sources, no new channels), the mixer's `audio` channel (SR_AUDIO: it
- * can play sound), and nothing of devmgr's unless it is a test (the utest,
- * usbtest, hdatest and mixtest commands: test suites that kill and rebind
- * drivers get the query and control channels, and the mixer's control
- * channel; mixtest, which kills the mixer, also init's control channel as
- * SR_USER + 3, the shell's own number for it), and nothing of the music
- * player's unless it is jamjar, the player's window, which gets a
- * duplicate of the shell's client end as SR_USER + 4 (the `jamjar`
- * command; `run jamjar` doesn't). Ctrl+C reaches the shell even while the
- * program holds the keys (the console sees to that) and kills it. When it
- * ends its job is killed: anything it started goes with it, so its console
- * channel never outlives it in the foreground. */
+ * What a program gets is its list (<wants.h>), which the build checked
+ * for every program in the boot image: the services and mounts it names,
+ * each mount a view (read-only, or writable with the top-level etc left
+ * alone: <fsview.h>), and the root resource with only the powers it names
+ * (without RIGHT_TRANSFER: it can't pass them on).
+ * Every program also gets its terminal: a PROGRAM-level console channel of
+ * its own (console.new_client: write, keys while it runs, the screen; no
+ * input sources, no new channels), and its output channel in a pipe. A
+ * program with no list gets the terminal only. Ctrl+C reaches the shell
+ * even while the program holds the keys (the console sees to that) and
+ * kills it. When it ends its job is killed: anything it started goes with
+ * it, so its console channel never outlives it in the foreground. */
 #include <idl/console.h>
+#include <wants.h>
 #include "sh.h"
 
 /* One round of drain: a count and a time, so a program writing flat out
@@ -116,43 +114,56 @@ static bool find_program(const char *argv0, char *path, size_t cap)
     return st == OK && !dir;
 }
 
-#define RUN_TEST    1u   /* devmgr's channels and the mixer's control channel */
-#define RUN_INITCTL 2u   /* init's control channel too */
-#define RUN_MUSIC   4u   /* the music player's channel (jamjar) */
-#define RUN_HANDLES 8    /* the most program_handles gives */
+#define RUN_HANDLES 3    /* the most program_handles gives */
 
-/* A duplicate of h as `role` into x[*nx], if there is an h. */
-static void give(struct spawn_handle *x, unsigned *nx, uint32_t role, handle_t h)
+/* The root resource's rights for a list's WANT_RIGHT_*: what the
+ * program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
+ * (RIGHT_DUPLICATE), never pass it on. */
+static rights_t root_rights(uint32_t want)
 {
-    handle_t d;
-    if (h && jam_handle_duplicate(h, RIGHT_SAME, &d) == OK)
-        x[(*nx)++] = (struct spawn_handle){ role, d };
+    rights_t r = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT;
+    if (want & (WANT_RIGHT_KLOG | WANT_RIGHT_SYSINFO | WANT_RIGHT_CLOCK))
+        r |= RIGHT_READ;
+    if (want & WANT_RIGHT_DEBUG)
+        r |= RIGHT_MANAGE;
+    return r;
 }
 
-/* The handles it starts with (see the top); *out_r: its stdout's read end
- * when we are in a pipe. The number of them. */
-static unsigned program_handles(struct spawn_handle *x, unsigned how, handle_t *out_r)
+/* The handles it starts with (see the top), each with the rights its copy
+ * gets in xr; *out_r: its stdout's read end when we are in a pipe. The
+ * number of them. */
+static unsigned program_handles(const struct wants *w, struct spawn_handle *x, rights_t *xr,
+                                handle_t *out_r)
 {
     unsigned nx = 0;
-    bool test = how & RUN_TEST;
     handle_t h, out_w;
-    give(x, &nx, SR_AUDIO, sh_audio());
-    if (test)
-        give(x, &nx, SR_AUDIO_CTL, sh_audio_ctl());
-    if (how & RUN_INITCTL)
-        give(x, &nx, SR_USER + 3, sh_initctl());
-    if (how & RUN_MUSIC)
-        give(x, &nx, SR_USER + 4, sh_music());
-    if (test && sh_devmgr() && jam_handle_duplicate(sh_devmgr(), RIGHT_SAME, &h) == OK)
-        x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
-    if (test && sh_devmgr_ctl() && jam_handle_duplicate(sh_devmgr_ctl(), RIGHT_SAME, &h) == OK)
-        x[nx++] = (struct spawn_handle){ SR_DEVMGR_CTL, h };
-    if (console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK)
+    if (w->rights && sh_root() && jam_handle_duplicate(sh_root(), RIGHT_SAME, &h) == OK) {
+        xr[nx] = root_rights(w->rights);
+        x[nx++] = (struct spawn_handle){ SR_RESOURCE, h };
+    }
+    if (console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK) {
+        xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
+    }
     /* In a pipe: its printf goes down a channel to us (libos printf.c). */
-    if (sh_piped() && jam_channel_create(out_r, &out_w) == OK)
+    if (sh_piped() && jam_channel_create(out_r, &out_w) == OK) {
+        xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_STDOUT, out_w };
+    }
     return nx;
+}
+
+/* The list of the program spawn will start from path (a bootfs name, or a
+ * path on a mount), into *w. A program in the boot image has the list the
+ * build checked; one on a mount gets nothing (its code is refused). */
+static void program_wants(const char *path, struct wants *w)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    memset(w, 0, sizeof(*w));
+    if (path[0] != '/' && bootfs_default(&fs) == OK && bootfs_lookup(fs, path, &data, &size) == OK)
+        (void)wants_read(data, size, w);   /* checked at build time; a bad one gives nothing */
 }
 
 /* Wait for it to end, copying its output and killing its job on Ctrl+C. */
@@ -219,8 +230,8 @@ static void clean_job(handle_t job, const char *path)
     }
 }
 
-/* argv[0] as a program; `how`: RUN_* (0: a plain program). Its status. */
-static int run_program(int argc, char **argv, unsigned how)
+/* argv[0] as a program. Its status. */
+static int run_program(int argc, char **argv)
 {
     char path[SH_PATH_MAX];
     if (!find_program(argv[0], path, sizeof(path)))
@@ -231,8 +242,15 @@ static int run_program(int argc, char **argv, unsigned how)
         sh_tty("run: no job (%s)\n", status_str(st));
         return 126;
     }
+    static struct wants w;   /* the shell runs one program at a time */
+    program_wants(path, &w);
+    const char *grants[WANTS_MAX + 1];
+    for (unsigned i = 0; i < w.n; i++)
+        grants[i] = w.grant[i];
+    grants[w.n] = NULL;
     struct spawn_handle x[RUN_HANDLES];
-    unsigned nx = program_handles(x, how, &out_r);
+    rights_t xr[RUN_HANDLES];
+    unsigned nx = program_handles(&w, x, xr, &out_r);
     char **env = sh_make_env();
     const char *args[20];
     int n = 0;
@@ -242,7 +260,7 @@ static int run_program(int argc, char **argv, unsigned how)
     args[n] = NULL;
     struct spawn_args a = {
         .path = path, .argc = n, .argv = args, .job = job, .extra = x, .nextra = nx,
-        .envp = (const char *const *)env, .ns = NS_ALL,
+        .extra_rights = xr, .envp = (const char *const *)env, .ns = w.n ? grants : NULL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);
@@ -274,12 +292,7 @@ static int run_program(int argc, char **argv, unsigned how)
 
 int sh_run_program(int argc, char **argv)
 {
-    return run_program(argc, argv, 0);
-}
-
-int sh_run_program_music(int argc, char **argv)
-{
-    return run_program(argc, argv, RUN_MUSIC);
+    return run_program(argc, argv);
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which
@@ -310,11 +323,11 @@ static bool show_result_line(const char *name, const char *log, size_t got, bool
     return shown;
 }
 
-static int run_test(int argc, char **argv, unsigned how)
+int sh_run_test_program(int argc, char **argv)
 {
     uint64_t from = sh_klog_end();
     sh_show_log(true, NULL);   /* a test's whole story: drivers, devmgr, the kernel */
-    int code = run_program(argc, argv, how);
+    int code = run_program(argc, argv);
     sh_show_log(false, NULL);
     if (argc > 1)
         return code;   /* a child mode (utest's own), not the suite: no result line */
@@ -326,14 +339,4 @@ static int run_test(int argc, char **argv, unsigned how)
         sh_say("%s: no result line in the log\n", argv[0]);
     free(log);
     return code;
-}
-
-int sh_run_test_program(int argc, char **argv)
-{
-    return run_test(argc, argv, RUN_TEST);
-}
-
-int sh_run_test_program_initctl(int argc, char **argv)
-{
-    return run_test(argc, argv, RUN_TEST | RUN_INITCTL);
 }

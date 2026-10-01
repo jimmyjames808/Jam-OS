@@ -25,6 +25,7 @@
  * checks here only keep this code from reading outside the file. Nothing
  * here uses malloc, so spawning doesn't grow the caller's heap. */
 #include <os.h>
+#include "ns.h"
 
 #define STACK_PAGES 32   /* 128 KiB */
 #define STACK_TOP   0x00007ff000000000ull
@@ -336,9 +337,9 @@ static status_t start_child(struct child *c, const uint8_t *msg, size_t len, str
 }
 
 /* From the new process c->proc to its running thread, then its first ns
- * message. The extras are consumed. */
+ * message (nso, made ahead: consumed). The extras are consumed. */
 static status_t make_child(const struct spawn_args *a, const struct image *img, const char *name,
-                           uint8_t *msg, size_t len, struct child *c)
+                           uint8_t *msg, size_t len, struct child *c, struct ns_out *nso)
 {
     status_t st = load_child(img, name, c);
     struct handout hs = { .n = 0 };
@@ -349,12 +350,16 @@ static status_t make_child(const struct spawn_args *a, const struct image *img, 
      * all. */
     for (unsigned i = 0; i < hs.n; i++)
         jam_handle_close(hs.h[i]);
-    if (st == OK && a->ns) {
+    if (st == OK && nso) {
         /* Its end holds no message until now: a channel end with channels
          * queued on it can't be sent in a message. */
-        st = ns_send(c->ns[0], a->ns);
-        if (st != OK)
+        st = ns_send_prepared(c->ns[0], NS_MOUNT, nso);
+        if (st == ERR_PEER_CLOSED)
+            st = OK;   /* it has ended already, without looking */
+        else if (st != OK)
             jam_process_kill(c->proc);   /* it would run without its mounts */
+    } else if (nso) {
+        ns_prepared_drop(nso);
     }
     return st;
 }
@@ -383,6 +388,9 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     if (st == OK)
         st = build_startup_msg(a, msg, &len);
     struct child c = { 0 };
+    struct ns_out *nso = NULL;   /* its first ns message, views made before it starts */
+    if (st == OK && a->ns)
+        st = ns_prepare(a->ns, &nso);
     if (st == OK && a->ns)
         st = jam_channel_create(&c.ns[0], &c.ns[1]);
     if (st == OK && a->ns && a->ns_out && a->ns_back_out)
@@ -393,9 +401,11 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
         close_extras(a);
         close_child(&c);
         release_image(&img);
+        if (nso)
+            ns_prepared_drop(nso);
         return st;
     }
-    st = make_child(a, &img, name, msg, len, &c);
+    st = make_child(a, &img, name, msg, len, &c, nso);
     release_image(&img);
     if (st == OK && a->ns_out) {
         *a->ns_out = c.ns[0];

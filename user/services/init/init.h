@@ -1,6 +1,7 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
- * the bootfs server, the console, serialin, devmgr and the shell; splash.c
+ * the bootfs server, the console, serialin, devmgr, the mixer, the music
+ * player, logd and the shell, each started as services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
@@ -81,7 +82,61 @@ void     splash_ended(void);
 /* initctl.shell_ready: SPLASH_GO to a splash still holding the screen. */
 void     splash_shell_ready(void);
 
-/* ---- shell.c, for ctl.c ---------------------------------------------------------- */
+/* ---- shell.c and services.c: shell mode's services --------------------------------- */
+
+/* The services, in the order they are started. */
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSVC };
+
+/* Port keys of shell mode's loop: a service's index (its process ended),
+ * or one of these. */
+#define KEY_MOUNTS   0x100u   /* the mounts watcher changed the namespace */
+#define KEY_CTL      0x200u   /* + CTL_*: requests on a control channel */
+#define KEY_SPLASH   0x300u   /* the splash's channel (splash.c) */
+#define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
+
+struct svc {
+    const char *path;          /* in bootfs */
+    handle_t    proc, job;     /* while it runs */
+    bool        running;       /* started, its end not seen yet */
+    bool        given_up;      /* ended too often: not started again */
+    uint64_t    next_try;      /* uptime ns */
+    uint64_t    backoff;       /* the last delay before a restart, ns */
+    uint64_t    started;       /* uptime ns */
+    uint64_t    window_start;  /* the minute its ends are counted in (uptime ns) */
+    unsigned    ends;          /* in the current window */
+};
+
+/* Every service's state (shell.c's; services.c reads the paths and marks
+ * one given up when its program isn't in bootfs). */
+extern struct svc svcs[NSVC];
+
+/* shell.c: start svc i with these arguments and extra handles (consumed);
+ * a service that follows init's namespace gets its part of it. */
+status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
+                   unsigned nx);
+/* The same with argv = { its path }. */
+status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx);
+/* shell.c: every service that follows init's namespace gets it as it is now. */
+void     tell_mounts(void);
+
+/* services.c: what shell mode's services share, set up once before the
+ * loop: the loop's port, the safe mode word, whether the splash plays
+ * first (the console starts quiet), the first shell's argument. */
+void     services_init(handle_t port, bool nousb, bool splash, const char *shell_arg);
+/* Start service i (one of the enum above); OK, or why not (backed off). */
+status_t services_start(unsigned i);
+/* Service i ended: drop what init kept of it (its client ends). */
+void     services_closed(unsigned i);
+/* Service i is given up on: calls waiting for it fail now. */
+void     services_given_up(unsigned i);
+/* A console runs (its clients may start); a devmgr runs. */
+bool     services_console_up(void);
+/* What /data/etc/settings says for svc i (settings.c), if it runs: the
+ * mixer's master volume, the music player's volume. */
+void     services_settings(unsigned i);
+bool     services_devmgr_up(void);
+
+/* ---- shell.c and services.c, for ctl.c and reboot.c -------------------------------- */
 
 /* The root resource (reboot, proc_list). */
 handle_t shell_root(void);

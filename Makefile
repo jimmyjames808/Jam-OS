@@ -343,8 +343,11 @@ BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
                 splash.mpg=boot/splash.mpg
 
+# Every program's list (<wants.h>) is checked first: what the build
+# approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg tools/mkbootfs.py
+           boot/splash.mpg tools/mkbootfs.py tools/checkwants.py user/include/os.h
+	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
 image: $(IMAGE)
