@@ -73,6 +73,11 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size);
  * INIT, the screen filled with the splash background, the jump. */
 bool           kexec_panic_begin(void);
 void           kexec_panic_message(const char *msg);
+/* A panic's text as the crash record's message: at most size - 1 bytes,
+ * a newline as a space and every other byte outside printable ASCII (a
+ * tab, UTF-8) as '?', so the next kernel, which shows it, gets plain text.
+ * Pure: the panic path uses it. */
+void           kexec_message_clean(char *dst, size_t size, const char *src);
 const char    *kexec_panic_why_not(void);
 _Noreturn void kexec_panic_jump(void);
 /* A CPU halted by the panic's (or kexec_reboot's) NMI (arch/x86_64/ipi.c).
@@ -132,8 +137,14 @@ void     kexec_memmap_merge(struct boot_mem_region *map, size_t *n);
  * stored kernel: read the previous kernel's crash record (bi->kexec_record)
  * and, if it panicked, copy its log ring into a VMO for init
  * (SR_CRASHLOG); then free the CRASH_LOG pages. Logs what it found. Every
- * byte of it is untrusted. */
+ * byte of it is untrusted. A record whose own checks pass (place, magic,
+ * version, size, checksum, kind) says how the previous kernel ended, and a
+ * panic counts for the crash-loop rule even if its log can't be used. */
 void crashlog_init(const struct boot_info *bi);
+/* Tests: crashlog_init's reading of bi->kexec_record, with none of its
+ * effects. NULL if the record says how the previous kernel ended, else why
+ * not; then *panicked (it was a panic) and *log_ok (its log can be saved). */
+const char *crashlog_check(const struct boot_info *bi, bool *panicked, bool *log_ok);
 /* This boot was started by a kernel that panicked. */
 bool crashlog_after_panic(void);
 /* Panics in a row before this boot (0 if it wasn't started by one). */

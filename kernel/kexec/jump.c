@@ -136,14 +136,23 @@ const char *kexec_panic_why_not(void)
     return why_not;
 }
 
+void kexec_message_clean(char *dst, size_t size, const char *src)
+{
+    if (!size)
+        return;
+    size_t i = 0;
+    for (; src[i] && i + 1 < size; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[i] = c == '\n' ? ' ' : c < 0x20 || c > 0x7e ? '?' : (char)c;
+    }
+    dst[i] = '\0';
+}
+
 void kexec_panic_message(const char *msg)
 {
     if (rec.r.message[0])
         return;   /* the first one says what happened */
-    size_t i = 0;
-    for (; msg[i] && i + 1 < KEXEC_MESSAGE; i++)
-        rec.r.message[i] = msg[i] == '\n' ? ' ' : msg[i];
-    rec.r.message[i] = '\0';
+    kexec_message_clean(rec.r.message, KEXEC_MESSAGE, msg);
 }
 
 /* The record's last fields and its checksum. */
