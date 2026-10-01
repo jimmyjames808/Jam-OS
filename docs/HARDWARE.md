@@ -176,7 +176,8 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
   second before the panic. The red panic screen only stays up (photograph
   it) when there is no stored kernel to start, or for a second panic
-  within 30 s of the boot that followed a panic (a crash loop).
+  within 30 s of the boot that followed a panic, or for the third panic in
+  a row (a crash loop).
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may
