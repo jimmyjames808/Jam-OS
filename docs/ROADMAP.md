@@ -24,7 +24,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`); sound works on the PC. Stage 4 (jacks): unsolicited responses with a tag per jack pin, the RIRB interrupt, an 80 ms debounce and a 500 ms polling fallback, `hda jacks`; checked in QEMU against fixtures and a fake codec (QEMU's codecs have no presence detection). The plug/unplug lines on the PC and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
 | A2 | Audio: mixer, `audio` protocol, WAV playback | **in progress** ([A2-PLAN.md](A2-PLAN.md)): in QEMU, programs play at once through the mixer service (each its own stream in a shared ring, mixed two periods ahead of the play position), `vol` sets each stream's volume and the master, `<audio.h>` (blocking writes, mono to stereo, any rate to 48 kHz) and `play <file.wav>` and `beep` go through it. Two sounds at once on the PC and the review are next |
 | AS | Boot splash: the logo animation with its sound, alpha blending | **in progress** ([AS-PLAN.md](AS-PLAN.md)): in QEMU a plain boot is the splash's dark background from the kernel's start, the animation from bootfs's `splash.mpg` (pl_mpeg) with its sound through the mixer, the sound the clock once heard, the last frame held until the shell is up, then faded into the text; a key skips it, `verbose` or `nosplash` shows the log; libfun has premultiplied alpha and anti-aliased shapes. Seen on the PC at 720p ("lower quality"); now 2560x1440 (drawn 1:1, scaled down on smaller screens), picture and sound starting together, the logo lingering 2 s. The PC and the review are next |
-| M8.5 | Crash kernel and kexec | later |
+| M8.5 | Crash kernel and kexec | **in progress** ([M8.5-PLAN.md](M8.5-PLAN.md)): in QEMU a panic starts the crash kernel (reserved, unmapped and checksummed at boot), which saves the log as `/data/logs/boot-NNNN-crash.txt` and halts or reboots; `reboot` kexecs into the kernel on the stick (one CPU until the kernel starts its own APs). The kernel's own AP startup, the join and the PC are next |
 | M9 | Networking | later |
 | M10 | ACPI power | later |
 | M11 | IOMMU | later |
@@ -48,7 +48,8 @@ Known limits it left:
 - Only programs in `/boot` can be run: a file on `/data` or `/esp` does
   not come with the right to execute it (decided: after M8).
 - A panic's own text is not in the boot log: logd can only save what it
-  had synced before (M8.5's crash kernel is what saves a panic).
+  had synced before. M8.5's crash kernel saves it next to the boot log
+  (built, not yet on the PC).
 - GPT sticks are not read.
 
 ## Later
@@ -153,6 +154,12 @@ are the design questions M8 left open
   are, escape sequences included; `ls` and `find` show a directory's
   first 256 entries and say nothing about the rest; init's loop waits up
   to 25 s for a `mount` and 15 s for a `kill`.
+- Reading a big file from `/esp` is slow: the ESP is FAT32 on 63 MiB, so
+  its clusters are one sector, and FatFs reads a file a cluster (one bulk
+  transfer) at a time. A kexec `reboot` reads 7.8 MB from it: about 27 s
+  in QEMU (the PC: to be measured). A read-ahead in fat's block layer, or
+  reading from the boot modules when `/esp` holds the same files, would
+  fix it.
 - The mouse wheel's scroll-back passes QEMU's mouse test but does not work
   on the PC: not looked into yet. The mouse test runs at 1280x800 only.
 

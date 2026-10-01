@@ -226,8 +226,9 @@
 # kernel's command line (len 0: this kernel's; at most 511 bytes). flags:
 # 0. ERR_NOT_SUPPORTED: no region (crashkernel=0); ERR_INVALID_ARGS: not a
 # kernel ELF or a bootfs image, a bad command line or flags;
-# ERR_NO_RESOURCES: too big for the region. After a failure nothing is
-# loaded, and no crash kernel either.
+# ERR_NO_RESOURCES: too big for the region. A refused image changes
+# nothing (a crash kernel stays loaded); after a success there is no crash
+# kernel until the next boot.
 140 kexec_load        status    handle_t root, handle_t kernel, handle_t bootfs, const char *cmdline, uint64_t len, uint32_t flags
 # Start what kexec_load loaded: every other CPU stopped, bus mastering off on
 # every device, the jump. Stop the drivers first (devmgr's shutdown): the

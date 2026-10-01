@@ -79,7 +79,7 @@ syscall path returns an error.
 | Code | Place |
 |---|---|
 | Boot sequence | `kernel/main.c` |
-| Kernel, by subsystem | `kernel/<subsystem>/`: `arch/x86_64` (CPU, interrupts, entry), `mm` (memory), `sched` (scheduler, threads, waits, mutexes), `object` (kernel objects and handles), `abi` (syscalls), `proc` (bootfs, ELF, userboot), `dev` (the kernel's own devices, PCI core, reboot), `debug` (klog, panic, symbols, lock checker, RESULTS box, debug commands, self-, crash and stress tests), `acpi`, `boot`, `lib` |
+| Kernel, by subsystem | `kernel/<subsystem>/`: `arch/x86_64` (CPU, interrupts, entry), `mm` (memory), `sched` (scheduler, threads, waits, mutexes), `object` (kernel objects and handles), `abi` (syscalls), `proc` (bootfs, ELF, userboot), `dev` (the kernel's own devices, PCI core, reboot), `debug` (klog, panic, symbols, lock checker, RESULTS box, debug commands, self-, crash and stress tests), `kexec` (the crash kernel and kexec), `acpi`, `boot`, `lib` |
 | Kernel headers | `kernel/include/jam/<name>.h`; a subsystem's internal header next to its code (`sched/sched_internal.h`, `dev/pci_internal.h`) |
 | Syscall glue (`sysc_*`, `sys_*`) | `kernel/abi/` |
 | Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |

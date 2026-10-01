@@ -86,7 +86,10 @@ Every driver and service is a userspace process from the start.
 ## Boot
 
 - `kernel/boot/limine.c` is the only file that includes `limine.h`. It fills
-  `struct boot_info` (all physical addresses) and calls `kmain`.
+  `struct boot_info` (all physical addresses) and calls `kmain`. A kernel
+  started by another Jam OS kernel ([kexec](#crash-kernel-and-kexec)) is
+  entered at the same `_start` with a magic in `rdi`, and
+  `kernel/boot/kexec.c` fills `struct boot_info` from the handoff instead.
 - Limine modules become **bootfs**, a read-only in-memory FS holding init,
   the services, the drivers and the apps, so user space starts before
   storage works. One module, `bootfs.img` (`tools/mkbootfs.py`): a header,
@@ -135,6 +138,11 @@ Every driver and service is a userspace process from the start.
   page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
   in) is reclaimed once every AP has started.
+- **The crash kernel's region** (128 MiB below 4 GiB by default,
+  `crashkernel=<MiB>`) is taken out of the memory map before the PMM
+  starts and typed `BOOT_MEM_FOREIGN`: RAM nobody may map as MMIO, but not
+  the PMM's, not in the HHDM and in no other mapping
+  ([Crash kernel and kexec](#crash-kernel-and-kexec)).
 - **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
   mapped per section (text RX, rodata R, data RW+NX), HHDM with 1 GiB/2 MiB
   pages for RAM only (write-back), framebuffer write-combining via PAT index 5.
@@ -243,7 +251,10 @@ Every driver and service is a userspace process from the start.
 - APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
   prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
   stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
-  Loader-reclaimable memory is freed only once every AP is online.
+  Loader-reclaimable memory is freed only once every AP is online. A
+  kernel started by kexec has no parked APs (no loader handle): they are
+  not started yet, so it runs on the one CPU that jumped (the kernel's own
+  INIT-SIPI-SIPI startup is not built yet).
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
 - ACPI tables can live in firmware-reserved memory the HHDM skips, so they
@@ -560,7 +571,8 @@ Not built yet; these rules bind every future path that can transmit.
   argv, environment, and handles by role (`kernel/include/jam/startup.h`):
   SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
   never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE, NS (the namespace),
-  AUDIO and AUDIO_CTL (the mixer's channels) and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
+  AUDIO and AUDIO_CTL (the mixer's channels), CRASHLOG (a crash kernel's
+  init and logd: the crashed kernel's log) and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
   one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
@@ -577,7 +589,8 @@ Not built yet; these rules bind every future path that can transmit.
   `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr), `shell_ready`
   (the shell is up: the splash gives the screen back) and `reboot`,
   which syncs `/data` and every `/usbN` first (2 s at most) and has logd
-  write out the log's last lines before the reset; the shell holds one
+  write out the log's last lines before the restart (a kexec, or the
+  firmware's reset if that fails; `reboot_firmware` always resets); the shell holds one
   end, the console another that answers only `reboot` (Ctrl+Alt+Del).
 - **Namespace**: each process has a table of mount point → `fs` channel
   (`/boot`, `/esp`, `/data`, `/usbN`), given by whoever started it (startup role
@@ -830,12 +843,68 @@ skipped for good.
   syncs the mounts, has logd write out and sync the log up to that line
   (`abi/idl/logctl.idl`), and resets. A panic or a pulled plug loses what
   was logged since the last sync, a quarter of a second at most plus the
-  write in flight; the panic's own text is never saved (the crash kernel
-  is a later milestone). Without `/data` it waits and tries again; what
+  write in flight; a panic's log, its own lines included, is saved by
+  the crash kernel next to the boot's file as `boot-NNNN-crash.txt`
+  ([Crash kernel and kexec](#crash-kernel-and-kexec)). logd gives the
+  kernel its file's name (`klog_name`) for that, and counts a number as
+  taken when either file has it. Without `/data` it waits and tries again; what
   the kernel's 64 KiB ring drops meanwhile, or in a burst faster than the
   stick takes it, is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
+
+## Crash kernel and kexec
+
+The Linux kdump approach: a second, ready-to-run Jam OS waits in reserved
+memory, a panic jumps into it, and it saves the crashed kernel's log
+through the normal path to the stick. The same jump gives `reboot` a path
+without the firmware. Code in `kernel/kexec/`; the plan, with the layout
+and the decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md).
+
+- **The region** (128 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
+  0 turns it all off) is unmapped from the running kernel, so a wild write
+  can't reach it. It is written only through a 2 MiB window mapped,
+  written and unmapped with a TLB shootdown (`region.c`).
+- **The crash kernel** is this boot's own kernel and bootfs: Limine loads
+  `jamos.elf` a second time as a module (the running image's data has
+  changed since it started). At boot they are laid out in the region with
+  everything the jump needs (`image.c`): the segments at their link
+  address, page tables mapping exactly what the new kernel touches before
+  it builds its own, a stack, and the handoff (`<jam/kexec_handoff.h>`): a
+  versioned, checksummed wire format (it crosses kernel builds), which
+  `kernel/boot/kexec.c` checks completely before using. The loaded bytes
+  are checksummed.
+- **The panic path** draws the panic screen, then (with no lock taken and
+  nothing allocated from the decision on) fills the crash record (the log
+  ring's place and head, where the panic's lines start, the boot's log
+  name), verifies the checksum through the window's own page-table
+  entries, turns Bus Master Enable off on every PCI function but bridges
+  and the display (so no device keeps writing memory or sending MSIs),
+  sends the other CPUs (halted by the panic's NMI) INIT, and jumps through
+  a trampoline page mapped at the same address in both kernels' tables. A
+  checksum that doesn't match ends the panic as before, and says so.
+- **The crash kernel** (command line `crash crashlog=<phys>
+  crash_reboot=<s>`) boots on that one CPU with only the region as memory:
+  the crashed kernel's RAM is `BOOT_MEM_FOREIGN` to it, except its log
+  ring and record, mapped read-only (`BOOT_MEM_CRASH_LOG`), which it checks
+  as untrusted and copies into a VMO for init (`SR_CRASHLOG`). init's crash
+  mode starts devmgr with `storage` (every PCI driver, so each controller
+  is reset rather than assumed idle, but only mass storage on USB), waits
+  for `/data`, runs `logd crash` (which writes `/data/logs/<name>-crash.txt`
+  and syncs) and stops devmgr. The kernel then shows the crashed kernel's
+  panic lines and the RESULTS box, and halts, or after `crash_reboot`
+  seconds (the crashed kernel's `panic_reboot`) resets through the
+  firmware. A crash kernel reserves nothing and arms nothing: its own
+  panic halts.
+- **`reboot`** (initctl.reboot, so also Ctrl+Alt+Del): init reads
+  `/esp/boot/jamos.elf` and `/esp/boot/bootfs.img`, calls `kexec_load`
+  (RIGHT_MANAGE on the root resource; the image replaces the crash kernel
+  and gets all of memory), syncs and flushes the log as before, stops
+  devmgr in order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other
+  CPUs halted, the image verified, bus mastering off, the jump). Any
+  failure before the jump falls back to the firmware reset; `reboot -f`
+  always uses it. M9's `update` is meant to call `kexec_load` with what it
+  fetched.
 
 ## Debugging
 
@@ -845,7 +914,8 @@ skipped for good.
   present.
 - Panic screen: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
-  with repeated frames collapsed, and the log tail. Symbols come from a
+  with repeated frames collapsed, and the log tail. Then the crash kernel
+  saves the log ([Crash kernel and kexec](#crash-kernel-and-kexec)). Symbols come from a
   two-pass link: `.ksyms` is the last section, so filling it in moves nothing
   (checked by `tools/gensyms.py verify`). #DF, NMI and #MC run on IST stacks.
   The other CPUs are halted by NMI first.
