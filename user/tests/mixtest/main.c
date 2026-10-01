@@ -22,6 +22,9 @@
  *                  other plays to its end; its stream is dropped
  *   master         440 Hz with the master at -6 dB
  *   ctl_volume     440 Hz, turned to -12 dB through audioctl mid-tone
+ *   library_at_once  two programs on <audio.h> (beep's and play's
+ *                  library) at once: 1000 Hz at 44.1 kHz (resampled) and
+ *                  440 Hz at 48 kHz, each a stream named for `vol`
  *   mixer_killed   init kills the mixer mid-tone: the program sees
  *                  ERR_PEER_CLOSED, opens a new stream and plays the rest
  *   driver_killed  init kills the hda driver mid-tone: the mixer opens
@@ -32,6 +35,7 @@
  * exit 0 if nothing failed. */
 #define CHECK_PROG "mixtest"
 #define CHECK_CUR  cur
+#include <audio.h>
 #include <check.h>
 #include <idl/audio.h>
 #include <idl/audioctl.h>
@@ -151,6 +155,33 @@ static int tone_main(int argc, char **argv)
     printf("mixtest: tone %s: %lu frames, %s\n", name, (unsigned long)t.at, status_str(st));
     mixer_close(&s);
     return st != OK ? 1 : reopen && !went ? 2 : 0;
+}
+
+/* "mixtest libtone <name> <rate> <hz> <ms>": a mono tone at `rate` Hz
+ * through <audio.h>, the library beep and play use (it resamples to the
+ * mixer's 48 kHz), drained and closed. */
+static int libtone_main(char **argv)
+{
+    unsigned rate = number(argv[3]);
+    struct tone t = { .re = 1, .frames = (uint64_t)number(argv[5]) * rate / 1000 };
+    sin_cos(2 * 3.14159265358979323846 * number(argv[4]) / rate, &t.sim, &t.sre);
+    struct audio_out a;
+    int st = audio_open_as(&a, rate, 1, argv[2]);
+    int16_t buf[2 * CHUNK], mono[CHUNK];
+    while (st == OK && t.at < t.frames) {
+        uint32_t n = t.frames - t.at < CHUNK ? (uint32_t)(t.frames - t.at) : CHUNK;
+        tone_next(&t, buf, n);
+        for (uint32_t i = 0; i < n; i++)
+            mono[i] = buf[2 * i];
+        long w = audio_write(&a, mono, n);
+        st = w < 0 ? (int)w : OK;
+    }
+    if (st == OK)
+        st = audio_drain(&a);
+    printf("mixtest: libtone %s: %lu frames at %u Hz, %s\n", argv[2], (unsigned long)t.at,
+           rate, status_str(st));
+    audio_close(&a);
+    return st == OK ? 0 : 1;
 }
 
 /* ---- the parent ------------------------------------------------------------------ */
@@ -327,6 +358,35 @@ static bool t_ctl_volume(void)
     return true;
 }
 
+/* Start "mixtest libtone ..." with SR_AUDIO only. */
+static status_t libtone(const char *name, const char *rate, const char *hz, handle_t *proc)
+{
+    handle_t a;
+    status_t st = jam_handle_duplicate(svc, RIGHT_SAME, &a);
+    if (st != OK)
+        return st;
+    struct spawn_handle x[] = { { SR_AUDIO, a } };
+    const char *argv[] = { "bin/mixtest", "libtone", name, rate, hz, "1200", NULL };
+    struct spawn_args sa = { .path = "bin/mixtest", .argc = 6, .argv = argv,
+                             .job = startup_handle(SR_JOB), .extra = x, .nextra = 1 };
+    return spawn(&sa, proc);
+}
+
+/* Two programs on <audio.h> at once (as play and beep would be): one at
+ * 44.1 kHz, resampled by the library, one at 48 kHz. */
+static bool t_library_at_once(void)
+{
+    handle_t a, b;
+    CHECK_ST(libtone("lib-play", "44100", "1000", &a), OK);
+    CHECK_ST(libtone("lib-beep", "48000", "440", &b), OK);
+    struct mixer_stream_info e;
+    CHECK(find_stream("lib-play", 2000, &e));
+    CHECK(find_stream("lib-beep", 2000, &e));
+    CHECK_EQ(finish(a), 0);
+    CHECK_EQ(finish(b), 0);
+    return true;
+}
+
 static bool t_kill_mid_tone(const char *name, const char *who, const char *opt)
 {
     handle_t d;
@@ -390,6 +450,7 @@ static const struct {
     { "client_killed", t_client_killed, true },
     { "master", t_master, true },
     { "ctl_volume", t_ctl_volume, true },
+    { "library_at_once", t_library_at_once, true },
     { "mixer_killed", t_mixer_killed, true },
     { "driver_killed", t_driver_killed, true },
     { "idle_wakes", t_idle_wakes, true },
@@ -403,6 +464,8 @@ int main(int argc, char **argv)
     initctl = startup_handle(SR_USER + 3);
     if (argc >= 6 && !strcmp(argv[1], "tone"))
         return tone_main(argc, argv);
+    if (argc >= 6 && !strcmp(argv[1], "libtone"))
+        return libtone_main(argv);
     if (!svc || !ctl) {
         printf("mixtest: no SR_AUDIO or SR_AUDIO_CTL: run it with the shell's `mixtest`\n");
         return 1;

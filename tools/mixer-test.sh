@@ -18,6 +18,9 @@
 #       3  440 Hz with the master at -6 dB: half the amplitude
 #       4  440 Hz turned to -12 dB through audioctl mid-tone: the end at a
 #          quarter of the start
+#       5  two programs on <audio.h> (play's and beep's library) at once:
+#          1000 Hz from 44.1 kHz samples (resampled) and 440 Hz, both at
+#          the tone's own amplitude (within 3 %)
 #       then at least 4 more segments of 440 Hz: the mixer killed mid-tone,
 #       the hda driver killed mid-tone (QEMU writes the WAV only while the
 #       driver's stream runs, so their gaps are not in it) and the stream
@@ -45,8 +48,8 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-test
     { echo "mixer: the script failed"; grep "serial-feed: .*no '" "$out/mixer.out"; ok=0; }
 log="$out/mixer.log"
 grep -aE "mixtest: [0-9]+ passed" "$log" | tail -1
-grep -aqE "mixtest: 9 passed($|\r)" "$log" ||
-    { echo "mixer: mixtest did not pass 9 of 9"; grep -a "FAILED" "$log" | head -5; ok=0; }
+grep -aqE "mixtest: 10 passed($|\r)" "$log" ||
+    { echo "mixer: mixtest did not pass 10 of 10"; grep -a "FAILED" "$log" | head -5; ok=0; }
 grep -aqE "mixer: stream [0-9]+ \(tone-a\) opened.*" "$log" &&
     grep -aqE "mixer: stream [0-9]+ \(tone-b\) opened" "$log" ||
     { echo "mixer: the tone programs' streams were not opened"; ok=0; }
@@ -119,8 +122,8 @@ def near(what, got, want, tol):
 
 print("mixer: WAV: %d segments: %s" % (len(segs), ", ".join(
     "%.0f ms" % ((b - a) * 1000.0 / RATE) for a, b in segs)))
-if len(segs) < 8:
-    sys.exit("mixer: %d segments, want 8 or more" % len(segs))
+if len(segs) < 9:
+    sys.exit("mixer: %d segments, want 9 or more" % len(segs))
 s = [left[a:b] for a, b in segs]
 # 1: both at once, 1000 Hz at -6 dB.
 mid = s[0][len(s[0]) // 2 - 24000:len(s[0]) // 2 + 24000]
@@ -142,8 +145,12 @@ near("segment 3: 440 Hz amplitude", amp(s[2][2400:-2400], 440), AMP * 0.50119, 0
 # 4: -12 dB mid-tone.
 near("segment 4: start amplitude", amp(s[3][2400:12000], 440), AMP, 0.03)
 near("segment 4: end / start", amp(s[3][-12000:-2400], 440) / AMP, 0.25119, 0.03)
+# 5: the library's two programs at once.
+mid = s[4][len(s[4]) // 2 - 12000:len(s[4]) // 2 + 12000]
+near("segment 5: 1000 Hz (44.1 kHz, resampled)", amp(mid, 1000), AMP, 0.03)
+near("segment 5: 440 Hz", amp(mid, 440), AMP, 0.03)
 # The rest: 440 Hz tones.
-for k in range(4, len(s)):
+for k in range(5, len(s)):
     if len(s[k]) >= 4800 and amp(s[k][:4800], 440) < 0.5 * AMP:
         fails.append("segment %d: no 440 Hz tone" % (k + 1))
 print("mixer: WAV: 440/1000 Hz %.0f/%.0f (ratio %.4f), killed-client segment %d samples, "
