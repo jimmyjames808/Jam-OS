@@ -21,10 +21,13 @@
  *
  * Bus mastering goes on only after the reset: a reset stops every DMA
  * engine (streams and rings), so nothing a previous driver of this
- * function left running reaches memory. Unsolicited responses stay off
- * (GCTL.UNSOL = 0), and so do interrupts (INTCTL = 0) until a stream
- * opens (stream.c). At exit the rings are stopped and the controller is
- * put back into reset, which is also how firmware leaves it. */
+ * function left running reaches memory. Unsolicited responses (GCTL.UNSOL)
+ * and the RIRB interrupt (INTCTL.CIE) stay off through the start; irq.c
+ * turns them on (hda_unsol_enable) when its loop begins with the MSI
+ * bound, for the jacks (jack.c). Commands are still polled then: the
+ * interrupt only drains what no command is waiting for. At exit the rings
+ * are stopped and the controller is put back into reset, which is also how
+ * firmware leaves it. */
 #include "hda.h"
 
 #define RIRB_OFF      2048u                   /* 256 CORB entries x 4 bytes before it */
@@ -244,8 +247,117 @@ static void rings_stop(struct hda *h)
 
 /* ---- commands --------------------------------------------------------------- */
 
+/* ---- the RIRB: answers and unsolicited responses ------------------------------
+ * The RIRB carries both: the answer to each command (solicited) and,
+ * once GCTL.UNSOL is on, the responses a codec sends by itself (a jack's
+ * presence changed). An entry's high word says which (bit 4 unsolicited)
+ * and from which codec (3:0). One command is in flight at a time and each
+ * codec answers in order, so a solicited entry is the answer of the
+ * command waiting for it, if one is; anything else is late. Entries are
+ * read in two places, on the driver's one thread: a command reading its
+ * answer (ring_cmd), and the RIRB interrupt (irq.c); both sort every
+ * entry they pass the same way, so an unsolicited response is never taken
+ * for an answer and is never lost to a command. */
+
+static void unsol_push(struct hda *h, unsigned cad, uint32_t resp)
+{
+    h->unsol++;
+    if (h->uq_n == UNSOL_Q) {
+        h->unsol_dropped++;
+        return;
+    }
+    unsigned i = (h->uq_head + h->uq_n) % UNSOL_Q;
+    h->uq_resp[i] = resp;
+    h->uq_cad[i] = (uint8_t)cad;
+    h->uq_n++;
+}
+
+bool hda_unsol_pop(struct hda *h, unsigned *cad, uint32_t *resp)
+{
+    if (!h->uq_n)
+        return false;
+    *cad = h->uq_cad[h->uq_head];
+    *resp = h->uq_resp[h->uq_head];
+    h->uq_head = (uint8_t)((h->uq_head + 1) % UNSOL_Q);
+    h->uq_n--;
+    return true;
+}
+
+bool hda_rirb_sort(struct hda *h, uint64_t e, int want, uint32_t *out)
+{
+    uint32_t ex = (uint32_t)(e >> 32), cad = ex & 0xfu;
+    if (ex & 0x10u) {
+        unsol_push(h, cad, (uint32_t)e);
+        return false;
+    }
+    if (want < 0 || cad != (unsigned)want) {
+        h->late++;
+        return false;
+    }
+    *out = (uint32_t)e;
+    return true;
+}
+
+/* Take the entries the controller has written, in order, until the
+ * answer from codec `want` (true, *out) or none is left (false). */
+static bool rirb_poll(struct hda *h, int want, uint32_t *out)
+{
+    uint32_t hw = rd16(h, HDA_RIRBWP) & 0xffu;
+    while (h->rirb_rp != hw % h->rirb_entries) {
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the entry after the pointer */
+        h->rirb_rp = (h->rirb_rp + 1) % h->rirb_entries;
+        uint64_t e = h->rirb[h->rirb_rp];
+        wr8(h, HDA_RIRBSTS, RIRBSTS_RINTFL);   /* QEMU pauses the CORB until it is clear */
+        if (hda_rirb_sort(h, e, want, out))
+            return true;
+    }
+    return false;
+}
+
+void hda_rirb_drain(struct hda *h)
+{
+    uint32_t ignored;
+    if (h->rings)
+        (void)rirb_poll(h, -1, &ignored);
+}
+
+void hda_rirb_irq(struct hda *h)
+{
+    if (!h->rings)
+        return;
+    uint8_t sts = rd8(h, HDA_RIRBSTS);
+    wr8(h, HDA_RIRBSTS, sts & (RIRBSTS_RINTFL | RIRBSTS_OIS));   /* RW1C */
+    if ((sts & RIRBSTS_OIS) && h->overruns++ < 3)
+        drv_log("the RIRB overflowed: responses were lost");
+    hda_rirb_drain(h);
+}
+
+void hda_unsol_enable(struct hda *h, bool on)
+{
+    if (!h->regs || !(rd32(h, HDA_GCTL) & GCTL_CRST) || (on && !h->rings))
+        return;
+    uint32_t g = rd32(h, HDA_GCTL), ic = rd32(h, HDA_INTCTL);
+    if (on) {
+        wr32(h, HDA_GCTL, g | GCTL_UNSOL);
+        wr32(h, HDA_INTCTL, ic | INTCTL_GIE | INTCTL_CIE);
+    } else {
+        wr32(h, HDA_GCTL, g & ~GCTL_UNSOL);
+        ic &= ~INTCTL_CIE;
+        wr32(h, HDA_INTCTL, (ic & ~INTCTL_GIE) ? ic : 0);   /* GIE stays for a stream's bit */
+    }
+    h->unsol_on = on;
+}
+
+/* One command: whatever is in the RIRB already is sorted first (it can't
+ * be this command's answer: a late answer, or an unsolicited response the
+ * interrupt has not taken yet), then the command goes out and its answer
+ * is awaited. What can still be confused: an answer later than
+ * HDA_CMD_TIMEOUT arriving after this command went out and before its
+ * answer (counted in `timeouts` either way). */
 static status_t ring_cmd(struct hda *h, uint32_t cmd, unsigned cad, uint32_t *out)
 {
+    uint32_t ignored;
+    (void)rirb_poll(h, -1, &ignored);
     uint32_t wp = (h->corb_wp + 1) % h->corb_entries;
     h->corb[wp] = cmd;
     __atomic_thread_fence(__ATOMIC_RELEASE);   /* the entry before the doorbell */
@@ -253,22 +365,8 @@ static status_t ring_cmd(struct hda *h, uint32_t cmd, unsigned cad, uint32_t *ou
     wr16(h, HDA_CORBWP, (uint16_t)wp);
     uint64_t start = drv_clock_ns(), deadline = start + HDA_CMD_TIMEOUT;
     for (;;) {
-        uint32_t hw = rd16(h, HDA_RIRBWP) & 0xffu;
-        while (h->rirb_rp != hw % h->rirb_entries) {
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the entry after the pointer */
-            h->rirb_rp = (h->rirb_rp + 1) % h->rirb_entries;
-            uint64_t e = h->rirb[h->rirb_rp];
-            wr8(h, HDA_RIRBSTS, RIRBSTS_RINTFL | RIRBSTS_OIS);
-            uint32_t ex = (uint32_t)(e >> 32);
-            if (ex & 0x10u) {
-                h->unsol++;
-                continue;
-            }
-            if ((ex & 0xfu) != cad)
-                continue;   /* not ours: a late answer to a command that timed out */
-            *out = (uint32_t)e;
+        if (rirb_poll(h, (int)cad, out))
             return OK;
-        }
         if (drv_clock_ns() > deadline)
             return ERR_TIMED_OUT;
         pause_poll(start);

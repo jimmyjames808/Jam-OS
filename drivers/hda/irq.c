@@ -7,13 +7,21 @@
  *               closes the stream. The key carries a generation, so a
  *               packet for a channel already closed is ignored.
  *   KEY_IRQ     the controller's MSI (DR_IRQ(0)), bound PERSISTENT: acked,
- *               then INTSTS read and the stream's status cleared
+ *               then INTSTS read: the stream's status cleared (SIS bit),
+ *               the RIRB drained (CIS)
  *
  * The controller's one MSI carries stream buffer completions (one per
- * period while the stream runs) and could carry RIRB responses; the
- * RIRB's interrupt (INTCTL.CIE) stays off because commands are answered
- * in microseconds and polled (ctrl.c), and nothing unsolicited is
- * enabled yet. Jack events will arrive through the RIRB interrupt.
+ * period while the stream runs) and RIRB responses. Commands are still
+ * answered by polling (ctrl.c: a verb takes microseconds); the RIRB
+ * interrupt (INTCTL.CIE, on from the loop's start when the rings and the
+ * MSI are there) is for what no command waits for: unsolicited responses,
+ * the jacks' (jack.c). Since RINTCNT is 1 it also fires for every answer,
+ * which the drain finds already taken; that costs a wake per verb, and
+ * proves the interrupt works before any jack needs it.
+ *
+ * The jacks run at every turn of the loop: the unsolicited responses
+ * queued, the debounce reads due and the poll. Their deadline is part of
+ * the port wait's.
  *
  * Every wait has a deadline: while the stream runs the port wait ends at
  * least once a period, so a lost interrupt costs a period of latency and
@@ -42,7 +50,9 @@ struct loop {
     bool          waiting;
     uint32_t      wait_txid;
     uint64_t      wait_until;  /* frames */
-    uint64_t      irqs, spurious;
+    uint64_t      irqs, stream_irqs, rirb_irqs, spurious;
+    struct jacks *js;
+    struct jack_io io;
 };
 
 /* ---- the stream channel ----------------------------------------------------- */
@@ -234,10 +244,21 @@ static void irq_take(struct loop *l, const struct port_packet *p)
     l->irqs += p->signal.count;
     (void)drv_interrupt_ack(l->irq);
     uint32_t is = drv_read32(l->h->regs, HDA_INTSTS);
-    if (l->st.open && l->st.sd < HDA_MAX_STREAMS && (is & (1u << l->st.sd)))
+    bool stream = l->st.open && l->st.sd < HDA_MAX_STREAMS && (is & (1u << l->st.sd));
+    if (stream) {
         stream_status(l->h, &l->st);
-    else
+        l->stream_irqs++;
+    }
+    /* CIS, or no bit at all while CIE is the only other source: an answer
+     * a command polled for took RINTFL before this ran. Either way the
+     * RIRB's interrupt reached here, which is what jack.c waits to see. */
+    if ((is & INTSTS_CIS) || (!stream && l->h->unsol_on)) {
+        hda_rirb_irq(l->h);
+        l->rirb_irqs++;
+        l->js->irq_seen++;
+    } else if (!stream) {
         l->spurious++;
+    }
 }
 
 static void packet(struct loop *l, const struct port_packet *p)
@@ -265,18 +286,25 @@ static status_t setup(struct loop *l, const struct driver_start *ds)
         drv_port_bind(l->port, l->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT) != OK)
         l->irq = HANDLE_INVALID;
     if (l->irq == HANDLE_INVALID)
-        drv_log("no interrupt: the stream is polled once a period");
+        drv_log("no interrupt: the stream is polled once a period, the jacks every %u ms",
+                (unsigned)(JACK_POLL_NS / NS_PER_MS));
+    bool unsol = l->h->rings && l->irq != HANDLE_INVALID;
+    if (unsol)
+        hda_unsol_enable(l->h, true);
+    hda_jack_io(&l->io, l->h);
+    hda_jacks_start(l->js, &l->io, unsol, drv_clock_ns());
     l->serve_pending = true;   /* something may be queued already */
     return OK;
 }
 
 status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda_ops *ops,
-                  void *ctx, struct output *out)
+                  void *ctx, struct output *out, struct jacks *js)
 {
     struct loop *l = drv_malloc(sizeof(*l));
     if (!l)
         return ERR_NO_MEMORY;
-    *l = (struct loop){ .h = h, .ops = ops, .ctx = ctx, .serve = drv_handle(ds, DR_SERVE) };
+    *l = (struct loop){ .h = h, .ops = ops, .ctx = ctx, .serve = drv_handle(ds, DR_SERVE),
+                        .js = js };
     stream_init(h, &l->st, drv_handle(ds, DR_PCIDEV), out);
     status_t st = setup(l, ds);
     while (st == OK) {
@@ -288,9 +316,13 @@ status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda
             serve_some(l, true);
         stream_update(h, &l->st);
         wait_check(l);
+        hda_jacks_run(js, &l->io, drv_clock_ns());
         if (l->serve_pending || l->stream_pending)
             continue;
         uint64_t deadline = l->st.running ? drv_clock_ns() + PERIOD_NS : DEADLINE_NEVER;
+        uint64_t jd = hda_jacks_deadline(js);
+        if (jd < deadline)
+            deadline = jd;
         struct port_packet p;
         st = drv_port_wait(l->port, deadline, &p);
         if (st == OK)
@@ -299,10 +331,15 @@ status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda
             st = OK;
     }
     stream_ch_close(l, "the driver is stopping");
+    if (l->io.set)
+        hda_jacks_stop(js, &l->io);
+    hda_unsol_enable(h, false);
     if (l->port)
         drv_handle_close(l->port);
-    drv_log("%lu interrupt(s), %lu not the stream's", (unsigned long)l->irqs,
-            (unsigned long)l->spurious);
+    drv_log("%lu interrupt(s): %lu the stream's, %lu the RIRB's, %lu neither; %u unsolicited "
+            "response(s), %u late answer(s)", (unsigned long)l->irqs,
+            (unsigned long)l->stream_irqs, (unsigned long)l->rirb_irqs,
+            (unsigned long)l->spurious, h->unsol, h->late);
     drv_free(l);
     return st;
 }

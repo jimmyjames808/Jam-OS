@@ -20,6 +20,7 @@
 #define HDA_SET_GAIN         0x00150008u
 #define HDA_GET_GAIN         0x00150009u
 #define HDA_SET_BITS         0x0015000au
+#define HDA_JACKS            0x0015000bu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -136,9 +137,23 @@ struct hda_set_bits_rep {
     uint32_t bits;
     uint32_t pcm;
 } __attribute__((packed));
+struct hda_jacks_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_jacks_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t count;
+    uint32_t state;
+    uint32_t changes;
+    uint8_t pins[16];
+    uint8_t states[16];
+    uint8_t text[1024];
+} __attribute__((packed));
 
 #define HDA_REQ_MAX 16u   /* bytes: the biggest request */
-#define HDA_REP_MAX 288u   /* bytes: the biggest reply */
+#define HDA_REP_MAX 1076u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -185,7 +200,8 @@ static inline status_t hda_dump(handle_t ch, handle_t *out_text, uint32_t *out_l
  * parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
  * amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
  * minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
- * 0 unknown (jack detection is not built yet). nodes: the path's node ids
+ * the path's pin as `jacks` tracks it: 0 unknown (not a jack with presence
+ * detection, or not read yet), 1 unplugged, 2 plugged in. nodes: the path's node ids
  * from the DAC to the pin, `count` of them. text: what is set on each
  * node, read back from the codec, as one line (NUL-terminated). */
 static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
@@ -479,6 +495,46 @@ static inline status_t hda_set_bits(handle_t ch, uint32_t bits, uint32_t *out_bi
     return hda_set_bits_until(ch, DEADLINE_NEVER, bits, out_bits, out_pcm);
 }
 
+/* ---- the jacks (docs/A1-PLAN.md, stage 4) ----
+ * Every pin the codecs describe as a jack with presence detection, as the
+ * driver tracks it (debounced; not read anew for this call). count: how
+ * many (at most 16); pins and states: each one's node and state, in the
+ * driver's order (its unsolicited response tag is its index + 1): 0
+ * unknown, 1 unplugged, 2 plugged in. state and changes: the path's pin
+ * (info's jack) and how often it changed since the driver started. text:
+ * a line on how changes are found (unsolicited responses or polling),
+ * then a line per jack ("pin 1b headphones (front): plugged in, ..."),
+ * each ending in \n, NUL-terminated. */
+static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+{
+    struct hda_jacks_req idl_q;
+    struct hda_jacks_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_JACKS;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_count)
+        *out_count = idl_r.count;
+    if (idl_st == OK && out_state)
+        *out_state = idl_r.state;
+    if (idl_st == OK && out_changes)
+        *out_changes = idl_r.changes;
+    for (uint32_t idl_i = 0; idl_st == OK && out_pins && idl_i < 16; idl_i++)
+        out_pins[idl_i] = idl_r.pins[idl_i];
+    for (uint32_t idl_i = 0; idl_st == OK && out_states && idl_i < 16; idl_i++)
+        out_states[idl_i] = idl_r.states[idl_i];
+    for (uint32_t idl_i = 0; idl_st == OK && out_text && idl_i < 1024; idl_i++)
+        out_text[idl_i] = idl_r.text[idl_i];
+    return idl_st;
+}
+static inline status_t hda_jacks(handle_t ch, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+{
+    return hda_jacks_until(ch, DEADLINE_NEVER, out_count, out_state, out_changes, out_pins, out_states, out_text);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -494,6 +550,7 @@ struct hda_ops {
     status_t (*set_gain)(void *ctx, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*get_gain)(void *ctx, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*set_bits)(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm);
+    status_t (*jacks)(void *ctx, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024]);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -746,6 +803,42 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
             return sizeof(*idl_h);
         idl_r->bits = out_bits;
         idl_r->pcm = out_pcm;
+        return sizeof(*idl_r);
+    }
+    case HDA_JACKS: {
+        const struct hda_jacks_req *idl_q = (const struct hda_jacks_req *)req;
+        struct hda_jacks_rep *idl_r = (struct hda_jacks_rep *)rep;
+        uint32_t out_count = 0;
+        uint32_t out_state = 0;
+        uint32_t out_changes = 0;
+        uint8_t out_pins[16];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            out_pins[idl_i] = 0;
+        uint8_t out_states[16];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            out_states[idl_i] = 0;
+        uint8_t out_text[1024];
+        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
+            out_text[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->jacks) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->jacks(ctx, &out_count, &out_state, &out_changes, out_pins, out_states, out_text);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->count = out_count;
+        idl_r->state = out_state;
+        idl_r->changes = out_changes;
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->pins[idl_i] = out_pins[idl_i];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->states[idl_i] = out_states[idl_i];
+        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
+            idl_r->text[idl_i] = out_text[idl_i];
         return sizeof(*idl_r);
     }
     }

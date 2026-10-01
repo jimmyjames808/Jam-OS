@@ -7,7 +7,11 @@
 #      controller back in reset, exit 0, nothing left in init's root job).
 # The devices: intel-hda (ICH6, 8086:2668) with hda-duplex (codec 0) and
 # hda-output (codec 1), and ich9-intel-hda (8086:293e) with hda-micro.
-# Each driver runs the path self-test on its fixtures, logs each codec's
+# Each driver runs the path and jack self-tests on its fixtures (the jack
+# one: the ALC897's jack table, the RIRB's demultiplexer, the debounce,
+# unsolicited responses and the polling fallback against a fake codec,
+# which also checks that jack code sends no verb but 0x708, 0x709 and
+# GET_PIN_SENSE), logs each codec's
 # path (DAC 02 -> pin 03 on all three) and sets the best one up, muted.
 # The codecs log every verb they get (their debug=3), and every one must
 # be a GET (0xf00-0xfff, or the 4-bit 0xa / 0xb) or one of the SETs that
@@ -45,11 +49,22 @@ for want in "controller 8086:2668" "controller 8086:293e" \
             "path: codec 0 dac 02 -> pin 03 (speaker), muted: afg D0; dac 02 out m0; pin 03 ctl 40" \
             "path: pin 03 kept its output on (the codec ignores its pin control)" \
             "hda: path: codec 0 dac 02 -> pin 03 (line-out), muted:" \
-            "commands through CORB/RIRB, " "path 02-03 muted"; do
+            "commands through CORB/RIRB, " "path 02-03 muted" \
+            "jack self-test: passed (table, RIRB, debounce, unsolicited and polled)" \
+            "jacks: none with presence detection: nothing to watch"; do
     grep -qF -- "$want" "$log" || { echo "hda-shell: no line with \"$want\""; ok=0; }
 done
 n=$(grep -c "codec(s) answered" "$log" || true)
 [ "$n" -ge 5 ] || { echo "hda-shell: $n full dump(s), want 5 (2 at boot, 2 from hda, 1 restart)"; ok=0; }
+# The RIRB interrupt is on (for unsolicited responses) while commands are
+# still polled: the dumps from the shell must still be right (0 timeouts,
+# above) and the interrupt must have been taken.
+grep -qE "hda: jack 0 jack\(s\) .*unsolicited responses on \(0 received, [1-9][0-9]* RIRB" "$log" ||
+    { echo "hda-shell: hda jacks shows no RIRB interrupt taken"; ok=0; }
+if grep -E "jack self-test: [^p]" "$log"; then
+    echo "hda-shell: the jack self-test failed"
+    ok=0
+fi
 if grep -E "path self-test: [^7]|parses back to another path|path: none" "$log"; then
     echo "hda-shell: a path self-test or round trip failed"
     ok=0
@@ -67,6 +82,10 @@ if [ -n "$bad" ]; then
     echo "$bad" | head -10
     ok=0
 fi
+# QEMU's codecs have no pin with presence detection: no jack verb at all.
+jackv=$(echo "$trace" | grep -c "^jack " || true)
+[ "$jackv" = 0 ] ||
+    { echo "hda-shell: $jackv jack verb(s) (0x708/0x709) sent to QEMU's codecs"; ok=0; }
 pinctl=$(echo "$trace" | grep -c "^silent .* verb 0x707 " || true)
 mutes=$(echo "$trace" | grep -c "^silent .* verb 0x300 " || true)
 counts="$(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes"
