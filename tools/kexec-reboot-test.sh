@@ -34,8 +34,8 @@ run() {
         > "$out/kexec-$c.out" 2>&1
 }
 
-run kexec shell "wait 120 Jam OS shell" "wait jam>" "wait 60 logd: writing /data/logs/boot-0001.txt" \
-    "send reboot" "wait 180 init: kexec: /esp/boot/jamos.elf and /esp/boot/bootfs.img" \
+run kexec shell "wait 120 Jam OS shell" "wait jam>" \
+    "wait 60 logd: writing /data/logs/boot-0001.txt" "send reboot" "wait 180 init: kexec: /esp/boot/jamos.elf and /esp/boot/bootfs.img" \
     "wait 30 init: /data synced" "wait 60 driver(s) stopped; exiting" \
     "wait 30 kexec: starting the loaded kernel" "wait 60 loader:      Jam OS kexec, cmdline" \
     "wait 60 kexec: crash kernel armed" "wait 120 init: the shell is up" "wait jam>" \
@@ -54,11 +54,13 @@ cpus=${QEMU_SMP:-4}
 data="$out/kexec-kexec-stick.img@@64M"
 mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" ||
     fail kexec "boot-0001.txt doesn't end with the reboot's sync"
-mtype -i "$data" ::/logs/boot-0002-crash.txt 2>/dev/null | grep -q "loader:      Jam OS kexec" ||
+mtype -i "$data" ::/logs/boot-0002-crash.txt 2>/dev/null |
+    grep -q "the end of the kernel log of boot-0002" ||
     fail kexec "boot-0002-crash.txt isn't the kexec'd kernel's log"
 
 run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait jam>" \
-    "send reboot" "wait 180 init: kexec: " "wait 10 ERR_NOT_SUPPORTED" \
+    "seen 60 init: /esp mounted" "send reboot" "wait 180 init: kexec: " \
+    "wait 10 ERR_NOT_SUPPORTED" \
     "wait 10 init: rebooting through the firmware instead" "wait 30 reboot: resetting" ||
     fail fallback "the script (see $out/kexec-fallback.log)"
 grep -q "kexec: starting" "$out/kexec-fallback.log" && fail fallback "it kexec'd anyway"

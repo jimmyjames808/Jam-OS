@@ -5,7 +5,8 @@
  * crashed kernel's log ring from its oldest byte (the kernel checked the
  * ring and copied it: kernel/kexec/crashlog.c). The file is
  * /data/logs/<name>-crash.txt, <name> being the crashed boot's own log
- * file's ("boot-0042"), or for a boot that had none the next free number
+ * file's ("boot-0042"), or for a boot that had none (or whose crash file
+ * is somehow there already: nothing is overwritten) the next free number
  * (logfile.c): a few lines saying what it is, then the text as it was.
  * Synced, then one RESULTS line (debug_report) says where it went, or
  * why it didn't: the crash kernel's last screen shows it. */
@@ -91,6 +92,11 @@ int logd_crash(void)
     char path[96] = "";
     uint64_t have = 0;
     status_t st = logfile_crash_path(s, h.name, path, sizeof(path));
+    /* A boot is named once, so its crash file can't be there yet; if it
+     * is (a name someone else gave the kernel), it stays, and this log
+     * takes the next free number instead. */
+    if (st == OK && h.name[0] && s->stat(path) == OK)
+        st = logfile_crash_path(s, "", path, sizeof(path));
     if (st == OK)
         st = s->open(path, FS_WRITE | FS_CREATE | FS_TRUNCATE, &have);
     if (st == OK) {

@@ -200,7 +200,7 @@ KTEST(kexec_region_unmapped)
 {
     uint64_t base, size;
     if (!kexec_region(&base, &size)) {
-        kprintf("kexec_region_unmapped: no region on this boot (crashkernel=0): nothing to check\n");
+        kprintf("kexec_region_unmapped: no region (crashkernel=0): nothing to check\n");
         return;
     }
     KT_ASSERT(!(base & ((2ull << 20) - 1)) && size >= (32ull << 20));
@@ -221,7 +221,7 @@ KTEST(kexec_region_unmapped)
 KTEST(kexec_crash_kernel_intact)
 {
     if (!kexec_crash_armed()) {
-        kprintf("kexec_crash_kernel_intact: no crash kernel armed on this boot: nothing to check\n");
+        kprintf("kexec_crash_kernel_intact: no crash kernel armed: nothing to check\n");
         return;
     }
     KT_ASSERT(kexec_verify());
