@@ -26,18 +26,21 @@
 static status_t load(void)
 {
     handle_t k = HANDLE_INVALID, b = HANDLE_INVALID;
-    uint64_t ks = 0, bs = 0;
+    uint64_t ks = 0, bs = 0, t0 = now();
+    printf("init: kexec: reading %s and %s\n", KERNEL_FILE, BOOTFS_FILE);
     status_t st = file_read_vmo(KERNEL_FILE, KERNEL_MAX, &k, &ks);
     if (st == OK)
         st = file_read_vmo(BOOTFS_FILE, BOOTFS_MAX, &b, &bs);
+    uint64_t read_ms = (now() - t0) / NS_PER_MS;
     if (st == OK)
         st = jam_kexec_load(shell_root(), k, b, NULL, 0, 0);   /* this boot's command line */
     if (k)
         jam_handle_close(k);
     if (b)
         jam_handle_close(b);
-    printf("init: kexec: %s and %s (%lu + %lu KiB): %s\n", KERNEL_FILE, BOOTFS_FILE,
-           (unsigned long)(ks >> 10), (unsigned long)(bs >> 10), status_str(st));
+    printf("init: kexec: %s and %s (%lu + %lu KiB) read in %lu ms: %s\n", KERNEL_FILE,
+           BOOTFS_FILE, (unsigned long)(ks >> 10), (unsigned long)(bs >> 10),
+           (unsigned long)read_ms, status_str(st));
     return st;
 }
 
@@ -49,10 +52,14 @@ status_t init_reboot_kexec(void)
     mounts_sync();
     shell_flush_log(now() + LOG_WAIT);
     mounts_settle();
+    uint64_t t0 = now();
     st = shell_stop_devmgr(now() + STOP_WAIT);
     if (st != OK)   /* its drivers' DMA caps are closed either way: bus mastering is off */
         printf("init: kexec: devmgr didn't stop in order (%s): its job was killed\n",
                status_str(st));
+    /* Seen only on the serial port and the screen: logd has stopped. */
+    printf("init: kexec: devmgr stopped in %lu ms, jumping\n",
+           (unsigned long)((now() - t0) / NS_PER_MS));
     st = jam_kexec_reboot(shell_root());   /* returns only if it failed */
     printf("init: kexec: the jump failed (%s)\n", status_str(st));
     return st;
