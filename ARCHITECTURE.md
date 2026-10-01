@@ -689,6 +689,23 @@ its position kept exactly); `beep` and `play` (WAV files, parsed by
 `<wav.h>`) use it. Not built yet: jack detection
 ([docs/A1-PLAN.md](docs/A1-PLAN.md), stage 4).
 
+**MP3** ([docs/A2-PLAN.md](docs/A2-PLAN.md#mp3)): `play` picks a file's
+format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
+after any ID3v2 tag: MP3; anything else is refused), through a small
+source interface in the shell (`user/services/shell/cmd/play_src.c`: open, read 16-bit
+frames, close). MP3s are decoded in the shell's own process by
+`<mp3.h>` in libos, which wraps dr_mp3 (`third_party/dr_mp3`, public
+domain or MIT-0, a fork of minimp3, vendored unmodified, SSE2 on): MPEG-1,
+2 and 2.5, Layers I to III, CBR and VBR, into 16-bit frames at the
+file's rate, which `<audio.h>` resamples like any other. libos's
+`mp3_sniff` skips the tags at both ends and confirms a frame by the next
+one before the decoder sees the file, so a file that isn't MPEG audio is
+refused at once instead of searched end to end; the decoder reads the
+file 64 KiB at a time and skips frames it can't decode. Only programs
+that call `mp3_open` link the decoder (about 35 KiB of code; ~33 KiB of
+state and a 64 KiB buffer while a file plays). Decoding costs about
+4 % of a core under QEMU's emulation (`play -n`), far less on the PC.
+
 ## Storage
 
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
