@@ -7,14 +7,15 @@
 #      music status, music vol, music next; past one whole shuffle; music
 #      stop; then a 1000 Hz beep alone as the capture's end marker
 #   3. it plays on through Ctrl+C in the shell, a restart of the shell and
-#      a restart of the mixer; music stop
+#      a restart of the mixer; music prev, pause, status paused, pause again;
+#      the sleep timer: set, shown, off, 33 s that runs out and stops it
 #   4. a second stick's folder, the stick pulled mid-song: it stops itself
 wait 120 Jam OS shell
 wait jam>
 seen 60 init: /data mounted
 seen 60 music: ready
 send music; echo mu-""0 $?
-wait usage: music start [folder] | stop | next | status | vol [dB]
+wait usage: music start [folder] | stop | next | prev | pause | status | vol [dB]
 wait mu-0 2
 wait jam>
 send music status; echo mu-""1 $?
@@ -106,9 +107,47 @@ wait 30 music: track
 send music status | grep -c "music: playing"; echo mu-""18 $?
 wait mu-18 0
 wait jam>
-send music stop; echo mu-""19 $?
-wait music: stopped
+# prev, pause and the sleep timer (music.idl 6, 9, 10)
+send music prev; echo mu-""22 $?
+wait music: prev
+seen 10 music: back to
+wait mu-22 0
+wait jam>
+send music pause; echo mu-""23 $?
+wait music: paused (music pause again goes on)
+wait mu-23 0
+wait jam>
+send music status; echo mu-""24 $?
+wait music: paused
+wait mu-24 0
+wait jam>
+send music pause; echo mu-""25 $?
+wait music: playing on
+wait mu-25 0
+wait jam>
+send music sleep 0s; echo mu-""26 $?
+wait usage: music sleep <minutes 1..1440> | <seconds>s | off
+wait mu-26 2
+wait jam>
+send music sleep 90; music sleep; echo mu-""27 $?
+wait music: it stops in 90:00 (the last 30 s fade out)
+wait   the sleep timer stops it in 
+wait mu-27 0
+wait jam>
+send music sleep off; music sleep 33s; echo mu-""28 $?
+wait music: the sleep timer is off
+wait music: it stops in 0:33
+wait mu-28 0
+wait jam>
+wait 60 music: stopped: the sleep timer ran out
+send music status; music stop; echo mu-""19 $?
+wait music: stopped: the sleep timer ran out
+wait music: not playing
 wait mu-19 0
+wait jam>
+send music prev; echo mu-""29 $?
+wait music: not playing
+wait mu-29 1
 wait jam>
 
 # ---- 4: a second stick, pulled mid-song ----------------------------------------------------

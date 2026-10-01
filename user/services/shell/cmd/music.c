@@ -4,7 +4,9 @@
  * shell goes on meanwhile and Ctrl+C here never reaches it.
  *   music start [folder]   default /data/music; a relative folder is the
  *                          shell's (cd); already playing: the new folder
- *   music stop | next | status | vol [dB] */
+ *   music stop | next | prev | pause | status | vol [dB]
+ *   music sleep [minutes | <seconds>s | off]
+ * (bin/jamjar is the same player in a window.) */
 #include <idl/music.h>
 #include "sh.h"
 
@@ -79,7 +81,10 @@ static int status(handle_t ch)
     }
     folder[255] = path[255] = title[127] = note[127] = 0;
     char a[16], b[16], v[16];
-    if (playing == 2)
+    if (playing == 3)
+        sh_say("music: paused %s  %s / %s\n  %s\n", (char *)title, mss(elapsed, a, sizeof(a)),
+               length ? mss(length, b, sizeof(b)) : "?", (char *)path);
+    else if (playing == 2)
         sh_say("music: reading the folder: %u track%s so far\n", tracks, tracks == 1 ? "" : "s");
     else if (playing && title[0])
         sh_say("music: playing %s  %s / %s\n  %s\n", (char *)title, mss(elapsed, a, sizeof(a)),
@@ -95,20 +100,88 @@ static int status(handle_t ch)
         sh_say(", %u started\n", started);
     }
     sh_say("  volume %s dB\n", sh_db(volume, v, sizeof(v)));
+    uint8_t lp = 0, bands[16], level = 0;
+    uint32_t serial = 0, sleep_s = 0;
+    if (music_levels_until(ch, now() + SOON, &lp, &serial, NULL, NULL, NULL, &sleep_s, bands,
+                           &level) == OK && sleep_s)
+        sh_say("  the sleep timer stops it in %u:%02u\n", sleep_s / 60, sleep_s % 60);
+    return 0;
+}
+
+/* music sleep [minutes | <seconds>s | off]: alone, what is left. */
+static int sleep_cmd(handle_t ch, int argc, char **argv)
+{
+    uint32_t s = 0, got = 0;
+    if (argc == 2)
+        return status(ch);
+    if (strcmp(argv[2], "off")) {
+        char num[16];
+        size_t n = strlen(argv[2]);
+        bool secs = n > 1 && n < sizeof(num) && argv[2][n - 1] == 's';
+        uint64_t v = 0;
+        snprintf(num, sizeof(num), "%.*s", (int)(secs ? n - 1 : n), argv[2]);
+        if (!sh_parse_u64(num, &v) || v < 1 || v > (secs ? 86400u : 1440u)) {
+            sh_tty("usage: music sleep <minutes 1..1440> | <seconds>s | off\n");
+            return 2;
+        }
+        s = (uint32_t)(secs ? v : v * 60);
+    }
+    status_t st = music_sleep_until(ch, now() + SOON, s, &got);
+    if (st != OK) {
+        sh_tty("music: the player doesn't answer (%s)\n", status_str(st));
+        return 1;
+    }
+    if (got)
+        sh_say("music: it stops in %u:%02u (the last 30 s fade out)\n", got / 60, got % 60);
+    else
+        sh_say("music: the sleep timer is off\n");
+    return 0;
+}
+
+/* next, prev and pause: not playing is a failure (1) with a plain line. */
+static int skip(handle_t ch, const char *cmd)
+{
+    status_t st;
+    uint8_t paused = 0;
+    if (!strcmp(cmd, "next")) {
+        st = music_next_until(ch, now() + SOON);
+    } else if (!strcmp(cmd, "prev")) {
+        st = music_prev_until(ch, now() + SOON);
+    } else {
+        uint8_t playing = 0;
+        st = music_levels_until(ch, now() + SOON, &playing, NULL, NULL, NULL, NULL, NULL, NULL,
+                                NULL);
+        if (st == OK)
+            st = music_pause_until(ch, now() + SOON, playing != 3, &paused);
+    }
+    if (st == ERR_BAD_STATE) {
+        sh_say("music: not playing\n");
+        return 1;
+    }
+    if (st != OK) {
+        sh_tty("music: the player doesn't answer (%s)\n", status_str(st));
+        return 1;
+    }
+    if (!strcmp(cmd, "pause"))
+        sh_say("music: %s\n", paused ? "paused (music pause again goes on)" : "playing on");
+    else
+        sh_say("music: %s\n", cmd);
     return 0;
 }
 
 SH_CMD(music)
 {
     const char *cmd = argc > 1 ? argv[1] : "";
-    bool ok = (!strcmp(cmd, "start") && argc <= 3) ||
-              ((!strcmp(cmd, "stop") || !strcmp(cmd, "next") || !strcmp(cmd, "status")) &&
-               argc == 2) ||
-              (!strcmp(cmd, "vol") && argc <= 3);
+    bool one = !strcmp(cmd, "stop") || !strcmp(cmd, "next") || !strcmp(cmd, "status") ||
+               !strcmp(cmd, "prev") || !strcmp(cmd, "pause");
+    bool ok = (!strcmp(cmd, "start") && argc <= 3) || (one && argc == 2) ||
+              ((!strcmp(cmd, "vol") || !strcmp(cmd, "sleep")) && argc <= 3);
     if (!ok) {
-        sh_tty("usage: music start [folder] | stop | next | status | vol [dB]\n"
+        sh_tty("usage: music start [folder] | stop | next | prev | pause | status | vol [dB]\n"
+               "             | sleep [minutes|off]\n"
                "       (start: every .mp3 and .wav under the folder, default %s, in\n"
-               "       shuffle until `music stop`; the shell stays free meanwhile)\n",
+               "       shuffle until `music stop`; the shell stays free meanwhile;\n"
+               "       jamjar is the same player in a window)\n",
                DEFAULT_FOLDER);
         return 2;
     }
@@ -121,20 +194,16 @@ SH_CMD(music)
         return start(ch, argc == 3 ? argv[2] : DEFAULT_FOLDER);
     if (!strcmp(cmd, "status") || (!strcmp(cmd, "vol") && argc == 2))
         return status(ch);
+    if (!strcmp(cmd, "sleep"))
+        return sleep_cmd(ch, argc, argv);
+    if (!strcmp(cmd, "next") || !strcmp(cmd, "prev") || !strcmp(cmd, "pause"))
+        return skip(ch, cmd);
     status_t st;
     if (!strcmp(cmd, "stop")) {
         uint8_t was = 0;
         st = music_stop_until(ch, now() + SOON, &was);
         if (st == OK)
             sh_say("music: %s\n", was ? "stopped" : "not playing");
-    } else if (!strcmp(cmd, "next")) {
-        st = music_next_until(ch, now() + SOON);
-        if (st == ERR_BAD_STATE) {
-            sh_say("music: not playing\n");
-            return 1;
-        }
-        if (st == OK)
-            sh_say("music: next\n");
     } else {
         int32_t cb = 0, got = 0;
         if (!sh_parse_db(argv[2], &cb)) {

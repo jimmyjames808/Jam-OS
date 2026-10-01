@@ -103,8 +103,11 @@ struct ram {
 };
 bool ram_start(const char *point, struct ram *r);
 bool ram_stop(const char *point, struct ram *r);
-/* music.c: the music player's folder walk (user/services/music/tracks.c). */
+/* music.c: the music player's folder walk, play order and bands
+ * (user/services/music/tracks.c, spectrum.c). */
 bool t_music_scan(void);
+bool t_music_order(void);
+bool t_music_spectrum(void);
 /* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);

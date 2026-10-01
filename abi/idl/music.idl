@@ -33,8 +33,9 @@ protocol music 24
 # Skip the track being heard now: the next one starts from its beginning.
 # ERR_BAD_STATE: not playing.
 3  next  () -> ()
-# What the player is doing. `playing`: 1, 0, or 2 while it reads the
-# folder `start` was given (`tracks` then counts so far). `tracks`: files in the
+# What the player is doing. `playing`: 1, 0, 2 while it reads the
+# folder `start` was given (`tracks` then counts so far), or 3 while it is
+# paused (`pause`). `tracks`: files in the
 # folder's list; `bad`: how many of them were refused (not WAV or MP3
 # inside) and are skipped; `started`: tracks started since `start`.
 # The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
@@ -47,3 +48,39 @@ protocol music 24
 # [-960, 0]; kept across tracks, stops and starts (not across a restart
 # of the player). Answers the volume set.
 5  set_volume  (i32 centibels) -> (i32 centibels)
+
+# Back: more than 3 s into the track heard now, it starts over from its
+# beginning; otherwise the track heard before it plays (the player keeps
+# the last 64), and the one skipped back from plays after it, then the
+# shuffle goes on where it was. ERR_BAD_STATE: not playing (paused counts
+# as playing: it plays on from the track chosen).
+6  prev  () -> ()
+# `start` with options. `first`: an absolute path (NUL-terminated) of a
+# file under `folder` that plays first ("" for none; a file that is not in
+# the folder's list is ignored, with a line in the log); `order` 1: the
+# files play in the order of their paths (byte order), over and over,
+# instead of in shuffle; 0: shuffle, as `start`. The answer and the
+# errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1.
+7  play  (u8[256] folder, u8[256] first, u8 order) -> (u32 found, u8 reading)
+# What a view asks many times a second (a cheap call): `playing` as in
+# `status` (3: paused); `serial`, a number that changes whenever the track
+# heard changes (a new one, or the same one from its start: then `status`
+# says which); `elapsed_ms` and `length_ms` of it as `status`; `volume`
+# as `set_volume`; `sleep_s`, the seconds until the sleep timer stops the
+# player (0: off); and what is heard now: `bands`, its loudness in
+# sixteen frequency bands log-spaced from 40 Hz to 16 kHz (low first),
+# each 0..255 (about 0: -70 dB, 255: -10 dB below full scale, with a tilt
+# of +3 dB an octave so that every band of ordinary music moves), and
+# `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
+# scale). All zero while nothing is heard.
+8  levels  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[16] bands, u8 level)
+# Pause (`on` 1): the mixer stops taking the stream's frames where it is
+# (what it took is still heard, about 0.1 s) and the player stops reading;
+# `on` 0 goes on from there. Answers whether it is paused now.
+# ERR_BAD_STATE: not playing; ERR_INVALID_ARGS: `on` above 1.
+9  pause  (u8 on) -> (u8 paused)
+# The sleep timer: stop playing `seconds` from now, the last 30 s fading
+# out; 0 turns it off. `stop` and a restart of the player turn it off too;
+# a new `start` or `play` keeps it. Answers the seconds set.
+# ERR_OUT_OF_RANGE: more than 86400 (a day).
+10 sleep  (u32 seconds) -> (u32 seconds)

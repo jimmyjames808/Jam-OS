@@ -15,6 +15,11 @@
 #define MUSIC_NEXT             0x00180003u
 #define MUSIC_STATUS           0x00180004u
 #define MUSIC_SET_VOLUME       0x00180005u
+#define MUSIC_PREV             0x00180006u
+#define MUSIC_PLAY             0x00180007u
+#define MUSIC_LEVELS           0x00180008u
+#define MUSIC_PAUSE            0x00180009u
+#define MUSIC_SLEEP            0x0018000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct music_start_req {
@@ -74,8 +79,65 @@ struct music_set_volume_rep {
     int32_t  status;
     int32_t centibels;
 } __attribute__((packed));
+struct music_prev_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct music_prev_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct music_play_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t folder[256];
+    uint8_t first[256];
+    uint8_t order;
+} __attribute__((packed));
+struct music_play_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t found;
+    uint8_t reading;
+} __attribute__((packed));
+struct music_levels_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct music_levels_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t playing;
+    uint32_t serial;
+    uint64_t elapsed_ms;
+    uint64_t length_ms;
+    int32_t volume;
+    uint32_t sleep_s;
+    uint8_t bands[16];
+    uint8_t level;
+} __attribute__((packed));
+struct music_pause_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t on;
+} __attribute__((packed));
+struct music_pause_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t paused;
+} __attribute__((packed));
+struct music_sleep_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t seconds;
+} __attribute__((packed));
+struct music_sleep_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t seconds;
+} __attribute__((packed));
 
-#define MUSIC_REQ_MAX 264u   /* bytes: the biggest request */
+#define MUSIC_REQ_MAX 521u   /* bytes: the biggest request */
 #define MUSIC_REP_MAX 809u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
@@ -159,8 +221,9 @@ static inline status_t music_next(handle_t ch)
     return music_next_until(ch, DEADLINE_NEVER);
 }
 
-/* What the player is doing. `playing`: 1, 0, or 2 while it reads the
- * folder `start` was given (`tracks` then counts so far). `tracks`: files in the
+/* What the player is doing. `playing`: 1, 0, 2 while it reads the
+ * folder `start` was given (`tracks` then counts so far), or 3 while it is
+ * paused (`pause`). `tracks`: files in the
  * folder's list; `bad`: how many of them were refused (not WAV or MP3
  * inside) and are skipped; `started`: tracks started since `start`.
  * The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
@@ -232,6 +295,157 @@ static inline status_t music_set_volume(handle_t ch, int32_t centibels, int32_t 
     return music_set_volume_until(ch, DEADLINE_NEVER, centibels, out_centibels);
 }
 
+/* Back: more than 3 s into the track heard now, it starts over from its
+ * beginning; otherwise the track heard before it plays (the player keeps
+ * the last 64), and the one skipped back from plays after it, then the
+ * shuffle goes on where it was. ERR_BAD_STATE: not playing (paused counts
+ * as playing: it plays on from the track chosen). */
+static inline status_t music_prev_until(handle_t ch, uint64_t deadline_ns)
+{
+    struct music_prev_req idl_q;
+    struct music_prev_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_PREV;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t music_prev(handle_t ch)
+{
+    return music_prev_until(ch, DEADLINE_NEVER);
+}
+
+/* `start` with options. `first`: an absolute path (NUL-terminated) of a
+ * file under `folder` that plays first ("" for none; a file that is not in
+ * the folder's list is ignored, with a line in the log); `order` 1: the
+ * files play in the order of their paths (byte order), over and over,
+ * instead of in shuffle; 0: shuffle, as `start`. The answer and the
+ * errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1. */
+static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    struct music_play_req idl_q;
+    struct music_play_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_PLAY;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.folder[idl_i] = folder[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.first[idl_i] = first[idl_i];
+    idl_q.order = order;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_found)
+        *out_found = idl_r.found;
+    if (idl_st == OK && out_reading)
+        *out_reading = idl_r.reading;
+    return idl_st;
+}
+static inline status_t music_play(handle_t ch, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_play_until(ch, DEADLINE_NEVER, folder, first, order, out_found, out_reading);
+}
+
+/* What a view asks many times a second (a cheap call): `playing` as in
+ * `status` (3: paused); `serial`, a number that changes whenever the track
+ * heard changes (a new one, or the same one from its start: then `status`
+ * says which); `elapsed_ms` and `length_ms` of it as `status`; `volume`
+ * as `set_volume`; `sleep_s`, the seconds until the sleep timer stops the
+ * player (0: off); and what is heard now: `bands`, its loudness in
+ * sixteen frequency bands log-spaced from 40 Hz to 16 kHz (low first),
+ * each 0..255 (about 0: -70 dB, 255: -10 dB below full scale, with a tilt
+ * of +3 dB an octave so that every band of ordinary music moves), and
+ * `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
+ * scale). All zero while nothing is heard. */
+static inline status_t music_levels_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+{
+    struct music_levels_req idl_q;
+    struct music_levels_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_LEVELS;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_playing)
+        *out_playing = idl_r.playing;
+    if (idl_st == OK && out_serial)
+        *out_serial = idl_r.serial;
+    if (idl_st == OK && out_elapsed_ms)
+        *out_elapsed_ms = idl_r.elapsed_ms;
+    if (idl_st == OK && out_length_ms)
+        *out_length_ms = idl_r.length_ms;
+    if (idl_st == OK && out_volume)
+        *out_volume = idl_r.volume;
+    if (idl_st == OK && out_sleep_s)
+        *out_sleep_s = idl_r.sleep_s;
+    for (uint32_t idl_i = 0; idl_st == OK && out_bands && idl_i < 16; idl_i++)
+        out_bands[idl_i] = idl_r.bands[idl_i];
+    if (idl_st == OK && out_level)
+        *out_level = idl_r.level;
+    return idl_st;
+}
+static inline status_t music_levels(handle_t ch, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+{
+    return music_levels_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+}
+
+/* Pause (`on` 1): the mixer stops taking the stream's frames where it is
+ * (what it took is still heard, about 0.1 s) and the player stops reading;
+ * `on` 0 goes on from there. Answers whether it is paused now.
+ * ERR_BAD_STATE: not playing; ERR_INVALID_ARGS: `on` above 1. */
+static inline status_t music_pause_until(handle_t ch, uint64_t deadline_ns, uint8_t on, uint8_t *out_paused)
+{
+    struct music_pause_req idl_q;
+    struct music_pause_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_PAUSE;
+    idl_q.on = on;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_paused)
+        *out_paused = idl_r.paused;
+    return idl_st;
+}
+static inline status_t music_pause(handle_t ch, uint8_t on, uint8_t *out_paused)
+{
+    return music_pause_until(ch, DEADLINE_NEVER, on, out_paused);
+}
+
+/* The sleep timer: stop playing `seconds` from now, the last 30 s fading
+ * out; 0 turns it off. `stop` and a restart of the player turn it off too;
+ * a new `start` or `play` keeps it. Answers the seconds set.
+ * ERR_OUT_OF_RANGE: more than 86400 (a day). */
+static inline status_t music_sleep_until(handle_t ch, uint64_t deadline_ns, uint32_t seconds, uint32_t *out_seconds)
+{
+    struct music_sleep_req idl_q;
+    struct music_sleep_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_SLEEP;
+    idl_q.seconds = seconds;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_seconds)
+        *out_seconds = idl_r.seconds;
+    return idl_st;
+}
+static inline status_t music_sleep(handle_t ch, uint32_t seconds, uint32_t *out_seconds)
+{
+    return music_sleep_until(ch, DEADLINE_NEVER, seconds, out_seconds);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -242,6 +456,11 @@ struct music_ops {
     status_t (*next)(void *ctx);
     status_t (*status)(void *ctx, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128]);
     status_t (*set_volume)(void *ctx, int32_t centibels, int32_t *out_centibels);
+    status_t (*prev)(void *ctx);
+    status_t (*play)(void *ctx, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading);
+    status_t (*levels)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level);
+    status_t (*pause)(void *ctx, uint8_t on, uint8_t *out_paused);
+    status_t (*sleep)(void *ctx, uint32_t seconds, uint32_t *out_seconds);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -378,6 +597,109 @@ static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, co
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->centibels = out_centibels;
+        return sizeof(*idl_r);
+    }
+    case MUSIC_PREV: {
+        const struct music_prev_req *idl_q = (const struct music_prev_req *)req;
+        struct music_prev_rep *idl_r = (struct music_prev_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->prev) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->prev(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case MUSIC_PLAY: {
+        const struct music_play_req *idl_q = (const struct music_play_req *)req;
+        struct music_play_rep *idl_r = (struct music_play_rep *)rep;
+        uint32_t out_found = 0;
+        uint8_t out_reading = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->play) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->play(ctx, idl_q->folder, idl_q->first, idl_q->order, &out_found, &out_reading);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->found = out_found;
+        idl_r->reading = out_reading;
+        return sizeof(*idl_r);
+    }
+    case MUSIC_LEVELS: {
+        const struct music_levels_req *idl_q = (const struct music_levels_req *)req;
+        struct music_levels_rep *idl_r = (struct music_levels_rep *)rep;
+        uint8_t out_playing = 0;
+        uint32_t out_serial = 0;
+        uint64_t out_elapsed_ms = 0;
+        uint64_t out_length_ms = 0;
+        int32_t out_volume = 0;
+        uint32_t out_sleep_s = 0;
+        uint8_t out_bands[16];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            out_bands[idl_i] = 0;
+        uint8_t out_level = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->levels) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->levels(ctx, &out_playing, &out_serial, &out_elapsed_ms, &out_length_ms, &out_volume, &out_sleep_s, out_bands, &out_level);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->playing = out_playing;
+        idl_r->serial = out_serial;
+        idl_r->elapsed_ms = out_elapsed_ms;
+        idl_r->length_ms = out_length_ms;
+        idl_r->volume = out_volume;
+        idl_r->sleep_s = out_sleep_s;
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->bands[idl_i] = out_bands[idl_i];
+        idl_r->level = out_level;
+        return sizeof(*idl_r);
+    }
+    case MUSIC_PAUSE: {
+        const struct music_pause_req *idl_q = (const struct music_pause_req *)req;
+        struct music_pause_rep *idl_r = (struct music_pause_rep *)rep;
+        uint8_t out_paused = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->pause) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->pause(ctx, idl_q->on, &out_paused);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->paused = out_paused;
+        return sizeof(*idl_r);
+    }
+    case MUSIC_SLEEP: {
+        const struct music_sleep_req *idl_q = (const struct music_sleep_req *)req;
+        struct music_sleep_rep *idl_r = (struct music_sleep_rep *)rep;
+        uint32_t out_seconds = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->sleep) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->sleep(ctx, idl_q->seconds, &out_seconds);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->seconds = out_seconds;
         return sizeof(*idl_r);
     }
     }

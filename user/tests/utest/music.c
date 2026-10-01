@@ -11,6 +11,7 @@
 #include <os.h>
 #include "utest.h"
 
+#include "../../services/music/spectrum.c"
 #include "../../services/music/tracks.c"
 
 #define M "/m"
@@ -114,4 +115,135 @@ bool t_music_scan(void)
         CHECK(!t.scan && !t.path);
     }
     return ram_stop(M, &r) && ok;
+}
+
+/* ---- the play order: `play`'s order 1 and its first file ----------------------------- */
+
+/* The next n tracks handed out, as letters (the paths' last character). */
+static void deal(struct tracks *t, unsigned n, char *out)
+{
+    bool pass = false;
+    for (unsigned i = 0; i < n; i++) {
+        int64_t k = tracks_next(t, &pass);
+        out[i] = k < 0 ? '-' : t->path[k][strlen(t->path[k]) - 1];
+    }
+    out[n] = '\0';
+}
+
+bool t_music_order(void)
+{
+    static char *paths[] = { "/m/x/b", "/m/x/d", "/m/a", "/m/x/c" };
+    uint32_t order[4];
+    uint8_t bad[4] = { 0 };
+    struct tracks t = { .path = paths, .bad = bad, .order = order, .count = 4, .last = -1 };
+    char got[16];
+    tracks_sort(&t);
+    deal(&t, 6, got);
+    CHECK(!strcmp(got, "abcdab"));   /* by path, over and over */
+    CHECK_EQ(tracks_find(&t, "/m/x/c"), 3);
+    CHECK_EQ(tracks_find(&t, "/m/x"), -1);
+    tracks_sort(&t);
+    tracks_first(&t, 1);             /* "/m/x/d" first: on from it */
+    deal(&t, 5, got);
+    CHECK(!strcmp(got, "dabcd"));
+    for (uint64_t seed = 1; seed < 40; seed++) {
+        tracks_shuffle(&t, seed);
+        tracks_first(&t, 3);         /* "/m/x/c" first, the rest shuffled */
+        deal(&t, 4, got);
+        CHECK_EQ(got[0], 'c');
+        CHECK(strchr(got, 'a') && strchr(got, 'b') && strchr(got, 'd'));
+    }
+    bad[0] = 1;                      /* a bad one is passed over in order too */
+    t.nbad = 1;
+    tracks_sort(&t);
+    deal(&t, 4, got);
+    CHECK(!strcmp(got, "acda"));
+    return true;
+}
+
+/* ---- the bands (`levels`) ----------------------------------------------------------- */
+
+/* sin x by its series, after x is brought into [-pi, pi]. */
+static double sine(double x)
+{
+    const double pi = 3.14159265358979323846;
+    x -= (double)(int64_t)(x / (2 * pi)) * 2 * pi;
+    x = x > pi ? x - 2 * pi : x;
+    double x2 = x * x, term = x, sum = x;
+    for (int n = 1; n < 12; n++) {
+        term *= -x2 / ((2 * n) * (2 * n + 1));
+        sum += term;
+    }
+    return sum;
+}
+
+/* A second of a sine of hz at `amp` of full scale (0: silence), rate Hz,
+ * stereo, fed as the player does: 1024-frame chunks, the stream frame of
+ * each chunk's start counted at 48 kHz from 0. */
+static void feed_tone(struct spectrum *s, uint32_t rate, double hz, double amp)
+{
+    static int16_t pcm[2 * 1024];
+    int64_t done = 0;
+    for (uint32_t chunk = 0; chunk < rate / 1024; chunk++) {
+        for (uint32_t k = 0; k < 1024; k++) {
+            double t = (double)(done + k) / rate;
+            pcm[2 * k] = pcm[2 * k + 1] =
+                (int16_t)(sine(2 * 3.14159265358979323846 * hz * t) * amp * 32767.0);
+        }
+        spec_feed(s, pcm, 1024, 2, rate, done * 48000 / (int64_t)rate);
+        done += 1024;
+    }
+}
+
+static int loudest(const struct spec_entry *e)
+{
+    int best = 0;
+    for (int b = 1; b < (int)SPEC_BANDS; b++)
+        best = e->band[b] > e->band[best] ? b : best;
+    return best;
+}
+
+/* Each tone in its band: 300 Hz in band 5 (259-377 Hz), 1 kHz in 8,
+ * 5 kHz in 12; far bands much lower; the level of a -12 dBFS sine. */
+static bool tone_lands(struct spectrum *s, uint32_t rate, double hz, int band)
+{
+    spec_reset(s);
+    feed_tone(s, rate, hz, 0.25);
+    struct spec_entry e;
+    CHECK(spec_at(s, 24000, &e));   /* half a second in */
+    CHECK_EQ(loudest(&e), band);
+    CHECK(e.band[band] > 150);
+    for (int b = 0; b < (int)SPEC_BANDS; b++)
+        if (b < band - 2 || b > band + 2)
+            CHECK(e.band[b] + 60 < e.band[band]);
+    CHECK(e.level > 180 && e.level < 200);   /* -15 dBFS RMS: 191 */
+    return true;
+}
+
+bool t_music_spectrum(void)
+{
+    struct spectrum *s = malloc(sizeof(*s));
+    CHECK(s);
+    spec_init(s);
+    bool ok = tone_lands(s, 44100, 300, 5) && tone_lands(s, 48000, 1000, 8) &&
+              tone_lands(s, 22050, 5000, 12) && tone_lands(s, 96000, 1000, 8);
+    struct spec_entry e;
+    if (ok) {
+        /* Silence: zeros; nothing yet (or nothing near): no entry. */
+        spec_reset(s);
+        CHECK(!spec_at(s, 24000, &e));
+        feed_tone(s, 48000, 1000, 0.0);
+        CHECK(spec_at(s, 24000, &e));
+        for (unsigned b = 0; b < SPEC_BANDS; b++)
+            CHECK_EQ(e.band[b], 0);
+        CHECK_EQ(e.level, 0);
+        CHECK(!spec_at(s, 48000 * 5, &e));   /* 4 s past the last: stale */
+        CHECK(!spec_at(s, -1, &e));           /* before the first */
+        /* A skip at 0.5 s: what was written after is gone, the rest stays. */
+        spec_cut(s, 24000);
+        CHECK(spec_at(s, 23000, &e));
+        CHECK(!spec_at(s, 48000 * 3 / 4, &e));
+    }
+    free(s);
+    return ok;
 }
