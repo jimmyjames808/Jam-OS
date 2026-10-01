@@ -351,8 +351,11 @@ void smp_start_aps(const struct boot_info *bi)
 
     uint32_t online = __atomic_load_n(&online_count, __ATOMIC_ACQUIRE);
     uint64_t us = took / (tsc_hz / 1000000);
-    kprintf("smp: %u of %u CPUs online in %lu.%03lu ms (%s)\n", online, cpu_count, us / 1000,
-            us % 1000, how_name(how));
+    if (cpu_count == 1)
+        kprintf("smp: 1 of 1 CPUs online (the CPU list has no other)\n");
+    else
+        kprintf("smp: %u of %u CPUs online in %lu.%03lu ms (%s)\n", online, cpu_count,
+                us / 1000, us % 1000, how_name(how));
     report_firmware_state();
     __atomic_store_n(&ipi_ready, 1, __ATOMIC_RELEASE);
     sched_topology_init();
