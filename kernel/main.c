@@ -36,7 +36,7 @@
 #include <jam/userboot.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.25-m8"
+#define JAMOS_VERSION   "0.0.26-m8.5"
 #define KERNEL_STACK_SZ (64 * 1024)
 #define CRASH_INIT_S    180   /* a crash kernel's init: saving the log, at most */
 
