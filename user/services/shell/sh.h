@@ -137,8 +137,9 @@ handle_t sh_root(void);
 handle_t sh_pci(void);          /* RES_PCI, for pci_enum (`devices`), or 0 */
 handle_t sh_devmgr(void);       /* devmgr's query channel (the newest), or 0 */
 handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
-/* The first hda driver (abi/idl/hda.idl) with a path to a jack set up:
- * a channel to it the caller closes, or HANDLE_INVALID (cmd/hda.c). */
+/* The first hda driver (abi/idl/hda.idl) with a path to a jack set up, as
+ * the mixer hands it out (a query channel: no output stream), for the
+ * caller to close; or HANDLE_INVALID (cmd/hda.c). */
 handle_t sh_hda(void);
 /* init's control channel (abi/idl/initctl.idl: kill, sync, reboot, mount), or 0
  * (a shell that init didn't start has none). */

@@ -17,6 +17,10 @@
  *   protocol       no sound: formats refused, the stream methods refused
  *                  on /svc/audio, drain on a stopped stream, volumes
  *                  clamped, an unknown id, the 17th stream refused
+ *   device         no sound: audioctl.device's query channel to the hda
+ *                  driver answers info and the gain but refuses
+ *                  open_output and query (so nobody but the mixer can take
+ *                  the one output stream); at most 8 at once
  *   two_at_once    440 Hz and 1000 Hz (the second at -6 dB) from two
  *                  programs at once; both are listed while they play
  *   client_killed  the same, and the 1000 Hz program killed mid-tone: the
@@ -40,6 +44,7 @@
 #include <check.h>
 #include <idl/audio.h>
 #include <idl/audioctl.h>
+#include <idl/hda.h>
 #include <idl/initctl.h>
 #include <mixer.h>
 #include <os.h>
@@ -303,6 +308,52 @@ static bool t_protocol(void)
     return true;
 }
 
+#define QUERY_MAX 8u   /* the driver's query channels at once (hda.idl) */
+
+static bool t_device(void)
+{
+    handle_t q[QUERY_MAX + 1];
+    CHECK_ST(audioctl_device_until(ctl, now() + LONG, 0, &q[0]), OK);
+    uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
+    uint8_t nodes[8], text[240];
+    CHECK_ST(hda_info_until(q[0], soon(), &codec, &pin, &dac, &pcm, &formats, &amp, &jack,
+                            &count, nodes, text), OK);
+    CHECK(pin != 0);
+    int32_t gain, min, max;
+    uint32_t step;
+    status_t gst = hda_get_gain_until(q[0], soon(), &gain, &step, &min, &max);
+    CHECK(gst == OK || gst == ERR_NOT_SUPPORTED);   /* (QEMU's mixer=off codec has no amp) */
+    uint32_t bits, bpcm;
+    CHECK_ST(hda_set_bits_until(q[0], soon(), 0, &bits, &bpcm), OK);
+    /* What only the mixer may do: never on a query channel. */
+    handle_t stream = HANDLE_INVALID, ring = HANDLE_INVALID, other = HANDLE_INVALID;
+    uint32_t size, period;
+    CHECK_ST(hda_open_output_until(q[0], soon(), 48000, 2, 16, &stream, &ring, &size, &period),
+             ERR_ACCESS_DENIED);
+    CHECK(!stream && !ring);
+    CHECK_ST(hda_query_until(q[0], soon(), &other), ERR_ACCESS_DENIED);
+    CHECK_ST(hda_start_until(q[0], soon()), ERR_NOT_SUPPORTED);
+    /* Bounded: the driver serves QUERY_MAX at once. */
+    unsigned got = 1;
+    status_t st = OK;
+    while (got <= QUERY_MAX && (st = audioctl_device_until(ctl, now() + LONG, 0, &q[got])) == OK)
+        got++;
+    CHECK_EQ(got, QUERY_MAX);
+    CHECK_ST(st, ERR_NO_RESOURCES);
+    jam_handle_close(q[--got]);
+    /* The driver takes the closing in its own time: a free slot soon. */
+    uint64_t until = now() + SOON;
+    while ((st = audioctl_device_until(ctl, now() + LONG, 0, &q[got])) == ERR_NO_RESOURCES &&
+           now() < until)
+        pause_ms(20);
+    CHECK_ST(st, OK);
+    got++;
+    while (got)
+        jam_handle_close(q[--got]);
+    CHECK_ST(audioctl_device_until(ctl, now() + LONG, 99, &other), ERR_NOT_FOUND);
+    return true;
+}
+
 static bool t_two_at_once(void)
 {
     handle_t a, b;
@@ -448,6 +499,7 @@ static const struct {
     bool sound;          /* a phase with sound: silence after it */
 } tests[] = {
     { "protocol", t_protocol, false },
+    { "device", t_device, false },
     { "two_at_once", t_two_at_once, true },
     { "client_killed", t_client_killed, true },
     { "master", t_master, true },

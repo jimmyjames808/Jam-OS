@@ -5,7 +5,8 @@
  * on our port. The stream channel serves start, stop, drain (answered
  * later, once its frames have been heard), position and the volume; its
  * closing drops the stream. The control channel (SR_AUDIO_CTL) lists the
- * streams and sets any stream's volume and the master volume.
+ * streams, sets any stream's volume and the master volume, and hands out
+ * the sound card's query channels (`device`, output.c).
  *
  * `played` for a stream comes from its period history (output.c's
  * remember): the driver frames each period's frames went to, so the play
@@ -448,10 +449,16 @@ static status_t do_set_master(void *ctx, int32_t cb, int32_t *out)
     return OK;
 }
 
+static status_t do_device(void *ctx, uint32_t index, handle_t *out_device)
+{
+    return out_query(ctx, index, out_device);
+}
+
 static const struct audioctl_ops ctl_ops = {
     .streams = do_streams,
     .set_volume = do_set_volume,
     .set_master = do_set_master,
+    .device = do_device,
 };
 
 void serve_ctl(struct mixer *m)

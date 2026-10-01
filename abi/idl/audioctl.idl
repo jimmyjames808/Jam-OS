@@ -1,7 +1,8 @@
 # audioctl: the mixer's control channel (user/services/mixer), for the
-# shell's `vol` and the test programs: every stream's volume and the
-# master volume. A program holds it as its startup role SR_AUDIO_CTL; init
-# gives it to the shell, the shell to its test programs only.
+# shell's `vol` and `hda` and the test programs: every stream's volume,
+# the master volume and the sound card's query channels. init publishes
+# it as /svc/audioctl; the shell has it, and the programs whose lists ask
+# for it.
 # Format: see tools/genidl.py. The plan is docs/A2-PLAN.md.
 #
 # Reconnect: init holds this channel across mixer restarts, so a call
@@ -21,3 +22,9 @@ protocol audioctl 23
 2  set_volume  (u32 id, i32 centibels)  -> (i32 centibels)
 # The master volume, applied after the streams are summed, the same way.
 3  set_master  (i32 centibels)  -> (i32 centibels)
+# The index-th HD Audio driver devmgr runs (from 0, in devmgr's order), as
+# a query channel (hda.idl's `query`): everything the driver answers but
+# open_output, so the shell's `hda` can look and set the gain without
+# taking the output stream the mixer plays through. The caller closes it.
+# ERR_NOT_FOUND: no such driver (index past the last, or no devmgr).
+4  device  (u32 index)  -> (handle device)

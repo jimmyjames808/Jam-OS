@@ -7,13 +7,21 @@
  * above 0 dB); `hda bits [n]` the largest sample size (hda.set_bits);
  * `hda jacks` each jack's state as the driver tracks it (hda.jacks: plugged
  * in or not, and whether unsolicited responses or polling found it), the
- * same lines `hda` ends with. */
-#include <devmgr.h>
+ * same lines `hda` ends with.
+ *
+ * The driver is reached through the mixer (audioctl.device), never
+ * devmgr: devmgr hands the driver's own channel to the mixer alone
+ * (<devmgr.h>, "exclusive"), and the mixer hands out query channels,
+ * which answer everything here but can't open the output stream the
+ * mixer plays through (abi/idl/hda.idl, `query`). */
+#include <idl/audioctl.h>
 #include <idl/hda.h>
 #include "sh.h"
 
-#define DUMP_WAIT (10 * NS_PER_S)   /* a codec's dump is a few hundred verbs */
-#define DUMP_MAX  (64 * 1024)       /* the driver's dump buffer */
+#define DUMP_WAIT   (10 * NS_PER_S)   /* a codec's dump is a few hundred verbs */
+#define DUMP_MAX    (64 * 1024)       /* the driver's dump buffer */
+#define DEVICE_WAIT (15 * NS_PER_S)   /* the mixer asks devmgr and each driver in turn */
+#define MAX_DEVICES 8u                /* HD Audio drivers asked for at most */
 
 /* hda.info's line: the path the driver set up, or why there is none. */
 static void print_path(handle_t ch)
@@ -95,18 +103,24 @@ static void print_gain(handle_t ch)
     say_gain(st, gain, step, min, max);
 }
 
+/* The n-th HD Audio driver's query channel, from the mixer: OK, or
+ * ERR_NOT_FOUND past the last (or with no mixer), or why not. */
+static status_t device(uint32_t n, handle_t *ch)
+{
+    handle_t ctl = sh_audio_ctl();
+    if (!ctl)
+        return ERR_NOT_FOUND;
+    return audioctl_device_until(ctl, now() + DEVICE_WAIT, n, ch);
+}
+
 handle_t sh_hda(void)
 {
-    handle_t dm = sh_devmgr();
-    for (uint32_t n = 0; dm && n < 32; n++) {
-        struct devmgr_rep r;
+    for (uint32_t n = 0; n < MAX_DEVICES; n++) {
         handle_t ch;
-        uint32_t nh = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
-                                  now() + 5 * NS_PER_S);
+        status_t st = device(n, &ch);
         if (st == ERR_NOT_FOUND)
             break;
-        if (st != OK || nh != 1)
+        if (st != OK)
             continue;
         uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
         uint8_t nodes[8], text[240];
@@ -182,27 +196,20 @@ static int bits_cmd(int argc, char **argv)
     return 0;
 }
 
-/* Ask each running PCI driver in turn for hda.dump; others answer
- * ERR_NOT_SUPPORTED. Prints each dump; returns how many answered. */
-static unsigned dump_each(handle_t dm)
+/* Each HD Audio driver's dump, path, gain and jacks, as the mixer finds
+ * them; returns how many there were. */
+static unsigned dump_each(void)
 {
     unsigned found = 0;
-    for (uint32_t n = 0; n < 32 && !sh_interrupted(); n++) {
-        struct devmgr_rep r;
+    for (uint32_t n = 0; n < MAX_DEVICES && !sh_interrupted(); n++) {
         handle_t ch, text;
-        uint32_t nh = 0, len = 0, codecs = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
-                                  now() + 5 * NS_PER_S);
+        uint32_t len = 0, codecs = 0;
+        status_t st = device(n, &ch);
         if (st == ERR_NOT_FOUND)
             break;
-        if (st != OK || nh != 1)
-            continue;
-        st = hda_dump_until(ch, now() + DUMP_WAIT, &text, &len, &codecs);
-        if (st != OK)
-            jam_handle_close(ch);
-        if (st == ERR_NOT_SUPPORTED)
-            continue;   /* another driver's service */
         found++;
+        if (st == OK && (st = hda_dump_until(ch, now() + DUMP_WAIT, &text, &len, &codecs)) != OK)
+            jam_handle_close(ch);
         if (st != OK) {
             sh_say("hda: %s\n", status_str(st));
             continue;
@@ -234,13 +241,12 @@ SH_CMD(hda)
         sh_tty("usage: hda [gain [dB] | bits [16|20|24|32] | jacks]\n");
         return 2;
     }
-    handle_t dm = sh_devmgr();
-    if (!dm) {
-        sh_say("hda: no devmgr\n");
+    if (!sh_audio_ctl()) {
+        sh_say("hda: no mixer (the sound card is reached through it)\n");
         return 1;
     }
-    if (!dump_each(dm)) {
-        sh_say("hda: no HD Audio driver bound (devmgr has none that answers hda)\n");
+    if (!dump_each()) {
+        sh_say("hda: no HD Audio driver bound (the mixer finds none through devmgr)\n");
         return 1;
     }
     return 0;

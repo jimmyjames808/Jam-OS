@@ -13,6 +13,7 @@
 #define AUDIOCTL_STREAMS          0x00170001u
 #define AUDIOCTL_SET_VOLUME       0x00170002u
 #define AUDIOCTL_SET_MASTER       0x00170003u
+#define AUDIOCTL_DEVICE           0x00170004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct audioctl_streams_req {
@@ -46,6 +47,15 @@ struct audioctl_set_master_rep {
     uint32_t txid;
     int32_t  status;
     int32_t centibels;
+} __attribute__((packed));
+struct audioctl_device_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t index;
+} __attribute__((packed));
+struct audioctl_device_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define AUDIOCTL_REQ_MAX 16u   /* bytes: the biggest request */
@@ -127,6 +137,42 @@ static inline status_t audioctl_set_master(handle_t ch, int32_t centibels, int32
     return audioctl_set_master_until(ch, DEADLINE_NEVER, centibels, out_centibels);
 }
 
+/* The index-th HD Audio driver devmgr runs (from 0, in devmgr's order), as
+ * a query channel (hda.idl's `query`): everything the driver answers but
+ * open_output, so the shell's `hda` can look and set the gain without
+ * taking the output stream the mixer plays through. The caller closes it.
+ * ERR_NOT_FOUND: no such driver (index past the last, or no devmgr). */
+static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, handle_t *out_device)
+{
+    struct audioctl_device_req idl_q;
+    struct audioctl_device_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIOCTL_DEVICE;
+    idl_q.index = index;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_device)
+            *out_device = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+static inline status_t audioctl_device(handle_t ch, uint32_t index, handle_t *out_device)
+{
+    return audioctl_device_until(ch, DEADLINE_NEVER, index, out_device);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -135,6 +181,7 @@ struct audioctl_ops {
     status_t (*streams)(void *ctx, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640]);
     status_t (*set_volume)(void *ctx, uint32_t id, int32_t centibels, int32_t *out_centibels);
     status_t (*set_master)(void *ctx, int32_t centibels, int32_t *out_centibels);
+    status_t (*device)(void *ctx, uint32_t index, handle_t *out_device);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -211,6 +258,29 @@ static inline uint32_t audioctl_dispatch(const struct audioctl_ops *ops, void *c
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->centibels = out_centibels;
+        return sizeof(*idl_r);
+    }
+    case AUDIOCTL_DEVICE: {
+        const struct audioctl_device_req *idl_q = (const struct audioctl_device_req *)req;
+        struct audioctl_device_rep *idl_r = (struct audioctl_device_rep *)rep;
+        handle_t out_device = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->device) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->device(ctx, idl_q->index, &out_device);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_device != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_device != HANDLE_INVALID)
+                drv_handle_close(out_device);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_device;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }
