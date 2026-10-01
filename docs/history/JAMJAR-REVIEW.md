@@ -127,8 +127,8 @@ rounding is used).
 - **3 fixed.** The roulette takes the album playing and, when the label
   it would land on is that album, lands on the next one (never the same
   album twice in a row on the reel, so it is another). Test: 200 seeded
-  spins with an album "playing": FAILED before (about one in eight landed
-  on it), and `tools/jamjar-test.sh`'s roulette step can no longer wait
+  spins with an album "playing": FAILED before (the spins whose label was
+  that album landed on it), and `tools/jamjar-test.sh`'s roulette step can no longer wait
   for a track change that never comes.
 - **4 fixed.** A snapshot of a playing player that has not answered for
   1.5 s (`SNAP_STALE_NS`; a `play` of a big folder keeps it busy for
@@ -148,3 +148,15 @@ rounding is used).
 - **7 fixed** (the comment: -76..-16 dB, as `spectrum`'s). No test: a
   comment.
 - **8 fixed** (the comments). No test: comments.
+- **Not fixed** (reported): 5 is design question A; 9, 13, 14, 15, 16
+  and 18 are Lows that need more than a trivial change (a bigger cover
+  table, a sleeping lock, libfun's pool, the player's order, `prev`'s
+  history, the utest's layout); 10 and 11 are design questions B and C.
+
+Tests after the fixes (QEMU, 4 CPUs): `make check`, `make KTESTS=0`, the
+self-test (all checks pass), `tools/jamjar-test.sh` and `JAMJAR_HD=1`,
+`tools/jamjar-covers-test.sh`, `tools/music-test.sh`,
+`tools/apps-test.sh`, the `init` run (utest 77, usbtest 12 passed / 10
+skipped, no problems). What only the PC can show: the owner's 93 albums
+in shuffle with now playing's cover there after every track (and after
+many: the old failure came after about ten different albums).
