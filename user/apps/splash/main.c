@@ -136,8 +136,11 @@ int main(int argc, char **argv)
     size_t len = 0;
     init_ch = startup_handle(SR_USER + SPLASH_INIT_ROLE);
     pool_start(0);
-    if (has_arg(argc, argv, "--selftest"))
-        return splash_selftest(find_video(&mpg, &len) == OK ? mpg : NULL, len);
+    if (has_arg(argc, argv, "--selftest")) {
+        if (find_video(&mpg, &len) != OK)
+            mpg = NULL;
+        return splash_selftest(mpg, len);
+    }
     if (has_arg(argc, argv, "--alpha"))
         return splash_alpha_demo();
     /* The screen first: the console stays quiet until it gets it back, so

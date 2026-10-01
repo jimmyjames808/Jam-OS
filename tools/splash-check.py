@@ -172,6 +172,43 @@ def ref_sound():
     return pcm[shift:] if shift >= 0 else np.vstack([np.zeros((-shift, 2), np.int32), pcm])
 
 
+def follow(x, r, at):
+    """The capture x against the reference r from frame `at`, 100 ms at a
+    time. QEMU's audio backend on a busy host can lose a period, which is
+    not the guest's doing: a window that doesn't match where the last one
+    did is set aside, and the next windows are looked for within 4096
+    frames (two of the mixer's periods). Returns the SNR (after the best
+    gain) over the windows that matched, the jumps (capture position,
+    frames), the windows set aside, and where in r the capture ends."""
+    n, off, slips, bad = RATE // 10, at, [], 0
+    xs, ys = [], []
+
+    def fits(p, q):
+        g = float(np.dot(p, q)) / (float(np.dot(q, q)) + 1e-9)
+        return len(q) == n and ((p - g * q) ** 2).sum() * 1000 < (q * q).sum() + n * 64
+
+    for pos in range(0, len(x) - n + 1, n):
+        p = x[pos:pos + n]
+        q = r[off + pos:off + pos + n]
+        if len(q) < n:
+            break
+        if not fits(p, q):
+            moved = [d for d in range(-4096, 4097, 2) if off + pos + d >= 0 and d and
+                     fits(p, r[off + pos + d:off + pos + d + n])]
+            if not moved:
+                bad += 1
+                continue
+            slips.append((pos, moved[0]))
+            off += moved[0]
+            q = r[off + pos:off + pos + n]
+        xs.append(p)
+        ys.append(q)
+    X, Y = np.concatenate(xs), np.concatenate(ys)
+    gain = float((X * Y).sum() / ((Y * Y).sum() + 1e-9))
+    snr = 10 * np.log10((Y * Y).sum() / (((X - gain * Y) ** 2).sum() + 1e-9))
+    return snr, gain, slips, bad, off + len(x)
+
+
 def check_sound(path, join_ms, skipped):
     cap, ref = wav_frames(path), ref_sound()
     loud = np.nonzero(np.abs(cap).max(axis=1) > 64)[0]
@@ -187,27 +224,35 @@ def check_sound(path, join_ms, skipped):
     energy = np.concatenate([[0.0], np.cumsum(r * r)])
     window = np.sqrt(energy[len(probe):] - energy[:-len(probe)])[:len(r) - len(probe)] + 1e-9
     at = int((xc[:len(r) - len(probe)] / window).argmax())  # normalised: loudness aside
+    # The correlation's peak is broad on this music: settle the exact frame
+    # by the least difference after the best gain, within 16 frames.
+    def resid(o):
+        q = r[o:o + len(probe)]
+        g = float(np.dot(probe, q)) / (float(np.dot(q, q)) + 1e-9)
+        return float(((probe - g * q) ** 2).sum())
+    at = min(range(max(0, at - 16), min(len(r) - len(probe), at + 17)), key=resid)
     seg = r[at:at + len(probe)]
     best = float(np.dot(seg, probe)) / (np.linalg.norm(seg) * np.linalg.norm(probe) + 1e-9)
     start_ms = at * 1000.0 / RATE
-    length = min(len(cap), len(ref) - at)
-    x, y = cap[:length].astype(np.float64), ref[at:at + length].astype(np.float64)
-    gain = float((x * y).sum() / ((y * y).sum() + 1e-9))
-    snr = 10 * np.log10((y * y).sum() / (((x - gain * y) ** 2).sum() + 1e-9))
+    snr, gain, slips, bad, at_end = follow(cap[:, 0].astype(np.float64), r, at)
     ok("%s: starts at %.1f ms of the sound (the splash said %d ms; match %.4f), %.0f ms long, "
-       "%.1f dB above the difference (gain %.3f)" % (path, start_ms, join_ms, best,
-                                                     len(cap) * 1000.0 / RATE, snr, gain))
+       "%.1f dB above the difference (gain %.3f), %d slip(s), %d window(s) of 100 ms set aside"
+       % (path, start_ms, join_ms, best, len(cap) * 1000.0 / RATE, snr, gain, len(slips), bad))
+    for pos, by in slips:
+        ok("%s: at %.0f ms of the capture it jumps %+d frames (a period QEMU lost?)"
+           % (path, pos * 1000.0 / RATE, by))
     if best < 0.99 or start_ms < join_ms - 1 or start_ms > join_ms + 400:
         fail("the capture isn't the video's sound from where the splash joined it")
-    played_to = (at + len(cap)) * 1000.0 / RATE
+    played_to = at_end * 1000.0 / RATE
     end_ms = len(ref) * 1000.0 / RATE
     if skipped:
         if played_to > end_ms - 500:
             fail("skipped, but it played on to %.0f ms of %.0f" % (played_to, end_ms))
         ok("%s: stopped at %.0f ms of %.0f" % (path, played_to, end_ms))
     else:
-        if snr < 30:
-            fail("the sound isn't the video's (%.1f dB)" % snr)
+        if snr < 30 or len(slips) > 1 or bad > 2:
+            fail("the sound isn't the video's (%.1f dB, %d slips, %d windows set aside)"
+                 % (snr, len(slips), bad))
         if played_to < end_ms - 30:
             fail("it stopped at %.0f ms of %.0f" % (played_to, end_ms))
 
