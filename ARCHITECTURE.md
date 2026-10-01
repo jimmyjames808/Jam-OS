@@ -108,7 +108,9 @@ Every driver and service is a userspace process from the start.
   from then on (quiet: the log still goes to the ring and serial; a panic
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
-  shell only once the animation has played. The splash borrows the screen
+  shell only once the animation has played, or 20 s after the splash's
+  start, whichever comes first: a splash that hangs is killed then (the
+  console gets the screen back) and the log says so. The splash borrows the screen
   like any app (but not the keys), starts the video and its sound together
   once the mixer is up (2 s at most, then silently), plays to the end,
   holds the last frame at least 0.5 s and until the shell calls

@@ -36,6 +36,7 @@ static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr 
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 bool init_hidboot;
+bool init_splashhang;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -389,6 +390,7 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
         init_hidboot |= !strcmp(argv[i], "hidboot");
+        init_splashhang |= !strcmp(argv[i], "splashhang");
     }
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);

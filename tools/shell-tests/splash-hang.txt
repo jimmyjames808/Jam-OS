@@ -1,0 +1,11 @@
+# A splash that never finishes (the test word `splashhang`;
+# tools/splash-test.sh): init stops waiting for it 20 s after its start,
+# kills it (the console gets the screen back) and starts the shell anyway.
+wait 120 splash: hanging, as asked
+wait 60 init: the splash didn't finish in 20 s: starting the shell
+wait 60 jam>
+send echo hang-""ok
+wait hang-ok
+shot splash-hang
+send reboot -f
+wait reboot: resetting

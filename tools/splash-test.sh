@@ -2,7 +2,7 @@
 # The boot splash (user/apps/splash, docs/AS-PLAN.md) in QEMU, with
 # QEMU_SPLASH=1 (tools/qemu-test.sh leaves the splash out otherwise) and an
 # intel-hda + hda-output codec writing what it plays to a WAV file (as
-# tools/mixer-test.sh). Five boots:
+# tools/mixer-test.sh). Six boots:
 #   splash   a plain boot (OVMF's 1280x800: the video at 1x, centred), the
 #            serial script tools/shell-tests/splash.txt. Checked: the
 #            screen is all #1E1A1D when init starts (the kernel's quiet
@@ -25,6 +25,10 @@
 #            screen as init starts, no splash runs, the shell comes up.
 #   panic    `shell testpf`: a panic at boot with the screen quiet draws
 #            the red panic screen over it.
+#   hang     the test word `splashhang` (splash-hang.txt): a splash that
+#            never finishes; init starts the shell anyway, 20 s after the
+#            splash's start (not much later, never sooner), and the
+#            console has the screen back (its text in the screenshot).
 # It prints the time from the kernel's start to the first frame and to the
 # shell, with the splash and without (the nosplash boot).
 # QEMU_SMP passes through. Usage: tools/splash-test.sh <outdir>; exit 0 on PASS.
@@ -123,6 +127,19 @@ QEMU_SPLASH=1 QEMU_TIMEOUT=120 tools/qemu-test.sh "$out" panic shell testpf \
     > "$out/panic.out" 2>&1 || true
 need "$out/panic.log" "KERNEL PANIC"
 check red "$out/panic.png"
+
+# ---- hang: a splash that never finishes ---------------------------------------
+QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-hang.txt \
+    tools/qemu-test.sh "$out" hang shell splashhang > "$out/hang.out" 2>&1 ||
+    { echo "hang: the script failed"; tail -3 "$out/hang.out"; ok=0; }
+need "$out/hang.log" "init: hello from ring 3 (4 args: init shell splash splashhang)" \
+    "splash: hanging, as asked" "the splash didn't finish in 20 s: starting the shell" \
+    "console: the screen is back" "init: the shell is up"
+t_hang=$(at "$out/hang.log" "splash: hanging") t_gave=$(at "$out/hang.log" "didn't finish in")
+python3 -c "import sys; a, b = float(sys.argv[1]), float(sys.argv[2]); sys.exit(not 17 < b - a < 23)" \
+    "${t_hang:-0}" "${t_gave:-0}" ||
+    { echo "hang: the shell waited ${t_hang:-?} -> ${t_gave:-?} s, want about 20 s"; ok=0; }
+check text "$out/splash-hang.png"
 
 echo "splash: from the kernel's start: first frame ${t_first:-?} s, shell up ${t_shell:-?} s" \
      "with the splash, ${t_plain:-?} s without (nosplash)"

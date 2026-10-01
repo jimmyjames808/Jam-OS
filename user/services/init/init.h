@@ -31,6 +31,9 @@ bool init_shell(bool nousb, bool splash, const char *shell_arg);
 /* The option word "hidboot" (main.c): devmgr is started with it, so every
  * hid keeps its mouse in the boot protocol. */
 extern bool init_hidboot;
+/* The option word "splashhang" (main.c, a test's): bin/splash is started
+ * with --hang, so it never finishes (the shell's deadline is tested). */
+extern bool init_splashhang;
 
 
 /* ---- mounts.c -------------------------------------------------------------------- */
@@ -71,6 +74,13 @@ void     ctl_serve(unsigned who);
 void     splash_expect(void);
 /* The shell may start: no splash on this boot, or it has played, or ended. */
 bool     splash_played(void);
+/* When the shell stops waiting for it (uptime ns; DEADLINE_NEVER once it
+ * has played). */
+uint64_t splash_deadline(void);
+/* That deadline has passed: say so in the log, and the shell may start
+ * (the caller kills a splash still running, so the console gets the
+ * screen back). */
+void     splash_overdue(void);
 /* The splash's channel: ours bound on port with key (call splash_event on
  * its packets), *theirs to hand over as its SR_USER + SPLASH_INIT_ROLE. */
 status_t splash_channel(handle_t port, uint64_t key, handle_t *theirs);

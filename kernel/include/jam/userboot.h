@@ -45,7 +45,8 @@ status_t userboot_root_job(struct job **out);
  * argv[1]: a mode (e.g. "keytest") that init runs instead of init.cfg;
  * with arg, the nwords option words (at most USERBOOT_MAX_WORDS; the rest
  * are dropped) follow it as argv[2...] ("splash": the boot splash plays
- * first; "hidboot": hid keeps mice in the boot protocol). */
+ * first; "hidboot": hid keeps mice in the boot protocol; "splashhang": a
+ * test's, the splash never finishes). */
 /* timeout_s 0: wait for good (init's shell mode). */
 bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *const *words,
                        unsigned nwords);
