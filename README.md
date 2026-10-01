@@ -31,14 +31,14 @@ a real desktop PC, which is where every milestone is tested.
   shows up read-only at `/usb0`, `/usb1`, ... and `mount -w` makes it
   writable. Each boot's kernel log is saved to `/data/logs/` and can be
   read on another computer.
-- A console and a shell with about 70 commands, pipes, variables, Tab
+- A console and a shell with about 75 commands, pipes, variables, Tab
   completion and file commands (`ls cat cp mv rm mkdir write df mount`),
   plus a few apps: a Mandelbrot explorer, life, tetris, snake, minesweeper
   played with the mouse, and a graphical system monitor.
 - Kernel and user-space test suites, a stress test, a soak test (the
   kernel tests repeated in shuffled order under load, with sticks pulled
   and plugged) and a benchmark, runnable from the boot menu or the shell.
-- Sound (in progress): `beep`, and `play /data/song.wav` plays a PCM WAV
+- Sound: `beep`, and `play /data/song.wav` plays a PCM WAV
   file (8- to 32-bit, mono or stereo, any common rate) in the headphones;
   `play /data/song.mp3` plays an MP3 (CBR or VBR, ID3 tags skipped, decoded
   by dr_mp3) copied straight from the Mac; a mixer service plays several
@@ -122,11 +122,11 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3) |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |
-| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder) |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers) |
 | `docs/` | the documentation below; `docs/logo/`, the logo |
 
 ## Documentation
@@ -140,7 +140,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the real PC, and flashing the stick |
 | [docs/BENCH.md](docs/BENCH.md) | benchmark numbers from the PC |
-| [docs/A1-PLAN.md](docs/A1-PLAN.md) | the plan of the milestone in progress (audio) |
+| [docs/M8.6-PLAN.md](docs/M8.6-PLAN.md) | the plan of the next milestone (cleanup and polish) |
 | [docs/logo/README.md](docs/logo/README.md) | the logo's files and colours |
 
 ## Contributing
@@ -151,4 +151,4 @@ changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 ## Licence
 
 Jam OS is released under the [BSD 2-Clause License](LICENSE). The
-third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT).
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT; stb_image: MIT or public domain).
