@@ -1,6 +1,6 @@
 /* jamjar: the panels of the frame: the top bar, the library's three
  * columns and the help card. Now playing is in nowplaying.c, the jam in
- * simmer.c, and draw.c puts them together. Everything here reads the app
+ * bars.c, and draw.c puts them together. Everything here reads the app
  * and draws; nothing changes state. */
 #include "jamjar.h"
 
@@ -127,7 +127,9 @@ static void one_row(const struct app *a, int c, int row, const struct rect *rr)
     if (c == COL_ALBUM) {
         int sz = rr->h - 6 * u;
         uint32_t under = row == a->view.sel[c] ? (c == a->view.col ? C_BERRY1 : C_ROW) : C_PANEL;
-        art_draw(&scr.s, rr->x + 4 * u, rr->y + 3 * u, sz, a->lib.album[item].hash, under);
+        const struct lib_album *al = &a->lib.album[item];
+        art_cover(&scr.s, rr->x + 4 * u, rr->y + 3 * u, sz, al->hash, a->lib.track[al->first].path,
+                  under);
         x = rr->x + sz + 12 * u;
     }
     int rw = right ? text_width(u, right) + 12 * u : 0;
@@ -200,12 +202,12 @@ static const char *const help_keys[][2] = {
     { "s", "shuffle or in order" },
     { "r", "jam roulette: spin for an album" },
     { "z", "sleep timer: 15, 30, 60, 90 min, off" },
-    { "f", "the full jar" },
+    { "f", "the big view: the cover and the bars, full screen" },
     { "l", "show the track playing" },
     { "?  h", "this help" },
     { "q  Esc", "quit (the music plays on)" },
     { "mouse", "click selects, double-click plays, wheel scrolls" },
-    { "", "drag the volume; click the jam to splash it" },
+    { "", "drag the volume; click the cover to spin" },
 };
 
 void draw_help(const struct app *a)

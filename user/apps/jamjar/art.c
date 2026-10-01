@@ -7,8 +7,10 @@
  * hexagonal grid the way the Jam OS mark's drupelets are, grown from the
  * middle one neighbour at a time, turned by the hash, coloured between
  * the two fruits (now and then one gold berry, as in the mark), each
- * with a highlight. A label drawn once is kept (ART_CACHE of them, the
- * least recently used goes), so drawing it again is a copy.
+ * with a highlight. It is what an album shows when its tracks carry no
+ * cover picture (cover.c), or until the cover is read. Whatever is drawn
+ * at a size, the label or the cover scaled, is kept (ART_CACHE of them,
+ * the least recently used goes), so drawing it again is a copy.
  *
  * Also the mark itself, for the top bar: the seven drupelets of
  * docs/logo/jamos-mark.svg. */
@@ -113,19 +115,33 @@ static struct art_slot {
     uint64_t  hash;
     int       size;
     uint32_t  bg;
+    int       kind;      /* COVER_NONE: the jar label; else which cover image it came from */
     uint64_t  used;      /* the draw count when last used */
     uint32_t *px;        /* size * size, malloc'd; NULL: free slot */
 } cache[ART_CACHE];
 static uint64_t draws;
 
-void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint32_t bg)
+/* Draw kind (the label, or a cover image) of hash into o; false if a cover
+ * is gone meanwhile. */
+static bool render(const struct surf *o, int size, uint64_t hash, int kind, uint32_t bg)
+{
+    if (kind == COVER_NONE) {
+        label(o, 0, 0, size, hash, bg);
+        return true;
+    }
+    return cover_render(o, 0, 0, size, hash, kind, bg);
+}
+
+void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
+               uint32_t bg)
 {
     if (size < 4)
         return;
+    int kind = path ? cover_ready(hash, path, size, false) : COVER_NONE;
     struct art_slot *hit = NULL, *old = &cache[0];
     for (int i = 0; i < ART_CACHE && !hit; i++) {
         struct art_slot *c = &cache[i];
-        if (c->px && c->hash == hash && c->size == size && c->bg == bg)
+        if (c->px && c->hash == hash && c->size == size && c->bg == bg && c->kind == kind)
             hit = c;
         else if (!c->px || (old->px && c->used < old->used))
             old = c;
@@ -133,20 +149,27 @@ void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint3
     if (!hit) {
         free(old->px);
         old->px = malloc((size_t)size * (size_t)size * 4);
-        if (!old->px) {
-            label(s, x, y, size, hash, bg);   /* no room to keep it: draw it straight */
+        struct surf o = { old->px, size, size, size };
+        if (!old->px || !render(&o, size, hash, kind, bg)) {
+            free(old->px);
+            old->px = NULL;
+            label(s, x, y, size, hash, bg);   /* not kept: drawn straight */
             return;
         }
-        struct surf o = { old->px, size, size, size };
-        label(&o, 0, 0, size, hash, bg);
         old->hash = hash;
         old->size = size;
         old->bg = bg;
+        old->kind = kind;
         hit = old;
     }
     hit->used = ++draws;
     struct surf src = { hit->px, size, size, size };
     blit(s, x, y, &src, 0, 0, size, size);
+}
+
+void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint32_t bg)
+{
+    art_cover(s, x, y, size, hash, NULL, bg);
 }
 
 void art_mark(const struct surf *s, int x, int y, int size)

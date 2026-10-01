@@ -46,7 +46,8 @@ a real desktop PC, which is where every milestone is tested.
   of MP3s and WAVs in shuffle in the background while the shell goes on,
   and `jamjar` is the same player in a window: the library by artist and
   album, search, the controls with keys and the mouse, a sleep timer, and
-  jam at the bottom of the screen that moves with the music.
+  the albums' own covers (read from the MP3s' tags), and a spectrum
+  analyser across the bottom of the screen.
 - A boot splash: the logo animation with its sound while Jam OS starts
   (a key skips it; the `verbose` boot entry shows the text log instead).
 

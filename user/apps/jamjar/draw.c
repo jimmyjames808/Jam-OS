@@ -1,9 +1,9 @@
 /* jamjar: the whole frame, back to front: the background, the panels
- * (faded out as the full jar comes), the jam (its top rising from the
- * layout's place to most of the screen in the full jar), the big title
- * over the full jar, then the overlays: the roulette and the help. The
- * frame is drawn whole each time into scr.s; gfx_present sends only the
- * pixels that changed. */
+ * (faded out as the big view comes), the spectrum analyser (its rect
+ * growing from the layout's place to the lower 70 % of the screen in the
+ * big view), the cover and the names over the big view, then the
+ * overlays: the roulette and the help. The frame is drawn whole each time
+ * into scr.s; gfx_present sends only the pixels that changed. */
 #include "jamjar.h"
 
 struct rect app_jam(const struct app *a)
@@ -16,7 +16,7 @@ struct rect app_jam(const struct app *a)
     return r;
 }
 
-/* Over the full jar: the album's label, and the title, the artist and the
+/* Over the big view: the album's cover, and the title, the artist and the
  * album, big, in the middle. */
 static void big_title(const struct app *a)
 {
@@ -27,8 +27,8 @@ static void big_title(const struct app *a)
     if (!a->snap.path[0] || !slash)
         return;
     int art = lo->h * 16 / 100, y = lo->h * 5 / 100;
-    art_draw(&scr.s, (lo->w - art) / 2, y, art,
-             album_hash(a->snap.path, (size_t)(slash - a->snap.path)), C_BG);
+    art_cover(&scr.s, (lo->w - art) / 2, y, art,
+              album_hash(a->snap.path, (size_t)(slash - a->snap.path)), a->snap.path, C_BG);
     y += art + 18 * u;
     const struct track_names *n = &a->now;
     int ts = text_width(3 * u, n->title) > lo->w - 80 * u ? 2 * u : 3 * u;
@@ -76,7 +76,7 @@ void draw_frame(struct app *a, uint64_t t)
                     argb_pm(C_BG, (uint32_t)(a->full_t * 255.0f)));
     }
     struct rect jr = app_jam(a);
-    simmer_draw(&a->sim, &scr.s, &jr);
+    bars_draw(&a->bars, &scr.s, &jr);
     if (a->full_t > 0.6f)
         big_title(a);
     roulette_draw(&a->roul, &a->lib, lo, &scr.s);

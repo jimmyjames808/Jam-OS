@@ -1,7 +1,8 @@
 /* jamjar: the self-test (`run jamjar --selftest`): names, UTF-8, the
  * library and the search on a fixture laid out like the owner's (UTF-8
  * names, '_' for spaces, years before albums, files at odd depths), the
- * jar labels, the jam, the roulette, the layout for screens QEMU doesn't
+ * jar labels, the ID3 tags and the cover decoder, the spectrum analyser,
+ * the roulette, the layout for screens QEMU doesn't
  * have, and whole frames drawn at each of them. It needs no handle and no
  * screen: it draws into memory of its own. */
 #include "jamjar.h"
@@ -176,30 +177,48 @@ static void test_art(void)
               "  ... two albums' labels differ; the same one again is the same picture");
 }
 
-static void test_simmer(void)
+static void test_bars(void)
 {
-    static struct simmer s;
-    uint8_t loud[16], quiet[16] = { 0 };
-    for (int i = 0; i < 16; i++)
-        loud[i] = 230;
-    simmer_init(&s, 7);
-    for (int i = 0; i < 60; i++)
-        simmer_step(&s, quiet, 0, 1.0f / 30);
-    float low = s.rest[SIM_COLS / 2];
-    int bubbles = 0;
-    for (int i = 0; i < 60; i++) {
-        uint8_t *b = (i / 6) % 2 ? loud : quiet;   /* beats */
-        simmer_step(&s, b, (uint8_t)(b[0] / 2), 1.0f / 30);
-        for (int k = 0; k < SIM_BUBBLES; k++)
-            bubbles += s.bub[k].live;
+    static struct bars b;
+    uint8_t tone[BARS] = { 0 }, quiet[BARS] = { 0 };
+    tone[34] = 240;
+    tone[33] = tone[35] = 120;
+    bars_init(&b);
+    for (int i = 0; i < 30; i++)   /* half a second at 60 frames a second */
+        bars_step(&b, tone, true, 1.0f / 60);
+    int best = 0;
+    for (int i = 1; i < BARS; i++)
+        best = b.v[i] > b.v[best] ? i : best;
+    fun_check(best == 34 && b.v[34] > 0.7f && b.v[10] < 0.01f && b.peak[34] >= b.v[34],
+              "bars: a tone's bar rises fast and alone, its cap on top");
+    float top = b.peak[34];
+    for (int i = 0; i < 18; i++)   /* 0.3 s of quiet: the bar falls, the cap holds */
+        bars_step(&b, quiet, true, 1.0f / 60);
+    /* (The cap may have begun to fall a little: the normalisation eased
+     * the tone's bar down a touch while it played, so its hold began then.) */
+    bool ok = b.v[34] < top - 0.2f && b.peak[34] > top - 0.05f;
+    for (int i = 0; i < 60; i++)   /* a second more: the cap has fallen too */
+        bars_step(&b, quiet, true, 1.0f / 60);
+    fun_check(ok && b.peak[34] < top - 0.3f,
+              "  ... it falls at a steady rate; the cap holds half a second, then falls");
+    for (int i = 0; i < 30; i++)
+        bars_step(&b, tone, true, 1.0f / 60);
+    float last = 2.0f;
+    ok = true;
+    for (int i = 0; i < 120 && bars_busy(&b); i++) {   /* paused: everything to zero */
+        bars_step(&b, tone, false, 1.0f / 60);
+        ok &= b.v[34] <= last;
+        last = b.v[34];
     }
-    fun_check(s.rest[SIM_COLS / 2] > low + 0.2f && bubbles > 0,
-              "simmer: the music lifts the jam and its beats make bubbles");
-    simmer_splash(&s, 0.5f, 1.0f);
-    bool ok = simmer_busy(&s);
-    for (int i = 0; i < 600; i++)
-        simmer_step(&s, quiet, 0, 1.0f / 30);
-    fun_check(ok && !simmer_busy(&s), "  ... a splash moves it; quiet, it comes to rest");
+    fun_check(ok && !bars_busy(&b), "  ... nothing heard: every bar and cap falls to 0, smoothly");
+    bars_init(&b);
+    uint8_t tilt[BARS];
+    for (int i = 0; i < BARS; i++)
+        tilt[i] = (uint8_t)(i < 48 ? 150 : 60);   /* the top octave always quieter */
+    for (int i = 0; i < 60 * 30; i++)
+        bars_step(&b, tilt, true, 1.0f / 60);
+    fun_check(b.gain[60] > 1.2f && b.gain[10] < 1.0f && b.v[60] > 60.0f / 255 * 1.2f,
+              "  ... a band that is always quiet gets a gain (bounded), so it moves");
 }
 
 static void test_roulette(void)
@@ -235,7 +254,7 @@ static struct app app;
 static uint32_t *frame_px;   /* the back buffer for the frames: the biggest screen tested */
 
 /* A whole frame on a w x h screen, as the app draws it, playing a fixture
- * track with loud bands: the jam at the bottom is jam-coloured, the mark
+ * track with loud bands: the bars at the bottom are drawn, the mark
  * at the top left is drawn, and how long it took. */
 static void test_frame(int w, int h)
 {
@@ -259,22 +278,27 @@ static void test_frame(int w, int h)
     names_of_path(a->snap.path, &a->now);
     a->now_track = lib_find(&lib, a->snap.path);
     a->mx = a->my = -1;
-    simmer_init(&a->sim, 3);
-    uint8_t bands[16];
-    for (int i = 0; i < 16; i++)
-        bands[i] = (uint8_t)(220 - 9 * i);
+    bars_init(&a->bars);
+    uint8_t bands[BARS];
+    for (int i = 0; i < BARS; i++)
+        bands[i] = (uint8_t)(230 - 2 * i);
     for (int i = 0; i < 40; i++)
-        simmer_step(&a->sim, bands, 200, 1.0f / 30);
+        bars_step(&a->bars, bands, true, 1.0f / 30);
     uint64_t t0 = now();
     draw_frame(a, t0);
     uint64_t us = (now() - t0) / 1000;
-    uint32_t bottom = frame_px[(uint64_t)(h - 2) * w + w / 2];
+    /* A row low in the bars: more than a third of it is bars (not the
+     * background at its left edge). */
+    const uint32_t *row = frame_px + (uint64_t)(a->lo.jam.y + a->lo.jam.h * 70 / 100) * w;
+    int bars = 0;
+    for (int x = 0; x < w; x++)
+        bars += row[x] != row[1];
     const struct rect *m = &a->lo.mark;
     uint32_t centre = frame_px[(uint64_t)(m->y + m->h / 2) * w + m->x + m->w / 2];
     char what[96];
     snprintf(what, sizeof(what), "  ... a whole frame at %dx%d in %lu us", w, h,
              (unsigned long)us);
-    fun_check(bottom != C_BG && bottom != C_BG2 && centre == C_BERRY0, what);
+    fun_check(bars > w / 3 && centre == C_BERRY0, what);
 }
 
 /* One screen: the layout, then a whole frame drawn on it. */
@@ -314,7 +338,8 @@ int jamjar_selftest(void)
     test_library();
     test_view();
     test_art();
-    test_simmer();
+    test_covers();
+    test_bars();
     test_roulette();
     test_screen(1280, 720);
     test_screen(1280, 800);

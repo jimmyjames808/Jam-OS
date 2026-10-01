@@ -233,6 +233,10 @@ EXTRA_DEPS_fat   := $(FATFS_HDRS)
 # header) and the <string.h>/<stdlib.h> it includes, which are libos's
 # (user/apps/splash/port).
 EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
+# jamjar's album covers: stb_image (third_party/stb_image, vendored
+# unmodified, PNG and JPEG only) and the <stdlib.h>/<string.h> it includes,
+# which are libos's (user/apps/jamjar/port).
+EXTRA_CFLAGS_jamjar := -Ithird_party/stb_image -Iuser/apps/jamjar/port
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.

@@ -3,7 +3,7 @@
  * The player (bin/music) answers its channel between chunks of sound, so
  * a call can wait up to a mixer period (43 ms). The drawing must never
  * wait for that, so this thread makes every call: the commands the UI
- * queues (link_cmd), `levels` about 30 times a second, and `status` when
+ * queues (link_cmd), `spectrum` about 30 times a second, and `status` when
  * the track heard changes (and once a second, for the folder and the
  * note). What it learns goes into a snapshot that link_get copies out.
  *
@@ -119,19 +119,19 @@ static void ask_status(void)
     unlock();
 }
 
-/* `levels`; true if the track heard (or the state) changed. */
-static bool ask_levels(void)
+/* `spectrum`; true if the track heard (or the state) changed. */
+static bool ask_spectrum(void)
 {
     struct snap s;
     lock();
     s = L.snap;
     unlock();
-    uint8_t playing = 0, bands[16], level = 0;
+    uint8_t playing = 0, bands[BARS], level = 0;
     uint32_t serial = 0, sleep_s = 0;
     uint64_t el = 0, len = 0;
     int32_t vol = 0;
-    status_t st = music_levels_until(L.ch, now() + CALL_NS, &playing, &serial, &el, &len, &vol,
-                                     &sleep_s, bands, &level);
+    status_t st = music_spectrum_until(L.ch, now() + CALL_NS, &playing, &serial, &el, &len, &vol,
+                                       &sleep_s, bands, &level);
     bool changed = st == OK && (serial != s.serial || playing != s.playing);
     lock();
     L.snap.answered = st == OK;
@@ -175,7 +175,7 @@ static void link_main(void *arg)
             run(&c);
             did = true;
         }
-        if (ask_levels() || did || now() - last_status > STATUS_NS) {
+        if (ask_spectrum() || did || now() - last_status > STATUS_NS) {
             ask_status();
             last_status = now();
         }

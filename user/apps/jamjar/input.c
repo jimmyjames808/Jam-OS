@@ -293,12 +293,8 @@ static void press(struct app *a, int x, int y)
 {
     const struct layout *lo = &a->lo;
     int c, r;
-    if (a->full) {
-        struct rect jr = app_jam(a);
-        if (rect_has(&jr, x, y))
-            simmer_splash(&a->sim, (float)(x - jr.x) / (float)jr.w, 1.0f);
-        return;
-    }
+    if (a->full)
+        return;   /* the big view has nothing to click */
     if (row_at(a, x, y, &c, &r)) {
         click_row(a, c, r);
         return;
@@ -326,8 +322,6 @@ static void press(struct app *a, int x, int y)
         (void)command_key(a, 'r');
     } else if (rect_has(&lo->progress, x, y + 8 * lo->u) && rect_has(&lo->now, x, y)) {
         app_toast(a, "the player can't seek");
-    } else if (rect_has(&lo->jam, x, y)) {
-        simmer_splash(&a->sim, (float)x / (float)lo->w, 1.0f);
     }
 }
 

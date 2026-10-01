@@ -1,7 +1,8 @@
 /* jamjar: what its files share. The library (library.c) and its names
  * (names.c), what the columns show (view.c), the player as last heard
  * (link.c, a thread of its own), where everything goes (layout.c), the
- * jam at the bottom (simmer.c), the album art (art.c), the roulette
+ * spectrum analyser at the bottom (bars.c), the album art (art.c, cover.c,
+ * id3.c, stbi.c), the roulette
  * (roulette.c), the picture (draw.c, panels.c, nowplaying.c), keys and the mouse
  * (input.c), the loop (main.c) and the self-test (selftest.c).
  * docs/history/MUSIC-GUI.md is the design. */
@@ -24,6 +25,8 @@
 #define C_BERRY2  0xc8284fu
 #define C_ROSE    0xf06483u   /* the jam's lit rim, a focused row's edge */
 #define C_GOLD    0xd9a032u
+
+#define BARS 64   /* the spectrum analyser's bars: the player's spectrum bands */
 
 /* ---- names (names.c) -------------------------------------------------------------------- */
 
@@ -149,7 +152,7 @@ bool view_locate(struct view *v, const struct library *l, uint32_t t);
 
 /* ---- the player (link.c) ------------------------------------------------------------------ */
 
-/* The player as last heard: music.idl's `levels` many times a second and
+/* The player as last heard: music.idl's `spectrum` many times a second and
  * its `status` when the track changes. */
 struct snap {
     bool     link;                 /* there is a player to ask */
@@ -160,7 +163,7 @@ struct snap {
     uint64_t at;                   /* when elapsed_ms was true (uptime ns) */
     int32_t  volume;               /* centibels */
     uint32_t sleep_s;              /* 0: off */
-    uint8_t  bands[16], level;
+    uint8_t  bands[BARS], level;
     char     path[FS_PATH_MAX];    /* the track heard ("" none) */
     char     folder[FS_PATH_MAX];
     char     note[128];            /* why it stopped by itself */
@@ -198,53 +201,30 @@ struct layout {
     int         row_h, rows;        /* a list row's height; rows that fit */
     struct rect now, art, title, progress, btn[NBTNS], vol, mode;
     struct rect info;               /* the folder playing and a hint (h 0: no room) */
-    struct rect jam;                /* the simmer */
+    struct rect jam;                /* the spectrum analyser */
 };
 /* Everything on a w x h screen at UI scale ui. Nothing overlaps or leaves
  * the screen, from 1024x600 up. */
 void layout_make(struct layout *l, int w, int h, int ui);
 
-/* ---- the jam (simmer.c) ------------------------------------------------------------------ */
+/* ---- the spectrum analyser (bars.c) -------------------------------------------------- */
 
-#define SIM_COLS    256   /* surface points across the width */
-#define SIM_BUBBLES 48
-#define SIM_DROPS   96
-#define SIM_SEEDS   28
-
-/* Positions are fractions of the jam's rectangle: x across, a bubble's y
- * and a seed's d the depth between the surface (0) and the bottom (1), a
- * drop's y the height above the bottom (it may fly past 1); speeds per
- * second (a drop's vy is downward). r: a size, 0..1. */
-struct bubble { float x, y, r, vy, ph; bool live; };
-struct drop   { float x, y, vx, vy, r; bool live; };
-struct seed   { float x, d, r, drift; };
-
-struct simmer {
-    float         band[16];         /* smoothed, 0..1 */
-    float         avg[16];          /* a slow average: a jump above it is a beat */
-    float         level;
-    float         rest[SIM_COLS];   /* the surface's shape from the bands (0..1 of the rect) */
-    float         h[SIM_COLS];      /* ... plus the ripples on it */
-    float         v[SIM_COLS];      /* ... and their speed */
-    float         t;                /* seconds, for the slow waves */
-    struct bubble bub[SIM_BUBBLES];
-    struct drop   drop[SIM_DROPS];
-    struct seed   seed[SIM_SEEDS];
-    uint64_t      rng;
-    int           hgt;              /* the rect height the colours were made for */
-    uint32_t      lut[1024];        /* the jam's colour by depth below the surface */
-    int           lut_h;
+struct bars {
+    float v[BARS];      /* each bar's height now, 0..1 */
+    float peak[BARS];   /* its cap */
+    float hold[BARS];   /* seconds the cap still holds */
+    float pv[BARS];     /* the cap's extra fall speed */
+    float avg[BARS];    /* each band's long average (normalisation) */
+    float gain[BARS];   /* ... and the gain it gets from it */
 };
 
-void simmer_init(struct simmer *s, uint64_t seed);
-/* dt seconds on, with the player's bands and level (zeros: quiet). */
-void simmer_step(struct simmer *s, const uint8_t bands[16], uint8_t level, float dt);
+void bars_init(struct bars *b);
+/* dt seconds on, toward the player's bands (live false: toward zero). */
+void bars_step(struct bars *b, const uint8_t bands[BARS], bool live, float dt);
 /* Into r of the screen. */
-void simmer_draw(struct simmer *s, const struct surf *dst, const struct rect *r);
-/* A splash at x (0..1 of the width), strength 0..1. */
-void simmer_splash(struct simmer *s, float x, float strength);
-/* Still moving (frames needed even with no music). */
-bool simmer_busy(const struct simmer *s);
+void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r);
+/* Still moving (frames needed even with nothing heard). */
+bool bars_busy(const struct bars *b);
 
 /* ---- album art (art.c) ------------------------------------------------------------------- */
 
@@ -253,8 +233,63 @@ void art_flavour(uint64_t hash, uint32_t *c0, uint32_t *c1, char *name, size_t c
 /* The jar label of hash, size x size at x, y on s, over background bg
  * (cached: drawing the same one again is a copy). */
 void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint32_t bg);
+/* The album's real cover from the track at path, if it has one and it is
+ * read; its jar label until then, and for good if it has none. */
+void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
+               uint32_t bg);
 /* The Jam OS mark (the seven drupelets) in a box `size` wide. */
 void art_mark(const struct surf *s, int x, int y, int size);
+
+/* ---- album covers (id3.c, cover.c, stbi.c) ------------------------------------------- */
+
+/* id3.c: the picture in an MP3's ID3v2 tag. */
+#define ID3_HEADER 10
+struct id3_pic {
+    const uint8_t *data;    /* the image's bytes, inside the tag */
+    size_t         len;
+    uint8_t        type;    /* the APIC picture type: 3 is the front cover */
+    bool           png, jpeg;   /* what its first bytes say it is */
+};
+/* The whole tag's length (header, body, footer) from its first ID3_HEADER
+ * bytes; 0 if they are not an ID3v2.2-2.4 header. */
+size_t id3_tag_size(const uint8_t h[ID3_HEADER]);
+/* The cover in the tag tag[0..n) (n at least id3_tag_size): the front
+ * cover if there is one, else the first PNG or JPEG picture. The tag is
+ * changed in place (unsynchronisation undone). false: none. */
+bool   id3_cover(uint8_t *tag, size_t n, struct id3_pic *out);
+
+/* stbi.c: stb_image, PNG and JPEG, its memory from one bounded arena. */
+#define COVER_MAX_SIDE   2048u         /* a picture wider or taller is refused */
+#define COVER_MAX_PIXELS (2048u * 1600u)
+bool     stbi_size(const uint8_t *data, size_t n, int *w, int *h);
+/* RGBA pixels (in the arena; NULL: it doesn't decode or doesn't fit). */
+uint8_t *stbi_rgba(const uint8_t *data, size_t n, int *w, int *h);
+/* Empty the arena (every image decoded so far is gone). */
+void     stbi_arena_reset(void);
+/* n bytes of the arena for the caller (the tag read): NULL if they don't fit. */
+void    *stbi_arena_take(size_t n);
+/* cover.c: src (sw x sh of premultiplied 0xAARRGGBB, `stride` a row) to
+ * dw x dh: area averaging to make smaller, bilinear to make bigger. */
+void     cover_scale(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
+                     int dh);
+
+/* cover.c: covers read and decoded by a thread of its own, kept scaled
+ * per album. */
+#define COVER_SMALL 256u   /* every album's cover is kept this big ... */
+#define COVER_LARGE 512u   /* ... and the few drawn bigger at this size too */
+enum { COVER_NONE, COVER_SMALL_KIND, COVER_LARGE_KIND };
+/* A picture of w x h may be decoded (COVER_MAX_SIDE, COVER_MAX_PIXELS). */
+bool cover_size_ok(int w, int h);
+/* Start the thread (trace: say each cover read). */
+void cover_start(bool trace);
+/* Album `hash`'s cover, from the track at `path`, for drawing `size` wide:
+ * which image is ready (COVER_*); not ready ones are asked for (the newest
+ * asked first). `low`: ask behind everything else (reading ahead). */
+int  cover_ready(uint64_t hash, const char *path, int size, bool low);
+/* That image scaled to size x size with rounded corners over bg, into
+ * dst at (x, y); false if it is gone meanwhile. */
+bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash, int kind,
+                  uint32_t bg);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 
@@ -290,12 +325,12 @@ struct app {
     bool            view_ok;        /* view_init done */
     struct layout   lo;
     struct snap     snap;
-    struct simmer   sim;
+    struct bars     bars;
     struct roulette roul;
     bool            searching;      /* typing into the search box */
     bool            help;
     bool            ordered;        /* play in name order (s) */
-    bool            full;           /* the full jar (f) */
+    bool            full;           /* the big view (f) */
     float           full_t;         /* ... its transition, 0..1 */
     bool            quit;
     bool            trace;          /* say what happens (the tests) */
@@ -328,8 +363,8 @@ void app_play_album(struct app *a, uint32_t album, const char *first);
 /* The volume slider's value for x, in centibels. */
 int32_t vol_at(const struct layout *lo, int x);
 
-/* draw.c: the frame for time t into scr.s; where the jam is now (it rises
- * to 30 % of the screen in the full jar). */
+/* draw.c: the frame for time t into scr.s; where the bars are now (they
+ * grow to 70 % of the screen in the big view). */
 void draw_frame(struct app *a, uint64_t t);
 struct rect app_jam(const struct app *a);
 /* panels.c and nowplaying.c: the parts of the frame. */
@@ -340,5 +375,6 @@ void draw_now(struct app *a, uint64_t t);
 /* The elapsed time now, from the snapshot and the time since it. */
 uint64_t now_elapsed(const struct app *a, uint64_t t);
 
-/* selftest.c */
-int jamjar_selftest(void);
+/* selftest.c; covertest.c, its covers part */
+int  jamjar_selftest(void);
+void test_covers(void);

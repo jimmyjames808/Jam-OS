@@ -81,6 +81,10 @@ screen, nothing overlapping, at least a few rows in each list.
 
 ## Gimmicks
 
+(As first built; revision 2, at the end, replaced the simmer with a
+spectrum analyser, gave the albums their real covers and took the ring
+off the roulette.)
+
 1. **The simmer** (the visualizer): the bottom of the screen is jam in a
    pot. Its surface is a smooth curve through sixteen frequency bands of
    what is heard now (the bass in the middle, the highs out to both
@@ -109,6 +113,7 @@ screen, nothing overlapping, at least a few rows in each list.
 |---|---|---|
 | 6 | `prev () -> ()` | more than 3 s into the track heard: it starts over; else the track heard before it (the last 64 are kept); the one skipped back from plays next, then the shuffle goes on. ERR_BAD_STATE: not playing |
 | 7 | `play (u8[256] folder, u8[256] first, u8 order) -> (u32 found, u8 reading)` | `start` with options: `first` (a file under the folder, "" none) plays first; `order` 1: name order instead of shuffle |
+| 11 | `spectrum ()` | `levels` with 64 bands (revision 2) |
 | 8 | `levels () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[16] bands, u8 level)` | what a view polls many times a second: the state, a number that changes with each track heard, the times, and the sixteen bands and the loudness of what is heard now |
 | 9 | `pause (u8 on) -> (u8 paused)` | stop the mixer stream where it is (the ring keeps its frames), or go on |
 | 10 | `sleep (u32 seconds) -> (u32 seconds)` | stop after that long playing, the last 30 s fading out; 0: off |
@@ -206,3 +211,47 @@ mouse feel, the bands against real music, the owner's 177-file library.
   another character (drawn, rightly, as one box). The test sets mtools
   to 437. Whether macOS gives such a name a long name on the owner's
   stick is to be seen on the PC.
+
+## Revision 2 (the owner, after the first look on the PC)
+
+The owner liked it, and asked for three changes.
+
+**Real covers.** Every one of his MP3s carries its album's cover in its
+ID3v2 tag (an APIC frame; PNG, about 640x640). An album now shows that
+cover wherever its picture appears (the albums column, now playing, the
+big view, the roulette), and the jar label stays as what an album shows
+without one, or while its cover is read.
+- `id3.c` finds the picture: ID3v2.2 (PIC), 2.3 and 2.4, unsynchronised
+  tags and frames, a data length indicator, the text encodings of the
+  description, the front cover chosen over other pictures, compressed or
+  encrypted frames passed over; every length checked (the file is
+  untrusted). The image's kind comes from its own first bytes.
+- `stbi.c` decodes it: stb_image v2.30 (third_party/stb_image, public
+  domain or MIT), PNG and JPEG only, after `stbi_info` has said its size
+  (2048x1600 at most), with all of its memory from one 40 MiB arena that
+  is emptied after each picture; a picture that needs more fails.
+- `cover.c` does it on a thread of its own: the UI asks for every album
+  it draws (the newest asked first, so what is on the screen comes
+  first), and for every album of the library once, behind those. It
+  reads the tag (6 MiB at most), crops the picture to its middle square,
+  scales it down by area averaging in premultiplied alpha to 256 px
+  (kept for 128 albums, the least recently drawn going first) and, for
+  an album drawn bigger, to 512 px (kept for 2). art.c keeps each size
+  drawn, with rounded corners.
+
+**A spectrum analyser instead of the simmer.** The jam, its bubbles,
+seeds and splashes are gone; `bars.c` draws 64 bars across the width, log
+spaced from 40 Hz to 16 kHz (the player's new `spectrum` call, 64 bands
+of a sixth of an octave from a 2048-point FFT; bands narrower than a bin,
+below about 300 Hz, are read between the two nearest bins). Each bar
+blends a quarter of each neighbour, gets a bounded per-band gain from its
+long average (so the top octave moves), rises fast and falls at a steady
+1.25 heights a second; a cream cap holds 0.5 s, then falls faster and
+faster; with nothing heard everything falls to zero. Rounded tops, a gap,
+a crimson-to-gold gradient (gold from 80 % of the full height), a faint
+reflection, drawn across the thread
+pool. `f` is now the big view: the cover and the names over the bars,
+which take the lower 70 % of the screen.
+
+**The roulette lands without a ring** round the album it chose: it lands,
+shows the name, and plays.

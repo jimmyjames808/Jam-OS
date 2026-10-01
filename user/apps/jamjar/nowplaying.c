@@ -201,14 +201,6 @@ static void names(const struct app *a)
     char line[NAME_MAX + 16];
     snprintf(line, sizeof(line), "%s%s%s", n->album, n->year[0] ? "  " : "", n->year);
     text_clip(&scr.s, r->x, y, u, C_DIM, w, line);
-    y += TEXT_H(u) + 6 * u;
-    char flavour[64];
-    uint32_t c0, c1;
-    const char *slash = strrchr(s->path, '/');
-    art_flavour(album_hash(s->path, slash ? (size_t)(slash - s->path) : 0), &c0, &c1, flavour,
-                sizeof(flavour));
-    snprintf(line, sizeof(line), "%s jam", flavour);
-    text_clip(&scr.s, r->x, y, u, C_FAINT, w, line);
 }
 
 /* Under the controls, if there is room: where the music comes from, and
@@ -248,8 +240,8 @@ void draw_now(struct app *a, uint64_t t)
     const struct rect *ar = &lo->art;
     const char *slash = strrchr(a->snap.path, '/');
     if (a->snap.path[0] && slash) {
-        art_draw(&scr.s, ar->x, ar->y, ar->w, album_hash(a->snap.path,
-                 (size_t)(slash - a->snap.path)), C_PANEL);
+        art_cover(&scr.s, ar->x, ar->y, ar->w, album_hash(a->snap.path,
+                  (size_t)(slash - a->snap.path)), a->snap.path, C_PANEL);
     } else {
         panel(&scr.s, ar->x, ar->y, ar->w, ar->h, ar->w / 7, C_ROW, 256);
         art_mark(&scr.s, ar->x + ar->w / 5, ar->y + ar->h / 5, ar->w * 3 / 5);

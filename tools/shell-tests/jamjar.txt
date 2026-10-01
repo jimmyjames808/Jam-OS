@@ -3,10 +3,12 @@
 # audio devices, a USB keyboard and mouse). At OVMF's 1280x800: the mouse
 # targets below are that layout's (`noaccel`: a pixel a count).
 #   1. the self-test; `run jamjar` has no player: it says so, shows the library
-#   2. the shell's `jamjar`: play an album by keys, next, back, pause and
-#      on, volume; search for the 1 kHz tone and play it: the bands' loudest
-#      is band 8; help, the roulette, the full jar, the sleep timer
-#   3. the mouse: the next button, a volume drag, a splash, a double-click
+#   2. the shell's `jamjar`: the covers read from the tags (PNG in 2.3 and
+#      2.4 tags, a JPEG, one 611x640; none in a WAV; an oversized and a
+#      garbled one refused); play an album by keys, next, back, pause and
+#      on, volume; search for the 1 kHz tone and play it: the loudest bar is
+#      34; help, the roulette, the big view, the sleep timer
+#   3. the mouse: the next button, a volume drag, a double-click
 #   4. q: the music plays on
 wait 120 Jam OS shell
 wait jam>
@@ -21,7 +23,7 @@ wait jam>
 # ---- 1: no player -----------------------------------------------------------------------
 send run jamjar trace
 wait jamjar: no player channel
-wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
 sleep 1
 shot jamjar-noplayer
 type x
@@ -32,10 +34,19 @@ wait jam>
 
 # ---- 2: keys ----------------------------------------------------------------------------
 send jamjar trace noaccel
-wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
+seen 60 2017_4-44/Kill_Jay_Z.mp3: 640x640 in
+seen 60 2024_Vultures_1/Carnival.mp3: 600x600 in
+seen 60 Twisted_Fantasy/Dark_Fantasy.mp3: 611x640 in
+seen 60 2001_Discovery/One_More_Time.mp3: 640x640 in
+seen 60 1000_Hz_Tone.wav has no ID3v2 tag: no cover
+seen 60 2019_Oversized/Too_Big.mp3 has a picture too big to decode: no cover
+seen 60 2019_Garbled/Garbled.mp3 has a picture that
 sleep 1
 shot jamjar-idle
-# artists: All, Daft Punk, JAY-Z, ...: down twice is JAY-Z; Tab to its album; Enter plays it
+# artists: All, Broken, Daft Punk, JAY-Z, ...: down three times is JAY-Z;
+# Tab to its album; Enter plays it
+type \e[B
 type \e[B
 type \e[B
 type \t
@@ -43,7 +54,7 @@ sleep 0.3
 type \r
 wait jamjar: play 4-44 (shuffle)
 wait 30 jamjar: hearing /data/music/OnTheSpot/JA
-wait 20 jamjar: levels: loudest band
+wait 20 jamjar: spectrum: loudest bar
 sleep 2
 shot jamjar-playing
 type n
@@ -72,8 +83,8 @@ shot jamjar-search
 type \r
 wait jamjar: play Calibration (shuffle)
 wait 30 jamjar: hearing /data/music/OnTheSpot/Test_Tones/2020_Calibration/1000_Hz_Tone.wav
-wait 20 jamjar: levels: loudest band 8
-wait 20 jamjar: levels: loudest band 8
+wait 20 jamjar: spectrum: loudest bar 34
+wait 20 jamjar: spectrum: loudest bar 34
 type /
 type \e
 type \e
@@ -87,7 +98,7 @@ sleep 2
 shot jamjar-roulette
 wait 20 jamjar: play
 wait 30 jamjar: hearing
-# the full jar
+# the big view
 sleep 2
 type f
 sleep 2
@@ -129,17 +140,6 @@ monitor mouse_move -60 0
 sleep 0.3
 monitor mouse_button 0
 wait 10 jamjar: click 900,473
-# the jam (from y 632): a splash
-monitor mouse_move -3000 -3000
-sleep 1
-monitor mouse_move 640 760
-sleep 0.6
-monitor mouse_button 1
-sleep 0.1
-monitor mouse_button 0
-wait 10 jamjar: click 640,760
-sleep 0.3
-shot jamjar-splash
 # a double-click on the first track row (tracks: x 462..696, row 0 y 114..139)
 monitor mouse_move -3000 -3000
 sleep 1

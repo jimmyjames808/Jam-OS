@@ -5,13 +5,15 @@
 # real sound), and a library made by this script on the stick's data
 # partition, laid out as the owner's is (OnTheSpot/Artist/Year_Album/
 # Song_Name.mp3, UTF-8 names): six made-up songs (a kick, a bass line,
-# chords, hats and an arpeggio, 20 s each, as MP3) and a 1 kHz test tone
-# (WAV). tools/shell-tests/jamjar.txt (JAMJAR_HD=1:
+# chords, hats and an arpeggio, 20 s each, as MP3) with made-up covers in
+# their ID3 tags (PNG in 2.3 and 2.4 tags, one 611x640, and a JPEG), a
+# 1 kHz test tone (WAV, no cover), and two MP3s whose covers must be
+# refused (a PNG said to be 5000x5000, a garbled JPEG). tools/shell-tests/jamjar.txt (JAMJAR_HD=1:
 # tools/shell-tests/jamjar-hd.txt, at the PC's 2560x1440) runs the
 # self-test, jamjar without the player (`run jamjar`), then with it (the
 # shell's `jamjar`, `trace` on, so it says each command and what the
 # bands show): plays an album by keys, next, back, pause, volume, search,
-# the 1 kHz tone (the loudest band must be band 8, 0.9-1.3 kHz), help,
+# the 1 kHz tone (the loudest bar must be bar 34, 0.96-1.05 kHz), help,
 # roulette, the full jar, the sleep timer, mouse clicks on a button, the
 # volume, the jam and a track row; quits, and the music must still be
 # playing (`music status`). Screenshots: <outdir>/jamjar-*.png.
@@ -101,10 +103,77 @@ for i in range(6):
 t = np.arange(int(rate * 30)) / rate
 wav("tone.wav", 0.3 * np.sin(2 * np.pi * 1000 * t))
 PY
-for i in 0 1 2 3 4 5; do
-    ffmpeg -hide_banner -loglevel error -y -i "$tmp/song$i.wav" -c:a libmp3lame -b:a 128k \
-        "$tmp/song$i.mp3"
-done
+# The covers: made-up pictures (PIL), as the owner's MP3s carry theirs:
+# PNG, about 640x640 (one 611x640), and one JPEG.
+python3 - "$tmp" <<'PY' || { echo "jamjar: needs Python's PIL to draw the covers"; exit 1; }
+import sys
+from PIL import Image, ImageDraw
+out = sys.argv[1]
+def grad(w, h, a, b):
+    im = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(im)
+    for y in range(h):
+        t = y / (h - 1)
+        d.line([(0, y), (w, y)], fill=tuple(int(a[k] + (b[k] - a[k]) * t) for k in range(3)))
+    return im, d
+im, d = grad(640, 640, (10, 10, 12), (40, 40, 44))           # 4-44: black, a white frame, 4 bars
+d.rectangle([40, 40, 599, 599], outline=(235, 235, 230), width=6)
+for k in range(4):
+    d.rectangle([150 + 90 * k, 200, 190 + 90 * k, 440], fill=(235, 235, 230))
+im.save(out + "/cover-444.png")
+im, d = grad(600, 600, (60, 58, 56), (20, 18, 16))           # Vultures: orange rings, a JPEG
+for k in range(6):
+    r = 40 + 40 * k
+    d.ellipse([300 - r, 300 - r, 300 + r, 300 + r], outline=(240, 140 - 15 * k, 30), width=10)
+im.save(out + "/cover-vultures.jpg", quality=90)
+im, d = grad(611, 640, (200, 20, 40), (90, 0, 20))           # MBDTF: red, a gold diamond
+d.polygon([(305, 120), (520, 320), (305, 520), (90, 320)], fill=(220, 170, 50))
+d.polygon([(305, 200), (440, 320), (305, 440), (170, 320)], fill=(150, 10, 40))
+im.save(out + "/cover-mbdtf.png")
+im, d = grad(640, 640, (30, 30, 120), (160, 40, 160))        # Discovery: a grid
+for k in range(0, 640, 64):
+    d.line([(k, 0), (k, 639)], fill=(250, 220, 250), width=3)
+    d.line([(0, k), (639, k)], fill=(250, 220, 250), width=3)
+d.ellipse([220, 220, 420, 420], fill=(250, 210, 60))
+im.save(out + "/cover-discovery.png")
+PY
+mp3() {   # mp3 <song> <cover or -> <id3 version> <out>
+    if [ "$2" = - ]; then
+        ffmpeg -hide_banner -loglevel error -y -i "$tmp/$1.wav" -c:a libmp3lame -b:a 128k \
+            -write_id3v2 0 "$tmp/$4"
+    else
+        ffmpeg -hide_banner -loglevel error -y -i "$tmp/$1.wav" -i "$tmp/$2" -map 0:a -map 1:v \
+            -c:a libmp3lame -b:a 128k -c:v copy -id3v2_version "$3" \
+            -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" "$tmp/$4"
+    fi
+}
+mp3 song0 cover-444.png 3 song0.mp3
+mp3 song1 cover-444.png 3 song1.mp3
+mp3 song2 cover-vultures.jpg 3 song2.mp3
+mp3 song3 cover-mbdtf.png 3 song3.mp3
+mp3 song4 cover-mbdtf.png 3 song4.mp3
+mp3 song5 cover-discovery.png 4 song5.mp3
+mp3 song0 - - plain.mp3
+# Two that must keep their jar labels: a PNG whose header says 5000x5000
+# (refused before decoding), and a JPEG that is garbage after its first
+# bytes; each an ID3v2.3 tag of one APIC put before a plain MP3.
+python3 - "$tmp" <<'PY'
+import struct, sys, random
+out = sys.argv[1]
+def ss(n):
+    return bytes([(n >> 21) & 127, (n >> 14) & 127, (n >> 7) & 127, n & 127])
+def tagged(name, img, mime):
+    data = b"\x00" + mime + b"\x00" + b"\x03" + b"\x00" + img
+    frame = b"APIC" + struct.pack(">I", len(data)) + b"\x00\x00" + data
+    tag = b"ID3\x03\x00\x00" + ss(len(frame)) + frame
+    open("%s/%s" % (out, name), "wb").write(tag + open(out + "/plain.mp3", "rb").read())
+big = bytearray(open(out + "/cover-444.png", "rb").read())
+big[16:24] = struct.pack(">II", 5000, 5000)
+tagged("oversized.mp3", bytes(big), b"image/png")
+rnd = random.Random(5)
+tagged("garbled.mp3", b"\xff\xd8\xff\xe0" + bytes(rnd.randrange(256) for _ in range(30000)),
+       b"image/jpeg")
+PY
 
 cp build/jamos.img "$stick"
 img="$stick@@64M"
@@ -112,7 +181,8 @@ L="music/OnTheSpot"
 for d in music "$L" "$L/JAŸ-Z" "$L/JAŸ-Z/2017_4-44" "$L/¥\$" "$L/¥\$/2024_Vultures_1" \
          "$L/Kanye_West" "$L/Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy" \
          "$L/Daft_Punk" "$L/Daft_Punk/2001_Discovery" "$L/Test_Tones" \
-         "$L/Test_Tones/2020_Calibration"; do
+         "$L/Test_Tones/2020_Calibration" "$L/Broken" "$L/Broken/2019_Oversized" \
+         "$L/Broken/2019_Garbled"; do
     mmd -i "$img" "::/$d" || { echo "jamjar: can't make $d on the stick image"; exit 1; }
 done
 put() {
@@ -125,6 +195,8 @@ put song3.mp3 "Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy/Runaway.mp3"
 put song4.mp3 "Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy/Dark_Fantasy.mp3"
 put song5.mp3 "Daft_Punk/2001_Discovery/One_More_Time.mp3"
 put tone.wav "Test_Tones/2020_Calibration/1000_Hz_Tone.wav"
+put oversized.mp3 "Broken/2019_Oversized/Too_Big.mp3"
+put garbled.mp3 "Broken/2019_Garbled/Garbled.mp3"
 rm -rf "$tmp"
 
 devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16 \
@@ -138,7 +210,7 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_IMAGE="$stick" \
 rm -f "$stick"
 log="$out/$name.log"
 # What the trace said, for the report.
-tr -d '\r' < "$log" | grep -aE "jamjar: (levels|frames|library)" | head -20 || true
+tr -d '\r' < "$log" | grep -aE "jamjar: (spectrum|frames|library|cover)" | head -20 || true
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

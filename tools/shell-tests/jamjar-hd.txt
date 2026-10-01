@@ -1,7 +1,7 @@
 # jamjar at the PC's 2560x1440 (tools/jamjar-test.sh with JAMJAR_HD=1):
 # the same library and player as jamjar.txt, by keys only, for the
 # screenshots at the PC's size (UI scale 2): the library, playing, the
-# search, the help, the roulette and the full jar; then q, and the music
+# search, the help, the roulette and the big view; then q, and the music
 # plays on.
 wait 120 Jam OS shell
 wait jam>
@@ -9,10 +9,13 @@ seen 60 init: /data mounted
 seen 60 music: ready
 send jamjar trace
 wait 30 jamjar: 2560x1440, reading /data/music
-wait 30 jamjar: library /data/music: 5 artists, 5 albums, 7 tracks
+wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
+seen 60 2001_Discovery/One_More_Time.mp3: 640x640 in
+seen 60 Twisted_Fantasy/Dark_Fantasy.mp3: 611x640 in
 sleep 1
 shot jamjar-hd-idle
-# Kanye West (the fourth artist) and his album, in order this time
+# Kanye West (the fifth row) and his album, in order this time
+type \e[B
 type \e[B
 type \e[B
 type \e[B
@@ -21,7 +24,8 @@ type s
 type \r
 wait jamjar: play My Beautiful Dark Twisted Fantasy (in order)
 wait 30 jamjar: hearing /data/music/OnTheSpot/Kanye_West/
-wait 20 jamjar: levels: loudest band
+seen 30 Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy/Dark_Fantasy.mp3: 611x640 in
+wait 20 jamjar: spectrum: loudest bar
 sleep 3
 shot jamjar-hd-playing
 type /

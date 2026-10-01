@@ -5,9 +5,10 @@
  *   ... root=/usb0/music       the folder to read (default /usb0/music if
  *                              there is one, else /data/music)
  *   ... hz=60                  frames a second while anything moves
- *   ... trace                  say every command and, once a second, what
- *                              the bands show (the QEMU test reads it)
+ *   ... trace                  say every command, every cover read, and once a
+ *                              second the loudest bar (the QEMU test reads it)
  *   ... noaccel                the mouse without acceleration (tests)
+ *   ... nocovers               jar labels only: no covers read from the tags
  *   run jamjar --selftest      the library, names, search, art and layout
  *
  * It is a remote control and a view of the background player (bin/music,
@@ -41,6 +42,8 @@ static void read_library(struct app *a)
     if (lib_step(l, 48) == ERR_SHOULD_WAIT || !l->ready)
         return;
     a->view_ok = l->ntracks && view_init(&a->view, l);
+    for (uint32_t i = 0; i < l->nalbums; i++)   /* every cover read, behind those drawn */
+        (void)cover_ready(l->album[i].hash, l->track[l->album[i].first].path, COVER_SMALL, true);
     if (a->view_ok)
         view_scroll(&a->view, a->lo.rows);
     a->now_track = a->snap.path[0] ? lib_find(l, a->snap.path) : -1;
@@ -67,9 +70,9 @@ static void hear(struct app *a, uint64_t t)
         app_toast(a, "%s", msg);
     if (a->trace && a->snap.playing == 1 && t - a->trace_at > NS_PER_S) {
         int best = 0;
-        for (int i = 1; i < 16; i++)
+        for (int i = 1; i < BARS; i++)
             best = a->snap.bands[i] > a->snap.bands[best] ? i : best;
-        say("jamjar: levels: loudest band %d (%u), level %u\n", best, a->snap.bands[best],
+        say("jamjar: spectrum: loudest bar %d (%u), level %u\n", best, a->snap.bands[best],
             a->snap.level);
         a->trace_at = t;
     }
@@ -78,9 +81,9 @@ static void hear(struct app *a, uint64_t t)
 /* Everything that moves by itself, on to time t; true if a frame soon is wanted. */
 static bool animate(struct app *a, uint64_t t, float dt)
 {
-    static const uint8_t quiet[16];
+    static const uint8_t quiet[BARS];
     bool heard = a->snap.playing == 1;
-    simmer_step(&a->sim, heard ? a->snap.bands : quiet, heard ? a->snap.level : 0, dt);
+    bars_step(&a->bars, heard ? a->snap.bands : quiet, heard, dt);
     float goal = a->full ? 1.0f : 0.0f;
     if (a->full_t != goal) {
         float step = dt / 0.6f;
@@ -90,7 +93,7 @@ static bool animate(struct app *a, uint64_t t, float dt)
     int64_t album = roulette_step(&a->roul, t);
     if (album >= 0)
         app_play_album(a, (uint32_t)album, NULL);
-    return heard || simmer_busy(&a->sim) || a->roul.on || a->full_t != goal || !a->lib.ready ||
+    return heard || bars_busy(&a->bars) || a->roul.on || a->full_t != goal || !a->lib.ready ||
            a->searching || (a->toast[0] && t - a->toast_at < TOAST_NS + NS_PER_S);
 }
 
@@ -123,6 +126,8 @@ static int run(int argc, char **argv)
             root = argv[i] + 5;
     link_start(startup_handle(SR_USER + 4));
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
+    if (!has_arg(argc, argv, "nocovers"))
+        cover_start(a->trace);
     status_t st = gfx_open_on(C_BG);
     if (st != OK) {
         say("jamjar: can't borrow the screen (%s)\n", status_str(st));
@@ -130,7 +135,7 @@ static int run(int argc, char **argv)
     }
     (void)gfx_mouse_open(!has_arg(argc, argv, "noaccel"));   /* no mouse: keys still work */
     layout_make(&a->lo, scr.w, scr.h, scr.ui);
-    simmer_init(&a->sim, now());
+    bars_init(&a->bars);
     if ((st = lib_begin(&a->lib, root)) != OK) {
         a->lib.ready = true;
         a->lib.err = st;

@@ -84,7 +84,8 @@ void roulette_draw(const struct roulette *r, const struct library *l, const stru
             continue;
         bool centre = d > -0.5f && d <= 0.5f;
         int sz = centre ? big : size;
-        art_draw(s, x - sz / 2, cy - sz / 2, sz, l->album[r->tile[i]].hash, ROUL_BG);
+        const struct lib_album *al = &l->album[r->tile[i]];
+        art_cover(s, x - sz / 2, cy - sz / 2, sz, al->hash, l->track[al->first].path, ROUL_BG);
         float far = d < 0 ? -d : d;
         if (!centre)   /* the further from the pointer, the darker (corners kept round) */
             panel(s, x - sz / 2, cy - sz / 2, sz, sz, sz / 7, ROUL_BG,
@@ -98,7 +99,6 @@ void roulette_draw(const struct roulette *r, const struct library *l, const stru
     if (!r->landed)
         return;
     const struct lib_album *a = &l->album[r->tile[r->target]];
-    ring_aa(s, (float)cx, (float)cy, (float)big * 0.78f, 3.0f * u, C_GOLD, 200);
     struct rect t = { 0, cy + big / 2 + 24 * u, lo->w, 40 * u };
     text_in(s, &t, 2 * u, C_CREAM, a->name);
     t.y += 44 * u;
