@@ -269,9 +269,15 @@ static uint32_t *frame_px;   /* the back buffer for the frames: the biggest scre
  * at the top left is drawn, and how long it took. */
 static void test_frame(int w, int h)
 {
-    if (!frame_px && !(frame_px = big_alloc(2560ull * 1440 * 4))) {
-        fun_check(false, "frame: no memory to draw into");
-        return;
+    if (!frame_px) {
+        if (!(frame_px = big_alloc(2560ull * 1440 * 4))) {
+            fun_check(false, "frame: no memory to draw into");
+            return;
+        }
+        /* Its pages committed now, so the times below are the frames' own,
+         * as the app's are after its first frame (a page's first touch is
+         * slow in QEMU). */
+        memset(frame_px, 0, 2560ull * 1440 * 4);
     }
     scr.s = (struct surf){ frame_px, w, h, w };
     scr.w = w;
