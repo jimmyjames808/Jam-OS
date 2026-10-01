@@ -5,7 +5,8 @@
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
- * (abi/idl/initctl.idl).
+ * (abi/idl/initctl.idl); settings.c the clock and the volumes from
+ * /data/etc/settings.
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -93,6 +94,18 @@ void     shell_flush_log(uint64_t deadline);
  * exits (DEVMGR_SHUTDOWN), waited for until deadline; if it doesn't, its
  * job is killed. It is not started again. OK, or what went wrong. */
 status_t shell_stop_devmgr(uint64_t deadline);
+
+/* ---- settings.c: /data/etc/settings (<settings.h>) ------------------------------- */
+
+/* Set the kernel's clock from the real-time clock, as the settings say it
+ * keeps time (the defaults without /data), with their time zone. */
+void     settings_clock(void);
+/* The settings' volumes to the mixer's master (audioctl) and to the music
+ * player (music), if there are any; nothing waits long. */
+void     settings_master(handle_t audioctl);
+void     settings_music(handle_t music);
+/* /data has no settings file: write one with the defaults, commented. */
+void     settings_first_file(void);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 
