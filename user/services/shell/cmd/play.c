@@ -3,8 +3,11 @@
  * time (the file is never loaded whole), turned into 16-bit if they are 8,
  * 24 or 32, and written through <audio.h>, which makes mono stereo and
  * resamples to 48 kHz. Ctrl+C stops it within a chunk, with audio_close's
- * 5 ms fade. -v sets the volume for this file only (today the device's
- * gain, put back afterwards). */
+ * 5 ms fade. -v sets the volume for this file only (its mixer stream's).
+ * -s prints how the playing went afterwards (a line the owner can judge
+ * real hardware by: underruns and late periods should be 0):
+ *   play: stats: 12345 frames, 0 underruns, 0 late periods, mixer >= 128 ms ahead,
+ *   ring >= 1190 ms, slowest read 3 ms, 0 limited, out 48 kHz 24-bit */
 #include <audio.h>
 #include <wav.h>
 #include "sh.h"
@@ -48,9 +51,10 @@ static const char *mss(uint64_t frames, uint32_t rate, char *buf, size_t size)
     return buf;
 }
 
-/* The samples of w from f into a, CHUNK frames at a time. */
+/* The samples of w from f into a, CHUNK frames at a time; *slowest: the
+ * longest one file_read took (ns). */
 static status_t stream(struct jfile *f, const struct wav_info *w, struct audio_out *a,
-                       uint64_t *done)
+                       uint64_t *done, uint64_t *slowest)
 {
     uint8_t *raw = malloc((size_t)CHUNK * w->frame_bytes);
     int16_t *pcm = w->bits == 16 ? NULL : malloc((size_t)CHUNK * w->channels * 2);
@@ -65,7 +69,10 @@ static status_t stream(struct jfile *f, const struct wav_info *w, struct audio_o
         if (n > CHUNK)
             n = CHUNK;
         size_t got = 0;
+        uint64_t t0 = now();
         st = file_read(f, w->data_offset + *done * w->frame_bytes, raw, n * w->frame_bytes, &got);
+        if (now() - t0 > *slowest)
+            *slowest = now() - t0;
         if (st != OK)
             break;
         n = got / w->frame_bytes;
@@ -92,14 +99,46 @@ static status_t stream(struct jfile *f, const struct wav_info *w, struct audio_o
     return st;
 }
 
+/* The -s line (see the top). */
+static void say_stats(struct audio_out *a, uint64_t slowest)
+{
+    struct audio_stats st;
+    status_t r = audio_stats(a, &st);
+    if (r != OK) {
+        sh_say("play: stats: %s\n", status_str(r));
+        return;
+    }
+    char lead[24] = "-", ring[24] = "-", out[24] = "closed";
+    if (st.min_lead != UINT32_MAX)
+        snprintf(lead, sizeof(lead), "%u", (unsigned)(st.min_lead * 1000ull / AUDIO_RATE));
+    if (st.ring_min != UINT64_MAX)
+        snprintf(ring, sizeof(ring), "%lu", (unsigned long)(st.ring_min * 1000 / AUDIO_RATE));
+    if (st.bits)
+        snprintf(out, sizeof(out), "48 kHz %u-bit", st.bits);
+    sh_say("play: stats: %lu frames, %u underruns, %u late periods, mixer >= %s ms ahead, "
+           "ring >= %s ms, slowest read %lu ms, %u limited, out %s\n",
+           (unsigned long)st.played, st.underruns, st.late, lead, ring,
+           (unsigned long)(slowest / NS_PER_MS), st.limited, out);
+}
+
 SH_CMD(play)
 {
     int cb = 0, i = 1;
-    bool vol = argc > 1 && !strcmp(argv[1], "-v");
-    if (vol)
-        i = 3;
-    if (argc != i + 1 || (vol && !parse_db(argv[2], &cb))) {
-        sh_tty("usage: play [-v dB] <file.wav>   (-v -20: 20 dB down; at most 0)\n");
+    bool vol = false, stats = false;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "-s")) {
+            stats = true;
+        } else if (!strcmp(argv[i], "-v") && i + 1 < argc && parse_db(argv[i + 1], &cb)) {
+            vol = true;
+            i++;
+        } else {
+            i = argc;   /* usage */
+            break;
+        }
+    }
+    if (argc != i + 1) {
+        sh_tty("usage: play [-s] [-v dB] <file.wav>   (-v -20: 20 dB down, at most 0; -s: "
+               "how it went)\n");
         return 2;
     }
     const char *arg = argv[i];
@@ -148,10 +187,12 @@ SH_CMD(play)
     }
     if (vol && (st = audio_set_volume(&a, cb)) != OK)
         sh_tty("play: can't set the volume (%s): playing at `hda gain`\n", status_str(st));
-    uint64_t done = 0;
-    st = stream(&f, &w, &a, &done);
+    uint64_t done = 0, slowest = 0;
+    st = stream(&f, &w, &a, &done, &slowest);
     if (st == OK)
         st = audio_drain(&a);
+    if (stats)
+        say_stats(&a, slowest);
     audio_close(&a);
     file_close(&f);
     if (st == ERR_CANCELED) {

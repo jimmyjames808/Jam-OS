@@ -120,6 +120,7 @@ int audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const c
     if (st != OK)
         return st;
     a->open = true;
+    a->ring_min = UINT64_MAX;
     a->rate = rate;
     a->channels = channels;
     audio_rs_init(&a->rs, rate, AUDIO_RATE, channels);
@@ -144,7 +145,13 @@ long audio_write(struct audio_out *a, const void *frames, size_t nframes)
         if (!n && !used)
             return ERR_INTERNAL;
         /* Blocks while the ring is full: the mixer takes a period at a
-         * time, so room comes within 85 ms while it plays. */
+         * time, so room comes within 43 ms while it plays. */
+        if (a->s.started) {
+            uint64_t r = __atomic_load_n(&a->s.hdr->read, __ATOMIC_ACQUIRE);
+            uint64_t queued = a->s.write > r ? a->s.write - r : 0;
+            if (queued < a->ring_min)
+                a->ring_min = queued;
+        }
         status_t st = mixer_write(&a->s, out, n, now() + SOON, &done);
         if (st != OK)
             return st;
@@ -209,6 +216,15 @@ int audio_set_volume(struct audio_out *a, int centibels)
     if (!a->open)
         return ERR_BAD_STATE;
     return mixer_set_volume(&a->s, centibels, now() + SOON, NULL);
+}
+
+int audio_stats(struct audio_out *a, struct audio_stats *st)
+{
+    if (!a->open)
+        return ERR_BAD_STATE;
+    *st = (struct audio_stats){ .ring_min = a->ring_min, .ring_frames = a->s.frames };
+    return audio_stream_stats_until(a->s.ch, now() + SOON, &st->underruns, &st->late,
+                                    &st->min_lead, &st->limited, &st->bits, &st->played);
 }
 
 void audio_close(struct audio_out *a)

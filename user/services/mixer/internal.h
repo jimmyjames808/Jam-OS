@@ -22,7 +22,14 @@
 #define IDLE_PERIODS   12u     /* every playing stream empty this long: close the output */
 #define PERIOD_MAX     MIX_BLOCK_MAX   /* frames: the most a driver's period may hold */
 #define PERIOD_GUESS   2048u   /* frames: a period before the output was first opened */
-#define RING_FRAMES    16384u  /* each stream's ring: 341 ms */
+#define LATE_GUARD     256u    /* frames (5.3 ms): a period end with less than this
+                                * written ahead counts as late. The controller fetches
+                                * up to a FIFO (SD_FIFOS bytes, the driver's open line)
+                                * ahead of its position, so frames written closer than
+                                * that may already have been fetched as silence */
+#define RING_FRAMES    65536u  /* each stream's ring: 1.37 s, a program's read-ahead
+                                * (`play` reads its file in chunks between writes, so
+                                * a slow read is covered by what its ring holds) */
 #define HIST           4u      /* periods remembered per stream for `played` */
 
 /* Port keys: these, or a stream's slot with its generation. */
@@ -53,6 +60,8 @@ struct stream {
     uint64_t    read;              /* frames taken: ours, published to the header */
     uint64_t    written;           /* the header's `write` when last looked at */
     uint32_t    underruns;
+    uint32_t    late;              /* periods the mixer was late for while it played */
+    uint32_t    min_lead;          /* the least written ahead of the play position (frames) */
     uint32_t    limited;           /* periods the limiter turned down while it played */
     uint32_t    empty;             /* periods in a row it gave nothing */
     bool        idle;              /* its header's `idle` is set */
@@ -81,7 +90,7 @@ struct out {
     uint64_t written;      /* frames mixed into the ring since the open */
     uint64_t played;       /* the play position last heard of */
     uint64_t retry_at;     /* a failed open: when to try again (0: no retry due) */
-    uint64_t opens, late;  /* times opened; frames the mixer was late for */
+    uint64_t opens, late;  /* times opened; periods the mixer was late for */
     struct mix_limiter lim;
     uint32_t seed;         /* the 16-bit output's dither */
 };

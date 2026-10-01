@@ -11,9 +11,10 @@
  * until OUT_LEAD periods are written ahead of the play position again.
  * So a frame taken from a client is heard OUT_LEAD - 1 to OUT_LEAD
  * periods (128-171 ms) later, plus the limiter's MIX_LOOKAHEAD (1 ms).
- * An answer later than a whole period has cost the driver's
- * clear-behind silence: counted (`late`), and mixing goes on from the
- * play position.
+ * An answer that comes with less than LATE_GUARD frames still ahead is
+ * counted (`late`, per stream for `play -s`); past the play position it
+ * has cost the driver's clear-behind silence, and mixing goes on from
+ * the play position.
  *
  * The format: the largest sample size the driver's DAC takes (hda.info's
  * pcm, which `hda bits` caps), asked for at every open. At 20, 24 or 32
@@ -176,12 +177,27 @@ static void period_end(struct mixer *m, uint64_t pos)
     struct out *o = &m->out;
     uint32_t pf = o->period;
     o->played = pos;
-    if (pos > o->written) {
-        o->late += pos - o->written;
-        printf("mixer: %lu frames late: the driver played silence\n",
-               (unsigned long)(pos - o->written));
-        o->written = (pos + pf - 1) / pf * pf;
+    uint64_t ahead = o->written > pos ? o->written - pos : 0;
+    for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
+        struct stream *s = &m->s[i];
+        if (!s->used || !s->playing)
+            continue;
+        if (ahead < s->min_lead)
+            s->min_lead = (uint32_t)ahead;
+        if (ahead < LATE_GUARD)
+            s->late++;
     }
+    if (ahead < LATE_GUARD) {
+        o->late++;
+        if (pos > o->written)
+            printf("mixer: %lu frames late: the driver played silence\n",
+                   (unsigned long)(pos - o->written));
+        else
+            printf("mixer: late: only %lu frames were ahead of the play position\n",
+                   (unsigned long)ahead);
+    }
+    if (pos > o->written)
+        o->written = (pos + pf - 1) / pf * pf;
     uint64_t target = pos / pf * pf + (uint64_t)OUT_LEAD * pf;
     while (o->written < target)
         mix_period(m);
@@ -313,9 +329,10 @@ void out_close(struct mixer *m, const char *why)
             drain_check(m, &m->s[i], 0, OK);
     }
     if (was && why)
-        printf("mixer: output closed (%s); %lu frames mixed, %lu limited, peak %d%%\n", why,
-               (unsigned long)o->written, (unsigned long)o->lim.limited,
-               (int)((int64_t)o->lim.peak * 100 / MIX_FULL));
+        printf("mixer: output closed (%s); %lu frames mixed, %lu limited, %lu late period(s), "
+               "peak %d%%\n", why, (unsigned long)o->written, (unsigned long)o->lim.limited,
+               (unsigned long)o->late, (int)((int64_t)o->lim.peak * 100 / MIX_FULL));
+    o->late = 0;
 }
 
 static bool any_audible(const struct mixer *m)

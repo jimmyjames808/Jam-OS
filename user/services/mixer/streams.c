@@ -88,8 +88,10 @@ void stream_drop(struct mixer *m, struct stream *s, const char *why)
     jam_handle_close(s->ch);   /* its persistent binding goes with our only handle */
     jam_handle_close(s->vmo);
     jam_handle_close(s->event);
-    printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s), %u limited "
-           "period(s)\n", s->id, s->name, why, (unsigned long)s->read, s->underruns, s->limited);
+    printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s), %u late "
+           "period(s), least ahead %u ms, %u limited period(s)\n", s->id, s->name, why,
+           (unsigned long)s->read, s->underruns, s->late,
+           s->min_lead == UINT32_MAX ? 0 : s->min_lead * 1000 / MIXER_RATE, s->limited);
     uint32_t gen = s->gen;
     *s = (struct stream){ .gen = gen };
 }
@@ -187,6 +189,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     s->used = true;
     s->id = m->next_id++;
     s->gain = MIX_UNITY;
+    s->min_lead = UINT32_MAX;
     set_name(s, name);
     *out_stream = theirs;
     *out_ring = ring;
@@ -270,12 +273,27 @@ static status_t do_levels(void *ctx, int32_t *out_volume, int32_t *out_master,
     return OK;
 }
 
+static status_t do_stats(void *ctx, uint32_t *out_underruns, uint32_t *out_late,
+                         uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits,
+                         uint64_t *out_played)
+{
+    struct call *c = ctx;
+    *out_underruns = c->s->underruns;
+    *out_late = c->s->late;
+    *out_min_lead = c->s->min_lead;
+    *out_limited = c->s->limited;
+    *out_bits = c->m->out.ch ? c->m->out.bits : 0;
+    *out_played = stream_played(c->s, c->m->out.ch ? c->m->out.played : 0);
+    return OK;
+}
+
 static const struct audio_ops stream_ops = {
     .stream_start = do_start,
     .stream_stop = do_stop,
     .stream_position = do_position,
     .stream_set_volume = do_stream_volume,
     .stream_levels = do_levels,
+    .stream_stats = do_stats,
 };
 
 /* stream_drain: answered from drain_check once the frames are heard. */

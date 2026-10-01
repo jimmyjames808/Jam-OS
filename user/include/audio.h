@@ -63,6 +63,22 @@ struct audio_out {
     bool                open;
     unsigned            rate, channels;   /* of what the caller writes */
     struct audio_rs     rs;
+    uint64_t            ring_min;   /* the fewest frames queued in the ring at a write once
+                                     * started (UINT64_MAX: none yet) */
+};
+
+/* How an output's playing has gone (audio_stats), for `play -s`. */
+struct audio_stats {
+    uint32_t underruns;   /* mixer periods it ran short in (the writes fell behind) */
+    uint32_t late;        /* periods the mixer itself was late for meanwhile */
+    uint32_t min_lead;    /* frames: the least the mixer was ahead of the speaker
+                           * (UINT32_MAX: no period yet) */
+    uint32_t limited;     /* periods the mixer's limiter turned the sum down */
+    uint32_t bits;        /* the device's sample size now (0: the output is closed) */
+    uint64_t played;      /* frames heard (48 kHz) */
+    uint64_t ring_min;    /* frames: the fewest queued in our own ring at a write once
+                           * started (UINT64_MAX: none yet) */
+    uint32_t ring_frames; /* its size */
 };
 
 /* Open the output for frames of `rate` Hz and `channels` (1 or 2)
@@ -75,7 +91,7 @@ int  audio_open(struct audio_out *a, unsigned rate, unsigned channels);
 /* The same, with the stream named `name` for `vol` (15 characters). */
 int  audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const char *name);
 /* Write nframes interleaved frames, blocking while the stream's ring is
- * full (until the mixer takes a period, 85 ms). Returns nframes, or a
+ * full (until the mixer takes a period, 43 ms). Returns nframes, or a
  * negative status (ERR_PEER_CLOSED: the mixer died, so the stream is gone:
  * close and open again; ERR_TIMED_OUT: nothing was taken for 5 s). Write a
  * few thousand frames at a time to stay responsive (Ctrl+C) and far
@@ -94,7 +110,9 @@ int  audio_drain(struct audio_out *a);
  * the device's gain (`hda gain`) added up (audio.idl's stream_levels). */
 int  audio_set_volume(struct audio_out *a, int centibels);
 int  audio_get_volume(struct audio_out *a, int *centibels);
+/* How it has gone so far (the mixer's audio.stream_stats, and ours). */
+int  audio_stats(struct audio_out *a, struct audio_stats *st);
 /* Stop and close. What was written and the mixer has not taken yet is
  * dropped with a 5 ms fade (no click); what it took plays out (its lead,
- * 170 ms at most). audio_drain first to hear it all. */
+ * 171 ms at most). audio_drain first to hear it all. */
 void audio_close(struct audio_out *a);
