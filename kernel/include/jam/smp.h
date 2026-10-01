@@ -18,9 +18,13 @@ void apboot_reserve(void);
  * report any that did not, then give the loader's memory back to the
  * allocator if every CPU came up. */
 void smp_start_aps(const struct boot_info *bi);
-/* Print one line per CPU with its type and tick count, plus a topology
- * summary. Returns false if any CPU's tick rate is far off. */
-bool smp_report(uint64_t window_ms);
+/* Count every CPU's timer ticks over window_ms, then print one line per
+ * CPU with its type and tick count, plus a topology summary. Returns
+ * false if any CPU's tick rate is far off (judged against the window as
+ * measured). sleep: the window is slept through (a thread running next to
+ * user space), else spun through (udelay: the boot before the scheduler
+ * has other work). */
+bool smp_report(uint64_t window_ms, bool sleep);
 
 /* For the tests: the trampoline's page (0 if the memory map had none),
  * whether this boot started the APs with it, how many of its transition

@@ -152,6 +152,20 @@ static bool splash_boot(void)
     return cmdline_has("shell") || !mode_word_given();
 }
 
+/* The timer check (smp_report: every CPU's ticks over 1 s). Test,
+ * benchmark and regression entries run it first, synchronously: their
+ * RESULTS box starts with it. A shell boot (the everyday one) runs it in
+ * a kernel thread next to user space instead, so that second is not spent
+ * before init starts; its lines come when it ends, and its result counts
+ * only if init ever does. */
+static bool timer_check_ok = true;   /* the thread's result: written before it exits */
+
+static void timer_check_thread(void *arg)
+{
+    (void)arg;
+    timer_check_ok = smp_report(1000, true);
+}
+
 _Noreturn static void kmain_stage2(void *arg)
 {
     (void)arg;
@@ -189,8 +203,17 @@ _Noreturn static void kmain_stage2(void *arg)
     irq_enable();
     kexec_load_stored();   /* the next boot's kernel into its region (kexec.h) */
 
-    kprintf("measuring ticks on every CPU for 1 s...\n");
-    bool ok = smp_report(1000);
+    bool nousb = cmdline_has("nousb");
+    bool shell = cmdline_has("shell") || nousb || !mode_word_given();
+    bool ok = true;
+    struct thread *timer_check = NULL;
+    if (shell) {
+        kprintf("measuring ticks on every CPU for 1 s, next to user space...\n");
+        timer_check = thread_create("timer check", timer_check_thread, NULL, PRIO_DEFAULT);
+    } else {
+        kprintf("measuring ticks on every CPU for 1 s...\n");
+        ok = smp_report(1000, false);
+    }
     /* PCI enumeration and the resource tree, once every CPU is online
      * (the vector allocator spreads MSIs over them). */
     pci_init();
@@ -225,8 +248,6 @@ _Noreturn static void kmain_stage2(void *arg)
      * RESULTS box only comes if init ever ends). "nousb" (the safe mode
      * entry) is shell mode with devmgr leaving USB controllers alone. Test,
      * benchmark and crash entries don't start it. */
-    bool nousb = cmdline_has("nousb");
-    bool shell = cmdline_has("shell") || nousb || !mode_word_given();
     /* soak[=minutes] (the Soak test entry): a plain boot whose shell runs
      * `soak <minutes> halt` by itself. An option, like verbose: it
      * is not a mode word. */
@@ -252,6 +273,10 @@ _Noreturn static void kmain_stage2(void *arg)
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", words, nwords);
+    if (timer_check) {
+        thread_join(timer_check);
+        ok &= timer_check_ok;
+    }
     /* init has ended (in shell mode only if something went wrong): if the
      * console never took the screen the splash's quiet is still on, and
      * the RESULTS below would not be drawn. */
