@@ -31,6 +31,8 @@ _Static_assert(sizeof(struct sys_info) == 144, "sys_info layout");
 _Static_assert(sizeof(struct cpu_stat) == 40, "cpu_stat layout");
 _Static_assert(sizeof(struct proc_stat) == 80, "proc_stat layout");
 _Static_assert(sizeof(struct rtc_time) == 16, "rtc_time layout");
+_Static_assert(sizeof(struct wall_clock) == 56 && offsetof(struct wall_clock, zone) == 24,
+               "wall_clock layout");
 _Static_assert(CPU_TYPE_PERFORMANCE == CORE_PERFORMANCE && CPU_TYPE_EFFICIENCY == CORE_EFFICIENCY,
                "cpu_stat.type is enum core_type");
 

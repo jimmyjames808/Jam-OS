@@ -218,6 +218,15 @@
 # The CMOS real-time clock (waits out an update in progress, at most ~10 ms).
 133 rtc_read          status    handle_t root, struct rtc_time *out
 
+# the wall clock (struct wall_clock, <jam/abi.h>) ----------------------------
+# The time now: no handle needed (it is the uptime plus an offset).
+# ERR_NOT_FOUND: no clock (no RTC reading at boot and nobody set it).
+134 wallclock_get         status    struct wall_clock *out
+# Set it: in->utc_ns is UTC at uptime in->uptime_ns (not in the future),
+# in->zone the zone's name (printable ASCII, NUL-terminated; "" keeps the
+# one set before); flags and reserved 0. RIGHT_MANAGE on a RES_ROOT handle.
+135 wallclock_set         status    handle_t root, const struct wall_clock *in
+
 # kexec: a fresh kernel started without the firmware (<jam/kexec.h>) -------
 # Both need RIGHT_MANAGE on a RES_ROOT handle, as reboot does.
 # Replace the stored kernel (the copy of this boot's kernel and bootfs the

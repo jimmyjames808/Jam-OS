@@ -94,6 +94,8 @@ int64_t sysc_sys_info(handle_t root, uint64_t out);
 int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap);
 int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap);
 int64_t sysc_rtc_read(handle_t root, uint64_t out);
+int64_t sysc_wallclock_get(uint64_t out);
+int64_t sysc_wallclock_set(handle_t root, uint64_t in);
 int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
                         uint64_t len, uint32_t flags);
 int64_t sysc_kexec_reboot(handle_t root);

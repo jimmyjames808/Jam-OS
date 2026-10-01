@@ -621,6 +621,22 @@ jam_rtc_read:
     ret
     .size jam_rtc_read, . - jam_rtc_read
 
+    .globl jam_wallclock_get
+    .type jam_wallclock_get, @function
+jam_wallclock_get:
+    mov $SYS_wallclock_get, %eax
+    syscall
+    ret
+    .size jam_wallclock_get, . - jam_wallclock_get
+
+    .globl jam_wallclock_set
+    .type jam_wallclock_set, @function
+jam_wallclock_set:
+    mov $SYS_wallclock_set, %eax
+    syscall
+    ret
+    .size jam_wallclock_set, . - jam_wallclock_set
+
     .globl jam_kexec_load
     .type jam_kexec_load, @function
 jam_kexec_load:

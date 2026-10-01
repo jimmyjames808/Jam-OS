@@ -404,6 +404,16 @@ static int64_t call_rtc_read(const struct syscall_frame *f)
     return sysc_rtc_read((handle_t)f->args[0], f->args[1]);
 }
 
+static int64_t call_wallclock_get(const struct syscall_frame *f)
+{
+    return sysc_wallclock_get(f->args[0]);
+}
+
+static int64_t call_wallclock_set(const struct syscall_frame *f)
+{
+    return sysc_wallclock_set((handle_t)f->args[0], f->args[1]);
+}
+
 static int64_t call_kexec_load(const struct syscall_frame *f)
 {
     return sysc_kexec_load((handle_t)f->args[0], (handle_t)f->args[1], (handle_t)f->args[2],
@@ -490,6 +500,8 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_cpu_stat] = call_cpu_stat,
     [SYS_proc_list] = call_proc_list,
     [SYS_rtc_read] = call_rtc_read,
+    [SYS_wallclock_get] = call_wallclock_get,
+    [SYS_wallclock_set] = call_wallclock_set,
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
 };

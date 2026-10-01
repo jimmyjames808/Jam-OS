@@ -390,3 +390,20 @@ struct rtc_time {
     uint8_t  status_b;              /* register B as read (bit 2 binary, bit 1 24-hour) */
     uint64_t uptime_ns;             /* when it was read */
 };
+
+/* wallclock_get / wallclock_set: the wall clock. The kernel keeps UTC as an offset
+ * from its uptime. At boot it has only the real-time clock's reading,
+ * taken as UTC (WALLCLOCK_RTC: the RTC keeps UTC or, on a PC that also runs
+ * Windows, local time, and says nothing about which); init then sets it
+ * (WALLCLOCK_SET) from the RTC as its settings say, with the time zone every
+ * program shows times in: a name libos understands (<wallclock.h>). */
+#define WALLCLOCK_ZONE_MAX 32
+struct wall_clock {
+    int64_t  utc_ns;                /* ns since 1970-01-01 00:00 UTC */
+    uint64_t uptime_ns;             /* the uptime utc_ns is at */
+    uint32_t flags;                 /* WALLCLOCK_* (wallclock_set: 0) */
+    uint32_t reserved;              /* 0 */
+    char     zone[WALLCLOCK_ZONE_MAX];  /* the time zone's name, NUL-terminated ("": none given) */
+};
+#define WALLCLOCK_RTC 1u   /* the RTC's reading at boot as if UTC: nobody has set the clock */
+#define WALLCLOCK_SET 2u   /* set by wallclock_set: UTC */
