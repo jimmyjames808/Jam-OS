@@ -1,4 +1,4 @@
-/* System calls 110-117: what the console and the shell need
+/* System calls 110-118: what the console and the shell need
  * from the kernel. The objects are in <jam/console_svc.h>; the rules every
  * sysc_* follows are in sysc.h.
  *
@@ -11,12 +11,13 @@
  *   reboot            RIGHT_MANAGE
  *   serial_open       RIGHT_READ
  *   serial_write      RIGHT_WRITE
- * and on the objects: klog_read and serial_read need RIGHT_READ.
+ * and on the objects: klog_read, klog_name and serial_read need RIGHT_READ.
  *
  * Each new object costs its creator's job one JOB_LIMIT_HANDLES unit
  * (like a resource), on top of the handle slot. */
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
+#include <jam/kexec.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/list.h>
@@ -36,6 +37,7 @@
 #define CHUNK         512     /* bytes copied per step (on the stack) */
 #define KLOG_READ_MAX (64 * 1024)
 #define SERIAL_IO_MAX 4096
+#define KLOG_NAME_MAX 32      /* klog_name: what kexec keeps (KEXEC_NAME) */
 
 /* A charged small object: its job gets one handle unit back on destroy. */
 static status_t charge(struct job *job)
@@ -329,8 +331,7 @@ void screen_owner_drop(struct kobject *owner)
 
 /* ---- the system calls -------------------------------------------------------- */
 
-/* The caller's root resource with `need`. */
-static status_t get_root(struct handle_table *t, handle_t root, rights_t need)
+status_t sysc_get_root(struct handle_table *t, handle_t root, rights_t need)
 {
     struct kobject *obj;
     status_t st = handle_get(t, root, OBJ_RESOURCE, need, &obj, NULL);
@@ -345,7 +346,7 @@ static status_t get_root(struct handle_table *t, handle_t root, rights_t need)
 int64_t sysc_klog_open(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_READ);
+    status_t st = sysc_get_root(t, root, RIGHT_READ);
     if (st != OK)
         return st;
     struct kobject *r;
@@ -375,10 +376,24 @@ int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap
     return st == OK ? (int64_t)done : st;
 }
 
+int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
+{
+    SYSC_TABLE(t);
+    struct kobject *r;
+    status_t st = handle_get(t, reader, OBJ_KLOG, RIGHT_READ, &r, NULL);
+    if (st != OK)
+        return st;
+    kobject_unref(r);   /* only the right was needed */
+    char name[KLOG_NAME_MAX];
+    if (len == 0 || len >= sizeof(name) || copy_from_user(name, uname, len) != OK)
+        return ERR_INVALID_ARGS;
+    return kexec_set_log_name(name, len);
+}
+
 int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint64_t uowner)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_WRITE);
+    status_t st = sysc_get_root(t, root, RIGHT_WRITE);
     if (st != OK)
         return st;
     struct fb_info info;
@@ -412,7 +427,7 @@ int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint
 int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
     if (st != OK)
         return st;
     char cmd[64];
@@ -430,7 +445,7 @@ int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
 int64_t sysc_reboot(handle_t root)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
     if (st != OK)
         return st;
     kprintf("reboot: asked by %s\n", process_name(process_current()));
@@ -440,7 +455,7 @@ int64_t sysc_reboot(handle_t root)
 int64_t sysc_serial_open(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_READ);
+    status_t st = sysc_get_root(t, root, RIGHT_READ);
     if (st != OK)
         return st;
     struct kobject *s;
@@ -477,7 +492,7 @@ int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = get_root(t, root, RIGHT_WRITE);
+    status_t st = sysc_get_root(t, root, RIGHT_WRITE);
     if (st != OK)
         return st;
     if (len > SERIAL_IO_MAX)

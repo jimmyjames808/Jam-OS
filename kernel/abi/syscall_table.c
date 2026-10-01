@@ -367,6 +367,11 @@ static int64_t call_serial_write(const struct syscall_frame *f)
     return sysc_serial_write((handle_t)f->args[0], f->args[1], f->args[2]);
 }
 
+static int64_t call_klog_name(const struct syscall_frame *f)
+{
+    return sysc_klog_name((handle_t)f->args[0], f->args[1], f->args[2]);
+}
+
 static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
 {
     return sysc_dma_cap_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
@@ -397,6 +402,17 @@ static int64_t call_proc_list(const struct syscall_frame *f)
 static int64_t call_rtc_read(const struct syscall_frame *f)
 {
     return sysc_rtc_read((handle_t)f->args[0], f->args[1]);
+}
+
+static int64_t call_kexec_load(const struct syscall_frame *f)
+{
+    return sysc_kexec_load((handle_t)f->args[0], (handle_t)f->args[1], (handle_t)f->args[2],
+                           f->args[3], f->args[4], (uint32_t)f->args[5]);
+}
+
+static int64_t call_kexec_reboot(const struct syscall_frame *f)
+{
+    return sysc_kexec_reboot((handle_t)f->args[0]);
 }
 
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
@@ -467,12 +483,15 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_serial_open] = call_serial_open,
     [SYS_serial_read] = call_serial_read,
     [SYS_serial_write] = call_serial_write,
+    [SYS_klog_name] = call_klog_name,
     [SYS_dma_cap_bus_master] = call_dma_cap_bus_master,
     [SYS_channel_write_rights] = call_channel_write_rights,
     [SYS_sys_info] = call_sys_info,
     [SYS_cpu_stat] = call_cpu_stat,
     [SYS_proc_list] = call_proc_list,
     [SYS_rtc_read] = call_rtc_read,
+    [SYS_kexec_load] = call_kexec_load,
+    [SYS_kexec_reboot] = call_kexec_reboot,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

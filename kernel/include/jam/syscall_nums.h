@@ -69,12 +69,15 @@
 #define SYS_serial_open          115
 #define SYS_serial_read          116
 #define SYS_serial_write         117
+#define SYS_klog_name            118
 #define SYS_dma_cap_bus_master   120
 #define SYS_channel_write_rights 121
 #define SYS_sys_info             130
 #define SYS_cpu_stat             131
 #define SYS_proc_list            132
 #define SYS_rtc_read             133
+#define SYS_kexec_load           140
+#define SYS_kexec_reboot         141
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 134
+#define SYSCALL_COUNT 142

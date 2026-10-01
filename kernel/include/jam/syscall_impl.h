@@ -86,6 +86,7 @@ int64_t sysc_reboot(handle_t root);
 int64_t sysc_serial_open(handle_t root, uint64_t out);
 int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap);
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len);
+int64_t sysc_klog_name(handle_t reader, uint64_t name, uint64_t len);
 int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on);
 int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
                                   uint64_t rights, uint32_t nhandles);
@@ -93,3 +94,6 @@ int64_t sysc_sys_info(handle_t root, uint64_t out);
 int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap);
 int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap);
 int64_t sysc_rtc_read(handle_t root, uint64_t out);
+int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
+                        uint64_t len, uint32_t flags);
+int64_t sysc_kexec_reboot(handle_t root);

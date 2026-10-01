@@ -563,6 +563,14 @@ jam_serial_write:
     ret
     .size jam_serial_write, . - jam_serial_write
 
+    .globl jam_klog_name
+    .type jam_klog_name, @function
+jam_klog_name:
+    mov $SYS_klog_name, %eax
+    syscall
+    ret
+    .size jam_klog_name, . - jam_klog_name
+
     .globl jam_dma_cap_bus_master
     .type jam_dma_cap_bus_master, @function
 jam_dma_cap_bus_master:
@@ -612,5 +620,22 @@ jam_rtc_read:
     syscall
     ret
     .size jam_rtc_read, . - jam_rtc_read
+
+    .globl jam_kexec_load
+    .type jam_kexec_load, @function
+jam_kexec_load:
+    mov %rcx, %r10
+    mov $SYS_kexec_load, %eax
+    syscall
+    ret
+    .size jam_kexec_load, . - jam_kexec_load
+
+    .globl jam_kexec_reboot
+    .type jam_kexec_reboot, @function
+jam_kexec_reboot:
+    mov $SYS_kexec_reboot, %eax
+    syscall
+    ret
+    .size jam_kexec_reboot, . - jam_kexec_reboot
 
     .section .note.GNU-stack, "", @progbits
