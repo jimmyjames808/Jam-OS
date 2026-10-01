@@ -1,16 +1,18 @@
 # M8 plan: storage (USB stick, FAT32, files for every program)
 
-Goal ([roadmap](ROADMAP.md#next-m8-storage)): **`ls /boot` and writing a
+> **Historical.** This plan is finished and kept as written; paths and status in it are as they were then. What it delivered: [HISTORY.md](../HISTORY.md#m8-storage).
+
+Goal ([roadmap](../ROADMAP.md)): **`ls /boot` and writing a
 file under `/data` work from a user-space filesystem service; every boot's
 log is saved as `/data/logs/boot-NNNN.txt`; the stick still boots after a
 pulled-plug test; a PC run's log can be read on the Mac from the stick.**
 
-Decided already ([HISTORY.md](HISTORY.md#decisions)): the USB stick and
+Decided already ([HISTORY.md](../HISTORY.md#decisions)): the USB stick and
 FAT32 only (no NVMe, no other filesystem); FAT32 comes from a **FatFs**
 port, not a hand-written driver. Everything is a process; the kernel gains
 nothing but what enforcement needs.
 
-The PC's stick ([HARDWARE.md](HARDWARE.md#usb)): 058f:6387, high speed,
+The PC's stick ([HARDWARE.md](../HARDWARE.md#usb)): 058f:6387, high speed,
 behind the ASMedia hub, so every block goes through the hub (the TT is not
 involved: a high-speed device behind a high-speed hub). In QEMU the boot
 stick is a SuperSpeed `usb-storage` device on root port 1.
@@ -112,7 +114,7 @@ Configuration: long file names on (UTF-8 API), exFAT off, f_mkfs on,
 re-entrancy off (fat is single-threaded), the `diskio` callbacks
 implemented over the `block` channel, `get_fattime` from the RTC.
 
-**Write safety** ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)): FatFs
+**Write safety** ([ARCHITECTURE.md](../../ARCHITECTURE.md#storage)): FatFs
 writes data, then the FATs, then the directory entry. `sync` (and every
 `fs.sync`) flushes FatFs and sends SCSI SYNCHRONIZE CACHE. A volume found
 dirty is mounted anyway and logged (there is no fsck); the ESP is never
@@ -249,7 +251,7 @@ to the boot disk's data partition alone.
   `cat` a file in `/data`; a boot log per boot on the stick, read on the
   Mac; pulling the stick mid-write and replugging leaves it bootable;
   All tests, then `stress 600` and `soak 10` (M8 is signed off by both;
-  from then on the soak alone, [TESTING.md](TESTING.md#the-tiers)).
+  from then on the soak alone, [TESTING.md](../TESTING.md#the-tiers)).
 
 ## Decisions for this plan (2026-09-30)
 1. Nothing on the stick needs keeping: flashing the new layout (which
@@ -263,7 +265,7 @@ to the boot disk's data partition alone.
 - The foundation's IDL files and headers are the contract between tracks;
   a track that needs one changed says so instead of changing another
   track's side.
-- Follow [CODING-GUIDE.md](../CODING-GUIDE.md): bounded waits, handles
+- Follow [CODING-GUIDE.md](../../CODING-GUIDE.md): bounded waits, handles
   with the narrowest rights, a test for every fix, no GPL code (FatFs is
   BSD-style; Linux's usb-storage may be read for facts, never copied).
 - Every commit leaves the tree building with the existing tests passing at
