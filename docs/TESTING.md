@@ -141,7 +141,7 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
-- `crashkernel=<MiB>`: the stored kernel's region (default 128, 32..1024); `crashkernel=0`: no
+- `crashkernel=<MiB>`: the stored kernel's region (default 32, 32..1024); `crashkernel=0`: no
   stored kernel, so a panic halts on its screen and `reboot` falls back to the firmware.
 - `crashtest=<name>`: the stored kernel's command line gets `test<name>`, so the next boot (after
   a reboot or a panic) runs that crash test: a crash loop for `tools/kdump-test.sh`.

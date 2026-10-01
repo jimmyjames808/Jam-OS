@@ -364,3 +364,17 @@ KTEST(kexec_message_clean)
     kexec_message_clean(buf, sizeof(buf), "");
     KT_ASSERT(!strcmp(buf, ""));
 }
+
+/* The stored kernel leaves a quarter of the default region free, so a
+ * growing kernel or bootfs is noticed here before it no longer fits on
+ * the PC (where a panic would then halt and `reboot` use the firmware). */
+KTEST(kexec_region_has_room)
+{
+    uint64_t base, size, used = kexec_stored_bytes();
+    if (!kexec_region(&base, &size) || !used) {
+        kprintf("kexec_region_has_room: no stored kernel: nothing to check\n");
+        return;
+    }
+    kprintf("kexec_region_has_room: %lu KiB of %lu MiB\n", used >> 10, size >> 20);
+    KT_ASSERT(used <= size / 4 * 3);
+}

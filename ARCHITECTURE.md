@@ -142,7 +142,7 @@ Every driver and service is a userspace process from the start.
   the highest, is taken out of the memory map right after the early
   allocator starts (`pmm_early_alloc_low`) and never given back; after the
   startup it holds a halt stub.
-- **The stored kernel's region** (128 MiB below 4 GiB by default,
+- **The stored kernel's region** (32 MiB below 4 GiB by default,
   `crashkernel=<MiB>`) is taken out of the memory map before the PMM
   starts and typed `BOOT_MEM_FOREIGN`: RAM nobody may map as MMIO, but not
   the PMM's, not in the HHDM and in no other mapping
@@ -927,7 +927,7 @@ boot saves the panicked boot's log first and the shell prints one line
 about it. Code in `kernel/kexec/`; the plan, with the layout and the
 decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 
-- **The region** (128 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
+- **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write
   can't reach it. It is written only through a 2 MiB window mapped,
   written and unmapped with a TLB shootdown (`region.c`).

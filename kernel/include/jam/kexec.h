@@ -3,7 +3,7 @@
  * "Revision 2").
  *
  * At boot the kernel reserves a physically contiguous region of RAM
- * (crashkernel=<MiB>, default 128, below 4 GiB) and unmaps it: the HHDM
+ * (crashkernel=<MiB>, default 32, below 4 GiB) and unmaps it: the HHDM
  * skips it (BOOT_MEM_FOREIGN) and nothing else maps it, so no wild write
  * can reach it. Into it goes the stored kernel, a ready-to-run copy of
  * the kernel and bootfs this boot started from (the boot modules: Limine
@@ -31,7 +31,11 @@
 #include <jam/boot.h>
 #include <jam/status.h>
 
-#define KEXEC_DEFAULT_MIB 128
+/* The region's size: the stored kernel needs about 12 MiB (kernel 4 MiB
+ * with its bss, bootfs 4.3, the kernel file again 3.3, tables and stack
+ * 0.6, measured in QEMU), so 32 leaves room for a bigger log ring and
+ * a bigger bootfs. ktest kexec_region_has_room says when it gets tight. */
+#define KEXEC_DEFAULT_MIB 32
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
 /* A panic this soon after a start that was itself a panic's halts on its
  * panic screen instead of jumping again (a crash loop). */
@@ -125,6 +129,8 @@ status_t kexec_reboot(void);
  * kernel (the crash test kexecbad: the next panic must refuse it). */
 bool     kexec_verify(void);
 status_t kexec_test_corrupt(void);
+/* The bytes the stored kernel takes from the region's start, 0 if none. */
+uint64_t kexec_stored_bytes(void);
 /* Crash tests: break the next panic's jump after its decision. STALL: an
  * AP never hands the jump to the BSP (kexecstall); FAULT: the panicking
  * CPU faults (kexecfault). Either must end in a firmware reset. */
