@@ -120,7 +120,7 @@ rm -f "$stick" "$p"
 log="$out/music.log"
 for want in "music: track [0-9]+: A - One \(0:02\)" \
             "music: track [0-9]+: B'Side - Three's \(H.O.V.A.\) \(0:02\)" \
-            "music: track [0-9]+: JA\?\?-Z - F\?\?nf ~ \?\? \(0:02\)" \
+            "music: track [0-9]+: JAŸ-Z - Fünf ~ Ÿ \(0:02\)" \
             "music: track [0-9]+: Spaced Name - Five Spaced \(0:02\)" \
             "music: track [0-9]+: Loose \(0:02\)" \
             "music: the mixer stream failed \(.*\): opening a new one" \
@@ -146,10 +146,9 @@ if data[:4] != b"RIFF" or i < 0:
     sys.exit("music: %s is not a WAV file" % sys.argv[1])
 x = np.frombuffer(data[i + 8:i + 8 + (len(data) - i - 8) // 4 * 4], dtype="<i2").reshape(-1, 2)
 mono = x.astype(np.float64).mean(axis=1)
-# The kernel's log shows each byte of a non-ASCII character as '?'
-# (debug_write keeps the log printable ASCII): "JA??-Z - F??nf ~ ??".
+# The kernel's log keeps well-formed UTF-8 as it is.
 names = {"A - One": 300, "A - Two": 400, "B'Side - Three's (H.O.V.A.)": 500,
-         "JA??-Z - F??nf ~ ??": 600, "Spaced Name - Five Spaced": 700, "Loose": 800}
+         "JAŸ-Z - Fünf ~ Ÿ": 600, "Spaced Name - Five Spaced": 700, "Loose": 800}
 order = [names[l.strip()] for l in open(sys.argv[2], encoding="utf-8", errors="replace")
          if l.strip()]
 W = 4800

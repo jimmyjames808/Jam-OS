@@ -5,8 +5,7 @@
  * ring on interrupter 0 (MSI / MSI-X entry 0 as a port packet), run. Then
  * the Supported Protocol capabilities (which root ports are USB 2 and
  * which USB 3), port power, a DMA page pool for contexts, rings and
- * buffers (handed out by ring.c), commands with a timeout (and Command
- * Abort), and the event loop
+ * buffers (handed out by ring.c), and the event loop
  * that every wait goes through: events are drained on each interrupt and
  * also polled at least every 50 ms, so a lost MSI costs latency, never a
  * hang. */
@@ -14,11 +13,6 @@
 
 struct hc g_hc;
 
-#define DMA_DCBAA   0x0000
-#define DMA_ERST    0x0800
-#define DMA_CMDRING 0x1000
-#define DMA_EVRING  0x2000
-#define DMA_SPARRAY 0x3000
 
 /* ---- registers ------------------------------------------------------------- */
 
@@ -54,11 +48,12 @@ static volatile uint8_t *reg(struct hc *x, uint32_t off)
 static uint32_t hc_rd(struct hc *x, uint32_t off) { return drv_read32(reg(x, off), 0); }
 static void hc_wr(struct hc *x, uint32_t off, uint32_t v) { drv_write32(reg(x, off), 0, v); }
 static uint32_t op_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->caplen + r); }
+uint32_t hc_op_read(struct hc *x, uint32_t r) { return op_rd(x, r); }
 static void op_wr(struct hc *x, uint32_t r, uint32_t v) { hc_wr(x, x->caplen + r, v); }
 static uint32_t ir_rd(struct hc *x, uint32_t r) { return hc_rd(x, x->rtsoff + IR0 + r); }
 static void ir_wr(struct hc *x, uint32_t r, uint32_t v) { hc_wr(x, x->rtsoff + IR0 + r, v); }
 
-static void op_wr64(struct hc *x, uint32_t r, uint64_t v)
+void hc_op_write64(struct hc *x, uint32_t r, uint64_t v)
 {
     op_wr(x, r, lo32(v));
     op_wr(x, r + 4, hi32(v));
@@ -432,8 +427,8 @@ static int program_rings(struct hc *x)
     /* Slots: as many as we track (the DCBAA page holds 256 entries). */
     x->max_slots_en = x->slots < MAX_DEVS ? x->slots : MAX_DEVS;
     op_wr(x, OP_CONFIG, (op_rd(x, OP_CONFIG) & ~0xffu) | x->max_slots_en);
-    op_wr64(x, OP_DCBAAP, x->ctx_dev + DMA_DCBAA);
-    op_wr64(x, OP_CRCR, cr_dev | CRCR_RCS);
+    hc_op_write64(x, OP_DCBAAP, x->ctx_dev + DMA_DCBAA);
+    hc_op_write64(x, OP_CRCR, cr_dev | CRCR_RCS);
 
     ir_wr(x, IR_ERSTSZ, (ir_rd(x, IR_ERSTSZ) & ~0xffffu) | 1);
     ir_wr64(x, IR_ERDP, ev_dev);
@@ -564,8 +559,7 @@ static void poll_events(struct hc *h, bool after_irq)
     }
 }
 
-/* The event ring now, without waiting. */
-static void hc_poll(struct hc *h)
+void hc_poll(struct hc *h)
 {
     poll_events(h, false);
 }
@@ -612,14 +606,21 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
      * checked here too, at least every 200 ms in the idle loop. */
     if (!fired && h->running)
         check_status(h, op_rd(h, OP_USBSTS));
+    uint64_t before = h->events;
     poll_events(h, fired);
+    if (st == OK || h->events != before)
+        task_kick();   /* something happened: waiting tasks look again */
 }
 
 /* Waiting for a completion: poll the event ring at least every 50 ms, so
- * a lost interrupt costs time, not the command. */
+ * a lost interrupt costs time, not the command. In a task the main loop
+ * waits instead (it polls as often: task_wait's cap). */
 void hc_wait(struct hc *h, uint64_t deadline)
 {
-    wait_capped(h, deadline, 50);
+    if (in_task())
+        task_wait(deadline);
+    else
+        wait_capped(h, deadline, 50);
 }
 
 /* The main loop with nothing to do: 200 ms. */
@@ -633,78 +634,6 @@ void hc_sleep(struct hc *h, uint64_t ms)
     uint64_t end = drv_clock_ns() + ms * NS_PER_MS;
     while (drv_clock_ns() < end)
         hc_wait(h, end);
-}
-
-/* ---- commands ------------------------------------------------------------------------ */
-
-/* The command at t (of this type) got no completion in timeout_ms.
- * Command Abort: the ring stops, the command completes with Command
- * Aborted (or finishes meanwhile). A ring that doesn't stop in 5 s leaves
- * the controller dead. */
-static void abort_command(struct hc *h, volatile struct trb *t, uint32_t type,
-                          uint64_t timeout_ms)
-{
-    drv_log("command type %u: no completion in %lu ms; aborting it", type,
-            (unsigned long)timeout_ms);
-    /* The whole register holds a valid pointer (our enqueue point and
-     * cycle), as Linux writes it: if the ring has stopped by the time
-     * the high dword lands, some controllers take the 64-bit value as
-     * the new Command Ring Pointer -- 0 would send the next command
-     * fetch to physical address 0. */
-    uint64_t next = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
-    op_wr64(h, OP_CRCR, next | h->cmd_cycle | CRCR_CA);
-    uint64_t end = drv_clock_ns() + 5000 * NS_PER_MS;
-    while (drv_clock_ns() < end && (op_rd(h, OP_CRCR) & CRCR_CRR))
-        hc_wait(h, drv_clock_ns() + 5 * NS_PER_MS);
-    hc_poll(h);
-    if (op_rd(h, OP_CRCR) & CRCR_CRR) {
-        h->dead = true;
-        drv_report("FAILED: the command ring did not stop 5 s after Command Abort");
-    } else if (!h->cmd.done) {
-        /* Stopped without taking it (never fetched): the next doorbell
-         * would run it late, against contexts we free on the timeout.
-         * A No Op in its place (what Linux does); its completion is
-         * logged as not the outstanding one. */
-        t->d3 = TRB_TYPE(TRB_NOOP_CMD) | (t->d3 & TRB_C);
-    }
-}
-
-uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
-                    uint32_t *slot_out, uint64_t timeout_ms)
-{
-    if (h->dead || !h->running)
-        return CC_GONE;
-    struct trb *cr = (struct trb *)(h->ctx + DMA_CMDRING);
-    uint64_t trb = h->ctx_dev + DMA_CMDRING + (uint64_t)h->cmd_enq * sizeof(struct trb);
-    volatile struct trb *t = &cr[h->cmd_enq];
-    t->d0 = d0;
-    t->d1 = d1;
-    t->d2 = d2;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    t->d3 = (d3 & ~TRB_C) | h->cmd_cycle;
-    if (++h->cmd_enq == RING_TRBS - 1) {
-        volatile struct trb *l = &cr[RING_TRBS - 1];
-        l->d3 = (l->d3 & ~TRB_C) | h->cmd_cycle;
-        h->cmd_enq = 0;
-        h->cmd_cycle ^= 1;
-    }
-    h->cmd.busy = true;
-    h->cmd.done = false;
-    h->cmd.trb = trb;
-    h->cmd.cc = 0;
-    h->cmd.slot = 0;
-    hc_doorbell(h, 0, 0);
-    uint64_t deadline = drv_clock_ns() + timeout_ms * NS_PER_MS;
-    while (!h->cmd.done && !h->dead && drv_clock_ns() < deadline)
-        hc_wait(h, deadline);
-    if (!h->cmd.done && !h->dead)
-        abort_command(h, t, TRB_TYPE_OF(d3), timeout_ms);
-    h->cmd.busy = false;
-    if (!h->cmd.done)
-        return h->dead ? CC_GONE : CC_TIMEOUT;
-    if (slot_out)
-        *slot_out = h->cmd.slot;
-    return h->cmd.cc;
 }
 
 /* ---- bring-up and shutdown -------------------------------------------------------------- */
@@ -727,9 +656,6 @@ int hc_bring_up(struct hc *x)
         return FAIL(x, "bus master", "can't turn it on (%s)", status_str(st));
     if ((r = setup_memory(x)) || (r = pool_setup(x)))
         return r;
-    x->ctl_page = pool_alloc(x);
-    if (x->ctl_page < 0)
-        return FAIL(x, "DMA pool", "no page for control transfers");
     st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK)
         return FAIL(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));

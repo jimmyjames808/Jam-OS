@@ -5,8 +5,8 @@
  *     real-mode trampoline), the default on every boot, and the only way
  *     after a kexec, which has no loader;
  *   - the boot word `smp=loader`: Limine woke the APs and parked them, and
- *     each is released onto its struct cpu (boot_start_cpu). Kept as a
- *     fallback until the kernel's own startup is signed off on the PC.
+ *     each is released onto its struct cpu (boot_start_cpu). Kept for
+ *     troubleshooting.
  * Either way the AP ends in smp_ap_main on its own kernel stack and the
  * kernel's page tables: its per-CPU state, its APIC, its topology, then
  * the claim, then (once numbered) its firmware check, its timer, online.
@@ -437,7 +437,7 @@ static const char *type_name(enum core_type t)
     }
 }
 
-bool smp_report(uint64_t window_ms)
+bool smp_report(uint64_t window_ms, bool sleep)
 {
     /* Snapshot every count before printing anything: printing is slow on
      * a big framebuffer, and a CPU read after N printed lines would get a
@@ -446,12 +446,17 @@ bool smp_report(uint64_t window_ms)
     for (uint32_t i = 0; i < cpu_count; i++)
         before[i] = cpu_ticks(cpus[i]);
     uint64_t t0 = rdtsc();
-    udelay(window_ms * 1000);
+    if (sleep)
+        thread_sleep_ms(window_ms);
+    else
+        udelay(window_ms * 1000);
     for (uint32_t i = 0; i < cpu_count; i++)
         after[i] = cpu_ticks(cpus[i]);
     uint64_t measured_us = (rdtsc() - t0) / (tsc_hz / 1000000);
 
-    uint64_t expect = TICK_HZ * window_ms / 1000;
+    /* A sleeping thread may wake late on a busy machine: judge the counts
+     * against the window it really got. */
+    uint64_t expect = TICK_HZ * measured_us / 1000000;
     uint32_t p = 0, e = 0, bad = 0;
     bool smt = false;
     for (uint32_t i = 0; i < cpu_count; i++) {

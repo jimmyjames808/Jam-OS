@@ -2,7 +2,7 @@
  *
  * Text is UTF-8. The glyphs: ASCII from the console's font (<font.h>),
  * U+00A0 .. U+017F (Latin-1 and Latin Extended-A: "Fünf", "JAŸ-Z", "¥")
- * from the same font's table here (font_latin.c, `make font`), and one
+ * from the same font's Latin table (<font.h>, `make font`), and one
  * fallback box for any other code point and for each malformed byte, so a
  * name in another script shows one box per character, never one per byte.
  * Control characters draw as '?'. */
@@ -11,8 +11,8 @@
 
 /* ---- text ---------------------------------------------------------------------------- */
 
-#define LATIN_FIRST 0xa0u
-#define LATIN_N     224u                 /* U+00A0 .. U+017F */
+#define LATIN_FIRST FONT_LATIN_FIRST   /* U+00A0 .. U+017F */
+#define LATIN_N     FONT_LATIN_N
 #define G_LATIN     128u                 /* glyph number of U+00A0 */
 #define G_BOX       (G_LATIN + LATIN_N)  /* the fallback */
 #define NGLYPHS     (G_BOX + 1)

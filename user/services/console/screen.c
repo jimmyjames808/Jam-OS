@@ -47,7 +47,8 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
         fg = bg;
         bg = t;
     }
-    const uint8_t *g = font_8x16[c.ch & 0x7f];
+    const uint8_t *g = c.ch >= G_LATIN && c.ch < G_LATIN + FONT_LATIN_N
+                           ? font_latin[c.ch - G_LATIN] : font_8x16[c.ch & 0x7f];
     uint8_t block[GH];
     if (c.ch >= G_UPPER && c.ch <= G_DARK) {   /* the block elements */
         static const uint8_t shade[3][2] = { { 0x88, 0x22 }, { 0xaa, 0x55 }, { 0x77, 0xdd } };

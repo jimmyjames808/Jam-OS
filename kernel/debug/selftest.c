@@ -528,6 +528,28 @@ static void crash_kexecbad(void)
           st == OK ? "changed" : "no stored kernel");
 }
 
+/* A jump decided but not made must not leave the machine dark and halted:
+ * an AP that never hands the jump to the BSP (the BSP's wait runs out),
+ * and a fault on the panicking CPU after the decision. Both end in a
+ * firmware reset. */
+static void stall_on_cpu1(void *arg)
+{
+    (void)arg;
+    kexec_test_break(KEXEC_TEST_STALL);
+    panic("test panic on cpu 1 whose jump is never handed over (crash test kexecstall)");
+}
+
+static void crash_kexecstall(void)
+{
+    smp_call_on(1, stall_on_cpu1, NULL);
+}
+
+static void crash_kexecfault(void)
+{
+    kexec_test_break(KEXEC_TEST_FAULT);
+    panic("test panic that faults after deciding to jump (crash test kexecfault)");
+}
+
 static void crash_stack(void)
 {
     kprintf("%lu\n", recurse_forever(0));
@@ -563,6 +585,8 @@ static const struct crash_test {
     { "smep",       crash_smep,       false, false, "SMEP: kernel jumps to a user page" },
     { "kexecread",  crash_kexecread,  false, false, "read the stored kernel's region (unmapped)" },
     { "kexecbad",   crash_kexecbad,   false, false, "a damaged stored kernel is refused" },
+    { "kexecstall", crash_kexecstall, false, true,  "an AP never hands the jump over: reset" },
+    { "kexecfault", crash_kexecfault, false, false, "a fault after the jump is decided: reset" },
 };
 #define NCRASH (sizeof(crash_tests) / sizeof(crash_tests[0]))
 

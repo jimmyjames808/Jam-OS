@@ -8,9 +8,10 @@
  * boot's first shell waits for that answer (behind the splash, which takes
  * longer anyway) and prints one line:
  *     the last boot panicked: <message> (saved as /data/logs/boot-0024-crash.txt)
- * or why it was not saved. No /data within DATA_WAIT of init's start (the
- * stick is not there), or no answer within SAVE_WAIT: the shell starts,
- * the line says so, and the log is let go (a later /data doesn't get it).
+ * or why it was not saved. No logd given the log within DATA_WAIT of
+ * init's start (no /data: the stick is not there), or no answer within
+ * SAVE_WAIT once one was: the shell starts, the line says so, and the log
+ * is let go (a later /data doesn't get it).
  * A logd that dies before it answers is started again by shell.c and
  * gets the log again. */
 #include <crashlog.h>
@@ -26,6 +27,7 @@ enum { NONE, WAITING, DONE };
 static int      state = NONE;
 static handle_t log;            /* SR_CRASHLOG, until DONE */
 static handle_t answer;         /* our end of the newest logd's result channel (0: none) */
+static bool     given;          /* a logd was given the log: SAVE_WAIT from then on */
 static handle_t port;
 static uint64_t key;
 static uint64_t started;        /* uptime ns */
@@ -89,6 +91,7 @@ unsigned lastboot_logd_handles(struct spawn_handle *x)
     }
     drop(&answer);   /* an earlier logd's, which died before it answered */
     answer = mine;
+    given = true;
     x[0] = (struct spawn_handle){ SR_CRASHLOG, dup };
     x[1] = (struct spawn_handle){ LOGD_SR_CRASH_RESULT, theirs };
     return 2;
@@ -127,11 +130,11 @@ uint64_t lastboot_wait_until(uint64_t t)
 {
     if (state != WAITING)
         return DEADLINE_NEVER;
-    uint64_t until = started + (answer ? SAVE_WAIT : DATA_WAIT);
+    uint64_t until = started + (given ? SAVE_WAIT : DATA_WAIT);
     if (t < until)
         return until;
-    done(answer ? "not saved: logd didn't finish within 60 s"
-                : "not saved: no /data within 20 s; is the Jam OS stick in?");
+    done(given ? "not saved: logd didn't finish within 60 s"
+               : "not saved: no /data within 20 s; is the Jam OS stick in?");
     return DEADLINE_NEVER;
 }
 

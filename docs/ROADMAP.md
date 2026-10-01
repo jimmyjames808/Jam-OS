@@ -167,9 +167,6 @@ ones below are the design questions M8 left open
 
 The rest:
 
-- usb-bus retries a failed root port after 1 s, then 5 s; ports on hubs
-  are still looked at again only on a port status change (the same
-  pattern would fit `hub->port_fail` in hub.c).
 - The `init` QEMU run ends "with problems" about one run in three: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
   again, and devmgr's shutdown stops usb-bus while that fat is still
   mounting; it exits ERR_IO and devmgr reports "fat-esp bin/fat did not

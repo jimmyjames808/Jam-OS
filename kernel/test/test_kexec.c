@@ -272,9 +272,115 @@ KTEST(kexec_next_cmdline_words)
 /* A panic within 30 s of a start that was itself a panic's halts. */
 KTEST(kexec_crash_loop_rule)
 {
-    KT_ASSERT(kexec_crash_loop(true, 0));
-    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_NS - 1));
-    KT_ASSERT(!kexec_crash_loop(true, KEXEC_LOOP_NS));
-    KT_ASSERT(!kexec_crash_loop(false, 0));
-    KT_ASSERT(!kexec_crash_loop(false, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, 1, 0));
+    KT_ASSERT(kexec_crash_loop(true, 1, KEXEC_LOOP_NS - 1));
+    KT_ASSERT(!kexec_crash_loop(true, 1, KEXEC_LOOP_NS));
+    KT_ASSERT(!kexec_crash_loop(false, 0, 0));
+    KT_ASSERT(!kexec_crash_loop(false, 0, KEXEC_LOOP_NS * 10));
+    /* The third panic in a row halts however late it comes; a boot after
+     * a power-on or a reboot (no panic before it) never counts. */
+    KT_ASSERT(!kexec_crash_loop(true, KEXEC_LOOP_PANICS - 2, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_PANICS - 1, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_PANICS + 5, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(!kexec_crash_loop(false, KEXEC_LOOP_PANICS + 5, KEXEC_LOOP_NS * 10));
+}
+
+/* A crash record as a dying kernel seals it: a panic, a 64 KiB ring at
+ * ring_phys, a name and a message. */
+static void record_fill(struct kexec_crash_record *r, uint64_t ring_phys, uint64_t ring_size,
+                        const char *message)
+{
+    memset(r, 0, sizeof(*r));
+    r->magic = KEXEC_RECORD_MAGIC;
+    r->version = KEXEC_RECORD_VERSION;
+    r->size = sizeof(*r);
+    r->kind = KEXEC_RECORD_PANIC;
+    r->panics = 1;
+    r->ring_phys = ring_phys;
+    r->ring_size = ring_size;
+    r->head = 5000;
+    r->panic_at = 4000;
+    memcpy(r->name, "boot-0007", 10);
+    size_t n = strlen(message);
+    memcpy(r->message, message, n < KEXEC_MESSAGE ? n : KEXEC_MESSAGE - 1);
+    r->checksum = kexec_struct_sum(r, sizeof(*r), offsetof(struct kexec_crash_record, checksum));
+}
+
+/* The next kernel counts every panic its record describes for the
+ * crash-loop rule, whatever the panic's message or log ring look like;
+ * those decide only whether the log is saved. */
+KTEST(kexec_crash_record_counts_any_panic)
+{
+    struct boot_info *bi = kzalloc(sizeof(*bi));
+    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+    KT_ASSERT(bi && pa);
+    struct kexec_crash_record *r = phys_to_virt(pa);
+    /* The record's page, and a pretend ring range the check never reads. */
+    uint64_t ring = 1ull << 40;
+    bi->memmap[0] = (struct boot_mem_region){ pa, PAGE_SIZE, BOOT_MEM_CRASH_LOG };
+    bi->memmap[1] = (struct boot_mem_region){ ring, 64ull << 20, BOOT_MEM_CRASH_LOG };
+    bi->memmap_count = 2;
+    bi->kexec_record = pa;
+    bool panicked, log_ok;
+
+    record_fill(r, ring, 64 << 10, "test panic");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && log_ok);
+    /* A message with a tab and UTF-8 (a thread's name, say). */
+    record_fill(r, ring, 64 << 10, "user fault in \"\tJA\xc3\x9f-Z\"");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && log_ok);
+    /* A ring bigger than this kernel's (another build's). */
+    record_fill(r, ring, 2ull << 20, "test panic");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && log_ok);
+    /* A ring past what the check allows, or outside CRASH_LOG: the log is
+     * lost, the panic still counts. */
+    record_fill(r, ring, 32ull << 20, "test panic");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && !log_ok);
+    record_fill(r, ring + PAGE_SIZE, 64ull << 20, "test panic");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && !log_ok);
+    /* A name that is not one: dropped, the log saved under a number. */
+    record_fill(r, ring, 64 << 10, "test panic");
+    memcpy(r->name, "../x", 5);
+    r->checksum = kexec_struct_sum(r, sizeof(*r), offsetof(struct kexec_crash_record, checksum));
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && panicked && log_ok);
+    /* A reboot: no panic. */
+    record_fill(r, ring, 64 << 10, "");
+    r->kind = KEXEC_RECORD_REBOOT;
+    r->checksum = kexec_struct_sum(r, sizeof(*r), offsetof(struct kexec_crash_record, checksum));
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) == NULL && !panicked);
+    /* Not the previous kernel's record: no use at all. */
+    record_fill(r, ring, 64 << 10, "test panic");
+    r->panics++;
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) != NULL && !panicked);
+    bi->memmap[0].type = BOOT_MEM_USABLE;
+    record_fill(r, ring, 64 << 10, "test panic");
+    KT_ASSERT(crashlog_check(bi, &panicked, &log_ok) != NULL && !panicked);
+
+    pmm_free_page_phys(pa);
+    kfree(bi);
+}
+
+/* The dying kernel writes its message as plain text. */
+KTEST(kexec_message_clean)
+{
+    char buf[16];
+    kexec_message_clean(buf, sizeof(buf), "a\tb\xc3\x9f\nc");
+    KT_ASSERT(!strcmp(buf, "a?b?? c"));
+    kexec_message_clean(buf, 6, "longer than that");
+    KT_ASSERT(!strcmp(buf, "longe"));
+    kexec_message_clean(buf, sizeof(buf), "");
+    KT_ASSERT(!strcmp(buf, ""));
+}
+
+/* The stored kernel leaves a quarter of the default region free, so a
+ * growing kernel or bootfs is noticed here before it no longer fits on
+ * the PC (where a panic would then halt and `reboot` use the firmware). */
+KTEST(kexec_region_has_room)
+{
+    uint64_t base, size, used = kexec_stored_bytes();
+    if (!kexec_region(&base, &size) || !used) {
+        kprintf("kexec_region_has_room: no stored kernel: nothing to check\n");
+        return;
+    }
+    kprintf("kexec_region_has_room: %lu KiB of %lu MiB\n", used >> 10, size >> 20);
+    KT_ASSERT(used <= size / 4 * 3);
 }

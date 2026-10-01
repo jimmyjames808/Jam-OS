@@ -644,6 +644,8 @@ static const struct {
     { "mix_volume_and_master", t_mix_volume_and_master },
     { "mix_dither", t_mix_dither },
     { "mix_limits", t_mix_limits },
+    { "utf8_well_formed", t_utf8_well_formed },
+    { "utf8_bad_pieces", t_utf8_bad_pieces },
 };
 
 int main(int argc, char **argv)

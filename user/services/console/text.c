@@ -34,9 +34,71 @@ static void commit(const struct cell *c)
     dirty = true;
 }
 
-void kernel_line(const char *s, size_t n)
+uint16_t cell_glyph(uint32_t cp)
+{
+    if (cp >= 0x20 && cp < 0x7f)
+        return (uint16_t)cp;
+    if (cp >= FONT_LATIN_FIRST && cp < FONT_LATIN_FIRST + FONT_LATIN_N)
+        return (uint16_t)(G_LATIN + cp - FONT_LATIN_FIRST);
+    switch (cp) {
+    case 0x2580: return G_UPPER;    /* upper half block */
+    case 0x2584: return G_LOWER;    /* lower half block */
+    case 0x2588: return G_FULL;     /* full block */
+    case 0x2591: return G_LIGHT;    /* light shade */
+    case 0x2592: return G_MEDIUM;   /* medium shade */
+    case 0x2593: return G_DARK;     /* dark shade */
+    }
+    return '?';
+}
+
+/* The next character of s[*i..n) as a cell glyph, *i moved past it: a
+ * control character or a bad piece of UTF-8 (<utf8.h>) is one '?', a tab
+ * a space. The log's text is checked by the kernel already; the console
+ * checks again rather than trust it. */
+static uint16_t next_glyph(const char *s, size_t n, size_t *i)
+{
+    uint8_t b = (uint8_t)s[*i];
+    if (b < 0x80) {
+        (*i)++;
+        return b == '\t' ? ' ' : b < 0x20 || b == 0x7f ? '?' : b;
+    }
+    uint32_t cp = 0;
+    int k = utf8_seq((const uint8_t *)s + *i, n - *i, &cp);
+    *i += (size_t)(k > 0 ? k : -k);
+    return k > 0 && !utf8_is_control(cp) ? cell_glyph(cp) : '?';
+}
+
+/* s as lines above the current one, wrapped at cols: its first `stamp`
+ * bytes in A_STAMP, the rest in attr. */
+static void log_text(const char *s, size_t n, size_t stamp, uint8_t attr)
 {
     struct cell l[MAX_COLS];
+    uint32_t x = 0;
+    blank(l, cols, A_KERNEL);
+    for (size_t i = 0; i < n;) {
+        if (s[i] == '\r') {
+            i++;
+            continue;
+        }
+        bool in_stamp = i < stamp;
+        uint16_t g = next_glyph(s, n, &i);
+        if (x == cols) {
+            commit(l);
+            blank(l, cols, A_KERNEL);
+            x = 0;
+        }
+        l[x++] = (struct cell){ g, in_stamp ? A_STAMP : attr };
+    }
+    commit(l);
+}
+
+void notice_out(const char *s, size_t n)
+{
+    log_text(s, n, 0, A_NOTICE);
+}
+
+void kernel_line(const char *s, size_t n)
+{
     /* "[    1.234567] " then the text; "[name] " after the stamp: a process. */
     size_t stamp = 0;
     if (n > 2 && s[0] == '[') {
@@ -53,24 +115,7 @@ void kernel_line(const char *s, size_t n)
                 text = A_PROC;
                 break;
             }
-    uint32_t x = 0;
-    blank(l, cols, A_KERNEL);
-    for (size_t i = 0; i < n; i++) {
-        uint8_t ch = (uint8_t)s[i];
-        if (ch == '\r')
-            continue;
-        if (ch == '\t')
-            ch = ' ';
-        if (ch < 0x20 || ch > 0x7e)
-            ch = '?';
-        if (x == cols) {
-            commit(l);
-            blank(l, cols, A_KERNEL);
-            x = 0;
-        }
-        l[x++] = (struct cell){ ch, i < stamp ? A_STAMP : text };
-    }
-    commit(l);
+    log_text(s, n, stamp, text);
 }
 
 /* Everything allocated (and touched) up front: the console's memory use

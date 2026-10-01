@@ -5,8 +5,9 @@
  * splash.c), with a PROGRAM-level console channel (SR_CONSOLE), init's
  * channel (SR_USER + SPLASH_INIT_ROLE, <splash.h>) and a namespace with
  * the mixer's `audio` channel (/svc/audio, its list's one want). It:
- *   1. borrows the screen and the keys (gfx_open_on: the screen stays the
- *      kernel's dark background, the video's own);
+ *   1. borrows the screen, and not the keys (gfx_open_screen: the screen
+ *      stays the kernel's dark background, the video's own; what is typed
+ *      meanwhile waits in the console for the shell);
  *   2. plays bootfs's splash.mpg (video.c, draw.c, sound.c): shows its
  *      first frame (dark, like the screen already is) and holds it until
  *      the sound's stream is open, at most SOUND_WAIT, so picture and
@@ -15,14 +16,15 @@
  *      silently and the sound joins where it is by then, faded in. Each
  *      frame is shown when the media clock reaches it (the sound's
  *      position once it plays): late frames are dropped, none is early;
- *   3. a key (any key down) skips the rest: the sound fades out;
+ *   3. plays to its end: no key skips it;
  *   4. tells init SPLASH_PLAYED (init starts the shell), holds the last
  *      frame until init says SPLASH_GO (the shell is up) or closes the
  *      channel, at most HOLD_MAX, and in any case for LINGER after an
  *      animation that played to its end (the logo stays a moment);
  *   5. fades the picture into the console's background and gives the
  *      screen back: the console draws its text.
- * Without init's channel (`run splash` from the shell) it holds the last
+ * Without init's channel (`run splash` from the shell) it takes the keys
+ * too: a key skips the rest (the sound fades out), and it holds the last
  * frame for a second or until a key.
  *
  * `run splash --selftest`: selftest.c; `run splash --alpha`: demo.c.
@@ -45,16 +47,27 @@ JAM_WANTS("svc audio\n");
 #define CONSOLE_BG 0x101018u          /* the console's text background (its palette's 0) */
 
 static handle_t init_ch;   /* init's channel (0: run from the shell) */
+static bool keys;          /* the keys are ours (run from the shell): a key skips */
 
-/* Wait until media time `due`, watching the keys. True: a key was pressed. */
+/* Wait until `deadline` (uptime); with the keys, watching them. True: a
+ * key was pressed. */
+static bool wait_key(uint64_t deadline)
+{
+    if (!keys) {
+        jam_nanosleep(deadline);
+        return false;
+    }
+    return gfx_key(deadline) != KEY_NONE;
+}
+
+/* Wait until media time `due`. True: a key was pressed. */
 static bool wait_until(uint64_t due)
 {
     for (;;) {
         uint64_t t = clock_now();
         if (t >= due)
             return false;
-        int k = gfx_key(now() + (due - t));
-        if (k != KEY_NONE)
+        if (wait_key(now() + (due - t)))
             return true;
     }
 }
@@ -65,7 +78,7 @@ static bool start_clock(uint64_t since)
 {
     uint64_t t = now();
     while (sound_state() == SOUND_PENDING && now() < since + SOUND_WAIT)
-        if (gfx_key(now() + 5 * NS_PER_MS) != KEY_NONE)
+        if (wait_key(now() + 5 * NS_PER_MS))
             return true;
     bool with_sound = sound_state() == SOUND_READY;
     clock_start(with_sound);
@@ -98,7 +111,7 @@ static bool play(const uint8_t *mpg, size_t len, uint64_t since)
         uint64_t t = clock_now();
         if (t >= next && t - last_shown < SHOW_EVERY) {
             dropped++;   /* its time is over already: on to the next */
-            skipped = gfx_key(0) != KEY_NONE;
+            skipped = keys && gfx_key(0) != KEY_NONE;
             continue;
         }
         /* On time, or so far behind (a machine too slow to decode every
@@ -173,6 +186,7 @@ int main(int argc, char **argv)
     const uint8_t *mpg = NULL;
     size_t len = 0;
     init_ch = startup_handle(SR_USER + SPLASH_INIT_ROLE);
+    keys = !init_ch;
     pool_start(0);
     if (has_arg(argc, argv, "--selftest")) {
         if (find_video(&mpg, &len) != OK)
@@ -184,7 +198,7 @@ int main(int argc, char **argv)
     /* The screen first: the console stays quiet until it gets it back, so
      * a missing or bad video gives it back at once. */
     uint64_t since = now();
-    status_t st = gfx_open_on(SPLASH_BG);
+    status_t st = keys ? gfx_open_on(SPLASH_BG) : gfx_open_screen(SPLASH_BG);
     if (st == OK && ((st = find_video(&mpg, &len)) != OK || (st = video_open(mpg, len)) != OK))
         gfx_close();
     if (st != OK) {

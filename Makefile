@@ -404,7 +404,7 @@ font:
 	(echo "/* User space's copy of kernel/dev/font_8x16.c, written by \`make font\`. Its own object"; \
 	 echo " * in libos.a: only the programs that draw text (<font.h>) link it in. */"; \
 	 cat kernel/dev/font_8x16.c) > user/lib/font_8x16.c
-	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf user/apps/fun/font_latin.c --latin
+	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf user/lib/font_latin.c --latin
 
 clean:
 	rm -rf $(BUILD)

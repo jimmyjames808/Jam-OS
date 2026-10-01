@@ -1,0 +1,17 @@
+# The boot splash with keys typed while it plays (tools/splash-test.sh):
+# no key skips it, and what was typed waits in the console for the shell
+# (which starts only after it), so the two lines below run once it is up:
+# the second prints typed-kept (the variable set by the first), which the
+# lines as typed don't hold.
+wait 120 splash: waited
+sleep 1
+shot splash-hd
+sleep 0.5
+send K=kept
+send echo typed-$K
+wait 60 splash: played at
+seen 60 Jam OS shell
+wait 60 typed-kept
+wait 60 console: the screen is back
+send reboot -f
+wait reboot: resetting

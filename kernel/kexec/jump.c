@@ -21,6 +21,13 @@
  * AP is handed to it (HAND_JUMP): the next kernel always starts on the
  * BSP, as after Limine, and starts every AP itself.
  *
+ * A jump decided and then not made would leave the machine dark (the
+ * panic draws nothing once it has decided) and halted for good. So the
+ * BSP waits for the hand-over at most HANDOVER_WAIT_S, and a fault on the
+ * panicking CPU after the decision (debug/panic.c: kexec_panic_failed)
+ * gives up too: either way a firmware reset, which loses the log but
+ * brings the machine back.
+ *
  * The crash record is a page of this kernel's own, typed CRASH_LOG in the
  * stored kernel's memory map with the log ring, its address in the
  * handoff: how this kernel ended (a reboot or a panic), where the log ring
@@ -45,6 +52,11 @@
 #include <jam/x86.h>
 #include "kexec_internal.h"
 
+/* The BSP's longest wait for the CPU that decided to jump: it prints the
+ * panic first (synchronously on the serial port: a few KiB, well under a
+ * second at 115200 baud) and turns bus mastering off. */
+#define HANDOVER_WAIT_S 10
+
 /* A page of its own: the next kernel frees exactly this page. */
 static union {
     struct kexec_crash_record r;
@@ -58,6 +70,7 @@ static const char *why_not;       /* kexec_panic_begin said no: why (NULL: no st
 enum { HAND_WAIT, HAND_HALT, HAND_JUMP };
 static int bsp_waiting;           /* the BSP is in kexec_halted_wait */
 static int handover = HAND_WAIT;  /* what it is to do */
+static int test_break;            /* KEXEC_TEST_*: a crash test breaks the jump */
 
 uint64_t kx_record_phys(void)
 {
@@ -88,9 +101,11 @@ status_t kexec_set_log_name(const char *name, size_t len)
     return OK;
 }
 
-bool kexec_crash_loop(bool after_panic, uint64_t uptime)
+bool kexec_crash_loop(bool after_panic, uint32_t panics_before, uint64_t uptime)
 {
-    return after_panic && uptime < KEXEC_LOOP_NS;
+    if (!after_panic)
+        return false;
+    return uptime < KEXEC_LOOP_NS || panics_before + 1 >= KEXEC_LOOP_PANICS;
 }
 
 static uint64_t uptime(void)
@@ -120,8 +135,10 @@ bool kexec_panic_begin(void)
     if (s != KX_ARMED)
         why_not = s == KX_LOADING ? "the stored kernel was being replaced"
                                   : "a reboot was starting the stored kernel";
-    else if (kexec_crash_loop(crashlog_after_panic(), uptime()))
-        why_not = "this boot started after a panic less than 30 s ago (a crash loop)";
+    else if (kexec_crash_loop(crashlog_after_panic(), crashlog_panics(), uptime()))
+        why_not = uptime() < KEXEC_LOOP_NS
+                      ? "this boot started after a panic less than 30 s ago (a crash loop)"
+                      : "the third panic in a row (a crash loop)";
     else if (!intact())
         why_not = "the stored kernel's checksum no longer matches (its memory was changed)";
     else if (!bsp_ready())
@@ -136,14 +153,23 @@ const char *kexec_panic_why_not(void)
     return why_not;
 }
 
+void kexec_message_clean(char *dst, size_t size, const char *src)
+{
+    if (!size)
+        return;
+    size_t i = 0;
+    for (; src[i] && i + 1 < size; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[i] = c == '\n' ? ' ' : c < 0x20 || c > 0x7e ? '?' : (char)c;
+    }
+    dst[i] = '\0';
+}
+
 void kexec_panic_message(const char *msg)
 {
     if (rec.r.message[0])
         return;   /* the first one says what happened */
-    size_t i = 0;
-    for (; msg[i] && i + 1 < KEXEC_MESSAGE; i++)
-        rec.r.message[i] = msg[i] == '\n' ? ' ' : msg[i];
-    rec.r.message[i] = '\0';
+    kexec_message_clean(rec.r.message, KEXEC_MESSAGE, msg);
 }
 
 /* The record's last fields and its checksum. */
@@ -176,6 +202,18 @@ _Noreturn static void jump_here(void)
         hlt();
 }
 
+/* No jump after all: a firmware reset rather than a dark, silent hang.
+ * A stuck CPU may hold the log's or the serial port's lock; the screen
+ * stays dark (the reset follows at once). */
+_Noreturn static void give_up(const char *why)
+{
+    klog_force_unlock();
+    fbcon_go_dark();
+    serial_panic();
+    kprintf("kexec: %s: a firmware reboot instead\n", why);
+    machine_reboot();
+}
+
 /* Bus mastering off, then the jump: here on the BSP, else by the BSP
  * (waiting in kexec_halted_wait), which sends this CPU INIT too. */
 _Noreturn static void jump(void)
@@ -183,7 +221,8 @@ _Noreturn static void jump(void)
     pci_panic_bus_master_off();
     if (lapic_is_bsp())
         jump_here();
-    __atomic_store_n(&handover, HAND_JUMP, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&test_break, __ATOMIC_RELAXED) != KEXEC_TEST_STALL)
+        __atomic_store_n(&handover, HAND_JUMP, __ATOMIC_RELEASE);
     for (;;) {
         cli();
         hlt();
@@ -201,6 +240,7 @@ bool kexec_halted_will_wait(void)
 
 _Noreturn void kexec_halted_wait(void)
 {
+    uint64_t start = rdtsc();
     for (;;) {
         cli();
         int h = __atomic_load_n(&handover, __ATOMIC_ACQUIRE);
@@ -208,14 +248,32 @@ _Noreturn void kexec_halted_wait(void)
             jump_here();   /* kx and the record are written before HAND_JUMP */
         if (h == HAND_HALT)
             halt_forever();
+        if (rdtsc() - start > HANDOVER_WAIT_S * tsc_hz)
+            give_up("the CPU that stopped this one didn't hand the jump over within 10 s");
         cpu_relax();
     }
 }
 
+_Noreturn void kexec_panic_failed(void)
+{
+    static int once;
+    if (__atomic_exchange_n(&once, 1, __ATOMIC_SEQ_CST))
+        halt_forever();   /* the reset itself faulted: nothing more to try */
+    give_up("a fault on the panicking CPU after it decided to start the stored kernel");
+}
+
 _Noreturn void kexec_panic_jump(void)
 {
+    static uint8_t *volatile null_page;   /* NULL: the test's page fault */
+    if (__atomic_load_n(&test_break, __ATOMIC_RELAXED) == KEXEC_TEST_FAULT)
+        null_page[8] = 0;   /* a fault after the decision: the nested panic */
     seal(KEXEC_RECORD_PANIC);
     jump();
+}
+
+void kexec_test_break(int how)
+{
+    __atomic_store_n(&test_break, how, __ATOMIC_RELAXED);
 }
 
 status_t kexec_reboot(void)

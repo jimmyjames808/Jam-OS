@@ -38,6 +38,7 @@
 #pragma once
 
 #include <os.h>
+#include <wallclock.h>
 
 /* ---- output and input (sh_io.c) ---------------------------------------------------- */
 
@@ -120,6 +121,12 @@ bool        sh_alias_at(int i, const char **name, const char **value);
 /* ---- the console and history (main.c) ---------------------------------------------- */
 
 handle_t    sh_console(void);
+/* The kernel log on the screen while a command whose output is the log
+ * runs (console.show_log): true before it, false after; `only` a process
+ * name (its lines and the kernel's), or NULL for every line. Nested pairs
+ * count once (the outermost's `only`); on a console that shows the log
+ * anyway it changes nothing. */
+void        sh_show_log(bool on, const char *only);
 unsigned    sh_history_count(void);            /* lines ever remembered */
 const char *sh_history_at(unsigned i);         /* i-th of the last 32, NULL if gone */
 
@@ -182,22 +189,12 @@ bool sh_parse_db(const char *s, int32_t *cb);
 
 /* ---- time (sh_time.c) -------------------------------------------------------------- */
 
-struct sh_tz {
-    bool sydney;       /* Australia/Sydney: AEST +10, AEDT +11 (Oct..Apr) */
-    int  off_min;      /* fixed zones: minutes east of UTC */
-    char name[24];     /* what dates show: "UTC", "UTC+05:30" */
-};
-
-/* TZ: Australia/Sydney (also Sydney, AEST, AEDT, local), UTC/GMT, or
- * [UTC|GMT]+H[:MM] / -H[:MM]. false if not understood. */
-bool sh_parse_tz(const char *s, struct sh_tz *tz);
-/* $TZ; if it isn't understood, says so (naming `who`) and gives UTC. */
-bool sh_local_tz(struct sh_tz *tz, const char *who);
+/* $TZ as a zone (<wallclock.h>); if it isn't understood, says so (naming
+ * `who`) and gives UTC. */
+bool sh_local_tz(struct tz *tz, const char *who);
 /* The time now (UTC seconds) from the RTC ($RTC says whether it keeps
  * local time or UTC), and the raw reading; false (said) if unreadable. */
 bool sh_clock_now(int64_t *utc, struct rtc_time *raw, const char *who);
-/* "Thu 15 Jan 2026 12:02:03 AEDT (UTC+11:00)", or just "12:02:03". */
-void sh_fmt_time(int64_t utc, const struct sh_tz *tz, char *buf, size_t cap, bool with_zone);
 /* "3 days, 4:05", "1:02:03", "5 min 3 s" */
 void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap);
 

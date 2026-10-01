@@ -6,18 +6,28 @@
  * handoff's record_phys) and its log ring. They are mapped like any RAM
  * but kept out of the allocator until crashlog_init has read them; then
  * they are freed. All of it is untrusted, as anything another kernel left
- * behind: the record must lie in a CRASH_LOG range with its magic,
- * version, size and checksum right, the ring must lie in CRASH_LOG ranges
- * and be a power of two, the position must be in order, the name a name
- * and the message printable.
+ * behind, checked in two steps:
+ *   - the record itself: in a CRASH_LOG range, its magic, version, size,
+ *     checksum and kind right. Only then does it say how the previous
+ *     kernel ended; else it is no use (and a panic it may describe is
+ *     not known);
+ *   - a panic's log: the ring in CRASH_LOG ranges and a power of two of
+ *     at most RING_MAX, the positions in order. A ring that fails only
+ *     loses the log. The name and message are made safe instead of
+ *     refused: a name that is not one is dropped (logd numbers the file
+ *     itself), the message is cleaned to printable ASCII.
+ * So a panic always counts for the crash-loop rule (kexec_crash_loop)
+ * once the record is the previous kernel's, whatever its log looks like:
+ * the rule must not depend on the text of a panic message.
  *
  * A record that says "reboot" needs nothing more. One that says "panic"
  * has its ring copied once, oldest byte first, into a VMO (a struct
  * crashlog_header, <jam/startup.h>, then the text), which userboot hands
  * init as SR_CRASHLOG; init hands it to logd, which saves it as
- * /data/logs/<name>-crash.txt, and the shell says what happened. The
- * panic also counts for the crash-loop rule (kexec_crash_loop). */
+ * /data/logs/<name>-crash.txt, and the shell says what happened. */
 #include <stddef.h>
+#include <stdint.h>
+#include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/startup.h>
@@ -25,8 +35,14 @@
 #include <jam/vmo.h>
 #include "kexec_internal.h"
 
+/* A log ring's size: any power of two in between. RING_MAX bounds the
+ * VMO the copy needs; it is well above this kernel's own ring, so a
+ * kernel with a bigger one still gets its log saved. */
 #define RING_MIN (4ull << 10)
-#define RING_MAX (1ull << 20)
+#define RING_MAX (16ull << 20)
+
+_Static_assert(KLOG_SIZE >= RING_MIN && KLOG_SIZE <= RING_MAX,
+               "this kernel's own log ring passes the next kernel's check");
 
 _Static_assert(CRASHLOG_NAME == KEXEC_NAME && CRASHLOG_MESSAGE == KEXEC_MESSAGE,
                "the crash log's header carries the record's strings as they are");
@@ -59,17 +75,8 @@ static bool name_ok(const char *n)
     return i < KEXEC_NAME;
 }
 
-/* Terminated within its field, and printable ASCII. */
-static bool text_ok(const char *s, size_t cap)
-{
-    size_t i = 0;
-    for (; i < cap && s[i]; i++)
-        if (s[i] < 0x20 || s[i] > 0x7e)
-            return false;
-    return i < cap;
-}
-
-/* The record at pa, checked; NULL if it can be used, else why not. */
+/* The record at pa, copied once into *r: NULL if it says how the previous
+ * kernel ended, else why it is no use. */
 static const char *check_record(const struct boot_info *bi, uint64_t pa,
                                 struct kexec_crash_record *r)
 {
@@ -84,14 +91,48 @@ static const char *check_record(const struct boot_info *bi, uint64_t pa,
         return "its checksum is wrong";
     if (r->kind != KEXEC_RECORD_REBOOT && r->kind != KEXEC_RECORD_PANIC)
         return "it says neither reboot nor panic";
+    return NULL;
+}
+
+/* A panic record's log: the name and message made safe to use, then NULL
+ * if the ring can be copied, else why not. */
+static const char *check_log(const struct boot_info *bi, struct kexec_crash_record *r)
+{
+    if (!name_ok(r->name))
+        memset(r->name, 0, sizeof(r->name));   /* logd takes the next free number */
+    char msg[KEXEC_MESSAGE];
+    memcpy(msg, r->message, sizeof(msg));
+    msg[sizeof(msg) - 1] = '\0';
+    kexec_message_clean(r->message, sizeof(r->message), msg);
     if (r->ring_size < RING_MIN || r->ring_size > RING_MAX ||
         (r->ring_size & (r->ring_size - 1)) || !in_crash_log(bi, r->ring_phys, r->ring_size))
         return "the log ring is not where it says";
     if (r->panic_at > r->head)
         return "its log positions are out of order";
-    if (!name_ok(r->name) || !text_ok(r->message, KEXEC_MESSAGE))
-        return "its log name or message is not text";
     return NULL;
+}
+
+/* The record and, for a panic, its log: NULL if the record says how the
+ * previous kernel ended; then *log_why is NULL if a panic's log can be
+ * copied, else why not. */
+static const char *examine(const struct boot_info *bi, struct kexec_crash_record *r,
+                           const char **log_why)
+{
+    *log_why = NULL;
+    const char *why = check_record(bi, bi->kexec_record, r);
+    if (!why && r->kind == KEXEC_RECORD_PANIC)
+        *log_why = check_log(bi, r);
+    return why;
+}
+
+const char *crashlog_check(const struct boot_info *bi, bool *panicked, bool *log_ok)
+{
+    struct kexec_crash_record r;
+    const char *log_why;
+    const char *why = examine(bi, &r, &log_why);
+    *panicked = !why && r.kind == KEXEC_RECORD_PANIC;
+    *log_ok = *panicked && !log_why;
+    return why;
 }
 
 /* The ring as text, oldest byte first, after a header, into a VMO. */
@@ -127,7 +168,8 @@ static status_t copy_ring(const struct kexec_crash_record *r)
 static void read_record(const struct boot_info *bi)
 {
     struct kexec_crash_record r;
-    const char *why = check_record(bi, bi->kexec_record, &r);
+    const char *log_why;
+    const char *why = examine(bi, &r, &log_why);
     if (why) {
         kprintf("kexec: the previous kernel's crash record is no use (%s): if it panicked, "
                 "its log is lost\n", why);
@@ -143,6 +185,10 @@ static void read_record(const struct boot_info *bi)
     panics = r.panics;
     kprintf("kexec: the previous kernel panicked after %lu.%03lu s (panic %u in a row): %s\n",
             ms / 1000, ms % 1000, r.panics, r.message);
+    if (log_why) {
+        kprintf("kexec: its log can't be saved (%s)\n", log_why);
+        return;
+    }
     status_t st = copy_ring(&r);
     if (st != OK)
         kprintf("kexec: no memory for its log (%s): it is lost\n", status_str(st));

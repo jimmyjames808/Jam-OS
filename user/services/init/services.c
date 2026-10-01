@@ -12,9 +12,11 @@
  *             console channel (SR_USER + 0) and a control channel of init's
  *             that answers only `reboot` (SR_USER + 8, ctl.c: Ctrl+Alt+Del
  *             goes through init, which syncs /data first);
- *             init keeps the client end. With the splash (the second
- *             argument "quiet") it draws nothing until the splash has
- *             borrowed the screen and given it back
+ *             init keeps the client end. With the splash (the argument
+ *             "quiet") it draws nothing until the splash has borrowed the
+ *             screen and given it back; on a boot with the splash every
+ *             console also gets "nolog": the kernel log off the screen
+ *             but for its notices
  *   splash    bin/splash, once, on a plain boot (argv "splash" from the
  *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
  *             channel of init's (SR_USER + 0, <splash.h>) and a client end
@@ -106,6 +108,7 @@ static handle_t audio_srv[2], audio_cli[2];
 static handle_t music_srv, music_cli;
 static bool nousb;
 static bool quiet_console;   /* the next console starts quiet (the splash's first one) */
+static bool nolog_console;   /* every console keeps the log off the screen (a splash boot) */
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
 
@@ -209,8 +212,13 @@ static status_t start_console(void)
         { SR_USER + 0, b },
         { SR_USER + 8, ctl },
     };
-    const char *argv[] = { svcs[CONSOLE].path, "quiet" };
-    st = svc_start(CONSOLE, quiet_console ? 2 : 1, argv, x, ctl ? 3 : 2);
+    const char *argv[3] = { svcs[CONSOLE].path };
+    int argc = 1;
+    if (nolog_console)
+        argv[argc++] = "nolog";
+    if (quiet_console)
+        argv[argc++] = "quiet";
+    st = svc_start(CONSOLE, argc, argv, x, ctl ? 3 : 2);
     quiet_console = false;   /* a restarted console draws at once */
     if (st != OK) {
         jam_handle_close(a);
@@ -571,7 +579,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     port = loop_port;
     nousb = no_usb;
     first_arg = shell_arg;
-    quiet_console = splash;
+    quiet_console = nolog_console = splash;
     make_audio_channels();
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;

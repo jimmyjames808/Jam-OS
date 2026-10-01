@@ -1,4 +1,5 @@
-/* date: the date and time from the real-time clock in $TZ (sh_time.c);
+/* date: the date and time from the real-time clock in $TZ (sh_time.c,
+ * <wallclock.h>);
  * -u UTC, -r the raw clock reading, -d @secs a given Unix time. */
 #include "sh.h"
 
@@ -42,13 +43,13 @@ SH_CMD(date)
     struct rtc_time r;
     if (!given && !sh_clock_now(&utc, &r, "date"))
         return 1;
-    struct sh_tz tz;
+    struct tz tz;
     if (utc_only)
-        sh_parse_tz("UTC", &tz);
+        tz_parse("UTC", &tz);
     else
         sh_local_tz(&tz, "date");
     char buf[80];
-    sh_fmt_time(utc, &tz, buf, sizeof(buf), true);
+    time_format(utc, &tz, buf, sizeof(buf), true);
     sh_say("%s\n", buf);
     if (raw && !given)
         show_raw(&r, utc);

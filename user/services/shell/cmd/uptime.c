@@ -28,10 +28,10 @@ SH_CMD(uptime)
     sh_fmt_uptime(s.uptime_ns, up, sizeof(up));
     int64_t utc;
     struct rtc_time r;
-    struct sh_tz tz;
+    struct tz tz;
     if (sh_clock_now(&utc, &r, "uptime")) {
         sh_local_tz(&tz, "uptime");
-        sh_fmt_time(utc, &tz, now, sizeof(now), false);
+        time_format(utc, &tz, now, sizeof(now), false);
     }
     sh_say("%s up %s, 1 user, %u CPUs, %u.%u%% busy since boot\n", now, up, s.cpu_count, busy / 10,
            busy % 10);

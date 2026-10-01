@@ -18,6 +18,7 @@
 #define CONSOLE_LEND_SCREEN      0x000c0006u
 #define CONSOLE_NEW_CLIENT       0x000c0007u
 #define CONSOLE_BLANK            0x000c0008u
+#define CONSOLE_SHOW_LOG         0x000c0009u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct console_write_req {
@@ -94,6 +95,16 @@ struct console_blank_req {
     uint8_t on;
 } __attribute__((packed));
 struct console_blank_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct console_show_log_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t on;
+    uint8_t only[32];
+} __attribute__((packed));
+struct console_show_log_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -356,6 +367,38 @@ static inline status_t console_blank(handle_t ch, uint8_t on)
     return console_blank_until(ch, DEADLINE_NEVER, on);
 }
 
+/* Ask for the kernel log on the screen (on 1), or stop asking (on 0). A
+ * console started with the argument "nolog" (init's, on a plain boot with
+ * the splash) keeps the log off the screen but for a few notices, and
+ * shows it only while some channel asks: the shell asks while a command
+ * whose output is the log runs (the kernel's commands, `ktest`, `ps -k`,
+ * ...; the test programs; a program it runs). `only` (NUL-padded) names a
+ * process: then just its lines ("[name] ...") and the kernel's own are
+ * shown, so a program's run doesn't bring the background services' lines;
+ * empty: every line. A channel that closes stops asking. Without "nolog"
+ * the log is always on the screen and this changes nothing. ADMIN and
+ * SHELL channels only: ERR_ACCESS_DENIED for a PROGRAM one. */
+static inline status_t console_show_log_until(handle_t ch, uint64_t deadline_ns, uint8_t on, const uint8_t only[32])
+{
+    struct console_show_log_req idl_q;
+    struct console_show_log_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_SHOW_LOG;
+    idl_q.on = on;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.only[idl_i] = only[idl_i];
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t console_show_log(handle_t ch, uint8_t on, const uint8_t only[32])
+{
+    return console_show_log_until(ch, DEADLINE_NEVER, on, only);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -369,6 +412,7 @@ struct console_ops {
     status_t (*lend_screen)(void *ctx, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
     status_t (*blank)(void *ctx, uint8_t on);
+    status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -561,6 +605,22 @@ static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->blank(ctx, idl_q->on);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_SHOW_LOG: {
+        const struct console_show_log_req *idl_q = (const struct console_show_log_req *)req;
+        struct console_show_log_rep *idl_r = (struct console_show_log_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->show_log) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->show_log(ctx, idl_q->on, idl_q->only);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

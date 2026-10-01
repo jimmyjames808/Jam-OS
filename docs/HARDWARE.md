@@ -54,9 +54,21 @@ logs that interface's report descriptor in hex, the layout it found and
 the protocol it chose (report protocol for a mouse with a wheel).
 
 Seen in the boot logs, all harmless so far:
-- The mouse on port 11 sometimes fails its first Address Device; usb-bus
-  tries the root port again and it attaches, but the retry costs about
-  3 s of the boot (M8.6 looks for the cause).
+- The mouse on port 11 (258a:0033) often fails its first attempt: in the
+  boot logs of 2026-09-30 and 2026-10-01 its Address Device ended in a USB
+  Transaction Error twice, or its first GET_DESCRIPTOR did, or (boot 11)
+  the command got no completion for 3 s and the try right after the abort
+  worked at once. Each time it attached about 0.2 s after the first try
+  (after a connect change, or at the next try). Most likely the mouse
+  doesn't answer for a few hundred ms after its first bus reset (busy, or
+  dropping off the bus and coming back as the HAF700 does), and the xHC
+  retries a NAKed SET_ADDRESS for as long as software lets it. usb-bus
+  gives Address Device 250 ms a try (USB 2.0 allows a device 50 ms),
+  tries a failed port again after 100 ms, doubling, and treats a
+  reconnect during the attempt as a fresh start; since every root port is
+  attached in its own task (M8.6), the mouse can only delay itself. Each
+  failed try is logged with the PORTSC it left (connected, enabled, a
+  connect change), which tells the two causes apart.
 - The HAF700 on port 8 detaches and comes back once during enumeration,
   and after a warm reboot devmgr can log that its hid "did not end
   cleanly" (a follow-up in [ROADMAP.md](ROADMAP.md#smaller-follow-ups)).
@@ -154,7 +166,8 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
   second before the panic. The red panic screen only stays up (photograph
   it) when there is no stored kernel to start, or for a second panic
-  within 30 s of the boot that followed a panic (a crash loop).
+  within 30 s of the boot that followed a panic, or for the third panic in
+  a row (a crash loop).
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may
@@ -164,12 +177,15 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   stick is out.
 - A hang during boot: the last line on the screen names the step (`pci:`
   lines name the function being sized). The plain entry shows the boot
-  splash instead of the log: boot `Jam OS (text log, no splash)`
-  (`verbose`) to see it.
+  splash instead of the log, and the shell after it shows only notices
+  of it: boot `Jam OS (text log, no splash)` (`verbose`) to see the log
+  as it comes; `log 40` shows its last lines from the shell.
 - Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
   kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
-  `smp:` lines name each CPU that did not start; boot `Jam OS (Limine
-  starts the CPUs)` (`smp=loader`) to compare.
+  `smp:` lines name each CPU that did not start. To compare, have Limine
+  start them instead: in Limine's menu press E on `Jam OS`, add
+  `cmdline: smp=loader` (or append `smp=loader` to the entry's
+  `cmdline`), then F10 to boot it.
 - Anything that looks like memory corruption: boot with `nopcid` first
   (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
   log's `cpu id:` and `pcid:` lines give the microcode revision and whether

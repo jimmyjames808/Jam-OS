@@ -207,7 +207,8 @@ static status_t try_open(void)
     if (st != OK)
         return st;
     printf("logd: writing %s\n", logfile_path());
-    /* The kernel keeps the name for a crash kernel (<name>-crash.txt). */
+    /* The kernel keeps the name: if this boot panics, the next one saves
+     * its log next to this file as <name>-crash.txt. */
     if (src.klog && jam_klog_name(src.h, logfile_name(), strlen(logfile_name())) != OK)
         printf("logd: the kernel didn't take the log's name\n");
     up = true;
