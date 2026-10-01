@@ -9,8 +9,8 @@ uint64_t now_elapsed(const struct app *a, uint64_t t)
 {
     const struct snap *s = &a->snap;
     uint64_t e = s->elapsed_ms;
-    if (s->playing == 1 && t > s->at)
-        e += (t - s->at) / NS_PER_MS;
+    if (s->playing == 1 && t > s->at)   /* a player gone quiet: the clock stops */
+        e += (t - s->at < SNAP_STALE_NS ? t - s->at : SNAP_STALE_NS) / NS_PER_MS;
     return s->length_ms && e > s->length_ms ? s->length_ms : e;
 }
 
@@ -109,6 +109,12 @@ int32_t vol_at(const struct layout *lo, int x)
     return cb / 5 * 5;
 }
 
+void vol_text(int32_t cb, char *out, size_t cap)
+{
+    int32_t m = cb < 0 ? -cb : cb;
+    snprintf(out, cap, "%s%d.%d dB", cb < 0 ? "-" : "", (int)(m / 10), (int)(m % 10));
+}
+
 /* A loudspeaker at (x, y) with `waves` arcs in front of it. */
 static void speaker(float x, float y, float u, int waves)
 {
@@ -147,7 +153,7 @@ static void volume(const struct app *a)
     if (cb <= -960)
         snprintf(db, sizeof(db), "muted");
     else
-        snprintf(db, sizeof(db), "%d.%d dB", cb / 10, (cb < 0 ? -cb : cb) % 10);
+        vol_text(cb, db, sizeof(db));
     text(&scr.s, r->x + r->w + 16 * u, r->y + (r->h - TEXT_H(u)) / 2, u, C_DIM, db);
 }
 
@@ -183,7 +189,10 @@ static void names(const struct app *a)
         text_clip(&scr.s, r->x, y + 92 * u, u, C_FAINT, w, "(its `jamjar` command) to play");
         return;
     }
-    text(&scr.s, r->x, y, u, s->playing == 1 ? C_GOLD : C_FAINT, state_word(s->playing));
+    if (snap_stale(s, now()))
+        text(&scr.s, r->x, y, u, C_ROSE, "THE PLAYER DOESN'T ANSWER");
+    else
+        text(&scr.s, r->x, y, u, s->playing == 1 ? C_GOLD : C_FAINT, state_word(s->playing));
     y += 28 * u;
     if (!s->path[0]) {
         text_clip(&scr.s, r->x, y, lo->tb, C_DIM, w, "Nothing playing");

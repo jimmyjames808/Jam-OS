@@ -1,7 +1,7 @@
 /* music: what the player's files share (main.c: the loop and the control
  * channel; tracks.c: the folder's list, the shuffle and the titles;
  * player.c: playing it through <audio.h>; spectrum.c: the bands of what is
- * heard, for `levels`). */
+ * heard, for `spectrum` and `levels`). */
 #pragma once
 
 #include <audio.h>
@@ -150,7 +150,7 @@ struct player {
     uint32_t hist[HIST_MAX], nhist;
     uint32_t ahead[HIST_MAX], nahead;
     int16_t *pcm;                 /* a chunk */
-    struct spectrum *spec;        /* the bands (malloc'd once: 30 KiB) */
+    struct spectrum *spec;        /* the bands (malloc'd once: about 85 KiB) */
 };
 
 /* player.c */

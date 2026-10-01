@@ -82,7 +82,7 @@ static void hear(struct app *a, uint64_t t)
 static bool animate(struct app *a, uint64_t t, float dt)
 {
     static const uint8_t quiet[BARS];
-    bool heard = a->snap.playing == 1;
+    bool heard = a->snap.playing == 1 && !snap_stale(&a->snap, t);   /* else the bars fall */
     bars_step(&a->bars, heard ? a->snap.bands : quiet, heard, dt);
     float goal = a->full ? 1.0f : 0.0f;
     if (a->full_t != goal) {
@@ -142,8 +142,9 @@ static int run(int argc, char **argv)
     }
     if (!a->snap.link)
         say("jamjar: no player channel: start it with the shell's `jamjar` command to play\n");
-    if (a->trace)
-        say("jamjar: %dx%d, reading %s\n", scr.w, scr.h, a->lib.root);
+    if (a->trace)   /* the cover test reads where now playing's cover goes */
+        say("jamjar: %dx%d, reading %s; now playing's cover at %d,%d, %d px\n", scr.w, scr.h,
+            a->lib.root, a->lo.art.x, a->lo.art.y, a->lo.art.w);
     uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0;
     while (!a->quit) {
         uint64_t t = now();

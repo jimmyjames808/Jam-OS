@@ -89,6 +89,16 @@ static void test_utf8(void)
     fun_check(text_width(1, "Ÿ") == text_width(1, "Y") && text_width(1, "\xe4\xb8\xad") > 0 &&
                   text_width(1, "\xe4\xb8\xad") < 2 * text_width(1, "?"),
               "  ... drawn one glyph a character: 'Y' with a diaeresis, one box for CJK");
+    static uint32_t tp[40 * 20];
+    struct surf ts = { tp, 40, 20, 40 };
+    bool inside = true;
+    for (int max_w = 0; max_w < 30; max_w += 3) {
+        memset(tp, 0, sizeof(tp));
+        text_clip(&ts, 0, 0, 1, 0xffffff, max_w, "Kill Jay Z");
+        for (int i = 0; i < 40 * 20; i++)
+            inside &= !tp[i] || i % 40 < max_w;
+    }
+    fun_check(inside, "  ... text cut short to fit stays inside its width, the dots too");
 }
 
 static void test_library(void)
@@ -175,6 +185,17 @@ static void test_art(void)
     art_draw(&s1, 0, 0, 96, lib.album[0].hash, C_PANEL);   /* from the cache now */
     fun_check(diff > 96 * 96 / 8 && !memcmp(px[0], px[1], sizeof(px[0])),
               "  ... two albums' labels differ; the same one again is the same picture");
+    /* Now playing at 2560x1440 draws each album played at 435 px (757 KB):
+     * forty of them must not fill the 16 MiB heap the whole app lives in. */
+    enum { BIG = 435 };
+    uint32_t *bp = big_alloc((uint64_t)BIG * BIG * 4);
+    struct surf sb = { bp, BIG, BIG, BIG };
+    for (uint64_t i = 0; bp && i < 40; i++)
+        art_draw(&sb, 0, 0, BIG, 0x6a616d00 + i, C_PANEL);
+    void *room = malloc(4u << 20);
+    fun_check(bp && room && art_cache_bytes() <= (8u << 20) && art_cache_bytes() >= BIG * BIG * 4,
+              "  ... 40 albums drawn at 435 px: 8 MiB kept at most, the heap keeps room");
+    free(room);
 }
 
 static void test_bars(void)
@@ -225,7 +246,7 @@ static void test_roulette(void)
 {
     static struct roulette r;
     uint64_t t0 = 1000 * NS_PER_S;
-    bool ok = roulette_start(&r, &lib, 5, t0);
+    bool ok = roulette_start(&r, &lib, 5, -1, t0);
     float last = -1;
     int64_t got = -1;
     for (uint64_t t = t0; ok && got < 0 && t < t0 + 10 * NS_PER_S; t += 20 * NS_PER_MS) {
@@ -236,6 +257,39 @@ static void test_roulette(void)
     fun_check(ok && got >= 0 && got < lib.nalbums && !r.on &&
                   (uint32_t)got == r.tile[r.target],
               "roulette: slows to the target label and picks its album");
+    /* Spins that would land on the album playing land beside it instead. */
+    unsigned would = 0;
+    ok = true;
+    for (uint64_t seed = 1; seed <= 200; seed++) {
+        (void)roulette_start(&r, &lib, seed, -1, t0);
+        uint32_t playing = r.tile[r.target];
+        (void)roulette_start(&r, &lib, seed, 3, t0);
+        would += playing == 3;
+        got = -1;
+        for (uint64_t t = t0; got < 0 && t < t0 + 10 * NS_PER_S; t += 50 * NS_PER_MS)
+            got = roulette_step(&r, t);
+        ok &= got >= 0 && got != 3;
+    }
+    fun_check(ok && would > 0, "  ... never on the album playing (200 spins)");
+}
+
+/* The player stops answering while it plays (it crashed, or hangs): after
+ * SNAP_STALE_NS its last state is not shown as now any more. */
+static void test_stale(void)
+{
+    static struct app a;
+    uint64_t t0 = 50 * NS_PER_S;
+    a.snap = (struct snap){ .link = true, .answered = true, .playing = 1, .elapsed_ms = 1000,
+                            .length_ms = 200000, .at = t0 };
+    bool ok = now_elapsed(&a, t0 + NS_PER_S) == 2000 && !snap_stale(&a.snap, t0 + NS_PER_S);
+    ok &= snap_stale(&a.snap, t0 + 10 * NS_PER_S) && now_elapsed(&a, t0 + 60 * NS_PER_S) < 4000;
+    fun_check(ok, "link: the player stops answering: its state goes stale, its clock stops");
+    char v[3][24];
+    vol_text(-5, v[0], sizeof(v[0]));
+    vol_text(-125, v[1], sizeof(v[1]));
+    vol_text(0, v[2], sizeof(v[2]));
+    fun_check(eq(v[0], "-0.5 dB") && eq(v[1], "-12.5 dB") && eq(v[2], "0.0 dB"),
+              "volume: -0.5 dB keeps its sign");
 }
 
 static bool apart(const struct rect *p, const struct rect *q)
@@ -258,9 +312,15 @@ static uint32_t *frame_px;   /* the back buffer for the frames: the biggest scre
  * at the top left is drawn, and how long it took. */
 static void test_frame(int w, int h)
 {
-    if (!frame_px && !(frame_px = big_alloc(2560ull * 1440 * 4))) {
-        fun_check(false, "frame: no memory to draw into");
-        return;
+    if (!frame_px) {
+        if (!(frame_px = big_alloc(2560ull * 1440 * 4))) {
+            fun_check(false, "frame: no memory to draw into");
+            return;
+        }
+        /* Its pages committed now, so the times below are the frames' own,
+         * as the app's are after its first frame (a page's first touch is
+         * slow in QEMU). */
+        memset(frame_px, 0, 2560ull * 1440 * 4);
     }
     scr.s = (struct surf){ frame_px, w, h, w };
     scr.w = w;
@@ -341,6 +401,7 @@ int jamjar_selftest(void)
     test_covers();
     test_bars();
     test_roulette();
+    test_stale();
     test_screen(1280, 720);
     test_screen(1280, 800);
     test_screen(1024, 600);

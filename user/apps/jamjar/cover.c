@@ -50,6 +50,7 @@ static struct {
     uint64_t      draws;             /* lock */
     handle_t      wake;
     bool          trace;
+    bool          fake;              /* the self-test: no thread, no files (fake_decode) */
 } C;
 
 static uint32_t tmp_small[COVER_SMALL * COVER_SMALL];   /* the thread's own */
@@ -219,11 +220,10 @@ static uint32_t times(uint32_t p, uint32_t k)
     return o;
 }
 
-bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash, int kind,
-                  uint32_t bg)
+bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
 {
-    uint32_t *px = malloc((size_t)size * (size_t)size * 4);
-    if (!px)
+    int size = dst->w;
+    if (size < 1 || dst->h != size || dst->stride != size)
         return false;
     lock();
     int i = find(hash, false);
@@ -234,21 +234,15 @@ bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash,
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        cover_scale(src, side, side, side, px, size, size);
+        cover_scale(src, side, side, side, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;
     for (int j = 0; ok && j < size; j++) {
-        if (y + j < 0 || y + j >= dst->h)
-            continue;
-        for (int k = 0; k < size; k++) {
-            if (x + k < 0 || x + k >= dst->w)
-                continue;
-            uint32_t *d = dst->px + (uint64_t)(y + j) * dst->stride + x + k;
-            *d = px_over(bg, times(px[(size_t)j * size + k], inside(k, j, size, r)));
-        }
+        uint32_t *row = dst->px + (size_t)j * size;
+        for (int k = 0; k < size; k++)
+            row[k] = px_over(bg, times(row[k], inside(k, j, size, r)));
     }
-    free(px);
     return ok;
 }
 
@@ -404,32 +398,54 @@ static void store(int i, bool large, bool ok)
     unlock();
 }
 
+/* The self-test's stand-in for reading and decoding a file: both sizes
+ * one colour, made from the path. */
+static void fake_decode(const char *path)
+{
+    uint32_t c = 0xff000000u | (uint32_t)(name_hash(path) & 0xffffff);
+    for (size_t k = 0; k < COVER_SMALL * COVER_SMALL; k++)
+        tmp_small[k] = c;
+    for (size_t k = 0; k < COVER_LARGE * COVER_LARGE; k++)
+        tmp_large[k] = c;
+}
+
+/* The next job done; false if there was none. */
+static bool work(void)
+{
+    static char path[FS_PATH_MAX];
+    bool large = false;
+    int i = next_job(&large);
+    if (i < 0)
+        return false;
+    lock();
+    memcpy(path, C.tab[i].path, sizeof(path));
+    bool want_large = C.tab[i].lst == ST_LOADING;
+    unlock();
+    int w = 0, h = 0;
+    uint64_t t0 = now();
+    const char *why = NULL;
+    if (C.fake)
+        fake_decode(path);
+    else
+        why = decode(path, want_large, &w, &h);
+    stbi_arena_reset();
+    store(i, large, !why);
+    if (C.trace && why)
+        say("jamjar: cover: %s %s: no cover\n", path, why);
+    else if (C.trace)
+        say("jamjar: cover: %s: %dx%d in %lu ms%s\n", path, w, h,
+            (unsigned long)((now() - t0) / NS_PER_MS), want_large ? " (large too)" : "");
+    return true;
+}
+
 static void cover_main(void *arg)
 {
     (void)arg;
-    static char path[FS_PATH_MAX];
     for (;;) {
-        bool large = false;
-        int i = next_job(&large);
-        if (i < 0) {
-            (void)jam_object_wait_one(C.wake, SIG_SIGNALED, DEADLINE_NEVER, NULL);
-            (void)jam_event_signal(C.wake, SIG_SIGNALED, 0);
+        if (work())
             continue;
-        }
-        lock();
-        memcpy(path, C.tab[i].path, sizeof(path));
-        bool want_large = C.tab[i].lst == ST_LOADING;
-        unlock();
-        int w = 0, h = 0;
-        uint64_t t0 = now();
-        const char *why = decode(path, want_large, &w, &h);
-        stbi_arena_reset();
-        store(i, large, !why);
-        if (C.trace && why)
-            say("jamjar: cover: %s %s: no cover\n", path, why);
-        else if (C.trace)
-            say("jamjar: cover: %s: %dx%d in %lu ms%s\n", path, w, h,
-                (unsigned long)((now() - t0) / NS_PER_MS), want_large ? " (large too)" : "");
+        (void)jam_object_wait_one(C.wake, SIG_SIGNALED, DEADLINE_NEVER, NULL);
+        (void)jam_event_signal(C.wake, SIG_SIGNALED, 0);
     }
 }
 
@@ -446,22 +462,39 @@ static uint32_t *map_new(uint64_t bytes)
     return st == OK ? (uint32_t *)(uintptr_t)addr : NULL;
 }
 
-void cover_start(bool trace)
+/* The table and the slots; false if there is no memory for the slots. */
+static bool slots_init(void)
 {
-    C.trace = trace;
     for (uint32_t s = 0; s < SMALL_SLOTS; s++)
         C.small_of[s] = -1;
     for (uint32_t s = 0; s < LARGE_SLOTS; s++)
         C.large_of[s] = -1;
     C.small = map_new((uint64_t)SMALL_SLOTS * COVER_SMALL * COVER_SMALL * 4);
     C.large = map_new((uint64_t)LARGE_SLOTS * COVER_LARGE * COVER_LARGE * 4);
+    return C.small && C.large;
+}
+
+void cover_start(bool trace)
+{
+    C.trace = trace;
     void *stack = malloc(STACK);
     handle_t th;
-    if (!C.small || !C.large || !stack || jam_event_create(&C.wake) != OK ||
+    if (!slots_init() || !stack || jam_event_create(&C.wake) != OK ||
         thread_spawn("covers", cover_main, NULL, stack, STACK, &th) != OK) {
         say("jamjar: no covers (out of memory): the albums keep their jar labels\n");
         C.wake = HANDLE_INVALID;
         return;
     }
     jam_handle_close(th);
+}
+
+bool cover_test_start(void)
+{
+    C.fake = true;
+    return slots_init();
+}
+
+bool cover_test_work(void)
+{
+    return work();
 }

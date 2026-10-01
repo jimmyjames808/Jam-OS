@@ -69,7 +69,7 @@ protocol music 24
 # as `set_volume`; `sleep_s`, the seconds until the sleep timer stops the
 # player (0: off); and what is heard now: `bands`, its loudness in
 # sixteen frequency bands log-spaced from 40 Hz to 16 kHz (low first),
-# each 0..255 (about 0: -70 dB, 255: -10 dB below full scale, with a tilt
+# each 0..255 (about 0: -76 dB, 255: -16 dB below full scale, with a tilt
 # of +3 dB an octave so that every band of ordinary music moves), and
 # `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
 # scale). All zero while nothing is heard. (`spectrum` has the same in 64

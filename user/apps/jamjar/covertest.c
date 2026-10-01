@@ -5,7 +5,8 @@
  * way it guards against, and a few thousand randomly damaged ones; then
  * stb_image on a 4x4 PNG with alpha and a 16x16 JPEG (made by Python's
  * zlib and ffmpeg), a truncated PNG, a PNG whose header says 5000x5000,
- * and the scaling. */
+ * and the scaling; and the covers' states as cover.c's thread moves them
+ * (a fake decoder, no thread), with art.c drawing over them. */
 #include "jamjar.h"
 
 /* A 4x4 PNG: the left half red, the right half blue at alpha 128. */
@@ -276,8 +277,70 @@ static void test_decode(void)
     fun_check(ok, "  ... scaling down averages areas (premultiplied)");
 }
 
+/* ---- the covers' states, without the thread (cover_test_*) ------------------------------- */
+
+#define SIDE 300   /* drawn bigger than COVER_SMALL * 9 / 8: the large copy is asked for */
+#define PA "/m/A/Album/a.mp3"
+#define PB "/m/B/Album/b.mp3"
+#define PC "/m/C/Album/c.mp3"
+
+static uint32_t *spx;
+
+static void work_all(void)
+{
+    for (int guard = 0; guard < 16 && cover_test_work(); guard++)
+        ;
+}
+
+/* Album `h` drawn big from path p into the test's surface at `size`;
+ * whether its middle is p's cover (fake_decode's colour). */
+static bool shows(uint64_t h, const char *p, int size)
+{
+    struct surf s = { spx, size, size, size };
+    art_cover(&s, 0, 0, size, h, p, C_PANEL);
+    uint32_t want = 0xff000000u | (uint32_t)(name_hash(p) & 0xffffff);
+    return (spx[(size_t)size / 2 * size + size / 2] | 0xff000000u) == want;
+}
+
+/* Between art_cover asking what is ready and drawing it: B and C asked
+ * for big after A, and the thread's work done, so the one of them without
+ * a large copy takes A's (the least recently drawn of the two kept). */
+static void take_a_large(void)
+{
+    (void)cover_ready(0xb, PB, SIDE, false);
+    (void)cover_ready(0xc, PC, SIDE, false);
+    work_all();
+}
+
+static void test_states(void)
+{
+    if (!spx && !(spx = big_alloc((uint64_t)(SIDE + 20) * (SIDE + 20) * 4))) {
+        fun_check(false, "covers: no memory to draw into");
+        return;
+    }
+    bool ok = cover_test_start() && !shows(0xa, PA, SIDE);   /* asked: its label meanwhile */
+    work_all();
+    ok &= shows(0xa, PA, SIDE);
+    fun_check(ok, "covers: asked for, read, then drawn (both sizes in one read)");
+    ok = !shows(0xb, PB, SIDE) && !shows(0xc, PC, SIDE);
+    work_all();   /* B and C take the two large copies; A's goes */
+    ok &= shows(0xb, PB, SIDE) && shows(0xc, PC, SIDE) && shows(0xa, PA, SIDE);
+    fun_check(ok, "  ... a third album drawn big: A's large copy goes, A shows its small one");
+    work_all();   /* A's large copy read again */
+    art_test_hook(take_a_large);
+    ok = shows(0xa, PA, SIDE);   /* kept (small) -> large, which goes before it is drawn */
+    art_test_hook(NULL);
+    (void)cover_ready(0xa, PA, SIDE, false);
+    work_all();   /* A's large copy read once more */
+    art_test_hook(take_a_large);
+    ok &= shows(0xa, PA, SIDE + 20);   /* not kept yet: the same, on a new picture */
+    art_test_hook(NULL);
+    fun_check(ok, "  ... a copy taken away mid-draw: the picture, never the label");
+}
+
 void test_covers(void)
 {
     test_id3();
     test_decode();
+    test_states();
 }

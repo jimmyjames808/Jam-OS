@@ -184,6 +184,11 @@ struct cmd {
  * link_get says so). */
 void link_start(handle_t music);
 void link_get(struct snap *out);
+/* A snapshot of a player that was playing and has not answered for
+ * SNAP_STALE_NS (it is down, or hangs): not to be shown as what plays now.
+ * (A `play` of a big folder keeps it busy for about 0.5 s.) */
+#define SNAP_STALE_NS (1500 * NS_PER_MS)
+bool snap_stale(const struct snap *s, uint64_t t);
 /* Queue a command (a volume replaces one still queued); false if full. */
 bool link_cmd(const struct cmd *c);
 /* The last command's outcome, once ("" none): for the toast. */
@@ -239,6 +244,12 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
                uint32_t bg);
 /* The Jam OS mark (the seven drupelets) in a box `size` wide. */
 void art_mark(const struct surf *s, int x, int y, int size);
+/* Bytes of the pictures art_draw and art_cover keep (the self-test). */
+size_t art_cache_bytes(void);
+/* The self-test: call `between` in art_cover after it has asked cover.c
+ * what is ready and before it draws that (NULL: none), to change the
+ * covers' state at exactly that point. */
+void art_test_hook(void (*between)(void));
 
 /* ---- album covers (id3.c, cover.c, stbi.c) ------------------------------------------- */
 
@@ -286,10 +297,15 @@ void cover_start(bool trace);
  * which image is ready (COVER_*); not ready ones are asked for (the newest
  * asked first). `low`: ask behind everything else (reading ahead). */
 int  cover_ready(uint64_t hash, const char *path, int size, bool low);
-/* That image scaled to size x size with rounded corners over bg, into
- * dst at (x, y); false if it is gone meanwhile. */
-bool cover_render(const struct surf *dst, int x, int y, int size, uint64_t hash, int kind,
-                  uint32_t bg);
+/* That image scaled to fill dst (a square, its stride its width) with
+ * rounded corners over bg; false if it is gone meanwhile, and then dst
+ * is not touched. */
+bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg);
+/* The self-test: the covers without their thread and without files.
+ * cover_test_work does the thread's next job, with a picture of one
+ * colour (made from the path) instead of the file's; false: no job. */
+bool cover_test_start(void);
+bool cover_test_work(void);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 
@@ -308,8 +324,10 @@ struct roulette {
     float    kick;                  /* the pointer's bounce, 0..1 */
 };
 
-/* Spin over the library's albums (false: none to spin). */
-bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, uint64_t t);
+/* Spin over the library's albums (false: none to spin); it doesn't land
+ * on album `avoid` (the one playing; -1: none) unless it is the only one. */
+bool roulette_start(struct roulette *r, const struct library *l, uint64_t seed, int64_t avoid,
+                    uint64_t t);
 /* On to time t: the album it chose once it has landed and shown it (else -1). */
 int64_t roulette_step(struct roulette *r, uint64_t t);
 void    roulette_draw(const struct roulette *r, const struct library *l, const struct layout *lo,
@@ -362,6 +380,8 @@ void app_play_row(struct app *a, int c, int row);
 void app_play_album(struct app *a, uint32_t album, const char *first);
 /* The volume slider's value for x, in centibels. */
 int32_t vol_at(const struct layout *lo, int x);
+/* A volume in centibels as "-12.5 dB" (the sign kept above -1 dB too). */
+void    vol_text(int32_t cb, char *out, size_t cap);
 
 /* draw.c: the frame for time t into scr.s; where the bars are now (they
  * grow to 70 % of the screen in the big view). */

@@ -9,14 +9,20 @@
  * the two fruits (now and then one gold berry, as in the mark), each
  * with a highlight. It is what an album shows when its tracks carry no
  * cover picture (cover.c), or until the cover is read. Whatever is drawn
- * at a size, the label or the cover scaled, is kept (ART_CACHE of them,
- * the least recently used goes), so drawing it again is a copy.
+ * at a size, the label or the cover scaled, is kept (ART_CACHE of them and
+ * ART_BUDGET bytes at most, the least recently used going first), so
+ * drawing it again is a copy.
  *
  * Also the mark itself, for the top bar: the seven drupelets of
  * docs/logo/jamos-mark.svg. */
 #include "jamjar.h"
 
-#define ART_CACHE 64
+#define ART_CACHE  64
+/* Half of libos's 16 MiB heap (HEAP_SIZE), which also holds the library
+ * and the threads' stacks (stb_image has an arena of its own). At
+ * 2560x1440 now playing's cover is 757 KB; a frame draws about 1 MB of
+ * pictures, 3 MB with the roulette up. */
+#define ART_BUDGET (8u << 20)
 #define MAX_BERRIES 9
 
 static const struct fruit {
@@ -111,6 +117,10 @@ static void label(const struct surf *s, int x, int y, int size, uint64_t hash, u
     }
 }
 
+/* The kept pictures: one per album, size and background, whichever kind
+ * it is now (a kind that changes is drawn again over the old one, in
+ * place). Their bytes are counted against ART_BUDGET, so the cache can
+ * never eat the heap that the library and the rest of the app live in. */
 static struct art_slot {
     uint64_t  hash;
     int       size;
@@ -120,16 +130,86 @@ static struct art_slot {
     uint32_t *px;        /* size * size, malloc'd; NULL: free slot */
 } cache[ART_CACHE];
 static uint64_t draws;
+static size_t   kept;    /* bytes of the pictures in the cache */
+static void   (*between)(void);   /* the self-test's hook (art_test_hook) */
+
+static size_t bytes_of(int size)
+{
+    return (size_t)size * (size_t)size * 4;
+}
+
+size_t art_cache_bytes(void)
+{
+    return kept;
+}
+
+void art_test_hook(void (*fn)(void))
+{
+    between = fn;
+}
+
+static void forget(struct art_slot *c)
+{
+    free(c->px);
+    c->px = NULL;
+    kept -= bytes_of(c->size);
+}
+
+/* The kept picture of hash at size over bg, or NULL. */
+static struct art_slot *lookup(uint64_t hash, int size, uint32_t bg)
+{
+    for (int i = 0; i < ART_CACHE; i++)
+        if (cache[i].px && cache[i].hash == hash && cache[i].size == size && cache[i].bg == bg)
+            return &cache[i];
+    return NULL;
+}
+
+/* A slot with memory for a size x size picture. The least recently drawn
+ * pictures go until it fits in ART_BUDGET and malloc has the memory (each
+ * round forgets one, so this ends). NULL: not even an empty cache helps. */
+static struct art_slot *new_slot(int size)
+{
+    size_t need = bytes_of(size);
+    for (;;) {
+        struct art_slot *empty = NULL, *old = NULL;
+        for (int i = 0; i < ART_CACHE; i++) {
+            struct art_slot *c = &cache[i];
+            if (!c->px)
+                empty = empty ? empty : c;
+            else if (!old || c->used < old->used)
+                old = c;
+        }
+        if (empty && (kept + need <= ART_BUDGET || !kept) && (empty->px = malloc(need))) {
+            kept += need;
+            empty->size = size;
+            return empty;
+        }
+        if (!old)
+            return NULL;
+        forget(old);
+    }
+}
 
 /* Draw kind (the label, or a cover image) of hash into o; false if a cover
- * is gone meanwhile. */
-static bool render(const struct surf *o, int size, uint64_t hash, int kind, uint32_t bg)
+ * is gone meanwhile (then o is as it was). */
+static bool render(const struct surf *o, uint64_t hash, int kind, uint32_t bg)
 {
     if (kind == COVER_NONE) {
-        label(o, 0, 0, size, hash, bg);
+        label(o, 0, 0, o->w, hash, bg);
         return true;
     }
-    return cover_render(o, 0, 0, size, hash, kind, bg);
+    return cover_render(o, hash, kind, bg);
+}
+
+/* c's picture drawn again as kind; false (c as it was) if that cover is
+ * gone meanwhile. */
+static bool redraw(struct art_slot *c, uint64_t hash, int kind, uint32_t bg)
+{
+    struct surf o = { c->px, c->size, c->size, c->size };
+    if (!render(&o, hash, kind, bg))
+        return false;
+    c->kind = kind;
+    return true;
 }
 
 void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
@@ -138,32 +218,27 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
     if (size < 4)
         return;
     int kind = path ? cover_ready(hash, path, size, false) : COVER_NONE;
-    struct art_slot *hit = NULL, *old = &cache[0];
-    for (int i = 0; i < ART_CACHE && !hit; i++) {
-        struct art_slot *c = &cache[i];
-        if (c->px && c->hash == hash && c->size == size && c->bg == bg && c->kind == kind)
-            hit = c;
-        else if (!c->px || (old->px && c->used < old->used))
-            old = c;
+    if (between)
+        between();
+    /* The image cover_ready named can be given to another album by cover.c's
+     * thread before it is drawn here. A kept picture then stays as it was
+     * (the next frame asks again); a new one is drawn from what is ready
+     * now, at worst the label, which can't fail. */
+    struct art_slot *c = lookup(hash, size, bg);
+    if (c && c->kind != kind) {
+        (void)redraw(c, hash, kind, bg);
+    } else if (!c && (c = new_slot(size)) != NULL) {
+        c->hash = hash;
+        c->bg = bg;
+        for (int tries = 0; !redraw(c, hash, kind, bg); tries++)
+            kind = path && !tries ? cover_ready(hash, path, size, false) : COVER_NONE;
     }
-    if (!hit) {
-        free(old->px);
-        old->px = malloc((size_t)size * (size_t)size * 4);
-        struct surf o = { old->px, size, size, size };
-        if (!old->px || !render(&o, size, hash, kind, bg)) {
-            free(old->px);
-            old->px = NULL;
-            label(s, x, y, size, hash, bg);   /* not kept: drawn straight */
-            return;
-        }
-        old->hash = hash;
-        old->size = size;
-        old->bg = bg;
-        old->kind = kind;
-        hit = old;
+    if (!c) {
+        label(s, x, y, size, hash, bg);   /* not kept: drawn straight */
+        return;
     }
-    hit->used = ++draws;
-    struct surf src = { hit->px, size, size, size };
+    c->used = ++draws;
+    struct surf src = { c->px, size, size, size };
     blit(s, x, y, &src, 0, 0, size, size);
 }
 

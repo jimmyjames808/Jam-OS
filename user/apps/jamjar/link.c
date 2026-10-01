@@ -197,12 +197,18 @@ void link_start(handle_t music)
         return;
     void *stack = malloc(LINK_STACK);
     handle_t th;
+    L.snap.link = true;   /* before the thread reads the snapshot */
     if (!stack || thread_spawn("link", link_main, NULL, stack, LINK_STACK, &th) != OK) {
+        L.snap.link = false;
         free(stack);
         return;
     }
     jam_handle_close(th);
-    L.snap.link = true;
+}
+
+bool snap_stale(const struct snap *s, uint64_t t)
+{
+    return s->link && s->playing && t > s->at && t - s->at > SNAP_STALE_NS;
 }
 
 void link_get(struct snap *out)

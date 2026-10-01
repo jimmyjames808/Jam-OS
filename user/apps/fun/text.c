@@ -256,8 +256,11 @@ int text_clip(const struct surf *s, int x, int y, int scale, uint32_t c, int max
 {
     if (text_width(scale, str) <= max_w)
         return text(s, x, y, scale, c, str);
-    /* As many whole characters as fit before "...". */
+    /* As many whole characters as fit before "..."; not even the dots fit:
+     * nothing (never past max_w). */
     int dots = text_width(scale, "..."), w = 0;
+    if (dots > max_w)
+        return x;
     const char *p = str, *end = str;
     while (*p) {
         uint32_t cp = utf8_next(&p);
