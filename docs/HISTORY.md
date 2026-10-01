@@ -31,7 +31,7 @@ are the kernel's version string; hashes are commits on main.
 
 ## Audio (A1, A2, AS) and M8.5 (kexec)
 
-*2026-10-01, 0.0.26-m8.5 to 0.0.27-m8.5.* Signed off together on the PC:
+*2026-10-01, 0.0.25-m8 to 0.0.27-m8.5.* Signed off together on the PC:
 All tests with no problems and `soak 10` passed (645 s on 28 CPUs, 4495
 kernel tests, 19 utest runs, 2929 file cycles, 0 FAILED).
 
@@ -324,6 +324,19 @@ with 27 clients at 836,077 calls/s (M4: 492,673), worst call 37 us,
 Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
+- 2026-10-01, after the PC sign-off of the audio track and M8.5: M8.6's
+  decisions, listed in [its plan](M8.6-PLAN.md#the-owners-decisions-2026-10-01).
+  Programs on `/data` run only once the owner marks them with `allow`,
+  which also approves what each declares it wants (services under
+  `/svc`, mounts); the splash always plays to its end; `play` and
+  jamjar's cover decoding move into small programs of their own; the
+  kernel log leaves the screen; the block cache is write-through; the
+  real date and time, a split `RIGHT_READ` and a settings file come
+  before networking.
+- 2026-10-01, after the first PC run of the crash kernel: M8.5's
+  Revision 2, one kernel with two ways in. There is no crash-kernel mode:
+  a `reboot` and a panic both start a fresh copy of the same system as a
+  normal boot, which after a panic saves the dead boot's log first.
 - 2026-10-01: the soak test replaced the stress test as the PC's tier:
   `soak 2` after a fix round, All tests and `soak 10` to sign off a
   milestone; the stress test stays for kernel work. The audio track
