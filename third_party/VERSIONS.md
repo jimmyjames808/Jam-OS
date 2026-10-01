@@ -35,3 +35,16 @@ Vendored third-party code:
   since upstream commit 16a6a11; LICENSE holds the full MIT text it
   carried before. Built into bin/splash only (user/apps/splash/plmpeg.c,
   PLM_NO_STDIO; its <string.h> and <stdlib.h> are user/apps/splash/port).
+- stb_image/: stb_image v2.30 (2024-05-31) by Sean Barrett, stb_image.h
+  from https://github.com/nothings/stb at commit
+  f75e8d1cad7d90d72ef7a4661f1b994ef78b4e31 (2024-07-29, master then;
+  taken from vcpkg's checkout of that commit, which it verified by the
+  archive's SHA-512), sha256 594c2fe35d49488b...; unmodified. LICENSE
+  (sha256 bebfe904b1430165...) is the repository's: MIT or public
+  domain (Unlicense), the user's choice. Built into bin/jamjar only
+  (user/apps/jamjar/stbi.c): PNG and JPEG from memory, no stdio, no HDR,
+  no thread-locals (Jam OS has no TLS); its <stdlib.h> and <string.h> are
+  user/apps/jamjar/port. stb_image is not written for hostile input, so
+  jamjar checks a picture's size with stbi_info before decoding it
+  (2048x1600 pixels at most) and gives it one bounded arena (40 MiB) for
+  all of its memory: a picture that needs more fails to decode.
