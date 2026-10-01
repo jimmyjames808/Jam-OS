@@ -175,7 +175,8 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
   second before the panic. The red panic screen only stays up (photograph
   it) when there is no stored kernel to start, or for a second panic
-  within 30 s of the boot that followed a panic (a crash loop).
+  within 30 s of the boot that followed a panic, or for the third panic in
+  a row (a crash loop).
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may
@@ -185,8 +186,9 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   stick is out.
 - A hang during boot: the last line on the screen names the step (`pci:`
   lines name the function being sized). The plain entry shows the boot
-  splash instead of the log: boot `Jam OS (text log, no splash)`
-  (`verbose`) to see it.
+  splash instead of the log, and the shell after it shows only notices
+  of it: boot `Jam OS (text log, no splash)` (`verbose`) to see the log
+  as it comes; `log 40` shows its last lines from the shell.
 - Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
   kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
   `smp:` lines name each CPU that did not start. To compare, have Limine

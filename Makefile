@@ -343,8 +343,11 @@ BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
                 splash.mpg=boot/splash.mpg
 
+# Every program's list (<wants.h>) is checked first: what the build
+# approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg tools/mkbootfs.py
+           boot/splash.mpg tools/mkbootfs.py tools/checkwants.py user/include/os.h
+	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
 image: $(IMAGE)
@@ -401,7 +404,7 @@ font:
 	(echo "/* User space's copy of kernel/dev/font_8x16.c, written by \`make font\`. Its own object"; \
 	 echo " * in libos.a: only the programs that draw text (<font.h>) link it in. */"; \
 	 cat kernel/dev/font_8x16.c) > user/lib/font_8x16.c
-	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf user/apps/fun/font_latin.c --latin
+	python3 tools/bdf2c.py third_party/spleen/spleen-8x16.bdf user/lib/font_latin.c --latin
 
 clean:
 	rm -rf $(BUILD)

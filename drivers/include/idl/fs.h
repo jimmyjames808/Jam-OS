@@ -18,6 +18,7 @@
 #define FS_RENAME           0x00100006u
 #define FS_SYNC             0x00100007u
 #define FS_STATFS           0x00100008u
+#define FS_VIEW             0x00100009u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct fs_open_req {
@@ -103,6 +104,15 @@ struct fs_statfs_rep {
     uint64_t free;
     uint8_t read_only;
     uint8_t label[16];
+} __attribute__((packed));
+struct fs_view_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t flags;
+} __attribute__((packed));
+struct fs_view_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define FS_REQ_MAX 520u   /* bytes: the biggest request */
@@ -324,6 +334,45 @@ static inline status_t fs_statfs(handle_t ch, uint64_t *out_total, uint64_t *out
     return fs_statfs_until(ch, DEADLINE_NEVER, out_total, out_free, out_read_only, out_label);
 }
 
+/* A narrower channel onto this filesystem (a "view"), for a program that
+ * should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
+ * request that would change the volume is ERR_ACCESS_DENIED, and statfs
+ * says read-only) and FS_VIEW_GUARD_ETC 2 (the same for anything at or
+ * under the volume's top-level `etc` directory) (<fsview.h>). The new
+ * channel keeps this channel's own flags too, so a view is never wider
+ * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
+ * ERR_NO_RESOURCES: the service serves as many channels as it can. */
+static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_fs)
+{
+    struct fs_view_req idl_q;
+    struct fs_view_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FS_VIEW;
+    idl_q.flags = flags;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_fs)
+            *out_fs = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+static inline status_t fs_view(handle_t ch, uint32_t flags, handle_t *out_fs)
+{
+    return fs_view_until(ch, DEADLINE_NEVER, flags, out_fs);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -337,6 +386,7 @@ struct fs_ops {
     status_t (*rename)(void *ctx, const uint8_t from[256], const uint8_t to[256]);
     status_t (*sync)(void *ctx);
     status_t (*statfs)(void *ctx, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16]);
+    status_t (*view)(void *ctx, uint32_t flags, handle_t *out_fs);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -519,6 +569,29 @@ static inline uint32_t fs_dispatch(const struct fs_ops *ops, void *ctx, const vo
         idl_r->read_only = out_read_only;
         for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
             idl_r->label[idl_i] = out_label[idl_i];
+        return sizeof(*idl_r);
+    }
+    case FS_VIEW: {
+        const struct fs_view_req *idl_q = (const struct fs_view_req *)req;
+        struct fs_view_rep *idl_r = (struct fs_view_rep *)rep;
+        handle_t out_fs = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->view) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->view(ctx, idl_q->flags, &out_fs);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_fs != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_fs != HANDLE_INVALID)
+                drv_handle_close(out_fs);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_fs;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }

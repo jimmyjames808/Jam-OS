@@ -1,20 +1,21 @@
 /* mixtest: the mixer (user/services/mixer, abi/idl/audio.idl and
- * audioctl.idl) from user space. The shell's `mixtest` runs it with the
- * mixer's channels (SR_AUDIO, SR_AUDIO_CTL), devmgr's and init's control
- * channel (SR_USER + 3: it kills the mixer and the hda driver once);
+ * audioctl.idl) from user space. The shell's `mixtest` runs it with what
+ * its list asks for: the mixer's channels (/svc/audio, /svc/audioctl) and
+ * init's control channel (/svc/init: it kills the mixer and the hda
+ * driver once);
  * tools/mixer-test.sh runs it in QEMU with the codec's samples going to a
  * WAV file and checks the sound there.
  *
  * Every sound comes from a child process, `mixtest tone <name> <hz> <ms>
- * <centibels> [reopen] [pause]`, a separate program with only SR_AUDIO
- * (as the shell gives any program): a sine at a quarter of full scale
+ * <centibels> [reopen] [pause]`, a separate program with only /svc/audio
+ * in its namespace (as play is given): a sine at a quarter of full scale
  * with 5 ms fades, written ahead with mixer_write, drained, closed.
  * `reopen`: it must see the mixer go away once (ERR_PEER_CLOSED) and
  * then opens a new stream and plays the rest; `pause`: after 300 ms of
  * tone it waits 2 s with nothing written, then plays the rest. Phases,
  * each a sound of its own with silence between (the WAV's segments):
  *   protocol       no sound: formats refused, the stream methods refused
- *                  on SR_AUDIO, drain on a stopped stream, volumes
+ *                  on /svc/audio, drain on a stopped stream, volumes
  *                  clamped, an unknown id, the 17th stream refused
  *   two_at_once    440 Hz and 1000 Hz (the second at -6 dB) from two
  *                  programs at once; both are listed while they play
@@ -42,6 +43,12 @@
 #include <idl/initctl.h>
 #include <mixer.h>
 #include <os.h>
+#include <wants.h>
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc audio\n"
+          "svc audioctl\n"
+          "svc init\n");
 
 #define AMPLITUDE 8192.0             /* -12 dBFS */
 #define FADE      240u               /* frames: 5 ms */
@@ -188,18 +195,16 @@ static int libtone_main(char **argv)
 
 static uint64_t soon(void) { return now() + SOON; }
 
-/* Start "mixtest tone ..." with SR_AUDIO only. */
+/* What a tone child is given: the mixer and nothing else. */
+static const char *const audio_only[] = { "/svc/" SVC_AUDIO, NULL };
+
+/* Start "mixtest tone ..." with /svc/audio only. */
 static status_t tone(const char *name, const char *hz, const char *ms, const char *cb,
                      const char *opt, handle_t *proc)
 {
-    handle_t a;
-    status_t st = jam_handle_duplicate(svc, RIGHT_SAME, &a);
-    if (st != OK)
-        return st;
-    struct spawn_handle x[] = { { SR_AUDIO, a } };
     const char *argv[] = { "bin/mixtest", "tone", name, hz, ms, cb, opt, NULL };
     struct spawn_args sa = { .path = "bin/mixtest", .argc = opt ? 7 : 6, .argv = argv,
-                             .job = startup_handle(SR_JOB), .extra = x, .nextra = 1 };
+                             .job = startup_handle(SR_JOB), .ns = audio_only };
     return spawn(&sa, proc);
 }
 
@@ -358,17 +363,12 @@ static bool t_ctl_volume(void)
     return true;
 }
 
-/* Start "mixtest libtone ..." with SR_AUDIO only. */
+/* Start "mixtest libtone ..." with /svc/audio only. */
 static status_t libtone(const char *name, const char *rate, const char *hz, handle_t *proc)
 {
-    handle_t a;
-    status_t st = jam_handle_duplicate(svc, RIGHT_SAME, &a);
-    if (st != OK)
-        return st;
-    struct spawn_handle x[] = { { SR_AUDIO, a } };
     const char *argv[] = { "bin/mixtest", "libtone", name, rate, hz, "1200", NULL };
     struct spawn_args sa = { .path = "bin/mixtest", .argc = 6, .argv = argv,
-                             .job = startup_handle(SR_JOB), .extra = x, .nextra = 1 };
+                             .job = startup_handle(SR_JOB), .ns = audio_only };
     return spawn(&sa, proc);
 }
 
@@ -461,15 +461,15 @@ static const struct {
 
 int main(int argc, char **argv)
 {
-    svc = startup_handle(SR_AUDIO);
-    ctl = startup_handle(SR_AUDIO_CTL);
-    initctl = startup_handle(SR_USER + 3);
+    svc = svc_get(SVC_AUDIO);
+    ctl = svc_get(SVC_AUDIOCTL);
+    initctl = svc_get(SVC_INIT);
     if (argc >= 6 && !strcmp(argv[1], "tone"))
         return tone_main(argc, argv);
     if (argc >= 6 && !strcmp(argv[1], "libtone"))
         return libtone_main(argv);
     if (!svc || !ctl) {
-        printf("mixtest: no SR_AUDIO or SR_AUDIO_CTL: run it with the shell's `mixtest`\n");
+        printf("mixtest: no /svc/audio or /svc/audioctl: run it with the shell's `mixtest`\n");
         return 1;
     }
     unsigned n = sizeof(tests) / sizeof(tests[0]), passed = 0;

@@ -3,8 +3,9 @@
  * Each client channel has a level (console.idl new_client): ADMIN (init's,
  * and the copy devmgr gets), SHELL (the shell's: no connect_input), PROGRAM
  * (what the shell hands a program it runs: write, size, clear, open_keys,
- * lend_screen; not blank). A client can only make channels of a lower level than its
- * own. keys.c has what the levels mean for the keys.
+ * lend_screen; not blank, not show_log). A client can only make channels
+ * of a lower level than its own. keys.c has what the levels mean for the
+ * keys.
  *
  * Program output (console.write) is also written to COM1 as it is (the
  * kernel log goes there by itself), so a serial terminal, and the QEMU
@@ -79,7 +80,7 @@ static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
         return st;
     }
     clients[i] = mine;
-    client_info[i].level = level;
+    client_info[i] = (struct client){ .level = level };
     *out = theirs;
     return OK;
 }
@@ -95,9 +96,23 @@ static status_t op_blank(void *ctx, uint8_t on)
     return OK;
 }
 
+/* A client asks for the kernel log on the screen, or stops asking. */
+static status_t op_show_log(void *ctx, uint8_t on, const uint8_t only[32])
+{
+    struct client *c = ctx;
+    if (c->level == L_PROGRAM)
+        return ERR_ACCESS_DENIED;
+    if (on > 1 || only[LOG_ONLY_MAX - 1])
+        return ERR_INVALID_ARGS;
+    klog_event();   /* what was logged before the change goes by the old rule */
+    c->show_log = on == 1;
+    memcpy(c->log_only, only, LOG_ONLY_MAX);
+    return OK;
+}
+
 static const struct console_ops console_ops = {
     op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen, op_new_client,
-    op_blank,
+    op_blank, op_show_log,
 };
 
 void clients_init(void)
@@ -149,7 +164,28 @@ void client_event(unsigned i)
         jam_port_unbind(port, clients[i], KEY(K_CLIENT, i));
         jam_handle_close(clients[i]);
         clients[i] = HANDLE_INVALID;
+        client_info[i].show_log = false;   /* gone: it asks no more */
     }
+}
+
+bool clients_show_line(const char *name, size_t n)
+{
+    for (unsigned i = 0; i < MAX_CLIENTS; i++) {
+        const struct client *c = &client_info[i];
+        if (!clients[i] || !c->show_log)
+            continue;
+        if (!c->log_only[0] || !n || (strlen(c->log_only) == n && !memcmp(c->log_only, name, n)))
+            return true;
+    }
+    return false;
+}
+
+bool clients_show_all(void)
+{
+    for (unsigned i = 0; i < MAX_CLIENTS; i++)
+        if (clients[i] && client_info[i].show_log && !client_info[i].log_only[0])
+            return true;
+    return false;
 }
 
 bool clients_pending(void)

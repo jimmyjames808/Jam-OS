@@ -4,7 +4,7 @@
  * driver's handles can't do; hid.c and hidmouse.c: the hid driver
  * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
- * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>), the
+ * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -57,6 +57,10 @@ bool t_wav_parse(void);
 bool t_mp3_header(void);
 bool t_mp3_sniff(void);
 bool t_mp3_decode(void);
+
+/* text.c: libos's text helpers: <utf8.h>. */
+bool t_utf8_well_formed(void);
+bool t_utf8_bad_pieces(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
@@ -118,6 +122,17 @@ bool t_music_stereo(void);
 /* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);
+
+/* svc.c: services and grants; views.c: views of a filesystem. */
+bool t_svc_publish_and_open(void);
+bool t_svc_connect(void);
+bool t_svc_child_gets_its_grants(void);
+bool t_svc_child_gets_views(void);
+int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
+int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
+bool t_view_etc_names(void);
+bool t_fat_views(void);
+bool t_fat_view_limits(void);
 #define NS_HELLO "hello from utest\n"   /* what the children expect in <mount>/hello */
 /* text into a new file at path. */
 status_t ns_put(const char *path, const char *text);

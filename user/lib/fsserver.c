@@ -8,6 +8,7 @@
  * that has been closed (or reused) since finds nothing to read and is
  * harmless. */
 #include <fsserver.h>
+#include <fsview.h>
 
 /* Port keys: an fs channel's slot, or FILE_KEY + a file's slot. */
 #define FILE_KEY 0x100u
@@ -37,7 +38,8 @@ static status_t watch(struct fsserver *s, handle_t ch, uint64_t key)
     return st;
 }
 
-status_t fsserver_add_fs(struct fsserver *s, handle_t ch)
+/* ch (consumed) in a free fs slot, with view flags; view: made by fs.view. */
+static status_t add_fs(struct fsserver *s, handle_t ch, uint32_t flags, bool view)
 {
     status_t st = ERR_NO_RESOURCES;
     for (unsigned i = 0; i < FSSERVER_MAX_FS; i++) {
@@ -47,10 +49,23 @@ status_t fsserver_add_fs(struct fsserver *s, handle_t ch)
         if (st != OK)
             break;
         s->fs[i] = ch;
+        s->fs_flags[i] = flags;
+        s->fs_view[i] = view;
         return OK;
     }
     jam_handle_close(ch);
     return st;
+}
+
+status_t fsserver_add_fs(struct fsserver *s, handle_t ch)
+{
+    return add_fs(s, ch, 0, false);
+}
+
+/* fs.view's new channel (fs_view_serve_one's `add`). */
+static status_t add_view(void *host, handle_t ch, uint32_t flags)
+{
+    return add_fs(host, ch, flags, true);
 }
 
 status_t fsserver_open(struct fsserver *s, void *ctx, bool writable, handle_t *client,
@@ -103,7 +118,7 @@ static void serve_fs(struct fsserver *s, unsigned i)
 {
     status_t st = OK;
     for (unsigned n = 0; st == OK && s->fs[i] && n < FSSERVER_ROUND; n++)
-        st = fs_serve_one(s->fs[i], s->fs_ops, s);
+        st = fs_view_serve_one(s->fs[i], s->fs_flags[i], s->fs_ops, s, add_view, s);
     if (st == OK && s->fs[i]) {
         again(s, i);
     } else if (st != ERR_SHOULD_WAIT && s->fs[i]) {
@@ -128,7 +143,7 @@ static void serve_file(struct fsserver *s, unsigned i)
 static bool in_use(const struct fsserver *s)
 {
     for (unsigned i = 0; i < FSSERVER_MAX_FS; i++)
-        if (s->fs[i])
+        if (s->fs[i] && !s->fs_view[i])
             return true;
     for (unsigned i = 0; i < FSSERVER_MAX_FILES; i++)
         if (s->files[i].ch)

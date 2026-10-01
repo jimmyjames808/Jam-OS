@@ -2,7 +2,14 @@
  * lock, to the ring (KLOG_SIZE bytes), COM1 and the framebuffer console, so
  * lines from different CPUs never interleave. The ring is what the panic
  * screen shows (klog_tail) and what the console process follows through the
- * klog read syscall (klog_read_at). */
+ * klog read syscall (klog_read_at).
+ *
+ * What the log holds is text, whoever wrote it: printable ASCII, tabs,
+ * newlines and well-formed UTF-8 (a song's "JAŸ-Z") go in as they are;
+ * every other control character (escape sequences, C1's CSI) and each bad
+ * piece of ill-formed UTF-8 (<jam/utf8.h>) goes in as one '?'. So a
+ * process name or a program's line can't move a terminal's cursor, and
+ * readers (the console, logd's files, dmesg) can trust what they read. */
 #include <stdint.h>
 #include <jam/fbcon.h>
 #include <jam/klog.h>
@@ -10,6 +17,7 @@
 #include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/time.h>
+#include <jam/utf8.h>
 
 /* KLOG_SIZE (klog.h): a power of two */
 
@@ -30,6 +38,31 @@ static void emit(const char *s, size_t len)
     __atomic_store_n(&head, h, __ATOMIC_RELAXED);
     serial_write(s, len);
     fbcon_write(s, len);
+}
+
+/* s[0..len) as the log keeps it (the top of the file): the clean runs as
+ * they are, a '?' for each control character or bad piece between them. */
+static void emit_clean(const char *s, size_t len)
+{
+    const uint8_t *u = (const uint8_t *)s;
+    size_t run = 0, i = 0;
+    while (i < len) {
+        if ((u[i] >= 0x20 && u[i] < 0x7f) || u[i] == '\n' || u[i] == '\t') {
+            i++;
+            continue;
+        }
+        uint32_t cp = 0;
+        int k = u[i] < 0x80 ? -1 : utf8_seq(u + i, len - i, &cp);
+        if (k > 0 && !utf8_is_control(cp)) {
+            i += (size_t)k;
+            continue;
+        }
+        emit(s + run, i - run);
+        emit("?", 1);
+        i += (size_t)(k > 0 ? k : -k);
+        run = i;
+    }
+    emit(s + run, len - run);
 }
 
 /* Every line starts with seconds since the TSC was calibrated. Interrupt
@@ -53,7 +86,7 @@ void klog_write(const char *s, size_t len)
             chunk++;   /* include the newline */
             at_line_start = true;
         }
-        emit(s, chunk);
+        emit_clean(s, chunk);
         s += chunk;
         len -= chunk;
     }
@@ -63,7 +96,7 @@ void klog_write(const char *s, size_t len)
 void klog_write_raw(const char *s, size_t len)
 {
     uint64_t f = spin_lock_irqsave(&ring_lock);
-    emit(s, len);
+    emit_clean(s, len);
     if (len)
         at_line_start = s[len - 1] == '\n';
     spin_unlock_irqrestore(&ring_lock, f);

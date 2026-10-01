@@ -275,11 +275,17 @@ KTEST(kexec_next_cmdline_words)
 /* A panic within 30 s of a start that was itself a panic's halts. */
 KTEST(kexec_crash_loop_rule)
 {
-    KT_ASSERT(kexec_crash_loop(true, 0));
-    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_NS - 1));
-    KT_ASSERT(!kexec_crash_loop(true, KEXEC_LOOP_NS));
-    KT_ASSERT(!kexec_crash_loop(false, 0));
-    KT_ASSERT(!kexec_crash_loop(false, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, 1, 0));
+    KT_ASSERT(kexec_crash_loop(true, 1, KEXEC_LOOP_NS - 1));
+    KT_ASSERT(!kexec_crash_loop(true, 1, KEXEC_LOOP_NS));
+    KT_ASSERT(!kexec_crash_loop(false, 0, 0));
+    KT_ASSERT(!kexec_crash_loop(false, 0, KEXEC_LOOP_NS * 10));
+    /* The third panic in a row halts however late it comes; a boot after
+     * a power-on or a reboot (no panic before it) never counts. */
+    KT_ASSERT(!kexec_crash_loop(true, KEXEC_LOOP_PANICS - 2, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_PANICS - 1, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_PANICS + 5, KEXEC_LOOP_NS * 10));
+    KT_ASSERT(!kexec_crash_loop(false, KEXEC_LOOP_PANICS + 5, KEXEC_LOOP_NS * 10));
 }
 
 /* A crash record as a dying kernel seals it: a panic, a 64 KiB ring at

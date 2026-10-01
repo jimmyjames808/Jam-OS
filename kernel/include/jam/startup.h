@@ -19,20 +19,21 @@ enum startup_role {
     SR_STDOUT,      /* channel; libos prints through debug_write instead */
     SR_BOOTFS,      /* a VMO of the whole bootfs image, read-only */
     SR_RESOURCE,    /* a resource (init: the root; devmgr: RES_PCI) */
-    SR_DEVMGR,      /* a channel to devmgr (devmgr: its server end; the
-                     * programs init starts: a client end, <devmgr.h>),
-                     * queries only (STATUS, GET_SERVICE, GET_DRIVER,
-                     * SUPERVISION) */
+    SR_DEVMGR,      /* devmgr's query channel (devmgr: its server end; the
+                     * mixer: a client end; everyone else opens
+                     * /svc/devmgr, <devmgr.h>): STATUS, GET_SERVICE,
+                     * GET_DRIVER, SUPERVISION */
     SR_CONSOLE,     /* a client end of the console's channel (the shell,
                      * and what the shell runs: a restricted one) */
-    SR_DEVMGR_CTL,  /* devmgr's control channel (every call; <devmgr.h>):
-                     * init, and the test programs init or the shell runs */
-    SR_NS,          /* the file namespace (M8): the mount points and their
-                     * `fs` channels, as libos's fs.c defines the encoding */
-    SR_AUDIO,       /* the mixer's `audio` channel (abi/idl/audio.idl; the
-                     * mixer: its server end): open a sound stream */
-    SR_AUDIO_CTL,   /* the mixer's `audioctl` channel (every stream's
-                     * volume): the shell and its test programs */
+    SR_DEVMGR_CTL,  /* devmgr's control channel, its server end (every
+                     * call; <devmgr.h>; clients open /svc/devmgr-ctl) */
+    SR_NS,          /* the namespace: the mount points and their `fs`
+                     * channels and the services under /svc, as libos's
+                     * ns.c defines the encoding (<os.h> "files") */
+    SR_AUDIO,       /* the mixer's `audio` channel, its server end
+                     * (abi/idl/audio.idl; clients open /svc/audio) */
+    SR_AUDIO_CTL,   /* the mixer's `audioctl` channel, its server end
+                     * (every stream's volume; clients open /svc/audioctl) */
     SR_CRASHLOG,    /* a boot after a panic only: a read-only VMO holding
                      * the panicked kernel's log (struct crashlog_header,
                      * then the text): init, and logd, which saves it */

@@ -32,3 +32,12 @@ protocol fs 16
 # Bytes in the filesystem and bytes free, 1 if read-only, and the volume
 # label (NUL-terminated).
 8  statfs  () -> (u64 total, u64 free, u8 read_only, u8[16] label)
+# A narrower channel onto this filesystem (a "view"), for a program that
+# should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
+# request that would change the volume is ERR_ACCESS_DENIED, and statfs
+# says read-only) and FS_VIEW_GUARD_ETC 2 (the same for anything at or
+# under the volume's top-level `etc` directory) (<fsview.h>). The new
+# channel keeps this channel's own flags too, so a view is never wider
+# than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
+# ERR_NO_RESOURCES: the service serves as many channels as it can.
+9  view  (u32 flags) -> (handle fs)

@@ -14,7 +14,7 @@ send T=a
 wait jam>
 
 # ---- the mounts --------------------------------------------------------------------------
-send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^3$ && echo ok-$T-root
+send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^4$ && ls / | grep -c ^svc/$ | grep ^1$ && echo ok-$T-root
 wait ok-a-root
 send df
 wait /esp

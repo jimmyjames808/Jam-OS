@@ -35,6 +35,10 @@
 #include <devmgr.h>
 #include <idl/hda.h>
 #include <os.h>
+#include <wants.h>
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc devmgr-ctl\n");
 
 #define PATTERN_FRAMES 48000u   /* one second */
 #define RATE           48000u
@@ -316,7 +320,7 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
     char line[120];
-    dm = startup_handle(SR_DEVMGR_CTL);
+    dm = svc_get(SVC_DEVMGR_CTL);
     if (!dm || !find_hda()) {
         int n = snprintf(line, sizeof(line), "hdatest: no hda driver (no HD Audio controller, "
                          "no codec, or no devmgr): skipped");

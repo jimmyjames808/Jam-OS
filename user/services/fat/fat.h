@@ -12,7 +12,8 @@
  * callbacks over `block`, the volume's dirty flag and get_fattime;
  * cache.c the write-through block cache under them;
  * fsops.c the `fs` methods; fileops.c the open-file table and the `file`
- * methods; path.c paths, names, times and the FRESULT -> ERR_* mapping. */
+ * methods; views.c the narrower `fs` channels (fs.view); path.c paths,
+ * names, times and the FRESULT -> ERR_* mapping. */
 #pragma once
 
 #include <stdbool.h>
@@ -30,14 +31,18 @@
  * filled with zeros, and nothing else is served meanwhile): grow in steps. */
 #define FAT_GROW_MAX   (16u << 20)
 #define FAT_BATCH      16          /* messages served per wakeup on one channel */
+#define FAT_VIEWS      32          /* views (fs.view) served at once */
 
-/* Port keys: the fs channel, the block channel, and open file `slot`
- * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart). */
+/* Port keys: the fs channel, the block channel, open file `slot`
+ * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart) and
+ * view `slot` (FAT_KEY_VIEW(slot, gen), the same way). */
 #define FAT_KEY_FS          1ull
 #define FAT_KEY_BLOCK       2ull
 #define FAT_KEY_CTL         3ull
 #define FAT_KEY_FILE_BIT    (1ull << 62)
 #define FAT_KEY_FILE(s, g)  (FAT_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
+#define FAT_KEY_VIEW_BIT    (1ull << 61)
+#define FAT_KEY_VIEW(s, g)  (FAT_KEY_VIEW_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define FAT_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
 
@@ -156,6 +161,15 @@ uint64_t fat_unix_time(WORD date, WORD time);
 /* ---- fsops.c --------------------------------------------------------------------- */
 
 extern const struct fs_ops fat_fs_ops;
+
+/* ---- views.c --------------------------------------------------------------------- */
+
+/* Serve ch (consumed, whatever happens) as a view with FS_VIEW_* flags
+ * (fs_view_serve_one's `add`; host unused). ERR_NO_RESOURCES: FAT_VIEWS
+ * of them already. */
+status_t views_add(void *host, handle_t ch, uint32_t flags);
+/* The port said a view's channel has news (key's slot and gen): serve it. */
+void     views_event(uint64_t key);
 
 /* ---- fileops.c ------------------------------------------------------------------- */
 

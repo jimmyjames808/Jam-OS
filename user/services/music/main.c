@@ -2,10 +2,14 @@
  * init starts it in shell mode, like the mixer, with
  *   SR_USER + 0   the server end of the `music` channel (abi/idl/music.idl);
  *                 init keeps both ends, so a restarted player serves the
- *                 same channel and the shell's `music` reaches it
- *   SR_AUDIO      the mixer's `audio` channel: its one stream ("music")
- *   SR_NS         init's whole namespace, kept up to date by init as
- *                 sticks come and go (/data, /usbN)
+ *                 same channel, which init publishes as /svc/music
+ *   SR_NS         every mount read-only, kept up to date by init as
+ *                 sticks come and go (/data, /usbN), and /svc/audio, the
+ *                 mixer: its one stream ("music")
+ * The `music` channel also answers the svc protocol's connect: each
+ * opener of /svc/music (libos's svc_open) gets a channel of its own
+ * (CLIENTS at once), which speaks `music` and goes when the opener closes
+ * it, so a call cut short leaves its late answer with the opener.
  * It runs in a job of its own under init's, not the shell's, so it plays
  * on while the shell runs other commands, after Ctrl+C and across a
  * restart of the shell; only `music stop` (or `kill music`) stops it.
@@ -23,7 +27,12 @@
 #include <idl/music.h>
 #include "music.h"
 
+#define CLIENTS 8          /* channels handed out by svc.connect at once */
+#define KEY_CTL 0u         /* port keys: the shared channel, then 1 + a client's slot */
+
 static struct player P;
+static handle_t port;
+static handle_t clients[CLIENTS];   /* our ends of the channels openers got (0: free) */
 
 static void put(uint8_t *out, size_t size, const char *s)
 {
@@ -219,6 +228,59 @@ static const struct music_ops ops = {
     .pause = on_pause, .sleep = on_sleep, .spectrum = on_spectrum, .stereo = on_stereo,
 };
 
+static uint32_t dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                         uint32_t *rhn)
+{
+    return music_dispatch(&ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* svc.connect: a new channel for one opener, served like the shared one. */
+static status_t on_connect(void *ctx, handle_t *out)
+{
+    (void)ctx;
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        if (clients[i])
+            continue;
+        handle_t mine, theirs;
+        status_t st = jam_channel_create(&mine, &theirs);
+        if (st == OK)
+            st = jam_port_bind(port, mine, 1 + i, SIG_READABLE | SIG_PEER_CLOSED,
+                               PORT_BIND_PERSISTENT);
+        if (st != OK) {
+            if (mine) {
+                jam_handle_close(mine);
+                jam_handle_close(theirs);
+            }
+            return st;
+        }
+        clients[i] = mine;
+        *out = theirs;
+        return OK;
+    }
+    return ERR_NO_RESOURCES;
+}
+
+/* Answer what is queued on every channel. The shared channel's end (init
+ * gave up on us): its status; else ERR_SHOULD_WAIT. */
+static status_t serve_all(struct player *p)
+{
+    status_t st;
+    while ((st = svc_serve_request(p->ctl, dispatch, on_connect, p)) == OK) {
+    }
+    if (st != ERR_SHOULD_WAIT)
+        return st;
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        status_t cs = ERR_SHOULD_WAIT;
+        while (clients[i] && (cs = svc_serve_request(clients[i], dispatch, on_connect, p)) == OK) {
+        }
+        if (clients[i] && cs != ERR_SHOULD_WAIT) {   /* its opener is gone */
+            jam_handle_close(clients[i]);
+            clients[i] = HANDLE_INVALID;
+        }
+    }
+    return ERR_SHOULD_WAIT;
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -233,11 +295,17 @@ int main(int argc, char **argv)
         printf("music: started without its channel (SR_USER + 0): nothing to serve\n");
         return 1;
     }
+    status_t st = jam_port_create(&port);
+    if (st == OK)
+        st = jam_port_bind(port, p->ctl, KEY_CTL, SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        printf("music: no port for its channels (%s)\n", status_str(st));
+        return 1;
+    }
     printf("music: ready (`music start [folder]` in the shell)\n");
     for (;;) {
-        status_t st;
-        while ((st = music_serve_one(p->ctl, &ops, p)) == OK) {
-        }
+        st = serve_all(p);
         if (st != ERR_SHOULD_WAIT) {
             printf("music: reading its channel: %s: ending\n", status_str(st));
             player_stop(p, NULL);
@@ -252,14 +320,12 @@ int main(int argc, char **argv)
             player_step(p);
             continue;
         }
-        /* Stopped or paused: the channel, or the sleep timer's end. */
-        signals_t seen = 0;
+        /* Stopped or paused: a channel, or the sleep timer's end. */
+        struct port_packet pkt;
         uint64_t until = p->sleep_at ? p->sleep_at : DEADLINE_NEVER;
-        st = jam_object_wait_one(p->ctl, SIG_READABLE | SIG_PEER_CLOSED, until, &seen);
-        if (st == ERR_TIMED_OUT)
-            continue;
-        if (st != OK) {
-            printf("music: waiting on its channel: %s: ending\n", status_str(st));
+        st = jam_port_wait(port, until, &pkt);
+        if (st != OK && st != ERR_TIMED_OUT) {
+            printf("music: waiting on its channels: %s: ending\n", status_str(st));
             return 1;
         }
     }

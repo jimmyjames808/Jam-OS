@@ -32,7 +32,7 @@ built yet, it says so.
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers); uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
-| Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows |
+| Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
 | IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame on VLAN 21 only ([Networking](#networking)) |
@@ -496,7 +496,7 @@ Every driver and service is a userspace process from the start.
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (`drivers/usb-bus/task.c`) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
-| console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
+| console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
 | fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
@@ -603,9 +603,13 @@ Not built yet; these rules bind every future path that can transmit.
 - **Startup message**: every process starts with one channel message holding
   argv, environment, and handles by role (`kernel/include/jam/startup.h`):
   SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
-  never write), RESOURCE, DEVMGR, DEVMGR_CTL, CONSOLE, NS (the namespace),
-  AUDIO and AUDIO_CTL (the mixer's channels), CRASHLOG (init and logd on
-  the boot after a panic: the panicked boot's log) and program-specific ones (SR_USER + n). `printf` writes to the STDOUT channel when there is
+  never write), RESOURCE, DEVMGR and DEVMGR_CTL (devmgr's own server ends,
+  and the mixer's query end), CONSOLE, NS (the namespace: mounts and
+  services, below), AUDIO and AUDIO_CTL (the mixer's server ends), CRASHLOG
+  (init and logd on the boot after a panic: the panicked boot's log) and
+  program-specific ones (SR_USER + n). A program reaches a service by its
+  name in the namespace, not by a startup role, so a new service costs no
+  startup slot. `printf` writes to the STDOUT channel when there is
   one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
@@ -614,9 +618,15 @@ Not built yet; these rules bind every future path that can transmit.
   mixer, the music player, logd (once `/data` is there) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
-  and `/esp` when devmgr reports their filesystem services) and gives it
-  to what it starts; the shell and logd are sent every later change (a
-  mount gone, or back with a new service), each change replacing the one
+  and `/esp` when devmgr reports their filesystem services) and publishes
+  its services in it under `/svc` (`audio` and `audioctl`, the mixer's;
+  `music`, a channel per opener; `devmgr` and `devmgr-ctl`, each devmgr's;
+  `init`, the shell's control channel; `logd`). The services it starts
+  that have a namespace get the part of it their grants name: the shell
+  all of it as it is, the music player every mount read-only and the
+  mixer, logd `/data` with its top-level `etc` guarded, the splash the
+  mixer; they are sent every later change (a mount gone, or back with a
+  new service, a new devmgr's channels), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
   `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,
   `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr), `shell_ready`
@@ -627,8 +637,9 @@ Not built yet; these rules bind every future path that can transmit.
   [Kexec](#kexec-reboot-and-panic)); the shell holds one
   end, the console another that answers only `reboot` (Ctrl+Alt+Del).
 - **Namespace**: each process has a table of mount point → `fs` channel
-  (`/boot`, `/esp`, `/data`, `/usbN`), given by whoever started it (startup role
-  NS: a channel on which the starter sends the mounts, and later ones to
+  (`/boot`, `/esp`, `/data`, `/usbN`) and of services → their channel
+  (`/svc/<name>`), given by whoever started it (startup role
+  NS: a channel on which the starter sends them, and later ones to
   a program that is already running). A program reads that channel only
   when it next looks up a path, and some never do again (logd), so a
   starter that follows its mounts for a running program keeps a
@@ -642,18 +653,43 @@ Not built yet; these rules bind every future path that can transmit.
   that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
   through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
   bootfs image served by a process (`user/services/bootfs/`). No global
-  kernel VFS: a program reaches only the mounts it was given, which is the
-  only permission system for files. Today init gives the shell every
-  mount and the shell passes all of them on to what it runs, so every
-  program can write `/data`; a narrower namespace is possible, nothing
-  uses one yet. Not built yet: services as paths
-  (`/svc/net`, `/dev/console`) and a POSIX `open()` on top.
+  kernel VFS: a program reaches only the mounts and services it was
+  given, which is the only permission system for files and services.
+  **Services**: `svc_open(name)` gives the caller a channel of its own
+  where the service hands them out (the `svc` protocol's `connect`,
+  `abi/idl/svc.idl`: the music player does), else a duplicate of the
+  shared one; `svc_get` keeps one and opens it again once its service
+  has restarted. `/` lists `svc`, `/svc` the names. **Views**: a mount's
+  service hands out narrower channels onto the same volume (`fs.view`,
+  `<fsview.h>`): read-only (every change refused, `statfs` says so), or
+  with the volume's top-level `etc` guarded (no change at or under it,
+  however the name is spelled); the service checks every request on a
+  view before its own code sees it (fat and libos's fsserver). **Grants**:
+  a starter names what a child gets (`<os.h>` "grants"): everything as
+  it has it, one mount as it is or as a view (`/data:r`, `/data:w`), every
+  other stick (`/usb*`), every mount as views (`*:r`, `*:w`), a service;
+  the views are made before the child starts. Not built yet: a POSIX
+  `open()` on top.
+- **The program's list** (`<wants.h>`, [M8.6-SVC.md](docs/history/M8.6-SVC.md)):
+  a program declares in its source what it wants (`JAM_WANTS("svc
+  music\n" "mount /data r\n")`: services, mounts read-only or writable,
+  and the root resource's powers it needs); the text is an ELF note
+  under a `PT_NOTE` program header, and `tools/checkwants.py` checks every
+  program's list when the boot image is built (that is the build's
+  approval; the services that kill drivers and services are for tests
+  only). The shell gives a program it runs exactly its list (every mount
+  as a view: read-only, or writable with `etc` guarded; the root with
+  only the powers named, which it can't pass on) and its terminal (a
+  PROGRAM-level console channel, its output channel in a pipe); a
+  program with no list gets the terminal only. Only init and the shell
+  hold a `/data` whose `etc` they may change.
 - **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
   editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
   `sh_vars.c` holds variables ($NAME, export -> the environment of `run`)
   and aliases, `sh_exec.c` runs a line (pipes: stages run in turn, each
   one's output captured in memory as the next one's input, by `sh_io.c`; a
-  program in a pipe gets an SR_STDOUT channel), `sh_table.c` is the one
+  program in a pipe gets an SR_STDOUT channel), `sh_program.c` starts
+  programs (each with its list, above), `sh_table.c` is the one
   command table (with help), `sh_complete.c` Tab completion, `sh_vfs.c`
   paths and files over libos's namespace (the current directory is the
   shell's own); `cmd/<name>.c` is one file per command.
@@ -767,9 +803,9 @@ is the driver's only client while anything plays: every program's sound
 goes through it, so several play at once. init starts it after devmgr
 and makes its two channels once, keeping their server ends, so a
 restarted mixer serves the same channels: `audio`
-(`abi/idl/audio.idl`), which every program the shell runs gets as its
-startup role `SR_AUDIO`, and `audioctl` (every stream's volume and the
-master volume, `SR_AUDIO_CTL`: the shell's `vol` and test programs).
+(`abi/idl/audio.idl`), published as `/svc/audio` (a program whose list
+asks for it plays sound), and `audioctl` (every stream's volume and the
+master volume, `/svc/audioctl`: the shell's `vol` and test programs).
 `open_output` gives a client a stream of its own: a channel (start,
 stop, drain, position, its volume; closing it ends the stream), a ring
 VMO (a header page with the client's `write` and the mixer's `read`
@@ -821,9 +857,12 @@ other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start, stop, next, status,
 set_volume, prev, play, levels, pause, sleep, spectrum, stereo) once and
 keeps both ends, as
-the mixer's; the shell holds a client end (SR_USER + 4) for `music start
-[folder] | stop | next | prev | pause | status | vol | sleep`, and hands a
-duplicate to bin/jamjar, the player's window, as the same role. It walks the folder for `.mp3` and `.wav` files, shuffles
+the mixer's, and publishes it as `/svc/music`. Each opener gets a channel
+of its own (the player answers the `svc` protocol's `connect` on its
+channel and serves up to 8 of them), so a call cut short leaves its late
+answer with the opener: the shell's for `music start
+[folder] | stop | next | prev | pause | status | vol | sleep`, and
+bin/jamjar's, the player's window. It walks the folder for `.mp3` and `.wav` files, shuffles
 them (every track once per pass, never the same twice in a row) and
 plays them back to back through one mixer stream, reading each with
 `<play_src.h>` and switching the resampler between files with
@@ -841,9 +880,10 @@ by stream frame because it writes up to 1.37 s ahead
 (`user/services/music/spectrum.c`).
 
 **jamjar** (`user/apps/jamjar`, [the design note](docs/history/MUSIC-GUI.md))
-is the player's window, an app the shell starts with a duplicate of its
-`music` end; it plays nothing itself. It reads the library through the
-namespace it is given and decodes the albums' covers itself, on a thread
+is the player's window, an app whose list asks for the player (it opens
+`/svc/music`, a channel of its own), `/data` and the other sticks
+read-only; it plays nothing itself. It reads the library through those
+and decodes the albums' covers itself, on a thread
 of its own: the ID3v2 picture frame found by its own bounded parser,
 then PNG or JPEG through stb_image, only after `stbi_info` has said the
 size (at most 2048 on a side and 2048x1600 pixels), with all of
@@ -976,7 +1016,8 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 - **The panic path** decides first, with no lock taken and nothing
   allocated: a stored kernel is armed, its checksum (read through the
   window's own page-table entries) matches, and this is not a crash loop
-  (a panic within 30 s of a start that was itself a panic's). Then the
+  (a panic within 30 s of a start that was itself a panic's, or the third
+  panic in a row however far apart). Then the
   panic's lines go to the log and the serial port but not the screen;
   the crash record is filled (a panic, the log ring's place and head,
   where the panic's lines start, its message, the boot's log name, the
@@ -1022,7 +1063,24 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 - Framebuffer klog from the first instruction, 64 KiB ring buffer, readable
   from user space through a klog reader handle (the console follows it,
   and logd saves it to `/data/logs/`, [Storage](#storage)). COM1 too when
-  present.
+  present. The log is text whoever wrote it: printable ASCII, tabs,
+  newlines and well-formed UTF-8 go in as they are (a song's "JAŸ-Z"),
+  any other control character and each bad piece of ill-formed UTF-8
+  (Unicode's maximal-subpart rule) as one `?` (`kernel/debug/klog.c`).
+- **The log and the screen**: on a plain boot (the splash plays) the
+  console keeps the kernel log off the shell's screen (init starts it
+  with "nolog"); `log` and `dmesg` show it, and the shell asks for it on
+  the screen (`console.show_log`) while a command whose output is the log
+  runs: the kernel's commands (`ktest`, `ps -k`, `pci`, ...) and the test
+  programs with every line, a program `run` starts with its own lines and
+  the kernel's. A few things the log says still get a line of their own,
+  in yellow (`user/services/console/notices.c`): another stick plugged
+  in or pulled out, the Jam OS stick pulled out and back, `/data` full or
+  not mounted, a service or driver that crashed and is being started
+  again or was given up on. Each is announced once things have settled
+  (a remount says nothing), never twice within 30 s, at most four in
+  10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
+  comes, and the boot tests draw it from the kernel.
 - Panic screen: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, and the log tail: drawn only when there

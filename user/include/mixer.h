@@ -1,7 +1,7 @@
 /* The mixer's streams, as a program sees them: the shared ring's layout,
  * the event's bits, `vol`'s stream list (abi/idl/audioctl.idl), and the
  * client side in libos (user/lib/mixer_client.c): open a stream on the
- * mixer's service channel (SR_AUDIO), write frames into its ring, start,
+ * mixer's service channel (/svc/audio), write frames into its ring, start,
  * drain, close. The protocol is abi/idl/audio.idl; the design is
  * docs/A2-PLAN.md.
  *
@@ -85,7 +85,7 @@ struct mixer_stream {
     bool               started;
 };
 
-/* Open a stream on the mixer's service channel svc (SR_AUDIO), named for
+/* Open a stream on the mixer's service channel svc (/svc/audio), named for
  * `vol` (up to 15 characters), and map its ring. Waits for the mixer
  * until deadline (a restarting mixer answers late). Errors: audio.idl's
  * open_output's (ERR_NOT_FOUND: no audio output; ERR_NO_RESOURCES: too

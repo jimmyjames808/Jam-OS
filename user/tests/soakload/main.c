@@ -24,6 +24,10 @@
  * no channel it runs for argv[1] seconds (default 10), for `run soakload`. */
 #include <os.h>
 #include <soakload.h>
+#include <wants.h>
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("mount * rw\n");
 
 #define NTHREADS   5
 #define STACK_SIZE (32 * 1024)

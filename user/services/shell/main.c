@@ -15,7 +15,15 @@
  * shell with the new console's channel). */
 #include <idl/console.h>
 #include <idl/initctl.h>
+#include <wants.h>
 #include "sh_core.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("mount * rw\n"
+          "svc audio\n"
+          "svc audioctl\n"
+          "svc music\n"
+          "svc devmgr\n");
 
 #define LINE_MAX  240
 #define HIST      32
@@ -70,6 +78,23 @@ static void echo(const char *fmt, ...)
 handle_t sh_console(void)
 {
     return con;
+}
+
+void sh_show_log(bool on, const char *only)
+{
+    static unsigned depth;   /* pairs open */
+    if (!on && !depth)
+        return;   /* no pair open: nothing to end */
+    depth += on ? 1 : -1u;
+    if (depth != (on ? 1u : 0u))
+        return;   /* nested: only the outermost pair asks */
+    sh_flush();   /* what the command wrote so far goes before the change */
+    /* A shell on a PROGRAM channel (`run shell`) may not ask: its own
+     * shell asks for it, since it runs it. */
+    uint8_t name[32] = { 0 };
+    if (on && only)
+        memcpy(name, only, strnlen(only, sizeof(name) - 1));
+    (void)console_show_log(con, on, name);
 }
 
 /* ---- keys ---------------------------------------------------------------------- */

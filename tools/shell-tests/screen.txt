@@ -1,0 +1,51 @@
+# The screen on a plain boot (tools/screen-test.sh; QEMU_SPLASH=1, so the
+# console gets "nolog"): after the splash, the shell's banner and prompt
+# and no kernel log; the log on the screen while a command whose output it
+# is runs; and the notices: another stick plugged in and pulled out (a
+# remount in between says nothing), the boot stick pulled out and back.
+wait 120 console: the screen is back
+seen 60 jam>
+sleep 2
+shot screen-boot
+
+# ---- another stick -----------------------------------------------------------------
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 console: notice: a stick is at /usb0 (read-only
+sleep 1
+shot screen-stick
+send ls /usb0
+wait hello.txt
+wait jam>
+send mount -w /usb0
+wait jam>
+sleep 5
+send mount -r /usb0
+wait jam>
+sleep 5
+send echo remount-quiet
+wait remount-quiet
+monitor device_del sa
+wait 30 console: notice: the stick at /usb0 was pulled out
+
+# ---- the log while a command runs ----------------------------------------------------
+send ktest utf8
+wait shell: ktest utf8: 5 passed
+wait jam>
+sleep 1
+shot screen-ktest
+send clear
+wait jam>
+
+# ---- the boot stick ----------------------------------------------------------------
+monitor device_del stick
+wait 30 console: notice: the Jam OS stick was pulled out
+monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
+wait 60 console: notice: the Jam OS stick is back
+sleep 1
+shot screen-back
+send run console selftest
+wait 60 console: selftest
+wait run: bin/console exited
+wait jam>
+send reboot -f
+wait reboot: resetting
