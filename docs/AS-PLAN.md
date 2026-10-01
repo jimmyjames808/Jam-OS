@@ -112,8 +112,14 @@ second measuring the CPUs' ticks); 185-193 of 195 frames shown at
 1280x800, the rest dropped; the sound joined 0.3-0.5 s into the animation,
 and the capture matches the video's sound from that point to its end
 (37-39 dB above the difference: two MP2 decoders, pl_mpeg's and ffmpeg's);
-the shell up at 8.0-8.2 s of uptime with the splash and 1.5 s without.
-pl_mpeg decodes a frame in 9.7 ms under QEMU.
+the shell up at 8.0-8.3 s of uptime with the splash and 1.5 s without.
+pl_mpeg decodes a frame in 9.7 ms under QEMU. After the merge with the
+mixer's shorter periods the guess `HEARD_IN` was 5-57 ms off at the
+switch. On a busy Mac QEMU itself sometimes loses a period of the
+capture (the guest's mixer reports no underrun or late period), so the
+check follows one such jump; at 2560x1440 QEMU's audio timing is too
+disturbed to compare the capture, so the skip boot checks the mixer's
+count of frames taken instead.
 
 ## What only the PC can show
 
