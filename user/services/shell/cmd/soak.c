@@ -19,8 +19,9 @@
  *
  *   seed=S   the first loop's seed (default: from the clock); the kernel
  *            prints each loop's, and `ktest seed=<it>` replays that loop
- *   halt     the first failure stops the machine on the panic screen (what
- *            the boot menu's Soak entry does), instead of being recorded
+ *   halt     the first kernel test failure panics (what the boot menu's
+ *            Soak entry does), instead of being recorded: the next boot
+ *            saves the log and its shell names the failure
  *   load=N   N kernel load workers instead of two per CPU (QEMU: fewer)
  *   idle     no load at all: only the repeated, shuffled tests and utest
  *

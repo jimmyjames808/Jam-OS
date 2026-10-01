@@ -28,11 +28,15 @@
  * lines go into the log it is saving.
  *
  * Once its file is open it gives the kernel the file's name (klog_name),
- * so a crash kernel can save this boot's log next to it as
- * <name>-crash.txt. `logd crash` is that crash kernel's save (crash.c).
+ * so if this boot panics, the next one can save its log next to it as
+ * <name>-crash.txt. That save (crash.c) is the first thing logd does on
+ * the boot after a panic: init passes the log (SR_CRASHLOG) and a channel
+ * for the result (<crashlog.h>); the panicked boot's file comes before
+ * this boot's opens, and the result is written either way.
  *
  * logd.h has the two startup handles that replace the namespace and the
  * kernel log for tests. */
+#include <crashlog.h>
 #include <idl/logctl.h>
 #include <os.h>
 #include "logd.h"
@@ -170,8 +174,35 @@ static uint64_t retry_at;              /* !up: when to try /data again */
 static uint64_t backoff = RETRY_FIRST; /* !up: how long after the next failure */
 static status_t said;                  /* the failure last reported (OK: none) */
 
+/* The panicked boot's log (SR_CRASHLOG), saved once, at the first try at
+ * /data; the result goes to init (LOGD_SR_CRASH_RESULT), and the log is
+ * let go either way. */
+static void save_crash(void)
+{
+    handle_t vmo = startup_handle(SR_CRASHLOG), to = startup_handle(LOGD_SR_CRASH_RESULT);
+    if (!vmo)
+        return;
+    struct crashlog_result r = { .status = 0 };
+    r.status = logd_save_crash(store, vmo, r.path, sizeof(r.path));
+    jam_handle_close(vmo);
+    if (r.status == OK)
+        printf("logd: the last boot's log is saved as %s\n", r.path);
+    else
+        printf("logd: the last boot's log was NOT saved: %s%s(%s)\n", r.path, r.path[0] ? " " : "",
+               status_str(r.status));
+    if (to) {
+        (void)jam_channel_write(to, &r, sizeof(r), NULL, 0);   /* init gone: no one to tell */
+        jam_handle_close(to);
+    }
+}
+
 static status_t try_open(void)
 {
+    static bool tried_crash;
+    if (!tried_crash) {
+        tried_crash = true;
+        save_crash();
+    }
     status_t st = logfile_open(store);
     if (st != OK)
         return st;
@@ -268,8 +299,8 @@ static void lost_data(status_t st)
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && !strcmp(argv[1], "crash"))
-        return logd_crash();
+    (void)argc;
+    (void)argv;
     handle_t fs = startup_handle(LOGD_SR_FS);
     store = fs ? store_fs(fs) : &store_ns;
     if (!open_source())

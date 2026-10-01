@@ -15,7 +15,12 @@
  *
  * Quiet (the boot splash, screen_quiet): nothing is drawn at all until the
  * first lease ends, so the screen goes straight from the kernel's dark
- * background to the splash and back to the text. */
+ * background to the splash and back to the text.
+ *
+ * Blank (console.blank, for a reboot by kexec): the whole framebuffer the
+ * splash's background and nothing drawn, until blank is turned off, so
+ * the screen goes straight from the shell to the next boot's splash. */
+#include <splash.h>
 #include "console.h"
 
 /* The palette (C_* in console.h). */
@@ -32,6 +37,7 @@ static uint32_t native[16];        /* the palette in the framebuffer's format */
 static struct cell *shadow;        /* rows * cols: what each screen cell shows */
 static uint8_t *shadow_cursor;     /* rows * cols: drawn inverted */
 static uint64_t quiet_until;       /* uptime ns: draw nothing before it (0: not quiet) */
+static bool blanked;               /* console.blank: draw nothing at all */
 
 static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 {
@@ -76,8 +82,39 @@ void screen_quiet(uint64_t until)
     quiet_until = until;
 }
 
+/* Every cell drawn again at the next render (the shadow grid forgets). */
+static void forget_shadow(void)
+{
+    memset(shadow, 0, (size_t)rows * cols * sizeof(struct cell));
+    memset(shadow_cursor, 0, (size_t)rows * cols);
+    dirty = true;
+}
+
+void screen_blank(bool on)
+{
+    if (!on) {
+        if (blanked && shadow)
+            forget_shadow();
+        blanked = false;
+        return;
+    }
+    blanked = true;
+    if (!fbp)
+        return;
+    uint32_t px = ((SPLASH_BG >> 16 & 0xff) << fbi.red_shift) |
+                  ((SPLASH_BG >> 8 & 0xff) << fbi.green_shift) |
+                  ((SPLASH_BG & 0xff) << fbi.blue_shift);
+    for (uint32_t y = 0; y < fbi.height; y++)
+        for (uint32_t x = 0; x < fbi.width; x++)
+            fbp[(uint64_t)y * (fbi.pitch / 4) + x] = px;
+}
+
 void render(void)
 {
+    if (blanked) {
+        dirty = false;   /* nothing to draw until blank is off, which redraws it all */
+        return;
+    }
     if (alt_on && alt_sync && now() - alt_sync_since < 250000000ull)
         return;   /* mid-frame: stay dirty, draw once the frame is complete */
     if (quiet_until && now() < quiet_until)
@@ -208,8 +245,6 @@ void lease_ended(void)
     jam_handle_close(lease);
     lease = HANDLE_INVALID;
     quiet_until = 0;
-    memset(shadow, 0, (size_t)rows * cols * sizeof(struct cell));
-    memset(shadow_cursor, 0, (size_t)rows * cols);
-    dirty = true;
+    forget_shadow();
     printf("console: the screen is back\n");
 }

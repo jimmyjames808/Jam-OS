@@ -36,9 +36,8 @@
 #include <jam/userboot.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.26-m8.5"
+#define JAMOS_VERSION   "0.0.27-m8.5"
 #define KERNEL_STACK_SZ (64 * 1024)
-#define CRASH_INIT_S    180   /* a crash kernel's init: saving the log, at most */
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 
@@ -116,12 +115,12 @@ static const char *ktest_prefix(void)
 
 /* Does the command line name a mode: a test, benchmark, report or crash
  * entry, or "init"? A boot without one is a plain boot and starts the
- * shell, whatever options it carries (panic_reboot=15, nodeadline, ...):
+ * shell, whatever options it carries (verbose, nodeadline, ...):
  * an option must never decide what is booted. */
 static bool mode_word_given(void)
 {
     static const char *const modes[] = { "ktest", "bench", "selftest", "init", "keytest",
-                                         "pcilist", "memmap", "crash" };
+                                         "pcilist", "memmap" };
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
         if (cmdline_has(modes[i]))
             return true;
@@ -160,6 +159,9 @@ _Noreturn static void kmain_stage2(void *arg)
     pmm_stats(&total, &free);
     kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
     bootfs_init(boot);   /* only needs the heap; before the tests that use it */
+    /* After a kexec: the previous kernel's record (did it panic?) and log,
+     * before anything could panic into a stored kernel (kexec.h). */
+    crashlog_init(boot);
 
     if (cmdline_has("selftest"))
         selftest_run();
@@ -185,7 +187,7 @@ _Noreturn static void kmain_stage2(void *arg)
     lapic_timer_start(TICK_HZ);
     smp_start_aps(boot);
     irq_enable();
-    kexec_crash_load();   /* the crash kernel into its region (kexec.h) */
+    kexec_load_stored();   /* the next boot's kernel into its region (kexec.h) */
 
     kprintf("measuring ticks on every CPU for 1 s...\n");
     bool ok = smp_report(1000);
@@ -217,13 +219,6 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
-    /* A crash kernel (kexec.h): init saves the crashed kernel's log, then
-     * the last screen shows its panic and where the log went. */
-    if (kexec_is_crash_kernel()) {
-        crashlog_init(boot);
-        userboot_run_init(CRASH_INIT_S, "crash", NULL);
-        crashlog_finish();
-    }
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
      * or on "shell" or a plain boot (no mode word: mode_word_given): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
@@ -233,7 +228,7 @@ _Noreturn static void kmain_stage2(void *arg)
     bool nousb = cmdline_has("nousb");
     bool shell = cmdline_has("shell") || nousb || !mode_word_given();
     /* soak[=minutes] (the Soak test entry): a plain boot whose shell runs
-     * `soak <minutes> halt` by itself. An option, like panic_reboot: it
+     * `soak <minutes> halt` by itself. An option, like verbose: it
      * is not a mode word. */
     static char soak_arg[16];
     uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
@@ -281,7 +276,7 @@ _Noreturn void kmain(struct boot_info *bi)
     gdt_init_bsp();
     idt_init();
     print_boot_info(bi);
-    kexec_reserve(bi);   /* before the memory managers: the crash kernel's region */
+    kexec_reserve(bi);   /* before the memory managers: the stored kernel's region */
     if (cmdline_has("memmap"))
         kmain_print_memmap();
 

@@ -1,6 +1,7 @@
-# Ctrl+Alt+Del on a USB keyboard: the console asks init (initctl.reboot),
-# init syncs /data (2 s at most) and kexecs into the kernel on the stick;
-# the file written before is there after it. Then `reboot -f` resets.
+# Ctrl+Alt+Del on a USB keyboard: the console blanks the screen and asks
+# init (initctl.reboot), which syncs /data (2 s at most) and kexecs into
+# the kernel's stored copy of the system; the file written before is there
+# after it. Then `reboot -f` resets.
 # QEMU_USB as in tools/usbkeys-test.sh (a usb-hub on xhci port 2 with a
 # usb-kbd behind it: hid-6.1:0), command line "shell".
 wait 120 Jam OS shell
@@ -10,10 +11,12 @@ seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 0.5
 send write /data/cad.txt written before the reset && cat /data/cad.txt
 wait written before the reset
+# (that matched the line's echo: the prompt says the command has run)
+wait jam>
 monitor sendkey ctrl-alt-delete
 wait 10 console: Ctrl+Alt+Del: rebooting
 wait 120 init: /data synced
-wait 60 kexec: starting the loaded kernel
+wait 60 kexec: starting the stored kernel
 wait 60 loader:      Jam OS kexec
 wait 120 init: the shell is up
 wait jam>

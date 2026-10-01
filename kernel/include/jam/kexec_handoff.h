@@ -1,7 +1,7 @@
 /* What one Jam OS kernel hands the next when it starts it itself
- * (kexec, kernel/kexec/): the handoff, read by kernel/boot/kexec.c in
- * place of Limine's responses, and the crash record, read by a crash
- * kernel (kernel/kexec/crashlog.c).
+ * (kexec, kernel/kexec/), after a reboot or a panic: the handoff, read by
+ * kernel/boot/kexec.c in place of Limine's responses, and the crash
+ * record, read by the next kernel at boot (kernel/kexec/crashlog.c).
  *
  * Both cross from one kernel build to another, so they are wire formats,
  * not kernel structs: fixed-size fields, explicit numbers (never a C enum
@@ -12,9 +12,9 @@
  * At the new kernel's entry (_start): rdi = KEXEC_ENTRY_MAGIC, rsi = the
  * handoff's address in the HHDM of the page tables it runs on; Limine
  * enters with rdi = 0. Those tables map the kernel image at its link
- * address, the handoff, a stack, every range the memory map calls RAM of
- * the new kernel's in the HHDM, the framebuffer, and the crash record
- * and log ring read-only (a crash kernel). */
+ * address, the handoff, a stack, every range the memory map calls RAM in
+ * the HHDM (the crash record and the log ring included) and the
+ * framebuffer. */
 #pragma once
 
 /* In rdi at _start (entry.S includes this header for it alone). */
@@ -27,9 +27,9 @@
 #include <jam/boot.h>
 
 #define KEXEC_HANDOFF_MAGIC   0x46464f444e41484bull /* "KHANDOFF" */
-#define KEXEC_HANDOFF_VERSION 1u
+#define KEXEC_HANDOFF_VERSION 2u
 #define KEXEC_RECORD_MAGIC    0x44524f4345524b43ull /* "CKRECORD" */
-#define KEXEC_RECORD_VERSION  1u
+#define KEXEC_RECORD_VERSION  2u
 
 #define KEXEC_MAX_MEMMAP  256
 #define KEXEC_MAX_CPUS    256
@@ -37,6 +37,7 @@
 #define KEXEC_STR         64    /* loader name, module path and string */
 #define KEXEC_CMDLINE     512
 #define KEXEC_NAME        32    /* the crash record's log file name */
+#define KEXEC_MESSAGE     128   /* the crash record's panic message */
 
 /* Memory types on the wire (struct boot_mem_region's, by number). */
 enum {
@@ -52,9 +53,12 @@ enum {
     KEXEC_MEM_CRASH_LOG = 10,
 };
 
-/* handoff.flags */
-#define KEXEC_ONE_CPU (1u << 0)   /* start only the CPU that entered (a crash kernel) */
-#define KEXEC_FLAGS   KEXEC_ONE_CPU
+/* handoff.flags: none yet (must be 0) */
+#define KEXEC_FLAGS 0u
+
+/* crash_record.kind: how the sending kernel ended */
+#define KEXEC_RECORD_REBOOT 1u   /* kexec_reboot: nothing to save */
+#define KEXEC_RECORD_PANIC  2u   /* a panic: its log ring is to be saved */
 
 struct kexec_mem {
     uint64_t base;       /* physical */
@@ -96,6 +100,7 @@ struct kexec_handoff {
     uint64_t kernel_virt_base;      /* its link address */
     uint64_t rsdp_phys;             /* 0: no ACPI */
     uint64_t tsc_hz;                /* the old kernel's measurement (a hint) */
+    uint64_t record_phys;           /* its crash record (a CRASH_LOG page), 0: none */
     struct kexec_fb fb;
     uint32_t cpu_count;             /* entries in cpus[] */
     uint32_t memmap_count;          /* entries in memmap[] */
@@ -108,29 +113,35 @@ struct kexec_handoff {
     struct kexec_module modules[KEXEC_MAX_MODULES];
 };
 
-/* Filled by a panicking kernel just before it jumps; the crash kernel's
- * command line has its physical address (crashlog=<decimal>). */
+/* Filled by the sending kernel just before it jumps (a reboot or a
+ * panic); the handoff has its physical address (record_phys), and the
+ * memory map types its page and the log ring's pages CRASH_LOG, which the
+ * next kernel frees once it has read them. */
 struct kexec_crash_record {
     uint64_t magic;                 /* KEXEC_RECORD_MAGIC */
     uint32_t version;               /* KEXEC_RECORD_VERSION */
     uint32_t size;                  /* sizeof(struct kexec_crash_record) */
     uint64_t checksum;              /* kexec_checksum of the struct with this field 0 */
+    uint32_t kind;                  /* KEXEC_RECORD_* */
+    uint32_t panics;                /* a panic: panics in a row, this one included; else 0 */
+    uint64_t uptime_ns;             /* how long the sending kernel ran */
     uint64_t ring_phys;             /* the kernel log ring */
     uint64_t ring_size;             /* bytes, a power of two */
     uint64_t head;                  /* bytes ever written to it, at the jump */
     uint64_t panic_at;              /* the panic's first byte (a head value) */
-    uint64_t tail_at;               /* where its copy of the log tail starts (0: none) */
     char     name[KEXEC_NAME];      /* this boot's log file ("boot-0042"), "" if none */
+    char     message[KEXEC_MESSAGE];   /* the panic's message, "" for a reboot */
 };
 
 _Static_assert(sizeof(struct kexec_mem) == 24, "kexec_mem: no padding");
 _Static_assert(sizeof(struct kexec_fb) == 32, "kexec_fb: no padding");
 _Static_assert(sizeof(struct kexec_module) == 144, "kexec_module: no padding");
 _Static_assert(sizeof(struct kexec_handoff) ==
-                   120 + KEXEC_STR + KEXEC_CMDLINE + 8 * KEXEC_MAX_CPUS +
+                   128 + KEXEC_STR + KEXEC_CMDLINE + 8 * KEXEC_MAX_CPUS +
                        24 * KEXEC_MAX_MEMMAP + 144 * KEXEC_MAX_MODULES,
                "kexec_handoff: no padding");
-_Static_assert(sizeof(struct kexec_crash_record) == 96, "kexec_crash_record: no padding");
+_Static_assert(sizeof(struct kexec_crash_record) == 72 + KEXEC_NAME + KEXEC_MESSAGE,
+               "kexec_crash_record: no padding");
 
 /* The checksum both formats use, and the one over the loaded region: a
  * 64-bit multiply-xor over 8-byte words (len a multiple of 8), started

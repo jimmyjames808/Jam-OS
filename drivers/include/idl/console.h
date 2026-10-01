@@ -17,6 +17,7 @@
 #define CONSOLE_CONNECT_INPUT    0x000c0005u
 #define CONSOLE_LEND_SCREEN      0x000c0006u
 #define CONSOLE_NEW_CLIENT       0x000c0007u
+#define CONSOLE_BLANK            0x000c0008u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct console_write_req {
@@ -84,6 +85,15 @@ struct console_new_client_req {
     uint8_t level;
 } __attribute__((packed));
 struct console_new_client_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct console_blank_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t on;
+} __attribute__((packed));
+struct console_blank_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -322,6 +332,30 @@ static inline status_t console_new_client(handle_t ch, uint8_t level, handle_t *
     return console_new_client_until(ch, DEADLINE_NEVER, level, out_client);
 }
 
+/* Blank the screen (on 1): fill it with the boot splash's background and
+ * draw nothing more (the text, the kernel log and the serial mirror keep
+ * going), or draw again (on 0). For a reboot by kexec: the screen stays
+ * that colour until the next boot's splash. ADMIN and SHELL channels
+ * only: ERR_ACCESS_DENIED for a PROGRAM one. */
+static inline status_t console_blank_until(handle_t ch, uint64_t deadline_ns, uint8_t on)
+{
+    struct console_blank_req idl_q;
+    struct console_blank_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_BLANK;
+    idl_q.on = on;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t console_blank(handle_t ch, uint8_t on)
+{
+    return console_blank_until(ch, DEADLINE_NEVER, on);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -334,6 +368,7 @@ struct console_ops {
     status_t (*connect_input)(void *ctx, handle_t *out_source);
     status_t (*lend_screen)(void *ctx, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
+    status_t (*blank)(void *ctx, uint8_t on);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -513,6 +548,22 @@ static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx
         }
         rhs[0] = out_client;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_BLANK: {
+        const struct console_blank_req *idl_q = (const struct console_blank_req *)req;
+        struct console_blank_rep *idl_r = (struct console_blank_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->blank) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->blank(ctx, idl_q->on);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }

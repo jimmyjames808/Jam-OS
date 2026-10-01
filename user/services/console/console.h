@@ -124,6 +124,9 @@ status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, ui
                         handle_t *out_lease);
 /* A program has the screen (lend_screen) and hasn't given it back. */
 bool screen_lent(void);
+/* console.blank: on, the whole screen the splash background and nothing
+ * drawn; off, all of it drawn again. */
+void screen_blank(bool on);
 /* The lease's other end closed: the screen is ours again. */
 void lease_ended(void);
 

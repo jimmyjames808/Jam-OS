@@ -233,6 +233,19 @@ void fbcon_force_unlock(void)
     __atomic_store_n(&quiet, false, __ATOMIC_RELAXED);
 }
 
+void fbcon_go_dark(void)
+{
+    spin_force_unlock(&lock);
+    __atomic_store_n(&taken, false, __ATOMIC_RELAXED);
+    __atomic_store_n(&quiet, true, __ATOMIC_RELAXED);
+}
+
+void fbcon_fill_splash_bg(void)
+{
+    if (ready)
+        fill_screen(FBCON_SPLASH_BG);
+}
+
 bool fbcon_geometry(struct boot_framebuffer *out)
 {
     if (!ready)

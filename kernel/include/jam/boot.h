@@ -21,12 +21,13 @@ enum boot_mem_type {
     BOOT_MEM_LOADER_RECLAIMABLE, /* free once we stop using boot_info data */
     BOOT_MEM_KERNEL_AND_MODULES,
     BOOT_MEM_FRAMEBUFFER,
-    /* RAM that is not this kernel's (kernel/kexec): the crash kernel's
-     * reserved region in the running kernel, the crashed kernel's memory
-     * in a crash kernel. Never mapped, never managed, never handed out. */
+    /* RAM that is not this kernel's (kernel/kexec): the reserved region
+     * that holds the stored kernel. Never mapped, never managed, never
+     * handed out. */
     BOOT_MEM_FOREIGN,
-    /* The crashed kernel's log ring and crash record, in a crash kernel:
-     * mapped read-only, read once at boot (kernel/kexec/crashlog.c). */
+    /* The previous kernel's crash record and log ring, after a kexec:
+     * mapped, kept out of the allocator until they are read at boot
+     * (kernel/kexec/crashlog.c), then freed like loader-reclaimable. */
     BOOT_MEM_CRASH_LOG,
 };
 
@@ -36,15 +37,14 @@ static inline int boot_mem_is_ram(enum boot_mem_type t)
 {
     return t == BOOT_MEM_USABLE || t == BOOT_MEM_LOADER_RECLAIMABLE ||
            t == BOOT_MEM_KERNEL_AND_MODULES || t == BOOT_MEM_ACPI_RECLAIMABLE ||
-           t == BOOT_MEM_ACPI_NVS;
+           t == BOOT_MEM_ACPI_NVS || t == BOOT_MEM_CRASH_LOG;
 }
 
 /* Types that are RAM at all, this kernel's or not, bad RAM included: no
  * MMIO resource or physical VMO may ever cover one (pmm_range_has_ram). */
 static inline int boot_mem_is_any_ram(enum boot_mem_type t)
 {
-    return boot_mem_is_ram(t) || t == BOOT_MEM_BAD || t == BOOT_MEM_FOREIGN ||
-           t == BOOT_MEM_CRASH_LOG;
+    return boot_mem_is_ram(t) || t == BOOT_MEM_BAD || t == BOOT_MEM_FOREIGN;
 }
 
 struct boot_mem_region {
@@ -88,6 +88,8 @@ struct boot_info {
     uint64_t kernel_virt_base;                       /* virtual address of __kernel_start */
     uint64_t rsdp_phys;                              /* 0 if no ACPI */
     uint64_t tsc_hz_loader;                          /* loader's TSC estimate, 0 if unknown */
+    uint64_t kexec_record;                           /* the previous kernel's crash record
+                                                      * (physical; kexec), 0 if none */
     uint32_t cpu_count;                              /* entries in cpus[] */
     uint32_t bsp_lapic_id;                           /* the CPU running the boot code */
     int      x2apic;                                 /* loader switched the APICs to x2APIC mode */

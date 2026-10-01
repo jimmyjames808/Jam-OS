@@ -132,22 +132,26 @@ test run at boot (All tests, the stress test, the benchmark) ends with a
 RESULTS box on the screen that sums it up; the `soak` command ends with a
 SOAK RESULTS box. To end a run on the PC cleanly, `reboot` from the shell:
 it syncs `/data` and has logd write the log's last lines first, then
-restarts into the kernel on the stick without the firmware (kexec);
-`reboot -f` goes through the firmware and the boot menu.
+starts a fresh copy of the system without the firmware (kexec): the
+screen turns the splash background at once and the next thing on it is
+the splash. It is the copy the kernel stored at boot, unless the stick's
+kernel or boot image changed since (then it reads them first, slowly
+until M8.6); `reboot -f` goes through the firmware and the boot menu.
 
 ## If something goes wrong on the PC
 
-- **A panic.** The panic screen comes up, then the crash kernel starts
-  (its boot log scrolls past), saves the log as
-  `/data/logs/boot-NNNN-crash.txt` and shows the panic again with a
-  RESULTS box saying where the log went (or why it couldn't). The
-  everyday entry then halts; the second entry restarts the PC 15 s later.
-  Photograph the top of the screen: the message, the note line under it (a
-  kernel test's loop, seed and test, when tests were running;
-  [TESTING.md](TESTING.md#soak) says how to replay it) and the backtrace.
-  The crash file holds the last 64 KiB of the log, the panic included; the
-  boot's own `boot-NNNN.txt` stops up to a quarter of a second before the
-  panic.
+- **A panic.** No panic screen: the screen turns the splash background,
+  the PC boots again without the firmware (the splash, then the shell),
+  and the shell's first line says what the panic was and where its log
+  went (`the last boot panicked: ... (saved as
+  /data/logs/boot-NNNN-crash.txt)`), or why it was not saved. Read that
+  file on the Mac: the last 64 KiB of the log, the panic with its
+  registers, backtrace and note line (a kernel test's loop, seed and test,
+  when tests were running; [TESTING.md](TESTING.md#soak) says how to
+  replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
+  second before the panic. The red panic screen only stays up (photograph
+  it) when there is no stored kernel to start, or for a second panic
+  within 30 s of the boot that followed a panic (a crash loop).
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may

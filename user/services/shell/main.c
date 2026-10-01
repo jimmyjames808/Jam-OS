@@ -319,6 +319,9 @@ int main(int argc, char **argv)
         line_max = cols - PROMPT_W - 1;
     sh_init();
     echo("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
+    const char *note = sh_boot_note();   /* after a panic: what happened to that boot */
+    if (note[0])
+        echo("\033[93m%s\033[0m\n", note);
     sh_flush();
     /* Up: the boot splash, if one holds the screen, gives it back now.
      * Without init's channel (a shell run from a shell) there is none. */

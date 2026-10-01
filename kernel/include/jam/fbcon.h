@@ -29,6 +29,14 @@ uint64_t fbcon_phys(uint64_t *len);
 /* Drop any console lock state so panic output always gets through; also
  * takes the screen back from a process that owns it (a panic always draws). */
 void fbcon_force_unlock(void);
+/* The way out by kexec (kernel/kexec/jump.c), interrupts off, the other
+ * CPUs halted: go_dark drops the lock state like fbcon_force_unlock but
+ * draws nothing from now on (the text is still kept, so a panic screen
+ * that comes after all can be drawn with fbcon_unquiet); fill_splash_bg
+ * fills the whole framebuffer with FBCON_SPLASH_BG through its existing
+ * mapping, taking no lock. */
+void fbcon_go_dark(void);
+void fbcon_fill_splash_bg(void);
 
 /* Screen hand-off (framebuffer_take, kernel/abi/sysc_console.c).
  * fbcon_geometry: false if fbcon can't draw (no 32-bpp framebuffer).

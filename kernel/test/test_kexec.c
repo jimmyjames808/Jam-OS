@@ -1,7 +1,8 @@
 /* kexec: the checksum, memory-map splitting, the handoff's check (every
  * field a corrupted handoff could get wrong), the region unmapped from
- * every kernel page table, the loaded crash kernel intact, and a refused
- * image changing nothing. */
+ * every kernel page table, the stored kernel intact, a refused image
+ * changing nothing, the next kernel's command line and the crash-loop
+ * rule. */
 #include <stddef.h>
 #include <jam/kexec.h>
 #include <jam/kexec_handoff.h>
@@ -133,7 +134,7 @@ KTEST(kexec_handoff_check)
         valid_handoff(h);
         switch (k) {
         case 0:  h->magic ^= 1; break;
-        case 1:  h->version = 2; break;
+        case 1:  h->version = KEXEC_HANDOFF_VERSION + 1; break;
         case 2:  h->size -= 8; break;
         case 3:  h->flags = 1u << 5; break;
         case 4:  h->x2apic = 2; break;
@@ -218,10 +219,10 @@ KTEST(kexec_region_unmapped)
     KT_ASSERT(self != UINT64_MAX && kernel_maps(ALIGN_DOWN(self, PAGE_SIZE), PAGE_SIZE));
 }
 
-KTEST(kexec_crash_kernel_intact)
+KTEST(kexec_stored_kernel_intact)
 {
-    if (!kexec_crash_armed()) {
-        kprintf("kexec_crash_kernel_intact: no crash kernel armed: nothing to check\n");
+    if (!kexec_armed()) {
+        kprintf("kexec_stored_kernel_intact: no stored kernel: nothing to check\n");
         return;
     }
     KT_ASSERT(kexec_verify());
@@ -229,7 +230,7 @@ KTEST(kexec_crash_kernel_intact)
 
 KTEST(kexec_load_refuses_garbage)
 {
-    bool armed = kexec_crash_armed();
+    bool armed = kexec_armed();
     struct vmo *k, *b;
     KT_EQ(vmo_create(8192, 0, &k), OK);
     KT_EQ(vmo_create(8192, 0, &b), OK);
@@ -239,9 +240,39 @@ KTEST(kexec_load_refuses_garbage)
     uint64_t base, size;
     KT_EQ(st, kexec_region(&base, &size) ? ERR_INVALID_ARGS : ERR_NOT_SUPPORTED);
     /* A refused image changes nothing. */
-    KT_EQ(kexec_crash_armed(), armed);
+    KT_EQ(kexec_armed(), armed);
     if (armed)
         KT_ASSERT(kexec_verify());
     kobject_unref(vmo_kobject(b));
     kobject_unref(vmo_kobject(k));
+}
+
+/* The next kernel keeps the machine's words, drops the one-time ones, and
+ * turns crashtest=<name> into test<name>. */
+KTEST(kexec_next_cmdline_words)
+{
+    char buf[KEXEC_CMDLINE];
+    kexec_next_cmdline("ktest=sched loops=3 nopcid  soak=3 verbose crashkernel=64 init testpf "
+                       "stress=60 idlespin=5 smp=loader bench", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "nopcid verbose crashkernel=64 idlespin=5 smp=loader"));
+    kexec_next_cmdline("shell nosplash crashtest=lockorder", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell nosplash testlockorder"));
+    kexec_next_cmdline("", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, ""));
+    /* Cut to fit, still terminated. */
+    kexec_next_cmdline("verbose nosplash", buf, 10);
+    KT_ASSERT(strlen(buf) < 10);
+    /* A word that only starts like a kept one is not kept. */
+    kexec_next_cmdline("verbosely crashkernel= nousbx", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, ""));
+}
+
+/* A panic within 30 s of a start that was itself a panic's halts. */
+KTEST(kexec_crash_loop_rule)
+{
+    KT_ASSERT(kexec_crash_loop(true, 0));
+    KT_ASSERT(kexec_crash_loop(true, KEXEC_LOOP_NS - 1));
+    KT_ASSERT(!kexec_crash_loop(true, KEXEC_LOOP_NS));
+    KT_ASSERT(!kexec_crash_loop(false, 0));
+    KT_ASSERT(!kexec_crash_loop(false, KEXEC_LOOP_NS * 10));
 }

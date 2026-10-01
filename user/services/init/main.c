@@ -1,8 +1,7 @@
 /* init: the first user process, started by the kernel's userboot with the
  * root job, the root resource and the bootfs image.
  *
- * With "crash" (a crash kernel's boot) it saves the crashed kernel's log
- * and exits (crash.c). With "shell" (a plain boot), "shell-nousb" (the safe mode entry:
+ * With "shell" (a plain boot), "shell-nousb" (the safe mode entry:
  * devmgr leaves USB controllers alone) or "soak=<minutes>" (a plain boot
  * whose shell starts the soak test) it starts and supervises the bootfs
  * server, the console, serial input, devmgr and the shell (shell.c) and
@@ -150,9 +149,8 @@ static bool check_root_resource(void)
 }
 
 /* devmgr: started before the programs, stopped after them. With a
- * console client end (consumed) for its class drivers' input, and an
- * argument (NULL: none). */
-bool init_start_devmgr(handle_t console, const char *arg)
+ * console client end (consumed) for its class drivers' input. */
+static bool start_devmgr(handle_t console)
 {
     const struct bootfs_view *fs;
     const void *data;
@@ -173,11 +171,11 @@ bool init_start_devmgr(handle_t console, const char *arg)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[] = { "bin/devmgr", arg };
+        const char *argv[] = { "bin/devmgr" };
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
-            .path = "bin/devmgr", .argc = arg ? 2 : 1, .argv = argv, .job = devmgr_job, .extra = x,
+            .path = "bin/devmgr", .argc = 1, .argv = argv, .job = devmgr_job, .extra = x,
             .nextra = console ? 4 : 3,
         };
         st = spawn(&sa, &devmgr_proc);   /* consumes pci, b, qb and console */
@@ -214,7 +212,7 @@ bool init_start_devmgr(handle_t console, const char *arg)
     return r.b == 0;
 }
 
-bool init_stop_devmgr(void)
+static bool stop_devmgr(void)
 {
     if (!devmgr_proc)
         return true;
@@ -346,7 +344,7 @@ static bool run_config(const char *cfg, uint64_t len)
 #define KEYTEST_S 30
 static bool run_keytest(void)
 {
-    bool ok = init_start_devmgr(HANDLE_INVALID, NULL);
+    bool ok = start_devmgr(HANDLE_INVALID);
     init_say("keytest: type on the USB keyboard now: %d s; each key DOWN is logged by its hid "
              "(hid-<port>:<interface>)", KEYTEST_S);
     for (int left = KEYTEST_S; left > 0; left -= 10) {
@@ -355,7 +353,7 @@ static bool run_keytest(void)
             printf("init: keytest: %d s left\n", left - 10);
     }
     printf("init: keytest: time is up; stopping the drivers\n");
-    ok &= init_stop_devmgr();
+    ok &= stop_devmgr();
     return ok;
 }
 
@@ -392,9 +390,6 @@ int main(int argc, char **argv)
 
     if (argc > 1 && !strcmp(argv[1], "keytest"))
         return run_keytest() ? 0 : 1;
-    /* A crash kernel's boot: save the crashed kernel's log (crash.c). */
-    if (argc > 1 && !strcmp(argv[1], "crash"))
-        return init_crash();
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);
@@ -410,9 +405,9 @@ int main(int argc, char **argv)
         return 1;
     }
     bool ok = start_bootfs();
-    ok &= init_start_devmgr(HANDLE_INVALID, NULL);
+    ok &= start_devmgr(HANDLE_INVALID);
     ok &= run_config(cfg, len);
-    ok &= init_stop_devmgr();
+    ok &= stop_devmgr();
     ok &= stop_bootfs();
     return ok ? 0 : 1;
 }

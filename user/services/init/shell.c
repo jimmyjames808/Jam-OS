@@ -51,7 +51,9 @@
  *             log), a namespace holding only /data (SR_NS) and the server
  *             end of a `logctl` channel (SR_USER + 2; init keeps the client
  *             end and asks for a flush before a reboot). It saves each
- *             boot's log as /data/logs/boot-NNNN.txt
+ *             boot's log as /data/logs/boot-NNNN.txt. On the boot after a
+ *             panic it also gets the panicked boot's log and a channel for
+ *             its answer (lastboot.c), and saves that log first
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client; no connect_input), root with READ |
  *             MANAGE, RES_PCI with RIGHTS_BASIC (SR_USER + 1), devmgr's
@@ -61,7 +63,10 @@
  *             new devmgr's pair (INIT_SHELL_DEVMGR, <devmgr.h>), init's
  *             control channel (SR_USER + 3, ctl.c: kill, sync, reboot),
  *             init's namespace (SR_NS) and client ends of the mixer's
- *             channels (SR_AUDIO, SR_AUDIO_CTL) and of the music player's (SR_USER + 4)
+ *             channels (SR_AUDIO, SR_AUDIO_CTL) and of the music player's (SR_USER + 4).
+ *             On the boot after a panic the first shell waits for logd's
+ *             answer (lastboot.c) and finds its one line queued on the
+ *             SR_USER + 2 channel (INIT_SHELL_NOTE) when it starts
  * init keeps its end of the shell's, the music player's and logd's SR_NS channels and sends
  * them every later change of its mounts (logd: of /data), with ns_update:
  * each change takes back the one they haven't read yet (logd never looks
@@ -107,6 +112,7 @@ enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSV
 #define KEY_MOUNTS 0x100u   /* the mounts watcher changed the namespace */
 #define KEY_CTL    0x200u   /* + CTL_*: requests on a control channel */
 #define KEY_SPLASH 0x300u   /* the splash's channel (splash.c) */
+#define KEY_LASTBOOT 0x400u /* logd's answer about the last boot's log (lastboot.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -458,9 +464,10 @@ static status_t start_logd(void)
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
         return st;
-    struct spawn_handle x[] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) },
-                                { SR_USER + 2, theirs } };
-    st = start1(LOGD, x, 2);
+    struct spawn_handle x[4] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) },
+                                 { SR_USER + 2, theirs } };
+    unsigned nx = 2 + lastboot_logd_handles(&x[2]);   /* after a panic: its log first */
+    st = start1(LOGD, x, nx);
     if (st != OK) {
         jam_handle_close(mine);
         return st;
@@ -570,6 +577,22 @@ static status_t start_music(void)
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
 
+/* The line the boot's first shell prints after a panic (lastboot.c), queued
+ * on its init channel before it starts. */
+static void queue_banner(handle_t to)
+{
+    const char *b = lastboot_banner();
+    size_t n = strlen(b);
+    if (!to || !n)
+        return;
+    struct { uint32_t kind; char text[INIT_SHELL_NOTE_MAX]; } m = { INIT_SHELL_NOTE, { 0 } };
+    if (n > sizeof(m.text))
+        n = sizeof(m.text);
+    memcpy(m.text, b, n);
+    if (jam_channel_write(to, &m, (uint32_t)(sizeof(m.kind) + n), NULL, 0) != OK)
+        printf("init: the shell can't be given the last boot's line\n");
+}
+
 static status_t start_shell(void)
 {
     handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
@@ -596,6 +619,7 @@ static status_t start_shell(void)
         p2 = HANDLE_INVALID;
     if (jam_channel_create(&mine, &theirs) != OK)
         mine = theirs = HANDLE_INVALID;
+    queue_banner(mine);
     if (ctl_new(CTL_SHELL, port, KEY_CTL + CTL_SHELL, &ctl) != OK)
         ctl = HANDLE_INVALID;
     struct spawn_handle x[] = {
@@ -742,6 +766,12 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for devmgr (started just before it) */
         if (i == SHELL && !splash_played())
             continue;   /* waits for the splash: its packet wakes the loop */
+        if (i == SHELL && lastboot_wait_until(t) != DEADLINE_NEVER) {
+            /* waits for logd's answer (its packet wakes the loop), at most until then */
+            uint64_t until = lastboot_wait_until(t);
+            deadline = until < deadline ? until : deadline;
+            continue;
+        }
         if (i == MUSIC && !svcs[MIXER].running && !svcs[MIXER].given_up)
             continue;   /* after the mixer (it opens its stream only on `music start`) */
         if (t < s->next_try) {
@@ -785,6 +815,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         return false;
     }
     make_audio_channels();
+    lastboot_init(port, KEY_LASTBOOT);
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
@@ -798,13 +829,17 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             return false;
         if (st != OK)
             continue;
-        if (pkt.key < NSVC && pkt.type == PORT_PACKET_SIGNAL && svcs[pkt.key].running)
+        if (pkt.key < NSVC && pkt.type == PORT_PACKET_SIGNAL && svcs[pkt.key].running) {
             ended((unsigned)pkt.key);
-        else if (pkt.key == KEY_MOUNTS)
+        } else if (pkt.key == KEY_MOUNTS) {
             tell_mounts();
-        else if (pkt.key >= KEY_CTL && pkt.key < KEY_CTL + CTL_COUNT)
+            reboot_note_esp();   /* the first /esp: what the stored kernel came from */
+        } else if (pkt.key == KEY_LASTBOOT) {
+            lastboot_event();
+        } else if (pkt.key >= KEY_CTL && pkt.key < KEY_CTL + CTL_COUNT) {
             ctl_serve((unsigned)(pkt.key - KEY_CTL));
-        else if (pkt.key == KEY_SPLASH)
+        } else if (pkt.key == KEY_SPLASH) {
             splash_event();
+        }
     }
 }

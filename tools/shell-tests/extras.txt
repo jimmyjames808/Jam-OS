@@ -1,7 +1,7 @@
 # More of the shell (QEMU_INPUT=this file, command line "shell"): the
 # benchmark and a short stress run from the shell, scrollback, clear, and
-# last a panic, whose screen must show over the console (qemu-test.sh saves
-# the screen as <name>.png when the kernel halts).
+# last a panic, which starts the stored kernel: the next boot's shell says
+# what happened.
 wait 120 Jam OS shell
 wait jam>
 send bench
@@ -23,4 +23,8 @@ sleep 0.5
 shot cleared
 send panic
 wait 30 KERNEL PANIC
-wait system halted
+wait 60 loader:      Jam OS kexec
+wait 120 the last boot panicked:
+wait jam>
+send reboot -f
+wait reboot: resetting

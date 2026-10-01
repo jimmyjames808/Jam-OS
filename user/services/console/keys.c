@@ -94,6 +94,7 @@ static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, 
     if (usage == 0x4c && state == INPUT_KEY_DOWN && (mods & INPUT_MOD_CTRL) &&
         (mods & INPUT_MOD_ALT)) {
         printf("console: Ctrl+Alt+Del: rebooting\n");
+        screen_blank(true);   /* nothing drawn until the next boot's splash */
         handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
         if (init)
             printf("console: init: %s\n",

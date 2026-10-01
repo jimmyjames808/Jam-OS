@@ -3,7 +3,7 @@
  * Each client channel has a level (console.idl new_client): ADMIN (init's,
  * and the copy devmgr gets), SHELL (the shell's: no connect_input), PROGRAM
  * (what the shell hands a program it runs: write, size, clear, open_keys,
- * lend_screen). A client can only make channels of a lower level than its
+ * lend_screen; not blank). A client can only make channels of a lower level than its
  * own. keys.c has what the levels mean for the keys.
  *
  * Program output (console.write) is also written to COM1 as it is (the
@@ -84,8 +84,20 @@ static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
     return OK;
 }
 
+static status_t op_blank(void *ctx, uint8_t on)
+{
+    const struct client *c = ctx;
+    if (c->level == L_PROGRAM)
+        return ERR_ACCESS_DENIED;
+    if (on > 1)
+        return ERR_INVALID_ARGS;
+    screen_blank(on);
+    return OK;
+}
+
 static const struct console_ops console_ops = {
     op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen, op_new_client,
+    op_blank,
 };
 
 void clients_init(void)

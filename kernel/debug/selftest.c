@@ -508,24 +508,24 @@ static void crash_rohhdm(void)   /* ...through the HHDM alias too */
     *(volatile uint8_t *)phys_to_virt(pa) = 0xcc;
 }
 
-/* The crash kernel's region is not mapped: a read through where the HHDM
- * would have it must fault. (Without a region it panics plainly.) */
+/* The stored kernel's region is not mapped: a read through where the
+ * HHDM would have it must fault. (Without a region it panics plainly.) */
 static void crash_kexecread(void)
 {
     uint64_t base, size;
     if (!kexec_region(&base, &size))
-        panic("crash test kexecread: no crash kernel region (crashkernel=0?)");
+        panic("crash test kexecread: no stored kernel region (crashkernel=0?)");
     kprintf("crash kexecread: reading %lx through the HHDM\n", base + size / 2);
     kprintf("%u\n", *(volatile uint8_t *)phys_to_virt(base + size / 2));
 }
 
-/* A crash kernel whose memory changed is not used: the panic must say
- * so and end as it would without one. */
+/* A stored kernel whose memory changed is not started: the panic must
+ * say so and halt on its screen. */
 static void crash_kexecbad(void)
 {
     status_t st = kexec_test_corrupt();
-    panic("test panic after changing a byte of the crash kernel (crash test kexecbad: %s)",
-          st == OK ? "changed" : "no crash kernel loaded");
+    panic("test panic after changing a byte of the stored kernel (crash test kexecbad: %s)",
+          st == OK ? "changed" : "no stored kernel");
 }
 
 static void crash_stack(void)
@@ -561,8 +561,8 @@ static const struct crash_test {
     { "watchdog",   crash_watchdog,   false, true,  "a CPU stuck with interrupts off (watchdog)" },
     { "smap",       crash_smap,       false, false, "SMAP: kernel reads a user page without stac" },
     { "smep",       crash_smep,       false, false, "SMEP: kernel jumps to a user page" },
-    { "kexecread",  crash_kexecread,  false, false, "read the crash kernel's region (unmapped)" },
-    { "kexecbad",   crash_kexecbad,   false, false, "a damaged crash kernel is refused" },
+    { "kexecread",  crash_kexecread,  false, false, "read the stored kernel's region (unmapped)" },
+    { "kexecbad",   crash_kexecbad,   false, false, "a damaged stored kernel is refused" },
 };
 #define NCRASH (sizeof(crash_tests) / sizeof(crash_tests[0]))
 

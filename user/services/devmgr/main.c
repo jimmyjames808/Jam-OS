@@ -44,10 +44,7 @@
  *
  * The argument "nousb" (init passes it on for the safe mode boot entry)
  * leaves USB host controllers (class 0c03xx) without a driver: no USB at
- * all, the console's input is the serial port alone. "storage" (a crash
- * kernel's boot, which only saves a log) binds the PCI drivers as always,
- * so every controller is reset, but of the USB interfaces only mass
- * storage: no hid.
+ * all, the console's input is the serial port alone.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -94,7 +91,6 @@ unsigned ndevs, problems;
 handle_t pci_res, port;
 static unsigned nbound, nfailed, nskipped;
 static bool nousb;
-bool storage_only;
 static bool shutdown_asked;   /* DEVMGR_SHUTDOWN: answered, then stop as if every client left */
 
 void say(bool report_it, const char *fmt, ...)
@@ -700,10 +696,8 @@ static bool stop_all(void)
 
 int main(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++)
         nousb |= !strcmp(argv[i], "nousb");
-        storage_only |= !strcmp(argv[i], "storage");
-    }
     /* chans[0]: control (SR_DEVMGR_CTL), chans[1]: queries (SR_DEVMGR).
      * devmgr runs until the control channel's clients are all gone (with
      * no control channel: the query channel's); a query channel whose

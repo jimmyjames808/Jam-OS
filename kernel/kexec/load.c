@@ -1,21 +1,17 @@
-/* kexec's two loads: the crash kernel at boot, from the boot modules, and
- * a reboot image from two VMOs (the kexec_load system call).
+/* kexec's two loads: the stored kernel at boot, from the boot modules,
+ * and its replacement from two VMOs (the kexec_load system call, which
+ * init makes when the files on /esp changed).
  *
- * The crash kernel is this boot's own kernel and bootfs: jamos.elf loaded
- * a second time by Limine as a module (the running image's .data and
- * .bss have changed since it started, so it is no source), and the bootfs
- * module, which nothing ever writes. Its command line:
- *   crash                  the mode (main.c): save the log, nothing else
- *   crashlog=<phys>        the crash record (jump.c)
- *   crash_reboot=<s>       this kernel's panic_reboot: what the crash
- *                          kernel does once the log is saved. Never
- *                          panic_reboot itself, so a panic in the crash
- *                          kernel halts on its screen
- *   test<name>             from crashtest=<name>: a boot-time crash test
- *                          in the crash kernel (tools/kdump-test.sh)
- * and the switches that work around hardware (nopcid, ...), which it
- * needs as much as this kernel did. */
-#include <stdarg.h>
+ * The stored kernel is this boot's own kernel and bootfs: jamos.elf loaded
+ * a second time by Limine as a module, or handed on as one by the kernel
+ * that kexec'd this one (the running image's .data and .bss have changed
+ * since it started, so it is no source), and the bootfs module, which
+ * nothing ever writes.
+ *
+ * Its command line (kexec_next_cmdline) is this boot's, keeping only the
+ * words that describe the machine and how the boot looks: whichever way it
+ * is started, after a reboot or after a panic in a test entry, it is a
+ * plain boot to the shell. */
 #include <jam/bootfs.h>
 #include <jam/cmdline.h>
 #include <jam/kprintf.h>
@@ -28,38 +24,89 @@
 #define KERNEL_FILE_MAX (64ull << 20)
 #define BOOTFS_FILE_MAX (256ull << 20)
 
-/* Boot words a crash kernel inherits: each turns off something the
- * hardware may not take (TESTING.md lists them). */
-static const char *const inherited[] = {
-    "nopcid", "forcepcid", "nodeadline", "noserialirq", "nooneshot", "nofpuopt",
-    "nokmcache", "nospinidle", "noplaceorder", "noaffinepair",
+/* Boot words the next kernel keeps: the hardware switches (TESTING.md
+ * lists them), which it needs as much as this one did, and the ones that
+ * choose how a plain boot looks. */
+static const char *const kept_words[] = {
+    "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
+    "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nokmcache", "nospinidle",
+    "noplaceorder", "noaffinepair",
 };
+/* ... and key=value words. */
+static const char *const kept_keys[] = { "crashkernel=", "idlespin=" };
 
-static size_t append(char *buf, size_t size, size_t at, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
-
-static size_t append(char *buf, size_t size, size_t at, const char *fmt, ...)
+static bool kept(const char *w, size_t n)
 {
-    if (at >= size)
-        return at;
-    va_list ap;
-    va_start(ap, fmt);
-    int n = kvsnprintf(buf + at, size - at, fmt, ap);
-    va_end(ap);
-    return n > 0 ? at + (size_t)n : at;
+    for (size_t i = 0; i < sizeof(kept_words) / sizeof(kept_words[0]); i++)
+        if (strlen(kept_words[i]) == n && !memcmp(w, kept_words[i], n))
+            return true;
+    for (size_t i = 0; i < sizeof(kept_keys) / sizeof(kept_keys[0]); i++) {
+        size_t kl = strlen(kept_keys[i]);
+        if (n > kl && !memcmp(w, kept_keys[i], kl))
+            return true;
+    }
+    return false;
 }
 
-static void crash_cmdline(char *buf, size_t size)
+/* s begins with prefix (s is read no further than its first mismatch). */
+static bool starts_with(const char *s, const char *prefix)
 {
-    uint64_t reboot_s = cmdline_get_u64("panic_reboot", 0, 0);
-    size_t at = append(buf, size, 0, "crash crashlog=%lu crash_reboot=%lu", kx_record_phys(),
-                       reboot_s > 3600 ? 3600 : reboot_s);
-    for (size_t i = 0; i < sizeof(inherited) / sizeof(inherited[0]); i++)
-        if (cmdline_has(inherited[i]))
-            at = append(buf, size, at, " %s", inherited[i]);
-    char test[CRASHTEST_MAX];
-    if (cmdline_get_str("crashtest", test, sizeof(test)))
-        at = append(buf, size, at, " test%s", test);
+    for (; *prefix; s++, prefix++)
+        if (*s != *prefix)
+            return false;
+    return true;
+}
+
+/* n bytes of w onto buf's string at `at`, as far as they fit (buf stays
+ * terminated); the new end. */
+static size_t append_bytes(char *buf, size_t size, size_t at, const char *w, size_t n)
+{
+    for (size_t i = 0; i < n && at + 1 < size; i++)
+        buf[at++] = w[i];
+    buf[at] = '\0';
+    return at;
+}
+
+/* ... after a space if buf has something already. A word that doesn't
+ * fit whole is left out. */
+static size_t append_word(char *buf, size_t size, size_t at, const char *w, size_t n)
+{
+    size_t need = (at ? 1 : 0) + n;
+    if (at + need + 1 > size)
+        return at;
+    if (at)
+        at = append_bytes(buf, size, at, " ", 1);
+    return append_bytes(buf, size, at, w, n);
+}
+
+void kexec_next_cmdline(const char *from, char *buf, size_t size)
+{
+    if (!size)
+        return;
+    buf[0] = '\0';
+    size_t at = 0;
+    for (const char *p = from; *p;) {
+        while (*p == ' ')
+            p++;
+        size_t n = 0;
+        while (p[n] && p[n] != ' ')
+            n++;
+        if (n && kept(p, n))
+            at = append_word(buf, size, at, p, n);
+        p += n;
+    }
+    for (const char *p = from; *p; p++) {
+        if ((p != from && p[-1] != ' ') || !starts_with(p, "crashtest="))
+            continue;
+        size_t n = 0;
+        while (p[10 + n] && p[10 + n] != ' ' && n < CRASHTEST_MAX)
+            n++;
+        char word[4 + CRASHTEST_MAX] = "test";
+        memcpy(word + 4, p + 10, n);
+        if (n)
+            at = append_word(buf, size, at, word, 4 + n);
+        break;
+    }
 }
 
 /* The boot module whose path ends in `suffix`, or NULL. */
@@ -75,10 +122,9 @@ static const struct boot_module *module(const char *suffix)
     return NULL;
 }
 
-/* Load under the lock; `done` is the state on success. A refused image
- * leaves the state as it was (kx_build writes nothing then): a crash
- * kernel stays armed. */
-static status_t load(const struct kx_image *im, int done)
+/* Load under the lock. A refused image leaves the state as it was
+ * (kx_build writes nothing then): what was stored stays armed. */
+static status_t load(const struct kx_image *im)
 {
     mutex_lock(&kx_lock);
     int s = __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE);
@@ -89,36 +135,35 @@ static status_t load(const struct kx_image *im, int done)
     status_t st = kx_build(im);
     /* Release: the panic path reads kx only once it sees ARMED. */
     if (st == OK)
-        __atomic_store_n(&kx_state, done, __ATOMIC_RELEASE);
+        __atomic_store_n(&kx_state, KX_ARMED, __ATOMIC_RELEASE);
     mutex_unlock(&kx_lock);
     return st;
 }
 
-void kexec_crash_load(void)
+void kexec_load_stored(void)
 {
     if (__atomic_load_n(&kx_state, __ATOMIC_ACQUIRE) != KX_EMPTY)
         return;
     kx_window_init();
     const struct boot_module *k = module(KEXEC_KERNEL_MODULE), *b = module(BOOTFS_MODULE);
     if (!k || !b) {
-        kprintf("kexec: no %s module (boot/limine.conf): no crash kernel\n",
+        kprintf("kexec: no %s module (boot/limine.conf): no stored kernel\n",
                 k ? BOOTFS_MODULE : KEXEC_KERNEL_MODULE);
         return;
     }
     static char cmd[KEXEC_CMDLINE];
-    crash_cmdline(cmd, sizeof(cmd));
+    kexec_next_cmdline(cmdline_get(), cmd, sizeof(cmd));
     struct kx_image im = {
         .kernel = phys_to_virt(k->phys), .kernel_size = k->size,
-        .bootfs = phys_to_virt(b->phys), .bootfs_size = b->size,
-        .crash = true, .cmdline = cmd,
+        .bootfs = phys_to_virt(b->phys), .bootfs_size = b->size, .cmdline = cmd,
     };
-    if (load(&im, KX_ARMED) == OK)
-        kprintf("kexec: crash kernel armed, command line \"%s\"\n", cmd);
+    if (load(&im) == OK)
+        kprintf("kexec: stored kernel armed, command line \"%s\"\n", cmd);
     else
-        kprintf("kexec: no crash kernel: a panic halts as before\n");
+        kprintf("kexec: no stored kernel: a panic halts on its screen\n");
 }
 
-bool kexec_crash_armed(void)
+bool kexec_armed(void)
 {
     return __atomic_load_n(&kx_state, __ATOMIC_ACQUIRE) == KX_ARMED;
 }
@@ -127,23 +172,25 @@ status_t kexec_load_image(struct vmo *kernel, struct vmo *bootfs, const char *cm
 {
     if (__atomic_load_n(&kx_state, __ATOMIC_ACQUIRE) == KX_OFF)
         return ERR_NOT_SUPPORTED;
-    if (!cmdline || !cmdline[0])
-        cmdline = cmdline_get();
-    if (strlen(cmdline) >= KEXEC_CMDLINE)
-        return ERR_INVALID_ARGS;
+    char next[KEXEC_CMDLINE];   /* the default: kexec_next_cmdline's */
     uint64_t ks = vmo_size(kernel), bs = vmo_size(bootfs);
     if (!ks || !bs || ks > KERNEL_FILE_MAX || bs > BOOTFS_FILE_MAX)
         return ERR_NO_RESOURCES;
+    if (cmdline && strlen(cmdline) >= KEXEC_CMDLINE)
+        return ERR_INVALID_ARGS;
     void *kp = NULL, *bp = NULL;
     status_t st = vmo_map_kernel(kernel, 0, ks, 0, &kp);
     if (st == OK)
         st = vmo_map_kernel(bootfs, 0, bs, 0, &bp);
     if (st == OK) {
+        if (!cmdline || !cmdline[0]) {
+            kexec_next_cmdline(cmdline_get(), next, sizeof(next));
+            cmdline = next;
+        }
         struct kx_image im = {
-            .kernel = kp, .kernel_size = ks, .bootfs = bp, .bootfs_size = bs,
-            .crash = false, .cmdline = cmdline,
+            .kernel = kp, .kernel_size = ks, .bootfs = bp, .bootfs_size = bs, .cmdline = cmdline,
         };
-        st = load(&im, KX_IMAGE);
+        st = load(&im);
     }
     if (bp)
         (void)vmo_unmap_kernel(bootfs, bp);   /* our own mapping: nothing to do if it failed */
