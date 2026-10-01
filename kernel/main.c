@@ -269,13 +269,14 @@ _Noreturn void kmain(struct boot_info *bi)
         kmain_print_memmap();
 
     pmm_early_init(bi);
+    apboot_reserve();   /* the AP trampoline's page, below 640 KiB, before anything else */
     vmm_init(bi);
     pmm_init();
     vmm_use_buddy();
     heap_init();
 
     /* Loader-reclaimable memory (Limine's stack, page tables, and the code
-     * the parked APs are spinning in) is freed once the APs have started
-     * (smp_start_aps). */
+     * the parked APs are spinning in until INIT resets them) is freed once
+     * every AP has started (smp_start_aps). */
     stack_switch_call(kstack_alloc(KERNEL_STACK_SZ), kmain_stage2, NULL);
 }
