@@ -239,7 +239,8 @@ without one, or while its cover is read.
   scales it down by area averaging in premultiplied alpha to 256 px
   (kept for 128 albums, the least recently drawn going first) and, for
   an album drawn bigger, to 512 px (kept for 2). art.c keeps each size
-  drawn, with rounded corners.
+  drawn, with rounded corners (since the review, at most 8 MiB of them:
+  [JAMJAR-REVIEW.md](JAMJAR-REVIEW.md), finding 1).
 
 **A spectrum analyser instead of the simmer.** The jam, its bubbles,
 seeds and splashes are gone; `bars.c` draws 64 bars across the width, log

@@ -131,7 +131,7 @@ Jam OS's files.
 | 18-22 | Not fixed: Low. |
 | 23 | Fixed in 517fe4a. No test (the commit says why). |
 | 24 | Fixed in 1b3b659. Test: ktest-all.txt runs `ktest` three times in one boot; it panicked at the second before. No other test failed its second or third run in QEMU at 4 and 8 CPUs. |
-| 25 | The tail: a53f19c (a sync every 250 ms, so a sudden stop loses at most that plus the write in flight; a panic's own text is never saved, that is the crash kernel's job). The burst: not fixed. The lines lost on the PC were in ktest console_klog_read_after_gap, which writes more than the kernel's 64 KiB ring holds at once, on purpose; no reader in user space can follow that. |
+| 25 | The tail: a53f19c (a sync every 250 ms, so a sudden stop loses at most that plus the write in flight; a panic's own text is never saved, that is the crash kernel's job; since M8.5's Revision 2 the next boot saves it). The burst: not fixed. The lines lost on the PC were in ktest console_klog_read_after_gap, which writes more than the kernel's 64 KiB ring holds at once, on purpose; no reader in user space can follow that. |
 | 26 | Not fixed. Read, not reproduced: a driver whose call to usb-bus timed out leaves its request queued there, charged to the driver's job until usb-bus reads it; devmgr checks the job the moment the driver exits. A later re-check of the job before it counts as a problem would cover it. |
 | 27 | Not fixed: reported. |
 | 28 | Fixed with the review's last commit: `seen` for both lines. The expectation was wrong, not the shell: two programs write those lines. |
