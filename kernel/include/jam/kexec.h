@@ -37,9 +37,12 @@
  * a bigger bootfs. ktest kexec_region_has_room says when it gets tight. */
 #define KEXEC_DEFAULT_MIB 32
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
-/* A panic this soon after a start that was itself a panic's halts on its
- * panic screen instead of jumping again (a crash loop). */
-#define KEXEC_LOOP_NS (30ull * 1000000000ull)
+/* A crash loop halts on its panic screen instead of jumping again: a
+ * panic this soon after a start that was itself a panic's, or the
+ * KEXEC_LOOP_PANICS-th panic in a row however far apart (boots that end
+ * by a reboot start the count again). */
+#define KEXEC_LOOP_NS     (30ull * 1000000000ull)
+#define KEXEC_LOOP_PANICS 3u
 
 struct vmo;
 
@@ -99,8 +102,10 @@ _Noreturn void kexec_halted_wait(void);
  * BSP's wait in kexec_halted_wait is bounded for the same reason. */
 _Noreturn void kexec_panic_failed(void);
 /* Is a panic now a crash loop? This boot started after a panic
- * (after_panic) and has run for uptime_ns. */
-bool kexec_crash_loop(bool after_panic, uint64_t uptime_ns);
+ * (after_panic), the panics in a row before it were panics_before (the
+ * previous record's count, 0 after a power-on or a reboot) and it has run
+ * for uptime_ns. */
+bool kexec_crash_loop(bool after_panic, uint32_t panics_before, uint64_t uptime_ns);
 
 /* The name of this boot's log file ("boot-0042": 1..31 of [A-Za-z0-9_-]),
  * kept for the next boot to name its copy of the log after

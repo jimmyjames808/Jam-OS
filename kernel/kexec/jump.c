@@ -101,9 +101,11 @@ status_t kexec_set_log_name(const char *name, size_t len)
     return OK;
 }
 
-bool kexec_crash_loop(bool after_panic, uint64_t uptime)
+bool kexec_crash_loop(bool after_panic, uint32_t panics_before, uint64_t uptime)
 {
-    return after_panic && uptime < KEXEC_LOOP_NS;
+    if (!after_panic)
+        return false;
+    return uptime < KEXEC_LOOP_NS || panics_before + 1 >= KEXEC_LOOP_PANICS;
 }
 
 static uint64_t uptime(void)
@@ -133,8 +135,10 @@ bool kexec_panic_begin(void)
     if (s != KX_ARMED)
         why_not = s == KX_LOADING ? "the stored kernel was being replaced"
                                   : "a reboot was starting the stored kernel";
-    else if (kexec_crash_loop(crashlog_after_panic(), uptime()))
-        why_not = "this boot started after a panic less than 30 s ago (a crash loop)";
+    else if (kexec_crash_loop(crashlog_after_panic(), crashlog_panics(), uptime()))
+        why_not = uptime() < KEXEC_LOOP_NS
+                      ? "this boot started after a panic less than 30 s ago (a crash loop)"
+                      : "the third panic in a row (a crash loop)";
     else if (!intact())
         why_not = "the stored kernel's checksum no longer matches (its memory was changed)";
     else if (!bsp_ready())

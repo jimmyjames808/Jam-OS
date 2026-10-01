@@ -957,7 +957,8 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
 - **The panic path** decides first, with no lock taken and nothing
   allocated: a stored kernel is armed, its checksum (read through the
   window's own page-table entries) matches, and this is not a crash loop
-  (a panic within 30 s of a start that was itself a panic's). Then the
+  (a panic within 30 s of a start that was itself a panic's, or the third
+  panic in a row however far apart). Then the
   panic's lines go to the log and the serial port but not the screen;
   the crash record is filled (a panic, the log ring's place and head,
   where the panic's lines start, its message, the boot's log name, the
