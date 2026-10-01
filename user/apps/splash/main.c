@@ -32,7 +32,7 @@
 #include "splash_int.h"
 
 #define HOLD_MAX   (30 * NS_PER_S)    /* a shell that never comes: give the screen back */
-#define LINGER     (2 * NS_PER_S)     /* the last frame stays at least this long after the end */
+#define LINGER     (500 * NS_PER_MS)  /* the last frame stays at least this long after the end */
 #define SOUND_WAIT (2 * NS_PER_S)     /* the first frame waits this long for the sound at most */
 #define SHOW_EVERY (100 * NS_PER_MS)  /* behind: a frame shown at least this often (media time) */
 #define HOLD_ALONE NS_PER_S           /* run from the shell: the last frame this long */
