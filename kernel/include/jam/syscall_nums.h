@@ -34,6 +34,7 @@
 #define SYS_vmo_set_size         54
 #define SYS_vmo_commit           55
 #define SYS_vmo_decommit         56
+#define SYS_vmo_make_exec        57
 #define SYS_vmar_map             60
 #define SYS_vmar_unmap           61
 #define SYS_vmar_protect         62

@@ -31,6 +31,20 @@ typedef uint32_t rights_t;
 #define RIGHT_INSPECT   (1u << 8)
 #define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
 #define RIGHT_SLICE     (1u << 10)  /* resources: make a smaller resource inside this one */
+/* Powers over the whole system, on the root resource (RES_ROOT) only: each
+ * call that needs one checks for it alone, so a program is given exactly
+ * the powers it uses (a slice never has them). */
+#define RIGHT_ROOT_KLOG    (1u << 11)  /* klog_open: read the kernel log */
+#define RIGHT_ROOT_SERIAL  (1u << 12)  /* serial_open: the serial port's input */
+#define RIGHT_ROOT_SYSINFO (1u << 13)  /* sys_info, cpu_stat, proc_list */
+#define RIGHT_ROOT_CLOCK   (1u << 14)  /* rtc_read: the real-time clock */
+#define RIGHT_ROOT_REBOOT  (1u << 15)  /* reboot, kexec_reboot */
+#define RIGHT_ROOT_KEXEC   (1u << 16)  /* kexec_load: replace the stored kernel */
+#define RIGHT_ROOT_DEBUG   (1u << 17)  /* debug_command: the kernel's tests and debug commands */
+#define RIGHT_ROOT_VMEX    (1u << 18)  /* vmo_make_exec: run code from a VMO a process made */
+#define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
+                     RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
+                     RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX)
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)

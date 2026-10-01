@@ -1,6 +1,7 @@
 /* VMO operations on handles (the system calls' sys_* layer). */
 #include <jam/handle.h>
 #include <jam/sys.h>
+#include <jam/sysinfo.h>
 #include <jam/vmo.h>
 
 #define VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP)
@@ -104,6 +105,37 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset, uin
     if (st != OK)
         return st;
     st = vmo_commit(v, offset, len);
+    vmo_put(v);
+    return st;
+}
+
+/* The handle is swapped for one that may execute and not write, then the
+ * VMO is checked: if this is its one handle and nothing maps or pins it,
+ * nothing can change it from now on (writing, mapping writable, resizing
+ * and decommitting all need RIGHT_WRITE). Checked after the swap, so a
+ * duplicate made meanwhile by another thread counts as a second handle
+ * (refused) instead of slipping past with RIGHT_WRITE. */
+status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
+{
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_VMEX);
+    if (st != OK)
+        return st;
+    struct vmo *v;
+    st = vmo_get(t, h, RIGHT_READ | RIGHT_MAP, &v);
+    if (st != OK)
+        return st;
+    struct khandle kh;
+    st = handle_remove(t, h, &kh);
+    if (st == OK) {
+        kh.rights = (kh.rights & ~RIGHT_WRITE) | RIGHT_EXEC;
+        st = handle_insert(t, &kh, out);
+        if (st != OK)
+            khandle_release(&kh);
+    }
+    if (st == OK && (kobject_handles(vmo_kobject(v)) != 1 || !vmo_unmapped_paged(v))) {
+        handle_close(t, *out);
+        st = ERR_BAD_STATE;
+    }
     vmo_put(v);
     return st;
 }

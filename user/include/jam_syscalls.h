@@ -42,6 +42,7 @@ status_t jam_vmo_get_size(handle_t h, uint64_t *size);
 status_t jam_vmo_set_size(handle_t h, uint64_t size);
 status_t jam_vmo_commit(handle_t h, uint64_t offset, uint64_t len);
 status_t jam_vmo_decommit(handle_t h, uint64_t offset, uint64_t len);
+status_t jam_vmo_make_exec(handle_t vmo, handle_t root, handle_t *out);
 status_t jam_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr);
 status_t jam_vmar_unmap(handle_t vmar, uint64_t addr, uint64_t len);
 status_t jam_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags);

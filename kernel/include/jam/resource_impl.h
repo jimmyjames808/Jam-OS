@@ -22,6 +22,9 @@ struct vmo;
 /* Rights a resource handle can carry; a derived resource's handle gets the
  * rights of the handle it was made from, masked to these. */
 #define RES_RIGHTS (RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP | RIGHT_SLICE | RIGHT_MANAGE)
+/* The root's handle (userboot gives it to init): a resource's rights and
+ * every power over the system (RIGHTS_ROOT, <jam/abi.h>). */
+#define ROOT_RIGHTS (RES_RIGHTS | RIGHTS_ROOT)
 #define DMA_CAP_RIGHTS RIGHTS_BASIC
 
 /* ---- resources ------------------------------------------------------------ */

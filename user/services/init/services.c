@@ -7,7 +7,7 @@
  *   bootfs    bin/bootfs: the boot image as a mount, with the server end of
  *             its `fs` channel (SR_USER + 0); init mounts the client end at
  *             /boot in its own namespace, the one the shell is given
- *   console   bin/console: root with READ | WRITE | MANAGE (klog, the screen,
+ *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
  *             console channel (SR_USER + 0) and a control channel of init's
  *             that answers only `reboot` (SR_USER + 8, ctl.c: Ctrl+Alt+Del
@@ -19,16 +19,17 @@
  *             but for its notices
  *   splash    bin/splash, once, on a plain boot (argv "splash" from the
  *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
- *             channel of init's (SR_USER + 0, <splash.h>) and a client end
- *             of the mixer's `audio` channel (SR_AUDIO). It plays the boot
+ *             channel of init's (SR_USER + 0, <splash.h>) and a namespace
+ *             with /svc/audio (shell.c's grants). It plays the boot
  *             animation while the rest start; the shell is started only
  *             once it has played (or ended), and it gives the screen back
  *             when the shell says it is ready (initctl.shell_ready)
- *   serialin  bin/serialin: root with READ (serial_open) and an `input`
+ *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels (SR_DEVMGR_CTL,
- *             SR_DEVMGR; init keeps a client end of each) and a copy of
+ *             SR_DEVMGR; init keeps a client end of each and publishes
+ *             them as /svc/devmgr and /svc/devmgr-ctl) and a copy of
  *             init's (ADMIN) console client end (SR_CONSOLE), so its HID
  *             drivers type into the console. init waits
  *             for its first binding pass (up to 30 s). "nousb" (the safe
@@ -38,35 +39,36 @@
  *             client end (SR_DEVMGR: it finds the hda driver), and the
  *             server ends of the `audio` and `audioctl` channels (SR_AUDIO,
  *             SR_AUDIO_CTL; abi/idl/audio.idl, audioctl.idl). init makes
- *             those two channels once and keeps their server ends, so a
+ *             those two channels once, publishes their client ends as
+ *             /svc/audio and /svc/audioctl and keeps their server ends, so a
  *             restarted mixer serves the same channels (calls made while
  *             it is down wait for it) and nobody needs new client ends;
  *             init closes them only if it gives up on the mixer. The mixer
  *             ends when devmgr does and is started again with the new one
  *   music     bin/music, the background music player, after the mixer: the
  *             server end of the `music` channel (SR_USER + 0;
- *             abi/idl/music.idl), a client end of the mixer's `audio`
- *             channel (SR_AUDIO) and init's namespace (SR_NS, followed
- *             like the shell's). init makes the `music` channel once and
- *             keeps both ends, as the mixer's, so a restarted player
- *             serves the same channel and the shell's end stays good
- *   logd      bin/logd, once /data is mounted: root with READ (the kernel
- *             log), a namespace holding only /data (SR_NS) and the server
+ *             abi/idl/music.idl) and a namespace of every mount
+ *             read-only and /svc/audio (SR_NS, followed like the
+ *             shell's). init makes the `music` channel once, keeps both
+ *             ends, as the mixer's, so a restarted player serves the same
+ *             channel, and publishes it as /svc/music (a channel per
+ *             opener)
+ *   logd      bin/logd, once /data is mounted: root with RIGHT_ROOT_KLOG
+ *             (the kernel log), a namespace holding only /data (SR_NS) and the server
  *             end of a `logctl` channel (SR_USER + 2; init keeps the client
- *             end and asks for a flush before a reboot). It saves each
+ *             end, publishes it as /svc/logd and asks for a flush before
+ *             a reboot). It saves each
  *             boot's log as /data/logs/boot-NNNN.txt. On the boot after a
  *             panic it also gets the panicked boot's log and a channel for
  *             its answer (lastboot.c), and saves that log first
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
- *             console.new_client; no connect_input), root with READ |
- *             MANAGE, RES_PCI with RIGHTS_BASIC (SR_USER + 1), devmgr's
- *             query and control client ends (SR_DEVMGR, SR_DEVMGR_CTL: it
- *             passes control only to its utest/usbtest commands), a
- *             channel from init (SR_USER + 2) on which init sends it each
- *             new devmgr's pair (INIT_SHELL_DEVMGR, <devmgr.h>), init's
- *             control channel (SR_USER + 3, ctl.c: kill, sync, reboot),
- *             init's namespace (SR_NS) and client ends of the mixer's
- *             channels (SR_AUDIO, SR_AUDIO_CTL) and of the music player's (SR_USER + 4).
+ *             console.new_client; no connect_input), root with SHELL_ROOT,
+ *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), a channel from
+ *             init (SR_USER + 2) and init's whole namespace as it is
+ *             (SR_NS, followed: every mount, /data's etc included, and
+ *             every service: devmgr's channels, init's control channel
+ *             /svc/init, made anew for each shell (ctl.c: kill, sync,
+ *             reboot, mount), the mixer's, the music player's, logd's).
  *             On the boot after a panic the first shell waits for logd's
  *             answer (lastboot.c) and finds its one line queued on the
  *             SR_USER + 2 channel (INIT_SHELL_NOTE) when it starts
@@ -83,7 +85,8 @@
  * hid). A new devmgr binds them again from scratch (the kernel's safe
  * rebind: a new dma_cap with Bus Master Enable off until usb-bus has
  * reset the controller; the dead one's DMA pages stay quarantined until
- * then), connected to the console. The shell gets the new devmgr channel.
+ * then), connected to the console. /svc/devmgr and /svc/devmgr-ctl name
+ * the new devmgr's channels, and the followers are told.
  * The mounts that came from the dead devmgr leave the namespace (the
  * shell's and logd's too) until the new one serves them again; logd then
  * carries on in the same file. */
@@ -93,6 +96,17 @@
 #include <os.h>
 #include <splash.h>
 #include "init.h"
+
+/* The root's powers each service gets (<jam/abi.h> RIGHT_ROOT_*; none can
+ * map or slice): the console reads the log, draws (WRITE: the screen and
+ * the serial port's output) and reboots on Ctrl+Alt+Del if init doesn't
+ * answer; serialin reads the serial port; logd the log; the shell the
+ * log, the system's figures, the clock, the kernel's debug commands, a
+ * reboot when init doesn't answer, and programs from /data (VMEX). Only
+ * init keeps RIGHT_ROOT_KEXEC. */
+#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_WRITE | RIGHT_ROOT_REBOOT)
+#define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
+                      RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
 
 static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
@@ -208,7 +222,7 @@ static status_t start_console(void)
     if (ctl_new(CTL_CONSOLE, port, KEY_CTL + CTL_CONSOLE, &ctl) != OK)
         ctl = HANDLE_INVALID;
     struct spawn_handle x[] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE) },
+        { SR_RESOURCE, root_with(RIGHTS_BASIC | CONSOLE_ROOT) },
         { SR_USER + 0, b },
         { SR_USER + 8, ctl },
     };
@@ -252,7 +266,7 @@ static status_t start_serialin(void)
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) }, { SR_USER + 0, src },
+        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_ROOT_SERIAL) }, { SR_USER + 0, src },
     };
     return svc_start1(SERIALIN, x, 2);
 }
@@ -335,7 +349,7 @@ static status_t start_logd(void)
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
         return st;
-    struct spawn_handle x[4] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ) },
+    struct spawn_handle x[4] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_ROOT_KLOG) },
                                  { SR_USER + 2, theirs } };
     unsigned nx = 2 + lastboot_logd_handles(&x[2]);   /* after a panic: its log first */
     st = svc_start1(LOGD, x, nx);
@@ -489,7 +503,7 @@ static status_t start_shell(void)
     }
     struct spawn_handle x[] = {
         { SR_CONSOLE, c },
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE) },
+        { SR_RESOURCE, root_with(RIGHTS_BASIC | SHELL_ROOT) },
         { SR_USER + 1, p2 },
         { SR_USER + 2, theirs },
     };

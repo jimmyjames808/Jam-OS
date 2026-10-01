@@ -2,14 +2,13 @@
  * from the kernel. The objects are in <jam/console_svc.h>; the rules every
  * sysc_* follows are in sysc.h.
  *
- * Rights, all on a RES_ROOT handle (init hands the console root with
- * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE, and the shell root with
- * RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE; neither can map or slice):
- *   klog_open         RIGHT_READ
+ * Rights, all on a RES_ROOT handle (sysinfo_check_root; init hands each
+ * service the root with only the ones it uses, none can map or slice):
+ *   klog_open         RIGHT_ROOT_KLOG
  *   framebuffer_take  RIGHT_WRITE
- *   debug_command     RIGHT_MANAGE
- *   reboot            RIGHT_MANAGE
- *   serial_open       RIGHT_READ
+ *   debug_command     RIGHT_ROOT_DEBUG
+ *   reboot            RIGHT_ROOT_REBOOT
+ *   serial_open       RIGHT_ROOT_SERIAL
  *   serial_write      RIGHT_WRITE
  * and on the objects: klog_read, klog_name and serial_read need RIGHT_READ.
  *
@@ -27,6 +26,7 @@
 #include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/syscall_impl.h>
+#include <jam/sysinfo.h>
 #include <jam/vmo.h>
 #include "sysc.h"
 
@@ -331,22 +331,10 @@ void screen_owner_drop(struct kobject *owner)
 
 /* ---- the system calls -------------------------------------------------------- */
 
-status_t sysc_get_root(struct handle_table *t, handle_t root, rights_t need)
-{
-    struct kobject *obj;
-    status_t st = handle_get(t, root, OBJ_RESOURCE, need, &obj, NULL);
-    if (st != OK)
-        return st;
-    if (resource_kind(obj) != RES_ROOT)
-        st = ERR_WRONG_TYPE;
-    kobject_unref(obj);
-    return st;
-}
-
 int64_t sysc_klog_open(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_READ);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_KLOG);
     if (st != OK)
         return st;
     struct kobject *r;
@@ -393,7 +381,7 @@ int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
 int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint64_t uowner)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
     if (st != OK)
         return st;
     struct fb_info info;
@@ -427,7 +415,7 @@ int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint
 int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_DEBUG);
     if (st != OK)
         return st;
     char cmd[64];
@@ -445,7 +433,7 @@ int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
 int64_t sysc_reboot(handle_t root)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_REBOOT);
     if (st != OK)
         return st;
     kprintf("reboot: asked by %s\n", process_name(process_current()));
@@ -455,7 +443,7 @@ int64_t sysc_reboot(handle_t root)
 int64_t sysc_serial_open(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_READ);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SERIAL);
     if (st != OK)
         return st;
     struct kobject *s;
@@ -492,7 +480,7 @@ int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
     if (st != OK)
         return st;
     if (len > SERIAL_IO_MAX)

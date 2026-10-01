@@ -14,10 +14,10 @@
  * the most CPU time ever). q or Esc quits.
  *
  * Authority: the figures are the kernel's sys_info, cpu_stat and
- * proc_list, which need RIGHT_READ on the root resource (SR_RESOURCE).
- * A program started with `run` has no such handle; the shell's `sysmon`
- * command starts this one with a read-only duplicate of its own. Without
- * it the program says so and ends.
+ * proc_list, which need RIGHT_ROOT_SYSINFO on the root resource
+ * (SR_RESOURCE): its list asks for that power (`right sysinfo`), and the
+ * shell's `sysmon` command hands it the same. Without it the program says
+ * so and ends.
  *
  * A reading every half second; the figures are what changed between two
  * readings (model.c). The whole frame is redrawn for each, and
@@ -76,8 +76,8 @@ static int monitor(int argc, char **argv)
     period = (period < 100 ? 100 : period > 5000 ? 5000 : period) * NS_PER_MS;
     status_t st = src.fake || src.root ? take(&src, &readings[0]) : ERR_BAD_HANDLE;
     if (st != OK) {
-        say("sysmon: the kernel's figures need the root resource with RIGHT_READ (%s).\n"
-            "sysmon: start it with the shell's `sysmon` command, which hands it one "
+        say("sysmon: the kernel's figures need the root resource with RIGHT_ROOT_SYSINFO "
+            "(%s).\nsysmon: start it from the shell, which hands it one "
             "(or `run sysmon fake=28` for a made-up machine)\n", status_str(st));
         return 1;
     }

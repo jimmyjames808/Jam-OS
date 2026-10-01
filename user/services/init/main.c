@@ -14,7 +14,7 @@
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
  * one after another, each as a real child process in a job of its own (a
  * child of init's job) with the root resource to read with (SR_RESOURCE:
- * RIGHT_READ only) and init's namespace as it is then (SR_NS: /boot, what
+ * TEST_ROOT's powers) and init's namespace as it is then (SR_NS: /boot, what
  * devmgr has mounted (mounts.c), and devmgr's query and control channels
  * as /svc/devmgr and /svc/devmgr-ctl); it waits for each to finish and reports how it
  * ended: the lines go into the kernel's RESULTS box. At the end it closes
@@ -26,6 +26,8 @@
 #include "init.h"
 
 #define MAX_WORDS     16
+/* The root's powers an init.cfg program gets (<jam/abi.h> RIGHT_ROOT_*). */
+#define TEST_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_VMEX)
 #define RUN_TIMEOUT_S 240   /* per program */
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
@@ -72,10 +74,12 @@ static bool run(int argc, char **argv)
         init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
-    /* The root resource to read with (the kernel log, the clock); devmgr's
-     * channels are in our namespace (/svc), which it gets whole. */
+    /* The root resource to read with (the kernel log, the system's
+     * figures, the clock) and to make a VMO executable (utest's tests of
+     * that); devmgr's channels are in our namespace (/svc), which it gets
+     * whole. */
     struct spawn_handle x[1] = { { SR_RESOURCE, HANDLE_INVALID } };
-    st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | RIGHT_READ, &x[0].h);
+    st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | TEST_ROOT, &x[0].h);
     if (st != OK) {
         init_say("init: %s: no handles for it (%s)", argv[0], status_str(st));
         jam_handle_close(job);

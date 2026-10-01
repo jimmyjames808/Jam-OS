@@ -1,6 +1,7 @@
-/* System calls 140-141: kexec (<jam/kexec.h>). Both need RIGHT_MANAGE on
- * a RES_ROOT handle, the right reboot needs: starting another kernel is
- * at least that much authority. kexec_load also needs RIGHT_READ on its two
+/* System calls 140-141: kexec (<jam/kexec.h>). kexec_load needs
+ * RIGHT_ROOT_KEXEC on a RES_ROOT handle (it replaces the kernel the next
+ * reboot or panic starts: init alone holds it), kexec_reboot
+ * RIGHT_ROOT_REBOOT, as reboot does. kexec_load also needs RIGHT_READ on its two
  * VMOs, which it reads whole (the kernel maps them read-only while it
  * copies). The rules every sysc_* follows are in sysc.h. */
 #include <jam/kexec.h>
@@ -8,6 +9,7 @@
 #include <jam/kprintf.h>
 #include <jam/process.h>
 #include <jam/syscall_impl.h>
+#include <jam/sysinfo.h>
 #include <jam/vmo.h>
 #include "sysc.h"
 
@@ -24,7 +26,7 @@ int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_
                         uint64_t len, uint32_t flags)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_KEXEC);
     if (st != OK)
         return st;
     char cmd[KEXEC_CMDLINE];
@@ -50,7 +52,7 @@ int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_
 int64_t sysc_kexec_reboot(handle_t root)
 {
     SYSC_TABLE(t);
-    status_t st = sysc_get_root(t, root, RIGHT_MANAGE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_REBOOT);
     if (st != OK)
         return st;
     kprintf("kexec: kexec_reboot from %s\n", process_name(process_current()));

@@ -718,6 +718,14 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
     return st;
 }
 
+bool vmo_unmapped_paged(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    bool ok = v->kind == VMO_PAGED && list_empty(&v->umaps) && list_empty(&v->ranges);
+    vunlock(v, f);
+    return ok;
+}
+
 /* ---- user mappings (reverse map, see aspace_vmo.h) ------------------------ */
 
 status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)

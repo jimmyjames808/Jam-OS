@@ -3,13 +3,13 @@
  * borrows from the console, until q.
  *
  * The figures come from sys_info, cpu_stat and proc_list, which need
- * RIGHT_READ on the root resource. A program `run` starts has no such
- * handle, so this command starts bin/sysmon itself and gives it one: a
- * duplicate of the shell's root with RIGHT_READ only (no RIGHT_MANAGE:
- * no debug commands, no reboot), which arrives without RIGHT_DUPLICATE
- * and RIGHT_TRANSFER, so the program can't pass it on. Like any program
- * it gets a PROGRAM-level console channel and a job of its own, which is
- * killed when it ends or on Ctrl+C. */
+ * RIGHT_ROOT_SYSINFO on the root resource. This command starts bin/sysmon
+ * itself and gives it a duplicate of the shell's root with that power
+ * only (no debug commands, no reboot), which arrives without
+ * RIGHT_DUPLICATE and RIGHT_TRANSFER, so the program can't pass it on;
+ * `run sysmon` gives the same through its list (<wants.h>). Like any
+ * program it gets a PROGRAM-level console channel and a job of its own,
+ * which is killed when it ends or on Ctrl+C. */
 #include <idl/console.h>
 #include "sh.h"
 
@@ -23,7 +23,7 @@ static status_t sysmon_handles(struct spawn_handle x[2])
     status_t st = console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &con);
     if (st != OK)
         return st;
-    st = jam_handle_duplicate(sh_root(), RIGHTS_BASIC | RIGHT_READ, &res);
+    st = jam_handle_duplicate(sh_root(), RIGHTS_BASIC | RIGHT_ROOT_SYSINFO, &res);
     if (st != OK) {
         jam_handle_close(con);
         return st;
@@ -52,7 +52,7 @@ SH_CMD(sysmon)
 {
     /* What the child's copies keep: the console channel as it is, the
      * resource readable but neither duplicable nor transferable. */
-    static const rights_t rights[2] = { RIGHT_SAME, RIGHT_READ | RIGHT_WAIT | RIGHT_INSPECT };
+    static const rights_t rights[2] = { RIGHT_SAME, RIGHT_ROOT_SYSINFO | RIGHT_WAIT | RIGHT_INSPECT };
     struct spawn_handle x[2];
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);

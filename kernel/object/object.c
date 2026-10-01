@@ -134,6 +134,11 @@ void kobject_handle_gain(struct kobject *obj)
     __atomic_add_fetch(&obj->handles, 1, __ATOMIC_RELAXED);
 }
 
+uint32_t kobject_handles(struct kobject *obj)
+{
+    return __atomic_load_n(&obj->handles, __ATOMIC_ACQUIRE);
+}
+
 void kobject_handle_drop(struct kobject *obj)
 {
     uint32_t left = __atomic_sub_fetch(&obj->handles, 1, __ATOMIC_ACQ_REL);

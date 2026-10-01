@@ -347,7 +347,7 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *const *w
     struct kobject *res = resource_root();
     if (res) {
         extra[nextra].role = SR_RESOURCE;
-        extra[nextra++].kh = khandle_from_new(res, RES_RIGHTS);
+        extra[nextra++].kh = khandle_from_new(res, ROOT_RIGHTS);
     }
     /* A boot after a panic: the panicked kernel's log, to save
      * (kexec/crashlog.c). The first init run gets it. */

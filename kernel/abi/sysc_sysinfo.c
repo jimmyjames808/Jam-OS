@@ -1,7 +1,10 @@
 /* System calls 130-133: read-only system information for the shell's
- * uname / free / lscpu / top / ps / date. Each needs RIGHT_READ on a
- * RES_ROOT handle (sysinfo_check_root); none changes anything. The
- * structs are in <jam/abi.h>; the rules every sysc_* follows are in sysc.h. */
+ * uname / free / lscpu / top / ps / date. Each needs a power on a RES_ROOT
+ * handle (sysinfo_check_root): RIGHT_ROOT_SYSINFO for sys_info, cpu_stat
+ * and proc_list, RIGHT_ROOT_CLOCK for rtc_read; none changes anything.
+ * sysinfo_check_root is also every other root call's check (kernel/abi/
+ * sysc_console.c, sysc_kexec.c, vmo_sys.c). The structs are in
+ * <jam/abi.h>; the rules every sysc_* follows are in sysc.h. */
 #include <jam/cpu.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
@@ -19,10 +22,10 @@
 
 extern const char jamos_version[];   /* kernel/main.c */
 
-status_t sysinfo_check_root(struct handle_table *t, handle_t root)
+status_t sysinfo_check_root(struct handle_table *t, handle_t root, rights_t need)
 {
     struct kobject *obj;
-    status_t st = handle_get(t, root, OBJ_RESOURCE, RIGHT_READ, &obj, NULL);
+    status_t st = handle_get(t, root, OBJ_RESOURCE, need, &obj, NULL);
     if (st != OK)
         return st;
     if (resource_kind(obj) != RES_ROOT)
@@ -83,7 +86,7 @@ void sysinfo_cpu(uint32_t i, struct cpu_stat *s)
 int64_t sysc_sys_info(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SYSINFO);
     if (st != OK)
         return st;
     struct sys_info s;
@@ -94,7 +97,7 @@ int64_t sysc_sys_info(handle_t root, uint64_t out)
 int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SYSINFO);
     if (st != OK)
         return st;
     uint32_t n = 0;
@@ -110,7 +113,7 @@ int64_t sysc_cpu_stat(handle_t root, uint32_t first, uint64_t out, uint32_t cap)
 int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SYSINFO);
     if (st != OK)
         return st;
     if (cap > PROC_LIST_MAX)
@@ -133,7 +136,7 @@ int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap)
 int64_t sysc_rtc_read(handle_t root, uint64_t out)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_CLOCK);
     if (st != OK)
         return st;
     struct rtc_time r;

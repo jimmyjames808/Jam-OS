@@ -269,6 +269,14 @@ jam_vmo_decommit:
     ret
     .size jam_vmo_decommit, . - jam_vmo_decommit
 
+    .globl jam_vmo_make_exec
+    .type jam_vmo_make_exec, @function
+jam_vmo_make_exec:
+    mov $SYS_vmo_make_exec, %eax
+    syscall
+    ret
+    .size jam_vmo_make_exec, . - jam_vmo_make_exec
+
     .globl jam_vmar_map
     .type jam_vmar_map, @function
 jam_vmar_map:

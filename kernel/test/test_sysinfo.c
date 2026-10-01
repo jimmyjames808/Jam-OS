@@ -11,6 +11,7 @@
 #include <jam/percpu.h>
 #include <jam/process.h>
 #include <jam/resource.h>
+#include <jam/resource_impl.h>
 #include <jam/rtc.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -27,29 +28,58 @@ static handle_t put_handle(struct handle_table *t, struct kobject *obj, rights_t
     return h;
 }
 
-/* Every call of the block needs RIGHT_READ on a RES_ROOT. */
+/* Every call of the block needs its power on a RES_ROOT: the system
+ * figures RIGHT_ROOT_SYSINFO, the clock RIGHT_ROOT_CLOCK. */
 KTEST(sysinfo_rights)
 {
     struct handle_table t;
     handle_table_init(&t);
     struct kobject *root = resource_root();
     kobject_ref(root);
-    handle_t rd = put_handle(&t, root, RIGHTS_BASIC | RIGHT_READ);
-    handle_t nord = put_handle(&t, root, RIGHTS_BASIC | RIGHT_MANAGE);
+    handle_t rd = put_handle(&t, root, RIGHTS_BASIC | RIGHT_ROOT_SYSINFO);
+    handle_t nord = put_handle(&t, root, RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE);
     struct kobject *pci;
     KT_EQ(resource_create(root, RES_PCI, 0, 0, &pci), OK);
-    handle_t pcih = put_handle(&t, pci, RIGHTS_BASIC | RIGHT_READ);
+    handle_t pcih = put_handle(&t, pci, RIGHTS_BASIC | RIGHT_ROOT_SYSINFO);
     struct event *ev;
     KT_EQ(event_create(&ev), OK);
-    handle_t evh = put_handle(&t, &ev->base, RIGHTS_BASIC | RIGHT_READ);
+    handle_t evh = put_handle(&t, &ev->base, RIGHTS_BASIC | RIGHT_ROOT_SYSINFO);
 
-    KT_EQ(sysinfo_check_root(&t, rd), OK);
-    KT_EQ(sysinfo_check_root(&t, nord), ERR_ACCESS_DENIED);
-    KT_EQ(sysinfo_check_root(&t, pcih), ERR_WRONG_TYPE);
-    KT_EQ(sysinfo_check_root(&t, evh), ERR_WRONG_TYPE);
-    KT_EQ(sysinfo_check_root(&t, HANDLE_INVALID), ERR_BAD_HANDLE);
+    KT_EQ(sysinfo_check_root(&t, rd, RIGHT_ROOT_SYSINFO), OK);
+    KT_EQ(sysinfo_check_root(&t, rd, RIGHT_ROOT_CLOCK), ERR_ACCESS_DENIED);
+    KT_EQ(sysinfo_check_root(&t, nord, RIGHT_ROOT_SYSINFO), ERR_ACCESS_DENIED);   /* READ isn't it */
+    KT_EQ(sysinfo_check_root(&t, pcih, RIGHT_ROOT_SYSINFO), ERR_WRONG_TYPE);
+    KT_EQ(sysinfo_check_root(&t, evh, RIGHT_ROOT_SYSINFO), ERR_WRONG_TYPE);
+    KT_EQ(sysinfo_check_root(&t, HANDLE_INVALID, RIGHT_ROOT_SYSINFO), ERR_BAD_HANDLE);
     handle_close(&t, rd);
-    KT_EQ(sysinfo_check_root(&t, rd), ERR_BAD_HANDLE);
+    KT_EQ(sysinfo_check_root(&t, rd, RIGHT_ROOT_SYSINFO), ERR_BAD_HANDLE);
+    handle_table_destroy(&t);
+}
+
+/* Each power on the root is a right of its own: a handle with any set of
+ * the others, READ, WRITE and MANAGE included, is refused the one it lacks;
+ * a slice of the root never carries them. */
+KTEST(sysinfo_root_powers_apart)
+{
+    static const rights_t powers[] = { RIGHT_ROOT_KLOG, RIGHT_ROOT_SERIAL, RIGHT_ROOT_SYSINFO,
+                                       RIGHT_ROOT_CLOCK, RIGHT_ROOT_REBOOT, RIGHT_ROOT_KEXEC,
+                                       RIGHT_ROOT_DEBUG, RIGHT_ROOT_VMEX };
+    struct handle_table t;
+    handle_table_init(&t);
+    struct kobject *root = resource_root();
+    KT_EQ(RIGHTS_ROOT & (RES_RIGHTS | RIGHT_SAME), 0);
+    for (unsigned i = 0; i < sizeof(powers) / sizeof(powers[0]); i++) {
+        rights_t others = (ROOT_RIGHTS & ~powers[i]);
+        kobject_ref(root);
+        handle_t without = put_handle(&t, root, others);
+        kobject_ref(root);
+        handle_t with = put_handle(&t, root, RIGHTS_BASIC | powers[i]);
+        KT_EQ(sysinfo_check_root(&t, without, powers[i]), ERR_ACCESS_DENIED);
+        KT_EQ(sysinfo_check_root(&t, with, powers[i]), OK);
+        handle_close(&t, without);
+        handle_close(&t, with);
+    }
+    kobject_unref(root);
     handle_table_destroy(&t);
 }
 

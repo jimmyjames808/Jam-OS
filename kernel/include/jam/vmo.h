@@ -67,6 +67,10 @@ status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len);
 /* Commits pages as needed. */
 status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len);
 uint64_t vmo_size(struct vmo *v);
+/* v is a paged VMO that nothing maps (in any address space or the kernel)
+ * and nothing pins: with no handle that may write it, its bytes can't
+ * change (vmo_make_exec). */
+bool     vmo_unmapped_paged(struct vmo *v);
 /* Bytes of memory the VMO owns right now (committed pages). */
 uint64_t vmo_committed(struct vmo *v);
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the

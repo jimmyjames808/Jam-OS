@@ -192,8 +192,10 @@ static bool t_rights(void)
 /* kexec_load, kexec_reboot and klog_name refuse what they must (the rights
  * on the root resource only where we were given one: init's run gives it,
  * and the shell gives it for the list's `right klog`, without
- * RIGHT_TRANSFER). Nothing here loads an image or names the log: either
- * would change this boot (the stored kernel replaced, the crash log's name). */
+ * RIGHT_TRANSFER). Nobody gives us RIGHT_ROOT_KEXEC (init alone holds it),
+ * so its argument checks run only where a starter does. Nothing here loads
+ * an image or names the log: either would change this boot (the stored
+ * kernel replaced, the crash log's name). */
 static bool t_kexec_refusals(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), v, rd, mapo, klog, m;
@@ -205,9 +207,9 @@ static bool t_kexec_refusals(void)
         CHECK_ST(jam_handle_close(v), OK);
         return true;
     }
-    CHECK_ST(jam_handle_duplicate(root, RIGHT_WAIT | RIGHT_INSPECT | RIGHT_READ, &rd), OK);
-    CHECK_ST(jam_kexec_load(rd, v, v, NULL, 0, 0), ERR_ACCESS_DENIED);   /* no MANAGE */
-    CHECK_ST(jam_kexec_reboot(rd), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_duplicate(root, RIGHT_WAIT | RIGHT_INSPECT | RIGHT_ROOT_KLOG, &rd), OK);
+    CHECK_ST(jam_kexec_load(rd, v, v, NULL, 0, 0), ERR_ACCESS_DENIED);   /* no KEXEC */
+    CHECK_ST(jam_kexec_reboot(rd), ERR_ACCESS_DENIED);                  /* no REBOOT */
 
     CHECK_ST(jam_klog_open(rd, &klog), OK);
     CHECK_ST(jam_klog_name(v, "boot-0001", 9), ERR_WRONG_TYPE);
@@ -218,10 +220,8 @@ static bool t_kexec_refusals(void)
     CHECK_ST(jam_handle_close(klog), OK);
     CHECK_ST(jam_handle_close(rd), OK);
 
-    /* With the root's RIGHT_MANAGE, the arguments too. Neither init's run
-     * (READ only) nor the shell (no root) gives utest that today, so this
-     * part waits for a starter that does. */
-    if (jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_MANAGE, &m) == OK) {
+    /* With the root's RIGHT_ROOT_KEXEC, the arguments too. */
+    if (jam_handle_duplicate(root, RIGHT_WAIT | RIGHT_ROOT_KEXEC, &m) == OK) {
         CHECK_ST(jam_handle_duplicate(v, RIGHTS_BASIC | RIGHT_MAP, &mapo), OK);
         CHECK_ST(jam_kexec_load(m, v, v, NULL, 0, 1), ERR_INVALID_ARGS);            /* flags */
         CHECK_ST(jam_kexec_load(m, v, m, NULL, 0, 0), ERR_WRONG_TYPE);              /* bootfs */
@@ -557,6 +557,8 @@ static const struct {
     { "basics", t_basics },
     { "rights", t_rights },
     { "kexec_refusals", t_kexec_refusals },
+    { "root_powers", t_root_powers },
+    { "vmo_make_exec", t_vmo_make_exec },
     { "bad_pointers", t_bad_pointers },
     { "startup_message", t_startup_message },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },

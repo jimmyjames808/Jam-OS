@@ -99,6 +99,14 @@ int64_t sysc_vmo_commit(handle_t h, uint64_t offset, uint64_t len)
     return sys_vmo_commit(t, h, offset, len);
 }
 
+int64_t sysc_vmo_make_exec(handle_t h, handle_t root, uint64_t out)
+{
+    SYSC_TABLE(t);
+    handle_t nh;
+    status_t st = sys_vmo_make_exec(t, h, root, &nh);
+    return st == OK ? sysc_put_handle(t, out, nh) : st;
+}
+
 int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
 {
     SYSC_TABLE(t);

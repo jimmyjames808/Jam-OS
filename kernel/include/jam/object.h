@@ -96,6 +96,8 @@ bool kobject_tryref(struct kobject *obj);
 /* Handle-count bookkeeping, used by the handle layer (handle.c). */
 void kobject_handle_gain(struct kobject *obj);
 void kobject_handle_drop(struct kobject *obj);   /* may run on_zero_handles */
+/* How many handles there are to obj now (in tables or in transit). */
+uint32_t kobject_handles(struct kobject *obj);
 
 /* signals = (signals & ~clear) | set, then notify observers if changed. */
 void kobject_signal(struct kobject *obj, signals_t clear, signals_t set);
