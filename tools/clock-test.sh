@@ -5,7 +5,7 @@
 #           the default), /data/etc/settings made with the defaults, a
 #           file written, `vol master`, `music vol` and `date -z` kept in
 #           the settings, then `reboot` by kexec: the next kernel's init
-#           sets the clock in Perth's time, the volumes come back
+#           reads the RTC as Perth's local time, the volumes come back
 #   boot 2  clock-2.txt: after `rtc = utc` is put into the settings from
 #           this side, the clock reads the RTC as UTC
 # Then, with mtools, as the Mac sees the stick: the file boot 1 wrote is

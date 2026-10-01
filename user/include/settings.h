@@ -12,7 +12,8 @@
  *   timezone       the zone times are shown in (<wallclock.h>), default
  *                  Australia/Sydney; init sets the clock with it
  *   rtc            what the PC's real-time clock keeps: local (the zone's
- *                  time, as Windows sets it; the default) or utc
+ *                  time, as Windows sets it; the default), utc, or a
+ *                  zone's name (Windows set to another zone than ours)
  *   volume         the mixer's master volume, dB (0 the most)
  *   music.folder   what `music start` plays with no folder given
  *   music.volume   the music player's volume, dB

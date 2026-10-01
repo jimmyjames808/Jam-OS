@@ -7,8 +7,10 @@
  * (`rtc = local`, the default: Windows sets it so on a PC that runs both)
  * or UTC (`rtc = utc`), and the zone is `timezone` (default
  * Australia/Sydney), which the kernel also hands every program that asks
- * the time (<wallclock.h>). Before /data is there (the first time) the
- * defaults are used.
+ * the time (<wallclock.h>). `rtc` may also name a zone (`rtc =
+ * Australia/Sydney`): the RTC keeps that zone's time, whatever zone times
+ * are shown in. Before /data is there (the first time) the defaults are
+ * used.
  *
  * The volumes: `volume` to the mixer's master and `music.volume` to the
  * music player, each when it starts (again) and when /data comes, with a
@@ -36,7 +38,7 @@ static const char template_text[] =
     "#   Australia/Perth, Pacific/Auckland, Europe/London, UTC, UTC+05:30, ...)\n"
     "timezone = " TZ_DEFAULT "\n"
     "# rtc: what the PC's real-time clock keeps: local (the zone's time, as Windows\n"
-    "#   sets it) or utc (as Linux and macOS do)\n"
+    "#   sets it), utc (as Linux and macOS do), or a zone (Windows set to another one)\n"
     "rtc = local\n"
     "# volume: the master volume in dB (0 is the most, -96 silence); music.volume:\n"
     "#   the music player's; music.folder: what `music start` plays without a folder\n";
@@ -60,9 +62,13 @@ void settings_clock(void)
                zone_name, TZ_DEFAULT);
         tz_parse(TZ_DEFAULT, &zone);
     }
-    bool rtc_utc = !strcmp(rtc, "utc") || !strcmp(rtc, "UTC");
-    if (!rtc_utc && strcmp(rtc, "local"))
-        printf("init: settings: rtc = %s is neither local nor utc: local\n", rtc);
+    /* The zone the RTC keeps: the system's (local), UTC, or one named. */
+    struct tz rtc_zone = zone;
+    if (!strcmp(rtc, "utc") || !strcmp(rtc, "UTC"))
+        tz_parse("UTC", &rtc_zone);
+    else if (strcmp(rtc, "local") && !tz_parse(rtc, &rtc_zone))
+        printf("init: settings: rtc = %s is not local, utc or a zone: local\n", rtc);
+    bool rtc_utc = rtc_zone.std_min == 0 && rtc_zone.dst_min == 0;
     struct rtc_time r;
     status_t st = jam_rtc_read(shell_root(), &r);
     if (st != OK) {
@@ -73,13 +79,14 @@ void settings_clock(void)
     int64_t s = civil_days(r.year, r.month, r.day) * 86400 + r.hour * 3600 + r.minute * 60 +
                 r.second;
     struct wall_clock w = { 0 };
-    w.utc_ns = (rtc_utc ? s : tz_local_to_utc(&zone, s)) * NS_PER_S;
+    w.utc_ns = tz_local_to_utc(&rtc_zone, s) * NS_PER_S;
     w.uptime_ns = r.uptime_ns;
     snprintf(w.zone, sizeof(w.zone), "%s", zone.name);
     st = jam_wallclock_set(shell_root(), &w);
     char when[48];
     time_format_iso(w.utc_ns / NS_PER_S, &zone, when, sizeof(when));
-    printf("init: the clock: %s (the RTC keeps %s time)%s%s\n", when, rtc_utc ? "UTC" : "local",
+    printf("init: the clock: %s (the RTC keeps %s time)%s%s\n", when,
+           rtc_utc ? "UTC" : strcmp(rtc_zone.name, zone.name) ? rtc_zone.name : "local",
            st == OK ? "" : ": not set, ", st == OK ? "" : status_str(st));
 }
 

@@ -934,7 +934,9 @@ capped at 8 MiB.
   RTC can't say which. init sets it (`wallclock_set`, RIGHT_MANAGE on the
   root resource) at the start of shell mode and again whenever `/data`
   comes: it reads the RTC (`rtc_read`), takes it as the setting `rtc`
-  says (`local`, the default, or `utc`), and gives the kernel the time
+  says (`local`, the default; `utc`; or a zone's name: the RTC keeps
+  that zone's time, e.g. Windows set to another zone than the one Jam OS
+  shows), and gives the kernel the time
   zone too, a name. Any program reads the time without a handle
   (`wallclock_get`): it is the uptime plus an offset.
 - **Time zones are libos's** (`<wallclock.h>`): the calendar, a small

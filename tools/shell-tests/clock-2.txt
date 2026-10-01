@@ -4,6 +4,7 @@
 wait 120 Jam OS shell
 wait jam>
 seen 60 init: the clock: 2026-01-15 09:0
+seen 60 AWST (the RTC keeps UTC time)
 send date
 wait Thu 15 Jan 2026 09:0
 wait AWST (UTC+08:00)

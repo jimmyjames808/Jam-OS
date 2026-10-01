@@ -14,13 +14,13 @@ static int show_raw(void)
         sh_tty("date: the real-time clock: %s\n", status_str(st));
         return 1;
     }
-    char rtc[16] = "local";
+    char rtc[SETTINGS_VALUE_MAX] = "local";
     (void)settings_get(SETTINGS_FILE, "rtc", rtc, sizeof(rtc));   /* none: the default */
     sh_say("RTC %04u-%02u-%02u %02u:%02u:%02u (register B %#x: %s, %s), read as %s time "
            "(the setting rtc = %s in " SETTINGS_FILE ")\n",
            r.year, r.month, r.day, r.hour, r.minute, r.second, r.status_b,
            r.status_b & 4 ? "binary" : "BCD", r.status_b & 2 ? "24-hour" : "12-hour",
-           strcmp(rtc, "utc") ? "local" : "UTC", rtc);
+           !strcmp(rtc, "utc") || !strcmp(rtc, "UTC") ? "UTC" : rtc, rtc);
     struct wall_clock w;
     st = jam_wallclock_get(&w);
     w.zone[sizeof(w.zone) - 1] = '\0';
