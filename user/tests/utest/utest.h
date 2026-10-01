@@ -42,6 +42,11 @@ bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
 
+/* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
+bool t_audio_formats(void);
+bool t_audio_resample(void);
+bool t_wav_parse(void);
+
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
 handle_t own_job(void);

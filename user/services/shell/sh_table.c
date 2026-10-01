@@ -50,6 +50,11 @@ static const struct sh_cmd cmds[] = {
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
       "  at a quarter of full scale with 5 ms fades, through drv/hda at `hda gain`.\n"
       "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
+    C(play, C_SYSTEM, "play [-v dB] <file.wav>",
+      "play a WAV file in the headphones (e.g. play /data/song.wav), at `hda gain`.\n"
+      "  PCM WAV: 8-, 16-, 24- or 32-bit, mono or stereo, 8000-192000 Hz (resampled to\n"
+      "  48 kHz). -v -20: 20 dB down for this file only. Ctrl+C stops it. On a Mac:\n"
+      "  afconvert -f WAVE -d LEI16@48000 song.m4a song.wav, then copy it to the stick"),
     C(vol, C_SYSTEM, "vol [<id>|master <dB>]",
       "the mixer's volumes: alone, the master and every stream playing (id, volume,\n"
       "  state, underruns, name); vol 3 -6: stream 3 at -6 dB; vol master -10: all of\n"
