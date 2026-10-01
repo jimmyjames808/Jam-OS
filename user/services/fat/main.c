@@ -20,6 +20,7 @@
  * disk went away); 1 when the volume can't be served but might be later
  * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
  * partition holds no FAT volume fat can serve and nothing was formatted. */
+#include <fsview.h>
 #include <idl/fsctl.h>
 #include "fat.h"
 
@@ -162,10 +163,12 @@ static status_t run(handle_t serve, handle_t ctl)
             vol.disk_gone = true;
         } else if (pkt.key & FAT_KEY_FILE_BIT) {
             files_event(pkt.key);
+        } else if (pkt.key & FAT_KEY_VIEW_BIT) {
+            views_event(pkt.key);
         } else if (pkt.key == FAT_KEY_FS) {
             for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++) {
                 files_reap();
-                st = fs_serve_one(serve, &fat_fs_ops, NULL);
+                st = fs_view_serve_one(serve, 0, &fat_fs_ops, NULL, views_add, NULL);
             }
             if (st == ERR_PEER_CLOSED)
                 return OK;

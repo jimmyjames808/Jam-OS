@@ -118,6 +118,11 @@ bool t_music_stereo(void);
 /* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);
+
+/* views.c: views of a filesystem. */
+bool t_view_etc_names(void);
+bool t_fat_views(void);
+bool t_fat_view_limits(void);
 #define NS_HELLO "hello from utest\n"   /* what the children expect in <mount>/hello */
 /* text into a new file at path. */
 status_t ns_put(const char *path, const char *text);
