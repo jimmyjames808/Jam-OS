@@ -60,8 +60,15 @@ void     draw_frame(const plm_frame_t *f, const struct video_layout *l);
 
 /* ---- sound.c ---------------------------------------------------------------------- */
 
-/* Media time 0 is now (the first frame is about to be shown). */
-void     clock_start(void);
+/* Media time 0 is now. with_sound: the sound's stream is open and starts
+ * at 0 too: the clock holds at 0 until it is heard (half a second at most). */
+void     clock_start(bool with_sound);
+/* The sound's stream: SOUND_PENDING (being decoded or opened),
+ * SOUND_READY (open, waiting for the clock), SOUND_NONE (no sound). */
+enum { SOUND_PENDING, SOUND_READY, SOUND_NONE };
+int      sound_state(void);
+/* frames from..from + 25 ms of pcm faded in (a raised cosine). */
+void     sound_fade_in(int16_t *pcm, size_t frames, size_t from);
 /* Media time now, ns: the sound's position while it plays, else the timer. */
 uint64_t clock_now(void);
 /* Play the file's sound on a thread of its own through the mixer channel

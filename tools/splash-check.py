@@ -4,12 +4,13 @@ boot splash's own file (boot/splash.mpg, decoded here with ffmpeg).
 
     splash-check.py quiet <png>             the whole screen is #1E1A1D
     splash-check.py frames <png> <png>      two screenshots of the animation,
-                                            a known time apart: each matches
-                                            a frame of the video (at the
-                                            integer scale that fits, centred,
-                                            the rest #1E1A1D), in order
-    splash-check.py frame <png> <scale>     one screenshot: a frame of the
-                                            video at that integer scale
+                                            a second apart: each matches a
+                                            frame of the video (placed as
+                                            bin/splash places it: scaled to
+                                            fit, centred, the rest #1E1A1D),
+                                            in order
+    splash-check.py frame <png> <width>     one screenshot: a frame of the
+                                            video, drawn that wide
     splash-check.py text <png>              the console's text screen: its
                                             background with text on it
     splash-check.py red <png>               a panic screen (dark red)
@@ -59,16 +60,41 @@ def ref_frames():
     return np.frombuffer(raw, np.uint8).reshape(-1, SMALL[1], SMALL[0], 3).astype(np.int16)
 
 
+def video_size():
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height", "-of", "csv=p=0", MPG],
+                         capture_output=True, check=True, text=True).stdout
+    w, h = out.strip().split(",")[:2]
+    return int(w), int(h)
+
+
+def layout(sw, sh):
+    """Where bin/splash puts the video on a sw x sh screen (video.c's rules):
+    an integer scale up when it fits, else down to fit (an integer n as a
+    box, any other ratio bilinear). (x, y, width, height)."""
+    vw, vh = video_size()
+    if vw <= sw and vh <= sh:
+        k = min(sw // vw, sh // vh, 8)
+        ow, oh = vw * k, vh * k
+    else:
+        s = min((sw << 16) // vw, (sh << 16) // vh)
+        ow, oh = (vw * s) >> 16, (vh * s) >> 16
+        n = vw // max(ow, 1)
+        if (n >= 2 and vw % n == 0 and vh % n == 0 and vw // n <= sw and vh // n <= sh and
+                vw // n >= ow - 1 and vh // n >= oh - 1):
+            ow, oh = vw // n, vh // n
+    return (sw - ow) // 2, (sh - oh) // 2, ow, oh
+
+
 def video_part(img):
-    """The 1280x720 picture at its integer scale, centred; and the rest."""
+    """The picture where bin/splash puts it, at SMALL; the rest; its width."""
     h, w = img.shape[:2]
-    k = max(1, min(w // 1280, h // 720))
-    x, y = (w - 1280 * k) // 2, (h - 720 * k) // 2
-    pic = img[y:y + 720 * k, x:x + 1280 * k]
+    x, y, ow, oh = layout(w, h)
+    pic = img[y:y + oh, x:x + ow]
     small = np.asarray(Image.fromarray(pic.astype(np.uint8)).resize(SMALL, Image.BOX))
     mask = np.ones((h, w), bool)
-    mask[y:y + 720 * k, x:x + 1280 * k] = False
-    return small.astype(np.int16), img[mask], k
+    mask[y:y + oh, x:x + ow] = False
+    return small.astype(np.int16), img[mask], ow
 
 
 def match(frames, img):
@@ -90,21 +116,28 @@ def check_frames(a, b):
     frames = ref_frames()
     ia, ea, ba, k = match(frames, shot(a))
     ib, eb, bb, _ = match(frames, shot(b))
-    ok("%s: frame %d (mean error %.2f), %s: frame %d (%.2f), at %dx" % (a, ia, ea, b, ib, eb, k))
+    ok("%s: frame %d (mean error %.2f), %s: frame %d (%.2f), %d wide" % (a, ia, ea, b, ib, eb, k))
     if ea > 4 or eb > 4:
         fail("a screenshot doesn't look like any frame of the video")
     if ba > 4 or bb > 4:
         fail("the screen around the video isn't #1E1A1D")
-    if not 15 <= ia <= 75 or not 40 <= ib - ia <= 90:
-        fail("frames %d and %d: want the first 0.5-2.5 s in and the second 1.3-3 s later"
+    num, den = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                               "stream=r_frame_rate", "-of", "csv=p=0", MPG], capture_output=True,
+                              check=True, text=True).stdout.split()[0].strip(",").split("/")
+    fps = float(num) / float(den)
+    # QEMU's emulated CPU decodes a 2560x1440 frame in about 40 ms, slower
+    # than the 33 ms it has: the picture runs behind the sound there (the PC
+    # decodes one in a few ms). So: moving on, in order, not to the minute.
+    if not 0.1 * fps <= ia <= 2.5 * fps or not 0.3 * fps <= ib - ia <= 3 * fps:
+        fail("frames %d and %d: want the first 0.1-2.5 s in and the second 0.3-3 s later"
              % (ia, ib))
 
 
-def check_frame(path, scale):
+def check_frame(path, width):
     i, err, border, k = match(ref_frames(), shot(path))
-    ok("%s: frame %d (mean error %.2f) at %dx" % (path, i, err, k))
-    if err > 4 or border > 4 or k != scale:
-        fail("%s: not a frame of the video at %dx" % (path, scale))
+    ok("%s: frame %d (mean error %.2f), %d wide" % (path, i, err, k))
+    if err > 4 or border > 4 or k != width:
+        fail("%s: not a frame of the video %d wide" % (path, width))
 
 
 def check_text(path):
@@ -244,7 +277,8 @@ def check_sound(path, join_ms, skipped):
     if best < 0.99 or start_ms < join_ms - 1 or start_ms > join_ms + 400:
         fail("the capture isn't the video's sound from where the splash joined it")
     played_to = at_end * 1000.0 / RATE
-    end_ms = len(ref) * 1000.0 / RATE
+    # the end of the sound: its last sample above the capture's trim level
+    end_ms = (np.nonzero(np.abs(ref).max(axis=1) > 64)[0][-1] + 1) * 1000.0 / RATE
     if skipped:
         if played_to > end_ms - 500:
             fail("skipped, but it played on to %.0f ms of %.0f" % (played_to, end_ms))

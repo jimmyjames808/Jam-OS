@@ -143,6 +143,22 @@ static void check_draw(void)
     fun_check(!strcmp(m, "2/1") && bil == grey && bilin == red, "3/4 bilinear: flat areas exact");
 }
 
+/* A late join's fade-in: nothing before it touched, a ramp from 0 up to
+ * the sound over 25 ms, nothing after it touched. */
+static void check_fade_in(void)
+{
+    static int16_t pcm[2 * 2000];
+    for (int i = 0; i < 4000; i++)
+        pcm[i] = 20000;
+    sound_fade_in(pcm, 2000, 100);
+    bool rising = true;
+    for (int i = 101; i < 1300; i++)
+        rising &= pcm[2 * i] >= pcm[2 * (i - 1)] && pcm[2 * i] == pcm[2 * i + 1];
+    fun_check(pcm[2 * 99] == 20000 && pcm[200] == 0 && pcm[2 * 101] < 10 && rising &&
+              pcm[2 * 1299] > 19900 && pcm[2 * 1300] == 20000,
+              "a late join fades in over 25 ms (raised cosine), no step");
+}
+
 static void check_video(const uint8_t *mpg, size_t len)
 {
     if (!mpg) {
@@ -189,8 +205,10 @@ static void check_video(const uint8_t *mpg, size_t len)
         "drawn 1:1 in %u.%u ms (%u threads)\n", (unsigned)l->w, (unsigned)l->h, frames,
         us_dec / 1000, us_dec / 100 % 10, (unsigned long)(worst / NS_PER_MS), us_draw / 1000,
         us_draw / 100 % 10, pool_threads());
-    unsigned want = (unsigned)(secs * fps + 0.5);
-    fun_check(fps >= 23.9 && fps <= 60.1 && frames + 1 >= want && frames <= want + 1,
+    /* The length is from the first frame's time stamp to the last's: one
+     * frame (and the muxer's rounding) short of the frames there are. */
+    unsigned want = (unsigned)(secs * fps + 0.5) + 1;
+    fun_check(fps >= 23.9 && fps <= 60.1 && frames + 1 >= want && frames <= want + 2,
               "every frame of the file's length at its rate");
     fun_check(color_diff(corner, SPLASH_BG) <= 6, "the first frame's corner is #1E1A1D");
     int16_t *pcm = NULL;
@@ -210,6 +228,7 @@ int splash_selftest(const uint8_t *mpg, size_t len)
     check_blend();
     check_shapes();
     check_draw();
+    check_fade_in();
     check_video(mpg, len);
     return fun_selftest_end();
 }

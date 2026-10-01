@@ -12,6 +12,8 @@
 #            from where the splash said it joined, to the end (30 dB above
 #            the difference: tools/splash-check.py); the order in the log
 #            (first frame, sound, played, the shell up, the screen back);
+#            the sound waited for and started with the picture (joins at
+#            0 ms); the last frame lingers 2 s after the end;
 #            `run splash --selftest` passes; `run splash --alpha` draws the
 #            logo with libfun's anti-aliased discs (their colours, a partly
 #            covered edge).
@@ -56,8 +58,9 @@ QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/splash.w
     > "$out/splash.out" 2>&1 || { echo "splash: the script failed"; tail -3 "$out/splash.out"; ok=0; }
 log=$out/splash.log
 need "$log" "quiet for the boot splash" "init: hello from ring 3 (3 args: init shell splash)" \
-    "splash: sound joins at" "splash: played at" "init: the splash has played: starting the shell" \
-    "splash: the shell is up: giving the screen back" "console: the screen is back" \
+    "at 1/2 (box) on 1280x800" "they start together" "splash: sound joins at 0 ms" \
+    "the shell is up" "splash: played at" "init: the splash has played: starting the shell" \
+    "giving the screen back" "console: the screen is back" \
     "bin/splash exited with code 0" "splash: selftest PASSED"
 t_first=$(at "$log" "splash: first frame") t_shell=$(at "$log" "init: the shell is up")
 t_played=$(at "$log" "splash: played at") t_back=$(at "$log" "console: the screen is back")
@@ -65,7 +68,13 @@ python3 -c "import sys; a = [float(x) for x in sys.argv[1:]]; sys.exit(a != sort
     "$t_first" "$t_played" "$t_shell" "$t_back" ||
     { echo "splash: out of order: first frame $t_first, played $t_played, shell $t_shell," \
            "screen back $t_back"; ok=0; }
-grep -aE "splash: (first frame|sound joins|the sound is heard|played at)" "$log" | sed 's/^/  /'
+grep -aE "splash: (first frame|waited|sound joins|the sound is heard|played at|the shell is up)" \
+    "$log" | sed 's/^/  /'
+# The logo lingers: the screen goes back LINGER (2 s) after the end at the
+# earliest, however soon the shell is up.
+back=$(grep -aE "giving the screen back [0-9]+ ms after it" "$log" | head -1 |
+       sed -n 's/.*giving the screen back \([0-9]*\) ms after it.*/\1/p')
+[ -n "$back" ] && [ "$back" -ge 1950 ] || { echo "splash: no linger (${back:-?} ms)"; ok=0; }
 join=$(grep -aE "splash: sound joins at [0-9]+ ms" "$log" | head -1 |
        sed -n 's/.*joins at \([0-9]*\) ms.*/\1/p')
 check quiet "$out/splash-quiet.png"
@@ -81,15 +90,19 @@ QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
     QEMU_EXTRA="$(snd "$out/skip.wav") -vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64" \
     QEMU_INPUT=tools/shell-tests/splash-skip.txt tools/qemu-test.sh "$out" skip shell \
     > "$out/skip.out" 2>&1 || { echo "skip: the script failed"; tail -3 "$out/skip.out"; ok=0; }
-need "$out/skip.log" "at 2x on 2560x1440" "splash: skipped by a key" "console: the screen is back"
-check frame "$out/splash-hd.png" 2
+need "$out/skip.log" "at 1:1 on 2560x1440" "splash: skipped by a key" "console: the screen is back"
+check frame "$out/splash-hd.png" 2560
 # The sound cut short: the mixer took far less than the track's 6.5 s
 # (the capture itself isn't checked here: at 2560x1440 QEMU's emulation is
 # too busy to keep its own audio timing, which the guest's stats rule out).
 taken=$(grep -aE "\(splash\) closed .*: [0-9]+ frames taken" "$out/skip.log" | head -1 |
         sed -n 's/.*: \([0-9]*\) frames taken.*/\1/p')
-echo "skip: the mixer took ${taken:-?} frames of the splash's sound (the whole track: 312863)"
-[ -n "$taken" ] && [ "$taken" -lt 250000 ] || { echo "skip: the sound wasn't cut short"; ok=0; }
+long=$(grep -aE "splash: first frame .* [0-9]+ ms long" "$out/skip.log" | head -1 |
+       sed -n 's/.* \([0-9]*\) ms long.*/\1/p')
+whole=$(( ${long:-0} * 48 ))
+echo "skip: the mixer took ${taken:-?} frames of the splash's sound (the whole track: $whole)"
+[ -n "$taken" ] && [ "$taken" -lt $((whole - 48000)) ] ||
+    { echo "skip: the sound wasn't cut short"; ok=0; }
 
 # ---- verbose and nosplash: the text log --------------------------------------
 for word in verbose nosplash; do

@@ -26,24 +26,35 @@
 #include <idl/audio.h>
 #include "splash_int.h"
 
-#define MAX_FRAMES (12u * SPLASH_RATE)   /* the most sound kept: 12 s */
+#define MAX_SECONDS 120u                 /* the most sound kept */
 #define CHUNK      2048u                 /* frames a write: 43 ms (a stop is seen between) */
 #define POLL       (20 * NS_PER_MS)      /* how often the position is asked */
 #define STACK      (256u << 10)          /* the thread's (pl_mpeg's audio decoder is small) */
 #define HEARD_IN   (50 * NS_PER_MS)      /* from the open to the first frame heard (a guess) */
+#define AWAIT_MAX  (500 * NS_PER_MS)     /* the clock holds at 0 for the first sound this long */
+#define FADE_IN    1200u                 /* frames: 25 ms raised cosine on a late join */
+
 
 static uint64_t t0;                   /* uptime at media time 0 (0: not started) */
 static bool live;                     /* the sound is heard: the clock is its position */
 static uint32_t seq;                  /* the sequence lock: odd while being written */
 static uint64_t pub_media, pub_at;    /* media ns heard at uptime pub_at */
 static bool stop_asked, ended = true;
+static bool await_sound;              /* the clock started for the sound: held at 0 until heard */
+static int state = SOUND_NONE;        /* SOUND_*: the stream's, for the video's start */
 
 static const uint8_t *file;           /* the video file (bootfs) */
 static size_t file_len;
 
-void clock_start(void)
+void clock_start(bool with_sound)
 {
+    __atomic_store_n(&await_sound, with_sound, __ATOMIC_RELAXED);
     __atomic_store_n(&t0, now(), __ATOMIC_RELEASE);
+}
+
+int sound_state(void)
+{
+    return __atomic_load_n(&state, __ATOMIC_ACQUIRE);
 }
 
 uint64_t clock_now(void)
@@ -51,8 +62,13 @@ uint64_t clock_now(void)
     uint64_t start = __atomic_load_n(&t0, __ATOMIC_ACQUIRE), t = now();
     if (!start)
         return 0;
-    if (!__atomic_load_n(&live, __ATOMIC_ACQUIRE))
-        return t - start;
+    if (!__atomic_load_n(&live, __ATOMIC_ACQUIRE)) {
+        if (!__atomic_load_n(&await_sound, __ATOMIC_RELAXED))
+            return t - start;
+        /* The sound starts at 0 and is about to be heard: hold the first
+         * frame for it, but not for ever (then the timer, from 0). */
+        return t - start < AWAIT_MAX ? 0 : t - start - AWAIT_MAX;
+    }
     for (;;) {
         uint32_t s1 = __atomic_load_n(&seq, __ATOMIC_ACQUIRE);
         uint64_t m = __atomic_load_n(&pub_media, __ATOMIC_RELAXED);
@@ -125,7 +141,9 @@ status_t sound_decode(const uint8_t *mpg, size_t len, int16_t **out, size_t *fra
     plm_set_video_enabled(p, 0);
     status_t st = plm_has_headers(p) && plm_get_num_audio_streams(p) > 0 &&
                   plm_get_samplerate(p) == SPLASH_RATE ? OK : ERR_NOT_SUPPORTED;
-    int16_t *pcm = st == OK ? big_alloc((uint64_t)MAX_FRAMES * 4) : NULL;
+    double secs = st == OK ? plm_get_duration(p) + 1 : 0;
+    uint64_t max = (uint64_t)((secs < MAX_SECONDS ? secs : MAX_SECONDS) * SPLASH_RATE);
+    int16_t *pcm = st == OK ? big_alloc(max * 4) : NULL;
     if (st == OK && !pcm)
         st = ERR_NO_MEMORY;
     /* Decoded frame k is the sound at media frame k - shift (the buffer
@@ -135,7 +153,7 @@ status_t sound_decode(const uint8_t *mpg, size_t len, int16_t **out, size_t *fra
     while (st == OK && (smp = plm_decode_audio(p))) {
         for (unsigned i = 0; i < smp->count; i++, k++) {
             long at = k - shift;
-            if (at < 0 || at >= (long)MAX_FRAMES)
+            if (at < 0 || at >= (long)max)
                 continue;
             pcm[2 * at] = s16(smp->interleaved[2 * i]);
             pcm[2 * at + 1] = s16(smp->interleaved[2 * i + 1]);
@@ -191,6 +209,17 @@ static void play(struct audio_out *a, const int16_t *pcm, uint64_t from, uint64_
     }
 }
 
+/* A late join starts mid-sound: frames from..from + FADE_IN of pcm faded
+ * in (a raised cosine), so it doesn't start with a step. */
+void sound_fade_in(int16_t *pcm, size_t frames, size_t from)
+{
+    for (size_t i = 0; i < FADE_IN && from + i < frames; i++) {
+        double g = 0.5 - 0.5 * cosd(3.141592653589793 * (double)i / FADE_IN);
+        for (int c = 0; c < 2; c++)
+            pcm[2 * (from + i) + c] = (int16_t)(pcm[2 * (from + i) + c] * g);
+    }
+}
+
 static void sound_main(void *arg)
 {
     (void)arg;
@@ -202,19 +231,30 @@ static void sound_main(void *arg)
         st = audio_open_as(&a, SPLASH_RATE, 2, "splash");
     if (st != OK) {
         printf("splash: playing without sound (%s)\n", status_str(st));
+        __atomic_store_n(&state, SOUND_NONE, __ATOMIC_RELEASE);
         __atomic_store_n(&ended, true, __ATOMIC_RELEASE);
         return;
     }
-    /* When it will be heard: at boot the splash's is the only stream, and
-     * the mixer opens the output with it, its first frames first: heard as
-     * soon as the driver's stream runs (15 ms in QEMU; HEARD_IN). (With the
-     * output already running it would be the mixer's lead later.)
-     * A wrong guess costs one jump of the video when the clock becomes the
-     * sound's position. */
-    uint64_t from = (clock_now() + HEARD_IN) * SPLASH_RATE / NS_PER_S;
+    __atomic_store_n(&state, SOUND_READY, __ATOMIC_RELEASE);
+    /* The video starts the clock. */
+    while (!__atomic_load_n(&t0, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&stop_asked, __ATOMIC_ACQUIRE))
+        jam_nanosleep(now() + NS_PER_MS);
+    /* With the sound ready in time, video and sound start together: from
+     * frame 0, the clock held at 0 until it is heard. Late, the sound joins
+     * where the animation is by the time it is heard: at boot the splash's
+     * is the only stream, and the mixer opens the output with its first
+     * frames first, heard as soon as the driver's stream runs (15 ms in
+     * QEMU; HEARD_IN); a wrong guess costs one jump of the video when the
+     * clock becomes the sound's position. A late join fades in. */
+    uint64_t from = 0;
+    if (!__atomic_load_n(&await_sound, __ATOMIC_RELAXED)) {
+        from = (clock_now() + HEARD_IN) * SPLASH_RATE / NS_PER_S;
+        sound_fade_in(pcm, frames, from);
+    }
     if (from < frames) {
-        printf("splash: sound joins at %lu ms of the animation\n",
-               (unsigned long)(from * 1000 / SPLASH_RATE));
+        printf("splash: sound joins at %lu ms of the animation%s\n",
+               (unsigned long)(from * 1000 / SPLASH_RATE), from ? ", faded in" : "");
         play(&a, pcm, from, frames);
     } else {
         printf("splash: the sound came too late: playing without it\n");
@@ -234,8 +274,10 @@ void sound_start(const uint8_t *mpg, size_t len, handle_t audio)
     void *stack = big_alloc(STACK);
     handle_t th;
     __atomic_store_n(&ended, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&state, SOUND_PENDING, __ATOMIC_RELEASE);
     if (!stack || thread_spawn("sound", sound_main, NULL, stack, STACK, &th) != OK) {
         printf("splash: no thread for the sound: playing without it\n");
+        __atomic_store_n(&state, SOUND_NONE, __ATOMIC_RELEASE);
         __atomic_store_n(&ended, true, __ATOMIC_RELEASE);
         return;
     }
