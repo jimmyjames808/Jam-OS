@@ -156,11 +156,6 @@ ones below are the design questions M8 left open
 
 The rest:
 
-- The `init` QEMU run ends "with problems" about one run in three: usbtest's last check restarts usb-storage, devmgr starts `fat-esp`
-  again, and devmgr's shutdown stops usb-bus while that fat is still
-  mounting; it exits ERR_IO and devmgr reports "fat-esp bin/fat did not
-  end cleanly". A fat that finds its disk gone while mounting could exit 0,
-  or devmgr could excuse a filesystem service whose disk went first.
 - devmgr's protocol is hand-written, not IDL.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.
