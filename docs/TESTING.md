@@ -74,6 +74,7 @@ waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 | `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`); the run passes if every `wait` matched and QEMU ended by itself |
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
+| `QEMU_SPLASH` | 0 | 1: keep the boot splash (otherwise the boot word `nosplash` is added, so the tests see the text log) |
 
 Examples:
 
@@ -92,7 +93,8 @@ make debug                                                # the same, stopped fo
 
 | Entry | Command line | What it does |
 |---|---|---|
-| Jam OS | (empty) | init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), logd and the shell. A panic halts with its screen up |
+| Jam OS | (empty) | the boot splash ([AS-PLAN.md](AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (a key skips it), then the shell; meanwhile init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer and logd. A panic halts with its screen up |
+| Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash |
 | Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; a panic's screen stays 15 s, then the PC restarts by itself |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
@@ -106,6 +108,9 @@ make debug                                                # the same, stopped fo
 Other boot words (for `tools/qemu-test.sh`, not in the menu):
 
 - `shell`: the plain boot, spelled out (what the shell scripts use).
+- `verbose` or `nosplash`: no boot splash, the text log on the screen
+  (`tools/qemu-test.sh` adds `nosplash` unless `QEMU_SPLASH=1`). `nousb`
+  and `soak` leave the splash out too.
 - `ktest=<prefix>`: the tests whose name starts with the prefix. Tests
   named `review_...` run only when the prefix asks for them.
 - With `ktest` or `ktest=<prefix>`: `loops=<n>`, `seed=<s>`, `shuffle`,
@@ -292,6 +297,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/hda-stream-test.sh <outdir>` | the HD Audio output stream (`hdastream.txt`): intel-hda with an hda-output codec (`mixer=off`) whose samples go to a WAV file through QEMU's wav backend at 48 kHz 16-bit stereo; `hdatest` passes (the position's rate within 2 %, a closed stream released, a kill mid-stream: restart, the dead driver's pins out of the DMA quarantine unwritten); the WAV holds `hdatest`'s one-second pattern sample for sample after the leading silence, then most of a ring of silence (the driver's clear-behind); the codec got only allow-listed verbs, and the path opened only while the converter has the stream's tag and closed again before it is released (`tools/hda-verbs.awk` follows the state the SETs leave; hdatest turns the gain down while it plays) |
 | `tools/beep-test.sh <outdir>` | `beep` (`beep.txt`): intel-hda with an hda-output codec with its mixer on (its DAC amp scales what the WAV gets) through QEMU's wav backend; `beep 440 500` at the default -30 dB: the tone's frequency from its zero crossings within 1 %, its length within 30 ms, the fades (first and last 2.5 ms well under the peak), no clicks, silence after, the peak at QEMU's volume for step 44 within 5 %; the codec's verbs: the path opened only while the converter has the stream's tag and muted again before it is released, the DAC's amp opened at step 44 only; the driver's lines in order (stream open, unmuted, muted again, stream closed); `hda gain` set and clamped |
 | `tools/play-test.sh <outdir>` | `play` (`play.txt`): WAV files made by the script and copied onto the stick image's `/data` with mtools, played through intel-hda with an hda-output codec (mixer on) into QEMU's wav backend: 48 kHz stereo (440 Hz left, 660 Hz right), 44.1 kHz mono, 22.05 kHz 8-bit, 96 kHz 24-bit WAVE_FORMAT_EXTENSIBLE with `play -v -20`; each sound's frequency per channel within 1 %, its length within 2 %, mono equal on both channels, silence after it, no clicks, the `-v` one's peak a tenth of the others' (its mixer stream at -20 dB) and the others' unchanged; garbage, a cut-off header, 32-bit float and a missing file refused with their reasons; a 10 s file stopped by Ctrl+C after 2 s ends within 3 s with a fade |
+| `tools/splash-test.sh <outdir>` | the boot splash (`splash.txt`, `splash-skip.txt`, `splash-off.txt`; `tools/splash-check.py` compares with `boot/splash.mpg` decoded by ffmpeg): a plain boot with an hda-output codec into a WAV: the screen all `#1E1A1D` as init starts, two screenshots a second apart that are frames of the video in order, the console's text after the hand-back, the capture the video's sound from where the splash said it joined to its end, `run splash --selftest`; a key skip at 2560x1440 (a frame at 2x, the sound cut short, the key not in the shell); `verbose` and `nosplash` (the text log, no splash); `shell testpf` (the panic screen over the quiet one); prints the time to the first frame and to the shell with and without |
 | `tools/mixer-test.sh <outdir>` | the mixer (`mixer.txt`): intel-hda with an hda-output codec (`mixer=off`) into QEMU's wav backend; `mixtest` passes (the protocol's refusals and clamps; tone programs at once; one killed; the master and an `audioctl` volume; the mixer killed and the hda driver killed mid-tone, each played on; a stream left empty lets the mixer close the output and its next write wakes it; two programs on `<audio.h>` at once); the WAV, segment by segment: 440 Hz and 1000 Hz at once with the second at -6 dB (amplitude ratio within 3 %), the killed client's partner with no gap, -6 dB master and -12 dB `audioctl` volume heard, the library's 44.1 kHz and 48 kHz tones together; the log's stream, restart and output lines; the codec's verbs: muted whenever nothing plays |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
 

@@ -150,7 +150,9 @@ it syncs `/data` and has logd write the log's last lines first.
   screen, photographed, is the record. Nothing is logged while the boot
   stick is out.
 - A hang during boot: the last line on the screen names the step (`pci:`
-  lines name the function being sized).
+  lines name the function being sized). The plain entry shows the boot
+  splash instead of the log: boot `Jam OS (text log, no splash)`
+  (`verbose`) to see it.
 - Anything that looks like memory corruption: boot with `nopcid` first
   (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
   log's `cpu id:` and `pcid:` lines give the microcode revision and whether
