@@ -201,6 +201,17 @@ static bool render(const struct surf *o, uint64_t hash, int kind, uint32_t bg)
     return cover_render(o, hash, kind, bg);
 }
 
+/* c's picture drawn again as kind; false (c as it was) if that cover is
+ * gone meanwhile. */
+static bool redraw(struct art_slot *c, uint64_t hash, int kind, uint32_t bg)
+{
+    struct surf o = { c->px, c->size, c->size, c->size };
+    if (!render(&o, hash, kind, bg))
+        return false;
+    c->kind = kind;
+    return true;
+}
+
 void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
                uint32_t bg)
 {
@@ -209,25 +220,18 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
     int kind = path ? cover_ready(hash, path, size, false) : COVER_NONE;
     if (between)
         between();
+    /* The image cover_ready named can be given to another album by cover.c's
+     * thread before it is drawn here. A kept picture then stays as it was
+     * (the next frame asks again); a new one is drawn from what is ready
+     * now, at worst the label, which can't fail. */
     struct art_slot *c = lookup(hash, size, bg);
     if (c && c->kind != kind) {
-        struct surf o = { c->px, size, size, size };
-        if (render(&o, hash, kind, bg)) {
-            c->kind = kind;
-        } else {
-            forget(c);
-            c = NULL;
-        }
+        (void)redraw(c, hash, kind, bg);
     } else if (!c && (c = new_slot(size)) != NULL) {
-        struct surf o = { c->px, size, size, size };
-        if (render(&o, hash, kind, bg)) {
-            c->hash = hash;
-            c->bg = bg;
-            c->kind = kind;
-        } else {
-            forget(c);
-            c = NULL;
-        }
+        c->hash = hash;
+        c->bg = bg;
+        for (int tries = 0; !redraw(c, hash, kind, bg); tries++)
+            kind = path && !tries ? cover_ready(hash, path, size, false) : COVER_NONE;
     }
     if (!c) {
         label(s, x, y, size, hash, bg);   /* not kept: drawn straight */

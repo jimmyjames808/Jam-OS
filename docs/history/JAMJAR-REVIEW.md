@@ -117,3 +117,10 @@ rounding is used).
   heap (FAILED before: the heap was full); `tools/jamjar-covers-test.sh`
   (32 albums at 2560x1440, 16 of them heard in that run): every shot
   shows the cover (before: the shots after skips 11-14 showed jar labels).
+- **2 fixed.** When the image `cover_ready` named is gone by the time
+  it is drawn, a kept picture stays as it was (the next frame asks again)
+  and a new one is drawn from what is ready then (at worst the label).
+  Test: the self-test drives cover.c's states without its thread (a
+  made-up picture per path) and, through a hook between asking and
+  drawing, takes the album's large copy away at exactly that point, for
+  a kept picture and a new one: FAILED before (the label was drawn).
