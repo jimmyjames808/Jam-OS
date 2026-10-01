@@ -19,7 +19,6 @@
  * init keeps both mixer channels across a mixer's restart: they never
  * change. Programs the shell starts get none of the others
  * (sh_program.c). */
-#include <audio.h>
 #include <devmgr.h>
 #include "sh_core.h"
 
@@ -112,11 +111,4 @@ handle_t sh_devmgr_ctl(void)
 {
     devmgr_refresh();
     return devmgr_ctl;
-}
-
-/* <audio.h> (beep, play) finds the audio device through the newest
- * devmgr, not the SR_DEVMGR the shell started with. */
-handle_t audio_devmgr(void)
-{
-    return sh_devmgr();
 }
