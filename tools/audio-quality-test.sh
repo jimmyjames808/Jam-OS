@@ -106,7 +106,11 @@ log="$out/quality.log"
 
 grep -E "^play: .*(frames|underrun|lead)" "$log" | tr -d '\r' | sed 's/^/quality: /' || true
 if [ "${AQ_NOSTATS:-0}" != 1 ]; then
+    # The shell's stats line and the mixer's close line say the same; one of
+    # them can be lost when the serial ring overflows, so either counts.
     n=$(grep -cE "^play: stats: .* 0 underruns, 0 late" "$log" || true)
+    m=$(grep -cE "mixer: stream [0-9]+ \(play\) closed .* 0 underrun\(s\), 0 late period\(s\)" "$log" || true)
+    [ "$m" -gt "$n" ] && n=$m
     [ "$n" -ge 7 ] || { echo "quality: only $n of 7 plays said 0 underruns and 0 late periods"; ok=0; }
 fi
 if grep -q "frames late" "$log"; then
