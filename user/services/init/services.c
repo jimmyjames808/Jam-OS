@@ -140,6 +140,19 @@ handle_t shell_devmgr(void)
     return devmgr;
 }
 
+handle_t shell_console(void)
+{
+    return cons;
+}
+
+void services_settings(unsigned i)
+{
+    if (i == MIXER && svcs[MIXER].running)
+        settings_master(audio_cli[1]);
+    if (i == MUSIC && svcs[MUSIC].running)
+        settings_music(music_cli);
+}
+
 bool services_console_up(void)
 {
     return cons != HANDLE_INVALID;

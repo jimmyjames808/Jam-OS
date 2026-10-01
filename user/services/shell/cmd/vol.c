@@ -3,7 +3,8 @@
  * name); `vol <id> <dB>` sets a stream's volume, `vol master <dB>` the
  * master. Volumes are attenuation only: 0 dB is the most, -96 dB and
  * below is silence. `hda gain` is the codec's own output level, below
- * the mixer. */
+ * the mixer. The master is kept in /data/etc/settings (`volume`): init
+ * sets it again at the next boot. */
 #include <idl/audioctl.h>
 #include <mixer.h>
 #include "sh.h"
@@ -78,6 +79,8 @@ SH_CMD(vol)
         sh_say("vol: %s\n", status_str(st));
     else if (master)
         sh_say("vol: master %s\n", vol_str(got, a, sizeof(a)));
+    if (st == OK && master)
+        sh_keep_setting("vol", "volume", sh_db(got, a, sizeof(a)));
     else
         sh_say("vol: stream %lu %s\n", (unsigned long)id, vol_str(got, a, sizeof(a)));
     return st == OK ? 0 : 1;

@@ -1,0 +1,56 @@
+# tools/clock-test.sh, boot 1 (the RTC at 2026-01-15 01:02:03, as a PC
+# with Windows keeps local time): the clock from the RTC in Sydney's
+# time, the settings file written with its defaults at /data's first
+# mount, a file written (dated by that clock), the volumes and a zone
+# changed and kept in /data/etc/settings, then `reboot` (kexec): the next
+# boot reads the RTC as Perth's local time.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: settings: /data/etc/settings written with the defaults
+seen 60 logd: writing /data/logs/boot-0001.txt
+send date
+wait Thu 15 Jan 2026 01:0
+wait AEDT (UTC+11:00)
+send date -u
+wait Wed 14 Jan 2026 14:0
+send date -r
+wait RTC 2026-01-15 01:0
+wait read as local time
+wait the clock: 2026-01-14 14:0
+send cat /data/etc/settings
+wait timezone = Australia/Sydney
+wait rtc = local
+send write /data/stamp.txt dated && sync && echo ok-stamp
+wait ok-stamp
+send vol master -12
+wait vol: master -12.0 dB
+send music vol -6
+wait music: volume -6.0 dB
+send date -z Mars/Olympus
+wait date: Mars/Olympus is not a zone
+send date -z Australia/Perth
+wait date: the zone is Australia/Perth now: Wed 14 Jan 2026 22:0
+send date
+wait AWST (UTC+08:00)
+send cat /data/etc/settings
+wait timezone = Australia/Perth
+wait volume = -12.0
+wait music.volume = -6.0
+send reboot
+wait 30 init: /data synced
+wait 120 loader:      Jam OS kexec
+wait 180 Jam OS shell
+wait jam>
+# rtc = local: the RTC's 01:02 is read as the zone's local time, Perth's
+# now (Windows would have set it so in Perth). The zone comes with /data,
+# which may mount after the shell is up: wait for that clock line.
+seen 60 AWST (the RTC keeps local time)
+send date
+wait Thu 15 Jan 2026 01:0
+wait AWST (UTC+08:00)
+send vol
+wait master -12.0 dB
+send music status
+wait 30 volume -6.0 dB
+send reboot -f
+wait reboot: resetting

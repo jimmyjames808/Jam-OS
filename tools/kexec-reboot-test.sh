@@ -19,9 +19,17 @@
 #             so the read lasts past the screenshot 2 s in, fat's cache
 #             making it a fraction of a second otherwise), then the new
 #             kernel comes up
+#   load      the stick swapped the same way, then `kernel load`: both
+#             files read and kexec_loaded at once; the `reboot` after it
+#             reads nothing ("/esp unchanged") and starts them
+#   broken    the stick swapped for a copy whose /esp/boot/jamos.elf was
+#             cut short (a flash pulled half way): `kernel load` refuses it
+#             and keeps the stored copy; `reboot` tries the files, says on
+#             the screen that it restarts the one in memory, and does so:
+#             no firmware reset into the broken stick
 #   firmware  `reboot -f`: the firmware reset, no kexec at all
-#   fallback  crashkernel=0 (no stored kernel): `reboot` falls back to the
-#             firmware by itself
+#   fallback  crashkernel=0 (no stored kernel): `kernel load` says there is
+#             none, and `reboot` falls back to the firmware by itself
 # The kexec run has a sound card (intel-hda, as on the PC): the mixer
 # holds a channel to the hda driver, and a reboot that left it running
 # waited devmgr's whole stop timeout (30 s on the PC); devmgr must stop
@@ -31,7 +39,7 @@
 set -u
 out=$1
 shift
-runs=${*:-kexec changed firmware fallback}
+runs=${*:-kexec changed load broken firmware fallback}
 mkdir -p "$out"
 fails=0
 cpus=${QEMU_SMP:-4}
@@ -113,9 +121,61 @@ run_changed() {
     rm -f "$stick2" "$out/jamos-longer.elf"
 }
 
+run_load() {
+    stick2="$out/kexec-load-stick2.img"
+    cp build/jamos.img "$stick2"
+    cp build/jamos.elf "$out/jamos-longer.elf"
+    head -c 4096 /dev/zero >> "$out/jamos-longer.elf"
+    mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
+        { fail load "can't write the second stick's kernel"; return; }
+    run load shell "wait 120 Jam OS shell" "wait jam>" \
+        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "monitor device_del stick" "wait 30 init: /esp is gone" \
+        "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
+        "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
+        "wait 60 init: /esp mounted" "sleep 1" "send kernel load" \
+        "wait 120 kexec_load: OK" "wait 30 kernel: loaded" "wait jam>" \
+        "send reboot" "wait 30 init: kexec: /esp unchanged: the stored kernel, no files read" \
+        "wait 60 kexec: starting the stored kernel" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "send reboot -f" "wait reboot: resetting" ||
+        fail load "the script (see $out/kexec-load.log)"
+    log="$out/kexec-load.log"
+    [ "$(grep -ac "kexec_load: " "$log")" -eq 1 ] ||
+        fail load "the files were read and loaded more than once"
+    [ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
+        fail load "a firmware reset happened before the last one"
+    rm -f "$stick2" "$out/jamos-longer.elf"
+}
+
+run_broken() {
+    stick2="$out/kexec-broken-stick2.img"
+    cp build/jamos.img "$stick2"
+    head -c 200000 build/jamos.elf > "$out/jamos-cut.elf"
+    mcopy -o -i "$stick2@@1M" "$out/jamos-cut.elf" ::/boot/jamos.elf ||
+        { fail broken "can't write the second stick's kernel"; return; }
+    run broken shell "wait 120 Jam OS shell" "wait jam>" \
+        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "monitor device_del stick" "wait 30 init: /esp is gone" \
+        "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
+        "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
+        "wait 60 init: /esp mounted" "sleep 1" "send kernel load" \
+        "wait 120 kernel: not loaded: they are not a Jam OS kernel and boot image" "wait jam>" \
+        "send reboot" "wait 30 init: kexec: /esp's kernel or boot image changed: reading" \
+        "wait 120 the stick's kernel didn't load (ERR_INVALID_ARGS): restarting the one in memory" \
+        "sleep 1" "shot kexec-broken-notice" \
+        "wait 60 kexec: starting the stored kernel" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "send reboot -f" "wait reboot: resetting" ||
+        fail broken "the script (see $out/kexec-broken.log)"
+    [ "$(grep -ac "reboot: resetting" "$out/kexec-broken.log")" -eq 1 ] ||
+        fail broken "a firmware reset happened before the last one"
+    rm -f "$stick2" "$out/jamos-cut.elf"
+}
+
 run_firmware() {
     run firmware shell "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
-        "wait 10 rebooting through the firmware" "wait 30 reboot: resetting" ||
+        "wait 30 rebooting through the firmware" "wait 30 reboot: resetting" ||
         fail firmware "the script (see $out/kexec-firmware.log)"
     grep -aq "kexec_load\|kexec: starting\|init: kexec:.*stored kernel," "$out/kexec-firmware.log" &&
         fail firmware "reboot -f tried kexec"
@@ -123,7 +183,9 @@ run_firmware() {
 
 run_fallback() {
     run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait jam>" \
-        "seen 60 init: /esp mounted" "send reboot" "wait 60 init: kexec: " \
+        "seen 60 init: /esp mounted" "send kernel load" \
+        "wait 120 kernel: not loaded: there is no stored kernel" "wait jam>" \
+        "send reboot" "wait 60 init: kexec: " \
         "wait 60 the jump failed (ERR_NOT_SUPPORTED)" \
         "wait 10 init: rebooting through the firmware instead" "wait 30 reboot: resetting" ||
         fail fallback "the script (see $out/kexec-fallback.log)"

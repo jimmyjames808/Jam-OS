@@ -202,6 +202,21 @@ static void ended(unsigned i)
     s->next_try = t + s->backoff;
 }
 
+/* /data has come (at boot, or back): the settings again, before logd
+ * starts, so its file is dated by the settings' clock. */
+static void data_came(void)
+{
+    static bool had;
+    bool has = mounted(DATA_MOUNT);
+    if (has && !had) {
+        settings_clock();
+        settings_first_file();
+        services_settings(MIXER);
+        services_settings(MUSIC);
+    }
+    had = has;
+}
+
 /* Start every service that is due, in order (all but the console wait
  * for it); one that fails backs off. The next time one is due, or
  * DEADLINE_NEVER. */
@@ -233,6 +248,8 @@ static uint64_t start_due(uint64_t t)
             continue;
         }
         status_t st = services_start(i);
+        if (st == OK && mounted(DATA_MOUNT))
+            services_settings(i);   /* a (re)started mixer or player gets its volume */
         if (st != OK) {
             printf("init: can't start %s (%s)\n", s->path, status_str(st));
             s->backoff = s->backoff ? s->backoff * 2 : 100 * NS_PER_MS;
@@ -257,6 +274,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         return false;
     }
     services_init(port, no_usb, splash, shell_arg);
+    settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
            "devmgr, the mixer, the music player, logd and the shell\n",
@@ -273,6 +291,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             ended((unsigned)pkt.key);
         } else if (pkt.key == KEY_MOUNTS) {
             tell_mounts();
+            data_came();
             reboot_note_esp();   /* the first /esp: what the stored kernel came from */
         } else if (pkt.key == KEY_LASTBOOT) {
             lastboot_event();

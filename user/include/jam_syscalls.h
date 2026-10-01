@@ -85,5 +85,7 @@ status_t jam_sys_info(handle_t root, struct sys_info *out);
 int64_t jam_cpu_stat(handle_t root, uint32_t first, struct cpu_stat *out, uint32_t cap);
 int64_t jam_proc_list(handle_t root, struct proc_stat *out, uint32_t cap);
 status_t jam_rtc_read(handle_t root, struct rtc_time *out);
+status_t jam_wallclock_get(struct wall_clock *out);
+status_t jam_wallclock_set(handle_t root, const struct wall_clock *in);
 status_t jam_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, const char *cmdline, uint64_t len, uint32_t flags);
 status_t jam_kexec_reboot(handle_t root);

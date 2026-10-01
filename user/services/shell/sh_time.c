@@ -1,6 +1,9 @@
-/* The time for date, uptime and top: $TZ (a zone libos's <wallclock.h>
- * understands), the real-time clock read as $RTC says it keeps time, and
- * uptimes written out. The calendar and the zones themselves are libos's. */
+/* The time for date, uptime and top: the system's clock (the kernel's,
+ * which init sets from the real-time clock), shown in $TZ if it is set
+ * and else in the system's zone (/data/etc/settings' `timezone`), and
+ * uptimes written out. The calendar and the zones are libos's
+ * (<wallclock.h>). And what the commands keep in the settings file. */
+#include <settings.h>
 #include "sh.h"
 
 /* ---- time zones -------------------------------------------------------------------- */
@@ -8,6 +11,10 @@
 bool sh_local_tz(struct tz *tz, const char *who)
 {
     const char *s = sh_getvar("TZ");
+    if (!s || !*s) {
+        (void)clock_now(NULL, tz);   /* the system's zone (or the default) either way */
+        return true;
+    }
     if (tz_parse(s, tz))
         return true;
     sh_tty("%s: TZ=%s not understood (Australia/Sydney, UTC, +10, -5:30): using UTC\n", who, s);
@@ -17,24 +24,15 @@ bool sh_local_tz(struct tz *tz, const char *who)
 
 /* ---- the clock and uptimes ---------------------------------------------------------- */
 
-bool sh_clock_now(int64_t *utc, struct rtc_time *raw, const char *who)
+bool sh_clock_now(int64_t *utc, const char *who)
 {
-    status_t st = jam_rtc_read(sh_root(), raw);
-    if (st != OK) {
-        sh_tty("%s: the real-time clock: %s\n", who, status_str(st));
-        return false;
-    }
-    int64_t local = civil_days(raw->year, raw->month, raw->day) * 86400 +
-                    raw->hour * 3600 + raw->minute * 60 + raw->second;
-    const char *rtc = sh_getvar("RTC");
-    struct tz tz;
-    if (rtc && (!strcmp(rtc, "utc") || !strcmp(rtc, "UTC")))
-        *utc = local;
-    else if (tz_parse(rtc, &tz))   /* "local" = Australia/Sydney */
-        *utc = tz_local_to_utc(&tz, local);
-    else
-        *utc = local;
-    return true;
+    if (clock_now(utc, NULL))
+        return true;
+    struct wall_clock w;
+    if (jam_wallclock_get(&w) == OK)
+        return true;   /* not set by init (yet): the RTC's reading as it is */
+    sh_tty("%s: there is no clock (no real-time clock, and nobody set one)\n", who);
+    return false;
 }
 
 void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap)
@@ -48,4 +46,14 @@ void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap)
                  (unsigned long)(s % 60));
     else
         snprintf(buf, cap, "%lu min %lu s", (unsigned long)m, (unsigned long)(s % 60));
+}
+
+/* ---- settings ---------------------------------------------------------------------- */
+
+void sh_keep_setting(const char *who, const char *key, const char *value)
+{
+    status_t st = settings_set(SETTINGS_FILE, key, value);
+    if (st != OK)
+        sh_tty("%s: not kept in " SETTINGS_FILE " (%s): it lasts until the next boot\n", who,
+               sh_why(st));
 }

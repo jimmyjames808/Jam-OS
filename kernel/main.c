@@ -34,6 +34,7 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
+#include <jam/wallclock.h>
 #include <jam/x86.h>
 
 #define JAMOS_VERSION   "0.0.27-m8.5"
@@ -198,6 +199,7 @@ _Noreturn static void kmain_stage2(void *arg)
     acpi_init(boot->rsdp_phys);
     lapic_init_bsp(boot->x2apic);
     tsc_calibrate_with_loader(boot->tsc_hz_loader);
+    wallclock_init();   /* the date from the RTC (it waits with udelay: after the TSC) */
     uint64_t redraw_us = fbcon_time_redraw(rdtsc) / (tsc_hz / 1000000);
     if (splash_boot())   /* quiet: nothing was drawn */
         kprintf("fbcon: %ux%u, quiet for the boot splash, mapped %s\n", boot->fb.width,

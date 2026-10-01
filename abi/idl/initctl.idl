@@ -45,3 +45,12 @@ protocol initctl 18
 # sync, then a reset through the firmware, never kexec (the shell's
 # `reboot -f`). Answers only if the reset failed.
 6  reboot_firmware  () -> ()
+# Read /esp's boot/jamos.elf and boot/bootfs.img now and make them the
+# kernel's stored copy (kexec_load), the one `reboot` and a panic start:
+# a freshly flashed stick is loaded before the reboot, which then reads
+# nothing. Answers their sizes and how long the read took, once loaded.
+# ERR_NOT_FOUND: no /esp, or not both files; the kernel's kexec_load
+# errors (ERR_NOT_SUPPORTED: no stored kernel's region, crashkernel=0;
+# ERR_INVALID_ARGS: not a kernel and a boot image); the stored copy is
+# then unchanged. The shell's channel only.
+7  kernel_load  () -> (u64 kernel_bytes, u64 bootfs_bytes, u32 read_ms)

@@ -16,6 +16,7 @@
 #define INITCTL_MOUNT            0x00120004u
 #define INITCTL_SHELL_READY      0x00120005u
 #define INITCTL_REBOOT_FIRMWARE  0x00120006u
+#define INITCTL_KERNEL_LOAD      0x00120007u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -70,9 +71,20 @@ struct initctl_reboot_firmware_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct initctl_kernel_load_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_kernel_load_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t kernel_bytes;
+    uint64_t bootfs_bytes;
+    uint32_t read_ms;
+} __attribute__((packed));
 
 #define INITCTL_REQ_MAX 40u   /* bytes: the biggest request */
-#define INITCTL_REP_MAX 16u   /* bytes: the biggest reply */
+#define INITCTL_REP_MAX 28u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -221,6 +233,38 @@ static inline status_t initctl_reboot_firmware(handle_t ch)
     return initctl_reboot_firmware_until(ch, DEADLINE_NEVER);
 }
 
+/* Read /esp's boot/jamos.elf and boot/bootfs.img now and make them the
+ * kernel's stored copy (kexec_load), the one `reboot` and a panic start:
+ * a freshly flashed stick is loaded before the reboot, which then reads
+ * nothing. Answers their sizes and how long the read took, once loaded.
+ * ERR_NOT_FOUND: no /esp, or not both files; the kernel's kexec_load
+ * errors (ERR_NOT_SUPPORTED: no stored kernel's region, crashkernel=0;
+ * ERR_INVALID_ARGS: not a kernel and a boot image); the stored copy is
+ * then unchanged. The shell's channel only. */
+static inline status_t initctl_kernel_load_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+{
+    struct initctl_kernel_load_req idl_q;
+    struct initctl_kernel_load_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_KERNEL_LOAD;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_kernel_bytes)
+        *out_kernel_bytes = idl_r.kernel_bytes;
+    if (idl_st == OK && out_bootfs_bytes)
+        *out_bootfs_bytes = idl_r.bootfs_bytes;
+    if (idl_st == OK && out_read_ms)
+        *out_read_ms = idl_r.read_ms;
+    return idl_st;
+}
+static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+{
+    return initctl_kernel_load_until(ch, DEADLINE_NEVER, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -232,6 +276,7 @@ struct initctl_ops {
     status_t (*mount)(void *ctx, const uint8_t path[16], uint8_t writable);
     status_t (*shell_ready)(void *ctx);
     status_t (*reboot_firmware)(void *ctx);
+    status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -347,6 +392,27 @@ static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INITCTL_KERNEL_LOAD: {
+        const struct initctl_kernel_load_req *idl_q = (const struct initctl_kernel_load_req *)req;
+        struct initctl_kernel_load_rep *idl_r = (struct initctl_kernel_load_rep *)rep;
+        uint64_t out_kernel_bytes = 0;
+        uint64_t out_bootfs_bytes = 0;
+        uint32_t out_read_ms = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->kernel_load) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->kernel_load(ctx, &out_kernel_bytes, &out_bootfs_bytes, &out_read_ms);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->kernel_bytes = out_kernel_bytes;
+        idl_r->bootfs_bytes = out_bootfs_bytes;
+        idl_r->read_ms = out_read_ms;
         return sizeof(*idl_r);
     }
     }

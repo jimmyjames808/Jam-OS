@@ -216,8 +216,6 @@ void sh_init(void)
     sh_setvar("USER", "jam", 1);
     sh_setvar("HOME", "/boot", 1);
     sh_setvar("PATH", "/boot/bin", 1);
-    sh_setvar("TZ", "Australia/Sydney", 1);
-    sh_setvar("RTC", "local", 0);
     sh_setvar("HOSTNAME", "jamos", 0);
     sh_set_alias("lspci", "devices");
     sh_set_alias("lsusb", "usb");

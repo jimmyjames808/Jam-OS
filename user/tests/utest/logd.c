@@ -100,6 +100,28 @@ static bool logd_alive(const struct logd *l)
 
 /* Write line number i of the log into l's feed, and add it to `all` (a
  * string of at most cap bytes: what the file must hold), if given. */
+/* A log file logd made: its first line dates it ("Jam OS boot log
+ * boot-0004.txt: the kernel started at ..."), the rest is text. */
+static bool log_is(const struct fatrun *r, const char *path, const char *text)
+{
+    struct tfile f;
+    static char got[4096];
+    uint32_t done = 0;
+    CHECK_ST(t_open(r, path, FS_READ, &f), OK);
+    status_t st = t_read(&f, 0, got, sizeof(got) - 1, &done);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    got[done] = '\0';
+    const char *name = strrchr(path, '/') + 1, *nl = strchr(got, '\n');
+    char head[64];
+    snprintf(head, sizeof(head), "Jam OS boot log %s: the kernel started at ", name);
+    if (!nl || strncmp(got, head, strlen(head)))
+        FAIL("%s doesn't start with the line that dates it: \"%.80s\"", path, got);
+    if (strcmp(nl + 1, text))
+        FAIL("%s holds \"%s\" after its date, not \"%s\"", path, nl + 1, text);
+    return true;
+}
+
 static bool say_line(const struct logd *l, unsigned i, char *all, size_t cap)
 {
     char line[64];
@@ -149,7 +171,7 @@ bool t_logd_writes_the_log(void)
     if (syncs < 6 || syncs > 14)
         FAIL("%u block syncs in 2.5 s of steady logging, want one file sync every 250 ms",
              syncs);
-    if (!logd_end(&l) || !file_is(&fat, "/logs/boot-0004.txt", all))
+    if (!logd_end(&l) || !log_is(&fat, "/logs/boot-0004.txt", all))
         return false;
     CHECK_ST(t_stat(&fat, "/logs/boot-0005.txt", NULL, NULL, NULL), ERR_NOT_FOUND);
 
@@ -164,10 +186,10 @@ bool t_logd_writes_the_log(void)
     syncs = ramdisk_syncs(&disk);
     CHECK_ST(logctl_flush_until(l.ctl, now() + FAT_CALL_NS), OK);
     CHECK_EQ(ramdisk_syncs(&disk), syncs + 1);
-    if (!file_is(&fat, "/logs/boot-0005.txt", second))
+    if (!log_is(&fat, "/logs/boot-0005.txt", second))
         return false;
-    if (!logd_end(&l) || !file_is(&fat, "/logs/boot-0005.txt", second) ||
-        !file_is(&fat, "/logs/boot-0004.txt", all))
+    if (!logd_end(&l) || !log_is(&fat, "/logs/boot-0005.txt", second) ||
+        !log_is(&fat, "/logs/boot-0004.txt", all))
         return false;
     return fat_stop(&fat) && ramdisk_destroy(&disk);
 }
@@ -209,7 +231,7 @@ bool t_logd_without_data(void)
         return false;
     if (!logd_start(&l, fat.fs, HANDLE_INVALID) || !say_line(&l, 1, all, sizeof(all)))
         return false;
-    if (!logd_end(&l) || !file_is(&fat, "/logs/boot-0001.txt", all))
+    if (!logd_end(&l) || !log_is(&fat, "/logs/boot-0001.txt", all))
         return false;
     return fat_stop(&fat) && ramdisk_destroy(&disk);
 }
@@ -251,7 +273,7 @@ bool t_logd_data_goes_away(void)
         return false;
 
     /* the stick again: the five lines are in the file */
-    if (!fat_start(&fat, &disk, true) || !file_is(&fat, "/logs/boot-0001.txt", all))
+    if (!fat_start(&fat, &disk, true) || !log_is(&fat, "/logs/boot-0001.txt", all))
         return false;
     return fat_stop(&fat) && ramdisk_destroy(&disk);
 }
@@ -337,10 +359,15 @@ bool t_logd_kernel_log(void)
         if (!file_end(&fat, LOG1, false, got, sizeof(got), &n))
             return false;
     }
-    /* and it starts with a line of the log: "[    0.000000] ...", or
-     * "[logd: N bytes of the log were lost]" */
+    /* and it starts with the line that dates it, then a line of the log:
+     * "[    0.000000] ...", or "[logd: N bytes of the log were lost]" */
     if (!file_end(&fat, LOG1, true, got, sizeof(got), &n))
         return false;
-    CHECK(n > 0 && got[0] == '[');
+    static const char head[] = "Jam OS boot log boot-0001.txt: the kernel started at ";
+    CHECK(n > sizeof(head) && !memcmp(got, head, sizeof(head) - 1));
+    size_t nl = 0;
+    while (nl < n && got[nl] != '\n')
+        nl++;
+    CHECK(nl + 1 < n && got[nl + 1] == '[');
     return fat_stop(&fat) && ramdisk_destroy(&disk);
 }

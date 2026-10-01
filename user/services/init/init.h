@@ -6,7 +6,8 @@
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
- * (abi/idl/initctl.idl).
+ * (abi/idl/initctl.idl); settings.c the clock and the volumes from
+ * /data/etc/settings.
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -133,6 +134,9 @@ void     services_closed(unsigned i);
 void     services_given_up(unsigned i);
 /* A console runs (its clients may start); a devmgr runs. */
 bool     services_console_up(void);
+/* What /data/etc/settings says for svc i (settings.c), if it runs: the
+ * mixer's master volume, the music player's volume. */
+void     services_settings(unsigned i);
 bool     services_devmgr_up(void);
 
 /* ---- shell.c and services.c, for ctl.c and reboot.c -------------------------------- */
@@ -141,6 +145,8 @@ bool     services_devmgr_up(void);
 handle_t shell_root(void);
 /* devmgr's control channel, or 0 while none runs. */
 handle_t shell_devmgr(void);
+/* init's (ADMIN) console channel, or 0 while no console runs. */
+handle_t shell_console(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
  * until deadline at most. Nothing to do without a logd. */
 void     shell_flush_log(uint64_t deadline);
@@ -148,6 +154,18 @@ void     shell_flush_log(uint64_t deadline);
  * exits (DEVMGR_SHUTDOWN), waited for until deadline; if it doesn't, its
  * job is killed. It is not started again. OK, or what went wrong. */
 status_t shell_stop_devmgr(uint64_t deadline);
+
+/* ---- settings.c: /data/etc/settings (<settings.h>) ------------------------------- */
+
+/* Set the kernel's clock from the real-time clock, as the settings say it
+ * keeps time (the defaults without /data), with their time zone. */
+void     settings_clock(void);
+/* The settings' volumes to the mixer's master (audioctl) and to the music
+ * player (music), if there are any; nothing waits long. */
+void     settings_master(handle_t audioctl);
+void     settings_music(handle_t music);
+/* /data has no settings file: write one with the defaults, commented. */
+void     settings_first_file(void);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 
@@ -160,6 +178,10 @@ void     reboot_note_esp(void);
  * only if that failed (said in the log); the caller resets through the
  * firmware. */
 status_t init_reboot_kexec(void);
+/* initctl.kernel_load: /esp's kernel and boot image read and made the
+ * stored copy now (and noted as such); their sizes and the read's time.
+ * ERR_NOT_FOUND without them; kexec_load's errors (the old copy stays). */
+status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32_t *read_ms);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

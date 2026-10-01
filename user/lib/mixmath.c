@@ -163,3 +163,36 @@ void mix_out16(int16_t *out, const int32_t *acc, uint32_t frames, uint32_t *seed
         }
     }
 }
+
+const char *mix_db_str(int32_t cb, char *buf, size_t size)
+{
+    uint32_t a = cb < 0 ? (uint32_t)-cb : (uint32_t)cb;
+    snprintf(buf, size, "%s%u.%u", cb < 0 ? "-" : "", a / 10, a % 10);
+    return buf;
+}
+
+bool mix_parse_db(const char *s, int32_t *cb)
+{
+    bool neg = *s == '-';
+    if (*s == '-' || *s == '+')
+        s++;
+    int32_t v = 0;
+    bool digits = false;
+    for (; *s >= '0' && *s <= '9'; s++, digits = true)
+        if ((v = v * 10 + (*s - '0')) > 1000)
+            return false;
+    v *= 10;
+    if (*s == '.') {
+        s++;
+        if (*s >= '0' && *s <= '9') {
+            v += *s++ - '0';
+            digits = true;
+        }
+        while (*s >= '0' && *s <= '9')
+            s++;   /* hundredths and beyond: no volume is finer than a tenth */
+    }
+    if (*s || !digits)
+        return false;
+    *cb = neg ? -v : v;
+    return true;
+}

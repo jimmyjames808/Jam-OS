@@ -73,18 +73,19 @@ send TZ=+5:30 date -d @1790685296
 wait Tue 29 Sep 2026 18:04:56 UTC+05:30 (UTC+05:30)
 send TZ=bogus date -d @0
 wait TZ=bogus not understood
+# The clock: init reads the RTC as Sydney's local time (the setting rtc =
+# local, the default), so it is 14:02 UTC (tools/clock-test.sh has rtc = utc).
 send date
 wait Thu 15 Jan 2026 01:0
-send RTC=utc date
-wait Thu 15 Jan 2026 12:0
 wait AEDT (UTC+11:00)
-send RTC=utc date -u
-wait Thu 15 Jan 2026 01:0
-send RTC=utc TZ=-5 date
-wait Wed 14 Jan 2026 20:0
+send date -u
+wait Wed 14 Jan 2026 14:0
+send TZ=-5 date
+wait Wed 14 Jan 2026 09:0
 send date -r
 wait RTC 2026-01-15 01:0
-wait read as Sydney time
+wait read as local time
+wait the clock: 2026-01-14 14:0
 wait jam>
 
 # ---- files ---------------------------------------------------------------------------

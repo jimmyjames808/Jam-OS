@@ -19,12 +19,14 @@
 static int intro(char *buf, size_t size, const struct crashlog_header *h)
 {
     uint64_t ms = h->uptime_ns / NS_PER_MS;
+    char date[200];
+    logfile_date(date, sizeof(date), "whose kernel started");
     int n = snprintf(buf, size,
                      "Jam OS crash log: the end of the kernel log of %s, which panicked after "
-                     "%lu.%03lu s (panic %u in a row), saved by the boot after it.\n"
+                     "%lu.%03lu s (panic %u in a row), saved by the boot after it, %s.\n"
                      "The panic: %s\n",
                      h->name[0] ? h->name : "a boot that had no log file of its own",
-                     (unsigned long)(ms / 1000), (unsigned long)(ms % 1000), h->panics,
+                     (unsigned long)(ms / 1000), (unsigned long)(ms % 1000), h->panics, date,
                      h->message[0] ? h->message : "(no message)");
     if (h->lost)
         n += snprintf(buf + n, size - (size_t)n,

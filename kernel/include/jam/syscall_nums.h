@@ -77,6 +77,8 @@
 #define SYS_cpu_stat             131
 #define SYS_proc_list            132
 #define SYS_rtc_read             133
+#define SYS_wallclock_get        134
+#define SYS_wallclock_set        135
 #define SYS_kexec_load           140
 #define SYS_kexec_reboot         141
 

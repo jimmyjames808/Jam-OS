@@ -17,8 +17,13 @@
  *
  * The number is chosen once per boot. When /data comes back after it went
  * away the same file is opened again and appended to; only if it is gone
- * (another stick, a reformatted one) is a new number taken. */
+ * (another stick, a reformatted one) is a new number taken.
+ *
+ * A new file starts with one line that dates it: when the kernel started,
+ * by the wall clock in the system's zone (<wallclock.h>), so each line's
+ * [seconds] can be read as a time of day. */
 #include <os.h>
+#include <wallclock.h>
 #include "logd.h"
 
 #define LOG_DIR  "/logs"
@@ -88,6 +93,42 @@ static status_t make_dir(void)
     return st == ERR_ALREADY_EXISTS ? OK : st;
 }
 
+/* "the kernel started at Thu 1 Oct 2026 14:03:20 AEST (UTC+10:00)" for
+ * the line that dates a log file (also crash.c's). */
+void logfile_date(char *out, size_t cap, const char *what)
+{
+    int64_t utc = 0;
+    struct tz zone;
+    struct wall_clock w;
+    bool have = jam_wallclock_get(&w) == OK;
+    bool set = clock_now(&utc, &zone);
+    if (!have) {
+        snprintf(out, cap, "%s at a time not known (there is no clock)", what);
+        return;
+    }
+    char when[64];
+    if (!set)
+        tz_parse("UTC", &zone);   /* the RTC's reading as it is */
+    time_format(utc - (int64_t)(now() / NS_PER_S), &zone, when, sizeof(when), true);
+    snprintf(out, cap, "%s at %s%s", what, when,
+             set ? "" : ", by the real-time clock in its own zone (the clock wasn't set yet)");
+}
+
+/* The first line of a new file. */
+static status_t write_date_line(void)
+{
+    char date[200], line[256];
+    logfile_date(date, sizeof(date), "the kernel started");
+    int n = snprintf(line, sizeof(line), "Jam OS boot log %s.txt: %s; each line's [seconds] "
+                     "count from then.\n", base, date);
+    if (n >= (int)sizeof(line))
+        n = (int)sizeof(line) - 1;
+    status_t st = store->write(0, line, (uint32_t)n);
+    if (st == OK)
+        offset = (uint64_t)n;
+    return st;
+}
+
 status_t logfile_open(const struct store *s)
 {
     uint64_t size = 0;
@@ -111,7 +152,7 @@ status_t logfile_open(const struct store *s)
         return st;
     is_open = true;
     offset = size;
-    return OK;
+    return size ? OK : write_date_line();
 }
 
 status_t logfile_write(const void *data, uint32_t n)
