@@ -1,0 +1,15 @@
+# Input early in boot (tools/usb-early-test.sh): a plain boot with a hub,
+# keyboards, a mouse and two slow devices (serial jamos-test-slow: their
+# first two attempts each take a second and fail). The first keyboard and
+# mouse must be ready long before the slow ones attach; then `usb` lists
+# all seven devices.
+wait 60 console: input ready: the first keyboard and mouse
+seen 60 jam>
+wait 60 usb 8: 0627:0001
+seen 60 usb 6.3: 0627:0001
+sleep 1
+send usb
+wait 30 7 devices
+wait jam>
+send reboot -f
+wait reboot: resetting

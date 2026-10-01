@@ -13,6 +13,7 @@
 #define INPUT_KEY              0x000b0001u
 #define INPUT_MOUSE            0x000b0002u
 #define INPUT_TEXT             0x000b0003u
+#define INPUT_READY            0x000b0004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct input_key_req {
@@ -46,6 +47,17 @@ struct input_text_req {
     uint8_t bytes[64];
 } __attribute__((packed));
 struct input_text_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct input_ready_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t kind;
+    uint16_t vendor;
+    uint16_t product;
+} __attribute__((packed));
+struct input_ready_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -124,6 +136,32 @@ static inline status_t input_text(handle_t ch, uint16_t length, const uint8_t by
     return input_text_until(ch, DEADLINE_NEVER, length, bytes);
 }
 
+/* The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
+ * (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
+ * from now on. hid calls it once per start; the console logs each with
+ * the time since the kernel started, so the boot log says when the first
+ * keyboard and mouse could be used. */
+static inline status_t input_ready_until(handle_t ch, uint64_t deadline_ns, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    struct input_ready_req idl_q;
+    struct input_ready_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INPUT_READY;
+    idl_q.kind = kind;
+    idl_q.vendor = vendor;
+    idl_q.product = product;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t input_ready(handle_t ch, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    return input_ready_until(ch, DEADLINE_NEVER, kind, vendor, product);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -132,6 +170,7 @@ struct input_ops {
     status_t (*key)(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
     status_t (*mouse)(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons);
     status_t (*text)(void *ctx, uint16_t length, const uint8_t bytes[64]);
+    status_t (*ready)(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -195,6 +234,22 @@ static inline uint32_t input_dispatch(const struct input_ops *ops, void *ctx, co
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->text(ctx, idl_q->length, idl_q->bytes);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INPUT_READY: {
+        const struct input_ready_req *idl_q = (const struct input_ready_req *)req;
+        struct input_ready_rep *idl_r = (struct input_ready_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->ready) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->ready(ctx, idl_q->kind, idl_q->vendor, idl_q->product);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

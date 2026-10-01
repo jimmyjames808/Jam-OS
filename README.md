@@ -50,7 +50,8 @@ a real desktop PC, which is where every milestone is tested.
   across the bottom of the screen (left up, right down) and a sunburst in
   the full-screen view.
 - A boot splash: the logo animation with its sound while Jam OS starts
-  (a key skips it; the `verbose` boot entry shows the text log instead).
+  (it plays to the end, and what is typed meanwhile reaches the shell; the
+  `verbose` boot entry shows the text log instead).
 
 Not yet: networking, power management, running
 programs from `/data`. Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).

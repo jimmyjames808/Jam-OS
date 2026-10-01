@@ -1,5 +1,7 @@
 /* usb-bus internals, shared by its files: the xHCI host controller
- * (hc.c; ring.c: the DMA page pool and transfer rings), the USB device
+ * (hc.c; command.c: the command ring; ring.c: the DMA page pool and
+ * transfer rings), the tasks that serve ports and devices side by side
+ * (task.c), the USB device
  * model (devices.c: the device table and contexts; control.c: control
  * transfers and descriptors; intr.c: interrupt-IN endpoints; config.c:
  * configurations and interfaces; bulk.c: bulk endpoints and transfers;
@@ -28,9 +30,10 @@ static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 #define MAX_IFS      8      /* interfaces per device (active alternate settings) */
 #define MAX_EPS_IF   8      /* endpoints per interface we remember */
 #define MAX_LEVEL    6      /* a device on a root port is level 1; 5 hub tiers below */
-#define POOL_PAGES   320    /* DMA pages for contexts, rings and buffers */
+#define POOL_PAGES   384    /* DMA pages for contexts, rings and buffers */
 #define INTR_TRBS    8      /* interrupt-IN transfers kept queued per endpoint */
 #define MAX_CHANS    96     /* served channels (interfaces and report channels) */
+#define MAX_TASKS    48     /* tasks at once (task.c): a port's or a device's work */
 #define CFG_MAX      4096   /* biggest configuration descriptor we read */
 #define BULK_SIZE    65536u /* a class driver's bulk buffer (usb.open_bulk) */
 #define BULK_PAGES   (BULK_SIZE / PAGE)
@@ -286,17 +289,6 @@ struct hc {
         uint32_t cc, slot, param;    /* from the event: completion code, slot id, parameter */
     } cmd;
 
-    /* the one outstanding control transfer */
-    struct {
-        bool busy, done;             /* running; finished (cc says how) */
-        uint8_t slot;                /* the device's slot */
-        uint64_t data_trb, status_trb, setup_trb;   /* its TRBs' device addresses (0: none) */
-        uint32_t cc;                 /* completion code of the transfer */
-        uint32_t residual;           /* bytes not transferred (a short data stage) */
-        bool short_seen;             /* the data stage ended short */
-    } ctl;
-    int ctl_page;                    /* the shared control bounce buffer */
-
     /* the one outstanding bulk transfer (bulk.c) */
     struct {
         bool busy, done;             /* running; finished (cc says how) */
@@ -386,6 +378,8 @@ struct usbdev {
     bool gone;            /* detached or failed: only the cleanup is left */
     bool configured;      /* SET_CONFIGURATION done */
     bool reported;        /* its line is out */
+    bool reaping;         /* gone, and its slot being disabled to free the entry */
+    uint16_t holds;       /* tasks using the entry: it is not freed while any does */
     uint32_t id;          /* unique for this run; 0 = never */
     uint8_t slot;         /* xHCI slot id, 0: none */
     int parent;           /* devs[] index of its hub, -1: root port */
@@ -401,6 +395,16 @@ struct usbdev {
 
     int out_page, in_page;   /* pool pages: output (device) and input contexts, -1: none */
     struct ring ep0;      /* the default control endpoint's ring */
+    /* the control transfer running on EP0 (control.c): one at a time per device */
+    struct {
+        bool locked;      /* a task is using EP0 (a transfer and its recovery) */
+        bool busy, done;  /* running: events count; finished (cc says how) */
+        uint64_t data_trb, status_trb, setup_trb;   /* its TRBs' device addresses (0: none) */
+        uint32_t cc;      /* completion code of the transfer */
+        uint32_t residual;   /* bytes not transferred (a short data stage) */
+        bool short_seen;  /* the data stage ended short */
+        int page;         /* pool page: the transfers' bounce buffer, -1: none */
+    } ctl;
     uint16_t mps0;        /* EP0 max packet */
     uint8_t address;      /* the USB address the controller gave it */
 
@@ -432,6 +436,7 @@ struct usbdev {
 
     const char *problem;             /* why it stopped short of configured */
     uint8_t port_fail[16];           /* hub: failed attach attempts per port */
+    uint64_t port_retry_at[16];      /* hub: when to try a failed port again (ns); 0: not waiting */
     uint8_t port_oc[16];             /* hub: port power restores after over-current */
     uint32_t ep_recover;             /* DCIs to reset after an error (main loop) */
     uint32_t ep_drop;                /* DCIs whose client went away (main loop) */
@@ -441,12 +446,24 @@ extern struct usbdev *g_devs;   /* MAX_DEVS of them (drv_malloc) */
 
 /* ---- hc.c ------------------------------------------------------------------ */
 
+/* The fixed DMA area's layout (hc.c allocates it): offsets of the DCBAA,
+ * the event ring segment table, the command and event rings and the
+ * scratchpad array. */
+#define DMA_DCBAA   0x0000
+#define DMA_ERST    0x0800
+#define DMA_CMDRING 0x1000
+#define DMA_EVRING  0x2000
+#define DMA_SPARRAY 0x3000
+
 int  hc_bring_up(struct hc *h);
 int  hc_shutdown(struct hc *h);
 void hc_release(struct hc *h, bool quiet);
 uint32_t hc_portsc(struct hc *h, uint32_t port);
 void hc_portsc_write(struct hc *h, uint32_t port, uint32_t set);
 bool hc_port_is_usb3(struct hc *h, uint32_t port);
+uint32_t hc_op_read(struct hc *h, uint32_t r);                 /* an operational register */
+void hc_op_write64(struct hc *h, uint32_t r, uint64_t v);      /* one, low dword first */
+void hc_poll(struct hc *h);               /* the event ring now, without waiting */
 
 /* ring.c: the page pool (hc.c sets it up) and transfer rings. */
 int   pool_alloc(struct hc *h);            /* a zeroed page, -1 if none */
@@ -462,12 +479,17 @@ void ring_reset(struct ring *r);
 uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3);
 uint32_t ring_index(const struct ring *r, uint64_t trb_dev);   /* RING_TRBS if not in it */
 
-/* Run one command; its completion code (CC_TIMEOUT: none within timeout). */
+/* command.c: run one command; its completion code (CC_TIMEOUT: none
+ * within timeout, then aborted; CC_GONE: the controller is dead or the
+ * driver stopping). One at a time: a task waits here for the one before
+ * it. */
 uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3,
                     uint32_t *slot_out, uint64_t timeout_ms);
 void hc_doorbell(struct hc *h, uint32_t slot, uint32_t target);
 /* Wait for an interrupt (or anything else on the port) until deadline,
- * then poll. Packets for other keys are passed to serve_packet(). */
+ * then poll. Packets for other keys are passed to serve_packet(). In a
+ * task: give the CPU back to the main loop until then (task_wait), which
+ * does the waiting. */
 void hc_wait(struct hc *h, uint64_t deadline);
 void hc_wait_idle(struct hc *h, uint64_t deadline);
 /* Sleep that keeps servicing the controller. */
@@ -476,6 +498,45 @@ void hc_set_dcbaa(const struct hc *h, uint32_t slot, uint64_t addr);
 #define KEY_IRQ   0x7a60
 #define KEY_SERVE 0x5e7e
 #define KEY_CHAN  (1ull << 40)   /* | gen << 8 (16 bits) | index (8 bits) */
+
+/* ---- task.c ---------------------------------------------------------------- */
+
+#define TASK_PORT   1   /* a port's work: dev_id the hub (0: a root port), port (0: the hub) */
+#define TASK_DEVICE 2   /* a device's requests and endpoint upkeep: dev_id */
+
+/* A task (task.c's header has the model). */
+struct task {
+    uint8_t kind;           /* TASK_*, 0: a free slot */
+    bool done;              /* its function returned */
+    uint8_t port;           /* TASK_PORT: the port */
+    uint32_t dev_id;        /* TASK_PORT: the hub's id, 0 for a root port; TASK_DEVICE: its id */
+    void (*fn)(struct task *t);   /* what it runs */
+    uint64_t sp;            /* its stack pointer while switched out */
+    uint8_t *stack;         /* its stack (drv_malloc), kept for the slot's next task */
+    uint64_t wake_at;       /* runs again at this uptime (ns), */
+    uint64_t seen;          /* or as soon as there was a task_kick since it last ran */
+};
+
+extern bool g_task_overflow;              /* a stack overflowed: the driver stops (exit 7) */
+void tasks_reset(void);                   /* fresh state at the driver's start */
+void tasks_free(void);                    /* the free slots' stacks back to the heap */
+/* Start fn as a task of this kind and run it until it first waits (main
+ * loop only). NULL if every slot is taken or there is no memory. */
+struct task *task_start(uint8_t kind, uint32_t dev_id, uint8_t port, void (*fn)(struct task *t));
+struct task *task_find(uint8_t kind, uint32_t dev_id, uint8_t port);   /* a live one, or NULL */
+bool in_task(void);                       /* called from a task (not the main loop)? */
+/* In a task: let the main loop run until deadline (at most 50 ms) or
+ * the next task_kick. Returns at once in the main loop. */
+void task_wait(uint64_t deadline);
+void task_yield(void);                    /* the same with no deadline: the next round */
+void task_kick(void);                     /* something happened: waiting tasks look again */
+bool tasks_run(void);                     /* run every task that may go on; true if any did */
+uint64_t tasks_next_wake(uint64_t next);  /* the earliest a task may go on (now: one may now) */
+unsigned tasks_live(uint8_t kind);
+/* The default address of root port rp's tree: taken by a task from the
+ * device's reset until its Address Device is over (task.c's header). */
+void addr0_take(uint8_t rp);
+void addr0_give(uint8_t rp);
 
 /* ---- devices.c ------------------------------------------------------------- */
 
@@ -487,11 +548,21 @@ void devices_reset(void);                 /* the counters and ids, for a fresh s
 struct usbdev *dev_by_slot(uint8_t slot);
 struct usbdev *dev_find(uint32_t id);     /* by id: a live one (not gone), else NULL */
 int  dev_index(const struct usbdev *d);
-struct usbdev *child_at(int parent, uint8_t port);   /* parent -1: a root port */
+/* The device on a port (parent -1: a root port), not one already gone. */
+struct usbdev *child_at(int parent, uint8_t port);
+/* Is an entry still left on the port (gone, waiting for its last user)? */
+bool port_entry_left(int parent, uint8_t port);
 struct usbdev *dev_alloc(void);           /* a cleared entry, NULL if all are used */
 /* Give d's entry back. slot_disabled false: the controller may still own
  * the slot, so its DMA pages are kept (leaked) rather than reused. */
 void dev_free(struct usbdev *d, bool slot_disabled);
+/* A task uses d across waits: hold it, and put it when done. The last put
+ * of a gone device frees it (dev_reap). */
+void dev_hold(struct usbdev *d);
+void dev_put(struct usbdev *d);
+/* Free every gone entry no task holds, devices below a hub before the
+ * hub: Disable Slot (unless the driver is stopping), then dev_free. */
+void dev_reap(void);
 bool disable_slot(struct usbdev *d);      /* true once the controller let go of the slot */
 bool disable_slot_id(const char *path, uint32_t slot);   /* the same for a bare slot id */
 volatile uint32_t *in_ctx(struct usbdev *d, unsigned index);    /* 0 control, 1 slot, dci+1 */
@@ -506,7 +577,8 @@ uint64_t in_dev(struct usbdev *d);        /* the input context's device address 
  * CC_STALL (recovered), CC_TIMEOUT, CC_GONE or another error. */
 uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
                      uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms);
-void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
+/* A transfer event on d's EP0, for its running control transfer. */
+void ctl_event(struct usbdev *d, uint64_t trb, uint32_t cc, uint32_t residual);
 /* Endpoint recovery: Reset Endpoint (tsp: keep the data toggle), or Stop
  * Endpoint; then the dequeue pointer moves past what was queued. */
 void ep_reset_tsp(struct usbdev *d, uint8_t dci, struct ring *r, bool tsp);
@@ -523,7 +595,8 @@ int  ep_open_intr(struct usbdev *d, struct ep *e, uint8_t owner, int chan);
 void ep_close(struct usbdev *d, struct ep *e);
 void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc,
                         uint32_t residual);
-bool intr_upkeep(struct hc *h);           /* halted and dropped endpoints; true if any */
+/* d's halted and dropped endpoints (its device task); true if any. */
+bool dev_upkeep(struct hc *h, struct usbdev *d);
 
 /* ---- bulk.c ---------------------------------------------------------------- */
 
@@ -573,9 +646,13 @@ const char *cc_str(uint32_t cc);          /* a completion code's name, from the 
 /* ---- attach.c -------------------------------------------------------------- */
 
 /* Enumerate the device just reset on `port` of hub `parent` (-1: a root
- * port). True if it ended configured. */
+ * port). The caller holds the root port's default address (addr0_take);
+ * enumerate gives it back once the device has its address, or has
+ * failed. True if it ended configured. */
 bool enumerate(int parent, uint8_t port, uint8_t speed);
-void detach(struct usbdev *d, const char *why, bool quiet);   /* and everything below it */
+/* d and everything below it are gone: channels closed, entries freed as
+ * soon as no task uses them. */
+void detach(struct usbdev *d, const char *why, bool quiet);
 
 /* ---- hub.c, rootport.c ----------------------------------------------------- */
 
@@ -587,25 +664,41 @@ void detach(struct usbdev *d, const char *why, bool quiet);   /* and everything 
 #define OC_RESTORES 3
 
 bool hub_setup(struct usbdev *d);         /* after SET_CONFIGURATION; false: not used as a hub */
-void hub_work(struct usbdev *hub);        /* one unit: the hub's own change, or one port */
+/* A hub's port with a change (or due for a retry); port 0: the hub's own
+ * change. A port task's work. */
+void hub_port_work(struct usbdev *hub, uint8_t port);
+/* Due retries of failed hub ports become changes; the next retry time
+ * (or `next`). */
+uint64_t hub_retries(uint64_t next);
 /* Has the device on the hub's port gone (not connected, or a connect
  * change)? Reads the port's status without clearing anything; false if
  * it can't be read. */
 bool hub_port_lost(struct usbdev *hub, uint8_t port);
-void root_port(struct hc *h, uint32_t p);
+void root_port(struct hc *h, uint32_t p);   /* a port task's work */
 void root_ports_reset(void);
+/* Attach attempts per port before it waits for an unplug, and the wait
+ * before attempt n + 1 after n failed (0: no more). */
+#define PORT_TRIES 6
+uint64_t port_retry_ms(unsigned fails);
+/* Wait (up to 2 s) until the entry of a device that left the port is
+ * freed; false if one is still there. */
+bool wait_port_free(int parent, uint8_t port);
 /* Due retries of failed root ports become port changes; the next
  * retry time (UINT64_MAX: none). */
 uint64_t root_retries(struct hc *h);
 
 /* ---- work.c ---------------------------------------------------------------- */
 
-bool usb_work(struct hc *h);              /* pending port and hub work; true if any was done */
+/* Start a task for every port and device with work and none yet (main
+ * loop only). */
+void work_dispatch(struct hc *h);
+void device_task(struct task *t);         /* a TASK_DEVICE's work (serve.c starts it) */
 void usb_reset_state(void);
 void usb_start(struct hc *h);             /* the first scan of every root port */
-/* Shutdown: every device detached quietly. */
-void usb_stop_all(const struct hc *h);
-bool usb_busy(void);                      /* port or hub work pending */
+/* Shutdown: every task given up to 2 s to end, then every device
+ * detached quietly. */
+void usb_stop_all(struct hc *h);
+bool usb_busy(void);                      /* port or hub work pending or running */
 
 /* ---- serve.c --------------------------------------------------------------- */
 
@@ -620,6 +713,8 @@ struct chan {
     uint8_t kind;        /* CHAN_IFACE or CHAN_REPORTS */
     uint8_t a;           /* CHAN_IFACE: interface number; CHAN_REPORTS: DCI */
     bool pending;        /* may have something to read: the main loop serves it */
+    bool serving;        /* a device task is in one of its requests */
+    bool close_after;    /* closed meanwhile: closed for real when that request ends */
     uint16_t gen;        /* bumped at every add and close: in its port key */
     uint32_t dev_id;     /* the device's id */
 };
@@ -631,6 +726,15 @@ void chan_close(int i);
 handle_t chan_handle(int i);   /* HANDLE_INVALID for a free slot or a bad index */
 int  chan_slot(const struct chan *c);   /* c's index */
 void serve_iface_gone(uint32_t dev_id);   /* close every channel of a device */
+/* Serve d's interface channels with requests queued (its device task);
+ * true if any had some. */
+bool serve_device_chans(uint32_t dev_id);
+/* The channels with something queued, from the main loop: report
+ * channels and channels whose device is gone are read here (no waits);
+ * a live device's interface channels get its device task. */
+void serve_chans_dispatch(void);
+/* Is anything queued that the main loop itself must read? */
+bool serve_main_pending(void);
 void serve_device_ready(struct usbdev *d); /* tell devmgr about its interfaces */
 /* A report from an interrupt IN endpoint for a client: returns false if the
  * client's channel is gone (the caller closes the endpoint). */

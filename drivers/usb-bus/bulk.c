@@ -8,8 +8,9 @@
  * and a length, never bytes in a message, and usb-bus itself never maps
  * the buffer.
  *
- * One bulk transfer runs at a time, controller-wide (g_hc.bulk), inside
- * the request that asked for it, like a control transfer: the TD is one
+ * One bulk transfer runs at a time, controller-wide (g_hc.bulk; a device
+ * task wanting one while another's runs waits its turn), inside the
+ * request that asked for it, like a control transfer: the TD is one
  * Normal TRB per buffer page it touches (the pages are not contiguous for
  * the device), chained, with the interrupt on the last; then a bounded
  * wait that keeps servicing the controller. bulk_event matches the
@@ -280,8 +281,13 @@ static bool branch_lost(struct usbdev *d, uint64_t *next)
         struct usbdev *hub = &g_devs[d->parent];
         if (hub->gone)
             return true;
-        if ((hub->hub_change[d->port / 32] & (1u << (d->port % 32))) &&
-            hub_port_lost(hub, d->port))
+        bool lost = false;
+        if (hub->hub_change[d->port / 32] & (1u << (d->port % 32))) {
+            dev_hold(hub);
+            lost = hub_port_lost(hub, d->port);
+            dev_put(hub);
+        }
+        if (lost || hub->gone)
             return true;
         d = hub;
     }
@@ -305,6 +311,7 @@ static uint32_t td_wait(struct hc *h, struct usbdev *d, uint32_t timeout_ms)
     /* Not busy from here: the events of a TD that Stop Endpoint cuts
      * short must not count as a result. */
     h->bulk.busy = false;
+    task_kick();   /* the next transfer's turn */
     if (h->bulk.done)
         return h->bulk.cc;
     return lost || d->gone || h->dead || h->stopping ? CC_GONE : CC_TIMEOUT;
@@ -337,8 +344,12 @@ status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uin
     struct ep *e = &d->eps[ep_dci(in ? b->in : b->out)];
     if (!e->configured)
         return ERR_BAD_STATE;
-    if (h->dead)
+    while (h->bulk.busy && !h->dead && !h->stopping && !d->gone && in_task())
+        task_wait(drv_clock_ns() + 50 * NS_PER_MS);   /* another device's transfer runs */
+    if (h->dead || h->stopping || d->gone || h->bulk.busy)
         return ERR_PEER_CLOSED;
+    if (f->bulk != b || !e->configured)
+        return ERR_BAD_STATE;   /* released while this one waited its turn */
     h->bulk.busy = true;
     h->bulk.done = false;
     h->bulk.slot = d->slot;

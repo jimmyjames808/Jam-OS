@@ -109,10 +109,18 @@ Every driver and service is a userspace process from the start.
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played. The splash borrows the screen
-  like any app, starts the video and its sound together once the mixer is
-  up (2 s at most, then silently), holds the last frame at least 0.5 s and
-  until the shell calls `initctl.shell_ready`, and fades into the
-  console's text. Any key skips it (the sound fades out).
+  like any app (but not the keys), starts the video and its sound together
+  once the mixer is up (2 s at most, then silently), plays to the end,
+  holds the last frame at least 0.5 s and until the shell calls
+  `initctl.shell_ready`, and fades into the console's text. No key skips
+  it: what is typed meanwhile waits in the console (keys typed before
+  anyone listens go to the first to open the keys) and reaches the shell
+  once it is up. `run splash` from the shell takes the keys, and there a
+  key skips it.
+- **The timer check** (every CPU's ticks counted over 1 s): the test,
+  benchmark and regression entries run it before anything else; a plain
+  boot runs it in a kernel thread next to user space, so the second is not
+  spent before init starts (its lines come in the log when it ends).
 
 ## Memory
 
@@ -486,7 +494,7 @@ Every driver and service is a userspace process from the start.
 | Component | Uses | Provides | Built |
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
-| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device) | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (`drivers/usb-bus/task.c`) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal, and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
