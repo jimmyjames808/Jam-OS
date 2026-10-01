@@ -134,7 +134,11 @@ Every driver and service is a userspace process from the start.
   of the same size, so thread churn neither grows the vmap area nor strands
   page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
-  in) is reclaimed once every AP has started.
+  in until INIT resets them) is reclaimed once every AP has started.
+- **The AP trampoline's page**: one page of usable RAM in [64 KiB, 640 KiB),
+  the highest, is taken out of the memory map right after the early
+  allocator starts (`pmm_early_alloc_low`) and never given back; after the
+  startup it holds a halt stub.
 - **VMM**: own 4-level tables (no dependency on the loader's). Kernel image
   mapped per section (text RX, rodata R, data RW+NX), HHDM with 1 GiB/2 MiB
   pages for RAM only (write-back), framebuffer write-combining via PAT index 5.
@@ -240,9 +244,27 @@ Every driver and service is a userspace process from the start.
   re-armed after every interrupt for the earlier of its next 100 Hz tick
   (an absolute TSC deadline, no drift) and its earliest sleeper (per-CPU
   one-shot timers, see Scheduler). Tickless idle is not built yet.
-- APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
-  prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
-  stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
+- APs: the kernel starts them itself, on every boot, with the Intel SDM's
+  INIT-SIPI-SIPI (`kernel/arch/x86_64/apboot.c`): INIT to each CPU of the
+  boot list by APIC ID (never a broadcast), 10 ms, SIPI to each, 200 us,
+  SIPI again, 200 us, so all start at once (about 11 ms in all). Each AP
+  runs a real-mode trampoline (`kernel/arch/x86_64/trampoline.S`) 16 -> 32 ->
+  64-bit on a transition page table below 4 GiB (the trampoline page
+  identity-mapped, plus the kernel half), loads the kernel's CR3, finds its
+  slot by its APIC ID (CPUID) and moves onto the struct cpu the BSP
+  prepared (64 KiB guard-paged stack, own GDT/TSS with guarded IST stacks).
+  It sets NX/WP/PGE/PAT, its per-CPU state, its APIC (in the BSP's mode),
+  then **claims** its start (a compare-and-swap); the BSP gives up on a CPU
+  after 1 s with the same compare-and-swap and sends it INIT, so a CPU that
+  comes late parks itself and changes nothing shared; the CPUs that came up
+  are then numbered densely, so one that did not leaves no hole in
+  `cpus[]`. Each AP compares its
+  microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
+  if they differ); the boot log says if anything differs. The boot word
+  `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
+  releases each), the fallback until the kernel's own startup is signed
+  off on the PC. After a kexec there is no loader: the kernel's startup is
+  the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.

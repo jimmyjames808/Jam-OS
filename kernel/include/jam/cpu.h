@@ -18,6 +18,7 @@ struct cpu_features {
     bool pcid, invpcid;                     /* CPUID 1.ECX[17], 7.EBX[10] */
     bool pku, pks, waitpkg;                 /* CPUID 7.ECX[3], [31], [5] */
     bool cet_ss, cet_ibt, uintr;            /* CPUID 7.ECX[7], 7.EDX[20], 7.EDX[5] */
+    bool mtrr, tsc_adjust;                  /* CPUID 1.EDX[12], 7.EBX[1] (IA32_TSC_ADJUST) */
     uint32_t family, model, stepping;       /* CPUID 1.EAX, the extended fields folded in */
     uint32_t microcode;                     /* the running microcode revision, 0 if unknown */
     uint32_t max_leaf;                      /* highest basic CPUID leaf */
@@ -37,6 +38,20 @@ void cpu_enable_paging_features(void);
  * page tables and its own GDT (percpu_load): SMEP, SMAP, UMIP, FSGSBASE
  * off, the FPU/XSAVE state (fpu.c) and the syscall MSRs (uentry.c). */
 void cpu_init_local(void);
+
+/* What firmware sets up on every CPU and the kernel does not: the
+ * microcode, the MTRRs (Intel SDM vol. 3A, 12.11.8: they must match on
+ * every CPU) and IA32_TSC_ADJUST. cpu_snapshot_bsp records the BSP's, once,
+ * before the APs start. cpu_match_bsp, on an AP with interrupts off,
+ * compares, loads the BSP's MTRRs if this CPU's differ (INIT keeps the
+ * MTRRs on real CPUs, QEMU's TCG resets them), and returns what differed
+ * (CPU_DIFF_*) and this CPU's microcode revision. */
+#define CPU_DIFF_MICROCODE  (1u << 0)
+#define CPU_DIFF_MTRR       (1u << 1)   /* differ, and could not be fixed */
+#define CPU_DIFF_MTRR_SET   (1u << 2)   /* differed; now the BSP's */
+#define CPU_DIFF_TSC_ADJUST (1u << 3)
+void     cpu_snapshot_bsp(void);
+unsigned cpu_match_bsp(uint32_t *microcode);
 
 /* Segment selectors. The user selectors are laid out for SYSRET:
  * STAR[63:48] = GDT_USER_BASE, so SS = +8 and CS = +16. */

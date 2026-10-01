@@ -97,6 +97,7 @@ make debug                                                # the same, stopped fo
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash |
 | Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; a panic's screen stays 15 s, then the PC restarts by itself |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
+| Jam OS (Limine starts the CPUs) | `smp=loader` | the same as Jam OS, but Limine wakes the other CPUs and the kernel releases them, instead of the kernel's own INIT-SIPI-SIPI: the fallback until the kernel's own startup is signed off on the PC |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
 | Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
@@ -129,6 +130,16 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
 - `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting.
+- `smp=loader`: Limine starts the other CPUs (see the boot menu). The
+  boot log's `smp: N of M CPUs online in T ms (...)` line says which way
+  they were started and how long it took.
+- `smp_test_skip=<cpu>` and `smp_test_late=<cpu>` (kernels with tests
+  only): that CPU gets no startup IPIs, or comes late (it waits until the
+  BSP has given up on it, then its claim must be refused). Either boot
+  must log `smp: cpu <cpu> (lapic L) did not start` (the late one also
+  `its claim was refused: it parked itself`) and run on with one CPU
+  fewer; its RESULTS box says FINISHED WITH PROBLEMS (the CPU's timer
+  ticks are missing).
 
 The tests at boot (All tests, the stress test, the benchmark, the timer
 fallback) run before user space, so nothing of them reaches the stick:

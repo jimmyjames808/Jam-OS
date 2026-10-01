@@ -153,6 +153,10 @@ it syncs `/data` and has logd write the log's last lines first.
   lines name the function being sized). The plain entry shows the boot
   splash instead of the log: boot `Jam OS (text log, no splash)`
   (`verbose`) to see it.
+- Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
+  kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
+  `smp:` lines name each CPU that did not start; boot `Jam OS (Limine
+  starts the CPUs)` (`smp=loader`) to compare.
 - Anything that looks like memory corruption: boot with `nopcid` first
   (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
   log's `cpu id:` and `pcid:` lines give the microcode revision and whether
