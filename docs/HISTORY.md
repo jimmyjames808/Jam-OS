@@ -29,6 +29,51 @@ are the kernel's version string; hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## Audio (A1, A2, AS) and M8.5 (kexec)
+
+*2026-10-01, 0.0.26-m8.5 to 0.0.27-m8.5.* Signed off together on the PC:
+All tests with no problems and `soak 10` passed (645 s on 28 CPUs, 4495
+kernel tests, 19 utest runs, 2929 file cycles, 0 FAILED).
+
+Audio, all in user processes, on the PC's Realtek ALC897:
+- **A1:** `drivers/hda`: controller reset, CORB/RIRB, the codec's widget
+  graph, a path finder to the front headphone jack, an allow-list of SET
+  verbs, one output stream with MSI and clear-behind, jack detection
+  (unsolicited responses with a polling fallback), `beep`, `hda`. The
+  output stage goes on once at the driver's start with every amp muted
+  and settles 400 ms, so no stream starts with a thump
+  ([the review](history/AUDIO-REVIEW.md)).
+- **A2:** the mixer service (client rings in shared VMOs, Q15 gains,
+  24-bit output, dither, a limiter), `<audio.h>` with a Kaiser-sinc
+  resampler, `play` (WAV and MP3 through dr_mp3), `vol`, the background
+  `music` player owned by init, and jamjar, its full-screen remote: the
+  library from the stick, real album covers from ID3 tags (stb_image),
+  stereo spectrum bars and a sunburst ([the review](history/JAMJAR-REVIEW.md)).
+- **AS:** the boot splash: the owner's 2560x1440 animation as MPEG-1
+  with MP2 sound (pl_mpeg), picture and sound starting together, the
+  kernel quiet behind it.
+
+M8.5, after a first version as Linux's kdump and the owner's Revision 2
+([the plan](M8.5-PLAN.md)): one kernel with two ways in. A fresh copy of
+the system waits in reserved RAM (unmapped, checksummed). `reboot` and a
+panic both jump into it: the screen goes to the splash background, the
+next boot is a normal one, and after a panic logd saves the dead boot's
+log first and the shell says so. A second panic within 30 s halts on the
+panic screen. The kernel starts the other CPUs itself (INIT-SIPI-SIPI),
+which a kexec'd kernel needs.
+
+What the PC taught:
+- The AP trampoline's GDT descriptors need their accessed bit set: the
+  CPU writes it into a read-only page otherwise, and the triple fault
+  reset the PC before anything was on the screen. QEMU's TCG never sets
+  the bit, so every QEMU test passed.
+- A reboot waited 30 s for the hda driver, whose client (the mixer) was
+  still running; QEMU's tests had no sound card. Stopping the console
+  instead made the kernel redraw its log over the blank screen.
+- Real mice send the wheel only in the report protocol: the boot
+  protocol has three bytes.
+- At 2560x1440 jamjar's picture cache filled the heap after ten albums.
+
 ## M8: storage
 
 *2026-09-30 to 2026-10-01, 0.0.25-m8.*

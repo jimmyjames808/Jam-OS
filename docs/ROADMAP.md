@@ -21,10 +21,10 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M7 | USB (xHCI, hubs, HID), console, shell, driver supervision | done |
 | M7.5 | Cleanup, no behaviour change | done (PC 2026-09-30: All tests 221, shell ktest 212, 10-minute stress passed) |
 | M8 | Storage: USB mass storage, FAT32 (FatFs), `/esp` and `/data`, other sticks at `/usbN`, a log per boot | done (PC 2026-10-01: All tests 224, `stress 600` and `soak 10` passed) |
-| **A1** | **Audio: HD Audio driver, `beep`** | **in progress**: stage 0 (the probe) found the PC's codec, a Realtek ALC897 with the front headphone jack on pin 1b; stages 1-3 work in QEMU: the path DAC 02 -> mixer 0c -> pin 1b set up muted through an allow-list of SET verbs, one output stream on it (period interrupts over MSI, clear-behind), and `beep` (the path unmuted at -30 dB only while the stream runs; `hda gain`); sound works on the PC. Stage 4 (jacks): unsolicited responses with a tag per jack pin, the RIRB interrupt, an 80 ms debounce and a 500 ms polling fallback, `hda jacks`; checked in QEMU against fixtures and a fake codec (QEMU's codecs have no presence detection). The plug/unplug lines on the PC and the review are next ([A1-PLAN.md](A1-PLAN.md)) |
-| A2 | Audio: mixer, `audio` protocol, WAV playback | **in progress** ([A2-PLAN.md](A2-PLAN.md)): in QEMU, programs play at once through the mixer service (each its own stream in a shared ring, mixed two periods ahead of the play position), `vol` sets each stream's volume and the master, `<audio.h>` (blocking writes, mono to stereo, any rate to 48 kHz) and `play <file.wav>` and `beep` go through it. Two sounds at once on the PC and the review are next |
-| AS | Boot splash: the logo animation with its sound, alpha blending | **in progress** ([AS-PLAN.md](AS-PLAN.md)): in QEMU a plain boot is the splash's dark background from the kernel's start, the animation from bootfs's `splash.mpg` (pl_mpeg) with its sound through the mixer, the sound the clock once heard, the last frame held until the shell is up, then faded into the text; a key skips it, `verbose` or `nosplash` shows the log; libfun has premultiplied alpha and anti-aliased shapes. Seen on the PC at 720p ("lower quality"); now 2560x1440 (drawn 1:1, scaled down on smaller screens), picture and sound starting together, the logo lingering 2 s. The PC and the review are next |
-| M8.5 | Crash kernel and kexec | **in progress** ([M8.5-PLAN.md](M8.5-PLAN.md)). The first version (a crash kernel as a mode of its own) worked on the PC 2026-10-01; reworked to the owner's Revision 2: one kernel, two ways in. In QEMU `reboot` and a panic both start the kernel's stored copy of the system (reserved, unmapped and checksummed at boot) with every CPU and all of RAM; the screen is the splash background until the next boot's splash; after a panic logd saves the log as `/data/logs/boot-NNNN-crash.txt` and the shell says so in one line; `reboot` reads no file unless `/esp` changed. The PC is next |
+| A1 | Audio: HD Audio driver, `beep` | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); beep, jack detection) |
+| A2 | Audio: mixer, `audio` protocol, WAV and MP3 playback, `music`, jamjar | done (the same sign-off) |
+| AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
+| M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
 | M8.6 | Cleanup: the code checked against the coding guide, the queued design fixes, a block cache in fat, the log off the screen, a command to load the stick's kernel as the stored one, keyboard and mouse ready early in boot | later |
 | M9 | Networking | later |
 | M10 | ACPI power, tickless idle | later |
@@ -39,16 +39,17 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | G2-G4 | Toolkit and fonts, mode setting, 3D | after G1 |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
-## Next: A1, audio
+## Next: M8.6, cleanup and polish
 
-HD Audio on the PC's Realtek ALC897 (Intel 8086:7a50 controller) as a
-driver process, and `beep` in the shell playing a tone in the
-front-panel headphones. The plan is [A1-PLAN.md](A1-PLAN.md). Stage 0 (a
-read-only probe of the controller and codec) ran on the PC; stages 1
-(codec control and the path to the front headphone jack), 2 (the output
-stream) and 3 (`beep`, `hda gain`) work in QEMU, and sound plays on the
-PC; stage 4 (jack detection) is built and checked in QEMU against
-fixtures. Next: the plug/unplug lines on the PC, and the review.
+The row below has the whole list. In order: the independent review of
+M8.5's code; keyboard and mouse ready early in boot and the block cache;
+`/svc` with per-program views, `play` and jamjar's cover decoding split
+into small programs, UTF-8 in the log, running programs from `/data`;
+the log off the screen, `kernel load` and the small items; the code
+check last.
+
+The audio track (A1, A2, AS) and M8.5 are done:
+[what they delivered](HISTORY.md#audio-a1-a2-as-and-m85-kexec).
 
 M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
 Known limits it left:
