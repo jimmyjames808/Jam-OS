@@ -22,8 +22,8 @@ KTEST(kstack_free_reuses_range)
     void *a = kstack_alloc_try(64 * 1024);
     KT_ASSERT(a == warm);
     ((volatile uint64_t *)a)[-1] = 1;   /* mapped and writable */
-    /* 16 pages taken. Reusing the range frees its list node, and with it,
-     * if it was the only object there, the node's slab page. */
+    /* 16 pages taken. Taking a whole free range frees its list node, and
+     * with it, if it was the only object there, the node's slab page. */
     KT_ASSERT(kt_free_pages() <= free0 - 15);
     kstack_free(a, 64 * 1024);
     KT_EQ(vmm_translate(vmm_kernel_pml4(), (uint64_t)a - 8), UINT64_MAX);

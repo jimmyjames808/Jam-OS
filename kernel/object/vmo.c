@@ -949,7 +949,9 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
     vunlock(v, f);
     if (!r)
         return ERR_NOT_FOUND;
-    vmm_unmap(vmm_kernel_pml4(), base, (r->end - r->first) << PAGE_SHIFT);
+    uint64_t len = (r->end - r->first) << PAGE_SHIFT;
+    vmm_unmap(vmm_kernel_pml4(), base, len);
+    vmm_release(base, len);   /* shot down: the range and its page tables can be reused */
     range_remove(v, r);
     return OK;
 }

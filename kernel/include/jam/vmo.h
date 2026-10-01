@@ -93,8 +93,8 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len);
  * VMO's own: write-back, or what vmo_create_physical was given). *va points
  * at `offset` itself, not the start of its page. The mapping holds a VMO
  * reference until vmo_unmap_kernel, which needs interrupts on (it shoots
- * down other CPUs' TLBs) and no spinlock held. Kernel virtual space is not
- * reused after an unmap yet (the vmap area has no free list). */
+ * down other CPUs' TLBs) and no spinlock held, and gives the virtual range
+ * back for reuse (page tables included). */
 status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned vm_flags,
                         void **va);
 status_t vmo_unmap_kernel(struct vmo *v, void *va);

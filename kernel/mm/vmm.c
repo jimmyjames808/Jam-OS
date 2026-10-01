@@ -32,9 +32,8 @@ extern char __kernel_start[], __text_start[], __text_end[], __rodata_start[],
 
 static uint64_t kernel_pml4;
 static bool use_buddy;
-static spinlock_t vmap_lock = SPINLOCK_INIT("vmap");
 static spinlock_t pt_lock = SPINLOCK_INIT("kernel page tables");
-static uint64_t vmap_next = VMAP_BASE;
+static uint64_t kernel_tables;   /* table pages walk took from the buddy allocator for kernel_pml4 */
 
 /* 0 only when `may_fail` and the allocator is out of memory. */
 static uint64_t alloc_table_mode(bool may_fail)
@@ -92,6 +91,8 @@ static uint64_t *walk(uint64_t pml4, uint64_t va, int level, int create)
             uint64_t pa = alloc_table_mode(create == WALK_TRY);
             if (!pa)
                 return NULL;
+            if (pml4 == kernel_pml4 && use_buddy)
+                __atomic_add_fetch(&kernel_tables, 1, __ATOMIC_RELAXED);
             /* Intermediate entries are permissive; leaves decide access. */
             *e = pa | PTE_P | PTE_W | PTE_U;
         } else if (*e & PTE_PS) {
@@ -223,6 +224,11 @@ uint64_t vmm_kernel_pml4(void)
     return kernel_pml4;
 }
 
+uint64_t vmm_kernel_table_pages(void)
+{
+    return __atomic_load_n(&kernel_tables, __ATOMIC_RELAXED);
+}
+
 uint64_t *vmm_kernel_ptes(uint64_t va)
 {
     ASSERT(!(va & (SIZE_2M - 1)) && va >= VMAP_BASE && va < VMAP_END);
@@ -342,60 +348,138 @@ void vmm_use_buddy(void)
     use_buddy = true;
 }
 
-static uint64_t vmap_reserve_raw(uint64_t len);
+/* ---- the vmap area ----------------------------------------------------------
+ *
+ * Kernel stacks, kernel mappings of VMOs (vmo_map_kernel) and MMIO get their
+ * virtual ranges here. A range is taken first-fit from a list of free ranges
+ * (kept in address order), else from the top of the used part (vmap_next).
+ * A freed range is merged with its free neighbours, and folded back into the
+ * top when it reaches vmap_next.
+ *
+ * Page tables made for a range are never freed: the next range there reuses
+ * them. So the kernel's page tables grow only with the high-water mark of the
+ * area, not with how often things are mapped (test:
+ * vmap_reuse_keeps_tables_flat); without the reuse every vmo_map_kernel of a
+ * big VMO stranded a page table per 2 MiB.
+ *
+ * Every range ends with a guard page that is never mapped. The page below a
+ * range is the guard of the range under it, or free (unmapped), or, for the
+ * first range, VMAP_BASE's page, which is never handed out: so every mapping
+ * has an unmapped page on both sides, and running off either end faults.
+ * A range is given back only after it is unmapped and shot down on every
+ * CPU, so nothing can still reach it through a stale TLB entry.
+ *
+ * Guarded by vmap_lock, which nests inside no other lock and is held only
+ * for list work (the nodes are allocated and freed outside it). */
+struct vfree {
+    struct vfree *next;   /* the next free range, higher up */
+    uint64_t      va;     /* first free byte */
+    uint64_t      end;    /* one past the last; below the next range, never touching it */
+};
+static spinlock_t vmap_lock = SPINLOCK_INIT("vmap");
+static struct vfree *vfree_list;
+static uint64_t vmap_next = VMAP_BASE + PAGE_SIZE;   /* everything above is free */
+
+/* `len` bytes (page multiple, the guard included). */
+static uint64_t vmap_take(uint64_t len)
+{
+    struct vfree *used_up = NULL;
+    uint64_t va = 0;
+    uint64_t f = spin_lock_irqsave(&vmap_lock);
+    for (struct vfree **pp = &vfree_list; *pp; pp = &(*pp)->next) {
+        struct vfree *r = *pp;
+        if (r->end - r->va < len)
+            continue;
+        va = r->va;
+        r->va += len;
+        if (r->va == r->end) {
+            *pp = r->next;
+            used_up = r;
+        }
+        break;
+    }
+    if (!va && VMAP_END - vmap_next >= len) {
+        va = vmap_next;
+        vmap_next += len;
+    }
+    spin_unlock_irqrestore(&vmap_lock, f);
+    if (!va)
+        panic("vmm: vmap area exhausted");
+    kfree(used_up);
+    return va;
+}
+
+/* Give back [va, end) from vmap_take, with the lock held. spare[0] is a
+ * node for when nothing merges; nodes merged away are left in spare[] for
+ * the caller to free. False if no node could hold the range. */
+static bool vmap_give_locked(uint64_t va, uint64_t end, struct vfree *spare[3])
+{
+    struct vfree **pp = &vfree_list, **prev_link = NULL;
+    while (*pp && (*pp)->end <= va) {
+        prev_link = pp;
+        pp = &(*pp)->next;
+    }
+    struct vfree *prev = prev_link ? *prev_link : NULL, *next = *pp;
+    if ((next && next->va < end) || end > vmap_next || va < VMAP_BASE + PAGE_SIZE)
+        panic("vmm: vmap range %lx-%lx given back twice or never taken", va, end);
+    if (prev && prev->end == va) {   /* take prev out: the range grows down over it */
+        va = prev->va;
+        *prev_link = next;
+        pp = prev_link;
+        spare[1] = prev;
+    }
+    if (next && next->va == end) {   /* and next: it grows up over it */
+        end = next->end;
+        *pp = next->next;
+        spare[2] = next;
+    }
+    if (end == vmap_next) {
+        vmap_next = va;
+        return true;
+    }
+    for (int i = 0; i < 3; i++) {
+        struct vfree *n = spare[i];
+        if (n) {
+            spare[i] = NULL;
+            n->va = va;
+            n->end = end;
+            n->next = *pp;
+            *pp = n;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void vmap_give(uint64_t va, uint64_t len)
+{
+    struct vfree *spare[3] = { kmalloc(sizeof(struct vfree)), NULL, NULL };
+    uint64_t f = spin_lock_irqsave(&vmap_lock);
+    bool kept = vmap_give_locked(va, va + len, spare);
+    spin_unlock_irqrestore(&vmap_lock, f);
+    for (int i = 0; i < 3; i++)
+        kfree(spare[i]);
+    if (!kept)   /* out of memory for a node: the range stays out of use */
+        kprintf("vmm: vmap range %lx (%lu KiB) lost: no memory for its list node\n", va,
+                len >> 10);
+}
 
 uint64_t vmm_reserve(uint64_t len)
 {
-    return vmap_reserve_raw(ALIGN_UP(len, PAGE_SIZE) + PAGE_SIZE);   /* + guard gap */
+    return vmap_take(ALIGN_UP(len, PAGE_SIZE) + PAGE_SIZE);
 }
 
-static uint64_t vmap_reserve_raw(uint64_t len)
+void vmm_release(uint64_t va, uint64_t len)
 {
-    uint64_t f = spin_lock_irqsave(&vmap_lock);
-    uint64_t va = vmap_next;
-    vmap_next += len;
-    spin_unlock_irqrestore(&vmap_lock, f);
-    if (vmap_next > VMAP_END)
-        panic("vmm: vmap area exhausted");
-    return va;
+    vmap_give(va, ALIGN_UP(len, PAGE_SIZE) + PAGE_SIZE);
 }
 
 /* ---- kernel stacks ----------------------------------------------------------
  *
- * The vmap area is a bump allocator, so a freed stack's virtual range is kept
- * on this list and handed to the next stack of the same size: without that,
- * thread churn beyond the scheduler's stack cache would walk the bump pointer
- * forward for ever and strand a page table per 2 MiB of it. A range on the
- * list is unmapped (its TLB entries were shot down when it was freed) but its
- * page tables stay, so reusing it needs no new tables. Guarded by vmap_lock. */
-struct vslot {
-    struct vslot *next;   /* next free slot */
-    uint64_t      va;     /* lowest mapped byte (the guard page is below) */
-    uint64_t      size;   /* bytes */
-};
-static struct vslot *free_slots;
-
-/* A free range of exactly `size` bytes (plus its guard page), or NULL. */
-static struct vslot *slot_take(uint64_t size)
-{
-    uint64_t f = spin_lock_irqsave(&vmap_lock);
-    struct vslot **pp = &free_slots;
-    while (*pp && (*pp)->size != size)
-        pp = &(*pp)->next;
-    struct vslot *s = *pp;
-    if (s)
-        *pp = s->next;
-    spin_unlock_irqrestore(&vmap_lock, f);
-    return s;
-}
-
-static void slot_put(struct vslot *s)
-{
-    uint64_t f = spin_lock_irqsave(&vmap_lock);
-    s->next = free_slots;
-    free_slots = s;
-    spin_unlock_irqrestore(&vmap_lock, f);
-}
+ * A stack is a vmap range: [va, va + size) mapped, the guard above the top
+ * (unused) and the unmapped page below va (see the vmap area) catching an
+ * overflow. A freed stack's range is reused like any other, page tables
+ * included, so thread churn neither grows the area nor strands tables. */
 
 /* Map the chain of pages (linked through page->private, `n` of them) at va.
  * Every page table is created BEFORE any leaf is written, so a failure
@@ -446,18 +530,10 @@ static void *stack_alloc(size_t size, bool may_fail)
         p->private = (uint64_t)chain;
         chain = p;
     }
-    struct vslot *slot = slot_take(size);
-    uint64_t va = slot ? slot->va : vmap_reserve_raw(size + PAGE_SIZE) + PAGE_SIZE;
+    uint64_t va = vmm_reserve(size);
     if (!map_stack_pages(va, chain, n, may_fail)) {
         free_chain(chain);
-        if (!slot)
-            slot = kmalloc(sizeof(*slot));   /* keep the range; if this fails
-                                              * too, the range is just lost */
-        if (slot) {
-            slot->va = va;
-            slot->size = size;
-            slot_put(slot);
-        }
+        vmm_release(va, size);   /* nothing was mapped: keep the tables made */
         return NULL;
     }
     for (struct page *p = chain; p;) {   /* the pages are ours: clear the links */
@@ -465,7 +541,6 @@ static void *stack_alloc(size_t size, bool may_fail)
         p->private = 0;
         p = next;
     }
-    kfree(slot);
     return (void *)(va + size);
 }
 
@@ -483,9 +558,6 @@ void kstack_free(void *top, size_t size)
 {
     size = ALIGN_UP(size, PAGE_SIZE);
     uint64_t va = (uint64_t)top - size;
-    /* The node first: if it can't be had, the range is lost but the pages
-     * still go back. */
-    struct vslot *slot = kmalloc(sizeof(*slot));
     /* Read the physical pages before the unmap, free them only after it:
      * vmm_unmap has shot the range down on every CPU by then, so no stale
      * TLB entry can reach a page that is being reused. Chunks keep the
@@ -501,18 +573,14 @@ void kstack_free(void *top, size_t size)
         for (uint64_t i = 0; i < len / PAGE_SIZE; i++)
             pmm_free_page_phys(pas[i]);
     }
-    if (slot) {
-        slot->va = va;
-        slot->size = size;
-        slot_put(slot);
-    }
+    vmm_release(va, size);
 }
 
 void *vmm_map_mmio(uint64_t pa, uint64_t len)
 {
     uint64_t off = pa & (PAGE_SIZE - 1);
     len = ALIGN_UP(len + off, PAGE_SIZE);
-    uint64_t va = vmap_reserve_raw(len + PAGE_SIZE);   /* unmapped gap after */
+    uint64_t va = vmm_reserve(len);
     vmm_map(kernel_pml4, va, pa - off, len, VM_WRITE | VM_UC | VM_GLOBAL | VM_SMALL);
     return (void *)(va + off);
 }

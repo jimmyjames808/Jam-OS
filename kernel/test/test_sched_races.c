@@ -359,6 +359,7 @@ KTEST(repro_unmap_migrate_stale_tlb)
     KT_EQ(tlb_seen, 0xc0ffee);
 
     vmm_unmap(pml4, va, PAGE_SIZE);
+    vmm_release(va, PAGE_SIZE);
     pmm_free_page_phys(pa1);
     pmm_free_page_phys(pa2);
     kt_unpin_self();

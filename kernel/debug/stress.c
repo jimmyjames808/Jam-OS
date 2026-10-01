@@ -454,6 +454,8 @@ static uint64_t workers_end(void)
     kfree(pingpongs);
     workers = NULL;
     pingpongs = NULL;
+    vmm_release((uint64_t)shoot_va, PAGE_SIZE);   /* unmapped after every round */
+    shoot_va = NULL;
     check_job_empty();
     return __atomic_load_n(&failures, __ATOMIC_RELAXED);
 }
