@@ -13,10 +13,10 @@
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
  * one after another, each as a real child process in a job of its own (a
- * child of init's job) with a client end of devmgr's channel (SR_DEVMGR),
- * the root resource to read with (SR_RESOURCE: RIGHT_READ only) and init's
- * namespace as it is then (SR_NS: /boot, and what devmgr has mounted,
- * mounts.c); it waits for each to finish and reports how it
+ * child of init's job) with the root resource to read with (SR_RESOURCE:
+ * RIGHT_READ only) and init's namespace as it is then (SR_NS: /boot, what
+ * devmgr has mounted (mounts.c), and devmgr's query and control channels
+ * as /svc/devmgr and /svc/devmgr-ctl); it waits for each to finish and reports how it
  * ended: the lines go into the kernel's RESULTS box. At the end it closes
  * its end of devmgr's channel, which stops devmgr and its drivers, waits
  * for that, and stops the bootfs server the same way. init exits 0 if
@@ -72,26 +72,18 @@ static bool run(int argc, char **argv)
         init_say("init: %s: no job (%s)", argv[0], status_str(st));
         return false;
     }
-    /* The root resource to read with (the kernel log, the clock), then
-     * devmgr's channels if there is a devmgr. */
-    struct spawn_handle x[3] = { { SR_RESOURCE, HANDLE_INVALID }, { SR_DEVMGR_CTL, HANDLE_INVALID },
-                                 { SR_DEVMGR, HANDLE_INVALID } };
+    /* The root resource to read with (the kernel log, the clock); devmgr's
+     * channels are in our namespace (/svc), which it gets whole. */
+    struct spawn_handle x[1] = { { SR_RESOURCE, HANDLE_INVALID } };
     st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | RIGHT_READ, &x[0].h);
-    if (st == OK && devmgr_ch)
-        st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &x[1].h);
-    if (st == OK && devmgr_ch)
-        st = jam_handle_duplicate(devmgr_q, RIGHT_SAME, &x[2].h);
     if (st != OK) {
         init_say("init: %s: no handles for it (%s)", argv[0], status_str(st));
-        for (unsigned k = 0; k < 3; k++)
-            if (x[k].h)
-                jam_handle_close(x[k].h);
         jam_handle_close(job);
         return false;
     }
     struct spawn_args a = {
         .path = argv[0], .argc = argc, .argv = (const char *const *)argv, .job = job,
-        .extra = x, .nextra = devmgr_ch ? 3 : 1, .ns = NS_ALL,
+        .extra = x, .nextra = 1, .ns = NS_ALL,
     };
     uint64_t t0 = now();
     st = spawn(&a, &proc);
@@ -198,6 +190,12 @@ static bool start_devmgr(handle_t console)
     }
     devmgr_ch = a;
     devmgr_q = qa;
+    /* The programs we run reach it through our namespace. */
+    handle_t dq = HANDLE_INVALID, dc = HANDLE_INVALID;
+    if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
+        (void)ns_svc_set(SVC_DEVMGR, dq, false);   /* without it: the tests skip devmgr's */
+    if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
+        (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
     /* Wait for its first binding pass. */
     struct devmgr_rep r;
     st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
@@ -221,6 +219,8 @@ static bool stop_devmgr(void)
 {
     if (!devmgr_proc)
         return true;
+    (void)ns_svc_remove(SVC_DEVMGR);       /* our copies too: none may keep it */
+    (void)ns_svc_remove(SVC_DEVMGR_CTL);
     jam_handle_close(devmgr_q);
     jam_handle_close(devmgr_ch);
     devmgr_ch = devmgr_q = HANDLE_INVALID;

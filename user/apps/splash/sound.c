@@ -265,7 +265,7 @@ static void sound_main(void *arg)
 
 void sound_start(const uint8_t *mpg, size_t len, handle_t audio)
 {
-    if (!audio) {   /* <audio.h> opens its stream on this SR_AUDIO */
+    if (!audio) {   /* <audio.h> opens its stream on /svc/audio */
         printf("splash: no audio channel: playing without sound\n");
         return;
     }

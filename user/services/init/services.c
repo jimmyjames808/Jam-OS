@@ -167,21 +167,15 @@ static void tell_devmgr(void)
                status_str(st != OK ? st : r.status));
 }
 
-/* The shell gets each new devmgr client end on its init channel. */
-static void tell_shell(void)
+/* Publish h (a duplicate is taken; h stays ours) as /svc/<name> in our
+ * namespace, the one the shell and the other followers get; HANDLE_INVALID
+ * takes the name away. Followers hear of it with the next tell_mounts. */
+static void publish(const char *name, handle_t h, bool connect)
 {
-    handle_t d[2] = { HANDLE_INVALID, HANDLE_INVALID };
-    if (!to_shell || !devmgr || jam_handle_duplicate(devmgr_q, RIGHT_SAME, &d[0]) != OK)
-        return;
-    if (jam_handle_duplicate(devmgr, RIGHT_SAME, &d[1]) != OK) {
-        jam_handle_close(d[0]);
-        return;
-    }
-    uint32_t kind = INIT_SHELL_DEVMGR;
-    if (jam_channel_write(to_shell, &kind, sizeof(kind), d, 2) != OK) {
-        jam_handle_close(d[0]);   /* the shell is gone: it gets them when it restarts */
-        jam_handle_close(d[1]);
-    }
+    handle_t d = dup_of(h);
+    status_t st = d ? ns_svc_set(name, d, connect) : ns_svc_remove(name);
+    if (st != OK && (d || st != ERR_NOT_FOUND))
+        printf("init: /svc/%s: %s\n", name, status_str(st));
 }
 
 static status_t start_bootfs(void)
@@ -239,9 +233,8 @@ static status_t start_splash(void)
         jam_handle_close(c);
     if (st != OK)
         return st;
-    struct spawn_handle x[] = { { SR_CONSOLE, c }, { SR_USER + SPLASH_INIT_ROLE, theirs },
-                                { SR_AUDIO, dup_of(audio_cli[0]) } };
-    return svc_start1(SPLASH, x, x[2].h ? 3 : 2);   /* no mixer channel: it plays silently */
+    struct spawn_handle x[] = { { SR_CONSOLE, c }, { SR_USER + SPLASH_INIT_ROLE, theirs } };
+    return svc_start1(SPLASH, x, 2);   /* no /svc/audio: it plays silently */
 }
 
 static status_t start_serialin(void)
@@ -298,6 +291,9 @@ static status_t start_devmgr(void)
     }
     devmgr = a;
     devmgr_q = qa;
+    publish(SVC_DEVMGR, devmgr_q, false);
+    publish(SVC_DEVMGR_CTL, devmgr, false);
+    tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
     st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
@@ -306,7 +302,6 @@ static status_t start_devmgr(void)
     else
         printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped%s\n", r.a, r.b, r.c,
                nousb ? " (nousb: no USB drivers)" : "");
-    tell_shell();
     handle_t watch;
     st = jam_handle_duplicate(devmgr, RIGHT_SAME, &watch);
     if (st == OK)
@@ -341,6 +336,7 @@ static status_t start_logd(void)
         return st;
     }
     logd_ctl = mine;
+    publish(SVC_LOGD, logd_ctl, false);
     return OK;
 }
 
@@ -440,14 +436,10 @@ static status_t start_music(void)
         svcs[MUSIC].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, dup_of(music_srv) },
-                                { SR_AUDIO, dup_of(audio_cli[0]) } };
-    if (!x[0].h) {
-        if (x[1].h)
-            jam_handle_close(x[1].h);
+    struct spawn_handle x[] = { { SR_USER + 0, dup_of(music_srv) } };
+    if (!x[0].h)
         return ERR_NO_RESOURCES;
-    }
-    return svc_start1(MUSIC, x, x[1].h ? 2 : 1);   /* no mixer: it answers "no output" */
+    return svc_start1(MUSIC, x, 1);   /* no /svc/audio: it answers "no output" */
 }
 
 /* The line the boot's first shell prints after a panic (lastboot.c), queued
@@ -468,49 +460,35 @@ static void queue_banner(handle_t to)
 
 static status_t start_shell(void)
 {
-    handle_t c = HANDLE_INVALID, d = HANDLE_INVALID, dc = HANDLE_INVALID, pci = HANDLE_INVALID;
-    handle_t p2 = HANDLE_INVALID, mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
-    handle_t ctl = HANDLE_INVALID;
-    handle_t au = dup_of(audio_cli[0]), auc = dup_of(audio_cli[1]), mu = dup_of(music_cli);
+    handle_t c = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
+    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID, ctl = HANDLE_INVALID;
     /* A SHELL-level console channel: no input sources of its own. */
     status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 1, &c);
-    if (st != OK) {
-        if (au)
-            jam_handle_close(au);
-        if (auc)
-            jam_handle_close(auc);
-        if (mu)
-            jam_handle_close(mu);
+    if (st != OK)
         return st;
-    }
-    if (devmgr) {
-        jam_handle_duplicate(devmgr_q, RIGHT_SAME, &d);
-        jam_handle_duplicate(devmgr, RIGHT_SAME, &dc);
-    }
     if (jam_resource_create(root, RES_PCI, 0, 0, &pci) == OK &&
         jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
         p2 = HANDLE_INVALID;
     if (jam_channel_create(&mine, &theirs) != OK)
         mine = theirs = HANDLE_INVALID;
     queue_banner(mine);
-    if (ctl_new(CTL_SHELL, port, KEY_CTL + CTL_SHELL, &ctl) != OK)
-        ctl = HANDLE_INVALID;
+    /* Its control channel of init's: /svc/init, published before the
+     * shell is given our namespace (a new one each time: the old one's
+     * holders see ERR_PEER_CLOSED). */
+    if (ctl_new(CTL_SHELL, port, KEY_CTL + CTL_SHELL, &ctl) == OK) {
+        publish(SVC_INIT, ctl, false);
+        jam_handle_close(ctl);
+    }
     struct spawn_handle x[] = {
         { SR_CONSOLE, c },
         { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_READ | RIGHT_MANAGE) },
         { SR_USER + 1, p2 },
-        { SR_DEVMGR, d },
-        { SR_DEVMGR_CTL, dc },
         { SR_USER + 2, theirs },
-        { SR_USER + 3, ctl },
-        { SR_AUDIO, au },
-        { SR_AUDIO_CTL, auc },
-        { SR_USER + 4, mu },
     };
     /* Leave out the ones we don't have. */
-    struct spawn_handle y[10];
+    struct spawn_handle y[4];
     unsigned n = 0;
-    for (unsigned k = 0; k < 10; k++)
+    for (unsigned k = 0; k < 4; k++)
         if (x[k].h)
             y[n++] = x[k];
     /* The boot's first shell gets the boot word's command (shell_first_arg);
@@ -552,6 +530,8 @@ void services_closed(unsigned i)
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
         devmgr = devmgr_q = HANDLE_INVALID;
+        publish(SVC_DEVMGR, HANDLE_INVALID, false);
+        publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
         tell_mounts();
         printf("init: devmgr and its drivers are gone: starting them again\n");
@@ -559,6 +539,7 @@ void services_closed(unsigned i)
     if (i == LOGD && logd_ctl) {
         jam_handle_close(logd_ctl);
         logd_ctl = HANDLE_INVALID;
+        publish(SVC_LOGD, HANDLE_INVALID, false);
     }
     if (i == SHELL && to_shell) {
         jam_handle_close(to_shell);
@@ -576,6 +557,12 @@ void services_given_up(unsigned i)
         jam_handle_close(music_srv);   /* the shell's `music` fails now */
         music_srv = HANDLE_INVALID;
     }
+    if (i == MIXER || i == MUSIC) {   /* and nobody new gets them */
+        publish(i == MIXER ? SVC_AUDIO : SVC_MUSIC, HANDLE_INVALID, false);
+        if (i == MIXER)
+            publish(SVC_AUDIOCTL, HANDLE_INVALID, false);
+        tell_mounts();
+    }
 }
 
 void services_init(handle_t loop_port, bool no_usb, bool splash, const char *shell_arg)
@@ -588,4 +575,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     make_audio_channels();
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
+    publish(SVC_AUDIO, audio_cli[0], false);
+    publish(SVC_AUDIOCTL, audio_cli[1], false);
+    publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
 }

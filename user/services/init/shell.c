@@ -7,11 +7,16 @@
  * started and what it is given is in services.c; this file is the order,
  * the namespace they follow and the restarts.
  *
- * init keeps its end of the shell's, the music player's and logd's SR_NS channels and sends
- * them every later change of its mounts (logd: of /data), with ns_update:
- * each change takes back the one they haven't read yet (logd never looks
- * up a path again after it opens its file), so however often the mounts
- * change, each holds at most one message from init.
+ * init's own namespace holds its mounts (/boot, and what devmgr mounts:
+ * mounts.c) and the services it publishes under /svc (services.c). The
+ * services that have a namespace get the part of it their grants name
+ * (followers[], <os.h> "grants"): the shell all of it as it is, the music
+ * player every mount read-only and the mixer, logd /data (its top-level
+ * etc left alone), the splash the mixer. init keeps its end of each one's
+ * SR_NS channel and sends it every later change, with ns_update: each
+ * change takes back the one it hasn't read yet (logd never looks up a
+ * path again after it opens its file), so however often the namespace
+ * changes, each holds at most one message from init.
  *
  * A service that ends is started again (in the order above; the console's
  * clients wait for the console, logd for /data):
@@ -37,46 +42,26 @@ struct svc svcs[NSVC] = {
 
 /* A service that has a namespace, kept in step with init's. */
 struct follower {
-    const char *const *only;    /* the mounts it may have (NS_ALL: every one); NULL: none */
+    const char *const *only;    /* its grants (<os.h> "grants"); NULL: no namespace */
     handle_t           ns;      /* init's end of its SR_NS channel (0: not running) */
     handle_t           back;    /* a duplicate of its end, for ns_update (0: none) */
 };
 
-static const char *const logd_mounts[] = { DATA_MOUNT, NULL };
+static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, NULL };
+static const char *const music_grants[] = { "*:r", "/svc/" SVC_AUDIO, NULL };
+static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
 static struct follower followers[NSVC] = {
-    [MUSIC] = { .only = NS_ALL }, [LOGD] = { .only = logd_mounts }, [SHELL] = { .only = NS_ALL },
+    [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
+    [LOGD] = { .only = logd_grants }, [SHELL] = { .only = NS_ALL },
 };
 static handle_t port;
-
-/* path is one of list's mount points (NS_ALL lists every one). */
-static bool in_list(const char *const *list, const char *path)
-{
-    if (list[0] && !strcmp(list[0], NS_ALL[0]))
-        return true;
-    for (unsigned i = 0; list[i]; i++)
-        if (!strcmp(list[i], path))
-            return true;
-    return false;
-}
-
-/* init's mount points now that are in `only`, into out; how many. */
-static unsigned mount_points(const char *const *only, char out[NS_MAX_MOUNTS][NS_NAME_MAX])
-{
-    unsigned n = 0;
-    char point[NS_NAME_MAX];
-    for (unsigned i = 0; n < NS_MAX_MOUNTS && ns_mount_at(i, point); i++)
-        if (in_list(only, point))
-            memcpy(out[n++], point, NS_NAME_MAX);
-    return n;
-}
 
 /* init has a mount at path now. */
 static bool mounted(const char *path)
 {
-    char all[NS_MAX_MOUNTS][NS_NAME_MAX];
-    unsigned n = mount_points(NS_ALL, all);
-    for (unsigned i = 0; i < n; i++)
-        if (!strcmp(all[i], path))
+    char point[NS_NAME_MAX];
+    for (unsigned i = 0; ns_mount_at(i, point); i++)
+        if (!strcmp(point, path))
             return true;
     return false;
 }
@@ -130,9 +115,9 @@ status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx)
     return svc_start(i, 1, argv, x, nx);
 }
 
-/* Svc i's namespace follows init's: the whole of it that its list
- * allows (a mount whose service restarted has a new channel), replacing
- * any earlier one it hasn't read. */
+/* Svc i's namespace follows init's: the whole of it that its grants
+ * name (a mount whose service restarted has a new channel, a view a new
+ * view), replacing any earlier one it hasn't read. */
 static void tell_follower(unsigned i)
 {
     struct follower *f = &followers[i];

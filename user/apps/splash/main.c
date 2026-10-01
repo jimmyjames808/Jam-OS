@@ -3,8 +3,8 @@
  *
  * init starts it first on a plain boot, right after the console (init's
  * splash.c), with a PROGRAM-level console channel (SR_CONSOLE), init's
- * channel (SR_USER + SPLASH_INIT_ROLE, <splash.h>) and the mixer's `audio`
- * channel (SR_AUDIO). It:
+ * channel (SR_USER + SPLASH_INIT_ROLE, <splash.h>) and a namespace with
+ * the mixer's `audio` channel (/svc/audio, its list's one want). It:
  *   1. borrows the screen and the keys (gfx_open_on: the screen stays the
  *      kernel's dark background, the video's own);
  *   2. plays bootfs's splash.mpg (video.c, draw.c, sound.c): shows its
@@ -29,7 +29,11 @@
  * Anything that goes wrong on the way
  * ends it early (the console then draws at once); a panic draws over it
  * whatever it is doing (the kernel's). */
+#include <wants.h>
 #include "splash_int.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc audio\n");
 
 #define HOLD_MAX   (30 * NS_PER_S)    /* a shell that never comes: give the screen back */
 #define LINGER     (500 * NS_PER_MS)  /* the last frame stays at least this long after the end */
@@ -83,7 +87,7 @@ static bool play(const uint8_t *mpg, size_t len, uint64_t since)
            (unsigned long)(now() / NS_PER_MS), (int)f->width, (int)f->height,
            video_mode(mode, sizeof(mode)), scr.w, scr.h,
            (unsigned long)(video_seconds() * 1000));
-    sound_start(mpg, len, startup_handle(SR_AUDIO));
+    sound_start(mpg, len, svc_get(SVC_AUDIO));
     double fps = video_fps();
     unsigned shown = 1, dropped = 0, n = 1;
     bool skipped = start_clock(since);

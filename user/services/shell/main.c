@@ -15,7 +15,15 @@
  * shell with the new console's channel). */
 #include <idl/console.h>
 #include <idl/initctl.h>
+#include <wants.h>
 #include "sh_core.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("mount * rw\n"
+          "svc audio\n"
+          "svc audioctl\n"
+          "svc music\n"
+          "svc devmgr\n");
 
 #define LINE_MAX  240
 #define HIST      32

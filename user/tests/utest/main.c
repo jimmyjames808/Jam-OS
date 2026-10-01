@@ -28,7 +28,14 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <os.h>
+#include <wants.h>
 #include "utest.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc devmgr\n"
+          "svc devmgr-ctl\n"
+          "mount * rw\n"
+          "right klog\n");
 
 const char *utest_cur;   /* the test running */
 

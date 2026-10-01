@@ -72,7 +72,7 @@ void     sound_fade_in(int16_t *pcm, size_t frames, size_t from);
 /* Media time now, ns: the sound's position while it plays, else the timer. */
 uint64_t clock_now(void);
 /* Play the file's sound on a thread of its own through the mixer channel
- * `audio` (SR_AUDIO; 0: silent): decoded whole first, then joined at the
+ * `audio` (/svc/audio; 0: silent): decoded whole first, then joined at the
  * media time it is at when the mixer answers. */
 void     sound_start(const uint8_t *mpg, size_t len, handle_t audio);
 /* Stop it (a key skipped the animation): faded out over 5 ms. */

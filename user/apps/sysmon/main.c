@@ -22,7 +22,11 @@
  * A reading every half second; the figures are what changed between two
  * readings (model.c). The whole frame is redrawn for each, and
  * gfx_present sends only the pixels that changed. */
+#include <wants.h>
 #include "sysmon.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("right sysinfo\n");
 
 static struct sample readings[2];
 static struct model model;

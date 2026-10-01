@@ -147,19 +147,14 @@ const char *sh_boot_note(void);
 /* ---- programs (sh_program.c) ------------------------------------------------------- */
 
 /* Start argv[0] (a name: /boot/bin/<name>; else a path on any mount),
- * wait for it, say how it ended; its status. It gets the shell's
- * namespace, a PROGRAM-level console channel and nothing of devmgr's; its
+ * wait for it, say how it ended; its status. It gets what its list asks
+ * for (<wants.h>) and its terminal (a PROGRAM-level console channel); its
  * job is killed when it ends. */
 int sh_run_program(int argc, char **argv);
-/* A test program (utest, usbtest): run it with devmgr's channels and the
- * mixer's control channel, then show its result line from the kernel log;
- * its status. */
+/* A test program (utest, usbtest, hdatest, mixtest): run it as
+ * sh_run_program does (its list asks for what it tests), then show its
+ * result line from the kernel log; its status. */
 int sh_run_test_program(int argc, char **argv);
-/* The same, with init's control channel as SR_USER + 3 too (mixtest). */
-int sh_run_test_program_initctl(int argc, char **argv);
-/* A plain program with the music player's channel as SR_USER + 4 too (the
- * shell's own number for it): bin/jamjar, the player's window. */
-int sh_run_program_music(int argc, char **argv);
 
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 

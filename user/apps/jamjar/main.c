@@ -1,7 +1,7 @@
 /* jamjar: the music player's window, on the screen borrowed from the console.
  *
- *   jamjar                     (the shell command) the library and the player
- *   run jamjar                 the library only: no player channel (it says so)
+ *   jamjar, run jamjar         the library and the player
+ *   ... noplayer               the library only: the player is left alone
  *   ... root=/usb0/music       the folder to read (default /usb0/music if
  *                              there is one, else /data/music)
  *   ... hz=60                  frames a second while anything moves
@@ -14,15 +14,23 @@
  *
  * It is a remote control and a view of the background player (bin/music,
  * abi/idl/music.idl), never a second player: the music goes on after q.
- * The shell's `jamjar` command hands it the player's channel as SR_USER + 4
- * (the shell's own number for it). docs/history/MUSIC-GUI.md is the design.
+ * Its list (below) asks for the player, whose channel it opens for itself
+ * (/svc/music hands each opener its own), and for the music read-only:
+ * /data and the other sticks. Without the player (none runs, or it isn't
+ * in its namespace) it shows the library only, and says so.
+ * docs/history/MUSIC-GUI.md is the design.
  *
  * The loop: read a little more of the library while it is being read, take
  * the player's latest snapshot (link.c's thread does the calls), move the
  * bars on, draw, present, and wait for a key, a mouse report or the next
  * frame: every 1/hz s while anything moves, four times a second when
  * nothing does (the clock of the progress bar). */
+#include <wants.h>
 #include "jamjar.h"
+
+JAM_WANTS("svc music\n"
+          "mount /data r\n"
+          "mount /usb* r\n");
 
 static struct app A;
 
@@ -127,7 +135,10 @@ static int run(int argc, char **argv)
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "root=", 5))
             root = argv[i] + 5;
-    link_start(startup_handle(SR_USER + 4));
+    handle_t music = HANDLE_INVALID;
+    if (!has_arg(argc, argv, "noplayer"))
+        (void)svc_open(SVC_MUSIC, &music);   /* none: the library only */
+    link_start(music);
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
     if (!has_arg(argc, argv, "nocovers"))
         cover_start(a->trace);
@@ -143,8 +154,8 @@ static int run(int argc, char **argv)
         a->lib.ready = true;
         a->lib.err = st;
     }
-    if (!a->snap.link)
-        say("jamjar: no player channel: start it with the shell's `jamjar` command to play\n");
+    if (!music)
+        say("jamjar: no player (none runs, or noplayer): the library only\n");
     if (a->trace)   /* the cover test reads where now playing's cover goes */
         say("jamjar: %dx%d, reading %s; now playing's cover at %d,%d, %d px\n", scr.w, scr.h,
             a->lib.root, a->lo.art.x, a->lo.art.y, a->lo.art.w);

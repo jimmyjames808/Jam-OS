@@ -72,6 +72,10 @@ static bool parse(int argc, char **argv, struct soak *s)
     return true;
 }
 
+/* What bin/soakload is given: every mount, writable where we may write
+ * (views: <os.h> "grants"), and nothing else. */
+static const char *const load_grants[] = { "*:w", NULL };
+
 /* Start bin/soakload in a job of its own with a control channel and a
  * namespace channel (mounts that come back are sent to it between loops). */
 static void start_load(struct soak *s)
@@ -88,7 +92,7 @@ static void start_load(struct soak *s)
     const char *args[] = { "soakload" };
     struct spawn_args a = {
         .path = "bin/soakload", .argc = 1, .argv = args, .job = s->load_job, .extra = &x,
-        .nextra = 1, .ns = NS_ALL, .ns_out = &s->load_ns,
+        .nextra = 1, .ns = load_grants, .ns_out = &s->load_ns,
     };
     status_t st = spawn(&a, &s->load_proc);
     if (st != OK) {
@@ -147,7 +151,7 @@ static bool one_loop(struct soak *s)
     if (!ktest_once(s, !s->idle))
         return false;
     if (s->load_ns)
-        ns_send(s->load_ns, NS_ALL);   /* a stick plugged back in is a new mount */
+        ns_send(s->load_ns, load_grants);   /* a stick plugged back in is a new mount */
     char name[] = "utest";
     char *argv[] = { name, NULL };
     s->utest_runs++;

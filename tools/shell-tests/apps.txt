@@ -87,10 +87,13 @@ shot apps-sysmon
 type q
 wait 30 sysmon: bin/sysmon exited with code 0
 wait jam>
-# ... `run` doesn't: it says so and ends
+# ... and `run sysmon` gives it the same: its list asks for the kernel's
+# figures (right sysinfo)
 send run sysmon
-wait 30 sysmon: the kernel's figures need the root resource
-wait run: bin/sysmon exited with code 1
+wait run: bin/sysmon started
+sleep 2
+type q
+wait 30 run: bin/sysmon exited with code 0
 wait jam>
 # ... and the PC's 28 CPUs (16 P + 12 E threads), made up
 send run sysmon fake=28
