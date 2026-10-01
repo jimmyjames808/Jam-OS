@@ -35,9 +35,9 @@
  * Reports arrive as one message each on the channel open_interrupt_in
  * returns. The loop waits on a port for that channel (readable or closed),
  * DR_USB closed and DR_INPUT closed, with the next key repeat as deadline.
- * The keyboard layer is keyboard.c; a boot mouse report is buttons, dx, dy
- * and, when the report has a fourth byte, the wheel (input.mouse, sent
- * only when something changed).
+ * The keyboard layer is keyboard.c, the mouse layer mouse.c (a boot mouse
+ * report is buttons, dx, dy and, when the report has a fourth byte, the
+ * wheel: input.mouse, sent only when something changed).
  *
  * Ending (the reconnect rule of input.idl and usb.idl): DR_USB closed =
  * "device gone", exit 0 (devmgr binds a new hid when the interface comes
@@ -173,20 +173,11 @@ void hid_set_leds(struct hid *h, uint8_t leds)
                 h->iface, leds, status_str(st));
 }
 
-static void mouse_report(struct hid *h, const uint8_t *r, uint32_t n)
+void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons,
+               bool buttons_changed)
 {
-    if (n < 3) {
-        h->kbd.short_reports++;
-        return;
-    }
-    uint8_t buttons = r[0] & 0x07;
-    int8_t dx = (int8_t)r[1], dy = (int8_t)r[2], wheel = n >= 4 ? (int8_t)r[3] : 0;
-    if (!dx && !dy && !wheel && buttons == h->mouse_buttons)
-        return;
-    uint8_t was = h->mouse_buttons;
-    h->mouse_buttons = buttons;
     if (h->input == HANDLE_INVALID) {
-        if (buttons != was)
+        if (buttons_changed)
             drv_log("hid %04x:%04x if %u: mouse buttons 0x%x", h->vendor, h->product, h->iface,
                     buttons);
         h->events++;

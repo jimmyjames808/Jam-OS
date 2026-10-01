@@ -1,5 +1,6 @@
-/* hid: what the driver's two files share (hid.c: the device, the reports,
- * the mouse; keyboard.c: the keyboard layer). See hid.c for the driver. */
+/* hid: what the driver's files share (hid.c: the device and the reports;
+ * keyboard.c: the keyboard layer; mouse.c: the mouse layer). See hid.c for
+ * the driver. */
 #pragma once
 
 #include <jam/driver.h>
@@ -71,6 +72,14 @@ struct hid {
 void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
 /* hid.c: SET_REPORT(output) with the LED byte. */
 void hid_set_leds(struct hid *h, uint8_t leds);
+/* hid.c: send one mouse event to the console (or, without DR_INPUT, log
+ * the buttons when buttons_changed); sets h->stop when the console is
+ * gone. */
+void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons,
+               bool buttons_changed);
+
+/* mouse.c: one report from a boot mouse. */
+void mouse_report(struct hid *h, const uint8_t *r, uint32_t n);
 
 /* keyboard.c */
 void     kbd_init(struct hid *h);
