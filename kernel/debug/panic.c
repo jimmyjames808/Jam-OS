@@ -156,7 +156,8 @@ static void panic_begin(void)
      * lock a halted CPU (or this one) was holding. */
     uint32_t halted = ipi_halt_others();
     klog_force_unlock();
-    __atomic_store_n(&jumping, kexec_panic_begin(), __ATOMIC_RELEASE);   /* no lock, no allocation */
+    /* No lock, no allocation; the panic's lines start here. */
+    __atomic_store_n(&jumping, kexec_panic_begin(), __ATOMIC_RELEASE);
     if (jumping)
         fbcon_go_dark();
     else

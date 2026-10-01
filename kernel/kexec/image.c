@@ -95,7 +95,7 @@ static enum boot_mem_type next_type(enum boot_mem_type t)
 {
     switch (t) {
     case BOOT_MEM_USABLE:
-    case BOOT_MEM_LOADER_RECLAIMABLE:   /* reclaimed by now */
+    case BOOT_MEM_LOADER_RECLAIMABLE:   /* no CPU runs there: one that didn't start got INIT */
     case BOOT_MEM_KERNEL_AND_MODULES:   /* this kernel, about to stop */
     case BOOT_MEM_FOREIGN:              /* the region */
     case BOOT_MEM_CRASH_LOG:            /* freed at boot */

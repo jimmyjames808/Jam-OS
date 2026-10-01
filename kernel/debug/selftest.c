@@ -585,8 +585,8 @@ static const struct crash_test {
     { "smep",       crash_smep,       false, false, "SMEP: kernel jumps to a user page" },
     { "kexecread",  crash_kexecread,  false, false, "read the stored kernel's region (unmapped)" },
     { "kexecbad",   crash_kexecbad,   false, false, "a damaged stored kernel is refused" },
-    { "kexecstall", crash_kexecstall, false, true,  "an AP never hands the jump over: firmware reset" },
-    { "kexecfault", crash_kexecfault, false, false, "a fault after the jump is decided: firmware reset" },
+    { "kexecstall", crash_kexecstall, false, true,  "an AP never hands the jump over: reset" },
+    { "kexecfault", crash_kexecfault, false, false, "a fault after the jump is decided: reset" },
 };
 #define NCRASH (sizeof(crash_tests) / sizeof(crash_tests[0]))
 
