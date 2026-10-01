@@ -19,7 +19,7 @@
 #include <os.h>
 
 #define OUT_LEAD       4u      /* periods written ahead of the play position */
-#define IDLE_PERIODS   12u     /* every playing stream empty this long: close the output */
+#define IDLE_PERIODS   24u     /* every playing stream empty this long (1 s): close the output */
 #define PERIOD_MAX     MIX_BLOCK_MAX   /* frames: the most a driver's period may hold */
 #define PERIOD_GUESS   2048u   /* frames: a period before the output was first opened */
 #define LATE_GUARD     256u    /* frames (5.3 ms): a period end with less than this
