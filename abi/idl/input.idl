@@ -23,3 +23,9 @@ protocol input 11
 # escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
 # for Backspace.
 3  text   (u16 length, u8[64] bytes) -> ()
+# The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
+# (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
+# from now on. hid calls it once per start; the console logs each with
+# the time since the kernel started, so the boot log says when the first
+# keyboard and mouse could be used.
+4  ready  (u8 kind, u16 vendor, u16 product) -> ()

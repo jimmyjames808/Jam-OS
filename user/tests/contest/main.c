@@ -89,7 +89,7 @@ static status_t st_text(void *ctx, uint16_t n, const uint8_t bytes[64])
     (void)ctx, (void)n, (void)bytes;
     return OK;
 }
-static const struct input_ops st_input = { st_key, st_mouse, st_text };
+static const struct input_ops st_input = { .key = st_key, .mouse = st_mouse, .text = st_text };
 
 static status_t sc_write(void *ctx, uint16_t n, const uint8_t t[2048])
 {
