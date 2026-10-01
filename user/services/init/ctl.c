@@ -28,7 +28,8 @@
  * /boot, /esp and /data are what they are.
  *
  * shell_ready (the shell, once it is up) lets the boot splash give the
- * screen back (splash.c). */
+ * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
+ * /esp's kernel and boot image the stored copy now (reboot.c). */
 #include <devmgr.h>
 #include <idl/initctl.h>
 #include <idl/usbbus.h>
@@ -285,9 +286,19 @@ static status_t op_shell_ready(void *ctx)
     return OK;
 }
 
+static status_t op_kernel_load(void *ctx, uint64_t *kernel_bytes, uint64_t *bootfs_bytes,
+                               uint32_t *read_ms)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    return init_kernel_load(kernel_bytes, bootfs_bytes, read_ms);
+}
+
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
+    .kernel_load = op_kernel_load,
 };
 
 static void ctl_close(struct ctl *c)

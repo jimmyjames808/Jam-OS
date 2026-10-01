@@ -118,6 +118,10 @@ void     reboot_note_esp(void);
  * only if that failed (said in the log); the caller resets through the
  * firmware. */
 status_t init_reboot_kexec(void);
+/* initctl.kernel_load: /esp's kernel and boot image read and made the
+ * stored copy now (and noted as such); their sizes and the read's time.
+ * ERR_NOT_FOUND without them; kexec_load's errors (the old copy stays). */
+status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32_t *read_ms);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

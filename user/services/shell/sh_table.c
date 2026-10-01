@@ -90,6 +90,9 @@ static const struct sh_cmd cmds[] = {
     C(reboot, C_SYSTEM, "reboot [-f]",
       "restart the machine into the kernel on the stick, by kexec (no firmware);\n"
       "  -f: through the firmware and the boot menu. /data is synced first"),
+    C(kernel, C_SYSTEM, "kernel load",
+      "read /esp's kernel and boot image now and store them for the next reboot\n"
+      "  (and a panic): after `make flash`, load, then `reboot` reads nothing"),
     C(run, C_SYSTEM, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"

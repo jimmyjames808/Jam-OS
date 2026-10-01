@@ -8,7 +8,9 @@
  * modification time of /esp/boot/jamos.elf and bootfs.img; at reboot, if
  * /esp is there and either differs (or nothing was noted), both files are
  * read and handed to the kernel (kexec_load) in place of the stored copy.
- * Else nothing is read at all.
+ * Else nothing is read at all. initctl.kernel_load (the shell's `kernel
+ * load`) reads and hands them over at once, and notes them as the stored
+ * copy's: the reboot after it reads nothing.
  *
  * Then what a firmware reboot does too (/data synced, logd's last lines
  * written, the volume left clean), devmgr's shutdown (DEVMGR_SHUTDOWN: the
@@ -74,8 +76,9 @@ static bool esp_changed(void)
     return true;
 }
 
-/* Read both files and hand them to the kernel in place of the stored copy. */
-static status_t load(void)
+/* Read both files and hand them to the kernel in place of the stored copy;
+ * their sizes into *kb and *bb, the read's time into *ms. */
+static status_t load(uint64_t *kb, uint64_t *bb, uint32_t *ms)
 {
     handle_t k = HANDLE_INVALID, b = HANDLE_INVALID;
     uint64_t ks = 0, bs = 0, t0 = now();
@@ -92,13 +95,36 @@ static status_t load(void)
     printf("init: kexec: %lu + %lu KiB read in %lu ms, kexec_load: %s\n",
            (unsigned long)(ks >> 10), (unsigned long)(bs >> 10), (unsigned long)read_ms,
            status_str(st));
+    *kb = ks;
+    *bb = bs;
+    *ms = read_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)read_ms;
     return st;
+}
+
+status_t init_kernel_load(uint64_t *kb, uint64_t *bb, uint32_t *ms)
+{
+    struct noted k, b;
+    if (stat_file(KERNEL_FILE, &k) != OK || stat_file(BOOTFS_FILE, &b) != OK) {
+        printf("init: kernel load: no " KERNEL_FILE " or " BOOTFS_FILE "\n");
+        return ERR_NOT_FOUND;
+    }
+    status_t st = load(kb, bb, ms);
+    if (st != OK)
+        return st;
+    /* The stored copy is these files now: a reboot reads them again only
+     * if they change once more. */
+    kernel = k;
+    bootfs = b;
+    noted = true;
+    return OK;
 }
 
 status_t init_reboot_kexec(void)
 {
     if (esp_changed()) {
-        status_t st = load();
+        uint64_t kb, bb;
+        uint32_t ms;
+        status_t st = load(&kb, &bb, &ms);
         if (st != OK)
             return st;
     }
