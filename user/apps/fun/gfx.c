@@ -17,6 +17,11 @@ static status_t map_vmo(handle_t vmo, uint64_t len, void **out)
 
 status_t gfx_open(void)
 {
+    return gfx_open_on(0);
+}
+
+status_t gfx_open_on(uint32_t bg)
+{
     memset(&scr, 0, sizeof(scr));
     scr.con = startup_handle(SR_CONSOLE);
     if (!scr.con)
@@ -65,6 +70,8 @@ status_t gfx_open(void)
     scr.open = true;
     /* The shown copy starts black; the screen starts as the console left
      * it, so the first present writes everything. */
+    if (bg)
+        fill(&scr.s, 0, 0, scr.w, scr.h, bg);
     gfx_present_all();
     return OK;
 }
