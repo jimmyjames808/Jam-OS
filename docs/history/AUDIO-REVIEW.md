@@ -64,8 +64,9 @@ driver turns the pin and EAPD on at that moment.
 The previous theory (which tone client the mixer catches first) is
 covered already: the check starts where 440 Hz first reaches full level.
 The failure seen here was QEMU's (item 1). To be sure of it the test now
-runs QEMU with `-trace hda_audio_overrun`; in 12 more runs here no
-overrun happened and all passed. See the outcome.
+runs QEMU with `-trace hda_audio_overrun`: in 12 more runs no overrun
+happened and all passed; in the final suite one run traced one, and its
+WAV had a segment exactly 2048 frames short. See the outcome.
 
 ### Found later (the PC)
 
@@ -134,7 +135,7 @@ shell's command.
 
 | # | Outcome |
 |---|---|
-| 1 | Fixed in 785d90d (the test): QEMU runs with `-trace hda_audio_overrun`; with drops logged, segment 2's dip windows above half the amplitude (at most two per drop) are let through, with a line. Test: the checker fails the failing run's WAV with 0 drops and passes it with 1; a passing run's WAV with 2048 frames zeroed in segment 2 still fails with 1 drop. mixer-test then passed 5 runs in a row. |
+| 1 | Fixed in 785d90d (the test): QEMU runs with `-trace hda_audio_overrun`; with drops logged, segment 2's dip windows above half the amplitude (at most two per drop) are let through, with a line. Test: the checker fails the failing run's WAV with 0 drops and passes it with 1; a passing run's WAV with 2048 frames zeroed in segment 2 still fails with 1 drop. On the final tree mixer-test passed 6 runs (one, then five in a row); in one of them QEMU traced an overrun and segment 4 came out exactly 2048 frames (43 ms) short of its 1200 ms: the drop, seen where no gap is checked. |
 | 2 | Fixed in 51cbd63: the walk is stepped (tracks_scan_begin/step); `start` reads for up to 0.5 s and answers, a bigger folder is read on between the player's calls (`reading` in music.idl, `music status` shows the count) and plays when read. Test: utest music_scan (stepped and whole walks agree, the rules, a stop half way); music-test passes. The asynchronous answer is not run in QEMU (the commit says why). |
 | 3 | Fixed with 17 for paths whose amps can mute (the PC's): the stage no longer switches per stream. Design question A is answered by that commit; the hold-time option is moot. |
 | 4 | Design question E. |
