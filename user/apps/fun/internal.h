@@ -2,10 +2,8 @@
  * library's public side). */
 #pragma once
 
+#include <font.h>
 #include "fun.h"
-
-/* font_latin.c (`make font`): the font's glyphs for U+00A0 .. U+017F. */
-extern const uint8_t font_latin[224][16];
 
 /* gfx.c: present rows y0 .. y1 - 1 only (what changed in them). */
 void gfx_present_rows(int y0, int y1);
