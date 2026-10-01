@@ -15,7 +15,10 @@
 #             /esp/boot/jamos.elf is 4 KiB longer, as if flashed on the
 #             Mac: `reboot` reads both files and kexec_loads them first
 #             (the screen meanwhile all the splash background: the shell
-#             blanked the console), then the new kernel comes up
+#             blanked the console; the copy's reads are throttled to 2 MB/s
+#             so the read lasts past the screenshot 2 s in, fat's cache
+#             making it a fraction of a second otherwise), then the new
+#             kernel comes up
 #   firmware  `reboot -f`: the firmware reset, no kexec at all
 #   fallback  crashkernel=0 (no stored kernel): `reboot` falls back to the
 #             firmware by itself
@@ -94,7 +97,7 @@ run_changed() {
     run changed shell "wait 120 Jam OS shell" "wait jam>" \
         "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
-        "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
+        "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw,throttling.bps-read=2000000" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
         "wait 60 init: /esp mounted" "sleep 1" "send reboot" \
         "wait 30 init: kexec: /esp's kernel or boot image changed: reading" \
