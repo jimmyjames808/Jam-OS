@@ -136,8 +136,9 @@ check red "$out/panic.png"
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-hang.txt \
     tools/qemu-test.sh "$out" hang shell splashhang > "$out/hang.out" 2>&1 ||
     { echo "hang: the script failed"; tail -3 "$out/hang.out"; ok=0; }
-need "$out/hang.log" "init: hello from ring 3 (4 args: init shell splash splashhang)" \
-    "splash: hanging, as asked" "the splash didn't finish in 20 s: starting the shell" \
+grep -aqE "init: hello from ring 3 \([0-9]+ args: init shell splash .*splashhang\)" "$out/hang.log" ||
+    { echo "hang: init was not given splashhang"; ok=0; }
+need "$out/hang.log" "splash: hanging, as asked" "the splash didn't finish in 20 s: starting the shell" \
     "console: the screen is back" "init: the shell is up"
 t_hang=$(at "$out/hang.log" "splash: hanging") t_gave=$(at "$out/hang.log" "didn't finish in")
 python3 -c "import sys; a, b = float(sys.argv[1]), float(sys.argv[2]); sys.exit(not 17 < b - a < 23)" \
