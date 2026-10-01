@@ -562,6 +562,9 @@ static const struct {
     { "heap_reuses_freed_space", t_heap_reuses_freed_space },
     { "ns_fat_mount", t_ns_fat_mount },
     { "spawn_from_vmo", t_spawn_from_vmo },
+    { "audio_formats", t_audio_formats },
+    { "audio_resample", t_audio_resample },
+    { "wav_parse", t_wav_parse },
 };
 
 int main(int argc, char **argv)

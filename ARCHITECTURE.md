@@ -655,7 +655,11 @@ unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
 again as soon as it stops, so the jack is silent whenever nothing plays;
 `beep` in the shell makes the samples (the driver never makes sound of
-its own). Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
+its own). Programs write sound through `<audio.h>` in libos (open with
+their own rate and channels, blocking writes, drain, close): the library
+makes mono stereo, resamples to 48 kHz (linear interpolation, its
+position kept exactly) and keeps the ring written ahead of the play
+position; `beep` and `play` (WAV files, parsed by `<wav.h>`) use it. Not built yet (the plan is [docs/A1-PLAN.md](docs/A1-PLAN.md)):
 jack detection, and a mixer service that owns the device, with programs
 opening streams and writing samples through a shared VMO ring.
 
