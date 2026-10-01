@@ -18,8 +18,11 @@
 # setting a path up muted uses: power D0 (0x705 payload 0), connection
 # select (0x701), pin control with the output and headphone bits clear
 # (0x707), and amp gain/mute with the mute bit set (the 4-bit 0x3, which
-# QEMU prints as 0x300); tools/hda-verbs.awk sorts them. So no amp was
-# unmuted and no pin output enabled; and since nothing opens a stream
+# QEMU prints as 0x300); tools/hda-verbs.awk sorts them. Besides those,
+# the output stage (pin control with the output bits, EAPD on: the
+# awk's "power") once the path's amps are muted, which the driver leaves
+# on while it runs; on these codecs an amp mutes the path, so it lets
+# nothing out. So no amp was unmuted; and since nothing opens a stream
 # here, no converter format or stream tag was set either.
 # (QEMU's codecs ignore the pin control: their output pins read back 0x40,
 # output on, whatever is set, and the driver's log says so. The trace is
@@ -43,11 +46,12 @@ for want in "controller 8086:2668" "controller 8086:293e" \
             "commands through CORB/RIRB (256/256 entries)" \
             "c0 03   cfg 00004010: jack ext green line-out" "c0 03 pin      caps 00400101 2ch conn 02" \
             "0 verb(s) timed out, 0 unsolicited response(s)" \
-            "path self-test: 7 of 7 fixture(s) passed" \
+            "path self-test: 8 of 8 fixture(s) passed" \
             "codec 1 path: dac 02 -> pin 03 (line-out)" "codec 0 path: dac 02 -> pin 03 (speaker)" \
             "path: codec 0 dac 02 -> pin 03 (line-out), muted: afg D0; dac 02 out m0; pin 03 ctl 40" \
             "path: codec 0 dac 02 -> pin 03 (speaker), muted: afg D0; dac 02 out m0; pin 03 ctl 40" \
             "path: pin 03 kept its output on (the codec ignores its pin control)" \
+            "path: the output stage (pin 03's output, EAPD) on with every amp muted" \
             "hda: path: codec 0 dac 02 -> pin 03 (line-out), muted:" \
             "commands through CORB/RIRB, " "path 02-03 muted" \
             "jack self-test: passed (table, RIRB, debounce, unsolicited and polled)" \
@@ -65,7 +69,7 @@ if grep -E "jack self-test: [^p]" "$log"; then
     echo "hda-shell: the jack self-test failed"
     ok=0
 fi
-if grep -E "path self-test: [^7]|parses back to another path|path: none" "$log"; then
+if grep -E "path self-test: [^8]|parses back to another path|path: none" "$log"; then
     echo "hda-shell: a path self-test or round trip failed"
     ok=0
 fi
@@ -73,7 +77,7 @@ fi
 # Every verb the codecs got (their debug lines on QEMU's stderr) is a GET
 # or a silent SET (tools/hda-verbs.awk); every path set-up sent at least
 # the pin control and a mute.
-trace=$(awk -f tools/hda-verbs.awk "$out/hda-shell.out")
+trace=$(awk -v stage=1 -f tools/hda-verbs.awk "$out/hda-shell.out")
 verbs=$(grep -c "hda_audio_command: nid" "$out/hda-shell.out" || true)
 [ "$verbs" -gt 100 ] || { echo "hda-shell: only $verbs codec verb(s) traced"; ok=0; }
 bad=$(echo "$trace" | grep -E "^(conv|open|bad) " || true)
@@ -86,9 +90,12 @@ fi
 jackv=$(echo "$trace" | grep -c "^jack " || true)
 [ "$jackv" = 0 ] ||
     { echo "hda-shell: $jackv jack verb(s) (0x708/0x709) sent to QEMU's codecs"; ok=0; }
+# QEMU's codecs here keep their mixer, so an amp mutes the path: the
+# output stage's verbs are "power" (-v stage=1), not "open".
 pinctl=$(echo "$trace" | grep -c "^silent .* verb 0x707 " || true)
 mutes=$(echo "$trace" | grep -c "^silent .* verb 0x300 " || true)
-counts="$(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes"
+counts="$(echo "$trace" | tail -2 | head -1 | sed 's/^total //'); pinctl $pinctl mutes $mutes;"
+counts="$counts $(echo "$trace" | tail -3 | head -1)"
 # 3 path set-ups (2 at boot, 1 after the restart), each one pin control
 # and at least one mute (the DAC's output amp).
 [ "$pinctl" -ge 3 ] && [ "$mutes" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }

@@ -24,7 +24,7 @@ built yet, it says so.
 | SMP | From day one |
 | Native API | Capability handles; a POSIX layer (musl) possible later |
 | Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
-| Syscall ABI | Unstable until M12; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
+| Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
@@ -137,7 +137,11 @@ Every driver and service is a userspace process from the start.
   of the same size, so thread churn neither grows the vmap area nor strands
   page tables.
 - **Loader memory** (Limine's stack, tables, and the code the parked APs spin
-  in) is reclaimed once every AP has started.
+  in until INIT resets them) is reclaimed once every AP has started.
+- **The AP trampoline's page**: one page of usable RAM in [64 KiB, 640 KiB),
+  the highest, is taken out of the memory map right after the early
+  allocator starts (`pmm_early_alloc_low`) and never given back; after the
+  startup it holds a halt stub.
 - **The crash kernel's region** (128 MiB below 4 GiB by default,
   `crashkernel=<MiB>`) is taken out of the memory map before the PMM
   starts and typed `BOOT_MEM_FOREIGN`: RAM nobody may map as MMIO, but not
@@ -248,13 +252,28 @@ Every driver and service is a userspace process from the start.
   re-armed after every interrupt for the earlier of its next 100 Hz tick
   (an absolute TSC deadline, no drift) and its earliest sleeper (per-CPU
   one-shot timers, see Scheduler). Tickless idle is not built yet.
-- APs: Limine parks them; `boot_start_cpu` releases each onto a struct cpu
-  prepared by the BSP (64 KiB guard-paged stack, own GDT/TSS with guarded IST
-  stacks). The AP enables NX/WP/PGE/PAT before loading the kernel CR3.
-  Loader-reclaimable memory is freed only once every AP is online. A
-  kernel started by kexec has no parked APs (no loader handle): they are
-  not started yet, so it runs on the one CPU that jumped (the kernel's own
-  INIT-SIPI-SIPI startup is not built yet).
+- APs: the kernel starts them itself, on every boot, with the Intel SDM's
+  INIT-SIPI-SIPI (`kernel/arch/x86_64/apboot.c`): INIT to each CPU of the
+  boot list by APIC ID (never a broadcast), 10 ms, SIPI to each, 200 us,
+  SIPI again, 200 us, so all start at once (about 11 ms in all). Each AP
+  runs a real-mode trampoline (`kernel/arch/x86_64/trampoline.S`) 16 -> 32 ->
+  64-bit on a transition page table below 4 GiB (the trampoline page
+  identity-mapped, plus the kernel half), loads the kernel's CR3, finds its
+  slot by its APIC ID (CPUID) and moves onto the struct cpu the BSP
+  prepared (64 KiB guard-paged stack, own GDT/TSS with guarded IST stacks).
+  It sets NX/WP/PGE/PAT, its per-CPU state, its APIC (in the BSP's mode),
+  then **claims** its start (a compare-and-swap); the BSP gives up on a CPU
+  after 1 s with the same compare-and-swap and sends it INIT, so a CPU that
+  comes late parks itself and changes nothing shared; the CPUs that came up
+  are then numbered densely, so one that did not leaves no hole in
+  `cpus[]`. Each AP compares its
+  microcode, MTRRs and TSC_ADJUST with the BSP's (and loads the BSP's MTRRs
+  if they differ); the boot log says if anything differs. The boot word
+  `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
+  releases each), the fallback until the kernel's own startup is signed
+  off on the PC. After a kexec there is no loader: the kernel's startup is
+  the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
+  Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
 - ACPI tables can live in firmware-reserved memory the HHDM skips, so they
@@ -650,7 +669,10 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 - A future compositor process owns the framebuffer VMO; apps draw into
   their own surface VMOs and send damage rectangles over a channel; input
   goes to the compositor, which routes it to the focused client. Rendering
-  is in software (28 cores and AVX are plenty for 2D at 2560x1440).
+  is in software (28 cores and AVX are plenty for 2D at 2560x1440). It
+  speaks the Wayland protocol (G1 in the roadmap): Wayland's model and
+  wire format over channels, handles where Linux passes file descriptors,
+  `wl_shm` pools as VMOs; our own compositor, not a port.
 - Mode setting and vsync only through the Intel iGPU (documented by
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
@@ -687,7 +709,13 @@ is needed there: every reported position trails the DMA engine's
 fetch). The path is
 unmuted only while the stream runs, at a gain that starts at -30 dB
 (`hda gain`, `set_gain`: the DAC's amp, never above 0 dB), and muted
-again as soon as it stops, so the jack is silent whenever nothing plays;
+again as soon as it stops, so the jack is silent whenever nothing plays.
+The muting is done by the path's amps where one can mute (the PC's, and
+QEMU's codecs with their mixer): the output stage (the pin's output and
+headphone amp, EAPD) goes on once, with every amp muted, at the driver's
+start, and stays on until it exits, so its power-up thump is never heard
+(the first unmute waits until it has been on 400 ms). Where no amp can
+mute, the pin's output is switched with the stream instead.
 `beep` in the shell makes the samples (the driver never makes sound of
 its own).
 

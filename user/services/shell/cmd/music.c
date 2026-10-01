@@ -10,7 +10,7 @@
 
 #define DEFAULT_FOLDER "/data/music"
 #define SOON       (5 * NS_PER_S)
-#define START_WAIT (60 * NS_PER_S)   /* reads the whole folder, then opens a stream */
+#define START_WAIT (15 * NS_PER_S)   /* reads the folder up to 0.5 s, opens a stream */
 
 static const char *mss(uint64_t ms, char *buf, size_t size)
 {
@@ -41,7 +41,8 @@ static int start(handle_t ch, const char *arg)
     memset(folder, 0, sizeof(folder));
     memcpy(folder, abs, strlen(abs));
     uint32_t found = 0;
-    st = music_start_until(ch, now() + START_WAIT, folder, &found);
+    uint8_t reading = 0;
+    st = music_start_until(ch, now() + START_WAIT, folder, &found, &reading);
     if (st == ERR_NOT_FOUND) {
         sh_tty("music: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
         return 1;
@@ -49,6 +50,11 @@ static int start(handle_t ch, const char *arg)
     if (st != OK) {
         sh_tty("music: %s: can't play it (%s)\n", abs, sh_why(st));
         return 1;
+    }
+    if (reading) {
+        sh_say("music: reading %s (%u track%s so far): it plays once it is read "
+               "(music status)\n", abs, found, found == 1 ? "" : "s");
+        return 0;
     }
     if (!found) {
         sh_say("music: no .mp3 or .wav files in %s\n", abs);
@@ -73,7 +79,9 @@ static int status(handle_t ch)
     }
     folder[255] = path[255] = title[127] = note[127] = 0;
     char a[16], b[16], v[16];
-    if (playing && title[0])
+    if (playing == 2)
+        sh_say("music: reading the folder: %u track%s so far\n", tracks, tracks == 1 ? "" : "s");
+    else if (playing && title[0])
         sh_say("music: playing %s  %s / %s\n  %s\n", (char *)title, mss(elapsed, a, sizeof(a)),
                length ? mss(length, b, sizeof(b)) : "?", (char *)path);
     else if (playing)

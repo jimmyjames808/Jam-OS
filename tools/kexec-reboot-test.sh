@@ -12,8 +12,8 @@
 #   fallback  crashkernel=0 (no region to load into): `reboot` falls back
 #             to the firmware by itself; and `reboot -f` is the firmware
 #             reset on a normal boot
-# The new kernel runs on one CPU until the kernel starts its own APs
-# (INIT-SIPI-SIPI); QEMU_SMP and QEMU_XHCI pass through.
+# The new kernel starts every CPU itself (INIT-SIPI-SIPI: there is no
+# loader to park them); QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/kexec-reboot-test.sh <outdir>; exit 0 on PASS.
 set -u
 out=$1
@@ -48,7 +48,9 @@ run kexec shell "wait 120 Jam OS shell" "wait jam>" "wait 60 logd: writing /data
     fail kexec "the script (see $out/kexec-kexec.log)"
 log="$out/kexec-kexec.log"
 grep -q "reboot: resetting" "$log" && fail kexec "a firmware reset happened"
-grep -q "smp: 1 of 1 CPUs online" "$log" || fail kexec "the new kernel didn't start on its own CPU"
+cpus=${QEMU_SMP:-4}
+[ "$(grep -c "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
+    fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
 data="$out/kexec-kexec-stick.img@@64M"
 mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" ||
     fail kexec "boot-0001.txt doesn't end with the reboot's sync"

@@ -44,10 +44,11 @@
  * The converter: the DAC at the start of the path main.c chose and set
  * up muted (path.c, verbs.c) gets the stream's format and tag, through
  * verbs.c's hda_set like every other SET verb. The path itself is opened
- * (hda_output_open: unmuted at the gain, the pin's output and EAPD on)
- * just before RUN is set, and closed (muted, pin output off) just after
- * RUN clears, at stop, at the stream's close and at the driver's exit:
- * the jack is silent whenever the stream does not run. A driver killed
+ * (hda_output_open: its amps unmuted at the gain; the output stage, the
+ * pin's output and EAPD, has been on since the driver started, verbs.c)
+ * just before RUN is set, and closed (its amps muted) just after RUN
+ * clears, at stop, at the stream's close and at the driver's exit: the
+ * jack is silent whenever the stream does not run. A driver killed
  * mid-stream can't mute; its successor's start sets the path up muted
  * again before anything else.
  *

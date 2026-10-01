@@ -19,6 +19,16 @@ void     lapic_eoi(void);
 void     lapic_send_ipi(uint32_t apic_id, uint8_t vector);
 void     lapic_send_nmi(uint32_t apic_id);
 void     lapic_send_nmi_others(void);
+/* The startup IPIs, to one CPU by APIC ID: INIT (it stops whatever the
+ * CPU is doing and leaves it waiting for a SIPI) and SIPI (start in real
+ * mode at vector << 12). Every wait inside is bounded: false if an xAPIC
+ * never reported the IPI sent. Interrupts may be on or off. */
+bool     lapic_send_init(uint32_t apic_id);
+bool     lapic_send_sipi(uint32_t apic_id, uint8_t vector);
+/* The APIC's error status (send/receive errors since the last read). */
+uint32_t lapic_read_esr(void);
+/* The APICs are in x2APIC mode (32-bit IDs) rather than xAPIC (8-bit). */
+bool     lapic_x2apic(void);
 /* INIT to every other CPU: each resets and waits for a SIPI, running no
  * code of anyone's (kexec's last step, after their NMI halt: the next
  * kernel starts them itself, and may reuse the memory they halted in). */

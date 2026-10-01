@@ -350,7 +350,7 @@ path: codec 0 dac 02 -> mixer 0c -> pin 1b (front headphone jack), muted: afg D0
 ```
 
 and the RESULTS line ends `path 02-0c-1b muted`. A line starting `path
-self-test:` other than "7 of 7 fixture(s) passed", or one saying a dump
+self-test:` other than "8 of 8 fixture(s) passed", or one saying a dump
 "parses back to another path", means nothing was set up.
 
 ## What stage 3 built and learned
@@ -373,6 +373,18 @@ self-test:` other than "7 of 7 fixture(s) passed", or one saying a dump
   (`3 0c 7080`). The other inputs of the mixer are never unmuted. After
   opening, the driver reads back the pin control, EAPD and the DAC amp and
   logs them.
+- **Changed by the audio review (2026-10-01): the output stage stays
+  on.** The owner heard a thump at the boot splash's first sound, never
+  later: the pin's output, headphone amp and EAPD switched on within
+  microseconds of the first samples, on a stage never powered since the
+  reset. Now, on a path with an amp that can mute (the ALC897's mixer 0c
+  input and pin 1b output amps), the driver turns the stage on once, right
+  after the muted set-up (`707 1b c0`, `70c 1b 02`), leaves it on, and a
+  stream only unmutes and mutes the amps; the first unmute waits until the
+  stage has been on for 400 ms (`OUTPUT_SETTLE_NS`, hda.h). The driver's
+  exit turns it off. A path whose amps can't mute (QEMU's codec with
+  mixer=off) keeps the sequence above. "Muted unless a stream plays"
+  holds at the amps.
 - **If a verb fails while opening**, it is logged by name, the path is
   muted again (every closing verb tried) and `start` fails with its
   status; `beep` says the path stayed muted.

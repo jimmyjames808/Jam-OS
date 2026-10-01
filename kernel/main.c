@@ -248,6 +248,10 @@ _Noreturn static void kmain_stage2(void *arg)
      * hid per HID interface, keys to the log) for 30 s. */
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", NULL);
+    /* init has ended (in shell mode only if something went wrong): if the
+     * console never took the screen the splash's quiet is still on, and
+     * the RESULTS below would not be drawn. */
+    fbcon_unquiet();
     sched_print_stats();
     uint64_t dropped = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
     if (dropped || serial_irq_broken())
@@ -282,13 +286,14 @@ _Noreturn void kmain(struct boot_info *bi)
         kmain_print_memmap();
 
     pmm_early_init(bi);
+    apboot_reserve();   /* the AP trampoline's page, below 640 KiB, before anything else */
     vmm_init(bi);
     pmm_init();
     vmm_use_buddy();
     heap_init();
 
     /* Loader-reclaimable memory (Limine's stack, page tables, and the code
-     * the parked APs are spinning in) is freed once the APs have started
-     * (smp_start_aps). */
+     * the parked APs are spinning in until INIT resets them) is freed once
+     * every AP has started (smp_start_aps). */
     stack_switch_call(kstack_alloc(KERNEL_STACK_SZ), kmain_stage2, NULL);
 }

@@ -13,7 +13,6 @@
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
-#include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
@@ -110,7 +109,6 @@ void lapic_eoi(void)
 }
 
 #define ICR_NMI        (4u << 8)
-#define ICR_INIT       (5u << 8)
 #define ICR_ASSERT     (1u << 14)
 #define ICR_PENDING    (1u << 12)
 #define ICR_ALL_BUT_ME (3u << 18)
@@ -148,9 +146,73 @@ void lapic_send_nmi_others(void)
     send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_NMI);
 }
 
+/* The startup IPIs (Intel SDM vol. 3A, 11.6.1 "Interrupt Command
+ * Register"). INIT is sent as a level assert only: processors since the
+ * Pentium 4 do not support the INIT level de-assert. */
+#define ICR_INIT       (5u << 8)
+#define ICR_STARTUP    (6u << 8)
+#define ICR_IDLE_US    1000   /* an idle APIC accepts an IPI in well under 1 us */
+
+/* xAPIC: wait for the delivery status to go idle. False after
+ * ICR_IDLE_US; the caller logs. */
+static bool icr_idle(void)
+{
+    uint64_t end = rdtsc() + tsc_hz / 1000000 * ICR_IDLE_US;
+    while (rd(REG_ICR_LO) & ICR_PENDING) {
+        if (rdtsc() > end)
+            return false;
+        cpu_relax();
+    }
+    return true;
+}
+
+/* send_icr with every wait bounded, and with the xAPIC's delivery status
+ * waited for after the send too, as the SDM's MP example does. x2APIC has
+ * no delivery status: its ICR write is the send. */
+static bool send_icr_bounded(uint32_t dest, uint32_t low)
+{
+    uint64_t f = irq_save();
+    __asm__ volatile("mfence" ::: "memory");   /* see send_icr */
+    bool ok = true;
+    if (x2) {
+        wrmsr(0x830, (uint64_t)dest << 32 | low);
+    } else {
+        ok = icr_idle();
+        if (ok) {
+            wr(REG_ICR_HI, dest << 24);
+            wr(REG_ICR_LO, low);
+            ok = icr_idle();
+        }
+    }
+    irq_restore(f);
+    return ok;
+}
+
+bool lapic_send_init(uint32_t apic_id)
+{
+    return send_icr_bounded(apic_id, ICR_ASSERT | ICR_INIT);
+}
+
+bool lapic_send_sipi(uint32_t apic_id, uint8_t vector)
+{
+    return send_icr_bounded(apic_id, ICR_ASSERT | ICR_STARTUP | vector);
+}
+
+uint32_t lapic_read_esr(void)
+{
+    wr(REG_ESR, 0);   /* the write latches the errors seen since the last one */
+    return rd(REG_ESR);
+}
+
+bool lapic_x2apic(void)
+{
+    return x2;
+}
+
 void lapic_send_init_others(void)
 {
-    send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_INIT);
+    /* Nothing left to do if an xAPIC never reports it sent: the caller jumps. */
+    (void)send_icr_bounded(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_INIT);
 }
 
 static void on_spurious(struct trap_frame *f)
@@ -232,9 +294,20 @@ static void on_timer(struct trap_frame *f)
 
 void lapic_init_cpu(struct cpu *c)
 {
+    /* Every CPU uses the BSP's mode. INIT keeps an APIC's mode (SDM vol.
+     * 3A, 11.12.5.1 "x2APIC States"), so an AP is normally in it already;
+     * one that is not (a previous kernel or the firmware left it in the
+     * other) is switched. xAPIC -> x2APIC needs EN before EXTD; x2APIC ->
+     * xAPIC only goes through disabled. */
     uint64_t base = rdmsr(MSR_APIC_BASE);
-    if (x2 && !(base & APIC_BASE_X2))
-        panic("lapic: cpu %u is not in x2APIC mode", c->index);
+    if (x2 && !(base & APIC_BASE_X2)) {
+        base |= APIC_BASE_EN;
+        wrmsr(MSR_APIC_BASE, base);
+        base |= APIC_BASE_X2;
+    } else if (!x2 && (base & APIC_BASE_X2)) {
+        wrmsr(MSR_APIC_BASE, base & ~(APIC_BASE_X2 | APIC_BASE_EN));
+        base &= ~APIC_BASE_X2;
+    }
     wrmsr(MSR_APIC_BASE, base | APIC_BASE_EN);
 
     wr(REG_TPR, 0);

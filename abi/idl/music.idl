@@ -18,19 +18,23 @@ protocol music 24
 # left out) in shuffle, back to back, until `stop`. Answers once the
 # folder has been read and the player's mixer stream is open, with the
 # number of files found; 0 files: nothing plays (the player stays
-# stopped). Already playing: the old folder stops (5 ms fade) and the new
-# one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
+# stopped). A folder that takes longer than half a second to read is read
+# on after the answer, between the player's other calls: `reading` 1 and
+# `found` the files so far; it plays once the folder is read (or stops,
+# with a note, if there is nothing to play). Already playing (or
+# reading): the old folder stops (5 ms fade) and the new one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
 # or no audio output (the mixer's open_output: the shell's `music`
 # checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it
 # is a file; ERR_INVALID_ARGS: not an absolute path; the mixer's other
 # errors from opening a stream.
-1  start  (u8[256] folder) -> (u32 found)
+1  start  (u8[256] folder) -> (u32 found, u8 reading)
 # Stop playing, with the 5 ms fade. `was_playing`: 1 if it was.
 2  stop  () -> (u8 was_playing)
 # Skip the track being heard now: the next one starts from its beginning.
 # ERR_BAD_STATE: not playing.
 3  next  () -> ()
-# What the player is doing. `playing`: 1 or 0. `tracks`: files in the
+# What the player is doing. `playing`: 1, 0, or 2 while it reads the
+# folder `start` was given (`tracks` then counts so far). `tracks`: files in the
 # folder's list; `bad`: how many of them were refused (not WAV or MP3
 # inside) and are skipped; `started`: tracks started since `start`.
 # The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),

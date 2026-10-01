@@ -96,6 +96,15 @@ bool t_ns_child_sees_only_its_mounts(void);
 bool t_ns_mounts_reach_a_running_child(void);
 bool t_ns_malformed_messages(void);
 bool t_spawn_from_vmo(void);
+/* bin/ramfs, started and mounted at point (and the reverse: it must end
+ * clean). */
+struct ram {
+    handle_t job, proc;   /* bin/ramfs */
+};
+bool ram_start(const char *point, struct ram *r);
+bool ram_stop(const char *point, struct ram *r);
+/* music.c: the music player's folder walk (user/services/music/tracks.c). */
+bool t_music_scan(void);
 /* nschild.c: "utest ns-...", "utest fscat <path>", "utest fs-hold <path>"
  * and "utest fat-shell", the namespace tests' children. */
 int ns_child(int argc, char **argv);

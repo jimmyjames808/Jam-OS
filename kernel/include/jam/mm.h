@@ -68,6 +68,10 @@ static inline struct page *virt_to_page(const void *va)
 void         pmm_early_init(const struct boot_info *bi);
 /* Bump allocator used only while building the first page tables. */
 uint64_t     pmm_early_alloc(uint64_t size, uint64_t align);
+/* The highest usable page in [floor, limit) (both page-aligned), taken out
+ * of the early ranges before pmm_init, so the allocator never sees it: it
+ * stays PG_RESERVED. 0 if there is none. Not zeroed. */
+uint64_t     pmm_early_alloc_low(uint64_t floor, uint64_t limit);
 void         pmm_init(void);
 /* Give a RAM range (e.g. loader-reclaimable) to the allocator; returns bytes. */
 uint64_t     pmm_add_range(uint64_t base, uint64_t length);
