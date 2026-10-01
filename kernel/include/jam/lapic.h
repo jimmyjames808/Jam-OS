@@ -19,6 +19,10 @@ void     lapic_eoi(void);
 void     lapic_send_ipi(uint32_t apic_id, uint8_t vector);
 void     lapic_send_nmi(uint32_t apic_id);
 void     lapic_send_nmi_others(void);
+/* INIT to every other CPU: each resets and waits for a SIPI, running no
+ * code of anyone's (kexec's last step, after their NMI halt: the next
+ * kernel starts them itself, and may reuse the memory they halted in). */
+void     lapic_send_init_others(void);
 
 /* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and
  * "nodeadline" is not on the command line), else the APIC's own counter. */

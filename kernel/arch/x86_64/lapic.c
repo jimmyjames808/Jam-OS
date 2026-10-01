@@ -110,6 +110,7 @@ void lapic_eoi(void)
 }
 
 #define ICR_NMI        (4u << 8)
+#define ICR_INIT       (5u << 8)
 #define ICR_ASSERT     (1u << 14)
 #define ICR_PENDING    (1u << 12)
 #define ICR_ALL_BUT_ME (3u << 18)
@@ -145,6 +146,11 @@ void lapic_send_nmi(uint32_t apic_id)
 void lapic_send_nmi_others(void)
 {
     send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_NMI);
+}
+
+void lapic_send_init_others(void)
+{
+    send_icr(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_INIT);
 }
 
 static void on_spurious(struct trap_frame *f)

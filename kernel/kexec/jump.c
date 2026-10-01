@@ -6,7 +6,7 @@
  * allocates nothing and calls only what reads memory it owns: the crash
  * record's stores, the checksum through the window's own page-table
  * entries (region.c), one config write per PCI function
- * (pci_panic_bus_master_off) and the jump. The lines it prints come
+ * (pci_panic_bus_master_off), an INIT to the other CPUs and the jump. The lines it prints come
  * before the decision, or after a failed check, when the panic goes on
  * as it always did.
  *
@@ -22,6 +22,7 @@
 #include <jam/ipi.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
+#include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/pci.h>
@@ -77,9 +78,13 @@ void kexec_panic_tail(void)
     tail_at = klog_head();
 }
 
-/* Into the trampoline at T, which loads the new CR3 and never returns. */
+/* The other CPUs, halted by NMI, are sent INIT: they wait for a SIPI
+ * from now on, running nothing (the next kernel may reuse the memory they
+ * halted in, and starts them itself). Then into the trampoline at T,
+ * which loads the new CR3 and never returns. */
 _Noreturn static void jump(void)
 {
+    lapic_send_init_others();
     void (*tramp)(uint64_t, uint64_t, uint64_t, uint64_t) =
         (void (*)(uint64_t, uint64_t, uint64_t, uint64_t))kx_tramp_va();
     tramp(kx.cr3, kx.entry, kx.handoff, kx.stack_top);
