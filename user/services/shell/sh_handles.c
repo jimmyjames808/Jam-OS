@@ -13,12 +13,16 @@
  *                 talks to devmgr takes the newest first
  *   SR_USER + 3   init's control channel (abi/idl/initctl.idl): `kill`,
  *                 and `reboot` with /data synced first
- * Programs the shell starts get none of these (sh_program.c). */
-#include <audio.h>
+ *   SR_AUDIO      the mixer's `audio` channel (abi/idl/audio.idl): every
+ *                 program the shell runs gets a duplicate
+ *   SR_AUDIO_CTL  its `audioctl` channel (`vol`; test programs get it too)
+ * init keeps both mixer channels across a mixer's restart: they never
+ * change. Programs the shell starts get none of the others
+ * (sh_program.c). */
 #include <devmgr.h>
 #include "sh_core.h"
 
-static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl;
+static handle_t root, pci, devmgr, devmgr_ctl, from_init, initctl, audio, audio_ctl;
 
 void sh_handles_init(void)
 {
@@ -28,6 +32,18 @@ void sh_handles_init(void)
     devmgr_ctl = startup_handle(SR_DEVMGR_CTL);
     from_init = startup_handle(SR_USER + 2);
     initctl = startup_handle(SR_USER + 3);
+    audio = startup_handle(SR_AUDIO);
+    audio_ctl = startup_handle(SR_AUDIO_CTL);
+}
+
+handle_t sh_audio(void)
+{
+    return audio;
+}
+
+handle_t sh_audio_ctl(void)
+{
+    return audio_ctl;
 }
 
 handle_t sh_initctl(void)
@@ -95,11 +111,4 @@ handle_t sh_devmgr_ctl(void)
 {
     devmgr_refresh();
     return devmgr_ctl;
-}
-
-/* <audio.h> (beep, play) finds the audio device through the newest
- * devmgr, not the SR_DEVMGR the shell started with. */
-handle_t audio_devmgr(void)
-{
-    return sh_devmgr();
 }

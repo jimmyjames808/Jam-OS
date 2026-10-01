@@ -565,6 +565,10 @@ static const struct {
     { "audio_formats", t_audio_formats },
     { "audio_resample", t_audio_resample },
     { "wav_parse", t_wav_parse },
+    { "mix_gains", t_mix_gains },
+    { "mix_unity_is_exact", t_mix_unity_is_exact },
+    { "mix_volume_and_master", t_mix_volume_and_master },
+    { "mix_saturates", t_mix_saturates },
 };
 
 int main(int argc, char **argv)

@@ -48,13 +48,17 @@ static const struct sh_cmd cmds[] = {
       "  path is unmuted only while a stream plays (beep)"),
     C(beep, C_SYSTEM, "beep [hz] [ms]",
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
-      "  at a quarter of full scale with 5 ms fades, through drv/hda at `hda gain`.\n"
+      "  at a quarter of full scale with 5 ms fades, through the mixer at `hda gain`.\n"
       "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
     C(play, C_SYSTEM, "play [-v dB] <file.wav>",
       "play a WAV file in the headphones (e.g. play /data/song.wav), at `hda gain`.\n"
       "  PCM WAV: 8-, 16-, 24- or 32-bit, mono or stereo, 8000-192000 Hz (resampled to\n"
       "  48 kHz). -v -20: 20 dB down for this file only. Ctrl+C stops it. On a Mac:\n"
       "  afconvert -f WAVE -d LEI16@48000 song.m4a song.wav, then copy it to the stick"),
+    C(vol, C_SYSTEM, "vol [<id>|master <dB>]",
+      "the mixer's volumes: alone, the master and every stream playing (id, volume,\n"
+      "  state, underruns, name); vol 3 -6: stream 3 at -6 dB; vol master -10: all of\n"
+      "  them. 0 dB is the most, -96 dB is silence. hda gain is the codec's level below"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
@@ -93,6 +97,9 @@ static const struct sh_cmd cmds[] = {
     C(hdatest, C_TESTS, "hdatest",
       "the HD Audio output stream checks (bin/hdatest) and their result line; it kills\n"
       "  and restarts the hda driver once"),
+    C(mixtest, C_TESTS, "mixtest",
+      "the mixer checks (bin/mixtest) and their result line: tone programs played at\n"
+      "  once, one killed; it kills and restarts the mixer and the hda driver once"),
     C(demo, C_TESTS, "demo [seconds]",
       "the visual demo: fractals on every CPU (default 76 s; any key stops it)"),
     C(crash, C_TESTS, "crash [name [yes]]",

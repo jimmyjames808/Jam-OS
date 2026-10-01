@@ -2,7 +2,8 @@
  * rights, the table of tests; threads.c; drivers.c: drivers as processes
  * and devmgr's edu driver; supervise.c: devmgr's supervision and what a
  * driver's handles can't do; hid.c: the hid driver against hidmock.c;
- * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd), the
+ * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
+ * mix.c: the mixer's arithmetic), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -133,3 +134,9 @@ bool t_fat_not_formatted(void);
 bool t_fat_format_off(void);
 bool t_fat_dirty_volume(void);
 bool t_fat_disk_gone(void);
+
+/* mix.c: the mixer's arithmetic (<mixmath.h>). */
+bool t_mix_gains(void);
+bool t_mix_unity_is_exact(void);
+bool t_mix_volume_and_master(void);
+bool t_mix_saturates(void);

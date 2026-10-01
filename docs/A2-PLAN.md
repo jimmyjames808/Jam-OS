@@ -102,3 +102,194 @@ Then on the PC, headphones in the front jack: `play /data/song.wav`
 - A low-pass filter for downsampling; float WAV (`afconvert -d LEI16`
   avoids it); `play` of several files or a directory; a progress line.
 - Two programs at once: track 2's mixer.
+
+## Track 2: the `audio` protocol and the mixer
+
+### Fixed decisions
+
+- **The mixer is a service init starts** in shell mode, after devmgr
+  (`bin/mixer`, `user/services/mixer/`), supervised like the others. It
+  is the hda driver's only client while anything plays: it finds the
+  driver through devmgr's query channel (GET_SERVICE, the first service
+  that answers `hda.info` with a path, as `beep` did), opens the one
+  output stream when the first stream starts and closes it when none
+  plays, so the jack is muted whenever nothing plays (A1's driver
+  unmutes only while its stream runs).
+- **One format: 48 kHz, 16-bit, stereo** (the driver's and the mixer's).
+  `open_output` refuses anything else (`ERR_NOT_SUPPORTED`); the client
+  library converts other rates, mono and 8-bit before writing.
+- **Clients reach the mixer by a startup role.** Two new roles in
+  `kernel/include/jam/startup.h`: `SR_AUDIO` (the `audio` service channel:
+  open a stream) and `SR_AUDIO_CTL` (the `audioctl` control channel: list
+  streams, set any stream's volume, the master volume). init makes both
+  channels once and keeps a duplicate of their server ends, so a mixer
+  that dies and is restarted serves the same channels: a client's call
+  made meanwhile waits for the new mixer, and its stream (a channel of
+  its own) reports `ERR_PEER_CLOSED`, after which it opens a new one on
+  the same `SR_AUDIO`. The shell gets both; every program the shell runs
+  gets `SR_AUDIO`; test programs (`utest`, `usbtest`, `hdatest`,
+  `mixtest`) also get `SR_AUDIO_CTL`, and `mixtest` init's control
+  channel (it kills the mixer and the hda driver).
+- **Rights: a client holds only its stream.** `open_output` returns a
+  stream channel (start, stop, drain, position, its own volume; closing
+  it ends the stream), the ring VMO (read, write, map) and an event (wait,
+  signal). Nothing on the service channel names another stream; only
+  `audioctl` does.
+- **Volume in centibels, attenuation only**: 0 dB at most (no clipping
+  from boost), -96.0 dB and below is silence. Per-stream and master
+  volume are applied by the mixer in fixed point (Q15); `hda gain` stays
+  the codec's own output level (the headphones' loudness), untouched by
+  the mixer.
+
+### The protocol (`abi/idl/audio.idl`, `abi/idl/audioctl.idl`)
+
+| Method | On | What |
+|---|---|---|
+| `open_output(rate, channels, bits, name[16]) -> (stream, ring, event, id, frames, lead)` | `SR_AUDIO` | a new stream, stopped, empty; `frames`: the ring's size; `lead`: how far ahead of the speaker the mixer reads (frames). `ERR_NO_RESOURCES`: 16 streams already; `ERR_NOT_FOUND`: no audio output (no hda driver with a path) |
+| `start`, `stop` (the stream methods are `stream_*` in the IDL, clear of `<audio.h>`'s names) | stream | the mixer takes frames from the ring (from the next period it mixes) or leaves them there |
+| `drain() -> (frames)` | stream | answers once everything written before the call has played |
+| `position() -> (written, consumed, played)` | stream | frames: in the ring, taken by the mixer, heard (estimated from the driver's position) |
+| `set_volume(cb) -> (cb)` | stream | this stream's volume |
+| `levels() -> (volume, master, device)` | stream | what it is heard at: its volume, the master, the driver's gain |
+| `streams() -> (count, master, list)` | `SR_AUDIO_CTL` | every stream: id, volume, state, underruns, frames played, name |
+| `set_volume(id, cb) -> (cb)`, `set_master(cb) -> (cb)` | `SR_AUDIO_CTL` | for `vol` |
+
+### The ring: no copies on the client's side, no syscall per write
+
+One VMO per stream, made by the mixer: a header page, then the samples
+(16384 frames, 64 KiB, 341 ms). The header (`user/include/mixer.h`) has
+`write` (frames written, ever; only the client writes it), `read` (frames
+taken; only the mixer writes it) and two flags, each on its own cache
+line. The client writes samples straight into its mapping and then
+`write`: no call. The event is used only when someone would otherwise
+wait:
+- **the client is blocked for space**: it sets `waiting`, clears the
+  event's SPACE bit and waits on it; the mixer signals SPACE after taking
+  frames from a ring whose `waiting` is set;
+- **the mixer is starved**: when every playing stream has been empty for
+  about a second the mixer closes the driver's stream (the path is muted)
+  and sets `idle` in their headers; a client that writes while `idle` is
+  set signals the event's DATA bit, which wakes the mixer.
+A missed wake costs at most one period (the mixer looks at every ring
+each period anyway).
+
+The mixer never maps a client's ring: a client holds the VMO with
+`RIGHT_WRITE` and could shrink it under a mapping (as fat never maps a
+file client's buffer). It reads the header and the frames with `vmo_read`
+(one copy, into the buffer it mixes from) and writes `read` with
+`vmo_write`; it keeps its own `read` and never reads it back. A client
+that lies in `write` gets at most its own ring's frames again.
+
+### The mixer
+
+- **One thread, one port** (as the hda driver): the service and control
+  channels, each stream's channel and event, devmgr's channel (its close
+  ends the mixer, which init restarts with the new devmgr) and the
+  driver's stream channel. `wait_period` is sent without waiting for the
+  answer (its reply arrives on the port), so client calls are served
+  while a period plays.
+- **Periods and latency**: the driver's 4 periods of 4096 frames (85 ms).
+  At each period's end the mixer mixes so that two periods are written
+  ahead of the play position: what a client wrote is heard 85 to 170 ms
+  after the mixer takes it (`lead` = 8192 frames), plus however far ahead
+  the client keeps its own ring.
+- **Mixing**: for each playing stream its frames (`vmo_read`) times its
+  gain in Q15, rounded, summed into 32-bit accumulators; then the master
+  gain and saturation to 16 bits, straight into the driver's mapped ring.
+  At 0 dB the samples pass through unchanged (`user/lib/mixmath.c`).
+- **A slow client** contributes what it has and silence for the rest
+  (counted as an underrun); the others are not affected. **A dead
+  client's** stream channel closes and the stream is dropped at once.
+- **The driver restarting**: the driver's stream channel closes; the
+  mixer gets the service again and reopens the output (streams keep their
+  rings; a gap is heard). **The mixer dying**: init restarts it (as any
+  service); clients' stream channels close; a client reopens.
+- No stream playing: the driver's stream is closed at once (the path
+  muted). Every playing stream empty for 12 periods (~1 s): closed too,
+  reopened when one of them writes (DATA) or another starts.
+
+### `vol`
+
+`vol` lists the streams (id, volume, state, underruns, name) and the
+master volume; `vol <id> <dB>` sets a stream's, `vol master <dB>` the
+master (`audioctl`).
+
+### Tests
+
+- utest `mix_*`: the arithmetic (0 dB passes samples through exactly,
+  -6 dB is Q15 16423, saturation at both ends, master, silence).
+- `tools/mixer-test.sh` (QEMU, hda-output codec with `mixer=off` into a
+  WAV file, like hda-stream-test): `mixtest` runs two tone programs at
+  once (440 Hz, and 1000 Hz at -6 dB): both frequencies are in the
+  capture, the second at half the first's amplitude; one of two killed
+  mid-tone, the other plays on without a gap; master and `audioctl`
+  volume heard; the mixer killed (its client sees `ERR_PEER_CLOSED`,
+  reopens and plays again); the hda driver killed (the mixer reopens the
+  output, the stream plays on); a stream left empty lets the mixer close
+  the output and a later write wakes it; the codec's verbs show the path
+  muted at the end; `vol` from the shell.
+
+### What was built
+
+As planned above, plus:
+- **`<audio.h>` on the mixer** (after track 1 merged): `audio_open` is a
+  mixer stream on the program's `SR_AUDIO` (`audio_open_as` names it for
+  `vol`: beep and play do); the library converts to 48 kHz stereo and
+  writes with `mixer_write` (`<mixer.h>`, libos: the client side of the
+  ring); `audio_drain` is the mixer's drain, then a period of silence
+  drained too (as before: whatever records the output gets past the
+  sound's end); `audio_close` fades the frames the mixer has not taken
+  yet over 5 ms. `audio_set_volume` is now the stream's own volume (it was
+  the device's gain, put back at close), so `play -v -20` plays that file
+  20 dB below the others instead of moving `hda gain`; `audio_get_volume`
+  is the level heard (stream + master + device gain: `levels`), so
+  `beep` still says "at -30.0 dB". The weak `audio_devmgr` hook is gone.
+- **Numbers in QEMU** (tools/mixer-test.sh, 2026-10-01): 440 Hz and
+  1000 Hz at -6 dB from two programs: amplitudes 8192 and 4106, ratio
+  0.5012 (Q15 16423 / 32768 = 0.50119); a 1500 ms tone whose partner was
+  killed at 700 ms: no 10 ms window under 90 % of its amplitude; master
+  -6 dB: 4106; `audioctl` -12 dB mid-tone: 0.2512 of the start; the mixer
+  killed mid-tone: the client saw `ERR_PEER_CLOSED` and had a new stream
+  42 ms later; the hda driver killed mid-tone: the output reopened 0.25 s
+  later on its restart, the stream played to its end; an empty stream
+  let the output close after 12 periods, its next write reopened it.
+  The codec's verbs: the path open only while a stream ran.
+- Not possible from one shell: `play` and `beep` at the same time (the
+  shell runs one command at a time); `mixtest` runs two programs on
+  `<audio.h>` at once instead (a 44.1 kHz tone resampled and a 48 kHz one).
+
+### What only the PC can show
+
+- Two sounds at once in the headphones: the shell runs one command at
+  a time, so on the PC that is `mixtest` (two tone programs at once, at a
+  quarter of full scale and `hda gain`; headphones off the head first).
+  It also kills the mixer and the hda driver once, as in QEMU.
+- The mixer keeping up on the real controller: `vol` shows each
+  stream's underruns (0 expected), the log says "frames late" if a
+  period's end came too late.
+
+### Left for later
+
+- devmgr still hands the hda driver's channel to any GET_SERVICE caller
+  (the shell's `hda`, `hda gain` and `hdatest` use it): a program that
+  holds the driver's one stream (`hdatest`) makes a stream's start fail
+  `ERR_BAD_STATE` meanwhile.
+- The mixer's loop waits in its calls to the driver (an open up to 3 s,
+  finding the driver up to 2 s per service) while the driver restarts:
+  its clients' calls wait as long.
+- `played` is interpolated within a period from the driver's position;
+  nothing measures the codec's own delay.
+
+### Done when
+
+Two programs play at once through the mixer in QEMU (above), `vol` works
+from the shell, beep and play go through the mixer, and on the PC two
+sounds are heard at once.
+
+### For AS (the boot splash)
+
+The splash gets `SR_AUDIO` from init. Its `open_output` may come before
+the mixer has found the driver: the call waits for the mixer (init holds
+the channel), and the mixer opens the driver when the splash starts its
+stream. For lip sync it uses `position().played` (the mixer's estimate
+of what is heard, to within a period's interpolation), not what it wrote.

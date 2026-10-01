@@ -1,0 +1,36 @@
+# The mixer (user/services/mixer) and `vol`: one emulated controller with
+# QEMU's hda-output codec writing what it plays to a WAV file; use
+# tools/mixer-test.sh (it adds the devices and checks the log and the
+# file). `vol` with nothing playing, the master set and clamped, then
+# `mixtest` (tone programs at once, one killed, the mixer and the hda
+# driver killed mid-tone), then `vol` again. (The markers are echoed as
+# mx-""1 so the typed line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+send vol; echo mx-""1
+wait master 0.0 dB
+wait no streams
+wait mx-1
+wait jam>
+send vol master 3; vol master -200; vol 99 -6; vol master 0; echo mx-""2
+wait vol: master 0.0 dB
+wait vol: master mute
+wait vol: no stream 99
+wait vol: master 0.0 dB
+wait mx-2
+wait jam>
+send vol x; echo mx-""3
+wait usage: vol
+wait mx-3
+wait jam>
+send mixtest; echo mx-""4
+wait 240 mixtest: none_left
+wait mx-4
+wait jam>
+send vol; echo mx-""5
+wait no streams
+wait mx-5
+wait jam>
+send reboot
+wait reboot: resetting

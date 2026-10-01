@@ -8,15 +8,16 @@
 #   m44.wav    44100 Hz mono 16-bit, 1 s, 1000 Hz (resampled to 48 kHz)
 #   u8.wav     22050 Hz mono 8-bit, 1 s, 500 Hz
 #   x24.wav    96000 Hz stereo 24-bit WAVE_FORMAT_EXTENSIBLE, 1 s, 750 Hz,
-#              played with -v -20 (and the gain put back after)
+#              played with -v -20 (its mixer stream's volume)
 #   garbage.wav, cut.wav (the first 30 bytes of s48.wav), float.wav
 #              (32-bit float): refused with their reasons
 #   long.wav   48000 Hz mono 16-bit, 10 s, 300 Hz: Ctrl+C after ~2 s
 # Then the capture holds five sounds, each with silence after it, and is
 # checked: each one's frequency (from zero crossings) within 1 % on each
 # channel, its length within 2 % of the file's, mono files equal on both
-# channels and the stereo one's channels apart; x24's peak 54/44 of the
-# others' (QEMU scales by the amp's step: -20 dB is step 54, -30 dB 44);
+# channels and the stereo one's channels apart; x24's peak a tenth of the
+# others' (-20 dB of stream volume in the mixer, on top of the device's
+# gain, which stays at -30 dB);
 # the stopped one shorter than 3 s, ending in a fade (its last 1 ms well
 # under its peak) and no click (no jump between samples bigger than its
 # sine's own). QEMU_SMP passes through.
@@ -150,14 +151,15 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         endp = max(abs(v) for v in l[-48:])
         if endp > 0.5 * peaks[name]:
             fails.append("long: no fade: its last 1 ms reaches %d of %d" % (endp, peaks[name]))
-# -v -20 played x24 at step 54 where the others play at 44; the gain was put back.
+# -v -20 played x24's stream at -20 dB in the mixer (Q15 3277: a tenth),
+# the device at its -30 dB like the others.
 ratio = peaks["x24"] / float(peaks["s48"])
-print("play: x24 at -20 dB vs s48 at -30 dB: peaks %d/%d = %.3f (want %.3f)"
-      % (peaks["x24"], peaks["s48"], ratio, 54 / 44.0))
-if abs(ratio - 54 / 44.0) > 0.05:
-    fails.append("x24's peak is %.3f of s48's, want %.3f within 0.05" % (ratio, 54 / 44.0))
+print("play: x24 at -20 dB vs s48 at 0 dB (both at the device's -30): peaks %d/%d = %.4f "
+      "(want 0.1000)" % (peaks["x24"], peaks["s48"], ratio))
+if abs(ratio - 0.1) > 0.005:
+    fails.append("x24's peak is %.4f of s48's, want 0.1000 within 0.005" % ratio)
 if abs(peaks["m44"] / float(peaks["s48"]) - 1) > 0.05 or abs(peaks["long"] / float(peaks["s48"]) - 1) > 0.05:
-    fails.append("m44/long peaks %d/%d differ from s48's %d (the gain was not put back?)"
+    fails.append("m44/long peaks %d/%d differ from s48's %d (a volume left over from x24?)"
                  % (peaks["m44"], peaks["long"], peaks["s48"]))
 if fails:
     sys.exit("play: " + "; ".join(fails))

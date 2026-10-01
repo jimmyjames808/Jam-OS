@@ -66,6 +66,8 @@ const char *startup_role_name(uint32_t role)
     case SR_CONSOLE:      return "console";
     case SR_DEVMGR_CTL:   return "devmgr-ctl";
     case SR_NS:           return "ns";
+    case SR_AUDIO:        return "audio";
+    case SR_AUDIO_CTL:    return "audio-ctl";
     }
     return role >= SR_USER ? "user" : "?";
 }

@@ -10,9 +10,12 @@
  * What a program gets: the shell's namespace as it is then (every mount
  * the shell has), a PROGRAM-level console channel of its own
  * (console.new_client: write, keys while it runs, the screen; no input
- * sources, no new channels), and nothing of devmgr's unless `test` (the
- * utest and usbtest commands: test suites that kill and rebind drivers get
- * the query and control channels). Ctrl+C reaches the shell even while the
+ * sources, no new channels), the mixer's `audio` channel (SR_AUDIO: it
+ * can play sound), and nothing of devmgr's unless it is a test (the utest,
+ * usbtest, hdatest and mixtest commands: test suites that kill and rebind
+ * drivers get the query and control channels, and the mixer's control
+ * channel; mixtest, which kills the mixer, also init's control channel as
+ * SR_USER + 3, the shell's own number for it). Ctrl+C reaches the shell even while the
  * program holds the keys (the console sees to that) and kills it. When it
  * ends its job is killed: anything it started goes with it, so its console
  * channel never outlives it in the foreground. */
@@ -110,12 +113,30 @@ static bool find_program(const char *argv0, char *path, size_t cap)
     return st == OK && !dir;
 }
 
+#define RUN_TEST    1u   /* devmgr's channels and the mixer's control channel */
+#define RUN_INITCTL 2u   /* init's control channel too */
+#define RUN_HANDLES 8    /* the most program_handles gives */
+
+/* A duplicate of h as `role` into x[*nx], if there is an h. */
+static void give(struct spawn_handle *x, unsigned *nx, uint32_t role, handle_t h)
+{
+    handle_t d;
+    if (h && jam_handle_duplicate(h, RIGHT_SAME, &d) == OK)
+        x[(*nx)++] = (struct spawn_handle){ role, d };
+}
+
 /* The handles it starts with (see the top); *out_r: its stdout's read end
  * when we are in a pipe. The number of them. */
-static unsigned program_handles(struct spawn_handle *x, bool test, handle_t *out_r)
+static unsigned program_handles(struct spawn_handle *x, unsigned how, handle_t *out_r)
 {
     unsigned nx = 0;
+    bool test = how & RUN_TEST;
     handle_t h, out_w;
+    give(x, &nx, SR_AUDIO, sh_audio());
+    if (test)
+        give(x, &nx, SR_AUDIO_CTL, sh_audio_ctl());
+    if (how & RUN_INITCTL)
+        give(x, &nx, SR_USER + 3, sh_initctl());
     if (test && sh_devmgr() && jam_handle_duplicate(sh_devmgr(), RIGHT_SAME, &h) == OK)
         x[nx++] = (struct spawn_handle){ SR_DEVMGR, h };
     if (test && sh_devmgr_ctl() && jam_handle_duplicate(sh_devmgr_ctl(), RIGHT_SAME, &h) == OK)
@@ -192,8 +213,8 @@ static void clean_job(handle_t job, const char *path)
     }
 }
 
-/* argv[0] as a program; `test`: with devmgr's channels. Its status. */
-static int run_program(int argc, char **argv, bool test)
+/* argv[0] as a program; `how`: RUN_* (0: a plain program). Its status. */
+static int run_program(int argc, char **argv, unsigned how)
 {
     char path[SH_PATH_MAX];
     if (!find_program(argv[0], path, sizeof(path)))
@@ -204,8 +225,8 @@ static int run_program(int argc, char **argv, bool test)
         sh_tty("run: no job (%s)\n", status_str(st));
         return 126;
     }
-    struct spawn_handle x[4];
-    unsigned nx = program_handles(x, test, &out_r);
+    struct spawn_handle x[RUN_HANDLES];
+    unsigned nx = program_handles(x, how, &out_r);
     char **env = sh_make_env();
     const char *args[20];
     int n = 0;
@@ -243,7 +264,7 @@ static int run_program(int argc, char **argv, bool test)
 
 int sh_run_program(int argc, char **argv)
 {
-    return run_program(argc, argv, false);
+    return run_program(argc, argv, 0);
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which
@@ -274,10 +295,10 @@ static bool show_result_line(const char *name, const char *log, size_t got, bool
     return shown;
 }
 
-int sh_run_test_program(int argc, char **argv)
+static int run_test(int argc, char **argv, unsigned how)
 {
     uint64_t from = sh_klog_end();
-    int code = run_program(argc, argv, true);
+    int code = run_program(argc, argv, how);
     if (argc > 1)
         return code;   /* a child mode (utest's own), not the suite: no result line */
     char *log;
@@ -288,4 +309,14 @@ int sh_run_test_program(int argc, char **argv)
         sh_say("%s: no result line in the log\n", argv[0]);
     free(log);
     return code;
+}
+
+int sh_run_test_program(int argc, char **argv)
+{
+    return run_test(argc, argv, RUN_TEST);
+}
+
+int sh_run_test_program_initctl(int argc, char **argv)
+{
+    return run_test(argc, argv, RUN_TEST | RUN_INITCTL);
 }
