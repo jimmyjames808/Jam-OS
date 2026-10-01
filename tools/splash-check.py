@@ -13,6 +13,10 @@ boot splash's own file (boot/splash.mpg, decoded here with ffmpeg).
     splash-check.py text <png>              the console's text screen: its
                                             background with text on it
     splash-check.py red <png>               a panic screen (dark red)
+    splash-check.py alpha <png>             `run splash --alpha`: the seven
+                                            drupelets' colours at their
+                                            centres, the middle one's edge
+                                            partly covered (anti-aliased)
     splash-check.py sound <wav> <join ms>   the capture is the video's sound
                                             from <join ms> on (aligned to the
                                             video by the file's time stamps),
@@ -121,6 +125,26 @@ def check_red(path):
         fail("%s: not a panic screen" % path)
 
 
+def check_alpha(path):
+    img = shot(path)
+    h, w = img.shape[:2]
+    k = max(1, min(w // 1280, h // 720))
+    ox, oy = (w - 1280 * k) / 2, (h - 720 * k) / 2
+    cx, cy, r, d = ox + 456 * k, oy + 360 * k, 44 * k, 91 * k
+    want = [0x8e1b3b, 0xa9234a, 0xc8274d, 0xd99f31, 0xc8274d, 0xa9234a, 0xc8274d]
+    pts = [(cx, cy)] + [(cx + d * np.sin(i * np.pi / 3), cy - d * np.cos(i * np.pi / 3))
+                        for i in range(6)]
+    for (x, y), c in zip(pts, want):
+        got = img[int(y), int(x)]
+        rgb = np.array([c >> 16, c >> 8 & 0xff, c & 0xff])
+        if np.abs(got - rgb).max() > 3:
+            fail("%s: the drupelet at (%d, %d) is %s, want #%06x" % (path, x, y, got, c))
+    edge = [int(img[int(cy), int(cx + r) + dx][0]) for dx in (-1, 0, 1)]
+    ok("%s: seven drupelets; the middle one's edge, red: %s" % (path, edge))
+    if not any(60 < e < 130 for e in edge):
+        fail("%s: no partly covered pixel on the edge (not anti-aliased)" % path)
+
+
 def wav_frames(path):
     data = open(path, "rb").read()
     i = data.find(b"data")
@@ -200,6 +224,8 @@ def main():
         check_text(args[0])
     elif what == "red":
         check_red(args[0])
+    elif what == "alpha":
+        check_alpha(args[0])
     elif what in ("sound", "skipped"):
         check_sound(args[0], int(args[1]), what == "skipped")
     else:

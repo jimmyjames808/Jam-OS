@@ -12,7 +12,9 @@
 #            from where the splash said it joined, to the end (30 dB above
 #            the difference: tools/splash-check.py); the order in the log
 #            (first frame, sound, played, the shell up, the screen back);
-#            `run splash --selftest` passes.
+#            `run splash --selftest` passes; `run splash --alpha` draws the
+#            logo with libfun's anti-aliased discs (their colours, a partly
+#            covered edge).
 #   skip     at the PC's 2560x1440 (QEMU's VGA; the video at 2x): a
 #            screenshot is a frame at 2x; a key typed while it plays skips
 #            it (the sound stops short) and doesn't reach the shell.
@@ -68,6 +70,8 @@ join=$(grep -aE "splash: sound joins at [0-9]+ ms" "$log" | head -1 |
 check quiet "$out/splash-quiet.png"
 check frames "$out/splash-a.png" "$out/splash-b.png"
 check text "$out/splash-shell.png"
+check alpha "$out/splash-alpha.png"
+need "$log" "splash: alpha demo drawn"
 if [ -n "$join" ]; then check sound "$out/splash.wav" "$join"; else ok=0; fi
 
 # ---- skip: a key, at 2560x1440 -------------------------------------------------
