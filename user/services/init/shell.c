@@ -469,6 +469,22 @@ static status_t start_logd(void)
     return OK;
 }
 
+status_t shell_stop_devmgr(uint64_t deadline)
+{
+    struct svc *s = &svcs[DEVMGR];
+    if (!devmgr || !s->running)
+        return OK;
+    struct devmgr_rep r;
+    status_t st = devmgr_call(devmgr, DEVMGR_SHUTDOWN, 0, 0, 0, &r, NULL, 0, NULL, deadline);
+    signals_t seen;
+    if (st == OK)
+        st = jam_object_wait_one(s->proc, SIG_TERMINATED, deadline, &seen);
+    if (st != OK)
+        jam_job_kill(s->job);
+    s->given_up = true;   /* not again: the machine is about to restart */
+    return st;
+}
+
 void shell_flush_log(uint64_t deadline)
 {
     status_t st = logd_ctl ? logctl_flush_until(logd_ctl, deadline) : ERR_NOT_FOUND;

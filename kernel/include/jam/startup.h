@@ -33,6 +33,9 @@ enum startup_role {
                      * mixer: its server end): open a sound stream */
     SR_AUDIO_CTL,   /* the mixer's `audioctl` channel (every stream's
                      * volume): the shell and its test programs */
+    SR_CRASHLOG,    /* a crash kernel's boot only: a read-only VMO holding
+                     * the crashed kernel's log (struct crashlog_header,
+                     * then the text): init, and logd, which saves it */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };
@@ -48,4 +51,20 @@ struct startup_msg {
     uint32_t strings_len;                 /* bytes of strings after the struct */
     /* then strings_len bytes: argc argv strings, then envc "KEY=value"
      * strings, each NUL-terminated */
+};
+
+/* SR_CRASHLOG's VMO: this header, then text_len bytes of log text, the
+ * crashed kernel's log ring from its oldest byte to its newest. */
+#define CRASHLOG_MAGIC   0x474f4c48534152ull   /* "RASHLOG" */
+#define CRASHLOG_VERSION 1
+#define CRASHLOG_NAME    32
+
+struct crashlog_header {
+    uint64_t magic;                 /* CRASHLOG_MAGIC */
+    uint32_t version;               /* CRASHLOG_VERSION */
+    uint32_t reserved;              /* 0 */
+    uint64_t text_len;              /* bytes of text after the header */
+    uint64_t panic_at;              /* where in the text the panic's own lines start */
+    uint64_t lost;                  /* bytes the boot logged before the text (out of the ring) */
+    char     name[CRASHLOG_NAME];   /* that boot's log file ("boot-0042"), "" if it had none */
 };

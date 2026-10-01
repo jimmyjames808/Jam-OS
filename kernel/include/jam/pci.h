@@ -84,6 +84,15 @@ status_t pci_msi_mask(struct pci_dev *d, bool msix, uint32_t index, bool masked)
 status_t pci_set_bus_master(struct pci_dev *d, bool on);
 /* Memory decode on (a driver needs its BARs to answer). Same refusals. */
 status_t pci_enable_memory(struct pci_dev *d);
+/* The last thing a kernel does before it jumps into another (kexec's panic
+ * path and kexec_reboot): Bus Master Enable off on every function but the
+ * display and the bridges, so no device keeps writing memory or sending
+ * MSIs into the next kernel. One config write each, no lock (the other
+ * CPUs are halted, maybe holding pci_lock), nothing waited for: the next
+ * kernel's drivers reset their devices before they turn it on again. A
+ * root port's is left on, or nothing behind it could do DMA again.
+ * Returns how many functions had it on. */
+uint32_t pci_panic_bus_master_off(void);
 
 /* Around a power-state change (D3hot -> D0 resets a function without
  * No_Soft_Reset): save the command register and the BAR registers, then

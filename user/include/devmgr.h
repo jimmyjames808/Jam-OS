@@ -200,6 +200,14 @@ struct devmgr_mounts_rep {
 #define DEVMGR_REMOUNT_WRITE 1u
 #define DEVMGR_REMOUNT_TEST  2u
 
+/* () -> (), control channel only: stop, as when the last control client
+ * leaves (filesystems synced and stopped clean, the USB class drivers,
+ * then the bus drivers with their final halt and reset), and exit. The
+ * answer comes first; the caller waits for devmgr's process to end. For a
+ * kexec reboot, which must leave no device writing memory, while the
+ * shell still holds copies of the control channel. */
+#define DEVMGR_SHUTDOWN     0x0003000eu
+
 /* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
  * the partition (storage.idl's index, 0 to 3; DEVMGR_PART_* on the boot
  * disk) as the device and the

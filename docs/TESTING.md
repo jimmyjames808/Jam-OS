@@ -90,12 +90,14 @@ make debug                                                # the same, stopped fo
 ## The boot menu
 
 `boot/limine.conf` is the menu; each entry is a kernel command line.
+Every entry loads the kernel a second time, as a module: the crash
+kernel's pristine image (`tools/qemu-test.sh` does the same).
 
 | Entry | Command line | What it does |
 |---|---|---|
-| Jam OS | (empty) | the boot splash ([AS-PLAN.md](AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (a key skips it), then the shell; meanwhile init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer and logd. A panic halts with its screen up |
+| Jam OS | (empty) | the boot splash ([AS-PLAN.md](AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (a key skips it), then the shell; meanwhile init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer and logd. A panic starts the crash kernel, which saves the log as `/data/logs/boot-NNNN-crash.txt` and halts with the panic and where the log went on the screen |
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash |
-| Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; a panic's screen stays 15 s, then the PC restarts by itself |
+| Jam OS (restart 15 s after a panic) | `panic_reboot=15` | the same as Jam OS; after a panic the crash kernel's screen stays 15 s, then the PC restarts by itself |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Jam OS (Limine starts the CPUs) | `smp=loader` | the same as Jam OS, but Limine wakes the other CPUs and the kernel releases them, instead of the kernel's own INIT-SIPI-SIPI: the fallback until the kernel's own startup is signed off on the PC |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
@@ -129,7 +131,14 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
-- `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting.
+- `panic_reboot=<s>`: after a panic, count down s seconds (1..3600) and reboot instead of halting
+  (with a crash kernel it is the crash kernel that counts down, once the log is saved).
+- `crashkernel=<MiB>`: the crash kernel's region (default 128, 32..1024); `crashkernel=0`: no
+  crash kernel and no kexec `reboot` (it falls back to the firmware).
+- `crashtest=<name>`: the crash kernel runs the crash test `test<name>` at its boot (a panic
+  inside the crash kernel: `tools/kdump-test.sh`).
+- `crash`, `crashlog=<phys>`, `crash_reboot=<s>`: the crash kernel's own command line, which the
+  panicking kernel makes; not for typing.
 - `smp=loader`: Limine starts the other CPUs (see the boot menu). The
   boot log's `smp: N of M CPUs online in T ms (...)` line says which way
   they were started and how long it took.
@@ -151,7 +160,11 @@ writes to `/data/logs/`.
 
 Most tests are shell commands, so a test run needs no reboot: `ktest
 [prefix]`, `bench`, `stress <seconds>`, `utest`, `usbtest`, `crash <name>
-yes` (the deliberate panics), plus `devices`, `usb`, `pci`, `memmap`.
+yes` (the deliberate panics; `crash panic yes` is the plain one, and
+`kexecbad` damages the crash kernel first, so it must be refused), plus
+`devices`, `usb`, `pci`, `memmap`. `reboot` kexecs into the kernel on the
+stick; `reboot -f` resets through the firmware, which ends a QEMU run
+(`-no-reboot`): the shell scripts end with it.
 `soak` is the soak test ([Soak](#soak)), and `ktest` takes its options.
 `ktest` from the shell runs "live" next to the rest of user space: checks
 on system-wide counts are not made, and tests that need the machine to
@@ -263,7 +276,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `files.txt` | the file namespace: `/boot` as a read-only mount, `run` with a path, the file commands (mkdir touch write cp mv rm df sync) on a writable mount (the tests' RAM filesystem, `run ramfs shell`), a mount that reaches a running shell, the bootfs server killed and mounted again | |
 | `files-fat.txt` | the file commands on a real FAT volume (`run utest fat-shell`: bin/fat over a RAM disk): names with spaces and lower case, big copies, rm -r | |
 | `unplug.txt` | the stick pulled while the system runs and plugged back in (the monitor's `device_del` / `device_add`): `/data` and `/esp` go, nothing hangs, they come back in the running shell, logd carries on | |
-| `cad.txt` | Ctrl+Alt+Del on a USB keyboard: the console asks init, which syncs `/data` and resets | the `tools/usbkeys-test.sh` `QEMU_USB` |
+| `cad.txt` | Ctrl+Alt+Del on a USB keyboard: the console asks init, which syncs `/data` and kexecs into the kernel on the stick, where the file written before is read back | the `tools/usbkeys-test.sh` `QEMU_USB` |
 | `data-1.txt`, `data-2.txt`, `data-3.txt` | three boots of one stick: `/esp` and `/data` from the stick itself, a file kept across a reboot, a boot log per boot, the fat service and devmgr killed, the plug pulled | use `tools/data-test.sh` |
 | `sticks.txt` | other people's sticks: read-only at `/usb0` and `/usb1`, writes refused, `mount -w` and `mount -r`, what `mount` refuses, a stick pulled while a file on it is read and another in the middle of a copy onto it, sticks with nothing to mount | use `tools/sticks-test.sh` |
 | `fun.txt` | the apps (life, tetris, fractal): self-tests, play, screenshots, kill and crash with the screen borrowed | use `tools/fun-test.sh` |
@@ -303,7 +316,9 @@ matters `QEMU_XHCI`) pass through.
 | `tools/fun-test.sh <outdir>` | the apps (`fun.txt`); `FUN_HD=1` runs at the PC's 2560x1440 |
 | `tools/apps-test.sh <outdir>` | snake, mines and sysmon (`apps.txt`), with a USB mouse; `APPS_HD=1` runs at 2560x1440 |
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse; 1280x800 only (the clicks are at pixel positions) |
-| `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot |
+| `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot; each panic then goes through the crash kernel, which halts |
+| `tools/kdump-test.sh <outdir> [case...]` | the crash kernel, each case a fresh boot of a stick image read afterwards with mtools: `save` (`crash panic yes`: the crash kernel, on one CPU, saves `/data/logs/boot-0001-crash.txt` with the panic and the lines before it, and halts), `reboot` (`panic_reboot=3`: it resets, and the stick boots the normal kernel, which takes the next number), `bad` (`crash kexecbad yes`: the damaged crash kernel is refused, the panic halts as before), `inner` (`crashtest=panic`: the crash kernel's own panic halts), `nostick` (the stick pulled first: nothing saved, and it says so) |
+| `tools/kexec-reboot-test.sh <outdir>` | `reboot` by kexec: no firmware reset, the new kernel (every CPU started by the kernel itself) reaches the shell and `/data` (the old boot's log ends with the reboot's sync), and its own crash kernel saves a panic as `boot-0002-crash.txt`; with `crashkernel=0` `reboot` falls back to the firmware; `reboot -f` resets through the firmware |
 | `tools/data-test.sh <outdir>` | the stick's filesystems end to end, three boots of one stick image (`data-1.txt` to `data-3.txt`): written, rebooted, read back; QEMU quit in the middle of writes and the dirty volume mounted again; then the boot logs read off the image with mtools, as the Mac reads the real stick |
 | `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back (`SOAK_LOAD`: the kernel load workers, default one per CPU); PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
 | `tools/ktest-keep-test.sh <outdir>` | the test runner's own failure paths, with three tests that exist for it (`ktest=review_ktest`): with `keep` both failures are recorded and the run goes on; without it the first panics and the panic screen names loop, seed and test |

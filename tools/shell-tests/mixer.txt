@@ -32,5 +32,5 @@ send vol; echo mx-""5
 wait no streams
 wait mx-5
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

@@ -39,5 +39,5 @@ send hda jacks; echo hda-""6
 wait hda: jack 0 jack(s) with presence detection; unsolicited responses on
 wait hda-6
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

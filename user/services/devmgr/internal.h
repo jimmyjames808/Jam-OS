@@ -103,6 +103,9 @@ extern handle_t       pci_res, port;
 /* Problems for the exit code: real drivers that crashed or were given up
  * on, and drivers that didn't end cleanly. */
 extern unsigned       problems;
+/* The argument "storage" (a crash kernel's boot): of the USB interfaces
+ * only mass storage gets a driver (main.c, usb.c). */
+extern bool           storage_only;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */

@@ -64,3 +64,7 @@ static inline status_t sysc_publish(struct handle_table *t, struct kobject *obj,
     }
     return sysc_put_handle(t, uout, h);
 }
+
+/* root, a RES_ROOT resource in t with the rights `need`: OK, or why not
+ * (ERR_BAD_HANDLE, ERR_ACCESS_DENIED, ERR_WRONG_TYPE). sysc_console.c. */
+status_t sysc_get_root(struct handle_table *t, handle_t root, rights_t need);

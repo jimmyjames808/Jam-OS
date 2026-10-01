@@ -83,5 +83,5 @@ wait JAMOS-DATA
 type \x03
 wait 10 run: bin/utest was killed
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

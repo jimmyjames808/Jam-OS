@@ -1,12 +1,15 @@
 /* Panic screen: message, registers (for exceptions), a symbolised
  * frame-pointer backtrace and the tail of the kernel log. The other CPUs are
- * halted with an NMI first. */
+ * halted with an NMI first. Then, if a crash kernel is loaded, it is
+ * checked and started to save the log (kernel/kexec/jump.c); otherwise,
+ * or if it can't be used, the machine halts (or restarts: panic_reboot). */
 #include <stdarg.h>
 #include <stdint.h>
 #include <jam/cmdline.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
 #include <jam/ipi.h>
+#include <jam/kexec.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/ksyms.h>
@@ -126,6 +129,7 @@ static void panic_begin(void)
 
     size_t n = klog_tail(tail, TAIL_BYTES);
     tail[n] = '\0';
+    kexec_panic_begin();   /* the panic's own lines start here */
 
     fbcon_set_colors(0xffffff, 0x8b0000);
     fbcon_clear();
@@ -157,14 +161,20 @@ _Noreturn static void panic_end(void)
             break;
         }
     /* Written directly: the tail is longer than kprintf's line buffer. */
+    kexec_panic_tail();
     kprintf("\nlast log lines:\n");
     klog_write_raw(start, strlen(start));
 
-    /* panic_reboot=<s>: count down, then reset instead of halting. It
-     * busy-waits on the TSC: interrupts are off and the other CPUs are
-     * halted, so nothing could wake a sleeping thread. Before the TSC is
-     * calibrated there is no clock to count with, so it halts. */
-    uint64_t wait_time = cmdline_get_u64("panic_reboot", 0, 0);
+    kexec_panic_jump();   /* returns only without a usable crash kernel */
+    panic_halt_or_reboot(cmdline_get_u64("panic_reboot", 0, 0));
+}
+
+_Noreturn void panic_halt_or_reboot(uint64_t wait_time)
+{
+    /* A count down, then a reset instead of halting. It busy-waits on the
+     * TSC: interrupts are off and the other CPUs are halted, so nothing
+     * could wake a sleeping thread. Before the TSC is calibrated there is
+     * no clock to count with, so it halts. */
     if (!wait_time || !tsc_hz) {
         kprintf("\n\nsystem halted.\n");
         halt_forever();

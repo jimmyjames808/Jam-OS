@@ -71,6 +71,6 @@ send df | grep -c ^/esp | grep ^1$ && df | grep -c ^/data | grep ^1$ && echo ok-
 wait ok-a-df
 
 # ---- reboot: init syncs /data first ------------------------------------------------------
-send reboot
+send reboot -f
 wait init: /data synced
 wait reboot: resetting

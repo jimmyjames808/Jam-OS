@@ -29,6 +29,10 @@ bool     lapic_send_sipi(uint32_t apic_id, uint8_t vector);
 uint32_t lapic_read_esr(void);
 /* The APICs are in x2APIC mode (32-bit IDs) rather than xAPIC (8-bit). */
 bool     lapic_x2apic(void);
+/* INIT to every other CPU: each resets and waits for a SIPI, running no
+ * code of anyone's (kexec's last step, after their NMI halt: the next
+ * kernel starts them itself, and may reuse the memory they halted in). */
+void     lapic_send_init_others(void);
 
 /* Periodic per-CPU tick. TSC-deadline mode when the CPU has it (and
  * "nodeadline" is not on the command line), else the APIC's own counter. */

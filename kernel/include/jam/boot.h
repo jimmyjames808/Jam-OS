@@ -21,14 +21,30 @@ enum boot_mem_type {
     BOOT_MEM_LOADER_RECLAIMABLE, /* free once we stop using boot_info data */
     BOOT_MEM_KERNEL_AND_MODULES,
     BOOT_MEM_FRAMEBUFFER,
+    /* RAM that is not this kernel's (kernel/kexec): the crash kernel's
+     * reserved region in the running kernel, the crashed kernel's memory
+     * in a crash kernel. Never mapped, never managed, never handed out. */
+    BOOT_MEM_FOREIGN,
+    /* The crashed kernel's log ring and crash record, in a crash kernel:
+     * mapped read-only, read once at boot (kernel/kexec/crashlog.c). */
+    BOOT_MEM_CRASH_LOG,
 };
 
-/* Types that are real RAM (as opposed to MMIO holes or firmware-reserved). */
+/* Types that are real RAM this kernel maps and keeps struct pages for (as
+ * opposed to MMIO holes, firmware-reserved ranges and foreign RAM). */
 static inline int boot_mem_is_ram(enum boot_mem_type t)
 {
     return t == BOOT_MEM_USABLE || t == BOOT_MEM_LOADER_RECLAIMABLE ||
            t == BOOT_MEM_KERNEL_AND_MODULES || t == BOOT_MEM_ACPI_RECLAIMABLE ||
            t == BOOT_MEM_ACPI_NVS;
+}
+
+/* Types that are RAM at all, this kernel's or not, bad RAM included: no
+ * MMIO resource or physical VMO may ever cover one (pmm_range_has_ram). */
+static inline int boot_mem_is_any_ram(enum boot_mem_type t)
+{
+    return boot_mem_is_ram(t) || t == BOOT_MEM_BAD || t == BOOT_MEM_FOREIGN ||
+           t == BOOT_MEM_CRASH_LOG;
 }
 
 struct boot_mem_region {

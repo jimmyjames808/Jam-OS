@@ -223,6 +223,25 @@ uint64_t vmm_kernel_pml4(void)
     return kernel_pml4;
 }
 
+uint64_t *vmm_kernel_ptes(uint64_t va)
+{
+    ASSERT(!(va & (SIZE_2M - 1)) && va >= VMAP_BASE && va < VMAP_END);
+    uint64_t f = spin_lock_irqsave(&pt_lock);
+    uint64_t *e = walk(kernel_pml4, va, 1, WALK_CREATE);
+    spin_unlock_irqrestore(&pt_lock, f);
+    return e;   /* entry 0 of its table: the table is 2 MiB of va */
+}
+
+uint64_t vmm_pte(uint64_t pa, unsigned flags, bool large)
+{
+    return pa | leaf_bits(flags, large) | (large ? PTE_PS : 0);
+}
+
+uint64_t vmm_pte_table(uint64_t pa)
+{
+    return pa | PTE_P | PTE_W;
+}
+
 static void map_kernel_section(const struct boot_info *bi, const char *start, const char *end,
                                unsigned flags)
 {
@@ -287,15 +306,19 @@ void vmm_init(const struct boot_info *bi)
 
     for (size_t i = 0; i < bi->memmap_count; i++) {
         const struct boot_mem_region *r = &bi->memmap[i];
+        /* Foreign RAM (the crash kernel's region, or a crashed kernel's
+         * memory) gets no mapping at all, so no wild write can reach it. */
         if (r->type == BOOT_MEM_RESERVED || r->type == BOOT_MEM_BAD ||
-            r->type == BOOT_MEM_FRAMEBUFFER)
+            r->type == BOOT_MEM_FRAMEBUFFER || r->type == BOOT_MEM_FOREIGN)
             continue;
         uint64_t base = ALIGN_DOWN(r->base, PAGE_SIZE);
         uint64_t end = ALIGN_UP(r->base + r->length, PAGE_SIZE);
         /* The kernel image and boot modules are read-only through the HHDM:
          * otherwise kernel text would be writable through this alias, and
-         * W^X only holds if it holds for every mapping of a page. */
-        unsigned flags = r->type == BOOT_MEM_KERNEL_AND_MODULES ? 0 : VM_WRITE;
+         * W^X only holds if it holds for every mapping of a page. A crashed
+         * kernel's log is only read. */
+        unsigned flags = r->type == BOOT_MEM_KERNEL_AND_MODULES ||
+                         r->type == BOOT_MEM_CRASH_LOG ? 0 : VM_WRITE;
         vmm_map(kernel_pml4, base + hhdm_offset, base, end - base, flags | VM_GLOBAL);
     }
 

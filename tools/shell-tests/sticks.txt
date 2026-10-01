@@ -136,6 +136,6 @@ wait arg: still-s
 wait run: bin/utest exited with code 0
 send cat /usb1/floppy.txt | grep -c superfloppy | grep ^1$ && echo ok-$T-end
 wait ok-s-end
-send reboot
+send reboot -f
 wait init: /data synced
 wait reboot: resetting

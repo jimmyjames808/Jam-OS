@@ -29,6 +29,7 @@
 #define REG_ID      0x020
 #define REG_TPR     0x080
 #define REG_EOI     0x0b0
+#define REG_ISR0    0x100   /* in-service vectors, 8 registers of 32, 0x10 apart */
 #define REG_SVR     0x0f0
 #define REG_ESR     0x280
 #define REG_ICR_LO  0x300
@@ -208,6 +209,12 @@ bool lapic_x2apic(void)
     return x2;
 }
 
+void lapic_send_init_others(void)
+{
+    /* Nothing left to do if an xAPIC never reports it sent: the caller jumps. */
+    (void)send_icr_bounded(0, ICR_ASSERT | ICR_ALL_BUT_ME | ICR_INIT);
+}
+
 static void on_spurious(struct trap_frame *f)
 {
     (void)f;   /* no EOI for spurious interrupts */
@@ -322,6 +329,16 @@ void lapic_init_cpu(struct cpu *c)
     wr(REG_ESR, 0);
     wr(REG_ESR, 0);
     wr(REG_SVR, 0x100 | VEC_SPURIOUS);   /* software enable */
+    /* One EOI per vector still in service. After Limine there is none;
+     * after a kexec from a kernel that panicked inside an interrupt
+     * handler there is one, and it would block its vector and every lower
+     * one. (Each EOI ends the highest in service.) */
+    unsigned in_service = 0;
+    for (uint32_t i = 0; i < 8; i++)
+        for (uint32_t bits = rd(REG_ISR0 + i * 0x10); bits; bits &= bits - 1)
+            in_service++;
+    for (unsigned i = 0; i < in_service; i++)
+        lapic_eoi();
     lapic_eoi();
 
     if (c->index == 0) {

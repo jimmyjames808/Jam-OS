@@ -5,5 +5,5 @@ wait 120 init: hello from ring 3
 shot splash-off
 wait 120 Jam OS shell
 wait 60 jam>
-send reboot
+send reboot -f
 wait reboot: resetting

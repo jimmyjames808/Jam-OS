@@ -15,6 +15,7 @@
 #define INITCTL_REBOOT           0x00120003u
 #define INITCTL_MOUNT            0x00120004u
 #define INITCTL_SHELL_READY      0x00120005u
+#define INITCTL_REBOOT_FIRMWARE  0x00120006u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -58,6 +59,14 @@ struct initctl_shell_ready_req {
     uint32_t ordinal;
 } __attribute__((packed));
 struct initctl_shell_ready_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct initctl_reboot_firmware_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_reboot_firmware_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -118,7 +127,10 @@ static inline status_t initctl_sync(handle_t ch)
     return initctl_sync_until(ch, DEADLINE_NEVER);
 }
 
-/* sync, then reset the machine. Answers only if the reset failed. */
+/* Restart into the kernel on the stick: by kexec (/esp's boot/jamos.elf and
+ * boot/bootfs.img loaded, everything synced, devmgr's drivers stopped, then
+ * the jump), or, if any of that fails, through the firmware (sync, then a
+ * reset). Answers only if both failed. */
 static inline status_t initctl_reboot_until(handle_t ch, uint64_t deadline_ns)
 {
     struct initctl_reboot_req idl_q;
@@ -187,6 +199,26 @@ static inline status_t initctl_shell_ready(handle_t ch)
     return initctl_shell_ready_until(ch, DEADLINE_NEVER);
 }
 
+/* sync, then a reset through the firmware, never kexec (the shell's
+ * `reboot -f`). Answers only if the reset failed. */
+static inline status_t initctl_reboot_firmware_until(handle_t ch, uint64_t deadline_ns)
+{
+    struct initctl_reboot_firmware_req idl_q;
+    struct initctl_reboot_firmware_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_REBOOT_FIRMWARE;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t initctl_reboot_firmware(handle_t ch)
+{
+    return initctl_reboot_firmware_until(ch, DEADLINE_NEVER);
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -197,6 +229,7 @@ struct initctl_ops {
     status_t (*reboot)(void *ctx);
     status_t (*mount)(void *ctx, const uint8_t path[16], uint8_t writable);
     status_t (*shell_ready)(void *ctx);
+    status_t (*reboot_firmware)(void *ctx);
 };
 
 /* Decode the request of n bytes at req, call its handler, encode the reply
@@ -293,6 +326,22 @@ static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->shell_ready(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INITCTL_REBOOT_FIRMWARE: {
+        const struct initctl_reboot_firmware_req *idl_q = (const struct initctl_reboot_firmware_req *)req;
+        struct initctl_reboot_firmware_rep *idl_r = (struct initctl_reboot_firmware_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->reboot_firmware) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->reboot_firmware(ctx);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

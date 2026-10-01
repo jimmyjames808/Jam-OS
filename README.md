@@ -100,7 +100,8 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | Path | What |
 |---|---|
 | `kernel/main.c` | the boot sequence, then the tests or user space |
-| `kernel/boot/` | loader glue (the only code that knows about Limine) |
+| `kernel/boot/` | loader glue: Limine's (the only code that knows about it), and a kexec'd kernel's handoff |
+| `kernel/kexec/` | the crash kernel and kexec: the reserved region, loading a kernel into it, the jump, the crash kernel's side |
 | `kernel/arch/x86_64/` | entry, interrupts, syscalls, CPUs, APIC, TSC, FPU, PCIDs, IPIs |
 | `kernel/acpi/` | static ACPI tables (MADT, FADT, HPET, MCFG) |
 | `kernel/mm/` | physical pages, page tables, heap, address spaces |

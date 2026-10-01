@@ -17,5 +17,5 @@ send
 wait unknown command
 sleep 0.5
 shot longline-after
-send reboot
+send reboot -f
 wait reboot: resetting

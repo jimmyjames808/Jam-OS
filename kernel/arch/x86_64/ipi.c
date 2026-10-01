@@ -41,6 +41,7 @@ static struct inbox inboxes[MAX_CPUS];
 int ipi_ready;
 static int watchdog_target = -1;   /* the CPU the watchdog NMI is for, -1: none */
 static uint32_t halted;            /* CPUs that took the panic NMI */
+static int halting;                /* ipi_halt_others has begun: an NMI halts */
 
 void ipi_send(uint32_t cpu, uint8_t vector)
 {
@@ -301,6 +302,8 @@ uint32_t ipi_halt_others(void)
     uint32_t others = 0;
     for (uint32_t i = 0; i < cpu_count; i++)
         others += cpu_online(cpus[i]) && cpus[i] != this_cpu();
+    /* Published before the NMI: send_icr fences, the handler reads it. */
+    __atomic_store_n(&halting, 1, __ATOMIC_RELEASE);
     lapic_send_nmi_others();
     uint64_t start = rdtsc();
     while (__atomic_load_n(&halted, __ATOMIC_ACQUIRE) < others && rdtsc() - start < tsc_hz / 10)
@@ -321,7 +324,8 @@ extern int panic_in_progress;
 
 void nmi_handler(struct trap_frame *f)
 {
-    if (__atomic_load_n(&panic_in_progress, __ATOMIC_ACQUIRE)) {
+    if (__atomic_load_n(&panic_in_progress, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&halting, __ATOMIC_ACQUIRE)) {
         __atomic_add_fetch(&halted, 1, __ATOMIC_RELEASE);
         halt_forever();
     }

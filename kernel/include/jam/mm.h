@@ -138,6 +138,19 @@ void    *kstack_alloc_try(size_t size);
 void     kstack_free(void *top, size_t size);
 /* Reserve (but do not map) kernel virtual space in the vmap area. */
 uint64_t vmm_reserve(uint64_t len);
+/* For code that must later map pages without taking a lock or allocating
+ * (kexec's panic path, kernel/kexec/region.c): the 512 leaf entries of the
+ * page table that covers the 2 MiB-aligned vmap range at va, made now if
+ * needed (it may allocate: call it at boot). The caller then stores
+ * entries from vmm_pte itself and flushes the TLB itself; vmm_map and
+ * vmm_unmap still work on the range as usual. */
+uint64_t *vmm_kernel_ptes(uint64_t va);
+/* Page-table entries as vmm_map writes them, for tables built elsewhere
+ * (the page tables kexec hands a new kernel): a leaf for pa with VM_*
+ * flags, at 4 KiB or (large) a 2 MiB / 1 GiB page; and an entry pointing
+ * at the next level's table at pa (present, writable: leaves decide). */
+uint64_t  vmm_pte(uint64_t pa, unsigned flags, bool large);
+uint64_t  vmm_pte_table(uint64_t pa);
 /* Map a physical MMIO range uncached into the vmap area. */
 void    *vmm_map_mmio(uint64_t pa, uint64_t len);
 

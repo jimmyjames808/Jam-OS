@@ -18,5 +18,5 @@ wait jam>
 send help
 wait Commands:
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

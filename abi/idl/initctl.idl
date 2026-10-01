@@ -22,7 +22,10 @@ protocol initctl 18
 # Everything written to /data, and to every /usbN, is on its stick
 # (fs.sync), waiting at most 2 s in all. OK also when there is no /data.
 2  sync  () -> ()
-# sync, then reset the machine. Answers only if the reset failed.
+# Restart into the kernel on the stick: by kexec (/esp's boot/jamos.elf and
+# boot/bootfs.img loaded, everything synced, devmgr's drivers stopped, then
+# the jump), or, if any of that fails, through the firmware (sync, then a
+# reset). Answers only if both failed.
 3  reboot  () -> ()
 # Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
 # again (0): devmgr restarts its filesystem service on a `block` channel
@@ -37,3 +40,6 @@ protocol initctl 18
 # tells the boot splash (bin/splash) to hand the screen back to the
 # console; nothing to do if no splash is waiting (a later shell's call).
 5  shell_ready  () -> ()
+# sync, then a reset through the firmware, never kexec (the shell's
+# `reboot -f`). Answers only if the reset failed.
+6  reboot_firmware  () -> ()

@@ -16,6 +16,7 @@
 #include <jam/ioapic.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
+#include <jam/kexec.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/lapic.h>
@@ -37,6 +38,7 @@
 
 #define JAMOS_VERSION   "0.0.25-m8"
 #define KERNEL_STACK_SZ (64 * 1024)
+#define CRASH_INIT_S    180   /* a crash kernel's init: saving the log, at most */
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);
 
@@ -53,6 +55,8 @@ static const char *mem_type_name(enum boot_mem_type t)
     case BOOT_MEM_LOADER_RECLAIMABLE: return "loader-reclaim";
     case BOOT_MEM_KERNEL_AND_MODULES: return "kernel+modules";
     case BOOT_MEM_FRAMEBUFFER:        return "framebuffer";
+    case BOOT_MEM_FOREIGN:            return "foreign";
+    case BOOT_MEM_CRASH_LOG:          return "crash-log";
     }
     return "?";
 }
@@ -117,7 +121,7 @@ static const char *ktest_prefix(void)
 static bool mode_word_given(void)
 {
     static const char *const modes[] = { "ktest", "bench", "selftest", "init", "keytest",
-                                         "pcilist", "memmap" };
+                                         "pcilist", "memmap", "crash" };
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
         if (cmdline_has(modes[i]))
             return true;
@@ -181,6 +185,7 @@ _Noreturn static void kmain_stage2(void *arg)
     lapic_timer_start(TICK_HZ);
     smp_start_aps(boot);
     irq_enable();
+    kexec_crash_load();   /* the crash kernel into its region (kexec.h) */
 
     kprintf("measuring ticks on every CPU for 1 s...\n");
     bool ok = smp_report(1000);
@@ -212,6 +217,13 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
+    /* A crash kernel (kexec.h): init saves the crashed kernel's log, then
+     * the last screen shows its panic and where the log went. */
+    if (kexec_is_crash_kernel()) {
+        crashlog_init(boot);
+        userboot_run_init(CRASH_INIT_S, "crash", NULL);
+        crashlog_finish();
+    }
     /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
      * or on "shell" or a plain boot (no mode word: mode_word_given): devmgr, the
      * console, serial input and the shell, for good (no timeout; the
@@ -269,6 +281,7 @@ _Noreturn void kmain(struct boot_info *bi)
     gdt_init_bsp();
     idt_init();
     print_boot_info(bi);
+    kexec_reserve(bi);   /* before the memory managers: the crash kernel's region */
     if (cmdline_has("memmap"))
         kmain_print_memmap();
 

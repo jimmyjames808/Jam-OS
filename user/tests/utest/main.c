@@ -182,6 +182,53 @@ static bool t_rights(void)
     return true;
 }
 
+/* kexec_load, kexec_reboot and klog_name refuse what they must (the rights
+ * on the root resource only where we were given one: init's run gives it,
+ * the shell doesn't). Nothing here loads an image or names the log: either
+ * would change this boot (a crash kernel replaced, the crash log's name). */
+static bool t_kexec_refusals(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), v, rd, mapo, klog, m;
+    CHECK_ST(jam_vmo_create(8192, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_kexec_load(v, v, v, NULL, 0, 0), ERR_WRONG_TYPE);   /* not a resource */
+    CHECK_ST(jam_kexec_load(0x7fff0000u, v, v, NULL, 0, 0), ERR_BAD_HANDLE);
+    CHECK_ST(jam_kexec_reboot(v), ERR_WRONG_TYPE);
+    if (!root) {   /* run from the shell, which gives programs no root resource */
+        CHECK_ST(jam_handle_close(v), OK);
+        return true;
+    }
+    CHECK_ST(jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_READ, &rd), OK);
+    CHECK_ST(jam_kexec_load(rd, v, v, NULL, 0, 0), ERR_ACCESS_DENIED);   /* no MANAGE */
+    CHECK_ST(jam_kexec_reboot(rd), ERR_ACCESS_DENIED);
+
+    CHECK_ST(jam_klog_open(rd, &klog), OK);
+    CHECK_ST(jam_klog_name(v, "boot-0001", 9), ERR_WRONG_TYPE);
+    CHECK_ST(jam_klog_name(klog, "a b", 3), ERR_INVALID_ARGS);
+    CHECK_ST(jam_klog_name(klog, "", 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_klog_name(klog, "boot-0001-and-a-name-too-long-to-keep", 37), ERR_INVALID_ARGS);
+    CHECK_ST(jam_klog_name(klog, (const char *)8, 4), ERR_INVALID_ARGS);   /* a bad pointer */
+    CHECK_ST(jam_handle_close(klog), OK);
+    CHECK_ST(jam_handle_close(rd), OK);
+
+    /* With the root's RIGHT_MANAGE, the arguments too. Neither init's run
+     * (READ only) nor the shell (no root) gives utest that today, so this
+     * part waits for a starter that does. */
+    if (jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_MANAGE, &m) == OK) {
+        CHECK_ST(jam_handle_duplicate(v, RIGHTS_BASIC | RIGHT_MAP, &mapo), OK);
+        CHECK_ST(jam_kexec_load(m, v, v, NULL, 0, 1), ERR_INVALID_ARGS);            /* flags */
+        CHECK_ST(jam_kexec_load(m, v, m, NULL, 0, 0), ERR_WRONG_TYPE);              /* bootfs */
+        CHECK_ST(jam_kexec_load(m, mapo, v, NULL, 0, 0), ERR_ACCESS_DENIED);        /* no READ */
+        CHECK_ST(jam_kexec_load(m, v, v, (const char *)8, 4, 0), ERR_INVALID_ARGS); /* pointer */
+        CHECK_ST(jam_kexec_load(m, v, v, "a\nb", 3, 0), ERR_INVALID_ARGS);          /* not text */
+        status_t st = jam_kexec_load(m, v, v, NULL, 0, 0);   /* zeros: no ELF */
+        CHECK(st == ERR_INVALID_ARGS || st == ERR_NOT_SUPPORTED);
+        CHECK_ST(jam_handle_close(mapo), OK);
+        CHECK_ST(jam_handle_close(m), OK);
+    }
+    CHECK_ST(jam_handle_close(v), OK);
+    return true;
+}
+
 static bool t_bad_pointers(void)
 {
     struct job_info before, after;
@@ -501,6 +548,7 @@ static const struct {
 } tests[] = {
     { "basics", t_basics },
     { "rights", t_rights },
+    { "kexec_refusals", t_kexec_refusals },
     { "bad_pointers", t_bad_pointers },
     { "startup_message", t_startup_message },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },

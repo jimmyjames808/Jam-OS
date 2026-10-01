@@ -7,5 +7,5 @@ send run contest cad
 wait 10 contest: cad: connect_input: ERR_ACCESS_DENIED
 wait 10 run: bin/contest exited with code 0
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

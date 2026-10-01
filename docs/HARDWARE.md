@@ -131,17 +131,23 @@ an entry from the boot menu ([TESTING.md](TESTING.md#the-boot-menu)). A
 test run at boot (All tests, the stress test, the benchmark) ends with a
 RESULTS box on the screen that sums it up; the `soak` command ends with a
 SOAK RESULTS box. To end a run on the PC cleanly, `reboot` from the shell:
-it syncs `/data` and has logd write the log's last lines first.
+it syncs `/data` and has logd write the log's last lines first, then
+restarts into the kernel on the stick without the firmware (kexec);
+`reboot -f` goes through the firmware and the boot menu.
 
 ## If something goes wrong on the PC
 
-- **A panic.** The everyday entry halts with the panic screen up; the
-  second entry restarts the PC 15 s after one. Photograph the top of the
-  screen: the message, the note line under it (a kernel test's loop, seed
-  and test, when tests were running; [TESTING.md](TESTING.md#soak) says how
-  to replay it) and the backtrace. The boot log on the stick stops up to a
-  quarter of a second before the panic, and never holds the panic screen
-  itself.
+- **A panic.** The panic screen comes up, then the crash kernel starts
+  (its boot log scrolls past), saves the log as
+  `/data/logs/boot-NNNN-crash.txt` and shows the panic again with a
+  RESULTS box saying where the log went (or why it couldn't). The
+  everyday entry then halts; the second entry restarts the PC 15 s later.
+  Photograph the top of the screen: the message, the note line under it (a
+  kernel test's loop, seed and test, when tests were running;
+  [TESTING.md](TESTING.md#soak) says how to replay it) and the backtrace.
+  The crash file holds the last 64 KiB of the log, the panic included; the
+  boot's own `boot-NNNN.txt` stops up to a quarter of a second before the
+  panic.
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may

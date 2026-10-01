@@ -268,5 +268,5 @@ wait ^C
 wait jam>
 sleep 0.5
 shot shell-cmds
-send reboot
+send reboot -f
 wait reboot: resetting

@@ -15,9 +15,12 @@
  * same way among the functions with a driver bound (GET_DRIVER
  * 0xffff/0xffff); devmgr restarts them like any driver that dies.
  *
- * reboot and sync flush /data and every /usbN first, for at most 2 s
- * (mounts_sync). reboot then has logd save the log's last lines, that one
- * included (shell_flush_log), so a boot log ends with its own shutdown.
+ * reboot is a kexec into the kernel on the stick (reboot.c); if that
+ * can't be done, and for reboot_firmware (`reboot -f`), it is a reset
+ * through the firmware. Either way /data and every /usbN are flushed first,
+ * for at most 2 s (mounts_sync), and logd saves the log's last lines, that
+ * one included (shell_flush_log), so a boot log ends with its own
+ * shutdown. sync flushes the same way.
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
  * devmgr (DEVMGR_REMOUNT) for /usbN and refused for every other path:
@@ -208,15 +211,30 @@ static status_t op_sync(void *ctx)
     return OK;
 }
 
-static status_t op_reboot(void *ctx)
+static status_t firmware_reboot(void)
 {
-    (void)ctx;
     /* The files first, then the log with the line that says so, then the
      * volume's clean mark: each bounded, 4 s in all. */
     mounts_sync();
     shell_flush_log(now() + LOG_WAIT);
     mounts_settle();
     return jam_reboot(shell_root());   /* comes back only if it failed */
+}
+
+static status_t op_reboot(void *ctx)
+{
+    (void)ctx;
+    (void)init_reboot_kexec();   /* comes back only if it failed, having said why */
+    printf("init: rebooting through the firmware instead\n");
+    return firmware_reboot();
+}
+
+static status_t op_reboot_firmware(void *ctx)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    return firmware_reboot();
 }
 
 /* "/usbN" -> N; false for any other path. */
@@ -268,7 +286,7 @@ static status_t op_shell_ready(void *ctx)
 
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
-    .shell_ready = op_shell_ready,
+    .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
 };
 
 static void ctl_close(struct ctl *c)

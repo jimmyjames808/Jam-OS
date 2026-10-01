@@ -11,7 +11,7 @@ set -u
 out=$1
 shift
 all="bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog
-     smap smep"
+     smap smep kexecread kexecbad"
 names=${*:-$all}
 mkdir -p "$out"
 fails=0
@@ -25,7 +25,7 @@ for n in $names; do
         if [ "$n" = bp ]; then
             echo "wait 30 came back, as a breakpoint must"
             echo "wait jam>"
-            echo "send reboot"
+            echo "send reboot -f"
             echo "wait reboot: resetting"
         else
             echo "wait 60 KERNEL PANIC"
