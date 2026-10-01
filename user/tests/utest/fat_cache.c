@@ -1,6 +1,7 @@
 /* utest: fat's block cache (user/services/fat/cache.c) over a RAM disk.
- * A file read twice in a fresh fat costs the disk a block read per 64 KiB
- * line, not one per cluster; what is written goes to the disk at once and
+ * A file read from start to end in a fresh fat costs the disk about a
+ * block read per 64 KiB (the read-ahead grows to a whole line), not one
+ * per cluster, and reading it again costs nothing; what is written goes to the disk at once and
  * is what the next read sees (write-through: the cache never holds
  * anything the disk doesn't). */
 #define CHECK_PROG "utest"
@@ -72,8 +73,9 @@ bool t_fat_cache(void)
         !fat_stop(&r))
         return false;
 
-    /* A fresh fat: an empty cache. The first read costs one block read per
-     * line (and a few for the FAT and the directory); the second none. */
+    /* A fresh fat: an empty cache. The first read costs about a block
+     * read per 64 KiB (the first few smaller, while the read-ahead grows,
+     * and a few for the FAT and the directory); the second none. */
     if (!fat_start(&r, &disk, false))
         return false;
     uint32_t r0 = ramdisk_reads(&disk);
@@ -81,9 +83,9 @@ bool t_fat_cache(void)
         return false;
     CHECK(!memcmp(got, pattern, CACHE_FILE));
     uint32_t first = ramdisk_reads(&disk) - r0;
-    if (first > CACHE_FILE / LINE_BYTES + 6)
+    if (first > CACHE_FILE / LINE_BYTES + 10)
         FAIL("reading %u KiB took %u block reads, want at most %u (a line each)",
-             CACHE_FILE >> 10, first, CACHE_FILE / LINE_BYTES + 6);
+             CACHE_FILE >> 10, first, CACHE_FILE / LINE_BYTES + 10);
     uint32_t r1 = ramdisk_reads(&disk);
     if (!read_all(&r, "/big.bin"))
         return false;

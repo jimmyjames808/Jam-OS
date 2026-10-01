@@ -859,8 +859,10 @@ capped at 8 MiB.
   ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)).
 - Write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
-  reads go by 64 KiB lines (one block call each), 16 lines per volume,
-  the least recently used given up first; every write still goes to the
+  a miss reads 4 KiB, and twice as much as the last one when it carries
+  on where that one ended, up to a 64 KiB line (one block call); 16 lines
+  per volume, the least recently used given up first; every write still
+  goes to the
   stick at once and is then copied into the lines that hold its sectors,
   so the cache never holds anything the stick doesn't (sticks get
   pulled). A big read (a whole 64 KiB) goes past it. Nobody else writes a
