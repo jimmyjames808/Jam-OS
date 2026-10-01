@@ -183,6 +183,39 @@ uint64_t pmm_early_alloc(uint64_t size, uint64_t align)
     panic("pmm: early allocation of %lu bytes failed", size);
 }
 
+uint64_t pmm_early_alloc_low(uint64_t floor, uint64_t limit)
+{
+    ASSERT(!early_done);
+    uint64_t best = 0;
+    size_t at = 0;
+    for (size_t i = 0; i < early_count; i++) {
+        uint64_t top = early[i].end < limit ? early[i].end : limit;
+        uint64_t base = early[i].base > floor ? early[i].base : floor;
+        if (top >= base + PAGE_SIZE && top - PAGE_SIZE > best) {
+            best = top - PAGE_SIZE;
+            at = i;
+        }
+    }
+    if (!best)
+        return 0;
+    struct range *r = &early[at];
+    if (best + PAGE_SIZE == r->end) {
+        r->end = best;
+    } else if (best == r->base) {
+        r->base += PAGE_SIZE;
+    } else {
+        /* The middle of a range: split it, keeping the array in address
+         * order (pmm_early_alloc carves from the last range first). */
+        if (early_count == MAX_EARLY_RANGES)
+            return 0;
+        memmove(&early[at + 2], &early[at + 1], (early_count - at - 1) * sizeof(early[0]));
+        early[at + 1] = (struct range){ best + PAGE_SIZE, r->end };
+        r->end = best;
+        early_count++;
+    }
+    return best;
+}
+
 static unsigned zone_of(uint64_t pfn)
 {
     return (pfn << PAGE_SHIFT) < FOUR_GIB ? ZONE_DMA32 : ZONE_NORMAL;
