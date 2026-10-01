@@ -24,7 +24,7 @@ built yet, it says so.
 | SMP | From day one |
 | Native API | Capability handles; a POSIX layer (musl) possible later |
 | Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
-| Syscall ABI | Unstable until M15; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
+| Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
