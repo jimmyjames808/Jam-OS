@@ -108,15 +108,16 @@ static bool enable_slot(struct attach *a)
     return true;
 }
 
-/* The input and output contexts and EP0's ring; the output context goes
- * into the DCBAA. */
+/* The input and output contexts, EP0's ring and its control transfers'
+ * bounce page; the output context goes into the DCBAA. */
 static bool alloc_contexts(struct attach *a)
 {
     struct hc *h = &g_hc;
     struct usbdev *d = a->d;
     d->out_page = pool_alloc(h);
     d->in_page = pool_alloc(h);
-    if (d->out_page < 0 || d->in_page < 0 || !ring_init(h, &d->ep0))
+    d->ctl.page = pool_alloc(h);
+    if (d->out_page < 0 || d->in_page < 0 || d->ctl.page < 0 || !ring_init(h, &d->ep0))
         return failed(a, "memory for the contexts", CC_RESOURCE);
     hc_set_dcbaa(h, d->slot, pool_dev(h, d->out_page));
     return true;

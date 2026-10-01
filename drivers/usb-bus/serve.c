@@ -461,7 +461,6 @@ static int take_handles(struct hc *h, const struct driver_start *s)
     h->dma = drv_handle(s, DR_DMA);
     h->serve = drv_handle(s, DR_SERVE);
     h->port = h->ctx_vmo = h->sp_vmo = h->pool_vmo = HANDLE_INVALID;
-    h->ctl_page = -1;
     if (h->dev == HANDLE_INVALID || h->bar == HANDLE_INVALID || h->irq == HANDLE_INVALID ||
         h->dma == HANDLE_INVALID) {
         drv_report("missing handles: DR_PCIDEV %s, DR_BAR(0) %s, DR_IRQ(0) %s, DR_DMA %s",

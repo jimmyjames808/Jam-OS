@@ -727,9 +727,6 @@ int hc_bring_up(struct hc *x)
         return FAIL(x, "bus master", "can't turn it on (%s)", status_str(st));
     if ((r = setup_memory(x)) || (r = pool_setup(x)))
         return r;
-    x->ctl_page = pool_alloc(x);
-    if (x->ctl_page < 0)
-        return FAIL(x, "DMA pool", "no page for control transfers");
     st = drv_port_bind(x->port, x->irq, KEY_IRQ, SIG_INTERRUPT, PORT_BIND_PERSISTENT);
     if (st != OK)
         return FAIL(x, "interrupt", "bind DR_IRQ(0): %s", status_str(st));

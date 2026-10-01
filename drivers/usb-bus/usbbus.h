@@ -28,7 +28,7 @@ static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 #define MAX_IFS      8      /* interfaces per device (active alternate settings) */
 #define MAX_EPS_IF   8      /* endpoints per interface we remember */
 #define MAX_LEVEL    6      /* a device on a root port is level 1; 5 hub tiers below */
-#define POOL_PAGES   320    /* DMA pages for contexts, rings and buffers */
+#define POOL_PAGES   384    /* DMA pages for contexts, rings and buffers */
 #define INTR_TRBS    8      /* interrupt-IN transfers kept queued per endpoint */
 #define MAX_CHANS    96     /* served channels (interfaces and report channels) */
 #define CFG_MAX      4096   /* biggest configuration descriptor we read */
@@ -286,17 +286,6 @@ struct hc {
         uint32_t cc, slot, param;    /* from the event: completion code, slot id, parameter */
     } cmd;
 
-    /* the one outstanding control transfer */
-    struct {
-        bool busy, done;             /* running; finished (cc says how) */
-        uint8_t slot;                /* the device's slot */
-        uint64_t data_trb, status_trb, setup_trb;   /* its TRBs' device addresses (0: none) */
-        uint32_t cc;                 /* completion code of the transfer */
-        uint32_t residual;           /* bytes not transferred (a short data stage) */
-        bool short_seen;             /* the data stage ended short */
-    } ctl;
-    int ctl_page;                    /* the shared control bounce buffer */
-
     /* the one outstanding bulk transfer (bulk.c) */
     struct {
         bool busy, done;             /* running; finished (cc says how) */
@@ -401,6 +390,15 @@ struct usbdev {
 
     int out_page, in_page;   /* pool pages: output (device) and input contexts, -1: none */
     struct ring ep0;      /* the default control endpoint's ring */
+    /* the control transfer running on EP0 (control.c): one at a time per device */
+    struct {
+        bool busy, done;  /* running; finished (cc says how) */
+        uint64_t data_trb, status_trb, setup_trb;   /* its TRBs' device addresses (0: none) */
+        uint32_t cc;      /* completion code of the transfer */
+        uint32_t residual;   /* bytes not transferred (a short data stage) */
+        bool short_seen;  /* the data stage ended short */
+        int page;         /* pool page: the transfers' bounce buffer, -1: none */
+    } ctl;
     uint16_t mps0;        /* EP0 max packet */
     uint8_t address;      /* the USB address the controller gave it */
 
@@ -506,7 +504,8 @@ uint64_t in_dev(struct usbdev *d);        /* the input context's device address 
  * CC_STALL (recovered), CC_TIMEOUT, CC_GONE or another error. */
 uint32_t usb_control(struct usbdev *d, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
                      uint16_t length, void *data, uint32_t *actual, uint64_t timeout_ms);
-void ctl_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
+/* A transfer event on d's EP0, for its running control transfer. */
+void ctl_event(struct usbdev *d, uint64_t trb, uint32_t cc, uint32_t residual);
 /* Endpoint recovery: Reset Endpoint (tsp: keep the data toggle), or Stop
  * Endpoint; then the dequeue pointer moves past what was queued. */
 void ep_reset_tsp(struct usbdev *d, uint8_t dci, struct ring *r, bool tsp);

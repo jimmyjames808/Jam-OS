@@ -10,7 +10,8 @@
  * Each device has two pool pages of context (xHCI 6.2): the input context
  * a command reads (index 0 the control context, 1 the slot, dci + 1 an
  * endpoint) and the output (device) context the controller keeps (index 0
- * the slot, dci an endpoint). Both are g_hc.csz bytes per entry. */
+ * the slot, dci an endpoint), both g_hc.csz bytes per entry; and a third
+ * page for its control transfers' data (control.c). */
 #include "usbbus.h"
 
 struct usbdev *g_devs;
@@ -70,7 +71,7 @@ struct usbdev *dev_alloc(void)
         d->used = true;
         d->id = ++next_id;
         d->parent = -1;
-        d->out_page = d->in_page = -1;
+        d->out_page = d->in_page = d->ctl.page = -1;
         d->ep0.page = -1;
         for (int k = 0; k < 32; k++) {
             d->eps[k].ring.page = -1;
@@ -119,7 +120,9 @@ void dev_free(struct usbdev *d, bool slot_disabled)
         pool_free(&g_hc, d->out_page);
     if (d->in_page >= 0)
         pool_free(&g_hc, d->in_page);
-    d->out_page = d->in_page = -1;
+    if (d->ctl.page >= 0)
+        pool_free(&g_hc, d->ctl.page);
+    d->out_page = d->in_page = d->ctl.page = -1;
     if (d->cfg)
         drv_free(d->cfg);
     d->cfg = NULL;
