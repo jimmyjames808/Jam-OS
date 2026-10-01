@@ -454,6 +454,7 @@ Every driver and service is a userspace process from the start.
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | in progress |
 | mixer | `hda`, through devmgr's query channel | `audio` and `audioctl`: every program's sound mixed into the one output ([Audio](#audio)) | yes |
+| music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
 | netstack | lwIP + `netdev` | `socket` | no |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
@@ -552,7 +553,7 @@ Not built yet; these rules bind every future path that can transmit.
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
   handles they need: on a plain boot the bootfs server, the console,
-  serialin, devmgr, the mixer, logd (once `/data` is there) and the shell, restarting
+  serialin, devmgr, the mixer, the music player, logd (once `/data` is there) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and gives it
@@ -715,6 +716,24 @@ file 64 KiB at a time and skips frames it can't decode. Only programs
 that call `mp3_open` link the decoder (about 35 KiB of code; ~33 KiB of
 state and a 64 KiB buffer while a file plays). Decoding costs about
 4 % of a core under QEMU's emulation (`play -n`), far less on the PC.
+
+**The music player** (`user/services/music`,
+[docs/A2-PLAN.md](docs/A2-PLAN.md#music-player)) is a service init starts
+after the mixer, in a job of its own, so it plays on while the shell runs
+other commands, through Ctrl+C and a restart of the shell. init makes its
+`music` channel (`abi/idl/music.idl`: start, stop, next, status,
+set_volume) once and keeps both ends, as the mixer's; the shell holds a
+client end (SR_USER + 4) for `music start [folder] | stop | next |
+status | vol`. It walks the folder for `.mp3` and `.wav` files, shuffles
+them (every track once per pass, never the same twice in a row) and
+plays them back to back through one mixer stream, reading each with
+`<play_src.h>` and switching the resampler between files with
+`audio_set_input`, so there is no gap; `next` drops what is queued with
+`audio_discard`'s fade. It is single-threaded: it answers its channel
+between chunks of about 20 ms. A file it can't read, three in a row (the
+stick pulled), a pass that plays nothing, or the mixer stream failing
+three times in a row stops it with a line in the log; a refused file is
+skipped for good.
 
 ## Storage
 

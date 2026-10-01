@@ -60,7 +60,8 @@ struct initctl_mount_rep {
 
 /* Kill the process called `name` (NUL-terminated, no spaces) and answer
  * with its kernel object id once it is dead: a service init runs ("console",
- * "serialin", "devmgr", "bootfs", "logd", "shell"; init starts it again), or
+ * "serialin", "devmgr", "bootfs", "mixer", "music", "logd", "shell"; init
+ * starts it again), or
  * what devmgr runs for a USB device: a class driver ("hid-6.1:0",
  * "usb-storage-1:0") or a disk's filesystem service ("fat-data",
  * "fat-usb0"); devmgr

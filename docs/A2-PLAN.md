@@ -506,3 +506,130 @@ number.
 - Heard on the PC: a real song; `play -n` there.
 - Seeking, a progress line, playing several files or a directory.
 - Upstream: the stream-cursor bug above.
+
+## Music player
+
+Status: done in QEMU (branch `music`); not yet heard on the PC.
+
+`music start` plays a folder of MP3 and WAV files in shuffle, forever, in
+the background: the shell stays free for other commands meanwhile.
+
+### Design: a service init runs
+
+- **bin/music** (`user/services/music/`) is a service init starts in
+  shell mode after the mixer, supervised like the others, in a job of its
+  own under init's. Nothing of it is in the shell's job, so it plays on
+  while the shell runs commands, through Ctrl+C (which only reaches the
+  shell's own command) and across a restart of the shell; only
+  `music stop` stops it (or `kill music`, after which init starts a new,
+  stopped player).
+- **Its channel**: `abi/idl/music.idl` (protocol 24: `start`, `stop`,
+  `next`, `status`, `set_volume`). init makes it once and keeps both
+  ends, as it does the mixer's, so a restarted player serves the same
+  channel and the shell's end (startup role SR_USER + 4) never goes
+  stale. The player gets the server end (SR_USER + 0), a client end of
+  the mixer's `audio` channel (SR_AUDIO) and init's namespace (SR_NS),
+  which init keeps up to date as it does the shell's, so `/data` and
+  `/usbN` come and go under it.
+- **Idle until started**: it waits on its channel and holds no stream; a
+  stream ("music" in `vol`) is open only while it plays.
+- **One thread**: while playing, each step reads at most 1024 frames from
+  the current file and writes them through `<audio.h>` (blocking at most
+  about one mixer period while the ring is full), then answers whatever is
+  queued on the channel, so `stop` and `next` act within about 50 ms.
+- **The sources** are `<play_src.h>`, moved from the shell into libos for
+  this (the format chosen by content, as `play` does). **Gapless**: one
+  mixer stream for the whole session; between files `audio_set_input`
+  (new in `<audio.h>`) writes out what the old resampler still owes and
+  switches it to the next file's rate and channels (the same ones: it
+  carries on untouched). **`next`** uses `audio_discard` (new): what the
+  mixer hasn't taken is dropped with the 5 ms fade, the stream stays open.
+- **What is heard**: the player writes up to the ring's 1.37 s ahead, so
+  each track's first frame in the stream is kept as a mark and `status`
+  names the track at the mixer's `played` position. `next` skips that
+  track; if the writer was already on the following one, that one starts
+  over from its beginning (logged "from the start").
+
+### Commands (the shell's `music`, cmd/music.c)
+
+| Command | What |
+|---|---|
+| `music start [folder]` | default `/data/music`; a relative folder is the shell's (`cd`). Walks it (any depth, at most 16 folders down, 4096 files) for `.mp3` and `.wav` files, any case; names starting with `.` (`.DS_Store`, `._x.mp3`) are left out, folders too. Says `music: playing N tracks from F in shuffle`. Already playing: the old folder stops (fade) and the new one starts (chosen over "already playing": switching albums is one command) |
+| `music stop` | stops with the 5 ms fade: `music: stopped` (or `not playing`) |
+| `music next` | skips the track heard now |
+| `music status` | `music: playing Artist - Title  1:23 / 3:45`, the file's path, the folder with its track count (and how many were unplayable), tracks started, the volume; stopped: why, if it stopped by itself |
+| `music vol <dB>` | its stream's volume (0 dB the most); kept across tracks, stops and starts; `music vol` alone shows it |
+| `music` | usage (exit 2) |
+
+**The shuffle**: Fisher-Yates over the list, seeded from the clock (ns
+since boot when `start` was typed); every track plays once before the
+next shuffle, and a new shuffle never starts with the track just played
+(with two or more tracks).
+
+**The title** comes from the path, as music libraries lay files out
+(`Artist/Album/N. Title.mp3`): the file's name without its ending and
+without a leading track number (`1. `, `01 - `, `7-`; a number followed
+by a space only, as in `99 Problems`, stays), and the artist is the
+folder above the album's when the file is that deep below the folder
+started: `Artist - Title`. Shallower, the title alone. Tags are not read.
+
+**The log**: one line per track as the player starts writing it (about
+1.4 s before it is heard): `[music] music: track 3: Drake - Passionfruit
+(4:58)`; the console shows log lines above the prompt, so they never break
+the line being typed. The kernel log is printable ASCII, so each byte of a
+non-ASCII character shows there as `?` (`JA??-Z`); `music status` prints
+the name as it is (`JAŸ-Z`).
+
+### When things go wrong
+
+- A file the source refuses (not WAV or MP3 inside, a rate it can't
+  play): one log line, skipped, never tried again; when every file is
+  refused the player stops (`none of the N files in F is a WAV or MP3
+  file`).
+- A file that can't be opened or read (the stick pulled: its mount goes,
+  reads fail `ERR_PEER_CLOSED`): one line; three files in a row and it
+  stops: `stopped: 3 files in a row could not be read (was the stick
+  pulled?)`. No retry loop, nothing busy.
+- A whole pass of the shuffle that played no frames: it stops.
+- A folder with no `.mp3`/`.wav` files: `music start` says so and nothing
+  plays.
+- The mixer restarting (`kill mixer`, or a crash): the stream's channel
+  closes, the player opens a new stream (waiting for the new mixer) and
+  the same track goes on (what was queued in the old ring, up to 1.37 s, is
+  lost). Three failures in a row without a write between: it stops.
+- The player itself dying: init starts it again, stopped.
+- Names with spaces, quotes, `$`, `~` and UTF-8 are only ever bytes in a
+  path given to the file calls; nothing parses them.
+
+### Tests
+
+`tools/music-test.sh` ([TESTING.md](TESTING.md#area-scripts)). In QEMU on
+2026-10-01: seven tracks heard in the log's order before the stop (the
+six once each, then a seventh), the 1500 Hz `beep` mixed over a track,
+the stop faded (the music's last millisecond at 842 of a tone's 8192), no
+dotfile or text file tried, the garbage file skipped, `kill mixer`
+reopened in 27 ms and played on, the pulled second stick stopped it 0.2 s
+after the pull (`stopped at 0:05: ERR_PEER_CLOSED`, then two `can't open
+it (ERR_NOT_FOUND)`), mixer streams closed with 0 underruns and 0 late
+periods.
+
+### On the PC
+
+Copy the library to the stick's data partition from the Mac (keep its
+folders): `cp -R ~/Music/OnTheSpot/Tracks /Volumes/JAMOS-DATA/music/OnTheSpot`
+(the volume may be `NO NAME`). Then, headphones in the front jack:
+
+    music start /data/music/OnTheSpot
+    music status
+    music next
+    music vol -10
+    music stop
+
+`music start` alone plays everything under `/data/music`.
+
+### Left for later
+
+- Reading titles from ID3 tags (the path is used); seeking; a queue or a
+  playlist file; repeat/no-shuffle modes; resuming after a restart.
+- The scan reads the folder in `start`'s handler: a huge folder on a slow
+  stick holds the reply (the shell waits up to 60 s).
