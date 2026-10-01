@@ -60,6 +60,13 @@ static const struct sh_cmd cmds[] = {
       "the mixer's volumes: alone, the master and every stream playing (id, volume,\n"
       "  state, underruns, name); vol 3 -6: stream 3 at -6 dB; vol master -10: all of\n"
       "  them. 0 dB is the most, -96 dB is silence. hda gain is the codec's level below"),
+    C(music, C_SYSTEM, "music start [folder] | stop | next | status | vol <dB>",
+      "the background music player: plays every .mp3 and .wav under a folder\n"
+      "  (default /data/music, any depth) in shuffle, forever, while the shell goes on.\n"
+      "  start again: the new folder instead. stop: stops it (Ctrl+C doesn't). next:\n"
+      "  skip the track playing. status: the track (Artist - Title, from its path),\n"
+      "  how far in, the folder, how many tracks. vol -10: its volume (0 dB the most).\n"
+      "  Each track's start is a line in the log. e.g. music start /data/music/OnTheSpot"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),

@@ -1,5 +1,5 @@
 /* play: a sound file in the headphones. The file is opened as a source
- * (play_src.h: the format is chosen by what the file starts with), which
+ * (<play_src.h>, libos: the format is chosen by what the file starts with), which
  * hands out 16-bit frames a chunk at a time (the file is never loaded
  * whole); they are written through <audio.h>, which makes mono stereo and
  * resamples to 48 kHz. Ctrl+C stops it within a chunk, with audio_close's
@@ -9,7 +9,7 @@
  *   play: stats: 12345 frames, 0 underruns, 0 late periods, mixer >= 128 ms ahead,
  *   ring >= 1190 ms, slowest read 3 ms, 0 limited, out 48 kHz 24-bit */
 #include <audio.h>
-#include "play_src.h"
+#include <play_src.h>
 #include "sh.h"
 
 #define CHUNK 4096u   /* frames read and written at a time (93 ms at 44.1 kHz) */
@@ -67,6 +67,38 @@ static status_t stream(struct play_src *src, struct audio_out *a, uint64_t *done
     }
     free(pcm);
     return st;
+}
+
+/* play -n: read the source to its end as fast as it goes, and say how
+ * long that took per second of audio (an MP3's decoding cost). Returns
+ * play's exit status (130 after Ctrl+C). */
+static int time_src(const char *name, struct play_src *s)
+{
+    int16_t *pcm = malloc((size_t)CHUNK * s->channels * sizeof(int16_t));
+    if (!pcm) {
+        sh_tty("play: %s: out of memory\n", name);
+        return 1;
+    }
+    uint64_t frames = 0, t0 = now();
+    long n = 0;
+    bool stopped = false;
+    while (!(stopped = sh_interrupted()) && (n = play_src_read(s, pcm, CHUNK)) > 0)
+        frames += (uint64_t)n;
+    uint64_t ns = now() - t0;
+    free(pcm);
+    if (n < 0) {
+        sh_tty("play: %s: stopped: %s\n", name, sh_why((status_t)n));
+        return 1;
+    }
+    /* Microseconds of decoding per second of audio. */
+    uint64_t us = frames ? ns * s->rate / frames / 1000 : 0;
+    char t[24];
+    sh_say("play: %s: %s%s (%lu frames) decoded in %lu.%03lu s: %lu.%03lu ms per second of "
+           "audio\n", name, stopped ? "stopped: " : "", play_mss(frames, s->rate, t, sizeof(t)),
+           (unsigned long)frames, (unsigned long)(ns / NS_PER_S),
+           (unsigned long)(ns % NS_PER_S / NS_PER_MS), (unsigned long)(us / 1000),
+           (unsigned long)(us % 1000));
+    return stopped ? 130 : 0;
 }
 
 /* The -s line (see the top). */
@@ -145,7 +177,7 @@ SH_CMD(play)
     sh_say("play: %s: %s\n", arg, src.desc);
     sh_flush();
     if (dry) {
-        int rc = play_src_time(arg, &src);
+        int rc = time_src(arg, &src);
         play_src_close(&src);
         file_close(&f);
         return rc;

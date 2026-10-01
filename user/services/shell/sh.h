@@ -138,6 +138,8 @@ handle_t sh_initctl(void);
 /* The mixer's `audio` and `audioctl` channels, or 0 (no mixer). */
 handle_t sh_audio(void);
 handle_t sh_audio_ctl(void);
+/* The music player's channel (abi/idl/music.idl), or 0 (no player). */
+handle_t sh_music(void);
 
 /* ---- programs (sh_program.c) ------------------------------------------------------- */
 
@@ -287,6 +289,7 @@ SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CM
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
+SH_CMD(music);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(run);
 /* tests */

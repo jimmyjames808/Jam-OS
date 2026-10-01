@@ -407,6 +407,46 @@ static void fade_out(struct audio_out *a)
     (void)mixer_drain(s, now() + SOON);
 }
 
+int audio_set_input(struct audio_out *a, unsigned rate, unsigned channels)
+{
+    if (!a->open)
+        return ERR_BAD_STATE;
+    if (rate < AUDIO_RATE_MIN || rate > AUDIO_RATE_MAX || (channels != 1 && channels != 2))
+        return ERR_NOT_SUPPORTED;
+    if (rate == a->rate && channels == a->channels)
+        return OK;   /* the resampler goes on as it is: no seam */
+    struct audio_rs rs;
+    status_t st = audio_rs_init(&rs, rate, AUDIO_RATE, channels);
+    if (st != OK)
+        return st;
+    /* The old resampler's last outputs first (it runs taps/2 frames behind). */
+    int16_t out[2 * BLOCK];
+    size_t n;
+    while (st == OK && (n = audio_rs_flush(&a->rs, out, BLOCK)) > 0) {
+        size_t done = 0;
+        st = mixer_write(&a->s, out, n, now() + SOON, &done);
+    }
+    if (st != OK) {
+        audio_rs_free(&rs);
+        return st;
+    }
+    audio_rs_free(&a->rs);
+    a->rs = rs;
+    a->rate = rate;
+    a->channels = channels;
+    return OK;
+}
+
+int audio_discard(struct audio_out *a)
+{
+    if (!a->open)
+        return ERR_BAD_STATE;
+    if (a->s.started)
+        fade_out(a);
+    audio_rs_reset(&a->rs);
+    return OK;
+}
+
 int audio_get_volume(struct audio_out *a, int *centibels)
 {
     if (!a->open)
