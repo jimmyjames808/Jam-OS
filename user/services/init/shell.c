@@ -478,6 +478,23 @@ static status_t start_logd(void)
 
 status_t shell_stop_devmgr(uint64_t deadline)
 {
+    /* The drivers' clients first. The mixer holds a channel to the hda
+     * driver, which ends only once every client has gone, so devmgr would
+     * wait its whole STOP_WAIT for it (the PC's 30 s reboot). The console
+     * (the screen is already blank) receives the keyboard drivers' keys:
+     * after Ctrl+Alt+Del it is waiting in initctl.reboot, so their calls
+     * to it would time out one by one (6 s). They are stopped for good:
+     * the machine is about to restart. */
+    static const int clients[] = { MUSIC, SPLASH, MIXER, CONSOLE };
+    for (unsigned i = 0; i < sizeof(clients) / sizeof(clients[0]); i++) {
+        struct svc *c = &svcs[clients[i]];
+        c->given_up = true;
+        if (!c->running)
+            continue;
+        signals_t seen;
+        jam_job_kill(c->job);
+        (void)jam_object_wait_one(c->proc, SIG_TERMINATED, deadline, &seen);
+    }
     struct svc *s = &svcs[DEVMGR];
     if (!devmgr || !s->running)
         return OK;

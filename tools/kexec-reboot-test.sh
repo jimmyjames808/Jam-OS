@@ -19,8 +19,11 @@
 #   firmware  `reboot -f`: the firmware reset, no kexec at all
 #   fallback  crashkernel=0 (no stored kernel): `reboot` falls back to the
 #             firmware by itself
-# The new kernel starts every CPU itself (INIT-SIPI-SIPI: there is no
-# loader to park them); QEMU_SMP and QEMU_XHCI pass through.
+# The kexec run has a sound card (intel-hda, as on the PC): the mixer
+# holds a channel to the hda driver, and a reboot that left it running
+# waited devmgr's whole stop timeout (30 s on the PC); devmgr must stop
+# within 2 s. The new kernel starts every CPU itself (INIT-SIPI-SIPI:
+# there is no loader to park them); QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/kexec-reboot-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
 out=$1
@@ -45,7 +48,8 @@ run() {
 }
 
 run_kexec() {
-    QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
+    QEMU_EXTRA="${QEMU_EXTRA:--audiodev none,id=snd0 -device intel-hda,id=hda0 \
+-device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
         "seen 30 console: the screen is back" \
         "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
@@ -66,6 +70,9 @@ run_kexec() {
         fail kexec "a firmware reset happened before the last one"
     grep -aq "kexec_load\|reading /esp" "$log" && fail kexec "a file was read"
     grep -aq "the last boot panicked" "$log" && fail kexec "a reboot was taken for a panic"
+    ms=$(grep -ao "devmgr stopped in [0-9]* ms" "$log" | head -1 | tr -dc 0-9)
+    [ -n "$ms" ] && [ "$ms" -lt 2000 ] ||
+        fail kexec "devmgr took ${ms:-?} ms to stop (a driver left waiting for its clients?)"
     [ "$(grep -ac "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
         fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
     mtype -i "$out/kexec-kexec-stick.img@@64M" ::/logs/boot-0001.txt 2>/dev/null |
