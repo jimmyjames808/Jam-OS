@@ -90,5 +90,5 @@ wait Commands:
 wait jam>
 sleep 0.5
 shot shell-restarted
-send reboot
+send reboot -f
 wait reboot: resetting

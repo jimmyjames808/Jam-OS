@@ -19,7 +19,9 @@
 #include "console.h"
 
 #define INITCTL_ROLE 8                  /* SR_USER + this: init's control channel */
-#define REBOOT_WAIT  (4 * NS_PER_S)     /* init's sync takes at most 2 s */
+/* init's reboot: a kexec reads the kernel and boot image from /esp, syncs
+ * (2 s at most) and stops every driver (30 s at most) before the jump. */
+#define REBOOT_WAIT  (60 * NS_PER_S)
 
 /* ---- keys: the focus stack of open_keys channels ------------------------------ */
 
@@ -86,8 +88,8 @@ static void send_key(const struct input_key_event *ev)
 static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal)
 {
     /* Ctrl+Alt+Del (a keyboard's: usage 0x4c with CTRL and ALT) reboots:
-     * through init, which syncs /data first (initctl.reboot answers only
-     * if that failed). Without init, or if it is busy for REBOOT_WAIT, the
+     * through init, which syncs /data first and kexecs into the kernel on
+     * the stick (initctl.reboot answers only if that failed). Without init, or if it is busy for REBOOT_WAIT, the
      * console resets the machine itself. */
     if (usage == 0x4c && state == INPUT_KEY_DOWN && (mods & INPUT_MOD_CTRL) &&
         (mods & INPUT_MOD_ALT)) {

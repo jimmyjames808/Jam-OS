@@ -109,5 +109,5 @@ wait Commands:
 wait jam>
 sleep 0.5
 shot fun-shell-after
-send reboot
+send reboot -f
 wait reboot: resetting

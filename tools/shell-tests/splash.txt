@@ -26,5 +26,5 @@ sleep 1
 shot splash-alpha
 wait 60 run: bin/splash exited
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

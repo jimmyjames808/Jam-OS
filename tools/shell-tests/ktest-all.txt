@@ -23,5 +23,5 @@ wait 600 ktest (live system):
 wait shell: ktest:
 wait passed
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

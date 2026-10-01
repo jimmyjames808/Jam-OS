@@ -49,5 +49,5 @@ wait jam>
 send echo alive$T
 wait alivex
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

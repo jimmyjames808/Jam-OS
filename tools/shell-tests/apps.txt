@@ -107,5 +107,5 @@ wait the graphical system monitor
 wait jam>
 sleep 0.5
 shot apps-shell-after
-send reboot
+send reboot -f
 wait reboot: resetting

@@ -38,6 +38,6 @@ send write /data/again.txt written after the replug-$T && cat /data/again.txt
 wait written after the replug-u
 send ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-esp
 wait ok-u-esp
-send reboot
+send reboot -f
 wait init: /data synced
 wait reboot: resetting

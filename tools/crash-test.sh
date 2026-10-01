@@ -25,7 +25,7 @@ for n in $names; do
         if [ "$n" = bp ]; then
             echo "wait 30 came back, as a breakpoint must"
             echo "wait jam>"
-            echo "send reboot"
+            echo "send reboot -f"
             echo "wait reboot: resetting"
         else
             echo "wait 60 KERNEL PANIC"

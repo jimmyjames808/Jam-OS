@@ -46,6 +46,6 @@ wait jam>
 send usb
 wait 30 problem(s)
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting
 

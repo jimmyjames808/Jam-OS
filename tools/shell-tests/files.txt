@@ -212,5 +212,5 @@ send run utest env back-$T
 wait arg: back-x
 wait run: bin/utest exited with code 0
 wait jam>
-send reboot
+send reboot -f
 wait reboot: resetting

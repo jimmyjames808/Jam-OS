@@ -10,5 +10,5 @@ wait 30 splash: skipped by a key
 seen 60 Jam OS shell
 seen 60 jam>
 wait 60 console: the screen is back
-send reboot
+send reboot -f
 wait reboot: resetting

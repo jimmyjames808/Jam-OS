@@ -18,6 +18,6 @@ send write /data/after.txt after the pull-$T && cat /data/after.txt
 wait after the pull-c
 send rm -r "/data/My Notes" /data/utest.copy && ls /data | grep -c Notes | grep ^0$ && ls /data | grep -c utest | grep ^0$ && echo ok-$T-rm
 wait ok-c-rm
-send reboot
+send reboot -f
 wait init: /data synced
 wait reboot: resetting
