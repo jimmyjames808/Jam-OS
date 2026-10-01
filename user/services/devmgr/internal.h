@@ -2,8 +2,8 @@
  * loop), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
  * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
- * usb-storage serves: which one is the boot disk, and its filesystem
- * services), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
+ * usb-storage serves: which one is the boot disk) and fsvc.c (their
+ * filesystem services; disk.h between the two), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
  * and the calls waiting for it to change). The protocol is in <devmgr.h>. */
 #pragma once
 
