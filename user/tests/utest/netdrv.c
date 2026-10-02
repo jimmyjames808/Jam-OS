@@ -66,6 +66,7 @@ static status_t f_stats(void *ctx, uint8_t out_counts[256])
 {
     (void)ctx;
     memset(out_counts, 0, 256);
+    out_counts[0] = 42;   /* rx_frames: netsock.c looks for it */
     return OK;
 }
 
@@ -420,6 +421,11 @@ status_t netdrv_recv(uint8_t *f, uint32_t *n, uint64_t wait)
 bool netdrv_ping(uint32_t seq, bool arp)
 {
     return ping(seq, arp);
+}
+
+bool netdrv_serve_session(void)
+{
+    return serve(fk.session);
 }
 
 handle_t netdrv_ctl(void)

@@ -23,6 +23,9 @@ status_t netdrv_recv(uint8_t *f, uint32_t *n, uint64_t wait);
 /* The peer pings us (after an ARP request for us, if arp: netstack then
  * knows the peer's MAC) and the reply is checked. */
 bool     netdrv_ping(uint32_t seq, bool arp);
+/* Answer one request netstack sent on the session channel (netdev.info,
+ * netdev.stats: rx_frames 42, the rest 0). */
+bool     netdrv_serve_session(void);
 /* netctl's client end; /svc/net's shared channel's client end. */
 handle_t netdrv_ctl(void);
 handle_t netdrv_net(void);

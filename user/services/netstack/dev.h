@@ -32,6 +32,7 @@
 #define DEV_RETRY_MIN (250 * NS_PER_MS)   /* after a failed connect, doubling ... */
 #define DEV_RETRY_MAX (5 * NS_PER_S)      /* ... up to this */
 #define DEV_RX_BUDGET NETDEV_SLOTS        /* frames taken per turn of the loop */
+#define DEV_STATS_AGAIN (2 * NS_PER_S)    /* a netdev.stats unanswered this long is sent again */
 
 /* Port keys (main.c's are below 0x10). */
 #define KEY_CONNECT  0x10u   /* the thread's channel: a session, or why none */
@@ -85,6 +86,7 @@ struct dev {
     bool     stats_out;          /* a netdev.stats is out on it (dev_ask_stats) */
     uint32_t last_txid;          /* idl_txid_next's counter for the session channel */
     uint32_t stats_txid;
+    uint64_t stats_at;           /* ns: when it went (one unanswered this long is asked again) */
     bool     link_up;            /* the link as last heard from the driver */
     uint32_t info_txid;
     uint32_t changes;            /* the link-change count last seen */

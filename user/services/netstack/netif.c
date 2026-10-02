@@ -208,8 +208,9 @@ status_t dev_ask_stats(struct dev *d)
 {
     if (!d->session)
         return ERR_NOT_FOUND;
-    if (d->stats_out)
-        return OK;
+    if (d->stats_out && now() - d->stats_at < DEV_STATS_AGAIN)
+        return OK;   /* its answer goes to every asker; a lost one's is never taken */
+    d->stats_at = now();
     d->stats_txid = idl_txid_next(&d->last_txid);
     status_t st = netdev_stats_send(d->session, d->stats_txid);
     d->stats_out = st == OK;
