@@ -28,7 +28,8 @@
  * (MAC OCP 0xeb58 bit 0, read back: txdesc.h), so it never takes an
  * address or a length from the wrong bytes.
  * Descriptors come back in tx_reap; the chip's own count of frames sent is
- * compared with tx.queued at the end (regs.c, tally_tx_check).
+ * compared with tx.queued while the driver runs (guard.c: more sent than
+ * queued stops the chip) and at the end (regs.c, tally_tx_check).
  *
  * Registers and values: OpenBSD's rge(4) (if_rge.c rge_init, rge_encap,
  * rge_txeof, rge_txstart, rge_tx_list_init; if_rgereg.h), ISC licence. */
@@ -127,9 +128,9 @@ static void stall_dump(struct rtl *t, uint32_t c, uint64_t waited)
     uint64_t ring = t->ring_addr + TX_RING_OFF;
     uint32_t back = t->tx.done + t->tx.errors;
     drv_log("tx STALL: descriptor %u (slot %u at %#lx) still the chip's %lu ms after its doorbell; "
-            "%u queued, %u back, %u doorbell(s) again", c, c % TX_DESCS, (unsigned long)(ring +
-            (c % TX_DESCS) * RTL_TXD_SIZE), (unsigned long)(waited / NS_PER_MS), t->tx.queued,
-            back, t->tx.kicks);
+            "%lu queued, %u back, %u doorbell(s) again", c, c % TX_DESCS, (unsigned long)(ring +
+            (c % TX_DESCS) * RTL_TXD_SIZE), (unsigned long)(waited / NS_PER_MS),
+            (unsigned long)t->tx.queued, back, t->tx.kicks);
     drv_log("tx STALL: it holds cmdsts %08x extsts %08x addr %08x%08x, then %08x %08x %08x %08x; "
             "cmdsts before it %08x, after it %08x", w[0], w[1], w[3], w[2], w[4], w[5], w[6], w[7],
             before, after);
@@ -324,9 +325,9 @@ void tx_log(const struct rtl *t)
         return;
     char wait[48];
     tx_wait_str(t, wait, sizeof(wait));
-    drv_log("tx: %u queued, %u sent, %u with an error, %u with collisions, %u still out; refused: "
-            "%u by the tag check, %u for a full ring; %u doorbell(s) again; gate refusals %u",
-            t->tx.queued, t->tx.done, t->tx.errors, t->tx.collisions, t->tx_prod - t->tx_cons,
+    drv_log("tx: %lu queued, %u sent, %u with an error, %u with collisions, %u still out; "
+            "refused: %u by the tag check, %u for a full ring; %u doorbell(s) again; gate "
+            "refusals %u", (unsigned long)t->tx.queued, t->tx.done, t->tx.errors, t->tx.collisions, t->tx_prod - t->tx_cons,
             t->tx.refused, t->tx.full, t->tx.kicks, t->tx.gate);
     drv_log("tx: doorbell to descriptor back, min/avg/max %s over %u frame(s); %u stalled "
             "(still the chip's after %lu ms)", wait, t->tx.wait_n, t->tx.stalls,
@@ -349,7 +350,8 @@ void tx_tick(struct rtl *t)
     uint64_t sent;
     if (chip_sent(t, &sent))
         drv_snprintf(chip, sizeof(chip), "%lu", (unsigned long)sent);
-    drv_log("tx so far: %u queued, chip sent %s, %u back, %u pending; wait min/avg/max %s; %u "
-            "stalled, %u doorbell(s) again, %u refused for a full ring", t->tx.queued, chip, back,
+    drv_log("tx so far: %lu queued, chip sent %s, %u back, %u pending; wait min/avg/max %s; %u "
+            "stalled, %u doorbell(s) again, %u refused for a full ring",
+            (unsigned long)t->tx.queued, chip, back,
             t->tx_prod - t->tx_cons, wait, t->tx.stalls, t->tx.kicks, t->tx.full);
 }

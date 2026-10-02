@@ -105,7 +105,7 @@ void full_run(struct rtl *t, struct outcome *o)
             t->vlan);
     while (loop_step(t, DEADLINE_NEVER))
         ;
-    o->cut = true;   /* it ends only when devmgr stops it */
+    o->cut = !t->tripped;   /* it ends only when devmgr stops it, or the guard the chip */
     t->on_frame = NULL;
     srv_end(&card.v);
     srv_log(&card.v);
@@ -121,9 +121,9 @@ void full_report(const struct rtl *t, const struct outcome *o)
     tx_wait_str(t, wait, sizeof(wait));
     const struct netdev_stats *s = &card.v.st;
     drv_report("netdev vlan %u, %s, %lu session(s), rx %lu to netstack (%lu with none, %lu ring "
-               "full), tx %lu from netstack: %s, wait %s, %u stalled%s", t->vlan, link,
+               "full), tx %lu from netstack: %s, wait %s, %u stalled%s%s", t->vlan, link,
                (unsigned long)s->sessions, (unsigned long)s->rx_frames,
                (unsigned long)s->rx_no_session, (unsigned long)s->rx_ring_full,
                (unsigned long)s->tx_frames, o->txcheck, wait, t->tx.stalls,
-               t->refused || t->tx.gate ? ", WRITES REFUSED" : "");
+               t->refused || t->tx.gate ? ", WRITES REFUSED" : "", guard_note(t));
 }

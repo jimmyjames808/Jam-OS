@@ -17,7 +17,6 @@
 _Static_assert(sizeof(struct tally) == 64, "the chip dumps 64 bytes");
 
 #define OCP_WAIT_NS   (20 * NS_PER_MS)   /* rge: 20000 x 1 us */
-#define TALLY_WAIT_NS (10 * NS_PER_MS)   /* rge: 1000 x 10 us */
 
 uint8_t rd8(const struct rtl *t, uint32_t reg)
 {
@@ -154,26 +153,55 @@ void mii_wr(struct rtl *t, unsigned reg, uint16_t v)
 
 /* rge_kstat_read: the address (64-byte aligned) high half first, then the
  * low half, then the low half with the dump bit; the chip clears the bit
- * when the counters are in memory. */
-status_t tally_dump(struct rtl *t, struct tally *out)
+ * when the counters are in memory. If the bit is still set (a dump given
+ * up on is still going), nothing is written: the wait starts again. */
+void tally_ask(struct rtl *t, uint64_t now)
 {
+    if (t->dump.busy)
+        return;
+    rtl_dump_asked(&t->dump, now);
+    if (rd32(t, RTL_DTCCR_LO) & RTL_DTCCR_CMD)
+        return;
     uint64_t addr = t->ring_addr + TALLY_OFF;
     wr32(t, RTL_DTCCR_HI, (uint32_t)(addr >> 32));
     (void)rd8(t, RTL_CMD);   /* rge reads back between the halves */
     wr32(t, RTL_DTCCR_LO, (uint32_t)addr);
     wr32(t, RTL_DTCCR_LO, (uint32_t)addr | RTL_DTCCR_CMD);
-    uint64_t end = drv_clock_ns() + TALLY_WAIT_NS;
-    while (rd32(t, RTL_DTCCR_LO) & RTL_DTCCR_CMD) {
-        if (drv_clock_ns() > end)
-            return ERR_TIMED_OUT;
-        delay_us(10);
-    }
+}
+
+enum rtl_dump_step tally_look(struct rtl *t, uint64_t now)
+{
+    if (!t->dump.busy)
+        return RTL_DUMP_NONE;
+    enum rtl_dump_step s = rtl_dump_look(&t->dump, rd32(t, RTL_DTCCR_LO) & RTL_DTCCR_CMD, now);
+    if (s != RTL_DUMP_LANDED)
+        return s;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     const volatile uint8_t *p = t->ring + TALLY_OFF;
     struct tally x;
     for (unsigned i = 0; i < sizeof(x); i++)
         ((uint8_t *)&x)[i] = p[i];
-    *out = x;
+    t->tally_last = x;
+    return s;
+}
+
+/* Until the dump out lands or is late (RTL_DUMP_WAIT_NS). */
+static enum rtl_dump_step tally_wait(struct rtl *t)
+{
+    enum rtl_dump_step s;
+    while ((s = tally_look(t, drv_clock_ns())) == RTL_DUMP_WAITING)
+        delay_us(10);
+    return s;
+}
+
+status_t tally_dump(struct rtl *t, struct tally *out)
+{
+    if (t->dump.busy)
+        (void)tally_wait(t);   /* the one already out first: then a dump of our own */
+    tally_ask(t, drv_clock_ns());
+    if (tally_wait(t) != RTL_DUMP_LANDED)
+        return ERR_TIMED_OUT;
+    *out = t->tally_last;
     return OK;
 }
 
@@ -191,7 +219,7 @@ bool tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, siz
     if (!o->start_ok || !o->end_ok) {
         drv_log("tx check: the tally could not be read (%s), so it can't be compared",
                 o->start_ok ? "at the end" : "at the start");
-        drv_snprintf(out, size, "tx %u queued, chip tally UNREAD", t->tx.queued);
+        drv_snprintf(out, size, "tx %lu queued, chip tally UNREAD", (unsigned long)t->tx.queued);
         return false;
     }
     /* The chip counts a frame when it has sent it (well or with an error);
@@ -210,11 +238,12 @@ bool tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, siz
         [RTL_TX_NOT_BACK] = "all sent, but NOT ALL HANDED BACK (the chip did not write the "
                             "descriptors back)",
     };
-    drv_log("tx check: %u queued, %lu sent by the chip (tally: %lu ok, %lu with an error), %lu "
-            "completions seen (%u ok, %u with an error): %s", t->tx.queued,
+    drv_log("tx check: %lu queued, %lu sent by the chip (tally: %lu ok, %lu with an error), %lu "
+            "completions seen (%u ok, %u with an error): %s", (unsigned long)t->tx.queued,
             (unsigned long)(sent + err), (unsigned long)sent, (unsigned long)err,
             (unsigned long)back, t->tx.done, t->tx.errors, say[v]);
-    drv_snprintf(out, size, "tx %u queued, chip sent %lu, %lu back (%s)", t->tx.queued,
+    drv_snprintf(out, size, "tx %lu queued, chip sent %lu, %lu back (%s)",
+                 (unsigned long)t->tx.queued,
                  (unsigned long)(sent + err), (unsigned long)back, rtl_tx_verdict_word(v));
     return v == RTL_TX_EQUAL;
 }

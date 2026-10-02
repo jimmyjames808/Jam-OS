@@ -236,6 +236,12 @@ bool t_rtl8125_txdesc(void);
 bool t_rtl8125_kick(void);
 bool t_rtl8125_tx_verdict(void);
 
+/* rtlguard.c: drivers/rtl8125/guard.h, and guard.c (with regs.c, chip.c,
+ * tx.c) over a fake chip. */
+bool t_rtl8125_guard(void);
+bool t_rtl8125_dump(void);
+bool t_rtl8125_guard_fake(void);
+
 /* rtlrx.c: drivers/rtl8125/rxdesc.h. */
 bool t_rtl8125_rxdesc(void);
 bool t_rtl8125_rxdesc_laps(void);

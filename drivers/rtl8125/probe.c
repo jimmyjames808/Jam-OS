@@ -29,7 +29,8 @@ void probe_run(struct rtl *t, struct outcome *o)
         t->ev.polls = 0;   /* from here on, a poll is a second without an interrupt */
         o->cut = !loop_until(t, drv_clock_ns() + LISTEN_NS, NS_PER_S, NULL);
         if (o->cut)
-            drv_log("devmgr is stopping: the listening ends early");
+            drv_log("%s: the listening ends early", t->tripped ? "the guard stopped the chip"
+                    : "devmgr is stopping");
     }
     (void)census_harvest(t, false);
     census_log(&t->c);
@@ -47,8 +48,8 @@ void probe_report(const struct rtl *t, const struct outcome *o)
     uint32_t v = census_vlan(c, t->vlan), u = census_kind(c, NETFRAME_UNTAGGED);
     uint32_t other = c->frames - v - u;
     drv_report("8125B xid %03x, phy %08x patch %04x, %s, %s%u frames: vlan %u: %u, untagged %u, "
-               "other %u, irqs %u, %s%s -> %s", t->xid, o->phy, o->rcode, link,
+               "other %u, irqs %u, %s%s%s -> %s", t->xid, o->phy, o->rcode, link,
                t->link_at ? (o->cut ? "cut short: " : "60 s: ") : "", c->frames, t->vlan, v,
                u, other, t->ev.irqs, o->txcheck, t->refused ? ", WRITES REFUSED" : "",
-               t->link_at ? census_verdict(c, t->vlan) : "nothing heard (no link)");
+               guard_note(t), t->link_at ? census_verdict(c, t->vlan) : "nothing heard (no link)");
 }
