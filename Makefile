@@ -262,12 +262,14 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # the player's own objects, linked in, and its header; and the RTL8125
 # probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
 # and netstack's core with lwIP, driven in-process over a fake edge
-# (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
+# (utest/netstack.c: its stack.h and ctl.h, no lwIP header; nettcp.c and
+# tcpabuse.c: its TCP connections, tcp.c, the same way), the DHCP
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
 # network drivers' netdev server over a fake card (utest/netsrv.c:
 # drivers/lib/netserver.c), and bin/dns's sockets and askers over a fake
 # netstack (utest/dnsd.c), and bin/sntp's request and checks (utest/sntp.c).
-NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
+NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
+                        port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
                       $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \

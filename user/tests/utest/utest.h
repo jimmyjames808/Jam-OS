@@ -254,6 +254,17 @@ bool t_netstack_udp_unreachable(void);
 bool t_netstack_malformed(void);
 bool t_netstack_fuzz(void);
 bool t_netstack_cleared(void);
+/* nettcp.c and tcpabuse.c: netstack's TCP (stack.c's edge, tcp.c's
+ * connections) in-process, the test as the peer and the program. */
+bool t_nettcp_connect(void);
+bool t_nettcp_listen(void);
+bool t_nettcp_slow_reader(void);
+bool t_nettcp_reset(void);
+bool t_nettcp_syn_flood(void);
+bool t_nettcp_pool_full(void);
+bool t_nettcp_malformed(void);
+bool t_nettcp_fuzz(void);
+bool t_nettcp_hostile_ring(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_process(void);
 bool t_ipv4_text(void);
