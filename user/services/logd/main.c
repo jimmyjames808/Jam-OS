@@ -20,6 +20,10 @@
  * clean mark in the FATs and one cache flush of the stick; nothing while
  * the log is quiet. A stop that is announced loses nothing: init asks for
  * a flush (LOGD_SR_CTL, abi/idl/logctl.idl) before it resets the machine.
+ * That channel (/svc/logd) also answers the svc protocol's connect with a
+ * `logctl` channel of the opener's own (CLIENTS at once in all), so an
+ * answer that comes after its caller gave up waits on that caller's
+ * channel only.
  *
  * Without /data (not mounted, gone, its filesystem restarting, full) logd
  * keeps running and tries again after RETRY_FIRST, doubling up to
@@ -48,7 +52,9 @@
 #define SYNC_EVERY  (250 * NS_PER_MS)
 #define FLUSH_MAX   (500 * NS_PER_MS)   /* a flush stops reading the log after this long */
 #define KEY_LOG     1ull             /* port keys: the log has more (or has ended) */
-#define KEY_CTL     2ull             /* a request on the control channel */
+#define KEY_CTL     2ull             /* | slot << 8 | gen << 16: a control channel has a
+                                      * request, or closed */
+#define CLIENTS     8u               /* control channels: init's and the openers' */
 #define RETRY_FIRST NS_PER_S
 #define RETRY_MAX   (8 * NS_PER_S)
 
@@ -62,9 +68,15 @@ struct source {
 
 static struct source src;
 static handle_t port;          /* what wait_for waits on */
-static handle_t ctl;           /* LOGD_SR_CTL, or 0 */
-static bool     ctl_armed;     /* ctl is bound to the port (ONCE) */
-static bool     ctl_pending;   /* a request may be queued on ctl */
+
+/* The control channels: [0] LOGD_SR_CTL's, the rest made by svc.connect. */
+struct ctl {
+    handle_t h;          /* our end (0: a free slot) */
+    bool     armed;      /* bound to the port (ONCE), not fired yet */
+    bool     pending;    /* a request may be queued */
+    uint32_t gen;        /* the slot's generation, in its port key */
+};
+static struct ctl ctls[CLIENTS];
 static char     piece[NOTE_MAX + CHUNK];   /* the piece being written, after its note */
 static uint32_t piece_at, piece_len;       /* where it starts in piece[], its length (0: none) */
 
@@ -132,19 +144,33 @@ static void take(void)
 /* Wait until there is more log (only when `for_log`: without /data it
  * stays where it is), the text channel's other end has closed, or the
  * deadline passes. */
+static uint64_t ctl_key(unsigned i)
+{
+    return KEY_CTL | (uint64_t)i << 8 | (uint64_t)ctls[i].gen << 16;
+}
+
+/* A port packet for control channel slot i (if it is still that one). */
+static void ctl_packet(uint64_t key)
+{
+    unsigned i = (unsigned)(key >> 8) & 0xffu;
+    if (i < CLIENTS && ctls[i].h && key == ctl_key(i)) {
+        ctls[i].armed = false;
+        ctls[i].pending = true;
+    }
+}
+
 static void wait_for(bool for_log, uint64_t deadline)
 {
     signals_t mask = (for_log ? SIG_READABLE : 0) | (src.klog ? 0 : SIG_PEER_CLOSED);
     bool log_armed = mask && jam_port_bind(port, src.h, KEY_LOG, mask, PORT_BIND_ONCE) == OK;
-    if (ctl && !ctl_armed)
-        ctl_armed = jam_port_bind(port, ctl, KEY_CTL, SIG_READABLE | SIG_PEER_CLOSED,
-                                  PORT_BIND_ONCE) == OK;
+    for (unsigned i = 0; i < CLIENTS; i++)
+        if (ctls[i].h && !ctls[i].armed)
+            ctls[i].armed = jam_port_bind(port, ctls[i].h, ctl_key(i),
+                                          SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE) == OK;
     struct port_packet pkt;
     status_t st = jam_port_wait(port, deadline, &pkt);
-    if (st == OK && pkt.key == KEY_CTL) {
-        ctl_armed = false;
-        ctl_pending = true;
-    }
+    if (st == OK && (pkt.key & 0xffu) == KEY_CTL)
+        ctl_packet(pkt.key);
     if (st == OK && pkt.key == KEY_LOG)
         log_armed = false;
     /* Closed while /data is away: what is still queued can't be saved. */
@@ -269,21 +295,66 @@ static status_t op_flush(void *ctx)
 
 static const struct logctl_ops ctl_ops = { .flush = op_flush };
 
-/* Answer what is queued on the control channel. A flush that /data failed
- * is its caller's to hear; the main loop finds /data gone at its next
- * write. */
+static uint32_t dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                         uint32_t *rhn)
+{
+    return logctl_dispatch(&ctl_ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* svc.connect: a control channel of the opener's own, in a free slot
+ * (watched from the next wait_for on). */
+static status_t on_connect(void *ctx, handle_t *out)
+{
+    (void)ctx;
+    for (unsigned i = 1; i < CLIENTS; i++) {
+        if (ctls[i].h)
+            continue;
+        handle_t theirs;
+        status_t st = jam_channel_create(&ctls[i].h, &theirs);
+        if (st != OK)
+            return st;
+        *out = theirs;
+        return OK;
+    }
+    return ERR_NO_RESOURCES;
+}
+
+/* Slot i's holders are gone: its channel closed, the slot free. */
+static void ctl_drop(unsigned i)
+{
+    struct ctl *c = &ctls[i];
+    if (c->armed)
+        (void)jam_port_unbind(port, c->h, ctl_key(i));   /* not fired: nothing else to undo */
+    jam_handle_close(c->h);
+    *c = (struct ctl){ .gen = (c->gen + 1) & 0xffffu };   /* a queued packet is stale */
+}
+
+/* Answer what is queued on each control channel, a few requests each. A
+ * flush that /data failed is its caller's to hear; the main loop finds
+ * /data gone at its next write. */
 static void serve_ctl(void)
 {
-    status_t st = OK;
-    ctl_pending = false;
-    for (int guard = 0; guard < 8 && st == OK; guard++)
-        st = logctl_serve_one(ctl, &ctl_ops, NULL);
-    if (st == OK) {
-        ctl_pending = true;   /* maybe more */
-    } else if (st != ERR_SHOULD_WAIT) {
-        jam_handle_close(ctl);   /* its holder is gone */
-        ctl = HANDLE_INVALID;
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        struct ctl *c = &ctls[i];
+        if (!c->h || !c->pending)
+            continue;
+        status_t st = OK;
+        c->pending = false;
+        for (int guard = 0; guard < 8 && st == OK; guard++)
+            st = svc_serve_request(c->h, dispatch, on_connect, NULL);
+        if (st == OK)
+            c->pending = true;   /* maybe more */
+        else if (st != ERR_SHOULD_WAIT)
+            ctl_drop(i);   /* its holders are gone */
     }
+}
+
+static bool ctl_pending(void)
+{
+    for (unsigned i = 0; i < CLIENTS; i++)
+        if (ctls[i].h && ctls[i].pending)
+            return true;
+    return false;
 }
 
 /* No /data (any more): close the file, say so once, try again later. */
@@ -307,7 +378,8 @@ int main(int argc, char **argv)
     store = fs ? store_fs(fs) : &store_ns;
     if (!open_source())
         return 1;
-    ctl = startup_handle(LOGD_SR_CTL);
+    ctls[0].h = startup_handle(LOGD_SR_CTL);
+    ctls[0].pending = ctls[0].h != HANDLE_INVALID;
     if (jam_port_create(&port) != OK) {
         printf("logd: no port\n");
         return 1;
@@ -315,7 +387,7 @@ int main(int argc, char **argv)
     while (!src.ended) {
         status_t st = OK;
         uint64_t t = now();
-        if (ctl && ctl_pending)
+        if (ctl_pending())
             serve_ctl();
         if (!up && t >= retry_at)
             st = try_open();
@@ -323,7 +395,7 @@ int main(int argc, char **argv)
             st = save(t);
         if (st != OK)
             lost_data(st);
-        if (ctl && ctl_pending)
+        if (ctl_pending())
             continue;
         if (!up)
             wait_for(false, retry_at);

@@ -301,7 +301,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
 #define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
-#define SVC_LOGD       "logd"        /* logd's control channel (logctl.idl) */
+#define SVC_LOGD       "logd"        /* logd's control channel, a channel per opener (logctl.idl) */
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

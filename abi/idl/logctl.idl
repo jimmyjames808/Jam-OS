@@ -1,8 +1,10 @@
 # logctl: logd's control channel, served by logd (user/services/logd) to
 # whoever started it with one (startup role SR_USER + 2): init, which asks
-# for a flush on the way to a reboot so the log's last lines are saved.
+# for a flush on the way to a reboot so the log's last lines are saved,
+# and publishes it as /svc/logd. That channel also answers the svc
+# protocol's connect (abi/idl/svc.idl) with a channel of the opener's own.
 # After ERR_PEER_CLOSED logd is gone: there is nothing to flush, and the
-# next logd comes with a new channel.
+# next logd comes with a new channel (open /svc/logd again).
 # Format: see tools/genidl.py.
 
 protocol logctl 19

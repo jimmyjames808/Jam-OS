@@ -405,7 +405,7 @@ static status_t start_logd(void)
         return st;
     }
     logd_ctl = mine;
-    publish(SVC_LOGD, logd_ctl, false);
+    publish(SVC_LOGD, logd_ctl, true);   /* a channel per opener (svc.connect) */
     return OK;
 }
 
