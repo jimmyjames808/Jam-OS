@@ -191,19 +191,30 @@ bool tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, siz
     if (!o->start_ok || !o->end_ok) {
         drv_log("tx check: the tally could not be read (%s), so it can't be compared",
                 o->start_ok ? "at the end" : "at the start");
-        drv_snprintf(out, size, "chip tally UNREAD");
+        drv_snprintf(out, size, "tx %u queued, chip tally UNREAD", t->tx.queued);
         return false;
     }
+    /* The chip counts a frame when it has sent it (well or with an error);
+     * the driver, when it takes the descriptor back (txdesc.h). */
     uint64_t sent = o->end.tx_ok - o->start.tx_ok, err = o->end.tx_err - o->start.tx_err;
-    bool same = sent == t->tx.done && err == t->tx.errors &&
-                t->tx.queued == t->tx.done + t->tx.errors;
-    drv_log("tx check: the driver queued %u frame(s), %u came back sent and %u with an error; "
-            "the chip's tally: %lu sent, %lu errors: %s", t->tx.queued, t->tx.done,
-            t->tx.errors, (unsigned long)sent, (unsigned long)err,
-            same ? "equal: the chip sent nothing of its own"
-            : sent > t->tx.done ? "THE CHIP SENT FRAMES THE DRIVER DID NOT QUEUE"
-            : "they differ");
-    drv_snprintf(out, size, "chip tally +%lu%s", (unsigned long)sent, same ? " (equal)"
-                 : " (DIFFERS)");
-    return same;
+    uint64_t back = (uint64_t)t->tx.done + t->tx.errors;
+    enum rtl_tx_verdict v = rtl_tx_verdict(t->tx.queued, sent + err, back);
+    static const char *const say[] = {
+        [RTL_TX_EQUAL] = "equal: every frame queued was sent and handed back, and the chip "
+                         "sent nothing of its own",
+        [RTL_TX_FEWER_SENT] = "FEWER SENT than queued: frames still in the ring, or never "
+                              "fetched by the chip",
+        [RTL_TX_MORE_SENT] = "MORE SENT than queued: THE CHIP SENT FRAMES THE DRIVER DID NOT "
+                             "QUEUE",
+        [RTL_TX_UNSENT_BACK] = "MORE HANDED BACK THAN THE CHIP COUNTED",
+        [RTL_TX_NOT_BACK] = "all sent, but NOT ALL HANDED BACK (the chip did not write the "
+                            "descriptors back)",
+    };
+    drv_log("tx check: %u queued, %lu sent by the chip (tally: %lu ok, %lu with an error), %lu "
+            "completions seen (%u ok, %u with an error): %s", t->tx.queued,
+            (unsigned long)(sent + err), (unsigned long)sent, (unsigned long)err,
+            (unsigned long)back, t->tx.done, t->tx.errors, say[v]);
+    drv_snprintf(out, size, "tx %u queued, chip sent %lu, %lu back (%s)", t->tx.queued,
+                 (unsigned long)(sent + err), (unsigned long)back, rtl_tx_verdict_word(v));
+    return v == RTL_TX_EQUAL;
 }

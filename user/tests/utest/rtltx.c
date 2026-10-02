@@ -85,3 +85,25 @@ bool t_rtl8125_kick(void)
     CHECK(rtl_kick_due(&k, 8, last + 2 * RTL_KICK_MAX_NS, last + 2 * RTL_KICK_MAX_NS + ms));
     return true;
 }
+
+/* The chip's tally against the driver: the PC's netsend (3 queued, the
+ * chip counted 2, 1 handed back) is normal progress with frames still
+ * out, not "frames the driver did not queue"; only more sent than queued
+ * is that. */
+bool t_rtl8125_tx_verdict(void)
+{
+    CHECK_EQ(rtl_tx_verdict(3, 2, 1), RTL_TX_FEWER_SENT);   /* boot-0067 */
+    CHECK_EQ(rtl_tx_verdict(3, 3, 3), RTL_TX_EQUAL);
+    CHECK_EQ(rtl_tx_verdict(0, 0, 0), RTL_TX_EQUAL);         /* the probe */
+    CHECK_EQ(rtl_tx_verdict(0, 1, 0), RTL_TX_MORE_SENT);     /* a PAUSE frame */
+    CHECK_EQ(rtl_tx_verdict(3, 4, 3), RTL_TX_MORE_SENT);
+    CHECK_EQ(rtl_tx_verdict(3, 3, 2), RTL_TX_NOT_BACK);
+    CHECK_EQ(rtl_tx_verdict(3, 1, 2), RTL_TX_UNSENT_BACK);
+    CHECK_EQ(rtl_tx_verdict(3, 0, 0), RTL_TX_FEWER_SENT);
+    for (unsigned v = RTL_TX_EQUAL; v <= RTL_TX_NOT_BACK; v++)
+        CHECK(rtl_tx_verdict_word(v)[0] != '?');
+    CHECK(!strcmp(rtl_tx_verdict_word(RTL_TX_EQUAL), "equal"));
+    CHECK(!strcmp(rtl_tx_verdict_word(RTL_TX_MORE_SENT), "MORE SENT"));
+    CHECK(!strcmp(rtl_tx_verdict_word(RTL_TX_FEWER_SENT), "FEWER SENT"));
+    return true;
+}

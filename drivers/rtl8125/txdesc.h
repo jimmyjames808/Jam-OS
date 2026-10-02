@@ -15,7 +15,8 @@
  * the transmitter goes on: the bit must say what RTL_TXD_SIZE says.
  *
  * The bookkeeping: when to ring the doorbell again for a descriptor the
- * chip still owns (rtl_kick_due). */
+ * chip still owns (rtl_kick_due), and what the chip's own count of frames
+ * sent says next to the driver's (rtl_tx_verdict). */
 #pragma once
 
 #include <stdbool.h>
@@ -88,4 +89,45 @@ static inline bool rtl_kick_due(struct rtl_kick *k, uint32_t cons, uint64_t queu
     k->at = now + k->gap;
     k->gap = k->gap * 4 > RTL_KICK_MAX_NS ? RTL_KICK_MAX_NS : k->gap * 4;
     return true;
+}
+
+/* ---- the chip's count against the driver's ------------------------------------- */
+
+/* Frames the driver queued, the chip's tally of frames it sent (good and
+ * errored) over the same time, and the descriptors it handed back. In
+ * normal progress back <= chip <= queued: a frame is counted when the chip
+ * has sent it, and handed back after. Fewer sent than queued means frames
+ * are still in the ring (or were never fetched); more sent than queued
+ * means the chip sent frames of its own (PAUSE, wake-on-LAN or management
+ * frames: the plan's check); more handed back than sent can't happen. */
+enum rtl_tx_verdict {
+    RTL_TX_EQUAL,          /* chip == queued (and back == chip) */
+    RTL_TX_FEWER_SENT,     /* chip < queued: frames still out, or never fetched */
+    RTL_TX_MORE_SENT,      /* chip > queued: THE CHIP SENT FRAMES THE DRIVER DID NOT QUEUE */
+    RTL_TX_UNSENT_BACK,    /* back > chip: descriptors handed back the tally didn't count */
+    RTL_TX_NOT_BACK,       /* chip == queued but back < chip: sent, not all handed back */
+};
+
+static inline enum rtl_tx_verdict rtl_tx_verdict(uint64_t queued, uint64_t chip, uint64_t back)
+{
+    if (chip > queued)
+        return RTL_TX_MORE_SENT;
+    if (back > chip)
+        return RTL_TX_UNSENT_BACK;
+    if (chip < queued)
+        return RTL_TX_FEWER_SENT;
+    return back == chip ? RTL_TX_EQUAL : RTL_TX_NOT_BACK;
+}
+
+/* The RESULTS line's word for a verdict. */
+static inline const char *rtl_tx_verdict_word(enum rtl_tx_verdict v)
+{
+    switch (v) {
+    case RTL_TX_EQUAL:       return "equal";
+    case RTL_TX_FEWER_SENT:  return "FEWER SENT";
+    case RTL_TX_MORE_SENT:   return "MORE SENT";
+    case RTL_TX_UNSENT_BACK: return "MORE BACK THAN SENT";
+    case RTL_TX_NOT_BACK:    return "NOT ALL BACK";
+    }
+    return "?";
 }

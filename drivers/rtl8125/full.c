@@ -113,9 +113,10 @@ void full_report(const struct rtl *t, const struct outcome *o)
     chip_link_summary(t, link, sizeof(link));
     const struct netdev_stats *s = &card.v.st;
     drv_report("netdev vlan %u, %s, %lu session(s), rx %lu to netstack (%lu with none, %lu ring "
-               "full), tx %lu from netstack (%u queued), %s%s", t->vlan, link,
+               "full), tx %lu from netstack: %s%s", t->vlan, link,
                (unsigned long)s->sessions, (unsigned long)s->rx_frames,
                (unsigned long)s->rx_no_session, (unsigned long)s->rx_ring_full,
-               (unsigned long)s->tx_frames, t->tx.queued, o->txcheck,
+               (unsigned long)s->tx_frames, o->txcheck,
+
                t->refused || t->tx.gate ? ", WRITES REFUSED" : "");
 }

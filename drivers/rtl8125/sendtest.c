@@ -165,9 +165,10 @@ void sendtest_report(const struct rtl *t, const struct outcome *o)
     uint32_t dropped = 0;
     for (unsigned k = NETFRAME_RX_RUNT; k < NETFRAME_RX_KINDS; k++)
         dropped += t->rx.drop[k];
-    drv_report("netsend vlan %u, %s%s, %u of %u ARP probes to %u.%u.%u.%u answered (ms %s), tx "
-               "%u queued, %s, rx kept %u dropped %u%s", t->vlan, link, o->cut ? ", CUT SHORT"
+    drv_report("netsend vlan %u, %s%s, %u of %u ARP probes to %u.%u.%u.%u answered (ms %s), %s, "
+               "rx kept %u dropped %u%s", t->vlan, link, o->cut ? ", CUT SHORT"
                : "", s.answered, PROBES, s.target >> 24, (s.target >> 16) & 0xff,
-               (s.target >> 8) & 0xff, s.target & 0xff, rtt, t->tx.queued, o->txcheck,
+               (s.target >> 8) & 0xff, s.target & 0xff, rtt, o->txcheck,
+
                t->rx.kept, dropped, t->refused || t->tx.gate ? ", WRITES REFUSED" : "");
 }

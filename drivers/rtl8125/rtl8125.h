@@ -320,7 +320,8 @@ struct outcome {
     bool     start_ok, end_ok; /* the tally dumps worked */
     struct tally start, end;
     bool     cut;              /* devmgr stopped it early */
-    char     txcheck[40];      /* tally_tx_check's short form, "chip tally +3 (equal)" */
+    char     txcheck[72];      /* tally_tx_check's short form, "tx 3 queued, chip sent 3,
+                                * 3 back (equal)" */
 };
 
 /* ---- regs.c ---------------------------------------------------------------------- */
@@ -349,9 +350,11 @@ void     delay_us(uint64_t us);
 status_t tally_dump(struct rtl *t, struct tally *out);
 void     tally_log(const char *when, const struct tally *x);
 /* The plan's check that the chip sent nothing of its own (no PAUSE, no
- * wake-on-LAN or management frames): the chip's count of frames sent
- * between the two dumps against what tx.c handed it. Logged; true if
- * they agree. `out` gets a short form for a RESULTS line. */
+ * wake-on-LAN or management frames), and that it sent what it was given:
+ * the chip's count of frames sent between the two dumps against what
+ * tx.c queued and took back (txdesc.h, rtl_tx_verdict). Logged; true if
+ * all three agree. `out` gets a short form for a RESULTS line. */
+
 bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, size_t size);
 
 /* ---- chip.c ---------------------------------------------------------------------- */
