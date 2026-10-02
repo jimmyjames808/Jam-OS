@@ -74,6 +74,8 @@ the Mac's "Private Wi-Fi address" set to Fixed keep it from changing).
    replaces the stored kernel in RAM (the one `reboot` and a panic
    start), never the stick: the ESP stays read-only to Jam OS. `make
    flash` still makes a build permanent.
+   **The owner (2026-10-02): RAM only**: `update` for quick testing,
+   `make flash` for a build meant to stay.
 5. **The PHY firmware patch** ([below](#the-phy-firmware-patch)).
    *Recommendation:* no Realtek blob in the repo. Run without a patch
    first; only if the PC's link misbehaves, take the patch in the
