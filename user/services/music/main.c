@@ -28,11 +28,13 @@
 #include "music.h"
 
 #define CLIENTS 8          /* channels handed out by svc.connect at once */
+#define BUDGET  32         /* requests from one channel per turn: playback goes on between */
 #define KEY_CTL 0u         /* port keys: the shared channel, then 1 + a client's slot */
 
 static struct player P;
 static handle_t port;
 static handle_t clients[CLIENTS];   /* our ends of the channels openers got (0: free) */
+static bool     more;               /* a channel still had requests when its turn ended */
 
 static void put(uint8_t *out, size_t size, const char *s)
 {
@@ -260,21 +262,31 @@ static status_t on_connect(void *ctx, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
-/* Answer what is queued on every channel. The shared channel's end (init
- * gave up on us): its status; else ERR_SHOULD_WAIT. */
+/* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
+ * budget is spent: `more` says so), else the read's status. */
+static status_t serve_some(struct player *p, handle_t ch)
+{
+    status_t st = OK;
+    for (unsigned n = 0; n < BUDGET && st == OK; n++)
+        st = svc_serve_request(ch, dispatch, on_connect, p);
+    if (st == OK) {
+        more = true;   /* a client writing flat out doesn't hold up the music */
+        return ERR_SHOULD_WAIT;
+    }
+    return st;
+}
+
+/* Answer what is queued on every channel, a budget each. The shared
+ * channel's end (init gave up on us): its status; else ERR_SHOULD_WAIT. */
 static status_t serve_all(struct player *p)
 {
-    status_t st;
-    while ((st = svc_serve_request(p->ctl, dispatch, on_connect, p)) == OK) {
-    }
+    more = false;
+    status_t st = serve_some(p, p->ctl);
     if (st != ERR_SHOULD_WAIT)
         return st;
     for (unsigned i = 0; i < CLIENTS; i++) {
-        status_t cs = ERR_SHOULD_WAIT;
-        while (clients[i] && (cs = svc_serve_request(clients[i], dispatch, on_connect, p)) == OK) {
-        }
-        if (clients[i] && cs != ERR_SHOULD_WAIT) {   /* its opener is gone */
-            jam_handle_close(clients[i]);
+        if (clients[i] && serve_some(p, clients[i]) != ERR_SHOULD_WAIT) {
+            jam_handle_close(clients[i]);   /* its opener is gone */
             clients[i] = HANDLE_INVALID;
         }
     }
@@ -320,6 +332,8 @@ int main(int argc, char **argv)
             player_step(p);
             continue;
         }
+        if (more)
+            continue;   /* requests left over from their turn: no sleeping on them */
         /* Stopped or paused: a channel, or the sleep timer's end. */
         struct port_packet pkt;
         uint64_t until = p->sleep_at ? p->sleep_at : DEADLINE_NEVER;
