@@ -48,6 +48,7 @@
 #define CHUNK      (64u << 10)        /* bytes moved at a time */
 #define ESP_WAIT   (30 * NS_PER_S)    /* devmgr's ESP_WRITE: a stop in order, then a start */
 #define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
+#define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
 
 /* The ESP's files, by the paths fat takes (the mount's root is "/"). */
 static const char *const cur[UPDATE_FILES] = { "/boot/jamos.elf", "/boot/bootfs.img" };
@@ -60,7 +61,39 @@ struct writer {
     uint8_t *buf;                         /* CHUNK bytes */
     uint64_t old_size[UPDATE_FILES];      /* the stick's build: its files' sizes */
     uint8_t  old_sha[UPDATE_FILES][SHA256_BYTES];   /* ... and SHA-256s, as read */
+    uint64_t said;                        /* uptime ns of the last progress line */
 };
+
+/* A progress line. Every step and file says how long it took, and a long
+ * file how far it is every SAY_EVERY, so the log (streamed to the Mac on
+ * the PC) always shows where a slow write is. */
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say(const char *fmt, ...)
+{
+    char line[200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    printf("init: update: write: %s\n", line);
+}
+
+static unsigned long ms_since(uint64_t t0)
+{
+    return (unsigned long)((now() - t0) / NS_PER_MS);
+}
+
+/* off of size bytes of path + suffix done (what: "written", "read"): a
+ * line, if the last one was SAY_EVERY ago. */
+static void say_progress(struct writer *w, const char *path, const char *suffix, const char *what,
+                         uint64_t off, uint64_t size, uint64_t t0)
+{
+    if (now() - w->said < SAY_EVERY)
+        return;
+    w->said = now();
+    say("%s%s: %lu of %lu KiB %s, %lu ms so far", path + 1, suffix, (unsigned long)(off >> 10),
+        (unsigned long)(size >> 10), what, ms_since(t0));
+}
 
 /* fs.idl's path field for path, with suffix (".new" or ""). */
 static void field(uint8_t out[FS_PATH_MAX], const char *path, const char *suffix)
@@ -94,12 +127,18 @@ static status_t rename_to(struct writer *w, const char *path, const char *suffix
     uint8_t from[FS_PATH_MAX], dst[FS_PATH_MAX];
     field(from, path, suffix);
     field(dst, to, "");
-    return fs_rename_until(w->fs, now() + FS_CALL_TIMEOUT, from, dst);
+    uint64_t t0 = now();
+    status_t st = fs_rename_until(w->fs, now() + FS_CALL_TIMEOUT, from, dst);
+    say("%s%s renamed %s in %lu ms (%s)", path + 1, suffix, to + 1, ms_since(t0), status_str(st));
+    return st;
 }
 
 static status_t sync_esp(struct writer *w)
 {
-    return fs_sync_until(w->fs, now() + FS_CALL_TIMEOUT);
+    uint64_t t0 = now();
+    status_t st = fs_sync_until(w->fs, now() + FS_CALL_TIMEOUT);
+    say("the ESP synced in %lu ms (%s)", ms_since(t0), status_str(st));
+    return st;
 }
 
 /* path + suffix opened with flags into *f. */
@@ -124,8 +163,10 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
         return st;
     struct sha256 h;
     sha256_init(&h);
+    uint64_t t0 = now();
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK, got = 0;
+        say_progress(w, path, suffix, "read back", off, size, t0);
         st = file_read(&f, off, w->buf, n, &got);
         if (st == OK && got != n)
             st = ERR_IO;   /* shorter than it was written */
@@ -138,6 +179,8 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     file_close(&f);
     if (st == OK)
         sha256_done(&h, digest);
+    say("%s%s: %lu KiB read back in %lu ms (%s)", path + 1, suffix, (unsigned long)(size >> 10),
+        ms_since(t0), status_str(st));
     return st;
 }
 
@@ -150,8 +193,10 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
     status_t st = open_file(w, path, ".new", FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
     if (st != OK)
         return st;
+    uint64_t t0 = now();
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK, put = 0;
+        say_progress(w, path, ".new", "written", off, size, t0);
         if (off >= size / 2 && off < size / 2 + CHUNK)
             st = inject(w, step);   /* half of it written: a test's failure */
         if (st == OK)
@@ -161,9 +206,13 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
         if (st == OK && put != n)
             st = ERR_IO;
     }
+    uint64_t written = now();
     if (st == OK)
         st = file_sync(&f);
     file_close(&f);
+    say("%s.new: %lu KiB written in %lu ms, synced and closed in %lu ms (%s)", path + 1,
+        (unsigned long)(size >> 10), (unsigned long)((written - t0) / NS_PER_MS),
+        ms_since(written), status_str(st));
     return st;
 }
 
@@ -245,6 +294,9 @@ static status_t room(struct writer *w)
         st = ERR_ACCESS_DENIED;   /* devmgr said writable, the volume says not */
     if (st == OK && free_bytes + have < need)
         st = ERR_NO_SPACE;
+    say("%lu KiB free, %lu KiB more from the older previous build, %lu KiB needed",
+        (unsigned long)(free_bytes >> 10), (unsigned long)(have >> 10),
+        (unsigned long)(need >> 10));
     return st;
 }
 
@@ -325,9 +377,14 @@ static void steps(struct writer *w)
         [UPDATE_WRITE_NEW] = write_new, [UPDATE_WRITE_SWITCH] = switch_names,
     };
     j->stick = UPDATE_STICK_OLD;
-    for (j->step = UPDATE_WRITE_ROOM; j->step <= UPDATE_WRITE_SWITCH; j->step++)
-        if ((j->st = step[j->step](w)) != OK)
+    for (j->step = UPDATE_WRITE_ROOM; j->step <= UPDATE_WRITE_SWITCH; j->step++) {
+        uint64_t t0 = now();
+        say("%s ...", update_write_step_str(j->step));
+        j->st = step[j->step](w);
+        say("%s: %s in %lu ms", update_write_step_str(j->step), status_str(j->st), ms_since(t0));
+        if (j->st != OK)
             break;
+    }
     if (j->st == OK) {
         j->stick = UPDATE_STICK_NEW;
         return;
@@ -385,7 +442,10 @@ void esp_write_build(struct esp_write *j)
     j->step = UPDATE_WRITE_OPEN;
     j->stick = UPDATE_STICK_OLD;
     j->noted = false;
+    say("asking devmgr for the ESP read-write ...");
     j->st = j->esp ? esp_mode(j->esp, true, &w.fs) : ERR_NOT_FOUND;
+    say("the ESP is %s (%s) in %lu ms", j->st == OK ? "writable" : "not writable",
+        status_str(j->st), ms_since(t0));
     w.buf = j->st == OK ? malloc(CHUNK) : NULL;
     if (j->st == OK && !w.buf)
         j->st = ERR_NO_MEMORY;
@@ -396,7 +456,9 @@ void esp_write_build(struct esp_write *j)
     free(w.buf);
     if (w.fs) {
         jam_handle_close(w.fs);   /* ours is the only other end: nobody else has it */
+        uint64_t t1 = now();
         status_t st = esp_mode(j->esp, false, NULL);
+        say("the ESP read-only again in %lu ms (%s)", ms_since(t1), status_str(st));
         if (st != OK)
             printf("init: update: the ESP didn't go back to read-only (%s): /esp stays away "
                    "until the next boot\n", status_str(st));
