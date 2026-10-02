@@ -11,17 +11,12 @@
  * Data: the client maps a 64 KiB buffer VMO of its channel (map_buffer)
  * and names offsets in it. A request moves at most the buffer's 64 KiB;
  * it becomes as many READ(10) / WRITE(10) commands as the bulk buffer
- * needs. How the data gets between that VMO and usb-bus's bulk buffer:
- *   - a read-only channel: the client's handle has no RIGHT_WRITE, so it
- *     can neither write the buffer nor shrink or decommit it; usb-storage
- *     maps it and copies each block straight in (one copy);
- *   - a writable channel: the client must write the buffer, and the same
- *     right would let it shrink it under a mapping here (a fault, which
- *     would take every partition of the disk down with usb-storage). So
- *     usb-storage never maps it and moves the data with drv_vmo_read /
- *     drv_vmo_write, which a shrunk buffer only fails (the kernel copies
- *     through a buffer of its own: two copies). One copy there needs a
- *     right that allows writing a VMO but not resizing it.
+ * needs. usb-storage maps the buffer too and copies each block straight
+ * between it and usb-bus's bulk buffer (one copy). The client's handle
+ * has no RIGHT_RESIZE, so it can neither shrink nor decommit the buffer
+ * under that mapping (a fault there would take every partition of the
+ * disk down with usb-storage); a read-only channel's has no RIGHT_WRITE
+ * either.
  *
  * The table is the MBR's four primary entries (block 0, signature 55 AA
  * at 510): the used ones, in table order. An entry that doesn't fit on
@@ -47,7 +42,7 @@ struct blk {
     bool pending;        /* may have requests queued */
     uint16_t gen;        /* bumped at every open and close: in its port key */
     handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
-    uint8_t *map;        /* a read-only channel's buffer, mapped here (NULL: not mapped) */
+    uint8_t *map;        /* that buffer, mapped here (NULL: not made yet) */
 };
 
 static struct blk blks[MAX_BLKS];
@@ -167,7 +162,7 @@ static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
     if (st != OK)
         return st;
     /* The client's handle: to map, read and (writable channel) write, and
-     * no more. */
+     * no more: never RIGHT_RESIZE, since the buffer is mapped here. */
     rights_t r = RIGHT_READ | RIGHT_MAP | RIGHT_TRANSFER | (b->ro ? 0 : RIGHT_WRITE);
     st = drv_handle_duplicate(vmo, r, &theirs);
     if (st != OK) {
@@ -175,7 +170,7 @@ static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
         return st;
     }
     void *map = NULL;
-    if (b->ro && (st = drv_vmo_map(vmo, 0, BLOCK_BUF, VMAR_READ | VMAR_WRITE, &map)) != OK) {
+    if ((st = drv_vmo_map(vmo, 0, BLOCK_BUF, VMAR_READ | VMAR_WRITE, &map)) != OK) {
         drv_handle_close(theirs);
         drv_handle_close(vmo);
         return st;
@@ -212,15 +207,11 @@ static status_t transfer(struct blk *b, bool write, uint64_t lba, uint32_t count
     lba += k->parts[b->part].start;
     while (count) {
         uint32_t n = count < most ? count : most;
-        status_t st = OK;
         if (write)
-            st = drv_vmo_read(b->vmo, offset, k->xbuf, (uint64_t)n * bs);
-        if (st == OK)
-            st = scsi_rw(k, write, lba, n);
-        if (st == OK && !write && b->map)
+            __builtin_memcpy(k->xbuf, b->map + offset, (size_t)n * bs);
+        status_t st = scsi_rw(k, write, lba, n);
+        if (st == OK && !write)
             __builtin_memcpy(b->map + offset, k->xbuf, (size_t)n * bs);
-        else if (st == OK && !write)
-            st = drv_vmo_write(b->vmo, offset, k->xbuf, (uint64_t)n * bs);
         if (st != OK)
             return st;
         lba += n;
