@@ -72,7 +72,9 @@ Not yet:
   `bin/update`): the NIC's driver reads only a frame's length and tag.
 - **Anyone holding the stick.** The ESP, `/data/etc/allow` and the logs
   can be changed on another computer: FAT32 keeps no owners and nothing
-  is signed, and authority never came from the filesystem.
+  on it is checked at boot (only `update`'s builds are signed, and the
+  key that checks them is in the build on the stick), and authority never
+  came from the filesystem.
 - **Spectre-class attacks**: no mitigations.
 
 ## The migration rule
@@ -836,13 +838,25 @@ shell's `update [-n] [address]` takes an offer channel from init
 Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
 a snapshot, a file, an offset and a length; 32 in flight; the server keeps
 no state per client) and offers them to init as read-only VMOs. init
-copies them into VMOs only it holds, checks each size and SHA-256 against
-the manifest, calls `kexec_load` (which init alone may) and notes `/esp`'s
-files as seen, so the `reboot` that follows starts the fetched build
+first checks the manifest's signature: Ed25519 (RFC 8032, SHA-512;
+Monocypher, `third_party/monocypher`) over every byte before its
+signature line, against the public key in the running build's own boot
+image (`/boot/update.pub`, built in by the Makefile from the owner's
+`~/.config/jamos/update.pub`). Nothing else in the manifest is used
+before that passes; a build without a key refuses every update, and so
+does an unsigned manifest. Then it copies the files into VMOs only it
+holds, checks each size and SHA-256 against the manifest, calls
+`kexec_load` (which init alone may) and notes `/esp`'s files as seen, so
+the `reboot` that follows starts the fetched build
 ([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. Only RAM
-changes: a power-off brings back the stick's build. Updates are not
-signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
-([ROADMAP](docs/ROADMAP.md#smaller-follow-ups)).
+changes: a power-off brings back the stick's build. The key's secret
+half stays on the Mac (`build/host/jamos-sign`, from the same Monocypher,
+makes it and signs each manifest the server hands out), so a device on
+VLAN 21 posing as the Mac can serve only builds the owner signed; an
+older signed build is one of those (downgrades are allowed: the owner
+types `update` and sees both versions). Each build carries the key it
+will check the next update with, so the first build with a key, or with
+a new key, goes on the stick by `make flash`.
 
 **What each process holds:**
 
@@ -854,7 +868,7 @@ signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
 | dns | `/svc/net`; the server end of `/svc/dns` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net`, its offer channel to init | yes: the fetch's replies and the manifest |
-| init | the fetched build's copies, `kexec_load` | the manifest only (a strict parser); the files it copied are only hashed |
+| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
@@ -1476,7 +1490,8 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it. M9's `update` hands init a fetched
   build on an offer channel (initctl.update_offer, `<update.h>`): init
-  copies it into VMOs of its own, checks each length and SHA-256 against
+  checks the manifest's signature with its build's key, copies the files
+  into VMOs of its own, checks each length and SHA-256 against
   the manifest, calls `kexec_load` with the copies and notes `/esp`'s
   files as seen, so `reboot` starts the fetched build
   (`user/services/init/update.c`; the fetch: [Networking](#networking)).

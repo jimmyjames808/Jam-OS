@@ -75,7 +75,8 @@ a real desktop PC, which is where every milestone is tested.
   settings, names from DNS, `ping` and `host`, UDP sockets for programs
   (their list asks for `svc net`, and `svc dns` for names), the boot log
   sent to the Mac as it is written, and `update` to run the Mac's newest
-  build without moving the stick ([below](#the-network)). `version`
+  build, signed with the owner's key, without moving the stick
+  ([below](#the-network)). `version`
   names the git commit a build was made from.
 
 Not yet: the network signed off on the PC (everything but DHCP has run
@@ -104,7 +105,7 @@ the build tools (and Pillow for test screenshots).
 | `make debug` | the same, stopped for gdb on :1234 |
 | `make usb DEV=/dev/diskN` | write the image to a USB stick, erasing it ([below](#boot-a-real-pc)) |
 | `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only |
-| `make check` | generated code current, the driver isolation check, the docs check, the include order |
+| `make check` | generated code current, the driver isolation check, the docs check, the include order, the signing tool's test vectors |
 | `make includes` | put `#include` lines in the order the check wants |
 | `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
 | `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |
@@ -143,7 +144,7 @@ leaves the network card alone. In QEMU, `tools/qemu-test.sh` with
 | `net stats` | every count netstack keeps, and the network card's own |
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
-| `update [-n] [address]` | fetch the build the Mac serves, have init check it, and reboot into it; `-n` fetches and checks only |
+| `update [-n] [address]` | fetch the build the Mac serves, have init check its signature and files, and reboot into it; `-n` fetches and checks only |
 
 The settings, in `/data/etc/settings` on the stick (edit `etc/settings`
 on the Mac, or in Jam OS), for example:
@@ -177,27 +178,48 @@ receiver goes on where it stopped). A receiver started late still gets
 the boot from its first line. `--quiet` doesn't print the lines;
 `--from <the PC's address>` takes datagrams only from it.
 
-**A new build without moving the stick** (so far run in QEMU only):
+**A new build without moving the stick.** Updates are signed: the PC
+takes only a build whose manifest was signed with your key, and a build
+made without the key takes no update at all.
 
+0. Once, on the Mac, make the key:
+
+   ```sh
+   make
+   build/host/jamos-sign keygen
+   ```
+
+   That writes `~/.config/jamos/update.key` (the secret: mode 0600, never
+   in the repository; back it up) and `update.pub` (its public half, which
+   every later `make` builds into the boot image). It refuses to replace
+   a key that is already there. Then `make` and **`make flash`**: the
+   build on the stick must already have the key before `update` works, and
+   the build the stick has now accepts no signed manifest at all, so this
+   first signed build goes on by hand. If the key is ever lost, make a new
+   one (delete the two files first) and `make flash` again: builds signed
+   with the old key are refused from then on, and the other way round.
 1. On the Mac: `make`, then leave this running:
 
    ```sh
    python3 tools/update-server.py
    ```
 
-   It serves `build/jamos.elf` and `build/bootfs.img` on UDP port 5022
-   (`--build <dir>` for another folder, `--client <the PC's address>` to
-   answer only the PC). Run `make` again whenever you like: the next
-   `update` gets the new build. Let `make` finish first, or the kernel and
-   the boot image can come from two builds.
+   It serves `build/jamos.elf` and `build/bootfs.img` on UDP port 5022,
+   each snapshot's manifest signed with `~/.config/jamos/update.key`
+   (`--key <file>` for another; it won't start without one), `--build
+   <dir>` for another folder, `--client <the PC's address>` to answer only
+   the PC. Run `make` again whenever you like: the next `update` gets the
+   new build. Let `make` finish first, or the kernel and the boot image
+   can come from two builds.
 2. On the PC: `update`. It fetches the build from `net.host`, init checks
+   the manifest's signature against the key in the running build, then
    each file's size and SHA-256 against the manifest, the screen says
    `old -> new` (version and git commit), and the PC reboots into it.
 
 The fetched build lives in RAM: it survives `reboot` and a panic, and a
 power-off brings back the stick's. `make flash` is still how a build
-stays. Updates are not signed yet: anyone on VLAN 21 who answers as the
-Mac could run their own kernel, so `update` runs only when you type it.
+stays. A signature proves the build is one you signed, not that it is the
+newest: an older signed build is accepted too (the versions are printed).
 
 ## Where things live
 
@@ -224,8 +246,8 @@ Mac could run their own kernel, so `update` runs only when you type it.
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
-| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |
-| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP) |
+| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`) |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP), Monocypher (`update`'s Ed25519 signatures) |
 | `docs/` | the documentation below; `docs/logo/`, the logo |
 
 ## Documentation
@@ -251,4 +273,4 @@ changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 ## Licence
 
 Jam OS is released under the [BSD 2-Clause License](LICENSE). The
-third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT; stb_image: MIT or public domain; lwIP: BSD-3-Clause).
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT; stb_image: MIT or public domain; lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0).

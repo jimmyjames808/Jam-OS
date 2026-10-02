@@ -58,8 +58,10 @@ protocol initctl 18
 7  kernel_load  () -> (u64 kernel_bytes, u64 bootfs_bytes, u32 read_ms)
 # A channel for one offer of a fetched build (<update.h>): the caller
 # writes one struct update_offer on it with the kernel's and the boot
-# image's VMOs; init copies both, checks each length and SHA-256 against
-# the manifest in the offer, makes them the kernel's stored copy
+# image's VMOs; init checks the manifest's signature with the update key
+# in its own boot image (none: every offer refused), copies both files,
+# checks each length and SHA-256 against the manifest in the offer, makes
+# them the kernel's stored copy
 # (kexec_load, this boot's command line) and notes /esp's files as seen,
 # so `reboot` starts the fetched build; then it writes one struct
 # update_answer and closes the channel. Any refusal leaves the stored

@@ -708,6 +708,7 @@ static const struct {
     { "update_manifest", t_update_manifest },
     { "update_manifest_refusals", t_update_manifest_refusals },
     { "update_manifest_damage", t_update_manifest_damage },
+    { "update_signature", t_update_signature },
     { "updwire_golden", t_updwire_golden },
     { "updwire_hostile", t_updwire_hostile },
     { "updfetch_clean", t_updfetch_clean },

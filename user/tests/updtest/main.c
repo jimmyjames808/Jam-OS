@@ -3,11 +3,15 @@
  * exist; tools/update-test.sh runs it in QEMU.
  *
  * The files: /data/update/manifest, jamos.elf and bootfs.img, put there
- * by the test script (the manifest made by tools/update-server.py, the
- * boot image a copy of the build's with one more file, update-marker.txt,
- * so the boot after the update shows which build runs). The shell gives
- * it what its list asks for: /data (read) and init's control channel,
- * whose update_offer is the channel bin/update's offer will travel on.
+ * by the test script (the manifest made by tools/update-server.py and
+ * signed with a throwaway test key whose public half is in the running
+ * build's boot image; the boot image a copy of the build's with one more
+ * file, update-marker.txt, so the boot after the update shows which build
+ * runs); manifest-otherkey, the same manifest signed with a second key;
+ * nak.manifest, signed with the first, for two files that are no kernel.
+ * The shell gives it what its list asks for: /data (read) and init's
+ * control channel, whose update_offer is the channel bin/update's offer
+ * will travel on.
  *
  *   updtest good   the build as it is: accepted (init loads it as the
  *                  stored kernel; the script's `reboot` then runs it)
@@ -16,14 +20,19 @@
  *                  kernel or of the boot image changed (the SHA-256), the
  *                  kernel 4 KiB longer than the manifest says or cut to
  *                  half (the length), a VMO shorter than the length it
- *                  claims, a manifest of garbage, cut short, signed (this
- *                  build can't check a signature) or of another format,
- *                  an offer with a bad magic, one handle or an unknown
- *                  flag, and two files that match their manifest but are
- *                  no kernel (the kernel's own refusal); and the build
- *                  as it is, offered UPDATE_OFFER_CHECK_ONLY: accepted,
- *                  not loaded. The script's `reboot` then shows the
- *                  stored kernel unchanged.
+ *                  claims, a manifest of garbage, cut short, with a
+ *                  signature too short to be one or of another format (the
+ *                  format), unsigned, changed after it was signed (one
+ *                  digit of a SHA-256), signed by another key, or carrying
+ *                  another manifest's signature (the signature), an offer
+ *                  with a bad magic, one handle or an unknown flag, and two
+ *                  files that match their signed manifest but are no kernel
+ *                  (the kernel's own refusal); and the build as it is,
+ *                  offered UPDATE_OFFER_CHECK_ONLY: accepted, not loaded.
+ *                  The script's `reboot` then shows the stored kernel
+ *                  unchanged.
+ *   updtest nokey  on a build without an update key: the build offered,
+ *                  plain and check-only, refused for that alone.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -202,13 +211,23 @@ static void bad_files(const struct build *b)
     changed("VMO shorter than claimed", b, &short_vmo, UPDATE_SHORT_VMO);
 }
 
-/* b with another manifest text (len bytes). */
-static void bad_manifest(const struct build *b, const char *name, const void *text, size_t len)
+/* b with another manifest text (len bytes): refused for `why`. */
+static void bad_manifest(const struct build *b, const char *name, const void *text, size_t len,
+                         uint32_t why)
 {
     struct build v = *b;
     memcpy(v.manifest, text, len);
     v.manifest_len = (uint32_t)len;
-    expect(name, &v, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_MANIFEST, 0);
+    expect(name, &v, 2, UPDATE_OFFER_MAGIC, why, 0);
+}
+
+/* Where the manifest's signature line starts (after the last but one '\n'). */
+static size_t sig_line(const struct build *b)
+{
+    size_t at = b->manifest_len ? b->manifest_len - 1 : 0;
+    while (at > 0 && b->manifest[at - 1] != '\n')
+        at--;
+    return at;
 }
 
 static void bad_manifests(const struct build *b)
@@ -219,54 +238,111 @@ static void bad_manifests(const struct build *b)
         x = x * 1103515245u + 12345u;
         text[i] = (char)(x >> 16);
     }
-    bad_manifest(b, "garbage manifest", text, sizeof(text));
-    bad_manifest(b, "manifest cut short", b->manifest, b->manifest_len / 2);
-    size_t n = b->manifest_len;
+    bad_manifest(b, "garbage manifest", text, sizeof(text), UPDATE_BAD_MANIFEST);
+    bad_manifest(b, "manifest cut short", b->manifest, b->manifest_len / 2, UPDATE_BAD_MANIFEST);
+    size_t n = b->manifest_len, at = sig_line(b);
     memcpy(text, b->manifest, n);
-    if (n > 1 && n + 6 < sizeof(text)) {
-        memcpy(text + n - 1, " 00ff\n", 6);   /* "signature" with a value */
-        bad_manifest(b, "signed manifest", text, n + 5);
-    }
+    memcpy(text + at, "signature 00ff\n", 15);   /* a signature too short to be one */
+    bad_manifest(b, "short signature", text, at + 15, UPDATE_BAD_MANIFEST);
     memcpy(text, b->manifest, n);
     text[13] = '2';   /* "jamos-update 2" */
-    bad_manifest(b, "another format", text, n);
+    bad_manifest(b, "another format", text, n, UPDATE_BAD_MANIFEST);
+    memcpy(text, b->manifest, n);
+    memcpy(text + at, "signature\n", 10);
+    bad_manifest(b, "unsigned manifest", text, at + 10, UPDATE_UNSIGNED);
+    memcpy(text, b->manifest, n);
+    char *digit = &text[at - 2];   /* the boot image's SHA-256's last digit: signed */
+    *digit = *digit == '0' ? '1' : '0';
+    bad_manifest(b, "manifest changed after signing", text, n, UPDATE_BAD_SIGNATURE);
 }
 
-/* Two files that match their manifest exactly but are no kernel: only
- * kexec_load can refuse them. */
-static void not_a_kernel(void)
+/* Signatures that are good ones, but not of this manifest by this build's
+ * key: another key's (DIR "manifest-otherkey", the same build signed with
+ * a second throwaway key), and another manifest's (nak's) on this one. */
+static void wrong_signatures(const struct build *b, const struct build *nak)
+{
+    struct build other = *b;
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "manifest-otherkey", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st == OK) {
+        st = jam_vmo_read(m, 0, other.manifest, n);
+        jam_handle_close(m);
+        other.manifest_len = (uint32_t)n;
+    }
+    if (st == OK) {
+        expect("another key's signature", &other, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_SIGNATURE, 0);
+    } else {
+        failures++;
+        printf("updtest: another key's signature: no " DIR "manifest-otherkey (%s): FAILED\n",
+               status_str(st));
+    }
+    char text[UPDATE_MANIFEST_MAX];
+    size_t at = sig_line(b), nat = sig_line(nak);
+    memcpy(text, b->manifest, at);
+    memcpy(text + at, nak->manifest + nat, nak->manifest_len - nat);
+    bad_manifest(b, "another manifest's signature", text, at + nak->manifest_len - nat,
+                 UPDATE_BAD_SIGNATURE);
+}
+
+/* Two files that match their signed manifest exactly but are no kernel
+ * (8192 bytes of 0x55, 4096 of 0xaa; the test script signed DIR
+ * "nak.manifest" for them): only kexec_load can refuse them. Into *b. */
+static status_t make_nak(struct build *b)
 {
     static uint8_t k[8192], s[4096];
     memset(k, 0x55, sizeof(k));
     memset(s, 0xaa, sizeof(s));
-    uint8_t dk[SHA256_BYTES], ds[SHA256_BYTES];
-    char hk[2 * SHA256_BYTES + 1], hs[2 * SHA256_BYTES + 1];
-    sha256(k, sizeof(k), dk);
-    sha256(s, sizeof(s), ds);
-    sha256_hex(dk, hk);
-    sha256_hex(ds, hs);
-    struct build b = { .bytes = { sizeof(k), sizeof(s) } };
-    int n = snprintf(b.manifest, sizeof(b.manifest), "jamos-update 1\nversion not-a-kernel\n"
-                     "git 0000000\nkernel %u %s\nbootfs %u %s\nsignature\n",
-                     (unsigned)sizeof(k), hk, (unsigned)sizeof(s), hs);
-    b.manifest_len = (uint32_t)n;
-    if (jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b.vmo[0]) != OK ||
-        jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b.vmo[1]) != OK ||
-        jam_vmo_write(b.vmo[0], 0, k, sizeof(k)) != OK ||
-        jam_vmo_write(b.vmo[1], 0, s, sizeof(s)) != OK) {
+    *b = (struct build){ .bytes = { sizeof(k), sizeof(s) } };
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "nak.manifest", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st != OK)
+        return st;
+    st = jam_vmo_read(m, 0, b->manifest, n);
+    jam_handle_close(m);
+    b->manifest_len = (uint32_t)n;
+    if (st == OK)
+        st = jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b->vmo[0]);
+    if (st == OK)
+        st = jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b->vmo[1]);
+    if (st == OK)
+        st = jam_vmo_write(b->vmo[0], 0, k, sizeof(k));
+    if (st == OK)
+        st = jam_vmo_write(b->vmo[1], 0, s, sizeof(s));
+    return st;
+}
+
+/* Every refusal, each on an offer channel of its own; the build offered
+ * check-only (accepted, not loaded). */
+static void bad(struct build *b)
+{
+    struct build nak;
+    status_t st = make_nak(&nak);
+    if (st != OK) {
         failures++;
-        printf("updtest: not a kernel: can't make its files: FAILED\n");
-        return;
+        printf("updtest: no " DIR "nak.manifest, or its files (%s): FAILED\n", status_str(st));
     }
-    expect("not a kernel", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
-    jam_handle_close(b.vmo[0]);
-    jam_handle_close(b.vmo[1]);
+    bad_files(b);
+    bad_manifests(b);
+    if (st == OK)
+        wrong_signatures(b, &nak);
+    expect("bad magic", b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
+    expect("one handle", b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_CHECK_ONLY << 1;
+    expect("unknown flag", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
+    expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    b->flags = 0;
+    if (st == OK)
+        expect("not a kernel", &nak, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (strcmp(argv[1], "good") && strcmp(argv[1], "bad"))) {
-        printf("usage: updtest good|bad\n");
+    if (argc != 2 || (strcmp(argv[1], "good") && strcmp(argv[1], "bad") &&
+                      strcmp(argv[1], "nokey"))) {
+        printf("usage: updtest good|bad|nokey\n");
         return 2;
     }
     initctl = svc_get(SVC_INIT);
@@ -279,16 +355,12 @@ int main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "good")) {
         expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    } else if (!strcmp(argv[1], "nokey")) {
+        expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+        b.flags = UPDATE_OFFER_CHECK_ONLY;
+        expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
     } else {
-        bad_files(&b);
-        bad_manifests(&b);
-        expect("bad magic", &b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
-        expect("one handle", &b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-        b.flags = UPDATE_OFFER_CHECK_ONLY << 1;
-        expect("unknown flag", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-        b.flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
-        expect("check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
-        not_a_kernel();
+        bad(&b);
     }
     printf("updtest: %s: %s\n", argv[1], failures ? "FAILED" : "PASS");
     return failures ? 1 : 0;

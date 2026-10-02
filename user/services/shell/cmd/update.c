@@ -5,17 +5,33 @@
  * takes an offer channel from init (initctl.update_offer) and starts
  * bin/update (user/services/update) with it: the fetcher holds only that
  * channel and /svc/net, offers what it fetched, and init checks it
- * against the manifest and makes it the stored kernel (<update.h>). Then
- * the shell reboots into it, the normal way (`reboot`). -n: fetched and
- * checked, nothing loaded, no reboot. Only RAM changes: `make flash` keeps
- * a build for good. */
+ * against the manifest (signed by the key in this build's boot image) and
+ * makes it the stored kernel (<update.h>). Then the shell reboots into it,
+ * the normal way (`reboot`). -n: fetched and checked, nothing loaded, no
+ * reboot. Only RAM changes: `make flash` keeps a build for good. A build
+ * without a key fetches nothing: init would refuse every build. */
 #include <idl/initctl.h>
 #include <ipv4.h>
 #include <settings.h>
+#include <update.h>
 #include "sh.h"
 
 #define UPDATE_PATH "bin/update"
 #define OFFER_WAIT  (5 * NS_PER_S)
+
+/* Does this build have an update key (<update.h> UPDATE_KEY_FILE in its
+ * boot image)? Without one init refuses every build, so nothing is
+ * fetched: false (said). */
+static bool has_key(void)
+{
+    if (fs_stat("/boot/" UPDATE_KEY_FILE, NULL, NULL, NULL) == OK)
+        return true;
+    sh_tty("update: this build has no update key: updates are off.\n"
+           "  On the Mac, once: make, then build/host/jamos-sign keygen (the key goes in\n"
+           "  ~/.config/jamos), then make and make flash: the first build with the key\n"
+           "  goes on the stick by hand; after that `update` takes the builds it signs.\n");
+    return false;
+}
 
 /* The server's address: given, or net.host. false (said) if none. */
 static bool server(const char *given, char *out, size_t cap)
@@ -52,7 +68,7 @@ SH_CMD(update)
     }
     char host[SETTINGS_VALUE_MAX], git[48];
     struct sys_info s;
-    if (!server(given, host, sizeof(host)) || !sh_sysinfo(&s, "update"))
+    if (!has_key() || !server(given, host, sizeof(host)) || !sh_sysinfo(&s, "update"))
         return 1;
     sh_build_git(git, sizeof(git));
     handle_t ch = HANDLE_INVALID;

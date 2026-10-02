@@ -1,4 +1,6 @@
-/* The update manifest's parser (<update.h>): six lines, strictly.
+/* The update manifest's parser (<update.h>): six lines, strictly; and the
+ * public key file's. The signature's check is updsig.c's (it alone links
+ * Monocypher in).
  *
  * The bytes come from the network (through bin/update, which parses them
  * to know what to fetch, and again in init, which trusts nobody's parse
@@ -96,16 +98,17 @@ static uint8_t hex_val(uint8_t ch)
     return ch <= '9' ? (uint8_t)(ch - '0') : (uint8_t)(ch - 'a' + 10);
 }
 
-static bool take_sha(struct cur *c, uint8_t out[SHA256_BYTES])
+/* A word of exactly 2n lower-case hex digits, as n bytes into out. */
+static bool take_hex(struct cur *c, uint8_t *out, size_t n)
 {
-    if (word_len(c) != 2 * SHA256_BYTES)
+    if (word_len(c) != 2 * n)
         return false;
-    for (size_t i = 0; i < 2 * SHA256_BYTES; i++)
+    for (size_t i = 0; i < 2 * n; i++)
         if (!hex_char(c->p[i]))
             return false;
-    for (size_t i = 0; i < SHA256_BYTES; i++)
+    for (size_t i = 0; i < n; i++)
         out[i] = (uint8_t)(hex_val(c->p[2 * i]) << 4 | hex_val(c->p[2 * i + 1]));
-    c->p += 2 * SHA256_BYTES;
+    c->p += 2 * n;
     return true;
 }
 
@@ -117,7 +120,7 @@ static status_t take_file(struct cur *c, unsigned f, struct update_manifest *m)
     status_t st = take_size(c, &m->file[f].size);
     if (st != OK)
         return st;
-    if (!take_text(c, " ") || !take_sha(c, m->file[f].sha256) || !take_text(c, "\n"))
+    if (!take_text(c, " ") || !take_hex(c, m->file[f].sha256, SHA256_BYTES) || !take_text(c, "\n"))
         return ERR_INVALID_ARGS;
     return OK;
 }
@@ -158,11 +161,25 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
     m.signed_len = (size_t)(c.p - (const uint8_t *)text);
     if (!take_text(&c, "signature"))
         return ERR_INVALID_ARGS;
-    if (c.p < c.end && *c.p == ' ')
-        return ERR_NOT_SUPPORTED;   /* signed: this build can't check a signature */
+    if (take_text(&c, " ")) {
+        if (!take_hex(&c, m.signature, UPDATE_SIG_BYTES))
+            return ERR_INVALID_ARGS;
+        m.has_signature = true;
+    }
     if (!take_text(&c, "\n") || c.p != c.end)
         return ERR_INVALID_ARGS;
     *out = m;
+    return OK;
+}
+
+status_t update_key_parse(const void *text, size_t len, uint8_t key[UPDATE_KEY_BYTES])
+{
+    struct cur c = { text, (const uint8_t *)text + len };
+    uint8_t k[UPDATE_KEY_BYTES];
+    if (!text || !take_text(&c, "ed25519 ") || !take_hex(&c, k, UPDATE_KEY_BYTES) ||
+        !take_text(&c, "\n") || c.p != c.end)
+        return ERR_INVALID_ARGS;
+    memcpy(key, k, sizeof(k));
     return OK;
 }
 
@@ -181,6 +198,10 @@ const char *update_why_str(uint32_t why)
         [UPDATE_SHORT_VMO] = "a file's VMO is shorter than its length",
         [UPDATE_BAD_HASH] = "a file's SHA-256 isn't the manifest's",
         [UPDATE_NOT_LOADED] = "the kernel refused the build",
+        [UPDATE_NO_KEY] = "this build has no update key: updates are off",
+        [UPDATE_UNSIGNED] = "the manifest is not signed",
+        [UPDATE_BAD_SIGNATURE] = "the signature isn't this build's key's (or the manifest "
+                                 "changed)",
     };
     return why < UPDATE_WHY_COUNT ? words[why] : "?";
 }

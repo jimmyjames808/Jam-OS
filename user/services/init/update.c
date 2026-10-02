@@ -6,7 +6,11 @@
  * the power (kexec_load, RIGHT_ROOT_KEXEC) and parses nothing from the
  * network but the manifest, with the strict parser. An offer arrives on a
  * channel init made (initctl.update_offer), as one struct update_offer
- * with the kernel's and the boot image's VMOs. init copies each file into
+ * with the kernel's and the boot image's VMOs. First the signature: the
+ * manifest must be signed by the key in this build's own boot image
+ * (UPDATE_KEY_FILE; a build without one refuses every offer), over
+ * exactly the bytes before its signature line, before any size or hash in
+ * it is used. Then init copies each file into
  * a VMO only it holds, hashing exactly the bytes it writes, so nothing the
  * sender does to its own VMOs afterwards changes what was checked; then
  * every length and SHA-256 must be the manifest's, and only then are the
@@ -17,7 +21,9 @@
  * reloading the stick's. Nothing is written to the stick.
  *
  * Who does what (the service-loop rule): the loop reads the offer, parses
- * the manifest and compares the lengths, all quick; the copy and the hash
+ * the manifest, checks its signature (one Ed25519 check over at most 1 KiB,
+ * well under a millisecond) and compares the lengths, all quick; the copy
+ * and the hash
  * (a few hundred milliseconds for a build, up to UPDATE_FILE_MAX per file)
  * run on a worker thread, so the loop goes on serving meanwhile. The
  * worker touches only its struct check and the VMOs in it, and when it is
@@ -47,6 +53,7 @@ struct check {
     struct update_answer   a;
     uint64_t               t0;                   /* uptime ns: the offer read */
     uint64_t               hash_ms;              /* the worker's copy and hash */
+    uint64_t               verify_us;            /* the signature's check */
     bool                   done;                 /* the worker has finished */
 };
 
@@ -166,8 +173,48 @@ static void worker_main(void *arg)
         jam_nanosleep(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
 }
 
+/* This build's update key: the public key file in our boot image
+ * (UPDATE_KEY_FILE). ERR_NOT_FOUND: the build was made without one;
+ * ERR_INVALID_ARGS: the file isn't a key. */
+static status_t build_key(uint8_t key[UPDATE_KEY_BYTES])
+{
+    const struct bootfs_view *fs;
+    const void *text;
+    uint64_t len = 0;
+    status_t st = bootfs_default(&fs);
+    if (st == OK)
+        st = bootfs_lookup(fs, UPDATE_KEY_FILE, &text, &len);
+    return st == OK ? update_key_parse(text, (size_t)len, key) : st;
+}
+
+/* The manifest, parsed (its format only), and its signature: key signed
+ * exactly its bytes before the signature line. Nothing else it says is
+ * used before this has passed. False (c->a filled in) if refused. */
+static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
+{
+    const struct update_offer *o = c->o;
+    status_t st = update_manifest_parse(o->manifest, o->manifest_len, &c->m);
+    if (st != OK) {
+        refuse(&c->a, UPDATE_BAD_MANIFEST, 0, st);
+        return false;
+    }
+    if (!c->m.has_signature) {
+        refuse(&c->a, UPDATE_UNSIGNED, 0, ERR_ACCESS_DENIED);
+        return false;
+    }
+    uint64_t t0 = now();
+    st = update_manifest_verify(&c->m, o->manifest, key);
+    c->verify_us = (now() - t0) / 1000;
+    if (st != OK) {
+        refuse(&c->a, UPDATE_BAD_SIGNATURE, 0, st);
+        return false;
+    }
+    return true;
+}
+
 /* The quick checks of an offer of n bytes with nh handles, in the loop:
- * false (c->a filled in) if refused. */
+ * false (c->a filled in) if refused. A build without a key refuses every
+ * offer, whatever it holds. */
 static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
 {
     const struct update_offer *o = c->o;
@@ -176,11 +223,14 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
-    status_t st = update_manifest_parse(o->manifest, o->manifest_len, &c->m);
+    uint8_t key[UPDATE_KEY_BYTES];
+    status_t st = build_key(key);
     if (st != OK) {
-        refuse(&c->a, UPDATE_BAD_MANIFEST, 0, st);
+        refuse(&c->a, UPDATE_NO_KEY, 0, st);
         return false;
     }
+    if (!check_manifest(c, key))
+        return false;
     memcpy(c->a.version, c->m.version, sizeof(c->a.version));
     memcpy(c->a.git, c->m.git, sizeof(c->a.git));
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
@@ -198,8 +248,9 @@ static void say(const struct check *c)
     const struct update_offer *o = c->o;
     if (a->why == UPDATE_ACCEPTED) {
         bool only = o->flags & UPDATE_OFFER_CHECK_ONLY;
-        printf("init: update: %s (%s) checked in %u ms (kernel %lu bytes, bootfs %lu bytes, "
-               "hashed in %lu ms off the loop) %s\n", a->version, a->git, a->check_ms,
+        printf("init: update: %s (%s) checked in %u ms (signature %lu us; kernel %lu + bootfs "
+               "%lu bytes hashed in %lu ms off the loop) %s\n",
+               a->version, a->git, a->check_ms, (unsigned long)c->verify_us,
                (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
                (unsigned long)c->hash_ms,
                only ? "and not loaded (check only)" : "and stored: `reboot` starts it");

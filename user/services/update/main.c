@@ -3,7 +3,9 @@
  * build it serves, over a UDP socket of its own to the server's port
  * UPDWIRE_PORT, with the fetcher's window (<updfetch.h>); stores the
  * kernel and the boot image in two VMOs; and offers them to init, which
- * checks them against the manifest and loads them (<update.h>).
+ * checks the manifest's signature, then the files against it, and loads
+ * them (<update.h>). It doesn't check the signature itself: only init's
+ * check counts.
  *
  * It parses what the network sends, so it holds almost nothing: /svc/net
  * (its list) and the offer channel the shell took from init, nothing

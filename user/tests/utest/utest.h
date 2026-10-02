@@ -318,11 +318,13 @@ bool t_dnsres_hostile(void);
 bool t_dnsd_sockets(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
- * <updwire.h>); updfetch.c: the fetcher's window against a fake server
- * (<updfetch.h>); netlog.c: netlog's datagrams and sender (<netlog.h>). */
+ * <updwire.h>) and the manifest's signature; updfetch.c: the fetcher's
+ * window against a fake server (<updfetch.h>); netlog.c: netlog's
+ * datagrams and sender (<netlog.h>). */
 bool t_update_manifest(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
+bool t_update_signature(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);

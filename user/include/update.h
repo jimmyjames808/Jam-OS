@@ -12,23 +12,31 @@
  *     git <7..40 lower-case hex digits, optionally followed by -dirty>
  *     kernel <size> <SHA-256>     build/jamos.elf
  *     bootfs <size> <SHA-256>     build/bootfs.img
- *     signature
+ *     signature <signature>
  *
  * A size is decimal bytes, 1..UPDATE_FILE_MAX, no leading zero; a SHA-256
- * is 64 lower-case hex digits. The signature line is the place kept for
- * signed updates (a ROADMAP follow-up): today it has no value, and a
- * manifest whose signature line has one is refused (ERR_NOT_SUPPORTED:
- * this build can't check it, and fails closed). A signature will cover
- * every byte before its line (struct update_manifest's signed_len).
+ * is 64 lower-case hex digits. The signature is 128 lower-case hex digits:
+ * the Ed25519 signature (RFC 8032: EdDSA over edwards25519 with SHA-512,
+ * Monocypher's crypto_ed25519_check) of every byte before its line
+ * (struct update_manifest's signed_len), by the owner's update key
+ * (tools/jamos-sign.c makes it, once, on the Mac, and signs each manifest
+ * with it). The key's public half is in each build's boot image, the file
+ * UPDATE_KEY_FILE ("ed25519 <64 lower-case hex digits>\n"): a build
+ * without it has no key and takes no update at all. A bare "signature"
+ * line is an unsigned manifest: it parses (the parser only reads the
+ * format), and init refuses it. init checks the signature before it
+ * trusts anything else the manifest says: a size or a SHA-256 the key
+ * didn't sign is never compared with anything.
  *
  * The hand-off: whoever fetched the build (bin/update; a test program,
  * user/tests/updtest) holds an offer channel from init (initctl's
  * update_offer) and writes one struct update_offer on it, with the kernel
- * and the boot image in two VMOs (RIGHT_READ is enough). init copies both
- * into VMOs only it holds, so the sender can't change a byte after the
- * check, checks each file's length and SHA-256 against the manifest
- * (which it parses itself: nothing the sender says about it is trusted),
- * and hands its copies to the kernel (kexec_load) as the stored kernel,
+ * and the boot image in two VMOs (RIGHT_READ is enough). init checks the
+ * manifest's signature with its build's key, copies both files into VMOs
+ * only it holds, so the sender can't change a byte after the check, checks
+ * each file's length and SHA-256 against the manifest (which it parses
+ * itself: nothing the sender says about it is trusted), and hands its
+ * copies to the kernel (kexec_load) as the stored kernel,
  * the one `reboot` and a panic start. It answers one struct update_answer
  * on the channel and closes it. Any refusal leaves the stored kernel as it
  * was. Nothing is ever written to the stick: the fetched build runs until
@@ -50,6 +58,9 @@
 #define UPDATE_FILE_MAX     (32u << 20)    /* bytes of either file: the stored kernel's region */
 #define UPDATE_VERSION_MAX  47u            /* bytes of the version string */
 #define UPDATE_GIT_MAX      47u            /* bytes of the git field (40 hex + "-dirty") */
+#define UPDATE_KEY_BYTES    32u            /* an Ed25519 public key */
+#define UPDATE_SIG_BYTES    64u            /* an Ed25519 signature */
+#define UPDATE_KEY_FILE     "update.pub"   /* the public key, in the boot image (bootfs) */
 
 /* The files of a build, in the manifest's order. */
 enum { UPDATE_KERNEL, UPDATE_BOOTFS, UPDATE_FILES };
@@ -63,15 +74,28 @@ struct update_manifest {
         uint8_t  sha256[SHA256_BYTES];
     } file[UPDATE_FILES];
     size_t   signed_len;                        /* bytes before the signature line */
+    bool     has_signature;                     /* the signature line has a value */
+    uint8_t  signature[UPDATE_SIG_BYTES];       /* ... this one (zeros if not) */
 };
 
 /* Parse a manifest of len bytes (not NUL-terminated; any bytes at all),
  * strictly as the header above says, into *out (written only on
- * success). ERR_INVALID_ARGS: not a manifest (a line missing, out of
- * order, misspelt, a bad character, too long, anything after the end);
+ * success). Only the format is checked here, not the signature: an
+ * unsigned manifest parses (has_signature false). ERR_INVALID_ARGS: not a
+ * manifest (a line missing, out of order, misspelt, a bad character, too
+ * long, a signature that isn't 128 hex digits, anything after the end);
  * ERR_OUT_OF_RANGE: a size of 0 or over UPDATE_FILE_MAX;
- * ERR_NOT_SUPPORTED: another format version, or a signature. */
+ * ERR_NOT_SUPPORTED: another format version. */
 status_t update_manifest_parse(const void *text, size_t len, struct update_manifest *out);
+/* Did `key` sign exactly the first m->signed_len bytes of text, the
+ * manifest m was parsed from? OK if so; ERR_ACCESS_DENIED if m has no
+ * signature, or it isn't key's signature of those bytes. */
+status_t update_manifest_verify(const struct update_manifest *m, const void *text,
+                                const uint8_t key[UPDATE_KEY_BYTES]);
+/* The public key file (UPDATE_KEY_FILE) of len bytes into key (written
+ * only on success): exactly "ed25519 <64 lower-case hex digits>\n".
+ * ERR_INVALID_ARGS otherwise. */
+status_t update_key_parse(const void *text, size_t len, uint8_t key[UPDATE_KEY_BYTES]);
 /* The file's name in the manifest ("kernel", "bootfs"). */
 const char *update_file_name(unsigned file);
 
@@ -103,6 +127,9 @@ enum update_why {
     UPDATE_SHORT_VMO,   /* a VMO is shorter than its length, or can't be read */
     UPDATE_BAD_HASH,    /* a file's SHA-256 isn't the manifest's */
     UPDATE_NOT_LOADED,  /* the kernel refused it (kexec_load's status) */
+    UPDATE_NO_KEY,      /* this build has no update key (or no valid one): updates are off */
+    UPDATE_UNSIGNED,    /* the manifest has no signature */
+    UPDATE_BAD_SIGNATURE, /* not this build's key's signature, or the manifest changed */
     UPDATE_WHY_COUNT,
 };
 
