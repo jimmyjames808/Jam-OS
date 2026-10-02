@@ -245,8 +245,9 @@ static unsigned sign_vectors(void)
     for (size_t i = 0; i + 4 <= nb_ed_25519_vectors; i += 4) {
         uint8_t seed[32], pk[32], want[64], sk[64], pk2[32], sig[64];
         long n = vec(ed_25519_vectors[i + 2], msg, sizeof(msg));
-        if (vec(ed_25519_vectors[i], seed, 32) != 32 || vec(ed_25519_vectors[i + 1], pk, 32) != 32 ||
-            n < 0 || vec(ed_25519_vectors[i + 3], want, 64) != 64) {
+        if (vec(ed_25519_vectors[i], seed, 32) != 32 ||
+            vec(ed_25519_vectors[i + 1], pk, 32) != 32 || n < 0 ||
+            vec(ed_25519_vectors[i + 3], want, 64) != 64) {
             bad++;
             continue;
         }
