@@ -1,9 +1,8 @@
 /* mixer: audioctl.device on a thread of its own.
  *
- * Finding the index-th hda driver (out_query) walks devmgr's services: a
- * call to devmgr and one to each service, each with a 2 s deadline, and
- * any of them may be slow to answer (usb-bus inside a bulk transfer, a
- * driver devmgr is restarting). The loop must mix a period every 42.7 ms
+ * Reaching the driver (out_query) is a call to devmgr and one to the
+ * driver, each with a 2 s deadline, and either may be slow to answer
+ * (devmgr busy with a disk, a driver devmgr is restarting). The loop must mix a period every 42.7 ms
  * with 128 ms of lead, so it never makes those calls: it hands the
  * request (its txid and index) to this thread over a channel and goes on.
  * The thread walks and writes the answer on the control channel itself (a
@@ -12,7 +11,7 @@
  *
  * At most DEVICE_QUEUE requests wait for the thread; more are answered
  * ERR_NO_RESOURCES at once. What the thread touches of struct mixer:
- * m->devmgr and m->ctl, set before it starts and never changed after;
+ * m->cards and m->ctl, set before it starts and never changed after;
  * `waiting` is the one variable both threads change (atomics). */
 #include <devmgr.h>
 #include <idl/audioctl.h>

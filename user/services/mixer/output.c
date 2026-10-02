@@ -1,5 +1,6 @@
-/* mixer: the driver's side. The hda driver is found through devmgr (the
- * first service that answers hda.info with a path to a jack) and its one
+/* mixer: the driver's side. The hda driver played through is the first
+ * sound card's (in the order of our devmgr device channels) that answers
+ * hda.info with a path to a jack, and its one
  * output stream is open only while a stream plays, so the path is muted
  * whenever nothing plays (the driver unmutes only while its stream runs).
  *
@@ -38,31 +39,47 @@
 #define RETRY_NS     (500 * NS_PER_MS)
 #define TXID_BASE    0x6d780000u             /* our wait_period txids ("mx"), never 0 */
 
-/* The hda driver with a path among devmgr's services, into m->out.svc. */
+/* Card i's driver channel: GET_SERVICE on its device channel (all device
+ * fields 0: its own device, <devmgr.h> DEVMGR_DEVICE_CHANNEL). The
+ * caller's. */
+static status_t driver_channel(const struct mixer *m, unsigned i, handle_t *out)
+{
+    struct devmgr_rep r;
+    handle_t ch = HANDLE_INVALID;
+    uint32_t nh = 0;
+    status_t st = devmgr_call(m->cards[i], DEVMGR_GET_SERVICE, 0, 0, 0, &r, &ch, 1, &nh,
+                              now() + FIND_WAIT);
+    if (st == OK && nh != 1)
+        st = ERR_INTERNAL;
+    if (st != OK) {
+        if (nh)
+            jam_handle_close(ch);
+        return st;
+    }
+    *out = ch;
+    return OK;
+}
+
+/* The first card whose driver has a path to a jack, into m->out.svc. */
 status_t out_find(struct mixer *m)
 {
     if (m->out.svc)
         return OK;
-    if (!m->devmgr)
-        return ERR_NOT_FOUND;
-    for (uint32_t n = 0; n < 32; n++) {
-        struct devmgr_rep r;
+    for (unsigned i = 0; i < m->ncards; i++) {
         handle_t ch;
-        uint32_t nh = 0;
-        status_t st = devmgr_call(m->devmgr, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1,
-                                  &nh, now() + FIND_WAIT);
-        if (st == ERR_NOT_FOUND || st == ERR_PEER_CLOSED)
-            return st;
-        if (st != OK || nh != 1)
-            continue;
+        status_t st = driver_channel(m, i, &ch);
+        if (st == ERR_PEER_CLOSED)
+            return st;   /* devmgr is gone */
+        if (st != OK)
+            continue;    /* no driver running for it now */
         uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
         uint8_t nodes[8], text[240];
         st = hda_info_until(ch, now() + FIND_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
                             &jack, &count, nodes, text);
         if (st == OK && pin) {
             m->out.svc = ch;
-            printf("mixer: the hda driver is devmgr's service %u (codec %u, dac %02x, pin %02x)\n",
-                   n, codec, dac, pin);
+            printf("mixer: playing through sound card %u (codec %u, dac %02x, pin %02x)\n", i,
+                   codec, dac, pin);
             return OK;
         }
         jam_handle_close(ch);
@@ -443,35 +460,17 @@ int32_t out_device_gain(struct mixer *m)
     return gain;
 }
 
-/* The index-th hda driver among devmgr's services (the drivers that
- * answer hda.query; others refuse it, ERR_NOT_SUPPORTED), as a query
- * channel: audioctl.device. The driver it plays through is not touched:
- * a query channel can't open the output (hda.idl). */
+/* audioctl.device: the index-th card's driver as a query channel. The
+ * driver it plays through is not touched: a query channel can't open the
+ * output (hda.idl). */
 status_t out_query(struct mixer *m, uint32_t index, handle_t *out)
 {
-    uint32_t found = 0;
-    for (uint32_t n = 0; m->devmgr && n < 32; n++) {
-        struct devmgr_rep r;
-        handle_t ch, q;
-        uint32_t nh = 0;
-        status_t st = devmgr_call(m->devmgr, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1,
-                                  &nh, now() + FIND_WAIT);
-        if (st == ERR_NOT_FOUND || st == ERR_PEER_CLOSED)
-            break;
-        if (st != OK || nh != 1)
-            continue;
-        st = hda_query_until(ch, now() + FIND_WAIT, &q);
-        jam_handle_close(ch);
-        if (st == ERR_NOT_SUPPORTED)
-            continue;   /* another driver's service */
-        if (found++ != index) {
-            if (st == OK)
-                jam_handle_close(q);
-            continue;
-        }
-        if (st == OK)
-            *out = q;
-        return st;
-    }
-    return ERR_NOT_FOUND;
+    handle_t ch, q;
+    if (index >= m->ncards || driver_channel(m, index, &ch) != OK)
+        return ERR_NOT_FOUND;   /* no such card, no devmgr, or its driver not running now */
+    status_t st = hda_query_until(ch, now() + FIND_WAIT, &q);
+    jam_handle_close(ch);
+    if (st == OK)
+        *out = q;
+    return st;
 }

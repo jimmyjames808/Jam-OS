@@ -22,9 +22,10 @@ protocol audioctl 23
 2  set_volume  (u32 id, i32 centibels)  -> (i32 centibels)
 # The master volume, applied after the streams are summed, the same way.
 3  set_master  (i32 centibels)  -> (i32 centibels)
-# The index-th HD Audio driver devmgr runs (from 0, in devmgr's order), as
-# a query channel (hda.idl's `query`): everything the driver answers but
-# open_output, so the shell's `hda` can look and set the gain without
-# taking the output stream the mixer plays through. The caller closes it.
-# ERR_NOT_FOUND: no such driver (index past the last, or no devmgr).
+# The index-th sound card's HD Audio driver (from 0, in the order of the
+# devmgr device channels init gave the mixer), as a query channel
+# (hda.idl's `query`): everything the driver answers but open_output, so
+# the shell's `hda` can look and set the gain without taking the output
+# stream the mixer plays through. The caller closes it. ERR_NOT_FOUND: no
+# such driver (index past the last card, or its driver not running).
 4  device  (u32 index)  -> (handle device)

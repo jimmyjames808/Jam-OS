@@ -18,29 +18,37 @@
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
  * function with MSI-X that isn't a bridge or the boot display".
  *
- * Trust: devmgr serves three channels. The QUERY channel (/svc/devmgr;
- * devmgr's own server end is its startup role SR_DEVMGR) answers STATUS,
- * GET_SERVICE, GET_DRIVER (read-only views) and
- * SUPERVISION; anything else gets ERR_ACCESS_DENIED, and so does
- * GET_SERVICE of an EXCLUSIVE driver (devmgr's match table marks them:
- * hda, whose one output stream is the mixer's). The AUDIO channel
- * (SR_DEVMGR_AUDIO, not in /svc: init makes it for the mixer alone)
- * answers the same calls and GET_SERVICE of the exclusive drivers too.
- * The CONTROL channel
- * (/svc/devmgr-ctl; SR_DEVMGR_CTL) answers everything (exclusive drivers'
- * services included, for the tests): SET_CONSOLE, KILL, REBIND, RELEASE,
- * DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER, MOUNTS (the
- * filesystems' channels), TEST_DISK and REMOUNT too. devmgr
- * runs until every client end of its control channel is gone.
- * Who holds what: init all three (it hands devmgr new consoles, and the
- * mixer a copy of AUDIO); the programs
+ * Trust: what a channel may ask is fixed by which channel it is, never by
+ * who asks. devmgr serves
+ *   the QUERY channel (/svc/devmgr; devmgr's own server end is its startup
+ *     role SR_DEVMGR): STATUS, GET_SERVICE, GET_DRIVER (read-only views)
+ *     and SUPERVISION; anything else is ERR_ACCESS_DENIED, and so is
+ *     GET_SERVICE of a device that has a device channel (below);
+ *   DEVICE channels, each scoped to one device: made by DEVICE_CHANNEL on
+ *     the control channel, at most one per device at a time. One answers
+ *     GET_SERVICE, GET_DRIVER and SUPERVISION about its own device and
+ *     nothing else (another device, or any other call, is
+ *     ERR_ACCESS_DENIED). Holding a device's channel is the right to use
+ *     the device: init makes one for each HD Audio controller and gives
+ *     them to the mixer (whose output streams they are), and will do the
+ *     same with the NIC for netstack. While the channel has a client, the query
+ *     channel won't hand that device's service out;
+ *   the CONTROL channel (/svc/devmgr-ctl; SR_DEVMGR_CTL): everything, every
+ *     device's service included (the tests' hdatest takes hda's output
+ *     this way): SET_CONSOLE, KILL, REBIND, RELEASE, DRIVER_VIEW (a
+ *     driver's hardware handles), TEST_DRIVER, MOUNTS (the filesystems'
+ *     channels), TEST_DISK, REMOUNT and DEVICE_CHANNEL too. devmgr runs
+ *     until every client end of its control channel is gone.
+ * Who holds what: init the control and query channels (it hands devmgr
+ * new consoles, and makes the device channels) and the sound cards'
+ * device channels, duplicates of which the mixer gets (SR_DEVMGR_DEVICE);
+ * the programs
  * init runs from init.cfg (the test suites utest and usbtest) QUERY and
- * CONTROL; in shell mode the shell QUERY and CONTROL, and it passes them on only to the programs
- * whose lists ask for them (<wants.h>; CONTROL: test programs only, which
- * the build checks); the mixer AUDIO alone. GET_SERVICE's channels
+ * CONTROL; in shell mode the shell QUERY and CONTROL, and it passes them
+ * on only to the programs whose lists ask for them (<wants.h>; CONTROL:
+ * test programs only, which the build checks). GET_SERVICE's channels
  * reach drivers (usb-bus hands out USB interfaces), so even QUERY is for
  * trusted programs only.
-
  *
  * Supervision: devmgr restarts a driver that dies unexpectedly
  * (crashes, is killed by anyone, KILL included, or exits with an error;
@@ -86,7 +94,8 @@
 /* (dev) -> 1 handle: a channel to the driver's DR_SERVE end (a duplicate
  * of devmgr's client end). ERR_NOT_FOUND: no such device, or no driver
  * bound to it (ERR_BAD_STATE: bound, but the driver is gone for good;
- * ERR_ACCESS_DENIED: an exclusive driver's, asked on the query channel).
+ * ERR_ACCESS_DENIED: asked on the query channel for a device that has a
+ * device channel, or on a device channel for another device).
  * While a restart is due, the channel the restarted driver will serve
  * (see the reconnect rule above). Vendor and device 0xffff name the
  * instance-th function that has a driver bound, whatever it is (a client
@@ -220,6 +229,24 @@ struct devmgr_mounts_rep {
  * shell still holds copies of the control channel. */
 #define DEVMGR_SHUTDOWN     0x0003000eu
 
+/* (dev) -> 1 handle, control channel only: a new DEVICE channel scoped to
+ * that device (see "Trust" above), the caller's to give to the device's
+ * one user. On it, a request whose vendor, device and instance are all 0
+ * names its own device; naming it by its ids works too. It lasts until
+ * its clients are all gone (or devmgr ends: init makes a new one for a new
+ * devmgr). ERR_NOT_FOUND: no such device, or no driver for it;
+ * ERR_NOT_SUPPORTED: a USB interface or a filesystem service (only a PCI
+ * function or the crash-test device can have one); ERR_BAD_STATE: it has
+ * one already; ERR_NO_RESOURCES: devmgr serves as many channels as it can. */
+#define DEVMGR_DEVICE_CHANNEL 0x0003000fu
+/* A PCI function named by its class rather than its ids: DEVMGR_PCI_CLASS
+ * as the vendor, n as the device and class << 16 | subclass << 8 | prog_if
+ * as the instance: the n-th function of that class that has a driver (in
+ * devmgr's enumeration order), whatever its vendor. init finds the
+ * devices it gives away this way. */
+#define DEVMGR_PCI_CLASS      0xfffbu
+#define DEVMGR_CLASS_HDA      0x040300u   /* HD Audio (04 03 00): the mixer's */
+
 /* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
  * the partition (storage.idl's index, 0 to 3; DEVMGR_PART_* on the boot
  * disk) as the device and the
@@ -330,6 +357,28 @@ static inline status_t devmgr_call(handle_t ch, uint32_t ordinal, uint16_t vendo
     if (n < DEVMGR_REP_HDR || rep->status > 0)
         return ERR_INTERNAL;
     return rep->status;
+}
+
+/* One DEVMGR_DEVICE_CHANNEL call on the control channel ch: *out (the
+ * caller's) is the new device channel, on OK only. */
+static inline status_t devmgr_device_channel(handle_t ch, uint16_t vendor, uint16_t device,
+                                             uint32_t instance, uint64_t deadline_ns,
+                                             handle_t *out)
+{
+    struct devmgr_rep r;
+    handle_t h = HANDLE_INVALID;
+    uint32_t nh = 0;
+    status_t st = devmgr_call(ch, DEVMGR_DEVICE_CHANNEL, vendor, device, instance, &r, &h, 1,
+                              &nh, deadline_ns);
+    if (st == OK && nh != 1)
+        st = ERR_INTERNAL;   /* not devmgr's format */
+    if (st != OK) {
+        if (nh)
+            jam_handle_close(h);
+        return st;
+    }
+    *out = h;
+    return OK;
 }
 
 /* One DEVMGR_MOUNTS call on the control channel ch. OK: *out holds the

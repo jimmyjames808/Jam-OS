@@ -6,6 +6,20 @@
 
 #define TEST_DRIVER_PATH "drv/crasher"
 
+/* DEVMGR_PCI_CLASS: the n-th PCI function of class `cls` that has a driver
+ * (bound now or not), in enumeration order. */
+static struct binding *class_find(uint32_t cls, uint32_t n)
+{
+    for (unsigned i = 0; i < ndevs; i++) {
+        struct binding *b = &devs[i];
+        uint32_t c = (uint32_t)b->info.class_code << 16 | (uint32_t)b->info.subclass << 8 |
+                     b->info.prog_if;
+        if (b->kind == BIND_PCI && b->path && c == cls && n-- == 0)
+            return b;
+    }
+    return NULL;
+}
+
 static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
 {
     uint32_t seen = 0;
@@ -20,6 +34,8 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
     bool usb = q->vendor == DEVMGR_USB_IFACE;
     if (q->vendor == DEVMGR_FS_SVC)
         return fs_find(q->instance, q->device);
+    if (q->vendor == DEVMGR_PCI_CLASS)
+        return class_find(q->instance, q->device);
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
         if (b->kind == BIND_FS)
@@ -128,14 +144,14 @@ static status_t test_driver(void)
  * was started for b. Never a disk's driver's or a filesystem service's: a
  * disk's `storage` channel opens every partition for writing, so it stays
  * devmgr's own, and a filesystem's channel is DEVMGR_MOUNTS's to hand out
- * (the control channel's alone). An exclusive driver's (hda's) only on the
- * audio and control channels. */
+ * (the control channel's alone). Never, on the query channel, a device
+ * that has a device channel: its holder's (and the control channel's). */
 static void get_service(const struct binding *b, bool known, enum level lv, struct devmgr_rep *r,
                         handle_t *hs, uint32_t *nh)
 {
     if (!known)
         r->status = ERR_NOT_FOUND;
-    else if (b->disk || (b->exclusive && lv == LEVEL_QUERY))
+    else if (b->disk || (lv == LEVEL_QUERY && chans_device_owned((uint32_t)(b - devs))))
         r->status = ERR_ACCESS_DENIED;
     else if ((b->state != DEVMGR_SUP_RUNNING && b->state != DEVMGR_SUP_RESTARTING) ||
              !b->client)
@@ -204,8 +220,38 @@ static void view(struct binding *b, struct devmgr_rep *r, handle_t *hs, rights_t
     r->a = mask;
 }
 
-void request_handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep *r,
-                    handle_t *hs, rights_t *rs, uint32_t *nh)
+/* DEVICE_CHANNEL: a channel scoped to b (a PCI function with a driver,
+ * or the crash-test device) into hs[0]. */
+static void device_channel(const struct binding *b, struct devmgr_rep *r, handle_t *hs,
+                           uint32_t *nh)
+{
+    if (!b || !b->path)
+        r->status = ERR_NOT_FOUND;
+    else if (b->kind != BIND_PCI && b->kind != BIND_SOFT)
+        r->status = ERR_NOT_SUPPORTED;   /* USB and filesystem bindings come and go */
+    else if ((r->status = chans_new_device((uint32_t)(b - devs), &hs[0])) == OK)
+        *nh = 1;
+}
+
+/* The binding q names, as the channel it came on may see it: on a device
+ * channel all-zero device fields name the channel's own device, and any
+ * other device is ERR_ACCESS_DENIED. */
+static status_t named(const struct devmgr_req *q, const struct request_from *from,
+                      struct binding **out)
+{
+    struct binding *b;
+    if (from->lv == LEVEL_DEVICE && !q->vendor && !q->device && !q->instance)
+        b = &devs[from->dev];
+    else
+        b = find(q, q->ordinal == DEVMGR_DRIVER_VIEW);
+    if (from->lv == LEVEL_DEVICE && b != &devs[from->dev])
+        return ERR_ACCESS_DENIED;
+    *out = b;
+    return OK;
+}
+
+void request_handle(const struct devmgr_req *q, const struct request_from *from,
+                    struct devmgr_rep *r, handle_t *hs, rights_t *rs, uint32_t *nh)
 {
     *nh = 0;
     for (uint32_t i = 0; i < DEVMGR_MAX_HANDLES; i++)
@@ -232,11 +278,16 @@ void request_handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep
                           : ERR_INVALID_ARGS;
         return;
     }
-    struct binding *b = find(q, q->ordinal == DEVMGR_DRIVER_VIEW);
+    struct binding *b = NULL;
+    if ((r->status = named(q, from, &b)) != OK)
+        return;
     bool known = b && b->path && b->state != DEVMGR_SUP_NONE;   /* a driver was started */
     switch (q->ordinal) {
     case DEVMGR_GET_SERVICE:
-        get_service(b, known, lv, r, hs, nh);
+        get_service(b, known, from->lv, r, hs, nh);
+        return;
+    case DEVMGR_DEVICE_CHANNEL:
+        device_channel(b, r, hs, nh);
         return;
     case DEVMGR_GET_DRIVER:
         get_driver(b, known, r, hs, nh);

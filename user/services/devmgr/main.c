@@ -1,8 +1,9 @@
 /* devmgr: binds drivers to PCI functions and keeps them running
  * (supervise.c). A process in bootfs (bin/devmgr) that init
  * starts with a RES_PCI resource (SR_RESOURCE) sliced from the root, and
- * the server end of its channel (SR_DEVMGR; the protocol, and the
- * reconnect rule its clients follow, are in <devmgr.h>).
+ * the server ends of its control and query channels (SR_DEVMGR_CTL,
+ * SR_DEVMGR; chans.c serves them and the channels made from them; the
+ * protocol, and the reconnect rule its clients follow, are in <devmgr.h>).
  *
  * It enumerates every function (pci_enum), matches each against the table
  * below and, for every match whose driver ELF is in bootfs, wakes the
@@ -60,8 +61,8 @@
  * filesystem service on its ESP and its data partition, supervised the
  * same way, and hands their channels out through DEVMGR_MOUNTS (mounts.c).
  *
- * It runs until every client end of its channel is gone (init closes its
- * own at the end of the boot): then it closes each driver's client end,
+ * It runs until every client end of its control channel is gone (init
+ * closes its own at the end of the boot): then it closes each driver's client end,
  * waits for the drivers to return, kills any that don't, and exits 0 if
  * every driver ended cleanly with its job at zero and nothing crashed or
  * was given up on meanwhile. */
@@ -77,15 +78,15 @@ static const struct {
     uint16_t    vendor, device;   /* PCI ids, 0xffff: any */
     uint32_t    class_code;       /* class << 16 | subclass << 8 | prog_if, or ANY_CLASS */
     const char *path;             /* the driver in bootfs */
-    bool        exclusive;        /* GET_SERVICE on the audio and control channels only */
 } matches[] = {
-    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu", false },      /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus", false },   /* any xHCI controller */
+    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },      /* QEMU's edu test device */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },   /* any xHCI controller */
     /* Intel HD Audio in HDA mode (class 04 03 00). Only Intel's: other
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
-     * (Intel's audio DSP) needs firmware this driver doesn't have. Exclusive:
-     * its one output stream is the mixer's (<devmgr.h> "Trust"). */
-    { 0x8086, 0xffff, 0x040300, "drv/hda", true },
+     * (Intel's audio DSP) needs firmware this driver doesn't have. Who may
+     * use it is init's to say, not this table's: init asks for its device
+     * channel and gives it to the mixer (<devmgr.h> "Trust"). */
+    { 0x8086, 0xffff, 0x040300, "drv/hda" },
 };
 
 struct binding devs[MAX_DEVS];
@@ -132,10 +133,9 @@ const char *bdf(const struct binding *b)
     return s;
 }
 
-/* The driver for function i (NULL: none); *exclusive: matches[]'s flag. */
-static const char *match(const struct pci_dev_info *i, bool *exclusive)
+/* The driver for function i (NULL: none). */
+static const char *match(const struct pci_dev_info *i)
 {
-    *exclusive = false;
     if (i->flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return NULL;   /* never a driver's */
     uint32_t cls = (uint32_t)i->class_code << 16 | (uint32_t)i->subclass << 8 | i->prog_if;
@@ -147,10 +147,8 @@ static const char *match(const struct pci_dev_info *i, bool *exclusive)
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
         if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
             (matches[k].device == 0xffff || matches[k].device == i->device) &&
-            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls)) {
-            *exclusive = matches[k].exclusive;
+            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls))
             return matches[k].path;
-        }
     return NULL;
 }
 
@@ -207,7 +205,7 @@ static status_t enumerate(void)
         }
         b->kind = BIND_PCI;
         b->index = i;
-        b->path = match(&b->info, &b->exclusive);
+        b->path = match(&b->info);
         ndevs++;
     }
     return OK;
@@ -355,7 +353,7 @@ int main(int argc, char **argv)
             boot_mbr_id = hex32(argv[i] + 9);
     }
     /* devmgr runs until the control channel's clients are all gone (with
-     * no control channel: the query channel's); a query or audio channel
+     * no control channel: the query channel's); a query or device channel
      * whose clients are gone is just dropped. */
     bool have_chans = chans_init();
     pci_res = startup_handle(SR_RESOURCE);

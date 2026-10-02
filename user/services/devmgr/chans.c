@@ -1,25 +1,57 @@
 /* devmgr: its channels. init gives it the server ends of a control channel
- * (SR_DEVMGR_CTL), a query channel (SR_DEVMGR) and an audio channel
- * (SR_DEVMGR_AUDIO); each is watched on devmgr's port, read here and
- * answered by request.c. What a channel may ask is decided by which channel
- * it is (its level), never by who sent the request (<devmgr.h> "Trust"). */
+ * (SR_DEVMGR_CTL) and a query channel (SR_DEVMGR), and asks the control
+ * channel for device channels (DEVMGR_DEVICE_CHANNEL), each scoped to one
+ * device and made here. Every channel is watched on devmgr's port, read
+ * here and answered by request.c. What a channel may ask is decided by
+ * which channel it is (its level, and a device channel's device), never by
+ * who sent the request (<devmgr.h> "Trust").
+ *
+ * The table is bounded (MAX_CHANS): a device channel asked for past it is
+ * ERR_NO_RESOURCES. A query or device channel whose clients are all gone
+ * is dropped, and its slot is free again; devmgr lives as long as the
+ * clients of slot 0 do (the control channel, or without one the query
+ * channel). */
 #include "internal.h"
 
-/* What the query channel (SR_DEVMGR) and the audio channel
- * (SR_DEVMGR_AUDIO) may ask; the control channel (SR_DEVMGR_CTL) may ask
- * everything. The two differ in GET_SERVICE alone (get_service). */
+#define MAX_CHANS 32   /* the control and query channels, device channels */
+#define SLOT_LIFE 0    /* the channel devmgr lives by */
+
+struct chan {
+    handle_t   h;       /* our end (0: a free slot) */
+    enum level lv;      /* what it may ask */
+    uint32_t   dev;     /* LEVEL_DEVICE: devs index of its device */
+    uint32_t   gen;     /* the slot's generation, in its port key */
+    bool       armed;   /* bound to the port (ONCE), not fired yet */
+};
+
+static struct chan chans[MAX_CHANS];
+
+/* What the query channel may ask; the control channel may ask everything. */
 static bool query_ok(uint32_t ordinal)
 {
     return ordinal == DEVMGR_STATUS || ordinal == DEVMGR_GET_SERVICE ||
            ordinal == DEVMGR_GET_DRIVER || ordinal == DEVMGR_SUPERVISION;
 }
 
-/* Answer everything queued on ch, a channel of level lv. Returns
- * ERR_SHOULD_WAIT once the queue is empty, ERR_PEER_CLOSED once every
- * client is gone and nothing is left to read. */
-static status_t serve(handle_t ch, enum level lv)
+/* What a device channel may ask (about its device alone: request.c). */
+static bool device_ok(uint32_t ordinal)
 {
-    bool control = lv == LEVEL_CONTROL;
+    return ordinal == DEVMGR_GET_SERVICE || ordinal == DEVMGR_GET_DRIVER ||
+           ordinal == DEVMGR_SUPERVISION;
+}
+
+static bool allowed(const struct chan *c, uint32_t ordinal)
+{
+    return c->lv == LEVEL_CONTROL || (c->lv == LEVEL_QUERY && query_ok(ordinal)) ||
+           (c->lv == LEVEL_DEVICE && device_ok(ordinal));
+}
+
+/* Answer everything queued on c. Returns ERR_SHOULD_WAIT once the queue is
+ * empty, ERR_PEER_CLOSED once every client is gone and nothing is left to
+ * read. */
+static status_t serve(const struct chan *c)
+{
+    handle_t ch = c->h;
     for (;;) {
         _Alignas(8) uint8_t buf[64];
         handle_t in[4];
@@ -39,7 +71,7 @@ static status_t serve(handle_t ch, enum level lv)
         /* Only SET_CONSOLE and TEST_DISK carry a handle (one), and only on
          * control. */
         const struct devmgr_req *q = (const struct devmgr_req *)buf;
-        bool denied = n >= 8 && !control && !query_ok(q->ordinal);
+        bool denied = n >= 8 && !allowed(c, q->ordinal);
         bool whole = !denied && n == sizeof(*q);
         bool takes_handle = whole && nh == 1 && (q->ordinal == DEVMGR_SET_CONSOLE ||
                                                  q->ordinal == DEVMGR_TEST_DISK);
@@ -66,7 +98,8 @@ static status_t serve(handle_t ch, enum level lv)
             r.status = disk_test(in[0], &id);
             r.a = id;
         } else if (whole && !nh) {
-            request_handle(q, lv, &r, hs, rs, &nout);
+            struct request_from from = { c->lv, c->lv == LEVEL_DEVICE ? c->dev : NO_DEVICE };
+            request_handle(q, &from, &r, hs, rs, &nout);
         }
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
         if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
@@ -76,42 +109,45 @@ static status_t serve(handle_t ch, enum level lv)
     }
 }
 
-/* devmgr's channels: chans[CH_CONTROL] (SR_DEVMGR_CTL), chans[CH_QUERY]
- * (SR_DEVMGR) and chans[CH_AUDIO] (SR_DEVMGR_AUDIO), each 0 if init gave
- * none; their port keys and levels. devmgr lives as long as chans[life]'s
- * clients do (the control channel, or without one the query channel). */
-enum { CH_CONTROL, CH_QUERY, CH_AUDIO, NCHANS };
-static const uint64_t chan_keys[NCHANS] = { KEY_CONTROL, KEY_CHANNEL, KEY_AUDIO };
-static const enum level chan_levels[NCHANS] = { LEVEL_CONTROL, LEVEL_QUERY, LEVEL_AUDIO };
-static handle_t chans[NCHANS];
-static bool     armed[NCHANS];   /* bound to the port (ONCE), not fired yet */
-static unsigned life;
+static uint64_t key_of(unsigned i)
+{
+    return KEY_CHAN_OF(i, chans[i].gen);
+}
+
+/* Slot i: its channel closed and forgotten. */
+static void drop(unsigned i)
+{
+    struct chan *c = &chans[i];
+    if (c->armed)
+        (void)jam_port_unbind(port, c->h, key_of(i));   /* not fired: nothing else to undo */
+    jam_handle_close(c->h);
+    uint32_t gen = c->gen + 1;   /* a packet already queued for it is stale */
+    *c = (struct chan){ .gen = gen };
+}
 
 bool chans_init(void)
 {
-    chans[CH_CONTROL] = startup_handle(SR_DEVMGR_CTL);
-    chans[CH_QUERY] = startup_handle(SR_DEVMGR);
-    chans[CH_AUDIO] = startup_handle(SR_DEVMGR_AUDIO);
-    life = chans[CH_CONTROL] ? CH_CONTROL : CH_QUERY;
-    return chans[life] != HANDLE_INVALID;
+    chans[SLOT_LIFE] = (struct chan){ .h = startup_handle(SR_DEVMGR_CTL), .lv = LEVEL_CONTROL };
+    chans[1] = (struct chan){ .h = startup_handle(SR_DEVMGR), .lv = LEVEL_QUERY };
+    if (!chans[SLOT_LIFE].h) {   /* no control channel: it lives by the query channel */
+        chans[SLOT_LIFE] = chans[1];
+        chans[1] = (struct chan){ 0 };
+    }
+    return chans[SLOT_LIFE].h != HANDLE_INVALID;
 }
 
 status_t chans_serve(void)
 {
-    status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
-        if (!chans[c])
+    for (unsigned i = 0; i < MAX_CHANS; i++) {
+        if (!chans[i].h)
             continue;
-        st = serve(chans[c], chan_levels[c]);
-        if (st == ERR_PEER_CLOSED && c != life) {
-            if (armed[c])
-                jam_port_unbind(port, chans[c], chan_keys[c]);
-            jam_handle_close(chans[c]);   /* nobody queries any more */
-            chans[c] = HANDLE_INVALID;
-            st = ERR_SHOULD_WAIT;
-        }
+        status_t st = serve(&chans[i]);
+        if (st == ERR_PEER_CLOSED && i != SLOT_LIFE)
+            drop(i);   /* nobody asks on it any more */
+        else if (st != ERR_SHOULD_WAIT)
+            return st;
     }
-    return st;
+    return ERR_SHOULD_WAIT;
 }
 
 /* ONCE, re-armed after it fires (it fires at once if a message came in
@@ -119,27 +155,54 @@ status_t chans_serve(void)
  * restart ends the wait. */
 status_t chans_arm(void)
 {
-    status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
-        if (!chans[c] || armed[c])
+    for (unsigned i = 0; i < MAX_CHANS; i++) {
+        struct chan *c = &chans[i];
+        if (!c->h || c->armed)
             continue;
-        st = jam_port_bind(port, chans[c], chan_keys[c], SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_ONCE);
+        status_t st = jam_port_bind(port, c->h, key_of(i), SIG_READABLE | SIG_PEER_CLOSED,
+                                    PORT_BIND_ONCE);
         if (st != OK)
-            break;
-        armed[c] = true;
-        st = ERR_SHOULD_WAIT;
+            return st;
+        c->armed = true;
     }
-    return st;
+    return ERR_SHOULD_WAIT;
 }
 
 bool chans_packet(uint64_t key)
 {
-    bool ours = false;
-    for (unsigned c = 0; c < NCHANS; c++)
-        if (chan_keys[c] == key) {
-            armed[c] = false;
-            ours = true;
-        }
-    return ours;
+    if (!(key & KEY_CHAN))
+        return false;
+    unsigned i = KEY_INDEX(key);
+    if (i < MAX_CHANS && chans[i].h && KEY_GEN(key) == (chans[i].gen & 0xffffu))
+        chans[i].armed = false;
+    return true;   /* ours, stale or not */
+}
+
+bool chans_device_owned(uint32_t dev)
+{
+    for (unsigned i = 0; i < MAX_CHANS; i++)
+        if (chans[i].h && chans[i].lv == LEVEL_DEVICE && chans[i].dev == dev)
+            return true;
+    return false;
+}
+
+status_t chans_new_device(uint32_t dev, handle_t *out)
+{
+    if (chans_device_owned(dev))
+        return ERR_BAD_STATE;   /* one holder of a device's channel at a time */
+    for (unsigned i = 0; i < MAX_CHANS; i++) {
+        struct chan *c = &chans[i];
+        if (c->h || i == SLOT_LIFE)
+            continue;
+        handle_t mine, theirs;
+        status_t st = jam_channel_create(&mine, &theirs);
+        if (st != OK)
+            return st;
+        c->h = mine;
+        c->lv = LEVEL_DEVICE;
+        c->dev = dev;
+        *out = theirs;   /* watched by the next chans_arm */
+        return OK;
+    }
+    return ERR_NO_RESOURCES;
 }

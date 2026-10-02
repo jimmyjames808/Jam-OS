@@ -1,10 +1,10 @@
 /* The mixer: what its files share. main.c is the loop (one thread, one
- * port: every channel and event it serves, devmgr's channel and the
+ * port: every channel and event it serves, devmgr's device channels and the
  * driver's stream channel); streams.c the streams (the `audio` service
  * channel, each stream's channel and event, the `audioctl` control
  * channel); output.c the driver's side (finding the hda driver, its one
  * output stream, the periods, the mixing); device.c a second thread for
- * audioctl.device, which calls devmgr and its services and so must not
+ * audioctl.device, which calls devmgr and the drivers and so must not
  * hold up the loop. docs/A2-PLAN.md has the design; <mixer.h> the ring.
  *
  * Time is the driver's: at the end of each period it played (2048 frames,
@@ -12,7 +12,7 @@
  * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
  * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
  * late before anything is lost. The loop's state is its own: device.c's
- * thread reads only m->devmgr and m->ctl, which never change. */
+ * thread reads only m->cards and m->ctl, which never change. */
 #pragma once
 
 #include <mixer.h>
@@ -32,6 +32,7 @@
                                 * (`play` reads its file in chunks between writes, so
                                 * a slow read is covered by what its ring holds) */
 #define HIST           4u      /* periods remembered per stream for `played` */
+#define MIXER_CARDS    4u      /* sound cards (devmgr device channels) taken at the start */
 
 /* Port keys: these, or a stream's slot with its generation. */
 #define KEY_SVC     1u
@@ -97,7 +98,9 @@ struct out {
 };
 
 struct mixer {
-    handle_t      port, devmgr, svc, ctl;
+    handle_t      port, svc, ctl;
+    handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
+    unsigned      ncards;
     bool          svc_pending, ctl_pending;
     struct stream s[MIXER_MAX_STREAMS];
     struct out    out;
@@ -132,8 +135,9 @@ void stream_set_idle(struct stream *s, bool idle);
 
 /* ---- output.c ----------------------------------------------------------------- */
 
-/* The hda driver with a path to a jack, found through devmgr (kept in
- * m->out.svc). ERR_NOT_FOUND: there is none. */
+/* The hda driver of the first sound card whose driver has a path to a
+ * jack (kept in m->out.svc). ERR_NOT_FOUND: there is none;
+ * ERR_PEER_CLOSED: devmgr is gone. */
 status_t out_find(struct mixer *m);
 
 /* Open the driver's output if a stream plays and it is closed (and no
@@ -152,10 +156,10 @@ uint64_t out_position(struct mixer *m);
 /* The driver's gain in centibels (hda.get_gain), or 0 if it can't say (no
  * driver found yet: this never goes looking for one). */
 int32_t  out_device_gain(struct mixer *m);
-/* audioctl.device: the index-th hda driver devmgr runs, as a query channel
+/* audioctl.device: the index-th sound card's driver as a query channel
  * (hda.query: everything but open_output) into *out, the caller's.
- * ERR_NOT_FOUND: no such driver. Calls devmgr and its services: device.c's
- * thread calls it, never the loop. Uses only m->devmgr. */
+ * ERR_NOT_FOUND: no such driver. Calls devmgr and the driver: device.c's
+ * thread calls it, never the loop. Uses only m->cards. */
 status_t out_query(struct mixer *m, uint32_t index, handle_t *out);
 
 /* ---- device.c ----------------------------------------------------------------- */

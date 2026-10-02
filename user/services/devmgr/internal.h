@@ -26,11 +26,8 @@
 #define SUP_WINDOW        (60 * NS_PER_S)
 #define SUP_RESTART_LIMIT 5   /* restarts within SUP_WINDOW; the next death gives up */
 
-/* Port keys: devmgr's channel, and a driver process's SIG_TERMINATED
- * (binding index and start generation, so a stale packet is recognised). */
-#define KEY_CHANNEL        1ull   /* the query channel (SR_DEVMGR) */
-#define KEY_CONTROL        2ull   /* the control channel (SR_DEVMGR_CTL) */
-#define KEY_AUDIO          3ull   /* the audio channel (SR_DEVMGR_AUDIO) */
+/* Port keys: a driver process's SIG_TERMINATED (binding index and start
+ * generation, so a stale packet is recognised). */
 #define KEY_DRIVER         (1ull << 32)
 #define KEY_OF(i, gen)     (KEY_DRIVER | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* A driver wrote on its DR_SERVE channel by itself (usb-bus:
@@ -45,16 +42,28 @@
  * slot and its generation. */
 #define KEY_DISK           (1ull << 35)
 #define KEY_DISK_OF(i, gen) (KEY_DISK | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
+/* One of devmgr's channels has something to read, or closed (chans.c):
+ * its slot and the slot's generation. */
+#define KEY_CHAN           (1ull << 36)
+#define KEY_CHAN_OF(i, gen) (KEY_CHAN | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
-/* What a channel of devmgr's may ask (main.c): the query channel the
- * queries, the audio channel the queries and an exclusive driver's
- * service too, the control channel everything (<devmgr.h> "Trust"). */
+/* What a channel of devmgr's may ask (chans.c): the query channel the
+ * queries, but never a device that has a device channel; a device channel
+ * the queries about its own device alone; the control channel everything
+ * (<devmgr.h> "Trust"). */
 enum level {
     LEVEL_QUERY,
-    LEVEL_AUDIO,
+    LEVEL_DEVICE,
     LEVEL_CONTROL,
+};
+
+/* Which channel a request came on, for request.c. */
+#define NO_DEVICE UINT32_MAX
+struct request_from {
+    enum level lv;
+    uint32_t   dev;   /* LEVEL_DEVICE: devs index of the channel's device; else NO_DEVICE */
 };
 
 enum bind_kind {
@@ -71,8 +80,6 @@ struct binding {
     struct pci_dev_info info;       /* BIND_PCI: pci_enum's; BIND_SOFT, BIND_USB: vendor/device
                                      * only (BIND_USB: the USB ids) */
     const char         *path;       /* the driver; NULL: none for it */
-    bool                exclusive;  /* BIND_PCI: its service only to the audio and control
-                                     * channels (main.c's matches[]) */
     bool                test;       /* its deaths and giving up are expected (not problems) */
     handle_t            dev;        /* BIND_PCI: ours, with RIGHT_MANAGE (0 until started once) */
     /* The driver while it runs. */
@@ -146,11 +153,18 @@ status_t chans_arm(void);
 /* A port packet: true if it was a channel's (watched again by the next
  * chans_arm, read by the next chans_serve). */
 bool     chans_packet(uint64_t key);
+/* Does device `dev` (a devs index) have a device channel? Then the query
+ * channel never hands out its service. */
+bool     chans_device_owned(uint32_t dev);
+/* DEVMGR_DEVICE_CHANNEL: a new channel scoped to device `dev`; *out: the
+ * client end. ERR_BAD_STATE: it has one already (until that one's clients
+ * are all gone); ERR_NO_RESOURCES: no free slot. */
+status_t chans_new_device(uint32_t dev, handle_t *out);
 
-/* request.c. Answer one request that came on a channel of level lv: the
+/* request.c. Answer one request that came on the channel `from` says: the
  * reply, and *nh handles in hs, each to be sent with rs[i]. */
-void request_handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep *r,
-                    handle_t *hs, rights_t *rs, uint32_t *nh);
+void request_handle(const struct devmgr_req *q, const struct request_from *from,
+                    struct devmgr_rep *r, handle_t *hs, rights_t *rs, uint32_t *nh);
 
 /* bind.c. Start b's driver (state RUNNING on success): its handles from
  * scratch (for a PCI function: woken to D0, a new dma_cap, interrupt
