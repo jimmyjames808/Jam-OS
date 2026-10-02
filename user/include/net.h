@@ -166,3 +166,6 @@ status_t net_recv_arm(struct net_sock *s);
  * ERR_OUT_OF_RANGE among them when netstack said a length over
  * NET_DGRAM_MAX. */
 status_t net_sock_take(struct net_sock *s, struct net_dgram *d);
+/* Wait until s may have something for net_sock_take, or the deadline
+ * (ERR_TIMED_OUT). */
+status_t net_sock_wait(struct net_sock *s, uint64_t deadline);

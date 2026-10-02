@@ -222,3 +222,9 @@ status_t net_sock_take(struct net_sock *s, struct net_dgram *d)
         }
     }
 }
+
+status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
+{
+    signals_t seen;
+    return jam_object_wait_one(s->ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+}

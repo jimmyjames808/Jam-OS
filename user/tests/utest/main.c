@@ -775,6 +775,7 @@ static const struct {
     { "netsock_busy_client", t_netsock_busy_client },
     { "netsock_len_lies", t_netsock_len_lies },
     { "netsock_dhcp", t_netsock_dhcp },
+    { "netsock_bench", t_netsock_bench },
 };
 
 int main(int argc, char **argv)

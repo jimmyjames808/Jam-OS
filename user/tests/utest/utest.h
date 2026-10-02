@@ -275,6 +275,8 @@ bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
 bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
+/* netbench.c: datagrams through a socket and netstack, timed (BENCH.md). */
+bool t_netsock_bench(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
