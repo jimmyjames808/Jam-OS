@@ -504,11 +504,13 @@ the netdev contract; 3b plugs netstack into it.
   `ctx`, the MAC), `stack_start`, `stack_set_edge` (a device came or
   restarted; a new MAC flushes ARP, the address stays), `stack_set_link`,
   `stack_input(frame, len)` per received frame, `stack_poll` (the timers;
-  returns the deadline). 3b: the receive ring's reader calls
-  `stack_input`, `tx` writes the transmit ring (a full ring is an error:
-  counted as dropped), the loop adds the ring events and the devmgr device
-  channel to its port, and init/net.c starts it with netctl at
-  `SR_USER + 0`. Until then bin/netstack runs with no device: link down,
+  returns the deadline). 3b, on `<jam/netdev.h>`'s ring code: the rx
+  ring's reader takes each frame (`netdev_take`) and calls `stack_input`;
+  `tx` is `netdev_room` and `netdev_put` (a full ring is an error:
+  counted as dropped), then `netdev_publish`; `NETDEV_SIG_LINK` becomes
+  `stack_set_link`; the loop adds the session channel, `to_stack` and the
+  devmgr device channel to its port, and init/net.c starts it with netctl
+  at `SR_USER + 0`. Until then bin/netstack runs with no device: link down,
   nothing sent.
 - **Not in 3a:** init starting netstack; `net.address` from the settings
   file; the ring netif and its utest against a fake driver; the

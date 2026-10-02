@@ -284,6 +284,25 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, ""));
 }
 
+/* Every vlan word is kept, even one that means "no VLAN", and before
+ * the others, so a reboot never comes back on the default VLAN when this
+ * boot had none. netprobe is not kept. */
+KTEST(kexec_next_cmdline_vlan)
+{
+    char buf[KEXEC_CMDLINE];
+    kexec_next_cmdline("shell vlan=21 netprobe", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=21 shell"));
+    kexec_next_cmdline("vlan=off nosplash", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=off nosplash"));
+    kexec_next_cmdline("verbose vlan vlan= vlan=junk vlanx=3", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan vlan= vlan=junk verbose"));
+    kexec_next_cmdline("netprobe", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, ""));
+    /* Short of room: the vlan word goes in, the others as far as they fit. */
+    kexec_next_cmdline("verbose nosplash vlan=off", buf, 9);
+    KT_ASSERT(!strcmp(buf, "vlan=off"));
+}
+
 /* A panic within 30 s of a start that was itself a panic's halts. */
 KTEST(kexec_crash_loop_rule)
 {

@@ -9,8 +9,10 @@
  * first (splash.c). The option word "hidboot" (with any mode) is passed
  * on to devmgr, which passes it to every hid: mice stay in the boot
  * protocol; so is "netprobe" in shell mode (devmgr binds the RTL8125's
- * listen-only probe), and "bootdisk=0x<id>" (the disk the machine booted from:
- * devmgr's boot disk). Otherwise it starts the bootfs server (bin/bootfs: the boot
+ * listen-only probe), "vlan=<id>" (the network's VLAN, for the network
+ * drivers) and "bootdisk=0x<id>" (the disk the machine booted from:
+ * devmgr's boot disk). Otherwise (no mode, or "init", whose one option
+ * word is "vlan=<id>") it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -37,15 +39,17 @@
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
  * "Trust"); the programs init runs are the test suites: they get both.
- * devmgr_hda: the sound cards' device channels, made as in shell mode and
- * kept (no mixer runs here), so the query channel never hands hda out. */
+ * devmgr_hda, devmgr_net: the sound cards' and the network cards' device
+ * channels, made as in shell mode and kept (no mixer or netstack runs
+ * here), so the query channel never hands their drivers out. */
 static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
-static handle_t devmgr_hda[INIT_MAX_CLAIMED];
+static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 bool init_hidboot;
 bool init_netprobe;
 const char *init_bootdisk;
+const char *init_vlan;
 bool init_splashhang;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
@@ -182,10 +186,12 @@ static bool start_devmgr(handle_t console)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[3] = { "bin/devmgr" };
+        const char *argv[4] = { "bin/devmgr" };
         int argc = 1;
         if (init_hidboot)
             argv[argc++] = "hidboot";
+        if (init_vlan)
+            argv[argc++] = init_vlan;
         if (init_bootdisk)
             argv[argc++] = init_bootdisk;
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
@@ -210,12 +216,6 @@ static bool start_devmgr(handle_t console)
     }
     devmgr_ch = a;
     devmgr_q = qa;
-    /* The programs we run reach it through our namespace. */
-    handle_t dq = HANDLE_INVALID, dc = HANDLE_INVALID;
-    if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
-        (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
-    if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
-        (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
     /* Wait for its first binding pass. */
     struct devmgr_rep r;
     st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
@@ -225,7 +225,16 @@ static bool start_devmgr(handle_t console)
         return false;
     }
     printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    /* The device channels first, then /svc/devmgr: nobody can ask the
+     * query channel for these drivers before init holds them. */
     (void)services_claim_class(devmgr_ch, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
+    (void)services_claim_class(devmgr_ch, DEVMGR_CLASS_NET, devmgr_net, INIT_MAX_CLAIMED);
+    /* The programs we run reach it through our namespace. */
+    handle_t dq = HANDLE_INVALID, dc = HANDLE_INVALID;
+    if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
+        (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
+    if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
+        (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
     /* Its mounts, as they come: a program gets those there when it starts. */
     handle_t watch;
     st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &watch);
@@ -244,10 +253,14 @@ static bool stop_devmgr(void)
     (void)ns_svc_remove(SVC_DEVMGR_CTL);
     jam_handle_close(devmgr_q);
     jam_handle_close(devmgr_ch);
-    for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
+    for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++) {
         if (devmgr_hda[k])
             jam_handle_close(devmgr_hda[k]);
+        if (devmgr_net[k])
+            jam_handle_close(devmgr_net[k]);
+    }
     memset(devmgr_hda, 0, sizeof(devmgr_hda));
+    memset(devmgr_net, 0, sizeof(devmgr_net));
     devmgr_ch = devmgr_q = HANDLE_INVALID;
     mounts_unwatch();   /* its last control client gone: it stops its drivers, exits */
 
@@ -403,7 +416,8 @@ int main(int argc, char **argv)
         return 1;
     /* The option words after the mode (argv[2] on): "splash" (the kernel's
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
-     * plays first), "hidboot", "netprobe", "bootdisk=0x<id>", "splashhang". */
+     * plays first), "hidboot", "netprobe", "vlan=<id>", "bootdisk=0x<id>",
+     * "splashhang". */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -411,6 +425,8 @@ int main(int argc, char **argv)
         init_netprobe |= !strcmp(argv[i], "netprobe");
         if (!strncmp(argv[i], "bootdisk=", 9))
             init_bootdisk = argv[i];
+        if (!strncmp(argv[i], "vlan=", 5))
+            init_vlan = argv[i];
         init_splashhang |= !strcmp(argv[i], "splashhang");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain

@@ -1,0 +1,48 @@
+# netdev: a network card's driver (drivers/rtl8125, drivers/e1000e), as
+# devmgr binds it to a PCI function of class 02 00 00. Served on the
+# driver's DR_SERVE channel, which devmgr hands out only on the
+# function's device channel (init claims it and gives it to netstack
+# alone, <devmgr.h> DEVMGR_CLASS_NET) and its control channel (a test
+# program under user/tests/). Format: see tools/genidl.py.
+#
+# Control only: frames never travel in calls. `open` hands out two ring
+# VMOs and two events; their layout, the wake bits, the trust rules and
+# the rights are in <jam/netdev.h>, with the ring code both sides use.
+# The driver owns the VLAN: it tags every frame netstack sends and passes
+# on only frames of its VLAN (docs/M9-PLAN.md "Where the VLAN tag is
+# enforced"); `info` says which VLAN, and nobody else tells netstack.
+#
+# Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
+# fails with ERR_PEER_CLOSED, or a session channel that closes, means the
+# driver died or ended; unmap and close the session's rings and events,
+# get the channel from devmgr again (DEVMGR_GET_SERVICE) and `open` again.
+# The driver keeps nothing across a restart.
+
+protocol netdev 27
+
+# The card. mac: its address (6 bytes, as on the wire). vlan: the VLAN
+# every frame is tagged with and the only one received (1..4094: a driver
+# without one doesn't serve). mtu: the largest payload, 1500
+# (NETDEV_MTU: frames of 14..1514 bytes). link: NETDEV_LINK_* bits (up,
+# full duplex). speed: Mb/s, 0 while down. changes: link changes since
+# the driver started (each also signals NETDEV_SIG_LINK on the session's
+# to_stack event): compare with the count you saw last. chip: its name
+# (printable ASCII, NUL-padded), e.g. "RTL8125B", "82574L".
+1  info  ()  -> (u8[6] mac, u16 vlan, u16 mtu, u32 link, u32 speed, u32 changes, u8[16] chip)
+
+# The counts, as <jam/netdev.h>'s struct netdev_stats (little-endian, its
+# reserved fields 0): the driver's since it started, and the chip's own.
+2  stats  ()  -> (u8[256] counts)
+
+# A session: the rings and events of <jam/netdev.h>. Results: `session`,
+# a channel of its own (closing it ends the session; info and stats work
+# on it too, open is refused there with ERR_NOT_SUPPORTED); `tx` and `rx`,
+# the two ring VMOs (NETDEV_RING_BYTES each, NETDEV_RING_RIGHTS: map them
+# read-write and check their headers, netdev_end_attach); `to_driver`
+# (NETDEV_TO_DRIVER_RIGHTS: signal NETDEV_SIG_TX on it) and `to_stack`
+# (NETDEV_TO_STACK_RIGHTS: wait on it for NETDEV_SIG_RX, _TX_ROOM and
+# _LINK, and clear them). Both rings start empty, counts 0. One session at
+# a time: ERR_BAD_STATE while another's channel is open (the driver looks
+# first: a session whose opener has gone is ended then, so a restarted
+# netstack can open at once). ERR_NO_MEMORY: no memory for the rings.
+3  open  ()  -> (handle session, handle tx, handle rx, handle to_driver, handle to_stack)

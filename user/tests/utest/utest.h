@@ -231,6 +231,13 @@ bool t_netstack_cleared(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_process(void);
 
+/* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
+ * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
+bool t_netdev_ring_counts(void);
+bool t_netdev_ring_one_thread(void);
+bool t_netdev_ring_exchange(void);
+bool t_netdev_vlan_word(void);
+
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);

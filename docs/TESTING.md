@@ -153,6 +153,17 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`.
+- `vlan=<id>`: the network's VLAN, 1..4094 (the default with no word:
+  21, `BOOT_VLAN_DEFAULT` in `kernel/main.c`). Every frame Jam OS sends is
+  tagged with it and only frames tagged with it are received
+  ([ARCHITECTURE](../ARCHITECTURE.md#networking)). `vlan=off`, or any
+  value that isn't a VLAN id (`vlan=0`, `vlan=4095`, `vlan=21x`, a bare
+  `vlan`, two words that disagree), means no VLAN: the network drivers
+  turn neither receiver nor transmitter on. The boot log says which
+  (`network:     VLAN 21`), and so does devmgr (`network drivers get
+  vlan=21`). The kernel passes it to init (also in the `init` run), init
+  to devmgr, devmgr to each network card's driver; netstack hears it only
+  from the driver. A reboot keeps it, `vlan=off` too.
 - `bootdisk=<n>`: the MBR disk id (decimal) of the disk the machine booted
   from, which a kernel started by kexec gets from the one before (Limine
   tells the first one itself); devmgr takes the Jam OS disk with that id

@@ -14,10 +14,14 @@
  *   frame (untagged, no FCS), which lwIP handles to the end before it
  *   returns (an ARP or echo reply goes out through tx meanwhile).
  * - the link: stack_set_link when the device says it changed.
- * Not built yet: the netdev rings (docs/M9-PLAN.md "netdev: rings, not
- * calls"): their reader calls stack_input, their writer is tx. Until then
- * bin/netstack runs with no device (stack_no_device): link down, every
- * frame out dropped and counted.
+ * Not built yet: the netdev rings (<jam/netdev.h>): the rx ring's reader
+ * takes each frame (netdev_take) into a buffer and calls stack_input; tx
+ * is netdev_room and netdev_put on the tx ring (a full ring is an error,
+ * counted), then netdev_publish; NETDEV_SIG_LINK becomes stack_set_link.
+ * Until then bin/netstack runs with no device (stack_no_device): link
+ * down, every frame out dropped and counted. A frame from the rx ring may
+ * be as short as 14 bytes (56 for a minimum-size frame whose tag the
+ * driver removed): stack_input pads it.
  *
  * One thread: nothing here locks. Addresses are IPv4 addresses as
  * numbers, the first byte highest (10.2.21.5 is 0x0a021505). */

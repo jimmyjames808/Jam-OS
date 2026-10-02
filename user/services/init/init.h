@@ -38,6 +38,11 @@ extern bool init_netprobe;
 /* The option word "bootdisk=0x<id>" (main.c; NULL: none): the MBR disk id
  * the machine booted from, passed on to devmgr as it is. */
 extern const char *init_bootdisk;
+/* The option word "vlan=<id>" (main.c; NULL: none, the network stays
+ * off): the network's VLAN, passed on to devmgr as it is, which passes it
+ * to every network driver. Nobody else is told it: netstack hears it from
+ * the driver (netdev.info). */
+extern const char *init_vlan;
 /* The option word "splashhang" (main.c, a test's): bin/splash is started
  * with --hang, so it never finishes (the shell's deadline is tested). */
 extern bool init_splashhang;
@@ -166,6 +171,12 @@ bool     services_devmgr_up(void);
  * (main.c too). */
 #define INIT_MAX_CLAIMED 4u
 unsigned services_claim_class(handle_t devmgr_ctl, uint32_t cls, handle_t *out, unsigned max);
+/* Duplicates of the network cards' device channels (class 02 00 00,
+ * DEVMGR_CLASS_NET), which init claims before it publishes /svc/devmgr
+ * and holds for netstack, the only program that gets them; at most max,
+ * into out[] (the caller's). Returns how many (0: no devmgr running, or no
+ * network card with a driver). */
+unsigned services_net_devices(handle_t *out, unsigned max);
 
 /* ---- shell.c and services.c, for ctl.c and reboot.c -------------------------------- */
 
