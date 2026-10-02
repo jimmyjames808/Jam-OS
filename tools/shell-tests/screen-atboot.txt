@@ -1,7 +1,8 @@
 # tools/screen-test.sh's third boot: a plain boot (the splash, the log off
 # the screen) with a second stick in from the start. It is mounted while
 # the machine starts, so it is no news: no "a stick is at" notice
-# (tools/screen-test.sh checks the log). Pulling it out afterwards is.
+# (tools/screen-test.sh checks the log). Pulling it out afterwards is,
+# also after the console was started again.
 wait 120 console: the screen is back
 seen 60 init: /usb0 mounted
 seen 60 jam>
@@ -9,6 +10,11 @@ sleep 5
 send echo atboot-quiet
 wait atboot-quiet
 wait jam>
+# a console started again knows the boot is over: the pull is news
+send kill console
+wait console: the kernel log so far
+wait jam>
+sleep 1
 monitor device_del sb
 wait 30 console: notice: the stick at /usb0 was pulled out
 send reboot -f

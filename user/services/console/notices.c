@@ -15,7 +15,9 @@
  *     stick's first mounts, and a stick that was in at boot. Starting
  *     lasts until the splash gives the screen back (the shell is the first
  *     thing seen), or, with no splash, until the boot's mounts first
- *     settle.
+ *     settle. A console started again later finds the boot over in the
+ *     log it catches up on (init's "the shell is up", or a log that no
+ *     longer starts at the boot).
  *   /data not there SETTLE_DATA after /esp came (a damaged volume, or a
  *     partition fat can't read): nothing is saved, logs and settings
  *     included.
@@ -65,6 +67,7 @@ static uint64_t hold_until;      /* devmgr is being restarted: say nothing befor
 static bool     boot_known;      /* the boot stick's mounts were taken as they are */
 static bool     starting = true; /* the boot isn't over: what mounts is no news */
 static bool     lent_seen;       /* the screen was lent out (the splash) while starting */
+static bool     shell_seen;      /* init said "the shell is up" */
 static uint64_t esp_at;          /* /esp came without /data at this time (0: no) */
 static bool     data_said;       /* "/data is not mounted" was said */
 static char     crashed[32];     /* the last process the kernel said crashed */
@@ -226,6 +229,8 @@ static void init_line(const char *text, bool announce)
         return;
     text += 6;
     init_mount_line(text);
+    if (!strcmp(text, "the shell is up"))
+        shell_seen = true;
     const char *k = strstr(text, " was killed, code");
     if (k && !strncmp(text, "bin/", 4)) {
         size_t n;
@@ -367,8 +372,10 @@ void notice_tick(bool shown)
         announce_mounts();
 }
 
-void notice_settle(void)
+void notice_settle(bool whole_log)
 {
+    if (shell_seen || !whole_log)
+        starting = false;   /* a console started again: the boot is long over */
     told = mounts;
     boot_known = boot_known || (mounts & M_BOOT) == M_BOOT;
     changed_at = 0;
@@ -384,7 +391,7 @@ void notice_reset(void)
 {
     mounts = told = 0;
     changed_at = hold_until = esp_at = crashed_at = window_start = 0;
-    boot_known = data_said = lent_seen = false;
+    boot_known = data_said = lent_seen = shell_seen = false;
     starting = true;
     crashed[0] = crash_why[0] = said[0] = '\0';
     memset(recent_at, 0, sizeof(recent_at));

@@ -78,6 +78,7 @@ static uint64_t marks_known, marks_upto;
 static const struct log_writers *writers;   /* init's table, mapped (NULL: none) */
 static bool log_off;               /* "nolog": the log is off the screen but on request */
 static bool catching_up;           /* reading the log from before we started */
+static bool log_whole = true;       /* the log read so far starts at the boot's first line */
 static uint64_t draw_from;         /* the catch-up draws no line that starts before this */
 static uint64_t drawn_lines;       /* lines the catch-up drew */
 
@@ -189,6 +190,7 @@ void klog_event(void)
         if (n <= 0)
             return;
         if (first != klog_pos) {
+            log_whole = log_whole && !catching_up;   /* the boot's first lines are gone */
             npartial = 0;
             mid_line = true;   /* the oldest text kept may start inside a line */
         }
@@ -280,7 +282,7 @@ int main(int argc, char **argv)
         printf("console: the kernel log so far: drew %lu lines of the last %lu KiB (of %lu "
                "KiB)%s\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
                (unsigned long)(end >> 10), draw_from ? "; `dmesg` shows the rest" : "");
-        notice_settle();
+        notice_settle(log_whole);
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
     }

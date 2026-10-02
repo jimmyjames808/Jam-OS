@@ -182,8 +182,9 @@ uint64_t notice_deadline(void);
 /* Announce what has settled; nothing while the log is shown. */
 void     notice_tick(bool shown);
 /* What was read so far is known (the log before the console started):
- * only what changes from now on is news. */
-void     notice_settle(void);
+ * only what changes from now on is news. whole_log: that log began at the
+ * boot's first line (it hasn't wrapped). */
+void     notice_settle(bool whole_log);
 /* For the selftest (selftest.c): the last notice put on the screen ("" if
  * none), and everything forgotten (no log lines from then on). */
 const char *notice_last(void);
