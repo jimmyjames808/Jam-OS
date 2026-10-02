@@ -870,7 +870,9 @@ that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
 the netdev service on the everyday boot, as the probe with `netprobe` and
 the send test with `netsend` ([TESTING.md](docs/TESTING.md#the-boot-menu)).
 The entry "Jam OS (no network)" boots with `vlan=off`, so every network
-driver starts without a VLAN and leaves its card alone.
+driver starts without a VLAN and leaves its card alone. kexec keeps the
+`vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and `net`,
+not the one-shot `netprobe` and `netsend`.
 
 ## Userland
 

@@ -19,6 +19,7 @@
 #include "dnsd.h"
 
 #define RETRY (1 * NS_PER_S)   /* a failed iface or wait_change is asked again after this */
+#define PACKETS_PER_TURN 32u   /* port packets taken a turn (each notes work) */
 
 struct dnsd D;
 
@@ -142,6 +143,29 @@ static uint64_t turn(status_t *st)
     return deadline;
 }
 
+/* Wait for the port until `deadline` (0: don't wait), then take what else
+ * is queued without waiting, PACKETS_PER_TURN at most: each packet only
+ * notes work, which the next turn does. OK, or the port's failure. */
+static status_t take_packets(uint64_t deadline)
+{
+    for (unsigned k = 0; k < PACKETS_PER_TURN; k++) {
+        struct port_packet p;
+        status_t st = jam_port_wait(D.port, k ? 0 : deadline, &p);
+        if (st == ERR_TIMED_OUT)
+            return OK;
+        if (st != OK)
+            return st;
+        uint32_t low = (uint32_t)(p.key & 0xff);
+        if (p.key == KEY_NET)
+            D.net_pending = true;
+        else if (low >= KEY_SOCK && low < KEY_SOCK + SOCK_SLOTS)
+            socks_packet(low - KEY_SOCK, (uint32_t)(p.key >> 8));
+        else
+            askers_packet(p.key);
+    }
+    return OK;
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -154,23 +178,17 @@ int main(int argc, char **argv)
         uint64_t deadline = turn(&st);
         if (st != OK)
             break;
+        /* Work left over (a budget ran out): look at the port without
+         * sleeping rather than skip it, so an asker that always has more
+         * never keeps the sockets' replies or the other askers unread (the
+         * service-loop rule: a busy client delays only itself). */
         if (D.net_pending || socks_pending() || askers_pending())
-            continue;
-        struct port_packet p;
-        st = jam_port_wait(D.port, deadline, &p);
-        if (st != OK && st != ERR_TIMED_OUT) {
+            deadline = 0;
+        st = take_packets(deadline);
+        if (st != OK) {
             printf("dns: its port failed (%s): ending\n", status_str(st));
             return 1;
         }
-        if (st != OK)
-            continue;
-        uint32_t low = (uint32_t)(p.key & 0xff);
-        if (p.key == KEY_NET)
-            D.net_pending = true;
-        else if (low >= KEY_SOCK && low < KEY_SOCK + SOCK_SLOTS)
-            socks_packet(low - KEY_SOCK, (uint32_t)(p.key >> 8));
-        else
-            askers_packet(p.key);
     }
     /* Its askers see ERR_PEER_CLOSED and ask the next resolver (svc_get). */
     printf("dns: netstack is gone: ending (init starts it again)\n");

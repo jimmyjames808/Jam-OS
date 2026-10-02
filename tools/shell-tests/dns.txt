@@ -38,7 +38,7 @@ type \x03
 wait host: slow.jam: stopped
 wait jam>
 send run dnstest
-wait 60 dnstest: 4 passed, 0 failed
+wait 60 dnstest: 5 passed, 0 failed
 wait jam>
 send kill netstack
 wait 10 init: bin/netstack was killed

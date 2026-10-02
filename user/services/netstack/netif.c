@@ -15,6 +15,8 @@
 #include "stack.h"
 
 #define TO_STACK_BITS (NETDEV_SIG_RX | NETDEV_SIG_TX_ROOM | NETDEV_SIG_LINK)
+#define LINK_LINES    12   /* link changes logged in full ... */
+#define LINK_EVERY    64   /* ... then one in this many */
 
 static uint8_t rxbuf[NETDEV_FRAME_MAX];   /* the frame being taken off the rx ring */
 
@@ -113,13 +115,21 @@ static void failed(struct dev *d, int32_t st)
     retry_later(d);
 }
 
+/* The link as the driver says it. A change is logged as the drivers log
+ * theirs: the first LINK_LINES, then one in LINK_EVERY (a flapping cable
+ * mustn't fill the log, which netlog sends on). */
 static void set_link(struct dev *d, uint32_t link, uint32_t speed)
 {
     bool up = link & NETDEV_LINK_UP;
-    if (up && (!d->link_up || speed != d->rep.speed))
-        nstack_log("link up, %u Mb/s", speed);
-    else if (!up && d->link_up)
-        nstack_log("link down");
+    bool news = up ? !d->link_up || speed != d->rep.speed : d->link_up;
+    unsigned n = news ? d->link_lines++ : 0;
+    if (news && (n < LINK_LINES || n % LINK_EVERY == 0)) {
+        const char *more = n == LINK_LINES - 1 ? " (further changes: one line in 64)" : "";
+        if (up)
+            nstack_log("link up, %u Mb/s%s", speed, more);
+        else
+            nstack_log("link down%s", more);
+    }
     d->link_up = up;
     d->rep.speed = up ? speed : 0;
     stack_set_link(up);

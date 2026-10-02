@@ -757,6 +757,7 @@ static const struct {
     { "netctl_process", t_netctl_process },
     { "ipv4_text", t_ipv4_text },
     { "netdrv_ping_and_link", t_netdrv_ping_and_link },
+    { "netdrv_link_flap", t_netdrv_link_flap },
     { "netdrv_restart", t_netdrv_restart },
     { "netdrv_hostile_driver", t_netdrv_hostile_driver },
     { "netsock_udp", t_netsock_udp },
@@ -765,6 +766,8 @@ static const struct {
     { "netsock_limits", t_netsock_limits },
     { "netsock_hostile", t_netsock_hostile },
     { "netsock_slow_reader", t_netsock_slow_reader },
+    { "netsock_busy_client", t_netsock_busy_client },
+    { "netsock_len_lies", t_netsock_len_lies },
     { "netsock_dhcp", t_netsock_dhcp },
 };
 

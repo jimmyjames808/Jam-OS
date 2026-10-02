@@ -276,6 +276,122 @@ bool t_netsock_slow_reader(void)
     return true;
 }
 
+/* ---- a datagram longer than it can be (M9-REVIEW item 5) ----------------------------- */
+
+/* The sock_recv request s armed, read off the far end: its txid. */
+static bool recv_asked(handle_t far, uint32_t *txid)
+{
+    struct net_sock_recv_req q;
+    uint32_t n = 0, nh = 0;
+    CHECK_ST(drv_channel_read(far, &q, sizeof(q), &n, NULL, 0, &nh), OK);
+    CHECK(n == sizeof(q) && q.ordinal == NET_SOCK_RECV);
+    *txid = q.txid;
+    return true;
+}
+
+static bool recv_answer(handle_t far, uint32_t txid, uint16_t len)
+{
+    static struct net_sock_recv_rep r;
+    r = (struct net_sock_recv_rep){ .txid = txid, .status = OK, .address = PEER_IP,
+                                    .port = 4000, .len = len };
+    CHECK_ST(drv_channel_write(far, &r, sizeof(r), NULL, 0), OK);
+    return true;
+}
+
+/* libos's net_sock_take over a hand-made netstack: a reply saying more
+ * bytes than a datagram holds (1472) is refused, so a caller never reads
+ * past d->data; the socket then goes on. (net_recvfrom shares the check.) */
+bool t_netsock_len_lies(void)
+{
+    handle_t near, far;
+    struct net_sock s;
+    uint32_t txid;
+    CHECK_ST(jam_channel_create(&near, &far), OK);
+    net_sock_adopt(&s, near, 7000);
+    CHECK_ST(net_recv_arm(&s), OK);
+    CHECK(recv_asked(far, &txid));
+    CHECK(recv_answer(far, txid, NET_DGRAM_MAX + 1));
+    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
+    CHECK_ST(net_recv_arm(&s), OK);   /* as a caller does after a failed receive */
+    CHECK(recv_asked(far, &txid));
+    CHECK(recv_answer(far, txid, NET_DGRAM_MAX));
+    CHECK_ST(net_sock_take(&s, &dg), OK);
+    CHECK_EQ(dg.len, NET_DGRAM_MAX);
+    CHECK(recv_asked(far, &txid));   /* armed again by the take */
+    CHECK(recv_answer(far, txid, 0xffff));
+    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
+    net_close(&s);
+    jam_handle_close(far);
+    return true;
+}
+
+/* ---- a busy client (M9-REVIEW item 1) ------------------------------------------------ */
+
+struct flooder {
+    handle_t ch;            /* its opener channel */
+    volatile bool stop;
+    uint64_t written;       /* requests it got onto the channel */
+};
+
+/* Keep ch full of `counts` requests, written without waiting; replies
+ * read and dropped so they never back up. */
+static void flood(void *arg)
+{
+    struct flooder *fl = arg;
+    uint32_t txid = 0x70000000u;
+    while (!fl->stop) {
+        if (net_counts_send(fl->ch, ++txid) == OK) {
+            fl->written++;
+            continue;
+        }
+        _Alignas(8) uint8_t rep[NET_REP_MAX];
+        struct idl_msg m;
+        while (idl_reply_read(fl->ch, rep, sizeof(rep), &m) != ERR_SHOULD_WAIT)
+            idl_msg_drop(&m);   /* the channel was full: make room */
+    }
+}
+
+/* One opener that always has requests waiting holds up nobody else: the
+ * other opener's calls and the card's frames are answered meanwhile (the
+ * service-loop rule). netstack used to skip its port wait while any
+ * channel had work left, so it never learnt of another channel's request
+ * or a frame while the flood went on. */
+bool t_netsock_busy_client(void)
+{
+    static uint8_t stack[16384] __attribute__((aligned(16)));
+    struct flooder fl = { 0 };
+    handle_t b, th;
+    uint32_t addr, mask, gw, d1, d2, speed, version;
+    uint8_t mac[6], device, link;
+    uint16_t vlan;
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));
+    CHECK(opener(&fl.ch));
+    CHECK(opener(&b));
+    CHECK_ST(thread_spawn("flooder", flood, &fl, stack, sizeof(stack), &th), OK);
+    while (fl.written < 4 * 64)   /* well past a turn's budget: the flood is on */
+        jam_nanosleep(now() + NS_PER_MS);
+    for (uint32_t i = 0; i < 5; i++) {
+        uint64_t t0 = now();
+        CHECK_ST(net_iface_until(b, now() + NETDRV_WAIT, &addr, &mask, &gw, &d1, &d2, mac, &device,
+                                 &link, &vlan, &speed, &version), OK);
+        CHECK(now() - t0 < 500 * NS_PER_MS);
+        CHECK_EQ(addr, OUR_IP);
+        CHECK(netdrv_ping(2 + i, false));   /* frames in and out go on too */
+    }
+    uint64_t before = fl.written;
+    jam_nanosleep(now() + 50 * NS_PER_MS);
+    CHECK(fl.written > before);   /* still flooding: it was served meanwhile, not starved */
+    fl.stop = true;
+    signals_t seen;
+    CHECK_ST(jam_object_wait_one(th, SIG_TERMINATED, now() + NETDRV_WAIT, &seen), OK);
+    jam_handle_close(th);
+    jam_handle_close(fl.ch);
+    jam_handle_close(b);
+    CHECK(netdrv_stop());
+    return true;
+}
+
 /* ---- netctl's DHCP socket ----------------------------------------------------------- */
 
 /* The next frame: the DHCP socket's broadcast from 0.0.0.0:68 to

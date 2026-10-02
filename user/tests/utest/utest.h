@@ -260,6 +260,7 @@ bool t_ipv4_text(void);
 /* netdrv.c: bin/netstack over a fake driver's netdev rings (netpkt.c's
  * frames, as netstack.c's). */
 bool t_netdrv_ping_and_link(void);
+bool t_netdrv_link_flap(void);
 bool t_netdrv_restart(void);
 bool t_netdrv_hostile_driver(void);
 /* netsock.c: programs' sockets and pings on /svc/net, through bin/netstack
@@ -271,6 +272,8 @@ bool t_netsock_iface(void);
 bool t_netsock_limits(void);
 bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
+bool t_netsock_busy_client(void);
+bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
