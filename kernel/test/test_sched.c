@@ -559,7 +559,7 @@ KTEST(starvation_boost_rescues_low_priority)
     thread_sleep_ms(20);   /* the hog owns the CPU before the low one arrives */
     struct thread *low = thread_create_on("kt-low", sb_low, NULL, PRIO_DEFAULT - 4, &m);
     uint64_t t0 = uptime_ns();
-    while (!sb_low_runs && uptime_ns() - t0 < 4000 * NS_PER_MS)
+    while (!sb_low_runs && uptime_ns() - t0 < kt_patience_ms(4000) * NS_PER_MS)
         thread_sleep_ms(10);
     uint64_t waited = uptime_ns() - t0, runs = sb_low_runs, boosts = sched_boost_count() - boosts0;
     sb_stop = true;
@@ -569,6 +569,7 @@ KTEST(starvation_boost_rescues_low_priority)
             (unsigned long)(waited / NS_PER_MS), (unsigned long)boosts);
     KT_ASSERT(runs > 0);
     KT_ASSERT(boosts > 0);
-    /* A boost comes within ~1-2 s (the checks run once a second). */
-    KT_ASSERT(waited < 3500 * NS_PER_MS);
+    /* A boost comes within ~1-2 s (the checks run once a second). Timing:
+     * under load the boosted thread still waits its turn behind the load. */
+    KT_IDLE_ASSERT(waited < 3500 * NS_PER_MS);
 }

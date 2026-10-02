@@ -46,12 +46,12 @@
  * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
  * `committed` and the charge move together. Its own table pages (mid and
  * leaf, `tables`) are charged the same way, one unit each from creation to
- * free (were they free, a job allowed 0 pages could make the kernel allocate
+ * free (uncharged, a job allowed 0 pages could make the kernel allocate
  * 128 MiB of leaf tables for one 64 GiB VMO). The page is
  * charged BEFORE any table is made for it, so a refused commit builds
  * nothing; if a table it needs is refused, the page's charge is undone.
- * Tables stay (charged) until shrink or destroy frees them, as before
- * (decommit leaves them). Contiguous VMOs are charged whole when the job is
+ * Tables stay (charged) until shrink or destroy frees them (decommit
+ * leaves them). Contiguous VMOs are charged whole when the job is
  * set. Kernel VMOs have no job. Physical VMOs own no memory: only their
  * struct (one handle unit) is ever charged.
  *
@@ -909,7 +909,13 @@ status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned v
     /* The range keeps every page in place, so the addresses looked up here
      * stay valid; map them in physically contiguous runs. */
     uint64_t pml4 = vmm_kernel_pml4();
-    uint64_t base = vmm_reserve((r->end - r->first) << PAGE_SHIFT);
+    uint64_t size = (r->end - r->first) << PAGE_SHIFT;
+    uint64_t base = vmm_reserve(size);
+    if (!vmm_prepare_kernel(base, size)) {   /* nothing mapped yet: give it all back */
+        vmm_release(base, size);
+        range_remove(v, r);
+        return ERR_NO_MEMORY;
+    }
     unsigned flags = vm_flags | v->cache | VM_GLOBAL | VM_SMALL;
     uint64_t run_va = base, run_pa = 0, run_len = 0;
     for (uint64_t idx = r->first; idx < r->end; idx++) {

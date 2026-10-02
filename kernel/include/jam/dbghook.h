@@ -20,6 +20,9 @@ enum {
                               are checked (arg: uint64_t *, CPUs that saw a stale mapping) */
     DBG_SCHED_PICKED,      /* schedule, the next thread taken off the run queue, before it is
                               marked running, rq held (arg: the thread, NULL: idle) */
+    DBG_CHANNEL_CARRIED,   /* channel.c send_msg, the carried handles checked, before the
+                              message is queued; pair lock held, interrupts off (arg: the
+                              sending endpoint) */
     DBG_N
 };
 

@@ -309,8 +309,10 @@ Every driver and service is a userspace process from the start.
   `(slot + 1) << 15 | generation` (17 + 15 bits; 0 is never valid); freed
   slots are reused FIFO so a stale value takes a long time to come back.
 - Rights: `READ WRITE EXEC MAP DUPLICATE TRANSFER SIGNAL WAIT INSPECT
-  MANAGE`. `RIGHT_SAME` is only a sentinel for duplicate/replace ("keep the
-  rights"). `MANAGE` (jobs only): change limits, kill.
+  MANAGE RESIZE`. `RIGHT_SAME` is only a sentinel for duplicate/replace ("keep the
+  rights"). `MANAGE` (jobs only): change limits, kill. `RESIZE` (VMOs, with
+  `WRITE`): change the size, decommit; a service that maps a buffer it
+  shares hands the other side a handle without it.
 - Sending handles uses **in-transit slots**: `handle_take` reserves the slot,
   then `handle_commit` (sent) or `handle_untake` (put back under the same
   value). A failed send never loses a handle.

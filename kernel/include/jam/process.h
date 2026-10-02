@@ -19,7 +19,8 @@
  * its handles are closed and its job has been credited for them, and its
  * address space is gone unless someone else still holds a vmar handle to
  * it. A process killed before it ever had a thread is torn down by its
- * killer.
+ * killer, and so is one whose last handle closed before it was started
+ * (it is DYING then, with nobody else to tear it down).
  *
  * Locking: each object's own lock (classes "process", "thread", "job").
  * "process" ranks above "runqueue" (kill cancels threads under it) and is
@@ -180,7 +181,8 @@ struct dbg_process_start {
  * `killed` says it was a kill, not an exit. Returns at once (the teardown
  * finishes asynchronously), except for a process with no threads, whose
  * teardown the caller does. Needs a context that may sleep. A no-op on a
- * process that is already dying. */
+ * process that is already dying, except a never-started one whose last
+ * handle closed: its teardown is still owed, and the caller does it. */
 void process_kill(struct process *p, int64_t code, bool killed);
 
 /* ---- user threads ---------------------------------------------------------- */

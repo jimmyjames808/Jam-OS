@@ -356,9 +356,9 @@ static bool check_open_files(const struct fatrun *r)
     return true;
 }
 
-/* The transfer buffer is the client's to map, and with its handle the
- * client can also shrink it to nothing: fat must answer the next read and
- * write with an error, not fall over it. */
+/* The transfer buffer is the client's to map and write, but its handle
+ * has no RIGHT_RESIZE: the client can't shrink or decommit it under fat,
+ * and fat goes on answering. */
 static bool check_shrunk_buffer(const struct fatrun *r)
 {
     uint8_t p[FS_PATH_MAX] = "/hello.txt";
@@ -367,9 +367,9 @@ static bool check_shrunk_buffer(const struct fatrun *r)
     uint32_t n = 0;
     CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, p, FS_READ | FS_WRITE, &ch, &vmo, &size),
              OK);
-    CHECK_ST(jam_vmo_set_size(vmo, 0), OK);
-    CHECK_ST(file_read_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
-    CHECK_ST(file_write_until(ch, now() + FAT_CALL_NS, 0, 2, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_vmo_set_size(vmo, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmo_decommit(vmo, 0, 4096), ERR_ACCESS_DENIED);
+    CHECK_ST(file_read_until(ch, now() + FAT_CALL_NS, 0, 2, &n), OK);
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(vmo), OK);
     CHECK_ST(t_stat(r, "/hello.txt", &size, NULL, NULL), OK);   /* fat is still there */

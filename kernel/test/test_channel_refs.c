@@ -5,13 +5,17 @@
  * overflowing the kernel stack. The audit* test names stay as they are:
  * tests are run by name. */
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/port.h>
+#include <jam/sched.h>
 #include <jam/sys.h>
+#include <jam/time.h>
+#include <jam/x86.h>
 
 #define CH(p) ((struct kobject *)(p))
 #define CRIGHTS (RIGHTS_BASIC | RIGHTS_IO)
@@ -66,6 +70,72 @@ KTEST(auditA3_channel_three_cycle_refused)
     khandle_release(&kc1);
     kprintf("auditA3: 3-cycle refused; live endpoints %lu -> %lu\n", live, channel_live_count());
     KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
+/* ---- the cycle check against a concurrent send ---------------------------- */
+
+/* Two sends at once, each carrying one endpoint into the other's queue
+ * (Y0 into X0's queue, X0 into Y0's): each checks the endpoint it carries
+ * before either has queued. Together they would make a 2-cycle, so one of
+ * them must be refused. The hook holds the first send between its check
+ * and its queueing until the second has finished (or 100 ms). */
+static struct channel *race_x1, *race_y1;   /* the two senders */
+static struct khandle race_kx0;             /* what the second send carries */
+static volatile int race_in_hook, race_b_done;
+static status_t race_b_st;
+
+static void race_hook(void *arg)
+{
+    if (arg != race_x1)
+        return;   /* not the test's first send */
+    __atomic_store_n(&race_in_hook, 1, __ATOMIC_RELEASE);
+    uint64_t end = uptime_ns() + 100 * NS_PER_MS;   /* interrupts are off here */
+    while (!__atomic_load_n(&race_b_done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        cpu_relax();
+}
+
+static void race_second(void *arg)
+{
+    (void)arg;
+    uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    while (!__atomic_load_n(&race_in_hook, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        cpu_relax();
+    race_b_st = channel_write(race_y1, "bbbb", 4, &race_kx0, 1);   /* X0 -> Y0's queue */
+    __atomic_store_n(&race_b_done, 1, __ATOMIC_RELEASE);
+}
+
+KTEST(channel_cycle_check_races_refused)
+{
+    if (cpu_count < 2)
+        return;   /* the two sends must run at the same time */
+    uint64_t live = channel_live_count();
+    struct channel *x0, *y0;
+    KT_EQ(channel_create(&x0, &race_x1), OK);
+    KT_EQ(channel_create(&y0, &race_y1), OK);
+    struct khandle kx1 = khandle_from_new(CH(race_x1), CRIGHTS);
+    struct khandle ky1 = khandle_from_new(CH(race_y1), CRIGHTS);
+    struct khandle ky0 = khandle_from_new(CH(y0), CRIGHTS);
+    race_kx0 = khandle_from_new(CH(x0), CRIGHTS);
+    race_in_hook = race_b_done = 0;
+    race_b_st = ERR_INTERNAL;
+    kt_pin_self(0);
+    cpumask_t m;
+    cpumask_one(&m, 1);
+    struct thread *t = thread_create_on("kt-cycle-race", race_second, NULL, PRIO_DEFAULT, &m);
+    __atomic_store_n(&dbg_hooks[DBG_CHANNEL_CARRIED], race_hook, __ATOMIC_RELEASE);
+    status_t a = channel_write(race_x1, "aaaa", 4, &ky0, 1);   /* Y0 -> X0's queue */
+    __atomic_store_n(&dbg_hooks[DBG_CHANNEL_CARRIED], NULL, __ATOMIC_RELEASE);
+    thread_join(t);
+    kt_unpin_self();
+    kprintf("channel cycle race: first send %s, second %s\n", status_str(a),
+            status_str(race_b_st));
+    KT_ASSERT(a == OK || race_b_st == OK);     /* the first to queue is fine */
+    KT_ASSERT(a != OK || race_b_st != OK);     /* both: a cycle nothing can free */
+    khandle_release(&kx1);
+    khandle_release(&ky1);
+    khandle_release(&ky0);       /* each a no-op if its send took it */
+    khandle_release(&race_kx0);
+    KT_GLOBAL_EQ(channel_live_count(), live);   /* no leak */
 }
 
 /* Legitimate: sending an endpoint whose queue holds only plain messages, or

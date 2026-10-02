@@ -20,8 +20,6 @@
 
 #define ELF_MAX_PHDRS 64   /* program headers we are willing to walk */
 
-#define ALIGN_DOWN(x, a) ((x) & ~((uint64_t)(a) - 1))
-
 /* The reason the ELF header is refused, or NULL; then *eh holds it. */
 static const char *check_header(const uint8_t *img, uint64_t size, struct elf64_ehdr *eh)
 {

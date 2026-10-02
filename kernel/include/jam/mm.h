@@ -114,8 +114,14 @@ void     vmm_init(const struct boot_info *bi);
 uint64_t vmm_kernel_pml4(void);
 /* Page tables come from the early allocator until this is called. */
 void     vmm_use_buddy(void);
-/* Map [va, va+len) to [pa, pa+len), using 2 MiB / 1 GiB pages when possible. */
+/* Map [va, va+len) to [pa, pa+len), using 2 MiB / 1 GiB pages when possible.
+ * Panics when out of memory for a page table: a mapping user code can ask
+ * for prepares its tables first (vmm_prepare_kernel). */
 void     vmm_map(uint64_t pml4, uint64_t va, uint64_t pa, uint64_t len, unsigned flags);
+/* Make every page table a VM_SMALL mapping of [va, va+len) in the kernel's
+ * tables needs, so vmm_map there allocates nothing. False when out of
+ * memory (the tables made before it stay, for the next mapping there). */
+bool     vmm_prepare_kernel(uint64_t va, uint64_t len);
 /* Unmap 4 KiB-mapped pages; does not free the physical pages. */
 void     vmm_unmap(uint64_t pml4, uint64_t va, uint64_t len);
 /* Physical address for va, or UINT64_MAX if unmapped. */

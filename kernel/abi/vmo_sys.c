@@ -1,10 +1,15 @@
-/* VMO operations on handles (the system calls' sys_* layer). */
+/* VMO operations on handles (the system calls' sys_* layer). Reading needs
+ * RIGHT_READ; writing and committing RIGHT_WRITE; resizing and decommitting
+ * RIGHT_WRITE | RIGHT_RESIZE, so a handle duplicated without RIGHT_RESIZE
+ * changes a buffer's contents but never takes pages out from under someone
+ * else's mapping of it. */
 #include <jam/handle.h>
 #include <jam/sys.h>
 #include <jam/sysinfo.h>
 #include <jam/vmo.h>
 
-#define VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP)
+#define VMO_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE)
+#define RESIZE_NEED (RIGHT_WRITE | RIGHT_RESIZE)
 
 /* On success *v holds a reference: vmo_put it. */
 static status_t vmo_get(struct handle_table *t, handle_t h, rights_t need, struct vmo **v)
@@ -90,7 +95,7 @@ status_t sys_vmo_get_size(struct handle_table *t, handle_t h, uint64_t *size)
 status_t sys_vmo_set_size(struct handle_table *t, handle_t h, uint64_t size)
 {
     struct vmo *v;
-    status_t st = vmo_get(t, h, RIGHT_WRITE, &v);
+    status_t st = vmo_get(t, h, RESIZE_NEED, &v);
     if (st != OK)
         return st;
     st = vmo_set_size(v, size);
@@ -109,10 +114,10 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset, uin
     return st;
 }
 
-/* The handle is swapped for one that may execute and not write, then the
- * VMO is checked: if this is its one handle and nothing maps or pins it,
- * nothing can change it from now on (writing, mapping writable, resizing
- * and decommitting all need RIGHT_WRITE). Checked after the swap, so a
+/* The handle is swapped for one that may execute and not write (nor
+ * resize), then the VMO is checked: if this is its one handle and nothing
+ * maps or pins it, nothing can change it from now on (writing, mapping
+ * writable, resizing and decommitting all need RIGHT_WRITE). Checked after the swap, so a
  * duplicate made meanwhile by another thread counts as a second handle
  * (refused) instead of slipping past with RIGHT_WRITE. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
@@ -127,7 +132,7 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
     struct khandle kh;
     st = handle_remove(t, h, &kh);
     if (st == OK) {
-        kh.rights = (kh.rights & ~RIGHT_WRITE) | RIGHT_EXEC;
+        kh.rights = (kh.rights & ~(RIGHT_WRITE | RIGHT_RESIZE)) | RIGHT_EXEC;
         st = handle_insert(t, &kh, out);
         if (st != OK)
             khandle_release(&kh);
@@ -143,7 +148,7 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len)
 {
     struct vmo *v;
-    status_t st = vmo_get(t, h, RIGHT_WRITE, &v);
+    status_t st = vmo_get(t, h, RESIZE_NEED, &v);
     if (st != OK)
         return st;
     st = vmo_decommit(v, offset, len);

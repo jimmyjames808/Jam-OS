@@ -73,3 +73,43 @@ KTEST(vmap_ranges_merge)
     vmm_release(b, BIG);
     vmm_release(a, BIG);
 }
+
+/* vmo_map_kernel with no memory left for the page tables its range needs
+ * (kexec_load can ask for one): ERR_NO_MEMORY with nothing left mapped or
+ * recorded, not a panic. A 2 GiB physical VMO needs no pages of its own,
+ * only about a thousand page tables, and no earlier mapping made them. */
+KTEST(vmap_map_out_of_tables_fails)
+{
+    KT_SKIP_LIVE("takes every free page");
+    KT_OWN_LEAK_CHECK("page tables made before the failure stay, for the next mapping there");
+    enum { SPARE = 2 };   /* pages left free: for the range's record, then a table or two */
+    struct vmo *v;
+    KT_EQ(vmo_create_physical(1ull << 45, 2ull << 30, VM_UC, &v), OK);
+    uint64_t free0 = kt_free_pages_settled(), tables0 = vmm_kernel_table_pages();
+    struct page *chain = NULL, *p;
+    while ((p = pmm_alloc_pages(0, 0))) {
+        p->private = (uint64_t)chain;
+        chain = p;
+    }
+    for (int i = 0; i < SPARE && chain; i++) {
+        struct page *next = (struct page *)chain->private;
+        chain->private = 0;
+        pmm_free_pages(chain, 0);
+        chain = next;
+    }
+    void *va = NULL;
+    status_t st = vmo_map_kernel(v, 0, 2ull << 30, 0, &va);
+    while (chain) {
+        struct page *next = (struct page *)chain->private;
+        chain->private = 0;
+        pmm_free_pages(chain, 0);
+        chain = next;
+    }
+    KT_EQ(st, ERR_NO_MEMORY);
+    uint64_t made = vmm_kernel_table_pages() - tables0;
+    KT_ASSERT(made <= SPARE);
+    kobject_unref(vmo_kobject(v));   /* panics if a range were left recorded */
+    /* Nothing kept but those tables. (Running out may also make others
+     * give pages back, such as empty slabs: more free pages is fine.) */
+    KT_ASSERT(kt_free_pages() + made >= free0);
+}

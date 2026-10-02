@@ -31,6 +31,10 @@ typedef uint32_t rights_t;
 #define RIGHT_INSPECT   (1u << 8)
 #define RIGHT_MANAGE    (1u << 9)   /* jobs: change limits, kill everything in it */
 #define RIGHT_SLICE     (1u << 10)  /* resources: make a smaller resource inside this one */
+/* VMOs: change the size or decommit pages (with RIGHT_WRITE). A service
+ * that maps a buffer it shares hands the other side a handle without it,
+ * so the buffer can't shrink under the mapping. */
+#define RIGHT_RESIZE    (1u << 19)
 /* Powers over the whole system, on the root resource (RES_ROOT) only: each
  * call that needs one checks for it alone, so a program is given exactly
  * the powers it uses (a slice never has them). */

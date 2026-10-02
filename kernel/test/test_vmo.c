@@ -8,6 +8,7 @@
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
+#include <jam/time.h>
 #include <jam/vmo.h>
 
 #define PG PAGE_SIZE
@@ -593,8 +594,11 @@ KTEST(vmo_concurrent_writers)
  * exceeds the VMO size. It does not directly observe writes to freed pages --
  * the write/read pairing is the proxy: a write that landed on a page freed
  * under it would, once that page is reused, read back as neither the value
- * nor zero and trip dc_bad. */
-enum { DC_THREADS = 6, DC_ITERS = 3000 };
+ * nor zero and trip dc_bad. The workers go on past DC_ITERS, yielding,
+ * until the decommitter has had DC_MIN_DECOMMITS turns: on one CPU (or a
+ * busy machine) they would otherwise finish inside their own time slices
+ * before it ran at all, and the race would not happen. */
+enum { DC_THREADS = 6, DC_ITERS = 3000, DC_MIN_DECOMMITS = 11 };
 static volatile int dc_done;
 static volatile int dc_bad, dc_decommits;
 
@@ -603,11 +607,17 @@ static void dc_worker(void *arg)
     uint32_t i = (uint32_t)(uintptr_t)arg;
     uint64_t off = (i % 2) * PG + (i / 2) * 64 + 8;   /* spread over both pages */
     cw_wait_start();
-    for (uint64_t k = 1; k <= DC_ITERS; k++) {
+    uint64_t end = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (uint64_t k = 1;; k++) {
+        bool raced = __atomic_load_n(&dc_decommits, __ATOMIC_RELAXED) >= DC_MIN_DECOMMITS;
+        if (k > DC_ITERS && (raced || uptime_ns() >= end))
+            break;
         uint64_t val = ((uint64_t)i << 32) | k, seen;
         if (vmo_write(cw_vmo, off, &val, 8) != OK || vmo_read(cw_vmo, off, &seen, 8) != OK ||
             (seen != val && seen != 0))
             __atomic_add_fetch(&dc_bad, 1, __ATOMIC_RELAXED);
+        if (k > DC_ITERS)
+            thread_yield();   /* let the decommitter catch up */
     }
     __atomic_add_fetch(&dc_done, 1, __ATOMIC_RELEASE);
 }
@@ -642,7 +652,7 @@ static void dc_round(void)
     for (uint32_t i = 0; i <= DC_THREADS; i++)
         thread_join(ts[i]);
     KT_EQ(dc_bad, 0);
-    KT_ASSERT(dc_decommits > 10);   /* the race really ran */
+    KT_ASSERT(dc_decommits >= DC_MIN_DECOMMITS);   /* the race really ran */
     KT_ASSERT(vmo_committed(cw_vmo) <= 2 * PG);
     put(cw_vmo);
 }
@@ -682,7 +692,7 @@ KTEST(vmo_sys_rights)
     struct kobject *obj;
     rights_t r;
     KT_EQ(handle_get(&t, h, OBJ_VMO, 0, &obj, &r), OK);
-    KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP);
+    KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE);
     kobject_unref(obj);
 
     uint8_t in[16], out[16];
@@ -704,8 +714,22 @@ KTEST(vmo_sys_rights)
     KT_EQ(sys_vmo_get_size(&t, ro, &size), OK);
     KT_EQ(size, 3 * PG);
 
+    /* Writing without RIGHT_RESIZE: the contents, never the size or the
+     * pages (what a service hands a client for a buffer it maps itself). */
+    handle_t wn;
+    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE | RIGHT_READ | RIGHT_MAP, &wn), OK);
+    KT_EQ(sys_vmo_write(&t, wn, 0, in, 1), OK);
+    KT_EQ(sys_vmo_commit(&t, wn, 0, PG), OK);
+    KT_EQ(sys_vmo_set_size(&t, wn, PG), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_decommit(&t, wn, 0, PG), ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&t, wn), OK);
+    KT_EQ(handle_duplicate(&t, h, RIGHT_RESIZE, &wn), OK);   /* and resizing needs both */
+    KT_EQ(sys_vmo_set_size(&t, wn, PG), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_decommit(&t, wn, 0, PG), ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&t, wn), OK);
+
     /* Write-only handle. */
-    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE, &wo), OK);
+    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE | RIGHT_RESIZE, &wo), OK);
     KT_EQ(sys_vmo_read(&t, wo, 0, out, 1), ERR_ACCESS_DENIED);
     KT_EQ(sys_vmo_write(&t, wo, 0, in, 1), OK);
     KT_EQ(sys_vmo_commit(&t, wo, 0, 3 * PG), OK);
