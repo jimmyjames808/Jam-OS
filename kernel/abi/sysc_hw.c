@@ -15,7 +15,7 @@
  *                          it OFF (on is the current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
  *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
- *                          current cap
+ *                          current cap; on 0 or 1
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
  *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
  *                          the one the pin was made with)
@@ -237,11 +237,13 @@ status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enabl
 
 status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on)
 {
+    if (on > 1)
+        return ERR_INVALID_ARGS;   /* on (1) or off (0): nothing else means either */
     struct kobject *cap;
     status_t st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
     if (st != OK)
         return st;
-    st = dma_cap_bus_master(cap, on != 0);
+    st = dma_cap_bus_master(cap, on == 1);
     kobject_unref(cap);
     return st;
 }

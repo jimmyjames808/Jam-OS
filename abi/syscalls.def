@@ -207,7 +207,8 @@
 # function's CURRENT cap may (the last one made for it: making one turns
 # bus mastering off, ERR_BAD_STATE for an older one); a driver turns it on
 # once it has quiesced its device (reset it, or seen its DMA engine idle),
-# never before. Any rights on the handle. ERR_NOT_SUPPORTED: an unbound cap.
+# never before. Any rights on the handle. ERR_NOT_SUPPORTED: an unbound cap;
+# ERR_INVALID_ARGS: `on` neither 0 nor 1.
 120 dma_cap_bus_master status   handle_t dma, uint32_t on
 # channel_write, but handle i arrives with rights[i] (a subset of its
 # rights, else ERR_INVALID_ARGS; RIGHT_SAME keeps them): e.g. without
