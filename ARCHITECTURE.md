@@ -1108,7 +1108,8 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   the boot splash (once; the shell waits for it), serialin, devmgr, the
   mixer, the music player, netstack, dhcp (without a static address), dns,
   logd (once `/data` is there), netlog (when `net.host` is set), sntp
-  (once `/data` is there, unless `ntp = off`) and the shell, restarting
+  (once `/data` is there, unless `ntp = off`), the file server (`serve`,
+  after netstack) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
   on, except the console and the shell, which nobody could do without
@@ -1122,12 +1123,13 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
   listen permission, `net-sys`, the same for the network's services
-  ([Networking](#networking)), and `dns`, the resolver,
-  each a channel per opener). The services it starts
+  ([Networking](#networking)), `dns`, the resolver, and `serve`, the file
+  server, each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
-  mixer; they are sent every later change (a mount gone, or back with a
+  mixer, the file server `/svc/net` and `/svc/net-listen` (no mount: the
+  shell hands it each file); they are sent every later change (a mount gone, or back with a
   new service, a new devmgr's channels), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
   `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,

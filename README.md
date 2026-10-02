@@ -76,8 +76,10 @@ a real desktop PC, which is where every milestone is tested.
   settings, names from DNS, `ping` and `host`, UDP sockets for programs
   (their list asks for `svc net`, and `svc dns` for names), the boot log
   sent to the Mac as it is written, and `update` to run the Mac's newest
-  build, signed with the owner's key, without moving the stick
-  ([below](#the-network)). `version`
+  build, signed with the owner's key, without moving the stick; files
+  over plain HTTP both ways (`fetch` from a web server, `serve` a file in
+  the background) and a throughput tester (`speed`, with
+  `tools/speed.py` on the Mac) ([below](#the-network)). `version`
   names the git commit a build was made from.
 
 Not yet: the network signed off on the PC (everything but DHCP has run
@@ -164,6 +166,9 @@ the everyday entry "Jam OS" is on the network; "Jam OS (no network)"
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
 | `update [-n \| -w] [-f] [address]` | fetch the build the Mac serves, have init check its signature and files, and reboot into it; `-n` fetches and checks only; `-w` has init write it to the stick too; `-f` takes a build whose network default isn't this one's |
+| `fetch <url> [file \| -]` | download a file over plain HTTP (`http://` only: https needs TLS, which Jam OS doesn't have yet), into the URL's last name here, a file or a folder, or a pipe |
+| `serve [<file> [port] \| stop [port]]` | serve one file over HTTP in the background (port 8080 unless given); alone, what is served; `stop`, stop it |
+| `speed <host> [port] [-r \| -u] [-t s]`, `speed -l [port]` | network throughput against `tools/speed.py` on the Mac, either way, TCP or UDP |
 
 The settings, in `/data/etc/settings` on the stick (edit `etc/settings`
 on the Mac, or in Jam OS), for example:
@@ -186,6 +191,55 @@ asks the time (SNTP, UDP port 123) and sets the clock, then asks again
 every hour; `date -r` says whether the clock came from the network or
 from the PC's real-time clock, and the log has a line with how far off
 the clock was ([ARCHITECTURE.md](ARCHITECTURE.md#time-and-settings)).
+
+**Files and speed over the network** (TCP; the PC's address is in `net`,
+10.2.21.241 on the owner's network, and the Mac's here is 10.2.21.174):
+
+- **A file from the Mac.** In a folder on the Mac,
+  `python3 -m http.server 8000` (any web server will do); on the PC,
+  `cd /data` (`/boot` is read-only), then
+  `fetch http://10.2.21.174:8000/<file>`. A name works as well as an
+  address. fetch says the size, a progress line every 2 s, and at the end
+  the bytes, the time and the speed (MB/s, 10^6 bytes a second). The file
+  is written as `<file>.part` and renamed once it is whole, so a fetch
+  that fails or is stopped (Ctrl+C) leaves nothing. It follows up to 3
+  redirects (to `http://` only) and takes Content-Length, chunked and
+  until-closed bodies; a head over 16 KiB, no whole head in 20 s or a body
+  silent for 30 s ends it (exit 1). `fetch <url> | head` writes into the
+  pipe (at most 4 MiB, the pipe's size). Into a file, the speed is the
+  stick's writing speed.
+- **A file to the Mac.** On the PC `serve /data/big.bin` (port 8080;
+  `serve /data/big.bin 9000` for another, 1024 and up). It serves in the
+  background (bin/serve, a service init runs), so the shell is free at
+  once. On the Mac:
+
+  ```sh
+  curl http://10.2.21.241:8080/ -o big.bin
+  ```
+
+  Every path gets that file and nothing else: no folder listing, nothing
+  from the request is ever opened (GET and HEAD, one byte range, so
+  `curl -C -` resumes; a browser works too). Up to 4 files on 4 ports and
+  24 clients at once (16 a file), each cut off after 30 s without
+  progress; each request is a line in the log. `serve` alone lists what is
+  served (file, port, clients, requests, bytes sent); `serve stop` stops
+  everything, `serve stop 9000` one. bin/serve holds the listen
+  permission (`svc net listen` in its list) and no mount: the shell
+  opens the file and hands it over.
+- **Throughput.** On the Mac, from the repository:
+
+  ```sh
+  python3 tools/speed.py server
+  ```
+
+  (TCP and UDP port 5201; allow incoming connections if macOS asks). On
+  the PC: `speed 10.2.21.174` (it sends for 5 s; `-t 10` for 10),
+  `speed 10.2.21.174 -r` (the Mac sends), `speed 10.2.21.174 -u` (UDP
+  datagrams to the Mac, the lost ones counted). The other way round: on
+  the PC `speed -l`, then on the Mac
+  `python3 tools/speed.py client 10.2.21.241` (it sends) and
+  `python3 tools/speed.py client 10.2.21.241 -r` (the PC sends). Both
+  sides say MB/s and Mbit/s.
 
 **The log on the Mac.** With `net.host` set, netlog sends each boot's
 whole log, from its first line, over UDP to that address (port 5021), and
