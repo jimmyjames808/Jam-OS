@@ -34,6 +34,14 @@
 #define MIXER_FRAME      4u            /* bytes: left, right */
 #define MIXER_RING_HDR   4096u         /* the header page; the frames follow */
 #define MIXER_MAX_STREAMS 16u
+/* Streams one opener of /svc/audio may hold at once (each opener has a
+ * channel of its own; libos's svc_get keeps one per program). Four is more
+ * than any program uses (play, beep, the music player and the splash
+ * each hold one; a game's music and its effects would be two or three),
+ * and four programs at their cap still leave nobody short of the 16. A
+ * program that opens /svc/audio again gets another four: the cap stops a
+ * runaway loop over the library, not a program set on taking them all. */
+#define MIXER_STREAMS_PER_CLIENT 4u
 #define MIXER_RING_MAGIC 0x474e524du   /* "MRNG" */
 
 #define MIXER_SIG_SPACE  (1u << 24)    /* SIG_USER_ALL bits of the event */
@@ -89,7 +97,7 @@ struct mixer_stream {
  * `vol` (up to 15 characters), and map its ring. Waits for the mixer
  * until deadline (a restarting mixer answers late). Errors: audio.idl's
  * open_output's (ERR_NOT_FOUND: no audio output; ERR_NO_RESOURCES: too
- * many streams), ERR_BAD_STATE for a ring that isn't the mixer's layout,
+ * many streams, in all or on svc), ERR_BAD_STATE for a ring that isn't the mixer's layout,
  * the map's. */
 status_t mixer_open(handle_t svc, const char *name, uint64_t deadline, struct mixer_stream *s);
 /* Copy up to n frames (interleaved s16) into the ring, as many as there

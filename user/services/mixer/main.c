@@ -1,12 +1,14 @@
 /* mixer: every program's sound through the one output stream of the HD
  * Audio driver (docs/A2-PLAN.md). init starts it in shell mode, after
  * devmgr, with
- *   SR_DEVMGR_AUDIO  devmgr's audio channel (a client end): the one that
- *                 hands out the hda driver's channel (GET_SERVICE; the
- *                 query channel refuses it, <devmgr.h>), so the mixer is
- *                 the driver's only client but for the tests; its closing
- *                 (devmgr died, with every driver) ends the mixer, and init
- *                 starts it again with the new devmgr's
+ *   SR_DEVMGR_DEVICE  devmgr's device channel for each HD Audio
+ *                 controller (client ends, one handle each, at most
+ *                 MIXER_CARDS; none without one): each answers about its
+ *                 device alone, and the query channel won't hand a driver's
+ *                 channel out while its device has one (<devmgr.h>), so the
+ *                 mixer is the drivers' only client but for the tests. The
+ *                 first one's closing (devmgr died, with every driver) ends
+ *                 the mixer, and init starts it again with the new devmgr's
  *   SR_AUDIO      the server end of the `audio` channel (abi/idl/audio.idl)
  *   SR_AUDIO_CTL  the server end of the `audioctl` channel
  * init keeps a duplicate of both server ends, so a restarted mixer serves
@@ -35,6 +37,7 @@ static void packet(struct mixer *m, const struct port_packet *p)
 {
     uint32_t low = (uint32_t)(p->key & 0xff);
     struct stream *s;
+    struct client *c;
     if (p->key == KEY_SVC) {
         m->svc_pending = true;
     } else if (p->key == KEY_CTL) {
@@ -46,6 +49,8 @@ static void packet(struct mixer *m, const struct port_packet *p)
     } else if (low == KEY_OUT) {
         if (m->out.ch && (uint32_t)(p->key >> 8) == m->out.gen)
             m->out.pending = true;
+    } else if (low >= KEY_CLIENT && (c = clients_keyed(m, p->key)) != NULL) {
+        c->pending = true;
     } else if (low >= KEY_EVENT && (s = keyed(m, p->key, KEY_EVENT)) != NULL) {
         stream_event(m, s);
     } else if (low >= KEY_STREAM && (s = keyed(m, p->key, KEY_STREAM)) != NULL) {
@@ -55,7 +60,7 @@ static void packet(struct mixer *m, const struct port_packet *p)
 
 static bool anything_pending(const struct mixer *m)
 {
-    if (m->svc_pending || m->ctl_pending || m->out.pending)
+    if (m->svc_pending || m->ctl_pending || m->out.pending || clients_pending(m))
         return true;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->s[i].used && m->s[i].pending)
@@ -69,6 +74,7 @@ static void serve_all(struct mixer *m)
         serve_svc(m);
     if (m->ctl_pending)
         serve_ctl(m);
+    clients_serve(m);
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->s[i].used && m->s[i].pending)
             serve_stream(m, &m->s[i]);
@@ -78,7 +84,12 @@ static void serve_all(struct mixer *m)
 
 static status_t setup(struct mixer *m)
 {
-    m->devmgr = startup_handle(SR_DEVMGR_AUDIO);
+    for (unsigned i = 0; i < startup_handle_count(); i++) {
+        uint32_t role;
+        handle_t h = startup_handle_at(i, &role);
+        if (role == SR_DEVMGR_DEVICE && m->ncards < MIXER_CARDS)
+            m->cards[m->ncards++] = h;
+    }
     m->svc = startup_handle(SR_AUDIO);
     m->ctl = startup_handle(SR_AUDIO_CTL);
     if (!m->svc || !m->ctl) {
@@ -92,8 +103,8 @@ static status_t setup(struct mixer *m)
     if (st == OK)
         st = jam_port_bind(m->port, m->ctl, KEY_CTL, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
-    if (st == OK && m->devmgr)
-        st = jam_port_bind(m->port, m->devmgr, KEY_DEVMGR, SIG_PEER_CLOSED, PORT_BIND_ONCE);
+    if (st == OK && m->ncards)   /* they all end with devmgr: one is enough to watch */
+        st = jam_port_bind(m->port, m->cards[0], KEY_DEVMGR, SIG_PEER_CLOSED, PORT_BIND_ONCE);
     if (st != OK) {
         printf("mixer: can't set up its port (%s)\n", status_str(st));
         return st;

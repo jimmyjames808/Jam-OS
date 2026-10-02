@@ -32,8 +32,11 @@
 #define RUN_TIMEOUT_S 240   /* per program */
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
- * "Trust"); the programs init runs are the test suites: they get both. */
+ * "Trust"); the programs init runs are the test suites: they get both.
+ * devmgr_hda: the sound cards' device channels, made as in shell mode and
+ * kept (no mixer runs here), so the query channel never hands hda out. */
 static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
+static handle_t devmgr_hda[INIT_MAX_CLAIMED];
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 bool init_hidboot;
@@ -205,7 +208,7 @@ static bool start_devmgr(handle_t console)
     /* The programs we run reach it through our namespace. */
     handle_t dq = HANDLE_INVALID, dc = HANDLE_INVALID;
     if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
-        (void)ns_svc_set(SVC_DEVMGR, dq, false);   /* without it: the tests skip devmgr's */
+        (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
     if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
         (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
     /* Wait for its first binding pass. */
@@ -217,6 +220,7 @@ static bool start_devmgr(handle_t console)
         return false;
     }
     printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    (void)services_claim_class(devmgr_ch, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
     /* Its mounts, as they come: a program gets those there when it starts. */
     handle_t watch;
     st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &watch);
@@ -235,6 +239,10 @@ static bool stop_devmgr(void)
     (void)ns_svc_remove(SVC_DEVMGR_CTL);
     jam_handle_close(devmgr_q);
     jam_handle_close(devmgr_ch);
+    for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
+        if (devmgr_hda[k])
+            jam_handle_close(devmgr_hda[k]);
+    memset(devmgr_hda, 0, sizeof(devmgr_hda));
     devmgr_ch = devmgr_q = HANDLE_INVALID;
     mounts_unwatch();   /* its last control client gone: it stops its drivers, exits */
 

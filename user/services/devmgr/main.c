@@ -1,8 +1,9 @@
 /* devmgr: binds drivers to PCI functions and keeps them running
  * (supervise.c). A process in bootfs (bin/devmgr) that init
  * starts with a RES_PCI resource (SR_RESOURCE) sliced from the root, and
- * the server end of its channel (SR_DEVMGR; the protocol, and the
- * reconnect rule its clients follow, are in <devmgr.h>).
+ * the server ends of its control and query channels (SR_DEVMGR_CTL,
+ * SR_DEVMGR; chans.c serves them and the channels made from them; the
+ * protocol, and the reconnect rule its clients follow, are in <devmgr.h>).
  *
  * It enumerates every function (pci_enum), matches each against the table
  * below and, for every match whose driver ELF is in bootfs, wakes the
@@ -60,8 +61,8 @@
  * filesystem service on its ESP and its data partition, supervised the
  * same way, and hands their channels out through DEVMGR_MOUNTS (mounts.c).
  *
- * It runs until every client end of its channel is gone (init closes its
- * own at the end of the boot): then it closes each driver's client end,
+ * It runs until every client end of its control channel is gone (init
+ * closes its own at the end of the boot): then it closes each driver's client end,
  * waits for the drivers to return, kills any that don't, and exits 0 if
  * every driver ended cleanly with its job at zero and nothing crashed or
  * was given up on meanwhile. */
@@ -77,28 +78,26 @@ static const struct {
     uint16_t    vendor, device;   /* PCI ids, 0xffff: any */
     uint32_t    class_code;       /* class << 16 | subclass << 8 | prog_if, or ANY_CLASS */
     const char *path;             /* the driver in bootfs */
-    bool        exclusive;        /* GET_SERVICE on the audio and control channels only */
 } matches[] = {
-    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu", false },      /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus", false },   /* any xHCI controller */
+    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },      /* QEMU's edu test device */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },   /* any xHCI controller */
     /* Intel HD Audio in HDA mode (class 04 03 00). Only Intel's: other
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
-     * (Intel's audio DSP) needs firmware this driver doesn't have. Exclusive:
-     * its one output stream is the mixer's (<devmgr.h> "Trust"). */
-    { 0x8086, 0xffff, 0x040300, "drv/hda", true },
+     * (Intel's audio DSP) needs firmware this driver doesn't have. Who may
+     * use it is init's to say, not this table's: init asks for its device
+     * channel and gives it to the mixer (<devmgr.h> "Trust"). */
+    { 0x8086, 0xffff, 0x040300, "drv/hda" },
 };
-
-#define TEST_DRIVER_PATH "drv/crasher"
 
 struct binding devs[MAX_DEVS];
 unsigned ndevs, problems;
 handle_t pci_res, port;
-static unsigned nbound, nfailed, nskipped;
+unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
 uint32_t boot_mbr_id;
 uint64_t devmgr_started;
-static bool shutdown_asked;   /* DEVMGR_SHUTDOWN: answered, then stop as if every client left */
+bool shutdown_asked;
 
 void say(bool report_it, const char *fmt, ...)
 {
@@ -134,10 +133,9 @@ const char *bdf(const struct binding *b)
     return s;
 }
 
-/* The driver for function i (NULL: none); *exclusive: matches[]'s flag. */
-static const char *match(const struct pci_dev_info *i, bool *exclusive)
+/* The driver for function i (NULL: none). */
+static const char *match(const struct pci_dev_info *i)
 {
-    *exclusive = false;
     if (i->flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return NULL;   /* never a driver's */
     uint32_t cls = (uint32_t)i->class_code << 16 | (uint32_t)i->subclass << 8 | i->prog_if;
@@ -149,10 +147,8 @@ static const char *match(const struct pci_dev_info *i, bool *exclusive)
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
         if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
             (matches[k].device == 0xffff || matches[k].device == i->device) &&
-            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls)) {
-            *exclusive = matches[k].exclusive;
+            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls))
             return matches[k].path;
-        }
     return NULL;
 }
 
@@ -193,346 +189,6 @@ static void bind_all(void)
     }
 }
 
-/* ---- the protocol --------------------------------------------------------------- */
-
-static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
-{
-    uint32_t seen = 0;
-    /* GET_SERVICE 0xffff/0xffff: the instance-th function with a driver
-     * running (tests find usb-bus this way). GET_DRIVER and KILL
-     * 0xffff/0xffff: the instance-th function with a driver bound, running
-     * or not, so the numbering holds while one restarts (init's `kill`
-     * finds a PCI driver's process this way). */
-    bool any = q->vendor == 0xffff && q->device == 0xffff;
-    bool any_running = any && q->ordinal == DEVMGR_GET_SERVICE;
-    bool any_bound = any && (q->ordinal == DEVMGR_GET_DRIVER || q->ordinal == DEVMGR_KILL);
-    bool usb = q->vendor == DEVMGR_USB_IFACE;
-    if (q->vendor == DEVMGR_FS_SVC)
-        return fs_find(q->instance, q->device);
-    for (unsigned i = 0; i < ndevs; i++) {
-        struct binding *b = &devs[i];
-        if (b->kind == BIND_FS)
-            continue;   /* filesystem services only by DEVMGR_FS_SVC */
-        if (usb || b->kind == BIND_USB) {
-            /* USB class drivers only by DEVMGR_USB_IFACE (id, interface) */
-            if (usb && b->kind == BIND_USB && b->path && b->usb_id == q->instance &&
-                b->usb_ifnum == q->device)
-                return b;
-            continue;
-        }
-        bool hit = any_running ? b->kind == BIND_PCI && b->proc != HANDLE_INVALID
-                   : any_bound ? b->kind == BIND_PCI && b->path
-                   : msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
-                       ? b->kind == BIND_PCI && b->info.msix_vectors &&
-                             !(b->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
-                       : b->info.vendor == q->vendor && b->info.device == q->device;
-        if (hit && seen++ == q->instance)
-            return b;
-    }
-    return NULL;
-}
-
-/* The crash-test driver's binding (a software device), made on first use. */
-static struct binding *test_binding(void)
-{
-    struct devmgr_req q = { 0, 0, DEVMGR_TEST_VENDOR, DEVMGR_TEST_DEVICE, 0 };
-    struct binding *b = find(&q, false);
-    if (b || ndevs == MAX_DEVS)
-        return b;
-    b = &devs[ndevs++];
-    *b = (struct binding){ .kind = BIND_SOFT, .path = TEST_DRIVER_PATH, .test = true };
-    b->info.vendor = DEVMGR_TEST_VENDOR;
-    b->info.device = DEVMGR_TEST_DEVICE;
-    return b;
-}
-
-static status_t kill_request(struct binding *b)
-{
-    if (b->state != DEVMGR_SUP_RUNNING)
-        return OK;   /* nothing runs */
-    kill_driver(b);
-    signals_t seen;
-    status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
-                                      now() + STOP_WAIT, &seen);
-    b->killed = true;
-    sup_died(b, b->gen);   /* a death like any other: the restart is scheduled now */
-    return st;
-}
-
-/* b's driver goes and no restart is due: a fresh restart history. */
-static void unbind(struct binding *b)
-{
-    if (b->proc)
-        stop_driver(b, true, true);
-    /* Nothing runs now: it must not stay RUNNING with no process (no
-     * restart would ever come, KILL would fail). */
-    if (b->state == DEVMGR_SUP_RUNNING)
-        b->state = DEVMGR_SUP_NONE;
-    sup_reset(b);
-    close_client(b);
-}
-
-/* RELEASE: b is left without a driver until REBIND. A disk's filesystems
- * are synced first: they go with its driver. For a USB interface the
- * caller gets the channel the driver had (hs[0]). */
-static void release(struct binding *b, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
-{
-    if (b->disk)
-        disk_sync_all();
-    unbind(b);
-    say(false, "devmgr: %s %s released: no driver until it is bound again", bdf(b), b->path);
-    if (b->kind == BIND_USB && (r->status = usb_channel(b, &hs[0])) == OK)
-        *nh = 1;
-}
-
-/* Bind b again from scratch, with a fresh restart history. */
-static status_t rebind(struct binding *b)
-{
-    unbind(b);
-    b->last = start_driver(b);
-    say(false, "devmgr: %s %s bound again (%s)", bdf(b), b->path, status_str(b->last));
-    if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
-        usb_retire(b, "device gone");
-    } else if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
-        b->state = DEVMGR_SUP_RESTARTING;   /* once the console is back */
-        b->restart_at = DEADLINE_NEVER;
-        b->console_wait = true;
-        b->last = OK;
-    }
-    return b->last;
-}
-
-/* TEST_DRIVER: start the crash-test driver unless it runs already. */
-static status_t test_driver(void)
-{
-    struct binding *t = test_binding();
-    if (!t || !in_bootfs(TEST_DRIVER_PATH))
-        return ERR_NOT_FOUND;
-    if (t->state != DEVMGR_SUP_RUNNING && t->state != DEVMGR_SUP_RESTARTING)
-        return rebind(t);
-    return OK;
-}
-
-/* GET_SERVICE: a duplicate of b's client end into hs[0]. known: a driver
- * was started for b. Never a disk's driver's or a filesystem service's: a
- * disk's `storage` channel opens every partition for writing, so it stays
- * devmgr's own, and a filesystem's channel is DEVMGR_MOUNTS's to hand out
- * (the control channel's alone). An exclusive driver's (hda's) only on the
- * audio and control channels. */
-static void get_service(const struct binding *b, bool known, enum level lv, struct devmgr_rep *r,
-                        handle_t *hs, uint32_t *nh)
-{
-    if (!known)
-        r->status = ERR_NOT_FOUND;
-    else if (b->disk || (b->exclusive && lv == LEVEL_QUERY))
-        r->status = ERR_ACCESS_DENIED;
-    else if ((b->state != DEVMGR_SUP_RUNNING && b->state != DEVMGR_SUP_RESTARTING) ||
-             !b->client)
-        r->status = ERR_BAD_STATE;
-    else if ((r->status = jam_handle_duplicate(b->client, RIGHT_SAME, &hs[0])) == OK)
-        *nh = 1;
-}
-
-/* GET_DRIVER: read-only views of b's process, job and function. */
-static void get_driver(const struct binding *b, bool known, struct devmgr_rep *r, handle_t *hs,
-                       uint32_t *nh)
-{
-    if (!known) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    if (!b->proc) {
-        r->status = ERR_BAD_STATE;
-        return;
-    }
-    r->a = b->index;
-    const handle_t src[3] = { b->proc, b->job, b->dev };
-    const rights_t rights[3] = { RIGHTS_BASIC, RIGHTS_BASIC, RIGHTS_BASIC | RIGHT_READ };
-    uint32_t want = b->kind == BIND_PCI ? 3 : 2;   /* only a PCI binding has a function */
-    uint32_t got = 0;
-    while (got < want && (r->status = jam_handle_duplicate(src[got], rights[got], &hs[got])) == OK)
-        got++;
-    if (r->status != OK)   /* all or nothing: close what was duplicated */
-        while (got > 0)
-            jam_handle_close(hs[--got]);
-    *nh = got;
-}
-
-/* SUPERVISION: b's state, restarts, backoff, and its DMA quarantine. */
-static void supervision(const struct binding *b, struct devmgr_rep *r)
-{
-    if (!b) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    r->a = b->state;
-    r->b = b->restarts;
-    r->c = b->backoff_ms;
-    if (b->kind == BIND_PCI) {
-        struct pci_dev_info now;
-        if (jam_pci_enum(pci_res, b->index, &now) == OK) {
-            r->d = now.dma_quarantined;
-            r->e = now.dma_changed;
-        }
-    }
-}
-
-/* DRIVER_VIEW: b's function and memory BARs with a driver's rights. */
-static void view(struct binding *b, struct devmgr_rep *r, handle_t *hs, rights_t *rs,
-                 uint32_t *nh)
-{
-    /* A PCI function's only: a USB or soft binding has no function (its
-     * index 0 would open PCI function 0, and a reused USB binding would
-     * then lose that RIGHT_MANAGE handle). */
-    if (!b || b->kind != BIND_PCI) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    uint32_t mask = 0;
-    r->status = driver_view(b, hs, rs, nh, &mask);
-    r->a = mask;
-}
-
-/* Handle one request; the reply (and *nh handles in hs, each to arrive
- * with rs[i]) to send back. */
-static void handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep *r, handle_t *hs,
-                   rights_t *rs, uint32_t *nh)
-{
-    *nh = 0;
-    for (uint32_t i = 0; i < DEVMGR_MAX_HANDLES; i++)
-        rs[i] = RIGHT_SAME;
-    r->status = OK;
-    if (q->ordinal == DEVMGR_STATUS) {
-        r->a = nbound;
-        r->b = nfailed;
-        r->c = nskipped;
-        return;
-    }
-    if (q->ordinal == DEVMGR_SHUTDOWN) {
-        shutdown_asked = true;   /* run() sees it once this reply is sent */
-        return;
-    }
-    if (q->ordinal == DEVMGR_TEST_DRIVER) {
-        r->status = test_driver();
-        return;
-    }
-    if (q->ordinal == DEVMGR_REMOUNT) {
-        bool valid = q->vendor == DEVMGR_USB_MOUNT && !(q->instance & ~3u);
-        r->status = valid ? disk_remount(q->device, q->instance & DEVMGR_REMOUNT_TEST,
-                                         q->instance & DEVMGR_REMOUNT_WRITE)
-                          : ERR_INVALID_ARGS;
-        return;
-    }
-    struct binding *b = find(q, q->ordinal == DEVMGR_DRIVER_VIEW);
-    bool known = b && b->path && b->state != DEVMGR_SUP_NONE;   /* a driver was started */
-    switch (q->ordinal) {
-    case DEVMGR_GET_SERVICE:
-        get_service(b, known, lv, r, hs, nh);
-        return;
-    case DEVMGR_GET_DRIVER:
-        get_driver(b, known, r, hs, nh);
-        break;
-    case DEVMGR_KILL:
-        r->status = known ? kill_request(b) : ERR_NOT_FOUND;
-        return;
-    case DEVMGR_REBIND:
-        /* not a filesystem service: those come and go with their disk */
-        r->status = b && b->path && b->kind != BIND_FS ? rebind(b) : ERR_NOT_FOUND;
-        return;
-    case DEVMGR_RELEASE:
-        if (b && b->path && b->kind != BIND_FS)
-            release(b, r, hs, nh);
-        else
-            r->status = ERR_NOT_FOUND;
-        return;
-    case DEVMGR_SUPERVISION:
-        supervision(b, r);
-        return;
-    case DEVMGR_DRIVER_VIEW:
-        view(b, r, hs, rs, nh);
-        break;
-    default:
-        r->status = ERR_NOT_SUPPORTED;
-        return;
-    }
-    if (r->status != OK) {   /* hand out all or nothing */
-        for (uint32_t i = 0; i < *nh; i++)
-            jam_handle_close(hs[i]);
-        *nh = 0;
-    }
-}
-
-/* What the query channel (SR_DEVMGR) and the audio channel
- * (SR_DEVMGR_AUDIO) may ask; the control channel (SR_DEVMGR_CTL) may ask
- * everything. The two differ in GET_SERVICE alone (get_service). */
-static bool query_ok(uint32_t ordinal)
-{
-    return ordinal == DEVMGR_STATUS || ordinal == DEVMGR_GET_SERVICE ||
-           ordinal == DEVMGR_GET_DRIVER || ordinal == DEVMGR_SUPERVISION;
-}
-
-/* Answer everything queued on ch, a channel of level lv. Returns
- * ERR_SHOULD_WAIT once the queue is empty, ERR_PEER_CLOSED once every
- * client is gone and nothing is left to read. */
-static status_t serve(handle_t ch, enum level lv)
-{
-    bool control = lv == LEVEL_CONTROL;
-    for (;;) {
-        _Alignas(8) uint8_t buf[64];
-        handle_t in[4];
-        uint32_t n = 0, nh = 0;
-        struct channel_read_args a = {
-            .h = ch, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)in,
-            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(ch, n, nh);   /* nothing of ours is that big */
-            continue;
-        }
-        if (st != OK)
-            return st;
-        /* Only SET_CONSOLE and TEST_DISK carry a handle (one), and only on
-         * control. */
-        const struct devmgr_req *q = (const struct devmgr_req *)buf;
-        bool denied = n >= 8 && !control && !query_ok(q->ordinal);
-        bool whole = !denied && n == sizeof(*q);
-        bool takes_handle = whole && nh == 1 && (q->ordinal == DEVMGR_SET_CONSOLE ||
-                                                 q->ordinal == DEVMGR_TEST_DISK);
-        if (!takes_handle)
-            for (uint32_t i = 0; i < nh; i++)
-                jam_handle_close(in[i]);
-        if (n < 4)
-            continue;   /* no txid: nobody to answer */
-        if (whole && !nh && q->ordinal == DEVMGR_MOUNTS) {
-            mounts_request(ch, q->txid, q->instance);   /* answered now or later */
-            continue;
-        }
-        struct devmgr_rep r = { .txid = q->txid, .status = ERR_INVALID_ARGS };
-        handle_t hs[DEVMGR_MAX_HANDLES];
-        rights_t rs[DEVMGR_MAX_HANDLES];
-        uint32_t nout = 0;
-        if (denied) {
-            r.status = ERR_ACCESS_DENIED;
-        } else if (takes_handle && q->ordinal == DEVMGR_SET_CONSOLE) {
-            usb_new_console(in[0]);
-            r.status = OK;
-        } else if (takes_handle) {
-            uint32_t id = 0;
-            r.status = disk_test(in[0], &id);
-            r.a = id;
-        } else if (whole && !nh) {
-            handle(q, lv, &r, hs, rs, &nout);
-        }
-        uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
-        if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
-            for (uint32_t i = 0; i < nout; i++)
-                jam_handle_close(hs[i]);   /* the client is gone */
-        sup_run_due();   /* a long burst of requests mustn't hold up a restart */
-    }
-}
-
 /* ---- main ------------------------------------------------------------------------ */
 
 /* Every PCI function into devs[], each with the driver it matches. */
@@ -549,61 +205,14 @@ static status_t enumerate(void)
         }
         b->kind = BIND_PCI;
         b->index = i;
-        b->path = match(&b->info, &b->exclusive);
+        b->path = match(&b->info);
         ndevs++;
     }
     return OK;
 }
 
-/* devmgr's channels: chans[CH_CONTROL] (SR_DEVMGR_CTL), chans[CH_QUERY]
- * (SR_DEVMGR) and chans[CH_AUDIO] (SR_DEVMGR_AUDIO), each 0 if init gave
- * none; their port keys and levels. */
-enum { CH_CONTROL, CH_QUERY, CH_AUDIO, NCHANS };
-static const uint64_t chan_keys[NCHANS] = { KEY_CONTROL, KEY_CHANNEL, KEY_AUDIO };
-static const enum level chan_levels[NCHANS] = { LEVEL_CONTROL, LEVEL_QUERY, LEVEL_AUDIO };
-
-/* Answer what is queued on every channel. ERR_SHOULD_WAIT once all are
- * drained; a query or audio channel whose clients are gone is dropped, the
- * life channel's end is the result (ERR_PEER_CLOSED). */
-static status_t serve_channels(handle_t chans[NCHANS], const bool armed[NCHANS], unsigned life)
-{
-    status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
-        if (!chans[c])
-            continue;
-        st = serve(chans[c], chan_levels[c]);
-        if (st == ERR_PEER_CLOSED && c != life) {
-            if (armed[c])
-                jam_port_unbind(port, chans[c], chan_keys[c]);
-            jam_handle_close(chans[c]);   /* nobody queries any more */
-            chans[c] = HANDLE_INVALID;
-            st = ERR_SHOULD_WAIT;
-        }
-    }
-    return st;
-}
-
-/* ONCE, re-armed after it fires (it fires at once if a message came in
- * meanwhile); a driver's death arrives on the same port, and a due
- * restart ends the wait. ERR_SHOULD_WAIT when both are armed. */
-static status_t arm_channels(const handle_t chans[NCHANS], bool armed[NCHANS])
-{
-    status_t st = ERR_SHOULD_WAIT;
-    for (unsigned c = 0; c < NCHANS && st == ERR_SHOULD_WAIT; c++) {
-        if (!chans[c] || armed[c])
-            continue;
-        st = jam_port_bind(port, chans[c], chan_keys[c], SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_ONCE);
-        if (st != OK)
-            break;
-        armed[c] = true;
-        st = ERR_SHOULD_WAIT;
-    }
-    return st;
-}
-
 /* Wait for one packet (or the next due restart) and act on it. */
-static status_t wait_event(bool armed[NCHANS])
+static status_t wait_event(void)
 {
     struct port_packet pkt;
     uint64_t deadline = sup_next_deadline();
@@ -616,11 +225,9 @@ static status_t wait_event(bool armed[NCHANS])
     status_t st = jam_port_wait(port, deadline, &pkt);
     if (st != OK)
         return st;
-    if (pkt.key == KEY_CHANNEL || pkt.key == KEY_CONTROL || pkt.key == KEY_AUDIO) {
-        for (unsigned c = 0; c < NCHANS; c++)
-            if (chan_keys[c] == pkt.key)
-                armed[c] = false;
-    } else if ((pkt.key & KEY_DRIVER) && KEY_INDEX(pkt.key) < ndevs) {
+    if (chans_packet(pkt.key))
+        return OK;   /* chans_serve reads what came */
+    if ((pkt.key & KEY_DRIVER) && KEY_INDEX(pkt.key) < ndevs) {
         sup_died(&devs[KEY_INDEX(pkt.key)], KEY_GEN(pkt.key));
     } else if ((pkt.key & KEY_EVENTS) && KEY_INDEX(pkt.key) < ndevs) {
         struct binding *b = &devs[KEY_INDEX(pkt.key)];
@@ -640,19 +247,18 @@ static status_t wait_event(bool armed[NCHANS])
 
 /* Serve until the life channel's clients are all gone (ERR_PEER_CLOSED)
  * or something fails (its status). */
-static status_t run(handle_t chans[NCHANS], unsigned life)
+static status_t run(void)
 {
-    bool armed[NCHANS] = { false, false, false };
     for (;;) {
-        status_t st = serve_channels(chans, armed, life);
+        status_t st = chans_serve();
         if (shutdown_asked)
             return ERR_PEER_CLOSED;   /* as if every client had gone */
         if (st != ERR_SHOULD_WAIT)
             return st;
-        st = arm_channels(chans, armed);
+        st = chans_arm();
         if (st != ERR_SHOULD_WAIT)
             return st;
-        st = wait_event(armed);
+        st = wait_event();
         if (st != OK && st != ERR_TIMED_OUT)
             return st;
         sup_run_due();
@@ -747,17 +353,12 @@ int main(int argc, char **argv)
             boot_mbr_id = hex32(argv[i] + 9);
     }
     /* devmgr runs until the control channel's clients are all gone (with
-     * no control channel: the query channel's); a query or audio channel
+     * no control channel: the query channel's); a query or device channel
      * whose clients are gone is just dropped. */
-    handle_t chans[NCHANS] = { [CH_CONTROL] = startup_handle(SR_DEVMGR_CTL),
-                               [CH_QUERY] = startup_handle(SR_DEVMGR),
-                               [CH_AUDIO] = startup_handle(SR_DEVMGR_AUDIO) };
-    unsigned life = chans[CH_CONTROL] ? CH_CONTROL : CH_QUERY;
-
+    bool have_chans = chans_init();
     pci_res = startup_handle(SR_RESOURCE);
-    if (!chans[life] || !pci_res) {
-        say(true, "devmgr: no %s in the startup message",
-            chans[life] ? "PCI resource" : "channel");
+    if (!have_chans || !pci_res) {
+        say(true, "devmgr: no %s in the startup message", have_chans ? "PCI resource" : "channel");
         return 1;
     }
     status_t st = jam_port_create(&port);
@@ -774,7 +375,7 @@ int main(int argc, char **argv)
     say(false, "devmgr: %u function(s), %u driver(s) bound, %u failed, %u skipped; serving",
         ndevs, nbound, nfailed, nskipped);
 
-    st = run(chans, life);
+    st = run();
     bool ok = nfailed == 0;
     if (st != ERR_PEER_CLOSED) {
         say(true, "devmgr: serving failed (%s)", status_str(st));

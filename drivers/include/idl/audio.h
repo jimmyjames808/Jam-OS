@@ -114,18 +114,19 @@ struct audio_stream_stats_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* On SR_AUDIO: a new stream, stopped, with an empty ring. Only rate 48000,
+/* On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
  * channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client
  * library converts). name: a label for `vol` (NUL-padded, printable ASCII;
  * anything else is replaced by '?'). Results: `stream`, a channel of its own
  * that speaks the methods below (closing it ends the stream; refused on
- * SR_AUDIO); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
+ * /svc/audio); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
  * header page and then `frames` frames of samples (left, right:
  * little-endian s16); `event`, its wake-ups (wait, signal: the SPACE and
  * DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,
  * how many frames ahead of what is heard the mixer takes samples (a
  * write is heard about `lead` frames after the mixer took it, at most).
- * ERR_NO_RESOURCES: 16 streams are open already. ERR_NOT_FOUND: there is
+ * ERR_NO_RESOURCES: 16 streams are open already, or this opener's channel
+ * holds MIXER_STREAMS_PER_CLIENT (4) of them. ERR_NOT_FOUND: there is
  * no audio output (no hda driver with a path to a jack). */
 static inline status_t audio_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
 {

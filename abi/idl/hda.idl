@@ -1,8 +1,9 @@
 # hda: the Intel HD Audio driver (drivers/hda), as devmgr binds it to the
 # board's HD Audio controller. Served on the driver's DR_SERVE channel,
-# which devmgr hands out only on its audio and control channels (the
-# driver is "exclusive", <devmgr.h>): the mixer is its client, and hdatest
-# (a test, through the control channel). Everyone else (the shell's `hda`)
+# which devmgr hands out only on the controller's device channel (init
+# gives it to the mixer, <devmgr.h> DEVMGR_DEVICE_CHANNEL) and its control
+# channel: the mixer is its client, and hdatest (a test, through the
+# control channel). Everyone else (the shell's `hda`)
 # gets a query channel (`query` below) through the mixer's
 # `audioctl.device`: every method but open_output.
 # Format: see tools/genidl.py.

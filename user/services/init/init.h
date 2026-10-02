@@ -148,6 +148,14 @@ bool     services_console_up(void);
  * mixer's master volume, the music player's volume. */
 void     services_settings(unsigned i);
 bool     services_devmgr_up(void);
+/* devmgr's device channels (<devmgr.h> DEVMGR_DEVICE_CHANNEL, asked on its
+ * control channel devmgr_ctl) for every PCI function of class `cls` that
+ * has a driver, at most `max`, into out[]: init gives them to the class's
+ * user (the sound cards to the mixer), and while they exist the query
+ * channel hands none of them out. Returns how many. Used by both modes
+ * (main.c too). */
+#define INIT_MAX_CLAIMED 4u
+unsigned services_claim_class(handle_t devmgr_ctl, uint32_t cls, handle_t *out, unsigned max);
 
 /* ---- shell.c and services.c, for ctl.c and reboot.c -------------------------------- */
 

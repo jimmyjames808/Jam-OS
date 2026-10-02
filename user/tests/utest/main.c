@@ -577,6 +577,8 @@ static const struct {
     { "edu_process", t_edu_process },
     { "devmgr_query_channel", t_devmgr_query_channel },
     { "devmgr_query_refuses_hda", t_devmgr_query_refuses_hda },
+    { "devmgr_device_channel", t_devmgr_device_channel },
+    { "devmgr_openers", t_devmgr_openers },
 
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
@@ -603,6 +605,7 @@ static const struct {
     { "logd_without_data", t_logd_without_data },
     { "logd_data_goes_away", t_logd_data_goes_away },
     { "logd_kernel_log", t_logd_kernel_log },
+    { "logd_openers", t_logd_openers },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },
     { "fat_dirs", t_fat_dirs },

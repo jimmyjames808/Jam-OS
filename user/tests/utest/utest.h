@@ -49,6 +49,7 @@ bool t_logd_writes_the_log(void);
 bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
+bool t_logd_openers(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
 bool t_audio_formats(void);
@@ -118,6 +119,8 @@ bool t_startup_message(void);
 bool t_edu_process(void);
 bool t_devmgr_query_channel(void);
 bool t_devmgr_query_refuses_hda(void);
+bool t_devmgr_device_channel(void);
+bool t_devmgr_openers(void);
 bool t_edu_killed_mid_dma(void);
 
 /* ns.c: the file namespace, against the bootfs server and bin/ramfs. */

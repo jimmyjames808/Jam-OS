@@ -6,13 +6,16 @@
  * later, once its frames have been heard), position and the volume; its
  * closing drops the stream. The control channel (SR_AUDIO_CTL) lists the
  * streams, sets any stream's volume and the master volume, and hands out
- * the sound card's query channels (`device`: device.c's thread).
+ * the sound card's query channels (`device`: device.c's thread). Both
+ * shared channels, and every opener's channel made from them (clients.c),
+ * are read here.
  *
  * `played` for a stream comes from its period history (output.c's
  * remember): the driver frames each period's frames went to, so the play
  * position says how many of its frames have been heard. */
 #include <idl/audio.h>
 #include <idl/audioctl.h>
+#include <idl/svc.h>
 #include <mixmath.h>
 #include "internal.h"
 
@@ -27,6 +30,13 @@ _Static_assert((RING_FRAMES & (RING_FRAMES - 1)) == 0, "a power of two");
 struct call {
     struct mixer  *m;
     struct stream *s;
+};
+
+/* What the service channel's handlers get: the opener streams count to. */
+struct opener {
+    struct mixer *m;
+    uint32_t      owner;   /* struct stream's */
+    uint32_t      gen;
 };
 
 bool any_playing(const struct mixer *m)
@@ -155,18 +165,32 @@ static status_t client_handles(const struct stream *s, handle_t *ring, handle_t 
     return st;
 }
 
+/* A free stream slot for opener o, or NULL: none free, or o holds
+ * MIXER_STREAMS_PER_CLIENT. */
+static struct stream *free_slot(struct mixer *m, const struct opener *o)
+{
+    struct stream *slot = NULL;
+    unsigned held = 0;
+    for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
+        struct stream *s = &m->s[i];
+        if (!s->used && !slot)
+            slot = s;
+        if (s->used && s->owner == o->owner && s->owner_gen == o->gen)
+            held++;
+    }
+    return held < MIXER_STREAMS_PER_CLIENT ? slot : NULL;
+}
+
 static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8_t bits,
                                const uint8_t name[16], handle_t *out_stream, handle_t *out_ring,
                                handle_t *out_event, uint32_t *out_id, uint32_t *out_frames,
                                uint32_t *out_lead)
 {
-    struct mixer *m = ctx;
+    const struct opener *o = ctx;
+    struct mixer *m = o->m;
     if (rate != MIXER_RATE || channels != MIXER_CHANNELS || bits != 16)
         return ERR_NOT_SUPPORTED;
-    struct stream *s = NULL;
-    for (unsigned i = 0; !s && i < MIXER_MAX_STREAMS; i++)
-        if (!m->s[i].used)
-            s = &m->s[i];
+    struct stream *s = free_slot(m, o);
     if (!s)
         return ERR_NO_RESOURCES;
     status_t st = out_find(m);
@@ -189,6 +213,8 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     }
     s->used = true;
     s->id = m->next_id++;
+    s->owner = o->owner;
+    s->owner_gen = o->gen;
     s->gain = MIX_UNITY;
     s->min_lead = UINT32_MAX;
     set_name(s, name);
@@ -339,6 +365,10 @@ static status_t serve_one(struct mixer *m, handle_t ch, const struct audio_ops *
         drain_begin(m, s, (const void *)q);
         return OK;
     }
+    if (!s && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
+        clients_connect_reply(m, ch, hdr->txid, false);
+        return OK;
+    }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     uint32_t rn = audio_dispatch(ops, ctx, q, n, r, rhs, &rhn);
@@ -347,18 +377,23 @@ static status_t serve_one(struct mixer *m, handle_t ch, const struct audio_ops *
     return OK;
 }
 
+status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
+{
+    struct opener o = { m, owner, owner ? m->c[owner - 1].gen : 0 };
+    for (int i = 0; i < BUDGET; i++) {
+        status_t st = serve_one(m, ch, &svc_ops, &o, NULL);
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
 void serve_svc(struct mixer *m)
 {
-    m->svc_pending = false;
-    for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, m->svc, &svc_ops, m, NULL);
-        if (st != OK) {
-            if (st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
-                printf("mixer: reading the service channel: %s\n", status_str(st));
-            return;
-        }
-    }
-    m->svc_pending = true;
+    status_t st = serve_audio(m, m->svc, 0);
+    m->svc_pending = st == OK;
+    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
+        printf("mixer: reading the service channel: %s\n", status_str(st));
 }
 
 void serve_stream(struct mixer *m, struct stream *s)
@@ -455,47 +490,56 @@ static const struct audioctl_ops ctl_ops = {
     .set_master = do_set_master,
 };   /* device: device.c, on a thread of its own */
 
-/* One message from the control channel; `device` goes to its thread
- * (device.c), the rest are answered here. */
-static status_t ctl_serve_one(struct mixer *m)
+/* One message from a control channel (ch: the shared one or an
+ * opener's); `device` goes to its thread (device.c), the rest are
+ * answered here. */
+static status_t ctl_serve_one(struct mixer *m, handle_t ch)
 {
     _Alignas(8) uint8_t q[AUDIOCTL_REQ_MAX];
     _Alignas(8) uint8_t r[AUDIOCTL_REP_MAX];
     handle_t hs[IDL_READ_HANDLES];
     uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(m->ctl, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
     if (st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(m->ctl, n, nh);
+        return idl_drain(ch, n, nh);
     if (st != OK)
         return st;
     if (nh) {
         idl_close_all(hs, nh);
-        idl_reply_status(m->ctl, q, n, ERR_INVALID_ARGS);
+        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
         return OK;
     }
     const struct idl_req_hdr *hdr = (const void *)q;
     if (n == sizeof(struct audioctl_device_req) && hdr->ordinal == AUDIOCTL_DEVICE) {
-        device_ask(m, (const void *)q);
+        device_ask(m, ch, (const void *)q);
+        return OK;
+    }
+    if (n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
+        clients_connect_reply(m, ch, hdr->txid, true);
         return OK;
     }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, r, rhs, &rhn);
-    if (!rn || jam_channel_write(m->ctl, r, rn, rhs, rhn) != OK)
+    if (!rn || jam_channel_write(ch, r, rn, rhs, rhn) != OK)
         idl_close_all(rhs, rhn);   /* not sent: they're still ours */
+    return OK;
+}
+
+status_t serve_control(struct mixer *m, handle_t ch)
+{
+    for (int i = 0; i < BUDGET; i++) {
+        status_t st = ctl_serve_one(m, ch);
+        if (st != OK)
+            return st;
+    }
     return OK;
 }
 
 void serve_ctl(struct mixer *m)
 {
-    m->ctl_pending = false;
-    for (int i = 0; i < BUDGET; i++) {
-        status_t st = ctl_serve_one(m);
-        if (st != OK) {
-            if (st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
-                printf("mixer: reading the control channel: %s\n", status_str(st));
-            return;
-        }
-    }
-    m->ctl_pending = true;
+    status_t st = serve_control(m, m->ctl);
+    m->ctl_pending = st == OK;
+    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
+        printf("mixer: reading the control channel: %s\n", status_str(st));
 }

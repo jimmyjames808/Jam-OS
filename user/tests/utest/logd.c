@@ -10,11 +10,13 @@
  * follows; the file is the next free boot-NNNN.txt in /logs (made if
  * missing); syncs come at most four times a second; a flush asked for on
  * the control channel saves what was logged up to then; with /data refusing or gone
- * logd keeps running and tries again rarely. */
+ * logd keeps running and tries again rarely; the control channel hands
+ * each opener a channel of its own (svc.connect). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <idl/logctl.h>
+#include <idl/svc.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
@@ -370,4 +372,45 @@ bool t_logd_kernel_log(void)
         nl++;
     CHECK(nl + 1 < n && got[nl + 1] == '[');
     return fat_stop(&fat) && ramdisk_destroy(&disk);
+}
+
+/* The control channel answers svc.connect with a channel of the opener's
+ * own: a flush written on one and not waited for is answered on that one
+ * alone (here ERR_NOT_FOUND: /data is gone), and a closed opener's slot
+ * is free again (more opens, one after another, than logd keeps). */
+bool t_logd_openers(void)
+{
+    struct logd l;
+    handle_t fs, server, a, b;
+    if (!have_logd())
+        return true;
+    CHECK_ST(jam_channel_create(&fs, &server), OK);
+    CHECK_ST(jam_handle_close(server), OK);   /* no /data at all */
+    if (!logd_start(&l, fs, HANDLE_INVALID))
+        return false;
+    CHECK_ST(svc_connect_until(l.ctl, now() + FAT_CALL_NS, &a), OK);
+    CHECK_ST(svc_connect_until(l.ctl, now() + FAT_CALL_NS, &b), OK);
+    struct idl_req_hdr q = { 9, LOGCTL_FLUSH };
+    CHECK_ST(jam_channel_write(a, &q, sizeof(q), NULL, 0), OK);
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + FAT_CALL_NS, &seen), OK);
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);
+    CHECK_ST(jam_object_wait_one(l.ctl, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);
+    struct idl_rep_hdr r;
+    uint32_t n = 0, nh = 0;
+    CHECK_ST(drv_channel_read(a, &r, sizeof(r), &n, NULL, 0, &nh), OK);
+    CHECK(n == sizeof(r) && r.txid == 9);
+    CHECK_ST(r.status, ERR_NOT_FOUND);
+    CHECK_ST(logctl_flush_until(b, now() + FAT_CALL_NS), ERR_NOT_FOUND);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    for (unsigned i = 0; i < 20; i++) {
+        CHECK_ST(svc_connect_until(l.ctl, now() + FAT_CALL_NS, &a), OK);
+        CHECK_ST(logctl_flush_until(a, now() + FAT_CALL_NS), ERR_NOT_FOUND);
+        CHECK_ST(jam_handle_close(a), OK);
+    }
+    if (!logd_alive(&l) || !logd_end(&l))
+        return false;
+    CHECK_ST(jam_handle_close(fs), OK);
+    return true;
 }

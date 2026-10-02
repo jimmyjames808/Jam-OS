@@ -139,11 +139,12 @@ static inline status_t audioctl_set_master(handle_t ch, int32_t centibels, int32
     return audioctl_set_master_until(ch, DEADLINE_NEVER, centibels, out_centibels);
 }
 
-/* The index-th HD Audio driver devmgr runs (from 0, in devmgr's order), as
- * a query channel (hda.idl's `query`): everything the driver answers but
- * open_output, so the shell's `hda` can look and set the gain without
- * taking the output stream the mixer plays through. The caller closes it.
- * ERR_NOT_FOUND: no such driver (index past the last, or no devmgr). */
+/* The index-th sound card's HD Audio driver (from 0, in the order of the
+ * devmgr device channels init gave the mixer), as a query channel
+ * (hda.idl's `query`): everything the driver answers but open_output, so
+ * the shell's `hda` can look and set the gain without taking the output
+ * stream the mixer plays through. The caller closes it. ERR_NOT_FOUND: no
+ * such driver (index past the last card, or its driver not running). */
 static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, handle_t *out_device)
 {
     struct audioctl_device_req idl_q;

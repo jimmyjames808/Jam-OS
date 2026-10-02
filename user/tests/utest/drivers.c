@@ -2,7 +2,8 @@
  * processes started from here and talk through <idl/null.h>; with devmgr
  * (its control channel, SR_DEVMGR_CTL): the edu driver process it bound,
  * called through <idl/edu.h>, what the query channel may not do (hda's
- * channel included: it is the mixer's), and edu
+ * channel included: it is the mixer's), a device channel (scoped to edu),
+ * and edu
  * killed in the middle of a DMA (the device's pages quarantined, the
  * driver restarted). Tests that need devmgr or the edu device (QEMU's)
  * skip themselves without it. */
@@ -212,10 +213,12 @@ bool t_devmgr_query_channel(void)
     return true;
 }
 
-/* An exclusive driver's service (hda's: its one output stream is the
- * mixer's) is refused on the query channel, whichever way it is named;
- * the control channel (the tests') hands it out, and the query channel
- * still hands out the others'. Skipped without an hda driver. */
+/* hda's service (its one output stream is the mixer's) is refused on the
+ * query channel, whichever way it is named: init holds the sound card's
+ * device channel (in shell mode the mixer's, in this run init's own),
+ * and the query channel never hands out a device that has one. The
+ * control channel (the tests') hands it out, and the query channel still
+ * hands out the others'. Skipped without an hda driver. */
 bool t_devmgr_query_refuses_hda(void)
 {
     handle_t q = svc_get(SVC_DEVMGR), dm = devmgr();
@@ -259,6 +262,124 @@ bool t_devmgr_query_refuses_hda(void)
     }
     if (!hdas)
         printf("utest: %s: no hda driver: only the ids checked\n", utest_cur);
+    return true;
+}
+
+/* One devmgr call on ch naming (vendor, device, instance); OK with the
+ * one handle it carried into *out (closed if out is NULL). */
+static status_t dm_one(handle_t ch, uint32_t op, uint16_t vendor, uint16_t device,
+                       uint32_t instance, handle_t *out)
+{
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    status_t st = devmgr_call(ch, op, vendor, device, instance, &r, hs, DEVMGR_MAX_HANDLES, &nh,
+                              now() + 10 * NS_PER_S);
+    for (uint32_t i = 0; i < nh; i++)
+        if (i || !out || st != OK)
+            jam_handle_close(hs[i]);
+    if (st == OK && out)
+        *out = nh ? hs[0] : HANDLE_INVALID;
+    return st;
+}
+
+/* The query channel's answer for edu's service settles to `want` within
+ * 5 s (a device channel's end reaches devmgr in its own time). */
+static bool edu_from_query(handle_t q, status_t want)
+{
+    uint64_t until = now() + 5 * NS_PER_S;
+    status_t st;
+    while ((st = dm_one(q, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 0, NULL)) != want &&
+           now() < until)
+        (void)jam_nanosleep(now() + 20 * NS_PER_MS);
+    CHECK_ST(st, want);
+    return true;
+}
+
+/* A device channel (DEVMGR_DEVICE_CHANNEL) for edu, named by its class
+ * (QEMU's edu is class 00 ff 00, PCI_CLASS_OTHERS): it answers about edu alone,
+ * there is one at a time, and while it has a client the query channel
+ * refuses edu's service; once it is closed the query channel hands it
+ * out again. Skipped without devmgr or edu. */
+bool t_devmgr_device_channel(void)
+{
+    handle_t q = svc_get(SVC_DEVMGR), dm = devmgr(), d = HANDLE_INVALID, ch = HANDLE_INVALID;
+    if (!q || !dm)
+        return true;
+    if (dm_one(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 0, NULL) != OK) {
+        printf("utest: %s: no edu device: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(devmgr_device_channel(q, DEVMGR_PCI_CLASS, 0, 0x00ff00u, now() + 10 * NS_PER_S, &d),
+             ERR_ACCESS_DENIED);   /* the control channel's to make */
+    CHECK_ST(devmgr_device_channel(dm, DEVMGR_PCI_CLASS, 0, 0x00ff00u, now() + 10 * NS_PER_S,
+                                   &d), OK);
+    handle_t again = HANDLE_INVALID;
+    CHECK_ST(devmgr_device_channel(dm, EDU_VENDOR, EDU_DEVICE, 0, now() + 10 * NS_PER_S, &again),
+             ERR_BAD_STATE);
+    CHECK_ST(devmgr_device_channel(dm, 0x1234, 0x0bad, 0, now() + 10 * NS_PER_S, &again),
+             ERR_NOT_FOUND);
+    /* Its own device, by all-zero fields or by its ids: edu's driver. */
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, 0, 0, 0, &ch), OK);
+    uint32_t f = 0;
+    CHECK_ST(edu_factorial_until(ch, now() + 10 * NS_PER_S, 5, &f), OK);
+    CHECK_EQ(f, 120u);
+    CHECK_ST(jam_handle_close(ch), OK);
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 0, NULL), OK);
+    CHECK_ST(dm_one(d, DEVMGR_SUPERVISION, 0, 0, 0, NULL), OK);
+    CHECK_ST(dm_one(d, DEVMGR_GET_DRIVER, 0, 0, 0, NULL), OK);
+    /* Nothing else: another device (by ids or by class; one that doesn't
+     * exist too), or a call that isn't about its device. */
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 1, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, 0x1234, 0x0bad, 0, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, DEVMGR_TEST_VENDOR, DEVMGR_TEST_DEVICE, 0, NULL),
+             ERR_ACCESS_DENIED);
+    CHECK_ST(dm_one(d, DEVMGR_GET_SERVICE, DEVMGR_PCI_CLASS, 0, 0x0c0330u, NULL),
+             ERR_ACCESS_DENIED);   /* xHCI: usb-bus */
+    CHECK_ST(dm_one(d, DEVMGR_SUPERVISION, DEVMGR_PCI_CLASS, 0, 0x0c0330u, NULL),
+             ERR_ACCESS_DENIED);
+    static const uint32_t refused[] = { DEVMGR_STATUS, DEVMGR_KILL, DEVMGR_REBIND,
+                                        DEVMGR_DRIVER_VIEW, DEVMGR_DEVICE_CHANNEL,
+                                        DEVMGR_TEST_DRIVER };
+    for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
+        CHECK_ST(dm_one(d, refused[i], 0, 0, 0, NULL), ERR_ACCESS_DENIED);
+    /* The query channel: not while d has a client; again once it is gone. */
+    if (!edu_from_query(q, ERR_ACCESS_DENIED))
+        return false;
+    CHECK_ST(dm_one(dm, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 0, NULL), OK);   /* control */
+    CHECK_ST(jam_handle_close(d), OK);
+    return edu_from_query(q, OK);
+}
+
+/* /svc/devmgr hands each opener a query channel of its own (svc.connect):
+ * a request written on one is answered on that one only, the shared
+ * channel's other holders never see it, and a closed opener's slot is
+ * free again (more opens, one after another, than devmgr has slots). */
+bool t_devmgr_openers(void)
+{
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID;
+    if (svc_open(SVC_DEVMGR, &a) != OK)
+        return true;   /* no devmgr: skipped */
+    CHECK_ST(svc_open(SVC_DEVMGR, &b), OK);
+    struct devmgr_req q = { 7, DEVMGR_STATUS, 0, 0, 0 };
+    CHECK_ST(jam_channel_write(a, &q, sizeof(q), NULL, 0), OK);   /* asked, not waited for */
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);
+    struct devmgr_rep r;
+    uint32_t n = 0, nh = 0;
+    CHECK_ST(drv_channel_read(a, &r, sizeof(r), &n, NULL, 0, &nh), OK);
+    CHECK(n >= DEVMGR_REP_HDR && r.txid == 7 && r.status == OK);
+    /* The opener's channel is a query channel like the shared one. */
+    CHECK_ST(dm_call(b, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    CHECK_ST(dm_call(b, DEVMGR_KILL, 0xffff, 0xffff, &r, NULL, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    for (unsigned i = 0; i < 40; i++) {
+        CHECK_ST(svc_open(SVC_DEVMGR, &a), OK);
+        CHECK_ST(dm_call(a, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+        CHECK_ST(jam_handle_close(a), OK);
+    }
     return true;
 }
 

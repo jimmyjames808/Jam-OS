@@ -27,19 +27,24 @@
  *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
  *             channel from console.connect_input (SR_USER + 0)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
- *             server ends of its control, query and audio channels
- *             (SR_DEVMGR_CTL, SR_DEVMGR, SR_DEVMGR_AUDIO; init keeps a
- *             client end of each, publishes the first two as
- *             /svc/devmgr-ctl and /svc/devmgr and gives the third to the
- *             mixer alone) and a copy of
- *             init's (ADMIN) console client end (SR_CONSOLE), so its HID
- *             drivers type into the console. init waits
- *             for its first binding pass (up to 30 s). "nousb" (the safe
- *             mode boot entry) is passed on: no USB controller driver.
- *             Its mounts (/data, /esp) are followed from then on (mounts.c)
- *   mixer     bin/mixer, once devmgr runs: a duplicate of devmgr's audio
- *             client end (SR_DEVMGR_AUDIO: the one channel that hands out
- *             the hda driver's, <devmgr.h>), and the
+ *             server ends of its control and query channels
+ *             (SR_DEVMGR_CTL, SR_DEVMGR; init keeps a client end of each
+ *             and publishes them as /svc/devmgr-ctl and /svc/devmgr) and a
+ *             copy of init's (ADMIN) console client end (SR_CONSOLE), so its
+ *             HID drivers type into the console. init waits for its first
+ *             binding pass (up to 30 s), then asks it for each HD Audio
+ *             controller's device channel (<devmgr.h> DEVMGR_DEVICE_CHANNEL:
+ *             only its holder, and the control channel, can reach that hda
+ *             driver; init keeps them and gives the mixer duplicates), and
+ *             only then publishes the two names, so no program
+ *             can ask the query channel for hda before it is the mixer's.
+ *             "nousb" (the safe mode boot entry) is passed on: no USB
+ *             controller driver. Its mounts (/data, /esp) are followed from
+ *             then on (mounts.c). The NIC's device channel goes to netstack
+ *             the same way once there is a NIC driver
+ *   mixer     bin/mixer, once devmgr runs: a duplicate of each HD Audio
+ *             controller's device channel (SR_DEVMGR_DEVICE, one handle
+ *             each; none without one: the mixer then has no output), and the
  *             server ends of the `audio` and `audioctl` channels (SR_AUDIO,
  *             SR_AUDIO_CTL; abi/idl/audio.idl, audioctl.idl). init makes
  *             those two channels once, publishes their client ends as
@@ -115,7 +120,8 @@ static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
-static handle_t devmgr_a;   /* its audio channel, client end (the mixer's) */
+/* Its device channels for the HD Audio controllers, the mixer's (0: none). */
+static handle_t devmgr_hda[INIT_MAX_CLAIMED];
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) */
 /* The mixer's channels, made once: server ends (each mixer gets
@@ -289,6 +295,24 @@ static status_t start_serialin(void)
     return svc_start1(SERIALIN, x, 2);
 }
 
+unsigned services_claim_class(handle_t devmgr_ctl, uint32_t cls, handle_t *out, unsigned max)
+{
+    unsigned n = 0;
+    while (n < max) {
+        status_t st = devmgr_device_channel(devmgr_ctl, DEVMGR_PCI_CLASS, (uint16_t)n, cls,
+                                            now() + 5 * NS_PER_S, &out[n]);
+        if (st == ERR_NOT_FOUND)
+            break;   /* no more of them */
+        if (st != OK) {
+            printf("init: no device channel for class %06x number %u (%s)\n", cls, n,
+                   status_str(st));
+            break;
+        }
+        n++;
+    }
+    return n;
+}
+
 static status_t start_devmgr(void)
 {
     const struct bootfs_view *fs;
@@ -300,19 +324,17 @@ static status_t start_devmgr(void)
         return OK;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
-    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID, aa = HANDLE_INVALID, ab = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_channel_create(&a, &b);
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK)
-        st = jam_channel_create(&aa, &ab);
-    if (st == OK)
         st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK) {
-        handle_t left[] = { pci, a, b, qa, qb, aa, ab };
-        for (unsigned k = 0; k < 7; k++)
+        handle_t left[] = { pci, a, b, qa, qb };
+        for (unsigned k = 0; k < 5; k++)
             if (left[k])
                 jam_handle_close(left[k]);
         return st;
@@ -326,20 +348,15 @@ static status_t start_devmgr(void)
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                { SR_DEVMGR_AUDIO, ab }, { SR_CONSOLE, c } };
-    st = svc_start(DEVMGR, argc, argv, x, 5);   /* consumes pci, b, qb, ab and c */
+                                { SR_CONSOLE, c } };
+    st = svc_start(DEVMGR, argc, argv, x, 4);   /* consumes pci, b, qb and c */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
-        jam_handle_close(aa);
         return st;
     }
     devmgr = a;
     devmgr_q = qa;
-    devmgr_a = aa;
-    publish(SVC_DEVMGR, devmgr_q, false);
-    publish(SVC_DEVMGR_CTL, devmgr, false);
-    tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
     st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
@@ -348,6 +365,12 @@ static status_t start_devmgr(void)
     else
         printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped%s\n", r.a, r.b, r.c,
                nousb ? " (nousb: no USB drivers)" : "");
+    unsigned cards = services_claim_class(devmgr, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
+    if (cards > 1)
+        printf("init: %u HD Audio controllers: all of them the mixer's\n", cards);
+    publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
+    publish(SVC_DEVMGR_CTL, devmgr, false);
+    tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     handle_t watch;
     st = jam_handle_duplicate(devmgr, RIGHT_SAME, &watch);
     if (st == OK)
@@ -382,7 +405,7 @@ static status_t start_logd(void)
         return st;
     }
     logd_ctl = mine;
-    publish(SVC_LOGD, logd_ctl, false);
+    publish(SVC_LOGD, logd_ctl, true);   /* a channel per opener (svc.connect) */
     return OK;
 }
 
@@ -445,7 +468,7 @@ static void make_audio_channels(void)
 }
 
 /* The mixer: its server ends again (the same channels as any mixer
- * before it), and devmgr's audio channel to find the hda driver. */
+ * before it), and the sound cards' device channels to reach their drivers. */
 static status_t start_mixer(void)
 {
     const struct bootfs_view *fs;
@@ -457,16 +480,19 @@ static status_t start_mixer(void)
         svcs[MIXER].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_AUDIO, dup_of(audio_srv[0]) },
-                                { SR_AUDIO_CTL, dup_of(audio_srv[1]) },
-                                { SR_DEVMGR_AUDIO, dup_of(devmgr_a) } };
+    struct spawn_handle x[2 + INIT_MAX_CLAIMED] = { { SR_AUDIO, dup_of(audio_srv[0]) },
+                                                    { SR_AUDIO_CTL, dup_of(audio_srv[1]) } };
+    unsigned n = 2;
+    for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
+        if (devmgr_hda[k] && (x[n].h = dup_of(devmgr_hda[k])) != HANDLE_INVALID)
+            x[n++].role = SR_DEVMGR_DEVICE;   /* none: it answers "no output" */
     if (!x[0].h || !x[1].h) {
-        for (unsigned k = 0; k < 3; k++)
+        for (unsigned k = 0; k < n; k++)
             if (x[k].h)
                 jam_handle_close(x[k].h);
         return ERR_NO_RESOURCES;
     }
-    return svc_start1(MIXER, x, x[2].h ? 3 : 2);   /* no devmgr: it answers "no output" */
+    return svc_start1(MIXER, x, n);
 }
 
 /* The music player: its server end again (the same channel as any player
@@ -575,8 +601,11 @@ void services_closed(unsigned i)
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
-        jam_handle_close(devmgr_a);
-        devmgr = devmgr_q = devmgr_a = HANDLE_INVALID;
+        for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
+            if (devmgr_hda[k])
+                jam_handle_close(devmgr_hda[k]);
+        memset(devmgr_hda, 0, sizeof(devmgr_hda));
+        devmgr = devmgr_q = HANDLE_INVALID;
         publish(SVC_DEVMGR, HANDLE_INVALID, false);
         publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
@@ -622,7 +651,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     make_audio_channels();
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
-    publish(SVC_AUDIO, audio_cli[0], false);
-    publish(SVC_AUDIOCTL, audio_cli[1], false);
+    publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
+    publish(SVC_AUDIOCTL, audio_cli[1], true);
     publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
 }

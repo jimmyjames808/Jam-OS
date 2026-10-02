@@ -21,7 +21,8 @@ enum startup_role {
     SR_RESOURCE,    /* a resource (init: the root; devmgr: RES_PCI) */
     SR_DEVMGR,      /* devmgr's query channel, its server end (clients
                      * open /svc/devmgr, <devmgr.h>): STATUS, GET_SERVICE
-                     * (not an exclusive driver's), GET_DRIVER, SUPERVISION */
+                     * (not of a device with a device channel), GET_DRIVER,
+                     * SUPERVISION */
     SR_CONSOLE,     /* a client end of the console's channel (the shell,
                      * and what the shell runs: a restricted one) */
     SR_DEVMGR_CTL,  /* devmgr's control channel, its server end (every
@@ -36,10 +37,9 @@ enum startup_role {
     SR_CRASHLOG,    /* a boot after a panic only: a read-only VMO holding
                      * the panicked kernel's log (struct crashlog_header,
                      * then the text): init, and logd, which saves it */
-    SR_DEVMGR_AUDIO,/* devmgr's audio channel (devmgr: its server end; the
-                     * mixer: a client end, from init only): the query
-                     * channel's calls, and GET_SERVICE of the exclusive
-                     * drivers too (hda) */
+    SR_DEVMGR_DEVICE,/* a devmgr channel scoped to one device (a client
+                     * end, from init only: the mixer's, for the HD Audio
+                     * controller; <devmgr.h> DEVMGR_DEVICE_CHANNEL) */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };

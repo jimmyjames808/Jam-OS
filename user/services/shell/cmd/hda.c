@@ -10,8 +10,9 @@
  * same lines `hda` ends with.
  *
  * The driver is reached through the mixer (audioctl.device), never
- * devmgr: devmgr hands the driver's own channel to the mixer alone
- * (<devmgr.h>, "exclusive"), and the mixer hands out query channels,
+ * devmgr: the driver's own channel is the mixer's alone (init gives it
+ * the sound card's device channel, <devmgr.h> "Trust"), and the mixer
+ * hands out query channels,
  * which answer everything here but can't open the output stream the
  * mixer plays through (abi/idl/hda.idl, `query`). */
 #include <idl/audioctl.h>
@@ -20,7 +21,7 @@
 
 #define DUMP_WAIT   (10 * NS_PER_S)   /* a codec's dump is a few hundred verbs */
 #define DUMP_MAX    (64 * 1024)       /* the driver's dump buffer */
-#define DEVICE_WAIT (15 * NS_PER_S)   /* the mixer asks devmgr and each driver in turn */
+#define DEVICE_WAIT (15 * NS_PER_S)   /* the mixer asks devmgr, then the driver */
 #define MAX_DEVICES 8u                /* HD Audio drivers asked for at most */
 
 /* hda.info's line: the path the driver set up, or why there is none. */

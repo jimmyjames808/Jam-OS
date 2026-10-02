@@ -1,10 +1,11 @@
 /* The mixer: what its files share. main.c is the loop (one thread, one
- * port: every channel and event it serves, devmgr's channel and the
+ * port: every channel and event it serves, devmgr's device channels and the
  * driver's stream channel); streams.c the streams (the `audio` service
  * channel, each stream's channel and event, the `audioctl` control
- * channel); output.c the driver's side (finding the hda driver, its one
+ * channel); clients.c the openers' own `audio` and `audioctl` channels
+ * (svc.connect); output.c the driver's side (finding the hda driver, its one
  * output stream, the periods, the mixing); device.c a second thread for
- * audioctl.device, which calls devmgr and its services and so must not
+ * audioctl.device, which calls devmgr and the drivers and so must not
  * hold up the loop. docs/A2-PLAN.md has the design; <mixer.h> the ring.
  *
  * Time is the driver's: at the end of each period it played (2048 frames,
@@ -12,7 +13,7 @@
  * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
  * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
  * late before anything is lost. The loop's state is its own: device.c's
- * thread reads only m->devmgr and m->ctl, which never change. */
+ * thread reads only m->cards and m->ctl, which never change. */
 #pragma once
 
 #include <mixer.h>
@@ -32,6 +33,7 @@
                                 * (`play` reads its file in chunks between writes, so
                                 * a slow read is covered by what its ring holds) */
 #define HIST           4u      /* periods remembered per stream for `played` */
+#define MIXER_CARDS    4u      /* sound cards (devmgr device channels) taken at the start */
 
 /* Port keys: these, or a stream's slot with its generation. */
 #define KEY_SVC     1u
@@ -40,6 +42,9 @@
 #define KEY_OUT     4u          /* | out.gen << 8 */
 #define KEY_STREAM  0x10u       /* + slot, | gen << 8 */
 #define KEY_EVENT   0x30u       /* + slot, | gen << 8 */
+#define KEY_CLIENT  0x50u       /* + an opener's slot, | gen << 8 */
+
+#define MIXER_CLIENTS 24u       /* openers' channels at once (clients.c) */
 
 /* One period a stream gave frames to: its frames [from, from + n) went to
  * the driver's frames [at, at + n). */
@@ -51,6 +56,9 @@ struct hist {
 struct stream {
     bool        used;
     uint32_t    id;                /* for `vol`, never reused while the mixer runs */
+    uint32_t    owner;             /* the opener it counts to: 0 the shared channel, else
+                                    * 1 + its clients.c slot */
+    uint32_t    owner_gen;         /* that slot's generation then (0 for the shared one) */
     uint32_t    gen;               /* the slot's generation (its port keys) */
     char        name[16];
     handle_t    ch, vmo, event;    /* our ends */
@@ -96,9 +104,20 @@ struct out {
     uint32_t seed;         /* the 16-bit output's dither */
 };
 
+/* An opener's own `audio` or `audioctl` channel (clients.c). */
+struct client {
+    handle_t ch;        /* our end, bound PERSISTENT (0: a free slot) */
+    bool     ctl;       /* an `audioctl` channel (else `audio`) */
+    bool     pending;   /* its channel may have messages */
+    uint32_t gen;       /* the slot's generation (its port key) */
+};
+
 struct mixer {
-    handle_t      port, devmgr, svc, ctl;
+    handle_t      port, svc, ctl;
+    handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
+    unsigned      ncards;
     bool          svc_pending, ctl_pending;
+    struct client c[MIXER_CLIENTS];
     struct stream s[MIXER_MAX_STREAMS];
     struct out    out;
     int32_t       master;          /* centibels */
@@ -115,6 +134,12 @@ struct mixer {
  * channel; sets the pending flag again if more may be queued. */
 void serve_svc(struct mixer *m);
 void serve_ctl(struct mixer *m);
+/* Up to a budget of messages from an `audio` (or `audioctl`) channel ch,
+ * the shared one or an opener's (`owner`: struct stream's), OK if the
+ * budget was spent (more may be queued), else the read's status
+ * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED: its clients are gone). */
+status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner);
+status_t serve_control(struct mixer *m, handle_t ch);
 void serve_stream(struct mixer *m, struct stream *s);
 /* A stream's event fired (MIXER_SIG_DATA): take the bit down, watch again. */
 void stream_event(struct mixer *m, struct stream *s);
@@ -132,8 +157,9 @@ void stream_set_idle(struct stream *s, bool idle);
 
 /* ---- output.c ----------------------------------------------------------------- */
 
-/* The hda driver with a path to a jack, found through devmgr (kept in
- * m->out.svc). ERR_NOT_FOUND: there is none. */
+/* The hda driver of the first sound card whose driver has a path to a
+ * jack (kept in m->out.svc). ERR_NOT_FOUND: there is none;
+ * ERR_PEER_CLOSED: devmgr is gone. */
 status_t out_find(struct mixer *m);
 
 /* Open the driver's output if a stream plays and it is closed (and no
@@ -152,17 +178,35 @@ uint64_t out_position(struct mixer *m);
 /* The driver's gain in centibels (hda.get_gain), or 0 if it can't say (no
  * driver found yet: this never goes looking for one). */
 int32_t  out_device_gain(struct mixer *m);
-/* audioctl.device: the index-th hda driver devmgr runs, as a query channel
+/* audioctl.device: the index-th sound card's driver as a query channel
  * (hda.query: everything but open_output) into *out, the caller's.
- * ERR_NOT_FOUND: no such driver. Calls devmgr and its services: device.c's
- * thread calls it, never the loop. Uses only m->devmgr. */
+ * ERR_NOT_FOUND: no such driver. Calls devmgr and the driver: device.c's
+ * thread calls it, never the loop. Uses only m->cards. */
 status_t out_query(struct mixer *m, uint32_t index, handle_t *out);
 
 /* ---- device.c ----------------------------------------------------------------- */
+
+/* ---- clients.c ---------------------------------------------------------------- */
+
+/* svc.connect: a new opener's channel (`audioctl` if ctl), watched on the
+ * port; *out: the client end. ERR_NO_RESOURCES: MIXER_CLIENTS already. */
+status_t clients_connect(struct mixer *m, bool ctl, handle_t *out);
+/* The same, answered on ch to the request with txid. */
+void clients_connect_reply(struct mixer *m, handle_t ch, uint32_t txid, bool ctl);
+/* The opener a port key names, if it still holds that slot's generation. */
+struct client *clients_keyed(struct mixer *m, uint64_t key);
+/* Some opener's channel may have messages. */
+bool clients_pending(const struct mixer *m);
+/* A budget of messages from each opener's channel that may have some; a
+ * channel whose client end is gone is closed. */
+void clients_serve(struct mixer *m);
+
+/* ---- device.c (continued) ------------------------------------------------------ */
 
 struct audioctl_device_req;
 /* Start the thread that answers audioctl.device (without one, device_ask
  * answers in the loop, as slow as that is). */
 void device_init(struct mixer *m);
-/* An audioctl.device request read from m->ctl: answered by the thread. */
-void device_ask(struct mixer *m, const struct audioctl_device_req *q);
+/* An audioctl.device request read from the control channel ch (the
+ * shared one or an opener's): answered on ch by the thread. */
+void device_ask(struct mixer *m, handle_t ch, const struct audioctl_device_req *q);
