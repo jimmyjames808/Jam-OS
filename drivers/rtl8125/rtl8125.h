@@ -283,6 +283,7 @@ struct rtl {
     uint32_t tx_prod, tx_cons;    /* descriptors handed over / taken back (free-running) */
     bool     tx_on;               /* the transmitter is enabled */
     uint64_t tx_at[TX_DESCS];     /* when each descriptor was handed over (uptime, ns) */
+    uint64_t tx_wait[TX_DESCS];   /* ... and how long until it came back (ns) */
     struct rtl_kick kick;         /* the doorbell again for a descriptor still owned */
     uint32_t stall_cons;          /* the last descriptor counted as stalled, + 1 (0: none) */
     unsigned stall_dumps;         /* stall dumps logged (a few per run) */
@@ -468,6 +469,10 @@ status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len);
 unsigned tx_reap(struct rtl *t);
 /* Frames handed over and not yet taken back. */
 uint32_t tx_pending(const struct rtl *t);
+/* Descriptor seq's (tx_prod before its tx_send) wait from its doorbell to
+ * back, in ns; false while the chip still has it, or once its slot has
+ * been used again. */
+bool     tx_wait_of(const struct rtl *t, uint32_t seq, uint64_t *wait);
 void     tx_log(const struct rtl *t);
 /* "min/avg/max ms" of the frames' waits from the doorbell to their
  * descriptor back, or "none timed". */

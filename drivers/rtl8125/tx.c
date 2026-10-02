@@ -257,7 +257,8 @@ unsigned tx_reap(struct rtl *t)
             break;
         }
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        timed(&t->tx, now - t->tx_at[t->tx_cons % TX_DESCS]);
+        t->tx_wait[t->tx_cons % TX_DESCS] = now - t->tx_at[t->tx_cons % TX_DESCS];
+        timed(&t->tx, t->tx_wait[t->tx_cons % TX_DESCS]);
         if (st & RTL_TXD_ERR)
             t->tx.errors++;
         else
@@ -278,6 +279,17 @@ unsigned tx_reap(struct rtl *t)
     if (waiting)
         check_stall(t, now);
     return n;
+}
+
+bool tx_wait_of(const struct rtl *t, uint32_t seq, uint64_t *wait)
+{
+    if (!rtl_tx_allowed(t->mode, t->vlan))
+        return false;
+    uint32_t behind = t->tx_cons - seq;   /* free-running: 1..TX_DESCS when back and kept */
+    if (behind == 0 || behind > TX_DESCS || t->tx_prod - seq > TX_DESCS)
+        return false;
+    *wait = t->tx_wait[seq % TX_DESCS];
+    return true;
 }
 
 uint32_t tx_pending(const struct rtl *t)
