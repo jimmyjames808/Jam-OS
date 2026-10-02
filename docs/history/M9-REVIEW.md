@@ -130,13 +130,15 @@ Nothing High was found. What held up under a careful read:
   opener with a few slots reserved for the services init starts (dns,
   netlog), or init handing dns and netlog their own channels instead of
   the published one. Cross-cutting (devmgr, the mixer): for after M9.
-- **C. checknotx's reach (item 6).** Rules (a) and (b) are cheap grep
-  rules (no `->r` outside regs.c, tx.c and main.c's map; no `TX_RING_OFF`
-  or `txbufs` written outside tx.c and ring.c's allocation); (c) and (d)
-  need register knowledge only the PC can confirm. The e1000e could get
-  the same guard and rules, though it never runs on a real network.
-- **D. Keeping `net` across a kexec (item 3)** was fixed here because the
-  plan's own `update` workflow and crash path depend on it. If the owner
+- **C. checknotx's reach (item 6).** Parts (a) and (b) were cheap grep
+  rules and are done (rule 7); (c) and (d) need register knowledge only
+  the PC can confirm (which MAC OCP registers and which other queues can
+  start the transmitter): a guard for MAC OCP writes after the bring-up,
+  and the 8125's other queue and tail-pointer registers in
+  `rtl_write_allowed`, once their offsets are confirmed. The e1000e could
+  get the same guard and rules, though it never runs on a real network.
+- **D. Keeping `net` across a kexec (item 3)** was fixed here (196626f)
+  because the plan's own `update` workflow and crash path depend on it. If the owner
   prefers a reboot to fall back to the everyday boot (the network only
   when picked), revert that commit and instead say in README that `update`
   on the PC comes back without the network.
@@ -145,17 +147,29 @@ Nothing High was found. What held up under a careful read:
 
 | # | Outcome |
 |---|---|
-| 1 | |
-| 2 | |
-| 3 | |
-| 4 | |
-| 5 | |
-| 6 | |
+| 1 | Fixed in 19a7764: a turn with work left looks at the port without sleeping (and takes up to 32 packets a turn) instead of skipping it. Test: utest netsock_busy_client (one opener's channel kept full by a thread; the other opener's `iface` within 500 ms, pings answered meanwhile): before, ERR_TIMED_OUT after 5 s; after, the whole test 273 ms. |
+| 2 | Fixed in 596525a, the same way in bin/dns. Test: dnstest's busy check in tools/dns-test.sh (a thread floods a `/svc/dns` channel of its own while 5 new names are resolved): before, the first name timed out after 5 s; after, the slowest took 101 ms. |
+| 3 | Fixed in 196626f: `net` is a kept word (`netprobe` and `netsend` still aren't); ARCHITECTURE and TESTING say so. Design question D if the owner wants it the other way. Tests: ktest kexec_next_cmdline_vlan (fails at `"vlan=21 shell net"` before) and tools/netprobe-test.sh, whose `net` boot now reboots by kexec and wants devmgr's `net` line in both boots (1 before, 2 after). The PC run after `update` is the real check. |
+| 4 | Not a bug: lwIP refuses a raw send to a broadcast address without SOF_BROADCAST (`third_party/lwip/src/core/raw.c` 488-499, `IP_SOF_BROADCAST` in lwipopts.h), so the echo is ERR_INVALID_ARGS. f732964 adds the case to utest netsock_ping (passes before and after) so it stays that way. |
+| 5 | Fixed in 703c1b3: `net_sock_take` and `net_recvfrom` refuse a length over 1472 (ERR_OUT_OF_RANGE). Test: utest netsock_len_lies (a hand-made netstack answering 1473 and 65535 bytes): before, OK with len 1473. |
+| 6 | (a) and (b) fixed in e5fd244: checknotx rule 7 (the mapping named only in regs.c, tx.c and main.c; the transmit ring and buffers only in tx.c, ring.c and rtl8125.h), self-checked on three new offences in tools/checknotx-tests/bad.c. (c), (d) and the e1000e: design question C. |
 | 7 | Not fixed: design question A. |
-| 8 | |
-| 9 | |
+| 8 | Fixed in 6a90cea: GTCR's test mode bits (15:13) cleared with the advertisement bits. No test: only the PC's PHY has the register. |
+| 9 | Fixed in 8263fc9: the first 12 changes, then one in 64, as the drivers. Test: utest netdrv_link_flap (40 changes over the fake driver, netstack's link lines counted in the kernel log): 40 before, 11 after. |
 | 10 | Not fixed: design question B. |
-| 11 | Not fixed: the known class (ARCH-CHECK, items 0 and 8); netstack answers at once in practice. |
-| 12 | |
+| 11 | Not fixed: the known class (ARCH-CHECK items 0 and 8); netstack answers at once in practice. |
+| 12 | Fixed in 7ce4507: `--mac <the Mac adapter's MAC>`; a frame from neither address fails. Test: the self-test (an untagged frame from a third address fails with `--mac`, passes without it as before). For the next direct-cable run: add `--mac` with en11's address. |
 | 13 | Not fixed: only a broken netstack reaches it, and it delays only its own card. |
-| 14 | Covered by the tests of 1-3 where QEMU can. |
+| 14 | Tests added where QEMU can see it: 1, 2, 3 (the kexec of a `net` boot), 5, 9. The RTL8125's own paths (its rings past a lap, the tally check, `net` across `update`) stay the PC's to show. |
+
+### Tests run (QEMU, 2 CPUs, the owner's quick tier)
+
+On the branch's last fix (7ce4507): `make`, `make check` (checknotx's 7
+rules self-checked, the peer's and the pcap check's self-tests); the
+`init` run (utest 214 passed, run complete: no problems); each network
+area script once: netstack, net (vlan, vlan-off, rx), ping, dns, netlog,
+update, update-net, netprobe, net-vlan, rxsoak: all PASS. Each fix's own
+test was also run before its fix, failing as the outcomes say; the kexec
+ktest alone with `ktest=kexec_next_cmdline`. Not run (the owner's rule):
+the full ktest, the soak. Only the PC can show items 3 (`update` and a
+reboot on the network boot), 7 and 8.
