@@ -39,6 +39,9 @@ extern bool init_netprobe;
 /* The option word "netsend" (main.c): the same for the RTL8125's ARP send
  * test (devmgr gets it only without "netprobe"). */
 extern bool init_netsend;
+/* The option word "net" (main.c): the same for the RTL8125's netdev
+ * service (devmgr gets it only without "netprobe" and "netsend"). */
+extern bool init_net;
 /* The option word "bootdisk=0x<id>" (main.c; NULL: none): the MBR disk id
  * the machine booted from, passed on to devmgr as it is. */
 extern const char *init_bootdisk;

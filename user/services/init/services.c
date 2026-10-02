@@ -369,6 +369,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "netprobe";
     else if (init_netsend)
         argv[argc++] = "netsend";
+    else if (init_net)
+        argv[argc++] = "net";
     if (init_vlan)
         argv[argc++] = init_vlan;
     if (init_bootdisk)

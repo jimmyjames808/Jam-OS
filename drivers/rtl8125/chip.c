@@ -352,15 +352,26 @@ void chip_autoneg(struct rtl *t)
             a & (ANAR_PAUSE | ANAR_PAUSE_ASYM) ? "ADVERTISED" : "not advertised");
 }
 
+uint32_t chip_link_speed(uint16_t ps, bool *full)
+{
+    if (!(ps & RTL_PHYSTAT_LINK)) {
+        *full = false;
+        return 0;
+    }
+    uint32_t speed = ps & RTL_PHYSTAT_2500 ? 2500 : ps & RTL_PHYSTAT_1000 ? 1000
+                   : ps & RTL_PHYSTAT_100 ? 100 : ps & RTL_PHYSTAT_10 ? 10 : 0;
+    *full = (ps & RTL_PHYSTAT_FDX) || speed >= 1000;   /* rge_ifmedia_sts */
+    return speed;
+}
+
 void chip_link_str(uint16_t ps, char *buf, size_t size)
 {
     if (!(ps & RTL_PHYSTAT_LINK)) {
         drv_snprintf(buf, size, "down");
         return;
     }
-    unsigned speed = ps & RTL_PHYSTAT_2500 ? 2500 : ps & RTL_PHYSTAT_1000 ? 1000
-                   : ps & RTL_PHYSTAT_100 ? 100 : ps & RTL_PHYSTAT_10 ? 10 : 0;
-    bool full = (ps & RTL_PHYSTAT_FDX) || speed >= 1000;   /* rge_ifmedia_sts */
+    bool full;
+    uint32_t speed = chip_link_speed(ps, &full);
     drv_snprintf(buf, size, "%u %s%s%s", speed, full ? "full" : "half",
                  ps & RTL_PHYSTAT_RXFLOW ? ", pause rx" : "",
                  ps & RTL_PHYSTAT_TXFLOW ? ", PAUSE TX" : "");
@@ -390,6 +401,7 @@ bool chip_link_poll(struct rtl *t)
         return t->link;   /* no change (or the chip is gone: keep what we knew) */
     if (up != t->link && t->link_at)
         t->ev.link_changes++;   /* changes after the first link-up */
+    t->link_seq++;              /* every change, speed and duplex too (netdev.info) */
     if (up && !t->link_at)
         t->link_at = drv_clock_ns();
     t->link = up;

@@ -270,10 +270,11 @@ static bool run_tests(void)
 
 /* init's option words (at most INIT_WORDS_MAX): "splash" (splash_boot);
  * `hidboot`, which init passes on to devmgr and devmgr to every hid (mice
- * stay in the boot protocol); `netprobe` or `netsend` (one of them; the
- * probe if both), which init passes on to devmgr and devmgr to the
- * RTL8125's driver: its listen-only probe, or its ARP send test (no other
- * boot binds the network chip; a reboot doesn't keep it); vlan=<id> (only
+ * stay in the boot protocol); one of `netprobe`, `netsend` or `net` (in
+ * that order of precedence), which init passes on to devmgr and devmgr to
+ * the RTL8125's driver: its listen-only probe, its ARP send test, or its
+ * netdev service for netstack (no other boot binds the network chip; a
+ * reboot doesn't keep it); vlan=<id> (only
  * when there is a VLAN: boot_vlan), which init passes on to devmgr and
  * devmgr to every network driver; bootdisk=0x<id>, which init passes on
  * to devmgr (the boot disk); `splashhang` (a test's: the splash never
@@ -291,6 +292,8 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
         words[n++] = "netprobe";
     else if (cmdline_has("netsend"))
         words[n++] = "netsend";
+    else if (cmdline_has("net"))
+        words[n++] = "net";
     if (boot_vlan)
         words[n++] = vlan_word;
     static char disk_word[24];
