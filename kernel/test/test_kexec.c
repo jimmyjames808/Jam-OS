@@ -128,9 +128,14 @@ KTEST(kexec_handoff_check)
     KT_ASSERT(kexec_handoff_check(h, sizeof(*h) - 8) != NULL);   /* too short */
     h->cmdline[0] = 'S';   /* changed after the checksum */
     KT_ASSERT(kexec_handoff_check(h, sizeof(*h)) != NULL);
+    valid_handoff(h);   /* with a framebuffer: 800x600, 32 bpp, 3200 bytes a line */
+    h->fb = (struct kexec_fb){ .phys = 0x80000000, .width = 800, .height = 600, .pitch = 3200,
+                               .bpp = 32 };
+    reseal(h);
+    KT_ASSERT(kexec_handoff_check(h, sizeof(*h)) == NULL);
 
     /* Each one wrong, with a checksum that matches: the field checks. */
-    for (int k = 0; k < 14; k++) {
+    for (int k = 0; k < 16; k++) {
         valid_handoff(h);
         switch (k) {
         case 0:  h->magic ^= 1; break;
@@ -148,6 +153,13 @@ KTEST(kexec_handoff_check)
                  break;
         case 12: h->hhdm_offset = 0x1000; break;
         case 13: h->module_count = KEXEC_MAX_MODULES + 1; break;
+        case 14: /* the pitch in pixels, not bytes: lines would overlap */
+                 h->fb = (struct kexec_fb){ .phys = 0x80000000, .width = 800, .height = 600,
+                                            .pitch = 800, .bpp = 32 };
+                 break;
+        case 15: h->fb = (struct kexec_fb){ .phys = 0x80000000, .width = 800, .height = 600,
+                                            .pitch = 3200, .bpp = 0 };
+                 break;
         }
         reseal(h);
         if (kexec_handoff_check(h, sizeof(*h)) == NULL)

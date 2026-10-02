@@ -120,8 +120,10 @@ const char *kexec_handoff_check(const struct kexec_handoff *h, uint64_t len)
     if (!terminated(h->loader_name, KEXEC_STR) || !terminated(h->cmdline, KEXEC_CMDLINE))
         return "a string is not terminated";
     const struct kexec_fb *f = &h->fb;
+    /* A line is pitch bytes: at least width pixels of bpp bits each. */
     if (f->reserved[0] || f->reserved[1] || f->reserved[2] ||
-        (f->phys && (!f->width || !f->height || f->pitch < f->width)))
+        (f->phys && (!f->width || !f->height || !f->bpp || f->bpp % 8 || f->bpp > 32 ||
+                     f->pitch < (uint64_t)f->width * (f->bpp / 8u))))
         return "a bad framebuffer";
     const char *bad = check_memmap(h);
     return bad ? bad : check_modules(h);
