@@ -252,6 +252,62 @@ bool t_netdev_ring_one_thread(void);
 bool t_netdev_ring_exchange(void);
 bool t_netdev_vlan_word(void);
 
+/* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
+ * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the
+ * resolver's messages, its queries and its cache (user/services/dns/);
+ * netfuzz.c and nettest.h: what they share. */
+bool t_dhcp_build(void);
+bool t_dhcp_parse_sample(void);
+bool t_dhcp_parse_truncated(void);
+bool t_dhcp_parse_options(void);
+bool t_dhcp_parse_addresses(void);
+bool t_dhcp_overload(void);
+bool t_dhcp_fuzz(void);
+bool t_dhcpc_lease_cycle(void);
+bool t_dhcpc_retransmit(void);
+bool t_dhcpc_nak(void);
+bool t_dhcpc_wrong_replies(void);
+bool t_dhcpc_probe(void);
+bool t_dhcpc_reboot(void);
+bool t_dhcpc_times(void);
+bool t_dhcpc_stop(void);
+bool t_dhcpc_hostile(void);
+bool t_dns_names(void);
+bool t_dns_parse_samples(void);
+bool t_dns_parse_answers(void);
+bool t_dns_names_hostile(void);
+bool t_dns_parse_hostile(void);
+bool t_dns_fuzz(void);
+bool t_dnsres_basic(void);
+bool t_dnsres_retries(void);
+bool t_dnsres_slow_peer(void);
+bool t_dnsres_cname(void);
+bool t_dnsres_failures(void);
+bool t_dnsres_ports(void);
+bool t_dnsres_cache(void);
+bool t_dnsres_hostile(void);
+
+/* update.c: the update manifest's and protocol's parsers (<update.h>,
+ * <updwire.h>); updfetch.c: the fetcher's window against a fake server
+ * (<updfetch.h>); netlog.c: netlog's datagrams and sender (<netlog.h>). */
+bool t_update_manifest(void);
+bool t_update_manifest_refusals(void);
+bool t_update_manifest_damage(void);
+bool t_updwire_golden(void);
+bool t_updwire_hostile(void);
+bool t_updfetch_clean(void);
+bool t_updfetch_lossy(void);
+bool t_updfetch_snapshot_gone(void);
+bool t_updfetch_failures(void);
+bool t_netlog_golden(void);
+bool t_netlog_hostile(void);
+bool t_netlog_whole_log(void);
+bool t_netlog_mac_away(void);
+bool t_netlog_ring_dropped(void);
+bool t_netlog_forged_acks(void);
+bool t_netlog_crash_stream(void);
+bool t_netlog_klog_source(void);
+
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);

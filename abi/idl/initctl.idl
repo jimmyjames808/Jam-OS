@@ -56,3 +56,14 @@ protocol initctl 18
 # ERR_INVALID_ARGS: not a kernel and a boot image); the stored copy is
 # then unchanged. The shell's channel only.
 7  kernel_load  () -> (u64 kernel_bytes, u64 bootfs_bytes, u32 read_ms)
+# A channel for one offer of a fetched build (<update.h>): the caller
+# writes one struct update_offer on it with the kernel's and the boot
+# image's VMOs; init copies both, checks each length and SHA-256 against
+# the manifest in the offer, makes them the kernel's stored copy
+# (kexec_load, this boot's command line) and notes /esp's files as seen,
+# so `reboot` starts the fetched build; then it writes one struct
+# update_answer and closes the channel. Any refusal leaves the stored
+# kernel as it was. A newer offer channel closes an older one. Nothing is
+# written to the stick. The shell's channel only (the tests' programs
+# that ask for `svc init`; bin/update's channel comes from init itself).
+8  update_offer  () -> (handle offer)

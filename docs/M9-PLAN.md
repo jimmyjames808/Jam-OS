@@ -1,14 +1,13 @@
 # M9 plan: networking
 
-Status: the plan (2026-10-02, on main 2079f35, M8.6 done), with the
-owner's answers. **Stage 0, the listen-only probe, is built and ran on
-the PC** ([results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)).
-**Stage 1 part A (the netdev contract, `vlan=`) and stage 3a (netstack's
-core without a device)** ([below](#stage-3a-built-the-core-without-a-device))
-are merged.
-R1's first half (the transmit path, the VLAN filter and the `netsend`
-test) is built and waits for its PC run
-([below](#r1-progress-the-full-driver-without-the-netdev-server)).
+Status (2026-10-02): the plan, with the owner's answers. **Built and
+merged:** stage 0 (the listen-only probe; it ran on the PC:
+[results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)), stage 1
+(the netdev contract, `vlan=`, the QEMU harness), stage 3a (netstack's
+core on lwIP), R1's first half (the transmit path and the `netsend` test,
+waiting for its PC run), stage 5a (the DHCP and DNS cores) and stages 6a
+and 7a (netlog's and `update`'s cores, init's update check, the Mac
+tools). The sections below say what each one built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -668,6 +667,80 @@ gets a process that holds almost nothing.
   another program pings, and the driver: netstack not reading its
   receive ring makes the driver drop and count, never wait.
 
+#### Stage 5a, built: the DHCP and DNS cores
+
+Built 2026-10-02, before sockets exist: everything in DHCP and DNS that
+parses the network's bytes or keeps protocol state, as libraries with
+no I/O of their own, and their tests. `bin/dhcp` and `bin/dns` are
+built but only say "not built yet" and end; nothing starts them. The
+files: `user/services/dhcp/` (`dhcp.h`, `msg.c`: build and parse,
+`client.c`: the state machine), `user/services/dns/` (`dns.h`, `msg.c`:
+names, query, reply checks, `cache.c`, `resolver.c`: the queries in
+flight), `user/include/netbytes.h` (big-endian loads and stores, host
+order addresses); the tests are utest's
+([TESTING.md](TESTING.md#the-dhcp-and-dns-cores-utest)). What they do,
+where the plan above left it open:
+
+- **DHCP:** options 1, 3, 6, 51, 54, 58, 59 read, plus 53 and 52
+  (overload: options in the file and sname fields); a repeated option is
+  one long option (RFC 3396). Every message sent is 300 bytes with
+  option 61 (type 1 and the MAC), the host name `jamos`, the parameter
+  list and option 57 (1500). DISCOVER and the first REQUEST ask for a
+  broadcast answer (no address yet). Retransmits at 4, 8, ... 64 s, each
+  +- 1 s; four REQUESTs, then a new DISCOVER; after a NAK while
+  requesting a wait of 2 s doubling to 64 s; renewing and rebinding
+  retry at half the time left (at least 60 s). INIT-REBOOT when started
+  with the last address. The RFC 5227 ARP probe is a hook (none: no
+  probe; no answer in 10 s: the address is free); a conflict sends a
+  DECLINE and waits 10 s. A lease under 10 s counts as 10 s; T1 and T2
+  default to 1/2 and 7/8; the times count from the exchange's first
+  REQUEST.
+- **DNS:** each name in flight has **a socket of its own**, on a random
+  local port (1024 and up), and a random id, so a forged reply must
+  guess about 32 bits, not 16 (the plan said one socket); so at most 16
+  names are in flight, netstack's per-opener socket limit. Askers of a
+  name in flight share its query (8 at most). Tries at 1, 2, 3 and 4 s
+  over the servers in turn (10 s in all), each keeping its id and port;
+  SERVFAIL moves to the next server at once; TC is ERR_NOT_SUPPORTED (no
+  TCP); CNAMEs followed in one reply and over several, 8 at most.
+  Answers are cached under the name asked (32 names, TTL at most a day);
+  failures are not cached. An IPv4 literal is answered without a query.
+
+**What 5b connects** (the edge is a struct of function pointers each
+library calls; the caller's loop feeds the library and waits for its
+deadline, so the service-loop rule holds by construction):
+
+- `bin/dhcp` (holds netctl only): `dhcp_init(c, io, mac)`;
+  `dhcp_start(c, now, last_addr)` once the link is up (again with
+  `c->lease.addr` after the link or netstack comes back);
+  `dhcp_input(c, now, msg, len)` for each datagram on netctl's DHCP
+  socket; `dhcp_tick(c, now)` at `dhcp_deadline(c)`;
+  `dhcp_stop(c, now, true)` on an orderly shutdown. Its `struct
+  dhcp_io`: `send(ctx, to, msg, len)` from port 68 to port 67 of `to`
+  (255.255.255.255 or the server); `bound(ctx, lease)`: netctl's
+  set_ipv4 (address, mask, router) and set_dns, and the lease logged
+  once; `unbound(ctx, why)`: netctl's clear, logged; `probe(ctx, addr)`
+  (may stay NULL), answered with `dhcp_probe_done(c, now, addr,
+  conflict)`; `random(ctx)`.
+- `bin/dns` (holds `/svc/net` and its `/svc/dns` server end):
+  `dns_init(r, io)`; `dns_set_servers(r, servers, n)` from netstack's
+  DNS list, again whenever it changes; `resolve` (a `later` method) calls
+  `dns_resolve(r, now, name, cookie)` with a cookie naming the request:
+  an error is the reply at once, OK means `answer` brings it; an asker
+  whose channel closes: `dns_cancel(r, cookie)` for each of its
+  requests; `dns_input(r, now, &datagram)` for each datagram on any of
+  its sockets (local port, source address and port, bytes);
+  `dns_tick(r, now)` at `dns_deadline(r)`. Its `struct dns_io`:
+  `send(ctx, port, server, msg, len)`: open a UDP socket on `port` at its
+  first use (ERR_ALREADY_BOUND if taken: the resolver picks another),
+  send to the server's port 53; `release(ctx, port)`: close it;
+  `answer(ctx, cookie, st, addr, n, ttl)`: the `resolve` reply;
+  `random(ctx)`.
+- **Randomness:** libos has no random source yet. DNS ids and ports are
+  only as unguessable as `random`: 5b needs a real one (RDRAND, which
+  works in user space, checked by CPUID first; or one from the kernel).
+  A fixed seed would make forged answers easy.
+
 ### netlog: the log over UDP to the Mac
 
 - **bin/netlog** (planned user/services/netlog), started by init in
@@ -793,6 +866,95 @@ QEMU at once; main frozen while tracks run):
 
 Merge order: 0, 1, 2, 3, 4, then 5, 6, 7 as they finish, R1 when its PC
 run passes, 8, 9.
+
+## Stages 6a and 7a, built: netlog and update without the network
+
+Built 2026-10-02 (before sockets exist), so stages 6 and 7 split in two:
+6a/7a, everything that doesn't need `/svc/net`; 6b/7b, the programs that
+use it. What is there, and how it differs from the sections above:
+
+- **The manifest** ([`<update.h>`](../user/include/update.h), parser
+  `user/lib/update.c`): six lines, `jamos-update 1`, `version`, `git`,
+  `kernel <size> <sha256>`, `bootfs <size> <sha256>`, `signature` (no
+  value: a manifest whose signature line has one is refused,
+  ERR_NOT_SUPPORTED, until signing is built; a signature will cover the
+  bytes before its line). At most 1024 bytes, each file at most 32 MiB.
+- **init's check** (`user/services/init/update.c`): a new initctl method,
+  `update_offer`, hands out an offer channel; the sender writes one
+  `struct update_offer` (the manifest as fetched, each file's length, two
+  VMO handles); init copies each file into a VMO of its own, hashing the
+  bytes it writes, checks lengths and SHA-256s, calls `kexec_load` (this
+  boot's command line) and `reboot_keep_stored()` (reboot.c: `/esp`'s
+  files noted as seen), answers one `struct update_answer` and closes the
+  channel. Measured in QEMU: 530 ms for a 9 MB build.
+- **The protocol** ([`<updwire.h>`](../user/include/updwire.h)): a
+  20-byte request (snapshot, file 0/1/2, offset, length <= 1400) and a
+  24-byte reply header (the same, a status OK/GONE/RANGE/BAD, the file's
+  size). **The fetcher's window** ([`<updfetch.h>`](../user/include/updfetch.h)):
+  32 requests in flight, 300 ms before one is sent again, 10 sends at
+  most, the manifest again when the snapshot is gone (3 times at most); a
+  reply is stored only if it matches a request in flight exactly.
+- **netlog's core** ([`<netlog.h>`](../user/include/netlog.h)): the
+  datagram as planned plus two fields: the offset the PC was last acked
+  (a receiver that lost its files skips to it with a note) and a sequence
+  number (the receiver counts lost datagrams). Text is cut after the last
+  newline that fits; at most 16 datagrams per poll; a 500 ms first wait
+  doubling to 30 s; after 3 waits without an answer it says so once and
+  sends one datagram per try. Its sources: a klog reader, and the crash
+  log VMO (`netlog_crash_source`, checked with `crashlog_header_ok`).
+- **The Mac's tools**: `tools/update-server.py` (also `--manifest`) and
+  `tools/netlog-recv.py`, each with `--self-test`. The server waits until
+  both files have been unchanged for 1 s before a snapshot, but a snapshot
+  taken while `make` is between writing the kernel and the boot image
+  still pairs a new kernel with an old image: run `update` after `make`
+  has finished.
+- **Tests:** utest's `update_*`, `updwire_*`, `updfetch_*`, `netlog_*`;
+  `tools/update-test.sh` (init's check fed by `bin/updtest` from files);
+  the two self-tests ([TESTING.md](TESTING.md#area-scripts)).
+
+**The edges 7b connects:**
+1. `bin/update` (user/services/update/): a UDP socket from `/svc/net`
+   to `net.host`:5022, `updfetch_start`, then a loop of
+   `updfetch_poll(now)` (its return is the receive deadline) and
+   `updfetch_reply` for each datagram from the server's address. Its io:
+   `send` = the socket's send_to; `begin` = two VMOs of the manifest's
+   sizes, page-rounded (made again after a restart); `store` =
+   `jam_vmo_write`. At DONE it writes one `struct update_offer` on its
+   offer channel (the manifest bytes `begin` was given) and waits for
+   the `struct update_answer`, as `user/tests/updtest/main.c`'s `offer()`
+   does.
+2. initctl `update` (a `later` method, the next ordinal) in ctl.c: init
+   calls `update_offer_new()` itself, starts `bin/update` with `/svc/net`,
+   the server's address and the client end, and answers the pending txn
+   from `update_event()` (which today answers only the offer channel: it
+   needs a hook that hands the answer to ctl.c too). Or the shell makes
+   the offer channel (`initctl.update_offer`) and starts `bin/update`
+   itself; then init needs no change at all.
+3. The shell's `update [-n]`: the running version (sysinfo) and the
+   answer's version and git hash, then `reboot`. The running build's git
+   hash is nowhere on the PC today.
+4. tools/update-test.sh's network run: tools/netpeer.py answers port 5022
+   with `Server(kernel, bootfs, sock=None, ...).answer(dgram)` from
+   update-server.py (no socket needed); build B is the marked boot image
+   the script already makes.
+
+**The edges 6b connects:**
+1. `bin/netlog` (user/services/netlog/): `wait_up` on `/svc/net`, a UDP
+   socket to `net.host`:5021, the boot id from `wallclock_get` (UTC now
+   minus uptime; 0 if the clock isn't set), `netlog_klog_source` over a
+   klog reader, `netlog_start`; with a crash log, `netlog_crash_source`
+   and `netlog_add_crash`. The loop: `netlog_poll(now)` gives the
+   deadline; wait for the reader's `SIG_READABLE` or a datagram until
+   then; `netlog_ack` for each datagram from `net.host`:5021 only. io.say
+   is `printf`.
+2. init (net.c, stage 3's file): start it in shell mode when `net.host`
+   is set and netlog isn't off, with the root reduced to
+   `RIGHT_ROOT_KLOG`, `/svc/net`, and a read-only duplicate of
+   `SR_CRASHLOG` taken before lastboot.c lets the log go.
+3. tools/net-test.sh's `netlog` scenario: tools/netpeer.py answers port
+   5021 with netlog-recv.py's `Receiver(folder, sock=None).handle(dgram)`
+   (it returns the ack) and the test compares the file with the boot's
+   log from its first line, the receiver started late and paused.
 
 ## Where tracks meet
 
