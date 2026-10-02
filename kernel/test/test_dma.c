@@ -246,6 +246,24 @@ KTEST(dma_cap_owner_rules)
     kobject_unref(b);
 }
 
+/* dma_cap_bus_master takes on (1) or off (0): anything else is refused
+ * before the cap is looked at (fail closed), here on an unbound cap, which
+ * would otherwise answer ERR_NOT_SUPPORTED. */
+KTEST(dma_cap_bus_master_refuses_other_values)
+{
+    struct kobject *u;
+    KT_EQ(dma_cap_create(&u), OK);
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t h;
+    struct khandle kh = khandle_from_new(u, DMA_CAP_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &h), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, h, 2), ERR_INVALID_ARGS);
+    KT_EQ(sys_dma_cap_bus_master(&t, h, 0x100), ERR_INVALID_ARGS);
+    KT_EQ(sys_dma_cap_bus_master(&t, h, 1), ERR_NOT_SUPPORTED);   /* unbound */
+    handle_table_destroy(&t);
+}
+
 KTEST(dma_quarantine_phys_and_clean_close)
 {
     struct pci_dev *d = edu();

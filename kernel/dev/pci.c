@@ -217,10 +217,18 @@ static void add_function(const struct ecam_seg *s, uint8_t bus, uint8_t dev, uin
         in->flags |= PCI_INFO_BRIDGE;
 }
 
-static void walk_bus(struct ecam_seg *s, uint8_t bus, int depth);
+/* Put bus on the walk's list (marked seen at once, so each bus goes on it
+ * at most once and the list never holds more than 256). */
+static void walk_push(struct ecam_seg *s, uint8_t bus, uint8_t *todo, unsigned *n)
+{
+    if (bus < s->bus_start || bus > s->bus_end || bus_seen(s, bus))
+        return;
+    s->visited[bus / 8] |= 1u << (bus % 8);
+    todo[(*n)++] = bus;
+}
 
-/* Follow each bridge on `bus` to its secondary bus, in device order. */
-static void walk_children(struct ecam_seg *s, uint8_t bus, int depth)
+/* Put each bridge's secondary bus on `bus` on the walk's list. */
+static void walk_children(struct ecam_seg *s, uint8_t bus, uint8_t *todo, unsigned *n)
 {
     for (uint8_t dev = 0; dev < 32; dev++) {
         volatile uint8_t *cfg0 = fn_cfg(s, bus, dev, 0);
@@ -239,21 +247,16 @@ static void walk_children(struct ecam_seg *s, uint8_t bus, int depth)
             /* The firmware's numbers only: an unconfigured (0) or
              * nonsensical range is skipped, never assigned. */
             if (sec > bus && sec <= sub)
-                walk_bus(s, sec, depth + 1);
+                walk_push(s, sec, todo, n);
         }
     }
 }
 
-static void walk_bus(struct ecam_seg *s, uint8_t bus, int depth)
+/* Every function on one bus into the table (its ECAM mapped first). */
+static void walk_one_bus(struct ecam_seg *s, uint8_t bus)
 {
-    if (bus < s->bus_start || bus > s->bus_end || bus_seen(s, bus) || depth > 64)
-        return;
-    s->visited[bus / 8] |= 1u << (bus % 8);
     if (!s->bus_va[bus])
         s->bus_va[bus] = vmm_map_mmio(s->phys + ((uint64_t)bus << 20), 1u << 20);
-
-    /* This bus's functions first, then each bridge's secondary bus (the
-     * table is sorted by address afterwards anyway). */
     for (uint8_t dev = 0; dev < 32; dev++) {
         volatile uint8_t *cfg0 = fn_cfg(s, bus, dev, 0);
         if (raw_read(cfg0, CFG_VENDOR, 2) == 0xffff)
@@ -263,7 +266,22 @@ static void walk_bus(struct ecam_seg *s, uint8_t bus, int depth)
             if (raw_read(fn_cfg(s, bus, dev, fn), CFG_VENDOR, 2) != 0xffff)
                 add_function(s, bus, dev, fn);
     }
-    walk_children(s, bus, depth);
+}
+
+/* A segment from its start bus: each bus's functions, then the buses its
+ * bridges lead to, from a list rather than by recursion (the kernel has
+ * none). The order buses are walked in doesn't matter: the table is
+ * sorted afterwards. */
+static void walk_segment(struct ecam_seg *s)
+{
+    uint8_t todo[256];
+    unsigned n = 0;
+    walk_push(s, s->bus_start, todo, &n);
+    while (n) {
+        uint8_t bus = todo[--n];
+        walk_one_bus(s, bus);
+        walk_children(s, bus, todo, &n);
+    }
 }
 
 static uint64_t bdf_key(const struct pci_dev *d)
@@ -518,7 +536,7 @@ void pci_init(void)
         return;
     }
     for (uint32_t i = 0; i < nsegs; i++)
-        walk_bus(&segs[i], segs[i].bus_start, 0);
+        walk_segment(&segs[i]);
     sort_table();
 
     for (uint32_t i = 0; i < ndevs; i++)

@@ -163,6 +163,33 @@ KTEST(console_klog_read_after_gap)
     kobject_unref(r);
 }
 
+/* A reader that wants only the recent log (the console after a restart:
+ * the last 256 KiB, not the whole 4 MiB ring) asks where the log ends with
+ * a read past it, cap 0 (the sink is never called), then reads from a
+ * little before that end. */
+static status_t refuse_sink(void *ctx, uint64_t off, const char *text, size_t n)
+{
+    (void)ctx, (void)off, (void)text, (void)n;
+    return ERR_INTERNAL;
+}
+
+KTEST(console_klog_end_then_recent)
+{
+    struct kobject *r;
+    KT_EQ(klog_reader_create(NULL, &r), OK);
+    kprintf("console_klog_end_then_recent: a line to read back .....................\n");
+    uint64_t before = klog_head(), end = 0, done = 1;
+    KT_EQ(klog_reader_read_to(r, UINT64_MAX, 0, refuse_sink, NULL, &end, &done), OK);
+    KT_EQ(done, 0);
+    KT_ASSERT(end >= before && end <= klog_head());   /* live: others may log meanwhile */
+    char buf[64];
+    uint64_t first;
+    KT_ASSERT(end >= sizeof(buf));
+    KT_EQ(klog_reader_read(r, end - sizeof(buf), buf, sizeof(buf), &first), sizeof(buf));
+    KT_EQ(first, end - sizeof(buf));
+    kobject_unref(r);
+}
+
 /* Take the screen, fail a second take, give it back by closing the
  * owner's last handle, and again by tearing down a handle table that holds
  * it (what a dying owner's process does). */

@@ -32,6 +32,7 @@
 #include <jam/serial.h>
 #include <jam/smp.h>
 #include <jam/string.h>
+#include <jam/sysinfo.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
 #include <jam/wallclock.h>
@@ -83,7 +84,6 @@ static void print_boot_info(const struct boot_info *bi)
     kprintf("rsdp:        %lx\n", bi->rsdp_phys);
     kprintf("cpus:        %u from loader (bsp lapic %u, %s)\n", bi->cpu_count,
             bi->bsp_lapic_id, bi->x2apic ? "x2APIC" : "xAPIC");
-
 }
 
 static struct boot_info *boot;
@@ -146,7 +146,6 @@ static bool mode_word_given(void)
     return false;
 }
 
-/* Runs on the kernel's own stack, with its own page tables. */
 /* The boot splash (bin/splash) plays on a plain boot: the shell mode
  * without the safe mode's `nousb` or the soak test's `soak`, and without
  * the boot words `verbose` or `nosplash`, which show the text log instead.
@@ -173,13 +172,11 @@ static void timer_check_thread(void *arg)
     timer_check_ok = smp_report(1000, true);
 }
 
-_Noreturn static void kmain_stage2(void *arg)
+/* The disk the machine booted from: its MBR id from the loader, or after a
+ * kexec from the bootdisk= word (before the stored kernel is armed: its
+ * command line carries it). */
+static void boot_disk_init(void)
 {
-    (void)arg;
-    uint64_t total, free;
-    pmm_stats(&total, &free);
-    kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
-    /* Before the stored kernel is armed: its command line carries it. */
     boot_disk = boot->boot_disk_id ? boot->boot_disk_id
                                    : (uint32_t)cmdline_get_u64("bootdisk", 0, 0);
     if (boot_disk)
@@ -187,15 +184,12 @@ _Noreturn static void kmain_stage2(void *arg)
                 boot->boot_disk_id ? "from the loader" : "from the kernel before");
     else
         kprintf("boot disk:   no MBR disk id (devmgr takes the first Jam OS disk)\n");
-    bootfs_init(boot);   /* only needs the heap; before the tests that use it */
-    /* After a kexec: the previous kernel's record (did it panic?) and log,
-     * before anything could panic into a stored kernel (kexec.h). */
-    crashlog_init(boot);
+}
 
-    if (cmdline_has("selftest"))
-        selftest_run();
-    selftest_crash(boot->cmdline);
-
+/* ACPI, the local APIC and the clocks (TSC, the wall clock), then how
+ * fast the screen redraws. */
+static void clocks_init(void)
+{
     acpi_init(boot->rsdp_phys);
     lapic_init_bsp(boot->x2apic);
     tsc_calibrate_with_loader(boot->tsc_hz_loader);
@@ -208,8 +202,14 @@ _Noreturn static void kmain_stage2(void *arg)
         kprintf("fbcon: %ux%u, full-screen redraw takes %lu.%03lu ms, mapped %s\n",
                 boot->fb.width, boot->fb.height, redraw_us / 1000, redraw_us % 1000,
                 vmm_cache_type(vmm_kernel_pml4(), (uint64_t)boot->fb.virt));
+}
+
+/* The scheduler (this code becomes thread "main"), interrupts, the timer
+ * and the other CPUs; then the next boot's stored kernel. */
+static void cpus_init(void)
+{
     smp_init_bsp(boot);
-    sched_init_bsp();   /* this code is now thread "main" */
+    sched_init_bsp();
     ipi_init();
     ioapic_init();
     serial_start_irq();   /* COM1 output from its transmit interrupt */
@@ -218,26 +218,13 @@ _Noreturn static void kmain_stage2(void *arg)
     smp_start_aps(boot);
     irq_enable();
     kexec_load_stored();   /* the next boot's kernel into its region (kexec.h) */
+}
 
-    bool nousb = cmdline_has("nousb");
-    bool shell = cmdline_has("shell") || nousb || !mode_word_given();
+/* The test, benchmark and stress entries the command line names, in
+ * their order; false if one failed. */
+static bool run_tests(void)
+{
     bool ok = true;
-    struct thread *timer_check = NULL;
-    if (shell) {
-        kprintf("measuring ticks on every CPU for 1 s, next to user space...\n");
-        timer_check = thread_create("timer check", timer_check_thread, NULL, PRIO_DEFAULT);
-    } else {
-        kprintf("measuring ticks on every CPU for 1 s...\n");
-        ok = smp_report(1000, false);
-    }
-    /* PCI enumeration and the resource tree, once every CPU is online
-     * (the vector allocator spreads MSIs over them). */
-    pci_init();
-    resource_init();
-    if (cmdline_has("pcilist"))
-        pci_report();
-    if (cmdline_has("selftest"))
-        selftest_run_smp();
 #ifdef JAM_NO_KTESTS
     if (cmdline_has("ktest") || ktest_prefix() || cmdline_has("bench")) {
         kprintf("ktest: this kernel was built without tests or benchmarks (make KTESTS=0)\n");
@@ -258,53 +245,68 @@ _Noreturn static void kmain_stage2(void *arg)
     if (stress_s)
         ok &= stress_run(stress_s);
     selftest_crash_smp();
-    /* User space: init from bootfs, on "init" (init.cfg's programs: utest)
-     * or on "shell" or a plain boot (no mode word: mode_word_given): devmgr, the
-     * console, serial input and the shell, for good (no timeout; the
-     * RESULTS box only comes if init ever ends). "nousb" (the safe mode
-     * entry) is shell mode with devmgr leaving USB controllers alone. Test,
-     * benchmark and crash entries don't start it. */
-    /* soak[=minutes] (the Soak test entry): a plain boot whose shell runs
-     * `soak <minutes> halt` by itself. An option, like verbose: it
-     * is not a mode word. */
+    return ok;
+}
+
+/* init's option words (at most INIT_WORDS_MAX): "splash" (splash_boot);
+ * `hidboot`, which init passes on to devmgr and devmgr to every hid (mice
+ * stay in the boot protocol); bootdisk=0x<id>, which init passes on to
+ * devmgr (the boot disk); `splashhang` (a test's: the splash never
+ * finishes, and init must start the shell anyway). */
+#define INIT_WORDS_MAX 4
+
+static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
+{
+    unsigned n = 0;
+    if (shell && splash_boot())
+        words[n++] = "splash";
+    if (cmdline_has("hidboot"))
+        words[n++] = "hidboot";
+    static char disk_word[24];
+    if (boot_disk) {
+        ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
+        words[n++] = disk_word;
+    }
+    if (shell && splash_boot() && cmdline_has("splashhang"))
+        words[n++] = "splashhang";
+    return n;
+}
+
+/* User space: init from bootfs, on "init" (init.cfg's programs: utest)
+ * or on "shell" or a plain boot (no mode word: mode_word_given): devmgr,
+ * the console, serial input and the shell, for good (no timeout; the
+ * RESULTS box only comes if init ever ends). "nousb" (the safe mode
+ * entry) is shell mode with devmgr leaving USB controllers alone.
+ * soak[=minutes] (the Soak test entry) is a plain boot whose shell runs
+ * `soak <minutes> halt` by itself: an option, like verbose, not a mode
+ * word. The hidden `keytest` boot word: init starts devmgr alone
+ * (usb-bus, a hid per HID interface, keys to the log) for 30 s. Test,
+ * benchmark and crash entries start none of it. False if init (or
+ * keytest's) reported a problem. */
+static bool run_user_space(bool shell, bool nousb)
+{
     static char soak_arg[16];
     uint64_t soak_min = cmdline_get_u64("soak", 0, 3);
     if (soak_min && !nousb)
         ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
-    /* init's option words: "splash" (decided above); `hidboot`, which
-     * init passes on to devmgr and devmgr to every hid (mice stay in the
-     * boot protocol); bootdisk=0x<id>, which init passes on to devmgr (the
-     * boot disk); `splashhang` (a test's: the splash never finishes, and
-     * init must start the shell anyway). */
-    const char *words[4];
-    unsigned nwords = 0;
-    if (shell && splash_boot())
-        words[nwords++] = "splash";
-    if (cmdline_has("hidboot"))
-        words[nwords++] = "hidboot";
-    static char disk_word[24];
-    if (boot_disk) {
-        ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
-        words[nwords++] = disk_word;
-    }
-    if (shell && splash_boot() && cmdline_has("splashhang"))
-        words[nwords++] = "splashhang";
+    const char *mode = nousb ? "shell-nousb" : soak_arg[0] ? soak_arg : "shell";
+    const char *words[INIT_WORDS_MAX];
+    unsigned nwords = init_words(shell, words);
+    bool ok = true;
     if (cmdline_has("init") || shell)
         ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
-                                !shell ? NULL : nousb ? "shell-nousb" : soak_arg[0] ? soak_arg
-                                                                                   : "shell",
-                                words, nwords);
-    /* The hidden `keytest` boot word: init starts devmgr alone (usb-bus, a
-     * hid per HID interface, keys to the log) for 30 s. */
+                                shell ? mode : NULL, words, nwords);
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", words, nwords);
-    if (timer_check) {
-        thread_join(timer_check);
-        ok &= timer_check_ok;
-    }
-    /* init has ended (in shell mode only if something went wrong): if the
-     * console never took the screen the splash's quiet is still on, and
-     * the RESULTS below would not be drawn. */
+    return ok;
+}
+
+/* The end of a run (in shell mode only if init ended: something went
+ * wrong): the RESULTS box, then CPU 0 idles. If the console never took
+ * the screen the splash's quiet is still on, and the RESULTS would not be
+ * drawn. */
+_Noreturn static void finish(bool ok)
+{
     fbcon_unquiet();
     sched_print_stats();
     uint64_t dropped = __atomic_load_n(&serial_dropped, __ATOMIC_RELAXED);
@@ -318,12 +320,59 @@ _Noreturn static void kmain_stage2(void *arg)
     thread_exit();   /* CPU 0 falls through to its idle thread */
 }
 
+/* Runs on the kernel's own stack, with its own page tables. */
+_Noreturn static void kmain_stage2(void *arg)
+{
+    (void)arg;
+    uint64_t total, free;
+    pmm_stats(&total, &free);
+    kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
+    boot_disk_init();
+    bootfs_init(boot);   /* only needs the heap; before the tests that use it */
+    /* After a kexec: the previous kernel's record (did it panic?) and log,
+     * before anything could panic into a stored kernel (kexec.h). */
+    crashlog_init(boot);
+
+    if (cmdline_has("selftest"))
+        selftest_run();
+    selftest_crash(boot->cmdline);
+    clocks_init();
+    cpus_init();
+
+    bool nousb = cmdline_has("nousb");
+    bool shell = cmdline_has("shell") || nousb || !mode_word_given();
+    bool ok = true;
+    struct thread *timer_check = NULL;
+    if (shell) {
+        kprintf("measuring ticks on every CPU for 1 s, next to user space...\n");
+        timer_check = thread_create("timer check", timer_check_thread, NULL, PRIO_DEFAULT);
+    } else {
+        kprintf("measuring ticks on every CPU for 1 s...\n");
+        ok = smp_report(1000, false);
+    }
+    /* PCI enumeration and the resource tree, once every CPU is online
+     * (the vector allocator spreads MSIs over them). */
+    pci_init();
+    resource_init();
+    if (cmdline_has("pcilist"))
+        pci_report();
+    if (cmdline_has("selftest"))
+        selftest_run_smp();
+    ok &= run_tests();
+    ok &= run_user_space(shell, nousb);
+    if (timer_check) {
+        thread_join(timer_check);
+        ok &= timer_check_ok;
+    }
+    finish(ok);
+}
+
 _Noreturn void kmain(struct boot_info *bi)
 {
     percpu_set_gs(&cpu0);   /* spinlocks need this_cpu() from here on */
     boot = bi;
     cmdline_set(bi->cmdline);
-    int has_serial = serial_init();
+    bool has_serial = serial_init();
     fbcon_init(&bi->fb, splash_boot());
 
     fbcon_set_colors(0xffb000, 0x101018);

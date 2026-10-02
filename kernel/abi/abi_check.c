@@ -27,6 +27,13 @@ _Static_assert(sizeof(struct startup_msg) == 92, "startup_msg layout");
 _Static_assert(sizeof(struct bootfs_header) == 24, "bootfs header layout");
 _Static_assert(sizeof(struct bootfs_entry) == 72, "bootfs entry layout");
 
+_Static_assert(sizeof(struct pci_dev_info) == 176 && offsetof(struct pci_dev_info, flags) == 16 &&
+                   offsetof(struct pci_dev_info, bar) == 24,
+               "pci_dev_info layout");
+_Static_assert(sizeof(struct job_info) == 88, "job_info layout");
+_Static_assert(sizeof(struct process_info) == 32, "process_info layout");
+_Static_assert(sizeof(struct fb_info) == 32 && offsetof(struct fb_info, size) == 24,
+               "fb_info layout");
 _Static_assert(sizeof(struct sys_info) == 144, "sys_info layout");
 _Static_assert(sizeof(struct cpu_stat) == 40, "cpu_stat layout");
 _Static_assert(sizeof(struct proc_stat) == 80, "proc_stat layout");

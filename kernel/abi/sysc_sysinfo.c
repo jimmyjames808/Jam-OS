@@ -20,8 +20,6 @@
 
 #define PROC_LIST_MAX 1024
 
-extern const char jamos_version[];   /* kernel/main.c */
-
 status_t sysinfo_check_root(struct handle_table *t, handle_t root, rights_t need)
 {
     struct kobject *obj;

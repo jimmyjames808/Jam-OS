@@ -41,7 +41,6 @@
 #define MSIX_CTL_ENABLE  (1u << 15)
 #define MSIX_ENTRY_CTL_MASK 1u
 
-
 /* Every config space and MSI-X table access holds it (IRQ-safe, a leaf). */
 extern spinlock_t pci_lock;
 

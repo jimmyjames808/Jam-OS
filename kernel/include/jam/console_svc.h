@@ -57,13 +57,10 @@ status_t screen_take(struct job *job, struct fb_info *info, struct vmo **vmo,
                      struct kobject **owner);
 void     screen_owner_drop(struct kobject *owner);   /* unref, releasing if never handled */
 
-/* debug_command: run cmd (ktest / bench / stress / devices / ps) in a kernel
+/* debug_command: run cmd (dbgcmd.c lists the words) in a kernel
  * thread and wait for it (cancellable: ERR_CANCELED leaves it running).
  * scope (may be NULL) is the job tree "ps" lists. */
 int64_t  dbgcmd_run(const char *cmd, size_t len, struct job *scope);
-/* The same for a caller in job `caller` (may be NULL); no command looks at
- * it. */
-int64_t  dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct job *caller);
 bool     dbgcmd_busy(void);
 /* The parse without running anything (tests): 0 if cmd is known. */
 status_t dbgcmd_check(const char *cmd, size_t len);

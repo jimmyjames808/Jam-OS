@@ -5,6 +5,7 @@
  * All addresses here are PHYSICAL unless the field name says otherwise. */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,7 +34,7 @@ enum boot_mem_type {
 
 /* Types that are real RAM this kernel maps and keeps struct pages for (as
  * opposed to MMIO holes, firmware-reserved ranges and foreign RAM). */
-static inline int boot_mem_is_ram(enum boot_mem_type t)
+static inline bool boot_mem_is_ram(enum boot_mem_type t)
 {
     return t == BOOT_MEM_USABLE || t == BOOT_MEM_LOADER_RECLAIMABLE ||
            t == BOOT_MEM_KERNEL_AND_MODULES || t == BOOT_MEM_ACPI_RECLAIMABLE ||
@@ -42,7 +43,7 @@ static inline int boot_mem_is_ram(enum boot_mem_type t)
 
 /* Types that are RAM at all, this kernel's or not, bad RAM included: no
  * MMIO resource or physical VMO may ever cover one (pmm_range_has_ram). */
-static inline int boot_mem_is_any_ram(enum boot_mem_type t)
+static inline bool boot_mem_is_any_ram(enum boot_mem_type t)
 {
     return boot_mem_is_ram(t) || t == BOOT_MEM_BAD || t == BOOT_MEM_FOREIGN;
 }
