@@ -38,7 +38,9 @@ still listens first to confirm it from the PC's own port.
 it too (by Wi-Fi it was 10.2.21.174; by its USB Ethernet adapter with the
 VLAN 21 interface, 10.2.21.67), so netlog and `update` stay inside VLAN
 21 and cross no firewall. (The home network also has a 10.2.10.0/24
-Wi-Fi; Jam OS never needs it.)
+Wi-Fi; Jam OS never needs it.) **`net.host` = 10.2.21.174**, the Mac's
+Wi-Fi address on VLAN 21 (the owner's choice; a router reservation and
+the Mac's "Private Wi-Fi address" set to Fixed keep it from changing).
 
 1. **Is the PC's switch port a trunk carrying VLAN 21 tagged, or an
    access port on VLAN 21?** You don't need to know: stage 0 listens
