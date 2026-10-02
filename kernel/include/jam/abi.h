@@ -431,17 +431,21 @@ struct rtc_time {
  * taken as UTC (WALLCLOCK_RTC: the RTC keeps UTC or, on a PC that also runs
  * Windows, local time, and says nothing about which); init then sets it
  * (WALLCLOCK_SET) from the RTC as its settings say, with the time zone every
- * program shows times in: a name libos understands (<wallclock.h>). */
+ * program shows times in: a name libos understands (<wallclock.h>). A
+ * setter that took the time from the network (bin/sntp) passes
+ * WALLCLOCK_NET, the one flag wallclock_set takes; it is kept until a set
+ * without it, so init knows not to put the RTC's reading back. */
 #define WALLCLOCK_ZONE_MAX 32
 struct wall_clock {
     int64_t  utc_ns;                /* ns since 1970-01-01 00:00 UTC */
     uint64_t uptime_ns;             /* the uptime utc_ns is at */
-    uint32_t flags;                 /* WALLCLOCK_* (wallclock_set: 0) */
+    uint32_t flags;                 /* WALLCLOCK_* (wallclock_set: 0 or WALLCLOCK_NET) */
     uint32_t reserved;              /* 0 */
     char     zone[WALLCLOCK_ZONE_MAX];  /* the time zone's name, NUL-terminated ("": none given) */
 };
 #define WALLCLOCK_RTC 1u   /* the RTC's reading at boot as if UTC: nobody has set the clock */
 #define WALLCLOCK_SET 2u   /* set by wallclock_set: UTC */
+#define WALLCLOCK_NET 4u   /* ... from the network's time (SNTP), not the RTC */
 
 /* random_get: the most bytes one call gives (libos's os_random asks in
  * pieces this size). The kernel makes them on its stack. */

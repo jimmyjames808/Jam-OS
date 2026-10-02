@@ -33,7 +33,9 @@ static int show_raw(void)
     char when[48];
     time_format_iso(w.utc_ns / NS_PER_S, &utc, when, sizeof(when));
     sh_say("the clock: %s, %s, zone %s; Unix time %ld\n", when,
-           w.flags & WALLCLOCK_SET ? "set by init from the RTC" : "the RTC's reading (not set)",
+           w.flags & WALLCLOCK_NET   ? "set from the network (sntp)"
+           : w.flags & WALLCLOCK_SET ? "set by init from the RTC"
+                                     : "the RTC's reading (not set)",
            w.zone[0] ? w.zone : "(none)", (long)(w.utc_ns / NS_PER_S));
     return 0;
 }
@@ -50,7 +52,7 @@ static int set_zone(const char *name)
     struct wall_clock w;
     status_t st = jam_wallclock_get(&w);
     if (st == OK) {
-        w.flags = 0;
+        w.flags &= WALLCLOCK_NET;   /* a time from the network stays one */
         w.reserved = 0;
         memset(w.zone, 0, sizeof(w.zone));
         memcpy(w.zone, tz.name, strlen(tz.name));

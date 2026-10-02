@@ -51,12 +51,20 @@ What it does with each frame from the guest:
     mac.jam, router.jam, the CNAME www.jam, fastN.jam = 10.9.0.N;
     slow.jam is never answered, every other name is NXDOMAIN), counted
     as dhcp_* and dns_* in the summary.
+  - SNTP (--ntp UNIX): an SNTP server on port 123 of any address (so the
+    gateway 10.2.21.1 answers): a client request is answered with the
+    time UNIX seconds (fractions allowed), counted from the peer's start,
+    stratum 2, the request's transmit timestamp as the origin. With
+    --ntp-forge each answer is preceded by a forged one the guest must
+    ignore: the same, but its origin one bit off and its time a year
+    later. Counted as ntp_queries, ntp_answered, ntp_forged.
 
 Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
+               [--ntp UNIX [--ntp-forge]]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -599,6 +607,50 @@ class DnsServer:
         return out
 
 
+# ---- SNTP -------------------------------------------------------------------------
+
+NTP_UNIX = 2208988800   # seconds from 1900 to 1970
+NTP_YEAR = 365 * 86400
+
+
+def ntp_stamp(unix):
+    """An NTP timestamp (era 0 or 1: seconds mod 2**32) of Unix seconds."""
+    secs = int(unix)
+    frac = int((unix - secs) * (1 << 32)) & 0xffffffff
+    return ((secs + NTP_UNIX) & 0xffffffff) << 32 | frac
+
+
+class NtpServer:
+    """Port 123: the time `unix` at the peer's start, running from there
+    (RFC 4330 server mode, stratum 2). forge: a forged reply first."""
+
+    def __init__(self, peer, unix, forge=False):
+        self.unix, self.start, self.forge = unix, time.monotonic(), forge
+        for k in ("ntp_queries", "ntp_answered", "ntp_forged"):
+            peer.counts[k] = 0
+
+    def now(self):
+        return self.unix + (time.monotonic() - self.start)
+
+    def reply(self, req, t, origin_flip=0):
+        version = (req[0] >> 3) & 7
+        return (struct.pack("!BBbbII4s", version << 3 | 4, 2, 6, -20, 1 << 8, 1 << 8, b"JAMT") +
+                struct.pack("!QQQQ", ntp_stamp(t - 16), struct.unpack_from("!Q", req, 40)[0] ^
+                            origin_flip, ntp_stamp(t), ntp_stamp(t)))
+
+    def handle(self, peer, src, sport, dst, data):
+        if len(data) < 48 or data[0] & 7 != 3:
+            return None
+        peer.counts["ntp_queries"] += 1
+        if self.forge and peer.guest_mac is not None:
+            bad = self.reply(data, self.now() + NTP_YEAR, origin_flip=1)
+            peer.send(eth(peer.guest_mac, PEER_MAC, ETH_IPV4,
+                          ipv4(dst, src, 17, udp(dst, src, 123, sport, bad))))
+            peer.counts["ntp_forged"] += 1
+        peer.counts["ntp_answered"] += 1
+        return self.reply(data, self.now())
+
+
 def add_dhcp_dns(peer, lease=3600):
     """The peer's DHCP server on port 67 and DNS server on port 53."""
     peer.add_udp(67, DhcpServer(peer, lease).handle)
@@ -719,10 +771,41 @@ def selftest():
     fresh.handle(tag(req, VLAN))
     expect(fresh.summary(expect_none=True)["result"] == "FAIL", "a frame, expect-none: FAIL")
     selftest_dhcp_dns(g, devnull, expect)
+    selftest_ntp(g, devnull, expect)
     for f in fails:
         print("netpeer selftest: FAILED: " + f)
     print("netpeer selftest: %s" % ("PASS" if not fails else "FAIL"))
     return 0 if not fails else 1
+
+
+def selftest_ntp(g, devnull, expect):
+    """The SNTP server (--ntp, --ntp-forge) against the fake guest g."""
+    peer = Peer(0, g.getsockname()[1], VLAN, devnull)
+    peer.add_udp(123, NtpServer(peer, 1930000000.25, forge=True).handle)
+    g.connect(("127.0.0.1", peer.listen))
+    gmac, gip, gw = bytes.fromhex("525400abcd01"), ip_bytes("10.2.21.100"), ip_bytes("10.2.21.1")
+    req = bytes([0x23]) + bytes(39) + struct.pack("!Q", 0x0123456789abcdef)
+    g.send(tag(eth(PEER_MAC, gmac, ETH_IPV4, ipv4(gip, gw, 17, udp(gip, gw, 50000, 123, req))),
+               VLAN))
+    peer.poll(1)
+    got = []
+    for _ in range(2):
+        try:
+            u = untag(g.recv(65536))
+            got.append(u[42:] if struct.unpack_from("!HH", u, 34) == (123, 50000) else b"")
+        except socket.timeout:
+            break
+    expect(len(got) == 2 and all(len(r) == 48 for r in got), "NTP: a forged reply and a good one")
+    if len(got) == 2 and all(len(r) == 48 for r in got):
+        forged, good = got
+        origin = struct.unpack_from("!Q", good, 24)[0]
+        t3 = struct.unpack_from("!Q", good, 40)[0]
+        expect(good[0] == 0x24 and good[1] == 2 and origin == 0x0123456789abcdef,
+               "NTP: the good reply's header and origin")
+        expect(abs((t3 >> 32) - (1930000000 + NTP_UNIX) % (1 << 32)) <= 2, "NTP: its time")
+        expect(struct.unpack_from("!Q", forged, 24)[0] == origin ^ 1, "NTP: the forged origin")
+    expect(peer.counts["ntp_queries"] == 1 and peer.counts["ntp_forged"] == 1 and
+           peer.counts["bad"] == 0, "NTP's counts")
 
 
 def selftest_dhcp_dns(g, devnull, expect):
@@ -837,6 +920,8 @@ def run(a):
                    (int(b), float(secs)) if a.netlog_pause else None)
     if a.update:
         peer.add_udp(5022, update_handler(a.update, peer.log))
+    if a.ntp is not None:
+        peer.add_udp(123, NtpServer(peer, a.ntp, a.ntp_forge).handle)
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
@@ -902,6 +987,8 @@ def main():
     ap.add_argument("--netlog-late", type=float, default=0)
     ap.add_argument("--netlog-pause", help="BYTES:SECONDS")
     ap.add_argument("--update", metavar="SPEC")
+    ap.add_argument("--ntp", type=float, metavar="UNIX", help="answer SNTP with this time")
+    ap.add_argument("--ntp-forge", action="store_true", help="a forged SNTP reply first")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

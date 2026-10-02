@@ -775,6 +775,12 @@ static const struct {
     { "netsock_busy_client", t_netsock_busy_client },
     { "netsock_len_lies", t_netsock_len_lies },
     { "netsock_dhcp", t_netsock_dhcp },
+    { "netlisten_udp", t_netlisten_udp },
+    { "netlisten_wants", t_netlisten_wants },
+    { "sntp_request_and_reply", t_sntp_request_and_reply },
+    { "sntp_checks", t_sntp_checks },
+    { "sntp_times", t_sntp_times },
+    { "sntp_fuzz", t_sntp_fuzz },
 };
 
 int main(int argc, char **argv)

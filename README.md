@@ -158,6 +158,14 @@ net.host = 10.2.21.174
 | `net.address` | a static address: `<address>/<prefix> [<gateway> [<dns> [<dns>]]]`. Without it the DHCP client gets one |
 | `net.host` | the Mac's address on VLAN 21 (10.2.21.174 for the owner's): where the log goes and where `update` fetches from |
 | `netlog` | `off`: don't send the log, even with `net.host` set |
+| `ntp.server` | where the clock comes from (SNTP): an IPv4 address or a name. Without it, the network's gateway, then `pool.ntp.org` if the gateway gives no time |
+| `ntp` | `off`: don't set the clock from the network (it stays the real-time clock's, as `rtc` says) |
+
+**The clock from the network.** Once the network has an address, sntp
+asks the time (SNTP, UDP port 123) and sets the clock, then asks again
+every hour; `date -r` says whether the clock came from the network or
+from the PC's real-time clock, and the log has a line with how far off
+the clock was ([ARCHITECTURE.md](ARCHITECTURE.md#time-and-settings)).
 
 **The log on the Mac.** With `net.host` set, netlog sends each boot's
 whole log, from its first line, over UDP to that address (port 5021), and
@@ -219,9 +227,9 @@ Mac could run their own kernel, so `update` runs only when you type it.
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `rtl8125/` (the PC's Realtek RTL8125B network chip), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), update (`update`'s fetcher: the build the Mac serves, offered to init) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), sntp (the clock from the network), update (`update`'s fetcher: the build the Mac serves, offered to init) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |

@@ -1,6 +1,9 @@
 /* The network for programs (user/lib/net.c): UDP sockets and ping on
  * netstack's /svc/net (abi/idl/net.idl; the design is docs/M9-PLAN.md
- * "Programs and sockets"). A program's list asks for it with `svc net`.
+ * "Programs and sockets"). A program's list asks for it with `svc net`,
+ * or with `svc net listen` for /svc/net-listen too: the same protocol, but
+ * its openers may take a fixed port below NET_PORT_EPHEMERAL (open it with
+ * svc_get(SVC_NET_LISTEN) and pass it where these take `net`).
  *
  * Each datagram is one call on the socket's channel: netstack never waits
  * inside one (a sock_recv with nothing queued is answered when a datagram
@@ -35,8 +38,8 @@
 #define NET_LATER_PER_OPENER   8u      /* waits, echoes and chip_counts in flight an opener */
 #define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
 #define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
-#define NET_PORT_LOW           1024u   /* udp: ports below are refused */
-#define NET_PORT_EPHEMERAL     49152u  /* udp port 0: one from here up */
+#define NET_PORT_LOW           1024u   /* udp: ports below are refused; up to ... */
+#define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
 #define NET_PORT_DHCP_CLIENT   68u
 
@@ -124,7 +127,8 @@ status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out);
 status_t net_get_counters(handle_t net, struct net_counters *out);
 status_t net_get_chip_counters(handle_t net, void *out);
 
-/* A UDP socket on port (0: netstack picks one; 1..1023 refused). */
+/* A UDP socket on port (0: netstack picks one; 1..1023 refused; 1024..49151
+ * only on an opener of /svc/net-listen: ERR_ACCESS_DENIED). */
 status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out);
 /* A socket whose channel came from elsewhere (netctl's dhcp_open), on port. */
 void     net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port);

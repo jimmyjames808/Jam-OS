@@ -36,9 +36,11 @@ static uint8_t f[NETDEV_FRAME_MAX], g[NETDEV_FRAME_MAX];
 static struct net_dgram dg;
 static uint32_t txc = 0x40000000u;   /* our async txids, far from the kernel's */
 
+/* A listening program's opener: the tests take fixed ports (netlisten.c
+ * has what an opener of /svc/net may and may not take). */
 static bool opener(handle_t *out)
 {
-    CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, out), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_listen(), now() + NETDRV_WAIT, out), OK);
     return true;
 }
 

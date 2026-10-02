@@ -275,7 +275,9 @@ static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256])
  * address. port 0: netstack picks one (49152 and up). Results: `socket`,
  * a channel of its own that speaks the sock_* methods (closing it closes
  * the socket), and its port. ERR_ACCESS_DENIED: a port below 1024 (only
- * netctl's DHCP socket has one); ERR_ALREADY_BOUND: the port is taken;
+ * netctl's DHCP socket has one), or one below 49152 on an opener that
+ * didn't come through /svc/net-listen (the listen permission, netstack's
+ * listen.h); ERR_ALREADY_BOUND: the port is taken;
  * ERR_NO_RESOURCES: the opener has NET_SOCKETS_PER_OPENER sockets, or
  * NET_SOCKETS_MAX are open. */
 static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t port, handle_t *out_socket, uint16_t *out_port)
