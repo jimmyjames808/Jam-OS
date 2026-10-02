@@ -8,6 +8,7 @@
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
+#include <jam/time.h>
 #include <jam/vmo.h>
 
 #define PG PAGE_SIZE
@@ -593,8 +594,11 @@ KTEST(vmo_concurrent_writers)
  * exceeds the VMO size. It does not directly observe writes to freed pages --
  * the write/read pairing is the proxy: a write that landed on a page freed
  * under it would, once that page is reused, read back as neither the value
- * nor zero and trip dc_bad. */
-enum { DC_THREADS = 6, DC_ITERS = 3000 };
+ * nor zero and trip dc_bad. The workers go on past DC_ITERS, yielding,
+ * until the decommitter has had DC_MIN_DECOMMITS turns: on one CPU (or a
+ * busy machine) they would otherwise finish inside their own time slices
+ * before it ran at all, and the race would not happen. */
+enum { DC_THREADS = 6, DC_ITERS = 3000, DC_MIN_DECOMMITS = 11 };
 static volatile int dc_done;
 static volatile int dc_bad, dc_decommits;
 
@@ -603,11 +607,17 @@ static void dc_worker(void *arg)
     uint32_t i = (uint32_t)(uintptr_t)arg;
     uint64_t off = (i % 2) * PG + (i / 2) * 64 + 8;   /* spread over both pages */
     cw_wait_start();
-    for (uint64_t k = 1; k <= DC_ITERS; k++) {
+    uint64_t end = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (uint64_t k = 1;; k++) {
+        bool raced = __atomic_load_n(&dc_decommits, __ATOMIC_RELAXED) >= DC_MIN_DECOMMITS;
+        if (k > DC_ITERS && (raced || uptime_ns() >= end))
+            break;
         uint64_t val = ((uint64_t)i << 32) | k, seen;
         if (vmo_write(cw_vmo, off, &val, 8) != OK || vmo_read(cw_vmo, off, &seen, 8) != OK ||
             (seen != val && seen != 0))
             __atomic_add_fetch(&dc_bad, 1, __ATOMIC_RELAXED);
+        if (k > DC_ITERS)
+            thread_yield();   /* let the decommitter catch up */
     }
     __atomic_add_fetch(&dc_done, 1, __ATOMIC_RELEASE);
 }
@@ -642,7 +652,7 @@ static void dc_round(void)
     for (uint32_t i = 0; i <= DC_THREADS; i++)
         thread_join(ts[i]);
     KT_EQ(dc_bad, 0);
-    KT_ASSERT(dc_decommits > 10);   /* the race really ran */
+    KT_ASSERT(dc_decommits >= DC_MIN_DECOMMITS);   /* the race really ran */
     KT_ASSERT(vmo_committed(cw_vmo) <= 2 * PG);
     put(cw_vmo);
 }
