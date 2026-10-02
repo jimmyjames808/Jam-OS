@@ -3,14 +3,15 @@
  * One port carries everything the driver waits for: the chip's MSI-X
  * vector (received frames, finished transmits and link changes, all on
  * the one vector devmgr made), devmgr closing our channel (it is
- * stopping), and in full mode the netdev server's packets (server.h:
- * requests on DR_SERVE and the session channel, netstack's transmit
- * signal), whose work srv_work does at the top of each step. After the
- * chip's work the server is told: the rx ring published once per batch,
- * transmit descriptors freed, the link changed. Every wait has a deadline of at most a second, so a lost
- * interrupt costs time, never a stall, and the link and the rings are
- * polled then too. Nothing waits inside a step but the short, bounded
- * register waits (the service-loop rule, CODING-GUIDE.md).
+ * stopping), and in full mode the netdev server's packets
+ * (<jam/netserver.h>: requests on DR_SERVE and the session channel,
+ * netstack's transmit signal), whose work srv_work does at the top of each
+ * step. After the chip's work the server is told: the rx ring published
+ * once per batch, transmit descriptors freed, the link changed. Every
+ * wait has a deadline of at most a second, so a lost interrupt costs time,
+ * never a stall, and the link and the rings are polled then too. Nothing
+ * waits inside a step but the short, bounded register waits (the
+ * service-loop rule, CODING-GUIDE.md).
  *
  * An interrupt is handled as rge_intr does: the mask off while the
  * status is read and acknowledged, the work, then the mask on again, so

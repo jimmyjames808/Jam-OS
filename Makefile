@@ -54,7 +54,9 @@ OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 # Drivers (the rules are further down, after the user programs'): every
 # drivers/<name>/*.c, and every test driver's drivers/test/<name>/*.c, is
 # the program drv/<name> in bootfs (libos + user/lib/driver_user.c).
-DRIVER_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard drivers/*/*.c drivers/test/*/*.c))))
+# drivers/lib/ is no driver: code several drivers link (DRV_LIB_<name>).
+DRIVER_DIRS := $(sort $(filter-out drivers/lib,$(patsubst %/,%,$(dir $(wildcard drivers/*/*.c \
+                                                                       drivers/test/*/*.c)))))
 DRIVERS     := $(sort $(notdir $(DRIVER_DIRS)))
 ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
@@ -262,13 +264,14 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # and netstack's core with lwIP, driven in-process over a fake edge
 # (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
-# RTL8125's netdev server over a fake card (utest/netsrv.c: server.c).
+# network drivers' netdev server over a fake card (utest/netsrv.c:
+# drivers/lib/netserver.c).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
                       $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \
                       $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
-                      $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/rtl8125/server.c.o
+                      $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns
@@ -300,7 +303,9 @@ $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 # A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>,
 # <jam/task.h>, libos's cooperative tasks, <jam/netframe.h>, pure
 # functions over a network frame's bytes, and <jam/netdev.h>, the netdev
-# rings' layout and index code), the generated <idl/*.h>
+# rings' layout and index code; and <jam/netserver.h>, the netdev server
+# whose code, drivers/lib/netserver.c, a network driver links into its own
+# object: DRV_LIB_<name> below), the generated <idl/*.h>
 # and the compiler's freestanding headers
 # (stdint/stddef/stdbool/stdarg): -nostdinc drops every other include path,
 # and DRV_INC holds copies of just those files. -fno-builtin: no call is
@@ -316,12 +321,17 @@ DRV_SURFACE := drivers/include/jam/driver.h drivers/include/jam/task.h kernel/in
 DRV_INC     := $(BUILD)/driver-include
 DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/abi.h \
                $(DRV_INC)/jam/status.h $(DRV_INC)/jam/netframe.h $(DRV_INC)/jam/netdev.h \
-               $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
+               $(DRV_INC)/jam/netserver.h $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
 DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
-DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c))
+# DRV_LIB_<name>: the drivers/lib/ files driver <name> links into its own
+# object (checked by checkdriver.py with the rest of it).
+DRV_LIB_rtl8125 := netserver
+DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c)) \
+               $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 
-$(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/netframe.h $(DRV_INC)/jam/netdev.h: \
+$(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/netframe.h $(DRV_INC)/jam/netdev.h \
+        $(DRV_INC)/jam/netserver.h: \
         $(DRV_INC)/jam/%.h: drivers/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@

@@ -1,14 +1,18 @@
-/* rtl8125: the netdev server (drv/rtl8125, server.c): abi/idl/netdev.idl
- * on the driver's DR_SERVE channel, and the session's rings and events of
- * <jam/netdev.h>.
+/* <jam/netserver.h>: the netdev server every network driver links
+ * (drivers/lib/netserver.c): abi/idl/netdev.idl on the driver's DR_SERVE
+ * channel, and the session's rings and events of <jam/netdev.h>.
  *
  * It knows nothing of the chip. The driver hands it a struct srv_dev: a
- * send function (tx.c's tx_send: the copy, the tag and the last check are
- * the driver's, never this file's), the free transmit descriptors, the
- * card's info and the counts only the driver has. Received frames come in
- * by srv_rx, already kept for the VLAN and untagged by rx.c. So utest
- * (user/tests/utest/netsrv.c) runs this file as it is against a fake
- * device and a fake netstack.
+ * send function (the driver's transmit path: the copy, the tag and the
+ * last check are the driver's, never this file's), the free transmit
+ * descriptors, the card's info and the counts only the driver has.
+ * Received frames come in by srv_rx, already kept for the VLAN and
+ * untagged by the driver. So utest (user/tests/utest/netsrv.c) runs this
+ * file as it is against a fake device and a fake netstack.
+ *
+ * Its code is linked into each network driver's own object (the Makefile's
+ * DRV_LIB_<driver>), so tools/checkdriver.py checks it as that driver's
+ * code: it uses nothing but <jam/driver.h> and the inline headers.
  *
  * The loop's side (the service-loop rule): every wait is the driver's one
  * port. srv_packet takes the server's packets (DR_SERVE readable, the

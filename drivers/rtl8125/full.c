@@ -1,6 +1,6 @@
 /* rtl8125: full mode's service: the netdev server for netstack
- * (drv/rtl8125; the server itself is server.c, which knows nothing of the
- * chip).
+ * (drv/rtl8125; the server itself is drivers/lib/netserver.c, shared by
+ * the network drivers, which knows nothing of the chip).
  *
  * This file is the server's view of the card (struct srv_dev): netstack's
  * frames go to tx.c's tx_send and nowhere else, so each is copied into

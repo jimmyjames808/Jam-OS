@@ -389,8 +389,10 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   trip, then stops. Nothing else is ever sent.
 - **The netdev server (R1b)**: full mode without `netsend` serves
   abi/idl/netdev.idl on DR_SERVE exactly as `<jam/netdev.h>` says
-  (`drivers/rtl8125/server.c`, which knows nothing of the chip, and
-  `full.c`, the card as the server sees it). `info` (MAC, VLAN, MTU 1500,
+  (the server, which knows nothing of the chip, was built as
+  drivers/rtl8125/server.c and now lives in `drivers/lib/netserver.c`
+  for every network driver, see "One netdev server" below; `full.c` is
+  the card as the server sees it). `info` (MAC, VLAN, MTU 1500,
   link and speed, link changes, "RTL8125B"); `stats` (the driver's
   counts: frames and bytes each way, drops by reason, refusals by
   length, flags and tag, ring errors, sessions, and the chip's tally
@@ -406,7 +408,7 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   come back. Kept frames go into the rx ring, published once per batch
   with NETDEV_SIG_RX when netstack waits; a full ring or no session drops
   and counts. Link changes signal NETDEV_SIG_LINK. All of it on the
-  driver's one port. utest's `rtl8125_server_*` run `server.c` itself
+  driver's one port. utest's `netserver_*` run `netserver.c` itself
   over a fake card, the test as netstack.
 - **Which boot binds the chip:** the plan doesn't say when the everyday
   boot starts the network, and nothing opens the driver yet (stage 3b
@@ -575,10 +577,10 @@ Built 2026-10-02 (`drivers/e1000e`, about 1500 lines; devmgr binds it to
 - netstack (stage 3b) opens a session on it and sees the link at
   1000 Mb/s in shell mode; its end-to-end test (`tools/netstack-test.sh`)
   is stage 3b's to run.
-- Two netdev servers exist now: this one and R1b's
-  (`drivers/rtl8125/server.c`, chip-independent, merged while this stage
-  was being tested). Moving the e1000e onto R1b's (a shared file both
-  drivers link) is a follow-up.
+- Two netdev servers existed then: this one and R1b's (chip-independent,
+  merged while this stage was being tested). R1b's moved to
+  `drivers/lib/netserver.c` so both drivers can link it (see "One netdev
+  server" below).
 
 ### netdev: rings, not calls
 
@@ -636,6 +638,19 @@ devmgr device channel by class (02 00 00, with
 ([Authority](../ARCHITECTURE.md#drivers-and-services)). A test program
 reaches the driver only through devmgr's control channel, which only
 programs under `user/tests/` may ask for.
+
+#### One netdev server
+
+The server side of all this (DR_SERVE, the session, its rings and
+events) is one file every network driver links:
+`drivers/lib/netserver.c`, its interface `<jam/netserver.h>`. The
+driver plugs in a `struct srv_dev`: `send` (its own transmit path, which
+copies, tags and checks), `room` (free transmit descriptors), `info` and
+`stats` (its counts and the chip's); it hands kept, untagged frames to
+`srv_rx` and tells the server when descriptors come back and when the
+link changes. The Makefile links the file into each driver's object
+(`DRV_LIB_<driver>`), so `tools/checkdriver.py` checks it as that
+driver's code. utest's `netserver_*` run it over a fake card.
 
 ### netstack: lwIP, single-threaded
 

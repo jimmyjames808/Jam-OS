@@ -14,7 +14,7 @@
 #      runs.
 # The driver itself without a VLAN or without its hardware is utest's
 # rtl8125_stays_off, its netdev server over a fake card the
-# rtl8125_server_* tests; its transmit-register guard and tx.c's gate are
+# netserver_* tests; its transmit-register guard and tx.c's gate are
 # rtl8125_write_guard and rtl8125_tx_gate, and tools/checknotx.sh (make
 # check) checks that only tx.c, behind the gate, can transmit.
 # QEMU_SMP passes through. Usage: tools/netprobe-test.sh <outdir>; exit 0 on PASS.

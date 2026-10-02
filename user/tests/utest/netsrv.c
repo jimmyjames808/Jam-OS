@@ -1,6 +1,6 @@
-/* utest: the RTL8125 driver's netdev server (drivers/rtl8125/server.c),
- * linked in as it is, over a fake card and the test as netstack: info
- * and stats; one session at a time (a second open refused, open refused
+/* utest: the network drivers' netdev server (drivers/lib/netserver.c,
+ * <jam/netserver.h>), linked in as it is, over a fake card and the test
+ * as netstack: info and stats; one session at a time (a second open refused, open refused
  * on the session channel, a closed or orphaned session replaced); the
  * rights of what open hands out; netstack's frames to the card's send
  * function exactly (bad lengths, flags and tags counted, never sent; a
@@ -13,8 +13,8 @@
 #include <check.h>
 #include <jam/driver.h>
 #include <jam/netdev.h>
+#include <jam/netserver.h>
 #include <os.h>
-#include "server.h"
 #include "utest.h"
 
 /* ---- the fake card ------------------------------------------------------------------ */
@@ -207,7 +207,7 @@ static void frame(uint8_t *f, size_t len, uint16_t type, uint32_t n)
 
 /* ---- the tests ------------------------------------------------------------------------------ */
 
-bool t_rtl8125_server_session(void)
+bool t_netserver_session(void)
 {
     struct bench b;
     struct side s, s2;
@@ -262,7 +262,7 @@ bool t_rtl8125_server_session(void)
 
 /* netstack's frames: exactly what was written reaches the card, bad
  * slots never do; a card out of descriptors holds the ring. */
-bool t_rtl8125_server_tx(void)
+bool t_netserver_tx(void)
 {
     struct bench b;
     struct side s;
@@ -329,7 +329,7 @@ bool t_rtl8125_server_tx(void)
 
 /* Received frames: to the ring with a wake, dropped and counted when the
  * ring is full or nobody has a session; the link signal. */
-bool t_rtl8125_server_rx(void)
+bool t_netserver_rx(void)
 {
     struct bench b;
     struct side s;
