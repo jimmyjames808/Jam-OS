@@ -164,10 +164,11 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
  * driver's hardware; with its query channel usb-bus, and through it any
  * USB device's interfaces; with init's, every service and the reboot. The
  * build allows the last two only in user/tests/ (tools/checkwants.py), and
- * a file on /data is never one of the tree's tests. The root's debug power
- * either: `debug_command` panics the machine, crashes it on purpose and
- * runs the stress test. */
-static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT };
+ * a file on /data is never one of the tree's tests. Nor netstack's reserve
+ * for the network's own services (net-sys): a program could use it up. Nor
+ * the root's debug power: `debug_command` panics the machine, crashes it on
+ * purpose and runs the stress test. */
+static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT, SVC_NET_SYS };
 
 const char *sh_wants_refused(const struct wants *w)
 {

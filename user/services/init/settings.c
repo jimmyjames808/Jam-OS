@@ -10,7 +10,10 @@
  * the time (<wallclock.h>). `rtc` may also name a zone (`rtc =
  * Australia/Sydney`): the RTC keeps that zone's time, whatever zone times
  * are shown in. Before /data is there (the first time) the defaults are
- * used.
+ * used. Once bin/sntp has set the clock from the network (WALLCLOCK_NET),
+ * the network's time is better than any reading of the RTC: init then
+ * gives the kernel the zone only and keeps the time (a stick pulled and
+ * put back would otherwise put the RTC's error back for up to an hour).
  *
  * The volumes: `volume` to the mixer's master and `music.volume` to the
  * music player, each when it starts (again) and when /data comes, with a
@@ -51,6 +54,20 @@ static void setting(const char *key, const char *dflt, char *out, size_t cap)
         snprintf(out, cap, "%s", dflt);
 }
 
+/* The clock came from the network: only the zone changes, the time stays. */
+static void zone_only(struct wall_clock *w, const struct tz *zone)
+{
+    w->flags = WALLCLOCK_NET;   /* still the network's */
+    w->reserved = 0;
+    memset(w->zone, 0, sizeof(w->zone));
+    snprintf(w->zone, sizeof(w->zone), "%s", zone->name);
+    status_t st = jam_wallclock_set(shell_root(), w);
+    char when[48];
+    time_format_iso(w->utc_ns / NS_PER_S, zone, when, sizeof(when));
+    printf("init: the clock: %s, kept (set from the network)%s%s\n", when,
+           st == OK ? "" : ": the zone not set, ", st == OK ? "" : status_str(st));
+}
+
 void settings_clock(void)
 {
     char zone_name[SETTINGS_VALUE_MAX], rtc[16];
@@ -61,6 +78,11 @@ void settings_clock(void)
         printf("init: settings: timezone = %s is not a zone libos knows: %s instead\n",
                zone_name, TZ_DEFAULT);
         tz_parse(TZ_DEFAULT, &zone);
+    }
+    struct wall_clock now_w;
+    if (jam_wallclock_get(&now_w) == OK && (now_w.flags & WALLCLOCK_NET)) {
+        zone_only(&now_w, &zone);
+        return;
     }
     /* The zone the RTC keeps: the system's (local), UTC, or one named. */
     struct tz rtc_zone = zone;

@@ -277,6 +277,14 @@ bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
 /* netbench.c: datagrams through a socket and netstack, timed (BENCH.md). */
 bool t_netsock_bench(void);
+/* netlisten.c: the listen permission (netstack's listen.h, <wants.h>'s
+ * `svc net listen`); sntp.c: bin/sntp's request and checks (ntp.c). */
+bool t_netlisten_udp(void);
+bool t_netlisten_wants(void);
+bool t_sntp_request_and_reply(void);
+bool t_sntp_checks(void);
+bool t_sntp_times(void);
+bool t_sntp_fuzz(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

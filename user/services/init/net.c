@@ -1,5 +1,5 @@
 /* init's shell mode: the network services (docs/M9-PLAN.md): netstack,
- * the DHCP client, the resolver and netlog.
+ * the DHCP client, the resolver, netlog and the clock from the network.
  *
  *   netstack  bin/netstack, once devmgr runs: the server end of its
  *             control channel (SR_USER + 0, abi/idl/netctl.idl) and a
@@ -14,9 +14,19 @@
  *             gets a duplicate. Also the server end of
  *             /svc/net's shared channel (SR_USER + 1, abi/idl/net.idl),
  *             made once and kept the same way; services.c publishes its
- *             client end (a channel per opener). netstack ends when devmgr
- *             does (its device channels close) and is started again with
- *             the new devmgr's.
+ *             client end (a channel per opener). The same for
+ *             /svc/net-listen's (SR_USER + 2): the same protocol, but its
+ *             openers may also take the ports other programs can't (the
+ *             listen permission, docs/M9.5-PLAN.md); init publishes it, and
+ *             the shell gives it only to a program whose list says `svc net
+ *             listen`. And /svc/net-sys's (SR_USER + 3): the same protocol
+ *             for the network's own services (dns, netlog, sntp, and
+ *             bin/update through the shell), whose openers may use a
+ *             reserve of netstack's openers, sockets and ring bytes that
+ *             programs can't take (the fair shares, <net.h>); no program
+ *             from /data may ask for it. netstack ends when devmgr does
+ *             (its device channels close) and is started again with the
+ *             new devmgr's.
  *   dhcp      bin/dhcp, once netstack runs: a duplicate of netctl's client
  *             end (SR_USER + 0) and nothing else. Only without a static
  *             address: it waits for /data's settings (DHCP_DATA_WAIT at
@@ -24,7 +34,7 @@
  *             is stopped, if /data came after it) when they have one.
  *   dns       bin/dns, once netstack runs: the server end of /svc/dns's
  *             shared channel (SR_USER + 0, abi/idl/dns.idl), made once
- *             and kept as /svc/net's is, and /svc/net in its namespace
+ *             and kept as /svc/net's is, and /svc/net-sys in its namespace
  *             (shell.c's grants). Its client end is published here as
  *             /svc/dns (a channel per opener). It ends when netstack
  *             does, and is started again once netstack runs.
@@ -33,7 +43,7 @@
  *             when `net.host` names the Mac and `netlog` isn't `off`. It
  *             gets the Mac's address and the boot id as arguments, the
  *             root with RIGHT_ROOT_KLOG only (a kernel log reader), a
- *             namespace with /svc/net only (shell.c's grants) and, on the
+ *             namespace with /svc/net-sys only (shell.c's grants) and, on the
  *             boot after a panic, a read-only duplicate of SR_CRASHLOG,
  *             taken in net_init, before lastboot.c lets the log go. The
  *             boot id (the kernel's start in UTC ns, from the wall clock
@@ -41,6 +51,14 @@
  *             netlog sends into the same file on the Mac. Without
  *             `net.host`, or with `netlog = off`, it is not started this
  *             boot (said once).
+ *   sntp      bin/sntp, once /data is mounted (its settings say whether,
+ *             and which server) and netstack runs: unless `ntp = off`,
+ *             with `ntp.server` as its argument (none: it asks the
+ *             gateway, then pool.ntp.org), the root with RIGHT_ROOT_CLOCK
+ *             only (it sets the kernel's clock: no other service has that
+ *             power) and a namespace with /svc/net-sys and /svc/dns (shell.c's
+ *             grants). It waits for an address itself. A restart gets the
+ *             settings as they are then.
  *
  * The address: `net.address` in /data/etc/settings (<ipv4.h>
  * ipv4_config_parse: "10.2.21.50/24 10.2.21.1 10.2.21.1": address/prefix,
@@ -62,6 +80,8 @@ static handle_t crashlog;           /* SR_CRASHLOG read-only, for netlog (0: no 
 static uint64_t boot_id;            /* netlog's boot id, fixed at its first start */
 static bool     boot_id_known;
 static handle_t dns_srv, dns_cli;   /* /svc/dns's two ends, the same */
+static handle_t listen_srv, listen_cli;   /* /svc/net-listen's two ends, the same */
+static handle_t sys_srv, sys_cli;         /* /svc/net-sys's two ends, the same */
 
 void net_init(void)
 {
@@ -72,6 +92,10 @@ void net_init(void)
         ctl_cli = ctl_srv = HANDLE_INVALID;
     if (jam_channel_create(&net_cli, &net_srv) != OK)
         net_cli = net_srv = HANDLE_INVALID;
+    if (jam_channel_create(&listen_cli, &listen_srv) != OK)
+        listen_cli = listen_srv = HANDLE_INVALID;   /* no program may listen */
+    if (jam_channel_create(&sys_cli, &sys_srv) != OK)
+        sys_cli = sys_srv = HANDLE_INVALID;   /* the services share /svc/net with programs */
     handle_t d;
     if (jam_channel_create(&dns_cli, &dns_srv) != OK)
         dns_cli = dns_srv = HANDLE_INVALID;
@@ -85,6 +109,16 @@ handle_t net_svc_channel(void)
     return net_cli;
 }
 
+handle_t net_listen_channel(void)
+{
+    return listen_cli;
+}
+
+handle_t net_sys_channel(void)
+{
+    return sys_cli;
+}
+
 status_t net_start(void)
 {
     const struct bootfs_view *fs;
@@ -96,13 +130,19 @@ status_t net_start(void)
         svcs[NETSTACK].given_up = true;
         return OK;
     }
-    struct spawn_handle x[2 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID },
-                                                    { SR_USER + 1, HANDLE_INVALID } };
+    struct spawn_handle x[3 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     unsigned n = 1;
-    if (net_srv && jam_handle_duplicate(net_srv, RIGHT_SAME, &x[1].h) == OK)
+    x[n] = (struct spawn_handle){ SR_USER + 1, HANDLE_INVALID };
+    if (net_srv && jam_handle_duplicate(net_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it netstack serves no program: said in its log */
+    x[n] = (struct spawn_handle){ SR_USER + 2, HANDLE_INVALID };
+    if (listen_srv && jam_handle_duplicate(listen_srv, RIGHT_SAME, &x[n].h) == OK)
+        n++;   /* without it no program may listen */
+    x[n] = (struct spawn_handle){ SR_USER + 3, HANDLE_INVALID };
+    if (sys_srv && jam_handle_duplicate(sys_srv, RIGHT_SAME, &x[n].h) == OK)
+        n++;   /* without it the services have no reserve: said in netstack's log */
     handle_t cards[INIT_MAX_CLAIMED];
     unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
     for (unsigned k = 0; k < nc; k++)
@@ -234,7 +274,11 @@ void net_given_up(void)
         jam_handle_close(ctl_srv);   /* calls waiting for a netstack fail now */
     if (net_srv)
         jam_handle_close(net_srv);
-    ctl_srv = net_srv = HANDLE_INVALID;
+    if (listen_srv)
+        jam_handle_close(listen_srv);
+    if (sys_srv)
+        jam_handle_close(sys_srv);
+    ctl_srv = net_srv = listen_srv = sys_srv = HANDLE_INVALID;
 }
 
 /* The kernel's start in UTC ns: the wall clock now less the uptime; 0 if
@@ -292,4 +336,22 @@ status_t net_netlog_start(void)
         n++;   /* without it only this boot's log goes */
     const char *argv[] = { svcs[NETLOG].path, host, boot };
     return svc_start(NETLOG, 3, argv, x, n);   /* consumes them */
+}
+
+status_t net_sntp_start(void)
+{
+    char server[SETTINGS_VALUE_MAX] = "", off[8];
+    if (settings_get(SETTINGS_FILE, "ntp", off, sizeof(off)) == OK && !strcmp(off, "off")) {
+        printf("init: ntp = off in the settings: the clock is not set from the network\n");
+        svcs[SNTP].given_up = true;   /* not this boot */
+        return OK;
+    }
+    if (!in_bootfs(SNTP, "the clock is not set from the network"))
+        return OK;
+    (void)settings_get(SETTINGS_FILE, "ntp.server", server, sizeof(server));   /* none: "" */
+    struct spawn_handle x[] = { { SR_RESOURCE, HANDLE_INVALID } };
+    if (jam_handle_duplicate(shell_root(), RIGHTS_BASIC | RIGHT_ROOT_CLOCK, &x[0].h) != OK)
+        return ERR_NO_RESOURCES;
+    const char *argv[] = { svcs[SNTP].path, server };
+    return svc_start(SNTP, server[0] ? 2 : 1, argv, x, 1);   /* consumes it */
 }

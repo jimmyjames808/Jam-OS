@@ -2,7 +2,10 @@
 # bin/soakload on /data is refused until allowed; `allow` shows its list
 # and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
 # program can't change /data/etc (even with /data writable); a changed file
-# is refused until allowed again; a program whose list asks for devmgr's or
+# is refused until allowed again; the listen permission (`svc net listen`,
+# bin/wantlisten) is given from /boot as its list says, and from /data
+# shown as "accepting connections from the network" and given once
+# allowed; a program whose list asks for devmgr's or
 # init's channels (a copy of bin/utest) or for the kernel's debug commands
 # (a copy of bin/wantdebug) is refused, approval or not;
 # `allow -r` takes it back; only a file on /data can be allowed, and a shell
@@ -44,6 +47,32 @@ wait jam>
 send run /data/s 1; echo st-$T=$?
 wait soakload:
 wait run: /data/s exited with code 0
+wait st-x=0
+wait jam>
+# the listen permission: /svc/net refuses port 5000, /svc/net-listen takes it
+send run wantlisten; echo st-$T=$?
+wait wantlisten: port 5000 on /svc/net: ERR_ACCESS_DENIED
+wait wantlisten: port 5000 on /svc/net-listen: OK
+wait wantlisten: port 0 on /svc/net: OK
+wait st-x=0
+wait jam>
+send cp /boot/bin/wantlisten /data/l && run /data/l; echo st-$T=$?
+wait run: /data/l is not allowed to run: `allow /data/l` first
+wait st-x=126
+wait jam>
+send allow /data/l; echo st-$T=$?
+wait allow l: net, accepting connections from the network? y/n
+type y
+wait allow: /data/l may run
+wait st-x=0
+wait jam>
+send run /data/l; echo st-$T=$?
+wait wantlisten: port 5000 on /svc/net: ERR_ACCESS_DENIED
+wait wantlisten: port 5000 on /svc/net-listen: OK
+wait st-x=0
+wait jam>
+send allow -r l; echo st-$T=$?
+wait allow: l may no longer run
 wait st-x=0
 wait jam>
 # devmgr's and init's channels reach past every view: never from /data

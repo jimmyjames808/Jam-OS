@@ -20,7 +20,9 @@ void     wallclock_init(void);
 status_t wallclock_get(struct wall_clock *out);
 /* Set the clock (checked with wallclock_check first). */
 status_t wallclock_set(const struct wall_clock *in);
-/* in is a wallclock_set request the kernel takes: flags and reserved 0, a
+/* in is a wallclock_set request the kernel takes: flags 0 or WALLCLOCK_NET
+ * (the time came from the network: wallclock_get reports it until a set
+ * without it), reserved 0, a
  * zone of printable ASCII within WALLCLOCK_ZONE_MAX with its NUL, a UTC time
  * from 1970 to 2200, an uptime not after `uptime_now`.
  * ERR_INVALID_ARGS otherwise. */

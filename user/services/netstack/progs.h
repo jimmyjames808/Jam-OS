@@ -4,12 +4,14 @@
  * Four kinds of channel, all on the loop's port, each bound PERSISTENT
  * and served PROGS_BUDGET requests a turn with a flag saying more may be
  * queued (a binding fires on edges only):
- * - the two shared channels (startup roles SR_USER + 1, /svc/net, and
- *   SR_USER + 2, /svc/net-sys; init keeps their server ends across
- *   restarts and publishes the client ends): each answers svc.connect
- *   with an opener's channel, and iface and counts. An opener made on
- *   /svc/net-sys is a system opener (init gives that name only to the
- *   network's own services), one made on /svc/net an ordinary one;
+ * - the shared channels (startup roles SR_USER + 1, /svc/net, here;
+ *   SR_USER + 2, /svc/net-listen, listen.c's; SR_USER + 3, /svc/net-sys,
+ *   here; init keeps their server ends across restarts and publishes the
+ *   client ends): each answers svc.connect with an opener's channel
+ *   (progs_connect), and iface and counts. What kind of opener a channel
+ *   makes is the channel's (struct opener_kind): /svc/net-sys's are system
+ *   openers (init gives that name only to the network's own services), the
+ *   others ordinary ones, and /svc/net-listen's may listen;
  * - an opener's channel (clients.c): iface, counts, wait_change,
  *   chip_counts, udp, udp_rings, echo. What it starts is its own: its
  *   sockets (closed with it), its requests in flight (dropped with it) and
@@ -69,11 +71,20 @@ _Static_assert(KEY_RING + SOCK_SLOTS <= 0x100, "ring keys fit the low byte");
 /* An opener's class: which shared channel it came from. */
 enum { CLASS_PROG, CLASS_SYS, CLASSES };
 
+/* What an opener may do, fixed at connect by the shared channel it came
+ * through (each shared channel's own, given as progs_connect's ctx), never
+ * by anything the opener says. */
+struct opener_kind {
+    uint8_t cls;      /* CLASS_PROG (/svc/net, /svc/net-listen) or CLASS_SYS (/svc/net-sys) */
+    bool    listen;   /* may listen (/svc/net-listen: listen.h) */
+};
+
 struct opener {
     handle_t ch;          /* our end of its channel; 0: the slot is free */
     uint32_t gen;         /* the slot's generation */
     bool     pending;     /* requests may be queued */
     uint8_t  cls;         /* CLASS_PROG or CLASS_SYS */
+    bool     listen;      /* came through /svc/net-listen: may listen (listen.h) */
     uint16_t echo_id;     /* its ICMP echo id: the slot in the low 5 bits, random above */
     unsigned socks;       /* sockets it holds */
     unsigned later;       /* its requests in flight */
@@ -169,6 +180,14 @@ struct opener *progs_opener(unsigned slot, uint32_t gen);
  * bound it); an ordinary opener only within NET_PROG_*. A refusal is
  * counted. */
 bool     progs_share_ok(uint8_t cls, unsigned socks, unsigned later, uint64_t ring_bytes);
+/* svc.connect on a shared channel: a new opener's channel into *out; ctx
+ * the channel's const struct opener_kind (NULL: an ordinary opener that
+ * may not listen). Refused (ERR_NO_RESOURCES) when every opener slot, or
+ * an ordinary opener's share of them, is taken. */
+status_t progs_connect(void *ctx, handle_t *out);
+/* What a shared channel answers besides connect (iface, counts). */
+uint32_t progs_shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                               uint32_t *rhn);
 
 /* ---- sock.c ---------------------------------------------------------------- */
 

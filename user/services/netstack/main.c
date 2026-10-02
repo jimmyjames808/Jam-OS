@@ -14,7 +14,9 @@
  *                     (abi/idl/net.idl), programs' sockets and pings
  *                     (progs.h); init keeps a duplicate and publishes the
  *                     client end
- *   SR_USER + 2       the same for /svc/net-sys, the network's own
+ *   SR_USER + 2       the server end of /svc/net-listen's: the same, for
+ *                     the programs that may listen (listen.h)
+ *   SR_USER + 3       the same for /svc/net-sys, the network's own
  *                     services' (their openers use a reserve no program
  *                     can take: progs.h)
  *
@@ -29,12 +31,14 @@
 #include <os.h>
 #include "ctl.h"
 #include "dev.h"
+#include "listen.h"
 #include "progs.h"
 #include "stack.h"
 
-#define SR_NETCTL (SR_USER + 0)
-#define SR_NET    (SR_USER + 1)
-#define SR_NET_SYS (SR_USER + 2)
+#define SR_NETCTL     (SR_USER + 0)
+#define SR_NET        (SR_USER + 1)
+#define SR_NET_LISTEN (SR_USER + 2)
+#define SR_NET_SYS    (SR_USER + 3)
 #define KEY_CTL   1u
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
 #define PACKETS_PER_TURN 32u        /* port packets taken a turn (each notes work) */
@@ -109,7 +113,7 @@ static status_t take_packets(uint64_t deadline)
             return st;
         if (p.key == KEY_CTL)
             l.ctl_pending = l.ctl != 0;
-        else if (!progs_packet(&p))
+        else if (!progs_packet(&p) && !listen_packet(&p))
             dev_packet(&l.dev, &p);
     }
     return OK;
@@ -132,6 +136,8 @@ static status_t setup(void)
         st = dev_init(&l.dev, l.port);
     if (st == OK)
         st = progs_init(l.port, startup_handle(SR_NET), startup_handle(SR_NET_SYS), &l.dev);
+    if (st == OK)
+        st = listen_init(l.port, startup_handle(SR_NET_LISTEN));
     if (st != OK) {
         printf("netstack: can't set up (%s)\n", status_str(st));
         return st;
@@ -152,6 +158,7 @@ int main(int argc, char **argv)
         if (l.ctl_pending)
             serve_ctl();
         progs_serve();
+        listen_serve();
         uint64_t deadline = stack_poll();
         uint64_t t = progs_tick();
         if (t < deadline)
@@ -165,7 +172,7 @@ int main(int argc, char **argv)
          * sleeping rather than skip it, so a channel that always has more
          * never keeps the other channels' packets, or the card's, unread
          * (the service-loop rule: a busy client delays only itself). */
-        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending())
+        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending() || listen_pending())
             deadline = 0;
         if (take_packets(deadline) != OK)
             break;

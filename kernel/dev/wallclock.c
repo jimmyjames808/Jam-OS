@@ -67,7 +67,7 @@ status_t wallclock_get(struct wall_clock *out)
 
 status_t wallclock_check(const struct wall_clock *in, uint64_t uptime_now)
 {
-    if (in->flags || in->reserved || in->uptime_ns > uptime_now || in->utc_ns < 0 ||
+    if ((in->flags & ~WALLCLOCK_NET) || in->reserved || in->uptime_ns > uptime_now || in->utc_ns < 0 ||
         in->utc_ns / 1000000000ll >= UTC_MAX_S)
         return ERR_INVALID_ARGS;
     size_t n = 0;
@@ -89,15 +89,16 @@ status_t wallclock_set(const struct wall_clock *in)
     uint64_t f = spin_lock_irqsave(&lock);
     base_utc = in->utc_ns;
     base_up = in->uptime_ns;
-    flags = WALLCLOCK_SET;
+    flags = WALLCLOCK_SET | (in->flags & WALLCLOCK_NET);
     if (in->zone[0])
         memcpy(zone, in->zone, sizeof(zone));
     char z[WALLCLOCK_ZONE_MAX];
     memcpy(z, zone, sizeof(z));
     spin_unlock_irqrestore(&lock, f);
     int64_t s = in->utc_ns / 1000000000ll;
-    kprintf("clock: set to %ld s since 1970 UTC at uptime %lu.%03lu s, zone %s\n", (long)s,
+    kprintf("clock: set to %ld s since 1970 UTC at uptime %lu.%03lu s, zone %s%s\n", (long)s,
             (unsigned long)(in->uptime_ns / 1000000000ull),
-            (unsigned long)(in->uptime_ns / 1000000ull % 1000), z[0] ? z : "(none)");
+            (unsigned long)(in->uptime_ns / 1000000ull % 1000), z[0] ? z : "(none)",
+            in->flags & WALLCLOCK_NET ? ", from the network" : "");
     return OK;
 }

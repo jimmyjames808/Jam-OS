@@ -266,17 +266,18 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
 # network drivers' netdev server over a fake card (utest/netsrv.c:
 # drivers/lib/netserver.c), and bin/dns's sockets and askers over a fake
-# netstack (utest/dnsd.c).
+# netstack (utest/dnsd.c), and bin/sntp's request and checks (utest/sntp.c).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
                       $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \
                       $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
                       $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o \
-                      $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o
+                      $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
+                      $(UOBJ)/user/services/sntp/ntp.c.o
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
-                      -iquote user/services/dns
+                      -iquote user/services/dns -iquote user/services/sntp
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -382,6 +383,7 @@ check: all
 	sh tools/checknotx.sh
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
+	python3 tools/checkwants.py --selftest
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository

@@ -20,7 +20,7 @@
 #include <wants.h>
 
 /* What it is given when the shell runs it (<wants.h>). */
-JAM_WANTS("svc net\n");
+JAM_WANTS("svc net-sys\n");   /* the network's reserve (tools/checkwants.py: services only) */
 
 #define ROLE_OFFER  (SR_USER + 0)
 #define ROLE_STOP   (SR_USER + 2)

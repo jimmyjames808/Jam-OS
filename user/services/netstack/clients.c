@@ -14,10 +14,15 @@
  * reply goes to the opener that sent the request and to no other. */
 #include <idl/svc.h>
 #include "ctl.h"
+#include "listen.h"
 #include "progs.h"
 
-#define KEY_NET     2u   /* the shared channels, + the class (main.c's keys are below 0x10) */
-_Static_assert(KEY_NET + CLASSES <= 0x10, "shared channels' keys");
+/* The shared channels' keys (main.c's are below 0x10; listen.c's /svc/net-listen is 3) and
+ * the kind of opener each makes. */
+static const uint64_t shared_key[CLASSES] = { [CLASS_PROG] = 2, [CLASS_SYS] = 4 };
+static const struct opener_kind kinds[CLASSES] = {
+    [CLASS_PROG] = { .cls = CLASS_PROG }, [CLASS_SYS] = { .cls = CLASS_SYS },
+};
 
 _Static_assert(NET_OPENERS <= 32, "an opener's slot fits the echo id's low 5 bits");
 
@@ -255,7 +260,7 @@ static status_t op_udp(void *ctx, uint16_t port, handle_t *out_socket, uint16_t 
 {
     struct opener *o = ctx;
     unsigned i;
-    if (port && port < NET_PORT_LOW)
+    if (!listen_may_bind(o, port))
         return ERR_ACCESS_DENIED;
     if (o->socks >= NET_SOCKETS_PER_OPENER)
         return ERR_NO_RESOURCES;
@@ -270,7 +275,7 @@ static status_t op_udp_rings(void *ctx, uint16_t port, uint32_t tx_bytes, uint32
     struct opener *o = ctx;
     unsigned i;
     handle_t hs[3];
-    if (port && port < NET_PORT_LOW)
+    if (!listen_may_bind(o, port))
         return ERR_ACCESS_DENIED;
     if (o->socks >= NET_SOCKETS_PER_OPENER)
         return ERR_NO_RESOURCES;
@@ -337,12 +342,11 @@ static const struct net_ops shared_ops = { .iface = op_iface, .counts = op_count
 
 /* ---- the channels ------------------------------------------------------------------ */
 
-/* svc.connect on a shared channel (ctx: its class): a channel of the
- * caller's own. */
-static status_t on_connect(void *ctx, handle_t *out)
+status_t progs_connect(void *ctx, handle_t *out)
 {
-    uint8_t cls = (uint8_t)(uintptr_t)ctx;
-    if (cls == CLASS_PROG && pg.held[CLASS_PROG].openers >= NET_PROG_OPENERS) {
+    static const struct opener_kind plain = { .cls = CLASS_PROG };
+    const struct opener_kind *k = ctx ? ctx : &plain;
+    if (k->cls == CLASS_PROG && pg.held[CLASS_PROG].openers >= NET_PROG_OPENERS) {
         pg.c.refused_shares++;
         return ERR_NO_RESOURCES;
     }
@@ -362,17 +366,18 @@ static status_t on_connect(void *ctx, handle_t *out)
             jam_handle_close(theirs);
             return st;
         }
-        *o = (struct opener){ .ch = mine, .gen = o->gen, .pending = true, .cls = cls,
-                              .echo_id = (uint16_t)((os_random_u32() & ~0x1fu) | i) };
-        pg.held[cls].openers++;
+        *o = (struct opener){ .ch = mine, .gen = o->gen, .pending = true, .cls = k->cls,
+                              .echo_id = (uint16_t)((os_random_u32() & ~0x1fu) | i),
+                              .listen = k->listen };
+        pg.held[k->cls].openers++;
         *out = theirs;
         return OK;
     }
     return ERR_NO_RESOURCES;
 }
 
-static uint32_t shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
-                                uint32_t *rhn)
+uint32_t progs_shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                               uint32_t *rhn)
 {
     return net_dispatch(&shared_ops, ctx, req, n, rep, rhs, rhn);
 }
@@ -381,15 +386,15 @@ static void serve_shared(uint8_t cls)
 {
     pg.shared_pending[cls] = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = svc_serve_request(pg.shared[cls], shared_dispatch, on_connect,
-                                        (void *)(uintptr_t)cls);
+        status_t st = svc_serve_request(pg.shared[cls], progs_shared_dispatch, progs_connect,
+                                        (void *)&kinds[cls]);
         if (st == OK)
             continue;
         if (st != ERR_SHOULD_WAIT) {
             /* Every holder is gone, init's duplicate too: no new openers. */
             nstack_log("%s's channel is closed (%s): no new openers",
                        cls == CLASS_SYS ? "/svc/net-sys" : "/svc/net", status_str(st));
-            (void)jam_port_unbind(pg.port, pg.shared[cls], KEY_NET + cls);   /* was bound */
+            (void)jam_port_unbind(pg.port, pg.shared[cls], shared_key[cls]);   /* was bound */
             jam_handle_close(pg.shared[cls]);
             pg.shared[cls] = HANDLE_INVALID;
         }
@@ -403,7 +408,7 @@ static void opener_close(unsigned i)
     struct opener *o = &pg.o[i];
     later_drop(i);
     sock_close_opener(i);
-    (void)jam_port_unbind(pg.port, o->ch, key_of(i));   /* bound since on_connect */
+    (void)jam_port_unbind(pg.port, o->ch, key_of(i));   /* bound since progs_connect */
     jam_handle_close(o->ch);
     pg.held[o->cls].openers--;
     o->ch = HANDLE_INVALID;
@@ -463,8 +468,8 @@ void progs_flush(void)
 bool progs_packet(const struct port_packet *p)
 {
     uint32_t low = (uint32_t)(p->key & 0xff), gen = (uint32_t)(p->key >> 8);
-    if (p->key >= KEY_NET && p->key < KEY_NET + CLASSES) {
-        uint8_t c = (uint8_t)(p->key - KEY_NET);
+    if (p->key == shared_key[CLASS_PROG] || p->key == shared_key[CLASS_SYS]) {
+        uint8_t c = p->key == shared_key[CLASS_SYS] ? CLASS_SYS : CLASS_PROG;
         pg.shared_pending[c] = pg.shared[c] != 0;
     } else if (low >= KEY_RING && low < KEY_RING + SOCK_SLOTS) {
         sock_ring_event(low - KEY_RING, gen);
@@ -489,7 +494,7 @@ static status_t take_shared(uint8_t cls, handle_t h)
         return OK;
     pg.shared[cls] = h;
     pg.shared_pending[cls] = true;   /* connects may be queued from before a restart */
-    return jam_port_bind(pg.port, h, KEY_NET + cls, SIG_READABLE | SIG_PEER_CLOSED,
+    return jam_port_bind(pg.port, h, shared_key[cls], SIG_READABLE | SIG_PEER_CLOSED,
                          PORT_BIND_PERSISTENT);
 }
 

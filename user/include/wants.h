@@ -9,6 +9,11 @@
  *
  * One want per line:
  *     svc <name>              the service /svc/<name> (<os.h> SVC_*)
+ *     svc net listen          /svc/net, and the permission to listen:
+ *                             /svc/net-listen, whose openers may take a
+ *                             fixed port below NET_PORT_EPHEMERAL (and,
+ *                             with TCP, accept connections); never
+ *                             written `svc net-listen`
  *     mount <point> r|rw      a mount, read-only or writable (writable
  *                             leaves the top-level `etc` alone); <point>
  *                             is /boot, /esp, /data, /usb* (every other
