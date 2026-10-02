@@ -143,6 +143,14 @@ bool wait_port_free(int parent, uint8_t port)
     return !port_entry_left(parent, port);
 }
 
+bool root_retry_waiting(void)
+{
+    for (int p = 1; p < 256; p++)
+        if (root_retry_at[p])
+            return true;
+    return false;
+}
+
 /* Root ports whose retry time has come get their port_changed bit set, as
  * if the port had changed, so usb_work runs root_port on them again. The
  * earliest retry still waiting comes back (UINT64_MAX: none), so the main

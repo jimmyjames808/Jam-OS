@@ -7,8 +7,8 @@
  * scan after hub_setup, a retry). serve.c starts a device task for every
  * device with requests queued on its interface channels; work_dispatch
  * also starts one for a device with endpoint upkeep queued (intr.c).
- * usb_busy says whether port work is still pending or running (the
- * RESULTS lines wait until it settles). */
+ * usb_busy says whether port work is still pending, running or waiting
+ * for a failed port's retry (the RESULTS lines wait until it settles). */
 #include "usbbus.h"
 
 #define STOP_WAIT_MS 2000   /* how long the tasks get to end when the driver stops */
@@ -30,12 +30,17 @@ void usb_start(struct hc *h)
     started = true;
 }
 
+/* Has hub d work: a change to look at, or a failed port waiting for its
+ * retry? */
 static bool hub_pending(const struct usbdev *d)
 {
     if (d->hub_scan_all)
         return true;
     for (int k = 0; k < 8; k++)
         if (d->hub_change[k])
+            return true;
+    for (int p = 1; p < 16; p++)
+        if (d->port_retry_at[p])
             return true;
     return false;
 }
@@ -45,6 +50,8 @@ bool usb_busy(void)
     for (int i = 0; i < 8; i++)
         if (g_hc.port_changed[i])
             return true;
+    if (root_retry_waiting())
+        return true;
     for (int i = 0; i < MAX_DEVS; i++) {
         struct usbdev *d = &g_devs[i];
         if (d->used && !d->gone && d->is_hub && hub_pending(d))

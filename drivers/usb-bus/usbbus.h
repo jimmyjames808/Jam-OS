@@ -688,6 +688,7 @@ bool wait_port_free(int parent, uint8_t port);
 /* Due retries of failed root ports become port changes; the next
  * retry time (UINT64_MAX: none). */
 uint64_t root_retries(struct hc *h);
+bool root_retry_waiting(void);            /* is a failed root port waiting for its retry? */
 
 /* ---- work.c ---------------------------------------------------------------- */
 
@@ -700,7 +701,7 @@ void usb_start(struct hc *h);             /* the first scan of every root port *
 /* Shutdown: every task given up to 2 s to end, then every device
  * detached quietly. */
 void usb_stop_all(struct hc *h);
-bool usb_busy(void);                      /* port or hub work pending or running */
+bool usb_busy(void);                      /* port or hub work pending, running or due a retry */
 
 /* ---- serve.c --------------------------------------------------------------- */
 
