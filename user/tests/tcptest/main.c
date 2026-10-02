@@ -118,7 +118,8 @@ static int do_send(uint32_t addr, uint16_t port, uint64_t bytes)
     net_close(&s);
     if (st != OK)
         return fail("send", st);
-    printf("tcptest: PASS: connected in %lu ms; %lu bytes out at %lu.%lu MB/s, in at %lu.%lu MB/s\n",
+    printf("tcptest: PASS: connected in %lu ms; %lu bytes out at %lu.%lu MB/s, "
+           "in at %lu.%lu MB/s\n",
            (unsigned long)((t1 - t0) / NS_PER_MS), (unsigned long)bytes,
            (unsigned long)(tt_rate10(bytes, t2 - t1) / 10),
            (unsigned long)(tt_rate10(bytes, t2 - t1) % 10),

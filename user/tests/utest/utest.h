@@ -282,6 +282,8 @@ bool t_nettcp_pool_full(void);
 bool t_nettcp_malformed(void);
 bool t_nettcp_fuzz(void);
 bool t_nettcp_hostile_ring(void);
+/* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
+bool t_nettcp_limits(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_process(void);
 bool t_ipv4_text(void);
