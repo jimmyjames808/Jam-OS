@@ -506,7 +506,7 @@ port, so while it handles one request every other client waits behind it.
   blocking calls in code that serves nobody: a program, a shell command,
   or a thread of its own that serves nothing else.
 - **Data at packet or sample rate** goes through shared rings with an
-  event, not a call each (the mixer's streams, `netdev`).
+  event, not a call each (the mixer's streams, `netdev`, sockets).
 - **Not followed everywhere yet:** devmgr's and init's loops still make
   blocking calls of up to 2 to 25 s (listed in
   [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time));
@@ -615,8 +615,8 @@ port, so while it handles one request every other client waits behind it.
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
 | netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
 | dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
-| dns | `/svc/net` | `/svc/dns`: names to IPv4 addresses | yes |
-| netlog | the kernel log, `/svc/net` | each boot's log over UDP to the Mac | yes |
+| dns | `/svc/net-sys` | `/svc/dns`: names to IPv4 addresses | yes |
+| netlog | the kernel log, `/svc/net-sys` | each boot's log over UDP to the Mac | yes |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
 
 uACPI will live in the kernel; everything else is a process.
@@ -790,15 +790,45 @@ restarts:
 - **`/svc/net`** (`abi/idl/net.idl`, libos's `<net.h>`), a channel per
   opener: `iface`, `wait_change` (answers when the address or DNS servers
   change), `counts`, `chip_counts`, `echo` (a ping, built by netstack),
-  and `udp(port)`, a socket on a channel of its own (`sock_send_to`,
-  `sock_recv`, `sock_connect`, `sock_state`; closing the channel closes the
-  socket). One datagram per call, at most 1472 bytes. Limits: 32 openers,
-  16 sockets an opener and 32 in all, 8 requests in flight an opener, 32
-  datagrams queued a socket (one more is dropped and counted), each copied
-  into netstack's own heap so a slow reader never holds lwIP's buffers. A
-  program can't send to a broadcast, multicast or loopback address, can't
-  bind a port below 1024 (nor one below 49152 without the listen
-  permission, below), and sends no raw packets.
+  and `udp_rings(port, tx, rx)`, a socket: a channel of its own
+  (`sock_connect`, `sock_state`; closing it closes the socket) and its
+  **rings** (`user/include/sockring.h`): one VMO netstack makes and maps,
+  a header page, a tx ring the program writes and an rx ring netstack
+  writes (4 KiB to 256 KiB each; UDP's 16 and 32 KiB by default), and two
+  events, the netdev rings' model. A datagram is a record (16 bytes of
+  address, port and length, then at most 1472 bytes); while datagrams flow
+  neither side makes a call or a system call per datagram, only a signal
+  when the other side said it sleeps. netstack treats the rings as hostile
+  (its own counts, the program's clamped, a record's header read once and
+  checked, its bytes copied before lwIP sees them; a broken ring is looked
+  at again only on the program's next signal), reads a tx ring only while
+  the card's ring has room (a full tx ring is the program's backpressure)
+  and drops and counts a datagram that doesn't fit an rx ring, so a slow
+  reader never holds lwIP's buffers or netstack. A refused record (an
+  address a program can't send to, no route) counts in the socket's
+  status line, with its reason; the blocking `net_sendto` waits for
+  netstack to take its datagram and returns that reason. The VMO is
+  netstack's (its pages charged to netstack's job), so it is shrunk to
+  nothing once the program's end of the channel closes; a socket whose
+  opener went is ended (its status says CLOSED) but kept until then.
+  Limits: 32 openers, 16 sockets an opener and 48 in all, 8 requests in
+  flight an opener and 64 in all, 2 MiB of ring bytes an opener and 16 MiB
+  in all; of each, ordinary programs together get only their share
+  (24 openers, 24 sockets, 48 requests, 8 MiB), and the rest is the
+  network's own services' (`/svc/net-sys`, below). A program can't send to
+  a broadcast, multicast or loopback address, can't bind a port below 1024
+  (nor one below 49152 without the listen permission, below), and sends no
+  raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+- **`/svc/net-sys`**, the network's own services' reserve: the same
+  protocol on a third shared channel (netstack's SR_USER + 3), whose
+  openers are counted apart from programs', so no program can take the
+  openers, sockets, requests or ring bytes dns, netlog, sntp and
+  `bin/update` need. Like the listen permission it is fixed at connect by
+  the channel an opener came through: init grants the name to its network
+  services, `tools/checkwants.py` only to a program under
+  `user/services/` (`bin/update`'s list), and `allow` refuses it for a
+  program on `/data`. libos's `net_svc` opens it when the namespace has
+  it.
 - **`/svc/net-listen`**, the listen permission: the same protocol on a
   second shared channel init makes and publishes (netstack's SR_USER + 2),
   whose openers may also bind a fixed UDP port from 1024 to 49151, where
@@ -832,12 +862,12 @@ ARP probe of the offered address (an ACKed address is taken as free).
 
 **dns** (`user/services/dns`) serves `/svc/dns` (`abi/idl/dns.idl`:
 `resolve`, answered when the reply comes, so a slow name holds up only its
-own askers) and holds `/svc/net`. Each name in flight has a socket of its
+own askers) and holds `/svc/net-sys`. Each name in flight has a socket of its
 own on a random port with a random id (`os_random`), 16 names at most and
 8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
 at most a day). libos's `dns_lookup` (`<dns.h>`) is the client.
 
-**netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net`
+**netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net-sys`
 and, after a panic, the panicked boot's log read-only. init starts it when
 `net.host` is set and `netlog` isn't `off`. It sends the log from its
 first line (the 4 MiB ring still has the whole boot when the network comes
@@ -851,7 +881,7 @@ can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
 **sntp** (`user/services/sntp`) sets the clock from the network (SNTP, RFC
 4330; the checks in `ntp.c`, a core with no I/O that utest drives). init
 starts it once `/data`'s settings are read, unless `ntp = off`, with
-`ntp.server` as its argument, `/svc/net` and `/svc/dns`, and the root with
+`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns`, and the root with
 `RIGHT_ROOT_CLOCK` only: it is the one service besides init and the shell
 that may set the clock. Without `ntp.server` it asks the network's gateway
 (the DHCP lease's router, which on the owner's network is also its DNS
@@ -877,7 +907,7 @@ with no time backs off from 16 s to 1024 s. It sets the clock with
 **update** (`user/services/update`, `user/services/init/update.c`). The
 shell's `update [-n] [address]` takes an offer channel from init
 (`initctl.update_offer`) and runs `bin/update` with that channel and
-`/svc/net` only. It fetches the manifest, kernel and boot image from the
+`/svc/net-sys` only. It fetches the manifest, kernel and boot image from the
 Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
 a snapshot, a file, an offset and a length; 32 in flight; the server keeps
 no state per client) and offers them to init as read-only VMOs. init
@@ -896,10 +926,10 @@ signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
 | netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
 | dhcp | netctl | yes: DHCP replies |
-| dns | `/svc/net`; the server end of `/svc/dns` | yes: DNS replies |
-| netlog | a klog reader, `/svc/net`, the panicked boot's log (read-only) | the Mac's acks |
-| bin/update | `/svc/net`, its offer channel to init | yes: the fetch's replies and the manifest |
-| sntp | `/svc/net`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| dns | `/svc/net-sys`; the server end of `/svc/dns` | yes: DNS replies |
+| netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
+| bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
+| sntp | `/svc/net-sys`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | init | the fetched build's copies, `kexec_load` | the manifest only (a strict parser); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
@@ -991,7 +1021,8 @@ not the one-shot `netprobe` and `netsend`.
   channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
-  listen permission ([Networking](#networking)), and `dns`, the resolver,
+  listen permission, `net-sys`, the same for the network's services
+  ([Networking](#networking)), and `dns`, the resolver,
   each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
