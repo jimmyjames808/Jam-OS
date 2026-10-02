@@ -3,17 +3,21 @@
  * build it serves, over a UDP socket of its own to the server's port
  * UPDWIRE_PORT, with the fetcher's window (<updfetch.h>); stores the
  * kernel and the boot image in two VMOs; and offers them to init, which
- * checks them against the manifest and loads them (<update.h>).
+ * checks the manifest's signature, then the files against it, and loads
+ * them (<update.h>). It doesn't check the signature itself: only init's
+ * check counts.
  *
  * It parses what the network sends, so it holds almost nothing: /svc/net
  * (its list) and the offer channel the shell took from init, nothing
  * else. It can't load a kernel; it can only offer bytes that init checks.
  * The shell's `update` starts it as a helper (sh_run_helper):
- *   argv: update <server address> load|check <running version> <running git>
+ *   argv: update <server address> load|check|write <running version> <running git>
+ *   (write: load, and have init write the build to the stick too)
  *   SR_USER + 0   the offer channel (initctl.update_offer)
  *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
  * Its lines are the shell's. Exit: 0 init took the build (or, with
- * `check`, would have), 1 not, 2 usage, 130 stopped. */
+ * `check`, would have; with `write`, wrote it to the stick too), 1 not,
+ * 2 usage, 3 loaded but not written to the stick, 130 stopped. */
 #include <ipv4.h>
 #include <net.h>
 #include <updfetch.h>
@@ -26,6 +30,7 @@ JAM_WANTS("svc net\n");
 #define ROLE_STOP   (SR_USER + 2)
 #define UP_WAIT     (10 * NS_PER_S)    /* for the network's address */
 #define ANSWER_WAIT (60 * NS_PER_S)    /* init copies and hashes the build */
+#define WRITE_WAIT  (300 * NS_PER_S)   /* ... and writes it to the stick (`write`) */
 #define STOP_LOOK   (100 * NS_PER_MS)  /* how often the fetch looks for Ctrl+C */
 /* Bytes as MB with one decimal: the two arguments of "%lu.%u". */
 #define MB(b)       ((unsigned long)((b) / 1000000)), ((unsigned)((b) / 100000 % 10))
@@ -164,15 +169,15 @@ static status_t run_fetch(uint32_t host)
     return OK;
 }
 
-/* The fetched build offered to init on ch (the VMOs go, read-only); its
- * answer into *a. */
-static status_t offer(handle_t ch, bool check_only, struct update_answer *a)
+/* The fetched build offered to init on ch with flags (UPDATE_OFFER_*; the
+ * VMOs go, read-only); its answer into *a. */
+static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
 {
     struct update_offer *o = calloc(1, sizeof(*o));
     if (!o)
         return ERR_NO_MEMORY;
     o->magic = UPDATE_OFFER_MAGIC;
-    o->flags = check_only ? UPDATE_OFFER_CHECK_ONLY : 0;
+    o->flags = flags;
     o->manifest_len = fetch.manifest_len;
     memcpy(o->manifest, fetch.manifest, fetch.manifest_len);
     handle_t hs[UPDATE_FILES];
@@ -191,7 +196,9 @@ static status_t offer(handle_t ch, bool check_only, struct update_answer *a)
     free(o);
     signals_t seen;
     if (st == OK)
-        st = jam_object_wait_one(ch, SIG_READABLE, now() + ANSWER_WAIT, &seen);
+        st = jam_object_wait_one(ch, SIG_READABLE,
+                                 now() + (flags & UPDATE_OFFER_WRITE ? WRITE_WAIT : ANSWER_WAIT),
+                                 &seen);
     uint32_t got = 0;
     struct channel_read_args r = {
         .h = ch, .bytes_cap = sizeof(*a), .bytes = (uint64_t)(uintptr_t)a,
@@ -204,16 +211,27 @@ static status_t offer(handle_t ch, bool check_only, struct update_answer *a)
     return st;
 }
 
-/* init's answer, in words; the exit status. */
-static int say_answer(const struct update_answer *a, bool check_only, const char *from_version,
+/* init's answer to an offer with flags, in words; the exit status. */
+static int say_answer(const struct update_answer *a, uint32_t flags, const char *from_version,
                       const char *from_git)
 {
     if (a->why == UPDATE_ACCEPTED && a->status == OK) {
         printf("update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s\n", from_version,
                from_git, (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX, a->git,
-               a->check_ms, check_only ? "not loaded (-n): the running build stays"
-                                       : "stored: the next reboot runs it");
+               a->check_ms,
+               flags & UPDATE_OFFER_CHECK_ONLY ? "not loaded (-n): the running build stays"
+               : flags & UPDATE_OFFER_WRITE    ? "stored and written to the stick (-w): the next "
+                                                 "reboot runs it, and so does the next power-on"
+                                               : "stored: the next reboot runs it");
         return 0;
+    }
+    if (a->why == UPDATE_NOT_WRITTEN) {
+        printf("update: %.*s (%.*s) is stored, but init couldn't write it to the stick (%s: %s);"
+               "\n  %s.\n  `reboot` runs the new build until the power goes off\n",
+               (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX, a->git,
+               update_write_step_str(a->write_step), status_str(a->status),
+               update_stick_str(a->stick));
+        return 3;
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
                     a->why == UPDATE_BAD_HASH;
@@ -251,12 +269,15 @@ int main(int argc, char **argv)
     const char *end;
     handle_t ch = startup_handle(ROLE_OFFER);
     if (argc != 5 || !ipv4_parse(argv[1], &host, &end) || *end ||
-        (strcmp(argv[2], "load") && strcmp(argv[2], "check")) || !ch) {
-        printf("usage: update <server address> load|check <running version> <running git>, "
-               "with init's offer channel (the shell's `update` starts it)\n");
+        (strcmp(argv[2], "load") && strcmp(argv[2], "check") && strcmp(argv[2], "write")) ||
+        !ch) {
+        printf("usage: update <server address> load|check|write <running version> "
+               "<running git>, with init's offer channel (the shell's `update` starts it)\n");
         return 2;
     }
-    bool check_only = !strcmp(argv[2], "check");
+    uint32_t flags = !strcmp(argv[2], "check")   ? UPDATE_OFFER_CHECK_ONLY
+                     : !strcmp(argv[2], "write") ? UPDATE_OFFER_WRITE
+                                                 : 0;
     printf("update: asking %s:%u for its build\n", argv[1], UPDWIRE_PORT);
     status_t st = open_socket(host);
     if (st == OK)
@@ -272,11 +293,10 @@ int main(int argc, char **argv)
     }
     struct update_answer a;
     memset(&a, 0, sizeof(a));
-    st = offer(ch, check_only, &a);
+    st = offer(ch, flags, &a);
     if (st != OK) {
-        printf("update: init didn't answer (%s)\n",
-               status_str(st));
+        printf("update: init didn't answer (%s)\n", status_str(st));
         return 1;
     }
-    return say_answer(&a, check_only, argv[3], argv[4]);
+    return say_answer(&a, flags, argv[3], argv[4]);
 }

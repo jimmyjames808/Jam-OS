@@ -56,7 +56,11 @@ dropping every other VLAN's; the netdev rings; netstack on lwIP (IPv4,
 ARP, ICMP, UDP) with `/svc/net` sockets for programs; the DHCP client and
 the resolver as processes of their own (`host`, `ping <name>`); `ping`
 and `net`; netlog (the whole boot log to the Mac); `update` (the Mac's
-build fetched, checked by init and run by kexec, in RAM only). The
+build fetched, its manifest's Ed25519 signature checked against the key
+in the running build, then its files, and run by kexec, in RAM; signed
+since 2026-10-02, the owner's call: the first signed build goes on by
+`make flash`; `update -w` also has init write it to the stick, keeping
+the stick's build as "Jam OS (previous build)"). The
 slow-peer test passes (`tools/dns-test.sh`), and `tools/net-vlan-test.sh`
 runs every path that transmits in one boot with every frame tagged 21,
 and the same commands with `vlan=off` sending nothing.
@@ -161,11 +165,6 @@ kernel log ring and the block cache for the slow `/esp` read. The first
 ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
-- **Signed updates** (the owner, 2026-10-02: unsigned in M9, signed
-  later): M9's `update` checks hashes against the Mac's manifest, which
-  catches damage but not a device on VLAN 21 posing as the Mac. Later: an
-  Ed25519 key kept on the Mac (Monocypher), its public half in the image,
-  the manifest's signature field filled and checked by init.
 - **GPT sticks** are not read (their partitions are not mounted).
 - devmgr and init are single-threaded loops that wait inside a
   request: devmgr up to 2 s per call to a usb-storage, 5 s for a

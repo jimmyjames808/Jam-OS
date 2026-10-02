@@ -1,5 +1,7 @@
 /* utest: `update`'s parsers, over hostile input: the manifest (<update.h>)
- * and the protocol's datagrams (<updwire.h>). The golden bytes are what
+ * and the protocol's datagrams (<updwire.h>); and the manifest's
+ * signature (Monocypher's Ed25519 as built here, against RFC 8032's
+ * vectors and a manifest tools/jamos-sign signed). The golden bytes are what
  * tools/update-server.py makes (its Python struct layouts), so the two
  * sides are held to one format. init's own check of an offer is
  * tools/update-test.sh's (bin/updtest); the fetcher's window is
@@ -65,8 +67,8 @@ bool t_update_manifest_refusals(void)
         { "jamos-update 1", "jamos-update x", ERR_INVALID_ARGS },
         { "jamos-update 1", "jamos-update ", ERR_INVALID_ARGS },
         { "jamos-update 1", "Jamos-update 1", ERR_INVALID_ARGS },
-        { "signature\n", "signature 00ff\n", ERR_NOT_SUPPORTED },
-        { "signature\n", "signature \n", ERR_NOT_SUPPORTED },
+        { "signature\n", "signature 00ff\n", ERR_INVALID_ARGS },   /* not 128 digits */
+        { "signature\n", "signature \n", ERR_INVALID_ARGS },
         { "signature\n", "signature", ERR_INVALID_ARGS },
         { "signature\n", "signature\n\n", ERR_INVALID_ARGS },
         { "signature\n", "signature\nx", ERR_INVALID_ARGS },
@@ -108,6 +110,107 @@ bool t_update_manifest_refusals(void)
             FAIL("case %u (\"%s\" -> \"%s\"): %s, want %s", i, cases[i].from, cases[i].to,
                  status_str(st), status_str(cases[i].want));
     }
+    return true;
+}
+
+/* golden, signed by `jamos-sign sign` with the secret key whose seed is the
+ * bytes 00 01 .. 1f (its public half: golden_key). */
+static const char golden_signed[] =
+    "jamos-update 1\n"
+    "version 0.0.29-m9\n"
+    "git abcdef0-dirty\n"
+    "kernel 10 e444dff1ba68a27e327484b63b7da2c32a32fc7a52a4a0587fcb10dbfdac1b44\n"
+    "bootfs 5 5e846c64f2db12266e6b658a8e5b5b42cc225419b3ee1fca88acbb181ddfdb52\n"
+    "signature 4fc1c05c4dd76563bcc63974252b441a9ed8166d47fd9f951e29b7a61f087082"
+    "1c5aee3a008e3fddd1fca0320eadbdf8eae22a6a66bfd3f93cf1c3ffc8e9d306\n";
+static const char golden_key[] =
+    "ed25519 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n";
+
+static unsigned nibble(char c)
+{
+    return (unsigned)(c <= '9' ? c - '0' : c - 'a' + 10);
+}
+
+/* n bytes of lower-case hex into out. */
+static void unhex(const char *h, uint8_t *out, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        out[i] = (uint8_t)(nibble(h[2 * i]) << 4 | nibble(h[2 * i + 1]));
+}
+
+/* RFC 8032's Ed25519 tests 1-3 (section 7.1; also in Monocypher's own
+ * vectors, third_party/monocypher/tests/vectors-ed25519.h): Monocypher as
+ * built for Jam OS checks what the standard says. */
+static bool rfc8032(void)
+{
+    static const struct { const char *key, *msg, *sig; } t[] = {
+        { "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+          "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+          "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b" },
+        { "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+          "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+          "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00" },
+        { "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", "af82",
+          "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac"
+          "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a" },
+    };
+    for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        struct update_manifest m = { .has_signature = true, .signed_len = strlen(t[i].msg) / 2 };
+        uint8_t key[UPDATE_KEY_BYTES], msg[2];
+        unhex(t[i].key, key, sizeof(key));
+        unhex(t[i].sig, m.signature, sizeof(m.signature));
+        unhex(t[i].msg, msg, m.signed_len);
+        CHECK_ST(update_manifest_verify(&m, msg, key), OK);
+        m.signature[63] ^= 0x01;
+        CHECK_ST(update_manifest_verify(&m, msg, key), ERR_ACCESS_DENIED);
+    }
+    return true;
+}
+
+/* The signature: the key's over exactly the bytes before its line, and
+ * nothing else checks. */
+bool t_update_signature(void)
+{
+    if (!rfc8032())
+        return false;
+    uint8_t key[UPDATE_KEY_BYTES], other[UPDATE_KEY_BYTES];
+    CHECK_ST(update_key_parse(golden_key, strlen(golden_key), key), OK);
+    struct update_manifest m;
+    size_t len = strlen(golden_signed);
+    CHECK_ST(update_manifest_parse(golden_signed, len, &m), OK);
+    CHECK(m.has_signature && m.signed_len == strlen(golden) - strlen("signature\n"));
+    CHECK_ST(update_manifest_verify(&m, golden_signed, key), OK);
+    /* any byte it covers changed: refused (the sizes and hashes too) */
+    char text[sizeof(golden_signed)];
+    for (size_t i = 0; i < m.signed_len; i += 7) {
+        memcpy(text, golden_signed, len);
+        text[i] ^= 0x01;
+        struct update_manifest t;
+        if (update_manifest_parse(text, len, &t) == OK &&
+            update_manifest_verify(&t, text, key) != ERR_ACCESS_DENIED)
+            FAIL("byte %zu changed: the signature still checks", i);
+    }
+    /* another key, a changed signature, no signature at all */
+    memcpy(other, key, sizeof(other));
+    other[0] ^= 0x80;
+    CHECK_ST(update_manifest_verify(&m, golden_signed, other), ERR_ACCESS_DENIED);
+    struct update_manifest bent = m;
+    bent.signature[10] ^= 0x04;
+    CHECK_ST(update_manifest_verify(&bent, golden_signed, key), ERR_ACCESS_DENIED);
+    CHECK_ST(update_manifest_parse(golden, strlen(golden), &m), OK);
+    CHECK(!m.has_signature);
+    CHECK_ST(update_manifest_verify(&m, golden, key), ERR_ACCESS_DENIED);
+    /* the key file: exactly one line of 64 digits */
+    static const char *const bad_keys[] = {
+        "ed25519 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "ed25519 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b\n",
+        "ed25519 03A107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n",
+        "ed25519  03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n",
+        "ed448 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n",
+        "ed25519 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n\n", "",
+    };
+    for (unsigned i = 0; i < sizeof(bad_keys) / sizeof(bad_keys[0]); i++)
+        CHECK_ST(update_key_parse(bad_keys[i], strlen(bad_keys[i]), other), ERR_INVALID_ARGS);
     return true;
 }
 

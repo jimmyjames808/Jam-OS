@@ -5,7 +5,9 @@
     bootfs-edit.py <in.img> <out.img> <name>=<file> [<name>=<file> ...]
 
 Every file of in.img is kept (as tools/mkbootfs.py packed it) except those
-named, which come from the given files; tools/mkbootfs.py packs the result."""
+named, which come from the given files, or are left out with no file
+(`update.pub=`: a build without an update key); tools/mkbootfs.py packs the
+result."""
 import os
 import struct
 import subprocess
@@ -35,6 +37,7 @@ def main():
                 f.write(img[off:off + n])
             files[name] = path
         files.update(given)
+        files = {name: path for name, path in files.items() if path}
         tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkbootfs.py")
         args = [sys.executable, tool, out] + ["%s=%s" % kv for kv in sorted(files.items())]
         sys.exit(subprocess.run(args, stdout=subprocess.DEVNULL).returncode)

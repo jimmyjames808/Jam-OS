@@ -278,6 +278,14 @@ void request_handle(const struct devmgr_req *q, const struct request_from *from,
                           : ERR_INVALID_ARGS;
         return;
     }
+    if (q->ordinal == DEVMGR_ESP_WRITE) {   /* only on init's ESP channel (chans.c) */
+        bool writable = q->instance & DEVMGR_ESP_WRITABLE;
+        if (q->vendor || q->device || (q->instance & ~DEVMGR_ESP_WRITABLE))
+            r->status = ERR_INVALID_ARGS;
+        else if ((r->status = disk_esp_write(writable, &hs[0])) == OK && writable)
+            *nh = 1;
+        return;
+    }
     struct binding *b = NULL;
     if ((r->status = named(q, from, &b)) != OK)
         return;
