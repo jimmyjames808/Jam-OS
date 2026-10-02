@@ -43,8 +43,8 @@ Every driver and service is a userspace process from the start.
 
 - Drivers touch the world **only through handles**: channels, interrupt
   objects, VMOs, resource handles (MMIO, IRQs) and a DMA capability.
-- Drivers include only `<jam/driver.h>` (plus the generated IDL headers),
-  and `tools/checkdriver.py` fails the build if a driver uses anything else
+- Drivers include only `<jam/driver.h>` (plus the generated IDL headers
+  and `<jam/task.h>`, libos's cooperative tasks), and `tools/checkdriver.py` fails the build if a driver uses anything else
   (kernel headers, `kmalloc`, another driver, extra sections). Driver code
   never touches kernel structs.
 - **Bring-up happens as a process.** A crashing process reports why and
@@ -506,7 +506,7 @@ Every driver and service is a userspace process from the start.
 | Component | Uses | Provides | Built |
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
-| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (`drivers/usb-bus/task.c`) | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |

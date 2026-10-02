@@ -47,7 +47,7 @@ resources, DMA pins and quarantine, the config-write filter.
 
 **Drivers and services are processes from the start**
 ([the migration rule](ARCHITECTURE.md#the-migration-rule)). A driver includes only `<jam/driver.h>`, the
-generated `<idl/*.h>`, `<jam/abi.h>` and `<jam/status.h>`;
+generated `<idl/*.h>`, `<jam/abi.h>`, `<jam/status.h>` and `<jam/task.h>`;
 `tools/checkdriver.py` fails the build otherwise. A driver keeps no state
 across a restart: a restart is a bind from scratch.
 

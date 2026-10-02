@@ -606,7 +606,7 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
     uint64_t before = h->events;
     poll_events(h, fired);
     if (st == OK || h->events != before)
-        task_kick();   /* something happened: waiting tasks look again */
+        task_kick(g_tasks);   /* something happened: waiting tasks look again */
 }
 
 /* Waiting for a completion: poll the event ring at least every 50 ms, so
@@ -615,7 +615,7 @@ static void wait_capped(struct hc *h, uint64_t deadline, uint64_t cap_ms)
 void hc_wait(struct hc *h, uint64_t deadline)
 {
     if (in_task())
-        task_wait(deadline);
+        task_wait(g_tasks, deadline);
     else
         wait_capped(h, deadline, 50);
 }

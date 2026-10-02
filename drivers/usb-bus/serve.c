@@ -482,8 +482,8 @@ void serve_chans_dispatch(void)
             serve_chan(i);   /* no waits: drops, or answers PEER_CLOSED at once */
             continue;
         }
-        if (!task_find(TASK_DEVICE, c->dev_id, 0))
-            (void)task_start(TASK_DEVICE, c->dev_id, 0, device_task);   /* no slot: next round */
+        if (!usb_task_find(TASK_DEVICE, c->dev_id, 0))
+            (void)usb_task_start(TASK_DEVICE, c->dev_id, 0, device_task);   /* no slot: next round */
     }
 }
 
@@ -501,7 +501,7 @@ bool serve_main_pending(void)
 /* ---- main --------------------------------------------------------------------------- */
 
 /* Fresh state, and the handles from s: 2 (the exit code) if one we need
- * is missing, else 0. */
+ * is missing (or the tasks' memory is), else 0. */
 static int take_handles(struct hc *h, const struct driver_start *s)
 {
     /* A new process's statics are zero already (a restart is always a new
@@ -511,7 +511,10 @@ static int take_handles(struct hc *h, const struct driver_start *s)
     __builtin_memset(waiters, 0, sizeof(waiters));
     serve_closed = false;
     usb_reset_state();
-    tasks_reset();
+    if (!tasks_reset()) {
+        drv_report("no memory for the tasks");
+        return 2;
+    }
     h->name = s->name;
     h->dev = drv_handle(s, DR_PCIDEV);
     h->bar = drv_handle(s, DR_BAR(0));
@@ -590,7 +593,7 @@ static void run(struct hc *h)
             break;
         serve_chans_dispatch();
         work_dispatch(h);
-        tasks_run();
+        task_run(g_tasks);
         bool is_settled = settled();
         /* The list: once settled, and not before 2 s (USB 3 links may
          * still be training after the reset). */
@@ -604,7 +607,7 @@ static void run(struct hc *h)
         uint64_t retry = root_retries(h);   /* a failed port's retry, if sooner */
         if (retry < next)
             next = retry;
-        next = tasks_next_wake(next);
+        next = task_next_wake(g_tasks, next);
         if (h->serve == HANDLE_INVALID && (g_first_report_done || now > no_serve_end))
             break;
         if (h->serve_pending || serve_main_pending())

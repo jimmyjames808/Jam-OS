@@ -39,7 +39,7 @@ static void abort_command(struct hc *h, volatile struct trb *t, uint32_t type,
 static bool cmd_turn(struct hc *h)
 {
     while (h->cmd.busy && !h->dead && !h->stopping && in_task())
-        task_wait(drv_clock_ns() + 50 * NS_PER_MS);
+        task_wait(g_tasks, drv_clock_ns() + 50 * NS_PER_MS);
     return !h->cmd.busy && !h->dead && !h->stopping;
 }
 
@@ -77,7 +77,7 @@ uint32_t hc_command(struct hc *h, uint32_t d0, uint32_t d1, uint32_t d2, uint32_
     if (!h->cmd.done && !h->dead && !h->stopping)
         abort_command(h, t, TRB_TYPE_OF(d3), timeout_ms);
     h->cmd.busy = false;
-    task_kick();   /* the next command's turn */
+    task_kick(g_tasks);   /* the next command's turn */
     if (!h->cmd.done)
         return h->dead || h->stopping ? CC_GONE : CC_TIMEOUT;
     if (slot_out)
