@@ -60,6 +60,12 @@ What it does with each frame from the guest:
     tools/tcppeer.py's small TCP: a server the guest connects to and
     clients that connect to the guest's listener, every byte checked;
     counted as tcp_* in the summary (tools/tcp-test.sh).
+  - a relay (--tcp-relay PORT:HOSTPORT, --tcp-forward LPORT:ADDR:PORT,
+    --udp-relay PORT:HOSTPORT):
+    tools/tcprelay.py joins TCP connections on the VLAN to real sockets on
+    127.0.0.1, so programs on the Mac (curl, python3 -m http.server,
+    tools/speed.py) talk to the guest (tools/fetch-test.sh, serve-test.sh,
+    speed-test.sh); counted as relay_* in the summary.
   - SNTP (--ntp UNIX): an SNTP server on port 123 of any address (so the
     gateway 10.2.21.1 answers): a client request is answered with the
     time UNIX seconds (fractions allowed), counted from the peer's start,
@@ -74,7 +80,8 @@ Run (one of):
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
                [--ntp UNIX [--ntp-forge]] [--tcp-serve PORT:BYTES]
-               [--tcp-connect ADDR:PORT:CONNS:BYTES]
+               [--tcp-connect ADDR:PORT:CONNS:BYTES] [--tcp-relay PORT:HOSTPORT,...]
+               [--tcp-forward LPORT:ADDR:PORT,...] [--udp-relay PORT:HOSTPORT,...]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -229,6 +236,7 @@ class Peer:
         self.first_ping = None       # time.monotonic() of the first ping
         self.flood_n = 0             # frames flood() has sent, for its rotation
         self.tcp = None              # tools/tcppeer.py's Tcp (--tcp-serve, --tcp-connect)
+        self.relay = None            # tools/tcprelay.py's Relay (--tcp-relay, --tcp-forward)
 
     def log(self, msg):
         line = "netpeer: " + msg
@@ -421,6 +429,8 @@ class Peer:
         if proto == 1 and len(body) >= 8 and body[0] == 8 and not checksum(body):
             reply = ipv4(dst, src, 1, icmp(0, 0, body[4:8], body[8:]))
             self.counts["echo_replies"] += 1
+        elif proto == 6 and self.relay is not None and self.relay.input(f[6:12], src, dst, body):
+            return
         elif proto == 6 and self.tcp is not None:
             self.tcp.input(f[6:12], src, dst, body)
             return
@@ -818,6 +828,8 @@ def selftest():
     selftest_untagged(g, devnull, expect)
     problem = tcp_selftest()
     expect(problem is None, problem or "")
+    problem = relay_selftest()
+    expect(problem is None, problem or "")
     for f in fails:
         print("netpeer selftest: FAILED: " + f)
     print("netpeer selftest: %s" % ("PASS" if not fails else "FAIL"))
@@ -1006,6 +1018,27 @@ def tcp_selftest():
     return tcp_module().selftest(sys.modules[__name__])
 
 
+def relay_module():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcprelay.py")
+    s = importlib.util.spec_from_file_location("tcprelay", path)
+    mod = importlib.util.module_from_spec(s)
+    s.loader.exec_module(mod)
+    return mod
+
+
+def relay_selftest():
+    """tools/tcprelay.py's own test: both ways against tcppeer.py's TCP."""
+    return relay_module().selftest(sys.modules[__name__], tcp_module())
+
+
+def relay_side(peer, a):
+    """--tcp-relay, --tcp-forward and --udp-relay: tools/tcprelay.py's Relay on peer."""
+    mod = relay_module()
+    np = sys.modules[__name__]
+    return mod.Relay(peer, np, mod.parse_relays(a.tcp_relay),
+                     mod.parse_forwards(a.tcp_forward, np), mod.parse_relays(a.udp_relay))
+
+
 def tcp_side(peer, a):
     """--tcp-serve and --tcp-connect: tools/tcppeer.py's Tcp on peer."""
     mod = tcp_module()
@@ -1024,6 +1057,8 @@ def run(a):
     peer = Peer(a.listen, a.qemu, a.vlan, log)
     if a.tcp_serve or a.tcp_connect:
         peer.tcp = tcp_side(peer, a)
+    if a.tcp_relay or a.tcp_forward or a.udp_relay:
+        peer.relay = relay_side(peer, a)
     add_dhcp_dns(peer, a.dhcp_lease)
     if a.netlog:
         b, _, secs = (a.netlog_pause or "").partition(":")
@@ -1050,11 +1085,16 @@ def run(a):
         peer.counts["pings_late"] = peer.counts["ping_replies_late"] = 0
     while not stop and (end is None or time.monotonic() < end):
         fds = [peer.sock] + ([sys.stdin] if a.stdin else [])
-        r, _, _ = select.select(fds, [], [], 0.02 if a.flood or peer.tcp else 0.2)
+        rr, rw = peer.relay.fds() if peer.relay is not None else ([], [])
+        busy = a.flood or peer.tcp or peer.relay
+        r, w, _ = select.select(fds + rr, rw, [], 0.02 if busy else 0.2)
         if peer.sock in r:
             peer.poll(0)
         if peer.tcp is not None:
             peer.tcp.tick()
+        if peer.relay is not None:
+            peer.relay.service(r, w)
+            peer.relay.tick()
         if a.stdin and sys.stdin in r:
             line = sys.stdin.readline()
             if not line or not stdin_command(peer, line, a):
@@ -1072,6 +1112,8 @@ def run(a):
     peer.poll(0)
     if peer.tcp is not None:
         peer.tcp.report()
+    if peer.relay is not None:
+        peer.relay.close()
     s = peer.summary(a.expect_none)
     if a.summary:
         with open(a.summary, "w") as f:
@@ -1108,6 +1150,12 @@ def main():
     ap.add_argument("--tcp-serve", metavar="PORT:BYTES", help="a TCP server (tools/tcppeer.py)")
     ap.add_argument("--tcp-connect", metavar="ADDR:PORT:CONNS:BYTES",
                     help="TCP clients of the guest's listener (tools/tcppeer.py)")
+    ap.add_argument("--tcp-relay", metavar="PORT:HOSTPORT,...",
+                    help="the guest's connections to PORT go to 127.0.0.1:HOSTPORT")
+    ap.add_argument("--tcp-forward", metavar="LPORT:ADDR:PORT,...",
+                    help="connections to 127.0.0.1:LPORT go to the guest's ADDR:PORT")
+    ap.add_argument("--udp-relay", metavar="PORT:HOSTPORT,...",
+                    help="the guest's datagrams to PORT go to 127.0.0.1:HOSTPORT")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

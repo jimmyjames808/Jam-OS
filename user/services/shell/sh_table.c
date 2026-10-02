@@ -94,6 +94,27 @@ static const struct sh_cmd cmds[] = {
       "a name's IPv4 addresses from the resolver (bin/dns, asking the DNS servers\n"
       "  `net` shows: from DHCP, or net.address in /data/etc/settings), and how long\n"
       "  they may be kept. Ctrl+C stops the wait. e.g. host one.one.one.one"),
+    C(fetch, C_SYSTEM, "fetch <url> [file | -]",
+      "download a file over plain HTTP (http:// only: https needs TLS, which Jam OS\n"
+      "  doesn't have yet), e.g. fetch http://10.2.21.174:8000/big.bin. Into the URL's\n"
+      "  last name here (or file, or a folder; -: the output), or into a pipe: fetch\n"
+      "  <url> | head. Follows 3 redirects, says progress, the size, time and MB/s;\n"
+      "  Ctrl+C stops it. Saved as <file>.part until it is whole (bin/fetch)"),
+    C(serve, C_SYSTEM, "serve [<file> [port] | stop [port]]",
+      "serve one file over HTTP to any computer on the network, in the background\n"
+      "  (bin/serve, a service init runs: the shell stays free), e.g. serve\n"
+      "  /data/big.bin, then on the Mac: curl http://<address>:8080/ -o big.bin. Every\n"
+      "  path asked gets that file (GET and HEAD, ranges); nothing else is ever served.\n"
+      "  Port 8080 unless given (1024 and up); up to 4 files on 4 ports. serve alone:\n"
+      "  what is served (file, port, clients, requests, bytes). serve stop [port]:\n"
+      "  stop it (all of them without a port). One log line per request"),
+    C(speed, C_SYSTEM, "speed <host> [port] [-r] [-u] [-t seconds] | -l [port]",
+      "network throughput against tools/speed.py on the Mac (`python3 tools/speed.py\n"
+      "  server` there; port 5201): sends for 5 s (-t) over TCP and says MB/s and\n"
+      "  Mbit/s; -r: the Mac sends, this receives; -u: UDP datagrams instead (lost ones\n"
+      "  counted). -l: wait for the Mac's `speed.py client <address>` (needs the listen\n"
+      "  permission: bin/speed's list has it). Ctrl+C stops it. QEMU's numbers are\n"
+      "  QEMU's"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),

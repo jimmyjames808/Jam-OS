@@ -813,6 +813,11 @@ static const struct {
     { "sntp_checks", t_sntp_checks },
     { "sntp_times", t_sntp_times },
     { "sntp_fuzz", t_sntp_fuzz },
+    { "http_url", t_http_url },
+    { "http_response", t_http_response },
+    { "http_chunks", t_http_chunks },
+    { "http_request", t_http_request },
+    { "http_fuzz", t_http_fuzz },
 };
 
 int main(int argc, char **argv)

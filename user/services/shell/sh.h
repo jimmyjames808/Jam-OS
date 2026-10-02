@@ -170,6 +170,12 @@ int sh_run_program(int argc, char **argv);
  * killed). */
 int sh_run_helper(const char *path, int argc, const char *const *argv, struct spawn_handle *x,
                   unsigned nx);
+/* The same for a helper whose output is bytes (`fetch` into a pipe): what
+ * it writes on the channel whose read end is body_r (the caller's, still
+ * the caller's to close) is the command's output (sh_put), and its lines
+ * go to the screen. */
+int sh_run_helper_out(const char *path, int argc, const char *const *argv,
+                      struct spawn_handle *x, unsigned nx, handle_t body_r);
 /* A test program (utest, usbtest, hdatest, mixtest): run it as
  * sh_run_program does (its list asks for what it tests), then show its
  * result line from the kernel log; its status. */
@@ -356,7 +362,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music); SH_CMD(net); SH_CMD(ping);
-SH_CMD(host);
+SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */

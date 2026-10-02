@@ -50,14 +50,24 @@ static void drop(handle_t out, uint32_t n, uint32_t nh)
     free(hs);
 }
 
-/* Copy what the program wrote to its SR_STDOUT channel into our output,
- * one round of it. A message printf wouldn't send (over 4096 bytes, or
- * carrying handles) is dropped, its handles closed: left at the head of the
- * queue it would fail every later read. True if more may be queued; false
- * once the queue is empty or gone, or Ctrl+C was pressed (unless
- * past_ctrl_c: a helper asked to stop still has its last lines to say,
- * and Ctrl+C stays pressed for the rest of the line). */
-static bool drain(handle_t out, bool past_ctrl_c)
+/* Our output (sh_put), or the screen even inside a pipe (a helper's lines
+ * while its channel carries the output: sh_run_helper_out). */
+typedef void (*put_fn)(const char *s, size_t n);
+
+static void tty_put(const char *s, size_t n)
+{
+    sh_tty("%.*s", (int)n, s);
+}
+
+/* Copy what the program wrote to its SR_STDOUT channel (or a helper to
+ * its output channel) through put, one round of it. A message printf
+ * wouldn't send (over 4096 bytes, or carrying handles) is dropped, its
+ * handles closed: left at the head of the queue it would fail every later
+ * read. True if more may be queued; false once the queue is empty or gone,
+ * or Ctrl+C was pressed (unless past_ctrl_c: a helper asked to stop still
+ * has its last lines to say, and Ctrl+C stays pressed for the rest of the
+ * line). */
+static bool drain_to(handle_t out, bool past_ctrl_c, put_fn put)
 {
     char buf[4096];
     uint64_t t0 = now();
@@ -81,9 +91,14 @@ static bool drain(handle_t out, bool past_ctrl_c)
         for (uint32_t k = 0; k < nh; k++)
             jam_handle_close(hs[k]);
         if (!nh)
-            sh_put(buf, n);
+            put(buf, n);
     }
     return true;
+}
+
+static bool drain(handle_t out, bool past_ctrl_c)
+{
+    return drain_to(out, past_ctrl_c, sh_put);
 }
 
 /* What spawn should be given for argv0, into path: "utest" -> bin/utest;
@@ -317,15 +332,20 @@ int sh_run_program(int argc, char **argv)
 
 #define STOP_GRACE (3 * NS_PER_S)   /* a stopped helper's time to wind down */
 
-/* Wait for the helper to end, copying its output; on Ctrl+C ask it to
- * stop (a byte on stop), and kill its job if it hasn't ended in time. */
+/* Wait for the helper to end, copying its output (its lines, and what
+ * comes on body_r when it has one: then its lines go to the screen); on
+ * Ctrl+C ask it to stop (a byte on stop), and kill its job if it hasn't
+ * ended in time. */
 static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_t stop,
-                            struct process_info *info)
+                            handle_t body_r, struct process_info *info)
 {
     status_t st;
     uint64_t kill_at = DEADLINE_NEVER;
+    put_fn lines = body_r ? tty_put : sh_put;
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
-        drain(out_r, true);
+        drain_to(out_r, true, lines);
+        if (body_r)
+            drain_to(body_r, true, sh_put);
         if (sh_interrupted() && kill_at == DEADLINE_NEVER) {
             uint8_t go = 1;
             if (jam_channel_write(stop, &go, 1, NULL, 0) != OK)
@@ -338,7 +358,9 @@ static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_
             kill_at = DEADLINE_NEVER - 1;   /* once */
         }
     }
-    for (unsigned guard = 0; guard < 64 && drain(out_r, true); guard++)
+    for (unsigned guard = 0; guard < 64 && drain_to(out_r, true, lines); guard++)
+        ;
+    for (unsigned guard = 0; body_r && guard < 4096 && drain_to(body_r, true, sh_put); guard++)
         ;
     return st;
 }
@@ -374,8 +396,8 @@ static void helper_done(struct helper *h)
             jam_handle_close(*hs[i]);
 }
 
-int sh_run_helper(const char *path, int argc, const char *const *argv, struct spawn_handle *x,
-                  unsigned nx)
+static int run_helper(const char *path, int argc, const char *const *argv,
+                      struct spawn_handle *x, unsigned nx, handle_t body_r)
 {
     static struct wants w;
     handle_t vmo, proc;
@@ -403,12 +425,24 @@ int sh_run_helper(const char *path, int argc, const char *const *argv, struct sp
         return 126;
     }
     struct process_info info;
-    st = wait_helper(proc, h.job, h.out_r, h.stop_w, &info);
+    st = wait_helper(proc, h.job, h.out_r, h.stop_w, body_r, &info);
     helper_done(&h);
     jam_handle_close(proc);
     if (st != OK || info.killed)
         return 137;
     return info.exit_code < 0 ? 1 : info.exit_code > 255 ? 255 : (int)info.exit_code;
+}
+
+int sh_run_helper(const char *path, int argc, const char *const *argv, struct spawn_handle *x,
+                  unsigned nx)
+{
+    return run_helper(path, argc, argv, x, nx, HANDLE_INVALID);
+}
+
+int sh_run_helper_out(const char *path, int argc, const char *const *argv,
+                      struct spawn_handle *x, unsigned nx, handle_t body_r)
+{
+    return run_helper(path, argc, argv, x, nx, body_r);
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which

@@ -1,0 +1,39 @@
+# serve: the background file server (user/services/serve, bin/serve),
+# which serves files over HTTP/1.1 to any computer on the network. init
+# starts it in shell mode and keeps both ends of this channel, as the music
+# player's, publishing it as /svc/serve (a channel per opener); the shell's
+# `serve` command is its client (<serve.h> has the limits and the two
+# structs `share` uses).
+# Format: see tools/genidl.py.
+#
+# Reconnect: init holds the channel across a restart of the server, so a
+# call made while it is down waits (bounded by the caller's deadline) for
+# the new one. A restarted server serves nothing: the files it served are
+# gone with it (`info` lists none) and must be shared again.
+
+protocol serve 31
+
+# Serve a file on `port` (SERVE_PORT_MIN and up). `name` is the file's path
+# as the owner gave it (NUL-terminated): for `info`, the log and the
+# Content-Type, never opened by the server. Answers at once with a channel
+# `give`: the caller writes one message on it, struct serve_give with the
+# file's two handles (file_give: its `file` channel, open to read, and its
+# transfer buffer), and then reads one answer there, struct serve_answer:
+# OK once the server listens (it serves that file and nothing else, to
+# every path asked), else why not (ERR_ACCESS_DENIED: the server has no
+# listen permission; ERR_ALREADY_BOUND: another program has the port;
+# netstack's other errors; ERR_INVALID_ARGS: a wrong message). The server
+# closes `give` after its answer, or if nothing comes on it in
+# SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or
+# waiting for their file) already; ERR_ALREADY_EXISTS: that port is served
+# already; ERR_OUT_OF_RANGE: a port below SERVE_PORT_MIN; ERR_INVALID_ARGS:
+# no name.
+1  share  (u16 port, u8[128] name) -> (handle give)
+# What is served: the `index`-th file (0, 1, ...): its port, its name as
+# `share` was given it, its size, the clients connected now, and the
+# requests answered and file bytes sent since it was shared.
+# ERR_NOT_FOUND: past the last.
+2  info  (u32 index) -> (u16 port, u8[128] name, u64 size, u32 clients, u64 requests, u64 bytes)
+# Stop serving the file on `port` (0: every file): its listener closed and
+# its clients cut off. Answers how many stopped (0: none was served there).
+3  stop  (u16 port) -> (u32 stopped)

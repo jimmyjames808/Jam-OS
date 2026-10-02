@@ -322,6 +322,13 @@ bool t_sntp_request_and_reply(void);
 bool t_sntp_checks(void);
 bool t_sntp_times(void);
 bool t_sntp_fuzz(void);
+/* http.c: <http.h>, the HTTP of fetch and serve: URLs, response and
+ * request heads, chunked bodies, ranges, and hostile heads. */
+bool t_http_url(void);
+bool t_http_response(void);
+bool t_http_chunks(void);
+bool t_http_request(void);
+bool t_http_fuzz(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

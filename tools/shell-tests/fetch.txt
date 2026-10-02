@@ -1,0 +1,99 @@
+# fetch (tools/fetch-test.sh runs this): a plain boot with QEMU's e1000e
+# and the network peer, net.address set in the stick's settings; the
+# peer's --tcp-relay joins 10.2.21.174:8000 to tools/httptest.py on the
+# Mac. fetch saves a multi-MB file (Content-Length), the same bytes
+# chunked, a body that ends with the connection, a file by a name the DNS
+# server answers, and one at the end of three redirects; it writes into a
+# pipe; it refuses four redirects, https (typed and redirected to), a
+# head over 16 KiB (one giant line, and lines that never end), a head that
+# drips one byte a second (20 s), a body cut short, broken chunks and a
+# 404, each with exit 1 and nothing left behind; Ctrl+C stops it. The
+# script checks the saved files' SHA-256 against the server's afterwards.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait jam>
+send cd /data
+wait jam>
+send fetch http://10.2.21.174:8000/big.bin
+wait 200 fetch: 200, 6.0 MiB
+wait 200 MB/s
+wait 30 fetch: saved /data/big.bin
+wait jam>
+send fetch http://10.2.21.174:8000/chunked.bin
+wait 30 fetch: 200, length not given
+wait 200 fetch: saved /data/chunked.bin
+wait jam>
+send fetch 10.2.21.174:8000/close.bin
+wait 60 fetch: saved /data/close.bin
+wait jam>
+send fetch http://mac.jam:8000/small.txt name.txt
+wait 60 fetch: saved /data/name.txt
+wait jam>
+send fetch http://10.2.21.174:8000/redir redir.txt
+wait fetch: 301
+wait fetch: 302
+wait fetch: 307
+wait 60 fetch: saved /data/redir.txt
+wait jam>
+send fetch http://10.2.21.174:8000/small.txt | wc -c
+wait 190
+wait jam>
+send fetch http://10.2.21.174:8000/redir4 x; echo st=$?
+wait 60 fetch: more than 3 redirects: given up
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/to-https x; echo st=$?
+wait 60 https needs TLS
+wait st=1
+wait jam>
+send fetch https://example.com/ x; echo st=$?
+wait fetch: https://example.com/: only http:// URLs
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/giant x; echo st=$?
+wait 60 fetch: the server's answer has a head over 16384 bytes: refused
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/endless x; echo st=$?
+wait 60 fetch: the server's answer has a head over 16384 bytes: refused
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/drip x; echo st=$?
+wait 60 fetch: the server sent no whole answer head in 20 s
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/cut x; echo st=$?
+wait 60 fetch: the server closed the connection before the body's end
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/badchunk x; echo st=$?
+wait 60 fetch: the server's chunked body is broken: refused
+wait st=1
+wait jam>
+send fetch http://10.2.21.174:8000/nothing x; echo st=$?
+wait 60 fetch: the server answered 404
+wait st=1
+wait jam>
+send fetch http://nosuch.jam/x x; echo st=$?
+wait 60 fetch: nosuch.jam: no such name
+wait st=1
+wait jam>
+# Ctrl+C ends the rest of the line too: the status is asked for after it
+send fetch http://10.2.21.174:8000/drip y
+sleep 3
+type \x03
+wait 30 fetch: stopped: nothing kept
+wait jam>
+send echo st=$?
+wait st=130
+wait jam>
+send ls /data/x /data/x.part /data/y.part; echo st=$?
+wait st=1
+wait jam>
+send ls -l /data
+wait jam>
+send net stats
+wait jam>
+send reboot -f
+wait reboot: resetting

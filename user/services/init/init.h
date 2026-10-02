@@ -115,7 +115,7 @@ void     splash_shell_ready(void);
 
 /* The services, in the order they are started. */
 enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS, LOGD, NETLOG,
-       SNTP, SHELL, NSVC };
+       SNTP, SERVE, SHELL, NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
