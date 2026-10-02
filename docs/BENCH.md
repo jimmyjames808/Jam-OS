@@ -248,3 +248,40 @@ Reading:
   switch path, the lock checker's larger class table (78 classes in use).
   To find before M11.5's IPC pass builds on these numbers.
 
+## Sockets on rings (M9.5 track A), QEMU 2026-10-02
+
+**QEMU numbers, not the PC's** (TCG on the Mac, other agents' QEMUs
+running at the same time): only the ratio between the two columns means
+anything. utest's `netsock_bench` (`user/tests/utest/netbench.c`):
+datagrams through a program's UDP socket and bin/netstack, the test as
+the program and as the card (each datagram leaves through the card's tx
+ring and comes back into its rx ring as the peer's answer, so it crosses
+netstack twice, and the test's own work as the card is in the time). A
+round trip is one datagram at a time with the blocking calls; a stream
+keeps 16 in flight with the forms that don't wait. µs a datagram (each
+way). One CPU: the test and netstack share it; two CPUs: the scheduler
+usually puts them on two. Before: a call per datagram (net.idl's
+`sock_send_to`/`sock_recv`, build 9438f6e plus the bench); after: the
+rings (498fdfd).
+
+| `netsock_bench` (µs a datagram) | before, 1 CPU | after, 1 CPU | before, 2 CPUs (two runs) | after, 2 CPUs (two runs) |
+|---|---|---|---|---|
+| round trip, 64 bytes | 210.3 | 162.9 | 3473.7 / 960.7 | 152.1 / 172.8 |
+| stream, 64 bytes | 114.5 | 19.0 | 1701.3 / 958.8 | 13.7 / 14.3 |
+| round trip, 1472 bytes | 190.5 | 163.1 | 1245.7 / 892.5 | 162.2 / 176.3 |
+| stream, 1472 bytes | 141.6 | 46.2 | 1327.2 / 963.8 | 35.7 / 35.0 |
+
+Reading:
+- A stream of small datagrams is 6x faster on one CPU and about 70x on
+  two: while datagrams flow, neither side makes a call or a system call
+  per datagram (a signal only when the other side said it sleeps, about
+  once a turn of netstack's loop).
+- Across CPUs the call-per-datagram path paid a cross-CPU wake for every
+  call and every reply, which QEMU makes very slow (milliseconds, and very
+  variable); the rings pay it about once a batch. On the PC the cross-CPU
+  wake costs microseconds, so the gain there will be much smaller: measure
+  it with track E's throughput tester.
+- A round trip still pays two wakes each way (the program's and
+  netstack's) and is only 1.2-1.3x faster on one CPU.
+- `update`'s fetch in `tools/update-net-test.sh` (QEMU, 2 CPUs, after):
+  10.2 MB in 0.8 s.
