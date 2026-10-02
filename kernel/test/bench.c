@@ -1310,6 +1310,7 @@ static void user_benches(void)
                           "user: process->process channel_call, same CPU (P)");
     else
         user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
+    user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };

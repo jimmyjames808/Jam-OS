@@ -201,3 +201,19 @@ KTEST(pathstat_user_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
 }
+
+/* The same call with a deadline, as libos gives every file call: one more
+ * system call (the clock) and one sleeper-queue entry per call. */
+KTEST(pathstat_user_deadline_call_counts)
+{
+    struct path_result r;
+    if (!bench_path_ucall("dcall", test_cpu(), test_cpu(), 0, &r)) {
+        KT_SKIP_LIVE("no bin/utest or no trace free");
+        KT_ASSERT(!"bench_path_ucall failed");
+    }
+    KT_ASSERT(r.calls > 0);
+    KT_EQ(sys100(&r, SYS_clock_get), 100);
+    KT_EQ(sys100(&r, SYS_channel_call), 100);
+    KT_EQ(per100(&r, PATH_SLEEPQ), 100);
+    KT_EQ(per100(&r, PATH_KMALLOC), 200);
+}

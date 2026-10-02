@@ -14,6 +14,9 @@
  *                committing a zeroed page, installing it, returning
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
  *   bench-echo   the server: read, write the same bytes back
+ *   bench-dcall  bench-call with a deadline on every call, made as libos
+ *                makes one for a file call (now() + FS_CALL_TIMEOUT): the
+ *                clock read and the kernel's sleeper queue are in the time
  *   bench-tcall  channel_call to an echo THREAD of this process on a
  *                channel of its own: the same work as bench-call without
  *                the address-space switches (both threads share our CR3),
@@ -97,6 +100,8 @@ static int b_fault(void)
     return send(1);
 }
 
+static bool call_deadline;   /* bench-dcall: every call gets a deadline */
+
 static status_t call_once(handle_t ch)
 {
     uint64_t req[2] = { 0, 42 }, rep[2];
@@ -104,7 +109,8 @@ static status_t call_once(handle_t ch)
     struct channel_call_args a = {
         .h = ch, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
         .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-        .ractual = (uint64_t)(uintptr_t)&n, .deadline_ns = DEADLINE_NEVER,
+        .ractual = (uint64_t)(uintptr_t)&n,
+        .deadline_ns = call_deadline ? now() + FS_CALL_TIMEOUT : DEADLINE_NEVER,
     };
     return jam_channel_call(&a);
 }
@@ -203,6 +209,10 @@ int bench_child(int argc, char **argv)
     if (!strcmp(w, "clock")) return b_clock();
     if (!strcmp(w, "fault")) return b_fault();
     if (!strcmp(w, "call"))  return b_call();
+    if (!strcmp(w, "dcall")) {
+        call_deadline = true;
+        return b_call();
+    }
     if (!strcmp(w, "echo"))  return b_echo();
     if (!strcmp(w, "tcall")) return b_tcall();
     return 127;
