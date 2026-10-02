@@ -107,7 +107,8 @@ bool t_netstack_arp(void)
     CHECK_EQ(cap[0].n, STACK_FRAME_MIN);
     ncap = 0;
     input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP + 1));   /* not ours */
-    input(f, pkt_arp(f, 2, pkt_peer_mac, PEER_IP, pkt_our_mac, OUR_IP));    /* a reply nobody asked for */
+    /* A reply nobody asked for. */
+    input(f, pkt_arp(f, 2, pkt_peer_mac, PEER_IP, pkt_our_mac, OUR_IP));
     CHECK_EQ(ncap, 0);
     net_down();
     return true;
@@ -124,7 +125,8 @@ bool t_netstack_ping(void)
     CHECK_EQ(ncap, 1);
     CHECK(is_echo_reply(0, req, pkt_peer_mac, PEER_IP, 56));
     ncap = 0;
-    n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 2, STACK_MTU - 28);   /* the biggest that fits */
+    /* The biggest that fits. */
+    n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 2, STACK_MTU - 28);
     input(req, n);
     CHECK_EQ(ncap, 1);
     CHECK_EQ(cap[0].n, STACK_FRAME_MAX);
@@ -241,7 +243,10 @@ static size_t spoiled(uint8_t *f, enum bad which)
     case BAD_MORE_FRAGS:    f[20] = 0x20; refix(f); break;
     case BAD_FRAG_OFFSET:   f[21] = 0x10; refix(f); break;
     case BAD_OPTIONS:       add_options(f, &n); break;
-    case BAD_ARP_HW:        n = pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP); pkt_put16(f + 14, 6); break;
+    case BAD_ARP_HW:
+        n = pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP);
+        pkt_put16(f + 14, 6);   /* IEEE 802, not Ethernet */
+        break;
     case BAD_TO_BROADCAST:  pkt_put32(f + 30, 0x0a0215ffu); refix(f); break;
     case BAD_COUNT:         break;
     }
@@ -327,7 +332,8 @@ bool t_netstack_fuzz(void)
         if (r % 3 == 0)
             n = pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, i, r >> 8 & 63);
         else if (r % 3 == 1)
-            n = pkt_arp(f, 1 + (r >> 4 & 1), pkt_peer_mac, PEER_IP + (r >> 5 & 3), pkt_our_mac, OUR_IP);
+            n = pkt_arp(f, 1 + (r >> 4 & 1), pkt_peer_mac, PEER_IP + (r >> 5 & 3), pkt_our_mac,
+                        OUR_IP);
         else
             n = pkt_udp(f, 1 + (r >> 6 & 0x3ff), r >> 16 & 63);
         for (unsigned k = 0, flips = 1 + (r >> 24 & 7); k < flips; k++)

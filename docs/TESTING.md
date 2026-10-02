@@ -125,7 +125,9 @@ as a small network, tagging every reply: ARP for any IPv4 address (not
 probes from 0.0.0.0 nor gratuitous ARPs), ICMP echo for any address (so
 `ping 1.1.1.1` works in QEMU), and UDP on ports that have a handler
 (`Peer.add_udp`: where DHCP, DNS, netlog and the update server hook in).
-`--noise <s>` sends, every s seconds, four frames the guest's driver must
+`--ping <address>` sends an ICMP echo request to the guest every half
+second (from 10.2.21.174, once it has seen the guest's MAC) and counts
+the replies (`ping_replies`). `--noise <s>` sends, every s seconds, four frames the guest's driver must
 drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
 broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
 its counts `<name>.peer.json`.
@@ -403,13 +405,16 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 
 ## netstack
 
-netstack has no network device yet ([M9-PLAN](M9-PLAN.md#stage-3a-built-the-core-without-a-device)),
-so its tests are in utest, part of the `init` run
-([the tiers](#the-tiers)); no QEMU NIC is involved. utest links
-netstack's core (`user/services/netstack/stack.c`, `ctl.c`, lwIP) and
-drives it in-process over a fake edge that catches every frame lwIP
-sends; each is checked byte by byte, checksums included, and must be
-untagged and 60 bytes at least.
+Most of netstack's tests are in utest, part of the `init` run
+([the tiers](#the-tiers)), with no QEMU network card
+([M9-PLAN](M9-PLAN.md#stage-3a-built-the-core-without-a-device)). The
+`netstack_*` tests link netstack's core (`user/services/netstack/stack.c`,
+`ctl.c`, lwIP) and drive it in-process over a fake edge that catches
+every frame lwIP sends; the `netdrv_*` tests run bin/netstack as a
+process over a fake driver (the test plays devmgr's device channel and
+the driver: real ring VMOs and events, frames into the rx ring and out of
+the tx ring). Every frame is checked byte by byte (`user/tests/utest/netpkt.c`),
+checksums included, and must be untagged and 60 bytes at least.
 
 | Test | What |
 |---|---|
@@ -421,6 +426,19 @@ untagged and 60 bytes at least.
 | `netstack_cleared` | after `clear` neither ARP nor a ping is answered; a new address is announced by one gratuitous ARP and answered again; with the link down nothing is sent |
 | `netctl_set_and_clear` | the control channel served by `ctl.c` on a channel of the test's own: `set_ipv4` and `set_dns` show in `info`; 13 addresses a host can't have and 2 bad DNS servers refused, nothing changed; a /30 and a /8 taken; `clear`; a request of the wrong size refused |
 | `netctl_process` | bin/netstack started with its control channel at `SR_USER + 0`: set, a refusal, `info` (no device, link down), `stats` (nothing sent or received), `clear`; killed, its job empty |
+| `ipv4_text` | libos's `<ipv4.h>`: dotted quads (10 malformed ones refused), formatting, and init's `net.address` form (8 malformed ones refused) |
+| `netdrv_ping_and_link` | netstack finds the card through the device channel (GET_SERVICE), netdev.info and netdev.open; ARP and a ping through the rings; the link going down (`NETDEV_SIG_LINK`, netdev.info on the session): nothing sent; up again: the address announced, pings answered |
+| `netdrv_restart` | the driver's session closed (a driver restart): netstack asks devmgr again, opens a new session, announces its address, keeps it and its ARP entries; `netctl.device` counts 2 sessions |
+| `netdrv_hostile_driver` | rx slots of length 0, 1515 and 13 and with flags set: refused, counted, nothing answered, pings still answered; an rx `produced` five rings ahead and a tx `consumed` ahead of what was sent: netstack ends the session itself, counts the ring errors and opens a new one, which works; killed, its job empty |
+
+End to end, with QEMU's e1000e and the network peer:
+`tools/netstack-test.sh <outdir>` (`tools/shell-tests/netstack.txt`)
+writes `net.address = 10.2.21.5/24 ...` into a copy of the image's
+settings, boots with `QEMU_NET=1` and the peer's `--ping 10.2.21.5`
+(an echo request every half second, once it has seen the guest's MAC),
+kills netstack in the middle (init starts it again: a new session, the
+address again) and passes if the peer's and the pcap's VLAN checks pass
+and at least 8 pings were answered. It needs drv/e1000e (stage 2).
 
 ## Area scripts
 

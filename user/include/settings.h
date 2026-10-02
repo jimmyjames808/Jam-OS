@@ -17,6 +17,8 @@
  *   volume         the mixer's master volume, dB (0 the most)
  *   music.folder   what `music start` plays with no folder given
  *   music.volume   the music player's volume, dB
+ *   net.address    a static IPv4 address for netstack (<ipv4.h>
+ *                  ipv4_config_parse); init gives it to netstack
  * The shell's vol, music and date -z write them; init reads them when
  * /data is mounted.
  *

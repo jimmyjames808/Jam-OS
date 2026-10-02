@@ -615,6 +615,49 @@ the netdev contract; 3b plugs netstack into it.
 - **Tests:** utest's `netstack_*` and `netctl_*`
   ([TESTING](TESTING.md#netstack)).
 
+#### Stage 3b, built: netstack on the card, started by init
+
+- **Reaching the driver** (`user/services/netstack/connect.c`): a
+  thread of its own that serves nothing makes the calls that may wait:
+  devmgr's GET_SERVICE on each device channel in turn, then netdev.info
+  and netdev.open (2 s each). It hands the session (its channel, the two
+  ring VMOs, the two events) to the loop as one message. A card that
+  isn't netdev's (MTU not 1500, no VLAN) is refused.
+- **The session, in the loop** (`netif.c`): both rings mapped and checked
+  (`netdev_end_attach`); `stack.h`'s `tx` is `netdev_room` +
+  `netdev_put` (a full tx ring drops the frame and counts it: netstack
+  never waits for the driver); the rx ring drained into `stack_input`, at
+  most a ring's worth a turn; counts published once a turn, the driver
+  signalled only if it sleeps. `to_stack` is bound ONCE and cleared
+  before the rings are looked at; `NETDEV_SIG_LINK` sends netdev.info on
+  the session channel without waiting, and its reply (read off the port)
+  sets the link. A slot with a bad length or flags is refused and counted;
+  **a count out of range on either ring ends the session** (the rings
+  can't be trusted any more) and a new one is asked for. A session that
+  closes (the driver died or ended) is dropped, and the thread asked again
+  after 250 ms (doubling to 5 s while it fails); the address and the ARP
+  table stay, and the link coming up announces the address (a gratuitous
+  ARP). The first device channel closing means devmgr is gone: netstack
+  ends and init starts it with the new devmgr's channels.
+- **netctl.device** (method 6): the session, the VLAN, the speed,
+  sessions opened, ring errors, bad rx slots, tx frames dropped on a full
+  ring, the chip.
+- **init** (`user/services/init/net.c`, and a line each in `services.c`,
+  `shell.c`, `init.h`): netstack is a supervised service after devmgr,
+  started with netctl's server end (init makes the channel once and keeps
+  both ends, as the mixer's) and every network card's device channel. It
+  is killed and started again when devmgr ends.
+- **The static address:** `net.address = <address>/<prefix> [<gateway>
+  [<dns> [<dns>]]]` in /data/etc/settings (for example `10.2.21.50/24
+  10.2.21.1 10.2.21.1`), parsed by libos's `<ipv4.h>`, is given to
+  netstack (`set_ipv4`, `set_dns`, 1 s deadline) whenever it starts and
+  whenever /data comes. Without it netstack has no address until the DHCP
+  client (5b) sets one; init's netctl client end is the one to hand it.
+- **Tests:** utest's `netdrv_*` and `ipv4_text`; `tools/netstack-test.sh`
+  (end to end with e1000e and the peer's `--ping`) is written but **not
+  yet run: drv/e1000e (stage 2) was not on main** when 3b was handed
+  back ([TESTING](TESTING.md#netstack)).
+
 ### Programs and sockets
 
 - **`/svc/net`** (init publishes it; each opener gets a channel of its
