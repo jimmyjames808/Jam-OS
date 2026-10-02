@@ -59,7 +59,8 @@ static void uncharge(struct job *job)
 struct klog_reader {
     struct kobject   base;    /* OBJ_KLOG */
     struct job      *job;     /* charged one handle unit (a reference) */
-    uint64_t         seen;    /* (object lock) end of the last read */
+    uint64_t         seen;    /* end of the last read: written under the object lock,
+                                 read by the tick (atomic) */
     uint64_t         keep;    /* bytes of the ring it sees: KLOG_SIZE, less for a test */
     struct list_node node;    /* on `readers` (readers_lock) */
 };
@@ -112,7 +113,7 @@ status_t klog_reader_create(struct job *job, struct kobject **out)
 static void reader_update(struct klog_reader *r, uint64_t end)
 {
     uint64_t f = spin_lock_irqsave(&r->base.lock);
-    r->seen = end;
+    __atomic_store_n(&r->seen, end, __ATOMIC_RELAXED);
     if (end >= klog_head())
         kobject_signal_locked(&r->base, SIG_READABLE, 0);
     else
@@ -174,7 +175,7 @@ void klog_poll(void)
     spin_lock(&readers_lock);   /* CPU 0's tick: interrupts are off */
     for (struct list_node *n = readers.next; n != &readers; n = n->next) {
         struct klog_reader *r = container_of(n, struct klog_reader, node);
-        if (r->seen < h)
+        if (__atomic_load_n(&r->seen, __ATOMIC_RELAXED) < h)
             kobject_signal(&r->base, 0, SIG_READABLE);
     }
     spin_unlock(&readers_lock);
