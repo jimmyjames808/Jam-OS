@@ -170,6 +170,24 @@ static void say_stored_instead(status_t why)
     (void)console_blank_until(c, now() + NS_PER_S, 1);   /* dark again until the next splash */
 }
 
+/* What every restart does before the reset or the jump: /data synced,
+ * logd's last lines written (the sync's line included), the volume left
+ * clean, then devmgr's shutdown in order (DEVMGR_SHUTDOWN). Returns how
+ * long devmgr took, in ms; `how` names the restart in the log line that
+ * says devmgr had to be killed. */
+static uint64_t stop_everything(const char *how)
+{
+    mounts_sync();
+    shell_flush_log(now() + LOG_WAIT);
+    mounts_settle();
+    uint64_t t0 = now();
+    status_t st = shell_stop_devmgr(now() + STOP_WAIT);
+    if (st != OK)   /* its drivers' DMA caps are closed either way: bus mastering is off */
+        printf("init: %s: devmgr didn't stop in order (%s): its job was killed\n", how,
+               status_str(st));
+    return (now() - t0) / NS_PER_MS;
+}
+
 status_t init_reboot_kexec(void)
 {
     if (esp_changed()) {
@@ -181,18 +199,10 @@ status_t init_reboot_kexec(void)
         if (st != OK)
             say_stored_instead(st);   /* a refused image left the stored one armed */
     }
-    mounts_sync();
-    shell_flush_log(now() + LOG_WAIT);
-    mounts_settle();
-    uint64_t t0 = now();
-    status_t st = shell_stop_devmgr(now() + STOP_WAIT);
-    if (st != OK)   /* its drivers' DMA caps are closed either way: bus mastering is off */
-        printf("init: kexec: devmgr didn't stop in order (%s): its job was killed\n",
-               status_str(st));
+    uint64_t ms = stop_everything("kexec");
     /* Seen only on the serial port: logd has stopped, the screen is dark. */
-    printf("init: kexec: devmgr stopped in %lu ms, jumping\n",
-           (unsigned long)((now() - t0) / NS_PER_MS));
-    st = jam_kexec_reboot(shell_root());   /* returns only if it failed */
+    printf("init: kexec: devmgr stopped in %lu ms, jumping\n", (unsigned long)ms);
+    status_t st = jam_kexec_reboot(shell_root());   /* returns only if it failed */
     printf("init: kexec: the jump failed (%s)\n", status_str(st));
     return st;
 }
