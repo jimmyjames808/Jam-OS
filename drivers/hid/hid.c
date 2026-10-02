@@ -392,7 +392,7 @@ static int read_config(struct hid *h)
                 h->iface, status_str(st));
         return 3;
     }
-    parse_config(h, n);
+    parse_config(h, n < BUF_SIZE ? n : BUF_SIZE);   /* whatever usb-bus says, buf ends there */
     return -1;
 }
 
@@ -411,8 +411,8 @@ static int read_report_desc(struct hid *h, char *coll, uint32_t cap)
     if (gone(h, st))
         return 0;
     if (st == OK) {
-        h->report_desc_read = n;
-        summarise_report(h, n, coll, cap);
+        h->report_desc_read = n < want ? n : want;   /* never past what was asked (and buf) */
+        summarise_report(h, h->report_desc_read, coll, cap);
     } else {
         drv_log("hid %04x:%04x if %u: report descriptor unreadable (%s): going on",
                 h->vendor, h->product, h->iface, status_str(st));
