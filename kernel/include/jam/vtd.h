@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- register offsets (VT-d 11.4) ------------------------------------------- */
+/* ---- register offsets (VT-d chapter 11) ------------------------------------- */
 
 #define VTD_VER      0x000   /* 32: version, major in 7:4, minor in 3:0 */
 #define VTD_CAP      0x008   /* 64: capabilities */
@@ -39,7 +39,7 @@
 #define VTD_ICS      0x09c   /* 32: invalidation completion status */
 #define VTD_IRTA     0x0b8   /* 64: interrupt remapping table address */
 
-/* ---- CAP_REG (VT-d 11.4.2) -------------------------------------------------- */
+/* ---- the Capability Register ------------------------------------------------ */
 
 #define VTD_BITS(v, lo, n) (((uint64_t)(v) >> (lo)) & (((uint64_t)1 << (n)) - 1))
 
@@ -65,7 +65,7 @@
 #define VTD_CAP_ESIRTPS(c) VTD_BITS(c, 62, 1)   /* setting IRTA invalidates the IEC */
 #define VTD_CAP_ESRTPS(c)  VTD_BITS(c, 63, 1)   /* setting RTADDR invalidates caches */
 
-/* ---- ECAP_REG (VT-d 11.4.3) ------------------------------------------------- */
+/* ---- the Extended Capability Register --------------------------------------- */
 
 #define VTD_ECAP_C(e)      VTD_BITS(e, 0, 1)    /* page walks snoop the CPU's caches */
 #define VTD_ECAP_QI(e)     VTD_BITS(e, 1, 1)    /* queued invalidation */
@@ -82,7 +82,7 @@
 #define VTD_ECAP_SMTS(e)   VTD_BITS(e, 43, 1)   /* scalable-mode translation */
 #define VTD_ECAP_SLTS(e)   VTD_BITS(e, 46, 1)   /* second-stage translation (scalable mode) */
 
-/* ---- GSTS_REG (VT-d 11.4.4.2) ----------------------------------------------- */
+/* ---- the Global Status Register --------------------------------------------- */
 
 #define VTD_GSTS_TES   (1u << 31)   /* translation enabled */
 #define VTD_GSTS_RTPS  (1u << 30)   /* root table pointer set */
@@ -94,7 +94,7 @@
 #define VTD_GSTS_IRTPS (1u << 24)   /* interrupt remapping table pointer set */
 #define VTD_GSTS_CFIS  (1u << 23)   /* compatibility-format interrupts pass */
 
-/* ---- FSTS_REG (VT-d 11.4.6.1), PMEN (11.4.13), IRTA (11.4.10.1) ------------- */
+/* ---- Fault Status, Protected Memory Enable, Interrupt Remapping Table Address */
 
 #define VTD_FSTS_PFO   (1u << 0)    /* a fault was lost: the records were full */
 #define VTD_FSTS_PPF   (1u << 1)    /* a primary fault is recorded */
@@ -109,7 +109,7 @@
 #define VTD_IRTA_EIME  (1ull << 11) /* the table's entries take 32-bit destinations */
 #define VTD_IRTA_S(v)  VTD_BITS(v, 0, 4)   /* 2^(S + 1) entries */
 
-/* A fault recording register's upper 64 bits (VT-d 11.4.14). */
+/* A Fault Recording Register's upper 64 bits (VT-d chapter 11). */
 #define VTD_FRCD_F         (1ull << 63)           /* the record holds a fault */
 #define VTD_FRCD_TYPE1(h)  VTD_BITS(h, 62, 1)     /* T1: 0 write, 1 read (T2, bit 28: a page request) */
 #define VTD_FRCD_REASON(h) VTD_BITS(h, 32, 8)     /* the fault reason */
