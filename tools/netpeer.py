@@ -33,6 +33,18 @@ What it does with each frame from the guest:
   - noise (--noise S, or `noise` on stdin): frames the guest's driver must
     drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
     broadcast ARP request on the VLAN), counted as sent.
+  - a flood (--flood N, with --ping ADDR): N frames a second, the mix a
+    busy trunk port carries (flood()): on the VLAN, ARP requests for other
+    hosts and for ADDR, broadcast and multicast datagrams, UDP to ADDR's
+    closed ports, IPv4 to the guest's MAC for other addresses, echo
+    requests to ADDR from other hosts, frames for other MACs, IPv6; and
+    off it, frames the driver must drop (untagged, VLANs 10 and 20, a
+    priority tag, QinQ). Counted as flood_sent / flood_vlan. With
+    --ping-every S the pings come every S seconds (0.5 by default); with
+    --late-after S the summary also counts the pings sent S seconds or
+    more after the first one, and their replies (pings_late,
+    ping_replies_late): tools/rxsoak-test.sh checks the guest still
+    answers after thousands of frames.
   - DHCP and DNS (add_dhcp_dns, always on): a DHCP server on port 67
     (leases from 10.2.21.100, router and DNS server 10.2.21.1, the lease
     --dhcp-lease seconds) and a DNS server on port 53 (one.one.one.one,
@@ -44,7 +56,7 @@ Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
-               [--update SPEC]
+               [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -82,6 +94,7 @@ FRAME_MAX = 1518            # a tagged frame without FCS
 BAD_LOGGED = 8              # bad frames logged in hex, at most
 PING_FROM = "10.2.21.174"   # the Mac's address: where --ping's requests come from
 PING_ID = 0x4a4d            # their ICMP id ("JM")
+FLOOD_HOST = bytes.fromhex("024a414d0063")   # another host on the VLAN (the flood's sender)
 
 
 # ---- frames ------------------------------------------------------------------
@@ -177,6 +190,10 @@ class Peer:
         self.bad_kinds = {}          # kind (or "vlan <id>") -> count
         self.guest_mac = None        # learned from its first good frame
         self.udp_handlers = {}       # port -> fn(peer, ip_src, sport, ip_dst, payload) -> bytes|None
+        self.ping_sent_at = {}       # seq -> time.monotonic() it went (--ping)
+        self.late_after = None       # pings this long after the first count as late (--late-after)
+        self.first_ping = None       # time.monotonic() of the first ping
+        self.flood_n = 0             # frames flood() has sent, for its rotation
 
     def log(self, msg):
         line = "netpeer: " + msg
@@ -211,6 +228,69 @@ class Peer:
         self.send(eth(self.guest_mac, PEER_MAC, ETH_IPV4,
                       ipv4(ip_bytes(PING_FROM), ip_bytes(addr), 1, body)))
         self.counts["pings"] = seq
+        t = time.monotonic()
+        self.ping_sent_at[seq] = t
+        self.first_ping = self.first_ping or t
+        if self.is_late(t):
+            self.counts["pings_late"] = self.counts.get("pings_late", 0) + 1
+
+    def is_late(self, t):
+        return self.late_after is not None and t - self.first_ping >= self.late_after
+
+    def flood_frames(self, addr):
+        """The flood's frames, one of each kind: (frame, on the VLAN?).
+        Untagged frames get the VLAN's tag when they go (send)."""
+        g, me, other = self.guest_mac, ip_bytes(addr), ip_bytes("10.2.21.77")
+        n = self.flood_n
+        host = FLOOD_HOST
+        bcast_ip = ip_bytes("10.2.21.255")
+        arp_other = eth(BROADCAST, host, ETH_ARP,
+                        arp(1, host, other, b"\0" * 6, ip_bytes("10.2.21.%d" % (100 + n % 50))))
+        arp_guest = eth(BROADCAST, host, ETH_ARP, arp(1, host, other, b"\0" * 6, me))
+        ping_other = icmp(8, 0, struct.pack("!HH", 0x7777, n & 0xFFFF), b"x" * 32)
+        frames = [
+            (arp_other, True),
+            (arp_guest, True),
+            (eth(BROADCAST, host, ETH_IPV4, ipv4(other, bcast_ip, 17,
+                                                  udp(other, bcast_ip, 137, 137, b"n" * 50))), True),
+            (eth(bytes.fromhex("01005e000001"), host, ETH_IPV4,
+                 ipv4(other, ip_bytes("224.0.0.1"), 17,
+                      udp(other, ip_bytes("224.0.0.1"), 5353, 5353, b"m" * 40))), True),
+            (eth(g, host, ETH_IPV4, ipv4(other, me, 17,
+                                         udp(other, me, 40000, 9000 + n % 100, b"u" * 20))), True),
+            (eth(g, host, ETH_IPV4, ipv4(other, ip_bytes("10.2.21.88"), 17,
+                                         udp(other, ip_bytes("10.2.21.88"), 1, 2, b"o"))), True),
+            (eth(g, host, ETH_IPV4, ipv4(other, me, 1, ping_other)), True),
+            (eth(bytes.fromhex("024a414d0088"), host, ETH_IPV4,
+                 ipv4(other, ip_bytes("10.2.21.88"), 17,
+                      udp(other, ip_bytes("10.2.21.88"), 1, 2, b"p" * 300))), True),
+            (eth(bytes.fromhex("333300000001"), host, 0x86DD, b"\x60" + b"\0" * 59), True),
+            (eth(g, host, 0x86DD, b"\x60" + b"\0" * 59), True),
+            (arp_other, False),                       # untagged: the trunk's native VLAN
+            (tag(arp_other, 10), False),
+            (tag(arp_guest, 20), False),
+            (tag(arp_other, 0, pcp=3), False),        # a priority tag
+            (arp_other[:12] + struct.pack("!HHHH", TPID_8021AD, self.vlan, TPID_8021Q, self.vlan)
+             + arp_other[12:], False),                # QinQ over our VLAN
+        ]
+        return frames
+
+    def flood(self, addr, count):
+        """count frames of the flood's mix (once the guest's MAC is known)."""
+        if self.guest_mac is None:
+            return
+        for k in ("flood_sent", "flood_vlan"):
+            self.counts.setdefault(k, 0)
+        frames = self.flood_frames(addr)
+        for _ in range(count):
+            f, ours = frames[self.flood_n % len(frames)]
+            self.flood_n += 1
+            if ours:
+                self.send(f)
+                self.counts["flood_vlan"] += 1
+            else:
+                self.send_raw(f)
+            self.counts["flood_sent"] += 1
 
     def noise(self):
         """Frames the guest's driver must drop, and one it must pass."""
@@ -286,6 +366,10 @@ class Peer:
         if (proto == 1 and len(body) >= 8 and body[0] == 0 and not checksum(body) and
                 struct.unpack_from("!H", body, 4)[0] == PING_ID and dst == ip_bytes(PING_FROM)):
             self.counts["ping_replies"] += 1   # an answer to --ping
+            seq = struct.unpack_from("!H", body, 6)[0]
+            sent = self.ping_sent_at.pop(seq, None)
+            if sent is not None and self.is_late(sent):
+                self.counts["ping_replies_late"] = self.counts.get("ping_replies_late", 0) + 1
             return
         if proto == 1 and len(body) >= 8 and body[0] == 8 and not checksum(body):
             reply = ipv4(dst, src, 1, icmp(0, 0, body[4:8], body[8:]))
@@ -762,10 +846,14 @@ def run(a):
     peer.log("listening on 127.0.0.1:%d, QEMU at %d, VLAN %d" % (peer.listen, a.qemu, a.vlan))
     end = time.monotonic() + a.duration if a.duration else None
     next_noise = time.monotonic() + a.noise if a.noise else None
-    next_ping = time.monotonic() + 0.5 if a.ping else None
+    next_ping = time.monotonic() + a.ping_every if a.ping else None
+    flood_at, flood_step = time.monotonic(), 0.05
+    if a.late_after:
+        peer.late_after = a.late_after
+        peer.counts["pings_late"] = peer.counts["ping_replies_late"] = 0
     while not stop and (end is None or time.monotonic() < end):
         fds = [peer.sock] + ([sys.stdin] if a.stdin else [])
-        r, _, _ = select.select(fds, [], [], 0.2)
+        r, _, _ = select.select(fds, [], [], 0.02 if a.flood else 0.2)
         if peer.sock in r:
             peer.poll(0)
         if a.stdin and sys.stdin in r:
@@ -774,7 +862,11 @@ def run(a):
                 break
         if next_ping and time.monotonic() >= next_ping:
             peer.ping(a.ping)
-            next_ping += 0.5
+            next_ping += a.ping_every
+        if a.flood and a.ping and time.monotonic() >= flood_at:
+            due = int((time.monotonic() - flood_at) / flood_step) + 1
+            peer.flood(a.ping, max(1, round(a.flood * flood_step)) * min(due, 20))
+            flood_at += flood_step * due
         if next_noise and time.monotonic() >= next_noise:
             peer.noise()
             next_noise += a.noise
@@ -802,6 +894,10 @@ def main():
     ap.add_argument("--ready")
     ap.add_argument("--log")
     ap.add_argument("--ping")
+    ap.add_argument("--ping-every", type=float, default=0.5)
+    ap.add_argument("--flood", type=float, default=0, help="frames a second (with --ping)")
+    ap.add_argument("--late-after", type=float, default=0,
+                    help="count the pings from S seconds after the first apart")
     ap.add_argument("--netlog", help="answer netlog (port 5021) into this folder")
     ap.add_argument("--netlog-late", type=float, default=0)
     ap.add_argument("--netlog-pause", help="BYTES:SECONDS")

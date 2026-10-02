@@ -1,0 +1,25 @@
+# The receive path over a long run (tools/rxsoak-test.sh runs this): a
+# plain boot with QEMU's e1000e and the network peer flooding the guest
+# (netpeer.py --flood: thousands of frames on VLAN 21 and off it, while
+# it pings the guest every 0.2 s), net.address set in the stick's
+# settings. After the flood has wrapped the driver's descriptor ring and
+# the netdev rx ring many times, the guest must still answer the peer's
+# pings (the script checks the peer's late counts) and get the answers to
+# its own (`ping 10.2.21.1`); `net stats` shows where frames went.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait jam>
+sleep 100
+send net stats
+wait the card's driver:
+wait jam>
+sleep 70
+send ping 10.2.21.1 -c 3
+wait 30 --- 10.2.21.1: 3 sent, 3 received
+wait jam>
+send net stats
+wait the card's driver:
+wait jam>
+send reboot -f
+wait reboot: resetting
