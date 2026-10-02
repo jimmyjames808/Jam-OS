@@ -687,7 +687,7 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         umap_fill(as, m);
         st = vmo_umap_add(vmo, &m->umap, true);   /* bounds against the VMO size */
         if (st != OK)
-            maps_account(as, as->nmaps);   /* give the charge back */
+            (void)maps_account(as, as->nmaps);   /* give the charge back: shrinking can't fail */
     }
     if (st == OK) {
         list_add(pos, &m->node);
@@ -726,7 +726,7 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
         status_t st = as->nmaps >= MAX_MAPPINGS ? ERR_NO_RESOURCES
                                                 : maps_account(as, as->nmaps + 1);
         if (st == OK && !(spare = kzalloc(sizeof(*spare)))) {
-            maps_account(as, as->nmaps);
+            (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
             st = ERR_NO_MEMORY;
         }
         if (st != OK) {
@@ -767,7 +767,7 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
             umap_sync(m);
         }
     }
-    maps_account(as, as->nmaps);   /* only ever down here: can't fail */
+    (void)maps_account(as, as->nmaps);   /* only ever down here: can't fail */
     mutex_unlock(&as->lock);
     return OK;
 }
@@ -806,7 +806,7 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
             if (!(spare[i] = kzalloc(sizeof(struct mapping))))
                 st = ERR_NO_MEMORY;
         if (st == ERR_NO_MEMORY)
-            maps_account(as, as->nmaps);   /* back to what we have */
+            (void)maps_account(as, as->nmaps);   /* back to what we have: can't fail */
     }
     if (st != OK) {
         mutex_unlock(&as->lock);
