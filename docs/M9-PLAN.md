@@ -533,6 +533,7 @@ the driver does the same, with the same values):
 | rge_stop, rge_chipinit (reset, out-of-band exit, PHY power) | done (chip_reset), without rge_hw_init's tables (MAC break points, PCIe PHY values) or rge_phy_config's PHY tuning and patch: the owner's call, question 5 |
 | the station address written | not written: the chip's own is kept |
 | the receive and transmit lists cleared, end-of-ring on the last | done; transmit descriptors now 32 bytes |
+| rge_newbuf: every receive descriptor handed over gets its size, extended status 0, the buffer's address, then OWN | done since the receive fix ("R1: receive on the PC"); before it the address was written once, at the start |
 | config unlock (EECMD) | done |
 | register 0xf1 bit 7 cleared | **left out** (meaning not published) |
 | rge_disable_aspm_clkreq, twice | **left out**: ASPM is already off on the PC (`pcie:` line), CLKREQ is power saving |
@@ -606,6 +607,83 @@ STALL` line; the RESULTS line `netsend vlan 21, link ..., 20/20 probes to
 answered, and PASS. If it still fails, the `tx STALL` lines say whether
 the chip never fetched the descriptor or sent it without writing it
 back, and the capture says what actually left.
+
+#### R1: receive on the PC
+
+**The PC run (2026-10-02, build 41ccd54; boot-0073 `netsend`, boot-0075
+`net`, the normal network: the trunk port):** transmit is fixed (20/20
+probes; 132 queued, 132 sent by the chip, 132 back, 0 stalls in 117 s,
+waits 0.04-0.33 ms). Receive is not: pings to and from the PC "worked at
+the start, then stopped"; netlog's acks came back until about 72 s
+(`the Mac answers again` at 5.3 s, then a `tx so far` line every 10 s
+with each acked), `the Mac doesn't answer` at 78.3 s, and nothing came
+back after that while the PC went on sending.
+
+**Where it stopped: the end of the chip's first lap.** In full mode the
+chip takes our unicast and broadcasts only (rx_filter): the probe boot
+counted ~3 broadcasts a second on the port (the rest of its ~41 frames a
+second were multicast, which full mode refuses), and netlog's acks,
+ARP and pings add to that, so the chip had filled about 256 descriptors,
+its whole ring once, at about 70-75 s. The netdev rx ring and netstack
+were ruled out in QEMU: `tools/rxsoak-test.sh` pushes ~10 000 frames
+(~7 000 on VLAN 21, ~27 laps of the 256-slot netdev ring, ~40 of
+e1000e's descriptors) through the same netserver.c and netstack, with
+lwIP's receive buffers back at 0 in use, and the guest still answers
+every ping at the end.
+
+**The cause: the descriptor's address written once.** The driver wrote
+each receive descriptor's buffer address at the start only; giving a
+descriptor back after a frame it wrote the extended status and the
+command word (ownership, size, end of ring). The 8125's descriptor in
+rge's RXCFG (0x41000c00, bit 24: Realtek's "version 3" layout, 32
+bytes) has the address in a union with the frame's timestamp
+(Realtek's `struct RxDescV3`: `addr` shares its 8 bytes with
+TimeStampLow/High), so the chip's write-back may leave something else
+there, and on the second lap the chip writes frames wherever that
+points. rge_newbuf writes the address into every descriptor it hands
+over. Whether the PC's chip really writes there, and what, the next run
+shows (below); the fix holds either way.
+
+**What changed** (branch commits, one each):
+
+1. `drivers/rtl8125/rxdesc.h`: the receive descriptor as pure functions,
+   behaviour unchanged (utest `rtl8125_rxdesc`).
+2. **The address in every hand-back** (`rtl_rxd_arm` takes it and writes
+   it before the fence and the ownership bit), as rge_newbuf. utest
+   `rtl8125_rxdesc_laps`: a fake chip writing back as the version-3
+   layout allows (a timestamp where the address was, RSS bytes in front)
+   over three laps; every frame must land in its descriptor's own buffer
+   (without the address write the chip "writes to 0"). The driver also
+   counts descriptors that come back with another value in the address
+   field (the first one kept).
+3. **`tools/rxsoak-test.sh`** (netpeer `--flood`): the long run above.
+4. **`rx so far` lines**, at most every 10 s and only while frames come,
+   next to `tx so far`:
+   - rtl8125: `rx so far: N from the chip (tally T, M missed), K kept;
+     dropped U untagged, O other vlans, P vlan 0, B bad; S to netstack, F
+     ring full, Z no session` and `rx ring: D of 256 descriptors the
+     chip's, next I; R no-descriptor and V fifo-overflow interrupts; A
+     address field(s) changed by the chip (first X)`;
+   - e1000e: the same two lines (its chip counts and RDH/RDT);
+   - netstack: `rx so far: N off the ring (B bad), L into lwIP (R
+     refused); buffers U in use, M at most, E times none; dropped link
+     arp ip icmp udp; P pings answered`.
+
+**The next PC run:** "Jam OS (network)" as before, the Mac pinging
+10.2.21.240 and the PC's `ping 10.2.21.1` for well over 2 minutes
+(several laps of the ring). **What a fixed driver shows:** the pings
+answered to the end; netlog never says `doesn't answer`; every 10 s an
+`rx so far` whose counts keep growing past 256 from the chip, 0 missed,
+`rx ring: 256 of 256 descriptors the chip's`, 0 no-descriptor
+interrupts; netstack's `buffers 0 in use` (or a few), 0 times none. The
+`address field(s) changed by the chip` count says whether the chip writes
+there (non-zero: the cause confirmed; its first value is likely a
+timestamp). **If receive still stops**, the lines say where: the chip's
+tally standing still with `256 of 256` is the chip not receiving
+(missed growing: it found no descriptor); `from the chip` growing but `to
+netstack` not is the driver's filter; `to netstack` growing but netstack's
+`off the ring` not is the ring or its wake; `into lwIP` growing with
+`buffers` climbing to 128 is a leak in netstack.
 
 ### The PHY firmware patch
 

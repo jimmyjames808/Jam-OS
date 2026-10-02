@@ -132,9 +132,18 @@ start late or pause, counted as `netlog_in` and `netlog_dropped`;
 `PlannedServer`, as `tools/update-net-test.sh` does).
 `--ping <address>` sends an ICMP echo request to the guest every half
 second (from 10.2.21.174, once it has seen the guest's MAC) and counts
-the replies (`ping_replies`). `--noise <s>` sends, every s seconds, four frames the guest's driver must
+the replies (`ping_replies`); `--ping-every <s>` changes the half
+second, and `--late-after <s>` also counts the pings sent s seconds or
+more after the first and their replies (`pings_late`,
+`ping_replies_late`). `--noise <s>` sends, every s seconds, four frames the guest's driver must
 drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
-broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
+broadcast ARP request on the VLAN). `--flood <n>` (with `--ping`) sends
+n frames a second, the mix a busy trunk port carries: on VLAN 21 ARP
+requests for other hosts and for the guest, broadcast and multicast
+datagrams, UDP to the guest's closed ports, IPv4 to the guest's MAC for
+another address, echo requests from another host, frames for another MAC,
+IPv6; off it untagged, VLAN 10 and 20, priority-tagged and QinQ frames
+(`flood_sent`, `flood_vlan`). Its log is `<outdir>/<name>.peer.log`,
 its counts `<name>.peer.json`.
 
 It also serves DHCP and DNS on VLAN 21 (always; `add_dhcp_dns`): a DHCP
@@ -471,6 +480,19 @@ kills netstack in the middle (init starts it again: a new session, the
 address again) and passes if the peer's and the pcap's VLAN checks pass
 and at least 8 pings were answered. It needs drv/e1000e (stage 2).
 
+The receive path over a long run: `tools/rxsoak-test.sh <outdir>`
+(`tools/shell-tests/rxsoak.txt`, about 4 minutes) boots the same way
+with the peer's `--flood 60 --ping-every 0.2 --late-after 150`: about
+10 000 frames in three minutes (two thirds of them on VLAN 21), so the
+e1000e's 256 descriptors and the 256-slot netdev rx ring go round dozens
+of times (the PC's receive stopped at the end of the RTL8125's first lap:
+[M9-PLAN](M9-PLAN.md#r1-receive-on-the-pc)). `net stats` twice, then the
+guest's own `ping 10.2.21.1 -c 3` must get 3 replies; it passes if the
+script and the VLAN checks pass, at least 6000 frames were flooded, and
+at least 90% of the peer's pings sent 150 s or more after the first were
+answered. The drivers' and netstack's `rx so far` lines (every 10 s while
+frames come) are in the log. `RXSOAK_FLOOD` changes the rate.
+
 The shell's `net` and `ping`: `tools/ping-test.sh <outdir>`
 (`tools/shell-tests/net.txt`) boots the same way (without `--ping`):
 `net` shows the address, the DNS server and VLAN 21; `ping 1.1.1.1 -c
@@ -540,6 +562,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/music-test.sh <outdir>` | the music player (`music.txt`): a folder tree made by the script (ffmpeg, mtools) on `/data/music`: six 2 s tones (MP3 at 44.1, 48 VBR and 22.05 kHz, WAV at 48 and 44.1 kHz) under names with spaces, apostrophes, `$`, `~`, parentheses and UTF-8 (`JAŸ-Z`), an upper-case `.WAV` and `.Mp3`, a garbage `.mp3`, `.DS_Store`/`._` dotfiles, a text file and an empty folder tree; and a second stick of three 8 s WAVs. In the capture (100 ms FFT windows up to a 1000 Hz marker beep typed 2 s after `music stop`): the tracks heard are the log's `track N:` lines in order, the first six are the six tracks once each, at least seven heard, never the same twice in a row; the 1500 Hz `beep` mixed over a track; the stop fades. The log: every title (`Artist - Title` from the path), the garbage file skipped, no dotfile tried, the mixer restart reopened, the pulled stick stopping it after three unreadable files |
 | `tools/net-test.sh <outdir> [vlan vlan-off rx]` | the e1000e driver against `nettest`, a hostile netstack ([M9-PLAN](M9-PLAN.md#stage-2-built-drve1000e-and-nettest)), one `init` boot per scenario from a copy of the stick whose bootfs runs `bin/nettest <mode>` from init.cfg (in shell mode netstack holds the card's one session), with `QEMU_NET` and a peer of the script's own (`tools/netpeer.py`'s `Peer` plus nettest's frames; it also fails on a tag inside VLAN 21's): `vlan` (the session rules; every bad length, flags, frames already tagged 0x8100, 0x88a8 and 0x9100, `produced` a ring and one ahead and then behind, a thread rewriting EtherTypes while the driver copies: each refusal counted exactly, and the peer and the pcap each hold exactly the frames the driver queued and the chip sent, all tagged 21 once), `vlan-off` (a `vlan=off` boot: the driver's "no VLAN" line, no service, no frame at all), `rx` (the peer's census of untagged, VLAN 0, other-VLAN, QinQ, nested, 1522-byte and VLAN 21 frames: only the VLAN 21 ones arrive, untagged and whole, every drop counter exact; then 300 frames with the ring unread: 256 given, 44 `rx_ring_full`); every run ends with the driver stopped cleanly and every job empty |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)) |
+| `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
 | `tools/netlog-test.sh <outdir>` | netlog end to end (`netlog.txt`): the whole log of two boots and the panicked one's, from the first line, with the receiver late and paused, netlog and netstack killed ([netstack](#netstack)) |
 | `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`), a `shell netsend` boot (`netsend.txt`) and a `shell net` boot (`netserve.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log mentions none of them. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe, the send test or the netdev service without hardware, ends at once with exit 0 and an empty job); `rtl8125_txdesc` (`drivers/rtl8125/txdesc.h`: the 32-byte descriptor, the transmitter refused unless the chip's format bit agrees, the end-of-ring bit on the last descriptor only, a chip walking the ring in 32-byte steps finds every descriptor in order), `rtl8125_kick` (a stuck descriptor gets a handful of extra doorbells in 4 s however often the driver looks, never one within 1 ms of its own), `rtl8125_tx_verdict` (the chip's tally against queued and handed back: fewer sent is progress, only more sent is foreign); `netserver_session`, `netserver_tx`, `netserver_rx` (the network drivers' netdev server, `drivers/lib/netserver.c`, linked in, over a fake card with the test as netstack: info and stats, one session at a time, open refused on the session channel, a closed or orphaned session replaced, the rights open hands out; netstack's frames reach the card byte for byte, bad lengths, flags and tags counted and never sent, a card out of descriptors holds the ring until they come back, hostile counts bounded to a ring per turn; received frames into the rx ring with NETDEV_SIG_RX, a full ring and no session dropped and counted, NETDEV_SIG_LINK) |
