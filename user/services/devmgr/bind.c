@@ -133,7 +133,8 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * filesystem service after its mount ("fat-data"): in the log, in
      * `ps`, for the shell's `kill`. The service is also told its mount,
      * and the one that may format a blank partition is told so; a hid,
-     * "hidboot" when devmgr was. */
+     * "hidboot" when devmgr was; a PCI driver, its match-table row's word
+     * ("netprobe"). */
     const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
     char mount[16] = "";
     if (b->kind == BIND_FS)
@@ -142,6 +143,8 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
                             b->kind == BIND_FS ? fs_format_arg(b) : NULL };
     if (b->kind == BIND_USB)
         argv[1] = usb_driver_arg(b);   /* "hidboot" or none */
+    if (b->kind == BIND_PCI)
+        argv[1] = pci_driver_arg(b->path);   /* "netprobe" or none */
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argv[2] ? 3 : argv[1] ? 2 : 1, .argv = argv,
         .job = job,

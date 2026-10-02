@@ -32,6 +32,9 @@ bool init_shell(bool nousb, bool splash, const char *shell_arg);
 /* The option word "hidboot" (main.c): devmgr is started with it, so every
  * hid keeps its mouse in the boot protocol. */
 extern bool init_hidboot;
+/* The option word "netprobe" (main.c): shell mode's devmgr is started
+ * with it, so it binds the RTL8125's listen-only probe (drv/rtl8125). */
+extern bool init_netprobe;
 /* The option word "bootdisk=0x<id>" (main.c; NULL: none): the MBR disk id
  * the machine booted from, passed on to devmgr as it is. */
 extern const char *init_bootdisk;

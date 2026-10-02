@@ -47,7 +47,10 @@
  * leaves USB host controllers (class 0c03xx) without a driver: no USB at
  * all, the console's input is the serial port alone. The argument
  * "hidboot" (the boot word) is passed on to every drv/hid, which then
- * keeps mice in the boot protocol.
+ * keeps mice in the boot protocol. A match-table row that names a word
+ * binds only when devmgr was given that word, and its driver is started
+ * with it: "netprobe" (the boot word) binds drv/rtl8125, the RTL8125's
+ * listen-only probe; without it the network chip gets no driver at all.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -78,15 +81,19 @@ static const struct {
     uint16_t    vendor, device;   /* PCI ids, 0xffff: any */
     uint32_t    class_code;       /* class << 16 | subclass << 8 | prog_if, or ANY_CLASS */
     const char *path;             /* the driver in bootfs */
+    const char *word;             /* bound only with this word, passed on (NULL: always) */
 } matches[] = {
-    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu" },      /* QEMU's edu test device */
-    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus" },   /* any xHCI controller */
+    { 0x1234, 0x11e8, ANY_CLASS, "drv/edu", NULL },      /* QEMU's edu test device */
+    { 0xffff, 0xffff, 0x0c0330, "drv/usb-bus", NULL },   /* any xHCI controller */
     /* Intel HD Audio in HDA mode (class 04 03 00). Only Intel's: other
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
      * (Intel's audio DSP) needs firmware this driver doesn't have. Who may
      * use it is init's to say, not this table's: init asks for its device
      * channel and gives it to the mixer (<devmgr.h> "Trust"). */
-    { 0x8086, 0xffff, 0x040300, "drv/hda" },
+    { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
+    /* The board's Realtek RTL8125: only the listen-only probe so far
+     * (docs/M9-PLAN.md stage 0), and only on a `netprobe` boot. */
+    { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netprobe" },
 };
 
 struct binding devs[MAX_DEVS];
@@ -95,6 +102,7 @@ handle_t pci_res, port;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
+static bool netprobe;
 uint32_t boot_mbr_id;
 uint64_t devmgr_started;
 bool shutdown_asked;
@@ -133,6 +141,12 @@ const char *bdf(const struct binding *b)
     return s;
 }
 
+/* Was devmgr given the boot word a match-table row asks for? */
+static bool pci_word_given(const char *word)
+{
+    return !strcmp(word, "netprobe") && netprobe;
+}
+
 /* The driver for function i (NULL: none). */
 static const char *match(const struct pci_dev_info *i)
 {
@@ -144,11 +158,26 @@ static const char *match(const struct pci_dev_info *i)
             i->bus, i->dev, i->fn, i->vendor, i->device);
         return NULL;
     }
-    for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++)
-        if ((matches[k].vendor == 0xffff || matches[k].vendor == i->vendor) &&
-            (matches[k].device == 0xffff || matches[k].device == i->device) &&
-            (matches[k].class_code == ANY_CLASS || matches[k].class_code == cls))
-            return matches[k].path;
+    for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++) {
+        if ((matches[k].vendor != 0xffff && matches[k].vendor != i->vendor) ||
+            (matches[k].device != 0xffff && matches[k].device != i->device) ||
+            (matches[k].class_code != ANY_CLASS && matches[k].class_code != cls))
+            continue;
+        if (matches[k].word && !pci_word_given(matches[k].word)) {
+            say(false, "devmgr: %02x:%02x.%x %04x:%04x: left alone (no %s)", i->bus, i->dev,
+                i->fn, i->vendor, i->device, matches[k].word);
+            return NULL;
+        }
+        return matches[k].path;
+    }
+    return NULL;
+}
+
+const char *pci_driver_arg(const char *path)
+{
+    for (unsigned k = 0; path && k < sizeof(matches) / sizeof(matches[0]); k++)
+        if (matches[k].word && !strcmp(matches[k].path, path) && pci_word_given(matches[k].word))
+            return matches[k].word;
     return NULL;
 }
 
@@ -349,6 +378,7 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
+        netprobe |= !strcmp(argv[i], "netprobe");
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }
@@ -369,6 +399,9 @@ int main(int argc, char **argv)
     /* With a console, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
         usb_new_console(startup_handle(SR_CONSOLE));
+    if (netprobe)
+        say(false, "devmgr: netprobe: an RTL8125 (10ec:8125) gets drv/rtl8125, which only "
+            "listens");
     if (enumerate() != OK)
         return 1;
     bind_all();

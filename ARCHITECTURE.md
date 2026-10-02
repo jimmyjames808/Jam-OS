@@ -669,7 +669,9 @@ Rules for userspace drivers:
 
 ## Networking
 
-Not built yet; these rules bind every future path that can transmit.
+Not built yet, but for a listen-only probe of the NIC that sends nothing
+([M9-PLAN.md](docs/M9-PLAN.md#stage-0-built-the-pc-run)); these rules
+bind every future path that can transmit.
 
 - The NIC is the board's own RTL8125 ([HARDWARE.md](docs/HARDWARE.md#other-devices)),
   driven natively (references: Linux `r8169`, FreeBSD `re`; check whether

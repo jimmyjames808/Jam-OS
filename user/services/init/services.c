@@ -347,12 +347,14 @@ static status_t start_devmgr(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[4] = { "bin/devmgr" };
+    const char *argv[5] = { "bin/devmgr" };
     int argc = 1;
     if (nousb)
         argv[argc++] = "nousb";
     if (init_hidboot)
         argv[argc++] = "hidboot";
+    if (init_netprobe)
+        argv[argc++] = "netprobe";
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },

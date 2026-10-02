@@ -1,7 +1,8 @@
 # M9 plan: networking
 
-Status: the plan, for the owner to read and answer before any code
-(2026-10-02, on main 2079f35, M8.6 done). Nothing here is built yet.
+Status: the plan (2026-10-02, on main 2079f35, M8.6 done), with the
+owner's answers. **Stage 0, the listen-only probe, is built** and waits
+for its PC run ([below](#stage-0-built-the-pc-run)); nothing else is.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -210,6 +211,57 @@ The switch-port question is answered by listening, with nothing sent.
   menu entry, "Jam OS (network: listen only)") starts the full driver in
   this mode.
 
+#### Stage 0, built: the PC run
+
+Built 2026-10-02: `drivers/rtl8125` (main.c lists every register it
+writes), `drivers/include/jam/netframe.h` (classify only: the transmit
+side's tag and check come with the first driver that sends), the boot
+word `netprobe` (kernel, init, devmgr, the driver: as `hidboot` travels;
+a reboot doesn't keep it), the boot menu entry, `tools/checknotx.sh` in
+`make check`, utest's `netframe_*` and `rtl8125_*` tests and
+`tools/netprobe-test.sh` ([TESTING.md](TESTING.md#area-scripts)). What
+it does and how it differs from the plan above:
+
+- **No firmware tables at all**: not the PHY patch (question 5), and also
+  not rge's other tables (the MAC's break points, the PCIe PHY table,
+  the PHY's tuning values), nor rge's CSI and ASPM/CLKREQ changes. The
+  chip runs on whatever the board's firmware loaded, and the log says
+  what that was (`mac mcu:` and `phy:` lines). rge's MAC settings over
+  OCP in `rge_init` are applied (chip.c's `mac_setup`), as is its
+  out-of-band exit (RealWoW off).
+- **The receive descriptor is 32 bytes**, not 16: with the receive
+  configuration rge uses for the 8125B (0x41000c00), its `struct
+  rge_rx_desc` has the buffer address at 16 and the status at 28. R1
+  keeps this format (or proves the 16-byte one first).
+- **The firmware's bus-master bit can't be seen**: devmgr's new
+  `dma_cap` turns it off before any driver starts. The chip's own
+  registers (command, ring addresses, interrupt mask) still show what the
+  firmware left.
+- The ring and the tally dump are in one contiguous VMO, the buffers in
+  an ordinary one, neither restricted to DMA32: on the PC they should
+  land above 4 GiB, which tests the chip's 64-bit DMA (the `ring:` line).
+- The census counts by tag (untagged, priority-tagged, per VLAN id, outer
+  QinQ tags) with up to six EtherTypes each; it reads the descriptor's
+  length and bytes 12-17, never the addresses or the payload.
+
+**The owner's run:** boot "Jam OS (network: listen only)", the cable in.
+The probe takes about 75 s (up to 10 s for the link, then 60 s of
+listening). During the 60 s, on the Mac on VLAN 21's Wi-Fi: `sudo arp -d
+-a`, then `ping -c 20 10.2.21.1` (broadcast ARP on VLAN 21); optionally
+pull the PC's cable for a few seconds and put it back (link-change
+lines). Then bring back the `[rtl8125]` lines from the log
+(`/data/logs/boot-NNNN.txt`, or `log` in the shell) and the RESULTS line
+starting `rtl8125:`. The MAC address line stays in the log, never in a
+doc.
+
+**What to read from it, for R1:** the chip id (`xid 641`); whether the
+firmware left the transmitter on (`WARNING`); the PHY's id and patch
+version and the MAC's break points (whether the firmware patched it);
+whether the link came up without the tables, at what speed and how fast;
+the `ring:` line (64-bit DMA); `interrupts:` (MSI-X delivery: frames
+found after an interrupt rather than at the 1 s poll); the census and
+the verdict; `tally at end` with tx ok 0 and no `WRITES REFUSED`.
+
 ### The RTL8125 driver
 
 `drv/rtl8125`, bound by devmgr to 10ec:8125, one process like
@@ -221,7 +273,8 @@ The switch-port question is answered by listening, with nothing sent.
   maximum frame size 1522 (1518 plus the tag), then bus mastering on.
   The safe-rebind rule holds: reset first, bus mastering after.
 - **Rings:** one transmit and one receive descriptor ring (16-byte
-  descriptors with an ownership bit, 256 each, the queue-0 rings only:
+  descriptors, though rge's receive descriptor for the 8125 is 32 bytes:
+  [stage 0](#stage-0-built-the-pc-run) with an ownership bit, 256 each, the queue-0 rings only:
   no RSS, no second queue), 2 KiB buffers, all in contiguous DMA memory
   the driver pins with its `dma_cap` (64-bit addresses are fine: no
   DMA32 needed).
@@ -524,7 +577,7 @@ touches a USB disk and never starts agents of its own.
 
 | Stage | Track | What | Files it owns (new ones without a path check) | Needs |
 |---|---|---|---|---|
-| **0. Listen-only probe** | R | the RTL8125 driver with no transmit code: reset, PHY up, receive ring, link, the 60 s census, RESULTS line, chip id and PHY patch version logged; the frame checks (tag, check, classify) and their utest | drivers/rtl8125/ (main, regs, phy, probe), drivers/include/jam/netframe.h, user/tests/utest/netframe.c; one match line in `user/services/devmgr/main.c`; utest's test table | nothing |
+| **0. Listen-only probe** (built) | R | the RTL8125 driver with no transmit code: reset, PHY up, receive ring, link, the 60 s census, RESULTS line, chip id and PHY patch version logged; the frame checks (tag, check, classify) and their utest | drivers/rtl8125/ (main, regs, phy, probe), drivers/include/jam/netframe.h, user/tests/utest/netframe.c; one match line in `user/services/devmgr/main.c`; utest's test table | nothing |
 | **1. The contract and the harness** | Q | netdev.idl and netdev.h (rings, events, counters); `vlan=` from the kernel to init, devmgr and network drivers, kept by kexec; init claims class 02 00 00 and holds the channels; QEMU: `-nic none` by default, the spare MSI-X device, QEMU_NET; tools/netpeer.py (frames over dgram, the tag check, ARP and ICMP echo) and tools/pcap-vlan-check.py; TESTING's boot words | abi/idl/netdev.idl, drivers/include/jam/netdev.h, `kernel/main.c` (the word), `kernel/kexec/load.c`, init's and devmgr's argument passing, `tools/qemu-test.sh`, the Makefile's QEMU flags, `user/tests/utest/supervise.c`, tools/netpeer.py, tools/pcap-vlan-check.py, `docs/TESTING.md` | nothing (runs beside 0) |
 | **2. e1000e** | Q | drv/e1000e: rings, MSI-X, link, the netdev server, netframe.h on both paths; user/tests/nettest (holds the NIC through devmgr's control channel: hostile transmit frames, receive census); tools/net-test.sh scenarios `vlan` (only VLAN 21 frames leave, whatever the test writes), `vlan-off` (no frame at all), `rx` (untagged and other-VLAN dropped) | drivers/e1000e/, user/tests/nettest/, tools/net-test.sh, one match line in devmgr | 0, 1 |
 | **3. netstack core** | S | lwIP vendored (VERSIONS.md); the NO_SYS port (clock, memory, the options file); the netif over the netdev rings; the loop; netctl's `set_ipv4`/`set_dns`/`clear`; `net.address`; init starts netstack with the device channels; a utest of the ring netif against a fake driver; end-to-end: the peer's ICMP echo answered | third_party/lwip/, user/services/netstack/, abi/idl/netctl.idl, user/services/init/net.c (new: netstack and the later network services' starts) | 1 (2 for the end-to-end run) |

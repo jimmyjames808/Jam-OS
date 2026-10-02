@@ -328,7 +328,8 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 # `make check`: the generated code is current, the driver check still
 # rejects what it must (tools/checkdriver-tests/: a kernel include, a
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
-# and the Markdown docs still match the tree (tools/checkdocs.py).
+# the Markdown docs still match the tree (tools/checkdocs.py), and the
+# RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check

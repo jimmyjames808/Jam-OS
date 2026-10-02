@@ -1,0 +1,15 @@
+# The boot word netprobe (the boot menu's "Jam OS (network: listen only)")
+# in QEMU, which has no RTL8125: the word reaches devmgr through the
+# kernel and init, devmgr says so, binds nothing for it, and the system
+# boots as usual. tools/netprobe-test.sh runs this and checks the log for
+# what must not be there.
+# Run: QEMU_INPUT=tools/shell-tests/netprobe.txt tools/qemu-test.sh build/test netprobe shell netprobe
+wait 120 Jam OS shell
+seen 30 devmgr: netprobe: an RTL8125 (10ec:8125) gets drv/rtl8125, which only listens
+seen 30 devmgr: 00:04.0 1234:11e8 -> drv/edu
+wait jam>
+send devices
+wait devmgr:
+wait jam>
+send reboot -f
+wait reboot: resetting
