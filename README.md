@@ -132,9 +132,9 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 
 Jam OS sends on VLAN 21 only: every frame it sends is tagged 802.1Q VLAN
 21, and the boot word `vlan=off` keeps the network card off altogether
-([ARCHITECTURE.md](ARCHITECTURE.md#networking)). On the PC, boot the
-entry "Jam OS (network)": the everyday entries leave the network card
-alone until M9 is signed off. In QEMU, `tools/qemu-test.sh` with
+([ARCHITECTURE.md](ARCHITECTURE.md#networking)). On the PC the everyday
+entry "Jam OS" is on the network; "Jam OS (no network)" (`vlan=off`)
+leaves the network card alone. In QEMU, `tools/qemu-test.sh` with
 `QEMU_NET=1` gives the machine a card and a small network of its own
 ([TESTING.md](docs/TESTING.md#the-network-peer)).
 

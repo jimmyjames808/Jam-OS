@@ -155,9 +155,10 @@ router reservation and a fixed "Private Wi-Fi address"): the PC's
 stay inside VLAN 21 and cross no firewall. The PC's own address is
 `net.address` in its settings, or a lease from 10.2.21.1 without it.
 
-Which boot entry uses the chip: "Jam OS (network)" (the netdev service,
-with netstack on it), "Jam OS (network: send test)" and "Jam OS (network:
-listen only)"; the everyday entries leave it alone
+Which boot entry uses the chip: every one but "Jam OS (no network)"
+(`vlan=off`): the everyday entries as the netdev service with netstack on
+it, "Jam OS (network: send test)" and "Jam OS (network: listen only)" as
+their tests
 ([TESTING.md](TESTING.md#the-boot-menu)).
 
 ## Flash and boot the stick

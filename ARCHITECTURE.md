@@ -611,7 +611,7 @@ port, so while it handles one request every other client waits behind it.
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
 | mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
-| rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame tagged with the VLAN ([Networking](#networking)) | yes (bound only on the "Jam OS (network)" boot until M9's PC sign-off) |
+| rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame tagged with the VLAN ([Networking](#networking)) | yes (on every boot but "Jam OS (no network)", `vlan=off`) |
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
 | netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
 | dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
@@ -866,11 +866,11 @@ hashes on a worker thread; its loop does only the `kexec_load` and
 `/esp`'s stat.
 
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
-that has one. The PC's RTL8125 is bound only by the boot entry "Jam OS
-(network)" (`net`; also the probe `netprobe` and the send test `netsend`:
-[TESTING.md](docs/TESTING.md#the-boot-menu)); the everyday boot leaves the
-chip alone until the PC has signed M9 off (one line in devmgr's match
-table).
+that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
+the netdev service on the everyday boot, as the probe with `netprobe` and
+the send test with `netsend` ([TESTING.md](docs/TESTING.md#the-boot-menu)).
+The entry "Jam OS (no network)" boots with `vlan=off`, so every network
+driver starts without a VLAN and leaves its card alone.
 
 ## Userland
 

@@ -1,8 +1,9 @@
 /* rtl8125: the driver of the PC's Realtek RTL8125B (drv/rtl8125), started
- * by devmgr for 10ec:8125 only on a boot with `netprobe` (the boot menu's
- * "Jam OS (network: listen only)"), `netsend` ("Jam OS (network: send
- * test)") or `net` ("Jam OS (network)"); any other boot never touches the
- * chip.
+ * by devmgr for 10ec:8125 on every boot: as the listen-only probe with
+ * `netprobe` (the boot menu's "Jam OS (network: listen only)"), the send
+ * test with `netsend` ("Jam OS (network: send test)"), and otherwise the
+ * netdev service. "Jam OS (no network)" boots with `vlan=off`: the driver
+ * starts without a VLAN and never touches the chip.
  *
  * The mode comes from the arguments, once (args.h):
  *   - `netprobe`: the listen-only probe (probe.c). Nothing is sent.
