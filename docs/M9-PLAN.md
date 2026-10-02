@@ -80,6 +80,9 @@ the Mac's "Private Wi-Fi address" set to Fixed keep it from changing).
    *Recommendation:* no Realtek blob in the repo. Run without a patch
    first; only if the PC's link misbehaves, take the patch in the
    register-table form OpenBSD's `rge` driver carries (ISC licence).
+   **The owner (2026-10-02): no file to start with.** And first of all
+   one quick discovery agent: stage 0, listen only, to learn everything
+   about the PC's NIC and port that the rest of M9 needs.
 6. **TCP in M9?** Nothing in the done-when needs it. *Recommendation:*
    no. M9 is IPv4 with ARP, ICMP and UDP; TCP (and IPv6) come with the
    first program that needs them. Less code that parses what arrives.
