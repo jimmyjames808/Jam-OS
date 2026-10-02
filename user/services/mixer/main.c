@@ -12,7 +12,8 @@
  * init keeps a duplicate of both server ends, so a restarted mixer serves
  * the same channels and calls made meanwhile wait for it.
  *
- * This file is the loop: one thread and one port. Channels are bound
+ * This file is the loop: one thread and one port (and device.c's thread,
+ * which answers audioctl.device, the one call that waits on others). Channels are bound
  * PERSISTENT and served a budget at a time, with a flag saying more may be
  * queued (a binding fires on edges only); each stream's event is bound
  * ONCE and watched again after each wake. */
@@ -100,6 +101,7 @@ static status_t setup(struct mixer *m)
     m->master_gain = MIX_UNITY;
     m->next_id = 1;
     m->svc_pending = m->ctl_pending = true;   /* calls may be queued from before a restart */
+    device_init(m);
     return OK;
 }
 

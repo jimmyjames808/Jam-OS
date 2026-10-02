@@ -437,7 +437,7 @@ int32_t out_device_gain(struct mixer *m)
 {
     int32_t gain = 0, min, max;
     uint32_t step;
-    if (out_find(m) != OK ||
+    if (!m->out.svc ||
         hda_get_gain_until(m->out.svc, now() + CALL_WAIT, &gain, &step, &min, &max) != OK)
         return 0;
     return gain;
