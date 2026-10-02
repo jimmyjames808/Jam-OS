@@ -8,7 +8,9 @@
 Jam OS is a from-scratch operating system for x86_64 PCs, written in C. It
 is capability-based: a program can do only what the handles it holds
 allow, and every driver and service runs as a separate user process that
-the kernel supervises through those handles. It boots from a USB stick on
+the kernel supervises through those handles. Until the IOMMU work
+(planned), that keeps a crashed driver from taking the system down, not a
+faulty driver's device from writing memory. It boots from a USB stick on
 a real desktop PC, which is where every milestone is tested.
 
 ![The Jam OS shell in QEMU: uname, free, ps and usb](docs/images/shell.png)

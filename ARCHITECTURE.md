@@ -33,9 +33,46 @@ built yet, it says so.
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers); uACPI and lwIP when power management and networking land |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
-| IOMMU | Not yet; DMA is gated by `dma_cap`, and VT-d will go behind it |
+| IOMMU | Not yet (M11). `dma_cap` gates pinning and bus mastering, not where a device writes: until VT-d a driver's device can reach all of RAM. The PC's firmware has a DMAR table |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame on VLAN 21 only ([Networking](#networking)) |
+
+## What Jam OS defends against
+
+What the design defends against today:
+
+- **Programs.** A program can do only what its handles allow: the
+  services under `/svc` and the mounts its list asks for (read-only, or
+  writable with `etc` guarded), approved by the owner with `allow` for a
+  program on `/data`. A server decides by the channel a request came on,
+  never by who sent it (there is no sender identity in the IPC). A way for
+  a program to get something it wasn't granted is a bug
+  ([SECURITY.md](SECURITY.md)).
+- **Crashing services and drivers.** Each is a process: a crash ends that
+  process, devmgr or init starts it again, and the kernel goes on (its
+  clients see the restart until M11.6). A driver's code can reach only
+  what it was given: it can't program MSI, change another device's
+  config, or keep its device mastering after it died
+  ([the rules](#drivers-and-services)).
+
+Not yet:
+
+- **A driver that misprograms its device**, by a bug or on purpose. A
+  device does what its driver tells it, and until the IOMMU (M11: VT-d
+  and interrupt remapping) a DMA address the driver writes can be
+  anywhere in RAM, the kernel included, or the interrupt window (any
+  vector to any CPU). Drivers are crash-isolated, not contained: they are
+  trusted.
+- **A USB device that exploits usb-bus.** usb-bus holds the xHCI's
+  `dma_cap` and parses every USB device's descriptors, so a bug there
+  gives a hostile device DMA over all of RAM: the largest exposure today.
+  The other parsers of what comes from outside (usb-storage, fat, hid,
+  `play`, `jamcover`) hold no `dma_cap`; M9's network packets are to be
+  parsed only in netstack, which holds none either.
+- **Anyone holding the stick.** The ESP, `/data/etc/allow` and the logs
+  can be changed on another computer: FAT32 keeps no owners and nothing
+  is signed, and authority never came from the filesystem.
+- **Spectre-class attacks**: no mitigations.
 
 ## The migration rule
 
@@ -49,7 +86,8 @@ Every driver and service is a userspace process from the start.
   never touches kernel structs.
 - **Bring-up happens as a process.** A crashing process reports why and
   where (`process "x" killed: ... at rip ...`) and can't take the kernel
-  down, and a stuck process can always be killed. Bringing a driver up in
+  down (a driver still can, through its device's DMA, until the IOMMU:
+  M11), and a stuck process can always be killed. Bringing a driver up in
   the kernel first was tried and bought nothing
   ([HISTORY.md](docs/HISTORY.md#lessons-that-keep-coming-back)).
 - **One build.** `<jam/driver.h>` has one implementation, over system
@@ -58,8 +96,14 @@ Every driver and service is a userspace process from the start.
 - What stays in the kernel **on purpose** is enforcement, not drivers:
   the PCI core (ECAM, BAR sizing, MSI/MSI-X programming, Bus Master
   Enable), vector allocation and interrupt objects, resources, DMA pins and
-  the config-write filter, so one driver can never program another
-  device's interrupts or turn DMA back on after it was killed.
+  the config-write filter, so one driver can never configure another
+  device's interrupts or turn DMA back on after it was killed. What this
+  does not cover yet: a device does what its driver tells it, and until
+  the IOMMU (M11) a DMA address the driver writes can be anywhere in RAM,
+  the kernel included, or the interrupt window. So these rules keep a
+  driver's own code in its box and a dead driver's device quiet; they
+  don't contain a driver that misprograms its device, by a bug or on
+  purpose ([what Jam OS defends against](#what-jam-os-defends-against)).
 
 ## Layers
 
