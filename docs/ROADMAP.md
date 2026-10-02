@@ -133,9 +133,9 @@ ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
 - **GPT sticks** are not read (their partitions are not mounted).
-- One bulk transfer at a time inside usb-bus's loop, and devmgr's
-  bounded waits (up to 2 s) on a slow usb-storage: both block other work
-  meanwhile. Asynchronous transfers would be a redesign of the serve loop.
+- devmgr's bounded waits (up to 2 s) on a slow usb-storage block its
+  other work meanwhile. (usb-bus runs each device's bulk transfers apart
+  from the others', so a slow stick holds up only its own requests.)
 - The first `make -j8` after a new file in `abi/idl/` can spin forever;
   run again, it builds. Not looked into.
 - Names and volume labels from someone else's stick are printed as they

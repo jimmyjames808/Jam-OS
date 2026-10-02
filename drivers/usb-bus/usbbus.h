@@ -289,16 +289,7 @@ struct hc {
         uint32_t cc, slot, param;    /* from the event: completion code, slot id, parameter */
     } cmd;
 
-    /* the one outstanding bulk transfer (bulk.c) */
-    struct {
-        bool busy, done;             /* running; finished (cc says how) */
-        uint8_t slot, dci;           /* its endpoint */
-        uint32_t first;              /* ring index of its first TRB */
-        uint32_t ntrb;               /* its TRBs (at most BULK_TRBS) */
-        uint32_t len[BULK_TRBS];     /* each TRB's length */
-        uint32_t cc;                 /* completion code */
-        uint32_t actual;             /* bytes moved */
-    } bulk;
+    uint32_t bulk_running, bulk_peak;   /* bulk transfers running now (devices), and the most */
 
     uint32_t port_changed[8];        /* bitmap of root ports with a Port Status Change event */
     bool stopping;                   /* DR_SERVE closed: wind down */
@@ -405,6 +396,18 @@ struct usbdev {
         bool short_seen;  /* the data stage ended short */
         int page;         /* pool page: the transfers' bounce buffer, -1: none */
     } ctl;
+    /* the bulk transfer running on one of its endpoints (bulk.c): one at a
+     * time per device, since its task serves its requests one at a time;
+     * other devices' transfers run meanwhile */
+    struct {
+        bool busy, done;  /* running; finished (cc says how) */
+        uint8_t dci;      /* its endpoint */
+        uint32_t first;   /* ring index of its first TRB */
+        uint32_t ntrb;    /* its TRBs (at most BULK_TRBS) */
+        uint32_t len[BULK_TRBS];   /* each TRB's length */
+        uint32_t cc;      /* completion code */
+        uint32_t actual;  /* bytes moved */
+    } td;
     uint16_t mps0;        /* EP0 max packet */
     uint8_t address;      /* the USB address the controller gave it */
 
@@ -593,15 +596,14 @@ void get_string(struct usbdev *d, uint8_t index, uint16_t lang, char *out, unsig
 
 int  ep_open_intr(struct usbdev *d, struct ep *e, uint8_t owner, int chan);
 void ep_close(struct usbdev *d, struct ep *e);
-void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc,
-                        uint32_t residual);
+void usb_transfer_event(uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc, uint32_t residual);
 /* d's halted and dropped endpoints (its device task); true if any. */
 bool dev_upkeep(struct hc *h, struct usbdev *d);
 
 /* ---- bulk.c ---------------------------------------------------------------- */
 
-/* A transfer event on the endpoint of the outstanding bulk transfer. */
-void bulk_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual);
+/* A transfer event on the endpoint of d's running bulk transfer. */
+void bulk_event(struct usbdev *d, uint64_t trb, uint32_t cc, uint32_t residual);
 /* Close interface f's bulk pair: drop its endpoints, unpin and free the
  * buffer. slot_off: the controller has let go of the device's slot
  * already (dev_free); false with the device gone: the buffer is parked. */

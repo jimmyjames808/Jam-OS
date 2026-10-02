@@ -512,7 +512,7 @@ static void event(struct hc *h, volatile struct trb *e, uint32_t d3)
         }
         break;
     case TRB_TRANSFER_EV:
-        usb_transfer_event(h, (uint8_t)(d3 >> 24), (uint8_t)((d3 >> 16) & 0x1f),
+        usb_transfer_event((uint8_t)(d3 >> 24), (uint8_t)((d3 >> 16) & 0x1f),
                            (d3 & (1u << 2)) ? 0 : ptr, status >> 24, status & 0xffffff);
         break;
     case TRB_PORT_EV: {

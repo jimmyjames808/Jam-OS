@@ -135,8 +135,7 @@ static void intr_event(struct usbdev *d, struct ep *e, uint64_t trb, uint32_t cc
         drv_log("usb %s: interrupt ep %02x: %s", d->path, e->addr, cc_str(cc));
 }
 
-void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc,
-                        uint32_t residual)
+void usb_transfer_event(uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc, uint32_t residual)
 {
     struct usbdev *d = dev_by_slot(slot);
     if (dci == 1) {
@@ -146,8 +145,8 @@ void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, u
     }
     if (!d || dci >= 32 || !d->eps[dci].dci)
         return;
-    if (h->bulk.busy && h->bulk.slot == slot && h->bulk.dci == dci) {
-        bulk_event(h, trb, cc, residual);
+    if (d->td.busy && d->td.dci == dci) {
+        bulk_event(d, trb, cc, residual);
         return;
     }
     intr_event(d, &d->eps[dci], trb, cc, residual);
