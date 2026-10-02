@@ -326,6 +326,7 @@ bool t_netlog_whole_log(void);
 bool t_netlog_mac_away(void);
 bool t_netlog_ring_dropped(void);
 bool t_netlog_forged_acks(void);
+bool t_netlog_sender_restarted(void);
 bool t_netlog_crash_stream(void);
 bool t_netlog_klog_source(void);
 

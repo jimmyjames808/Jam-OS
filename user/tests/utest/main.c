@@ -714,6 +714,7 @@ static const struct {
     { "netlog_mac_away", t_netlog_mac_away },
     { "netlog_ring_dropped", t_netlog_ring_dropped },
     { "netlog_forged_acks", t_netlog_forged_acks },
+    { "netlog_sender_restarted", t_netlog_sender_restarted },
     { "netlog_crash_stream", t_netlog_crash_stream },
     { "netlog_klog_source", t_netlog_klog_source },
     { "netserver_session", t_netserver_session },

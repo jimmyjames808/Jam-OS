@@ -65,6 +65,8 @@ static int64_t log_read(void *ctx, uint64_t pos, void *buf, uint64_t cap, uint64
     (void)ctx;
     if (pos < nt.log_first)
         pos = nt.log_first;
+    if (pos > nt.log_len)
+        pos = nt.log_len;   /* past the end: no bytes, and where the end is (klog_read's) */
     *first = pos;
     uint64_t n = pos < nt.log_len ? nt.log_len - pos : 0;
     n = n < cap ? n : cap;
@@ -370,7 +372,7 @@ bool t_netlog_forged_acks(void)
     uint64_t high = nl.s[NETLOG_LIVE].high;
     CHECK(high > 0);
     uint8_t a[NETLOG_ACK_SIZE];
-    netlog_ack_encode(NETLOG_LIVE, BOOT, high + 1, a);       /* past what was sent */
+    netlog_ack_encode(NETLOG_LIVE, BOOT, nt.log_len + 1, a);  /* past what the log holds */
     netlog_ack(&nl, a, sizeof(a), nt.now);
     netlog_ack_encode(NETLOG_LIVE, BOOT + 1, high, a);       /* another boot */
     netlog_ack(&nl, a, sizeof(a), nt.now);
@@ -384,6 +386,34 @@ bool t_netlog_forged_acks(void)
     netlog_ack_encode(NETLOG_LIVE, BOOT, 50, a);             /* an old one, overtaken */
     netlog_ack(&nl, a, sizeof(a), nt.now);
     CHECK_EQ(nl.s[NETLOG_LIVE].acked, 100);
+    CHECK_EQ(nl.skipped, 0);
+    return true;
+}
+
+/* bin/netlog started again (init restarts it) while the Mac kept its
+ * file: the new sender starts at 0 and the Mac acks far past its first
+ * window. It skips to the Mac's offset and sends only what is new; before,
+ * it went back to 0 for ever. On an ended stream the skip is bounded the
+ * same way, by the stream's end. */
+bool t_netlog_sender_restarted(void)
+{
+    make_log(3000);   /* far more than a window */
+    start();
+    run_until(120 * NS_PER_S);
+    CHECK_EQ(nt.have[NETLOG_LIVE], nt.log_len);
+    CHECK(nt.log_len > 2 * NETLOG_WINDOW);
+    log_append("a line the first sender never saw");
+    struct netlog_source src = { .read = log_read, .end = UINT64_MAX };
+    netlog_start(&nl, &net_io, BOOT, &src);   /* the second sender, from byte 0 */
+    unsigned before = nt.sent;
+    run_until(nt.now + 30 * NS_PER_S);
+    CHECK_EQ(nt.have[NETLOG_LIVE], nt.log_len);
+    CHECK(!memcmp(nt.got[NETLOG_LIVE], nt.log, nt.log_len));
+    CHECK_EQ(nl.skipped, 1);
+    CHECK_EQ(nl.s[NETLOG_LIVE].acked, nt.log_len);
+    /* one window from 0, then the new line: not the whole log again */
+    CHECK(nt.sent - before <= NETLOG_WINDOW / 1000 + 4);
+    CHECK_EQ(netlog_poll(&nl, nt.now), UINT64_MAX);
     return true;
 }
 

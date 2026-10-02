@@ -151,8 +151,9 @@ struct netlog {
     uint64_t             retry_at;      /* go back at this time (0: nothing unacked) */
     unsigned             quiet;         /* waits in a row without an answer */
     bool                 silent;        /* said "no answer" and not yet "answers again" */
-    /* Counts, for `netlog` lines at the end and the tests. */
-    uint64_t             sent, resent_rounds, acks, ignored, lost_bytes;
+    /* Counts, for the tests. skipped: acks past what this sender sent
+     * (a restarted bin/netlog whose receiver kept its file). */
+    uint64_t             sent, resent_rounds, acks, ignored, lost_bytes, skipped;
     uint8_t              buf[NETLOG_DATA_MAX];   /* the datagram being made */
 };
 
@@ -165,5 +166,12 @@ void     netlog_add_crash(struct netlog *n, const struct netlog_source *crash);
  * UINT64_MAX when only new log text (the reader's SIG_READABLE) or an ack
  * would change anything. */
 uint64_t netlog_poll(struct netlog *n, uint64_t now);
-/* A datagram arrived from the Mac's address (the caller drops others). */
+/* A datagram arrived from the Mac's address (the caller drops others). An
+ * ack past what was sent but within what the source holds now skips the
+ * stream to it: the receiver kept what an earlier bin/netlog sent. */
 void     netlog_ack(struct netlog *n, const void *dgram, size_t len, uint64_t now);
+/* The stream's window has room for more text: only then does more text in
+ * its source change anything, so only then does bin/netlog wait for the
+ * kernel log to grow (a klog reader stays readable while the log is past
+ * its last read, which a full window leaves it). */
+bool     netlog_wants_text(const struct netlog *n, unsigned stream);
