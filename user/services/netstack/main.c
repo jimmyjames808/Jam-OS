@@ -14,6 +14,9 @@
  *                     (abi/idl/net.idl), programs' sockets and pings
  *                     (progs.h); init keeps a duplicate and publishes the
  *                     client end
+ *   SR_USER + 2       the same for /svc/net-sys, the network's own
+ *                     services' (their openers use a reserve no program
+ *                     can take: progs.h)
  *
  * This file is the loop: one port, and lwIP's timers, the programs'
  * timeouts and the next reconnect as the port wait's deadline (and
@@ -31,6 +34,7 @@
 
 #define SR_NETCTL (SR_USER + 0)
 #define SR_NET    (SR_USER + 1)
+#define SR_NET_SYS (SR_USER + 2)
 #define KEY_CTL   1u
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
 #define PACKETS_PER_TURN 32u        /* port packets taken a turn (each notes work) */
@@ -127,7 +131,7 @@ static status_t setup(void)
     if (st == OK)
         st = dev_init(&l.dev, l.port);
     if (st == OK)
-        st = progs_init(l.port, startup_handle(SR_NET), &l.dev);
+        st = progs_init(l.port, startup_handle(SR_NET), startup_handle(SR_NET_SYS), &l.dev);
     if (st != OK) {
         printf("netstack: can't set up (%s)\n", status_str(st));
         return st;
@@ -152,7 +156,8 @@ int main(int argc, char **argv)
         uint64_t t = progs_tick();
         if (t < deadline)
             deadline = t;
-        uint64_t retry = dev_work(&l.dev);   /* last: it sends what the others queued */
+        uint64_t retry = dev_work(&l.dev);   /* it sends what the others queued */
+        progs_flush();                       /* last: what the card's frames put in rx rings */
         rx_tick();
         if (retry < deadline)
             deadline = retry;

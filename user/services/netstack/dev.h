@@ -125,3 +125,11 @@ status_t dev_ask_stats(struct dev *d);
 /* The driver's counts (NETDEV_STATS_SIZE bytes), or why there are none
  * (ERR_PEER_CLOSED: the session ended first; counts NULL). */
 extern void (*dev_stats_done)(status_t st, const uint8_t *counts);
+/* Has the card's tx ring room for `need` frames now? (Also true with no
+ * session: a send then fails at once, so nothing should wait for room.) */
+bool     dev_tx_room(struct dev *d, uint32_t need);
+/* No room for `need` frames: ask the driver to say when it has some
+ * (dev_tx_room_came is called then). false: there is room after all. */
+bool     dev_tx_wait(struct dev *d, uint32_t need);
+/* The card's tx ring has room again, or the session changed. */
+extern void (*dev_tx_room_came)(void);

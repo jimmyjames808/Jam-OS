@@ -1,11 +1,11 @@
-/* The network for programs (<net.h>): thin calls over abi/idl/net.idl.
+/* The network for programs (<net.h>): the calls on an opener's channel
+ * over abi/idl/net.idl, and opening and closing a socket (its rings
+ * mapped). A socket's datagrams are netsock.c's.
  *
- * Every wait is netstack's: a blocking sock_recv or echo carries its
+ * Every wait is netstack's: a blocking echo or wait_change carries its
  * timeout to netstack, which answers by then, and the call itself waits
  * a little longer (MARGIN), so a reply never comes after its caller gave
- * up and lies on the channel for a later call to trip over. The forms
- * that don't wait keep their own txids (idl_txid_next) on the socket's
- * channel, which then carries no blocking call. */
+ * up and lies on the channel for a later call to trip over. */
 #include <idl/net.h>
 #include <jam/netdev.h>
 #include <net.h>
@@ -14,12 +14,11 @@
 #define CALL_WAIT (5 * NS_PER_S)    /* a call netstack answers at once */
 
 _Static_assert(sizeof(struct net_counters) == NET_COUNTERS_SIZE, "net.counts' u8[256]");
-_Static_assert(sizeof(((struct net_sock_send_to_req *)0)->data) == NET_DGRAM_MAX,
-               "net.idl's datagram size");
 
 handle_t net_svc(void)
 {
-    return svc_get(SVC_NET);
+    handle_t h = svc_get(SVC_NET_SYS);
+    return h ? h : svc_get(SVC_NET);
 }
 
 /* The time from now to deadline in ms, rounded up, as a timeout_ms. */
@@ -88,68 +87,82 @@ status_t net_get_chip_counters(handle_t net, void *out)
     return net_chip_counts_until(net, now() + CALL_WAIT, out);
 }
 
-status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out)
+/* Take on a socket: its channel and rings (all closed on a failure). */
+static status_t attach(struct net_sock *s, handle_t ch, uint16_t port, const handle_t hs[3],
+                       uint32_t tx, uint32_t rx)
 {
-    *out = (struct net_sock){ 0 };
-    return net_udp_until(net, now() + CALL_WAIT, port, &out->ch, &out->port);
+    *s = (struct net_sock){ .ch = ch, .port = port, .ring = hs[0], .to_stack = hs[1],
+                            .to_prog = hs[2] };
+    uint64_t va = 0, len = sockring_bytes(tx, rx);
+    status_t st = sockring_size_ok(tx) && sockring_size_ok(rx) ? OK : ERR_BAD_STATE;
+    if (st == OK)
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), s->ring, 0, len, VMAR_READ | VMAR_WRITE,
+                          &va);
+    if (st == OK) {
+        s->map = (uint8_t *)(uintptr_t)va;
+        s->map_len = len;
+        st = sockring_attach(&s->r, s->map, len, SOCKRING_DGRAM, tx, rx);
+    }
+    if (st != OK)
+        net_close(s);
+    return st;
 }
 
-void net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
+status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out)
 {
-    *s = (struct net_sock){ .ch = ch, .port = port };
+    handle_t ch = HANDLE_INVALID, hs[3] = { 0 };
+    uint32_t tx = 0, rx = 0;
+    *out = (struct net_sock){ 0 };
+    status_t st = net_udp_rings_until(net, now() + CALL_WAIT, port, 0, 0, &ch, &hs[0], &hs[1],
+                                      &hs[2], &port, &tx, &rx);
+    return st == OK ? attach(out, ch, port, hs, tx, rx) : st;
+}
+
+status_t net_udp_open_async(handle_t net, uint32_t txid, uint16_t port)
+{
+    return net_udp_rings_send(net, txid, port, 0, 0);
+}
+
+status_t net_udp_opened(const void *rep, struct idl_msg *m, struct net_sock *out)
+{
+    handle_t ch = HANDLE_INVALID, hs[3] = { 0 };
+    uint32_t tx = 0, rx = 0;
+    uint16_t port = 0;
+    *out = (struct net_sock){ 0 };
+    status_t st = net_udp_rings_result(rep, m, &ch, &hs[0], &hs[1], &hs[2], &port, &tx, &rx);
+    return st == OK ? attach(out, ch, port, hs, tx, rx) : st;
+}
+
+status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
+{
+    handle_t hs[3] = { 0 };
+    uint32_t tx = 0, rx = 0;
+    status_t st = net_sock_rings_until(ch, now() + CALL_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &tx,
+                                       &rx);
+    if (st != OK) {
+        jam_handle_close(ch);
+        *s = (struct net_sock){ 0 };
+        return st;
+    }
+    return attach(s, ch, port, hs, tx, rx);
 }
 
 void net_close(struct net_sock *s)
 {
-    if (s->ch)
-        jam_handle_close(s->ch);
+    net_sock_unbind(s);
+    if (s->map)   /* before the channel: netstack shrinks the VMO once it is closed */
+        (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)s->map,
+                             s->map_len);   /* our own mapping: nothing else to do */
+    handle_t hs[] = { s->waiter, s->ring, s->to_stack, s->to_prog, s->ch };
+    for (unsigned i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
+        if (hs[i])
+            jam_handle_close(hs[i]);
     *s = (struct net_sock){ 0 };
 }
 
 status_t net_connect(struct net_sock *s, uint32_t addr, uint16_t port)
 {
     return net_sock_connect_until(s->ch, now() + CALL_WAIT, addr, port);
-}
-
-/* The request's data: len bytes, the rest of the fixed array zero. */
-static bool fill(uint8_t buf[NET_DGRAM_MAX], const void *data, size_t len)
-{
-    if (len > NET_DGRAM_MAX)
-        return false;
-    memcpy(buf, data, len);
-    memset(buf + len, 0, NET_DGRAM_MAX - len);
-    return true;
-}
-
-status_t net_sendto(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
-                    size_t len)
-{
-    uint8_t buf[NET_DGRAM_MAX];
-    if (!fill(buf, data, len))
-        return ERR_INVALID_ARGS;
-    return net_sock_send_to_until(s->ch, now() + CALL_WAIT, addr, port, (uint16_t)len, buf);
-}
-
-status_t net_send(struct net_sock *s, const void *data, size_t len)
-{
-    return net_sendto(s, 0, 0, data, len);
-}
-
-/* A datagram netstack says is longer than d->data holds is refused, so a
- * caller that reads d->len bytes never reads past it. */
-static status_t dgram_ok(status_t st, struct net_dgram *d)
-{
-    if (st != OK || d->len <= NET_DGRAM_MAX)
-        return st;
-    d->len = 0;
-    return ERR_OUT_OF_RANGE;
-}
-
-status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline)
-{
-    return dgram_ok(net_sock_recv_until(s->ch, call_deadline(deadline), timeout_of(deadline),
-                                        &d->addr, &d->port, &d->len, &d->dropped, d->data),
-                    d);
 }
 
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,
@@ -169,62 +182,4 @@ status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint
     if (st == OK && ttl)
         *ttl = t;
     return st;
-}
-
-status_t net_sendto_async(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
-                          size_t len)
-{
-    uint8_t buf[NET_DGRAM_MAX];
-    if (!fill(buf, data, len))
-        return ERR_INVALID_ARGS;
-    status_t st = net_sock_send_to_send(s->ch, idl_txid_next(&s->last_txid), addr, port,
-                                        (uint16_t)len, buf);
-    if (st == OK)
-        s->sends++;
-    return st;
-}
-
-status_t net_recv_arm(struct net_sock *s)
-{
-    if (s->recv_txid)
-        return OK;
-    uint32_t txid = idl_txid_next(&s->last_txid);
-    status_t st = net_sock_recv_send(s->ch, txid, NET_WAIT_FOREVER);
-    if (st == OK)
-        s->recv_txid = txid;
-    return st;
-}
-
-status_t net_sock_take(struct net_sock *s, struct net_dgram *d)
-{
-    for (;;) {   /* each turn takes a message off a queue the kernel bounds */
-        _Alignas(8) uint8_t rep[NET_REP_MAX];
-        struct idl_msg m;
-        status_t st = idl_reply_read(s->ch, rep, sizeof(rep), &m);
-        if (st == ERR_SHOULD_WAIT || st == ERR_PEER_CLOSED || st == ERR_NO_MEMORY)
-            return st;
-        if (m.txid && m.txid == s->recv_txid) {
-            s->recv_txid = 0;
-            if (st == OK)
-                st = dgram_ok(net_sock_recv_result(rep, &m, &d->addr, &d->port, &d->len,
-                                                   &d->dropped, d->data), d);
-            if (st == OK)
-                (void)net_recv_arm(s);   /* a full queue: the next take finds it unarmed */
-            return st;
-        }
-        if (st == OK)
-            st = net_sock_send_to_result(rep, &m);   /* a send's answer (anything else: dropped) */
-        if (s->sends)
-            s->sends--;
-        if (st != OK) {
-            s->send_errors++;
-            s->last_error = st;
-        }
-    }
-}
-
-status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
-{
-    signals_t seen;
-    return jam_object_wait_one(s->ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
 }

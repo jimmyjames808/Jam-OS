@@ -43,6 +43,7 @@
 #define KEY_SOCK 1u
 #define KEY_LOG  2u
 #define RETRY    NS_PER_S   /* no /svc/net, or no socket: the next try */
+#define ACKS_A_TURN 64u     /* acks taken a turn; more wait for the next */
 
 static struct netlog         nl;
 static struct net_sock       sock;        /* .ch 0: none open */
@@ -113,8 +114,6 @@ static void open_socket(void)
         if (st == OK)
             st = net_connect(&sock, host, NETLOG_PORT);   /* only the Mac's datagrams come */
         if (st == OK)
-            st = net_recv_arm(&sock);
-        if (st == OK)
             return;
         net_close(&sock);
         if (!said)
@@ -126,38 +125,38 @@ static void open_socket(void)
 
 /* What came on the socket's channel: acks to the core. false: the socket
  * is gone (netstack ended). */
-static bool take_acks(void)
+static bool take_acks(bool *more)
 {
-    /* each turn takes one datagram off a queue netstack bounds (NET_RX_QUEUE) */
-    for (unsigned guard = 0; guard <= NET_RX_QUEUE; guard++) {
+    *more = false;
+    /* each turn takes one datagram off a ring netstack bounds */
+    for (unsigned guard = 0; guard < ACKS_A_TURN; guard++) {
         status_t st = net_sock_take(&sock, &dg);
         if (st == ERR_SHOULD_WAIT)
             return true;
-        if (st == ERR_PEER_CLOSED)
-            return false;
-        if (st != OK) {
-            (void)net_recv_arm(&sock);   /* the receive failed: ask again, the next wake reads */
-            return true;
-        }
+        if (st != OK)
+            return false;   /* ERR_PEER_CLOSED: netstack is gone */
         if (dg.addr == host && dg.port == NETLOG_PORT)
             netlog_ack(&nl, dg.data, dg.len, now());
     }
-    return true;   /* more may be queued: the binding fires again at once */
+    *more = true;   /* more may wait: the next turn looks without waiting */
+    return true;
 }
 
 /* Send and take acks until the socket goes. */
 static void run(void)
 {
-    while (take_acks()) {
+    bool more = false;
+    while (take_acks(&more)) {
         uint64_t t = now();
         uint64_t next = netlog_poll(&nl, t);
+        if (more)
+            continue;   /* acks still waiting: take them before sleeping */
         /* The log growing matters only with room in the window, and not
          * while the core paces a burst (it asks back within NETLOG_PACE). */
         bool log_armed = netlog_wants_text(&nl, NETLOG_LIVE) &&
                          (next == UINT64_MAX || next > t + NETLOG_PACE) &&
                          jam_port_bind(port, klog, KEY_LOG, SIG_READABLE, PORT_BIND_ONCE) == OK;
-        bool sock_armed = jam_port_bind(port, sock.ch, KEY_SOCK, SIG_READABLE | SIG_PEER_CLOSED,
-                                        PORT_BIND_ONCE) == OK;
+        bool sock_armed = net_sock_bind(&sock, port, KEY_SOCK, PORT_BIND_ONCE) == OK;
         uint64_t deadline = next == UINT64_MAX ? DEADLINE_NEVER : next;
         if (!sock_armed && deadline > t + RETRY)
             deadline = t + RETRY;   /* can't hear the socket: look at it now and then */
@@ -171,7 +170,7 @@ static void run(void)
         if (log_armed)
             (void)jam_port_unbind(port, klog, KEY_LOG);
         if (sock_armed)
-            (void)jam_port_unbind(port, sock.ch, KEY_SOCK);
+            net_sock_unbind(&sock);
         if (st != OK && st != ERR_TIMED_OUT) {
             printf("netlog: its port failed (%s): ending\n", status_str(st));
             jam_process_exit(1);   /* init starts it again */

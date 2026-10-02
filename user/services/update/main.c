@@ -135,7 +135,7 @@ static status_t run_fetch(uint32_t host)
     const struct updfetch_io io = { &fetch, io_send, io_begin, io_store };
     uint64_t t0 = now();
     unsigned quarter = 0;
-    status_t st = net_recv_arm(&fetch.sock);
+    status_t st = OK;
     updfetch_start(&u, &io);
     while (st == OK) {
         uint64_t t = now(), next = updfetch_poll(&u, t);
@@ -144,9 +144,7 @@ static status_t run_fetch(uint32_t host)
         if (stop_asked())
             return ERR_CANCELED;
         progress(&u, &quarter);
-        signals_t seen;
-        (void)jam_object_wait_one(fetch.sock.ch, SIG_READABLE | SIG_PEER_CLOSED,
-                                  next < t + STOP_LOOK ? next : t + STOP_LOOK, &seen);
+        (void)net_sock_wait(&fetch.sock, next < t + STOP_LOOK ? next : t + STOP_LOOK);
         st = take_all(&u, host);
     }
     uint64_t ms = (now() - t0) / NS_PER_MS;

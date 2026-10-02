@@ -3,7 +3,7 @@
  * picks, one per name in flight.
  *
  * Opening a socket is a call to netstack, so it is written without
- * waiting (net.udp with a txid of ours on the opener channel): the first
+ * waiting (net.udp_rings with a txid of ours on the opener channel): the first
  * datagram for a port waits in its slot (SOCK_OPENING) and goes when the
  * answer comes. A port another program has (ERR_ALREADY_BOUND) can't be
  * known when send returns, so that first datagram is lost; the slot keeps
@@ -13,7 +13,7 @@
  * opens the port again. A port released while its open is in flight
  * keeps its slot until the answer comes, and the socket is closed then.
  *
- * Each open socket's channel is bound on the loop's port; its datagrams
+ * Each open socket is bound on the loop's port (net_sock_bind); its datagrams
  * go to dns_input with the local port they came to. */
 #include "dnsd.h"
 
@@ -44,7 +44,7 @@ static status_t open_with(uint16_t port, uint32_t server, const void *msg, size_
     if (!s || len > DNS_MSG_MAX)
         return ERR_NO_RESOURCES;   /* not in practice: one slot per query, and spares */
     uint32_t txid = idl_txid_next(&D.net_txid);
-    status_t st = net_udp_send(D.net, txid, port);
+    status_t st = net_udp_open_async(D.net, txid, port);
     if (st != OK)
         return st;
     s->state = SOCK_OPENING;
@@ -108,12 +108,12 @@ void socks_init(void)
                             .answer = askers_answer, .random = io_random };
 }
 
-/* The open of slot s was answered: the socket, its port, or why not. */
-static void opened(struct sock *s, status_t st, handle_t h, uint16_t port)
+/* The open of slot s was answered: the socket (*ns, its rings mapped), or
+ * why not. */
+static void opened(struct sock *s, status_t st, struct net_sock *ns)
 {
     if (s->released) {
-        if (st == OK)
-            jam_handle_close(h);
+        net_close(ns);
         slot_free(s);
         return;
     }
@@ -123,14 +123,12 @@ static void opened(struct sock *s, status_t st, handle_t h, uint16_t port)
         s->queued = false;
         return;
     }
-    net_sock_adopt(&s->s, h, port);
+    s->s = *ns;
     s->state = SOCK_OPEN;
     uint64_t key = (KEY_SOCK + (unsigned)(s - D.s)) | (uint64_t)s->gen << 8;
-    st = jam_port_bind(D.port, h, key, SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
-    if (st == OK)
-        st = net_recv_arm(&s->s);
+    st = net_sock_bind(&s->s, D.port, key, PORT_BIND_PERSISTENT);
     if (st != OK) {
-        printf("dns: a socket on port %u can't be read (%s)\n", port, status_str(st));
+        printf("dns: a socket on port %u can't be read (%s)\n", ns->port, status_str(st));
         slot_free(s);   /* the resolver's next try opens it again */
         return;
     }
@@ -145,14 +143,13 @@ bool socks_open_reply(const void *rep, struct idl_msg *m)
         struct sock *s = &D.s[i];
         if (s->state != SOCK_OPENING || s->open_txid != m->txid)
             continue;
-        handle_t h = HANDLE_INVALID;
-        uint16_t port = 0;
-        status_t st = net_udp_result(rep, m, &h, &port);
-        if (st == OK && port != s->port) {
-            jam_handle_close(h);   /* not the port asked for: netstack broke the protocol */
+        struct net_sock ns;
+        status_t st = net_udp_opened(rep, m, &ns);
+        if (st == OK && ns.port != s->port) {
+            net_close(&ns);   /* not the port asked for: netstack broke the protocol */
             st = ERR_INTERNAL;
         }
-        opened(s, st, h, port);
+        opened(s, st, &ns);
         return true;
     }
     return false;
@@ -173,12 +170,8 @@ static status_t serve_one(struct sock *s)
         status_t st = net_sock_take(&s->s, &d);
         if (st == ERR_SHOULD_WAIT)
             return OK;
-        if (st == ERR_PEER_CLOSED)
-            return st;
-        if (st != OK) {
-            (void)net_recv_arm(&s->s);   /* its recv failed: ask again (a failure: the next turn) */
-            return OK;
-        }
+        if (st != OK)
+            return st;   /* ERR_PEER_CLOSED: netstack is gone */
         struct dns_datagram dg = { .port = s->port, .src = d.addr, .src_port = d.port,
                                    .msg = d.data, .len = d.len };
         uint32_t gen = s->gen;

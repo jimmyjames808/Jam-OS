@@ -314,6 +314,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
 #define SVC_LOGD       "logd"        /* logd's control channel, a channel per opener (logctl.idl) */
 #define SVC_NET        "net"         /* netstack: UDP sockets and ping, a channel per opener (net.idl) */
+#define SVC_NET_SYS    "net-sys"     /* netstack for the network's own services (their reserve): user/services/ only */
 #define SVC_DNS        "dns"         /* the resolver: names to addresses, a channel per opener (dns.idl) */
 
 /* A channel to service `name` for the caller, who closes it. */

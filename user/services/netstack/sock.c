@@ -1,27 +1,39 @@
 /* netstack: programs' UDP sockets (progs.h has the model). A socket is a
- * slot here, an lwIP socket (stack.h's stack_udp) and a channel of its
- * own; closing the channel, or its opener going, closes all three.
+ * slot here, an lwIP socket (stack.h's stack_udp), a channel of its own
+ * and its rings (<sockring.h>: one VMO netstack makes and maps, two
+ * events); closing the channel, or its opener going, closes them all.
  *
- * What a program may do is checked here, before lwIP sees it: a port of
- * 1024 or more (or 0, lwIP's pick), unicast destinations only, at most
+ * The rings are the program's to write, so everything in them is read as
+ * <sockring.h> says: our own counts and copies, the program's counts
+ * clamped, a record's header read once and its bytes copied out before
+ * anything looks at them. What a program may send is checked on that
+ * copy, before lwIP sees it: unicast destinations only, a port, at most
  * NET_DGRAM_MAX bytes. The DHCP socket (netctl's dhcp_open) is the one
  * exception: port 68, sends to port 67 of 255.255.255.255 or a unicast
- * address, out of the interface even with no address.
+ * address, out of the interface even with no address. A refused record
+ * is counted in the socket's status line (tx_refused, and why in `error`).
  *
- * Receiving never waits for the program: a datagram goes to the sock_recv
- * waiting for it, or into the socket's queue (copied: lwIP's buffer goes
- * back at once), or is dropped and counted when the queue is full. */
+ * Receiving never waits for the program: a datagram goes into the rx ring
+ * (published once a turn, progs_flush), or is dropped and counted when it
+ * doesn't fit. Sending never waits for the card: a tx ring is read only
+ * while the card's tx ring has room for a datagram, at most SOCK_TX_BUDGET
+ * records a socket a turn, the sockets in turn; with no room the rest
+ * stays in the rings until the driver says it has some (dev_tx_room_came).
+ *
+ * Closing: the VMO is unmapped and shrunk to nothing before its handles
+ * close, so a program that keeps its handle holds no page charged to
+ * netstack (the program unmaps first: libos's net_close). */
 #include <idl/net.h>
 #include "ctl.h"
 #include "progs.h"
 
 #define BROADCAST   0xffffffffu
 
-static uint8_t outbuf[NET_DGRAM_MAX];   /* a sock_recv answer's data: its tail always 0 */
+static uint8_t txbuf[NET_DGRAM_MAX];   /* the record being sent: our copy */
 
-static uint64_t key_of(unsigned i)
+static uint64_t key_of(unsigned i, uint32_t base)
 {
-    return (KEY_SOCK + i) | (uint64_t)pg.s[i].gen << 8;
+    return (base + i) | (uint64_t)pg.s[i].gen << 8;
 }
 
 /* May a program send to a? Unicast, and not its subnet's broadcast. */
@@ -35,14 +47,16 @@ static bool sendable(uint32_t a)
     return !m || (a & m) != (st.ip.address & m) || (a & ~m) != ~m;
 }
 
-status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint16_t *out_port)
+status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint16_t *out_port,
+                   unsigned *out_i)
 {
     unsigned i = dhcp ? NET_SOCKETS_MAX : 0;   /* programs' are the first NET_SOCKETS_MAX */
+    uint8_t cls = dhcp ? CLASS_SYS : pg.o[slot].cls;
     if (dhcp && pg.s[i].ch)
         return ERR_ALREADY_BOUND;
     while (!dhcp && i < NET_SOCKETS_MAX && pg.s[i].ch)
         i++;
-    if (!dhcp && i == NET_SOCKETS_MAX)
+    if (!dhcp && (i == NET_SOCKETS_MAX || !progs_share_ok(cls, 1, 0, 0)))
         return ERR_NO_RESOURCES;
     struct sock *s = &pg.s[i];
     handle_t mine, theirs;
@@ -52,7 +66,7 @@ status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint1
     s->gen++;
     st = stack_udp_open(port, dhcp, s, &s->u, &s->port);
     if (st == OK)
-        st = jam_port_bind(pg.port, mine, key_of(i), SIG_READABLE | SIG_PEER_CLOSED,
+        st = jam_port_bind(pg.port, mine, key_of(i, KEY_SOCK), SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
     if (st != OK) {
         stack_udp_close(s->u);
@@ -61,38 +75,145 @@ status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint1
         jam_handle_close(theirs);
         return st;
     }
-    s->ch = mine;
-    s->dhcp = dhcp;
-    s->opener = slot;
-    s->opener_gen = dhcp ? 0 : pg.o[slot].gen;
-    s->peer = s->peer_port = 0;
-    s->head = s->n = 0;
-    s->dropped = 0;
-    s->waiting = false;
-    s->pending = true;   /* a request may come before the first packet is read */
+    *s = (struct sock){ .ch = mine, .gen = s->gen, .dhcp = dhcp, .cls = cls, .opener = slot,
+                        .opener_gen = dhcp ? 0 : pg.o[slot].gen, .u = s->u, .port = s->port,
+                        .pending = true };   /* a request may come before the first packet */
+    pg.held[cls].socks++;
     if (!dhcp)
         pg.o[slot].socks++;
     *out = theirs;
     *out_port = s->port;
+    *out_i = i;
     return OK;
 }
 
-static void sock_close(unsigned i)
+/* ---- the rings ---------------------------------------------------------------------- */
+
+/* The opener whose share socket i's rings count against (NULL: the DHCP
+ * socket's, or its opener gone). */
+static struct opener *owner(const struct sock *s)
+{
+    return s->dhcp ? NULL : progs_opener(s->opener, s->opener_gen);
+}
+
+/* May socket s have rings of `bytes` more? (opener, class and total) */
+static bool budget_ok(const struct sock *s, uint64_t bytes)
+{
+    const struct opener *o = owner(s);
+    uint64_t total = pg.held[CLASS_PROG].ring_bytes + pg.held[CLASS_SYS].ring_bytes;
+    if (total + bytes > SOCKRING_TOTAL_BYTES || (o && o->ring_bytes + bytes > SOCKRING_OPENER_BYTES))
+        return false;
+    return progs_share_ok(s->cls, 0, 0, bytes);
+}
+
+/* The VMO, mapped and laid out, and the two events: into s (all ours). */
+static status_t rings_new(struct sock *s, uint32_t tx, uint32_t rx)
+{
+    uint64_t va = 0, bytes = sockring_bytes(tx, rx);
+    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &s->vmo);
+    if (st == OK)
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), s->vmo, 0, bytes,
+                          VMAR_READ | VMAR_WRITE, &va);
+    if (st == OK) {
+        s->map = (uint8_t *)(uintptr_t)va;
+        s->bytes = bytes;
+        st = sockring_make(&s->r, s->map, SOCKRING_DGRAM, tx, rx);
+    }
+    if (st == OK)
+        st = jam_event_create(&s->to_stack);
+    if (st == OK)
+        st = jam_event_create(&s->to_prog);
+    return st;
+}
+
+/* Undo rings_new (and the binding): nothing of it left, the VMO shrunk to
+ * nothing first so a program's handle keeps no page of netstack's. */
+static void rings_drop(struct sock *s, uint64_t key)
+{
+    if (s->to_stack)
+        (void)jam_port_unbind(pg.port, s->to_stack, key);   /* not bound yet: nothing to undo */
+    if (s->map)
+        (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)s->map,
+                             s->bytes);   /* our own mapping: nothing else to do */
+    if (s->vmo)
+        (void)jam_vmo_set_size(s->vmo, 0);   /* nothing to keep if it fails: it closes next */
+    handle_t hs[] = { s->vmo, s->to_stack, s->to_prog };
+    for (unsigned k = 0; k < 3; k++)
+        if (hs[k])
+            jam_handle_close(hs[k]);
+    s->vmo = s->to_stack = s->to_prog = HANDLE_INVALID;
+    s->map = NULL;
+    s->bytes = 0;
+}
+
+/* The program's handles, with <sockring.h>'s rights. */
+static status_t prog_handles(const struct sock *s, handle_t hs[3])
+{
+    status_t st = jam_handle_duplicate(s->vmo, SOCKRING_VMO_RIGHTS, &hs[0]);
+    if (st == OK)
+        st = jam_handle_duplicate(s->to_stack, SOCKRING_TO_STACK_RIGHTS, &hs[1]);
+    if (st == OK)
+        st = jam_handle_duplicate(s->to_prog, SOCKRING_TO_PROG_RIGHTS, &hs[2]);
+    if (st != OK)
+        for (unsigned k = 0; k < 3; k++)
+            if (hs[k])
+                jam_handle_close(hs[k]);
+    return st;
+}
+
+status_t sock_rings_make(unsigned i, uint32_t *tx, uint32_t *rx, handle_t hs[3])
 {
     struct sock *s = &pg.s[i];
+    uint32_t t = *tx ? *tx : SOCKRING_UDP_TX, r = *rx ? *rx : SOCKRING_UDP_RX;
+    if (s->vmo)
+        return ERR_BAD_STATE;
+    if (!sockring_size_ok(t) || !sockring_size_ok(r))
+        return ERR_INVALID_ARGS;
+    uint64_t bytes = sockring_bytes(t, r);
+    if (!budget_ok(s, bytes))
+        return ERR_NO_RESOURCES;
+    hs[0] = hs[1] = hs[2] = HANDLE_INVALID;
+    status_t st = rings_new(s, t, r);
+    if (st == OK)
+        st = jam_port_bind(pg.port, s->to_stack, key_of(i, KEY_RING),
+                           SOCKRING_SIG_TX | SOCKRING_SIG_RX_ROOM, PORT_BIND_PERSISTENT);
+    if (st == OK)
+        st = prog_handles(s, hs);
+    if (st != OK) {
+        rings_drop(s, key_of(i, KEY_RING));
+        return st;
+    }
+    s->st = (struct sockring_status){ .state = SOCKRING_STATE_OPEN };
+    s->changes_put = 0;
+    s->tx_ready = true;   /* the first look finds it empty and raises our flag */
+    struct opener *o = owner(s);
+    if (o)
+        o->ring_bytes += bytes;
+    pg.held[s->cls].ring_bytes += bytes;
+    *tx = t;
+    *rx = r;
+    return OK;
+}
+
+void sock_close(unsigned i)
+{
+    struct sock *s = &pg.s[i];
+    struct opener *o = owner(s);
     stack_udp_close(s->u);   /* no more datagrams for it */
-    for (unsigned k = 0; k < s->n; k++)
-        free(s->q[(s->head + k) % NET_RX_QUEUE]);
-    jam_handle_close(s->ch);   /* its binding goes with our only handle; a waiting
-                                * sock_recv goes unanswered: its channel is gone */
-    struct opener *o = s->dhcp ? NULL : progs_opener(s->opener, s->opener_gen);
+    if (s->vmo) {
+        if (o)
+            o->ring_bytes -= s->bytes;
+        pg.held[s->cls].ring_bytes -= s->bytes;
+        rings_drop(s, key_of(i, KEY_RING));
+    }
+    (void)jam_port_unbind(pg.port, s->ch, key_of(i, KEY_SOCK));   /* bound since sock_open */
+    jam_handle_close(s->ch);
     if (o && o->socks)
         o->socks--;
+    pg.held[s->cls].socks--;
     s->ch = HANDLE_INVALID;
     s->u = NULL;
-    s->n = 0;
-    s->waiting = false;
-    s->pending = false;
+    s->pending = s->tx_ready = s->rx_dirty = s->st_dirty = false;
 }
 
 void sock_close_opener(unsigned slot)
@@ -105,14 +226,17 @@ void sock_close_opener(unsigned slot)
 void sock_census(uint32_t *queued, uint32_t *open)
 {
     *queued = *open = 0;
-    for (unsigned i = 0; i < SOCK_SLOTS; i++)
-        if (pg.s[i].ch) {
-            (*open)++;
-            *queued += pg.s[i].n;
-        }
+    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+        struct sock *s = &pg.s[i];
+        if (!s->ch)
+            continue;
+        (*open)++;
+        if (s->vmo)
+            *queued += s->r.rx.size - sockring_room(&s->r.rx);
+    }
 }
 
-/* stack.h's stack_udp_input: a datagram for socket ctx. */
+/* stack.h's stack_udp_input: a datagram for socket ctx, into its rx ring. */
 static void dgram_in(void *ctx, uint32_t from, uint16_t port, const uint8_t *data, size_t len)
 {
     struct sock *s = ctx;
@@ -120,77 +244,152 @@ static void dgram_in(void *ctx, uint32_t from, uint16_t port, const uint8_t *dat
         return;
     if (s->peer && (from != s->peer || port != s->peer_port))
         return;   /* not from its peer: not for it */
-    pg.c.dgrams_in++;
-    if (s->waiting) {
-        s->waiting = false;
-        memcpy(outbuf, data, len);
-        memset(outbuf + len, 0, NET_DGRAM_MAX - len);
-        (void)net_reply_sock_recv(s->txn, OK, from, port, (uint16_t)len, s->dropped, outbuf);
-        return;   /* a reply that can't be written: the program is going */
-    }
-    struct dgram *d = s->n < NET_RX_QUEUE ? malloc(sizeof(*d) + len) : NULL;
-    if (!d) {
-        s->dropped++;
-        pg.c.dgrams_dropped++;
+    struct sockring_dgram h = { .addr = from, .port = port, .len = (uint16_t)len };
+    if (s->vmo && sockring_dgram_put(&s->r.rx, &h, data) == OK) {
+        pg.c.dgrams_in++;
+        s->rx_dirty = true;
         return;
     }
-    d->addr = from;
-    d->port = port;
-    d->len = (uint16_t)len;
-    memcpy(d->data, data, len);
-    s->q[(s->head + s->n++) % NET_RX_QUEUE] = d;
+    s->st.rx_dropped++;   /* full (or no rings yet) */
+    s->st_dirty = s->vmo != 0;
+    pg.c.dgrams_dropped++;
+}
+
+/* ---- sending ------------------------------------------------------------------------ */
+
+/* Why a record from s may not go (OK: it may), on our copy *h. */
+static status_t refusal(const struct sock *s, struct sockring_dgram *h)
+{
+    if (!h->addr && !h->port) {
+        if (!s->peer)
+            return ERR_BAD_STATE;
+        h->addr = s->peer;
+        h->port = s->peer_port;
+    }
+    if (!h->port)
+        return ERR_INVALID_ARGS;
+    if (s->dhcp ? h->port != NET_PORT_DHCP_SERVER || (h->addr != BROADCAST && !sendable(h->addr))
+                : !sendable(h->addr))
+        return ERR_INVALID_ARGS;
+    return OK;
+}
+
+static void refused(struct sock *s, status_t why)
+{
+    s->st.tx_refused++;
+    if (s->st.error != why)
+        s->st.changes++;
+    s->st.error = why;
+    s->st_dirty = true;
+    pg.c.dgrams_refused++;
+}
+
+/* Up to SOCK_TX_BUDGET records off socket s's tx ring while the card has
+ * room. true: the card ran out of room first. */
+static bool tx_one(struct sock *s)
+{
+    struct sockring_end *e = &s->r.tx;
+    (void)jam_event_signal(s->to_stack, SOCKRING_SIG_TX | SOCKRING_SIG_RX_ROOM, 0);   /* ours */
+    sockring_awake(e);
+    s->tx_ready = false;
+    uint64_t errors = e->errors, before = e->count;
+    unsigned k = 0;
+    for (; k < SOCK_TX_BUDGET; k++) {
+        if (!dev_tx_room(pg.dev, SOCK_CARD_ROOM))
+            break;
+        struct sockring_dgram h;
+        status_t st = sockring_dgram_take(e, &h, txbuf);
+        if (st == ERR_SHOULD_WAIT)
+            break;
+        if (st == ERR_OUT_OF_RANGE) {   /* a broken record: counted in ring_errors below */
+            pg.c.dgrams_refused++;
+            continue;
+        }
+        st = refusal(s, &h);
+        if (st == OK)
+            st = stack_udp_send(s->u, h.addr, h.port, txbuf, h.len, s->dhcp);
+        if (st == OK)
+            pg.c.dgrams_out++;
+        else
+            refused(s, st);
+    }
+    if (e->errors != errors) {
+        s->st.ring_errors = e->errors + s->r.rx.errors;
+        s->st_dirty = true;
+    }
+    if (e->count != before && sockring_publish(e))
+        (void)jam_event_signal(s->to_prog, 0, SOCKRING_SIG_TX_ROOM);   /* gone: its channel says */
+    bool full = k < SOCK_TX_BUDGET && !dev_tx_room(pg.dev, SOCK_CARD_ROOM);
+    if (full || k == SOCK_TX_BUDGET)
+        s->tx_ready = true;          /* more may wait: the next turn, or when the card has room */
+    else if (!sockring_sleep(e, 1))
+        s->tx_ready = true;          /* came while we looked */
+    return full;
+}
+
+void sock_tx_all(void)
+{
+    if (pg.card_full)
+        return;
+    for (unsigned n = 0; n < SOCK_SLOTS; n++) {
+        unsigned i = (pg.next_tx + n) % SOCK_SLOTS;
+        struct sock *s = &pg.s[i];
+        if (!s->ch || !s->vmo || !s->tx_ready || !tx_one(s))
+            continue;
+        /* The card is full: ask to be told, and start here next time. */
+        pg.next_tx = i;
+        pg.card_full = dev_tx_wait(pg.dev, SOCK_CARD_ROOM);
+        if (pg.card_full)
+            return;
+    }
+    pg.next_tx = (pg.next_tx + 1) % SOCK_SLOTS;
+}
+
+bool sock_tx_pending(void)
+{
+    if (pg.card_full)
+        return false;
+    for (unsigned i = 0; i < SOCK_SLOTS; i++)
+        if (pg.s[i].ch && pg.s[i].vmo && pg.s[i].tx_ready)
+            return true;
+    return false;
+}
+
+void sock_ring_event(unsigned i, uint32_t gen)
+{
+    struct sock *s = i < SOCK_SLOTS ? &pg.s[i] : NULL;
+    if (s && s->ch && s->vmo && s->gen == gen)
+        s->tx_ready = true;   /* SIG_RX_ROOM needs nothing: a full rx ring drops */
+}
+
+/* dev.h's dev_tx_room_came: the card's ring has room (or a new session). */
+static void room_came(void)
+{
+    pg.card_full = false;
+}
+
+void sock_flush(void)
+{
+    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+        struct sock *s = &pg.s[i];
+        if (!s->ch || !s->vmo || !(s->rx_dirty || s->st_dirty))
+            continue;
+        signals_t bits = 0;
+        if (s->st_dirty) {
+            s->st.ring_errors = s->r.tx.errors + s->r.rx.errors;
+            sockring_status_put(&s->r, &s->st);
+            bits |= s->st.changes != s->changes_put ? SOCKRING_SIG_STATE : 0;
+            s->changes_put = s->st.changes;
+        }
+        if (s->rx_dirty && sockring_publish(&s->r.rx))
+            bits |= SOCKRING_SIG_RX;
+        s->rx_dirty = s->st_dirty = false;
+        if (bits)
+            (void)jam_event_signal(s->to_prog, 0, bits);   /* gone: its channel says */
+    }
 }
 
 /* ---- the socket's methods ------------------------------------------------------- */
-
-static status_t op_send_to(void *ctx, uint32_t address, uint16_t port, uint16_t len,
-                           const uint8_t data[1472])
-{
-    struct sock *s = ctx;
-    if (!address && !port) {
-        if (!s->peer)
-            return ERR_BAD_STATE;
-        address = s->peer;
-        port = s->peer_port;
-    }
-    if (len > NET_DGRAM_MAX || !port)
-        return ERR_INVALID_ARGS;
-    if (s->dhcp ? port != NET_PORT_DHCP_SERVER || (address != BROADCAST && !sendable(address))
-                : !sendable(address))
-        return ERR_INVALID_ARGS;
-    status_t st = stack_udp_send(s->u, address, port, data, len, s->dhcp);
-    if (st == OK)
-        pg.c.dgrams_out++;
-    return st;
-}
-
-static status_t op_recv(void *ctx, struct idl_txn txn, uint32_t timeout_ms, uint32_t *out_address,
-                        uint16_t *out_port, uint16_t *out_len, uint32_t *out_dropped,
-                        uint8_t out_data[1472])
-{
-    struct sock *s = ctx;
-    if (s->waiting)
-        return ERR_BAD_STATE;
-    if (s->n) {
-        struct dgram *d = s->q[s->head];
-        s->head = (s->head + 1) % NET_RX_QUEUE;
-        s->n--;
-        *out_address = d->addr;
-        *out_port = d->port;
-        *out_len = d->len;
-        *out_dropped = s->dropped;
-        memcpy(out_data, d->data, d->len);   /* the rest: the generated code zeroes it */
-        free(d);
-        return OK;
-    }
-    if (!timeout_ms)
-        return ERR_SHOULD_WAIT;
-    s->waiting = true;
-    s->txn = txn;
-    s->deadline = timeout_ms == NET_WAIT_FOREVER ? DEADLINE_NEVER
-                                                 : now() + (uint64_t)timeout_ms * NS_PER_MS;
-    return IDL_LATER;
-}
 
 static status_t op_connect(void *ctx, uint32_t address, uint16_t port)
 {
@@ -211,16 +410,32 @@ static status_t op_state(void *ctx, uint16_t *out_port, uint32_t *out_peer,
     *out_port = s->port;
     *out_peer = s->peer;
     *out_peer_port = s->peer_port;
-    *out_queued = s->n;
-    *out_dropped = s->dropped;
+    *out_queued = s->vmo ? s->r.rx.size - sockring_room(&s->r.rx) : 0;
+    *out_dropped = s->st.rx_dropped > UINT32_MAX ? UINT32_MAX : (uint32_t)s->st.rx_dropped;
+    return OK;
+}
+
+static status_t op_rings(void *ctx, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring,
+                         handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes,
+                         uint32_t *out_rx_bytes)
+{
+    struct sock *s = ctx;
+    handle_t hs[3];
+    status_t st = sock_rings_make((unsigned)(s - pg.s), &tx_bytes, &rx_bytes, hs);
+    if (st != OK)
+        return st;
+    *out_ring = hs[0];
+    *out_to_stack = hs[1];
+    *out_to_prog = hs[2];
+    *out_tx_bytes = tx_bytes;
+    *out_rx_bytes = rx_bytes;
     return OK;
 }
 
 static const struct net_ops sock_ops = {
-    .sock_send_to = op_send_to,
-    .sock_recv = op_recv,
     .sock_connect = op_connect,
     .sock_state = op_state,
+    .sock_rings = op_rings,
 };
 
 void sock_serve(unsigned i)
@@ -240,33 +455,17 @@ void sock_serve(unsigned i)
     s->pending = true;   /* its budget is spent: more may be queued */
 }
 
-uint64_t sock_tick(uint64_t t)
-{
-    uint64_t next = DEADLINE_NEVER;
-    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
-        struct sock *s = &pg.s[i];
-        if (!s->ch || !s->waiting)
-            continue;
-        if (s->deadline <= t) {
-            s->waiting = false;
-            memset(outbuf, 0, sizeof(outbuf));
-            (void)net_reply_sock_recv(s->txn, ERR_TIMED_OUT, 0, 0, 0, 0, outbuf);
-        } else if (s->deadline < next) {
-            next = s->deadline;
-        }
-    }
-    return next;
-}
-
 /* ctl.h's ctl_dhcp_open: netctl's DHCP socket. */
 static status_t dhcp_open(handle_t *out)
 {
     uint16_t port;
-    return sock_open(0, NET_PORT_DHCP_CLIENT, true, out, &port);
+    unsigned i;
+    return sock_open(0, NET_PORT_DHCP_CLIENT, true, out, &port, &i);
 }
 
 void sock_hooks(void)
 {
     stack_udp_input = dgram_in;
     ctl_dhcp_open = dhcp_open;
+    dev_tx_room_came = room_came;
 }

@@ -103,6 +103,8 @@ static void detach(struct dev *d, const char *why)
     edge_off(d);
     nstack_log("the network driver's session ended (%s): asking for a new one", why);
     retry_later(d);
+    if (dev_tx_room_came)
+        dev_tx_room_came();   /* sends now fail at once: don't hold them for room */
 }
 
 /* No session: say why (once per reason) and try again later. */
@@ -171,6 +173,8 @@ static status_t attach(struct dev *d, const struct dev_found *f, const handle_t 
     memcpy(d->rep.chip, f->chip, sizeof(d->rep.chip));
     d->changes = f->changes;
     d->rx_pending = true;   /* frames may be there already */
+    if (dev_tx_room_came)
+        dev_tx_room_came();     /* a new, empty tx ring */
     d->backoff = 0;
     d->last_st = OK;
     nstack_log("on %s, VLAN %u, MAC %02x:%02x:%02x:%02x:%02x:%02x", f->chip[0] ? f->chip : "?",
@@ -213,6 +217,27 @@ static void ask_link(struct dev *d)
 }
 
 void (*dev_stats_done)(status_t st, const uint8_t *counts);
+void (*dev_tx_room_came)(void);
+
+bool dev_tx_room(struct dev *d, uint32_t need)
+{
+    return !d->session || netdev_room(&d->tx) >= need;
+}
+
+bool dev_tx_wait(struct dev *d, uint32_t need)
+{
+    if (dev_tx_room(d, need))
+        return false;
+    /* netdev_sleep's protocol, for `need` frames rather than one: raise our
+     * flag, fence, look again; the driver signals NETDEV_SIG_TX_ROOM after
+     * it consumes while the flag is up. */
+    __atomic_store_n(&d->tx.hdr->producer_waits, 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (netdev_room(&d->tx) < need)
+        return true;
+    netdev_awake(&d->tx);
+    return false;
+}
 
 status_t dev_ask_stats(struct dev *d)
 {
@@ -275,6 +300,11 @@ static void to_stack_event(struct dev *d, signals_t seen)
     (void)jam_event_signal(d->to_stack, TO_STACK_BITS, 0);   /* ours: can't fail */
     if (seen & NETDEV_SIG_LINK)
         ask_link(d);
+    if (seen & NETDEV_SIG_TX_ROOM) {
+        netdev_awake(&d->tx);
+        if (dev_tx_room_came)
+            dev_tx_room_came();
+    }
     d->rx_pending = true;
     if (jam_port_bind(d->port, d->to_stack, key_of(d, KEY_EVENT), TO_STACK_BITS,
                       PORT_BIND_ONCE) != OK)
