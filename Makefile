@@ -226,8 +226,24 @@ $(FATFS_OBJS:.o=.c): $(FATFS_STAGE)/%.c: $(FATFS_SRC)/%.c
 $(FATFS_STAGE)/%.o: $(FATFS_STAGE)/%.c $(FATFS_HDRS) | $(UINC) $(SYSCALLS_OK)
 	$(CC) $(USER_CFLAGS) $(FATFS_INC) -c $< -o $@
 
+# lwIP (third_party/lwip, vendored unmodified: only the files netstack
+# needs), built into bin/netstack and, for its in-process tests, utest.
+# Its configuration is user/services/netstack/port: lwipopts.h, arch/cc.h
+# and the C library headers lwIP includes (libos has what they declare).
+LWIP_DIR    := third_party/lwip/src
+LWIP_PORT   := user/services/netstack/port
+LWIP_INC    := -I$(LWIP_DIR)/include -I$(LWIP_PORT)
+LWIP_SRCS   := $(wildcard $(LWIP_DIR)/core/*.c $(LWIP_DIR)/core/ipv4/*.c $(LWIP_DIR)/netif/*.c)
+LWIP_OBJS   := $(LWIP_SRCS:%.c=$(BUILD)/lwip/%.o)
+
+$(LWIP_OBJS): $(BUILD)/lwip/%.o: %.c | $(UINC) $(SYSCALLS_OK)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) $(LWIP_INC) -c $< -o $@
+
 # What a program links, includes and needs made first beyond its own
 # directory and libos.
+EXTRA_OBJS_netstack   := $(LWIP_OBJS)
+EXTRA_CFLAGS_netstack := $(LWIP_INC)
 EXTRA_OBJS_fat   := $(FATFS_OBJS)
 EXTRA_CFLAGS_fat := $(FATFS_INC)
 EXTRA_DEPS_fat   := $(FATFS_HDRS)
@@ -242,9 +258,14 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # utest tests the music player's folder walk and spectrum (utest/music.c):
 # the player's own objects, linked in, and its header; and the RTL8125
-# probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h).
-EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o
-EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125
+# probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
+# and netstack's core with lwIP, driven in-process over a fake edge
+# (utest/netstack.c: its stack.h and ctl.h, no lwIP header).
+NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
+EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
+                      $(NETSTACK_CORE) $(LWIP_OBJS)
+EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
+                      -iquote user/services/netstack
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -424,7 +445,7 @@ font:
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) \
+-include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) $(LWIP_OBJS:.o=.d) \
          $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d))))
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real

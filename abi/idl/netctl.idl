@@ -1,0 +1,46 @@
+# netctl: netstack's control channel (user/services/netstack): the
+# interface's address and DNS servers, and what netstack knows about the
+# interface. Served by netstack on the channel it is started with
+# (startup role SR_USER + 0); planned: init makes it, keeps the server
+# end across netstack's restarts and gives the client end to the DHCP
+# client (or uses it itself for a static address from the settings
+# file). Never published in the namespace: programs reach the network
+# through /svc/net (planned net.idl), which can't change the address.
+# docs/M9-PLAN.md "Programs and sockets" has the design.
+#
+# Addresses are IPv4 addresses as numbers, the first byte highest:
+# 10.2.21.5 is 0x0a021505; 0 is "none".
+#
+# Reconnect: after ERR_PEER_CLOSED netstack is gone and with it the
+# address. The next netstack serves the same channel (its server end is
+# kept by whoever started it), and starts with no address: set it again.
+# Format: see tools/genidl.py.
+
+protocol netctl 28
+
+# Give the interface an address, replacing any it had. `mask` is a
+# subnet mask of 1 to 30 leading one bits (a /31 or /32 has no room for a
+# gateway or a peer); `address` a unicast address inside it, neither the
+# subnet's own address nor its broadcast; `gateway` 0 (none: only the
+# subnet is reachable) or another such address in the same subnet.
+# ERR_INVALID_ARGS otherwise (0.0.0.0/8, 127.0.0.0/8, multicast and
+# 240.0.0.0/4 are never valid). The ARP table is kept.
+1  set_ipv4  (u32 address, u32 mask, u32 gateway)  -> ()
+# The DNS servers netstack hands out (net.info, planned), in order; 0:
+# none. Each is a unicast address (as for set_ipv4's gateway, but any
+# subnet). ERR_INVALID_ARGS otherwise.
+2  set_dns  (u32 first, u32 second)  -> ()
+# Forget the address, the gateway, the DNS servers and every ARP entry
+# (the lease ended). Until an address is set again nothing is sent and
+# no ARP request or ping is answered.
+3  clear  ()  -> ()
+# The interface: its address, mask and gateway (0 if none), the DNS
+# servers, its MAC address; `device` 1 when a NIC is attached, `link` 1
+# when its link is up.
+4  info  ()  -> (u32 address, u32 mask, u32 gateway, u32 dns1, u32 dns2, u8[6] mac, u8 device, u8 link)
+# Counts since netstack started (stack.h's struct stack_counts has what
+# each one means): frames in, of them refused before lwIP, frames out,
+# frames the device refused; echo replies and ICMP errors sent, ICMP
+# errors held back by the rate limit; lwIP's drops by layer and the bad
+# checksums; lwIP's receive buffers and heap bytes in use now.
+5  stats  ()  -> (u64 rx_frames, u64 rx_refused, u64 tx_frames, u64 tx_dropped, u64 echo_replies, u64 icmp_errors, u64 icmp_limited, u32 link_dropped, u32 arp_dropped, u32 ip_dropped, u32 icmp_dropped, u32 udp_dropped, u32 bad_checksums, u32 rx_buffers_used, u32 heap_used)

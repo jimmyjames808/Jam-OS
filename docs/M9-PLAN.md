@@ -2,7 +2,9 @@
 
 Status: the plan (2026-10-02, on main 2079f35, M8.6 done), with the
 owner's answers. **Stage 0, the listen-only probe, is built** and waits
-for its PC run ([below](#stage-0-built-the-pc-run)); nothing else is.
+for its PC run ([below](#stage-0-built-the-pc-run)), and **stage 3a,
+netstack's core without a device**
+([below](#stage-3a-built-the-core-without-a-device)); nothing else is.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -461,6 +463,58 @@ allowed).
   per packet (see netlog).
 - The address: static if the settings file has `net.address` (address,
   prefix, gateway, DNS), else DHCP.
+
+#### Stage 3a, built: the core without a device
+
+Stage 3 was split in two: 3a (2026-10-02) is everything that doesn't need
+the netdev contract; 3b plugs netstack into it.
+
+- **lwIP 2.2.1** in third_party/lwip, only the files compiled
+  ([VERSIONS](../third_party/VERSIONS.md)), unmodified, `-Werror` clean
+  through its options alone. The port, user/services/netstack/port:
+  `lwipopts.h` (what is in and out, and every size with its reason),
+  `arch/cc.h`, `sys_arch.c` (`sys_now` from the clock; `LWIP_RAND` from
+  RDRAND; lwIP's diagnostics and failed assertions to the log,
+  rate-limited to a burst of 20 lines then 5 a second; a failed
+  assertion ends netstack).
+- **Memory:** all static, about 275 KiB: a 64 KiB heap (what lwIP builds
+  to send), 128 receive buffers of 1536 bytes (a whole frame each, so a
+  frame is never a chain), fixed pools (24 UDP sockets, 4 raw, 16 ARP
+  entries). A full pool drops the frame and counts it; nothing grows.
+- **The loop** (`main.c`): one port, the control channel (served 16
+  requests a turn), lwIP's timers as the wait's deadline.
+- **netctl** (abi/idl/netctl.idl, protocol 28): `set_ipv4` (refuses any
+  address a host can't have: a mask of 1 to 30 bits, no subnet or
+  broadcast address, no 0/8, 127/8, multicast or 240/4, a gateway in the
+  subnet), `set_dns`, `clear`, `info`, `stats` (stack.h's counts and
+  lwIP's buffers and heap in use). `dhcp_open` waits for stage 4's sockets.
+  Each change is logged once.
+- **What it answers:** ARP for its address; pings to its address (not to
+  a broadcast); a UDP datagram to a closed port gets lwIP's ICMP port
+  unreachable, and an unknown protocol (TCP included) protocol
+  unreachable, both rate-limited to 10 a second at the edge. A new
+  address is announced with one gratuitous ARP. Fragments and datagrams
+  with IP options are dropped. With the link down nothing is sent.
+- **Frames:** out untagged, 60 to 1514 bytes, padded with zeros. In: a
+  frame under 60 bytes is padded with zeros first, because lwIP's ARP
+  input reads its 28-byte header without checking the frame has it (a
+  cut-short request was answered from the last frame's bytes; utest's
+  `netstack_malformed` shows it).
+- **The edge 3b plugs into** (`stack.h`): `struct stack_edge` (`tx`,
+  `ctx`, the MAC), `stack_start`, `stack_set_edge` (a device came or
+  restarted; a new MAC flushes ARP, the address stays), `stack_set_link`,
+  `stack_input(frame, len)` per received frame, `stack_poll` (the timers;
+  returns the deadline). 3b: the receive ring's reader calls
+  `stack_input`, `tx` writes the transmit ring (a full ring is an error:
+  counted as dropped), the loop adds the ring events and the devmgr device
+  channel to its port, and init/net.c starts it with netctl at
+  `SR_USER + 0`. Until then bin/netstack runs with no device: link down,
+  nothing sent.
+- **Not in 3a:** init starting netstack; `net.address` from the settings
+  file; the ring netif and its utest against a fake driver; the
+  end-to-end ping in QEMU.
+- **Tests:** utest's `netstack_*` and `netctl_*`
+  ([TESTING](TESTING.md#netstack)).
 
 ### Programs and sockets
 

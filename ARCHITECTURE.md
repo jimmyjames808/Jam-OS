@@ -460,7 +460,7 @@ Every driver and service is a userspace process from the start.
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
   filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
-  mixer). devmgr's own protocol is still
+  mixer), `netctl` (netstack's control channel). devmgr's own protocol is still
   written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,
   `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
@@ -607,7 +607,7 @@ port, so while it handles one request every other client waits behind it.
 | mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
-| netstack | lwIP + `netdev` | `socket` | no |
+| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS) + `netdev` | `netctl` (the address); `socket` planned | the core and `netctl`; no device and not started yet ([M9-PLAN](docs/M9-PLAN.md#stage-3a-built-the-core-without-a-device)) |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
 
 uACPI will live in the kernel; everything else is a process.
