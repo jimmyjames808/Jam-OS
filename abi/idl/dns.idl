@@ -1,0 +1,39 @@
+# dns: names to IPv4 addresses, served by the resolver (user/services/dns)
+# on /svc/dns. A program whose list asks for it (`svc dns`) finds it
+# there; init publishes it and keeps the shared channel's server end
+# across the resolver's restarts. Each opener (libos's svc_open, svc_get)
+# gets a channel of its own with the svc protocol's connect
+# (abi/idl/svc.idl): an answer that comes later goes to that caller's
+# channel only. The shared channel answers connect and nothing else.
+# <dns.h> has the client side (dns_lookup) and the limits;
+# docs/M9-PLAN.md "DHCP and DNS: processes of their own" the design.
+#
+# Each name in flight is a query of its own (its own socket, id and
+# deadline), so a name whose server never answers delays only the
+# callers asking for that name.
+#
+# Limits, so one program can't use the resolver up: DNS_OPENERS (16)
+# openers (connect: ERR_NO_RESOURCES), DNS_PER_OPENER (8) resolves in
+# flight an opener; 16 names in flight in all (the resolver's
+# DNS_MAX_QUERIES, a socket each), 8 callers of one name.
+#
+# Reconnect: when the resolver ends (it does when netstack does), every
+# opener's channel sees ERR_PEER_CLOSED; open /svc/dns again (svc_get
+# does), whose connect waits on the shared channel, which init keeps, for
+# the restarted resolver. Nothing is lost but its cache.
+# Format: see tools/genidl.py.
+
+protocol dns 30
+
+# On an opener's channel: the IPv4 addresses of `name` (NUL-terminated in
+# its 256 bytes; a host name, or a dotted IPv4 address, answered as it
+# is), at most four, and how many seconds the answer may be kept (`ttl`).
+# Answered when the answer comes, from the cache at once. Errors:
+# ERR_NOT_FOUND (no such name, or it has no IPv4 address), ERR_TIMED_OUT
+# (no server answered within the resolver's 10 s, or timeout_ms passed:
+# 1..60000), ERR_IO (the servers failed), ERR_NOT_SUPPORTED (the answer
+# needs TCP), ERR_OUT_OF_RANGE (more than 8 CNAMEs); at once:
+# ERR_INVALID_ARGS (not a name, or no NUL; timeout_ms out of range),
+# ERR_BAD_STATE (no DNS servers yet: see `net`), ERR_NO_RESOURCES (too
+# many in flight).
+1  resolve  (u8[256] name, u32 timeout_ms)  -> (u8 count, u32 addr0, u32 addr1, u32 addr2, u32 addr3, u32 ttl) later

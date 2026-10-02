@@ -232,6 +232,9 @@ bool t_rtl8125_tx_gate(void);
 bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);
 bool t_rtl8125_stays_off(void);
+bool t_rtl8125_txdesc(void);
+bool t_rtl8125_kick(void);
+bool t_rtl8125_tx_verdict(void);
 
 /* netsrv.c: the network drivers' netdev server (drivers/lib/netserver.c,
  * linked in) over a fake card, the test as netstack. */
@@ -307,6 +310,8 @@ bool t_dnsres_failures(void);
 bool t_dnsres_ports(void);
 bool t_dnsres_cache(void);
 bool t_dnsres_hostile(void);
+/* dnsd.c: bin/dns's sockets (socks.c) against a fake netstack */
+bool t_dnsd_sockets(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
  * <updwire.h>); updfetch.c: the fetcher's window against a fake server
@@ -326,6 +331,7 @@ bool t_netlog_whole_log(void);
 bool t_netlog_mac_away(void);
 bool t_netlog_ring_dropped(void);
 bool t_netlog_forged_acks(void);
+bool t_netlog_sender_restarted(void);
 bool t_netlog_crash_stream(void);
 bool t_netlog_klog_source(void);
 

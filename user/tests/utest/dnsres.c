@@ -141,7 +141,7 @@ bool t_dnsres_basic(void)
 {
     dreset(1);
     CHECK_EQ(dns_deadline(&res), DEADLINE_NEVER);
-    CHECK_ST(dns_resolve(&res, 0, "One.One.One.One.", 1), OK);
+    CHECK_ST(dns_ask(&res, 0, "One.One.One.One.", 1), OK);
     CHECK(ds.nsent == 1 && !ds.nans && last()->server == SERVER1 && last()->port >= DNS_PORT_MIN);
     char name[DNS_NAME_MAX + 1];
     size_t pos = 12;
@@ -170,17 +170,17 @@ bool t_dnsres_basic(void)
     arrive(S / 10, last(), b, len);   /* the same reply again: no query to answer */
     CHECK(ds.nans == 1 && res.stats.foreign == 5);
     /* from the cache, in any case, until the TTL runs out */
-    CHECK_ST(dns_resolve(&res, 100 * S, "one.ONE.one.one", 2), OK);
+    CHECK_ST(dns_ask(&res, 100 * S, "one.ONE.one.one", 2), OK);
     CHECK(ds.nans == 2 && last_ans()->n == 2 && last_ans()->ttl == 201 && ds.nsent == 1);
-    CHECK_ST(dns_resolve(&res, 300 * S + S / 10 - 1, "one.one.one.one", 3), OK);
+    CHECK_ST(dns_ask(&res, 300 * S + S / 10 - 1, "one.one.one.one", 3), OK);
     CHECK(ds.nans == 3 && last_ans()->ttl == 1 && ds.nsent == 1);
-    CHECK_ST(dns_resolve(&res, 300 * S + S / 10, "one.one.one.one", 4), OK);
+    CHECK_ST(dns_ask(&res, 300 * S + S / 10, "one.one.one.one", 4), OK);
     CHECK(ds.nans == 3 && ds.nsent == 2);
     /* an IPv4 literal needs no server; a bad name gets no answer */
-    CHECK_ST(dns_resolve(&res, 400 * S, "10.2.21.174", 5), OK);
+    CHECK_ST(dns_ask(&res, 400 * S, "10.2.21.174", 5), OK);
     CHECK(ds.nans == 4 && last_ans()->n == 1 && last_ans()->addr[0] == NET_IPV4(10, 2, 21, 174));
-    CHECK_ST(dns_resolve(&res, 400 * S, "a..b", 6), ERR_INVALID_ARGS);
-    CHECK_ST(dns_resolve(&res, 400 * S, "", 6), ERR_INVALID_ARGS);
+    CHECK_ST(dns_ask(&res, 400 * S, "a..b", 6), ERR_INVALID_ARGS);
+    CHECK_ST(dns_ask(&res, 400 * S, "", 6), ERR_INVALID_ARGS);
     CHECK(ds.nans == 4 && ds.nsent == 2);
     return true;
 }
@@ -188,7 +188,7 @@ bool t_dnsres_basic(void)
 bool t_dnsres_retries(void)
 {
     dreset(2);
-    CHECK_ST(dns_resolve(&res, 0, "slow.example", 1), OK);
+    CHECK_ST(dns_ask(&res, 0, "slow.example", 1), OK);
     const struct sent first = *last();
     static const uint64_t at[] = { 1 * S, 3 * S, 6 * S };   /* waits of 1, 2, 3 s */
     for (unsigned i = 0; i < 3; i++) {
@@ -206,7 +206,7 @@ bool t_dnsres_retries(void)
     CHECK(ds.nreleased == 1 && ds.released[0] == first.port && res.stats.timeouts == 1);
     CHECK_EQ(dns_deadline(&res), DEADLINE_NEVER);
     /* a late reply to the first try, after the second went out, counts */
-    CHECK_ST(dns_resolve(&res, 20 * S, "late.example", 2), OK);
+    CHECK_ST(dns_ask(&res, 20 * S, "late.example", 2), OK);
     const struct sent q = *last();
     dns_tick(&res, 21 * S);
     CHECK_EQ(ds.nsent, 6);
@@ -220,12 +220,12 @@ bool t_dnsres_retries(void)
 bool t_dnsres_slow_peer(void)
 {
     dreset(1);
-    CHECK_ST(dns_resolve(&res, 0, "slow.example", 1000), OK);
+    CHECK_ST(dns_ask(&res, 0, "slow.example", 1000), OK);
     char name[32];
     for (unsigned i = 0; i < 20; i++) {
         uint64_t t = (uint64_t)i * 10 * MS;
         snprintf(name, sizeof(name), "fast%u.example", i);
-        CHECK_ST(dns_resolve(&res, t, name, i), OK);
+        CHECK_ST(dns_ask(&res, t, name, i), OK);
         answer(t, last(), &one_srv);
         const struct answer *a = answer_for(i);
         CHECK(a && a->st == OK && a->n == 2 && ds.nans == i + 1);
@@ -235,7 +235,7 @@ bool t_dnsres_slow_peer(void)
     struct sent q[5];
     for (unsigned i = 0; i < 5; i++) {
         snprintf(name, sizeof(name), "many%u.example", i);
-        CHECK_ST(dns_resolve(&res, 300 * MS, name, 100 + i), OK);
+        CHECK_ST(dns_ask(&res, 300 * MS, name, 100 + i), OK);
         q[i] = *last();
     }
     for (unsigned i = 5; i-- > 0;) {
@@ -258,14 +258,14 @@ bool t_dnsres_cname(void)
     dreset(1);
     const uint32_t gh = NET_IPV4(140, 82, 112, 3);
     struct dns_srv s = { &gh, 1, 60, "github.com", 0, false };
-    CHECK_ST(dns_resolve(&res, 0, "www.github.com", 1), OK);
+    CHECK_ST(dns_ask(&res, 0, "www.github.com", 1), OK);
     answer(0, last(), &s);
     CHECK(ds.nans == 1 && last_ans()->st == OK && last_ans()->addr[0] == gh);
-    CHECK_ST(dns_resolve(&res, S, "www.github.com", 2), OK);   /* cached under the name asked */
+    CHECK_ST(dns_ask(&res, S, "www.github.com", 2), OK);   /* cached under the name asked */
     CHECK(ds.nans == 2 && ds.nsent == 1);
     /* a CNAME alone: the target is asked for, with a new id and port */
     s = (struct dns_srv){ NULL, 0, 30, "target.example", 0, false };
-    CHECK_ST(dns_resolve(&res, 2 * S, "alias.example", 3), OK);
+    CHECK_ST(dns_ask(&res, 2 * S, "alias.example", 3), OK);
     const struct sent q1 = *last();
     answer(2 * S, &q1, &s);
     CHECK(ds.nans == 2 && ds.nsent == 3 && ds.nreleased == 2 && ds.released[1] == q1.port);
@@ -278,7 +278,7 @@ bool t_dnsres_cname(void)
     CHECK(ds.nans == 3 && last_ans()->cookie == 3 && last_ans()->addr[0] == gh);
     CHECK_EQ(last_ans()->ttl, 30);   /* the chain's smallest */
     /* CNAMEs over replies, one each: the 9th is one too many */
-    CHECK_ST(dns_resolve(&res, 3 * S, "loop0.example", 4), OK);
+    CHECK_ST(dns_ask(&res, 3 * S, "loop0.example", 4), OK);
     unsigned sends = 0;
     char target[32];
     for (unsigned i = 1; i <= DNS_CNAME_MAX + 1 && !answer_for(4); i++) {
@@ -290,7 +290,7 @@ bool t_dnsres_cname(void)
     CHECK(answer_for(4) && answer_for(4)->st == ERR_OUT_OF_RANGE && sends == DNS_CNAME_MAX + 1);
     /* a target that isn't a name we can ask for */
     s = (struct dns_srv){ NULL, 0, 30, "*.example", 0, false };
-    CHECK_ST(dns_resolve(&res, 4 * S, "wild.example", 5), OK);
+    CHECK_ST(dns_ask(&res, 4 * S, "wild.example", 5), OK);
     answer(4 * S, last(), &s);
     CHECK(answer_for(5) && answer_for(5)->st == ERR_NOT_FOUND);
     CHECK_EQ(dns_deadline(&res), DEADLINE_NEVER);
@@ -300,7 +300,7 @@ bool t_dnsres_cname(void)
 /* Resolve name for cookie and give the query's reply s: the status answered. */
 static status_t one_reply(const char *name, uint64_t cookie, const struct dns_srv *s)
 {
-    if (dns_resolve(&res, 0, name, cookie) != OK)
+    if (dns_ask(&res, 0, name, cookie) != OK)
         return ERR_INTERNAL;
     answer(0, last(), s);
     const struct answer *a = answer_for(cookie);
@@ -326,8 +326,8 @@ bool t_dnsres_failures(void)
     /* askers of a name in flight share its query */
     unsigned n = ds.nsent;
     for (unsigned i = 0; i < DNS_MAX_WAITERS; i++)
-        CHECK_ST(dns_resolve(&res, 0, "shared.example", 10 + i), OK);
-    CHECK_ST(dns_resolve(&res, 0, "SHARED.example", 99), ERR_NO_RESOURCES);
+        CHECK_ST(dns_ask(&res, 0, "shared.example", 10 + i), OK);
+    CHECK_ST(dns_ask(&res, 0, "SHARED.example", 99), ERR_NO_RESOURCES);
     CHECK_EQ(ds.nsent, n + 1);
     dns_cancel(&res, 10);
     answer(0, last(), &one_srv);
@@ -335,7 +335,7 @@ bool t_dnsres_failures(void)
     for (unsigned i = 1; i < DNS_MAX_WAITERS; i++)
         CHECK(answer_for(10 + i) && answer_for(10 + i)->st == OK);
     /* the last asker gone: the query ends, its port goes, a late reply is foreign */
-    CHECK_ST(dns_resolve(&res, 0, "gone.example", 20), OK);
+    CHECK_ST(dns_ask(&res, 0, "gone.example", 20), OK);
     const struct sent q = *last();
     unsigned rel = ds.nreleased;
     dns_cancel(&res, 20);
@@ -346,18 +346,18 @@ bool t_dnsres_failures(void)
     char name[32];
     for (unsigned i = 0; i < DNS_MAX_QUERIES; i++) {
         snprintf(name, sizeof(name), "n%u.example", i);
-        CHECK_ST(dns_resolve(&res, 0, name, 1000 + i), OK);
+        CHECK_ST(dns_ask(&res, 0, name, 1000 + i), OK);
     }
-    CHECK_ST(dns_resolve(&res, 0, "one.more.example", 2000), ERR_NO_RESOURCES);
+    CHECK_ST(dns_ask(&res, 0, "one.more.example", 2000), ERR_NO_RESOURCES);
     /* the servers taken away mid-query: each query ends at its next try */
     dns_set_servers(&res, NULL, 0);
     dns_tick(&res, 1 * S);
     CHECK(answer_for(1000) && answer_for(1000)->st == ERR_BAD_STATE);
     CHECK_EQ(dns_deadline(&res), DEADLINE_NEVER);
-    CHECK_ST(dns_resolve(&res, 2 * S, "x.example", 3000), ERR_BAD_STATE);
+    CHECK_ST(dns_ask(&res, 2 * S, "x.example", 3000), ERR_BAD_STATE);
     static const uint32_t bad[] = { 0, 0xffffffffu, NET_IPV4(127, 0, 0, 1) };
     dns_set_servers(&res, bad, 3);
-    CHECK_ST(dns_resolve(&res, 2 * S, "x.example", 3000), ERR_BAD_STATE);
+    CHECK_ST(dns_ask(&res, 2 * S, "x.example", 3000), ERR_BAD_STATE);
     return true;
 }
 
@@ -365,12 +365,12 @@ bool t_dnsres_ports(void)
 {
     dreset(1);
     ds.taken = 2;   /* two ports taken: the third is used */
-    CHECK_ST(dns_resolve(&res, 0, "p.example", 1), OK);
+    CHECK_ST(dns_ask(&res, 0, "p.example", 1), OK);
     CHECK(ds.nsent == 1 && res.stats.sent == 1 && !res.stats.send_failed);
     answer(0, last(), &one_srv);
     CHECK(answer_for(1) && answer_for(1)->st == OK);
     ds.taken = DNS_PORT_TRIES;   /* every port tried taken: a lost send, retried */
-    CHECK_ST(dns_resolve(&res, 0, "q.example", 2), OK);
+    CHECK_ST(dns_ask(&res, 0, "q.example", 2), OK);
     CHECK(ds.nsent == 1 && res.stats.send_failed == 1);
     dns_tick(&res, 1 * S);
     CHECK_EQ(ds.nsent, 2);
@@ -381,7 +381,7 @@ bool t_dnsres_ports(void)
     char name[32];
     for (unsigned i = 0; i < DNS_MAX_QUERIES; i++) {
         snprintf(name, sizeof(name), "r%u.example", i);
-        CHECK_ST(dns_resolve(&res, 2 * S, name, 10 + i), OK);
+        CHECK_ST(dns_ask(&res, 2 * S, name, 10 + i), OK);
         CHECK(last()->port >= DNS_PORT_MIN);
         if (i) {
             const struct sent *p = &ds.sent[(ds.nsent - 2) % RING];
@@ -432,10 +432,10 @@ bool t_dnsres_cache(void)
     CHECK_ST(one_reply("one.example", 1, &one_srv), OK);
     static const uint32_t same[] = { SERVER1 }, other[] = { SERVER2 };
     dns_set_servers(&res, same, 1);
-    CHECK_ST(dns_resolve(&res, 0, "one.example", 2), OK);
+    CHECK_ST(dns_ask(&res, 0, "one.example", 2), OK);
     CHECK(ds.nsent == 1 && answer_for(2));
     dns_set_servers(&res, other, 1);
-    CHECK_ST(dns_resolve(&res, 0, "one.example", 3), OK);
+    CHECK_ST(dns_ask(&res, 0, "one.example", 3), OK);
     CHECK(ds.nsent == 2 && !answer_for(3));
     return true;
 }
@@ -455,7 +455,7 @@ bool t_dnsres_hostile(void)
     struct dns_srv s = { &addr, 1, 60, NULL, 0, false };
     for (unsigned i = 0; i < FUZZ_ROUNDS; i++) {
         snprintf(name, sizeof(name), "f%u.example", i);
-        CHECK_ST(dns_resolve(&res, 0, name, i), OK);
+        CHECK_ST(dns_ask(&res, 0, name, i), OK);
         s.cname = i % 3 == 0 ? "t.example" : NULL;
         size_t len = dns_srv_reply(b, sizeof(b), last()->msg, last()->len, &s);
         len = fuzz_mutate(&seed, b, len, sizeof(b));

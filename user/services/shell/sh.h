@@ -175,6 +175,17 @@ int sh_run_helper(const char *path, int argc, const char *const *argv, struct sp
  * result line from the kernel log; its status. */
 int sh_run_test_program(int argc, char **argv);
 
+/* ---- names (sh_lookup.c) ------------------------------------------------------------- */
+
+struct dns_answer;
+/* name's IPv4 addresses (<dns.h>) from the resolver (/svc/dns), waited
+ * for with Ctrl+C watched (ERR_CANCELED); a dotted address is answered as
+ * it is. The resolver's errors (<dns.h> dns_lookup); ERR_PEER_CLOSED: no
+ * resolver. */
+status_t    sh_lookup(const char *name, struct dns_answer *out);
+/* sh_lookup's error in words ("no such name ..."). */
+const char *sh_lookup_why(status_t st);
+
 /* ---- programs from /data (sh_allow.c) ---------------------------------------------- */
 
 struct wants;
@@ -345,6 +356,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music); SH_CMD(net); SH_CMD(ping);
+SH_CMD(host);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */

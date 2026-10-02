@@ -82,12 +82,18 @@ static const struct sh_cmd cmds[] = {
     C(net, C_SYSTEM, "net [stats]",
       "the network: the address, gateway and DNS servers, the link (speed, VLAN,\n"
       "  MAC) and the frames in and out, as netstack sees them. net stats: every count\n"
-      "  netstack keeps and the network card's own. The address comes from\n"
-      "  net.address in /data/etc/settings (e.g. 10.2.21.50/24 10.2.21.1 10.2.21.1)"),
-    C(ping, C_SYSTEM, "ping <address> [-c count] [-s size]",
+      "  netstack keeps and the network card's own. The address comes from DHCP\n"
+      "  (bin/dhcp's lease is in the log), or from net.address in /data/etc/settings\n"
+      "  (e.g. 10.2.21.50/24 10.2.21.1 10.2.21.1; then there is no DHCP)"),
+    C(ping, C_SYSTEM, "ping <address|name> [-c count] [-s size]",
       "ICMP echo requests to an IPv4 address, one a second (default 4, 56 data\n"
       "  bytes): a line per reply with its round trip and TTL, or \"no reply\" after\n"
-      "  1 s, then a summary. Ctrl+C stops it. e.g. ping 1.1.1.1 -c 10"),
+      "  1 s, then a summary. A name is resolved first (as `host`, its first\n"
+      "  address). Ctrl+C stops it. e.g. ping 1.1.1.1 -c 10, ping one.one.one.one"),
+    C(host, C_SYSTEM, "host <name>",
+      "a name's IPv4 addresses from the resolver (bin/dns, asking the DNS servers\n"
+      "  `net` shows: from DHCP, or net.address in /data/etc/settings), and how long\n"
+      "  they may be kept. Ctrl+C stops the wait. e.g. host one.one.one.one"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),

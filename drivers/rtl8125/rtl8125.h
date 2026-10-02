@@ -37,6 +37,7 @@
 #include <jam/netserver.h>
 #include "args.h"
 #include "notx.h"
+#include "txdesc.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
 
@@ -182,14 +183,17 @@
 #define RX_ERRSUM       0x00100000u
 #define RX_LEN          0x00003fffu   /* bytes received, the CRC included */
 #define RX_CRC          4u
-/* One contiguous VMO: the receive ring, the transmit ring (16-byte
- * descriptors, tx.c), then the tally dump (64-byte aligned). */
+/* One contiguous VMO: the receive ring, the transmit ring (32-byte
+ * descriptors, txdesc.h; tx.c fills it), then the tally dump (64-byte
+ * aligned). */
 #define RX_RING_BYTES   (RX_DESCS * RX_DESC_SIZE)   /* 8 KiB */
 #define TX_DESCS        256
-#define TX_DESC_SIZE    16
 #define TX_RING_OFF     RX_RING_BYTES
-#define TALLY_OFF       (TX_RING_OFF + TX_DESCS * TX_DESC_SIZE)   /* 12 KiB */
-#define RING_VMO        (4 * 4096)
+#define TX_RING_BYTES   (TX_DESCS * RTL_TXD_SIZE)   /* 8 KiB */
+#define TALLY_OFF       (TX_RING_OFF + TX_RING_BYTES)   /* 16 KiB */
+#define RING_VMO        (5 * 4096)
+_Static_assert(TX_RING_OFF % RTL_TXD_RING_ALIGN == 0, "rge aligns the rings to 256 bytes");
+_Static_assert(TALLY_OFF % 64 == 0 && TALLY_OFF + 64 <= RING_VMO, "the tally dump fits");
 #define BUF_BYTES       (RX_DESCS * RX_BUF)
 #define BUF_PAGES       (BUF_BYTES / 4096)
 #define TX_BUF          2048      /* the driver's own copy of each frame sent: two per page */
@@ -244,8 +248,11 @@ struct txstats {
     uint32_t collisions;          /* taken back with a collision count */
     uint32_t refused;             /* frames netframe_tag or the last check refused */
     uint32_t full;                /* frames refused for want of a free descriptor */
-    uint32_t kicks;               /* doorbells rung again for frames still waiting */
+    uint32_t kicks;               /* doorbells rung again for frames still waiting (rtl_kick_due) */
     uint32_t gate;                /* tx.c entries refused by the gate (must stay 0) */
+    uint32_t stalls;              /* descriptors the chip still held TX_STALL_NS after queueing */
+    uint32_t wait_n;              /* frames timed from the doorbell to their descriptor back */
+    uint64_t wait_min, wait_max, wait_sum;   /* ... their waits, ns */
 };
 
 struct rtl;
@@ -275,6 +282,16 @@ struct rtl {
     /* transmit: tx.c's (chip_stop's reset clears tx_on) */
     uint32_t tx_prod, tx_cons;    /* descriptors handed over / taken back (free-running) */
     bool     tx_on;               /* the transmitter is enabled */
+    uint64_t tx_at[TX_DESCS];     /* when each descriptor was handed over (uptime, ns) */
+    uint64_t tx_wait[TX_DESCS];   /* ... and how long until it came back (ns) */
+    struct rtl_kick kick;         /* the doorbell again for a descriptor still owned */
+    uint32_t stall_cons;          /* the last descriptor counted as stalled, + 1 (0: none) */
+    unsigned stall_dumps;         /* stall dumps logged (a few per run) */
+    uint64_t stall_dump_at;       /* when the last was (uptime, ns) */
+    uint64_t tick_at;             /* when tx_tick last logged (uptime, ns) */
+    uint32_t tick_queued, tick_back;   /* the counts it logged then */
+    uint64_t tally_tx0;           /* the chip's tally of frames sent at the start (ok + error) */
+    bool     tally0_ok;           /* ... it was read */
     struct txstats tx;
     /* receive in full mode: rx.c's */
     struct rxstats rx;
@@ -314,7 +331,8 @@ struct outcome {
     bool     start_ok, end_ok; /* the tally dumps worked */
     struct tally start, end;
     bool     cut;              /* devmgr stopped it early */
-    char     txcheck[40];      /* tally_tx_check's short form, "chip tally +3 (equal)" */
+    char     txcheck[72];      /* tally_tx_check's short form, "tx 3 queued, chip sent 3,
+                                * 3 back (equal)" */
 };
 
 /* ---- regs.c ---------------------------------------------------------------------- */
@@ -343,9 +361,10 @@ void     delay_us(uint64_t us);
 status_t tally_dump(struct rtl *t, struct tally *out);
 void     tally_log(const char *when, const struct tally *x);
 /* The plan's check that the chip sent nothing of its own (no PAUSE, no
- * wake-on-LAN or management frames): the chip's count of frames sent
- * between the two dumps against what tx.c handed it. Logged; true if
- * they agree. `out` gets a short form for a RESULTS line. */
+ * wake-on-LAN or management frames), and that it sent what it was given:
+ * the chip's count of frames sent between the two dumps against what
+ * tx.c queued and took back (txdesc.h, rtl_tx_verdict). Logged; true if
+ * all three agree. `out` gets a short form for a RESULTS line. */
 bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, size_t size);
 
 /* ---- chip.c ---------------------------------------------------------------------- */
@@ -450,7 +469,18 @@ status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len);
 unsigned tx_reap(struct rtl *t);
 /* Frames handed over and not yet taken back. */
 uint32_t tx_pending(const struct rtl *t);
+/* Descriptor seq's (tx_prod before its tx_send) wait from its doorbell to
+ * back, in ns; false while the chip still has it, or once its slot has
+ * been used again. */
+bool     tx_wait_of(const struct rtl *t, uint32_t seq, uint64_t *wait);
 void     tx_log(const struct rtl *t);
+/* "min/avg/max ms" of the frames' waits from the doorbell to their
+ * descriptor back, or "none timed". */
+void     tx_wait_str(const struct rtl *t, char *buf, size_t size);
+/* At most every 10 s, and only when frames moved: one "tx so far" line
+ * (queued, sent by the chip, back, the waits), so a run that is killed
+ * (a reboot) still leaves the counts in the log. */
+void     tx_tick(struct rtl *t);
 
 /* ---- full.c: full mode's service, the netdev server for netstack --------------------- */
 

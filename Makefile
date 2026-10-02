@@ -265,13 +265,15 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
 # network drivers' netdev server over a fake card (utest/netsrv.c:
-# drivers/lib/netserver.c).
+# drivers/lib/netserver.c), and bin/dns's sockets and askers over a fake
+# netstack (utest/dnsd.c).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
                       $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \
                       $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
-                      $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o
+                      $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o \
+                      $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns

@@ -19,7 +19,8 @@
  *                 (`kill`, `sync`, `reboot`, `mount`), the mixer's `audio`
  *                 and `audioctl` (`vol`), the music player (`music`: a
  *                 channel of the shell's own), logd's control channel,
- *                 netstack's /svc/net (`net`, `ping`: <net.h>)
+ *                 netstack's /svc/net (`net`, `ping`: <net.h>), the
+ *                 resolver's /svc/dns (`host`, `ping <name>`: sh_lookup)
  * Each service's channel is libos's (svc_get): asked for again after its
  * service restarted (a new devmgr), it is the new one. What the shell
  * passes on to a program is that program's list (sh_program.c). */

@@ -161,7 +161,7 @@ static bool cached(struct dns_resolver *r, uint64_t now, const char *name, uint6
     return true;
 }
 
-status_t dns_resolve(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie)
+status_t dns_ask(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie)
 {
     r->stats.asked++;
     uint32_t literal;

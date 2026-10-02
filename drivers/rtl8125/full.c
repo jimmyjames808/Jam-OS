@@ -57,6 +57,13 @@ static void dev_stats(void *ctx, struct netdev_stats *s)
     s->rx_other_vlan += d[NETFRAME_RX_OTHER_VLAN] + d[NETFRAME_RX_OUTER] + d[NETFRAME_RX_NESTED];
     s->rx_bad += d[NETFRAME_RX_RUNT] + d[NETFRAME_RX_LONG] + t->rx.errors + t->rx.split;
     s->tx_done += t->tx.done;
+    const struct txstats *x = &t->tx;
+    s->tx_wait_n = x->wait_n;
+    s->tx_wait_min_ns = x->wait_min;
+    s->tx_wait_avg_ns = x->wait_n ? x->wait_sum / x->wait_n : 0;
+    s->tx_wait_max_ns = x->wait_max;
+    s->tx_stalls = x->stalls;
+    s->tx_kicks = x->kicks;
     struct tally now;
     if (!f->o->start_ok || tally_dump(t, &now) != OK)
         return;   /* chip_counted stays 0: the chip's counts are unknown */
@@ -109,13 +116,14 @@ void full_run(struct rtl *t, struct outcome *o)
 
 void full_report(const struct rtl *t, const struct outcome *o)
 {
-    char link[48];
+    char link[48], wait[48];
     chip_link_summary(t, link, sizeof(link));
+    tx_wait_str(t, wait, sizeof(wait));
     const struct netdev_stats *s = &card.v.st;
     drv_report("netdev vlan %u, %s, %lu session(s), rx %lu to netstack (%lu with none, %lu ring "
-               "full), tx %lu from netstack (%u queued), %s%s", t->vlan, link,
+               "full), tx %lu from netstack: %s, wait %s, %u stalled%s", t->vlan, link,
                (unsigned long)s->sessions, (unsigned long)s->rx_frames,
                (unsigned long)s->rx_no_session, (unsigned long)s->rx_ring_full,
-               (unsigned long)s->tx_frames, t->tx.queued, o->txcheck,
+               (unsigned long)s->tx_frames, o->txcheck, wait, t->tx.stalls,
                t->refused || t->tx.gate ? ", WRITES REFUSED" : "");
 }

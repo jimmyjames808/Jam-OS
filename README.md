@@ -70,14 +70,18 @@ a real desktop PC, which is where every milestone is tested.
   with `allow`.
 - Networking, under way (M9, so far in QEMU with its e1000e card): a
   network stack in a process of its own (lwIP), every frame tagged VLAN
-  21; a static address from `net.address` in `/data/etc/settings`; `net`
-  shows the address, the link and the counts (`net stats`: all of them)
-  and `ping <address>` pings; programs whose list asks for `svc net` get
-  UDP sockets; `update` runs the build the Mac serves, by kexec
-  ([below](#boot-a-real-pc)); `version` names the git commit a build was
-  made from.
+  21; the address from DHCP (bin/dhcp), or a static one from
+  `net.address` in `/data/etc/settings`; `net` shows the address, the
+  link and the counts (`net stats`: all of them); `host <name>` asks the
+  resolver (bin/dns) and `ping <address or name>` pings; programs whose
+  list asks for `svc net` get UDP sockets, and with `svc dns` names
+  (`dns_lookup`, `<dns.h>`); netlog sends the whole boot log to the Mac
+  ([below](#the-pcs-log-on-the-mac)); `update` runs the build the Mac
+  serves, by kexec ([below](#boot-a-real-pc)); `version` names the git
+  commit a build was made from.
 
-Not yet: networking on the PC (DHCP, DNS, the log to the Mac),
+Not yet: networking on the PC (DHCP, DNS, the log to the Mac and
+`update` are built but not yet run on the PC),
 power management. Status and plans:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -145,6 +149,37 @@ power-off brings back the stick's. `make flash` is still how a build
 stays. Updates are not signed yet: anyone on VLAN 21 who answers as the
 Mac could run their own kernel, so `update` runs only when you type it.
 
+## The PC's log on the Mac
+
+With `net.host` set in the stick's `/data/etc/settings`, netlog sends
+each boot's whole log, from its first line, over UDP to that address
+(port 5021), and after a panic the panicked boot's log too. On the stick
+(edit `etc/settings` on the Mac, or in Jam OS):
+
+```
+net.address = 10.2.21.240/24 10.2.21.1 10.2.21.1
+net.host = 10.2.21.174
+```
+
+`net.address` is the PC's own address until DHCP is built; `net.host`
+is the Mac's (on VLAN 21); `netlog = off` turns it off. On the PC, for
+now, boot the entry "Jam OS (network)": the everyday one leaves the
+network card alone. On the Mac, from
+the repository, leave this running:
+
+```sh
+python3 tools/netlog-recv.py ~/jamos-logs
+```
+
+It listens on port 5021 (allow incoming connections if macOS asks),
+prints the lines as they come, and writes one file per boot into
+`~/jamos-logs`: `boot-<the boot's start, local time>.txt`, and
+`boot-<...>-lastcrash.txt` for the log of a boot that panicked before
+it, each with a `.pos` file beside it (how much it has, so a restarted
+receiver goes on where it stopped). A receiver started late still gets
+the boot from its first line. `--quiet` doesn't print the lines;
+`--from <the PC's address>` takes datagrams only from it.
+
 ## Where things live
 
 | Path | What |
@@ -165,9 +200,9 @@ Mac could run their own kernel, so `update` runs only when you type it.
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), update (`update`'s fetcher: the build the Mac serves, offered to init) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), update (`update`'s fetcher: the build the Mac serves, offered to init) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |

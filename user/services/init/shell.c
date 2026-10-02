@@ -1,10 +1,12 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises ten services, each in a job of its own
- * under init's: the bootfs server, the console, the boot splash, serialin,
- * devmgr, the mixer, the music player, netstack, logd and the shell. How each one is
- * started and what it is given is in services.c; this file is the order,
+ * init starts and then supervises thirteen services, each in a job of its
+ * own under init's: the bootfs server, the console, the boot splash,
+ * serialin, devmgr, the mixer, the music player, netstack, the DHCP
+ * client, the resolver, logd, netlog and the shell. How each one is
+ * started and what it is given is in services.c (the network's in net.c);
+ * this file is the order,
  * the namespace they follow and the restarts.
  *
  * init's own namespace holds its mounts (/boot, and what devmgr mounts:
@@ -12,14 +14,14 @@
  * services that have a namespace get the part of it their grants name
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
- * etc left alone), the splash the mixer. init keeps its end of each one's
+ * etc left alone), netlog /svc/net, the splash the mixer. init keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
  * path again after it opens its file), so however often the namespace
  * changes, each holds at most one message from init.
  *
  * A service that ends is started again (in the order above; the console's
- * clients wait for the console, logd for /data):
+ * clients wait for the console, logd and netlog for /data):
  *   - a new bootfs server is mounted at /boot again, and the shell is sent
  *     the new mount (until then /boot answers ERR_PEER_CLOSED).
  *   - a new console, a new devmgr: services.c (services_closed) says what
@@ -43,8 +45,8 @@ struct svc svcs[NSVC] = {
     [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
     [SERIALIN] = { "bin/serialin" },
     [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
-    [NETSTACK] = { "bin/netstack" },
-    [LOGD] = { "bin/logd" }, [SHELL] = { "bin/shell" },
+    [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
+    [LOGD] = { "bin/logd" }, [NETLOG] = { "bin/netlog" }, [SHELL] = { "bin/shell" },
 };
 
 /* A service that has a namespace, kept in step with init's. */
@@ -57,9 +59,12 @@ struct follower {
 static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, NULL };
 static const char *const music_grants[] = { "*:r", "/svc/" SVC_AUDIO, NULL };
 static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
+static const char *const netlog_grants[] = { "/svc/" SVC_NET, NULL };
+static const char *const dns_grants[] = { "/svc/" SVC_NET, NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
-    [LOGD] = { .only = logd_grants }, [SHELL] = { .only = NS_ALL },
+    [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },
+    [SHELL] = { .only = NS_ALL }, [DNS] = { .only = dns_grants },
 };
 static handle_t port;
 
@@ -274,8 +279,8 @@ static uint64_t start_due(uint64_t t)
             continue;
         if (i != CONSOLE && i != BOOTFS && i != LOGD && !services_console_up())
             continue;   /* waits for the console */
-        if (i == LOGD && !mounted(DATA_MOUNT))
-            continue;   /* waits for /data: a mount's packet wakes the loop */
+        if ((i == LOGD || i == NETLOG) && !mounted(DATA_MOUNT))
+            continue;   /* waits for /data (netlog: its settings): a mount's packet wakes the loop */
         if ((i == MIXER || i == NETSTACK) && !services_devmgr_up() && !svcs[DEVMGR].given_up)
             continue;   /* waits for devmgr (started just before it) */
         if (i == SHELL && !splash_played() && t < splash_deadline()) {
@@ -296,6 +301,13 @@ static uint64_t start_due(uint64_t t)
         }
         if (i == MUSIC && !svcs[MIXER].running && !svcs[MIXER].given_up)
             continue;   /* after the mixer (it opens its stream only on `music start`) */
+        if ((i == DHCP || i == DNS) && !svcs[NETSTACK].running)
+            continue;   /* after netstack (started just before them) */
+        uint64_t dhcp_at = i == DHCP ? net_dhcp_wait(t, mounted(DATA_MOUNT)) : 0;
+        if (dhcp_at) {   /* /data's settings may say the address is static */
+            deadline = dhcp_at < deadline ? dhcp_at : deadline;
+            continue;
+        }
         if (t < s->next_try) {
             deadline = s->next_try < deadline ? s->next_try : deadline;
             continue;
@@ -331,7 +343,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
-           "devmgr, the mixer, the music player, netstack, logd and the shell\n",
+           "devmgr, the mixer, the music player, netstack, dhcp, dns, logd, netlog and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t deadline = start_due(now());
