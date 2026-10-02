@@ -9,8 +9,9 @@
  * job of its own under jamjar's; it writes the pixels into the output VMO,
  * which jamjar never maps: it reads them back with vmo_read, so they are
  * only bytes to it. A call that doesn't answer in JAMCOVER_TIMEOUT, or
- * whose channel closed (the helper crashed), costs that album its cover:
- * the helper's job is killed and the next call starts a new one.
+ * whose channel closed (the helper crashed), costs that album its cover
+ * (a timeout only after cover.c's one second try): the helper's job is
+ * killed and the next call starts a new one.
  *
  * One thread calls it (cover.c's; the self-test has no such thread), so
  * nothing here is locked. */

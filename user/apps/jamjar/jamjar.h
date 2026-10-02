@@ -266,8 +266,9 @@ void art_flavour(uint64_t hash, uint32_t *c0, uint32_t *c1, char *name, size_t c
  * (cached: drawing the same one again is a copy). */
 void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint32_t bg);
 /* The album's real cover from the track at path, if it has one and it is
- * read; its jar label until then, and for good if it has none. */
-void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
+ * read; its jar label until then, and for good if it has none. r is a
+ * square: r->w is its size, r->h is not looked at. */
+void art_cover(const struct surf *s, const struct rect *r, uint64_t hash, const char *path,
                uint32_t bg);
 /* The Jam OS mark (the seven drupelets) in a box `size` wide. */
 void art_mark(const struct surf *s, int x, int y, int size);
@@ -333,6 +334,13 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg);
  * colour (made from the path) instead of the file's; false: no job. */
 bool cover_test_start(void);
 bool cover_test_work(void);
+/* ... and then with real decodes by the helper: pic puts the picture for
+ * a path at the start of decoder_buffer() and returns its length (NULL:
+ * back to the one-colour pictures); a timed-out decode is tried again
+ * `after` ns later (0: the usual). Whether album hash is marked "no
+ * cover" for good. */
+void cover_test_retry(size_t (*pic)(const char *path), uint64_t after);
+bool cover_test_none(uint64_t hash);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 

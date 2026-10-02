@@ -46,10 +46,10 @@ static void layout(void)
 static void draw_background(void)
 {
     struct surf *s = &bg;
-    vgrad(s, 0, 0, s->w, s->h, 0x182044, 0x05060c);
+    vgrad(s, &(struct rect){ 0, 0, s->w, s->h }, 0x182044, 0x05060c);
     struct rect rim = { field.x - 2, field.y - 2, field.w + 4, field.h + 4 };
     glow(s, &rim, 15, 0x3ad07a);
-    fill(s, rim.x, rim.y, rim.w, rim.h, 0x4a9c6c);
+    fill_rect(s, &rim, 0x4a9c6c);
     for (int y = 0; y < FH; y++)
         for (int x = 0; x < FW; x++)
             fill(s, field.x + x * B, field.y + y * B, B, B, (x + y) % 2 ? 0x0d1f18 : 0x132a20);
@@ -73,7 +73,7 @@ bool draw_setup(void)
     if (!bg.px)
         return false;
     draw_background();
-    blit(&scr.s, 0, 0, &bg, 0, 0, scr.w, scr.h);
+    blit(&scr.s, 0, 0, &bg, &(struct rect){ 0, 0, scr.w, scr.h });
     return true;
 }
 
@@ -167,7 +167,7 @@ static void draw_apple(const struct game *g, uint64_t t)
 
 static void restore(const struct rect *r)
 {
-    blit(&scr.s, r->x, r->y, &bg, r->x, r->y, r->w, r->h);
+    blit(&scr.s, r->x, r->y, &bg, r);
 }
 
 static void stat(int *y, const char *label, const char *value, uint32_t c)
@@ -195,7 +195,7 @@ static void draw_message(const struct game *g)
 {
     char a[48], n[24];
     const struct surf *s = &scr.s;
-    blend(s, field.x, field.y, field.w, field.h, 0x04050c, 110);
+    blend(s, &field, 0x04050c, 110);
     const char *m1 = g->won ? "YOU WIN" : g->over ? "GAME OVER" : "PAUSED";
     struct rect r = { field.x, field.y + field.h / 2 - TEXT_H(4 * u) - 8 * u, field.w,
                       TEXT_H(4 * u) };

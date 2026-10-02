@@ -122,7 +122,7 @@ static void parts_draw(const struct surf *s)
         const struct part *p = &parts[i];
         uint32_t a = (uint32_t)(256 * p->life / p->max);
         int sz = p->size * (int)(64 + a * 3 / 4) / 256 + 1;
-        blend(s, (int)p->x - sz / 2, (int)p->y - sz / 2, sz, sz, p->c, a);
+        blend(s, &(struct rect){ (int)p->x - sz / 2, (int)p->y - sz / 2, sz, sz }, p->c, a);
     }
 }
 
@@ -227,8 +227,8 @@ static void layout(void)
 static void box(const struct surf *s, int x, int y, int w, int h, const char *label)
 {
     int r = B / 4;
-    panel(s, x - 2, y - 2, w + 4, h + 4, r + 2, 0x3b4c86, 170);
-    panel(s, x, y, w, h, r, 0x0c1022, 240);
+    panel(s, &(struct rect){ x - 2, y - 2, w + 4, h + 4 }, r + 2, 0x3b4c86, 170);
+    panel(s, &(struct rect){ x, y, w, h }, r, 0x0c1022, 240);
     if (label)
         text(s, x + B / 3, y + B / 5, ls, 0x8fa3d8, label);
 }
@@ -236,21 +236,23 @@ static void box(const struct surf *s, int x, int y, int w, int h, const char *la
 static void draw_background(void)
 {
     struct surf *s = &bg;
-    vgrad(s, 0, 0, s->w, s->h, 0x182044, 0x05060c);
+    vgrad(s, &(struct rect){ 0, 0, s->w, s->h }, 0x182044, 0x05060c);
     /* faint stars */
     uint64_t r = 12345;
     for (int i = 0; i < s->w * s->h / 3000; i++) {
         int x = (int)(rng_next(&r) % (uint64_t)s->w), y = (int)(rng_next(&r) % (uint64_t)s->h);
         uint32_t a = 30 + (uint32_t)(rng_next(&r) % 90);
         int d = a > 100 && scr.ui > 1 ? 2 : 1;
-        blend(s, x, y, d, d, 0xc8d4ff, a);
+        blend(s, &(struct rect){ x, y, d, d }, 0xc8d4ff, a);
     }
     /* the well: a glowing rim, a dark floor with a faint grid */
     for (int g = 5; g >= 1; g--)
-        panel(s, wx - 3 * g - 2, wy - 3 * g - 2, BW * B + 6 * g + 4, 20 * B + 6 * g + 4,
+        panel(s,
+              &(struct rect){ wx - 3 * g - 2, wy - 3 * g - 2, BW * B + 6 * g + 4,
+                              20 * B + 6 * g + 4 },
               B / 4 + 3 * g, 0x4a70ff, 22);
     fill(s, wx - 2, wy - 2, BW * B + 4, 20 * B + 4, 0x5a6cb0);
-    vgrad(s, wx, wy, BW * B, 20 * B, 0x0b0f20, 0x070914);
+    vgrad(s, &(struct rect){ wx, wy, BW * B, 20 * B }, 0x0b0f20, 0x070914);
     for (int x = 1; x < BW; x++)
         fill(s, wx + x * B - 1, wy, 1, 20 * B, 0x151b35);
     for (int y = 1; y < 20; y++)
@@ -286,7 +288,7 @@ bool draw_setup(void)
     if (!bg.px)
         return false;
     draw_background();
-    blit(&scr.s, 0, 0, &bg, 0, 0, scr.w, scr.h);
+    blit(&scr.s, 0, 0, &bg, &(struct rect){ 0, 0, scr.w, scr.h });
     return true;
 }
 
@@ -294,7 +296,7 @@ bool draw_setup(void)
 
 static void restore(int x, int y, int w, int h)
 {
-    blit(&scr.s, x, y, &bg, x, y, w, h);
+    blit(&scr.s, x, y, &bg, &(struct rect){ x, y, w, h });
 }
 
 /* A piece picture centred in a box (x, y, w, h). */
@@ -314,7 +316,7 @@ static void piece_at(int x, int y, int w, int h, int type, int size, bool dim)
         int cx = shape[type][0][k][0] - minx, cy = shape[type][0][k][1] - miny;
         blit_key(&scr.s, px + cx * b, py + cy * b, &sprite[size][type], KEY_PX);
         if (dim)
-            blend(&scr.s, px + cx * b, py + cy * b, b - 1, b - 1, 0x101018, 170);
+            blend(&scr.s, &(struct rect){ px + cx * b, py + cy * b, b - 1, b - 1 }, 0x101018, 170);
     }
 }
 
@@ -369,7 +371,8 @@ static void draw_stack(const struct game *g, const struct surf *well, uint64_t s
         for (int x = 0; x < BW; x++)
             if (g->cleared_cells[i][x])
                 blit_key(well, x * B, y, &sprite[SZ_WELL][g->cleared_cells[i][x] - 1], KEY_PX);
-        blend(well, 0, y, BW * B, B - 1, 0xffffff, (uint32_t)(256 * (t < 0.35 ? t / 0.35 : 1)));
+        blend(well, &(struct rect){ 0, y, BW * B, B - 1 }, 0xffffff,
+              (uint32_t)(256 * (t < 0.35 ? t / 0.35 : 1)));
         restore(wx, wy + y, x0, B - 1);
         restore(wx + x0 + w, wy + y, BW * B - x0 - w, B - 1);
     }
@@ -384,7 +387,7 @@ static void draw_glows(const struct game *g, const struct surf *well, uint64_t n
         for (int k = 0; k < 4; k++) {
             int cx = g->locked_x + shape[g->locked_type][g->locked_rot][k][0];
             int cy = g->locked_y + shape[g->locked_type][g->locked_rot][k][1] - HIDDEN;
-            blend(well, cx * B, cy * B, B - 1, B - 1, 0xffffff, a);
+            blend(well, &(struct rect){ cx * B, cy * B, B - 1, B - 1 }, 0xffffff, a);
         }
     }
     if (g->dropped_at && now - g->dropped_at < TRAIL_NS) {
@@ -397,7 +400,7 @@ static void draw_glows(const struct game *g, const struct surf *well, uint64_t n
             int y0 = top * B + (int)((bot - top) * B * ease_out(t * 1.3)), y1 = bot * B;
             for (int y = y0; y < y1; y++) {
                 uint32_t a = (uint32_t)(130 * (1 - t) * (y - y0 + 1) / (y1 - y0 + 1));
-                blend(well, cx * B + B / 5, y, B - 1 - 2 * (B / 5), 1, c, a);
+                blend(well, &(struct rect){ cx * B + B / 5, y, B - 1 - 2 * (B / 5), 1 }, c, a);
             }
         }
     }
@@ -414,10 +417,10 @@ static void draw_piece(const struct game *g, const struct surf *well)
         int cy = g->y + shape[g->type][g->rot][k][1] + d - HIDDEN;
         if (cy < 0)
             continue;
-        blend(well, cx * B, cy * B, B - 1, B - 1, c, 50);
+        blend(well, &(struct rect){ cx * B, cy * B, B - 1, B - 1 }, c, 50);
         struct surf cell = { well->px + (int64_t)cy * B * well->stride + cx * B, B - 1, B - 1,
                              well->stride };
-        frame(&cell, 0, 0, B - 1, B - 1, t, mixc(c, 0xffffff, 40));
+        frame(&cell, &(struct rect){ 0, 0, B - 1, B - 1 }, t, mixc(c, 0xffffff, 40));
     }
     for (int k = 0; k < 4; k++) {
         int cx = g->x + shape[g->type][g->rot][k][0];
@@ -449,10 +452,10 @@ static void draw_side(const struct game *g, uint32_t best, int in_y)
     stat(&y, "BEST", commas(a, sizeof(a), best), 0xb8c4f0);
     int bw = pw - 2 * (B / 3), bh = B / 4 > 4 ? B / 4 : 4;
     if (y + bh < stat_y + stat_h - B / 4) {
-        panel(s, lx + B / 3, y, bw, bh, bh / 2, 0x242c50, 256);
+        panel(s, &(struct rect){ lx + B / 3, y, bw, bh }, bh / 2, 0x242c50, 256);
         int fw = bw * (int)(g->lines % 10) / 10;
         if (fw >= bh)
-            panel(s, lx + B / 3, y, fw, bh, bh / 2, 0x4ac8ff, 256);
+            panel(s, &(struct rect){ lx + B / 3, y, fw, bh }, bh / 2, 0x4ac8ff, 256);
     }
 }
 
@@ -460,7 +463,7 @@ static void draw_side(const struct game *g, uint32_t best, int in_y)
 static void draw_message(const struct game *g, const struct surf *well)
 {
     char a[48], n[24];
-    blend(well, 0, 0, BW * B, 20 * B, 0x04050c, 190);
+    blend(well, &(struct rect){ 0, 0, BW * B, 20 * B }, 0x04050c, 190);
     const char *m1 = g->over ? "GAME OVER" : "PAUSED";
     int ts = hs, cy = 20 * B / 2 - TEXT_H(ts);
     while (ts > 1 && text_width(ts, m1) > BW * B - B)

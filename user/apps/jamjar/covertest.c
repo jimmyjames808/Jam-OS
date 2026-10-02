@@ -7,7 +7,8 @@
  * stb_image): a PNG decoded, a non-picture refused by the same helper, a
  * helper that crashes and one that hangs replaced; the scaling; and the
  * covers' states as cover.c's thread moves them
- * (a fake decoder, no thread), with art.c drawing over them. */
+ * (a fake decoder, no thread), with art.c drawing over them; and the
+ * second try of a decode that timed out (the real helper, no files). */
 #include <testpics.h>
 #include "jamjar.h"
 
@@ -264,9 +265,9 @@ static void test_helper(void)
     uint32_t src[16], dst[4];
     for (int i = 0; i < 16; i++)
         src[i] = i % 4 < 2 ? 0xffff0000u : 0x80000080u;
-    scale_pm(src, 4, 4, 4, dst, 2, 2);
+    scale_pm(&(struct picture){ src, 4, 4, 4 }, dst, 2, 2);
     ok = dst[0] == 0xffff0000u && dst[1] == 0x80000080u && dst[2] == dst[0] && dst[3] == dst[1];
-    scale_pm(src, 4, 4, 4, dst, 1, 1);   /* half and half */
+    scale_pm(&(struct picture){ src, 4, 4, 4 }, dst, 1, 1);   /* half and half */
     ok &= dst[0] == 0xc0800040u;
     fun_check(ok, "scaling down averages areas (premultiplied)");
 }
@@ -291,7 +292,7 @@ static void work_all(void)
 static bool shows(uint64_t h, const char *p, int size)
 {
     struct surf s = { spx, size, size, size };
-    art_cover(&s, 0, 0, size, h, p, C_PANEL);
+    art_cover(&s, &(struct rect){ 0, 0, size, size }, h, p, C_PANEL);
     uint32_t want = 0xff000000u | (uint32_t)(name_hash(p) & 0xffffff);
     return (spx[(size_t)size / 2 * size + size / 2] | 0xff000000u) == want;
 }
@@ -332,9 +333,67 @@ static void test_states(void)
     fun_check(ok, "  ... a copy taken away mid-draw: the picture, never the label");
 }
 
+/* The pictures test_retry's albums carry: the test PNG, or for a path
+ * with "junk" in it something that is no picture. */
+static size_t retry_pic(const char *path)
+{
+    static const char junk[] = "no picture at all";
+    uint8_t *in = decoder_buffer();
+    bool bad = strstr(path, "junk") != NULL;
+    if (!in)
+        return 0;
+    memcpy(in, bad ? (const void *)junk : test_png4, bad ? sizeof(junk) : sizeof(test_png4));
+    return bad ? sizeof(junk) : sizeof(test_png4);
+}
+
+/* Asked for small, then the thread's one job done: whether there was one. */
+static bool ask_and_work(uint64_t h, const char *p)
+{
+    (void)cover_ready(h, p, COVER_SMALL, false);
+    return cover_test_work();
+}
+
+static void pause_ms(uint64_t ms)
+{
+    jam_nanosleep(now() + ms * NS_PER_MS);
+}
+
+/* cover.c's second try, with the real helper: a decode that timed out
+ * (--hang) is tried again once, not before the retry time; a second
+ * timeout in a row, a crash or a refused picture is no cover at once. */
+static void test_retry(void)
+{
+    work_all();   /* what test_states left asked for, with its one-colour pictures */
+    cover_test_retry(retry_pic, 200 * NS_PER_MS);
+    decoder_test("--hang", 300 * NS_PER_MS);
+    bool ok = ask_and_work(0xd, "/m/D/Album/d.mp3") && !cover_test_none(0xd);
+    ok &= !cover_test_work();   /* the second try is not due yet */
+    decoder_test(NULL, 0);
+    pause_ms(250);
+    ok &= cover_test_work() && cover_ready(0xd, "/m/D/Album/d.mp3", COVER_SMALL, false) ==
+                                   COVER_SMALL_KIND;
+    fun_check(ok, "  ... a decode that timed out: tried again once, later, and kept");
+    decoder_test("--hang", 300 * NS_PER_MS);
+    ok = ask_and_work(0xe, "/m/E/Album/e.mp3") && !cover_test_none(0xe);
+    pause_ms(250);
+    ok &= cover_test_work() && cover_test_none(0xe);
+    pause_ms(250);
+    ok &= !cover_test_work();   /* no third try */
+    fun_check(ok, "  ... timed out twice in a row: no cover, no third try");
+    decoder_test("--crash", 0);
+    ok = ask_and_work(0xf, "/m/F/Album/f.mp3") && cover_test_none(0xf);
+    decoder_test(NULL, 0);
+    ok &= ask_and_work(0x10, "/m/G/Album/junk.mp3") && cover_test_none(0x10);
+    pause_ms(250);
+    ok &= !cover_test_work();
+    fun_check(ok, "  ... a crash or a refused picture: no cover at once, no second try");
+    cover_test_retry(NULL, 0);
+}
+
 void test_covers(void)
 {
     test_id3();
     test_helper();
     test_states();
+    test_retry();
 }

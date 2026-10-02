@@ -229,9 +229,10 @@ static void draw_map(void)
     int u = scr.ui, m = 12 * u;
     map_x0 = s->w - map_n - m;
     map_y0 = s->h - map_n - m - (show_help ? TEXT_H(u) + 16 * u : 0);
-    panel(s, map_x0 - 5 * u, map_y0 - 5 * u, map_n + 10 * u, map_n + 10 * u, 6 * u, 0x000000, 180);
+    panel(s, &(struct rect){ map_x0 - 5 * u, map_y0 - 5 * u, map_n + 10 * u, map_n + 10 * u },
+          6 * u, 0x000000, 180);
     struct surf mp = { map_px, map_n, map_n, map_n };
-    blit(s, map_x0, map_y0, &mp, 0, 0, map_n, map_n);
+    blit(s, map_x0, map_y0, &mp, &(struct rect){ 0, 0, map_n, map_n });
     /* the view: a rectangle (wrapping round the edges) */
     double per = (double)W / map_n;
     double vw = zl >= 0 ? (double)s->w / zpx : (double)s->w * kcells;
@@ -318,7 +319,7 @@ static void hud(uint64_t pop, uint32_t gps, uint64_t gen_us, uint32_t speed, boo
              sp, fps10 / 10, fps10 % 10);
     int w1 = text_width(3 * u, "LIFE") + pad + text_width(u, line), w2 = text_width(u, stats);
     int pw = (w1 > w2 ? w1 : w2) + 2 * pad, ph = TEXT_H(3 * u) + TEXT_H(u) + 3 * pad;
-    panel(s, pad, pad, pw, ph, 8 * u, 0x000000, 170);
+    panel(s, &(struct rect){ pad, pad, pw, ph }, 8 * u, 0x000000, 170);
     int x = text_shadow(s, 2 * pad, 2 * pad, 3 * u, 0xa8f070, "LIFE");
     text2(s, x + pad, 2 * pad + TEXT_H(3 * u) - TEXT_H(u) - 3 * u, u, 0x8890b0, 0xe8ecff, false,
           line);
@@ -331,7 +332,7 @@ static void hud(uint64_t pop, uint32_t gps, uint64_t gen_us, uint32_t speed, boo
                            "    r new soup    c clear    g glider gun    p R-pentomino    a ages"
                            "    m map    h help    q quit";
         int hw = text_width(u, help) + 2 * pad, hh = TEXT_H(u) + pad;
-        panel(s, (s->w - hw) / 2, s->h - hh - pad, hw, hh, 6 * u, 0x000000, 160);
+        panel(s, &(struct rect){ (s->w - hw) / 2, s->h - hh - pad, hw, hh }, 6 * u, 0x000000, 160);
         text(s, (s->w - hw) / 2 + pad, s->h - hh - pad + pad / 2, u, 0xb0b8d8, help);
     }
 }

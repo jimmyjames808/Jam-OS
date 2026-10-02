@@ -6,13 +6,13 @@
  * The wire format is the IDL's (tools/genidl.py): a request is u32 txid,
  * u32 ordinal = (DEVMGR_PROTOCOL_ID << 16) | method, then the arguments; a
  * reply is u32 txid, i32 status, then the results only if status is OK.
- * Hand-written rather than an abi/idl file because three replies carry
- * handles, which the generator can't express: its client stubs sit on
- * <jam/driver.h>'s drv_channel_call, which carries no handles in either
- * build. Teaching both (genidl.py and drv_channel_call in the kernel and
- * libos builds) would change the driver surface for one protocol whose
- * clients are ordinary programs; these few calls use libos's
- * jam_channel_call directly instead.
+ * Hand-written rather than an abi/idl file. Handle results are no longer
+ * the reason (genidl has them, over drv_channel_call_h); what genidl
+ * still can't express here: handle arguments (SET_CONSOLE, TEST_DISK; it
+ * refuses them on purpose), a reply with a varying number of handles
+ * (MOUNTS), and a reply held back until the mounts change (MOUNTS). The
+ * protocol moves to IDL with the interface review (M12, docs/ROADMAP.md).
+ * These calls use libos's jam_channel_call directly.
  *
  * Devices are named by vendor, device and instance (the n-th function with
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first

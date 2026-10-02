@@ -93,7 +93,7 @@ static int crash_test(void)
     pool_start(0);
     if (gfx_open() != OK)
         return 1;
-    vgrad(&scr.s, 0, 0, scr.w, scr.h, 0x700010, 0x100008);
+    vgrad(&scr.s, &(struct rect){ 0, 0, scr.w, scr.h }, 0x700010, 0x100008);
     text_shadow(&scr.s, 40, 40, scr.ui * 2, 0xffffff,
                 "tetris --crash-test: dying with the screen borrowed");
     gfx_present();
@@ -111,7 +111,7 @@ static int hang_test(void)
     pool_start(0);
     if (gfx_open() != OK)
         return 1;
-    vgrad(&scr.s, 0, 0, scr.w, scr.h, 0x001060, 0x000818);
+    vgrad(&scr.s, &(struct rect){ 0, 0, scr.w, scr.h }, 0x001060, 0x000818);
     text_shadow(&scr.s, 40, 40, scr.ui * 2, 0xffffff,
                 "tetris --hang-test: holding the screen until killed (Ctrl+C)");
     gfx_present();

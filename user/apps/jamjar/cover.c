@@ -15,8 +15,13 @@
  * least recently drawn going first) and, for an album drawn bigger than
  * that (now playing, the full jar), to COVER_LARGE too (LARGE_SLOTS).
  * An album with no picture, or one that fails, is marked so and keeps its
- * jar label (art.c). cover_render scales a kept image to the size drawn,
- * with rounded corners; art.c keeps that result.
+ * jar label (art.c). One failure is not final: a decode that timed out
+ * (on a busy machine a big picture can take JAMCOVER_TIMEOUT) is tried
+ * again once, RETRY_AFTER later; a second timeout in a row, a helper that
+ * crashed or a picture it refused is. So a picture that really hangs the
+ * decoder costs two timeouts and two new helpers, not one. cover_render
+ * scales a kept image to the size drawn, with rounded corners; art.c
+ * keeps that result.
  *
  * Sharing: `lock` (lock_take) guards the table and the slots. The thread
  * holds it only to pick work and to copy a finished image in; the UI holds
@@ -27,6 +32,7 @@
 #define SMALL_SLOTS 128u
 #define LARGE_SLOTS 2u
 #define STACK       (64u * 1024)
+#define RETRY_AFTER (5 * NS_PER_S)   /* a timed-out decode's second try, at the earliest */
 
 enum { ST_FREE, ST_WANTED, ST_LOADING, ST_READY, ST_NONE };
 
@@ -38,6 +44,8 @@ struct entry {
     uint32_t seq, lseq;              /* when last asked for (0: reading ahead) */
     int16_t  slot, lslot;            /* where its images are (-1: none) */
     uint64_t used;                   /* the draw count when last drawn */
+    uint64_t retry_at;               /* a timed-out decode's second try: not before (0: none) */
+    bool     retried;                /* the last decode timed out: the next one is the last */
 };
 
 static struct {
@@ -51,6 +59,8 @@ static struct {
     handle_t      wake;
     bool          trace;
     bool          fake;              /* the self-test: no thread, no files (fake_decode) */
+    size_t      (*test_pic)(const char *path);   /* the self-test's pictures (cover_test_retry) */
+    uint64_t      retry_after;       /* ns (0: RETRY_AFTER) */
 } C;
 
 static uint32_t tmp_small[COVER_SMALL * COVER_SMALL];   /* the thread's own */
@@ -158,7 +168,7 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        scale_pm(src, side, side, side, dst->px, size, size);
+        scale_pm(&(struct picture){ src, side, side, side }, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;
@@ -173,16 +183,23 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
 /* ---- the thread --------------------------------------------------------------------- */
 
 /* The next thing to do: the entry and whether it is for the large image;
- * -1 for nothing. Marks it loading. */
-static int next_job(bool *for_large)
+ * -1 for nothing, and then *wake_at is when a second try is due
+ * (DEADLINE_NEVER: none waits). Marks it loading. */
+static int next_job(bool *for_large, uint64_t *wake_at)
 {
     int best = -1;
     uint32_t best_seq = 0;
+    uint64_t t = now();
+    *wake_at = DEADLINE_NEVER;
     lock();
     for (uint32_t i = 0; i < ALBUMS; i++) {
         const struct entry *e = &C.tab[i];
         if (!e->hash)
             continue;
+        if (e->retry_at > t) {   /* a second try, not due yet */
+            *wake_at = e->retry_at < *wake_at ? e->retry_at : *wake_at;
+            continue;
+        }
         if (e->st == ST_WANTED && (best < 0 || e->seq > best_seq)) {
             best = (int)i;
             best_seq = e->seq;
@@ -195,6 +212,7 @@ static int next_job(bool *for_large)
     if (best >= 0) {
         struct entry *e = &C.tab[best];
         *for_large = e->st == ST_READY;
+        e->retry_at = 0;
         if (e->st == ST_WANTED)
             e->st = ST_LOADING;
         if (e->lst == ST_WANTED)
@@ -253,21 +271,35 @@ static const char *decode_why(status_t st)
     }
 }
 
-/* The picture of the track at path decoded by the helper (decoder.c),
- * cropped square and scaled into the thread's buffers. NULL on success,
- * else why not. */
-static const char *decode(const char *path, bool large, int *w, int *h)
+/* The picture of the track at path at the start of the decoder's input
+ * buffer: its length, 0 (with *why) if there is none. */
+static size_t picture(const char *path, const char **why)
 {
     uint8_t *tag;
-    const char *why;
-    size_t n = read_tag(path, &tag, &why);
+    size_t n = read_tag(path, &tag, why);
     struct id3_pic pic;
     if (!n)
-        return why;
-    if (!id3_cover(tag, n, &pic))
-        return "has no picture in its tag";
+        return 0;
+    if (!id3_cover(tag, n, &pic)) {
+        *why = "has no picture in its tag";
+        return 0;
+    }
     memmove(tag, pic.data, pic.len);   /* the helper reads it from the start */
-    status_t st = decoder_decode(pic.len, large, tmp_small, tmp_large, w, h);
+    return pic.len;
+}
+
+/* The picture of the track at path decoded by the helper (decoder.c),
+ * cropped square and scaled into the thread's buffers. NULL on success,
+ * else why not, and *timed_out says whether the helper ran out of time. */
+static const char *decode(const char *path, bool large, int *w, int *h, bool *timed_out)
+{
+    const char *why = "has no picture";
+    size_t n = C.test_pic ? C.test_pic(path) : picture(path, &why);
+    *timed_out = false;
+    if (!n)
+        return why;
+    status_t st = decoder_decode(n, large, tmp_small, tmp_large, w, h);
+    *timed_out = st == ERR_TIMED_OUT;
     return st == OK ? NULL : decode_why(st);
 }
 
@@ -299,10 +331,21 @@ static int claim(int16_t *of, uint32_t nslots, bool large, int owner)
     return pick;
 }
 
-static void store(int i, bool large, bool ok)
+/* What became of a job: its pictures kept, no cover, or a second try
+ * later (the first timeout in a row). */
+enum { DONE_OK, DONE_NONE, DONE_LATER };
+
+static void store(int i, bool large, int done)
 {
+    bool ok = done == DONE_OK;
+    uint8_t failed = done == DONE_LATER ? ST_WANTED : ST_NONE;
     lock();
     struct entry *e = &C.tab[i];
+    e->retried = done == DONE_LATER;
+    if (done == DONE_LATER) {   /* behind what is asked for meanwhile, and not before then */
+        e->seq = e->lseq = 0;
+        e->retry_at = now() + (C.retry_after ? C.retry_after : RETRY_AFTER);
+    }
     if (!large) {
         int s = ok && e->slot < 0 ? claim(C.small_of, SMALL_SLOTS, false, i) : e->slot;
         if (ok && s >= 0) {
@@ -310,7 +353,7 @@ static void store(int i, bool large, bool ok)
             C.small_of[s] = (int16_t)i;
             e->slot = (int16_t)s;
         }
-        e->st = ok && s >= 0 ? ST_READY : ST_NONE;
+        e->st = ok && s >= 0 ? ST_READY : ok ? ST_NONE : failed;
     }
     if (e->lst == ST_LOADING) {
         int s = ok && e->lslot < 0 ? claim(C.large_of, LARGE_SLOTS, true, i) : e->lslot;
@@ -319,7 +362,7 @@ static void store(int i, bool large, bool ok)
             C.large_of[s] = (int16_t)i;
             e->lslot = (int16_t)s;
         }
-        e->lst = ok && s >= 0 ? ST_READY : ST_NONE;
+        e->lst = ok && s >= 0 ? ST_READY : ok ? ST_NONE : failed;
     }
     unlock();
 }
@@ -335,27 +378,32 @@ static void fake_decode(const char *path)
         tmp_large[k] = c;
 }
 
-/* The next job done; false if there was none. */
-static bool work(void)
+/* The next job done; false if there was none, and then *wake_at is when
+ * one will be due (DEADLINE_NEVER: when one is asked for). */
+static bool work(uint64_t *wake_at)
 {
     static char path[FS_PATH_MAX];
     bool large = false;
-    int i = next_job(&large);
+    int i = next_job(&large, wake_at);
     if (i < 0)
         return false;
     lock();
     memcpy(path, C.tab[i].path, sizeof(path));
-    bool want_large = C.tab[i].lst == ST_LOADING;
+    bool want_large = C.tab[i].lst == ST_LOADING, retried = C.tab[i].retried;
     unlock();
     int w = 0, h = 0;
     uint64_t t0 = now();
     const char *why = NULL;
-    if (C.fake)
+    bool timed_out = false;
+    if (C.fake && !C.test_pic)
         fake_decode(path);
     else
-        why = decode(path, want_large, &w, &h);
-    store(i, large, !why);
-    if (C.trace && why)
+        why = decode(path, want_large, &w, &h, &timed_out);
+    bool later = timed_out && !retried;
+    store(i, large, !why ? DONE_OK : later ? DONE_LATER : DONE_NONE);
+    if (C.trace && later)
+        say("jamjar: cover: %s %s: tried again later\n", path, why);
+    else if (C.trace && why)
         say("jamjar: cover: %s %s: no cover\n", path, why);
     else if (C.trace)
         say("jamjar: cover: %s: %dx%d in %lu ms%s\n", path, w, h,
@@ -367,9 +415,10 @@ static void cover_main(void *arg)
 {
     (void)arg;
     for (;;) {
-        if (work())
+        uint64_t wake_at;
+        if (work(&wake_at))
             continue;
-        (void)jam_object_wait_one(C.wake, SIG_SIGNALED, DEADLINE_NEVER, NULL);
+        (void)jam_object_wait_one(C.wake, SIG_SIGNALED, wake_at, NULL);
         (void)jam_event_signal(C.wake, SIG_SIGNALED, 0);
     }
 }
@@ -421,5 +470,21 @@ bool cover_test_start(void)
 
 bool cover_test_work(void)
 {
-    return work();
+    uint64_t wake_at;
+    return work(&wake_at);
+}
+
+void cover_test_retry(size_t (*pic)(const char *path), uint64_t after)
+{
+    C.test_pic = pic;
+    C.retry_after = after;
+}
+
+bool cover_test_none(uint64_t hash)
+{
+    lock();
+    int i = find(hash, false);
+    bool none = i >= 0 && C.tab[i].st == ST_NONE;
+    unlock();
+    return none;
 }

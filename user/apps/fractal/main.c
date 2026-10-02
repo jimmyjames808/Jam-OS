@@ -180,12 +180,13 @@ static void hud_draw(const struct hud *h)
     /* progress: a thin line along the top while the passes run */
     if (pass_target >= 0)
         fill(s, 0, 0, (int)(s->w * progress()), 2 * u, 0xffd060);
-    panel(s, px, py, h->pw, h->ph, 8 * u, 0x000000, 165);
+    panel(s, &(struct rect){ px, py, h->pw, h->ph }, 8 * u, 0x000000, 165);
     int x = text_shadow(s, px + pad, py + pad, 2 * u, 0xffd060, "FRACTAL");
     text(s, x + pad, py + pad + TEXT_H(2 * u) - TEXT_H(u) - 2 * u, u, 0xe8ecff, h->l1);
     if (deep()) {
         int bx = px + h->pw - h->badge - pad;
-        panel(s, bx, py + pad, h->badge, TEXT_H(u) + pad / 2, 5 * u, 0xd03060, 256);
+        panel(s, &(struct rect){ bx, py + pad, h->badge, TEXT_H(u) + pad / 2 }, 5 * u, 0xd03060,
+              256);
         text(s, bx + pad, py + pad + pad / 4, u, 0xffffff, "DEEP");
     }
     int y = py + pad + TEXT_H(2 * u) + pad / 2;
@@ -198,7 +199,8 @@ static void hud_draw(const struct hud *h)
     if (note[0])
         text(s, px + pad, y, u, 0xffe070, note);
     if (show_help) {
-        panel(s, (s->w - h->hw) / 2, s->h - h->hh - pad, h->hw, h->hh, 6 * u, 0x000000, 160);
+        panel(s, &(struct rect){ (s->w - h->hw) / 2, s->h - h->hh - pad, h->hw, h->hh }, 6 * u,
+              0x000000, 160);
         text(s, (s->w - h->hw) / 2 + pad, s->h - h->hh - pad + pad / 2, u, 0xb0b8d8, help_line);
     }
 }

@@ -67,11 +67,11 @@ static void layout(const struct level *lv)
 static void draw_background(void)
 {
     struct surf *s = &bg;
-    vgrad(s, 0, 0, s->w, s->h, 0x1a2340, 0x06070d);
+    vgrad(s, &(struct rect){ 0, 0, s->w, s->h }, 0x1a2340, 0x06070d);
     /* the board: a glowing rim round a dark floor */
     struct rect rim = { board_r.x - 2, board_r.y - 2, board_r.w + 3, board_r.h + 3 };
     glow(s, &rim, 15, 0x4a70ff);
-    fill(s, rim.x, rim.y, rim.w, rim.h, 0x5a6cb0);
+    fill_rect(s, &rim, 0x5a6cb0);
     fill(s, board_r.x, board_r.y, board_r.w - 1, board_r.h - 1, 0x0a0c16);
     card(s, &hud_r, 10 * u);
     if (stats_fit && hud_r.x > 24 * u + text_width(2 * u, "MINESWEEPER")) {
@@ -88,7 +88,7 @@ bool draw_setup(const struct level *lv)
     if (!bg.px)
         return false;
     draw_background();
-    blit(&scr.s, 0, 0, &bg, 0, 0, scr.w, scr.h);
+    blit(&scr.s, 0, 0, &bg, &(struct rect){ 0, 0, scr.w, scr.h });
     return true;
 }
 
@@ -191,7 +191,7 @@ static void counter(const struct rect *r, const char *label, int value, uint32_t
 {
     const struct surf *s = &scr.s;
     char a[16];
-    panel(s, r->x, r->y, r->w, r->h, 6 * u, 0x05060c, 256);
+    panel(s, r, 6 * u, 0x05060c, 256);
     text(s, r->x + 8 * u, r->y + (r->h - TEXT_H(u)) / 2, u, 0x6b7bb0, label);
     snprintf(a, sizeof(a), "%03d", value < -99 ? -99 : value > 999 ? 999 : value);
     text(s, r->x + r->w - 8 * u - text_width(2 * u, a), r->y + (r->h - TEXT_H(2 * u)) / 2, 2 * u, c,
@@ -203,7 +203,7 @@ static void counter(const struct rect *r, const char *label, int value, uint32_t
 static void draw_open(const struct board *b, const struct rect *r, int x, int y)
 {
     bool boom = x == b->boom_x && y == b->boom_y;
-    fill(&scr.s, r->x, r->y, r->w, r->h, boom ? 0xc83030 : OPEN);
+    fill_rect(&scr.s, r, boom ? 0xc83030 : OPEN);
     if (b->cell[y][x] & CELL_MINE) {
         draw_mine(r, boom ? 0x1a1020 : STEEL);
     } else if (b->near[y][x]) {
@@ -251,7 +251,7 @@ static void draw_cells(const struct board *b, const struct view *v)
 
 static void restore(const struct rect *r)
 {
-    blit(&scr.s, r->x, r->y, &bg, r->x, r->y, r->w, r->h);
+    blit(&scr.s, r->x, r->y, &bg, r);
 }
 
 static void draw_levels(const struct view *v)

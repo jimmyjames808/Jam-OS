@@ -174,7 +174,7 @@ static void overlay(const char *scene, double fps, double zoom)
     char line[160], z[32];
     fmt_sci(z, sizeof(z), zoom);
     int bw = 8 * 58, bh = 16 * 4 + 12 + 40;
-    blend(&half, 8, 8, bw, bh, 0x000000, 192);   /* a quarter as bright */
+    blend(&half, &(struct rect){ 8, 8, bw, bh }, 0x000000, 192);   /* a quarter as bright */
     mono(16, 12, "JAM OS  -  VISUAL DEMO", rgb(255, 210, 90));
     mono(16, 30, scene, rgb(230, 230, 240));
     int f10 = (int)(fps * 10);

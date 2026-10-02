@@ -13,7 +13,7 @@ static void line_in(const struct rect *r, int scale, uint32_t c, const char *str
     if (w <= r->w)
         text(&scr.s, r->x + (r->w - w) / 2, r->y, scale, c, str);
     else
-        text_clip(&scr.s, r->x, r->y, scale, c, r->w, str);
+        text_clip(&scr.s, &(struct rect){ r->x, r->y, r->w, TEXT_H(scale) }, scale, c, str);
 }
 
 /* Beside the sunburst: the album's cover, and the title, the artist and
@@ -29,8 +29,8 @@ static void big_title(const struct app *a)
     const struct rect *ar = &lo->big_art;
     /* Its rounded corners over the background's colour at its middle. */
     uint32_t bg = mixc(C_BG, C_BG2, (uint32_t)((ar->y + ar->h / 2) * 256 / lo->h));
-    art_cover(&scr.s, ar->x, ar->y, ar->w,
-              album_hash(a->snap.path, (size_t)(slash - a->snap.path)), a->snap.path, bg);
+    art_cover(&scr.s, ar, album_hash(a->snap.path, (size_t)(slash - a->snap.path)), a->snap.path,
+              bg);
     const struct track_names *n = &a->now;
     struct rect r = lo->big_text;
     line_in(&r, 2 * u, C_CREAM, n->title);

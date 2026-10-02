@@ -13,8 +13,9 @@ static void search_box(const struct app *a)
     int u = lo->u;
     if (r->w < 60 * u)
         return;
-    panel(&scr.s, r->x, r->y, r->w, r->h, r->h / 2, a->searching ? C_BERRY1 : C_LINE, 256);
-    panel(&scr.s, r->x + u, r->y + u, r->w - 2 * u, r->h - 2 * u, r->h / 2 - u, C_PANEL, 256);
+    panel(&scr.s, r, r->h / 2, a->searching ? C_BERRY1 : C_LINE, 256);
+    panel(&scr.s, &(struct rect){ r->x + u, r->y + u, r->w - 2 * u, r->h - 2 * u }, r->h / 2 - u,
+          C_PANEL, 256);
     float cx = (float)(r->x + 18 * u), cy = (float)(r->y + r->h / 2 - u);
     ring_aa(&scr.s, cx, cy, 5.5f * u, 1.6f * u, C_DIM, 255);   /* a magnifier */
     line_aa(&scr.s, cx + 4.0f * u, cy + 4.0f * u, cx + 8.5f * u, cy + 8.5f * u, 2.0f * u, C_DIM,
@@ -24,7 +25,7 @@ static void search_box(const struct app *a)
         text(&scr.s, tx, ty, u, C_FAINT, "search   /");
         return;
     }
-    int end = text_clip(&scr.s, tx, ty, u, C_CREAM, tw, a->view.query);
+    int end = text_clip(&scr.s, &(struct rect){ tx, ty, tw, TEXT_H(u) }, u, C_CREAM, a->view.query);
     if (a->searching && (now() / (500 * NS_PER_MS)) % 2 == 0)
         fill(&scr.s, end + u, ty, 2 * u, TEXT_H(u), C_GOLD);   /* the caret */
 }
@@ -107,11 +108,11 @@ static void row_back(const struct app *a, int c, int row, const struct rect *rr)
     int u = a->lo.u;
     if (row == v->sel[c]) {
         bool focus = c == v->col;
-        panel(&scr.s, rr->x, rr->y, rr->w, rr->h, 6 * u, focus ? C_BERRY1 : C_ROW, 256);
+        panel(&scr.s, rr, 6 * u, focus ? C_BERRY1 : C_ROW, 256);
         if (focus)
             fill(&scr.s, rr->x, rr->y + 5 * u, 3 * u, rr->h - 10 * u, C_GOLD);
     } else if (c == a->hover_col && row == a->hover_row) {
-        panel(&scr.s, rr->x, rr->y, rr->w, rr->h, 6 * u, C_ROW, 140);
+        panel(&scr.s, rr, 6 * u, C_ROW, 140);
     }
 }
 
@@ -128,8 +129,8 @@ static void one_row(const struct app *a, int c, int row, const struct rect *rr)
         int sz = rr->h - 6 * u;
         uint32_t under = row == a->view.sel[c] ? (c == a->view.col ? C_BERRY1 : C_ROW) : C_PANEL;
         const struct lib_album *al = &a->lib.album[item];
-        art_cover(&scr.s, rr->x + 4 * u, rr->y + 3 * u, sz, al->hash, a->lib.track[al->first].path,
-                  under);
+        art_cover(&scr.s, &(struct rect){ rr->x + 4 * u, rr->y + 3 * u, sz, sz }, al->hash,
+                  a->lib.track[al->first].path, under);
         x = rr->x + sz + 12 * u;
     }
     int rw = right ? text_width(u, right) + 12 * u : 0;
@@ -139,7 +140,8 @@ static void one_row(const struct app *a, int c, int row, const struct rect *rr)
         rw += 16 * u;
     }
     uint32_t col = row == a->view.sel[c] ? C_CREAM : playing ? C_GOLD : C_DIM;
-    text_clip(&scr.s, x, y, u, col, rr->x + rr->w - rw - x - 4 * u, name);
+    text_clip(&scr.s, &(struct rect){ x, y, rr->x + rr->w - rw - x - 4 * u, TEXT_H(u) }, u, col,
+              name);
     if (right)
         text(&scr.s, rr->x + rr->w - text_width(u, right) - 8 * u, y, u, C_FAINT, right);
 }
@@ -163,7 +165,7 @@ static void column(const struct app *a, int c)
     }
     if (n > lo->rows) {   /* where the rows shown are in the column */
         int h = l->h * lo->rows / n, y = l->y + (l->h - h) * top / (n - lo->rows);
-        panel(&scr.s, l->x + l->w - 3 * u, y, 3 * u, h, u, C_LINE, 256);
+        panel(&scr.s, &(struct rect){ l->x + l->w - 3 * u, y, 3 * u, h }, u, C_LINE, 256);
     }
 }
 
@@ -171,7 +173,7 @@ void draw_library(struct app *a)
 {
     const struct layout *lo = &a->lo;
     int u = lo->u;
-    panel(&scr.s, lo->lib.x, lo->lib.y, lo->lib.w, lo->lib.h, 14 * u, C_PANEL, 256);
+    panel(&scr.s, &lo->lib, 14 * u, C_PANEL, 256);
     if (!a->lib.ready || !a->view_ok || !a->lib.ntracks) {
         char msg[300];
         if (!a->lib.ready)
@@ -218,12 +220,14 @@ void draw_help(const struct app *a)
     w = w > lo->w - 40 * u ? lo->w - 40 * u : w;
     struct rect r = { (lo->w - w) / 2, (lo->h - h) / 2, w, h };
     fill_pm(&scr.s, 0, 0, lo->w, lo->h, argb_pm(0x0a0709, 150));
-    panel(&scr.s, r.x - 2 * u, r.y - 2 * u, r.w + 4 * u, r.h + 4 * u, 18 * u, C_BERRY1, 256);
-    panel(&scr.s, r.x, r.y, r.w, r.h, 16 * u, C_PANEL, 256);
+    panel(&scr.s, &(struct rect){ r.x - 2 * u, r.y - 2 * u, r.w + 4 * u, r.h + 4 * u }, 18 * u,
+          C_BERRY1, 256);
+    panel(&scr.s, &r, 16 * u, C_PANEL, 256);
     text(&scr.s, r.x + 28 * u, r.y + 22 * u, 2 * u, C_GOLD, "keys");
     for (int i = 0; i < n; i++) {
         int y = r.y + 70 * u + i * lh;
         text(&scr.s, r.x + 28 * u, y, u, C_CREAM, help_keys[i][0]);
-        text_clip(&scr.s, r.x + 170 * u, y, u, C_DIM, r.w - 190 * u, help_keys[i][1]);
+        text_clip(&scr.s, &(struct rect){ r.x + 170 * u, y, r.w - 190 * u, TEXT_H(u) }, u, C_DIM,
+                  help_keys[i][1]);
     }
 }
