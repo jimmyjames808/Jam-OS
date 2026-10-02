@@ -162,5 +162,7 @@ status_t net_recv_arm(struct net_sock *s);
 /* Read s->ch: send answers are counted, and the first datagram is put in
  * *d (the next sock_recv is sent at once): OK. ERR_SHOULD_WAIT: no
  * datagram yet; ERR_PEER_CLOSED: netstack is gone (open the socket again);
- * another error: the socket's sock_recv failed (it is not sent again). */
+ * another error: the socket's sock_recv failed (it is not sent again),
+ * ERR_OUT_OF_RANGE among them when netstack said a length over
+ * NET_DGRAM_MAX. */
 status_t net_sock_take(struct net_sock *s, struct net_dgram *d);

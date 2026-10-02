@@ -272,6 +272,7 @@ bool t_netsock_limits(void);
 bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
+bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile

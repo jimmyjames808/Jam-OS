@@ -276,6 +276,55 @@ bool t_netsock_slow_reader(void)
     return true;
 }
 
+/* ---- a datagram longer than it can be (M9-REVIEW item 5) ----------------------------- */
+
+/* The sock_recv request s armed, read off the far end: its txid. */
+static bool recv_asked(handle_t far, uint32_t *txid)
+{
+    struct net_sock_recv_req q;
+    uint32_t n = 0, nh = 0;
+    CHECK_ST(drv_channel_read(far, &q, sizeof(q), &n, NULL, 0, &nh), OK);
+    CHECK(n == sizeof(q) && q.ordinal == NET_SOCK_RECV);
+    *txid = q.txid;
+    return true;
+}
+
+static bool recv_answer(handle_t far, uint32_t txid, uint16_t len)
+{
+    static struct net_sock_recv_rep r;
+    r = (struct net_sock_recv_rep){ .txid = txid, .status = OK, .address = PEER_IP,
+                                    .port = 4000, .len = len };
+    CHECK_ST(drv_channel_write(far, &r, sizeof(r), NULL, 0), OK);
+    return true;
+}
+
+/* libos's net_sock_take over a hand-made netstack: a reply saying more
+ * bytes than a datagram holds (1472) is refused, so a caller never reads
+ * past d->data; the socket then goes on. (net_recvfrom shares the check.) */
+bool t_netsock_len_lies(void)
+{
+    handle_t near, far;
+    struct net_sock s;
+    uint32_t txid;
+    CHECK_ST(jam_channel_create(&near, &far), OK);
+    net_sock_adopt(&s, near, 7000);
+    CHECK_ST(net_recv_arm(&s), OK);
+    CHECK(recv_asked(far, &txid));
+    CHECK(recv_answer(far, txid, NET_DGRAM_MAX + 1));
+    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
+    CHECK_ST(net_recv_arm(&s), OK);   /* as a caller does after a failed receive */
+    CHECK(recv_asked(far, &txid));
+    CHECK(recv_answer(far, txid, NET_DGRAM_MAX));
+    CHECK_ST(net_sock_take(&s, &dg), OK);
+    CHECK_EQ(dg.len, NET_DGRAM_MAX);
+    CHECK(recv_asked(far, &txid));   /* armed again by the take */
+    CHECK(recv_answer(far, txid, 0xffff));
+    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
+    net_close(&s);
+    jam_handle_close(far);
+    return true;
+}
+
 /* ---- a busy client (M9-REVIEW item 1) ------------------------------------------------ */
 
 struct flooder {
