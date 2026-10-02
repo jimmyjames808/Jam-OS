@@ -344,7 +344,9 @@ void chip_autoneg(struct rtl *t)
     anar &= (uint16_t)~(ANAR_10 | ANAR_10_FD | ANAR_TX | ANAR_TX_FD | ANAR_PAUSE |
                         ANAR_PAUSE_ASYM);
     mii_wr(t, MII_ANAR, anar | ANAR_10 | ANAR_10_FD | ANAR_TX | ANAR_TX_FD);
-    mii_wr(t, MII_GTCR, (uint16_t)((mii_rd(t, MII_GTCR) & ~(GTCR_1000_FDX | GTCR_1000_HDX)) |
+    /* the test mode bits cleared too: a PHY left in one sends test signals */
+    mii_wr(t, MII_GTCR, (uint16_t)((mii_rd(t, MII_GTCR) & ~(GTCR_1000_FDX | GTCR_1000_HDX |
+                                                          GTCR_TEST_MODE)) |
                                    GTCR_1000_FDX | GTCR_1000_HDX));
     mii_wr(t, MII_BMCR, BMCR_RESET | BMCR_AUTOEN | BMCR_STARTNEG);
     t->an_at = drv_clock_ns();

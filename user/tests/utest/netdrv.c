@@ -329,6 +329,75 @@ bool t_netdrv_ping_and_link(void)
     return true;
 }
 
+/* Lines in the kernel log from pos on that contain `what`; *pos moves to
+ * the end. */
+static unsigned klog_count(handle_t klog, uint64_t *pos, const char *what)
+{
+    static char buf[4096];
+    unsigned n = 0;
+    for (;;) {
+        uint64_t first = 0;
+        int64_t got = jam_klog_read(klog, *pos, buf, sizeof(buf) - 1, &first);
+        if (got <= 0)
+            return n;
+        buf[got] = 0;
+        char *end = strrchr(buf, '\n');   /* whole lines only: the rest next time */
+        if (!end)
+            return n;
+        end[1] = 0;
+        for (char *p = buf; (p = strstr(p, what)); p++)
+            n++;
+        *pos = first + (uint64_t)(end + 1 - buf);
+    }
+}
+
+/* netctl.info says the link is `up` (within WAIT). */
+static bool link_is(bool up)
+{
+    uint32_t a, m, g, d1, d2;
+    uint8_t mac[6], device = 0, link = !up;
+    for (uint64_t end = now() + WAIT; link != up && now() < end;) {
+        CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
+        if (link != up)
+            jam_nanosleep(now() + NS_PER_MS);
+    }
+    CHECK_EQ(link, up);
+    return true;
+}
+
+/* A flapping link: netstack logs the first changes and then one in 64, as
+ * the drivers do, not a line per change (M9-REVIEW item 9). */
+bool t_netdrv_link_flap(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), rd, klog;
+    if (!root || jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_ROOT_KLOG, &rd) != OK) {
+        printf("utest: %s: no RIGHT_ROOT_KLOG on our root: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(jam_klog_open(rd, &klog), OK);
+    CHECK(start());
+    uint64_t pos = UINT64_MAX;
+    char c;
+    CHECK_EQ(jam_klog_read(klog, pos, &c, 0, &pos), 0);   /* from the end of the log now */
+    for (unsigned i = 0; i < 40; i++) {
+        fk.link = i % 2 ? NETDEV_LINK_UP | NETDEV_LINK_FULL : 0;
+        fk.changes++;
+        CHECK_ST(jam_event_signal(fk.to_stack, 0, NETDEV_SIG_LINK), OK);
+        CHECK(serve(fk.session));
+        CHECK(link_is(fk.link != 0));   /* taken, before the next change is signalled */
+        if (fk.link)
+            CHECK(announced());   /* the gratuitous ARP of each link-up */
+    }
+    CHECK(ping(2, true));   /* still answering, and its lines are out by now */
+    jam_nanosleep(now() + 200 * NS_PER_MS);
+    unsigned lines = klog_count(klog, &pos, "netstack: link ");
+    CHECK(lines >= 11 && lines <= 12);   /* changes 1-11 of the session (and the 12th's note) */
+    jam_handle_close(klog);
+    jam_handle_close(rd);
+    CHECK(stop());
+    return true;
+}
+
 bool t_netdrv_restart(void)
 {
     uint32_t sessions;

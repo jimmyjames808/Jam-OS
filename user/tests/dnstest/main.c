@@ -14,11 +14,16 @@
  *               each answered in under FAST_MS
  *   answers     NXDOMAIN, a CNAME, two addresses, an address as a name, a
  *               name that can't be one, the cache
+ *   busy        a thread on a /svc/dns channel of its own keeps it full of
+ *               requests (written without waiting) while 5 names not yet
+ *               asked are each answered in under BUSY_MS: one busy asker
+ *               holds up nobody else (docs/history/M9-REVIEW.md item 2)
  * One line per check that fails and a summary line; exit 0 if none did. */
 #define CHECK_PROG "dnstest"
 #define CHECK_CUR  cur
 #include <check.h>
 #include <dns.h>
+#include <idl/dns.h>
 #include <ipv4.h>
 #include <net.h>
 #include <netbytes.h>
@@ -33,6 +38,8 @@ JAM_WANTS("svc dns\n"
 #define FAST_NAMES 20u
 #define SLOW_MIN   (9 * NS_PER_S)    /* the resolver's tries take 10 s */
 #define SLOW_WAIT  (15 * NS_PER_S)   /* the slow lookup's own deadline */
+#define BUSY_MS    1000u  /* a name asked while another asker floods (the flood shares the CPUs) */
+#define BUSY_NAMES 5u
 
 static const char *cur = "setup";
 
@@ -130,6 +137,65 @@ static bool t_answers(void)
     return true;
 }
 
+/* The busy asker: its channel kept full of requests for a name that
+ * can't be one (each answered at once), replies read and dropped. */
+static struct {
+    handle_t ch;
+    volatile bool stop;
+    uint64_t written;
+} busy;
+
+static void busy_thread(void *arg)
+{
+    (void)arg;
+    uint8_t name[256] = "a..b";
+    uint32_t txid = 0x60000000u;
+    while (!busy.stop) {
+        if (dns_resolve_send(busy.ch, ++txid, name, 1000) == OK) {
+            busy.written++;
+            continue;
+        }
+        _Alignas(8) uint8_t rep[DNS_REP_MAX];
+        struct idl_msg m;
+        while (idl_reply_read(busy.ch, rep, sizeof(rep), &m) != ERR_SHOULD_WAIT)
+            idl_msg_drop(&m);   /* the channel was full: make room */
+    }
+}
+
+static bool t_busy(void)
+{
+    static uint8_t stack[16384] __attribute__((aligned(64)));
+    cur = "busy";
+    handle_t th;
+    CHECK_ST(svc_open(SVC_DNS, &busy.ch), OK);
+    CHECK_ST(thread_spawn("busy", busy_thread, NULL, stack, sizeof(stack), &th), OK);
+    while (busy.written < 256)   /* well past a turn's budget: the flood is on */
+        jam_nanosleep(now() + NS_PER_MS);
+    uint64_t worst = 0;
+    for (unsigned i = 0; i < BUSY_NAMES; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "fast%u.jam", 100 + i);   /* not cached: a query each */
+        uint32_t addr = 0;
+        uint64_t ms;
+        CHECK_ST(timed(name, &addr, &ms), OK);
+        CHECK_EQ(addr, NET_IPV4(10, 9, 0, 100 + i));
+        if (ms >= BUSY_MS)
+            FAIL("%s took %lu ms while another asker floods", name, (unsigned long)ms);
+        worst = ms > worst ? ms : worst;
+    }
+    uint64_t before = busy.written;
+    jam_nanosleep(now() + 50 * NS_PER_MS);
+    CHECK(busy.written > before);   /* still flooding: it was served meanwhile */
+    busy.stop = true;
+    signals_t seen;
+    CHECK_ST(jam_object_wait_one(th, SIG_TERMINATED, now() + 5 * NS_PER_S, &seen), OK);
+    jam_handle_close(th);
+    jam_handle_close(busy.ch);
+    printf("dnstest: %u names answered while another asker floods, the slowest in %lu ms\n",
+           BUSY_NAMES, (unsigned long)worst);
+    return true;
+}
+
 static bool t_slow(handle_t th)
 {
     cur = "slow";
@@ -169,7 +235,7 @@ int main(int argc, char **argv)
         printf("dnstest: 0 passed, 1 failed\n");
         return 1;
     }
-    bool (*const tests[])(void) = { t_fast, t_ping, t_answers };
+    bool (*const tests[])(void) = { t_fast, t_ping, t_answers, t_busy };
     for (unsigned k = 0; k < sizeof(tests) / sizeof(tests[0]); k++)
         tests[k]() ? passed++ : failed++;
     t_slow(th) ? passed++ : failed++;

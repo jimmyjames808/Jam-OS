@@ -8,7 +8,8 @@
 #   2. `shell netsend` (tools/shell-tests/netsend.txt): the same for the
 #      send test's word;
 #   3. `shell net` (tools/shell-tests/netserve.txt): the same for the
-#      netdev service's word;
+#      netdev service's word, and a `reboot` (kexec) keeps it: the next
+#      boot's devmgr has it too;
 #   4. a plain `shell` boot: no netprobe, netsend or `net:` line and no
 #      rtl8125 anywhere in the log: without a word nothing of the driver
 #      runs.
@@ -47,6 +48,12 @@ log=$out/netserve.log
 if grep -q -e '-> drv/rtl8125' -e '\[rtl8125\]' "$log"; then
     echo "netprobe-test: the net boot bound or ran drv/rtl8125 without an RTL8125:"
     grep -e 'rtl8125' "$log"
+    ok=0
+fi
+# A reboot (kexec) keeps `net`: devmgr has the word in both boots.
+n=$(grep -c 'devmgr: net: an RTL8125' "$log" || true)
+if [ "$n" != 2 ]; then
+    echo "netprobe-test: the net boot's devmgr line $n time(s), want 2 (a reboot keeps net)"
     ok=0
 fi
 

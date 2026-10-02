@@ -135,10 +135,21 @@ status_t net_send(struct net_sock *s, const void *data, size_t len)
     return net_sendto(s, 0, 0, data, len);
 }
 
+/* A datagram netstack says is longer than d->data holds is refused, so a
+ * caller that reads d->len bytes never reads past it. */
+static status_t dgram_ok(status_t st, struct net_dgram *d)
+{
+    if (st != OK || d->len <= NET_DGRAM_MAX)
+        return st;
+    d->len = 0;
+    return ERR_OUT_OF_RANGE;
+}
+
 status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline)
 {
-    return net_sock_recv_until(s->ch, call_deadline(deadline), timeout_of(deadline), &d->addr,
-                               &d->port, &d->len, &d->dropped, d->data);
+    return dgram_ok(net_sock_recv_until(s->ch, call_deadline(deadline), timeout_of(deadline),
+                                        &d->addr, &d->port, &d->len, &d->dropped, d->data),
+                    d);
 }
 
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,
@@ -195,8 +206,8 @@ status_t net_sock_take(struct net_sock *s, struct net_dgram *d)
         if (m.txid && m.txid == s->recv_txid) {
             s->recv_txid = 0;
             if (st == OK)
-                st = net_sock_recv_result(rep, &m, &d->addr, &d->port, &d->len, &d->dropped,
-                                          d->data);
+                st = dgram_ok(net_sock_recv_result(rep, &m, &d->addr, &d->port, &d->len,
+                                                   &d->dropped, d->data), d);
             if (st == OK)
                 (void)net_recv_arm(s);   /* a full queue: the next take finds it unarmed */
             return st;

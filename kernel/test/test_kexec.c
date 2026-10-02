@@ -298,6 +298,14 @@ KTEST(kexec_next_cmdline_vlan)
     KT_ASSERT(!strcmp(buf, "vlan vlan= vlan=junk verbose"));
     kexec_next_cmdline("netprobe", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
+    /* `net` (the PC's network) is kept, so a reboot, a panic and `update`
+     * come back with the network; the one-shot tests are not. */
+    kexec_next_cmdline("shell net vlan=21", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=21 shell net"));
+    kexec_next_cmdline("netsend vlan=21", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=21"));
+    kexec_next_cmdline("network nets net=1", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, ""));
     /* Short of room: the vlan word goes in, the others as far as they fit. */
     kexec_next_cmdline("verbose nosplash vlan=off", buf, 9);
     KT_ASSERT(!strcmp(buf, "vlan=off"));

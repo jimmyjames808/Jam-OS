@@ -1,7 +1,7 @@
 # The boot word net (the boot menu's "Jam OS (network)") in
 # QEMU, which has no RTL8125: the word reaches devmgr through the kernel
 # and init, devmgr says so, binds nothing for it, and the system boots as
-# usual. tools/netprobe-test.sh runs this and checks the log for what must
+# usual; a reboot keeps the word. tools/netprobe-test.sh runs this and checks the log for what must
 # not be there.
 # Run: QEMU_INPUT=tools/shell-tests/netserve.txt tools/qemu-test.sh build/test netserve shell net
 wait 120 Jam OS shell
@@ -10,6 +10,11 @@ seen 30 devmgr: 00:04.0 1234:11e8 -> drv/edu
 wait jam>
 send devices
 wait devmgr:
+wait jam>
+# A reboot (kexec) keeps `net`: the next boot's devmgr has the word too
+# (M9-REVIEW item 3; netprobe-test.sh counts the devmgr lines: two).
+send reboot
+wait 120 Jam OS shell
 wait jam>
 send reboot -f
 wait reboot: resetting
