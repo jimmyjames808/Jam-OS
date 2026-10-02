@@ -54,7 +54,9 @@ that a bug fix comes with a test is in
   which is "full mode and a valid VLAN"; the probe's files call nothing of
   `tx.c`; the mode and the VLAN are set once, in `main.c`. It checks each
   rule against `tools/checknotx-tests/` first, counting its offences
-  there).
+  there); and the network test peer and the pcap check pass their own
+  self-tests on the host (`tools/netpeer.py --selftest`,
+  `tools/pcap-vlan-check.py --selftest`).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -68,8 +70,10 @@ and the scripts boot whatever image is there, so run `make -s image` (and
 any QEMU test: a stale image fails tests that the new code would pass.
 
 Copies `build/jamos.img`, sets the boot entry's command line, boots it
-headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device),
-waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
+headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device,
+a `virtio-rng` at 00:02.0 that no driver binds: a spare MSI-X function for
+utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
+`QEMU_NET` asks for one), waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 (serial) and `<name>.png` (the screen; needs Pillow). Environment:
 
 | Variable | Default | What |
@@ -86,6 +90,10 @@ waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
 | `QEMU_SPLASH` | 0 | 1: keep the boot splash (otherwise the boot word `nosplash` is added, so the tests see the text log) |
+| `QEMU_NET` | | `1`: a network card and the test peer ([below](#the-network-peer)); `<peer port>:<qemu port>`: the same card and pcap, with a peer you run yourself |
+| `QEMU_NET_VLAN` | 21 | the VLAN the peer and the pcap check want every frame tagged with |
+| `QEMU_NET_NONE` | 0 | 1: no frame at all may leave the guest (the `vlan=off` run) |
+| `QEMU_NET_PEER` | | more flags for `tools/netpeer.py`, e.g. `--noise 2` |
 
 Examples:
 
@@ -97,6 +105,42 @@ QEMU_XHCI=msi=on,msix=off tools/qemu-test.sh build/test msi init
 make run                                                  # interactive: the shell, a USB keyboard, serial on stdio
 make debug                                                # the same, stopped for gdb on :1234
 ```
+
+### The network peer
+
+With `QEMU_NET=1` the machine gets QEMU's e1000e (8086:10d3, its option
+ROM left out so the firmware never sends on it) on a `-netdev dgram`:
+each Ethernet frame the guest sends is one UDP datagram on 127.0.0.1 to
+`tools/netpeer.py`, and each datagram the peer sends back is a frame the
+guest receives. `tools/qemu-test.sh` picks two free UDP ports
+(`netpeer.py --free-ports 2`, so agents can test at once), starts the
+peer, and stops it when QEMU ends. QEMU's user networking (slirp) is not
+used: it doesn't speak 802.1Q, and the tests must not need the internet.
+
+The peer checks the rule ([ARCHITECTURE](../ARCHITECTURE.md#networking)):
+every frame from the guest must be tagged 802.1Q with the VLAN; an
+untagged, priority-tagged (VLAN 0), other-VLAN, QinQ, runt or over-long
+frame is logged in hex and fails the run. It strips the tag and answers
+as a small network, tagging every reply: ARP for any IPv4 address (not
+probes from 0.0.0.0 nor gratuitous ARPs), ICMP echo for any address (so
+`ping 1.1.1.1` works in QEMU), and UDP on ports that have a handler
+(`Peer.add_udp`: where DHCP, DNS, netlog and the update server hook in).
+`--noise <s>` sends, every s seconds, four frames the guest's driver must
+drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
+broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
+its counts `<name>.peer.json`.
+
+Independently, `-object filter-dump,queue=rx` writes every frame the
+guest's card sends (and none the peer sends) to `<outdir>/<name>.pcap`,
+and `tools/pcap-vlan-check.py` checks it for the same rule: two separate
+checks, sharing no code. The run fails if either finds a frame that isn't
+tagged with the VLAN, or (`QEMU_NET_NONE=1`) any frame at all.
+
+The peer also runs by hand (`--listen P --qemu Q`, its header has the
+flags), reads commands on stdin with `--stdin` (`send <hex>` tagged,
+`raw <hex>` as it is, `noise`, `stats`, `quit`), and is a module for test
+scripts (`sys.path` with `tools/`, `import netpeer`: `Peer`, the frame
+builders, `classify`).
 
 ## The boot menu
 
