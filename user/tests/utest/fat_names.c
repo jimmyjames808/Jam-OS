@@ -3,7 +3,9 @@
  * with spaces, a lowercase name coming back in capitals, two long names
  * that share their first six letters ending up with the same alias, and
  * characters FAT forbids being accepted. Also here: names in UTF-8,
- * lookups without case, and paths that are not paths. */
+ * lookups without case, paths that are not paths, and control characters
+ * that another computer wrote into a name or the label, which fat never
+ * hands out as they are. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -160,5 +162,43 @@ bool t_fat_names(void)
     if (!dir_count(&r, "/", "My Notes.txt", &count, &found))
         return false;
     CHECK(!found && count == 9);
+    return fat_stop(&r) && ramdisk_destroy(&disk);
+}
+
+/* The first place in rd's sectors holding the n bytes at pat, or NULL. */
+static uint8_t *find_bytes(const struct ramdisk *rd, const void *pat, size_t n)
+{
+    uint64_t size = rd->blocks * RAMDISK_SECTOR;
+    for (uint64_t i = 0; i + n <= size; i++)
+        if (!memcmp(rd->mem + i, pat, n))
+            return rd->mem + i;
+    return NULL;
+}
+
+/* A name with ESC in it and a label with ESC in it, written straight onto
+ * the disk as another computer could: readdir and statfs say '?' instead. */
+bool t_fat_names_shown(void)
+{
+    struct fatrun r;
+    char name[FS_PATH_MAX];
+    bool is_dir;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false) ||
+        !put_file(&r, "/esc-Q-name.txt", "x") || !fat_stop(&r))
+        return false;
+    /* The long name's "c-Q" in UTF-16, and the label's "JAMOS" in the root
+     * directory's volume-label entry. */
+    uint8_t *q = find_bytes(&disk, "c\0-\0Q\0", 6), *l = find_bytes(&disk, "JAMOS-DATA ", 11);
+    CHECK(q != NULL && l != NULL);
+    q[4] = 0x1b;
+    while ((l = find_bytes(&disk, "JAMOS-DATA ", 11)) != NULL)
+        l[0] = 0x1b;   /* the boot sector's copy too */
+    CHECK(fat_start_plain(&r, &disk, true));
+    CHECK_ST(t_readdir(&r, "/", 0, name, &is_dir), OK);
+    if (strcmp(name, "esc-?-name.txt"))
+        FAIL("readdir gives \"%s\"", name);
+    uint8_t label[16] = { 0 };
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, NULL, label), OK);
+    if (strcmp((const char *)label, "?AMOS-DATA"))
+        FAIL("statfs's label is \"%s\"", (const char *)label);
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }

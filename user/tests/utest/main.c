@@ -606,6 +606,7 @@ static const struct {
     { "fat_files", t_fat_files },
     { "fat_dirs", t_fat_dirs },
     { "fat_names", t_fat_names },
+    { "fat_names_shown", t_fat_names_shown },
     { "fat_full_disk", t_fat_full_disk },
     { "fat_read_only", t_fat_read_only },
     { "fat_not_formatted", t_fat_not_formatted },

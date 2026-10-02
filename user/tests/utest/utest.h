@@ -183,6 +183,7 @@ bool t_fat_format(void);
 bool t_fat_files(void);
 bool t_fat_dirs(void);
 bool t_fat_names(void);
+bool t_fat_names_shown(void);
 bool t_fat_full_disk(void);
 bool t_fat_read_only(void);
 bool t_fat_not_formatted(void);
