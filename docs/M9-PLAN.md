@@ -1857,18 +1857,99 @@ the boot stick's ESP, so it survives a power-off.
   which is whole and checked before the switch begins. Only during the
   switch's few directory writes can the default entry be without a kernel
   or have the new kernel with the old boot image.
-- **What the read-back proves**: it reads through fat, whose cache may
-  answer it, so it checks what fat was given and wrote, not the flash.
-- **Measured in QEMU** (2026-10-02, `tools/update-write-test.sh`): the
-  whole write of a 10 MB build took about 17 s on QEMU's emulated USB
-  stick; the fetch over the network 1.3 s. The PC's stick will differ.
+- **What is skipped**: nothing is written if the stick's build is the new
+  one already (`update -w` of the same build again), and the previous
+  build isn't copied again if it is the stick's build already (a write
+  that stopped after that step). Both are found by sizes first, then read
+  and hashed.
+- **What the read-back proves**: it reads through fat. fat's cache keeps
+  only lines a read made (a write never makes one, held writes included),
+  so for files this size the read-back is mostly the stick's own answer,
+  not fat's memory; it still can't tell the stick's cache from its flash.
+  It costs about 0.5 s of the write in QEMU, and is kept.
+- **Time**: one deadline over the write. Every call (file reads and
+  writes included) ends by it: the steps get 120 s in all, the clean-up
+  after a failure 60 s more, the remount back read-only 30 s, so bin/update
+  (which waits 300 s) always gets its answer; a write that runs out of
+  time is "not written" (`ERR_TIMED_OUT`), with the stick booting its old
+  build. Each step and file logs its time (`init: update: write: ...`),
+  and a long file how far it is every 2 s.
 - **Tests**: `tools/update-write-test.sh` (four cold boots of one stick
   image: each step's failure injected by updtest's test flag,
   `UPDATE_OFFER_FAIL`; `update -w` over the network; the written stick
-  booting B, its previous-build entry booting A) and
+  booting B, its previous-build entry booting A),
+  `tools/update-pc-test.sh` (the PC's setup: a throttled stick, a second
+  stick at `/usb0`; fast, again, stuck and reboot-while-writing runs) and
   `tools/update-test.sh` (a keyless build refuses `-w`);
   `tools/flash-test.sh` (`make flash` keeps the previous build)
   ([TESTING](TESTING.md#area-scripts)).
+
+### update -w on the PC: the "hang" and the fix
+
+**The PC run** (2026-10-02 20:07, build b050c6a; the boot stick is disk 9,
+the owner's SanDisk disk 10 at `/usb0`, one FAT32 partition of type 0b):
+`update -n` worked (signature 90 us). `update -w` said "stored; writing it
+to the stick", devmgr made the ESP writable and its fat mounted
+read-write at 149.94 s, and then nothing more came from init, fat or
+devmgr for the rest of the log (546 s; the owner stopped `update` at
+403 s). No usb-storage error or time-out was logged: the stick kept
+answering.
+
+**The cause**: no deadlock (init's worker talks only to devmgr's ESP
+channel and the ESP's fat, each reply matched to its call by the kernel;
+init's loop kept serving; the second stick plays no part, devmgr picks
+the boot disk's ESP alone). The write was simply that slow, and said
+nothing while it went. FatFs writes a file a cluster at a time, and the
+ESP's clusters are one 512-byte sector (mformat's choice for 63 MiB), so
+keeping the previous build and writing the new one was about 40,000
+one-sector WRITE commands, plus the FAT sectors freed and chained. A cheap
+USB 2 stick's small writes cost milliseconds each. `tools/update-pc-test.sh`
+reproduces it with a stick throttled to 100 write commands a second: the
+write took 445 s at 46 KB/s, and `update` gave up after 300 s ("init
+didn't answer"), as on the PC.
+
+**The fix** (each its own commit, with its test):
+
+- fat holds back the writes of a file opened `FS_GATHER` (`<os.h>`; fat's
+  `hold.c`): up to a MiB of the file and the FAT sectors that chain it,
+  sent in runs, in the order the runs began (the data before the FAT
+  sectors, the directory entry later still, at the sync), 64 KiB per
+  block write. init's `.new` files are opened `FS_GATHER`. A failed held
+  write stops fat writing at all and leaves the volume dirty (FatFs would
+  otherwise be ahead of the disk).
+- an unlink's writes are held and sent together before it is answered
+  (freeing a 6 MB boot image was 200 FAT-sector writes);
+- a read made while writes are held keeps the FAT write it causes with
+  them, and init copies the previous build a MiB at a time (read, then
+  write);
+- usb-bus's bulk buffer is 68 KiB, so a 64 KiB block request is one SCSI
+  command, not two;
+- one deadline over the write (above), and nothing written that the
+  stick has already.
+
+**Measured in QEMU** (`tools/update-pc-test.sh`, a stick throttled to 100
+write commands a second and 10 MB/s, 10.4 MB build): the stick write
+445 s before, 18.9 s with `FS_GATHER`, 9.0 s with the held unlinks and
+reads and the MiB copy, 5.9 s with the bigger bulk buffer (keeping the
+previous build 3.0 s, the new build 2.7 s, the switch 0.2 s). The fetch
+is 0.5 s. With 3 write commands a second the write stops at 120 s and
+`update` answers "not written" at 135 s; `update -w` of the build the
+stick has takes 0.4 s. On QEMU's unthrottled stick the write took about
+17 s before.
+
+**What the next PC run should show** (the netlog): after "writing it to
+the stick", a line per step and file, each with its time:
+`init: update: write: the ESP is writable (OK) in N ms`, `making room
+...`, `N KiB free, ...`, `keeping the stick's build as the previous one
+...`, `boot/prev-jamos.elf.new: 3658 of 3658 KiB written in N ms, synced
+and closed in N ms (OK)` (and, for a long one, `... N of M KiB written, N
+ms so far` every 2 s), `... read and hashed in N ms`, the renames, `the
+ESP synced`, the same for `writing the new build`, `switching the names
+...`, `the ESP read-only again in N ms`; then fat's `fat /esp: N sectors
+held back went out in N block writes` and `the stick write took N ms`.
+If the stick is far slower than QEMU's model, the lines show which step
+and how fast, and after 120 s the answer is "not written" with the stick
+booting its old build.
 
 ## Where tracks meet
 

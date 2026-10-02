@@ -1447,7 +1447,9 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   there, and after the switch has begun puts the old build back under
   the default names (copied again from the previous build) while the
   ESP's fat still answers. The read-back goes through fat, whose cache
-  may answer it.
+  may answer it. Every call of the write ends by one deadline (120 s for
+  the steps, 60 s for the clean-up after a failure), so `update -w`
+  always gets an answer; each step logs its time.
 - Write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
   a miss reads 4 KiB, and twice as much as the last one when it carries
@@ -1458,6 +1460,15 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   so the cache never holds anything the stick doesn't (sticks get
   pulled). A big read (a whole 64 KiB) goes past it. Nobody else writes a
   partition while its fat runs, so the cache never goes stale.
+- The exception is a file opened `FS_GATHER` (`<os.h>`), which only init's
+  ESP write uses: FatFs writes a file a cluster at a time, one sector on
+  the ESP, and a cheap stick takes milliseconds per write command, so its
+  writes are held in fat (`user/services/fat/hold.c`, about a MiB) and go
+  out in 64 KiB writes, in the order above, at its sync or close (or when
+  anything else writes, or the hold is full). A pulled stick loses what
+  was held; a held write that fails stops fat writing until it starts
+  again. An unlink's FAT writes are held the same way, and sent before it
+  is answered.
 - The FAT "clean shutdown" bit is cleared on the stick before the first
   sector written after a sync, and set again once everything is flushed (a
   sync, the last written file closed, a clean stop). A volume found dirty

@@ -40,9 +40,10 @@
  * service still answers; if it doesn't, the old build boots from "Jam OS
  * (previous build)". The answer says which (enum update_stick).
  *
- * The read-back goes through the ESP's service, which may answer from its
- * cache: it proves what the service was given and wrote, not the flash's
- * cells.
+ * The read-back goes through the ESP's service. Its cache keeps only lines
+ * a read made (a write never makes one), so for files this size it is
+ * mostly the stick's answer; it can't tell the stick's own cache from its
+ * flash cells.
  *
  * Time. Every call waits at most until the write's deadline (until()):
  * the steps get WRITE_LIMIT in all, the clean-up after a failure
