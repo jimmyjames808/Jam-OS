@@ -21,9 +21,13 @@
 #                 init refuses it
 #   7. othernet   again, with `update -f -n`: taken when forced, checked,
 #                 nothing loaded
-#   8. `update -n`: build B fetched and checked, old -> new said, nothing
+#   8. mustknow   the manifest (signed) has a must-understand line no build
+#                 knows: init refuses it, the build needs a newer one
+#   9. extension  the manifest (signed) has an extension line no build
+#                 knows, with `update -n`: skipped, B checked
+#  10. `update -n`: build B fetched and checked, old -> new said, nothing
 #                 loaded
-#   9. `update`: build B stored and the shell reboots into it (kexec); the
+#  11. `update`: build B stored and the shell reboots into it (kexec); the
 #      next boot's `version` is B's, and /boot/update-marker.txt is there.
 # Build A (the stick's) has a throwaway test key's public half
 # (tools/update-test-key.sh), and the server signs every manifest with it;
@@ -74,7 +78,8 @@ python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
 cat > "$out/updnet.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img",
  "key": "$out/testkey/key1/update.key",
- "plan": ["damage", "wronghash", "truncated", "gone", "badsig", "othernet", "othernet"]}
+ "plan": ["damage", "wronghash", "truncated", "gone", "badsig", "othernet", "othernet",
+          "mustknow", "extension"]}
 EOF
 echo "update-net-test: build A $va, build B $vb"
 
@@ -104,6 +109,13 @@ send update
 wait 120 update: init refused it: its network default is
 wait jam>
 send update -f -n
+wait 120 -> $vb (b0b0b0b): checked by init in
+wait not loaded (-n)
+wait jam>
+send update
+wait 120 update: init refused it: it needs a newer build than this one to take it (it has "!future-must"
+wait jam>
+send update -n
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait not loaded (-n)
 wait jam>
@@ -139,15 +151,17 @@ log="$out/updnet.log"
     fail "not 2 SHA-256 refusals logged by init"
 [ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 1 ] ||
     fail "not exactly one build loaded (the last one)"
-[ "$(grep -ac "init: update: .* and not loaded (check only)" "$log")" -eq 2 ] ||
-    fail "init didn't say the two -n checks loaded nothing"
+[ "$(grep -ac "init: update: .* and not loaded (check only)" "$log")" -eq 3 ] ||
+    fail "init didn't say the three -n checks loaded nothing"
+grep -aq "init: update: refused: it needs a newer build than this one to take it (it has \"!" \
+    "$log" || fail "init didn't refuse the must-understand line"
 [ "$(grep -ac "init: update: refused: its network default is" "$log")" -eq 1 ] ||
     fail "init didn't refuse the other network default"
 grep -aq "init: update: its network default is .*: taken (forced)" "$log" ||
     fail "init didn't take the other network default with -f"
 [ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 1 ] ||
     fail "the changed manifest wasn't refused for its signature"
-for plan in damage wronghash truncated gone badsig othernet good; do
+for plan in damage wronghash truncated gone badsig othernet mustknow extension good; do
     grep -aq "gets the plan '$plan'" "$out/updnet.peer.log" ||
         fail "the server never served the plan $plan"
 done

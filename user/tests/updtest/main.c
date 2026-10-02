@@ -176,8 +176,10 @@ static void expect(const char *name, const struct build *b, unsigned handles, ui
         failures++;
     bool per_file = a.why == UPDATE_BAD_SIZE || a.why == UPDATE_SHORT_VMO ||
                     a.why == UPDATE_BAD_HASH;
-    printf("updtest: %s: %s%s%s (%s, %s) %s\n", name, st == OK ? update_why_str(a.why) : "-",
-           per_file ? ": " : "", per_file ? update_file_name(a.file) : "",
+    a.needs[sizeof(a.needs) - 1] = '\0';
+    printf("updtest: %s: %s%s%s%s%s (%s, %s) %s\n", name,
+           st == OK ? update_why_str(a.why) : "-", per_file ? ": " : "",
+           per_file ? update_file_name(a.file) : "", a.needs[0] ? ": " : "", a.needs,
            status_str(st == OK ? a.status : st), a.version[0] ? a.version : "no version",
            ok ? "as expected" : "FAILED");
 }
@@ -264,7 +266,7 @@ static void bad_manifests(const struct build *b)
     bad_manifest(b, "short signature", text, at + 15, UPDATE_BAD_MANIFEST);
     memcpy(text, b->manifest, n);
     text[13] = '3';   /* "jamos-update 3" */
-    bad_manifest(b, "another format", text, n, UPDATE_BAD_MANIFEST);
+    bad_manifest(b, "another format", text, n, UPDATE_NEEDS_NEWER);
     memcpy(text, b->manifest, n);
     memcpy(text + at, "signature\n", 10);
     bad_manifest(b, "unsigned manifest", text, at + 10, UPDATE_UNSIGNED);
@@ -328,6 +330,47 @@ static void other_net(const struct build *b)
     v.flags = UPDATE_OFFER_FORCE | UPDATE_OFFER_CHECK_ONLY;
     expect("another network default, forced (check only)", &v, 2, UPDATE_OFFER_MAGIC,
            UPDATE_ACCEPTED, 0);
+}
+
+/* b with the signed manifest in DIR file instead, into *v. */
+static status_t other_manifest(const struct build *b, const char *file, struct build *v)
+{
+    *v = *b;
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(file, UPDATE_MANIFEST_MAX, &m, &n);
+    if (st == OK) {
+        st = jam_vmo_read(m, 0, v->manifest, n);
+        jam_handle_close(m);
+        v->manifest_len = (uint32_t)n;
+    }
+    if (st != OK) {
+        failures++;
+        printf("updtest: no %s (%s): FAILED\n", file, status_str(st));
+    }
+    return st;
+}
+
+/* Extension lines (<update.h>): the build's manifest signed with one no
+ * build knows (DIR "manifest-ext"): taken (check only); with a
+ * must-understand one (DIR "manifest-must"): refused, needing a newer
+ * build, and the same changed after signing: refused for the signature. */
+static void extension_lines(const struct build *b)
+{
+    struct build v;
+    if (other_manifest(b, DIR "manifest-ext", &v) == OK) {
+        v.flags = UPDATE_OFFER_CHECK_ONLY;
+        expect("an extension line (check only)", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    }
+    if (other_manifest(b, DIR "manifest-must", &v) != OK)
+        return;
+    v.flags = UPDATE_OFFER_CHECK_ONLY;
+    expect("a must-understand line", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NEEDS_NEWER, 0);
+    char *line = strstr((char *)v.manifest, "\n!");
+    if (line)
+        line[2] = line[2] == 'x' ? 'y' : 'x';   /* the line's first letter: signed */
+    expect("a must-understand line, changed after signing", &v, 2, UPDATE_OFFER_MAGIC,
+           line ? UPDATE_BAD_SIGNATURE : UPDATE_ACCEPTED, 0);
 }
 
 /* Two files that match their signed manifest exactly but are no kernel
@@ -423,6 +466,7 @@ static void bad(struct build *b)
     expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
     b->flags = 0;
     other_net(b);
+    extension_lines(b);
     if (st == OK)
         expect("not a kernel", &nak, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
 }

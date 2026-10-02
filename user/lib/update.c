@@ -176,17 +176,23 @@ static bool key_char(uint8_t ch)
 
 /* One extension line ("<key>" or "<key> <value>\n") taken, if the next
  * line is one: OK; ERR_NOT_FOUND if the next line is one of format 2's
- * (left for the caller); ERR_INVALID_ARGS if it is neither. */
-static status_t take_extension(struct cur *c)
+ * (left for the caller); ERR_INVALID_ARGS if it is neither. A
+ * must-understand line ('!' and a key) goes in needs, if needs is empty:
+ * this build knows none. */
+static status_t take_extension(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1])
 {
-    size_t n = word_len(c);
+    size_t n = word_len(c), from = n && c->p[0] == '!';
     if (base_key(c->p, n))
         return ERR_NOT_FOUND;
-    if (!n || n > UPDATE_EXT_KEY_MAX)
+    if (n <= from || n > UPDATE_EXT_KEY_MAX)
         return ERR_INVALID_ARGS;
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = from; i < n; i++)
         if (!key_char(c->p[i]))
             return ERR_INVALID_ARGS;
+    if (from && !needs[0]) {
+        memcpy(needs, c->p, n);
+        needs[n] = '\0';
+    }
     c->p += n;
     if (take_text(c, " ")) {
         size_t v = 0;
@@ -200,11 +206,12 @@ static status_t take_extension(struct cur *c)
 }
 
 /* Every extension line before the next line of format 2's (a later
- * build's additions: skipped, unknown to this one). */
-static status_t skip_extensions(struct cur *c)
+ * build's additions: skipped, unknown to this one; the first
+ * must-understand one into needs). */
+static status_t skip_extensions(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1])
 {
     status_t st;
-    while ((st = take_extension(c)) == OK)
+    while ((st = take_extension(c, needs)) == OK)
         ;
     return st == ERR_NOT_FOUND ? OK : st;
 }
@@ -232,23 +239,32 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
     struct update_manifest m;
     memset(&m, 0, sizeof(m));
     status_t st = take_format(&c);
+    if (st == ERR_NOT_SUPPORTED) {   /* another format: its first line is what we'd need */
+        const uint8_t *first = text;   /* "jamos-update " and digits: take_format saw them */
+        size_t n = 0;
+        while (n < len && n < UPDATE_EXT_KEY_MAX && first[n] != '\n')
+            n++;
+        memcpy(out->needs, first, n);
+        out->needs[n] = '\0';
+        return st;
+    }
     if (st == OK)
-        st = skip_extensions(&c);
+        st = skip_extensions(&c, m.needs);
     if (st != OK)
         return st;
     if (!take_text(&c, "version ") ||
         !take_word(&c, version_char, m.version, UPDATE_VERSION_MAX) || !take_text(&c, "\n") ||
-        skip_extensions(&c) != OK)
+        skip_extensions(&c, m.needs) != OK)
         return ERR_INVALID_ARGS;
     if (!take_text(&c, "git ") || !take_word(&c, git_char, m.git, UPDATE_GIT_MAX) ||
-        !git_ok(m.git) || !take_text(&c, "\n") || skip_extensions(&c) != OK)
+        !git_ok(m.git) || !take_text(&c, "\n") || skip_extensions(&c, m.needs) != OK)
         return ERR_INVALID_ARGS;
-    if (!take_net(&c, m.net) || skip_extensions(&c) != OK)
+    if (!take_net(&c, m.net) || skip_extensions(&c, m.needs) != OK)
         return ERR_INVALID_ARGS;
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         if ((st = take_file(&c, f, &m)) != OK)
             return st;
-        if (skip_extensions(&c) != OK)
+        if (skip_extensions(&c, m.needs) != OK)
             return ERR_INVALID_ARGS;
     }
     m.signed_len = (size_t)(c.p - (const uint8_t *)text);
@@ -317,6 +333,7 @@ const char *update_why_str(uint32_t why)
                                  "changed)",
         [UPDATE_NOT_WRITTEN] = "loaded, but the stick write failed",
         [UPDATE_NET_CHANGE] = "its network default isn't this build's",
+        [UPDATE_NEEDS_NEWER] = "it needs a newer build than this one to take it",
     };
     return why < UPDATE_WHY_COUNT ? words[why] : "?";
 }

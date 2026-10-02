@@ -8,8 +8,11 @@
 #      short-signed or future manifest, an unsigned one, one changed after
 #      signing, one signed by another key, one with another manifest's
 #      signature, a malformed offer, one signed as saying the other network
-#      default, two files that match their signed manifest but are no
-#      kernel), and the good build offered check only (accepted, not
+#      default, one with a must-understand line (`!future-must`, signed:
+#      "needs a newer build"; changed after signing: the signature), two
+#      files that match their signed manifest but are no kernel), the
+#      manifest with an extension line no build knows, signed (taken,
+#      check only), and the good build offered check only (accepted, not
 #      loaded), and the other-network one forced and check only (accepted,
 #      not loaded); then `reboot` (kexec): the stored kernel was
 #      left alone, so the next boot is the stick's build (no
@@ -51,7 +54,11 @@ python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.im
     python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
         --key "$key2" > "$out/manifest-otherkey" &&
     python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
-        --net "$othernet" --key "$key1" > "$out/manifest-othernet" ||
+        --net "$othernet" --key "$key1" > "$out/manifest-othernet" &&
+    python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
+        --extra "future-note no build knows this line" --key "$key1" > "$out/manifest-ext" &&
+    python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
+        --extra "!future-must 1" --key "$key1" > "$out/manifest-must" ||
     { echo "update-test: no manifest"; exit 1; }
 # Two files that are no kernel (updtest makes the same bytes), signed.
 python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x55" * 8192);
@@ -61,7 +68,8 @@ open(sys.argv[2], "wb").write(b"\xaa" * 4096)' "$out/nak.elf" "$out/nak.img" &&
     { echo "update-test: no manifest for the files that are no kernel"; exit 1; }
 mmd -i "$stick@@64M" ::/update &&
     mcopy -i "$stick@@64M" "$out/manifest" "$out/manifest-otherkey" \
-        "$out/manifest-othernet" "$out/nak.manifest" ::/update/ &&
+        "$out/manifest-othernet" "$out/manifest-ext" "$out/manifest-must" \
+        "$out/nak.manifest" ::/update/ &&
     mcopy -i "$stick@@64M" build/jamos.elf ::/update/jamos.elf &&
     mcopy -i "$stick@@64M" "$out/bootfs-marked.img" ::/update/bootfs.img ||
     { echo "update-test: can't write the stick's /data"; exit 1; }
@@ -103,10 +111,17 @@ QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.tx
     fail "the script (see $out/update.log)"
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
-[ "$(grep -ac "init: update: refused: " "$log")" -eq 18 ] ||
-    fail "not 17 refusals logged by init"
-[ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 3 ] ||
-    fail "not 3 refusals for the signature"
+[ "$(grep -ac "init: update: refused: " "$log")" -eq 20 ] ||
+    fail "not 20 refusals logged by init"
+[ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 4 ] ||
+    fail "not 4 refusals for the signature"
+needs="init: update: refused: it needs a newer build than this one to take it (it has"
+grep -aq "$needs \"!future-must\"" "$log" ||
+    fail "the must-understand line wasn't refused for that"
+grep -aq "$needs \"jamos-update 3\"" "$log" ||
+    fail "another format wasn't refused as needing a newer build"
+grep -aq "updtest: an extension line (check only): accepted" "$log" ||
+    fail "a manifest with an extension line wasn't taken"
 [ "$(grep -ac "init: update: refused: the manifest is not signed" "$log")" -eq 1 ] ||
     fail "the unsigned manifest wasn't refused for that"
 grep -aq "init: update: refused: its network default is $othernet, this build's $net" "$log" ||

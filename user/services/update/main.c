@@ -245,6 +245,13 @@ static int say_answer(const struct update_answer *a, uint32_t flags, const char 
                a->net_running[0] ? a->net_running : "not known");
         return 1;
     }
+    if (a->why == UPDATE_NEEDS_NEWER) {
+        printf("update: init refused it: it needs a newer build than this one to take it (it "
+               "has \"%.*s\", which this build doesn't know); the running build is "
+               "unchanged\n",
+               (int)UPDATE_EXT_KEY_MAX, a->needs);
+        return 1;
+    }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
                     a->why == UPDATE_BAD_HASH;
     printf("update: init refused it: %s%s%s (%s); the running build is unchanged\n",

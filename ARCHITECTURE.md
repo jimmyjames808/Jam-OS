@@ -999,8 +999,12 @@ stable base: those lines keep their meaning for good. Anything a later
 build adds goes in a new extension line (`<key> [<value>]`, anywhere
 before the signature line, signed with the rest), which a build that
 doesn't know it skips, so an older build always takes a newer build's
-manifest and `update` moves it forward. Only a change of the signature
-scheme itself would need a new format, and then a `make flash`.
+manifest and `update` moves it forward. A line the running build must
+act on to run the new one right is a must-understand line (its key
+starts with `!`): a build that doesn't know it refuses the update, once
+the signature has checked out, and says which line it needs ("needs a
+newer build"); it never skips one. Only a change of the signature scheme
+itself would need a new format, and then a `make flash`.
 
 **What each process holds:**
 

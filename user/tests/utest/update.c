@@ -39,6 +39,32 @@ static status_t edited(const char *from, const char *to, struct update_manifest 
     return update_manifest_parse(text, strlen(text), m);
 }
 
+/* Must-understand lines ('!'): the manifest parses (the signature is
+ * still to be checked), and needs names the first one, which init then
+ * refuses; another format is refused at once, named the same way. */
+static bool manifest_must_understand(void)
+{
+    struct update_manifest m;
+    CHECK_ST(edited("net vlan21\n", "net vlan21\n!new-boot-rule yes\nnote 1\n!other\n", &m), OK);
+    CHECK(!strcmp(m.needs, "!new-boot-rule"));
+    CHECK(!strcmp(m.net, "vlan21") && m.file[UPDATE_BOOTFS].size == 5);
+    CHECK_ST(edited("signature\n", "!k234567890123456789012345678901\nsignature\n", &m), OK);
+    CHECK_EQ(strlen(m.needs), UPDATE_EXT_KEY_MAX);
+    static const char *const bad[] = {
+        "!\n", "!Up 1\n", "!!x\n", "! x\n", "!k2345678901234567890123456789012\n",
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char with[64];
+        snprintf(with, sizeof(with), "%ssignature\n", bad[i]);
+        if (edited("signature\n", with, &m) != ERR_INVALID_ARGS)
+            FAIL("the must-understand line %u (\"%s\") wasn't refused", i, bad[i]);
+    }
+    memset(&m, 0, sizeof(m));
+    CHECK_ST(edited("jamos-update 2", "jamos-update 3", &m), ERR_NOT_SUPPORTED);
+    CHECK(!strcmp(m.needs, "jamos-update 3"));
+    return true;
+}
+
 /* Extension lines (a later build's): skipped wherever format 2 allows
  * them, and still inside what the signature covers; the format's own
  * lines read as before. */
@@ -72,7 +98,8 @@ static bool manifest_extensions(void)
     CHECK_ST(edited("signature\n", with, &m), OK);
     snprintf(with, sizeof(with), "%.*sv\nsignature\n", (int)(sizeof(line) - 2), line);
     CHECK_ST(edited("signature\n", with, &m), ERR_INVALID_ARGS);   /* a value a byte longer */
-    return true;
+    CHECK(!m.needs[0]);
+    return manifest_must_understand();
 }
 
 bool t_update_manifest(void)

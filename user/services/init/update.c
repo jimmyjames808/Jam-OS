@@ -226,6 +226,11 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
 {
     const struct update_offer *o = c->o;
     status_t st = update_manifest_parse(o->manifest, o->manifest_len, &c->m);
+    if (st == ERR_NOT_SUPPORTED) {   /* another format: no signature to check by */
+        refuse(&c->a, UPDATE_NEEDS_NEWER, 0, st);
+        memcpy(c->a.needs, c->m.needs, sizeof(c->a.needs));
+        return false;
+    }
     if (st != OK) {
         refuse(&c->a, UPDATE_BAD_MANIFEST, 0, st);
         return false;
@@ -239,6 +244,13 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
     c->verify_us = (now() - t0) / 1000;
     if (st != OK) {
         refuse(&c->a, UPDATE_BAD_SIGNATURE, 0, st);
+        return false;
+    }
+    if (c->m.needs[0]) {   /* signed, and asks for what this build can't do: never skipped */
+        refuse(&c->a, UPDATE_NEEDS_NEWER, 0, ERR_NOT_SUPPORTED);
+        memcpy(c->a.needs, c->m.needs, sizeof(c->a.needs));
+        memcpy(c->a.version, c->m.version, sizeof(c->a.version));   /* signed: said */
+        memcpy(c->a.git, c->m.git, sizeof(c->a.git));
         return false;
     }
     return true;
@@ -335,6 +347,12 @@ static void say(const struct check *c)
         printf("init: update: refused: its network default is %s, this build's %s (update -f "
                "takes it anyway); the stored kernel is unchanged\n", a->net,
                a->net_running[0] ? a->net_running : "not known");
+        return;
+    }
+    if (a->why == UPDATE_NEEDS_NEWER) {
+        printf("init: update: refused: it needs a newer build than this one to take it (it has "
+               "\"%s\", which this build doesn't know); the stored kernel is unchanged\n",
+               a->needs);
         return;
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||

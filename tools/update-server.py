@@ -7,8 +7,10 @@ manifest, over UDP.
         serve DIR/jamos.elf and DIR/bootfs.img (default build/) until ^C,
         each manifest signed with KEY (default ~/.config/jamos/update.key)
     update-server.py --manifest KERNEL BOOTFS [--version V] [--git G] [--net N] [--key KEY]
+                     [--extra LINE]...
         print the manifest of those two files and exit (signed with KEY if
-        one is given, else with a bare signature line: unsigned)
+        one is given, else with a bare signature line: unsigned), with each
+        LINE as an extension line before the signature line
     update-server.py --build-net BOOTFS
         print the boot image's network default ("vlan21", "untagged", or
         "unknown" for a build made before build.txt had one); exit 1 if
@@ -29,6 +31,11 @@ parser is user/lib/update.c):
     kernel <size> <sha256>
     bootfs <size> <sha256>
     signature <128 hex digits>
+
+Format 2 is the stable base: a later build adds extension lines
+(`<key> [<value>]` before the signature line, signed with the rest), which
+an older build skips, or must-understand ones (`!<key> ...`), which it
+refuses ("needs a newer build"); so an old build can always be updated.
 
 The signature is Ed25519's (RFC 8032) over every byte before its line, made
 by build/host/jamos-sign (tools/jamos-sign.c: the same Monocypher the PC
@@ -103,8 +110,21 @@ def net_ok(net):
     return bool(m) and (not m.group(2) or int(m.group(2)) <= 4094)
 
 
-def manifest(kernel, bootfs, version, git, net):
-    """The manifest's bytes for these two files' contents."""
+EXT_RE = re.compile(rb"!?[a-z0-9-]{1,32}( [\x20-\x7e]{1,200})?$")
+BASE_KEYS = (b"jamos-update", b"version", b"git", b"net", b"kernel", b"bootfs", b"signature")
+
+
+def ext_ok(line):
+    """An extension line (<update.h>): a key of a-z 0-9 - (1..32 bytes, or
+    '!' and 1..31: must-understand), none of format 2's names, then
+    optionally a space and 1..200 printable bytes."""
+    key = line.split(b" ", 1)[0]
+    return bool(EXT_RE.match(line)) and len(key) <= 32 and key not in BASE_KEYS
+
+
+def manifest(kernel, bootfs, version, git, net, extra=()):
+    """The manifest's bytes for these two files' contents; extra: extension
+    lines (str), put before the signature line."""
     if not VERSION_RE.match(version.encode()) or not GIT_RE.match(git.encode()):
         raise ValueError("bad version %r or git %r" % (version, git))
     if not net_ok(net):
@@ -115,6 +135,10 @@ def manifest(kernel, bootfs, version, git, net):
         if not 1 <= len(data) <= FILE_MAX:
             raise ValueError("%s is %d bytes (1..%d)" % (name, len(data), FILE_MAX))
         lines.append("%s %d %s" % (name, len(data), hashlib.sha256(data).hexdigest()))
+    for line in extra:
+        if not ext_ok(line.encode()):
+            raise ValueError("not an extension line: %r" % (line,))
+        lines.append(line)
     lines.append("signature")
     text = ("\n".join(lines) + "\n").encode()
     assert len(text) <= MANIFEST_MAX
@@ -134,9 +158,21 @@ def sign(text, key):
 
 def parse_manifest(text):
     """The C parser's rules, for the self-test: (version, git, [(size, sha)],
-    net) or None."""
+    net, needs) or None; needs is the first must-understand extension
+    line's key ("" if none). Extension lines are checked and skipped."""
     lines = text.split(b"\n")
-    if len(text) > MANIFEST_MAX or len(lines) != 8 or lines[7] != b"" or lines[0] != b"jamos-update 2":
+    if len(text) > MANIFEST_MAX or lines[0] != b"jamos-update 2" or lines[-1] != b"":
+        return None
+    needs, base = "", [lines[0]]
+    for line in lines[1:-1]:
+        if line.split(b" ", 1)[0] in BASE_KEYS:
+            base.append(line)
+        elif not ext_ok(line) or base[-1].startswith(b"signature"):
+            return None
+        elif line.startswith(b"!") and not needs:
+            needs = line.split(b" ", 1)[0].decode()
+    lines = base + [b""]
+    if len(lines) != 8:
         return None
     v, g, n = lines[1].split(b" ", 1), lines[2].split(b" ", 1), lines[3].split(b" ", 1)
     if v[0] != b"version" or len(v) != 2 or not VERSION_RE.match(v[1]):
@@ -154,7 +190,7 @@ def parse_manifest(text):
         files.append((int(w[1]), w[2].decode()))
     if not SIG_RE.match(lines[6]):
         return None
-    return v[1].decode(), g[1].decode(), files, n[1].decode()
+    return v[1].decode(), g[1].decode(), files, n[1].decode(), needs
 
 
 def elf_symbol_string(data, name):
@@ -332,7 +368,10 @@ class Server:
 
 # ---- a server for tests: a plan of damaged builds ------------------------------------
 
-PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig", "othernet")
+PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig", "othernet",
+         "extension", "mustknow")
+EXTENSION_LINE = "future-note a line a later build may add"   # the "extension" plan's
+MUSTKNOW_LINE = "!future-must 1"                               # the "mustknow" plan's
 GONE_AFTER = 300        # replies to a "gone" client before the server stops answering it
 
 
@@ -356,6 +395,10 @@ class PlannedServer(Server):
       othernet   the manifest (signed as usual) says the other network
                  default (untagged for a VLAN build, vlan21 for an untagged
                  one): init refuses it unless forced (`update -f`)
+      extension  the build, its manifest (signed) with an extension line
+                 no build knows (EXTENSION_LINE): taken as "good" is
+      mustknow   the same with a must-understand line (MUSTKNOW_LINE):
+                 init refuses it, saying it needs a newer build
     Every other manifest is signed with the spec's key (a throwaway test
     key: the PC under test has its public half)."""
 
@@ -384,6 +427,9 @@ class PlannedServer(Server):
             lines = text.split(b"\n")
             lines[3] = b"net " + other_net(lines[3][4:].decode()).encode()
             text = b"\n".join(lines)
+        elif self.current in ("extension", "mustknow"):
+            line = EXTENSION_LINE if self.current == "extension" else MUSTKNOW_LINE
+            text = text.replace(b"\nsignature\n", b"\n" + line.encode() + b"\nsignature\n")
         return text, kernel, bootfs
 
     def signed(self, text):
@@ -513,8 +559,9 @@ class Client:
 
 def check_plans(kpath, bpath, check):
     """PlannedServer: each client its plan, in order, then "good"."""
-    s = PlannedServer(kpath, bpath, ["damage", "wronghash", "truncated", "gone", "othernet"],
-                      log=lambda s: None, version="0.0.29-test", git="abcdef0", net="vlan21")
+    plans = ["damage", "wronghash", "truncated", "gone", "othernet", "extension", "mustknow"]
+    s = PlannedServer(kpath, bpath, plans, log=lambda s: None, version="0.0.29-test",
+                      git="abcdef0", net="vlan21")
 
     def ask(client, f, sid, off, length):
         rep = s.handle(client, REQ.pack(MAGIC, VERSION, REQUEST, f, 0, sid, off, length, 0))
@@ -524,7 +571,7 @@ def check_plans(kpath, bpath, check):
         return b"".join(ask(client, f, sid, off, CHUNK_MAX)[1] for off in range(0, size, CHUNK_MAX))
 
     results = {}
-    for n, plan in enumerate(["damage", "wronghash", "truncated", "gone", "othernet", "good"]):
+    for n, plan in enumerate(plans + ["good"]):
         client = ("10.2.21.5", 50000 + n)
         fields, text = ask(client, MANIFEST, 0, 0, CHUNK_MAX)
         m = parse_manifest(text)
@@ -532,6 +579,10 @@ def check_plans(kpath, bpath, check):
         (ksize, ksha), (bsize, bsha) = m[2]
         if plan == "othernet":
             results[plan] = m[3] == "untagged"
+        elif plan in ("extension", "mustknow"):
+            line = (EXTENSION_LINE if plan == "extension" else MUSTKNOW_LINE).encode()
+            results[plan] = b"\n" + line + b"\nsignature" in text and \
+                m[4] == ("" if plan == "extension" else MUSTKNOW_LINE.split()[0])
         elif plan == "truncated":
             results[plan] = ask(client, BOOTFS, sid, bsize - 10, 10)[0][4] == RANGE
         elif plan == "gone":
@@ -673,6 +724,24 @@ def self_test():
                          ("net off", good.replace(b"net vlan21", b"net off")),
                          ("a leading zero", good.replace(b"kernel 1", b"kernel 01"))):
         check("a manifest refused: " + what, parse_manifest(broken) is None)
+    ext = manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", [EXTENSION_LINE, "x", MUSTKNOW_LINE])
+    m = parse_manifest(ext)
+    check("extension lines skipped, the first must-understand one named",
+          m is not None and m[0] == "1.0" and m[4] == MUSTKNOW_LINE.split()[0])
+    check("no must-understand line: none named", parse_manifest(good)[4] == "")
+    for what, broken in (("an upper-case key", b"Future 1"), ("an empty value", b"future "),
+                         ("a 33-byte key", b"k" * 33), ("a bare !", b"!"),
+                         ("a format line's name", b"version 2")):
+        check("an extension line refused: " + what,
+              parse_manifest(good.replace(b"signature", broken + b"\nsignature")) is None)
+    check("no extension line after the signature",
+          parse_manifest(good + b"future 1\n") is None)
+    for line in ("Future 1", "version 2", "!", "x" * 33):
+        try:
+            manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", [line])
+            check("no manifest with the extension line %r" % (line,), False)
+        except ValueError:
+            pass
     for net in (None, "", "off", "vlan0", "vlan4095", "none"):
         try:
             manifest(b"k", b"b", "1.0", "abcdef0", net)
@@ -720,6 +789,8 @@ def main():
     ap.add_argument("--git")
     ap.add_argument("--key", help="the secret key to sign with (default %s)" % DEFAULT_KEY)
     ap.add_argument("--net", help="the network default to claim (vlan<id>, untagged)")
+    ap.add_argument("--extra", action="append", default=[], metavar="LINE",
+                    help="--manifest: an extension line to add (again for more)")
     ap.add_argument("--build-net", metavar="BOOTFS")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
@@ -732,7 +803,7 @@ def main():
     if a.manifest:
         k, b = (open(p, "rb").read() for p in a.manifest)
         text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash(),
-                        a.net or build_net(b))
+                        a.net or build_net(b), a.extra)
         sys.stdout.write((sign(text, a.key) if a.key else text).decode())
         return 0
     key = a.key or DEFAULT_KEY
