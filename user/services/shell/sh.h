@@ -300,6 +300,9 @@ const char *sh_basename(const char *path);
 status_t    sh_stat(const char *abs, bool *dir, uint64_t *size);
 /* Entries of directory abs (sorted, at most cap); -1 if not a directory. */
 int         sh_readdir(const char *abs, struct sh_dirent *out, int cap);
+/* sh_readdir gave n entries of abs, cap at most: say on the terminal if
+ * there are more, which `who` (the command) then didn't show. */
+void        sh_readdir_cut(const char *who, const char *abs, int n, int cap);
 /* A whole file's bytes and a NUL after them: valid until the next sh_read.
  * ERR_OUT_OF_RANGE: more than SH_FILE_MAX. */
 status_t    sh_read(const char *abs, const void **data, uint64_t *size);

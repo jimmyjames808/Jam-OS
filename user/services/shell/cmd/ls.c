@@ -67,6 +67,7 @@ static int list_one(const char *arg, struct sh_dirent *e, bool longf, bool headi
     int n = sh_readdir(abs, e, SH_DIR_MAX);
     if (n > 0)
         entries(e, n, longf);
+    sh_readdir_cut("ls", abs, n, SH_DIR_MAX);
     return 1;
 }
 

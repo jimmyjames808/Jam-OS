@@ -2,7 +2,8 @@
 # starts a second shell whose /data is the fat service (bin/fat) over a
 # RAM disk, freshly formatted (Ctrl+C ends it). Names with spaces and lower
 # case, names that differ only after eight characters, forbidden
-# characters, copies bigger than a transfer buffer, rm -r, df and sync.
+# characters, copies bigger than a transfer buffer, rm -r, a directory
+# bigger than ls shows (it says so), df and sync.
 # files.txt has the same commands on the tests' RAM filesystem.
 # QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
 # waited for is built from $T, so it never appears in the typed line.
@@ -73,6 +74,39 @@ send cat long.txt | head -1 | grep ^1$ && echo ok-$T-stream
 wait 60 ok-f-stream
 send rm long.txt
 wait jam>
+# ---- a directory of more than 256 entries: ls and find show 256 and say so -----------------
+send mkdir many && cd many && echo ok-$T-many
+wait ok-f-many
+send touch a000 a001 a002 a003 a004 a005 a006 a007 a008 a009 a010 a011 a012 a013 a014 a015 a016 a017 a018 a019 a020 a021 a022 a023 a024 && echo ok-$T-t0
+wait 60 ok-f-t0
+send touch a025 a026 a027 a028 a029 a030 a031 a032 a033 a034 a035 a036 a037 a038 a039 a040 a041 a042 a043 a044 a045 a046 a047 a048 a049 && echo ok-$T-t1
+wait 60 ok-f-t1
+send touch a050 a051 a052 a053 a054 a055 a056 a057 a058 a059 a060 a061 a062 a063 a064 a065 a066 a067 a068 a069 a070 a071 a072 a073 a074 && echo ok-$T-t2
+wait 60 ok-f-t2
+send touch a075 a076 a077 a078 a079 a080 a081 a082 a083 a084 a085 a086 a087 a088 a089 a090 a091 a092 a093 a094 a095 a096 a097 a098 a099 && echo ok-$T-t3
+wait 60 ok-f-t3
+send touch a100 a101 a102 a103 a104 a105 a106 a107 a108 a109 a110 a111 a112 a113 a114 a115 a116 a117 a118 a119 a120 a121 a122 a123 a124 && echo ok-$T-t4
+wait 60 ok-f-t4
+send touch a125 a126 a127 a128 a129 a130 a131 a132 a133 a134 a135 a136 a137 a138 a139 a140 a141 a142 a143 a144 a145 a146 a147 a148 a149 && echo ok-$T-t5
+wait 60 ok-f-t5
+send touch a150 a151 a152 a153 a154 a155 a156 a157 a158 a159 a160 a161 a162 a163 a164 a165 a166 a167 a168 a169 a170 a171 a172 a173 a174 && echo ok-$T-t6
+wait 60 ok-f-t6
+send touch a175 a176 a177 a178 a179 a180 a181 a182 a183 a184 a185 a186 a187 a188 a189 a190 a191 a192 a193 a194 a195 a196 a197 a198 a199 && echo ok-$T-t7
+wait 60 ok-f-t7
+send touch a200 a201 a202 a203 a204 a205 a206 a207 a208 a209 a210 a211 a212 a213 a214 a215 a216 a217 a218 a219 a220 a221 a222 a223 a224 && echo ok-$T-t8
+wait 60 ok-f-t8
+send touch a225 a226 a227 a228 a229 a230 a231 a232 a233 a234 a235 a236 a237 a238 a239 a240 a241 a242 a243 a244 a245 a246 a247 a248 a249 && echo ok-$T-t9
+wait 60 ok-f-t9
+send touch a250 a251 a252 a253 a254 a255 a256 a257 a258 a259 a260 a261 a262 a263 a264 a265 a266 a267 a268 a269 a270 a271 a272 a273 a274 && echo ok-$T-t10
+wait 60 ok-f-t10
+send ls | wc -l | grep ^256$ && echo ok-$T-ls256
+wait ls: /data/many: more than 256 entries: only 256 of them here
+wait ok-f-ls256
+send find /data/many | wc -l | grep ^256$ && echo ok-$T-find256
+wait find: /data/many: more than 256 entries: only 256 of them here
+wait ok-f-find256
+send cd /data && rm -r many && echo ok-$T-gone
+wait 60 ok-f-gone
 send rm nosuch; echo st-$T=$?
 wait rm: nosuch: no such file or directory
 wait st-f=1

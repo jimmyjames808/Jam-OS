@@ -19,6 +19,7 @@ static void find_in(const char *abs, const char *name_part, int depth)
     if (!e)
         return;
     int n = sh_readdir(abs, e, SH_DIR_MAX);
+    sh_readdir_cut("find", abs, n, SH_DIR_MAX);
     for (int i = 0; i < n; i++) {
         char path[SH_PATH_MAX];
         if (!sh_join(abs, e[i].name, path, sizeof(path)))
