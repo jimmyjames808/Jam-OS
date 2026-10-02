@@ -147,7 +147,7 @@ static inline status_t netctl_set_ipv4(handle_t ch, uint32_t address, uint32_t m
     return netctl_set_ipv4_until(ch, DEADLINE_NEVER, address, mask, gateway);
 }
 
-/* The DNS servers netstack hands out (net.info, planned), in order; 0:
+/* The DNS servers netstack hands out (net.idl's iface), in order; 0:
  * none. Each is a unicast address (as for set_ipv4's gateway, but any
  * subnet). ERR_INVALID_ARGS otherwise. */
 static inline status_t netctl_set_dns_until(handle_t ch, uint64_t deadline_ns, uint32_t first, uint32_t second)
