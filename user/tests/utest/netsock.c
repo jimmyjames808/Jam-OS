@@ -215,6 +215,46 @@ bool t_netsock_udp(void)
 
 /* ---- ping -------------------------------------------------------------------------- */
 
+/* libos's blocking net_ping, in a thread of its own while the test answers
+ * as the network. */
+struct pinger {
+    handle_t net;
+    uint64_t wait;          /* its deadline, from when it starts */
+    status_t st;
+    uint32_t rtt;
+    uint8_t  ttl;
+    volatile bool done;
+};
+
+static void pinger(void *arg)
+{
+    struct pinger *p = arg;
+    p->st = net_ping(p->net, PEER_IP, 11, 24, now() + p->wait, &p->rtt, &p->ttl);
+    p->done = true;
+}
+
+/* One net_ping in a thread: answered (reply) or not; its status. */
+static bool blocking_ping(handle_t net, bool reply, status_t want)
+{
+    static uint8_t stack[16384] __attribute__((aligned(16)));
+    static uint8_t req[NETDEV_FRAME_MAX];
+    struct pinger p = { .net = net, .wait = reply ? NETDRV_WAIT : 300 * NS_PER_MS };
+    handle_t th;
+    uint32_t n;
+    CHECK_ST(thread_spawn("pinger", pinger, &p, stack, sizeof(stack), &th), OK);
+    CHECK_ST(netdrv_recv(req, &n, NETDRV_WAIT), OK);
+    CHECK_EQ(n, 34u + 8 + 24);
+    if (reply)
+        CHECK(netdrv_send(g, pkt_echo_reply_to(g, req, 8 + 24)));
+    for (uint64_t end = now() + 2 * NETDRV_WAIT; !p.done && now() < end;)
+        jam_nanosleep(now() + 5 * NS_PER_MS);
+    CHECK(p.done);
+    jam_handle_close(th);
+    CHECK_ST(p.st, want);
+    CHECK(!reply || p.ttl == 64);
+    return true;
+}
+
 bool t_netsock_ping(void)
 {
     static uint8_t req[NETDEV_FRAME_MAX], req2[NETDEV_FRAME_MAX];
@@ -260,9 +300,11 @@ bool t_netsock_ping(void)
              ERR_INVALID_ARGS);
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, NET_DGRAM_MAX + 1, 100, NULL,
                             NULL, NULL), ERR_INVALID_ARGS);
+    CHECK(blocking_ping(o2, true, OK));
+    CHECK(blocking_ping(o2, false, ERR_TIMED_OUT));
     struct net_counters c;
     CHECK(counters(&c));
-    CHECK(c.echoes_sent >= 5 && c.echoes_answered == 2);
+    CHECK(c.echoes_sent >= 7 && c.echoes_answered == 3);
     CHECK_EQ(c.later, 0);
     jam_handle_close(o);
     jam_handle_close(o2);
