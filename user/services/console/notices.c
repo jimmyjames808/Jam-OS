@@ -27,11 +27,13 @@
  *
  * These lines are matched by their text: a change of wording in init,
  * devmgr, logd or the kernel must change this file too (the QEMU tests of
- * notices catch it). Only lines from the kernel itself or from processes
- * named init, devmgr and logd count. The name in front of a process's
- * lines is the one its creator gave process_create, and any program can
- * start a process in its own job: one called "init" can make notices.
- * They are only words on the screen; nothing acts on them.
+ * notices catch it). Only lines the kernel itself wrote, or init's,
+ * devmgr's and logd's real processes, count: the kernel marks each line
+ * with its writer's koid, and init says which koids those three have
+ * (main.c, <logwriters.h>). Not the name in front of a line: that is the
+ * one its creator gave process_create, and any program can start a
+ * process called "init" in its own job. A writer that isn't known (no
+ * mark, no table) counts as no one's.
  *
  * Never a burst: a text said in the last REPEAT is not said again (of the
  * last RECENT), and at most BURST notices go on the screen in BURST_WINDOW,
@@ -271,33 +273,34 @@ static void kernel_line_seen(const char *text)
     crashed_at = now();
 }
 
-void notice_take(const char *s, size_t n, bool announce)
+void notice_take(const char *s, size_t n, bool announce, enum log_writer w)
 {
     char line[512];
+    if (w == W_OTHER)
+        return;
     if (n >= sizeof(line))
         n = sizeof(line) - 1;
     memcpy(line, s, n);
     line[n] = '\0';
-    /* "[    1.234567] " (the stamp), then "[name] " for a process's line. */
-    const char *p = line;
-    if (*p == '[' && (p = strchr(p, ']')) && p[1] == ' ')
-        p += 2;
+    /* "[    1.234567] " (the stamp), then "[name] " for a process's
+     * debug_write line (its debug_report lines have none). */
+    const char *text = line;
+    if (*text == '[' && (text = strchr(text, ']')) && text[1] == ' ')
+        text += 2;
     else
         return;
-    if (*p != '[') {
-        kernel_line_seen(p);
+    if (w == W_KERNEL) {
+        kernel_line_seen(text);
         return;
     }
-    const char *e = strchr(p, ']');
-    if (!e || e[1] != ' ')
-        return;
-    size_t nl = (size_t)(e - p - 1);
-    const char *text = e + 2;
-    if (nl == 4 && !strncmp(p + 1, "init", 4))
+    const char *e = *text == '[' ? strchr(text, ']') : NULL;
+    if (e && e[1] == ' ')
+        text = e + 2;
+    if (w == W_INIT)
         init_line(text, announce);
-    else if (nl == 6 && !strncmp(p + 1, "devmgr", 6))
+    else if (w == W_DEVMGR)
         devmgr_line(text, announce);
-    else if (nl == 4 && !strncmp(p + 1, "logd", 4) && announce &&
+    else if (w == W_LOGD && announce &&
              strstr(text, "(ERR_NO_SPACE): the log is not being saved"))
         say("/data is full: the boot log is not being saved");
 }

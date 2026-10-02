@@ -293,6 +293,52 @@ static int print_env(int argc, char **argv)
     return 0;
 }
 
+/* "say <text>": one line in the kernel log, under our process's name. */
+static int say(int argc, char **argv)
+{
+    if (argc < 3)
+        return 2;
+    printf("%s\n", argv[2]);
+    return 0;
+}
+
+/* "impostor": processes called init, devmgr and logd (bin/utest "say"),
+ * each writing a line that the console turns into a notice when the real
+ * one writes it. The kernel marks each line with its writer's koid, and
+ * the console trusts only the real ones': no notice may come of these
+ * (tools/shell-tests/screen.txt, tools/screen-test.sh). */
+static int impostor(void)
+{
+    static const struct {
+        const char *name, *line;
+    } fakes[] = {
+        { "init", "init: bin/music ended 11 times in a minute: not restarting it" },
+        { "devmgr", "devmgr: usb 9:0 drv/hid crashed: restart 1 in 100 ms" },
+        { "logd", "logd: no /data/logs (ERR_NO_SPACE): the log is not being saved; trying "
+                  "again" },
+    };
+    for (unsigned i = 0; i < sizeof(fakes) / sizeof(fakes[0]); i++) {
+        handle_t job, proc;
+        struct process_info info;
+        if (jam_job_create(startup_handle(SR_JOB), 0, &job) != OK)
+            return 70;
+        const char *argv[] = { "utest", "say", fakes[i].line };
+        struct spawn_args a = {
+            .path = "bin/utest", .name = fakes[i].name, .argc = 3, .argv = argv, .job = job,
+        };
+        status_t st = spawn(&a, &proc);
+        if (st == OK) {
+            st = spawn_wait(proc, 10 * NS_PER_S, &info);
+            jam_handle_close(proc);
+        }
+        jam_handle_close(job);
+        if (st != OK || info.exit_code != 0)
+            return 71;
+    }
+    printf("impostor: 3 lines written as init, devmgr and logd\n");
+    return 0;
+}
+
 int child_main(int argc, char **argv)
 {
     const char *m = argv[1];
@@ -312,6 +358,8 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
     if (!strcmp(m, "env"))        return print_env(argc, argv);
+    if (!strcmp(m, "say"))        return say(argc, argv);
+    if (!strcmp(m, "impostor"))   return impostor();
     if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     if (!strncmp(m, "ns-", 3) || !strncmp(m, "fs", 2) || !strcmp(m, "fat-shell"))

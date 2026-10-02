@@ -602,6 +602,7 @@ static void umap_fill(struct aspace *as, struct mapping *m)
     m->umap.base = m->base;
     m->umap.first = m->vmo_off >> PAGE_SHIFT;
     m->umap.end = (m->vmo_off + m->len) >> PAGE_SHIFT;
+    m->umap.writable = (m->max & ASPACE_WRITE) != 0;   /* what vmar_protect may grant */
 }
 
 /* Region lock held: split m at addr (strictly inside it). m keeps

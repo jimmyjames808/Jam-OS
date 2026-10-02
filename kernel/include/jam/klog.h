@@ -3,8 +3,15 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
+#include <jam/abi.h>   /* struct klog_line, KLOG_WRITER_* */
 
+/* The kernel's own text (kprintf). */
 void   klog_write(const char *s, size_t len);
+/* Text whose lines `writer` wrote (a process's koid, for its debug_write
+ * and debug_report lines): each line it starts is marked with it, and if
+ * another writer's line is unfinished, it gets a line of its own. */
+void   klog_write_from(uint64_t writer, const char *s, size_t len);
 /* Copy up to `size` bytes of the most recent log text into buf. */
 size_t klog_tail(char *buf, size_t size);
 /* Write text that already carries its own timestamps (the panic screen's
@@ -39,6 +46,14 @@ size_t   klog_read_kept(uint64_t pos, uint64_t keep, char *buf, size_t cap, uint
  * tests drive it on a small one. */
 size_t   klog_ring_copy(const char *ring, uint64_t size, uint64_t h, uint64_t pos, char *buf,
                         size_t cap, uint64_t *first);
+/* Who wrote the lines: the marks of the lines processes started at or
+ * past pos (the kernel's own lines have none), in order, up to cap, into
+ * out; the count. *known gets where the marks are complete: a line at or
+ * past it without a mark is the kernel's, an older one's writer is not
+ * known (its mark may have gone: the last KLOG_MARKS are kept). Takes the
+ * log lock briefly. */
+#define KLOG_MARKS 16384u
+size_t   klog_lines(uint64_t pos, struct klog_line *out, size_t cap, uint64_t *known);
 /* CPU 0's tick: raise SIG_READABLE on readers that are behind (deferred to
  * the tick because klog_write runs under arbitrary locks). */
 void     klog_poll(void);

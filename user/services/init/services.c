@@ -11,7 +11,8 @@
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
  *             console channel (SR_USER + 0) and a control channel of init's
  *             that answers only `reboot` (SR_USER + 8, ctl.c: Ctrl+Alt+Del
- *             goes through init, which syncs /data first);
+ *             goes through init, which syncs /data first), and the log
+ *             writers' table read-only (CONSOLE_WRITERS_ROLE, writers.c);
  *             init keeps the client end. With the splash (the argument
  *             "quiet") it draws nothing until the splash has borrowed the
  *             screen and given it back; on a boot with the splash every
@@ -101,18 +102,20 @@
 #include <devmgr.h>
 #include <idl/console.h>
 #include <idl/logctl.h>
+#include <logwriters.h>
 #include <os.h>
 #include <splash.h>
 #include "init.h"
 
 /* The root's powers each service gets (<jam/abi.h> RIGHT_ROOT_*; none can
- * map or slice): the console reads the log, draws (WRITE: the screen and
- * the serial port's output) and reboots on Ctrl+Alt+Del if init doesn't
+ * map or slice): the console reads the log, draws on the screen, mirrors
+ * it to the serial port's output and reboots on Ctrl+Alt+Del if init doesn't
  * answer; serialin reads the serial port; logd the log; the shell the
  * log, the system's figures, the clock, the kernel's debug commands, a
  * reboot when init doesn't answer, and programs from /data (VMEX). Only
  * init keeps RIGHT_ROOT_KEXEC. */
-#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_WRITE | RIGHT_ROOT_REBOOT)
+#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SCREEN | RIGHT_ROOT_SERIAL_OUT | \
+                      RIGHT_ROOT_REBOOT)
 #define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
                       RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
 
@@ -244,18 +247,23 @@ static status_t start_console(void)
     /* Without it the console still reboots, without the sync. */
     if (ctl_new(CTL_CONSOLE, port, KEY_CTL + CTL_CONSOLE, &ctl) != OK)
         ctl = HANDLE_INVALID;
-    struct spawn_handle x[] = {
+    struct spawn_handle x[4] = {
         { SR_RESOURCE, root_with(RIGHTS_BASIC | CONSOLE_ROOT) },
         { SR_USER + 0, b },
-        { SR_USER + 8, ctl },
     };
+    unsigned nx = 2;
+    handle_t writers = writers_for_console();   /* without it no process makes notices */
+    if (writers)
+        x[nx++] = (struct spawn_handle){ CONSOLE_WRITERS_ROLE, writers };
+    if (ctl)
+        x[nx++] = (struct spawn_handle){ SR_USER + 8, ctl };
     const char *argv[3] = { svcs[CONSOLE].path };
     int argc = 1;
     if (nolog_console)
         argv[argc++] = "nolog";
     if (quiet_console)
         argv[argc++] = "quiet";
-    st = svc_start(CONSOLE, argc, argv, x, ctl ? 3 : 2);
+    st = svc_start(CONSOLE, argc, argv, x, nx);
     quiet_console = false;   /* a restarted console draws at once */
     if (st != OK) {
         jam_handle_close(a);

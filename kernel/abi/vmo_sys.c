@@ -115,11 +115,13 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset, uin
 }
 
 /* The handle is swapped for one that may execute and not write (nor
- * resize), then the VMO is checked: if this is its one handle and nothing
- * maps or pins it, nothing can change it from now on (writing, mapping
- * writable, resizing and decommitting all need RIGHT_WRITE). Checked after the swap, so a
- * duplicate made meanwhile by another thread counts as a second handle
- * (refused) instead of slipping past with RIGHT_WRITE. */
+ * resize), then the VMO is checked: it must be its one handle, and
+ * vmo_seal must succeed (nothing maps or pins it, no write is running).
+ * Checked after the swap, so a duplicate made meanwhile by another thread
+ * counts as a second handle (refused) instead of slipping past with
+ * RIGHT_WRITE. The seal covers a call that took its reference before the
+ * swap (a vmo_write or a writable vmar_map from another thread, past its
+ * handle_get): the VMO itself refuses it from then on. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
 {
     status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_VMEX);
@@ -137,7 +139,7 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
         if (st != OK)
             khandle_release(&kh);
     }
-    if (st == OK && (kobject_handles(vmo_kobject(v)) != 1 || !vmo_unmapped_paged(v))) {
+    if (st == OK && (kobject_handles(vmo_kobject(v)) != 1 || vmo_seal(v) != OK)) {
         handle_close(t, *out);
         st = ERR_BAD_STATE;
     }

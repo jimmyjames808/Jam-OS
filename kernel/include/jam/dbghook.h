@@ -23,6 +23,8 @@ enum {
     DBG_CHANNEL_CARRIED,   /* channel.c send_msg, the carried handles checked, before the
                               message is queued; pair lock held, interrupts off (arg: the
                               sending endpoint) */
+    DBG_VMO_WRITE_COPY,    /* vmo_write, a page got, before the bytes are copied into it; no
+                              lock held (arg: the VMO) */
     DBG_N
 };
 

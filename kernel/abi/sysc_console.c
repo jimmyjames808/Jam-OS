@@ -5,12 +5,13 @@
  * Rights, all on a RES_ROOT handle (sysinfo_check_root; init hands each
  * service the root with only the ones it uses, none can map or slice):
  *   klog_open         RIGHT_ROOT_KLOG
- *   framebuffer_take  RIGHT_WRITE
+ *   framebuffer_take  RIGHT_ROOT_SCREEN
  *   debug_command     RIGHT_ROOT_DEBUG
  *   reboot            RIGHT_ROOT_REBOOT
  *   serial_open       RIGHT_ROOT_SERIAL
- *   serial_write      RIGHT_WRITE
- * and on the objects: klog_read, klog_name and serial_read need RIGHT_READ.
+ *   serial_write      RIGHT_ROOT_SERIAL_OUT
+ * and on the objects: klog_read, klog_lines, klog_name and serial_read need
+ * RIGHT_READ.
  *
  * Each new object costs its creator's job one JOB_LIMIT_HANDLES unit
  * (like a resource), on top of the handle slot. */
@@ -38,6 +39,8 @@
 #define KLOG_READ_MAX KLOG_SIZE   /* one read: the whole ring at most */
 #define SERIAL_IO_MAX 4096
 #define KLOG_NAME_MAX 32      /* klog_name: what kexec keeps (KEXEC_NAME) */
+#define LINES_MAX     256     /* klog_lines: marks per call */
+#define LINES_STEP    32      /* ... copied per step (512 bytes on the stack) */
 
 /* A charged small object: its job gets one handle unit back on destroy. */
 static status_t charge(struct job *job)
@@ -374,6 +377,36 @@ int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap
     return st == OK ? (int64_t)done : st;
 }
 
+int64_t sysc_klog_lines(handle_t reader, uint64_t pos, uint64_t out, uint64_t cap,
+                        uint64_t uknown)
+{
+    SYSC_TABLE(t);
+    struct kobject *r;
+    status_t st = handle_get(t, reader, OBJ_KLOG, RIGHT_READ, &r, NULL);
+    if (st != OK)
+        return st;
+    kobject_unref(r);   /* only the right was needed */
+    if (cap > LINES_MAX)
+        cap = LINES_MAX;
+    struct klog_line step[LINES_STEP];
+    uint64_t done = 0, known = 0;
+    while (done < cap) {
+        size_t want = cap - done < LINES_STEP ? (size_t)(cap - done) : LINES_STEP;
+        size_t n = klog_lines(pos, step, want, &known);
+        if (n && copy_to_user(out + done * sizeof(step[0]), step, n * sizeof(step[0])) != OK)
+            return ERR_INVALID_ARGS;
+        done += n;
+        if (n < want)
+            break;
+        pos = step[n - 1].pos + 1;   /* the next step starts past the last line given */
+    }
+    /* Read last: it only grows, so a mark gone during the copy is before it. */
+    (void)klog_lines(pos, step, 0, &known);
+    if (copy_to_user(uknown, &known, sizeof(known)) != OK)
+        return ERR_INVALID_ARGS;
+    return (int64_t)done;
+}
+
 int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
 {
     SYSC_TABLE(t);
@@ -391,7 +424,7 @@ int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
 int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint64_t uowner)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SCREEN);
     if (st != OK)
         return st;
     struct fb_info info;
@@ -490,7 +523,7 @@ int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SERIAL_OUT);
     if (st != OK)
         return st;
     if (len > SERIAL_IO_MAX)

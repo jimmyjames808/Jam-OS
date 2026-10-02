@@ -57,11 +57,12 @@ struct vmo_umap {
     struct aspace   *as;          /* the address space it is in */
     uint64_t         base;        /* user address of VMO page `first` */
     uint64_t         first, end;  /* VMO page indices [first, end) */
+    bool             writable;    /* may be (or become) writable: refused on a sealed VMO */
 };
 
 /* Record u (fields filled in) on v and take a VMO reference for it. With
  * `check`, ERR_OUT_OF_RANGE if u reaches past the VMO's end (a new
- * mapping); splitting an existing mapping passes false, since a shrink may
+ * mapping), ERR_BAD_STATE if u is writable and v sealed (vmo_seal); splitting an existing mapping passes false, since a shrink may
  * already have cut the VMO below it. */
 status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check);
 /* Change u's range under the VMO lock. */

@@ -606,6 +606,7 @@ static const struct {
     { "logd_data_goes_away", t_logd_data_goes_away },
     { "logd_kernel_log", t_logd_kernel_log },
     { "logd_openers", t_logd_openers },
+    { "klog_lines", t_klog_lines },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },
     { "fat_dirs", t_fat_dirs },

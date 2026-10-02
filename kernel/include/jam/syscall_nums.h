@@ -71,6 +71,7 @@
 #define SYS_serial_read          116
 #define SYS_serial_write         117
 #define SYS_klog_name            118
+#define SYS_klog_lines           119
 #define SYS_dma_cap_bus_master   120
 #define SYS_channel_write_rights 121
 #define SYS_sys_info             130

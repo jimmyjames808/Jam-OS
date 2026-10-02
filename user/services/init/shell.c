@@ -25,8 +25,14 @@
  *   - a new console, a new devmgr: services.c (services_closed) says what
  *     their ends change for the others.
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
- * in a minute is given up on (a line in the log and the RESULTS box). init
- * itself never returns in this mode. */
+ * in a minute (from its first end) is given up on (a line in the log and
+ * the RESULTS box), but for the console and the shell: without them nobody
+ * can use the machine until a reset, so they are started again for good,
+ * every 5 s at worst (said once a minute). The console's clients (serialin,
+ * the shell) end when it does, often before init has seen the console's
+ * own end: an end of theirs while the console is gone doesn't count, and
+ * they start again at once with the new console. init itself never
+ * returns in this mode. */
 #include <os.h>
 #include "init.h"
 
@@ -104,6 +110,7 @@ status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_h
     }
     s->running = true;
     s->started = now();
+    writers_started(i, s->proc);
     f->ns = ns;
     f->back = back;
     return OK;
@@ -161,6 +168,43 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
     return ERR_NOT_FOUND;
 }
 
+/* The services init never gives up on, however often they end. */
+static bool never_given_up(unsigned i)
+{
+    return i == CONSOLE || i == SHELL;
+}
+
+/* Svc i is one of the console's clients and the console has ended (its
+ * end may still be on its way to us): i went with it, no fault of its own. */
+static bool went_with_console(unsigned i)
+{
+    if (i != SERIALIN && i != SHELL)
+        return false;
+    signals_t seen;
+    return !svcs[CONSOLE].running ||
+           jam_object_wait_one(svcs[CONSOLE].proc, SIG_TERMINATED, 0, &seen) == OK;
+}
+
+/* Count svc i's end at t in its minute: true if it may start again. */
+static bool count_end(unsigned i, uint64_t t)
+{
+    struct svc *s = &svcs[i];
+    if (!s->ends || t - s->window_start > GIVE_UP_WINDOW) {
+        s->window_start = t;
+        s->ends = 0;
+    }
+    if (++s->ends > GIVE_UP_COUNT && !never_given_up(i)) {
+        s->given_up = true;
+        services_given_up(i);
+        init_say("init: %s ended %u times in a minute: not restarting it", s->path, s->ends);
+        return false;
+    }
+    if (s->ends == GIVE_UP_COUNT + 1)
+        init_say("init: %s ended %u times in a minute: restarting it anyway (never given up)",
+                 s->path, s->ends);
+    return true;
+}
+
 /* Svc i ended: say how, clean up, schedule the restart. */
 static void ended(unsigned i)
 {
@@ -175,10 +219,6 @@ static void ended(unsigned i)
     s->proc = s->job = HANDLE_INVALID;
     s->running = false;
     uint64_t t = now();
-    if (t - s->window_start > GIVE_UP_WINDOW) {
-        s->window_start = t;
-        s->ends = 0;
-    }
     services_closed(i);
     if (followers[i].ns) {
         jam_handle_close(followers[i].ns);
@@ -193,14 +233,13 @@ static void ended(unsigned i)
         s->given_up = true;
         return;
     }
-    if (++s->ends > GIVE_UP_COUNT) {
-        s->given_up = true;
-        services_given_up(i);
-        init_say("init: %s ended %u times in a minute: not restarting it", s->path, s->ends);
+    bool took = went_with_console(i);
+    if (!took && !count_end(i, t))
         return;
-    }
-    /* Ran for a while: start again soon; else back off. */
-    s->backoff = t - s->started > 10 * NS_PER_S || !s->backoff ? 100 * NS_PER_MS : s->backoff * 2;
+    /* Ran for a while (or went with its console): start again soon; else
+     * back off. */
+    s->backoff = took || t - s->started > 10 * NS_PER_S || !s->backoff ? 100 * NS_PER_MS
+                                                                       : s->backoff * 2;
     if (s->backoff > 5 * NS_PER_S)
         s->backoff = 5 * NS_PER_S;
     s->next_try = t + s->backoff;
@@ -285,6 +324,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         init_say("init: shell mode: no port (%s)", status_str(st));
         return false;
     }
+    writers_init();
     services_init(port, no_usb, splash, shell_arg);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);

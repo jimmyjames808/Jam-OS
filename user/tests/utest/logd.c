@@ -414,3 +414,50 @@ bool t_logd_openers(void)
     CHECK_ST(jam_handle_close(fs), OK);
     return true;
 }
+
+/* The kernel marks each log line with its writer (klog_lines): one of
+ * ours, even one that reads like the kernel's own, carries our koid; and
+ * the call's errors. Needs RIGHT_ROOT_KLOG on our root. */
+bool t_klog_lines(void)
+{
+    static const char line[] = "user: process \"music\" killed: page fault (utest's mark)\n";
+    static struct klog_line marks[256];
+    static char text[256];
+    handle_t root = startup_handle(SR_RESOURCE), rd, klog;
+    if (!root || jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_ROOT_KLOG, &rd) != OK) {
+        printf("utest: %s: no RIGHT_ROOT_KLOG on our root: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(jam_klog_open(rd, &klog), OK);
+    struct process_info me;
+    CHECK_ST(jam_process_get_info(startup_handle(SR_SELF_PROCESS), &me), OK);
+    uint64_t end = 0, first, known;
+    char c;
+    CHECK_EQ(jam_klog_read(klog, UINT64_MAX, &c, 1, &end), 0);
+    CHECK_ST(jam_debug_write(line, sizeof(line) - 1), OK);
+    /* Our line's mark: past `end`, the line whose text has ours. */
+    uint64_t writer = KLOG_WRITER_KERNEL;
+    bool found = false;
+    int64_t n = jam_klog_lines(klog, end, marks, 256, &known);
+    CHECK(n > 0);
+    for (int64_t i = 0; i < n && !found; i++) {
+        int64_t got = jam_klog_read(klog, marks[i].pos, text, sizeof(text) - 1, &first);
+        CHECK(got > 0 && first == marks[i].pos);
+        text[got] = '\0';
+        char *nl = strchr(text, '\n');
+        if (nl)
+            *nl = '\0';
+        found = strstr(text, "(utest's mark)") != NULL;
+        writer = marks[i].writer;
+    }
+    CHECK(found);
+    CHECK_EQ(writer, me.koid);
+    CHECK(known <= end);   /* our line's mark is still there */
+    CHECK_EQ(jam_klog_lines(klog, end, marks, 0, &known), 0);
+    CHECK_EQ(jam_klog_lines(klog, end, (struct klog_line *)8, 4, &known), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_klog_lines(klog, end, marks, 4, (uint64_t *)8), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_klog_lines(rd, end, marks, 4, &known), ERR_WRONG_TYPE);
+    CHECK_ST(jam_handle_close(klog), OK);
+    CHECK_ST(jam_handle_close(rd), OK);
+    return true;
+}

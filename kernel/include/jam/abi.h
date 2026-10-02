@@ -46,9 +46,12 @@ typedef uint32_t rights_t;
 #define RIGHT_ROOT_KEXEC   (1u << 16)  /* kexec_load: replace the stored kernel */
 #define RIGHT_ROOT_DEBUG   (1u << 17)  /* debug_command: the kernel's tests and debug commands */
 #define RIGHT_ROOT_VMEX    (1u << 18)  /* vmo_make_exec: run code from a VMO a process made */
+#define RIGHT_ROOT_SCREEN  (1u << 20)  /* framebuffer_take: the screen */
+#define RIGHT_ROOT_SERIAL_OUT (1u << 21)  /* serial_write: the serial port's output */
 #define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
                      RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
-                     RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX)
+                     RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX | RIGHT_ROOT_SCREEN |    \
+                     RIGHT_ROOT_SERIAL_OUT)
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
@@ -336,7 +339,15 @@ struct input_want {
     uint32_t reserved;    /* 0 */
 };
 
-/* console services (abi/syscalls.def 110-117) --------------------------------- */
+/* console services (abi/syscalls.def 110-119) --------------------------------- */
+
+/* klog_lines: who wrote the log line starting at byte `pos` of the log. */
+#define KLOG_WRITER_KERNEL  0ull            /* the kernel itself (never in a mark) */
+#define KLOG_WRITER_UNKNOWN 0xffffffffffffffffull   /* a copy (the panic screen's) */
+struct klog_line {
+    uint64_t pos;         /* where the line starts (klog_read's positions) */
+    uint64_t writer;      /* the writing process's koid, or KLOG_WRITER_* */
+};
 
 /* framebuffer_take: the boot framebuffer's geometry. The VMO covers
  * pitch * height bytes rounded up to a page; pixel (x, y) is the uint32_t

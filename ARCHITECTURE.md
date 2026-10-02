@@ -379,7 +379,10 @@ Every driver and service is a userspace process from the start.
   can be started (`starting`), so a failed start leaves it NEW and
   untouched. `debug_write` builds lines under a per-process spinlock but
   prints them with no lock held, 100 lines at once then 50/s per process
-  (the rest are dropped and counted).
+  (the rest are dropped and counted). The kernel log marks every line a
+  process writes with the process's koid (the kernel's own lines have no
+  mark), which `klog_lines` gives a reader: the name in front of a line is
+  only what its creator called the process, the mark is who wrote it.
 - `resource` is the root of hardware authority (MMIO ranges, PCI devices).
   Userboot hands init the root; init passes a PCI slice to devmgr, which
   gives each driver only its own device, BARs and interrupt.
@@ -594,7 +597,7 @@ port, so while it handles one request every other client waits behind it.
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
-| console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
+| console | the framebuffer and COM1's output (the root's `RIGHT_ROOT_SCREEN` and `RIGHT_ROOT_SERIAL_OUT`, which no other program holds), `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
 | fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
@@ -729,7 +732,11 @@ Not built yet; these rules bind every future path that can transmit.
   handles they need: on a plain boot the bootfs server, the console,
   the boot splash (once; the shell waits for it), serialin, devmgr, the
   mixer, the music player, logd (once `/data` is there) and the shell, restarting
-  any that die (killing devmgr takes its drivers with its job); for the
+  any that die (killing devmgr takes its drivers with its job), backing
+  off up to 5 s; one that dies more than 10 times in a minute is given up
+  on, except the console and the shell, which nobody could do without
+  (an end of serialin's or the shell's that the console's took with it
+  doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
@@ -825,14 +832,18 @@ Not built yet; these rules bind every future path that can transmit.
   <list>` into `/data/etc/allow` (`allow -l` lists, `allow -r <name>`
   takes back). To run it the shell reads the file into a VMO only it
   holds, turns that handle into one that may execute and not write
-  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX` and refuses a VMO with
-  another handle, a mapping or a pin), hashes those bytes, and starts it
+  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX`, refuses a VMO with
+  another handle, a mapping, a pin or a write in progress, and seals it: the
+  VMO itself refuses every later write, even from a call that started
+  before), hashes those bytes, and starts it
   only if a line has that path and hash, with the list read from the
   same bytes. No program can mark one: every program's `/data` is a view
   that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that
   asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
   `init`) is refused, approval or not: they reach drivers, devices and
-  the filesystems unguarded, past every view. Whoever holds
+  the filesystems unguarded, past every view; so is one that asks for
+  `right debug` (the kernel's debug commands panic and crash the machine
+  on purpose). Whoever holds
   the stick can edit the file on another computer, as they could replace
   the kernel. User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
@@ -1240,7 +1251,7 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   nothing drawn). init starts the stored kernel as it is unless `/esp`
   has another kernel or boot image than the ones it noted (size and
   modification time) when `/esp` was first mounted; then it reads both
-  and calls `kexec_load` (RIGHT_MANAGE on the root resource) to replace
+  and calls `kexec_load` (`RIGHT_ROOT_KEXEC` on the root resource) to replace
   the stored kernel. It syncs and flushes the log as before, stops the
   sound's clients for good (the music player, the splash and the mixer:
   the hda driver ends only once its client has gone), stops devmgr in
@@ -1280,7 +1291,11 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   in yellow (`user/services/console/notices.c`): another stick plugged
   in or pulled out, the Jam OS stick pulled out and back, `/data` full or
   not mounted, a service or driver that crashed and is being started
-  again or was given up on. Each is announced once things have settled
+  again or was given up on. Only lines the kernel marks as its own or as
+  init's, devmgr's or logd's real process count (`klog_lines`; init keeps
+  those three koids in a page the console reads, `<logwriters.h>`), so a
+  program that starts a process called "init" makes no notice. Each is
+  announced once things have settled
   (a remount says nothing), never twice within 30 s, at most four in
   10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
   comes, and the boot tests draw it from the kernel.

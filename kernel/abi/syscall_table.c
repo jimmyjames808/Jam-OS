@@ -377,6 +377,11 @@ static int64_t call_klog_name(const struct syscall_frame *f)
     return sysc_klog_name((handle_t)f->args[0], f->args[1], f->args[2]);
 }
 
+static int64_t call_klog_lines(const struct syscall_frame *f)
+{
+    return sysc_klog_lines((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4]);
+}
+
 static int64_t call_dma_cap_bus_master(const struct syscall_frame *f)
 {
     return sysc_dma_cap_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
@@ -500,6 +505,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_serial_read] = call_serial_read,
     [SYS_serial_write] = call_serial_write,
     [SYS_klog_name] = call_klog_name,
+    [SYS_klog_lines] = call_klog_lines,
     [SYS_dma_cap_bus_master] = call_dma_cap_bus_master,
     [SYS_channel_write_rights] = call_channel_write_rights,
     [SYS_sys_info] = call_sys_info,

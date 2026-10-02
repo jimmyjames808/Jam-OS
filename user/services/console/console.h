@@ -167,10 +167,16 @@ void reboot_due(void);
 
 /* ---- notices.c: while the kernel log is off the screen ---------------------------- */
 
-/* A kernel log line (without its newline): follow what it says, and turn
- * it into a notice if announce (the log is not on the screen) and it is
- * one. */
-void     notice_take(const char *s, size_t n, bool announce);
+/* Who wrote a log line, from the kernel's mark on it (klog_lines) and
+ * init's table of the system's writers (<logwriters.h>): only the kernel's
+ * own lines and those of init's, devmgr's and logd's real processes can
+ * make notices. W_OTHER: anyone else, or not known (no mark, no table). */
+enum log_writer { W_KERNEL, W_INIT, W_DEVMGR, W_LOGD, W_OTHER };
+
+/* A kernel log line (without its newline) that `w` wrote: follow what it
+ * says, and turn it into a notice if announce (the log is not on the
+ * screen) and it is one. */
+void     notice_take(const char *s, size_t n, bool announce, enum log_writer w);
 /* When notice_tick has something to do next (uptime ns), or DEADLINE_NEVER. */
 uint64_t notice_deadline(void);
 /* Announce what has settled; nothing while the log is shown. */

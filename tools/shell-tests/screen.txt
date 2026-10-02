@@ -2,7 +2,9 @@
 # console gets "nolog"): after the splash, the shell's banner and prompt
 # and no kernel log; the log on the screen while a command whose output it
 # is runs; and the notices: another stick plugged in and pulled out (a
-# remount in between says nothing), the boot stick pulled out and back.
+# remount in between says nothing), the boot stick pulled out and back;
+# none from processes that only borrow the names init, devmgr and logd
+# (`utest impostor`: tools/screen-test.sh checks the log for them).
 wait 120 console: the screen is back
 seen 60 jam>
 sleep 2
@@ -33,6 +35,17 @@ wait shell: ktest utf8: 5 passed
 wait jam>
 sleep 1
 shot screen-ktest
+send clear
+wait jam>
+
+# ---- impostors: lines in init's, devmgr's and logd's names, other writers ------------
+send run utest impostor
+wait impostor: 3 lines written as init, devmgr and logd
+wait jam>
+sleep 4
+send echo impostors-done
+wait impostors-done
+wait jam>
 send clear
 wait jam>
 

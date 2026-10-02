@@ -20,13 +20,16 @@
  *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open),
- *                   RIGHT_WRITE (framebuffer_take, serial_write) and
+ *                   RIGHT_ROOT_SCREEN (framebuffer_take),
+ *                   RIGHT_ROOT_SERIAL_OUT (serial_write) and
  *                   RIGHT_ROOT_REBOOT (reboot, on Ctrl+Alt+Del, if init
  *                   doesn't answer)
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
  *   SR_USER + 8     init's control channel (abi/idl/initctl.idl), which
  *                   answers this holder only `reboot`: Ctrl+Alt+Del
+ *   SR_USER + 9     init's table of the log writers whose lines make
+ *                   notices (<logwriters.h>), read-only
  *
  * The screen: a grid of 8x16 cells. Committed lines live in a scrollback
  * ring; the line the programs are writing (the "current line", where the
@@ -41,6 +44,7 @@
  * Who may do what: clients.c (the client levels) and keys.c (the keys).
  * Drawing, and lending the screen to a program: screen.c. Full-screen text
  * programs can use the alternate screen: text.c. */
+#include <logwriters.h>
 #include "console.h"
 
 #define QUIET_MAX (5 * NS_PER_S)   /* the splash borrows the screen as it starts */
@@ -49,6 +53,7 @@
  * (which mounts there are), but drawing it would only fill a scrollback
  * that keeps SCROLLBACK lines, after a restart in a long boot. */
 #define CATCH_UP_DRAWN (256u << 10)
+#define KLOG_LINES_PER_CALL 256    /* klog_lines gives at most this many marks a call */
 
 handle_t root, port;
 
@@ -60,6 +65,17 @@ static char klog_buf[KLOG_BUF];    /* what one klog_read returns */
 static char partial[1024];         /* the line being gathered, without its newline */
 static size_t npartial;            /* its length */
 static uint64_t partial_at;        /* the log position of partial[0] */
+static enum log_writer partial_by; /* who wrote it (the mark at partial_at) */
+static bool mid_line;              /* the next text may start inside a line (a gap, a cut) */
+/* The marks of the processes' lines starting in the text klog_read last
+ * gave (a line is at least a 15-byte stamp and a newline), the next to
+ * look at, and the stretch of the log they are complete for: a line in
+ * [marks_known, marks_upto) without a mark is the kernel's; outside it,
+ * not known. */
+static struct klog_line marks[KLOG_BUF / 16];
+static size_t nmarks, mark_next;
+static uint64_t marks_known, marks_upto;
+static const struct log_writers *writers;   /* init's table, mapped (NULL: none) */
 static bool log_off;               /* "nolog": the log is off the screen but on request */
 static bool catching_up;           /* reading the log from before we started */
 static uint64_t draw_from;         /* the catch-up draws no line that starts before this */
@@ -84,6 +100,50 @@ static const char *line_name(const char *s, size_t n, size_t *len)
     return NULL;
 }
 
+/* The marks of the processes' lines starting in [first, first + n) of the
+ * log. */
+static void fetch_marks(uint64_t first, int64_t n)
+{
+    nmarks = mark_next = 0;
+    marks_known = UINT64_MAX;
+    marks_upto = 0;   /* nothing known until a call has answered */
+    uint64_t pos = first;
+    while (nmarks < sizeof(marks) / sizeof(marks[0])) {
+        uint64_t want = sizeof(marks) / sizeof(marks[0]) - nmarks, known;
+        if (want > KLOG_LINES_PER_CALL)
+            want = KLOG_LINES_PER_CALL;
+        int64_t got = jam_klog_lines(klog, pos, marks + nmarks, want, &known);
+        if (got < 0)
+            return;
+        nmarks += (size_t)got;
+        marks_known = known;
+        if ((uint64_t)got < want) {
+            marks_upto = UINT64_MAX;   /* every mark there is */
+            return;
+        }
+        pos = marks[nmarks - 1].pos + 1;
+        marks_upto = pos;   /* complete up to the last one given */
+        if (pos >= first + (uint64_t)n)
+            return;   /* past the text */
+    }
+}
+
+/* Who wrote the line that starts at pos: its mark, against init's table. */
+static enum log_writer writer_at(uint64_t pos)
+{
+    while (mark_next < nmarks && marks[mark_next].pos < pos)
+        mark_next++;
+    if (mark_next == nmarks || marks[mark_next].pos != pos)
+        return pos >= marks_known && pos < marks_upto ? W_KERNEL : W_OTHER;
+    uint64_t w = marks[mark_next].writer;
+    if (!writers || w == KLOG_WRITER_UNKNOWN)
+        return W_OTHER;
+    return w == __atomic_load_n(&writers->init, __ATOMIC_ACQUIRE)     ? W_INIT
+           : w == __atomic_load_n(&writers->devmgr, __ATOMIC_ACQUIRE) ? W_DEVMGR
+           : w == __atomic_load_n(&writers->logd, __ATOMIC_ACQUIRE)   ? W_LOGD
+                                                                       : W_OTHER;
+}
+
 /* One whole line of the log (a line longer than `partial` in pieces). */
 static void klog_line(const char *s, size_t n)
 {
@@ -95,7 +155,7 @@ static void klog_line(const char *s, size_t n)
         kernel_line(s, n);
     drawn_lines += shown && catching_up;
     if (log_off)
-        notice_take(s, n, !shown && !catching_up);
+        notice_take(s, n, !shown && !catching_up, partial_by);
 }
 
 /* n bytes of the kernel log from position `at`: each whole line to
@@ -107,11 +167,16 @@ static void klog_take(const char *p, int64_t n, uint64_t at)
         if (c == '\n' || npartial == sizeof(partial)) {
             klog_line(partial, npartial);
             npartial = 0;
+            mid_line = c != '\n';   /* the rest of a line cut in pieces */
             if (c == '\n')
                 continue;
         }
-        if (!npartial)
+        if (!npartial) {
             partial_at = at + (uint64_t)i;
+            /* Not a line's start: no mark could say whose it is. */
+            partial_by = mid_line ? W_OTHER : writer_at(partial_at);
+            mid_line = false;
+        }
         partial[npartial++] = c;
     }
 }
@@ -123,6 +188,10 @@ void klog_event(void)
         int64_t n = jam_klog_read(klog, klog_pos, klog_buf, sizeof(klog_buf), &first);
         if (n <= 0)
             return;
+        if (first != klog_pos) {
+            npartial = 0;
+            mid_line = true;   /* the oldest text kept may start inside a line */
+        }
         if (first != klog_pos && klog_pos) {
             char gap[64];
             int m = snprintf(gap, sizeof(gap), "[console: %lu bytes of kernel log missed]",
@@ -132,6 +201,8 @@ void klog_event(void)
                 kernel_line(gap, (size_t)m);
         }
         klog_pos = first + (uint64_t)n;
+        if (log_off)
+            fetch_marks(first, n);   /* only the notices need them */
         klog_take(klog_buf, n, first);
     }
 }
@@ -169,6 +240,11 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "selftest"))
         return console_selftest();
     root = startup_handle(SR_RESOURCE);
+    uint64_t waddr = 0;
+    if (startup_handle(CONSOLE_WRITERS_ROLE) &&
+        jam_vmar_map(startup_handle(SR_SELF_VMAR), startup_handle(CONSOLE_WRITERS_ROLE), 0,
+                     PAGE_SIZE, VMAR_READ, &waddr) == OK)
+        writers = (const struct log_writers *)(uintptr_t)waddr;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "quiet"))
             screen_quiet(now() + QUIET_MAX);

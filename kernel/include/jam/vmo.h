@@ -64,13 +64,18 @@ status_t vmo_set_job(struct vmo *v, struct job *job);
 
 /* Uncommitted pages read as zeros and stay uncommitted. */
 status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len);
-/* Commits pages as needed. */
+/* Commits pages as needed. ERR_BAD_STATE if v is sealed (vmo_seal), as
+ * for vmo_set_size, vmo_commit and vmo_decommit. */
 status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len);
 uint64_t vmo_size(struct vmo *v);
-/* v is a paged VMO that nothing maps (in any address space or the kernel)
- * and nothing pins: with no handle that may write it, its bytes can't
- * change (vmo_make_exec). */
-bool     vmo_unmapped_paged(struct vmo *v);
+/* Seal v for good (vmo_make_exec): from now on its bytes and size can't
+ * change. Every write path is refused with ERR_BAD_STATE (vmo_write,
+ * vmo_set_size, vmo_commit, vmo_decommit), and so are a writable user or
+ * kernel mapping and a pin; reading and read-only or executable mappings
+ * still work. ERR_BAD_STATE (and v unchanged) unless v is a paged VMO that
+ * nothing maps or pins and no write path is running on. Sealing a sealed
+ * VMO again is OK under the same conditions. */
+status_t vmo_seal(struct vmo *v);
 /* Bytes of memory the VMO owns right now (committed pages). */
 uint64_t vmo_committed(struct vmo *v);
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the
