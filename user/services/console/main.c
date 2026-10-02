@@ -43,6 +43,11 @@
 #include "console.h"
 
 #define QUIET_MAX (5 * NS_PER_S)   /* the splash borrows the screen as it starts */
+/* What a starting console draws of the log already in the kernel's ring
+ * (4 MiB): its last part. The rest is still read, for the notices' state
+ * (which mounts there are), but drawing it would only fill a scrollback
+ * that keeps SCROLLBACK lines, after a restart in a long boot. */
+#define CATCH_UP_DRAWN (256u << 10)
 
 handle_t root, port;
 
@@ -53,8 +58,11 @@ static uint64_t klog_pos;          /* the log position read up to */
 static char klog_buf[KLOG_BUF];    /* what one klog_read returns */
 static char partial[1024];         /* the line being gathered, without its newline */
 static size_t npartial;            /* its length */
+static uint64_t partial_at;        /* the log position of partial[0] */
 static bool log_off;               /* "nolog": the log is off the screen but on request */
 static bool catching_up;           /* reading the log from before we started */
+static uint64_t draw_from;         /* the catch-up draws no line that starts before this */
+static uint64_t drawn_lines;       /* lines the catch-up drew */
 
 /* The process name of a log line ("[    1.234567] [name] ..."), or n 0
  * for the kernel's own. */
@@ -80,15 +88,18 @@ static void klog_line(const char *s, size_t n)
 {
     size_t nl;
     const char *name = line_name(s, n, &nl);
-    bool shown = !log_off || clients_show_line(name, nl);
+    bool shown = (!log_off || clients_show_line(name, nl)) &&
+                 (!catching_up || partial_at >= draw_from);
     if (shown)
         kernel_line(s, n);
+    drawn_lines += shown && catching_up;
     if (log_off)
         notice_take(s, n, !shown && !catching_up);
 }
 
-/* n bytes of the kernel log: each whole line to klog_line. */
-static void klog_take(const char *p, int64_t n)
+/* n bytes of the kernel log from position `at`: each whole line to
+ * klog_line. */
+static void klog_take(const char *p, int64_t n, uint64_t at)
 {
     for (int64_t i = 0; i < n; i++) {
         char c = p[i];
@@ -98,6 +109,8 @@ static void klog_take(const char *p, int64_t n)
             if (c == '\n')
                 continue;
         }
+        if (!npartial)
+            partial_at = at + (uint64_t)i;
         partial[npartial++] = c;
     }
 }
@@ -118,7 +131,7 @@ void klog_event(void)
                 kernel_line(gap, (size_t)m);
         }
         klog_pos = first + (uint64_t)n;
-        klog_take(klog_buf, n);
+        klog_take(klog_buf, n, first);
     }
 }
 
@@ -178,9 +191,16 @@ int main(int argc, char **argv)
         if (st != OK)
             printf("console: kernel log: port_bind: %s; its lines show only with program "
                    "output\n", status_str(st));
+        uint64_t end = 0;
+        char c;
+        jam_klog_read(klog, UINT64_MAX, &c, 1, &end);   /* past the end: 0 bytes, the end */
+        draw_from = end > CATCH_UP_DRAWN ? end - CATCH_UP_DRAWN : 0;
         catching_up = true;
         klog_event();   /* the boot log so far: no news in it */
         catching_up = false;
+        printf("console: the kernel log so far: drew %lu lines of the last %lu KiB (of %lu "
+               "KiB)\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
+               (unsigned long)(end >> 10));
         notice_settle();
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
