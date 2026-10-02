@@ -737,10 +737,17 @@ deadline, so the service-loop rule holds by construction):
   send to the server's port 53; `release(ctx, port)`: close it;
   `answer(ctx, cookie, st, addr, n, ttl)`: the `resolve` reply;
   `random(ctx)`.
-- **Randomness:** libos has no random source yet. DNS ids and ports are
-  only as unguessable as `random`: 5b needs a real one (RDRAND, which
-  works in user space, checked by CPUID first; or one from the kernel).
-  A fixed seed would make forged answers easy.
+- **Randomness:** DNS ids and ports and DHCP's xid and jitter are only
+  as unguessable as `random`. It comes from the kernel's generator
+  (ChaCha20 seeded from RDSEED/RDRAND:
+  [ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers)) through libos's
+  `os_random_u32()` (`<os.h>`, the `random_get` system call, no handle
+  needed). The hook takes the context and os_random_u32 doesn't, so 5b
+  writes one adapter in each of `bin/dhcp` and `bin/dns`:
+  `static uint32_t io_random(void *ctx) { (void)ctx; return os_random_u32(); }`
+  and sets `io->random = io_random`, in effect `io->random = os_random_u32`.
+  Never a fixed seed or a generator of the service's own: forged answers
+  would be easy.
 
 ### netlog: the log over UDP to the Mac
 

@@ -34,6 +34,17 @@ static inline uint64_t now(void)
     return (uint64_t)jam_clock_get();
 }
 
+/* random numbers ---------------------------------------------------------------- */
+
+/* len unpredictable bytes from the kernel's generator (the random_get
+ * system call, RANDOM_GET_MAX at a time): for anything an attacker must
+ * not guess (DNS query ids and ports, DHCP transaction ids). Never blocks
+ * and never fails: a buf that isn't writable memory is the caller's bug,
+ * and the program traps. */
+void     os_random(void *buf, size_t len);
+/* 32 random bits (os_random). */
+uint32_t os_random_u32(void);
+
 /* startup message ----------------------------------------------------------- */
 
 /* The channel the startup message came on (still open). */

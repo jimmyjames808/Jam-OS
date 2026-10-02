@@ -101,3 +101,4 @@ int64_t sysc_wallclock_set(handle_t root, uint64_t in);
 int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
                         uint64_t len, uint32_t flags);
 int64_t sysc_kexec_reboot(handle_t root);
+int64_t sysc_random_get(uint64_t buf, uint64_t len);

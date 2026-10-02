@@ -671,4 +671,12 @@ jam_kexec_reboot:
     ret
     .size jam_kexec_reboot, . - jam_kexec_reboot
 
+    .globl jam_random_get
+    .type jam_random_get, @function
+jam_random_get:
+    mov $SYS_random_get, %eax
+    syscall
+    ret
+    .size jam_random_get, . - jam_random_get
+
     .section .note.GNU-stack, "", @progbits

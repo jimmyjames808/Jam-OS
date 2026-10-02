@@ -499,6 +499,25 @@ answer, and the clock is a number the test sets. They run in every
   several replies; SERVFAIL, TC, NXDOMAIN; shared and cancelled askers;
   a full table; ports the edge says are taken; the cache's bounds.
 
+## Random numbers
+
+The kernel's generator ([ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers))
+has ktests `random_*` (`kernel/test/test_random.c`, `ktest=random`, a
+few milliseconds): RFC 8439's ChaCha20 vectors (2.3.2, A.1 #1 and #2,
+2.4.2), the output as a known function of the key and the old key gone
+after a request, mixing, a due reseed, the stuck-source check, the
+machine's source against CPUID (and RDRAND alone where there is RDRAND),
+the path without RDSEED and RDRAND, two calls that differ, and 64 KiB
+whose byte counts (a chi-square) and one bits stay inside bounds a
+working generator leaves about once in 10^9 runs. utest's `random_get`
+and `os_random` call it from user space, with the refusals (too long, a
+NULL, kernel or read-only buffer).
+
+QEMU's default `-cpu max` has RDSEED and RDRAND. The path without them
+needs another CPU model: `QEMU_CPU=qemu64 tools/qemu-test.sh build/test
+rnd ktest=random` boots with `random: no RDSEED/RDRAND: seeded from
+timing only ...: WEAK` in the log and the RESULTS box.
+
 ## The other tools
 
 The rest of `tools/` builds, checks and flashes; the tests above use some

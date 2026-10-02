@@ -142,7 +142,8 @@ Every driver and service is a userspace process from the start.
   module's pages, without copying.
 - The order (`kernel/main.c`): early console, PMM/VMM, heap, bootfs, then
   on the kernel's own stack: ACPI tables (MADT/MCFG/HPET), BSP LAPIC, TSC
-  calibration, BSP per-CPU, scheduler (the boot code becomes thread
+  calibration, the wall clock, the [random number generator](#random-numbers),
+  BSP per-CPU, scheduler (the boot code becomes thread
   "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
   interrupts on, the PCI core and resources; then either the boot-time
   tests (ktest, bench, stress) or userboot → init.
@@ -697,7 +698,8 @@ bind every future path that can transmit.
 
 - **libos** (`user/lib/`): startup, syscall wrappers, malloc, printf,
   channel/port helpers, `spawn()`, threads, the ELF loader, the file
-  namespace and its file calls, and the implementation of
+  namespace and its file calls, random numbers (`os_random`, from the
+  [kernel's generator](#random-numbers)), and the implementation of
   `<jam/driver.h>`. malloc (`user/lib/heap.c`) serves blocks from one VMO
   mapped on first use: freed blocks go on a free list kept in address
   order and merge with free neighbours (or go back to the end of the
@@ -1186,6 +1188,34 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   never half of either (a lone `settings.new` is read in their place).
   init writes a commented file with the defaults the first time `/data`
   has none. M9's network settings are meant to live there too.
+
+## Random numbers
+
+- **One generator, the kernel's** (`kernel/dev/random.c`, `<jam/random.h>`),
+  built like OpenBSD's arc4random and Linux's crng: a 256-bit ChaCha20
+  key (`kernel/lib/chacha20.c`, written from RFC 8439) and nothing else.
+  Each request turns the key into one block under a lock: half of it is
+  the next key, half keys that request's own stream, made after the lock
+  is dropped. The old key is gone at once (fast key erasure), so memory
+  read later can't give back earlier output. It never blocks and works
+  from any CPU, interrupts off included.
+- **The seed**, at boot once the TSC is calibrated: RDSEED, else RDRAND
+  (each only if CPUID has it, drawn with a retry limit and refused if it
+  repeats a value or gives all zeros or all ones, as a stuck or broken
+  source does), mixed with TSC timings and what differs between machines
+  and boots (the loader's memory map and CPUs, ACPI's tables, the RTC's
+  date). The first request 60 s after the last reseed mixes in fresh
+  hardware words and the TSC. The log names the source (`random:` line);
+  without RDSEED and RDRAND (QEMU's qemu64) it says, also in the RESULTS
+  box, that the numbers are weak, seeded from timing only. The PC has
+  both ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
+- **For programs: the `random_get` system call**, at most
+  `RANDOM_GET_MAX` (256) bytes a call, with no handle or right: anyone
+  may ask, as anyone may read the clock, and a call costs only the
+  caller's time. libos wraps it as `os_random(buf, len)` and
+  `os_random_u32()` (`<os.h>`), for whatever an attacker must not guess:
+  DNS query ids and ports, DHCP transaction ids. Nothing is generated in
+  user space, so a restarted program never repeats a stream.
 
 ## Kexec: reboot and panic
 

@@ -273,3 +273,12 @@
 # only ERR_NOT_SUPPORTED (no region), ERR_BAD_STATE (nothing stored) or a
 # handle error; a damaged image resets through the firmware instead.
 141 kexec_reboot      status    handle_t root
+
+# random numbers ------------------------------------------------------------
+# len bytes (at most RANDOM_GET_MAX, 256, <jam/abi.h>) from the kernel's
+# generator into buf: ChaCha20 seeded from RDSEED/RDRAND, TSC timings and
+# boot data (<jam/random.h>); unpredictable, never blocks. No handle or
+# right needed. len 0: OK, buf untouched. ERR_INVALID_ARGS: len too big,
+# or buf not all writable (part of it may have been written). libos:
+# os_random.
+150 random_get        status    void *buf, uint64_t len

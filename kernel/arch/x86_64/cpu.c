@@ -59,11 +59,13 @@ void cpu_detect(void)
     f->xsave  = c & (1u << 26);
     f->avx    = f->xsave && (c & (1u << 28));
     f->pcid   = c & (1u << 17);
+    f->rdrand = c & (1u << 30);
 
     if (max_leaf >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
         f->hybrid = d & (1u << 15);
         f->tsc_adjust = b & (1u << 1);
+        f->rdseed = b & (1u << 18);
         f->smep   = b & (1u << 7);
         f->smap   = b & (1u << 20);
         f->umip   = c & (1u << 2);
