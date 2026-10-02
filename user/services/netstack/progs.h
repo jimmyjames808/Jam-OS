@@ -91,6 +91,13 @@ struct opener {
     uint64_t ring_bytes;  /* its sockets' ring bytes (sockring_bytes) */
 };
 
+/* A socket's ring memory (sockmem.h has its calls). */
+struct sockmem {
+    handle_t vmo, to_stack, to_prog;   /* ours, every right (vmo 0: none) */
+    uint8_t *map;                      /* the VMO mapped here (bytes long) */
+    uint64_t bytes;                    /* sockring_bytes: what it counts against the shares */
+};
+
 struct sock {
     handle_t           ch;          /* our end of its channel; 0: the slot is free */
     uint32_t           gen;         /* the slot's generation */
@@ -103,10 +110,7 @@ struct sock {
     uint16_t           port;        /* its local port */
     uint32_t           peer;        /* sock_connect's peer (0: anyone) */
     uint16_t           peer_port;
-    /* its rings (vmo 0: none yet) */
-    handle_t           vmo, to_stack, to_prog;   /* ours, every right */
-    uint8_t           *map;         /* the VMO mapped here (bytes long) */
-    uint64_t           bytes;       /* sockring_bytes: what it counts against the shares */
+    struct sockmem     m;           /* its rings' memory (m.vmo 0: none yet) */
     struct sockring    r;           /* our ends: tx consumer, rx producer */
     struct sockring_status st;      /* our copy of its status line (never read back) */
     bool               tx_ready;    /* its tx ring may hold records */
