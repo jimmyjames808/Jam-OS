@@ -25,7 +25,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | A2 | Audio: mixer, `audio` protocol, WAV and MP3 playback, `music`, jamjar | done (the same sign-off) |
 | AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
-| M8.6 | Cleanup and polish ([M8.6-PLAN.md](M8.6-PLAN.md)) | under way: the M8.5 review and tracks A, B and C merged; the code check under way |
+| M8.6 | Cleanup and polish ([M8.6-PLAN.md](M8.6-PLAN.md)) | under way: the M8.5 review, tracks A, B and C and the code check merged; the pre-M9 batch under way |
 | M9 | Networking | later |
 | M10 | ACPI power, tickless idle | later |
 | M10.5 | S3 sleep | later |
@@ -50,8 +50,10 @@ boot, the block cache, the boot disk and the other small items), B
 (`/svc` with per-program views, `allow` for programs on `/data`, `play`
 and jamjar's cover decoding split into small programs, the root
 resource's `RIGHT_READ` split), C (the log off the screen, UTF-8 in the
-log, `kernel load`, the date and time, settings). The code check is under
-way; then the PC sign-off.
+log, `kernel load`, the date and time, settings), and the code check. Now
+the pre-M9 batch ([the plan](M8.6-PLAN.md#after-the-code-check-the-pre-m9-batch-the-owner-2026-10-02):
+the architecture check's items and the code check's design questions);
+then the PC sign-off.
 
 The audio track (A1, A2, AS) and M8.5 are done:
 [what they delivered](HISTORY.md#audio-a1-a2-as-and-m85-kexec).
@@ -68,14 +70,14 @@ Known limits it left:
 | # | What | Done when |
 |---|---|---|
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
-| M8.6 | Cleanup and polish, in the order of [M8.6-PLAN.md](M8.6-PLAN.md): the independent review of M8.5's code; track A (keyboard and mouse ready early in boot, keys during the splash queued, a write-through block cache, the boot disk from Limine, Ctrl+Alt+Del's wait, a safe `make flash`, a bigger log ring); track B (`/svc` with per-program views, a program's list of what it wants approved by the owner with `allow`, which also marks programs on `/data` runnable, `play` and jamjar's cover decoding in programs of their own, the root resource's `RIGHT_READ` split); track C (the log and the RESULTS boxes off the screen with a short list of useful notices, UTF-8 in the log, `kernel load`, the real date and time from the RTC, settings in `/data/etc/settings`); last, the code check against CODING-GUIDE.md and ARCHITECTURE.md by fresh agents, findings first | keyboard and mouse ready within about 2 s of the kernel's start (the boot log says); the code check's findings fixed or written into the guide; All tests and `soak 10` on the PC with the SanDisk pulled and replugged |
-| M9 | RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved |
+| M8.6 | Cleanup and polish, in the order of [M8.6-PLAN.md](M8.6-PLAN.md): the independent review of M8.5's code; track A (keyboard and mouse ready early in boot, keys during the splash queued, a write-through block cache, the boot disk from Limine, Ctrl+Alt+Del's wait, a safe `make flash`, a bigger log ring); track B (`/svc` with per-program views, a program's list of what it wants approved by the owner with `allow`, which also marks programs on `/data` runnable, `play` and jamjar's cover decoding in programs of their own, the root resource's `RIGHT_READ` split); track C (the log and the RESULTS boxes off the screen with a short list of useful notices, UTF-8 in the log, `kernel load`, the real date and time from the RTC, settings in `/data/etc/settings`); then the code check against CODING-GUIDE.md and ARCHITECTURE.md by fresh agents, findings first; last, the pre-M9 batch: the architecture check's items and the code check's design questions (the service-loop rule and its tools, devmgr channels scoped to one device, driver isolation stated honestly, and more) | keyboard and mouse ready within about 2 s of the kernel's start (the boot log says); the code check's findings fixed or written into the guide; All tests and `soak 10` on the PC with the SanDisk pulled and replugged; `bench` run on the PC and its column in [BENCH.md](BENCH.md) (the first PC run since M5.5) |
+| M9 | First, how its services wait and what they hold ([ARCH-CHECK.md](history/ARCH-CHECK.md), claims 0, 2, 3): every new loop follows M8.6's service-loop rule (a loop serving several clients never blocks on a call inside a request; genidl's deferred replies and asynchronous calls and libos's tasks are the tools); the NIC gets a devmgr channel scoped to that one device, which init gives to netstack alone (as hda's goes to the mixer since M8.6). netdev is shared rings with events, never a call per packet; packets are parsed only in netstack, which holds no `dma_cap`; init makes each new service's channels once. Then: RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved; a service waiting on a slow peer delays only that peer's requests (a test) |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
 | M10.5 | S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |
-| M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
+| M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` (the PC's firmware has a DMAR table). Before G3 at the latest | DMA outside a driver's pinned VMOs is blocked, and a device's write to the interrupt window sends no interrupt; ARCHITECTURE then counts drivers as contained, not only crash-isolated |
 | M11.5 | Performance pass, as M5.5 was, before M12 reviews and M14 freezes the system calls: the IPC fast path (one reply-and-wait call, a direct hand-off to a waiting server, one copy of the message, no FPU save on a voluntary switch, no failed read before each wait), the file and block calls' deadlines made cheaper, and every number measured again on the PC. BENCH.md gains a Linux column measured on the same PC (default and `mitigations=off`), per-operation lines (a cached 4 KiB read, a block read) next to per-call ones, and a column with the lock checker off | a process-to-process call on the PC at 600 ns or less (1407 ns today), nothing given up in isolation or restart |
 | M11.6 | Services that outlive their process. A service's queues and state live outside the process (in VMOs and kernel objects the service is handed back when it restarts), so a restarted service reconnects to them and its clients never see the crash; a warm spare makes the restart fast. First for fat and the mixer, then the drivers. Built on M11.5's call path, before M12 reviews the interfaces it changes. The demonstration: a file copy on the PC that finishes with the right checksum while fat is killed again and again, its throughput printed next to the kill rate | killing fat or the mixer during use is not seen by their clients (no error, no gap in the sound); kill-to-first-answer measured and in BENCH.md |
-| M12 | Interface review: the system calls and the service protocols reviewed and reshaped while changing them is cheap, before POSIX builds on them and M14 freezes them. The second cleanup point after M8.6, by fresh agents | the review's findings fixed; nothing frozen yet |
+| M12 | Interface review: the system calls and the service protocols reviewed and reshaped while changing them is cheap, before POSIX builds on them and M14 freezes them. The second cleanup point after M8.6, by fresh agents. devmgr's disks, filesystem services and mounts move into a service of their own, and devmgr's protocol into IDL; variable-length IDL arrays | the review's findings fixed; nothing frozen yet |
 | M12.5 | User-space pagers. A process (a filesystem service) supplies the pages of a VMO on demand: mapped files (a cached read becomes a memory copy, and M13's `mmap` has something to stand on), programs loaded on demand instead of read whole, and the clean way to run programs from `/data` (the pages come from fat, checked against the approved hash). Pager failures (a pulled stick) end in a clean error, never a kernel hang | a file mapped and read through its pages; a program on `/data` runs from a pager; pulling the stick under a mapping fails the access cleanly |
 | M13 | POSIX on musl: file descriptors over handles, `posix_spawn` (no `fork`), paths through the namespace, then ported programs | unmodified POSIX programs (shell utilities, a small C program) build and run |
 | M14 | Stable syscall ABI: frozen only after POSIX has put its weight on it; versioned and documented | old binaries keep running on new kernels |
@@ -95,10 +97,14 @@ None has a plan yet; the order is the current preference.
 - **Shared request rings.** A client and a service share a ring of
   requests and replies in a VMO and make a system call only when the other
   side is asleep: the third level after copied messages and shared VMOs
-  for bulk data. The ring layout would be generated from the IDL.
-- **A service dependency graph.** devmgr and init know the order by code
-  (filesystems, then USB class drivers, then the bus drivers). Declared
-  dependencies would drive start, stop and restart order instead.
+  for bulk data. The ring layout would be generated from the IDL. The
+  first user is M9's netdev; then the fs and file calls (M11.5).
+- **A service dependency graph.** devmgr stops in device-tree order;
+  init starts and stops by a list. init already makes the mixer's
+  and the music player's channels once, so their clients don't
+  depend on start order; done for every service (M9's first), what
+  is left is the stop order, a rank in init's table. A declared graph
+  is for when that stops being enough.
 - **Leases on handles.** Handles given out for one device binding are
   revoked together when the device or its driver goes, including the ones
   passed on to other processes; jobs already reclaim what the dead process
@@ -123,15 +129,19 @@ ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
 - **GPT sticks** are not read (their partitions are not mounted).
-- devmgr's bounded waits (up to 2 s) on a slow usb-storage block its
-  other work meanwhile. (usb-bus runs each device's bulk transfers apart
-  from the others', so a slow stick holds up only its own requests.)
-- The first `make -j8` after a new file in `abi/idl/` can spin forever;
-  run again, it builds. Not looked into.
-- Names and volume labels from someone else's stick are printed as they
-  are, escape sequences included; `ls` and `find` show a directory's
-  first 256 entries and say nothing about the rest; init's loop waits up
-  to 25 s for a `mount` and 15 s for a `kill`.
+- devmgr and init are single-threaded loops that wait inside a
+  request: devmgr up to 2 s per call to a usb-storage, 5 s for a
+  filesystem's stop and 15 s for a killed driver; init up to 25 s for
+  a `mount` and 15 s for a `kill`. Meanwhile devmgr binds and
+  restarts nothing and init answers nothing, Ctrl+Alt+Del included.
+  M8.6's pre-M9 batch gives loops the tools to stop doing this; then
+  their waits are converted one at a time (init's first if Ctrl+Alt+Del
+  is ever seen stuck behind a `mount` on the PC; the storage ones go
+  with devmgr's split at M12) ([ARCH-CHECK.md](history/ARCH-CHECK.md)).
+  usb-bus is past this: since M8.6 every port and device has a task of
+  its own and each device's bulk transfers run apart from the others', so
+  a slow stick holds up only its own requests. One Bulk-Only stick still
+  runs one command at a time: the protocol has no queue.
 - The mouse wheel works on the PC (2026-10-01: hid drives a mouse whose
   report descriptor has a wheel in the report protocol; real mice send no
   wheel in the boot protocol). The boot log has each mouse's descriptor
@@ -139,14 +149,21 @@ ones below are the design questions M8 left open
   sent (no field in `input`). The mouse test runs at 1280x800 only.
 - The audio reviews' findings that were not fixed: an hda driver that
   dies mid-stream leaves the codec path open until its restart resets
-  the link, init waits for the splash with no deadline, and the Lows
+  the link, and the Lows
   ([AUDIO-REVIEW.md](history/AUDIO-REVIEW.md)); jamjar shares the shell's
   end of the player's channel, and its own Lows
   ([JAMJAR-REVIEW.md](history/JAMJAR-REVIEW.md)).
 
 The rest:
 
-- devmgr's protocol is hand-written, not IDL.
+- devmgr's protocol is hand-written, not IDL: handle results are in
+  genidl now; what remains is handle arguments, a varying number of reply
+  handles and the held-back `MOUNTS` reply. M12.
+- The benchmark has not run on the PC since M5.5 ([BENCH.md](BENCH.md)):
+  run it at M8.6's sign-off. Once per milestone a QEMU soak with the
+  scheduler's switches off (`noplaceorder noaffinepair nospinidle`). A new
+  scheduler heuristic needs a switch and a BENCH line showing a clear win
+  on the PC.
 - `console.write` always sends a 2048-byte array; variable-length IDL
   arrays would fix it.
 - The address-space switch got ~20 ns dearer with PCIDs on
