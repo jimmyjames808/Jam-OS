@@ -60,6 +60,8 @@ static uint8_t            tcp_ext = LWIP_TCP_PCB_NUM_EXT_ARG_ID_INVALID;   /* ou
 static bool               addr_going;   /* the address is changing: lwIP aborts its connections */
 static uint32_t           tcp_bad_acks; /* segments dropped by tcp_drop: a bad ACK */
 static uint32_t           tcp_no_acks;  /* ... no ACK flag */
+static bool               tx_blocked;   /* a frame found the edge full (stack_tx_blocked) */
+static unsigned           resume_from;  /* the active pcb stack_tx_resume starts with */
 
 void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const uint8_t *data,
                         size_t len);
@@ -145,8 +147,10 @@ static err_t link_out(struct netif *n, struct pbuf *p)
         counts.icmp_limited++;
         return ERR_OK;   /* as if sent: the sender has nothing to do about it */
     }
-    if (edge.tx(edge.ctx, txbuf, len) != OK) {
+    status_t st = edge.tx(edge.ctx, txbuf, len);
+    if (st != OK) {
         counts.tx_dropped++;
+        tx_blocked |= st == ERR_NO_RESOURCES;   /* full: TCP keeps the segment (unsent) */
         return ERR_IF;
     }
     counts.tx_frames++;
@@ -300,6 +304,38 @@ void stack_input(const uint8_t *frame, size_t len)
     memset((uint8_t *)p->payload + len, 0, padded - len);
     if (nif.input(p, &nif) != ERR_OK)
         pbuf_free(p);   /* not taken: still ours */
+}
+
+bool stack_tx_blocked(void)
+{
+    return tx_blocked;
+}
+
+/* tcp_output for each active pcb at list index [from, to) that holds
+ * something to send (segments, an ACK owed), until the edge is full again:
+ * the index it stopped at, or `to`. */
+static unsigned output_range(unsigned from, unsigned to)
+{
+    unsigned i = 0;
+    for (struct tcp_pcb *pcb = tcp_active_pcbs; pcb && i < to; pcb = pcb->next, i++) {
+        if (i < from || !(pcb->unsent || (pcb->flags & TF_ACK_NOW)))
+            continue;
+        (void)tcp_output(pcb);   /* a failure leaves it unsent again, and tx_blocked set */
+        if (tx_blocked)
+            return i;
+    }
+    return to;
+}
+
+void stack_tx_resume(void)
+{
+    tx_blocked = false;
+    /* From where the last resume found the edge full, so the first
+     * connections on the list can't take every slot each time. */
+    unsigned at = output_range(resume_from, UINT32_MAX);
+    if (!tx_blocked)
+        at = output_range(0, resume_from);
+    resume_from = tx_blocked ? at : 0;
 }
 
 uint64_t stack_poll(void)

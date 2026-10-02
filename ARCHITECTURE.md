@@ -888,7 +888,9 @@ restarts:
   them, so a slow reader stops its own sender and lwIP holds no received
   byte; bytes go from the tx ring into lwIP only as the peer's window takes
   them (and a segment more), so a peer that stops reading holds no more
-  than its window. A listener's connections get their rings when their
+  than its window. A segment the card's full tx ring refuses stays in
+  lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
+  the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
   handshake finishes (the bytes that come first wait there), counted
   against the listener's opener. Limits: 64 connections an opener, 256 in
   all (192 for ordinary programs), 4 listeners an opener, 16 in all, a

@@ -176,6 +176,8 @@ int main(int argc, char **argv)
         rx_tick();
         if (retry < deadline)
             deadline = retry;
+        if (sock_tcp_card())   /* frames put now: the next turn's dev_work publishes them */
+            deadline = 0;
         /* Work left over (a budget ran out): look at the port without
          * sleeping rather than skip it, so a channel that always has more
          * never keeps the other channels' packets, or the card's, unread

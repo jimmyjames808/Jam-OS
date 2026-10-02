@@ -788,6 +788,7 @@ static const struct {
     { "nettcp_malformed", t_nettcp_malformed },
     { "nettcp_fuzz", t_nettcp_fuzz },
     { "nettcp_hostile_ring", t_nettcp_hostile_ring },
+    { "nettcp_card_full", t_nettcp_card_full },
     { "nettcp_limits", t_nettcp_limits },
     { "netctl_set_and_clear", t_netctl_set_and_clear },
     { "netctl_process", t_netctl_process },

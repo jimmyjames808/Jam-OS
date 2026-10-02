@@ -157,6 +157,7 @@ struct progs {
     struct share   held[CLASSES];    /* what each class holds now */
     unsigned       next_tx;          /* the socket the next turn's tx starts with */
     bool           card_full;        /* the card's tx ring had no room: tx waits for it */
+    bool           tcp_card_wait;    /* TCP's frames found it full: they go when it has room */
     uint32_t       version;          /* iface's version */
     struct net_counters c;           /* the programs' counts (the rest is filled when asked) */
 };
@@ -222,6 +223,11 @@ void     sock_ring_event(unsigned i, uint32_t gen);
 void     sock_tx_all(void);
 /* Any tx ring to read now (and room on the card)? */
 bool     sock_tx_pending(void);
+/* TCP's frames found the card's tx ring full (stack_tx_blocked): ask the
+ * driver to say when it has room, and send them then (stack_tx_resume);
+ * with room already, send them now. true: frames were put on the ring
+ * now (the loop publishes them before it sleeps). */
+bool     sock_tcp_card(void);
 /* Publish the rx rings this turn filled, and the status lines it changed. */
 void     sock_flush(void);
 /* Bytes waiting in all sockets' rx rings now; sockets open now. */

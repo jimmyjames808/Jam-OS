@@ -41,8 +41,12 @@ struct tp_seg {
     size_t         len;
 };
 
-/* The fake edge (stack_edge.tx): keeps every frame, refuses past TP_CAP. */
+/* The fake edge (stack_edge.tx): keeps every frame, refuses past TP_CAP
+ * (ERR_NO_RESOURCES, as a full card's ring does). */
 status_t tp_edge_tx(void *ctx, const uint8_t *frame, size_t len);
+/* The edge is full once it holds `frames` caught ones (TP_CAP: as many as
+ * it keeps; fix_up sets that): a card whose ring has no room. */
+void     tp_room(unsigned frames);
 /* Frames caught and not read yet; forget them. */
 unsigned tp_caught(void);
 void     tp_forget(void);
