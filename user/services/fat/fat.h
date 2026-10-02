@@ -145,6 +145,8 @@ status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff);
 void     disk_hold(bool on);
 /* Is disk_write to hold (hold_put) instead of writing? */
 bool     hold_active(void);
+/* Are writes held now (waiting for an FS_GATHER file's sync or close)? */
+bool     hold_pending(void);
 /* count sectors of buff for `sector` on, held: each replaces an earlier
  * hold of the same sector; the cache gets them at once. */
 status_t hold_put(const uint8_t *buff, uint64_t sector, uint32_t count);

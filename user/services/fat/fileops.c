@@ -112,9 +112,14 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
         return ERR_INVALID_ARGS;
     UINT got = 0;
     if (length && offset < f_size(&f->fil)) {
+        /* A read moves FatFs's window, which writes out the FAT sector an
+         * FS_GATHER file's write left changed: while writes are held, it
+         * joins them (hold.c) instead of sending them all out early. */
+        disk_hold(hold_pending());
         FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
         if (fr == FR_OK)
             fr = f_read(&f->fil, bounce, length, &got);
+        disk_hold(false);
         if (fr != FR_OK)
             return fr_status(fr);
     }

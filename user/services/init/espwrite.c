@@ -52,7 +52,8 @@
 #include <update.h>
 #include "init.h"
 
-#define CHUNK      (64u << 10)        /* bytes moved at a time */
+#define CHUNK      (1u << 20)         /* bytes read, then written, at a time: as much as
+                                       * fat holds of an FS_GATHER file (its hold.c) */
 #define ESP_WAIT   (30 * NS_PER_S)    /* devmgr's ESP_WRITE: a stop in order, then a start */
 #define WRITE_LIMIT   (120 * NS_PER_S)   /* the steps, all of them */
 #define RECOVER_LIMIT (60 * NS_PER_S)    /* after a failure: put back, leftovers removed */

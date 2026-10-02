@@ -13,7 +13,9 @@
  * FAT copy, two writes per 64 KiB of the file otherwise. They go out (hold_release) when anything needs them on the
  * medium: any other write (so it keeps its place after them), a flush, a
  * full hold, or the file's sync or close. A read from the disk meanwhile
- * gets the held sectors laid over what it read (hold_overlay). Held sectors are kept as runs of consecutive sectors (a sector
+ * gets the held sectors laid over what it read (hold_overlay), and the
+ * writes a file read makes FatFs do while writes are held (its window
+ * moving off a changed FAT sector: fileops.c) join them. Held sectors are kept as runs of consecutive sectors (a sector
  * right after a run's end joins it), and go out run by run in the order
  * the runs began, a block buffer's worth per write: the file's data in
  * 64 KiB writes, then each FAT copy's changed sectors in one. So the data
@@ -31,7 +33,8 @@
  * clusters no file reaches. */
 #include "fat.h"
 
-#define HOLD_MAX  2048u   /* sectors held at most: 1 MiB */
+#define HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
+                           * that chain it (on one-sector clusters, 16 per copy) */
 #define HOLD_RUNS 32u     /* runs of consecutive sectors at most */
 
 static uint8_t *data;            /* HOLD_MAX sectors (malloc, at the first hold) */
@@ -55,6 +58,11 @@ void disk_hold(bool on)
 bool hold_active(void)
 {
     return holding;
+}
+
+bool hold_pending(void)
+{
+    return held > 0;
 }
 
 /* The k sectors gathered in the block buffer, written at *first. */

@@ -83,6 +83,36 @@ static bool unlink_cost(const struct fatrun *r)
     return is_big(r, "/gathered.bin");
 }
 
+/* /gathered.bin copied to /copy.bin FS_GATHER, a buffer read then a buffer
+ * written, as `update -w` keeps the stick's build: each read moves FatFs's
+ * window off the FAT sector the last write changed, and that write joins
+ * what is held instead of sending it all out every 64 KiB. */
+static bool copy_cost(const struct fatrun *r)
+{
+    struct tfile from, to;
+    uint32_t w0 = ramdisk_writes(&disk);
+    CHECK_ST(t_open(r, "/gathered.bin", FS_READ, &from), OK);
+    CHECK_ST(t_open(r, "/copy.bin", FS_WRITE | FS_CREATE | FS_GATHER, &to), OK);
+    status_t st = OK;
+    for (uint32_t off = 0; off < GFILE && st == OK; off += FAT_BUF) {
+        uint32_t done = 0;
+        st = t_read(&from, off, got + off, FAT_BUF, &done);
+        if (st == OK)
+            st = t_write(&to, off, got + off, FAT_BUF, &done);
+    }
+    t_close(&from);
+    t_close(&to);
+    CHECK_ST(st, OK);
+    CHECK_ST(t_sync(r), OK);
+    uint32_t writes = ramdisk_writes(&disk) - w0;
+    if (writes > GATHER_MAX)
+        FAIL("copying 1 MiB FS_GATHER took %u block writes, want at most %u", writes, GATHER_MAX);
+    if (!is_big(r, "/copy.bin"))
+        return false;
+    CHECK_ST(t_unlink(r, "/copy.bin"), OK);
+    return true;
+}
+
 /* A reader opened alongside the FS_GATHER writer reads what is held. */
 static bool reader_sees_held(const struct fatrun *r)
 {
@@ -141,7 +171,7 @@ bool t_fat_gather(void)
              GATHER_MAX);
     CHECK(plain > 2048);   /* one per cluster, at least: why FS_GATHER is there */
     if (!is_big(&r, "/gathered.bin") || !is_big(&r, "/plain.bin") || !unlink_cost(&r) ||
-        !reader_sees_held(&r) || !fat_stop(&r))
+        !copy_cost(&r) || !reader_sees_held(&r) || !fat_stop(&r))
         return false;
 
     /* A fresh fat (an empty cache): the bytes are on the disk. After the
