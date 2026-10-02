@@ -280,6 +280,16 @@ bool t_netdev_ring_one_thread(void);
 bool t_netdev_ring_exchange(void);
 bool t_netdev_vlan_word(void);
 
+/* sockring.c: a socket's rings (<sockring.h>): counts, datagrams and a
+ * byte stream round rings that wrap, the end, the wake flags, a hostile
+ * peer, a fake netstack thread's exchange with the rights it hands out. */
+bool t_sockring_counts(void);
+bool t_sockring_dgram(void);
+bool t_sockring_stream(void);
+bool t_sockring_wake(void);
+bool t_sockring_hostile(void);
+bool t_sockring_exchange(void);
+
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the
  * resolver's messages, its queries and its cache (user/services/dns/);
