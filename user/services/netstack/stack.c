@@ -12,6 +12,10 @@
  * bytes), and given to the edge. ICMP errors are rate-limited on the way
  * out (stack.h).
  *
+ * Programs' UDP sockets, pings and TCP connections are lwIP's raw API
+ * turned into stack.h's calls and hooks at the bottom of the file; TCP's
+ * model (the window is the socket's rx ring) is stack.h's.
+ *
  * State is file-static: one interface per process, one thread. */
 #include "lwip/etharp.h"
 #include "lwip/inet_chksum.h"
@@ -19,8 +23,10 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/priv/tcp_priv.h"
 #include "lwip/raw.h"
 #include "lwip/stats.h"
+#include "lwip/tcp.h"
 #include "lwip/timeouts.h"
 #include "lwip/udp.h"
 #include "netif/ethernet.h"
@@ -28,11 +34,16 @@
 
 #define ETHERTYPE_IPV4   0x0800u
 #define ICMP_ECHO_REPLY  0u
-#define ICMP_UNREACHABLE 3u
-#define ICMP_ECHO        8u
+#define ICMP_UNREACHABLE 3u       /* (ICMP_ECHO, 8, is lwIP's: lwip/prot/icmp.h) */
 #define ICMP_HDR         8u       /* type, code, checksum, id, seq */
 
 _Static_assert(PBUF_POOL_BUFSIZE >= STACK_FRAME_MAX, "a received frame must fit one pbuf");
+_Static_assert(STACK_TCP_MSS == TCP_MSS && STACK_TCP_WND == TCP_WND, "stack.h's TCP sizes");
+_Static_assert(STACK_TCP_WND <= 0xffff, "a window without scaling");
+_Static_assert(STACK_TCP_LISTENERS == MEMP_NUM_TCP_PCB_LISTEN, "a listener's pcb each");
+_Static_assert(STACK_TCP_BACKLOG == TCP_DEFAULT_LISTEN_BACKLOG && STACK_TCP_BACKLOG <= 0xff,
+               "lwIP's backlog is a byte");
+_Static_assert(MEMP_NUM_TCP_PCB == STACK_TCP_CONNS + 128, "netstack's connections and 128 more");
 
 static struct netif       nif;          /* the interface: lwIP's netif_default */
 static bool               lwip_ready;   /* lwip_init has run (it may only run once) */
@@ -44,6 +55,10 @@ static uint64_t           icmp_tokens = STACK_ICMP_ERR_PER_S;   /* ICMP errors a
 static uint64_t           icmp_topped;  /* ns: when icmp_tokens was last topped up */
 static struct raw_pcb    *echo_pcb;     /* raw ICMP: programs' echo requests and their replies */
 static uint8_t            udpbuf[STACK_UDP_MAX];   /* a datagram being handed to stack_udp_input */
+static const struct stack_tcp_hooks *tcp_hooks;    /* where TCP's events go (NULL: none) */
+static uint8_t            tcp_ext = LWIP_TCP_PCB_NUM_EXT_ARG_ID_INVALID;   /* our ext arg slot */
+static bool               addr_going;   /* the address is changing: lwIP aborts its connections */
+static uint32_t           tcp_bad_acks; /* segments dropped by tcp_ack_bad */
 
 void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const uint8_t *data,
                         size_t len);
@@ -59,6 +74,16 @@ static status_t refuse_tx(void *ctx, const uint8_t *frame, size_t len)
 }
 
 const struct stack_edge stack_no_device = { .tx = refuse_tx, .mac = { 0x02 } };
+
+static uint32_t be16(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 8 | p[1];
+}
+
+static uint32_t be32(const uint8_t *p)
+{
+    return be16(p) << 16 | be16(p + 2);
+}
 
 static ip4_addr_t to_lwip(uint32_t a)
 {
@@ -156,6 +181,7 @@ status_t stack_start(const struct stack_edge *e)
         echo_pcb = raw_new(IP_PROTO_ICMP);   /* the pool is empty only if this failed */
         if (echo_pcb)
             raw_recv(echo_pcb, echo_in, NULL);
+        tcp_ext = tcp_ext_arg_alloc_id();   /* LWIP_TCP_PCB_NUM_EXT_ARGS's first: can't fail */
     }
     edge = *e;
     if (!netif_add(&nif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4, NULL, nif_init,
@@ -171,7 +197,9 @@ void stack_stop(void)
 {
     if (!started)
         return;
-    netif_remove(&nif);   /* takes it down first: its ARP entries go with it */
+    addr_going = true;
+    netif_remove(&nif);   /* takes it down first: its ARP entries and connections go with it */
+    addr_going = false;
     started = false;
 }
 
@@ -195,6 +223,37 @@ void stack_set_link(bool up)
         netif_set_link_down(&nif);
 }
 
+/* RFC 5961 section 5: a segment on a synchronized connection whose ACK
+ * is for bytes never sent (past snd_nxt), or older than any window the
+ * peer was given (before lastack - snd_wnd_max), is not from the peer the
+ * connection talks to, and is dropped here: lwIP sees the bad ACK but
+ * still takes the segment's bytes or FIN, so a blind injection would need
+ * only a sequence number in the window. Only segments with bytes or a
+ * FIN are looked at (lwIP treats the rest right), and anything that is
+ * not plainly TCP to one of our connections is left to lwIP's checks. */
+static bool tcp_ack_bad(const uint8_t *f, size_t len)
+{
+    if (len < 14 + 20 || be16(f + 12) != ETHERTYPE_IPV4 || f[14 + 9] != IP_PROTO_TCP)
+        return false;
+    size_t ihl = (size_t)(f[14] & 0x0f) * 4, total = be16(f + 16);
+    if (ihl < 20 || total > len - 14 || total < ihl + 20)
+        return false;
+    const uint8_t *t = f + 14 + ihl;
+    size_t hl = (size_t)(t[12] >> 4) * 4;
+    if (hl < 20 || hl > total - ihl || !(t[13] & TCP_ACK) ||
+        (total - ihl == hl && !(t[13] & TCP_FIN)))
+        return false;
+    uint32_t src = be32(f + 26), ack = be32(t + 8);
+    for (const struct tcp_pcb *pcb = tcp_active_pcbs; pcb; pcb = pcb->next) {
+        if (pcb->local_port != be16(t + 2) || pcb->remote_port != be16(t) ||
+            from_lwip(ip_2_ip4(&pcb->remote_ip)) != src)
+            continue;
+        return pcb->state >= ESTABLISHED &&
+               (TCP_SEQ_GT(ack, pcb->snd_nxt) || TCP_SEQ_LT(ack, pcb->lastack - pcb->snd_wnd_max));
+    }
+    return false;
+}
+
 /* A frame shorter than Ethernet's minimum is padded with zeros to it, as
  * the wire pads it (one can arrive: a driver that takes the VLAN tag off
  * a 60-byte frame hands over 56). lwIP needs that: its ARP input reads
@@ -207,6 +266,10 @@ void stack_input(const uint8_t *frame, size_t len)
     counts.rx_frames++;
     if (!started || len < 14 || len > STACK_FRAME_MAX) {
         counts.rx_refused++;
+        return;
+    }
+    if (tcp_ack_bad(frame, len)) {
+        tcp_bad_acks++;
         return;
     }
     size_t padded = len < STACK_FRAME_MIN ? STACK_FRAME_MIN : len;
@@ -240,14 +303,18 @@ void stack_set_ipv4(const struct stack_ipv4 *ip)
     if (!started)
         return;
     ip4_addr_t a = to_lwip(ip->address), m = to_lwip(ip->mask), g = to_lwip(ip->gateway);
+    addr_going = true;   /* a new address ends the connections on the old one */
     netif_set_addr(&nif, &a, &m, &g);
+    addr_going = false;
 }
 
 void stack_clear(void)
 {
     if (!started)
         return;
+    addr_going = true;
     netif_set_addr(&nif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4);
+    addr_going = false;
     etharp_cleanup_netif(&nif);
 }
 
@@ -272,7 +339,8 @@ void stack_get_counts(struct stack_counts *out)
     out->ip_dropped = lwip_stats.ip.drop;
     out->icmp_dropped = lwip_stats.icmp.drop;
     out->udp_dropped = lwip_stats.udp.drop;
-    out->bad_checksums = lwip_stats.ip.chkerr + lwip_stats.icmp.chkerr + lwip_stats.udp.chkerr;
+    out->bad_checksums = lwip_stats.ip.chkerr + lwip_stats.icmp.chkerr + lwip_stats.udp.chkerr +
+                         lwip_stats.tcp.chkerr;
     out->rx_buffers_used = lwip_stats.memp[MEMP_PBUF_POOL]->used;
     out->rx_buffers_most = lwip_stats.memp[MEMP_PBUF_POOL]->max;
     out->rx_buffers_none = lwip_stats.memp[MEMP_PBUF_POOL]->err;
@@ -280,11 +348,6 @@ void stack_get_counts(struct stack_counts *out)
 }
 
 /* ---- programs' UDP sockets ----------------------------------------------------- */
-
-static uint32_t be16(const uint8_t *p)
-{
-    return (uint32_t)p[0] << 8 | p[1];
-}
 
 static status_t from_err(err_t e)
 {
@@ -426,4 +489,308 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size)
     if (e == ERR_OK && counts.tx_dropped != dropped)
         return ERR_NO_RESOURCES;
     return from_err(e);
+}
+
+/* ---- programs' TCP connections (stack.h has the model) -------------------------- */
+
+static struct tcp_pcb *pcb_of(struct stack_tcp *t)
+{
+    return (struct tcp_pcb *)t;
+}
+
+void stack_tcp_set_hooks(const struct stack_tcp_hooks *h)
+{
+    tcp_hooks = h;
+}
+
+/* The window a connection announces from now on: min(TCP_WND, w). lwIP
+ * starts every connection at TCP_WND and gives bytes back up to it; set
+ * before any byte can come, the smaller window is where the counting
+ * starts, and stack_tcp_recved never gives back more than came. */
+static void window_set(struct tcp_pcb *pcb, uint32_t w)
+{
+    if (w > TCP_WND)
+        w = TCP_WND;
+    pcb->rcv_wnd = pcb->rcv_ann_wnd = (tcpwnd_size_t)w;
+}
+
+/* Drop the first n bytes of a received chain in place, so that what lwIP
+ * keeps as refused data is what the hook didn't take. In place, because
+ * lwIP keeps the pointer it gave: a pbuf emptied this way stays in the
+ * chain with no bytes. Every pbuf's tot_len counts the bytes from it on. */
+static void take_front(struct pbuf *p, size_t n)
+{
+    for (struct pbuf *q = p; q && n; q = q->next) {
+        u16_t k = (u16_t)(n < q->len ? n : q->len);
+        for (struct pbuf *r = p; r != q; r = r->next)
+            r->tot_len = (u16_t)(r->tot_len - k);
+        pbuf_remove_header(q, k);   /* k <= q->len: can't fail */
+        n -= k;
+    }
+}
+
+static err_t tcp_in_cb(void *ctx, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+{
+    (void)pcb;
+    (void)err;   /* always ERR_OK in lwIP 2.2 */
+    if (!p) {
+        tcp_hooks->rx_end(ctx);
+        return ERR_OK;
+    }
+    size_t took = 0;
+    for (struct pbuf *q = p; q; q = q->next) {
+        if (!q->len)
+            continue;
+        size_t k = tcp_hooks->rx(ctx, q->payload, q->len);
+        took += k;
+        if (k < q->len)
+            break;
+    }
+    if (took == p->tot_len) {
+        pbuf_free(p);
+        return ERR_OK;
+    }
+    take_front(p, took);
+    return ERR_MEM;   /* lwIP keeps the rest and offers it again */
+}
+
+static err_t tcp_sent_cb(void *ctx, struct tcp_pcb *pcb, u16_t len)
+{
+    (void)pcb;
+    (void)len;
+    tcp_hooks->sent(ctx);
+    return ERR_OK;
+}
+
+static err_t tcp_connected_cb(void *ctx, struct tcp_pcb *pcb, err_t err)
+{
+    (void)pcb;
+    (void)err;   /* always ERR_OK: a failure comes to tcp_err_cb */
+    tcp_hooks->connected(ctx);
+    return ERR_OK;
+}
+
+/* lwIP's word for why a connection ended, as stack.h's hooks.gone says it. */
+static status_t gone_why(err_t e)
+{
+    switch (e) {
+    case ERR_CLSD: return OK;                /* LAST_ACK's ACK: both sides closed */
+    case ERR_ABRT: return addr_going ? ERR_BAD_STATE : ERR_TIMED_OUT;   /* rtx gave up */
+    default:       return ERR_PEER_CLOSED;   /* ERR_RST */
+    }
+}
+
+/* The pcb is already freed when lwIP calls this. */
+static void tcp_err_cb(void *ctx, err_t e)
+{
+    if (ctx && tcp_hooks)
+        tcp_hooks->gone(ctx, gone_why(e));
+}
+
+static void callbacks_set(struct tcp_pcb *pcb, void *ctx)
+{
+    tcp_arg(pcb, ctx);
+    tcp_recv(pcb, ctx ? tcp_in_cb : NULL);   /* NULL: lwIP's own, which drops and closes */
+    tcp_sent(pcb, ctx ? tcp_sent_cb : NULL);
+    tcp_err(pcb, ctx ? tcp_err_cb : NULL);
+}
+
+status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ctx,
+                           struct stack_tcp **out)
+{
+    if (!started || !tcp_hooks)
+        return ERR_BAD_STATE;
+    if (!netif_is_link_up(&nif) || ip4_addr_isany_val(*netif_ip4_addr(&nif)))
+        return ERR_BAD_STATE;
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb)
+        return ERR_NO_RESOURCES;
+    tcp_nagle_disable(pcb);   /* publishing is the push: send what the ring has */
+    callbacks_set(pcb, ctx);
+    ip4_addr_t dst = to_lwip(to);
+    err_t e = tcp_connect(pcb, &dst, port, tcp_connected_cb);
+    if (e != ERR_OK) {
+        callbacks_set(pcb, NULL);
+        tcp_abort(pcb);   /* never connected: nothing is sent */
+        return e == ERR_RTE ? ERR_BAD_STATE : e == ERR_MEM ? ERR_NO_MEMORY : ERR_NO_RESOURCES;
+    }
+    /* The SYN went with TCP_WND; the handshake's ACK, before any byte can
+     * come, carries this one. */
+    window_set(pcb, window);
+    *out = (struct stack_tcp *)pcb;
+    return OK;
+}
+
+/* Before a listener's SYN-ACK goes: the new connection's window is the
+ * listener's (its ext arg). */
+static err_t passive_open(u8_t id, struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb)
+{
+    window_set(cpcb, (uint32_t)(uintptr_t)lpcb->ext_args[id].data);
+    tcp_nagle_disable(cpcb);
+    return ERR_OK;
+}
+
+static const struct tcp_ext_arg_callbacks listen_ext = { .passive_open = passive_open };
+
+/* A listener's connection finished its handshake. Its prio goes from the
+ * listener's lowest (a half-open pcb lwIP may recycle) to a program's. */
+static err_t tcp_accept_cb(void *lctx, struct tcp_pcb *pcb, err_t err)
+{
+    if (err != ERR_OK || !pcb)
+        return ERR_VAL;   /* lwIP had no pcb: the SYN is dropped, nothing to undo */
+    void *ctx = tcp_hooks ? tcp_hooks->accepted(lctx, (struct stack_tcp *)pcb) : NULL;
+    if (!ctx) {
+        tcp_abort(pcb);
+        return ERR_ABRT;
+    }
+    tcp_setprio(pcb, TCP_PRIO_NORMAL);
+    callbacks_set(pcb, ctx);
+    tcp_backlog_delayed(pcb);   /* it counts against the backlog until the program takes it */
+    return ERR_OK;
+}
+
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void *lctx,
+                          struct stack_tcp_listen **out, uint16_t *out_port)
+{
+    if (!started || !tcp_hooks)
+        return ERR_BAD_STATE;
+    if (backlog < 1 || backlog > STACK_TCP_BACKLOG)
+        return ERR_INVALID_ARGS;
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb)
+        return ERR_NO_RESOURCES;
+    tcp_setprio(pcb, TCP_PRIO_MIN);   /* its half-open connections inherit it */
+    err_t e = tcp_bind(pcb, IP4_ADDR_ANY, port);
+    if (e != ERR_OK) {
+        tcp_abort(pcb);
+        return e == ERR_USE ? ERR_ALREADY_BOUND : ERR_NO_RESOURCES;
+    }
+    tcp_ext_arg_set_callbacks(pcb, tcp_ext, &listen_ext);
+    tcp_ext_arg_set(pcb, tcp_ext, (void *)(uintptr_t)window);
+    struct tcp_pcb *l = tcp_listen_with_backlog_and_err(pcb, (u8_t)backlog, &e);
+    if (!l) {
+        tcp_abort(pcb);   /* lwIP keeps the bound pcb when it has no listener for it */
+        return ERR_NO_RESOURCES;
+    }
+    tcp_arg(l, lctx);
+    tcp_accept(l, tcp_accept_cb);
+    *out = (struct stack_tcp_listen *)l;
+    *out_port = l->local_port;
+    return OK;
+}
+
+void stack_tcp_unlisten(struct stack_tcp_listen *l)
+{
+    struct tcp_pcb *pcb = (struct tcp_pcb *)l;
+    tcp_arg(pcb, NULL);
+    (void)tcp_close(pcb);   /* a listener always closes: its half-open ones are dropped */
+}
+
+void stack_tcp_taken(struct stack_tcp *t)
+{
+    tcp_backlog_accepted(pcb_of(t));
+}
+
+size_t stack_tcp_room(struct stack_tcp *t)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    if ((pcb->state != ESTABLISHED && pcb->state != CLOSE_WAIT) || (pcb->flags & TF_FIN))
+        return 0;
+    uint32_t queued = pcb->snd_lbb - pcb->lastack;   /* given and not yet acked */
+    uint32_t allowed = (uint32_t)pcb->snd_wnd + pcb->mss;
+    uint32_t room = allowed > queued ? allowed - queued : 0;
+    if (room > tcp_sndbuf(pcb))
+        room = tcp_sndbuf(pcb);
+    return room;
+}
+
+status_t stack_tcp_send(struct stack_tcp *t, const void *data, size_t n)
+{
+    if (!n)
+        return OK;
+    if (n > 0xffff)
+        return ERR_INVALID_ARGS;
+    err_t e = tcp_write(pcb_of(t), data, (u16_t)n, TCP_WRITE_FLAG_COPY);
+    if (e == ERR_MEM)
+        return ERR_NO_MEMORY;
+    return e == ERR_OK ? OK : ERR_BAD_STATE;
+}
+
+void stack_tcp_push(struct stack_tcp *t)
+{
+    (void)tcp_output(pcb_of(t));   /* a frame the edge refused is resent by TCP's timers */
+}
+
+void stack_tcp_recved(struct stack_tcp *t, size_t n)
+{
+    while (n) {
+        u16_t k = (u16_t)(n < 0xffff ? n : 0xffff);
+        tcp_recved(pcb_of(t), k);   /* it sends the window update when one is worth it */
+        n -= k;
+    }
+}
+
+status_t stack_tcp_shutdown(struct stack_tcp *t)
+{
+    err_t e = tcp_shutdown(pcb_of(t), 0, 1);
+    return e == ERR_OK ? OK : e == ERR_MEM ? ERR_NO_MEMORY : ERR_BAD_STATE;
+}
+
+bool stack_tcp_fin_acked(struct stack_tcp *t)
+{
+    enum tcp_state s = pcb_of(t)->state;
+    return s == FIN_WAIT_2 || s == TIME_WAIT;
+}
+
+void stack_tcp_release(struct stack_tcp *t)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    callbacks_set(pcb, NULL);
+    tcp_setprio(pcb, TCP_PRIO_MIN);   /* lwIP may recycle it now */
+    /* tcp_close resets a connection whose received bytes were not all
+     * given back to a window of TCP_WND; this one's window is its ring's,
+     * and every byte was read (stack.h). */
+    if (pcb->state == ESTABLISHED || pcb->state == CLOSE_WAIT)
+        pcb->rcv_wnd = TCP_WND_MAX(pcb);
+    if (tcp_close(pcb) != ERR_OK)
+        tcp_abort(pcb);   /* no memory for the FIN: a reset still ends it */
+}
+
+void stack_tcp_abort(struct stack_tcp *t)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    callbacks_set(pcb, NULL);
+    tcp_abort(pcb);
+}
+
+void stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port, uint16_t *port)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    *peer = from_lwip(ip_2_ip4(&pcb->remote_ip));
+    *peer_port = pcb->remote_port;
+    *port = pcb->local_port;
+}
+
+/* pcbs on a list (all, or those in state `only`): bounded by lwIP's pool. */
+static uint32_t list_len(const struct tcp_pcb *pcb, bool all, enum tcp_state only)
+{
+    uint32_t n = 0;
+    for (; pcb; pcb = pcb->next)
+        n += all || pcb->state == only;
+    return n;
+}
+
+void stack_tcp_get_counts(struct stack_tcp_counts *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->half_open = list_len(tcp_active_pcbs, false, SYN_RCVD);
+    out->live = list_len(tcp_active_pcbs, true, CLOSED) - out->half_open;
+    out->time_wait = list_len(tcp_tw_pcbs, true, CLOSED);
+    for (const struct tcp_pcb_listen *l = tcp_listen_pcbs.listen_pcbs; l; l = l->next)
+        out->listeners++;
+    out->segs_used = lwip_stats.memp[MEMP_TCP_SEG]->used;
+    out->dropped = lwip_stats.tcp.drop;
+    out->bad_checksums = lwip_stats.tcp.chkerr;
+    out->pcbs_none = lwip_stats.memp[MEMP_TCP_PCB]->err;
+    out->bad_acks = tcp_bad_acks;
 }

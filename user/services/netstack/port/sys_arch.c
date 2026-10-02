@@ -1,6 +1,7 @@
 /* lwIP's system layer for netstack in NO_SYS mode: the clock (sys_now),
- * random numbers (LWIP_RAND) and where lwIP's diagnostics and failed
- * assertions go (port/arch/cc.h names them), with netstack's own log
+ * random numbers (LWIP_RAND; TCP's initial sequence numbers) and where
+ * lwIP's diagnostics and failed assertions go (port/arch/cc.h names
+ * them), with netstack's own log
  * lines (nstack_log, stack.h) beside them. NO_SYS needs nothing else:
  * no threads, semaphores, mailboxes or critical sections, because
  * netstack's one loop is lwIP's only caller.
@@ -125,4 +126,13 @@ uint32_t lwport_random(void)
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
     z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
     return (uint32_t)(z ^ (z >> 31));
+}
+
+/* A TCP connection's initial sequence number (LWIP_HOOK_TCP_ISN): from
+ * the kernel's random source (os_random), as RFC 6528 asks, so an
+ * attacker off the path can't guess where a connection's numbers start.
+ * A system call per connection: connections are rare next to segments. */
+uint32_t lwport_tcp_isn(void)
+{
+    return os_random_u32();
 }
