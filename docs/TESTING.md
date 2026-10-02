@@ -90,6 +90,7 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`); the run passes if every `wait` matched and QEMU ended by itself |
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
+| `QEMU_BOOT_PREV` | 0 | 1: boot the stick's previous build (`/esp/boot/prev-jamos.elf` and `prev-bootfs.img`, the boot menu's "Jam OS (previous build)") instead of its own |
 | `QEMU_SPLASH` | 0 | 1: keep the boot splash (otherwise the boot word `nosplash` is added, so the tests see the text log) |
 | `QEMU_NET` | | `1`: a network card and the test peer ([below](#the-network-peer)); `<peer port>:<qemu port>`: the same card and pcap, with a peer you run yourself |
 | `QEMU_NET_VLAN` | 21 | the VLAN the peer and the pcap check want every frame tagged with |
