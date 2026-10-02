@@ -26,6 +26,7 @@
  * event and the channel's end (SIG_PEER_CLOSED) both bound. */
 #include <net.h>
 #include <netwait.h>
+#include "netint.h"
 
 #define SEND_WAIT   (5 * NS_PER_S)   /* net_sendto: for room, then for netstack to take it */
 #define PROG_BITS   (SOCKRING_SIG_RX | SOCKRING_SIG_TX_ROOM | SOCKRING_SIG_STATE)
@@ -37,15 +38,13 @@ static bool has_rings(const struct net_sock *s)
     return s->ch && s->map;
 }
 
-/* netstack ended: its end of the socket's channel is closed. */
-static bool gone(const struct net_sock *s)
+bool net_sock_gone(const struct net_sock *s)
 {
     signals_t seen = 0;
     return jam_object_wait_one(s->ch, SIG_PEER_CLOSED, 0, &seen) == OK;
 }
 
-/* Clear the event's bits, so a signal from now on is a new edge. */
-static void clear_bits(const struct net_sock *s)
+void net_sock_clear(const struct net_sock *s)
 {
     (void)jam_event_signal(s->to_prog, PROG_BITS, 0);   /* ours: can't fail */
 }
@@ -98,8 +97,7 @@ void net_sock_waitable(struct net_sock *s, struct netwait_sock *out)
     *out = (struct netwait_sock){ .rings = &s->r, .to_prog = s->to_prog, .ch = s->ch };
 }
 
-/* Sleep on the socket's own port until a signal or the deadline. */
-static status_t sleep_port(struct net_sock *s, uint64_t deadline)
+status_t net_sock_sleep(struct net_sock *s, uint64_t deadline)
 {
     if (!s->waiter) {
         handle_t p = HANDLE_INVALID;
@@ -121,10 +119,10 @@ status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
 {
     if (!has_rings(s))
         return ERR_BAD_STATE;
-    if (gone(s))
+    if (net_sock_gone(s))
         return OK;   /* a look finds it: ERR_PEER_CLOSED */
-    clear_bits(s);
-    status_t st = sockring_sleep(&s->r.rx, 1) ? sleep_port(s, deadline) : OK;
+    net_sock_clear(s);
+    status_t st = sockring_sleep(&s->r.rx, 1) ? net_sock_sleep(s, deadline) : OK;
     sockring_awake(&s->r.rx);
     return st;
 }
@@ -169,12 +167,12 @@ status_t net_sendto_async(struct net_sock *s, uint32_t addr, uint16_t port, cons
 static status_t wait_room(struct net_sock *s, uint32_t need, uint64_t deadline)
 {
     while (sockring_room(&s->r.tx) < need) {
-        if (gone(s))
+        if (net_sock_gone(s))
             return ERR_PEER_CLOSED;
-        clear_bits(s);   /* every bit: a binding fires when none of its bits was set before */
+        net_sock_clear(s);   /* every bit: a binding fires when none of its bits was set before */
         if (!sockring_sleep(&s->r.tx, need))
             continue;
-        status_t st = sleep_port(s, deadline);
+        status_t st = net_sock_sleep(s, deadline);
         sockring_awake(&s->r.tx);
         if (st != OK)
             return st;
@@ -245,11 +243,11 @@ status_t net_sock_take(struct net_sock *s, struct net_dgram *d)
     status_t st = take(s, d);
     if (st != ERR_SHOULD_WAIT)
         return st;
-    if (gone(s))
+    if (net_sock_gone(s))
         return ERR_PEER_CLOSED;
     /* Clear the bits, then look once more: a datagram published from now
      * on is a new edge (for a loop bound with net_sock_bind). */
-    clear_bits(s);
+    net_sock_clear(s);
     return take(s, d);
 }
 
