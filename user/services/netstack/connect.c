@@ -46,7 +46,7 @@ static status_t open_card(const struct dev *d, unsigned i, struct dev_found *f, 
     uint8_t chip[16];
     st = netdev_info_until(svc, now() + DEV_CALL_WAIT, f->mac, &f->vlan, &mtu, &f->link,
                            &f->speed, &f->changes, chip);
-    if (st == OK && (mtu != NETDEV_MTU || f->vlan < 1 || f->vlan > 4094))
+    if (st == OK && (mtu != NETDEV_MTU || !netframe_mode_ok(f->vlan)))
         st = ERR_NOT_SUPPORTED;   /* not the card netdev.idl describes */
     if (st == OK)
         st = netdev_open_until(svc, now() + DEV_CALL_WAIT, &hs[DEV_H_SESSION], &hs[DEV_H_TX],

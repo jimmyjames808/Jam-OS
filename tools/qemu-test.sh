@@ -52,7 +52,12 @@
 # <outdir>/<name>.peer.log, its summary in <name>.peer.json); every frame
 # the guest sends is also dumped to <outdir>/<name>.pcap and checked by
 # tools/pcap-vlan-check.py. The run fails if either finds a frame from the
-# guest that isn't tagged with the VLAN (QEMU_NET_VLAN, default 21).
+# guest that breaks the network's rule: QEMU_NET_VLAN (default 21) is the
+# VLAN every frame must be tagged with, or `none`: every frame untagged,
+# none tagged. The guest gets the same as its boot word (vlan=21,
+# vlan=none) unless the command line has a vlan word already or
+# QEMU_NET_WORD=0 (a run that boots with the build's default: the caller
+# then sets QEMU_NET_VLAN to that default).
 # QEMU_NET_NONE=1: no frame at all may leave (the vlan=off run).
 # QEMU_NET_PEER: more netpeer flags (e.g. "--noise 2").
 # QEMU_NET=<peer port>:<qemu port>: the same card and pcap, with a peer
@@ -63,6 +68,13 @@ out=$1 name=$2
 shift 2
 cmdline="$*"
 [ "${QEMU_SPLASH:-0}" = 1 ] || cmdline="$cmdline nosplash"
+net_vlan=${QEMU_NET_VLAN:-21}
+if [ -n "${QEMU_NET:-}" ] && [ "${QEMU_NET_WORD:-1}" != 0 ]; then
+    case " $cmdline" in
+    *" vlan"*) ;;   # the caller chose the mode
+    *) cmdline="$cmdline vlan=$net_vlan" ;;
+    esac
+fi
 ovmf=$(brew --prefix qemu)/share/qemu
 mkdir -p "$out"
 
@@ -92,7 +104,7 @@ if [ -n "${QEMU_NET:-}" ]; then
         pport=$1 qport=$2
         none=
         [ "${QEMU_NET_NONE:-0}" = 1 ] && none=--expect-none
-        python3 tools/netpeer.py --listen "$pport" --qemu "$qport" --vlan "${QEMU_NET_VLAN:-21}" \
+        python3 tools/netpeer.py --listen "$pport" --qemu "$qport" --vlan "$net_vlan" \
             $none ${QEMU_NET_PEER:-} --log "$out/$name.peer.log" \
             --summary "$out/$name.peer.json" --ready "$out/$name.peer.ready" \
             > "$out/$name.peer.out" 2>&1 &
@@ -196,9 +208,9 @@ fi
 if [ -n "${QEMU_NET:-}" ]; then
     none=
     [ "${QEMU_NET_NONE:-0}" = 1 ] && none=--expect-none
-    python3 tools/pcap-vlan-check.py --vlan "${QEMU_NET_VLAN:-21}" $none "$pcap" || net_ok=0
+    python3 tools/pcap-vlan-check.py --vlan "$net_vlan" $none "$pcap" || net_ok=0
 fi
-[ $net_ok = 1 ] || echo "$name: FAILED (network: a frame not tagged ${QEMU_NET_VLAN:-21}, or one too many)"
+[ $net_ok = 1 ] || echo "$name: FAILED (network: a frame that breaks vlan=$net_vlan's rule, or one too many)"
 if [ -n "$fpid" ]; then
     fst=0
     wait $fpid || fst=$?

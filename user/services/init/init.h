@@ -46,9 +46,9 @@ extern bool init_net;
 /* The option word "bootdisk=0x<id>" (main.c; NULL: none): the MBR disk id
  * the machine booted from, passed on to devmgr as it is. */
 extern const char *init_bootdisk;
-/* The option word "vlan=<id>" (main.c; NULL: none, the network stays
- * off): the network's VLAN, passed on to devmgr as it is, which passes it
- * to every network driver. Nobody else is told it: netstack hears it from
+/* The option word "vlan=<id>" or "vlan=none" (main.c; NULL: none, the
+ * network stays off): the network's mode, passed on to devmgr as it is,
+ * which passes it to every network driver. Nobody else is told it: netstack hears it from
  * the driver (netdev.info). */
 extern const char *init_vlan;
 /* The option word "splashhang" (main.c, a test's): bin/splash is started

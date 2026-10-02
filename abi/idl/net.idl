@@ -54,7 +54,8 @@ protocol net 29
 # mask and gateway (0: none), the DNS servers (0: none), its MAC address;
 # `device` 1 while a network card's driver has a session with netstack,
 # `link` 1 while its link is up; the VLAN every frame is tagged with (0
-# without a card), the link speed in Mb/s (0 while down); `version` counts
+# without a card; 0x1000, NET_VLAN_UNTAGGED, on an untagged network), the
+# link speed in Mb/s (0 while down); `version` counts
 # the changes to the address, gateway and DNS servers since netstack
 # started (1 at the start): pass it to wait_change.
 1  iface  ()  -> (u32 address, u32 mask, u32 gateway, u32 dns1, u32 dns2, u8[6] mac, u8 device, u8 link, u16 vlan, u32 speed, u32 version)

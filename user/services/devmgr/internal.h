@@ -132,10 +132,11 @@ extern bool           hidboot;
  * booted from (the loader's, passed on by the kernel and init); 0: not
  * known. disk.c takes the Jam OS disk with that id as the boot disk. */
 extern uint32_t       boot_mbr_id;
-/* The argument "vlan=<id>" (the kernel's, through init; <jam/netdev.h>
- * netdev_vlan_args): the network's VLAN, passed on as "vlan=<id>" to the
- * driver of every network card (PCI class 02, PCI_CLASS_NETWORK). 0: none
- * given, or not valid: the drivers start without it and keep the
+/* The argument "vlan=<id>" or "vlan=none" (the kernel's, through init;
+ * <jam/netdev.h> netdev_vlan_args): the network's mode, a VLAN or
+ * NETFRAME_MODE_UNTAGGED, passed on as the same word (netdev_mode_word)
+ * to the driver of every network card (PCI class 02, PCI_CLASS_NETWORK).
+ * 0: none given, or not valid: the drivers start without it and keep the
  * network off. */
 extern uint16_t       net_vlan;
 #define PCI_CLASS_NETWORK 0x02u

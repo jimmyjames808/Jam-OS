@@ -35,7 +35,7 @@ built yet, it says so.
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
 | IOMMU | Not yet (M11). `dma_cap` gates pinning and bus mastering, not where a device writes: until VT-d a driver's device can reach all of RAM. The PC's firmware has a DMAR table |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
-| Networking | The board's own NIC, driven natively; every frame on VLAN 21 only ([Networking](#networking)) |
+| Networking | The board's own NIC, driven natively; every frame in the configured mode only: tagged with one VLAN (the owner's builds: VLAN 21), or untagged and never tagged (a public build's default) ([Networking](#networking)) |
 
 ## What Jam OS defends against
 
@@ -613,7 +613,7 @@ port, so while it handles one request every other client waits behind it.
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
 | mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
-| rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame tagged with the VLAN ([Networking](#networking)) | yes (on every boot but "Jam OS (no network)", `vlan=off`) |
+| rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame in the network mode: tagged with the VLAN, or untagged ([Networking](#networking)) | yes (on every boot but "Jam OS (no network)", `vlan=off`) |
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
 | netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
 | dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
@@ -687,12 +687,25 @@ network stack in a process of its own; no TCP and no IPv6 yet. The plan,
 its stages and the PC's runs are in [M9-PLAN.md](docs/M9-PLAN.md); the
 PC's chip and switch port in [HARDWARE.md](docs/HARDWARE.md#the-network).
 
-**Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
-and nothing is ever sent untagged or on another VLAN** (the network it
-runs on must not see Jam OS traffic elsewhere). Incoming untagged or
-other-VLAN frames are dropped. With no VLAN the NIC stays down (fail
-closed). A change that could transmit comes with a test proving an
-untagged frame can't leave.
+**Hard requirement: every frame Jam OS sends is in the configured
+network mode, and nothing else ever leaves.** The mode is one of:
+- **a VLAN** (1..4094): every frame is tagged 802.1Q with that VLAN, and
+  nothing is ever sent untagged or on another VLAN; incoming untagged and
+  other-VLAN frames are dropped. **The owner's builds are VLAN 21** (his
+  network must not see Jam OS traffic elsewhere: [HARDWARE](docs/HARDWARE.md#the-network));
+- **untagged**: every frame is sent untagged and never one with a tag
+  (bytes 12-13 are never 0x8100, 0x88a8 or 0x9100), so Jam OS can't put
+  itself on a VLAN; incoming tagged frames are all dropped, priority tags
+  (VLAN 0) too. A build of the public tree is untagged by default, so it
+  works on an ordinary network;
+- **off**: the NIC stays down (fail closed), as with any word that isn't
+  a mode.
+
+The mode is chosen at build time, with the default for a boot without a
+`vlan=` word, and can be chosen at boot: see "The mode: one place" below.
+A change that could transmit comes with a test proving no frame outside
+the mode can leave (an untagged one in a VLAN mode, a tagged one in the
+untagged mode).
 
 ```
  the shell (net, ping, host, update), programs     /svc/net  /svc/dns
@@ -702,18 +715,38 @@ untagged frame can't leave.
  drv/rtl8125 (the PC) · drv/e1000e (QEMU)           tag, check, DMA
 ```
 
-**The VLAN: one place.** The kernel reads the boot word `vlan=<1..4094>`
-(21 with no word; `vlan=off`, or anything that isn't a VLAN id, means
-none) and passes it to init, init to devmgr, and devmgr to every network
-driver as an argument; kexec keeps it, so `reboot`, a panic and `update`
-come back on the same VLAN. netstack is never asked: a word from netstack
-can't change the VLAN. `net` shows the driver's.
+**The mode: one place.** The build chooses the default: the Makefile
+reads `JAMOS_VLAN` from a git-ignored `local.mk` at the top of the tree
+(`local.mk.example`: `JAMOS_VLAN := 21`, or `none`), or from the make
+command line, never from the environment; without one the default is
+untagged. It goes into the kernel as `JAMOS_NET_DEFAULT` (kernel/main.c),
+`make` says which it built (`network default: VLAN 21 (local.mk)`), and
+the boot image's `build.txt` records it (`net vlan21`, `net untagged`).
+At boot the kernel reads the boot word: `vlan=<1..4094>` a VLAN,
+`vlan=none` (or `vlan=untagged`) untagged, `vlan=off` off, no word the
+build's default, and anything else (a bad value, two words that
+disagree) off. It logs the mode and where it came from (`network:
+VLAN 21 (the build's default)`), and passes it to init as `vlan=<id>` or
+`vlan=none`, init to devmgr, and devmgr to every network driver as an
+argument; kexec keeps the word, all three forms, so `reboot`, a panic and
+`update` come back in the same mode. netstack is never asked: a word from
+netstack can't change the mode. `net` shows the driver's.
+
+**The owner's PC never changes mode by accident.** A boot with no word
+takes its build's default, so two guards keep an untagged build off the
+owner's stick: init's update check refuses a fetched build whose
+manifest's `net` (its `build.txt`'s) differs from the running build's,
+unless `update -f`; and `make flash` (`tools/flash-usb.sh`) prints the
+build's default and asks before it writes an untagged one (or one that
+doesn't say).
 
 **The drivers** (`drivers/rtl8125` for the PC's RTL8125B,
-`drivers/e1000e` for QEMU's 82574L) put the tag on in software, below
-netstack, so a netstack that is buggy or taken over still can't send an
-untagged frame. The checks are pure functions in one header both use,
-`<jam/netframe.h>`:
+`drivers/e1000e` for QEMU's 82574L) apply the mode in software, below
+netstack, so a netstack that is buggy or taken over still can't send a
+frame outside it: in a VLAN mode no untagged frame, in the untagged mode
+no tagged one. The checks are pure functions in one header both use,
+`<jam/netframe.h>` (the mode is one number: a VLAN id, or
+`NETFRAME_MODE_UNTAGGED`, 0x1000, which no 12-bit VLAN id can be):
 - **Transmit**: netstack's frame (14 to 1514 bytes, untagged) is copied
   out of its ring slot, then copied again into the driver's own DMA buffer
   with the tag (TPID 0x8100, priority 0, the VLAN) after the addresses,
@@ -723,22 +756,32 @@ untagged frame. The checks are pure functions in one header both use,
   (`netframe_tx_check`: bytes 12-15 exactly the tag) right before its
   descriptor goes to the NIC; netstack can't see that buffer, so changing
   its ring afterwards changes nothing. The NIC's own tag insertion is never
-  used (one wrong descriptor bit would be an untagged frame).
+  used (one wrong descriptor bit would be an untagged frame). In the
+  untagged mode the frame is copied as it is, padded with zeros to 60
+  bytes (`netframe_plain`), a frame whose EtherType is a tag's is refused
+  the same way, so netstack can never choose a VLAN, and the last check
+  (`netframe_tx_check_plain`) is that bytes 12-13 are no tag's TPID.
+  `netframe_tx_copy` and `netframe_tx_final` pick by the mode, and a mode
+  that is neither sends nothing.
 - **Receive**: the NIC's tag stripping is off; `netframe_rx_check` keeps
   only 802.1Q frames on the VLAN (any priority) and takes the tag off;
   untagged, priority-tagged, other-VLAN and QinQ frames are dropped and
-  counted by reason.
+  counted by reason. In the untagged mode `netframe_rx_check_plain` keeps
+  only untagged frames (14..1514 bytes) and drops every tagged one,
+  priority-tagged (VLAN 0) ones too: nothing on an untagged network should
+  tag a frame to us, and taking one would be taking a tag.
 - A driver reads a frame's length and bytes 12-17, never the addresses or
   the payload: everything else is parsed above it, in processes with no
   `dma_cap`. Flow control is off (pause not advertised, so the NIC sends
   no PAUSE frames of its own), wake-on-LAN is off while Jam OS runs, and
   no firmware tables are loaded.
-- **Without a valid VLAN** a driver turns on neither receiver nor
-  transmitter, logs `no VLAN: the network stays off`, and ends.
+- **Without a valid mode** (`vlan=off`, or no word from devmgr) a driver
+  turns on neither receiver nor transmitter, logs `no VLAN: the network
+  stays off`, and ends.
 
 **Machine checks of the rule.** Each driver has one transmit file
 (`tx.c`); every function it gives other files starts with a gate (full
-mode and a valid VLAN). For the RTL8125, `tools/checknotx.sh` (in `make
+mode and a configured network mode: a VLAN, or untagged). For the RTL8125, `tools/checknotx.sh` (in `make
 check`, self-tested) holds the transmit registers to `tx.c` and the gate
 to the top of every entry, and keeps the listen-only probe's files from
 calling it. While it runs, about once a second and after every reap, the
@@ -750,13 +793,15 @@ the chip and ends the driver with an error, fail closed
 (`tx check:`). utest's `netframe_*`
 tests try every length, tag and edit. In QEMU two separate checks look at
 every frame the guest sends, `tools/netpeer.py` and
-`tools/pcap-vlan-check.py`, and `tools/net-vlan-test.sh` runs every path
-that transmits in one boot, then the same commands on a `vlan=off` boot,
-which must send nothing ([TESTING.md](docs/TESTING.md#area-scripts)).
+`tools/pcap-vlan-check.py` (each with `--vlan none` for the untagged
+mode: any tag fails), and `tools/net-vlan-test.sh` runs every path that
+transmits in one boot, then the same commands on a `vlan=off` boot, which
+must send nothing; `tools/net-vlan-test.sh <out> none` runs every path
+untagged ([TESTING.md](docs/TESTING.md#area-scripts)).
 
 **netdev: rings, not calls** (`abi/idl/netdev.idl`,
-`<jam/netdev.h>`). `info` (MAC, VLAN, MTU, link, speed, a count of link
-changes, the chip), `stats` (the driver's counts and the chip's) and
+`<jam/netdev.h>`). `info` (MAC, the mode in its VLAN field, MTU, link,
+speed, a count of link changes, the chip), `stats` (the driver's counts and the chip's) and
 `open`, which gives a session channel, two ring VMOs (transmit and
 receive: a header page, then 256 slots of 2 KiB) and two events (one per
 waiter). The driver makes the rings in ordinary memory; netstack can map
@@ -929,8 +974,11 @@ does an unsigned manifest. Then it copies the files into VMOs only it
 holds, checks each size and SHA-256 against the manifest, calls
 `kexec_load` (which init alone may) and notes `/esp`'s files as seen, so
 the `reboot` that follows starts the fetched build
-([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. By
-default only RAM changes: a power-off brings back the stick's build.
+([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. A build
+whose network default (the manifest's `net`, from its `build.txt`, signed
+with the rest) isn't the running build's is refused (`update -f` takes
+it), so `update` never moves a PC from VLAN 21 to untagged or back by
+accident. By default only RAM changes: a power-off brings back the stick's build.
 `update -w` has init also write the build to the stick's ESP once it is
 loaded (the stick's own build kept as the previous one), so it survives a
 power-off ([Storage](#storage) has who may write the ESP and in what
@@ -987,9 +1035,9 @@ that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
 the netdev service on the everyday boot, as the probe with `netprobe` and
 the send test with `netsend` ([TESTING.md](docs/TESTING.md#the-boot-menu)).
 The entry "Jam OS (no network)" boots with `vlan=off`, so every network
-driver starts without a VLAN and leaves its card alone. kexec keeps the
-`vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and `net`,
-not the one-shot `netprobe` and `netsend`.
+driver starts with the network off and leaves its card alone. kexec keeps
+the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
+`net`, not the one-shot `netprobe` and `netsend`.
 
 ## Userland
 

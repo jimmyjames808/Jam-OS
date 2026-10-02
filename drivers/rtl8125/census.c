@@ -126,6 +126,9 @@ const char *census_verdict(const struct census *c, uint16_t v)
     uint32_t tagged = census_kind(c, NETFRAME_VLAN) + census_kind(c, NETFRAME_OUTER);
     if (!v)
         return "no vlan= given: counts only";
+    if (v == NETFRAME_MODE_UNTAGGED)
+        return census_kind(c, NETFRAME_UNTAGGED) ? "untagged frames: an untagged network"
+               : tagged ? "only tagged frames: no untagged network here" : "nothing heard";
     if (census_vlan(c, v))
         return census_kind(c, NETFRAME_UNTAGGED) ? "trunk carrying our VLAN (untagged too: a "
                                                     "native VLAN)" : "trunk carrying our VLAN";

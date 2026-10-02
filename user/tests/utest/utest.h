@@ -238,6 +238,15 @@ bool t_rtl8125_txdesc(void);
 bool t_rtl8125_kick(void);
 bool t_rtl8125_tx_verdict(void);
 
+/* netplain.c: the untagged network mode of <jam/netframe.h>, the
+ * functions that pick by the mode, and <jam/netdev.h>'s mode words. */
+bool t_netframe_plain(void);
+bool t_netframe_plain_refuses_tagged(void);
+bool t_netframe_tx_check_plain(void);
+bool t_netframe_tx_modes(void);
+bool t_netframe_rx_plain(void);
+bool t_netdev_mode_words(void);
+
 /* rtlguard.c: drivers/rtl8125/guard.h, and guard.c (with regs.c, chip.c,
  * tx.c) over a fake chip. */
 bool t_rtl8125_guard(void);
@@ -371,6 +380,7 @@ bool t_dnsd_sockets(void);
 bool t_update_manifest(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
+bool t_update_build_net(void);
 bool t_update_signature(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);

@@ -12,6 +12,12 @@
 # copies take). A pull before that leaves the old files whole (and .new
 # files, which the next flash removes first); a pull during the renames
 # can leave the new kernel with the old boot image or menu for that boot.
+# Before it touches any disk it says the build's network default (the boot
+# image's build.txt: the Makefile's JAMOS_VLAN, from local.mk) and, for a
+# build that sends untagged frames by default (no local.mk) or one that
+# doesn't say, asks before writing it: the owner's PC lives on VLAN 21,
+# and his builds come from a tree with `JAMOS_VLAN := 21` in local.mk.
+# FLASH_UNTAGGED=yes answers yes (a script that means it).
 # Usage: tools/flash-usb.sh <kernel> <bootfs> <limine.conf> [/dev/diskN]
 # With no disk given, the one external disk with Jam OS's layout is used.
 set -eu
@@ -21,6 +27,32 @@ bootfs=${2:?bootfs}
 conf=${3:?limine.conf}
 dev=${4:-}
 SUDO=${SUDO-sudo}   # SUDO= (empty) for a disk image the user owns
+
+net=$(python3 "$(dirname "$0")/update-server.py" --build-net "$bootfs") || net=unknown
+case $net in
+vlan*)
+    echo "network default of this build: VLAN ${net#vlan} (tagged)" ;;
+*)
+    if [ "$net" = untagged ]; then
+        echo "network default of this build: UNTAGGED (no JAMOS_VLAN in local.mk): a boot" \
+             "without a vlan= word sends plain untagged frames"
+    else
+        echo "network default of this build: NOT KNOWN (its build.txt says none: an old build)"
+    fi
+    echo "  A PC on a VLAN (the owner's: VLAN 21) needs local.mk with JAMOS_VLAN := 21 and"
+    echo "  make again (local.mk.example)."
+    if [ "${FLASH_UNTAGGED:-}" = yes ]; then
+        echo "  FLASH_UNTAGGED=yes: writing it anyway"
+    else
+        printf '  Write this build to the stick anyway? [y/N] '
+        answer=
+        { read -r answer < /dev/tty; } 2>/dev/null || answer=
+        case $answer in
+        y|Y|yes) ;;
+        *) echo "not written: no disk was touched"; exit 1 ;;
+        esac
+    fi ;;
+esac
 
 # "yes" if disk $1 has Jam OS's layout: partition 1 of type 0xEF and a partition 2.
 jam_layout()

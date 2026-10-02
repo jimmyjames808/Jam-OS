@@ -6,9 +6,13 @@ manifest, over UDP.
     update-server.py [--build DIR] [--port 5022] [--bind ADDR] [--client ADDR] [--key KEY]
         serve DIR/jamos.elf and DIR/bootfs.img (default build/) until ^C,
         each manifest signed with KEY (default ~/.config/jamos/update.key)
-    update-server.py --manifest KERNEL BOOTFS [--version V] [--git G] [--key KEY]
+    update-server.py --manifest KERNEL BOOTFS [--version V] [--git G] [--net N] [--key KEY]
         print the manifest of those two files and exit (signed with KEY if
         one is given, else with a bare signature line: unsigned)
+    update-server.py --build-net BOOTFS
+        print the boot image's network default ("vlan21", "untagged", or
+        "unknown" for a build made before build.txt had one); exit 1 if
+        unknown (tools/flash-usb.sh asks it)
     update-server.py --self-test
         the server against a Python client on 127.0.0.1: a whole fetch
         with requests and replies lost, a snapshot kept while the files
@@ -18,9 +22,10 @@ manifest, over UDP.
 The manifest (user/include/update.h has the C side's rules, and its strict
 parser is user/lib/update.c):
 
-    jamos-update 1
+    jamos-update 2
     version <the kernel's version string>
     git <short hash, -dirty if the tree has changes>
+    net <the build's network default: vlan<id> or untagged>
     kernel <size> <sha256>
     bootfs <size> <sha256>
     signature <128 hex digits>
@@ -45,7 +50,10 @@ fetcher starts again from the manifest. Malformed datagrams get no answer.
 The version comes from the kernel's own `jamos_version` symbol in the ELF
 file (so it is the build's, not the source's), else from kernel/main.c;
 the git hash from the boot image's build.txt (the Makefile writes the
-commit the build was made from), else the tree's when the snapshot is made.
+commit the build was made from), else the tree's when the snapshot is made;
+the network default from the same build.txt's "net" line, and a boot image
+without one is not served (init on the PC refuses a build whose default
+isn't its own unless `update -f`).
 
 For tests, tools/netpeer.py --update SPEC answers port 5022 with
 peer_handler(SPEC): this server with a plan of damaged builds (below)."""
@@ -87,11 +95,22 @@ DEFAULT_KEY = os.path.expanduser("~/.config/jamos/update.key")
 
 # ---- the manifest ---------------------------------------------------------------
 
-def manifest(kernel, bootfs, version, git):
+NET_RE = re.compile(rb"(untagged|vlan([1-9][0-9]{0,3}))$")
+
+
+def net_ok(net):
+    m = NET_RE.match(net.encode()) if net else None
+    return bool(m) and (not m.group(2) or int(m.group(2)) <= 4094)
+
+
+def manifest(kernel, bootfs, version, git, net):
     """The manifest's bytes for these two files' contents."""
     if not VERSION_RE.match(version.encode()) or not GIT_RE.match(git.encode()):
         raise ValueError("bad version %r or git %r" % (version, git))
-    lines = ["jamos-update 1", "version " + version, "git " + git]
+    if not net_ok(net):
+        raise ValueError("the build has no network default (build.txt's net line: %r); "
+                         "make it again" % (net,))
+    lines = ["jamos-update 2", "version " + version, "git " + git, "net " + net]
     for name, data in (("kernel", kernel), ("bootfs", bootfs)):
         if not 1 <= len(data) <= FILE_MAX:
             raise ValueError("%s is %d bytes (1..%d)" % (name, len(data), FILE_MAX))
@@ -114,23 +133,28 @@ def sign(text, key):
 
 
 def parse_manifest(text):
-    """The C parser's rules, for the self-test: (version, git, [(size, sha)]) or None."""
+    """The C parser's rules, for the self-test: (version, git, [(size, sha)],
+    net) or None."""
     lines = text.split(b"\n")
-    if len(text) > MANIFEST_MAX or len(lines) != 7 or lines[6] != b"" or lines[0] != b"jamos-update 1":
+    if len(text) > MANIFEST_MAX or len(lines) != 8 or lines[7] != b"" or lines[0] != b"jamos-update 2":
         return None
-    v, g = lines[1].split(b" ", 1), lines[2].split(b" ", 1)
+    v, g, n = lines[1].split(b" ", 1), lines[2].split(b" ", 1), lines[3].split(b" ", 1)
     if v[0] != b"version" or len(v) != 2 or not VERSION_RE.match(v[1]):
         return None
     if g[0] != b"git" or len(g) != 2 or not GIT_RE.match(g[1]):
         return None
+    if n[0] != b"net" or len(n) != 2 or not net_ok(n[1].decode(errors="replace")):
+        return None
     files = []
-    for name, line in zip((b"kernel", b"bootfs"), lines[3:5]):
+    for name, line in zip((b"kernel", b"bootfs"), lines[4:6]):
         w = line.split(b" ")
         if len(w) != 3 or w[0] != name or not re.match(rb"[1-9][0-9]{0,9}$", w[1]) or \
                 not re.match(rb"[0-9a-f]{64}$", w[2]) or int(w[1]) > FILE_MAX:
             return None
         files.append((int(w[1]), w[2].decode()))
-    return (v[1].decode(), g[1].decode(), files) if SIG_RE.match(lines[5]) else None
+    if not SIG_RE.match(lines[6]):
+        return None
+    return v[1].decode(), g[1].decode(), files, n[1].decode()
 
 
 def elf_symbol_string(data, name):
@@ -193,6 +217,21 @@ def build_git(bootfs):
     return m.group(1).decode() if m else None
 
 
+def build_net(bootfs):
+    """The network default in the boot image's build.txt (its line
+    "net vlan21" or "net untagged"), or None."""
+    text = bootfs_file(bootfs, "build.txt") or b""
+    for line in text.split(b"\n")[:-1]:
+        if line.startswith(b"net ") and net_ok(line[4:].decode(errors="replace")):
+            return line[4:].decode()
+    return None
+
+
+def other_net(net):
+    """The other kind of network default: untagged for a VLAN, VLAN 21 for untagged."""
+    return "vlan21" if net == "untagged" else "untagged"
+
+
 def git_hash():
     try:
         h = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], check=True,
@@ -228,16 +267,18 @@ def read_stable(paths, settle, tries=10):
 
 class Server:
     def __init__(self, kernel_path, bootfs_path, sock, client=None, log=print,
-                 version=None, git=None, settle=SETTLE, key=None):
+                 version=None, git=None, settle=SETTLE, key=None, net=None):
         self.paths = [kernel_path, bootfs_path]
         self.sock, self.client, self.log = sock, client, log
         self.version, self.git, self.settle, self.key = version, git, settle, key
+        self.net = net
         self.snaps = collections.OrderedDict()   # id -> [manifest, kernel, bootfs]
 
     def snapshot(self):
         kernel, bootfs = read_stable(self.paths, self.settle)
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
-                        self.git or build_git(bootfs) or git_hash())
+                        self.git or build_git(bootfs) or git_hash(),
+                        self.net or build_net(bootfs))
         text, kernel, bootfs = self.prepare(text, kernel, bootfs)
         text = self.signed(text)
         sid = 0
@@ -246,7 +287,7 @@ class Server:
         self.snaps[sid] = [text, kernel, bootfs]
         while len(self.snaps) > SNAPSHOTS:
             self.snaps.popitem(last=False)
-        self.log("update-server: snapshot %08x: %s" % (sid, text.decode().split("\n")[1:3]))
+        self.log("update-server: snapshot %08x: %s" % (sid, text.decode().split("\n")[1:4]))
         return sid
 
     def prepare(self, text, kernel, bootfs):
@@ -291,7 +332,7 @@ class Server:
 
 # ---- a server for tests: a plan of damaged builds ------------------------------------
 
-PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig")
+PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig", "othernet")
 GONE_AFTER = 300        # replies to a "gone" client before the server stops answering it
 
 
@@ -312,13 +353,16 @@ class PlannedServer(Server):
       unsigned   the manifest's signature line bare: init refuses it
       badsig     the manifest changed after it was signed (its version's
                  last character): init refuses the signature
+      othernet   the manifest (signed as usual) says the other network
+                 default (untagged for a VLAN build, vlan21 for an untagged
+                 one): init refuses it unless forced (`update -f`)
     Every other manifest is signed with the spec's key (a throwaway test
     key: the PC under test has its public half)."""
 
     def __init__(self, kernel_path, bootfs_path, plan, log=print, version=None, git=None,
-                 key=None):
+                 key=None, net=None):
         super().__init__(kernel_path, bootfs_path, None, log=log, version=version, git=git,
-                         settle=0.0, key=key)
+                         settle=0.0, key=key, net=net)
         for p in plan:
             if p not in PLANS:
                 raise ValueError("no plan %r (%s)" % (p, ", ".join(PLANS)))
@@ -336,6 +380,10 @@ class PlannedServer(Server):
             text = text.replace(good, hashlib.sha256(b"not the boot image").hexdigest().encode())
         elif self.current == "truncated":
             bootfs = bootfs[:len(bootfs) // 2]
+        elif self.current == "othernet":
+            lines = text.split(b"\n")
+            lines[3] = b"net " + other_net(lines[3][4:].decode()).encode()
+            text = b"\n".join(lines)
         return text, kernel, bootfs
 
     def signed(self, text):
@@ -366,13 +414,14 @@ class PlannedServer(Server):
 def peer_handler(spec_path, log):
     """tools/netpeer.py's handler for port 5022: a PlannedServer from the
     JSON file spec_path ({"kernel": path, "bootfs": path, "plan": [...],
-    and optionally "version", "git", "key": the secret key to sign with})."""
+    and optionally "version", "git", "net", "key": the secret key to sign
+    with})."""
     import json
     with open(spec_path) as f:
         spec = json.load(f)
     server = PlannedServer(spec["kernel"], spec["bootfs"], spec.get("plan", []), log=log,
                            version=spec.get("version"), git=spec.get("git"),
-                           key=spec.get("key"))
+                           key=spec.get("key"), net=spec.get("net"))
 
     def handle(peer, src, sport, dst, payload):
         return server.handle((socket.inet_ntoa(src), sport), payload)
@@ -464,8 +513,8 @@ class Client:
 
 def check_plans(kpath, bpath, check):
     """PlannedServer: each client its plan, in order, then "good"."""
-    s = PlannedServer(kpath, bpath, ["damage", "wronghash", "truncated", "gone"],
-                      log=lambda s: None, version="0.0.29-test", git="abcdef0")
+    s = PlannedServer(kpath, bpath, ["damage", "wronghash", "truncated", "gone", "othernet"],
+                      log=lambda s: None, version="0.0.29-test", git="abcdef0", net="vlan21")
 
     def ask(client, f, sid, off, length):
         rep = s.handle(client, REQ.pack(MAGIC, VERSION, REQUEST, f, 0, sid, off, length, 0))
@@ -475,13 +524,15 @@ def check_plans(kpath, bpath, check):
         return b"".join(ask(client, f, sid, off, CHUNK_MAX)[1] for off in range(0, size, CHUNK_MAX))
 
     results = {}
-    for n, plan in enumerate(["damage", "wronghash", "truncated", "gone", "good"]):
+    for n, plan in enumerate(["damage", "wronghash", "truncated", "gone", "othernet", "good"]):
         client = ("10.2.21.5", 50000 + n)
         fields, text = ask(client, MANIFEST, 0, 0, CHUNK_MAX)
         m = parse_manifest(text)
         sid = fields[5]
         (ksize, ksha), (bsize, bsha) = m[2]
-        if plan == "truncated":
+        if plan == "othernet":
+            results[plan] = m[3] == "untagged"
+        elif plan == "truncated":
             results[plan] = ask(client, BOOTFS, sid, bsize - 10, 10)[0][4] == RANGE
         elif plan == "gone":
             for _ in range(GONE_AFTER):
@@ -509,14 +560,15 @@ def check_signing(kpath, bpath, tmp, check):
     def verified(text, d):
         return subprocess.run([SIGN_TOOL, "verify", os.path.join(d, "update.pub")], input=text,
                               capture_output=True).returncode == 0
-    text = sign(manifest(b"k", b"b", "1.0", "abcdef0"), os.path.join(keys[0], "update.key"))
+    text = sign(manifest(b"k", b"b", "1.0", "abcdef0", "vlan21"),
+                os.path.join(keys[0], "update.key"))
     check("a signed manifest parses", parse_manifest(text) is not None)
     check("its signature checks", verified(text, keys[0]))
     check("another key's doesn't", not verified(text, keys[1]))
     check("a changed byte doesn't", not verified(text.replace(b"1.0", b"1.1"), keys[0]))
     s = PlannedServer(kpath, bpath, ["unsigned", "badsig"], log=lambda s: None,
                       version="0.0.29-test", git="abcdef0",
-                      key=os.path.join(keys[0], "update.key"))
+                      key=os.path.join(keys[0], "update.key"), net="vlan21")
     for n, plan in enumerate(["unsigned", "badsig", "good"]):
         rep = s.handle(("10.2.21.5", 51000 + n),
                        REQ.pack(MAGIC, VERSION, REQUEST, MANIFEST, 0, 0, 0, CHUNK_MAX, 0))
@@ -537,7 +589,7 @@ def self_test():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 0))
     server = Server(kpath, bpath, sock, log=lambda s: None, version="0.0.29-test", git="abcdef0",
-                    settle=0.0)
+                    settle=0.0, net="untagged")
     stop = threading.Event()
 
     def loop():
@@ -560,7 +612,8 @@ def self_test():
     c = Client(addr, drop=0.1)
     sid, text = c.fetch_manifest()
     m = parse_manifest(text)
-    check("the manifest parses", m is not None and m[0] == "0.0.29-test" and m[1] == "abcdef0")
+    check("the manifest parses", m is not None and m[0] == "0.0.29-test" and m[1] == "abcdef0"
+          and m[3] == "untagged")
     sizes = [m[2][0][0], m[2][1][0]] if m else [0, 0]
 
     def rebuild():
@@ -605,13 +658,27 @@ def self_test():
     got = q.one()
     check("an old snapshot is dropped", got and got[0][4] == GONE)
     # 5. The manifest's own rules (the C parser's, user/lib/update.c).
-    good = manifest(b"k", b"b", "1.0", "abcdef0")
+    good = manifest(b"k", b"b", "1.0", "abcdef0", "vlan21")
     check("a manifest parses", parse_manifest(good) is not None)
+    check("an untagged manifest parses",
+          parse_manifest(manifest(b"k", b"b", "1.0", "abcdef0", "untagged"))[3] == "untagged")
     for what, broken in (("no last newline", good[:-1]), ("a blank line after", good + b"\n"),
                          ("a short signature", good.replace(b"signature", b"signature 00")),
-                         ("format 2", good.replace(b"jamos-update 1", b"jamos-update 2")),
+                         ("format 1", good.replace(b"jamos-update 2", b"jamos-update 1")),
+                         ("format 3", good.replace(b"jamos-update 2", b"jamos-update 3")),
+                         ("no net line", good.replace(b"net vlan21\n", b"")),
+                         ("vlan 0", good.replace(b"net vlan21", b"net vlan0")),
+                         ("vlan 4095", good.replace(b"net vlan21", b"net vlan4095")),
+                         ("vlan 021", good.replace(b"net vlan21", b"net vlan021")),
+                         ("net off", good.replace(b"net vlan21", b"net off")),
                          ("a leading zero", good.replace(b"kernel 1", b"kernel 01"))):
         check("a manifest refused: " + what, parse_manifest(broken) is None)
+    for net in (None, "", "off", "vlan0", "vlan4095", "none"):
+        try:
+            manifest(b"k", b"b", "1.0", "abcdef0", net)
+            check("no manifest with net %r" % (net,), False)
+        except ValueError:
+            pass
     # 6. The version comes from the ELF symbol when there is a real build.
     elf = os.path.join(REPO, "build/jamos.elf")
     if os.path.exists(elf):
@@ -624,6 +691,14 @@ def self_test():
     check("a cut build.txt has no git hash", build_git(img) is None)
     img = img[:entry_at - 16] + struct.pack("<QQ", entry_at, 18) + b"git 0123abc-dirty\n"
     check("a boot image's git hash", build_git(img) == "0123abc-dirty")
+    check("a build.txt without a net line has no network default", build_net(img) is None)
+    for text, want in ((b"git 0123abc\nnet vlan21\n", "vlan21"),
+                       (b"git 0123abc\nnet untagged\n", "untagged"),
+                       (b"git 0123abc\nnet vlan21", None), (b"git 0123abc\nnet vlan5000\n", None),
+                       (b"git 0123abc\nnet none\n", None)):
+        img = (BOOTFS_HEADER.pack(b"JAMBOOTF", 1, 1, entry_at + len(text)) +
+               BOOTFS_ENTRY.pack(b"build.txt", entry_at, len(text)) + text)
+        check("build.txt %r: network default %r" % (text, want), build_net(img) == want)
     check_plans(kpath, bpath, check)
     check_signing(kpath, bpath, tmp, check)
     stop.set()
@@ -644,13 +719,20 @@ def main():
     ap.add_argument("--version")
     ap.add_argument("--git")
     ap.add_argument("--key", help="the secret key to sign with (default %s)" % DEFAULT_KEY)
+    ap.add_argument("--net", help="the network default to claim (vlan<id>, untagged)")
+    ap.add_argument("--build-net", metavar="BOOTFS")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.build_net:
+        net = build_net(open(a.build_net, "rb").read())
+        print(net or "unknown")
+        return 0 if net else 1
     if a.manifest:
         k, b = (open(p, "rb").read() for p in a.manifest)
-        text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash())
+        text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash(),
+                        a.net or build_net(b))
         sys.stdout.write((sign(text, a.key) if a.key else text).decode())
         return 0
     key = a.key or DEFAULT_KEY
@@ -663,7 +745,7 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((a.bind, a.port))
     server = Server(os.path.join(a.build, "jamos.elf"), os.path.join(a.build, "bootfs.img"),
-                    sock, client=a.client, version=a.version, git=a.git, key=key)
+                    sock, client=a.client, version=a.version, git=a.git, key=key, net=a.net)
     print("update-server: serving %s on %s:%d, signed with %s" % (a.build, a.bind, a.port, key))
     try:
         while True:

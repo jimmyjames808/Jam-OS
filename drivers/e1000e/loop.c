@@ -125,8 +125,10 @@ status_t loop_run(struct e1k *t)
         drv_log("can't bind the port (%s)", status_str(st));
         return st;
     }
-    drv_log("netdev: serving on vlan %u: netstack's frames tagged by tx.c, ours kept by rx.c",
-            t->vlan);
+    char m[NETDEV_MODE_TEXT];
+    drv_log("netdev: serving %s: netstack's frames %s by tx.c, ours kept by rx.c",
+            netdev_mode_str(t->vlan, m),
+            t->vlan == NETFRAME_MODE_UNTAGGED ? "checked untagged" : "tagged");
     uint64_t next_poll = drv_clock_ns() + POLL_NS;
     while (st == OK) {
         bool busy = srv_work(&t->v);

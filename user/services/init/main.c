@@ -11,10 +11,11 @@
  * protocol; so is "netprobe", "netsend" or "net" in shell mode (devmgr
  * binds the RTL8125's driver for its listen-only probe, its ARP send test
  * or its netdev service),
- * "vlan=<id>" (the network's VLAN, for the network drivers) and
+ * "vlan=<id>" or "vlan=none" (the network's mode, for the network
+ * drivers) and
  * "bootdisk=0x<id>" (the disk the machine booted from: devmgr's boot
- * disk). Otherwise (no mode, or "init", whose one option word is
- * "vlan=<id>") it starts the bootfs server (bin/bootfs: the boot
+ * disk). Otherwise (no mode, or "init", whose one option word is the
+ * vlan= word) it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -420,8 +421,8 @@ int main(int argc, char **argv)
         return 1;
     /* The option words after the mode (argv[2] on): "splash" (the kernel's
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
-     * plays first), "hidboot", "netprobe", "netsend", "net", "vlan=<id>",
-     * "bootdisk=0x<id>", "splashhang". */
+     * plays first), "hidboot", "netprobe", "netsend", "net", "vlan=<id>"
+     * or "vlan=none", "bootdisk=0x<id>", "splashhang". */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");

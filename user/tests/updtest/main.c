@@ -8,7 +8,10 @@
  * build's boot image; the boot image a copy of the build's with one more
  * file, update-marker.txt, so the boot after the update shows which build
  * runs); manifest-otherkey, the same manifest signed with a second key;
- * nak.manifest, signed with the first, for two files that are no kernel.
+ * manifest-othernet, the same build's manifest saying the other network
+ * default (untagged for a VLAN build, vlan21 for an untagged one), signed
+ * with the first; nak.manifest, signed with the first, for two files that
+ * are no kernel.
  * The shell gives it what its list asks for: /data (read) and init's
  * control channel, whose update_offer is the channel bin/update's offer
  * will travel on.
@@ -25,10 +28,13 @@
  *                  format), unsigned, changed after it was signed (one
  *                  digit of a SHA-256), signed by another key, or carrying
  *                  another manifest's signature (the signature), an offer
- *                  with a bad magic, one handle or an unknown flag, and two
- *                  files that match their signed manifest but are no kernel
- *                  (the kernel's own refusal); and the build as it is,
- *                  offered UPDATE_OFFER_CHECK_ONLY: accepted, not loaded.
+ *                  with a bad magic, one handle or an unknown flag, the
+ *                  build signed as saying the other network default (its
+ *                  own refusal, unless forced), and two files that match
+ *                  their signed manifest but are no kernel (the kernel's
+ *                  own refusal); and the build as it is, and the
+ *                  other-network one with UPDATE_OFFER_FORCE, each offered
+ *                  UPDATE_OFFER_CHECK_ONLY: accepted, not loaded.
  *                  The script's `reboot` then shows the stored kernel
  *                  unchanged.
  *   updtest nokey  on a build without an update key: the build offered,
@@ -257,7 +263,7 @@ static void bad_manifests(const struct build *b)
     memcpy(text + at, "signature 00ff\n", 15);   /* a signature too short to be one */
     bad_manifest(b, "short signature", text, at + 15, UPDATE_BAD_MANIFEST);
     memcpy(text, b->manifest, n);
-    text[13] = '2';   /* "jamos-update 2" */
+    text[13] = '3';   /* "jamos-update 3" */
     bad_manifest(b, "another format", text, n, UPDATE_BAD_MANIFEST);
     memcpy(text, b->manifest, n);
     memcpy(text + at, "signature\n", 10);
@@ -295,6 +301,33 @@ static void wrong_signatures(const struct build *b, const struct build *nak)
     memcpy(text + at, nak->manifest + nat, nak->manifest_len - nat);
     bad_manifest(b, "another manifest's signature", text, at + nak->manifest_len - nat,
                  UPDATE_BAD_SIGNATURE);
+}
+
+/* The network default guard: the build, signed as saying the other kind
+ * of network default (DIR "manifest-othernet"), refused; forced, taken
+ * (check only). */
+static void other_net(const struct build *b)
+{
+    struct build v = *b;
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "manifest-othernet", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st == OK) {
+        st = jam_vmo_read(m, 0, v.manifest, n);
+        jam_handle_close(m);
+        v.manifest_len = (uint32_t)n;
+    }
+    if (st != OK) {
+        failures++;
+        printf("updtest: another network default: no " DIR "manifest-othernet (%s): FAILED\n",
+               status_str(st));
+        return;
+    }
+    v.flags = 0;
+    expect("another network default", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NET_CHANGE, 0);
+    v.flags = UPDATE_OFFER_FORCE | UPDATE_OFFER_CHECK_ONLY;
+    expect("another network default, forced (check only)", &v, 2, UPDATE_OFFER_MAGIC,
+           UPDATE_ACCEPTED, 0);
 }
 
 /* Two files that match their signed manifest exactly but are no kernel
@@ -384,11 +417,12 @@ static void bad(struct build *b)
         wrong_signatures(b, &nak);
     expect("bad magic", b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
     expect("one handle", b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-    b->flags = 1u << 31;   /* no such flag (the bit above CHECK_ONLY is WRITE) */
+    b->flags = 1u << 31;   /* no such flag (the bits above CHECK_ONLY are WRITE, FORCE) */
     expect("unknown flag", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
     b->flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
     expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
     b->flags = 0;
+    other_net(b);
     if (st == OK)
         expect("not a kernel", &nak, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
 }

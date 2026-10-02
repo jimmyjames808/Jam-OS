@@ -2,23 +2,25 @@
  *
  * The chip's tag stripping (CTRL.VME) and VLAN filter (RCTL.VFE) are off,
  * so each frame arrives as it was on the wire, its CRC stripped
- * (RCTL.SECRC). The driver keeps only what netframe_rx_check keeps:
- * 802.1Q-tagged with the configured VLAN, any priority. Untagged frames,
- * priority tags (VLAN 0), other VLANs, outer QinQ tags and a tag inside
- * ours are dropped and counted, as are runts, frames too long, frames the
- * chip flagged and frames spread over several buffers (none should be:
- * RCTL.LPE is off, so nothing over 1522 bytes arrives, and a buffer is
- * 2048).
+ * (RCTL.SECRC). The driver keeps only what netframe_rx_mode keeps: with a
+ * VLAN, 802.1Q-tagged with it, any priority (untagged frames, priority
+ * tags (VLAN 0), other VLANs, outer QinQ tags and a tag inside ours are
+ * dropped and counted); untagged, only untagged frames (every tagged one,
+ * VLAN 0 too, dropped and counted). Runts are dropped and counted too, as
+ * are frames too long, frames the chip flagged and frames spread over
+ * several buffers (none should be: RCTL.LPE is off, so nothing over 1522
+ * bytes arrives, and a buffer is 2048).
  *
  * To decide, the driver reads a frame's length (from the descriptor) and
  * bytes 12-17 (copied once out of the buffer); a kept frame is copied
- * without its tag (netframe_untag) into the driver's scratch copy and
- * handed to the netdev server (srv_rx), which puts it into the session's
- * rx ring, or drops and counts it with no session (rx_no_session) or the
- * ring full (rx_ring_full): the driver never waits for netstack. The
- * loop publishes the ring once per batch (srv_rx_done). The buffer is the
- * driver's from the moment the chip sets DD until the descriptor goes
- * back with the tail (RDT), so the chip can't change it in between. */
+ * without its tag (untagged, as it is: netframe_rx_take) into the
+ * driver's scratch copy and handed to the netdev server (srv_rx), which
+ * puts it into the session's rx ring, or drops and counts it with no
+ * session (rx_no_session) or the ring full (rx_ring_full): the driver
+ * never waits for netstack. The loop publishes the ring once per batch
+ * (srv_rx_done). The buffer is the driver's from the moment the chip sets
+ * DD until the descriptor goes back with the tail (RDT), so the chip
+ * can't change it in between. */
 #include "e1000e.h"
 
 #define RX_TICK_NS (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
@@ -31,11 +33,11 @@ static void keep_or_drop(struct e1k *t, const uint8_t *buf, uint32_t len)
     uint8_t head[NETFRAME_TAGGED] = { 0 };
     for (unsigned k = 12; k < NETFRAME_TAGGED && k < len; k++)
         head[k] = buf[k];
-    enum netframe_rx v = netframe_rx_check(head, len, t->vlan);
+    enum netframe_rx v = netframe_rx_mode(head, len, t->vlan);
     t->rx_drop[v]++;
     if (v != NETFRAME_RX_KEEP)
         return;
-    size_t n = netframe_untag(t->frame, sizeof(t->frame), buf, len);
+    size_t n = netframe_rx_take(t->frame, sizeof(t->frame), buf, len, t->vlan);
     srv_rx(&t->v, t->frame, n);   /* n 0 can't happen (rx_check bounded it): rx_bad there */
 }
 

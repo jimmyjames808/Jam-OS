@@ -7,6 +7,9 @@
 #include <net.h>
 #include "sh.h"
 
+_Static_assert(NET_VLAN_UNTAGGED == NETFRAME_MODE_UNTAGGED,
+               "net.iface passes the driver's mode on as it is");
+
 static unsigned prefix_of(uint32_t mask)
 {
     return mask ? 32u - (unsigned)__builtin_ctz(mask) : 0;
@@ -32,8 +35,12 @@ static void show_iface(const struct net_info *i)
     sh_say("link     %s", i->link ? "up" : "down");
     if (i->link)
         sh_say(", %u Mb/s", i->speed);
-    sh_say(", VLAN %u, MAC %02x:%02x:%02x:%02x:%02x:%02x\n", i->vlan, i->mac[0], i->mac[1],
-           i->mac[2], i->mac[3], i->mac[4], i->mac[5]);
+    if (i->vlan == NET_VLAN_UNTAGGED)
+        sh_say(", untagged");
+    else
+        sh_say(", VLAN %u", i->vlan);
+    sh_say(", MAC %02x:%02x:%02x:%02x:%02x:%02x\n", i->mac[0], i->mac[1], i->mac[2], i->mac[3],
+           i->mac[4], i->mac[5]);
 }
 
 static void show_brief(const struct net_counters *c)

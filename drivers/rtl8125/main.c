@@ -3,17 +3,19 @@
  * `netprobe` (the boot menu's "Jam OS (network: listen only)"), the send
  * test with `netsend` ("Jam OS (network: send test)"), and otherwise the
  * netdev service. "Jam OS (no network)" boots with `vlan=off`: the driver
- * starts without a VLAN and never touches the chip.
+ * starts with the network off and never touches the chip.
  *
  * The mode comes from the arguments, once (args.h):
  *   - `netprobe`: the listen-only probe (probe.c). Nothing is sent.
- *   - full mode, which needs a valid vlan=<n> (the kernel's VLAN, passed
- *     on by devmgr): without one, "no VLAN: the network stays off" and
+ *   - full mode, which needs a valid vlan=<n> or vlan=none (the kernel's
+ *     network mode, passed on by devmgr): without one, "no VLAN: the
+ *     network stays off" and
  *     the chip is never touched. With `netsend` it runs the ARP send
  *     test (sendtest.c); otherwise it serves netdev to netstack (full.c,
  *     <jam/netserver.h>) until devmgr stops it.
  * Every frame full mode sends goes through tx.c, which tags it with the
- * VLAN; every frame it keeps went through rx.c's VLAN check.
+ * VLAN (untagged: refuses one that carries a tag); every frame it keeps
+ * went through rx.c's check for the mode.
  *
  * The steps, one log line or a few each, every wait bounded:
  *   a. what the firmware left (reads only): PCI command, chip command
@@ -98,6 +100,7 @@
 /* Does this start touch the chip at all? Logs why not. */
 static bool will_run(const struct rtl_args *a)
 {
+    char m[NETDEV_MODE_TEXT];
     if (a->mode == RTL_MODE_PROBE) {
         drv_log("netprobe: listen only, nothing is sent");
         return true;
@@ -107,11 +110,12 @@ static bool will_run(const struct rtl_args *a)
         return false;
     }
     if (!a->sendtest) {
-        drv_log("full mode on vlan %u: serving netdev for netstack", a->vlan);
+        drv_log("full mode, %s: serving netdev for netstack", netdev_mode_str(a->vlan, m));
         return true;
     }
     uint32_t ip = a->arp_target;
-    drv_log("netsend: full mode on vlan %u, ARP probes for %u.%u.%u.%u%s", a->vlan, ip >> 24,
+    drv_log("netsend: full mode, %s, ARP probes for %u.%u.%u.%u%s", netdev_mode_str(a->vlan, m),
+            ip >> 24,
             (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
             a->bad_target ? " (an arpto= word that isn't an address was ignored)" : "");
     return true;
@@ -223,7 +227,7 @@ int driver_main(const struct driver_start *ds)
     *t = (struct rtl){ 0 };
     *o = (struct outcome){ 0 };
     t->mode = a.mode;   /* the one place the mode is set: tx.c's gate reads it */
-    t->vlan = a.vlan;   /* and the VLAN, from netdev_vlan_args alone */
+    t->vlan = a.vlan;   /* and the network mode, from netdev_vlan_args alone */
     t->since = drv_clock_ns();
     if (!take_handles(t, ds))
         return 0;
