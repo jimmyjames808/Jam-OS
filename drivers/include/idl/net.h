@@ -18,10 +18,10 @@
 #define NET_CHIP_COUNTS      0x001d0004u
 #define NET_UDP              0x001d0005u
 #define NET_ECHO             0x001d0006u
-#define NET_SOCK_SEND_TO     0x001d0010u
-#define NET_SOCK_RECV        0x001d0011u
+#define NET_UDP_RINGS        0x001d000fu
 #define NET_SOCK_CONNECT     0x001d0012u
 #define NET_SOCK_STATE       0x001d0013u
+#define NET_SOCK_RINGS       0x001d0014u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct net_iface_req {
@@ -97,31 +97,19 @@ struct net_echo_rep {
     uint8_t ttl;
     uint16_t size;
 } __attribute__((packed));
-struct net_sock_send_to_req {
+struct net_udp_rings_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint32_t address;
     uint16_t port;
-    uint16_t len;
-    uint8_t data[1472];
+    uint32_t tx_bytes;
+    uint32_t rx_bytes;
 } __attribute__((packed));
-struct net_sock_send_to_rep {
+struct net_udp_rings_rep {
     uint32_t txid;
     int32_t  status;
-} __attribute__((packed));
-struct net_sock_recv_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint32_t timeout_ms;
-} __attribute__((packed));
-struct net_sock_recv_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t address;
     uint16_t port;
-    uint16_t len;
-    uint32_t dropped;
-    uint8_t data[1472];
+    uint32_t tx_bytes;
+    uint32_t rx_bytes;
 } __attribute__((packed));
 struct net_sock_connect_req {
     uint32_t txid;
@@ -146,9 +134,21 @@ struct net_sock_state_rep {
     uint32_t queued;
     uint32_t dropped;
 } __attribute__((packed));
+struct net_sock_rings_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t tx_bytes;
+    uint32_t rx_bytes;
+} __attribute__((packed));
+struct net_sock_rings_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t tx_bytes;
+    uint32_t rx_bytes;
+} __attribute__((packed));
 
-#define NET_REQ_MAX 1488u   /* bytes: the biggest request */
-#define NET_REP_MAX 1492u   /* bytes: the biggest reply */
+#define NET_REQ_MAX 20u   /* bytes: the biggest request */
+#define NET_REP_MAX 264u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -272,14 +272,15 @@ static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256])
 }
 
 /* On an opener's channel: a UDP socket on local port `port`, any local
- * address. port 0: netstack picks one (49152 and up). Results: `socket`,
- * a channel of its own that speaks the sock_* methods (closing it closes
- * the socket), and its port. ERR_ACCESS_DENIED: a port below 1024 (only
- * netctl's DHCP socket has one), or one below 49152 on an opener that
- * didn't come through /svc/net-listen (the listen permission, netstack's
- * listen.h); ERR_ALREADY_BOUND: the port is taken;
- * ERR_NO_RESOURCES: the opener has NET_SOCKETS_PER_OPENER sockets, or
- * NET_SOCKETS_MAX are open. */
+ * address, without its rings yet (sock_rings gives them). port 0: netstack
+ * picks one (49152 and up). Results: `socket`, a channel of its own that
+ * speaks the sock_* methods (closing it closes the socket), and its port.
+ * ERR_ACCESS_DENIED: a port below 1024 (only netctl's DHCP socket has
+ * one), or one below 49152 on an opener that didn't come through
+ * /svc/net-listen (the listen permission, netstack's listen.h);
+ * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: the opener has
+ * NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
+ * ordinary opener's NET_PROG_SOCKETS are. */
 static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t port, handle_t *out_socket, uint16_t *out_port)
 {
     struct net_udp_req idl_q;
@@ -351,79 +352,73 @@ static inline status_t net_echo(handle_t ch, uint32_t address, uint16_t seq, uin
     return net_echo_until(ch, DEADLINE_NEVER, address, seq, size, timeout_ms, out_rtt_us, out_ttl, out_size);
 }
 
-/* On a socket's channel: send `len` bytes of `data` (the rest is ignored)
- * to address:port. Address 0 and port 0: the peer sock_connect set
- * (ERR_BAD_STATE if none). ERR_INVALID_ARGS: len over NET_DGRAM_MAX, port
- * 0, or an address a program can't send to (0.0.0.0/8, 127.0.0.0/8,
- * multicast, 240.0.0.0/4, a broadcast address: only the DHCP socket sends
- * to 255.255.255.255, and only to port 67); ERR_BAD_STATE: no address, the
- * link down, no route; ERR_NO_MEMORY: netstack's buffers are full;
- * ERR_NO_RESOURCES: the card's transmit ring was full. OK means the
- * datagram went to the card (or waits for the peer's ARP answer), not
- * that it arrived. */
-static inline status_t net_sock_send_to_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port, uint16_t len, const uint8_t data[1472])
+/* On an opener's channel: udp(port) and the socket's sock_rings(tx_bytes,
+ * rx_bytes) in one call: the socket's channel, its rings' VMO and events
+ * (<sockring.h>: SOCKRING_VMO_RIGHTS, SOCKRING_TO_STACK_RIGHTS,
+ * SOCKRING_TO_PROG_RIGHTS; datagram framing), its port and the rings'
+ * sizes. The errors of both. */
+static inline status_t net_udp_rings_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    struct net_sock_send_to_req idl_q;
-    struct net_sock_send_to_rep idl_r;
+    struct net_udp_rings_req idl_q;
+    struct net_udp_rings_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
-    idl_q.ordinal = NET_SOCK_SEND_TO;
-    idl_q.address = address;
+    idl_q.ordinal = NET_UDP_RINGS;
     idl_q.port = port;
-    idl_q.len = len;
-    for (uint32_t idl_i = 0; idl_i < 1472; idl_i++)
-        idl_q.data[idl_i] = data[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    idl_q.tx_bytes = tx_bytes;
+    idl_q.rx_bytes = rx_bytes;
+    handle_t idl_rh[4];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 4, &idl_rhn, deadline_ns);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-static inline status_t net_sock_send_to(handle_t ch, uint32_t address, uint16_t port, uint16_t len, const uint8_t data[1472])
-{
-    return net_sock_send_to_until(ch, DEADLINE_NEVER, address, port, len, data);
-}
-
-/* On a socket's channel: the next datagram queued for this socket: who
- * sent it, its port, its length and bytes (the rest of `data` is 0), and
- * `dropped`, datagrams this socket has dropped (its queue was full) since
- * it opened. Waits up to timeout_ms (0: ERR_SHOULD_WAIT at once if none is
- * queued; NET_WAIT_FOREVER: no timeout); ERR_TIMED_OUT then. One sock_recv
- * waits at a time: ERR_BAD_STATE for a second. */
-static inline status_t net_sock_recv_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, uint32_t *out_address, uint16_t *out_port, uint16_t *out_len, uint32_t *out_dropped, uint8_t out_data[1472])
-{
-    struct net_sock_recv_req idl_q;
-    struct net_sock_recv_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NET_SOCK_RECV;
-    idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_address)
-        *out_address = idl_r.address;
+    if (idl_st == OK && idl_rhn != 4)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_socket)
+            *out_socket = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        if (out_ring)
+            *out_ring = idl_rh[1];
+        else
+            drv_handle_close(idl_rh[1]);
+    }
+    if (idl_st == OK) {
+        if (out_to_stack)
+            *out_to_stack = idl_rh[2];
+        else
+            drv_handle_close(idl_rh[2]);
+    }
+    if (idl_st == OK) {
+        if (out_to_prog)
+            *out_to_prog = idl_rh[3];
+        else
+            drv_handle_close(idl_rh[3]);
+    }
     if (idl_st == OK && out_port)
         *out_port = idl_r.port;
-    if (idl_st == OK && out_len)
-        *out_len = idl_r.len;
-    if (idl_st == OK && out_dropped)
-        *out_dropped = idl_r.dropped;
-    for (uint32_t idl_i = 0; idl_st == OK && out_data && idl_i < 1472; idl_i++)
-        out_data[idl_i] = idl_r.data[idl_i];
+    if (idl_st == OK && out_tx_bytes)
+        *out_tx_bytes = idl_r.tx_bytes;
+    if (idl_st == OK && out_rx_bytes)
+        *out_rx_bytes = idl_r.rx_bytes;
     return idl_st;
 }
-static inline status_t net_sock_recv(handle_t ch, uint32_t timeout_ms, uint32_t *out_address, uint16_t *out_port, uint16_t *out_len, uint32_t *out_dropped, uint8_t out_data[1472])
+static inline status_t net_udp_rings(handle_t ch, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    return net_sock_recv_until(ch, DEADLINE_NEVER, timeout_ms, out_address, out_port, out_len, out_dropped, out_data);
+    return net_udp_rings_until(ch, DEADLINE_NEVER, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
 }
 
-/* On a socket's channel: from now on only datagrams from address:port are
- * queued (others are dropped, not counted as dropped), and sock_send_to to
- * 0:0 goes there. Address 0 and port 0: any sender again. Datagrams queued
- * already stay. ERR_INVALID_ARGS: an address sock_send_to refuses;
- * ERR_NOT_SUPPORTED on the DHCP socket. */
+/* On a socket's channel: from now on only datagrams from address:port go
+ * into its rx ring (others are dropped, not counted as dropped), and a tx
+ * record to 0:0 goes there. Address 0 and port 0: any sender again.
+ * Datagrams in the ring already stay. ERR_INVALID_ARGS: an address a
+ * program can't send to; ERR_NOT_SUPPORTED on the DHCP socket. */
 static inline status_t net_sock_connect_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port)
 {
     struct net_sock_connect_req idl_q;
@@ -445,7 +440,8 @@ static inline status_t net_sock_connect(handle_t ch, uint32_t address, uint16_t 
 }
 
 /* On a socket's channel: its local port, the peer sock_connect set (0: none),
- * datagrams queued now, and dropped since it opened (its queue was full). */
+ * bytes waiting in its rx ring now, and datagrams dropped since it opened
+ * (its rx ring was full; also the status line's rx_dropped). */
 static inline status_t net_sock_state_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
     struct net_sock_state_req idl_q;
@@ -472,6 +468,64 @@ static inline status_t net_sock_state_until(handle_t ch, uint64_t deadline_ns, u
 static inline status_t net_sock_state(handle_t ch, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
     return net_sock_state_until(ch, DEADLINE_NEVER, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+}
+
+/* On a socket's channel: the socket's rings (<sockring.h>, datagram
+ * framing): their VMO and events with the rights the header names, and
+ * the rings' sizes. tx_bytes and rx_bytes: 0 for SOCKRING_UDP_TX and
+ * SOCKRING_UDP_RX, else a ring size (sockring_size_ok). After it the
+ * socket's datagrams go only through the rings: a tx record netstack
+ * refuses (an address a program can't send to, port 0, no route) counts in
+ * the status line's tx_refused, with its reason in `error`, and a datagram
+ * that doesn't fit the rx ring in rx_dropped. Once a socket: ERR_BAD_STATE
+ * for a second. ERR_INVALID_ARGS: a size not allowed; ERR_NO_RESOURCES:
+ * over the opener's or all sockets' ring bytes; ERR_NO_MEMORY: no memory. */
+static inline status_t net_sock_rings_until(handle_t ch, uint64_t deadline_ns, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    struct net_sock_rings_req idl_q;
+    struct net_sock_rings_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NET_SOCK_RINGS;
+    idl_q.tx_bytes = tx_bytes;
+    idl_q.rx_bytes = rx_bytes;
+    handle_t idl_rh[3];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 3, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 3)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_ring)
+            *out_ring = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        if (out_to_stack)
+            *out_to_stack = idl_rh[1];
+        else
+            drv_handle_close(idl_rh[1]);
+    }
+    if (idl_st == OK) {
+        if (out_to_prog)
+            *out_to_prog = idl_rh[2];
+        else
+            drv_handle_close(idl_rh[2]);
+    }
+    if (idl_st == OK && out_tx_bytes)
+        *out_tx_bytes = idl_r.tx_bytes;
+    if (idl_st == OK && out_rx_bytes)
+        *out_rx_bytes = idl_r.rx_bytes;
+    return idl_st;
+}
+static inline status_t net_sock_rings(handle_t ch, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_sock_rings_until(ch, DEADLINE_NEVER, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -697,78 +751,57 @@ static inline status_t net_echo_result(const void *idl_rep, struct idl_msg *idl_
     return OK;
 }
 
-/* net_sock_send_to without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then net_sock_send_to_result. */
-static inline status_t net_sock_send_to_send(handle_t ch, uint32_t idl_txid, uint32_t address, uint16_t port, uint16_t len, const uint8_t data[1472])
+/* net_udp_rings without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then net_udp_rings_result. */
+static inline status_t net_udp_rings_send(handle_t ch, uint32_t idl_txid, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes)
 {
-    struct net_sock_send_to_req idl_q;
+    struct net_udp_rings_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
     idl_q.txid = idl_txid;
-    idl_q.ordinal = NET_SOCK_SEND_TO;
-    idl_q.address = address;
+    idl_q.ordinal = NET_UDP_RINGS;
     idl_q.port = port;
-    idl_q.len = len;
-    for (uint32_t idl_i = 0; idl_i < 1472; idl_i++)
-        idl_q.data[idl_i] = data[idl_i];
+    idl_q.tx_bytes = tx_bytes;
+    idl_q.rx_bytes = rx_bytes;
     return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
 }
 
-/* The status and results of a reply to net_sock_send_to_send (read with
+/* The status and results of a reply to net_udp_rings_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_sock_send_to_result(const void *idl_rep, struct idl_msg *idl_m)
+static inline status_t net_udp_rings_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    const struct net_sock_send_to_rep *idl_r = (const struct net_sock_send_to_rep *)idl_rep;
+    const struct net_udp_rings_rep *idl_r = (const struct net_udp_rings_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
+    if (idl_st == OK && idl_m->nh != 4)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
         idl_msg_drop(idl_m);
         return idl_st;
     }
+    if (out_socket)
+        *out_socket = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_ring)
+        *out_ring = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    if (out_to_stack)
+        *out_to_stack = idl_m->hs[2];
+    else
+        drv_handle_close(idl_m->hs[2]);
+    if (out_to_prog)
+        *out_to_prog = idl_m->hs[3];
+    else
+        drv_handle_close(idl_m->hs[3]);
     idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
-/* net_sock_recv without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then net_sock_recv_result. */
-static inline status_t net_sock_recv_send(handle_t ch, uint32_t idl_txid, uint32_t timeout_ms)
-{
-    struct net_sock_recv_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = NET_SOCK_RECV;
-    idl_q.timeout_ms = timeout_ms;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to net_sock_recv_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_sock_recv_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_address, uint16_t *out_port, uint16_t *out_len, uint32_t *out_dropped, uint8_t out_data[1472])
-{
-    const struct net_sock_recv_rep *idl_r = (const struct net_sock_recv_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_address)
-        *out_address = idl_r->address;
     if (out_port)
         *out_port = idl_r->port;
-    if (out_len)
-        *out_len = idl_r->len;
-    if (out_dropped)
-        *out_dropped = idl_r->dropped;
-    for (uint32_t idl_i = 0; out_data && idl_i < 1472; idl_i++)
-        out_data[idl_i] = idl_r->data[idl_i];
+    if (out_tx_bytes)
+        *out_tx_bytes = idl_r->tx_bytes;
+    if (out_rx_bytes)
+        *out_rx_bytes = idl_r->rx_bytes;
     return OK;
 }
 
@@ -843,6 +876,53 @@ static inline status_t net_sock_state_result(const void *idl_rep, struct idl_msg
     return OK;
 }
 
+/* net_sock_rings without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then net_sock_rings_result. */
+static inline status_t net_sock_rings_send(handle_t ch, uint32_t idl_txid, uint32_t tx_bytes, uint32_t rx_bytes)
+{
+    struct net_sock_rings_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = NET_SOCK_RINGS;
+    idl_q.tx_bytes = tx_bytes;
+    idl_q.rx_bytes = rx_bytes;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to net_sock_rings_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t net_sock_rings_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    const struct net_sock_rings_rep *idl_r = (const struct net_sock_rings_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 3)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_ring)
+        *out_ring = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_to_stack)
+        *out_to_stack = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    if (out_to_prog)
+        *out_to_prog = idl_m->hs[2];
+    else
+        drv_handle_close(idl_m->hs[2]);
+    idl_m->nh = 0;
+    if (out_tx_bytes)
+        *out_tx_bytes = idl_r->tx_bytes;
+    if (out_rx_bytes)
+        *out_rx_bytes = idl_r->rx_bytes;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -856,10 +936,10 @@ struct net_ops {
     status_t (*chip_counts)(void *ctx, struct idl_txn idl_txn, uint8_t out_counts[256]);
     status_t (*udp)(void *ctx, uint16_t port, handle_t *out_socket, uint16_t *out_port);
     status_t (*echo)(void *ctx, struct idl_txn idl_txn, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size);
-    status_t (*sock_send_to)(void *ctx, uint32_t address, uint16_t port, uint16_t len, const uint8_t data[1472]);
-    status_t (*sock_recv)(void *ctx, struct idl_txn idl_txn, uint32_t timeout_ms, uint32_t *out_address, uint16_t *out_port, uint16_t *out_len, uint32_t *out_dropped, uint8_t out_data[1472]);
+    status_t (*udp_rings)(void *ctx, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
     status_t (*sock_connect)(void *ctx, uint32_t address, uint16_t port);
     status_t (*sock_state)(void *ctx, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped);
+    status_t (*sock_rings)(void *ctx, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
 };
 
 /* Answer the net.iface request kept in txn: idl_st and, if it is OK, the
@@ -979,40 +1059,34 @@ static inline status_t net_reply_echo(struct idl_txn idl_txn, status_t idl_st, u
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
-/* Answer the net.sock_send_to request kept in txn: idl_st and, if it is OK, the
+/* Answer the net.udp_rings request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_reply_sock_send_to(struct idl_txn idl_txn, status_t idl_st)
+static inline status_t net_reply_udp_rings(struct idl_txn idl_txn, status_t idl_st, handle_t socket, handle_t ring, handle_t to_stack, handle_t to_prog, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes)
 {
-    struct net_sock_send_to_rep idl_r;
+    struct net_udp_rings_rep idl_r;
+    handle_t idl_hs[4] = { socket, ring, to_stack, to_prog };
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the net.sock_recv request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_reply_sock_recv(struct idl_txn idl_txn, status_t idl_st, uint32_t address, uint16_t port, uint16_t len, uint32_t dropped, const uint8_t data[1472])
-{
-    struct net_sock_recv_rep idl_r;
-    if (idl_st > 0)
+    if (idl_st == OK && !(socket != HANDLE_INVALID && ring != HANDLE_INVALID && to_stack != HANDLE_INVALID && to_prog != HANDLE_INVALID))
         idl_st = ERR_INTERNAL;
     idl_r.status = idl_st;
-    if (idl_st != OK)
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        if (idl_hs[2] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[2]);
+        if (idl_hs[3] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[3]);
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.address = address;
+    }
     idl_r.port = port;
-    idl_r.len = len;
-    idl_r.dropped = dropped;
-    for (uint32_t idl_i = 0; idl_i < 1472; idl_i++)
-        idl_r.data[idl_i] = data[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r.tx_bytes = tx_bytes;
+    idl_r.rx_bytes = rx_bytes;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 4);
 }
 
 /* Answer the net.sock_connect request kept in txn: idl_st and, if it is OK, the
@@ -1048,6 +1122,33 @@ static inline status_t net_reply_sock_state(struct idl_txn idl_txn, status_t idl
     idl_r.queued = queued;
     idl_r.dropped = dropped;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the net.sock_rings request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t net_reply_sock_rings(struct idl_txn idl_txn, status_t idl_st, handle_t ring, handle_t to_stack, handle_t to_prog, uint32_t tx_bytes, uint32_t rx_bytes)
+{
+    struct net_sock_rings_rep idl_r;
+    handle_t idl_hs[3] = { ring, to_stack, to_prog };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(ring != HANDLE_INVALID && to_stack != HANDLE_INVALID && to_prog != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        if (idl_hs[2] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[2]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.tx_bytes = tx_bytes;
+    idl_r.rx_bytes = rx_bytes;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 3);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1225,52 +1326,45 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
         idl_r->size = out_size;
         return sizeof(*idl_r);
     }
-    case NET_SOCK_SEND_TO: {
-        const struct net_sock_send_to_req *idl_q = (const struct net_sock_send_to_req *)req;
-        struct net_sock_send_to_rep *idl_r = (struct net_sock_send_to_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->sock_send_to) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->sock_send_to(ctx, idl_q->address, idl_q->port, idl_q->len, idl_q->data);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case NET_SOCK_RECV: {
-        const struct net_sock_recv_req *idl_q = (const struct net_sock_recv_req *)req;
-        struct net_sock_recv_rep *idl_r = (struct net_sock_recv_rep *)rep;
-        uint32_t out_address = 0;
+    case NET_UDP_RINGS: {
+        const struct net_udp_rings_req *idl_q = (const struct net_udp_rings_req *)req;
+        struct net_udp_rings_rep *idl_r = (struct net_udp_rings_rep *)rep;
+        handle_t out_socket = HANDLE_INVALID;
+        handle_t out_ring = HANDLE_INVALID;
+        handle_t out_to_stack = HANDLE_INVALID;
+        handle_t out_to_prog = HANDLE_INVALID;
         uint16_t out_port = 0;
-        uint16_t out_len = 0;
-        uint32_t out_dropped = 0;
-        uint8_t out_data[1472];
-        for (uint32_t idl_i = 0; idl_i < 1472; idl_i++)
-            out_data[idl_i] = 0;
+        uint32_t out_tx_bytes = 0;
+        uint32_t out_rx_bytes = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
-        if (!ops->sock_recv) {
+        if (!ops->udp_rings) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->sock_recv(ctx, idl_txn, idl_q->timeout_ms, &out_address, &out_port, &out_len, &out_dropped, out_data);
-        /* IDL_LATER: the handler answers with net_reply_sock_recv. */
-        if (idl_st == IDL_LATER)
-            return 0;
+        status_t idl_st = ops->udp_rings(ctx, idl_q->port, idl_q->tx_bytes, idl_q->rx_bytes, &out_socket, &out_ring, &out_to_stack, &out_to_prog, &out_port, &out_tx_bytes, &out_rx_bytes);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
+        if (idl_h->status == OK && !(out_socket != HANDLE_INVALID && out_ring != HANDLE_INVALID && out_to_stack != HANDLE_INVALID && out_to_prog != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_socket != HANDLE_INVALID)
+                drv_handle_close(out_socket);
+            if (out_ring != HANDLE_INVALID)
+                drv_handle_close(out_ring);
+            if (out_to_stack != HANDLE_INVALID)
+                drv_handle_close(out_to_stack);
+            if (out_to_prog != HANDLE_INVALID)
+                drv_handle_close(out_to_prog);
             return sizeof(*idl_h);
-        idl_r->address = out_address;
+        }
+        rhs[0] = out_socket;
+        rhs[1] = out_ring;
+        rhs[2] = out_to_stack;
+        rhs[3] = out_to_prog;
+        *rhn = 4;
         idl_r->port = out_port;
-        idl_r->len = out_len;
-        idl_r->dropped = out_dropped;
-        for (uint32_t idl_i = 0; idl_i < 1472; idl_i++)
-            idl_r->data[idl_i] = out_data[idl_i];
+        idl_r->tx_bytes = out_tx_bytes;
+        idl_r->rx_bytes = out_rx_bytes;
         return sizeof(*idl_r);
     }
     case NET_SOCK_CONNECT: {
@@ -1312,6 +1406,41 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
         idl_r->peer_port = out_peer_port;
         idl_r->queued = out_queued;
         idl_r->dropped = out_dropped;
+        return sizeof(*idl_r);
+    }
+    case NET_SOCK_RINGS: {
+        const struct net_sock_rings_req *idl_q = (const struct net_sock_rings_req *)req;
+        struct net_sock_rings_rep *idl_r = (struct net_sock_rings_rep *)rep;
+        handle_t out_ring = HANDLE_INVALID;
+        handle_t out_to_stack = HANDLE_INVALID;
+        handle_t out_to_prog = HANDLE_INVALID;
+        uint32_t out_tx_bytes = 0;
+        uint32_t out_rx_bytes = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->sock_rings) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->sock_rings(ctx, idl_q->tx_bytes, idl_q->rx_bytes, &out_ring, &out_to_stack, &out_to_prog, &out_tx_bytes, &out_rx_bytes);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_ring != HANDLE_INVALID && out_to_stack != HANDLE_INVALID && out_to_prog != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_ring != HANDLE_INVALID)
+                drv_handle_close(out_ring);
+            if (out_to_stack != HANDLE_INVALID)
+                drv_handle_close(out_to_stack);
+            if (out_to_prog != HANDLE_INVALID)
+                drv_handle_close(out_to_prog);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_ring;
+        rhs[1] = out_to_stack;
+        rhs[2] = out_to_prog;
+        *rhn = 3;
+        idl_r->tx_bytes = out_tx_bytes;
+        idl_r->rx_bytes = out_rx_bytes;
         return sizeof(*idl_r);
     }
     }

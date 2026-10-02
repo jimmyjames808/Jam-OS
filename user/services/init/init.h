@@ -16,6 +16,7 @@
 #pragma once
 
 #include <os.h>
+#include <update.h>
 
 #define BOOT_MOUNT "/boot"
 #define DATA_MOUNT "/data"
@@ -193,6 +194,9 @@ unsigned services_net_devices(handle_t *out, unsigned max);
 handle_t shell_root(void);
 /* devmgr's control channel, or 0 while none runs. */
 handle_t shell_devmgr(void);
+/* devmgr's ESP channel (DEVMGR_ESP_WRITE), init's alone: or 0 while no
+ * devmgr runs (or none started in shell mode). Only update.c uses it. */
+handle_t shell_devmgr_esp(void);
 /* init's (ADMIN) console channel, or 0 while no console runs. */
 handle_t shell_console(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
@@ -234,6 +238,9 @@ handle_t net_svc_channel(void);
 /* /svc/net-listen's, the same: its openers may listen (take a fixed port
  * below NET_PORT_EPHEMERAL). */
 handle_t net_listen_channel(void);
+/* /svc/net-sys's client end (published: init's own network services and
+ * bin/update reach netstack's reserve through it), or 0. */
+handle_t net_sys_channel(void);
 /* Start netlog (shell.c's NETLOG, once /data is mounted) if the settings
  * name a Mac (`net.host`) and don't say `netlog = off`; otherwise it is
  * marked given up for this boot, said once. */
@@ -276,6 +283,10 @@ status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32
  * it and reads nothing unless the stick changes. Without /esp nothing is
  * noted now (its first mount notes it, reboot_note_esp). */
 void     reboot_keep_stored(void);
+/* The same, with the stick's files as `update -w` saw them last (sizes and
+ * modification times; espwrite.c: /esp itself is no mount at that
+ * moment). */
+void     reboot_keep_written(const uint64_t size[UPDATE_FILES], const uint64_t mtime[UPDATE_FILES]);
 
 /* ---- update.c: a fetched build checked and made the stored kernel (<update.h>) ----- */
 
@@ -289,6 +300,30 @@ status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
  * and answered), or the sender gone. After the answer the channel is
  * closed. */
 void     update_event(void);
+
+/* ---- espwrite.c: `update -w`'s stick write, on update.c's worker thread ----------- */
+
+/* One stick write: what to write, and how far it got. */
+struct esp_write {
+    /* Given. */
+    handle_t       esp;                        /* devmgr's ESP channel (the caller's) */
+    handle_t       vmo[UPDATE_FILES];          /* init's checked copies of the new build */
+    uint64_t       size[UPDATE_FILES];         /* their sizes in bytes */
+    const uint8_t *sha256[UPDATE_FILES];       /* the signed manifest's SHA-256s */
+    uint32_t       fail_at;                    /* a test's: fail at this step, once (NONE: no) */
+    /* Answered. */
+    uint32_t       step;                       /* enum update_write_step: DONE, or the failed one */
+    status_t       st;                         /* OK, or why it failed */
+    uint32_t       stick;                      /* enum update_stick: what the stick boots now */
+    uint32_t       write_ms;                   /* how long it took */
+    bool           noted;                      /* the stick's files, as they are now: */
+    uint64_t       file_size[UPDATE_FILES];    /* ... their sizes */
+    uint64_t       mtime[UPDATE_FILES];        /* ... and modification times */
+};
+/* Write the build in j to the stick's ESP (the file's header has the
+ * steps and what each failure leaves); blocks for as long as that takes
+ * (seconds: never call it from init's loop). */
+void esp_write_build(struct esp_write *j);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

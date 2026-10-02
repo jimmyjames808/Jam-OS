@@ -46,9 +46,10 @@
 #define PBUF_POOL_BUFSIZE       1536
 #define MEMP_NUM_PBUF           16   /* pbufs pointing at memory lwIP doesn't own (PBUF_REF) */
 #define MEMP_NUM_RAW_PCB        4    /* raw ICMP for programs' pings (one is used) */
-/* Programs' sockets (<net.h> NET_SOCKETS_MAX: DNS's names in flight
- * share it with netlog, update and the shell) and the DHCP client's. */
-#define MEMP_NUM_UDP_PCB        33
+/* Programs' sockets (<net.h> NET_SOCKETS_MAX: ordinary programs' share,
+ * and the reserve DNS's names in flight share with netlog, update, sntp
+ * and the shell) and the DHCP client's. */
+#define MEMP_NUM_UDP_PCB        49
 
 /* ---- the link: Ethernet with ARP, no tags ---------------------------------- */
 #define LWIP_ARP                1

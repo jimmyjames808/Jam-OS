@@ -29,7 +29,7 @@ built yet, it says so.
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
-| Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
+| Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to every program; only init writes it, for `update -w` |
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
@@ -72,7 +72,9 @@ Not yet:
   `bin/update`): the NIC's driver reads only a frame's length and tag.
 - **Anyone holding the stick.** The ESP, `/data/etc/allow` and the logs
   can be changed on another computer: FAT32 keeps no owners and nothing
-  is signed, and authority never came from the filesystem.
+  on it is checked at boot (only `update`'s builds are signed, and the
+  key that checks them is in the build on the stick), and authority never
+  came from the filesystem.
 - **Spectre-class attacks**: no mitigations.
 
 ## The migration rule
@@ -506,7 +508,7 @@ port, so while it handles one request every other client waits behind it.
   blocking calls in code that serves nobody: a program, a shell command,
   or a thread of its own that serves nothing else.
 - **Data at packet or sample rate** goes through shared rings with an
-  event, not a call each (the mixer's streams, `netdev`).
+  event, not a call each (the mixer's streams, `netdev`, sockets).
 - **Not followed everywhere yet:** devmgr's and init's loops still make
   blocking calls of up to 2 to 25 s (listed in
   [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time));
@@ -615,8 +617,8 @@ port, so while it handles one request every other client waits behind it.
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
 | netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
 | dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
-| dns | `/svc/net` | `/svc/dns`: names to IPv4 addresses | yes |
-| netlog | the kernel log, `/svc/net` | each boot's log over UDP to the Mac | yes |
+| dns | `/svc/net-sys` | `/svc/dns`: names to IPv4 addresses | yes |
+| netlog | the kernel log, `/svc/net-sys` | each boot's log over UDP to the Mac | yes |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
 
 uACPI will live in the kernel; everything else is a process.
@@ -664,7 +666,9 @@ Rules for userspace drivers:
   found by name through devmgr's bindings. Whoever supervises it starts it
   again. The shell refuses to kill init.
 - **Authority**: devmgr has a query channel (look things up), a control
-  channel (change bindings) and *device channels*, each scoped to one
+  channel (change bindings), the ESP channel (init's alone: the boot
+  stick's ESP made writable for `update -w`, which no other channel may
+  ask, [Storage](#storage)) and *device channels*, each scoped to one
   device and made on the control channel (`DEVMGR_DEVICE_CHANNEL` in
   `user/include/devmgr.h`): a device channel answers about its own device
   alone (its service, its driver, its supervision), and while a device
@@ -737,9 +741,13 @@ untagged frame. The checks are pure functions in one header both use,
 mode and a valid VLAN). For the RTL8125, `tools/checknotx.sh` (in `make
 check`, self-tested) holds the transmit registers to `tx.c` and the gate
 to the top of every entry, and keeps the listen-only probe's files from
-calling it. At its exit the RTL8125 driver compares the chip's own count
-of frames sent with the frames it queued (`tx check:`): more sent than
-queued would mean the chip sent frames of its own. utest's `netframe_*`
+calling it. While it runs, about once a second and after every reap, the
+RTL8125 driver compares the chip's own count of frames sent with the
+frames it queued; more sent than queued (frames of the chip's own), or a
+link that resolved to sending PAUSE, turns the transmitter off, resets
+the chip and ends the driver with an error, fail closed
+(`drivers/rtl8125/guard.c`); the same comparison is logged at its exit
+(`tx check:`). utest's `netframe_*`
 tests try every length, tag and edit. In QEMU two separate checks look at
 every frame the guest sends, `tools/netpeer.py` and
 `tools/pcap-vlan-check.py`, and `tools/net-vlan-test.sh` runs every path
@@ -790,15 +798,45 @@ restarts:
 - **`/svc/net`** (`abi/idl/net.idl`, libos's `<net.h>`), a channel per
   opener: `iface`, `wait_change` (answers when the address or DNS servers
   change), `counts`, `chip_counts`, `echo` (a ping, built by netstack),
-  and `udp(port)`, a socket on a channel of its own (`sock_send_to`,
-  `sock_recv`, `sock_connect`, `sock_state`; closing the channel closes the
-  socket). One datagram per call, at most 1472 bytes. Limits: 32 openers,
-  16 sockets an opener and 32 in all, 8 requests in flight an opener, 32
-  datagrams queued a socket (one more is dropped and counted), each copied
-  into netstack's own heap so a slow reader never holds lwIP's buffers. A
-  program can't send to a broadcast, multicast or loopback address, can't
-  bind a port below 1024 (nor one below 49152 without the listen
-  permission, below), and sends no raw packets.
+  and `udp_rings(port, tx, rx)`, a socket: a channel of its own
+  (`sock_connect`, `sock_state`; closing it closes the socket) and its
+  **rings** (`user/include/sockring.h`): one VMO netstack makes and maps,
+  a header page, a tx ring the program writes and an rx ring netstack
+  writes (4 KiB to 256 KiB each; UDP's 16 and 32 KiB by default), and two
+  events, the netdev rings' model. A datagram is a record (16 bytes of
+  address, port and length, then at most 1472 bytes); while datagrams flow
+  neither side makes a call or a system call per datagram, only a signal
+  when the other side said it sleeps. netstack treats the rings as hostile
+  (its own counts, the program's clamped, a record's header read once and
+  checked, its bytes copied before lwIP sees them; a broken ring is looked
+  at again only on the program's next signal), reads a tx ring only while
+  the card's ring has room (a full tx ring is the program's backpressure)
+  and drops and counts a datagram that doesn't fit an rx ring, so a slow
+  reader never holds lwIP's buffers or netstack. A refused record (an
+  address a program can't send to, no route) counts in the socket's
+  status line, with its reason; the blocking `net_sendto` waits for
+  netstack to take its datagram and returns that reason. The VMO is
+  netstack's (its pages charged to netstack's job), so it is shrunk to
+  nothing once the program's end of the channel closes; a socket whose
+  opener went is ended (its status says CLOSED) but kept until then.
+  Limits: 32 openers, 16 sockets an opener and 48 in all, 8 requests in
+  flight an opener and 64 in all, 2 MiB of ring bytes an opener and 16 MiB
+  in all; of each, ordinary programs together get only their share
+  (24 openers, 24 sockets, 48 requests, 8 MiB), and the rest is the
+  network's own services' (`/svc/net-sys`, below). A program can't send to
+  a broadcast, multicast or loopback address, can't bind a port below 1024
+  (nor one below 49152 without the listen permission, below), and sends no
+  raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+- **`/svc/net-sys`**, the network's own services' reserve: the same
+  protocol on a third shared channel (netstack's SR_USER + 3), whose
+  openers are counted apart from programs', so no program can take the
+  openers, sockets, requests or ring bytes dns, netlog, sntp and
+  `bin/update` need. Like the listen permission it is fixed at connect by
+  the channel an opener came through: init grants the name to its network
+  services, `tools/checkwants.py` only to a program under
+  `user/services/` (`bin/update`'s list), and `allow` refuses it for a
+  program on `/data`. libos's `net_svc` opens it when the namespace has
+  it.
 - **`/svc/net-listen`**, the listen permission: the same protocol on a
   second shared channel init makes and publishes (netstack's SR_USER + 2),
   whose openers may also bind a fixed UDP port from 1024 to 49151, where
@@ -832,12 +870,12 @@ ARP probe of the offered address (an ACKed address is taken as free).
 
 **dns** (`user/services/dns`) serves `/svc/dns` (`abi/idl/dns.idl`:
 `resolve`, answered when the reply comes, so a slow name holds up only its
-own askers) and holds `/svc/net`. Each name in flight has a socket of its
+own askers) and holds `/svc/net-sys`. Each name in flight has a socket of its
 own on a random port with a random id (`os_random`), 16 names at most and
 8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
 at most a day). libos's `dns_lookup` (`<dns.h>`) is the client.
 
-**netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net`
+**netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net-sys`
 and, after a panic, the panicked boot's log read-only. init starts it when
 `net.host` is set and `netlog` isn't `off`. It sends the log from its
 first line (the 4 MiB ring still has the whole boot when the network comes
@@ -851,7 +889,7 @@ can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
 **sntp** (`user/services/sntp`) sets the clock from the network (SNTP, RFC
 4330; the checks in `ntp.c`, a core with no I/O that utest drives). init
 starts it once `/data`'s settings are read, unless `ntp = off`, with
-`ntp.server` as its argument, `/svc/net` and `/svc/dns`, and the root with
+`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns`, and the root with
 `RIGHT_ROOT_CLOCK` only: it is the one service besides init and the shell
 that may set the clock. Without `ntp.server` it asks the network's gateway
 (the DHCP lease's router, which on the owner's network is also its DNS
@@ -877,17 +915,34 @@ with no time backs off from 16 s to 1024 s. It sets the clock with
 **update** (`user/services/update`, `user/services/init/update.c`). The
 shell's `update [-n] [address]` takes an offer channel from init
 (`initctl.update_offer`) and runs `bin/update` with that channel and
-`/svc/net` only. It fetches the manifest, kernel and boot image from the
+`/svc/net-sys` only. It fetches the manifest, kernel and boot image from the
 Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
 a snapshot, a file, an offset and a length; 32 in flight; the server keeps
 no state per client) and offers them to init as read-only VMOs. init
-copies them into VMOs only it holds, checks each size and SHA-256 against
-the manifest, calls `kexec_load` (which init alone may) and notes `/esp`'s
-files as seen, so the `reboot` that follows starts the fetched build
-([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. Only RAM
-changes: a power-off brings back the stick's build. Updates are not
-signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
-([ROADMAP](docs/ROADMAP.md#smaller-follow-ups)).
+first checks the manifest's signature: Ed25519 (RFC 8032, SHA-512;
+Monocypher, `third_party/monocypher`) over every byte before its
+signature line, against the public key in the running build's own boot
+image (`/boot/update.pub`, built in by the Makefile from the owner's
+`~/.config/jamos/update.pub`). Nothing else in the manifest is used
+before that passes; a build without a key refuses every update, and so
+does an unsigned manifest. Then it copies the files into VMOs only it
+holds, checks each size and SHA-256 against the manifest, calls
+`kexec_load` (which init alone may) and notes `/esp`'s files as seen, so
+the `reboot` that follows starts the fetched build
+([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. By
+default only RAM changes: a power-off brings back the stick's build.
+`update -w` has init also write the build to the stick's ESP once it is
+loaded (the stick's own build kept as the previous one), so it survives a
+power-off ([Storage](#storage) has who may write the ESP and in what
+order); if the write fails, the build stays loaded, the stick still boots,
+and the answer says how far it got. The key's secret
+half stays on the Mac (`build/host/jamos-sign`, from the same Monocypher,
+makes it and signs each manifest the server hands out), so a device on
+VLAN 21 posing as the Mac can serve only builds the owner signed; an
+older signed build is one of those (downgrades are allowed: the owner
+types `update` and sees both versions). Each build carries the key it
+will check the next update with, so the first build with a key, or with
+a new key, goes on the stick by `make flash`.
 
 **What each process holds:**
 
@@ -896,20 +951,36 @@ signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
 | netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
 | dhcp | netctl | yes: DHCP replies |
-| dns | `/svc/net`; the server end of `/svc/dns` | yes: DNS replies |
-| netlog | a klog reader, `/svc/net`, the panicked boot's log (read-only) | the Mac's acks |
-| bin/update | `/svc/net`, its offer channel to init | yes: the fetch's replies and the manifest |
-| sntp | `/svc/net`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
-| init | the fetched build's copies, `kexec_load` | the manifest only (a strict parser); the files it copied are only hashed |
+| dns | `/svc/net-sys`; the server end of `/svc/dns` | yes: DNS replies |
+| netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
+| bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
+| sntp | `/svc/net-sys`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
 its netdev channels); netstack's loop never waits (its waiting calls are
 on `connect.c`'s thread); dns writes its calls to netstack without waiting
 and takes the answers off its port. dhcp, netlog, sntp and `bin/update`
-serve nobody, so they may block, always with a deadline. init's update check
-hashes on a worker thread; its loop does only the `kexec_load` and
+serve nobody, so they may block, always with a deadline. init's update
+check hashes on a worker thread, and `update -w`'s stick write runs on
+the same worker after it; its loop does only the `kexec_load` and
 `/esp`'s stat.
+
+**Waiting on many sockets** (`user/include/netwait.h`, libos;
+[M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
+A wait set is one port with up to 256 entries: sockets (their rings,
+`to_prog` event and channel) and any other handle, each with an interest
+(read, write). `netwait_wait` returns the ready entries. Readiness is
+computed from the socket's rings and status line whenever the set looks,
+never from signal bits, so the set is level-triggered and a coalesced or
+early signal can't lose a wake: a signal only says which entry to look
+at. An entry that is not ready is armed (its event's bits cleared, the
+rings' `waits` flags raised, one more look) and leaves the list; a ready
+one stays on it, so a wait costs the entries that are ready or were
+signalled, not all of them. Hung up (netstack's end of the channel closed,
+a stream closed) and errors are always reported. This is what M13's
+`poll`, `select` and `epoll` will be built on.
 
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
 that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
@@ -976,7 +1047,8 @@ not the one-shot `netprobe` and `netsend`.
   channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
-  listen permission ([Networking](#networking)), and `dns`, the resolver,
+  listen permission, `net-sys`, the same for the network's services
+  ([Networking](#networking)), and `dns`, the resolver,
   each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
@@ -1297,13 +1369,37 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 ## Storage
 
 - The USB stick has two FAT32 partitions: the **ESP** (Limine, kernel,
-  bootfs), which Jam OS never writes, and a **data partition** mounted at
-  `/data` for everything writable. A bug in the FAT32 writer can't make the
-  stick unbootable. Only the Mac writes the ESP: `make usb` lays out a new
-  stick (the data partition grown to the end of it and left blank for
-  Jam OS to format), `make flash` copies a new kernel, boot image and boot
-  menu onto the ESP of one that has the layout
-  ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)).
+  bootfs), which no program ever writes, and a **data partition** mounted
+  at `/data` for everything writable. A bug in a program's file writes
+  can't make the stick unbootable. The Mac writes the ESP: `make usb` lays
+  out a new stick (the data partition grown to the end of it and left
+  blank for Jam OS to format), `make flash` copies a new kernel, boot
+  image and boot menu onto the ESP of one that has the layout
+  ([HARDWARE.md](docs/HARDWARE.md#flash-and-boot-the-stick)), keeping the
+  stick's kernel and boot image as the previous build
+  (`/esp/boot/prev-jamos.elf`, `/esp/boot/prev-bootfs.img`: the boot menu's "Jam OS
+  (previous build)").
+- **On the PC only init writes the ESP, and only for `update -w`** (a
+  build it has checked and loaded, [Networking](#networking)). The power
+  is a channel: devmgr makes the ESP's partition writable only when asked
+  on its ESP channel (`DEVMGR_ESP_WRITE`), whose one client end init made
+  when it started devmgr (devmgr's startup role `DEVMGR_SR_ESP`) and gives
+  to nobody; the control channel the shell and the tests hold can't ask
+  it. devmgr stops the ESP's fat in order and starts it again on a
+  `block` channel opened read-write, hands init a channel to it, and lists
+  no `/esp` meanwhile, so the writable channel is in no namespace, the
+  shell's included; then the same back to read-only (the volume marked
+  clean), and `/esp` comes back. init's writer (`user/services/init/espwrite.c`,
+  on update.c's worker thread) keeps the stick bootable at every step:
+  the stick's build is copied, not moved, to the previous-build files and
+  read back first; the new build goes under `*.new` names and is read
+  back and checked against the signed manifest's SHA-256s; only then do
+  the names switch, one directory entry at a time, during which the
+  previous-build entry still boots the old build. A failure stops it
+  there, and after the switch has begun puts the old build back under
+  the default names (copied again from the previous build) while the
+  ESP's fat still answers. The read-back goes through fat, whose cache
+  may answer it.
 - Write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
   a miss reads 4 KiB, and twice as much as the last one when it carries
@@ -1368,8 +1464,10 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   at that moment gets an error for the write that came too late and loses
   none that was answered. The mount is gone
   for a moment either way, and files open on it are closed. `/boot` and
-  `/esp` can never be made writable and `/data` never read-only: init
-  passes on nothing but `/usbN`, and devmgr remounts nothing else.
+  `/esp` can never be made writable by `mount` and `/data` never
+  read-only: init passes on nothing but `/usbN`, and devmgr remounts
+  nothing else that way (making the ESP writable for `update -w` is the
+  ESP channel's alone, above).
 - logd follows the kernel log from its first byte into
   `/data/logs/boot-NNNN.txt`, the next free number each boot, after one
   line that dates the file (when the kernel started, by the wall clock in
@@ -1531,7 +1629,8 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it. M9's `update` hands init a fetched
   build on an offer channel (initctl.update_offer, `<update.h>`): init
-  copies it into VMOs of its own, checks each length and SHA-256 against
+  checks the manifest's signature with its build's key, copies the files
+  into VMOs of its own, checks each length and SHA-256 against
   the manifest, calls `kexec_load` with the copies and notes `/esp`'s
   files as seen, so `reboot` starts the fetched build
   (`user/services/init/update.c`; the fetch: [Networking](#networking)).

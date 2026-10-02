@@ -135,7 +135,7 @@ SH_CMD(ping)
     }
     uint32_t addr = ans.addr[0];
     handle_t ch;
-    st = svc_open(SVC_NET, &ch);
+    st = net_svc_open(&ch);
     if (st != OK) {
         sh_say("ping: no netstack (%s)\n", status_str(st));
         return 1;

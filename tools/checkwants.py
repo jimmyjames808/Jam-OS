@@ -17,7 +17,9 @@ same rules: printable ASCII lines, each one of
     right <name>          klog sysinfo clock debug
 
 and, the build's own policy, the services that kill drivers and services
-(devmgr-ctl, init) only for a program whose source is under user/tests/.
+(devmgr-ctl, init) only for a program whose source is under user/tests/,
+and netstack's reserve for the network's own services (net-sys) only for
+one under user/services/.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -30,6 +32,7 @@ OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
 TESTS_ONLY = {"devmgr-ctl", "init"}
+SERVICES_ONLY = {"net-sys"}
 LISTEN = "net-listen"   # given only as `svc net listen` (<wants.h>)
 TEXT_MAX = 1024
 WANTS_MAX = 24
@@ -66,7 +69,7 @@ def notes(data):
     return out
 
 
-def check_text(text, in_tests, svcs):
+def check_text(text, in_tests, svcs, in_services=False):
     """The problems of one list's text; its wants as shown."""
     problems, shown, n = [], [], 0
     if len(text) + 1 > TEXT_MAX:
@@ -86,6 +89,8 @@ def check_text(text, in_tests, svcs):
                 problems.append("'%s': no such service (os.h's SVC_*)" % line)
             elif w[1] in TESTS_ONLY and not in_tests:
                 problems.append("'%s': only a test program (user/tests/) may ask for it" % line)
+            elif w[1] in SERVICES_ONLY and not in_services:
+                problems.append("'%s': only a service (user/services/) may ask for it" % line)
             n += 1
         elif len(w) == 3 and w[0] == "mount" and w[1] in POINTS and w[2] in ("r", "rw"):
             n += 1
@@ -108,6 +113,7 @@ def selftest():
             b"right clock\n", b"svc init\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
               b"svc net Listen\n", b"svc nope\n", b"right listen\n", b"svc init\n",
+              b"svc net-sys\n",
               b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n"]   # 25 wants
     fails = []
     for t in take:
@@ -149,7 +155,8 @@ def main(args):
         if not texts:
             continue
         lists += 1
-        problems, shown = check_text(texts[0], src.startswith("user/tests/"), svcs)
+        problems, shown = check_text(texts[0], src.startswith("user/tests/"), svcs,
+                                     src.startswith("user/services/"))
         for p in problems:
             print("checkwants: %s (%s): %s" % (name, src, p))
         bad += len(problems)

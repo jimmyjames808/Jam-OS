@@ -278,15 +278,20 @@ static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_byt
 
 /* A channel for one offer of a fetched build (<update.h>): the caller
  * writes one struct update_offer on it with the kernel's and the boot
- * image's VMOs; init copies both, checks each length and SHA-256 against
- * the manifest in the offer, makes them the kernel's stored copy
+ * image's VMOs; init checks the manifest's signature with the update key
+ * in its own boot image (none: every offer refused), copies both files,
+ * checks each length and SHA-256 against the manifest in the offer, makes
+ * them the kernel's stored copy
  * (kexec_load, this boot's command line) and notes /esp's files as seen,
  * so `reboot` starts the fetched build; then it writes one struct
  * update_answer and closes the channel. Any refusal leaves the stored
  * kernel as it was. A newer offer channel closes an older one; while an
  * offer is still being checked: ERR_BAD_STATE. An offer with
  * UPDATE_OFFER_CHECK_ONLY is checked and answered, nothing loaded. Nothing
- * is written to the stick. The shell's channel only (the tests' programs
+ * is written to the stick unless the offer has UPDATE_OFFER_WRITE: then
+ * init, once it has loaded the build, also writes it to the stick's ESP
+ * (only init can: devmgr's ESP channel is its alone) and answers when that
+ * is done. The shell's channel only (the tests' programs
  * that ask for `svc init`): the shell's `update` hands the channel to
  * bin/update, the fetcher, which holds nothing else of init's. */
 static inline status_t initctl_update_offer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_offer)

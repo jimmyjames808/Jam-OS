@@ -1,6 +1,8 @@
 #!/bin/sh
 # Update a stick that already boots Jam OS, on macOS: copy the kernel, the
-# bootfs and limine.conf onto its ESP. Nothing is erased; /data is not
+# bootfs and limine.conf onto its ESP, keeping the stick's kernel and
+# bootfs as the previous build (boot/prev-jamos.elf, prev-bootfs.img: the
+# boot menu's "Jam OS (previous build)"). Nothing is erased; /data is not
 # touched. (macOS does not mount an MBR partition of type 0xEF by itself,
 # so this mounts it by hand, which needs sudo.)
 # A pull mid-way must leave a stick that boots: the three files are first
@@ -78,9 +80,24 @@ if [ ! -f "$mnt/boot/jamos.elf" ] || [ ! -d "$mnt/boot/limine" ]; then
     exit 1
 fi
 
-# Left over by a flash that was cut short: not booted from, removed.
+# Left over by a flash (or a PC's `update -w`) that was cut short: not
+# booted from, removed.
 $SUDO rm -f "$mnt/boot/jamos.elf.new" "$mnt/boot/bootfs.img.new" \
-    "$mnt/boot/limine/limine.conf.new"
+    "$mnt/boot/limine/limine.conf.new" "$mnt/boot/prev-jamos.elf.new" \
+    "$mnt/boot/prev-bootfs.img.new"
+# The stick's build is kept as the previous one (the boot menu's "Jam OS
+# (previous build)"), as the PC's `update -w` does: the older previous
+# build removed first (room), the stick's two files copied (not moved: the
+# default entry keeps booting them until the switch below), compared, and
+# renamed.
+$SUDO rm -f "$mnt/boot/prev-jamos.elf" "$mnt/boot/prev-bootfs.img"
+$SUDO cp -X "$mnt/boot/jamos.elf" "$mnt/boot/prev-jamos.elf.new"
+$SUDO cp -X "$mnt/boot/bootfs.img" "$mnt/boot/prev-bootfs.img.new"
+sync
+cmp "$mnt/boot/jamos.elf" "$mnt/boot/prev-jamos.elf.new"
+cmp "$mnt/boot/bootfs.img" "$mnt/boot/prev-bootfs.img.new"
+$SUDO mv -f "$mnt/boot/prev-jamos.elf.new" "$mnt/boot/prev-jamos.elf"
+$SUDO mv -f "$mnt/boot/prev-bootfs.img.new" "$mnt/boot/prev-bootfs.img"
 # -X: no extended attributes, so no ._ files on the FAT volume.
 $SUDO cp -X "$elf" "$mnt/boot/jamos.elf.new"
 $SUDO cp -X "$bootfs" "$mnt/boot/bootfs.img.new"

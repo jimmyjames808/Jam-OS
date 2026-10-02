@@ -519,6 +519,8 @@ unsigned disk_mounts(struct mount *out)
                 continue;
             if (b->other && !b->ready)
                 continue;   /* no volume mounted yet (or none at all) */
+            if (!b->other && b->part == PART_ESP && b->rw)
+                continue;   /* init's while it writes the stick (ESP_WRITE): nobody else's */
             out[n] = (struct mount){ .bind = (uint32_t)(b - devs), .gen = b->gen };
             snprintf(out[n].path, sizeof(out[n].path), "%s", fs_mount_path(b));
             n++;

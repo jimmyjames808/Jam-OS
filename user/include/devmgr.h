@@ -41,10 +41,16 @@
  *     device's service included (the tests' hdatest takes hda's output
  *     this way): SET_CONSOLE, KILL, REBIND, RELEASE, DRIVER_VIEW (a
  *     driver's hardware handles), TEST_DRIVER, MOUNTS (the filesystems'
- *     channels), TEST_DISK, REMOUNT and DEVICE_CHANNEL too. devmgr runs
- *     until every client end of its control channel is gone.
+ *     channels), TEST_DISK, REMOUNT and DEVICE_CHANNEL too, but never
+ *     ESP_WRITE. devmgr runs until every client end of its control
+ *     channel is gone;
+ *   the ESP channel (devmgr's server end is its startup role
+ *     DEVMGR_SR_ESP): ESP_WRITE, the boot disk's ESP made writable, and
+ *     nothing else; no other channel may ask for that.
  * Who holds what: init the control and query channels (it hands devmgr
- * new consoles, and makes the device channels) and the sound cards'
+ * new consoles, and makes the device channels), the ESP channel (made at
+ * devmgr's start in shell mode and never handed on: only init writes the
+ * ESP) and the sound cards'
  * device channels, duplicates of which the mixer gets (SR_DEVMGR_DEVICE);
  * the programs
  * init runs from init.cfg (the test suites utest and usbtest) QUERY and
@@ -146,7 +152,8 @@
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
 /* Mounts (control channel only): the boot disk's data partition at /data
- * (read-write) and its ESP at /esp (read-only), and each FAT partition of
+ * (read-write) and its ESP at /esp (read-only; while init has it writable,
+ * ESP_WRITE, it is no mount at all), and each FAT partition of
  * any other disk at /usb0, /usb1, ... (read-only until DEVMGR_REMOUNT),
  * each served by a fat service devmgr started over usb-storage's `block`
  * channel for that partition (devmgr's storage side: disk.c, mounts.c).
@@ -249,6 +256,26 @@ struct devmgr_mounts_rep {
  * devmgr's enumeration order), whatever its vendor. init finds the
  * devices it gives away this way. */
 #define DEVMGR_PCI_CLASS      0xfffbu
+/* (vendor, device 0; instance flags) -> with DEVMGR_ESP_WRITABLE, 1
+ * handle: the boot disk's ESP made writable for init's stick write
+ * (`update -w`, init's update.c). Asked on the ESP channel only (devmgr's
+ * server end is its startup role DEVMGR_SR_ESP; init made it, holds the
+ * client end and never hands it on); on any other channel, the control
+ * channel included, it is ERR_ACCESS_DENIED, and the ESP channel may ask
+ * nothing else. DEVMGR_ESP_WRITABLE: the ESP's filesystem service stops in
+ * order and starts again on a `block` channel opened read-write; the
+ * handle is a channel to it, the caller's alone: /esp leaves the mounts
+ * (DEVMGR_MOUNTS) while it is writable, so no namespace ever gets it.
+ * Flags 0: it stops in order (everything on the stick, the volume clean)
+ * and starts read-only again, and /esp is a mount again (a new
+ * generation). OK at once if it is that way already (writable: another
+ * handle to the same channel). A crash meanwhile restarts it the way it
+ * was; a pulled stick ends it (the stick's next mount is read-only).
+ * ERR_NOT_FOUND: no boot disk with an ESP service; ERR_BAD_STATE: it
+ * isn't serving; ERR_INVALID_ARGS: another flag, or a device named. */
+#define DEVMGR_ESP_WRITE      0x00030010u
+#define DEVMGR_ESP_WRITABLE   1u
+#define DEVMGR_SR_ESP         (SR_USER + 0)   /* devmgr's startup role: the ESP channel */
 #define DEVMGR_CLASS_HDA      0x040300u   /* HD Audio (04 03 00): the mixer's */
 #define DEVMGR_CLASS_NET      0x020000u   /* Ethernet (02 00 00): netstack's (netdev.idl) */
 

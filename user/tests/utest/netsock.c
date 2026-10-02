@@ -78,6 +78,23 @@ static bool sent_udp(uint32_t dst, uint32_t sport, uint32_t dport, const void *d
     return true;
 }
 
+/* As a service's loop does: wait for the socket's key on port, then take
+ * (a packet may be from before: a loop that finds nothing waits again). */
+static bool loop_take(handle_t port, uint64_t key, struct net_sock *s)
+{
+    uint64_t end = now() + NETDRV_WAIT;
+    for (;;) {   /* each turn is one wait, bounded by end */
+        struct port_packet pp;
+        CHECK_ST(jam_port_wait(port, end, &pp), OK);
+        CHECK_EQ(pp.key, key);
+        status_t st = net_sock_take(s, &dg);
+        if (st != ERR_SHOULD_WAIT) {
+            CHECK_ST(st, OK);
+            return true;
+        }
+    }
+}
+
 /* The reply to the async call txid on ch within `wait`: its status (and
  * results), or NO_REPLY. */
 static status_t reply_of(handle_t ch, uint32_t txid, uint64_t wait, uint32_t *rtt, uint8_t *ttl,
@@ -178,13 +195,13 @@ bool t_netsock_udp(void)
     uint64_t t0 = now();
     CHECK_ST(net_recvfrom(&s, &dg, now() + 200 * NS_PER_MS), ERR_TIMED_OUT);
     CHECK(now() - t0 >= 150 * NS_PER_MS);
-    /* A sock_recv waiting, answered when the datagram comes. */
-    CHECK_ST(net_recv_arm(&e), OK);
+    /* A loop's socket: its key fires when the datagram comes. */
+    handle_t port_h;
+    CHECK_ST(jam_port_create(&port_h), OK);
+    CHECK_ST(net_sock_bind(&e, port_h, 77, PORT_BIND_PERSISTENT), OK);
     CHECK_ST(net_sock_take(&e, &dg), ERR_SHOULD_WAIT);
     CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 53, OUR_IP, e.port, "late", 4)));
-    signals_t seen;
-    CHECK_ST(jam_object_wait_one(e.ch, SIG_READABLE, now() + NETDRV_WAIT, &seen), OK);
-    CHECK_ST(net_sock_take(&e, &dg), OK);
+    CHECK(loop_take(port_h, 77, &e));
     CHECK(dg.port == 53 && dg.len == 4 && !memcmp(dg.data, "late", 4));
     /* Connected: only the peer's datagrams, and net_send goes to it. */
     CHECK_ST(net_connect(&s, PEER_IP, 40000), OK);
@@ -201,8 +218,8 @@ bool t_netsock_udp(void)
     CHECK_ST(net_sendto(&s, 0x7f000001u, 9, "x", 1), ERR_INVALID_ARGS);
     CHECK_ST(net_sendto(&s, 0xe0000001u, 9, "x", 1), ERR_INVALID_ARGS);
     CHECK_ST(net_sendto(&s, PEER_IP, 0, "x", 1), ERR_INVALID_ARGS);
-    CHECK_ST(net_sock_send_to_until(s.ch, now() + NETDRV_WAIT, PEER_IP, 9, NET_DGRAM_MAX + 1,
-                                    big), ERR_INVALID_ARGS);
+    CHECK_ST(net_sendto(&s, PEER_IP, 9, big, NET_DGRAM_MAX + 1), ERR_INVALID_ARGS);
+    CHECK_EQ(s.send_errors, 0);   /* the blocking form reported each refusal itself */
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none left */
     uint16_t port, peer_port;
     uint32_t peer, queued, dropped;
@@ -210,6 +227,7 @@ bool t_netsock_udp(void)
     CHECK(port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued && !dropped);
     net_close(&s);
     net_close(&e);
+    jam_handle_close(port_h);
     jam_handle_close(o);
     CHECK(netdrv_stop());
     return true;

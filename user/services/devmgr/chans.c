@@ -1,5 +1,7 @@
 /* devmgr: its channels. init gives it the server ends of a control channel
- * (SR_DEVMGR_CTL) and a query channel (SR_DEVMGR), and asks the control
+ * (SR_DEVMGR_CTL), a query channel (SR_DEVMGR) and, in shell mode, the ESP
+ * channel (DEVMGR_SR_ESP: ESP_WRITE alone, which no other channel may
+ * ask), and asks the control
  * channel for device channels (DEVMGR_DEVICE_CHANNEL), each scoped to one
  * device and made here. A query channel also answers the svc protocol's
  * connect (abi/idl/svc.idl) with a new query channel of the caller's own,
@@ -47,6 +49,9 @@ static bool device_ok(uint32_t ordinal)
 
 static bool allowed(const struct chan *c, uint32_t ordinal)
 {
+    /* The ESP made writable: init's ESP channel only, and that is all it may ask. */
+    if (ordinal == DEVMGR_ESP_WRITE || c->lv == LEVEL_ESP)
+        return ordinal == DEVMGR_ESP_WRITE && c->lv == LEVEL_ESP;
     return c->lv == LEVEL_CONTROL || (c->lv == LEVEL_QUERY && query_ok(ordinal)) ||
            (c->lv == LEVEL_DEVICE && device_ok(ordinal));
 }
@@ -152,6 +157,7 @@ bool chans_init(void)
 {
     chans[SLOT_LIFE] = (struct chan){ .h = startup_handle(SR_DEVMGR_CTL), .lv = LEVEL_CONTROL };
     chans[1] = (struct chan){ .h = startup_handle(SR_DEVMGR), .lv = LEVEL_QUERY };
+    chans[2] = (struct chan){ .h = startup_handle(DEVMGR_SR_ESP), .lv = LEVEL_ESP };
     if (!chans[SLOT_LIFE].h) {   /* no control channel: it lives by the query channel */
         chans[SLOT_LIFE] = chans[1];
         chans[1] = (struct chan){ 0 };

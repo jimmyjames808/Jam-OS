@@ -47,7 +47,7 @@
 #define STEP_MAX      (5 * (int64_t)NS_PER_S)    /* a re-sync moves the clock this much at most */
 #define CONFIRM_OVER  (60 * (int64_t)NS_PER_S)   /* the first set: a bigger step needs ... */
 #define CONFIRM_AGREE ((int64_t)NS_PER_S)        /* ... two replies that agree this closely */
-#define READ_GUARD    (2 * NET_RX_QUEUE)  /* datagrams read for one request at most */
+#define READ_GUARD    64u                /* datagrams read for one request at most */
 #define POOL          "pool.ntp.org"
 
 static handle_t         root;        /* SR_RESOURCE: RIGHT_ROOT_CLOCK */

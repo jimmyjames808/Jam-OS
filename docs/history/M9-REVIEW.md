@@ -137,6 +137,12 @@ Nothing High was found. What held up under a careful read:
   and the 8125's other queue and tail-pointer registers in
   `rtl_write_allowed`, once their offsets are confirmed. The e1000e could
   get the same guard and rules, though it never runs on a real network.
+  **Outcome (the owner's yes, 2026-10-02; M9.5 track F):** A is built
+  (item 7's outcome). For C, the preparation: the probe logs the
+  candidates (`txq before:`, `txq after bring-up:`, `txq at end:`), and
+  the part that needs no PC data is in the guard already (item 6's
+  outcome); what to bring back from the next probe run is in
+  [M9.5-PLAN](../M9.5-PLAN.md#track-f-as-built).
 - **D. Keeping `net` across a kexec (item 3)** was fixed here (196626f)
   because the plan's own `update` workflow and crash path depend on it. If the owner
   prefers a reboot to fall back to the everyday boot (the network only
@@ -152,14 +158,14 @@ Nothing High was found. What held up under a careful read:
 | 3 | Fixed in 196626f: `net` is a kept word (`netprobe` and `netsend` still aren't); ARCHITECTURE and TESTING say so. Design question D if the owner wants it the other way. Tests: ktest kexec_next_cmdline_vlan (fails at `"vlan=21 shell net"` before) and tools/netprobe-test.sh, whose `net` boot now reboots by kexec and wants devmgr's `net` line in both boots (1 before, 2 after). The PC run after `update` is the real check. |
 | 4 | Not a bug: lwIP refuses a raw send to a broadcast address without SOF_BROADCAST (`third_party/lwip/src/core/raw.c` 488-499, `IP_SOF_BROADCAST` in lwipopts.h), so the echo is ERR_INVALID_ARGS. f732964 adds the case to utest netsock_ping (passes before and after) so it stays that way. |
 | 5 | Fixed in 703c1b3: `net_sock_take` and `net_recvfrom` refuse a length over 1472 (ERR_OUT_OF_RANGE). Test: utest netsock_len_lies (a hand-made netstack answering 1473 and 65535 bytes): before, OK with len 1473. |
-| 6 | (a) and (b) fixed in e5fd244: checknotx rule 7 (the mapping named only in regs.c, tx.c and main.c; the transmit ring and buffers only in tx.c, ring.c and rtl8125.h), self-checked on three new offences in tools/checknotx-tests/bad.c. (c), (d) and the e1000e: design question C. |
-| 7 | Not fixed: design question A. |
+| 6 | (a) and (b) fixed in e5fd244: checknotx rule 7 (the mapping named only in regs.c, tx.c and main.c; the transmit ring and buffers only in tx.c, ring.c and rtl8125.h), self-checked on three new offences in tools/checknotx-tests/bad.c. (c), (d) and the e1000e: design question C. **M9.5 track F (b61e3d8), in part:** notx.h's guard refuses the other queues' ring addresses (0x2100-0x217f), every queue's tail and close pointers (0x2800-0x283f; the 8125BP's 0x0d30-0x0d3f), partial writes to the OCP windows, and through them MAC 0xeb58 with the wrong descriptor format, MAC 0xe63e with a second queue, PHY ANAR with pause and GTCR with a test mode; checknotx rule 2 names the new registers and rule 8 keeps eb58/e63e writes in chip.c. Tests: utest rtl8125_txq_guard, checknotx's self-check (rule 2: 7 offences, rule 8: 2). Left: the offsets confirmed on the PC (the probe's `txq` lines, [M9.5-PLAN](../M9.5-PLAN.md#track-f-as-built)), other MAC OCP registers that might start the transmitter, the e1000e. |
+| 7 | Fixed in M9.5 track F (514fce7), the owner's yes to design question A: the guard (drivers/rtl8125/guard.c, guard.h) checks the tally against tx.c's queued count about once a second and after every reap, and PHYSTAT's PAUSE TX bit at every step, in every mode; more sent than queued, PAUSE TX, a tally gone backwards or unreadable for 10 looks: transmitter off, chip reset, a `STOPPED THE CHIP:` line, exit 1 (devmgr restarts, gives up after 5 in 60 s). Tests: utest rtl8125_guard, rtl8125_dump, rtl8125_guard_fake (a fake chip). Before it, nothing checked while the driver ran. |
 | 8 | Fixed in 6a90cea: GTCR's test mode bits (15:13) cleared with the advertisement bits. No test: only the PC's PHY has the register. |
 | 9 | Fixed in 8263fc9: the first 12 changes, then one in 64, as the drivers. Test: utest netdrv_link_flap (40 changes over the fake driver, netstack's link lines counted in the kernel log): 40 before, 11 after. |
 | 10 | Not fixed: design question B. |
 | 11 | Not fixed: the known class (ARCH-CHECK items 0 and 8); netstack answers at once in practice. |
 | 12 | Fixed in 7ce4507: `--mac <the Mac adapter's MAC>`; a frame from neither address fails. Test: the self-test (an untagged frame from a third address fails with `--mac`, passes without it as before). For the next direct-cable run: add `--mac` with en11's address. |
-| 13 | Not fixed: only a broken netstack reaches it, and it delays only its own card. |
+| 13 | Fixed in M9.5 track F (923293c): `stats` (and the "so far" lines) answer from the last tally dump that landed (at most about a second old) and ask for the next; nothing waits for the DMA in the loop (tally_recent). The bounded wait stays for the start's and the end's dump and the rare stall dumps. Test: utest rtl8125_stats_nowait (a chip that never dumps: tally_dump waits its 10 ms, what each request cost before; 1280 requests through tally_recent take no wait). |
 | 14 | Tests added where QEMU can see it: 1, 2, 3 (the kexec of a `net` boot), 5, 9. The RTL8125's own paths (its rings past a lap, the tally check, `net` across `update`) stay the PC's to show. |
 
 ### Tests run (QEMU, 2 CPUs, the owner's quick tier)

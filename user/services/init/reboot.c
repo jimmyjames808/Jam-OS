@@ -17,7 +17,8 @@
  * load`) reads and hands them over at once, and notes them as the stored
  * copy's: the reboot after it reads nothing. An update (update.c) makes a
  * fetched build the stored copy and notes /esp's files as they are then,
- * so the reboot keeps the fetched build until the stick changes.
+ * so the reboot keeps the fetched build until the stick changes; `update
+ * -w` notes the files it wrote (or left) on the stick, the same build.
  *
  * Then what a firmware reboot does too (/data synced, logd's last lines
  * written, the volume left clean), devmgr's shutdown (DEVMGR_SHUTDOWN: the
@@ -136,6 +137,13 @@ void reboot_keep_stored(void)
         return;   /* no /esp now: its first mount notes it (reboot_note_esp) */
     kernel = k;
     bootfs = b;
+    noted = true;
+}
+
+void reboot_keep_written(const uint64_t size[UPDATE_FILES], const uint64_t mtime[UPDATE_FILES])
+{
+    kernel = (struct noted){ size[UPDATE_KERNEL], mtime[UPDATE_KERNEL] };
+    bootfs = (struct noted){ size[UPDATE_BOOTFS], mtime[UPDATE_BOOTFS] };
     noted = true;
 }
 

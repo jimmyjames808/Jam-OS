@@ -70,3 +70,22 @@ Vendored third-party code:
   input reads the 28-byte header without checking the frame holds it, so
   netstack pads every short frame with zeros to 60 bytes first
   (user/services/netstack/stack.c, tested by utest's netstack_malformed).
+- monocypher/: Monocypher 4.0.2 by Loup Vaillant and its contributors,
+  the release archive https://monocypher.org/download/monocypher-4.0.2.tar.gz
+  (sha256 38d07179738c0c90677dba3ceb7a7b8496bcfea758ba1a53e803fed30ae0879c;
+  its SHA-512 is the one monocypher.org publishes beside it). Only what
+  signed updates need, unmodified: src/monocypher.c and .h (sha256
+  afe2b098c8569577... and f78bb31255cfb7be...), src/optional/monocypher-ed25519.c
+  and .h (7c9b16056cbd2752... and bd546edcd468d64e...: Ed25519 as RFC 8032
+  has it, EdDSA with SHA-512, which is what Jam OS uses, not Monocypher's
+  default EdDSA with BLAKE2b), and LICENCE.md (5f8360e4c06ddcc5...).
+  Dual-licensed BSD-2-Clause or CC0, the user's choice: Jam OS takes it
+  under BSD-2-Clause. tests/vectors-ed25519.h is a cut of the archive's
+  tests/vectors.h (sha256 5cc8b311b0a23b65...): its first 5 lines and its
+  three Ed25519 tables (lines 10976-13842: ed_25519, ed_25519_pk,
+  ed_25519_check; official vectors, RFC 8032's among them, and random ones
+  from libsodium and ed25519-donna), unchanged. Built into libos
+  (user/lib/updsig.c: init's check of an update's signature, and utest)
+  and, with the Mac's compiler, into build/host/jamos-sign
+  (tools/jamos-sign.c: the key and the signatures; its `self-test` runs
+  those vectors).
