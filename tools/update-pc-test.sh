@@ -3,15 +3,24 @@
 # (2026-10-02, build b050c6a): a real USB 2 boot stick, whose every write
 # command costs milliseconds, and a second stick at /usb0 (the SanDisk: an
 # MBR and one FAT32 partition, type 0b). The boot stick here is QEMU's
-# with throttled writes (QEMU_STICK_THROTTLE, default 100 write commands a
-# second and 10 MB/s: a cheap stick's small-write speed); the network peer
-# serves build B, signed with the test key (as tools/update-write-test.sh
-# makes it). `update -w` must answer within PC_WAIT seconds (default 150),
-# with the stick written: B as the default build, A (this build) as the
-# previous one, no .new file left. The write's own time and its steps are
-# printed from init's progress lines.
-# PC_SANDISK=0 leaves the second stick out; PC_THROTTLE overrides the
-# limits ("" for none: QEMU's full speed).
+# with throttled writes (QEMU_STICK_THROTTLE); the network peer serves
+# build B, signed with the test key (as tools/update-write-test.sh makes
+# it). Three runs, each a cold boot of the same stick image (A):
+#   fast    100 write commands a second and 10 MB/s (a cheap stick's
+#           small-write speed; PC_THROTTLE overrides it, "" for none):
+#           `update -w` answers "written" within PC_WAIT seconds (150);
+#           the stick holds B, with A as the previous build, no .new file;
+#   stuck   3 write commands a second: the write can't finish in its time
+#           (espwrite.c WRITE_LIMIT), and `update -w` still answers, "not
+#           written", within 280 s; /esp is back read-only, and the stick
+#           still boots A with no .new file left;
+#   reboot  the same slow stick; `update -w` stopped with Ctrl+C while init
+#           writes, then `reboot`: the write doesn't hold the reboot up
+#           (kexec within 60 s), and the next boot runs B (the stored
+#           kernel); the stick's default entry still boots A.
+# init's progress lines (`init: update: write: ...`) are printed.
+# PC_RUNS picks runs ("fast" alone: about 2 minutes; all three about 8);
+# PC_SANDISK=0 leaves the second stick out.
 # Usage: tools/update-pc-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 out=$1
@@ -59,6 +68,7 @@ echo "update-pc-test: build A $va, build B $vb"
 
 # The second stick: not a Jam OS stick, one FAT32 partition with a file.
 usb=
+seen_usb="# no second stick"
 if [ "${PC_SANDISK:-1}" = 1 ]; then
     sd="$out/pctest-sandisk.img"
     python3 tools/mkstick.py "$sd" 256 0b
@@ -67,42 +77,101 @@ if [ "${PC_SANDISK:-1}" = 1 ]; then
     mcopy -i "$sd@@1M" "$out/pctest-hello.txt" ::/hello.txt
     usb="-drive if=none,id=sandisk,format=raw,file=$sd"
     usb="$usb -device usb-storage,bus=xhci.0,port=2,drive=sandisk"
+    seen_usb="seen 60 init: /usb0 mounted"
 fi
-seen_usb="seen 60 init: /usb0 mounted"
-[ -n "$usb" ] || seen_usb="# no second stick"
-
-cat > "$out/pctest.txt" <<EOF
-wait 120 Jam OS shell
-$seen_usb
-seen 60 netstack: address 10.2.21.5/24
-wait jam>
-send update -w
-wait $limit stored and written to the stick (-w)
-wait jam>
-send reboot -f
-wait reboot: resetting
-EOF
-QEMU_IMAGE="$img" QEMU_SAVE="$out/pctest-done.img" QEMU_NET=1 QEMU_USB="$usb" \
-    QEMU_STICK_THROTTLE="${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}" \
-    QEMU_NET_PEER="--update $out/pctest.spec.json" QEMU_TIMEOUT=$((limit + 300)) \
-    QEMU_INPUT="$out/pctest.txt" tools/qemu-test.sh "$out" pctest shell > "$out/pctest.out" 2>&1 ||
-    fail "the script, or the VLAN checks: no answer within $limit s? (see $out/pctest.out, $out/pctest.log)"
-log="$out/pctest.log"
-grep -a "update: fetched\|init: update: \|devmgr: /esp" "$log" | sed 's/^/update-pc-test: /'
-grep -aq "init: update: .* and stored, and written to the stick" "$log" ||
-    fail "init didn't say it wrote the stick"
 
 esp() {
     rm -f "$out/pctest-got"
     mcopy -i "$1@@1M" "::/boot/$2" "$out/pctest-got" 2>/dev/null && cmp -s "$out/pctest-got" "$3"
 }
-done_img="$out/pctest-done.img"
-esp "$done_img" jamos.elf "$out/jamos-B.elf" && esp "$done_img" bootfs.img "$out/bootfs-B.img" ||
-    fail "the stick's build isn't B"
-esp "$done_img" prev-jamos.elf build/jamos.elf &&
-    esp "$done_img" prev-bootfs.img "$out/bootfs-A.img" || fail "the previous build isn't A"
-! mdir -i "$done_img@@1M" ::/boot 2>/dev/null | grep -qi "new" || fail "a .new file is left"
-rm -f "$img" "$done_img" "$out/pctest-got"
+
+# stick <run> <build> <prev> <new>: the run's stick image boots <build> (A
+# or B) from its default entry and, if <prev> is A, A from its previous-
+# build entry; with <new> = none, no .new file is left.
+stick() {
+    i="$out/$1-done.img" k=build/jamos.elf b="$out/bootfs-A.img"
+    [ "$2" = B ] && k="$out/jamos-B.elf" b="$out/bootfs-B.img"
+    esp "$i" jamos.elf "$k" && esp "$i" bootfs.img "$b" || fail "$1: the stick's build isn't $2"
+    if [ "$3" = A ]; then
+        esp "$i" prev-jamos.elf build/jamos.elf && esp "$i" prev-bootfs.img "$out/bootfs-A.img" ||
+            fail "$1: the previous build isn't A"
+    fi
+    if [ "$4" = none ] && mdir -i "$i@@1M" ::/boot 2>/dev/null | grep -qi "new"; then
+        fail "$1: a .new file is left"
+    fi
+    rm -f "$i"
+}
+
+# boot <run> <throttle>: the stick (A) booted with the script <run>.txt.
+boot() {
+    QEMU_IMAGE="$img" QEMU_SAVE="$out/$1-done.img" QEMU_NET=1 QEMU_USB="$usb" \
+        QEMU_STICK_THROTTLE="$2" QEMU_NET_PEER="--update $out/pctest.spec.json" \
+        QEMU_TIMEOUT=$((limit + 420)) QEMU_INPUT="$out/$1.txt" \
+        tools/qemu-test.sh "$out" "$1" shell > "$out/$1.out" 2>&1 ||
+        fail "$1: the script, or the VLAN checks (see $out/$1.out, $out/$1.log)"
+    grep -a "update: \|init: update: \|devmgr: /esp\|kexec: starting" "$out/$1.log" |
+        sed "s/^/update-pc-test: $1: /"
+}
+
+begin() {
+    cat > "$out/$1.txt" <<EOF
+wait 120 Jam OS shell
+$seen_usb
+seen 60 netstack: address 10.2.21.5/24
+wait jam>
+send update -w
+EOF
+}
+
+for run in ${PC_RUNS:-fast stuck reboot}; do
+    begin $run
+    case $run in
+    fast)
+        cat >> "$out/fast.txt" <<EOF
+wait $limit stored and written to the stick (-w)
+wait jam>
+send reboot -f
+wait reboot: resetting
+EOF
+        boot fast "${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}"
+        grep -aq "init: update: .* and stored, and written to the stick" "$out/fast.log" ||
+            fail "fast: init didn't say it wrote the stick"
+        stick fast B A none ;;
+    stuck)
+        cat >> "$out/stuck.txt" <<EOF
+wait 280 is stored, but init couldn't write it to the stick
+wait jam>
+seen 30 init: update: write: the ESP read-only again in
+send ls /esp/boot
+wait jamos.elf
+wait jam>
+send reboot -f
+wait reboot: resetting
+EOF
+        boot stuck x-iops-write=3
+        grep -aq "init: update: write: no time left" "$out/stuck.log" ||
+            fail "stuck: the write didn't stop at its time limit"
+        stick stuck A - none ;;
+    reboot)
+        cat >> "$out/reboot.txt" <<EOF
+wait 120 init: update: write: making room: OK
+type \x03
+wait jam>
+send reboot
+wait 60 kexec: starting the stored kernel
+wait 120 init: the shell is up
+wait jam>
+send version
+wait Jam OS $vb, git
+wait jam>
+send reboot -f
+wait reboot: resetting
+EOF
+        boot reboot x-iops-write=3
+        stick reboot A - any ;;
+    esac
+done
+rm -f "$img" "$out/pctest-got"
 if [ $fails -eq 0 ]; then
     echo "update-pc-test: PASS"
     exit 0

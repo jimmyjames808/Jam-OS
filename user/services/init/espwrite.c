@@ -39,7 +39,14 @@
  *
  * The read-back goes through the ESP's service, which may answer from its
  * cache: it proves what the service was given and wrote, not the flash's
- * cells. */
+ * cells.
+ *
+ * Time. Every call waits at most until the write's deadline (until()):
+ * the steps get WRITE_LIMIT in all, the clean-up after a failure
+ * RECOVER_LIMIT more, and making the ESP read-only again ESP_WAIT, so a
+ * stick that stops answering ends in "not written" well inside the 300 s
+ * bin/update waits. Each step and file logs its time as it goes (say(),
+ * a long file every SAY_EVERY), so a slow stick shows in the log. */
 #include <devmgr.h>
 #include <fs_idl.h>
 #include <update.h>
@@ -47,6 +54,8 @@
 
 #define CHUNK      (64u << 10)        /* bytes moved at a time */
 #define ESP_WAIT   (30 * NS_PER_S)    /* devmgr's ESP_WRITE: a stop in order, then a start */
+#define WRITE_LIMIT   (120 * NS_PER_S)   /* the steps, all of them */
+#define RECOVER_LIMIT (60 * NS_PER_S)    /* after a failure: put back, leftovers removed */
 #define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
 #define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
 
@@ -62,7 +71,19 @@ struct writer {
     uint64_t old_size[UPDATE_FILES];      /* the stick's build: its files' sizes */
     uint8_t  old_sha[UPDATE_FILES][SHA256_BYTES];   /* ... and SHA-256s, as read */
     uint64_t said;                        /* uptime ns of the last progress line */
+    uint64_t deadline;                    /* no call may wait past this (uptime ns) */
 };
+
+/* A call's deadline: FS_CALL_TIMEOUT from now, never past the write's. A
+ * stick (or ESP service) that stops answering ends the write within
+ * WRITE_LIMIT, then the clean-up within RECOVER_LIMIT, then the remount
+ * back within ESP_WAIT: `update -w` (bin/update waits 300 s) always gets
+ * its answer, and the answer says the write failed. */
+static uint64_t until(const struct writer *w)
+{
+    uint64_t d = now() + FS_CALL_TIMEOUT;
+    return d < w->deadline ? d : w->deadline;
+}
 
 /* A progress line. Every step and file says how long it took, and a long
  * file how far it is every SAY_EVERY, so the log (streamed to the Mac on
@@ -117,7 +138,7 @@ static status_t unlink_file(struct writer *w, const char *path, const char *suff
 {
     uint8_t p[FS_PATH_MAX];
     field(p, path, suffix);
-    status_t st = fs_unlink_until(w->fs, now() + FS_CALL_TIMEOUT, p);
+    status_t st = fs_unlink_until(w->fs, until(w), p);
     return st == ERR_NOT_FOUND ? OK : st;
 }
 
@@ -128,7 +149,7 @@ static status_t rename_to(struct writer *w, const char *path, const char *suffix
     field(from, path, suffix);
     field(dst, to, "");
     uint64_t t0 = now();
-    status_t st = fs_rename_until(w->fs, now() + FS_CALL_TIMEOUT, from, dst);
+    status_t st = fs_rename_until(w->fs, until(w), from, dst);
     say("%s%s renamed %s in %lu ms (%s)", path + 1, suffix, to + 1, ms_since(t0), status_str(st));
     return st;
 }
@@ -136,7 +157,7 @@ static status_t rename_to(struct writer *w, const char *path, const char *suffix
 static status_t sync_esp(struct writer *w)
 {
     uint64_t t0 = now();
-    status_t st = fs_sync_until(w->fs, now() + FS_CALL_TIMEOUT);
+    status_t st = fs_sync_until(w->fs, until(w));
     say("the ESP synced in %lu ms (%s)", ms_since(t0), status_str(st));
     return st;
 }
@@ -149,8 +170,42 @@ static status_t open_file(struct writer *w, const char *path, const char *suffix
     handle_t ch, buf;
     uint64_t size;
     field(p, path, suffix);
-    status_t st = fs_open_until(w->fs, now() + FS_CALL_TIMEOUT, p, flags, &ch, &buf, &size);
+    status_t st = fs_open_until(w->fs, until(w), p, flags, &ch, &buf, &size);
     return st == OK ? file_adopt(ch, buf, flags, f) : st;
+}
+
+/* Exactly n bytes of f at off into dst (ERR_IO: the file is shorter), a
+ * transfer buffer's worth per call, each call by until(w). */
+static status_t read_at(struct writer *w, struct jfile *f, uint64_t off, uint8_t *dst, size_t n)
+{
+    for (size_t done = 0; done < n;) {
+        uint32_t want = n - done < f->buf_size ? (uint32_t)(n - done) : f->buf_size, got = 0;
+        status_t st = file_read_until(f->ch, until(w), off + done, want, &got);
+        if (st == OK && got != want)
+            st = ERR_IO;
+        if (st != OK)
+            return st;
+        memcpy(dst + done, f->buf, want);
+        done += want;
+    }
+    return OK;
+}
+
+/* n bytes from src written to f at off, the same way. */
+static status_t write_at(struct writer *w, struct jfile *f, uint64_t off, const uint8_t *src,
+                         size_t n)
+{
+    for (size_t done = 0; done < n;) {
+        uint32_t want = n - done < f->buf_size ? (uint32_t)(n - done) : f->buf_size, put = 0;
+        memcpy(f->buf, src + done, want);
+        status_t st = file_write_until(f->ch, until(w), off + done, want, &put);
+        if (st == OK && put != want)
+            st = ERR_IO;
+        if (st != OK)
+            return st;
+        done += want;
+    }
+    return OK;
 }
 
 /* path + suffix, which must be exactly size bytes: its SHA-256. */
@@ -165,16 +220,16 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     sha256_init(&h);
     uint64_t t0 = now();
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
-        size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK, got = 0;
+        size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
         say_progress(w, path, suffix, "read back", off, size, t0);
-        st = file_read(&f, off, w->buf, n, &got);
-        if (st == OK && got != n)
-            st = ERR_IO;   /* shorter than it was written */
+        st = read_at(w, &f, off, w->buf, n);   /* ERR_IO: shorter than it was written */
         if (st == OK)
             sha256_add(&h, w->buf, n);
     }
     uint64_t now_size = 0;
-    if (st == OK && file_stat(&f, &now_size, NULL) == OK && now_size != size)
+    if (st == OK)
+        st = file_stat_until(f.ch, until(w), &now_size, NULL);
+    if (st == OK && now_size != size)
         st = ERR_IO;   /* longer than it was written */
     file_close(&f);
     if (st == OK)
@@ -184,10 +239,13 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     return st;
 }
 
+/* Where write_file's bytes come from: next(w, ctx, off, buf, n) fills buf. */
+typedef status_t (*source_t)(struct writer *, void *, uint64_t, uint8_t *, size_t);
+
 /* The bytes `next` gives, size of them, written to path + ".new" (created
- * or emptied first) and synced. next(ctx, off, buf, n) fills buf. */
+ * or emptied first) and synced. */
 static status_t write_file(struct writer *w, const char *path, uint64_t size, uint32_t step,
-                           status_t (*next)(void *, uint64_t, uint8_t *, size_t), void *ctx)
+                           source_t next, void *ctx)
 {
     struct jfile f;
     /* FS_GATHER: fat sends the file in 64 KiB writes, not a write per
@@ -195,32 +253,32 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
     status_t st = open_file(w, path, ".new", FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
     if (st != OK)
         return st;
-    uint64_t t0 = now();
+    uint64_t t0 = now(), done = 0;
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
-        size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK, put = 0;
+        size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
         say_progress(w, path, ".new", "written", off, size, t0);
         if (off >= size / 2 && off < size / 2 + CHUNK)
             st = inject(w, step);   /* half of it written: a test's failure */
         if (st == OK)
-            st = next(ctx, off, w->buf, n);
+            st = next(w, ctx, off, w->buf, n);
         if (st == OK)
-            st = file_write(&f, off, w->buf, n, &put);
-        if (st == OK && put != n)
-            st = ERR_IO;
+            st = write_at(w, &f, off, w->buf, n);
+        done += st == OK ? n : 0;
     }
     uint64_t written = now();
     if (st == OK)
-        st = file_sync(&f);
+        st = file_sync_until(f.ch, until(w));
     file_close(&f);
-    say("%s.new: %lu KiB written in %lu ms, synced and closed in %lu ms (%s)", path + 1,
-        (unsigned long)(size >> 10), (unsigned long)((written - t0) / NS_PER_MS),
-        ms_since(written), status_str(st));
+    say("%s.new: %lu of %lu KiB written in %lu ms, synced and closed in %lu ms (%s)", path + 1,
+        (unsigned long)(done >> 10), (unsigned long)(size >> 10),
+        (unsigned long)((written - t0) / NS_PER_MS), ms_since(written), status_str(st));
     return st;
 }
 
 /* write_file's source: one of init's checked copies. */
-static status_t from_vmo(void *ctx, uint64_t off, uint8_t *buf, size_t n)
+static status_t from_vmo(struct writer *w, void *ctx, uint64_t off, uint8_t *buf, size_t n)
 {
+    (void)w;
     return jam_vmo_read(*(handle_t *)ctx, off, buf, n);
 }
 
@@ -230,13 +288,10 @@ struct from_file {
     struct sha256 h;
 };
 
-static status_t from_file(void *ctx, uint64_t off, uint8_t *buf, size_t n)
+static status_t from_file(struct writer *w, void *ctx, uint64_t off, uint8_t *buf, size_t n)
 {
     struct from_file *s = ctx;
-    size_t got = 0;
-    status_t st = file_read(&s->f, off, buf, n, &got);
-    if (st == OK && got != n)
-        st = ERR_IO;
+    status_t st = read_at(w, &s->f, off, buf, n);
     if (st == OK)
         sha256_add(&s->h, buf, n);
     return st;
@@ -280,16 +335,16 @@ static status_t room(struct writer *w)
     uint64_t total = 0, free_bytes = 0, need = 0, have = 0;
     uint8_t ro = 0, label[16];
     if (st == OK)
-        st = fs_statfs_until(w->fs, now() + FS_CALL_TIMEOUT, &total, &free_bytes, &ro, label);
+        st = fs_statfs_until(w->fs, until(w), &total, &free_bytes, &ro, label);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         uint64_t size = 0, mtime;
         uint8_t dir;
         uint8_t p[FS_PATH_MAX];
         field(p, prev[f], "");
-        if (fs_stat_until(w->fs, now() + FS_CALL_TIMEOUT, p, &size, &dir, &mtime) == OK)
+        if (fs_stat_until(w->fs, until(w), p, &size, &dir, &mtime) == OK)
             have += size;   /* the older previous build: it goes first */
         field(p, cur[f], "");
-        st = fs_stat_until(w->fs, now() + FS_CALL_TIMEOUT, p, &size, &dir, &mtime);
+        st = fs_stat_until(w->fs, until(w), p, &size, &dir, &mtime);
         need += size + w->job->size[f] + 2 * SLACK;
     }
     if (st == OK && ro)
@@ -391,6 +446,10 @@ static void steps(struct writer *w)
         j->stick = UPDATE_STICK_NEW;
         return;
     }
+    if (j->st == ERR_TIMED_OUT)
+        say("no time left (the write may take %lu s): stopping here",
+            (unsigned long)(WRITE_LIMIT / NS_PER_S));
+    w->deadline = now() + RECOVER_LIMIT;   /* the clean-up's own time */
     if (j->step == UPDATE_WRITE_SWITCH) {
         status_t back = put_back(w);
         j->stick = back == OK ? UPDATE_STICK_OLD : UPDATE_STICK_PREVIOUS;
@@ -415,7 +474,7 @@ static void note_files(struct writer *w)
     for (unsigned f = 0; f < UPDATE_FILES && j->noted; f++) {
         uint8_t p[FS_PATH_MAX], dir = 0;
         field(p, cur[f], "");
-        j->noted = fs_stat_until(w->fs, now() + FS_CALL_TIMEOUT, p, &j->file_size[f], &dir,
+        j->noted = fs_stat_until(w->fs, until(w), p, &j->file_size[f], &dir,
                                  &j->mtime[f]) == OK && !dir;
     }
 }
@@ -451,6 +510,7 @@ void esp_write_build(struct esp_write *j)
     w.buf = j->st == OK ? malloc(CHUNK) : NULL;
     if (j->st == OK && !w.buf)
         j->st = ERR_NO_MEMORY;
+    w.deadline = now() + WRITE_LIMIT;
     if (j->st == OK) {
         steps(&w);
         note_files(&w);
