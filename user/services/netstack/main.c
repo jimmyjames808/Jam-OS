@@ -33,6 +33,7 @@
 #define SR_NET    (SR_USER + 1)
 #define KEY_CTL   1u
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
+#define PACKETS_PER_TURN 32u        /* port packets taken a turn (each notes work) */
 
 struct loop {
     handle_t   port;
@@ -90,6 +91,26 @@ static void serve_ctl(void)
     l.ctl = 0;
 }
 
+/* Wait for the port until `deadline` (0: don't wait), then take what else
+ * is queued without waiting, PACKETS_PER_TURN at most: each packet only
+ * notes work, which the next turn does. OK, or the port's failure. */
+static status_t take_packets(uint64_t deadline)
+{
+    for (unsigned k = 0; k < PACKETS_PER_TURN; k++) {
+        struct port_packet p;
+        status_t st = jam_port_wait(l.port, k ? 0 : deadline, &p);
+        if (st == ERR_TIMED_OUT)
+            return OK;
+        if (st != OK)
+            return st;
+        if (p.key == KEY_CTL)
+            l.ctl_pending = l.ctl != 0;
+        else if (!progs_packet(&p))
+            dev_packet(&l.dev, &p);
+    }
+    return OK;
+}
+
 static status_t setup(void)
 {
     l.ctl = startup_handle(SR_NETCTL);
@@ -135,15 +156,13 @@ int main(int argc, char **argv)
         rx_tick();
         if (retry < deadline)
             deadline = retry;
+        /* Work left over (a budget ran out): look at the port without
+         * sleeping rather than skip it, so a channel that always has more
+         * never keeps the other channels' packets, or the card's, unread
+         * (the service-loop rule: a busy client delays only itself). */
         if (l.ctl_pending || dev_pending(&l.dev) || progs_pending())
-            continue;
-        struct port_packet p;
-        status_t st = jam_port_wait(l.port, deadline, &p);
-        if (st == OK && p.key == KEY_CTL)
-            l.ctl_pending = l.ctl != 0;
-        else if (st == OK && !progs_packet(&p))
-            dev_packet(&l.dev, &p);
-        else if (st != OK && st != ERR_TIMED_OUT)
+            deadline = 0;
+        if (take_packets(deadline) != OK)
             break;
     }
     printf("netstack: its port failed: ending\n");
