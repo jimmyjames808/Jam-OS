@@ -291,9 +291,9 @@ extern uint32_t pool_items_by[FUN_MAX_THREADS];
  * call it before they block; an app that waits some other way calls it
  * itself. */
 void     pool_rest(void);
-/* For the self-tests: the pauses the workers have spun between batches so
- * far, and how many workers sleep now. */
-uint64_t pool_spins(void);
+/* For the self-tests: the pauses a worker spins between batches before it
+ * sleeps (0: the default, about 1 ms), and how many workers sleep now. */
+void     pool_set_spin(uint32_t pauses);
 uint32_t pool_asleep(void);
 
 /* ---- maths without libm ------------------------------------------------------------------ */

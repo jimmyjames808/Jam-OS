@@ -114,26 +114,24 @@ static void nothing(uint32_t item, uint32_t worker, void *arg)
 }
 
 /* libfun's pool: after pool_rest (what gfx_key does before the app waits)
- * every worker sleeps at once instead of spinning out its ~1 ms. */
+ * every worker sleeps at once. With the spin before sleeping made endless,
+ * only the rest can put them to sleep, however late it comes. */
 static void test_pool_rest(uint32_t n)
 {
     if (n < 2) {
         fun_check(true, "pool_rest: one thread, no workers to rest");
         return;
     }
+    pool_set_spin(UINT32_MAX);
     pool_run(nothing, NULL, 4 * n);
-    uint64_t before = pool_spins(), deadline = now() + 2 * NS_PER_S;
     pool_rest();
+    uint64_t deadline = now() + 5 * NS_PER_S;
     while (pool_asleep() < n - 1 && now() < deadline)
         jam_nanosleep(now() + NS_PER_MS);
-    uint64_t spun = pool_spins() - before;
-    say("life: pool_rest: %u of %u workers asleep, %lu pauses spun after it\n", pool_asleep(),
-        n - 1, (unsigned long)spun);
-    /* Each worker looks at rest on every pause, so it spins only until
-     * the rest (a few hundred pauses in QEMU), where it would have spun
-     * POOL_SPIN (20000) each. */
-    fun_check(pool_asleep() == n - 1 && spun < 5000ull * (n - 1),
-              "pool_rest: every worker asleep at once, not spinning");
+    uint32_t asleep = pool_asleep();
+    pool_set_spin(0);   /* back to the default: any still spinning sleep soon */
+    say("life: pool_rest: %u of %u workers asleep\n", asleep, n - 1);
+    fun_check(asleep == n - 1, "pool_rest: every worker asleep at once, not spinning");
 }
 
 /* How much faster all CPUs are on a big world (information only). */

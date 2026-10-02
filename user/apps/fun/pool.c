@@ -83,7 +83,7 @@ static struct {
     uint32_t sleeping[FUN_MAX_THREADS];    /* worker i sleeps (or is about to) */
     uint32_t phase;                        /* bumped by pool_run: a new batch */
     uint32_t rest;                         /* bumped by pool_rest: stop spinning */
-    uint64_t spun[FUN_MAX_THREADS];        /* worker i's pauses so far (pool_spins) */
+    uint32_t spin;                         /* pauses before sleeping (0: POOL_SPIN) */
     uint32_t next, done, items;            /* the next item to take; threads done; items */
     void (*fn)(uint32_t, uint32_t, void *);   /* the batch's work: fn(item, thread, arg) */
     void *arg;                             /* its argument */
@@ -102,11 +102,11 @@ static void pool_work(uint32_t me)
     __atomic_fetch_add(&pool.done, 1, __ATOMIC_RELEASE);
 }
 
-/* Worker me's spins so far, for pool_spins (it alone writes them). */
-static void count_spins(uint32_t me, uint32_t spins)
+/* The pauses a worker spins before it sleeps (pool_set_spin). */
+static uint32_t spin_max(void)
 {
-    uint64_t was = __atomic_load_n(&pool.spun[me], __ATOMIC_RELAXED);
-    __atomic_store_n(&pool.spun[me], was + spins, __ATOMIC_RELAXED);
+    uint32_t n = __atomic_load_n(&pool.spin, __ATOMIC_RELAXED);
+    return n ? n : POOL_SPIN;
 }
 
 static void pool_worker(void *a)
@@ -115,14 +115,13 @@ static void pool_worker(void *a)
     for (;;) {
         uint32_t ph, spins = 0;
         while ((ph = __atomic_load_n(&pool.phase, __ATOMIC_ACQUIRE)) == seen) {
-            if (spins < POOL_SPIN && __atomic_load_n(&pool.rest, __ATOMIC_RELAXED) == rest) {
+            if (spins < spin_max() && __atomic_load_n(&pool.rest, __ATOMIC_RELAXED) == rest) {
                 spins++;
                 __builtin_ia32_pause();
                 continue;
             }
             /* Sleep: announce it, clear the event, look once more (pool_run
              * bumps the phase, then signals every worker that announced). */
-            count_spins(me, spins);
             spins = 0;
             __atomic_store_n(&pool.sleeping[me], 1, __ATOMIC_SEQ_CST);
             jam_event_signal(pool.ev[me], SIG_SIGNALED, 0);
@@ -131,7 +130,6 @@ static void pool_worker(void *a)
             __atomic_store_n(&pool.sleeping[me], 0, __ATOMIC_SEQ_CST);
             rest = __atomic_load_n(&pool.rest, __ATOMIC_RELAXED);   /* woken: spin again */
         }
-        count_spins(me, spins);
         seen = ph;
         rest = __atomic_load_n(&pool.rest, __ATOMIC_RELAXED);   /* before done: see the top */
         pool_work(me);
@@ -175,12 +173,9 @@ void pool_rest(void)
     __atomic_add_fetch(&pool.rest, 1, __ATOMIC_RELAXED);
 }
 
-uint64_t pool_spins(void)
+void pool_set_spin(uint32_t pauses)
 {
-    uint64_t n = 0;
-    for (uint32_t i = 1; i < pool.n; i++)
-        n += __atomic_load_n(&pool.spun[i], __ATOMIC_RELAXED);
-    return n;
+    __atomic_store_n(&pool.spin, pauses, __ATOMIC_RELAXED);
 }
 
 uint32_t pool_asleep(void)
