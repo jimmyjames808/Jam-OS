@@ -48,6 +48,7 @@
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
+#include <jam/pathstat.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/port.h>
@@ -63,10 +64,11 @@
 #include <jam/userboot.h>
 #include <jam/x86.h>
 
+#include "bench_internal.h"
+
 #define SAMPLES   4000
 #define BATCH     64
 #define WARM_NS   20000000ull   /* 20 ms */
-#define PRIO_BENCH 24
 
 /* ---- timing -------------------------------------------------------------- */
 
@@ -184,6 +186,20 @@ static void pick_cpus(void)
         if (hybrid && cpu_e < 0 && c->type == CORE_EFFICIENCY)
             cpu_e = (int)i;
     }
+}
+
+void bench_cpus(int *p, int *p2)
+{
+    if (cpu_p < 0)
+        pick_cpus();
+    *p = cpu_p;
+    *p2 = cpu_p2;
+}
+
+uint64_t bench_cycles_to_ps(uint64_t c)
+{
+    /* Independent of bench_run's setup, so a test can use it too. */
+    return tsc_hz ? c * 1000000ull / (tsc_hz / 1000000ull) : 0;
 }
 
 static const char *kind(int cpu)
@@ -1169,10 +1185,7 @@ static void ureap(struct process *p)
     kobject_unref(process_kobject(p));
 }
 
-/* Run "utest bench-<what>" on cpu (with a bench-echo server on server_cpu
- * for "call"), and collect its samples into `samples`. False (after
- * reporting why under `label`) if there was no result. */
-static bool user_bench_run(const char *what, int cpu, int server_cpu, const char *label)
+bool bench_user_run(const char *what, int cpu, int server_cpu, const char *label, bool trace)
 {
     struct job *j;
     struct ubench_result *r = kmalloc(sizeof(*r));
@@ -1204,6 +1217,14 @@ static bool user_bench_run(const char *what, int cpu, int server_cpu, const char
     char mode[24];
     ksnprintf(mode, sizeof(mode), "bench-%s", what);
     struct process *client = uspawn(j, mode, cpu, ex, nex);
+    if (trace) {
+        /* The client is the lead: its calls are what the window counts. */
+        if (client)
+            path_add_process(client);
+        if (server)
+            path_add_process(server);
+        path_arm();
+    }
 
     uint32_t nb = 0;
     status_t st = object_wait_one((struct kobject *)res_k, SIG_READABLE | SIG_PEER_CLOSED,
@@ -1211,12 +1232,11 @@ static bool user_bench_run(const char *what, int cpu, int server_cpu, const char
     if (st == OK)
         st = channel_read(res_k, r, sizeof(*r), &nb, NULL, 0, NULL);
     bool ok = st == OK && nb == sizeof(*r) && r->n == USAMPLES && r->batch;
-    if (ok) {
+    if (!ok)
+        report("bench: %s: no result from the user program (%s)", label, status_str(st));
+    else if (!trace)
         for (unsigned i = 0; i < USAMPLES; i++)
             samples[i] = span_ps(0, r->cycles[i], r->batch);
-    } else {
-        report("bench: %s: no result from the user program (%s)", label, status_str(st));
-    }
     kobject_unref((struct kobject *)res_k);
     ureap(client);   /* its end of the call channel closes: the server exits */
     ureap(server);
@@ -1227,7 +1247,7 @@ static bool user_bench_run(const char *what, int cpu, int server_cpu, const char
 
 static void user_bench(const char *what, int cpu, int server_cpu, const char *label)
 {
-    if (user_bench_run(what, cpu, server_cpu, label))
+    if (bench_user_run(what, cpu, server_cpu, label, false))
         result(label, samples, USAMPLES);
 }
 
@@ -1241,7 +1261,7 @@ static struct {
 static void user_bench_measure(int unused)
 {
     (void)unused;
-    ub.ok &= user_bench_run(ub.what, ub.cpu, ub.server_cpu, ub.label);
+    ub.ok &= bench_user_run(ub.what, ub.cpu, ub.server_cpu, ub.label, false);
 }
 
 static void user_bench_off_on(enum sw s, const char *what, int cpu, int server_cpu,
@@ -1428,6 +1448,7 @@ void bench_run(void)
     local_benches();
     cross_cpu_benches();
     system_benches();
+    bench_path_run();
     thread_set_affinity(current_thread(), &all);
     free_samples();
 }

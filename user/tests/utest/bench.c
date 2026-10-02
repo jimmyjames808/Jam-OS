@@ -109,13 +109,25 @@ static status_t call_once(handle_t ch)
     return jam_channel_call(&a);
 }
 
+/* Calls on ch for WARM_NS, untimed. The clock is read once every 64
+ * calls, so a warm-up call looks like a timed one to the kernel's path
+ * trace (kernel/test/bench_path.c), which counts some of them. */
+static void warm_calls(handle_t ch)
+{
+    uint64_t end = now() + WARM_NS;
+    for (unsigned k = 0;; k++) {
+        call_once(ch);
+        if (k % 64 == 0 && now() >= end)
+            return;
+    }
+}
+
 static int b_call(void)
 {
     handle_t ch = startup_handle(SR_USER + 1);
     if (call_once(ch) != OK)
         return 3;
-    for (uint64_t end = now() + WARM_NS; now() < end;)
-        call_once(ch);
+    warm_calls(ch);
     for (unsigned i = 0; i < SAMPLES; i++) {
         uint64_t t0 = cpu_tsc();
         call_once(ch);
@@ -171,8 +183,7 @@ static int b_tcall(void)
     jam_thread_set_priority(t, THREAD_PRIO_USER_MAX);
     if (call_once(mine) != OK)
         return 3;
-    for (uint64_t end = now() + WARM_NS; now() < end;)
-        call_once(mine);
+    warm_calls(mine);
     for (unsigned i = 0; i < SAMPLES; i++) {
         uint64_t t0 = cpu_tsc();
         call_once(mine);
