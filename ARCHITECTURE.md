@@ -465,7 +465,7 @@ Every driver and service is a userspace process from the start.
   filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
   mixer), `netdev` (a network driver to netstack: rings and events),
-  `netctl` (netstack's control channel), `net` (UDP sockets and ping for
+  `netctl` (netstack's control channel), `net` (UDP and TCP sockets and ping for
   programs, `/svc/net`), `dns` (the resolver, `/svc/dns`). devmgr's own
   protocol is still written by hand (`user/include/devmgr.h`). Planned:
   `power`. Bulk data
@@ -615,7 +615,7 @@ port, so while it handles one request every other client waits behind it.
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame in the network mode: tagged with the VLAN, or untagged ([Networking](#networking)) | yes (on every boot but "Jam OS (no network)", `vlan=off`) |
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
-| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
+| netstack | lwIP (IPv4, ARP, ICMP, UDP, TCP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP and TCP sockets and ping for programs) | yes |
 | dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
 | dns | `/svc/net-sys` | `/svc/dns`: names to IPv4 addresses | yes |
 | netlog | the kernel log, `/svc/net-sys` | each boot's log over UDP to the Mac | yes |
@@ -682,8 +682,8 @@ Rules for userspace drivers:
 
 ## Networking
 
-IPv4 with ARP, ICMP and UDP, through Jam OS's own NIC drivers and a
-network stack in a process of its own; no TCP and no IPv6 yet. The plan,
+IPv4 with ARP, ICMP, UDP and TCP, through Jam OS's own NIC drivers and a
+network stack in a process of its own; no IPv6 yet. The plan,
 its stages and the PC's runs are in [M9-PLAN.md](docs/M9-PLAN.md); the
 PC's chip and switch port in [HARDWARE.md](docs/HARDWARE.md#the-network).
 
@@ -825,10 +825,11 @@ control channel, which only programs under `user/tests/` may ask for.
 **netstack** (`user/services/netstack`) is lwIP 2.2.1 in its NO_SYS mode:
 one loop on one port (the receive event, every client's channel, lwIP's
 timers as the wait's deadline), so nothing locks. In: IPv4, ARP, ICMP
-(echo replies: the PC answers pings), UDP. Out: TCP, IPv6, fragments and
+(echo replies: the PC answers pings), UDP, TCP. Out: IPv6, fragments and
 reassembly, IP options, IGMP, and lwIP's own DHCP, DNS and VLAN code. Its
-memory is static (about 275 KiB: lwIP's heap, 128 receive buffers, fixed
-pools); a full pool drops the frame and counts it. `stack.c` is the only
+memory is static (lwIP's 1 MiB heap, mostly TCP's unacked bytes, 128
+receive buffers, fixed pools: 384 TCP pcbs, 1024 segments); a full pool
+drops the frame and counts it. `stack.c` is the only
 file that sees lwIP. The calls that may wait (devmgr's GET_SERVICE,
 `netdev.info` and `open`, 2 s each) run on a thread of its own that
 serves nothing (`connect.c`), which hands the session to the loop; a
@@ -872,6 +873,31 @@ restarts:
   a broadcast, multicast or loopback address, can't bind a port below 1024
   (nor one below 49152 without the listen permission, below), and sends no
   raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+- **TCP** on the same channels (`user/services/netstack/tcpsock.c` for the
+  calls, `tcp.c` for the connections, `stack.c`'s TCP edge for lwIP;
+  [M9.5-PLAN](docs/M9.5-PLAN.md#track-c-part-1-built-tcp-inside-netstack)):
+  `tcp(address, port, tx, rx)` opens a connection (CONNECTING at once; the
+  status line says OPEN, or CLOSED and why), `tcp_listener(port, backlog,
+  tx, rx)` listens (only an opener of `/svc/net-listen`, ports from 1024),
+  and `accept` on the listener's channel is answered when a connection
+  comes (a wait set watches that channel). A connection is a socket like
+  a UDP one, but its rings carry a byte stream: SOCKRING_END on the tx ring
+  is a FIN after the last byte, on the rx ring the peer's FIN. **The
+  receive window is the rx ring's free room**: bytes go into the ring as
+  they arrive and are given back to the window only as the program reads
+  them, so a slow reader stops its own sender and lwIP holds no received
+  byte; bytes go from the tx ring into lwIP only as the peer's window takes
+  them (and a segment more), so a peer that stops reading holds no more
+  than its window. A listener's connections get their rings when their
+  handshake finishes (the bytes that come first wait there), counted
+  against the listener's opener. Limits: 64 connections an opener, 256 in
+  all (192 for ordinary programs), 4 listeners an opener, 16 in all, a
+  backlog of 16 a listener and 128 together (96 for programs); half-open
+  connections and the ones netstack let go of have lwIP's lowest priority,
+  so a SYN flood fills only its listener's backlog and never takes a
+  program's pcb. Initial sequence numbers come from the kernel's random
+  source, and a segment whose ACK is for bytes never sent is dropped before
+  lwIP (RFC 5961). Closing a connection with bytes unread resets it.
 - **`/svc/net-sys`**, the network's own services' reserve: the same
   protocol on a third shared channel (netstack's SR_USER + 3), whose
   openers are counted apart from programs', so no program can take the
@@ -885,8 +911,8 @@ restarts:
 - **`/svc/net-listen`**, the listen permission: the same protocol on a
   second shared channel init makes and publishes (netstack's SR_USER + 2),
   whose openers may also bind a fixed UDP port from 1024 to 49151, where
-  servers live and where a peer sends unasked; TCP's `listen` and `accept`
-  will ask the same (`listen_may_accept`, `user/services/netstack/listen.h`).
+  servers live and where a peer sends unasked, and listen for TCP
+  connections (`listen_may_accept`, `user/services/netstack/listen.h`).
   netstack learns the permission from the channel an opener came through,
   set once at connect, never from anything the program says, so it can't
   be forged: a program has it only if it holds that channel. The shell

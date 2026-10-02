@@ -16,6 +16,7 @@
 #include "ctl.h"
 #include "listen.h"
 #include "progs.h"
+#include "tcpsock.h"
 
 /* The shared channels' keys (main.c's are below 0x10; listen.c's /svc/net-listen is 3) and
  * the kind of opener each makes. */
@@ -220,6 +221,7 @@ static status_t op_counts(void *ctx, uint8_t out_counts[256])
     sock_census(&c.queued, &c.sockets);
     uint64_t rb = pg.held[CLASS_PROG].ring_bytes + pg.held[CLASS_SYS].ring_bytes;
     c.ring_bytes = rb > UINT32_MAX ? UINT32_MAX : (uint32_t)rb;
+    tcpsock_counts(&c);
     memcpy(out_counts, &c, sizeof(c));
     return OK;
 }
@@ -334,6 +336,8 @@ static const struct net_ops opener_ops = {
     .udp = op_udp,
     .echo = op_echo,
     .udp_rings = op_udp_rings,
+    .tcp = tcpsock_op_tcp,
+    .tcp_listener = tcpsock_op_listener,
 };
 
 /* The shared channel answers only what is answered at once (a reply that
@@ -408,6 +412,7 @@ static void opener_close(unsigned i)
     struct opener *o = &pg.o[i];
     later_drop(i);
     sock_close_opener(i);
+    tcpsock_close_opener(i);
     (void)jam_port_unbind(pg.port, o->ch, key_of(i));   /* bound since progs_connect */
     jam_handle_close(o->ch);
     pg.held[o->cls].openers--;

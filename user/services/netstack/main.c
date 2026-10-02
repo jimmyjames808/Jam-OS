@@ -34,6 +34,8 @@
 #include "listen.h"
 #include "progs.h"
 #include "stack.h"
+#include "tcp.h"
+#include "tcpsock.h"
 
 #define SR_NETCTL     (SR_USER + 0)
 #define SR_NET        (SR_USER + 1)
@@ -113,7 +115,7 @@ static status_t take_packets(uint64_t deadline)
             return st;
         if (p.key == KEY_CTL)
             l.ctl_pending = l.ctl != 0;
-        else if (!progs_packet(&p) && !listen_packet(&p))
+        else if (!tcpsock_packet(&p) && !progs_packet(&p) && !listen_packet(&p))
             dev_packet(&l.dev, &p);
     }
     return OK;
@@ -138,6 +140,7 @@ static status_t setup(void)
         st = progs_init(l.port, startup_handle(SR_NET), startup_handle(SR_NET_SYS), &l.dev);
     if (st == OK)
         st = listen_init(l.port, startup_handle(SR_NET_LISTEN));
+    tcpsock_init();
     if (st != OK) {
         printf("netstack: can't set up (%s)\n", status_str(st));
         return st;
@@ -159,8 +162,13 @@ int main(int argc, char **argv)
             serve_ctl();
         progs_serve();
         listen_serve();
+        tcpsock_serve();
+        ntcp_work();   /* TCP's bytes, after the programs' kicks */
         uint64_t deadline = stack_poll();
         uint64_t t = progs_tick();
+        if (t < deadline)
+            deadline = t;
+        t = tcpsock_tick(now());
         if (t < deadline)
             deadline = t;
         uint64_t retry = dev_work(&l.dev);   /* it sends what the others queued */
@@ -172,7 +180,8 @@ int main(int argc, char **argv)
          * sleeping rather than skip it, so a channel that always has more
          * never keeps the other channels' packets, or the card's, unread
          * (the service-loop rule: a busy client delays only itself). */
-        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending() || listen_pending())
+        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending() || listen_pending() ||
+            tcpsock_pending() || ntcp_pending())
             deadline = 0;
         if (take_packets(deadline) != OK)
             break;

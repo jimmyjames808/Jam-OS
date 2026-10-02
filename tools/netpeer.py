@@ -56,6 +56,10 @@ What it does with each frame from the guest:
     mac.jam, router.jam, the CNAME www.jam, fastN.jam = 10.9.0.N;
     slow.jam is never answered, every other name is NXDOMAIN), counted
     as dhcp_* and dns_* in the summary.
+  - TCP (--tcp-serve PORT:BYTES, --tcp-connect ADDR:PORT:CONNS:BYTES):
+    tools/tcppeer.py's small TCP: a server the guest connects to and
+    clients that connect to the guest's listener, every byte checked;
+    counted as tcp_* in the summary (tools/tcp-test.sh).
   - SNTP (--ntp UNIX): an SNTP server on port 123 of any address (so the
     gateway 10.2.21.1 answers): a client request is answered with the
     time UNIX seconds (fractions allowed), counted from the peer's start,
@@ -69,7 +73,8 @@ Run (one of):
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
-               [--ntp UNIX [--ntp-forge]]
+               [--ntp UNIX [--ntp-forge]] [--tcp-serve PORT:BYTES]
+               [--tcp-connect ADDR:PORT:CONNS:BYTES]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -223,6 +228,7 @@ class Peer:
         self.late_after = None       # pings this long after the first count as late (--late-after)
         self.first_ping = None       # time.monotonic() of the first ping
         self.flood_n = 0             # frames flood() has sent, for its rotation
+        self.tcp = None              # tools/tcppeer.py's Tcp (--tcp-serve, --tcp-connect)
 
     def log(self, msg):
         line = "netpeer: " + msg
@@ -415,6 +421,9 @@ class Peer:
         if proto == 1 and len(body) >= 8 and body[0] == 8 and not checksum(body):
             reply = ipv4(dst, src, 1, icmp(0, 0, body[4:8], body[8:]))
             self.counts["echo_replies"] += 1
+        elif proto == 6 and self.tcp is not None:
+            self.tcp.input(f[6:12], src, dst, body)
+            return
         elif proto == 17 and len(body) >= 8:
             self.counts["udp_in"] += 1
             sport, dport = struct.unpack_from("!HH", body, 0)
@@ -807,6 +816,8 @@ def selftest():
     selftest_dhcp_dns(g, devnull, expect)
     selftest_ntp(g, devnull, expect)
     selftest_untagged(g, devnull, expect)
+    problem = tcp_selftest()
+    expect(problem is None, problem or "")
     for f in fails:
         print("netpeer selftest: FAILED: " + f)
     print("netpeer selftest: %s" % ("PASS" if not fails else "FAIL"))
@@ -982,9 +993,37 @@ def update_handler(spec, log):
     return mod.peer_handler(spec, log)
 
 
+def tcp_module():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcppeer.py")
+    s = importlib.util.spec_from_file_location("tcppeer", path)
+    mod = importlib.util.module_from_spec(s)
+    s.loader.exec_module(mod)
+    return mod
+
+
+def tcp_selftest():
+    """tools/tcppeer.py's own test: its server and client over a lossy wire."""
+    return tcp_module().selftest(sys.modules[__name__])
+
+
+def tcp_side(peer, a):
+    """--tcp-serve and --tcp-connect: tools/tcppeer.py's Tcp on peer."""
+    mod = tcp_module()
+    serve = connect = None
+    if a.tcp_serve:
+        port, nbytes = a.tcp_serve.split(":")
+        serve = (int(port), int(nbytes))
+    if a.tcp_connect:
+        addr, port, conns, nbytes = a.tcp_connect.split(":")
+        connect = (ip_bytes(addr), int(port), int(conns), int(nbytes))
+    return mod.Tcp(peer, sys.modules[__name__], serve, connect)
+
+
 def run(a):
     log = open(a.log, "a") if a.log else None
     peer = Peer(a.listen, a.qemu, a.vlan, log)
+    if a.tcp_serve or a.tcp_connect:
+        peer.tcp = tcp_side(peer, a)
     add_dhcp_dns(peer, a.dhcp_lease)
     if a.netlog:
         b, _, secs = (a.netlog_pause or "").partition(":")
@@ -1011,9 +1050,11 @@ def run(a):
         peer.counts["pings_late"] = peer.counts["ping_replies_late"] = 0
     while not stop and (end is None or time.monotonic() < end):
         fds = [peer.sock] + ([sys.stdin] if a.stdin else [])
-        r, _, _ = select.select(fds, [], [], 0.02 if a.flood else 0.2)
+        r, _, _ = select.select(fds, [], [], 0.02 if a.flood or peer.tcp else 0.2)
         if peer.sock in r:
             peer.poll(0)
+        if peer.tcp is not None:
+            peer.tcp.tick()
         if a.stdin and sys.stdin in r:
             line = sys.stdin.readline()
             if not line or not stdin_command(peer, line, a):
@@ -1029,6 +1070,8 @@ def run(a):
             peer.noise()
             next_noise += a.noise
     peer.poll(0)
+    if peer.tcp is not None:
+        peer.tcp.report()
     s = peer.summary(a.expect_none)
     if a.summary:
         with open(a.summary, "w") as f:
@@ -1062,6 +1105,9 @@ def main():
     ap.add_argument("--update", metavar="SPEC")
     ap.add_argument("--ntp", type=float, metavar="UNIX", help="answer SNTP with this time")
     ap.add_argument("--ntp-forge", action="store_true", help="a forged SNTP reply first")
+    ap.add_argument("--tcp-serve", metavar="PORT:BYTES", help="a TCP server (tools/tcppeer.py)")
+    ap.add_argument("--tcp-connect", metavar="ADDR:PORT:CONNS:BYTES",
+                    help="TCP clients of the guest's listener (tools/tcppeer.py)")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

@@ -9,6 +9,7 @@
 #include <idl/net.h>
 #include <jam/netdev.h>
 #include <net.h>
+#include "netint.h"
 
 #define MARGIN    NS_PER_S          /* the call waits this much past netstack's timeout */
 #define CALL_WAIT (5 * NS_PER_S)    /* a call netstack answers at once */
@@ -93,9 +94,8 @@ status_t net_get_chip_counters(handle_t net, void *out)
     return net_chip_counts_until(net, now() + CALL_WAIT, out);
 }
 
-/* Take on a socket: its channel and rings (all closed on a failure). */
-static status_t attach(struct net_sock *s, handle_t ch, uint16_t port, const handle_t hs[3],
-                       uint32_t tx, uint32_t rx)
+status_t net_sock_attach(struct net_sock *s, handle_t ch, uint16_t port, const handle_t hs[3],
+                         uint32_t framing, uint32_t tx, uint32_t rx)
 {
     *s = (struct net_sock){ .ch = ch, .port = port, .ring = hs[0], .to_stack = hs[1],
                             .to_prog = hs[2] };
@@ -107,7 +107,7 @@ static status_t attach(struct net_sock *s, handle_t ch, uint16_t port, const han
     if (st == OK) {
         s->map = (uint8_t *)(uintptr_t)va;
         s->map_len = len;
-        st = sockring_attach(&s->r, s->map, len, SOCKRING_DGRAM, tx, rx);
+        st = sockring_attach(&s->r, s->map, len, framing, tx, rx);
     }
     if (st != OK)
         net_close(s);
@@ -122,7 +122,7 @@ status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint
     *out = (struct net_sock){ 0 };
     status_t st = net_udp_rings_until(net, now() + CALL_WAIT, port, tx_bytes, rx_bytes, &ch,
                                       &hs[0], &hs[1], &hs[2], &port, &tx, &rx);
-    return st == OK ? attach(out, ch, port, hs, tx, rx) : st;
+    return st == OK ? net_sock_attach(out, ch, port, hs, SOCKRING_DGRAM, tx, rx) : st;
 }
 
 status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out)
@@ -142,7 +142,7 @@ status_t net_udp_opened(const void *rep, struct idl_msg *m, struct net_sock *out
     uint16_t port = 0;
     *out = (struct net_sock){ 0 };
     status_t st = net_udp_rings_result(rep, m, &ch, &hs[0], &hs[1], &hs[2], &port, &tx, &rx);
-    return st == OK ? attach(out, ch, port, hs, tx, rx) : st;
+    return st == OK ? net_sock_attach(out, ch, port, hs, SOCKRING_DGRAM, tx, rx) : st;
 }
 
 status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
@@ -156,7 +156,7 @@ status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
         *s = (struct net_sock){ 0 };
         return st;
     }
-    return attach(s, ch, port, hs, tx, rx);
+    return net_sock_attach(s, ch, port, hs, SOCKRING_DGRAM, tx, rx);
 }
 
 void net_close(struct net_sock *s)
