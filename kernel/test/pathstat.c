@@ -7,6 +7,7 @@
  * atomics), so it can be reached from spin_lock itself, from the
  * scheduler and from kmalloc without recursing into anything it counts.
  * path_end waits for `inflight` to drain before reading. */
+#include <stddef.h>
 #include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
@@ -174,7 +175,7 @@ bool path_begin(enum path_mark boundary, uint64_t skip, uint64_t calls, uint64_t
         return false;
     /* No probe reads the trace while path_active is NULL and inflight has
      * drained (path_end), so plain stores are fine until path_arm. */
-    memset(&trace, 0, sizeof(trace) - sizeof(trace.stamps));
+    memset(&trace, 0, offsetof(struct path_trace, stamps));   /* stamps: written before read */
     trace.boundary = boundary;
     trace.lo = skip + 1;   /* `seen` counts the boundary that starts a call */
     trace.hi = trace.lo + calls;
