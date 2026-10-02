@@ -470,6 +470,7 @@ checksums included, and must be untagged and 60 bytes at least.
 | `netsock_limits` | 32 openers, the 33rd refused; 16 sockets an opener, then refused; 32 in all, then refused; one closed, one more opened; an opener's end closes its 16 sockets and frees its slot; 8 requests in flight an opener, the 9th refused at once; afterwards no opener, socket or request left |
 | `netsock_hostile` | on an opener's, a socket's and the shared channel: 2 bytes (no answer), 6 bytes, an unknown method, another protocol's, a request a byte short, 8 KiB, a request carrying a handle: each refused; each kind of channel refuses the other's methods (the shared one answers `iface`); two `sock_recv`s at once; closing a socket with a `sock_recv` waiting, and an opener with an echo and a wait in flight, then their answers arriving: nothing breaks, pings still answered, nothing left behind |
 | `netsock_slow_reader` | the slow-peer rule: 40 datagrams to a socket nobody reads (32 queued, 8 dropped and counted, lwIP's receive buffers not held) and a `sock_recv` waiting on a silent peer, while another program's datagram is answered at once (under 500 ms) and pings are answered; the queue then read oldest first, `dropped` 8 |
+| `netsock_busy_client` | one opener's channel kept full of requests by a thread (written without waiting) while another opener's `iface` is answered in under 500 ms and pings are answered: a busy client holds up nobody else (netstack used to skip its port wait while any channel had more queued) |
 | `netsock_dhcp` | netctl's `dhcp_open`: one at a time; port 68 refused to a program; a program's socket gets no broadcast and can't send one, and sends nothing with no address; with no address the DHCP socket sends a 300-byte datagram from 0.0.0.0:68 to 255.255.255.255:67 (the broadcast MAC), only to port 67, and hears the server's answer to the broadcast address and to an address it hasn't got yet; closed, another may be opened |
 
 End to end, with QEMU's e1000e and the network peer:
@@ -637,7 +638,10 @@ pcap's VLAN checks.
   in under 200 ms and `mac.jam` is pinged 3 times in under 200 ms each;
   the slow lookup ends `ERR_TIMED_OUT` after the resolver's 10 s, not
   sooner than 9 s; also NXDOMAIN, a CNAME, two addresses, an address as
-  a name, a bad name and the cache. Then `kill netstack`: bin/dhcp asks
+  a name, a bad name and the cache; and **a busy asker**: a thread keeps a
+  `/svc/dns` channel of its own full of requests while 5 new names are
+  each answered in under 1 s (the resolver used to stop reading its port
+  while one asker had more queued). Then `kill netstack`: bin/dhcp asks
   for 10.2.21.100 again (INIT-REBOOT) and gets it, and the restarted
   bin/dns answers `host www.jam`. Afterwards: two lease lines (renewals
   aren't logged), at least 3 ACKs at the peer (2 leases and a renewal),
