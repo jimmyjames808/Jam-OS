@@ -5,7 +5,8 @@
  *
  * FatFs flushes its own state at the end of mkdir, unlink and rename; the
  * volume is then settled (marked clean, disk.c) unless an open file still
- * has unwritten changes. */
+ * has unwritten changes. An unlink's writes are held (hold.c) and go out
+ * together before it is answered. */
 #include "fat.h"
 
 /* A changing method on a read-only volume. */
@@ -121,11 +122,18 @@ static status_t op_unlink(void *ctx, const uint8_t path[256])
     if (path_is_root(p))
         return ERR_ACCESS_DENIED;
     dirs_forget();
+    /* Held (hold.c) and sent together before the answer: freeing a file
+     * changes a FAT sector per 128 clusters in each FAT copy, a write each
+     * otherwise (on the ESP's one-sector clusters, 200 for a boot image).
+     * The directory entry still goes out first, as FatFs wrote it. */
+    disk_hold(true);
     FRESULT fr = f_unlink(p);
+    disk_hold(false);
+    status_t held = disk_release();
     /* FR_DENIED: a directory that is not empty, or a read-only file. */
     if (fr == FR_DENIED && is_dir(p))
         return ERR_BAD_STATE;
-    return settled(fr_status(fr));
+    return settled(fr == FR_OK && held != OK ? held : fr_status(fr));
 }
 
 static status_t op_rename(void *ctx, const uint8_t from[256], const uint8_t to[256])

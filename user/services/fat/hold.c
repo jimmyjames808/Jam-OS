@@ -8,7 +8,9 @@
  *
  * What. While a file opened FS_GATHER is written (disk_hold, fileops.c),
  * disk_write hands its sectors here instead of to the disk, up to
- * HOLD_MAX. They go out (hold_release) when anything needs them on the
+ * HOLD_MAX. An unlink's are held too (fsops.c), and sent before it is
+ * answered: freeing a file changes a FAT sector per 128 clusters in each
+ * FAT copy, two writes per 64 KiB of the file otherwise. They go out (hold_release) when anything needs them on the
  * medium: any other write (so it keeps its place after them), a flush, a
  * full hold, or the file's sync or close. A read from the disk meanwhile
  * gets the held sectors laid over what it read (hold_overlay). Held sectors are kept as runs of consecutive sectors (a sector

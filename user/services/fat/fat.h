@@ -139,8 +139,9 @@ status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff);
 /* ---- hold.c ----------------------------------------------------------------------- */
 
 /* While on, FatFs's writes are held back instead of written (around an
- * FS_GATHER file's f_write: fileops.c); hold.c's header says when they go
- * out. Without memory for the hold, writes go through as ever. */
+ * FS_GATHER file's f_write, fileops.c, and an unlink, fsops.c); hold.c's
+ * header says when they go out. Without memory for the hold, writes go
+ * through as ever. */
 void     disk_hold(bool on);
 /* Is disk_write to hold (hold_put) instead of writing? */
 bool     hold_active(void);

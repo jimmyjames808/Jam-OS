@@ -4,7 +4,9 @@
  * FS_GATHER costs the disk a few dozen block writes (64 KiB of data
  * each, every FAT copy's changed sectors in one), not the two thousand
  * and more it costs without; both files read back right, through the
- * same fat and a fresh one; a reader that shares the writer's file sees
+ * same fat and a fresh one; removing one (an unlink's writes are held
+ * too) costs a few writes, not one per FAT sector freed in each FAT
+ * copy, and frees its space; a reader that shares the writer's file sees
  * what is held; and a held write that fails makes the file's sync fail
  * and stops fat writing (the volume stays dirty). This is what makes
  * `update -w` take seconds on a real stick instead of many minutes. */
@@ -18,6 +20,7 @@
 #define GFILE      (1u << 20)   /* bytes per test file */
 #define DISK_MIB   48u          /* FatFs formats this as FAT32, one sector a cluster */
 #define GATHER_MAX 40u          /* block writes the gathered file may cost (about 30) */
+#define UNLINK_MAX 10u          /* ... and removing a GFILE file (about 5; 35 not held) */
 
 static struct ramdisk disk;
 static uint8_t pattern[GFILE], got[GFILE];
@@ -61,6 +64,23 @@ static bool is_big(const struct fatrun *r, const char *path)
     t_close(&f);
     CHECK(!memcmp(got, pattern, GFILE));
     return true;
+}
+
+/* Removing the 1 MiB file frees 2048 clusters: 16 FAT sectors in each of
+ * two FAT copies, one write each if written as FatFs goes; held, a few. */
+static bool unlink_cost(const struct fatrun *r)
+{
+    uint64_t total, before, after;
+    CHECK_ST(t_free(r, &total, &before), OK);
+    uint32_t w0 = ramdisk_writes(&disk);
+    CHECK_ST(t_unlink(r, "/plain.bin"), OK);
+    uint32_t writes = ramdisk_writes(&disk) - w0;
+    if (writes > UNLINK_MAX)
+        FAIL("removing a 1 MiB file took %u block writes, want at most %u", writes, UNLINK_MAX);
+    CHECK_ST(t_stat(r, "/plain.bin", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_free(r, &total, &after), OK);
+    CHECK(after >= before + GFILE);
+    return is_big(r, "/gathered.bin");
 }
 
 /* A reader opened alongside the FS_GATHER writer reads what is held. */
@@ -120,8 +140,8 @@ bool t_fat_gather(void)
         FAIL("1 MiB written FS_GATHER took %u block writes, want at most %u", gathered,
              GATHER_MAX);
     CHECK(plain > 2048);   /* one per cluster, at least: why FS_GATHER is there */
-    if (!is_big(&r, "/gathered.bin") || !is_big(&r, "/plain.bin") || !reader_sees_held(&r) ||
-        !fat_stop(&r))
+    if (!is_big(&r, "/gathered.bin") || !is_big(&r, "/plain.bin") || !unlink_cost(&r) ||
+        !reader_sees_held(&r) || !fat_stop(&r))
         return false;
 
     /* A fresh fat (an empty cache): the bytes are on the disk. After the
