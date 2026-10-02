@@ -1,0 +1,111 @@
+#!/bin/sh
+# `update -w` as on the owner's PC, where it first looked like a hang
+# (2026-10-02, build b050c6a): a real USB 2 boot stick, whose every write
+# command costs milliseconds, and a second stick at /usb0 (the SanDisk: an
+# MBR and one FAT32 partition, type 0b). The boot stick here is QEMU's
+# with throttled writes (QEMU_STICK_THROTTLE, default 100 write commands a
+# second and 10 MB/s: a cheap stick's small-write speed); the network peer
+# serves build B, signed with the test key (as tools/update-write-test.sh
+# makes it). `update -w` must answer within PC_WAIT seconds (default 150),
+# with the stick written: B as the default build, A (this build) as the
+# previous one, no .new file left. The write's own time and its steps are
+# printed from init's progress lines.
+# PC_SANDISK=0 leaves the second stick out; PC_THROTTLE overrides the
+# limits ("" for none: QEMU's full speed).
+# Usage: tools/update-pc-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
+set -u
+out=$1
+mkdir -p "$out"
+fails=0
+limit=${PC_WAIT:-150}
+
+fail() {
+    echo "update-pc-test: FAILED: $1"
+    fails=$((fails + 1))
+}
+
+img="$out/pctest-stick.img"
+tools/update-test-key.sh "$out" build/jamos.img "$img" ||
+    { echo "update-pc-test: can't make the test key's stick"; exit 1; }
+key="$out/testkey/key1/update.key"
+printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
+    > "$out/pctest.settings"
+mmd -i "$img@@64M" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@64M" "$out/pctest.settings" ::/etc/settings ||
+    { echo "update-pc-test: can't write the stick's settings"; exit 1; }
+
+# Build B: A's kernel with another version string, A's boot image with
+# another build.txt (as tools/update-write-test.sh makes it).
+va=$(python3 tools/update-server.py --manifest build/jamos.elf build/bootfs.img |
+     sed -n 's/^version //p')
+vb=$(python3 - build/jamos.elf "$out/jamos-B.elf" "$va" <<'EOF'
+import sys
+data, old = open(sys.argv[1], "rb").read(), sys.argv[3].encode()
+new = old[:-1] + (b"C" if old.endswith(b"B") else b"B")
+assert data.count(old + b"\0") >= 1, "no version string in the kernel"
+open(sys.argv[2], "wb").write(data.replace(old + b"\0", new + b"\0"))
+print(new.decode())
+EOF
+) || { echo "update-pc-test: can't make build B's kernel"; exit 1; }
+printf 'git b0b0b0b\n' > "$out/pctest-build.txt"
+python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
+    "build.txt=$out/pctest-build.txt" ||
+    { echo "update-pc-test: can't make build B's boot image"; exit 1; }
+cat > "$out/pctest.spec.json" <<EOF
+{"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}
+EOF
+mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
+echo "update-pc-test: build A $va, build B $vb"
+
+# The second stick: not a Jam OS stick, one FAT32 partition with a file.
+usb=
+if [ "${PC_SANDISK:-1}" = 1 ]; then
+    sd="$out/pctest-sandisk.img"
+    python3 tools/mkstick.py "$sd" 256 0b
+    mformat -i "$sd@@1M" -T $((255 * 2048)) -F -v SANDISK ::
+    echo "the owner's other stick" > "$out/pctest-hello.txt"
+    mcopy -i "$sd@@1M" "$out/pctest-hello.txt" ::/hello.txt
+    usb="-drive if=none,id=sandisk,format=raw,file=$sd"
+    usb="$usb -device usb-storage,bus=xhci.0,port=2,drive=sandisk"
+fi
+seen_usb="seen 60 init: /usb0 mounted"
+[ -n "$usb" ] || seen_usb="# no second stick"
+
+cat > "$out/pctest.txt" <<EOF
+wait 120 Jam OS shell
+$seen_usb
+seen 60 netstack: address 10.2.21.5/24
+wait jam>
+send update -w
+wait $limit stored and written to the stick (-w)
+wait jam>
+send reboot -f
+wait reboot: resetting
+EOF
+QEMU_IMAGE="$img" QEMU_SAVE="$out/pctest-done.img" QEMU_NET=1 QEMU_USB="$usb" \
+    QEMU_STICK_THROTTLE="${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}" \
+    QEMU_NET_PEER="--update $out/pctest.spec.json" QEMU_TIMEOUT=$((limit + 300)) \
+    QEMU_INPUT="$out/pctest.txt" tools/qemu-test.sh "$out" pctest shell > "$out/pctest.out" 2>&1 ||
+    fail "the script, or the VLAN checks: no answer within $limit s? (see $out/pctest.out, $out/pctest.log)"
+log="$out/pctest.log"
+grep -a "update: fetched\|init: update: \|devmgr: /esp" "$log" | sed 's/^/update-pc-test: /'
+grep -aq "init: update: .* and stored, and written to the stick" "$log" ||
+    fail "init didn't say it wrote the stick"
+
+esp() {
+    rm -f "$out/pctest-got"
+    mcopy -i "$1@@1M" "::/boot/$2" "$out/pctest-got" 2>/dev/null && cmp -s "$out/pctest-got" "$3"
+}
+done_img="$out/pctest-done.img"
+esp "$done_img" jamos.elf "$out/jamos-B.elf" && esp "$done_img" bootfs.img "$out/bootfs-B.img" ||
+    fail "the stick's build isn't B"
+esp "$done_img" prev-jamos.elf build/jamos.elf &&
+    esp "$done_img" prev-bootfs.img "$out/bootfs-A.img" || fail "the previous build isn't A"
+! mdir -i "$done_img@@1M" ::/boot 2>/dev/null | grep -qi "new" || fail "a .new file is left"
+rm -f "$img" "$done_img" "$out/pctest-got"
+if [ $fails -eq 0 ]; then
+    echo "update-pc-test: PASS"
+    exit 0
+fi
+echo "update-pc-test: FAIL ($fails)"
+exit 1

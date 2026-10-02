@@ -32,6 +32,10 @@
 # -blockdev, which outlives the device): a script pulls it with the monitor
 # command `device_del stick` and plugs it back with
 # `device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick`.
+# QEMU_STICK_THROTTLE makes the stick as slow as a real one, with QEMU's
+# throttle-group limits, e.g. "x-iops-write=100,x-bps-write=10485760":
+# every write command waits its turn (100 a second), whatever its size, as
+# a cheap USB 2 stick's do (tools/update-pc-test.sh).
 # A panic starts the kernel's stored copy (kexec): a run without
 # QEMU_INPUT ends there (PANIC), a scripted one goes on into that boot.
 # The boot splash (a plain boot's animation) is left out with the boot
@@ -102,6 +106,14 @@ if [ -n "${QEMU_NET:-}" ]; then
     nic="$nic -device e1000e,netdev=net0,romfile="
     nic="$nic -object filter-dump,id=dump0,netdev=net0,queue=rx,file=$pcap"
 fi
+# The stick's block nodes: the file, then raw on it as "usbstick", or raw
+# then a throttle filter as "usbstick" (QEMU_STICK_THROTTLE).
+stick="-blockdev driver=raw,node-name=usbstick,file=stickfile"
+if [ -n "${QEMU_STICK_THROTTLE:-}" ]; then
+    stick="-object throttle-group,id=stickslow,$QEMU_STICK_THROTTLE"
+    stick="$stick -blockdev driver=raw,node-name=stickraw,file=stickfile"
+    stick="$stick -blockdev driver=throttle,node-name=usbstick,throttle-group=stickslow,file=stickraw"
+fi
 ser="build/.qemu-$name.ser"
 rm -f "$log" "$mon" "$ser"
 if [ -n "${QEMU_INPUT:-}" ]; then
@@ -115,7 +127,7 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -device virtio-rng-pci,vectors=2 \
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
     -blockdev driver=file,node-name=stickfile,filename="$img" \
-    -blockdev driver=raw,node-name=usbstick,file=stickfile \
+    $stick \
     -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
     ${QEMU_USB:-} ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
