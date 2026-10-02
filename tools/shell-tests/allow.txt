@@ -24,6 +24,12 @@ wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
 wait jam>
+# a y typed with the command, before the question, is no answer to it
+type allow /data/s; echo st-$T=$?\ry
+wait allow s: every mount (write)? y/n
+type n
+wait st-x=1
+wait jam>
 send allow /data/s; echo st-$T=$?
 wait allow s: every mount (write)? y/n
 type y
