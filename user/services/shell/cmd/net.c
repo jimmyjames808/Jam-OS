@@ -116,6 +116,14 @@ static void show_chip(handle_t net)
     for (unsigned k = 0; k < 5; k++)
         if (s.chip_counted & (1u << k))
             ROW(chip[k], v[k]);
+    if (!s.tx_wait_n && !s.tx_stalls && !s.tx_kicks)
+        return;   /* a driver that doesn't time its transmit ring (the e1000e) */
+    ROW("tx timed", s.tx_wait_n);
+    ROW("tx wait min (us)", s.tx_wait_min_ns / 1000);
+    ROW("tx wait avg (us)", s.tx_wait_avg_ns / 1000);
+    ROW("tx wait max (us)", s.tx_wait_max_ns / 1000);
+    ROW("tx stalls", s.tx_stalls);
+    ROW("tx doorbells again", s.tx_kicks);
 }
 
 SH_CMD(net)
