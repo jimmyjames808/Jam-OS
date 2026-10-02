@@ -285,6 +285,8 @@ struct stack_tcp_counts {
     uint32_t pcbs_none;      /* times a pcb was wanted and none was free */
     uint32_t bad_acks;       /* segments with bytes and an ACK for bytes never sent or long
                               * acked, dropped before lwIP (RFC 5961 section 5) */
+    uint32_t no_acks;        /* segments with no ACK, RST or SYN flag to a connection past
+                              * SYN_SENT, dropped before lwIP (RFC 9293 3.10.7.4) */
 };
 void     stack_tcp_get_counts(struct stack_tcp_counts *out);
 

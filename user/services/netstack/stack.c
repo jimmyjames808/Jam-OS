@@ -58,7 +58,8 @@ static uint8_t            udpbuf[STACK_UDP_MAX];   /* a datagram being handed to
 static const struct stack_tcp_hooks *tcp_hooks;    /* where TCP's events go (NULL: none) */
 static uint8_t            tcp_ext = LWIP_TCP_PCB_NUM_EXT_ARG_ID_INVALID;   /* our ext arg slot */
 static bool               addr_going;   /* the address is changing: lwIP aborts its connections */
-static uint32_t           tcp_bad_acks; /* segments dropped by tcp_ack_bad */
+static uint32_t           tcp_bad_acks; /* segments dropped by tcp_drop: a bad ACK */
+static uint32_t           tcp_no_acks;  /* ... no ACK flag */
 
 void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const uint8_t *data,
                         size_t len);
@@ -223,35 +224,46 @@ void stack_set_link(bool up)
         netif_set_link_down(&nif);
 }
 
-/* RFC 5961 section 5: a segment on a synchronized connection whose ACK
- * is for bytes never sent (past snd_nxt), or older than any window the
- * peer was given (before lastack - snd_wnd_max), is not from the peer the
- * connection talks to, and is dropped here: lwIP sees the bad ACK but
- * still takes the segment's bytes or FIN, so a blind injection would need
- * only a sequence number in the window. Only segments with bytes or a
- * FIN are looked at (lwIP treats the rest right), and anything that is
- * not plainly TCP to one of our connections is left to lwIP's checks. */
-static bool tcp_ack_bad(const uint8_t *f, size_t len)
+/* Two checks lwIP lacks, on segments to one of our connections, before
+ * lwIP sees them (anything that is not plainly TCP to one of them is left
+ * to lwIP's own checks):
+ * - RFC 9293 3.10.7.4, the fifth check: on a connection past SYN_SENT a
+ *   segment with neither ACK, RST nor SYN is dropped (lwIP would still take
+ *   its bytes or FIN). A RST without ACK stays lwIP's (its own check comes
+ *   first), as does a SYN (answered with a challenge ACK);
+ * - RFC 5961 section 5: a segment with bytes or a FIN on a synchronized
+ *   connection whose ACK is for bytes never sent (past snd_nxt), or older
+ *   than any window the peer was given (before lastack - snd_wnd_max), is
+ *   not from the peer the connection talks to: lwIP sees the bad ACK but
+ *   still takes the bytes, so a blind injection would need only a sequence
+ *   number in the window. A bare ACK lwIP treats right.
+ * The counter of the check that dropped it, or NULL to pass it on. */
+static uint32_t *tcp_drop(const uint8_t *f, size_t len)
 {
     if (len < 14 + 20 || be16(f + 12) != ETHERTYPE_IPV4 || f[14 + 9] != IP_PROTO_TCP)
-        return false;
+        return NULL;
     size_t ihl = (size_t)(f[14] & 0x0f) * 4, total = be16(f + 16);
     if (ihl < 20 || total > len - 14 || total < ihl + 20)
-        return false;
+        return NULL;
     const uint8_t *t = f + 14 + ihl;
     size_t hl = (size_t)(t[12] >> 4) * 4;
-    if (hl < 20 || hl > total - ihl || !(t[13] & TCP_ACK) ||
-        (total - ihl == hl && !(t[13] & TCP_FIN)))
-        return false;
+    if (hl < 20 || hl > total - ihl)
+        return NULL;
+    uint8_t flags = t[13];
+    bool payload = total - ihl > hl || (flags & TCP_FIN);
     uint32_t src = be32(f + 26), ack = be32(t + 8);
     for (const struct tcp_pcb *pcb = tcp_active_pcbs; pcb; pcb = pcb->next) {
         if (pcb->local_port != be16(t + 2) || pcb->remote_port != be16(t) ||
             from_lwip(ip_2_ip4(&pcb->remote_ip)) != src)
             continue;
-        return pcb->state >= ESTABLISHED &&
-               (TCP_SEQ_GT(ack, pcb->snd_nxt) || TCP_SEQ_LT(ack, pcb->lastack - pcb->snd_wnd_max));
+        if (pcb->state >= SYN_RCVD && !(flags & (TCP_ACK | TCP_RST | TCP_SYN)))
+            return &tcp_no_acks;
+        bool bad = pcb->state >= ESTABLISHED && payload && (flags & TCP_ACK) &&
+                   (TCP_SEQ_GT(ack, pcb->snd_nxt) ||
+                    TCP_SEQ_LT(ack, pcb->lastack - pcb->snd_wnd_max));
+        return bad ? &tcp_bad_acks : NULL;
     }
-    return false;
+    return NULL;
 }
 
 /* A frame shorter than Ethernet's minimum is padded with zeros to it, as
@@ -268,8 +280,9 @@ void stack_input(const uint8_t *frame, size_t len)
         counts.rx_refused++;
         return;
     }
-    if (tcp_ack_bad(frame, len)) {
-        tcp_bad_acks++;
+    uint32_t *dropped = tcp_drop(frame, len);
+    if (dropped) {
+        (*dropped)++;
         return;
     }
     size_t padded = len < STACK_FRAME_MIN ? STACK_FRAME_MIN : len;
@@ -793,4 +806,5 @@ void stack_tcp_get_counts(struct stack_tcp_counts *out)
     out->bad_checksums = lwip_stats.tcp.chkerr;
     out->pcbs_none = lwip_stats.memp[MEMP_TCP_PCB]->err;
     out->bad_acks = tcp_bad_acks;
+    out->no_acks = tcp_no_acks;
 }

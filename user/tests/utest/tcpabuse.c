@@ -148,13 +148,13 @@ bool t_nettcp_pool_full(void)
 
 enum spoil {
     SP_CHECKSUM, SP_HDR_SHORT, SP_HDR_LONG, SP_TRUNCATED, SP_SYN_FIN, SP_ACK_FUTURE,
-    SP_ACK_OLD, SP_SEQ_OLD, SP_SEQ_FUTURE, SP_COUNT
+    SP_ACK_OLD, SP_SEQ_OLD, SP_SEQ_FUTURE, SP_NO_ACK, SP_COUNT
 };
 
 static const char *const spoil_names[SP_COUNT] = {
     "bad TCP checksum", "data offset 4", "data offset past the segment",
     "TCP header cut short", "SYN and FIN", "ACK of bytes never sent", "ACK from long ago",
-    "an old sequence number", "a sequence number past the window",
+    "an old sequence number", "a sequence number past the window", "no ACK flag",
 };
 
 /* A data segment of 10 bytes from x's peer, spoiled one way; its length. */
@@ -172,6 +172,8 @@ static size_t spoiled(uint8_t *f, const struct cx *x, enum spoil how)
         p.snd += 100000;
     if (how == SP_SYN_FIN)
         flags = TP_SYN | TP_FIN | TP_ACK;
+    if (how == SP_NO_ACK)
+        flags = TP_PSH;   /* RFC 9293 3.10.7.4: "if the ACK bit is off, drop the segment" */
     size_t n = tp_frame(f, &p, flags, "malformed!", 10);
     uint8_t *t = f + 34;
     switch (how) {
@@ -216,6 +218,7 @@ bool t_nettcp_malformed(void)
     CHECK(after.bad_checksums > before.bad_checksums);
     CHECK(after.dropped >= before.dropped + 3);
     CHECK_EQ(after.bad_acks, before.bad_acks + 2);   /* never sent, long ago: before lwIP */
+    CHECK_EQ(after.no_acks, before.no_acks + 1);
     /* SYNs with broken options to a listener: answered or not, nothing
      * breaks. */
     struct ntcp_listener *l;

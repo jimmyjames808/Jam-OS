@@ -897,7 +897,9 @@ restarts:
   so a SYN flood fills only its listener's backlog and never takes a
   program's pcb. Initial sequence numbers come from the kernel's random
   source, and a segment whose ACK is for bytes never sent is dropped before
-  lwIP (RFC 5961). Closing a connection with bytes unread resets it.
+  lwIP (RFC 5961), as is a segment with no ACK, RST or SYN flag on a
+  connection past its SYN (RFC 9293: lwIP would take its bytes). Closing
+  a connection with bytes unread resets it.
 - **`/svc/net-sys`**, the network's own services' reserve: the same
   protocol on a third shared channel (netstack's SR_USER + 3), whose
   openers are counted apart from programs', so no program can take the
