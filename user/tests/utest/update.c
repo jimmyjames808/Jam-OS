@@ -13,11 +13,12 @@
 #include "utest.h"
 
 /* tools/update-server.py --manifest over 10 bytes of 'k' and 5 of 'b',
- * --version 0.0.29-m9 --git abcdef0-dirty. */
+ * --version 0.0.29-m9 --git abcdef0-dirty --net vlan21. */
 static const char golden[] =
-    "jamos-update 1\n"
+    "jamos-update 2\n"
     "version 0.0.29-m9\n"
     "git abcdef0-dirty\n"
+    "net vlan21\n"
     "kernel 10 e444dff1ba68a27e327484b63b7da2c32a32fc7a52a4a0587fcb10dbfdac1b44\n"
     "bootfs 5 5e846c64f2db12266e6b658a8e5b5b42cc225419b3ee1fca88acbb181ddfdb52\n"
     "signature\n";
@@ -41,6 +42,7 @@ bool t_update_manifest(void)
     struct update_manifest m;
     CHECK_ST(update_manifest_parse(golden, strlen(golden), &m), OK);
     CHECK(!strcmp(m.version, "0.0.29-m9") && !strcmp(m.git, "abcdef0-dirty"));
+    CHECK(!strcmp(m.net, "vlan21"));
     CHECK_EQ(m.file[UPDATE_KERNEL].size, 10);
     CHECK_EQ(m.file[UPDATE_BOOTFS].size, 5);
     uint8_t want[SHA256_BYTES];
@@ -53,6 +55,11 @@ bool t_update_manifest(void)
     CHECK_ST(edited("abcdef0-dirty", "0123456789abcdef0123456789abcdef01234567", &m), OK);
     CHECK_ST(edited("0.0.29-m9", "A.b_c+d-9", &m), OK);
     CHECK_ST(edited("kernel 10 ", "kernel 33554432 ", &m), OK);   /* UPDATE_FILE_MAX */
+    CHECK_ST(edited("net vlan21", "net untagged", &m), OK);
+    CHECK(!strcmp(m.net, "untagged"));
+    CHECK_ST(edited("net vlan21", "net vlan4094", &m), OK);
+    CHECK_ST(edited("net vlan21", "net vlan1", &m), OK);
+    CHECK(!strcmp(m.net, "vlan1"));
     return true;
 }
 
@@ -60,11 +67,29 @@ bool t_update_manifest(void)
 bool t_update_manifest_refusals(void)
 {
     static const struct { const char *from, *to; status_t want; } cases[] = {
-        { "jamos-update 1", "jamos-update 2", ERR_NOT_SUPPORTED },
-        { "jamos-update 1", "jamos-update 12", ERR_NOT_SUPPORTED },
-        { "jamos-update 1", "jamos-update x", ERR_INVALID_ARGS },
-        { "jamos-update 1", "jamos-update ", ERR_INVALID_ARGS },
-        { "jamos-update 1", "Jamos-update 1", ERR_INVALID_ARGS },
+        { "jamos-update 2", "jamos-update 1", ERR_NOT_SUPPORTED },   /* no net line */
+        { "jamos-update 2", "jamos-update 3", ERR_NOT_SUPPORTED },
+        { "jamos-update 2", "jamos-update 12", ERR_NOT_SUPPORTED },
+        { "jamos-update 2", "jamos-update x", ERR_INVALID_ARGS },
+        { "jamos-update 2", "jamos-update ", ERR_INVALID_ARGS },
+        { "jamos-update 2", "Jamos-update 2", ERR_INVALID_ARGS },
+        { "net vlan21\n", "", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan0", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan021", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan4095", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan40940", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan", ERR_INVALID_ARGS },
+        { "net vlan21", "net 21", ERR_INVALID_ARGS },
+        { "net vlan21", "net VLAN21", ERR_INVALID_ARGS },
+        { "net vlan21", "net none", ERR_INVALID_ARGS },
+        { "net vlan21", "net off", ERR_INVALID_ARGS },
+        { "net vlan21", "net untaggedx", ERR_INVALID_ARGS },
+        { "net vlan21", "net  vlan21", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan21 ", ERR_INVALID_ARGS },
+        { "net vlan21", "net vlan-21", ERR_INVALID_ARGS },
+        { "net vlan21\n", "net vlan21\nnet vlan21\n", ERR_INVALID_ARGS },
+        { "git abcdef0-dirty\nnet vlan21\n", "net vlan21\ngit abcdef0-dirty\n",
+          ERR_INVALID_ARGS },                                         /* the order */
         { "signature\n", "signature 00ff\n", ERR_NOT_SUPPORTED },
         { "signature\n", "signature \n", ERR_NOT_SUPPORTED },
         { "signature\n", "signature", ERR_INVALID_ARGS },
@@ -153,6 +178,39 @@ bool t_update_manifest_damage(void)
         }
         CHECK(update_manifest_parse(text, len, &m) != OK);
     }
+    return true;
+}
+
+/* The network default line of a build.txt (init reads its own; the
+ * update check compares it with the manifest's). */
+bool t_update_build_net(void)
+{
+    char net[UPDATE_NET_MAX + 1];
+    static const struct { const char *text; const char *want; } cases[] = {
+        { "git 5e3d102\nnet vlan21\n", "vlan21" },
+        { "git 5e3d102-dirty\nnet untagged\n", "untagged" },
+        { "net vlan4094\ngit 5e3d102\n", "vlan4094" },
+        { "git 5e3d102\n", NULL },                      /* a build from before */
+        { "git 5e3d102\nnet vlan21", NULL },            /* no newline: no line */
+        { "git 5e3d102\nnet vlan0\n", NULL },
+        { "git 5e3d102\nnet none\n", NULL },
+        { "git 5e3d102\nnet vlan21 \n", NULL },
+        { "git 5e3d102\n net vlan21\n", NULL },
+        { "git 5e3d102\nnetvlan21\n", NULL },
+        { "", NULL },
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        memset(net, 'x', sizeof(net));
+        status_t st = update_build_net(cases[i].text, strlen(cases[i].text), net);
+        bool ok = cases[i].want ? st == OK && !strcmp(net, cases[i].want) : st == ERR_NOT_FOUND;
+        if (!ok)
+            FAIL("case %u: %s", i, status_str(st));
+    }
+    /* never read past len: the line cut by len is not a line */
+    const char *t = "git 5e3d102\nnet vlan21\n";
+    CHECK_ST(update_build_net(t, strlen(t) - 1, net), ERR_NOT_FOUND);
+    CHECK_ST(update_build_net(t, strlen(t) - 3, net), ERR_NOT_FOUND);
+    CHECK_ST(update_build_net(NULL, 0, net), ERR_NOT_FOUND);
     return true;
 }
 

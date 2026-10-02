@@ -3,19 +3,22 @@
  * what the PC's two sides share: the manifest that names the build, and
  * the hand-off of a fetched build to init.
  *
- * The manifest (made by tools/update-server.py on the Mac) is text, six
+ * The manifest (made by tools/update-server.py on the Mac) is text, seven
  * lines in this order, each ended by one '\n', single spaces, nothing
  * else (no '\r', no blank line, nothing after the last line):
  *
- *     jamos-update 1
+ *     jamos-update 2
  *     version <the kernel's version string: 1..47 of A-Z a-z 0-9 . _ + ->
  *     git <7..40 lower-case hex digits, optionally followed by -dirty>
+ *     net <the build's network default: vlan<1..4094>, or untagged>
  *     kernel <size> <SHA-256>     build/jamos.elf
  *     bootfs <size> <SHA-256>     build/bootfs.img
  *     signature
  *
  * A size is decimal bytes, 1..UPDATE_FILE_MAX, no leading zero; a SHA-256
- * is 64 lower-case hex digits. The signature line is the place kept for
+ * is 64 lower-case hex digits; a VLAN has no leading zero. The `net` line
+ * is the build's build.txt's (the Makefile's JAMOS_VLAN, local.mk): what
+ * the build's network does on a boot with no `vlan=` word. The signature line is the place kept for
  * signed updates (a ROADMAP follow-up): today it has no value, and a
  * manifest whose signature line has one is refused (ERR_NOT_SUPPORTED:
  * this build can't check it, and fails closed). A signature will cover
@@ -36,6 +39,12 @@
  * is checked the same way and answered, but nothing is loaded (the shell's
  * `update -n`).
  *
+ * The network's default never changes by accident: init refuses a build
+ * whose `net` is not the running build's own (its build.txt), so a PC
+ * whose builds tag VLAN 21 can't fetch one that sends untagged frames (or
+ * the other way round) and reboot into it, unless the offer carries
+ * UPDATE_OFFER_FORCE (the shell's `update -f`).
+ *
  * Who offers: the shell's `update` takes the offer channel from init
  * (initctl.update_offer) and hands it to bin/update (user/services/update),
  * the fetcher, which holds only that channel and /svc/net. */
@@ -50,6 +59,7 @@
 #define UPDATE_FILE_MAX     (32u << 20)    /* bytes of either file: the stored kernel's region */
 #define UPDATE_VERSION_MAX  47u            /* bytes of the version string */
 #define UPDATE_GIT_MAX      47u            /* bytes of the git field (40 hex + "-dirty") */
+#define UPDATE_NET_MAX      15u            /* bytes of the net field ("vlan4094", "untagged") */
 
 /* The files of a build, in the manifest's order. */
 enum { UPDATE_KERNEL, UPDATE_BOOTFS, UPDATE_FILES };
@@ -58,6 +68,7 @@ enum { UPDATE_KERNEL, UPDATE_BOOTFS, UPDATE_FILES };
 struct update_manifest {
     char     version[UPDATE_VERSION_MAX + 1];   /* NUL-terminated */
     char     git[UPDATE_GIT_MAX + 1];           /* NUL-terminated */
+    char     net[UPDATE_NET_MAX + 1];           /* "vlan21", "untagged"; NUL-terminated */
     struct {
         uint64_t size;                          /* bytes */
         uint8_t  sha256[SHA256_BYTES];
@@ -72,6 +83,11 @@ struct update_manifest {
  * ERR_OUT_OF_RANGE: a size of 0 or over UPDATE_FILE_MAX;
  * ERR_NOT_SUPPORTED: another format version, or a signature. */
 status_t update_manifest_parse(const void *text, size_t len, struct update_manifest *out);
+/* The network default a build.txt of len bytes records (its line
+ * "net vlan21" or "net untagged", by the manifest's rules), into out
+ * (written only on success). ERR_NOT_FOUND: no such line, or not a valid
+ * value (a build made before build.txt had one). */
+status_t update_build_net(const void *text, size_t len, char out[UPDATE_NET_MAX + 1]);
 /* The file's name in the manifest ("kernel", "bootfs"). */
 const char *update_file_name(unsigned file);
 
@@ -93,6 +109,7 @@ struct update_offer {
 };
 
 #define UPDATE_OFFER_CHECK_ONLY 1u   /* check it, load nothing: the stored kernel stays */
+#define UPDATE_OFFER_FORCE 0x100u    /* take it even if its network default isn't this build's */
 
 /* Which check refused an offer. */
 enum update_why {
@@ -103,6 +120,7 @@ enum update_why {
     UPDATE_SHORT_VMO,   /* a VMO is shorter than its length, or can't be read */
     UPDATE_BAD_HASH,    /* a file's SHA-256 isn't the manifest's */
     UPDATE_NOT_LOADED,  /* the kernel refused it (kexec_load's status) */
+    UPDATE_NET_CHANGE,  /* its network default isn't the running build's, and no FORCE */
     UPDATE_WHY_COUNT,
 };
 
@@ -116,6 +134,8 @@ struct update_answer {
     uint32_t check_ms;                        /* the copy and the check */
     char     version[UPDATE_VERSION_MAX + 1]; /* the manifest's, if it parsed ("" if not) */
     char     git[UPDATE_GIT_MAX + 1];
+    char     net[UPDATE_NET_MAX + 1];         /* the manifest's network default ("" if none) */
+    char     net_running[UPDATE_NET_MAX + 1]; /* the running build's ("" if not known) */
 };
 
 /* "the SHA-256 isn't the manifest's", ...: why, in words. */

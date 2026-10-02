@@ -1,14 +1,16 @@
 /* update: run the build the Mac serves (tools/update-server.py), without
  * moving the stick (docs/M9-PLAN.md "update: a new build from the Mac").
- *   update [-n] [server address]
+ *   update [-n] [-f] [server address]
  * The server is net.host in /data/etc/settings unless given. The shell
  * takes an offer channel from init (initctl.update_offer) and starts
  * bin/update (user/services/update) with it: the fetcher holds only that
  * channel and /svc/net, offers what it fetched, and init checks it
  * against the manifest and makes it the stored kernel (<update.h>). Then
  * the shell reboots into it, the normal way (`reboot`). -n: fetched and
- * checked, nothing loaded, no reboot. Only RAM changes: `make flash` keeps
- * a build for good. */
+ * checked, nothing loaded, no reboot. -f: taken even if its network
+ * default (vlan21, untagged: its build.txt) isn't this build's, which init
+ * otherwise refuses. Only RAM changes: `make flash` keeps a build for
+ * good. */
 #include <idl/initctl.h>
 #include <ipv4.h>
 #include <settings.h>
@@ -38,15 +40,18 @@ static bool server(const char *given, char *out, size_t cap)
 
 SH_CMD(update)
 {
-    bool check_only = false;
+    bool check_only = false, force = false;
     const char *given = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-n") && !check_only) {
             check_only = true;
+        } else if (!strcmp(argv[i], "-f") && !force) {
+            force = true;
         } else if (argv[i][0] != '-' && !given) {
             given = argv[i];
         } else {
-            sh_tty("usage: update [-n] [server address]   (-n: fetch and check only)\n");
+            sh_tty("usage: update [-n] [-f] [server address]   (-n: fetch and check only; "
+                   "-f: even if its network default differs)\n");
             return 2;
         }
     }
@@ -64,9 +69,10 @@ SH_CMD(update)
         return 1;
     }
     struct spawn_handle x[3] = { { SR_USER + 0, ch } };
-    const char *args[] = { "update", host, check_only ? "check" : "load", s.version, git, NULL };
+    const char *args[] = { "update", host, check_only ? "check" : "load", s.version, git,
+                           force ? "force" : NULL, NULL };
     sh_flush();
-    int code = sh_run_helper(UPDATE_PATH, 5, args, x, 1);
+    int code = sh_run_helper(UPDATE_PATH, force ? 6 : 5, args, x, 1);
     if (code || check_only)
         return code;
     char *reboot_args[] = { "reboot", NULL };

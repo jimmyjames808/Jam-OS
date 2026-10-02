@@ -1,4 +1,5 @@
-/* The update manifest's parser (<update.h>): six lines, strictly.
+/* The update manifest's parser (<update.h>): seven lines, strictly; and
+ * the network default line of a build.txt, by the same rules.
  *
  * The bytes come from the network (through bin/update, which parses them
  * to know what to fetch, and again in init, which trusts nobody's parse
@@ -109,6 +110,36 @@ static bool take_sha(struct cur *c, uint8_t out[SHA256_BYTES])
     return true;
 }
 
+/* A network default: "untagged", or "vlan" and a VLAN id 1..4094 in
+ * decimal with no leading zero. */
+static bool net_ok(const char *w)
+{
+    if (!strcmp(w, "untagged"))
+        return true;
+    if (strncmp(w, "vlan", 4) || w[4] < '1' || w[4] > '9')
+        return false;
+    uint32_t v = 0;
+    size_t n = 0;
+    for (const char *p = w + 4; *p; p++, n++) {
+        if (n == 4 || *p < '0' || *p > '9')
+            return false;
+        v = v * 10 + (uint32_t)(*p - '0');
+    }
+    return v <= 4094;
+}
+
+static bool net_char(uint8_t ch)
+{
+    return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+}
+
+/* "net <default>\n" */
+static bool take_net(struct cur *c, char out[UPDATE_NET_MAX + 1])
+{
+    return take_text(c, "net ") && take_word(c, net_char, out, UPDATE_NET_MAX) &&
+           net_ok(out) && take_text(c, "\n");
+}
+
 /* "<name> <size> <sha>\n" */
 static status_t take_file(struct cur *c, unsigned f, struct update_manifest *m)
 {
@@ -122,12 +153,13 @@ static status_t take_file(struct cur *c, unsigned f, struct update_manifest *m)
     return OK;
 }
 
-/* The format line: version 1 only; another number is a later format. */
+/* The format line: version 2 only (1 had no `net` line); another number
+ * is another format. */
 static status_t take_format(struct cur *c)
 {
     if (!take_text(c, "jamos-update "))
         return ERR_INVALID_ARGS;
-    if (take_text(c, "1\n"))
+    if (take_text(c, "2\n"))
         return OK;
     size_t n = word_len(c);
     for (size_t i = 0; i < n; i++)
@@ -152,6 +184,8 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
     if (!take_text(&c, "git ") || !take_word(&c, git_char, m.git, UPDATE_GIT_MAX) ||
         !git_ok(m.git) || !take_text(&c, "\n"))
         return ERR_INVALID_ARGS;
+    if (!take_net(&c, m.net))
+        return ERR_INVALID_ARGS;
     for (unsigned f = 0; f < UPDATE_FILES; f++)
         if ((st = take_file(&c, f, &m)) != OK)
             return st;
@@ -164,6 +198,26 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
         return ERR_INVALID_ARGS;
     *out = m;
     return OK;
+}
+
+status_t update_build_net(const void *text, size_t len, char out[UPDATE_NET_MAX + 1])
+{
+    const uint8_t *p = text, *end = p + (text ? len : 0);
+    while (p < end) {   /* line by line: one is "net <default>" */
+        const uint8_t *nl = p;
+        while (nl < end && *nl != '\n')
+            nl++;
+        if (nl == end)
+            break;   /* a last line without its '\n' is no line */
+        struct cur c = { p, nl + 1 };
+        char w[UPDATE_NET_MAX + 1];
+        if (take_net(&c, w) && c.p == c.end) {
+            memcpy(out, w, sizeof(w));
+            return OK;
+        }
+        p = nl + 1;
+    }
+    return ERR_NOT_FOUND;
 }
 
 const char *update_file_name(unsigned file)
@@ -181,6 +235,7 @@ const char *update_why_str(uint32_t why)
         [UPDATE_SHORT_VMO] = "a file's VMO is shorter than its length",
         [UPDATE_BAD_HASH] = "a file's SHA-256 isn't the manifest's",
         [UPDATE_NOT_LOADED] = "the kernel refused the build",
+        [UPDATE_NET_CHANGE] = "its network default isn't this build's",
     };
     return why < UPDATE_WHY_COUNT ? words[why] : "?";
 }

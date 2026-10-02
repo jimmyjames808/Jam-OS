@@ -19,11 +19,15 @@
  *                  claims, a manifest of garbage, cut short, signed (this
  *                  build can't check a signature) or of another format,
  *                  an offer with a bad magic, one handle or an unknown
- *                  flag, and two files that match their manifest but are
- *                  no kernel (the kernel's own refusal); and the build
- *                  as it is, offered UPDATE_OFFER_CHECK_ONLY: accepted,
- *                  not loaded. The script's `reboot` then shows the
- *                  stored kernel unchanged.
+ *                  flag, two files that match their manifest but are
+ *                  no kernel (the kernel's own refusal), and the build
+ *                  with a manifest that says the other network default
+ *                  (untagged for a VLAN build, vlan21 for an untagged one:
+ *                  refused unless forced); and the build as it is, and
+ *                  that same other-network one with UPDATE_OFFER_FORCE,
+ *                  each offered UPDATE_OFFER_CHECK_ONLY: accepted, not
+ *                  loaded. The script's `reboot` then shows the stored
+ *                  kernel unchanged.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -228,8 +232,59 @@ static void bad_manifests(const struct build *b)
         bad_manifest(b, "signed manifest", text, n + 5);
     }
     memcpy(text, b->manifest, n);
-    text[13] = '2';   /* "jamos-update 2" */
+    text[13] = '3';   /* "jamos-update 3" */
     bad_manifest(b, "another format", text, n);
+}
+
+/* This build's network default (its build.txt), "untagged" if it has none. */
+static const char *running_net(void)
+{
+    static char net[UPDATE_NET_MAX + 1];
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size = 0;
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "build.txt", &data, &size) != OK ||
+        update_build_net(data, (size_t)size, net) != OK)
+        snprintf(net, sizeof(net), "untagged");
+    return net;
+}
+
+/* b with its manifest's net line saying `net` (into v). False if b's
+ * manifest has no net line or the result doesn't fit. */
+static bool with_net(const struct build *b, const char *net, struct build *v)
+{
+    static char text[UPDATE_MANIFEST_MAX + 1];
+    memcpy(text, b->manifest, b->manifest_len);
+    text[b->manifest_len] = '\0';
+    const char *at = strstr(text, "\nnet ");
+    const char *eol = at ? strchr(at + 5, '\n') : NULL;
+    if (!eol)
+        return false;
+    size_t head = (size_t)(at + 5 - text), tail = strlen(eol), nl = strlen(net);
+    if (head + nl + tail > sizeof(v->manifest))
+        return false;
+    *v = *b;
+    memcpy(v->manifest + head, net, nl);
+    memcpy(v->manifest + head + nl, eol, tail);
+    v->manifest_len = (uint32_t)(head + nl + tail);
+    return true;
+}
+
+/* The network default guard: the build with the other kind of default is
+ * refused, and taken (check only) when forced. */
+static void other_net(const struct build *b)
+{
+    struct build v;
+    const char *other = strcmp(running_net(), "untagged") ? "untagged" : "vlan21";
+    if (!with_net(b, other, &v)) {
+        failures++;
+        printf("updtest: the manifest has no net line: FAILED\n");
+        return;
+    }
+    expect("another network default", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NET_CHANGE, 0);
+    v.flags = UPDATE_OFFER_FORCE | UPDATE_OFFER_CHECK_ONLY;
+    expect("another network default, forced (check only)", &v, 2, UPDATE_OFFER_MAGIC,
+           UPDATE_ACCEPTED, 0);
 }
 
 /* Two files that match their manifest exactly but are no kernel: only
@@ -246,9 +301,9 @@ static void not_a_kernel(void)
     sha256_hex(dk, hk);
     sha256_hex(ds, hs);
     struct build b = { .bytes = { sizeof(k), sizeof(s) } };
-    int n = snprintf(b.manifest, sizeof(b.manifest), "jamos-update 1\nversion not-a-kernel\n"
-                     "git 0000000\nkernel %u %s\nbootfs %u %s\nsignature\n",
-                     (unsigned)sizeof(k), hk, (unsigned)sizeof(s), hs);
+    int n = snprintf(b.manifest, sizeof(b.manifest), "jamos-update 2\nversion not-a-kernel\n"
+                     "git 0000000\nnet %s\nkernel %u %s\nbootfs %u %s\nsignature\n",
+                     running_net(), (unsigned)sizeof(k), hk, (unsigned)sizeof(s), hs);
     b.manifest_len = (uint32_t)n;
     if (jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b.vmo[0]) != OK ||
         jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b.vmo[1]) != OK ||
@@ -288,6 +343,8 @@ int main(int argc, char **argv)
         expect("unknown flag", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
         b.flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
         expect("check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+        b.flags = 0;
+        other_net(&b);
         not_a_kernel();
     }
     printf("updtest: %s: %s\n", argv[1], failures ? "FAILED" : "PASS");

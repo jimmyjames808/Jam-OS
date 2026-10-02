@@ -370,6 +370,7 @@ bool t_dnsd_sockets(void);
 bool t_update_manifest(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
+bool t_update_build_net(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);

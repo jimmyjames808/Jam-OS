@@ -10,6 +10,7 @@
  * else. It can't load a kernel; it can only offer bytes that init checks.
  * The shell's `update` starts it as a helper (sh_run_helper):
  *   argv: update <server address> load|check <running version> <running git>
+ *         [force] (force: a build whose network default differs is taken)
  *   SR_USER + 0   the offer channel (initctl.update_offer)
  *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
  * Its lines are the shell's. Exit: 0 init took the build (or, with
@@ -166,13 +167,13 @@ static status_t run_fetch(uint32_t host)
 
 /* The fetched build offered to init on ch (the VMOs go, read-only); its
  * answer into *a. */
-static status_t offer(handle_t ch, bool check_only, struct update_answer *a)
+static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
 {
     struct update_offer *o = calloc(1, sizeof(*o));
     if (!o)
         return ERR_NO_MEMORY;
     o->magic = UPDATE_OFFER_MAGIC;
-    o->flags = check_only ? UPDATE_OFFER_CHECK_ONLY : 0;
+    o->flags = flags;
     o->manifest_len = fetch.manifest_len;
     memcpy(o->manifest, fetch.manifest, fetch.manifest_len);
     handle_t hs[UPDATE_FILES];
@@ -215,6 +216,13 @@ static int say_answer(const struct update_answer *a, bool check_only, const char
                                        : "stored: the next reboot runs it");
         return 0;
     }
+    if (a->why == UPDATE_NET_CHANGE) {
+        printf("update: init refused it: its network default is %.*s, this build's %.*s: "
+               "`update -f` takes it anyway (the PC then sends on that network); the running "
+               "build is unchanged\n", (int)UPDATE_NET_MAX, a->net, (int)UPDATE_NET_MAX,
+               a->net_running[0] ? a->net_running : "not known");
+        return 1;
+    }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
                     a->why == UPDATE_BAD_HASH;
     printf("update: init refused it: %s%s%s (%s); the running build is unchanged\n",
@@ -250,10 +258,11 @@ int main(int argc, char **argv)
     uint32_t host;
     const char *end;
     handle_t ch = startup_handle(ROLE_OFFER);
-    if (argc != 5 || !ipv4_parse(argv[1], &host, &end) || *end ||
+    bool force = argc == 6 && !strcmp(argv[5], "force");
+    if ((argc != 5 && !force) || !ipv4_parse(argv[1], &host, &end) || *end ||
         (strcmp(argv[2], "load") && strcmp(argv[2], "check")) || !ch) {
-        printf("usage: update <server address> load|check <running version> <running git>, "
-               "with init's offer channel (the shell's `update` starts it)\n");
+        printf("usage: update <server address> load|check <running version> <running git> "
+               "[force], with init's offer channel (the shell's `update` starts it)\n");
         return 2;
     }
     bool check_only = !strcmp(argv[2], "check");
@@ -272,7 +281,8 @@ int main(int argc, char **argv)
     }
     struct update_answer a;
     memset(&a, 0, sizeof(a));
-    st = offer(ch, check_only, &a);
+    st = offer(ch, (check_only ? UPDATE_OFFER_CHECK_ONLY : 0) | (force ? UPDATE_OFFER_FORCE : 0),
+               &a);
     if (st != OK) {
         printf("update: init didn't answer (%s)\n",
                status_str(st));

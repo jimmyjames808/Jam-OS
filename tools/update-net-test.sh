@@ -4,7 +4,8 @@
 # tools/netpeer.py answers port 5022 with tools/update-server.py's
 # PlannedServer, serving build B: this build's kernel with another version
 # string (its last character changed in the ELF file) and its boot image
-# with build.txt saying git b0b0b0b and one more file, update-marker.txt.
+# with build.txt saying git b0b0b0b (and this build's network default)
+# and one more file, update-marker.txt.
 # One QEMU run (net.address and net.host = 10.2.21.174 in the stick's
 # settings), each `update` a new client of the server, which gets the next
 # plan:
@@ -13,13 +14,19 @@
 #   3. truncated  the boot image served is half the manifest's size: the
 #                 fetch fails
 #   4. gone       the server stops answering mid-fetch: the fetch fails
-#   5. `update -n`: build B fetched and checked, old -> new said, nothing
+#   5. othernet   the manifest says the other network default (vlan21 for
+#                 an untagged build, untagged for a VLAN one): init
+#                 refuses it
+#   6. othernet   again, with `update -f -n`: taken when forced, checked,
+#                 nothing loaded
+#   7. `update -n`: build B fetched and checked, old -> new said, nothing
 #                 loaded
-#   6. `update`: build B stored and the shell reboots into it (kexec); the
+#   8. `update`: build B stored and the shell reboots into it (kexec); the
 #      next boot's `version` is B's, and /boot/update-marker.txt is there.
-# The running build stays untouched by 1-5: exactly one kexec_load (the
+# The running build stays untouched by 1-7: exactly one kexec_load (the
 # last), `version` still A's before it. Every frame the guest sent is tagged
-# VLAN 21 (the peer's and the pcap's checks, tools/qemu-test.sh).
+# VLAN 21 (the peer's and the pcap's checks, tools/qemu-test.sh: the run
+# boots with vlan=21, whatever this build's default).
 # Usage: tools/update-net-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 out=$1
@@ -53,13 +60,14 @@ EOF
 ) || { echo "update-net-test: can't make build B's kernel"; exit 1; }
 marker="update-marker: build B $$"
 printf '%s\n' "$marker" > "$out/updnet-marker.txt"
-printf 'git b0b0b0b\n' > "$out/updnet-build.txt"
+printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
+    > "$out/updnet-build.txt"
 python3 tools/bootfs-edit.py build/bootfs.img "$out/bootfs-B.img" \
     "update-marker.txt=$out/updnet-marker.txt" "build.txt=$out/updnet-build.txt" ||
     { echo "update-net-test: can't make build B's boot image"; exit 1; }
 cat > "$out/updnet.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img",
- "plan": ["damage", "wronghash", "truncated", "gone"]}
+ "plan": ["damage", "wronghash", "truncated", "gone", "othernet", "othernet"]}
 EOF
 echo "update-net-test: build A $va, build B $vb"
 
@@ -81,6 +89,13 @@ wait 120 update: the server's answers don't match its manifest
 wait jam>
 send update
 wait 120 update: the server stopped answering: the fetch failed
+wait jam>
+send update
+wait 120 update: init refused it: its network default is
+wait jam>
+send update -f -n
+wait 120 -> $vb (b0b0b0b): checked by init in
+wait not loaded (-n)
 wait jam>
 send update -n
 wait 120 -> $vb (b0b0b0b): checked by init in
@@ -114,9 +129,13 @@ log="$out/updnet.log"
     fail "not 2 SHA-256 refusals logged by init"
 [ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 1 ] ||
     fail "not exactly one build loaded (the last one)"
-grep -aq "init: update: .* and not loaded (check only)" "$log" ||
-    fail "init didn't say the -n check loaded nothing"
-for plan in damage wronghash truncated gone good; do
+[ "$(grep -ac "init: update: .* and not loaded (check only)" "$log")" -eq 2 ] ||
+    fail "init didn't say the two -n checks loaded nothing"
+[ "$(grep -ac "init: update: refused: its network default is" "$log")" -eq 1 ] ||
+    fail "init didn't refuse the other network default"
+grep -aq "init: update: its network default is .*: taken (forced)" "$log" ||
+    fail "init didn't take the other network default with -f"
+for plan in damage wronghash truncated gone othernet good; do
     grep -aq "gets the plan '$plan'" "$out/updnet.peer.log" ||
         fail "the server never served the plan $plan"
 done

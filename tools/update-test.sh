@@ -5,7 +5,9 @@
 #   1. `run updtest bad`: every damaged offer refused, each for its own
 #      reason (a changed byte, a wrong length, a short VMO, a garbage, cut,
 #      signed or future manifest, a malformed offer, two files that match
-#      their manifest but are no kernel), and the good build offered check
+#      their manifest but are no kernel, the build with the other network
+#      default in its manifest), and the good build offered check only
+#      (accepted, not loaded), and the other-network one forced and check
 #      only (accepted, not loaded); then `reboot` (kexec): the stored
 #      kernel was left alone, so the next boot is the stick's build (no
 #      /boot/update-marker.txt).
@@ -79,10 +81,14 @@ QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.tx
     fail "the script (see $out/update.log)"
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
-[ "$(grep -ac "init: update: refused: " "$log")" -eq 13 ] ||
-    fail "not 13 refusals logged by init"
-grep -aq "init: update: .* and not loaded (check only)" "$log" ||
-    fail "init didn't check the check-only offer"
+[ "$(grep -ac "init: update: refused: " "$log")" -eq 14 ] ||
+    fail "not 14 refusals logged by init"
+grep -aq "init: update: refused: its network default is" "$log" ||
+    fail "init didn't refuse the build with the other network default"
+grep -aq "init: update: its network default is .*: taken (forced)" "$log" ||
+    fail "init didn't take the other network default when forced"
+[ "$(grep -ac "init: update: .* and not loaded (check only)" "$log")" -eq 2 ] ||
+    fail "init didn't check the two check-only offers"
 grep -aq "updtest: good: PASS" "$log" || fail "the good build wasn't accepted"
 grep -aq "init: update: .* and stored: .reboot. starts it" "$log" ||
     fail "init didn't say it stored the build"

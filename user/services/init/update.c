@@ -16,8 +16,15 @@
  * (reboot.c), so the next `reboot` starts the fetched build instead of
  * reloading the stick's. Nothing is written to the stick.
  *
+ * The network's default is kept: a build whose manifest says another
+ * `net` than this build's build.txt (VLAN 21 against untagged, say) is
+ * refused before anything is copied, unless the offer says
+ * UPDATE_OFFER_FORCE (`update -f`), so the owner's PC never reboots by
+ * accident into a build that sends on another network.
+ *
  * Who does what (the service-loop rule): the loop reads the offer, parses
- * the manifest and compares the lengths, all quick; the copy and the hash
+ * the manifest and compares the lengths and the network default, all
+ * quick; the copy and the hash
  * (a few hundred milliseconds for a build, up to UPDATE_FILE_MAX per file)
  * run on a worker thread, so the loop goes on serving meanwhile. The
  * worker touches only its struct check and the VMOs in it, and when it is
@@ -126,6 +133,18 @@ static status_t copy_and_hash(handle_t src, uint64_t size, handle_t *out,
     return OK;
 }
 
+/* This build's network default (its build.txt's "net" line) into out; ""
+ * if it has none. */
+static void running_net(char out[UPDATE_NET_MAX + 1])
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size = 0;
+    out[0] = '\0';
+    if (bootfs_default(&fs) == OK && bootfs_lookup(fs, "build.txt", &data, &size) == OK)
+        (void)update_build_net(data, (size_t)size, out);   /* none: out stays "" */
+}
+
 /* The answer's refusal. */
 static void refuse(struct update_answer *a, uint32_t why, uint32_t file, status_t st)
 {
@@ -172,7 +191,8 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
 {
     const struct update_offer *o = c->o;
     if (n != sizeof(*o) || nh != UPDATE_FILES || o->txid || o->magic != UPDATE_OFFER_MAGIC ||
-        (o->flags & ~UPDATE_OFFER_CHECK_ONLY) || o->manifest_len > UPDATE_MANIFEST_MAX) {
+        (o->flags & ~(UPDATE_OFFER_CHECK_ONLY | UPDATE_OFFER_FORCE)) ||
+        o->manifest_len > UPDATE_MANIFEST_MAX) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
@@ -183,6 +203,13 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
     }
     memcpy(c->a.version, c->m.version, sizeof(c->a.version));
     memcpy(c->a.git, c->m.git, sizeof(c->a.git));
+    memcpy(c->a.net, c->m.net, sizeof(c->a.net));
+    running_net(c->a.net_running);
+    bool same = c->a.net_running[0] && !strcmp(c->a.net, c->a.net_running);
+    if (!same && !(o->flags & UPDATE_OFFER_FORCE)) {
+        refuse(&c->a, UPDATE_NET_CHANGE, 0, ERR_ACCESS_DENIED);
+        return false;
+    }
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
         if (o->bytes[f] != c->m.file[f].size) {
             refuse(&c->a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
@@ -203,6 +230,15 @@ static void say(const struct check *c)
                (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
                (unsigned long)c->hash_ms,
                only ? "and not loaded (check only)" : "and stored: `reboot` starts it");
+        if (strcmp(a->net, a->net_running))
+            printf("init: update: its network default is %s, this build's %s: taken (forced)\n",
+                   a->net, a->net_running[0] ? a->net_running : "not known");
+        return;
+    }
+    if (a->why == UPDATE_NET_CHANGE) {
+        printf("init: update: refused: its network default is %s, this build's %s (update -f "
+               "takes it anyway); the stored kernel is unchanged\n", a->net,
+               a->net_running[0] ? a->net_running : "not known");
         return;
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
