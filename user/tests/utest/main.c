@@ -696,6 +696,10 @@ static const struct {
     { "netstack_cleared", t_netstack_cleared },
     { "netctl_set_and_clear", t_netctl_set_and_clear },
     { "netctl_process", t_netctl_process },
+    { "ipv4_text", t_ipv4_text },
+    { "netdrv_ping_and_link", t_netdrv_ping_and_link },
+    { "netdrv_restart", t_netdrv_restart },
+    { "netdrv_hostile_driver", t_netdrv_hostile_driver },
 };
 
 int main(int argc, char **argv)

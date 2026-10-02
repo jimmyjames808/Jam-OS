@@ -13,6 +13,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <idl/netctl.h>
+#include <ipv4.h>
 #include <os.h>
 #include "ctl.h"
 #include "utest.h"
@@ -219,5 +220,40 @@ bool t_netctl_process(void)
     CHECK_ST(jam_handle_close(proc), OK);
     CHECK(job_drained(job));
     CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* <ipv4.h>: addresses as text, and init's net.address. */
+bool t_ipv4_text(void)
+{
+    static const char *const bad[] = {
+        "", "1.2.3", "1.2.3.4.", "256.1.1.1", "1.2.3.1000", "1..2.3", "+1.2.3.4", "a.b.c.d",
+        "1.2.3.-4", " 1.2.3.4",
+    };
+    uint32_t a;
+    const char *end;
+    CHECK(ipv4_parse("10.2.21.5", &a, &end) && a == 0x0a021505u && !*end);
+    CHECK(ipv4_parse("0.0.0.0/8", &a, &end) && a == 0 && *end == '/');
+    CHECK(ipv4_parse("255.255.255.255", &a, NULL) && a == 0xffffffffu);
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        if (ipv4_parse(bad[i], &a, &end) && !*end)
+            FAIL("\"%s\" was taken as an address", bad[i]);
+    char buf[IPV4_TEXT_MAX];
+    CHECK(!strcmp(ipv4_format(0x0a0215aeu, buf), "10.2.21.174"));
+    struct ipv4_config c;
+    CHECK(ipv4_config_parse("10.2.21.50/24 10.2.21.1 10.2.21.1 1.1.1.1", &c));
+    CHECK(c.address == 0x0a021532u && c.mask == 0xffffff00u && c.gateway == 0x0a021501u);
+    CHECK(c.dns[0] == 0x0a021501u && c.dns[1] == 0x01010101u);
+    CHECK(ipv4_config_parse("  192.168.1.2/30  ", &c));
+    CHECK(c.mask == 0xfffffffcu && !c.gateway && !c.dns[0]);
+    CHECK(ipv4_config_parse("10.0.0.1/32", &c) && c.mask == 0xffffffffu);
+    static const char *const badc[] = {
+        "10.2.21.50", "10.2.21.50/0", "10.2.21.50/33", "10.2.21.50/24x", "10.2.21.50 /24",
+        "10.2.21.50/24 10.2.21.1 1.1.1.1 8.8.8.8 9.9.9.9", "10.2.21.50/24 gateway",
+        "10.2.21.50/24 10.2.21.1junk",
+    };
+    for (unsigned i = 0; i < sizeof(badc) / sizeof(badc[0]); i++)
+        if (ipv4_config_parse(badc[i], &c))
+            FAIL("net.address = \"%s\" was taken", badc[i]);
     return true;
 }

@@ -238,6 +238,12 @@ bool t_netstack_fuzz(void);
 bool t_netstack_cleared(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_process(void);
+bool t_ipv4_text(void);
+/* netdrv.c: bin/netstack over a fake driver's netdev rings (netpkt.c's
+ * frames, as netstack.c's). */
+bool t_netdrv_ping_and_link(void);
+bool t_netdrv_restart(void);
+bool t_netdrv_hostile_driver(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

@@ -251,12 +251,16 @@ void dev_packet(struct dev *d, const struct port_packet *p)
     }
 }
 
-/* Up to DEV_RX_BUDGET frames off the rx ring into lwIP. */
+/* Up to DEV_RX_BUDGET frames off the rx ring into lwIP. A count out of
+ * range takes nothing (the slots it would name hold no frames): the
+ * session ends (rings_sane). */
 static void drain_rx(struct dev *d)
 {
     netdev_awake(&d->rx);
     uint64_t errors = d->rx.errors;
     uint32_t n = netdev_ready(&d->rx);
+    if (d->rx.errors != errors)
+        return;
     if (n > DEV_RX_BUDGET)
         n = DEV_RX_BUDGET;
     for (uint32_t i = 0; i < n; i++) {
@@ -267,26 +271,35 @@ static void drain_rx(struct dev *d)
             d->rep.rx_bad++;
     }
     (void)netdev_publish(&d->rx);   /* the driver never waits for room in the rx ring */
-    if (d->rx.errors != errors)
-        d->rx_pending = false;   /* a count out of range: wait for the driver's next signal */
-    else if (n == DEV_RX_BUDGET)
-        d->rx_pending = true;    /* more may wait: after the loop's other work */
+    if (n == DEV_RX_BUDGET)
+        d->rx_pending = true;       /* more may wait: after the loop's other work */
     else
         d->rx_pending = !netdev_sleep(&d->rx);
+}
+
+/* The driver's counts were in range: true. Else the rings can't be
+ * trusted any more (one side's frames would be lost or made up), so the
+ * session ends and a new one, with new rings, is asked for. */
+static bool rings_sane(struct dev *d)
+{
+    uint64_t errors = d->tx.errors + d->rx.errors;
+    if (!errors)
+        return true;
+    d->rep.ring_errors += errors;
+    detach(d, "the driver's ring counts were out of range");
+    return false;
 }
 
 uint64_t dev_work(struct dev *d)
 {
     if (d->session && d->rx_pending)
         drain_rx(d);
-    if (d->session && d->tx_dirty) {
+    if (d->session && rings_sane(d) && d->tx_dirty) {
         d->tx_dirty = false;
         if (netdev_publish(&d->tx))
             (void)jam_event_signal(d->to_driver, 0, NETDEV_SIG_TX);   /* gone: its session
                                                                        * closes too */
     }
-    if (d->session)
-        d->rep.ring_errors = d->tx.errors + d->rx.errors;
     if (d->session || d->asked || !d->retry_at || !d->ncards)
         return DEADLINE_NEVER;
     if (now() >= d->retry_at) {

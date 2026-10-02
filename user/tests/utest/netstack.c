@@ -18,23 +18,11 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <os.h>
+#include "netpkt.h"
 #include "stack.h"
 #include "utest.h"
 
-#define OUR_IP   0x0a021505u   /* 10.2.21.5 */
-#define PEER_IP  0x0a0215aeu   /* 10.2.21.174: the Mac */
-#define OTHER_IP 0x0a0215c8u   /* 10.2.21.200: a peer we have no ARP entry for */
-#define GW_IP    0x0a021501u   /* 10.2.21.1 */
-#define MASK24   0xffffff00u
-
-#define ETH_ARP  0x0806u
-#define ETH_IPV4 0x0800u
 #define CAP_MAX  40u           /* frames the fake edge keeps */
-
-static const uint8_t our_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
-static const uint8_t peer_mac[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
-static const uint8_t other_mac[6] = { 0x02, 0x66, 0x77, 0x88, 0x99, 0xaa };
-static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 /* What the edge was given since the last reset. */
 static struct {
@@ -53,115 +41,6 @@ static status_t cap_tx(void *ctx, const uint8_t *frame, size_t len)
     return OK;
 }
 
-/* ---- building frames ------------------------------------------------------- */
-
-static void put16(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-static void put32(uint8_t *p, uint32_t v)
-{
-    put16(p, v >> 16);
-    put16(p + 2, v);
-}
-
-static uint32_t get16(const uint8_t *p)
-{
-    return (uint32_t)p[0] << 8 | p[1];
-}
-
-static uint32_t get32(const uint8_t *p)
-{
-    return get16(p) << 16 | get16(p + 2);
-}
-
-/* The Internet checksum's sum over n bytes: 0xffff when a block that
- * carries its own checksum is intact. */
-static uint32_t sum16(const uint8_t *p, size_t n)
-{
-    uint32_t s = 0;
-    for (size_t i = 0; i + 1 < n; i += 2)
-        s += get16(p + i);
-    if (n & 1)
-        s += (uint32_t)p[n - 1] << 8;
-    while (s >> 16)
-        s = (s & 0xffff) + (s >> 16);
-    return s;
-}
-
-static void eth(uint8_t *f, const uint8_t *dst, const uint8_t *src, uint32_t type)
-{
-    memcpy(f, dst, 6);
-    memcpy(f + 6, src, 6);
-    put16(f + 12, type);
-}
-
-/* An ARP request (op 1) or reply (op 2) from sha/spa to tha/tpa: 42 bytes. */
-static size_t arp(uint8_t *f, uint32_t op, const uint8_t *sha, uint32_t spa, const uint8_t *tha,
-                  uint32_t tpa)
-{
-    eth(f, op == 1 ? bcast : tha, sha, ETH_ARP);
-    put16(f + 14, 1);          /* hardware: Ethernet */
-    put16(f + 16, ETH_IPV4);   /* protocol: IPv4 */
-    f[18] = 6;
-    f[19] = 4;
-    put16(f + 20, op);
-    memcpy(f + 22, sha, 6);
-    put32(f + 28, spa);
-    memcpy(f + 32, op == 1 ? (const uint8_t *)"\0\0\0\0\0\0" : tha, 6);
-    put32(f + 38, tpa);
-    return 42;
-}
-
-/* An IPv4 header (20 bytes, checksummed) at f + 14 for `len` payload bytes. */
-static void ipv4(uint8_t *f, uint32_t proto, uint32_t src, uint32_t dst, size_t len)
-{
-    uint8_t *ip = f + 14;
-    memset(ip, 0, 20);
-    ip[0] = 0x45;
-    put16(ip + 2, (uint32_t)(20 + len));
-    put16(ip + 4, 0x4242);   /* id */
-    ip[8] = 64;
-    ip[9] = (uint8_t)proto;
-    put32(ip + 12, src);
-    put32(ip + 16, dst);
-    put16(ip + 10, ~sum16(ip, 20) & 0xffff);
-}
-
-/* An ICMP echo request from src_mac/src to us, `data` payload bytes. */
-static size_t echo(uint8_t *f, const uint8_t *src_mac, uint32_t src, uint32_t dst, uint32_t seq,
-                   size_t data)
-{
-    eth(f, our_mac, src_mac, ETH_IPV4);
-    uint8_t *icmp = f + 34;
-    icmp[0] = 8;
-    icmp[1] = 0;
-    put16(icmp + 2, 0);
-    put16(icmp + 4, 0x1234);   /* id */
-    put16(icmp + 6, seq);
-    for (size_t i = 0; i < data; i++)
-        icmp[8 + i] = (uint8_t)(i * 7 + seq);
-    put16(icmp + 2, ~sum16(icmp, 8 + data) & 0xffff);
-    ipv4(f, 1, src, dst, 8 + data);
-    return 34 + 8 + data;
-}
-
-/* A UDP datagram from the peer to our port `dport` (checksum 0: none). */
-static size_t udp(uint8_t *f, uint32_t dport, size_t data)
-{
-    eth(f, our_mac, peer_mac, ETH_IPV4);
-    uint8_t *u = f + 34;
-    put16(u, 40000);
-    put16(u + 2, dport);
-    put16(u + 4, (uint32_t)(8 + data));
-    put16(u + 6, 0);
-    memset(u + 8, 'u', data);
-    ipv4(f, 17, PEER_IP, OUR_IP, 8 + data);
-    return 34 + 8 + data;
-}
-
 /* ---- the stack under test ---------------------------------------------------- */
 
 static uint32_t heap_at_start;   /* lwIP's heap in use with nothing going on */
@@ -170,7 +49,7 @@ static uint32_t heap_at_start;   /* lwIP's heap in use with nothing going on */
 static bool net_up(void)
 {
     struct stack_edge e = { .tx = cap_tx };
-    memcpy(e.mac, our_mac, 6);
+    memcpy(e.mac, pkt_our_mac, 6);
     stack_stop();
     CHECK_ST(stack_start(&e), OK);
     stack_set_link(true);
@@ -189,68 +68,26 @@ static void net_down(void)
     stack_stop();
 }
 
-/* Every frame out: untagged, 60 bytes at least, from our MAC. */
+/* The checks of netpkt.h on caught frame i. */
 static bool frame_ok(unsigned i)
 {
-    const uint8_t *f = cap[i].f;
-    CHECK(cap[i].n >= STACK_FRAME_MIN && cap[i].n <= STACK_FRAME_MAX);
-    CHECK(get16(f + 12) == ETH_ARP || get16(f + 12) == ETH_IPV4);   /* never 0x8100 */
-    CHECK(!memcmp(f + 6, our_mac, 6));
-    return true;
+    return pkt_frame_ok(cap[i].f, cap[i].n);
 }
 
-/* Frame i is an ARP reply telling `to` (mac, ip) that we are OUR_IP. */
 static bool is_arp_reply(unsigned i, const uint8_t *to, uint32_t to_ip)
 {
-    const uint8_t *f = cap[i].f;
-    CHECK(frame_ok(i));
-    CHECK_EQ(get16(f + 12), ETH_ARP);
-    CHECK(!memcmp(f, to, 6));
-    CHECK_EQ(get16(f + 20), 2);
-    CHECK(!memcmp(f + 22, our_mac, 6));
-    CHECK_EQ(get32(f + 28), OUR_IP);
-    CHECK(!memcmp(f + 32, to, 6));
-    CHECK_EQ(get32(f + 38), to_ip);
-    for (size_t k = 42; k < cap[i].n; k++)
-        CHECK_EQ(f[k], 0);   /* the padding is zeros */
-    return true;
+    return pkt_is_arp_reply(cap[i].f, cap[i].n, to, to_ip);
 }
 
-/* Frame i is a valid IPv4 packet from us to dst with protocol proto;
- * *icmp: its payload (n bytes). */
 static bool is_ipv4(unsigned i, uint32_t dst, uint32_t proto, const uint8_t **pl, size_t *n)
 {
-    const uint8_t *f = cap[i].f, *ip = f + 14;
-    CHECK(frame_ok(i));
-    CHECK_EQ(get16(f + 12), ETH_IPV4);
-    CHECK_EQ(ip[0], 0x45);
-    CHECK_EQ(sum16(ip, 20), 0xffff);
-    size_t total = get16(ip + 2);
-    CHECK(total >= 20 && 14 + total <= cap[i].n);
-    CHECK_EQ(ip[8], 64);   /* TTL */
-    CHECK_EQ(ip[9], proto);
-    CHECK_EQ(get32(ip + 12), OUR_IP);
-    CHECK_EQ(get32(ip + 16), dst);
-    CHECK_EQ(get16(ip + 6) & 0x3fff, 0);   /* not a fragment */
-    *pl = ip + 20;
-    *n = total - 20;
-    return true;
+    return pkt_is_ipv4(cap[i].f, cap[i].n, dst, proto, pl, n);
 }
 
-/* Frame i answers echo request `req` (as built by echo(), data bytes). */
 static bool is_echo_reply(unsigned i, const uint8_t *req, const uint8_t *to, uint32_t to_ip,
                           size_t data)
 {
-    const uint8_t *icmp;
-    size_t n;
-    CHECK(is_ipv4(i, to_ip, 1, &icmp, &n));
-    CHECK(!memcmp(cap[i].f, to, 6));
-    CHECK_EQ(n, 8 + data);
-    CHECK_EQ(icmp[0], 0);
-    CHECK_EQ(icmp[1], 0);
-    CHECK_EQ(sum16(icmp, n), 0xffff);
-    CHECK(!memcmp(icmp + 4, req + 34 + 4, 4 + data));   /* id, seq and data echoed */
-    return true;
+    return pkt_is_echo_reply(cap[i].f, cap[i].n, req, to, to_ip, data);
 }
 
 static void input(const uint8_t *f, size_t n)
@@ -264,13 +101,13 @@ bool t_netstack_arp(void)
 {
     static uint8_t f[64];
     CHECK(net_up());
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
     CHECK_EQ(ncap, 1);
-    CHECK(is_arp_reply(0, peer_mac, PEER_IP));
+    CHECK(is_arp_reply(0, pkt_peer_mac, PEER_IP));
     CHECK_EQ(cap[0].n, STACK_FRAME_MIN);
     ncap = 0;
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP + 1));   /* not ours */
-    input(f, arp(f, 2, peer_mac, PEER_IP, our_mac, OUR_IP));    /* a reply nobody asked for */
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP + 1));   /* not ours */
+    input(f, pkt_arp(f, 2, pkt_peer_mac, PEER_IP, pkt_our_mac, OUR_IP));    /* a reply nobody asked for */
     CHECK_EQ(ncap, 0);
     net_down();
     return true;
@@ -280,31 +117,31 @@ bool t_netstack_ping(void)
 {
     static uint8_t f[STACK_FRAME_MAX], req[STACK_FRAME_MAX];
     CHECK(net_up());
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));   /* we learn the peer */
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));   /* we learn the peer */
     ncap = 0;
-    size_t n = echo(req, peer_mac, PEER_IP, OUR_IP, 1, 56);   /* `ping`'s default size */
+    size_t n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 1, 56);   /* `ping`'s default size */
     input(req, n);
     CHECK_EQ(ncap, 1);
-    CHECK(is_echo_reply(0, req, peer_mac, PEER_IP, 56));
+    CHECK(is_echo_reply(0, req, pkt_peer_mac, PEER_IP, 56));
     ncap = 0;
-    n = echo(req, peer_mac, PEER_IP, OUR_IP, 2, STACK_MTU - 28);   /* the biggest that fits */
+    n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 2, STACK_MTU - 28);   /* the biggest that fits */
     input(req, n);
     CHECK_EQ(ncap, 1);
     CHECK_EQ(cap[0].n, STACK_FRAME_MAX);
-    CHECK(is_echo_reply(0, req, peer_mac, PEER_IP, STACK_MTU - 28));
+    CHECK(is_echo_reply(0, req, pkt_peer_mac, PEER_IP, STACK_MTU - 28));
     /* A peer we don't know yet: ARP first, then the reply. */
     ncap = 0;
-    n = echo(req, other_mac, OTHER_IP, OUR_IP, 3, 8);
+    n = pkt_echo(req, pkt_other_mac, OTHER_IP, OUR_IP, 3, 8);
     input(req, n);
     CHECK_EQ(ncap, 1);
     CHECK(frame_ok(0));
-    CHECK_EQ(get16(cap[0].f + 12), ETH_ARP);
-    CHECK(!memcmp(cap[0].f, bcast, 6));
-    CHECK_EQ(get16(cap[0].f + 20), 1);
-    CHECK_EQ(get32(cap[0].f + 38), OTHER_IP);
-    input(f, arp(f, 2, other_mac, OTHER_IP, our_mac, OUR_IP));
+    CHECK_EQ(pkt_get16(cap[0].f + 12), ETH_ARP);
+    CHECK(!memcmp(cap[0].f, pkt_bcast, 6));
+    CHECK_EQ(pkt_get16(cap[0].f + 20), 1);
+    CHECK_EQ(pkt_get32(cap[0].f + 38), OTHER_IP);
+    input(f, pkt_arp(f, 2, pkt_other_mac, OTHER_IP, pkt_our_mac, OUR_IP));
     CHECK_EQ(ncap, 2);
-    CHECK(is_echo_reply(1, req, other_mac, OTHER_IP, 8));
+    CHECK(is_echo_reply(1, req, pkt_other_mac, OTHER_IP, 8));
     struct stack_counts c;
     stack_get_counts(&c);
     CHECK(c.echo_replies >= 3);
@@ -316,11 +153,11 @@ bool t_netstack_udp_unreachable(void)
 {
     static uint8_t f[STACK_FRAME_MAX];
     CHECK(net_up());
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
     ncap = 0;
     struct stack_counts before, after;
     stack_get_counts(&before);
-    size_t n = udp(f, 9999, 20);
+    size_t n = pkt_udp(f, 9999, 20);
     input(f, n);
     CHECK_EQ(ncap, 1);
     const uint8_t *icmp;
@@ -328,7 +165,7 @@ bool t_netstack_udp_unreachable(void)
     CHECK(is_ipv4(0, PEER_IP, 1, &icmp, &len));
     CHECK_EQ(icmp[0], 3);   /* destination unreachable */
     CHECK_EQ(icmp[1], 3);   /* port unreachable */
-    CHECK_EQ(sum16(icmp, len), 0xffff);
+    CHECK_EQ(pkt_sum16(icmp, len), 0xffff);
     CHECK_EQ(len, 8u + 20 + 8);   /* the datagram's IP header and its first 8 bytes */
     CHECK(!memcmp(icmp + 8, f + 14, 28));
     /* A burst: at most a second's worth of answers. */
@@ -341,8 +178,8 @@ bool t_netstack_udp_unreachable(void)
     CHECK_EQ(after.icmp_errors - before.icmp_errors, 1 + ncap);
     /* No answer to a broadcast datagram. */
     ncap = 0;
-    eth(f, bcast, peer_mac, ETH_IPV4);
-    ipv4(f, 17, PEER_IP, 0x0a0215ffu, 8 + 20);
+    pkt_eth(f, pkt_bcast, pkt_peer_mac, ETH_IPV4);
+    pkt_ipv4(f, 17, PEER_IP, 0x0a0215ffu, 8 + 20);
     input(f, n);
     CHECK_EQ(ncap, 0);
     net_down();
@@ -368,8 +205,8 @@ static const char *const bad_names[BAD_COUNT] = {
 /* The IPv4 header checksum again, after a change to the header. */
 static void refix(uint8_t *f)
 {
-    put16(f + 24, 0);
-    put16(f + 24, ~sum16(f + 14, 20) & 0xffff);
+    pkt_put16(f + 24, 0);
+    pkt_put16(f + 24, ~pkt_sum16(f + 14, 20) & 0xffff);
 }
 
 /* An IP header of 24 bytes: one word of NOP options moved in front of the
@@ -380,32 +217,32 @@ static void add_options(uint8_t *f, size_t *len)
     memset(f + 34, 1, 4);
     *len += 4;
     f[14] = 0x46;
-    put16(f + 16, get16(f + 16) + 4);
+    pkt_put16(f + 16, pkt_get16(f + 16) + 4);
     refix(f);
 }
 
 /* Frame `which` into f (an echo request of 32 bytes spoiled); its length. */
 static size_t spoiled(uint8_t *f, enum bad which)
 {
-    size_t n = echo(f, peer_mac, PEER_IP, OUR_IP, which, 32);
+    size_t n = pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, which, 32);
     switch (which) {
     case BAD_RUNT:          return 13;
     case BAD_OVERSIZED:     return STACK_FRAME_MAX + 1;
-    case BAD_VLAN_TAG:      put16(f + 12, 0x8100); break;
-    case BAD_ETHERTYPE:     put16(f + 12, 0x88b5); break;
+    case BAD_VLAN_TAG:      pkt_put16(f + 12, 0x8100); break;
+    case BAD_ETHERTYPE:     pkt_put16(f + 12, 0x88b5); break;
     case BAD_VERSION:       f[14] = 0x65; break;
     case BAD_IHL_SHORT:     f[14] = 0x44; break;
     case BAD_IHL_LONG:      f[14] = 0x4f; break;
-    case BAD_TOTAL_LONG:    put16(f + 16, 1400); break;
-    case BAD_TOTAL_SHORT:   put16(f + 16, 19); break;
+    case BAD_TOTAL_LONG:    pkt_put16(f + 16, 1400); break;
+    case BAD_TOTAL_SHORT:   pkt_put16(f + 16, 19); break;
     case BAD_IP_CHECKSUM:   f[24] ^= 0x01; break;
     case BAD_ICMP_CHECKSUM: f[36] ^= 0x01; break;
     case BAD_TRUNCATED:     return n - 10;
     case BAD_MORE_FRAGS:    f[20] = 0x20; refix(f); break;
     case BAD_FRAG_OFFSET:   f[21] = 0x10; refix(f); break;
     case BAD_OPTIONS:       add_options(f, &n); break;
-    case BAD_ARP_HW:        n = arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP); put16(f + 14, 6); break;
-    case BAD_TO_BROADCAST:  put32(f + 30, 0x0a0215ffu); refix(f); break;
+    case BAD_ARP_HW:        n = pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP); pkt_put16(f + 14, 6); break;
+    case BAD_TO_BROADCAST:  pkt_put32(f + 30, 0x0a0215ffu); refix(f); break;
     case BAD_COUNT:         break;
     }
     return n;
@@ -426,7 +263,7 @@ static uint64_t drops(void)
  * rest of the last frame from the buffer and answer it. */
 static bool short_arp_after_whole(uint8_t *f)
 {
-    size_t n = arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP);
+    size_t n = pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP);
     ncap = 0;
     input(f, n);
     CHECK_EQ(ncap, 1);
@@ -441,7 +278,7 @@ bool t_netstack_malformed(void)
 {
     static uint8_t f[STACK_FRAME_MAX + 64], req[STACK_FRAME_MAX];
     CHECK(net_up());
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
     for (unsigned i = 0; i < BAD_COUNT; i++) {
         ncap = 0;
         size_t n = spoiled(f, i);
@@ -454,10 +291,10 @@ bool t_netstack_malformed(void)
     }
     CHECK(short_arp_after_whole(f));
     ncap = 0;
-    size_t n = echo(req, peer_mac, PEER_IP, OUR_IP, 99, 16);   /* still alive */
+    size_t n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 99, 16);   /* still alive */
     input(req, n);
     CHECK_EQ(ncap, 1);
-    CHECK(is_echo_reply(0, req, peer_mac, PEER_IP, 16));
+    CHECK(is_echo_reply(0, req, pkt_peer_mac, PEER_IP, 16));
     struct stack_counts c;
     stack_get_counts(&c);
     CHECK_EQ(c.rx_buffers_used, 0);
@@ -488,11 +325,11 @@ bool t_netstack_fuzz(void)
         size_t n;
         uint32_t r = xorshift(&seed);
         if (r % 3 == 0)
-            n = echo(f, peer_mac, PEER_IP, OUR_IP, i, r >> 8 & 63);
+            n = pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, i, r >> 8 & 63);
         else if (r % 3 == 1)
-            n = arp(f, 1 + (r >> 4 & 1), peer_mac, PEER_IP + (r >> 5 & 3), our_mac, OUR_IP);
+            n = pkt_arp(f, 1 + (r >> 4 & 1), pkt_peer_mac, PEER_IP + (r >> 5 & 3), pkt_our_mac, OUR_IP);
         else
-            n = udp(f, 1 + (r >> 6 & 0x3ff), r >> 16 & 63);
+            n = pkt_udp(f, 1 + (r >> 6 & 0x3ff), r >> 16 & 63);
         for (unsigned k = 0, flips = 1 + (r >> 24 & 7); k < flips; k++)
             f[xorshift(&seed) % n] ^= (uint8_t)(1u << (xorshift(&seed) & 7));
         if (r >> 28 == 0)
@@ -509,12 +346,12 @@ bool t_netstack_fuzz(void)
     CHECK_EQ(c.heap_used, heap_at_start);
     struct stack_ipv4 ip = { OUR_IP, MASK24, GW_IP };
     stack_set_ipv4(&ip);
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
     ncap = 0;
-    size_t n = echo(req, peer_mac, PEER_IP, OUR_IP, 7, 16);
+    size_t n = pkt_echo(req, pkt_peer_mac, PEER_IP, OUR_IP, 7, 16);
     input(req, n);
     CHECK_EQ(ncap, 1);
-    CHECK(is_echo_reply(0, req, peer_mac, PEER_IP, 16));
+    CHECK(is_echo_reply(0, req, pkt_peer_mac, PEER_IP, 16));
     net_down();
     return true;
 }
@@ -529,8 +366,8 @@ bool t_netstack_cleared(void)
     stack_get(&s);
     CHECK_EQ(s.ip.address, 0);
     CHECK(s.link);
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
-    input(f, echo(f, peer_mac, PEER_IP, OUR_IP, 1, 8));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, 1, 8));
     CHECK_EQ(ncap, 0);
     struct stack_ipv4 ip = { OUR_IP, MASK24, 0 };
     stack_set_ipv4(&ip);
@@ -542,18 +379,18 @@ bool t_netstack_cleared(void)
      * for our own address, from it). */
     CHECK_EQ(ncap, 1);
     CHECK(frame_ok(0));
-    CHECK(!memcmp(cap[0].f, bcast, 6));
-    CHECK_EQ(get16(cap[0].f + 12), ETH_ARP);
-    CHECK_EQ(get32(cap[0].f + 28), OUR_IP);
-    CHECK_EQ(get32(cap[0].f + 38), OUR_IP);
+    CHECK(!memcmp(cap[0].f, pkt_bcast, 6));
+    CHECK_EQ(pkt_get16(cap[0].f + 12), ETH_ARP);
+    CHECK_EQ(pkt_get32(cap[0].f + 28), OUR_IP);
+    CHECK_EQ(pkt_get32(cap[0].f + 38), OUR_IP);
     ncap = 0;
-    input(f, arp(f, 1, peer_mac, PEER_IP, NULL, OUR_IP));
+    input(f, pkt_arp(f, 1, pkt_peer_mac, PEER_IP, NULL, OUR_IP));
     CHECK_EQ(ncap, 1);
-    CHECK(is_arp_reply(0, peer_mac, PEER_IP));
+    CHECK(is_arp_reply(0, pkt_peer_mac, PEER_IP));
     /* Link down: nothing goes out. */
     stack_set_link(false);
     ncap = 0;
-    input(f, echo(f, peer_mac, PEER_IP, OUR_IP, 2, 8));
+    input(f, pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, 2, 8));
     CHECK_EQ(ncap, 0);
     net_down();
     return true;

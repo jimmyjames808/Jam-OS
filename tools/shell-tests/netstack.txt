@@ -1,0 +1,17 @@
+# netstack end to end (tools/netstack-test.sh runs this): a plain boot
+# with QEMU's e1000e and the network peer, net.address set in the stick's
+# settings. netstack opens a session with the driver, takes the address,
+# and the peer's pings (--ping) are answered; then netstack is killed and
+# init starts it again: a new session, the address again, the pings
+# answered again. The script checks the peer's counts afterwards.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait jam>
+sleep 4
+send kill netstack
+wait 10 init: bin/netstack was killed
+wait 30 netstack: link up
+sleep 4
+send reboot -f
+wait reboot: resetting

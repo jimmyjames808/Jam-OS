@@ -18,13 +18,17 @@ What it does with each frame from the guest:
     ones), ICMP echo for any address (so `ping 1.1.1.1` works in QEMU);
     UDP to a port with a handler (add_udp: later DHCP, DNS, netlog and the
     update server hook in here). Every reply is tagged with the VLAN.
+  - pings (--ping ADDR): every half second, once it has seen the guest's
+    MAC, an ICMP echo request from the Mac's address (10.2.21.174) to
+    ADDR; the guest's echo replies to them are checked (checksum, id,
+    sequence) and counted (ping_replies in the summary).
   - noise (--noise S, or `noise` on stdin): frames the guest's driver must
     drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
     broadcast ARP request on the VLAN), counted as sent.
 
 Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
-               [--duration S] [--stdin] [--summary FILE] [--ready FILE]
+               [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
@@ -58,6 +62,8 @@ TPID_8021Q, TPID_8021AD, TPID_9100 = 0x8100, 0x88A8, 0x9100
 ETH_ARP, ETH_IPV4 = 0x0806, 0x0800
 FRAME_MAX = 1518            # a tagged frame without FCS
 BAD_LOGGED = 8              # bad frames logged in hex, at most
+PING_FROM = "10.2.21.174"   # the Mac's address: where --ping's requests come from
+PING_ID = 0x4a4d            # their ICMP id ("JM")
 
 
 # ---- frames ------------------------------------------------------------------
@@ -149,7 +155,7 @@ class Peer:
         self.listen = self.sock.getsockname()[1]
         self.counts = {"frames": 0, "good": 0, "bad": 0, "arp_replies": 0, "echo_replies": 0,
                        "udp_in": 0, "unhandled": 0, "sent": 0, "noise_drop": 0,
-                       "noise_pass": 0}
+                       "noise_pass": 0, "pings": 0, "ping_replies": 0}
         self.bad_kinds = {}          # kind (or "vlan <id>") -> count
         self.guest_mac = None        # learned from its first good frame
         self.udp_handlers = {}       # port -> fn(peer, ip_src, sport, ip_dst, payload) -> bytes|None
@@ -176,6 +182,16 @@ class Peer:
         `port` on any address: its result (bytes) goes back as a datagram
         from that address and port; None: no answer."""
         self.udp_handlers[port] = fn
+
+    def ping(self, addr):
+        """An echo request to the guest at addr (once its MAC is known)."""
+        if self.guest_mac is None:
+            return
+        seq = self.counts["pings"] + 1
+        body = icmp(8, 0, struct.pack("!HH", PING_ID, seq), b"jamos-ping" * 5)
+        self.send(eth(self.guest_mac, PEER_MAC, ETH_IPV4,
+                      ipv4(ip_bytes(PING_FROM), ip_bytes(addr), 1, body)))
+        self.counts["pings"] = seq
 
     def noise(self):
         """Frames the guest's driver must drop, and one it must pass."""
@@ -248,6 +264,10 @@ class Peer:
             return
         proto, src, dst, body = p[9], p[12:16], p[16:20], p[ihl:total]
         reply = None
+        if (proto == 1 and len(body) >= 8 and body[0] == 0 and not checksum(body) and
+                struct.unpack_from("!H", body, 4)[0] == PING_ID and dst == ip_bytes(PING_FROM)):
+            self.counts["ping_replies"] += 1   # an answer to --ping
+            return
         if proto == 1 and len(body) >= 8 and body[0] == 8 and not checksum(body):
             reply = ipv4(dst, src, 1, icmp(0, 0, body[4:8], body[8:]))
             self.counts["echo_replies"] += 1
@@ -271,9 +291,11 @@ class Peer:
 
 def summary_line(s):
     return ("netpeer: %d frames from the guest, %d tagged %d, %d bad%s; answered %d ARP, %d echo; "
-            "sent %d -> %s" % (s["frames"], s["good"], s["vlan"], s["bad"],
-                               " " + json.dumps(s["bad_kinds"]) if s["bad_kinds"] else "",
-                               s["arp_replies"], s["echo_replies"], s["sent"], s["result"]))
+            "%d of %d pings answered; sent %d -> %s" %
+            (s["frames"], s["good"], s["vlan"], s["bad"],
+             " " + json.dumps(s["bad_kinds"]) if s["bad_kinds"] else "",
+             s["arp_replies"], s["echo_replies"], s["ping_replies"], s["pings"], s["sent"],
+             s["result"]))
 
 
 def free_ports(n):
@@ -372,6 +394,19 @@ def selftest():
         except socket.timeout:
             break
     expect(kinds == ["untagged", "vlan 10", "priority", "outer", "vlan 21"], "noise: %s" % kinds)
+    # --ping: a request to the guest's MAC (learned), tagged; its reply counted.
+    peer.ping("10.2.21.50")
+    try:
+        r = untag(g.recv(65536))
+        expect(r[:6] == gmac and r[30:34] == gip and r[34] == 8 and not checksum(r[34:]),
+               "--ping's request")
+        reply = icmp(0, 0, r[38:42], r[42:])
+        g.send(tag(eth(PEER_MAC, gmac, ETH_IPV4, ipv4(gip, r[26:30], 1, reply)), VLAN))
+        peer.poll(1)
+        expect(peer.counts["ping_replies"] == 1 and peer.counts["echo_replies"] == 1,
+               "--ping's reply counted (and not answered)")
+    except socket.timeout:
+        fails.append("no --ping request")
     fresh = Peer(0, g.getsockname()[1], VLAN, devnull)
     expect(fresh.summary(expect_none=True)["result"] == "PASS", "no frames, expect-none: PASS")
     fresh.handle(tag(req, VLAN))
@@ -417,6 +452,7 @@ def run(a):
     peer.log("listening on 127.0.0.1:%d, QEMU at %d, VLAN %d" % (peer.listen, a.qemu, a.vlan))
     end = time.monotonic() + a.duration if a.duration else None
     next_noise = time.monotonic() + a.noise if a.noise else None
+    next_ping = time.monotonic() + 0.5 if a.ping else None
     while not stop and (end is None or time.monotonic() < end):
         fds = [peer.sock] + ([sys.stdin] if a.stdin else [])
         r, _, _ = select.select(fds, [], [], 0.2)
@@ -426,6 +462,9 @@ def run(a):
             line = sys.stdin.readline()
             if not line or not stdin_command(peer, line, a):
                 break
+        if next_ping and time.monotonic() >= next_ping:
+            peer.ping(a.ping)
+            next_ping += 0.5
         if next_noise and time.monotonic() >= next_noise:
             peer.noise()
             next_noise += a.noise
@@ -451,6 +490,7 @@ def main():
     ap.add_argument("--summary")
     ap.add_argument("--ready")
     ap.add_argument("--log")
+    ap.add_argument("--ping")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
