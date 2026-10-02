@@ -45,7 +45,7 @@ mmd -i "$stick@@64M" ::/update &&
 cat > "$out/update.txt" <<EOF
 wait 120 Jam OS shell
 wait jam>
-seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf
+seen 60 init: kexec: noted /esp/boot/jamos.elf
 seen 60 init: /data mounted
 send run updtest bad
 wait 300 updtest: bad:
