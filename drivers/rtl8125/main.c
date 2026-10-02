@@ -10,7 +10,7 @@
  *     on by devmgr): without one, "no VLAN: the network stays off" and
  *     the chip is never touched. With `netsend` it runs the ARP send
  *     test (sendtest.c); otherwise it serves netdev to netstack (full.c,
- *     server.c) until devmgr stops it.
+ *     <jam/netserver.h>) until devmgr stops it.
  * Every frame full mode sends goes through tx.c, which tags it with the
  * VLAN; every frame it keeps went through rx.c's VLAN check.
  *

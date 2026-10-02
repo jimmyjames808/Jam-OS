@@ -1,14 +1,18 @@
-/* rtl8125: the netdev server (drv/rtl8125, server.c): abi/idl/netdev.idl
- * on the driver's DR_SERVE channel, and the session's rings and events of
- * <jam/netdev.h>.
+/* <jam/netserver.h>: the netdev server every network driver links
+ * (drivers/lib/netserver.c): abi/idl/netdev.idl on the driver's DR_SERVE
+ * channel, and the session's rings and events of <jam/netdev.h>.
  *
  * It knows nothing of the chip. The driver hands it a struct srv_dev: a
- * send function (tx.c's tx_send: the copy, the tag and the last check are
- * the driver's, never this file's), the free transmit descriptors, the
- * card's info and the counts only the driver has. Received frames come in
- * by srv_rx, already kept for the VLAN and untagged by rx.c. So utest
- * (user/tests/utest/netsrv.c) runs this file as it is against a fake
- * device and a fake netstack.
+ * send function (the driver's transmit path: the copy, the tag and the
+ * last check are the driver's, never this file's), the free transmit
+ * descriptors, the card's info and the counts only the driver has.
+ * Received frames come in by srv_rx, already kept for the VLAN and
+ * untagged by the driver. So utest (user/tests/utest/netsrv.c) runs this
+ * file as it is against a fake device and a fake netstack.
+ *
+ * Its code is linked into each network driver's own object (the Makefile's
+ * DRV_LIB_<driver>), so tools/checkdriver.py checks it as that driver's
+ * code: it uses nothing but <jam/driver.h> and the inline headers.
  *
  * The loop's side (the service-loop rule): every wait is the driver's one
  * port. srv_packet takes the server's packets (DR_SERVE readable, the
@@ -43,7 +47,8 @@ struct srv_info {
     uint16_t vlan;
     uint32_t link;                /* NETDEV_LINK_* */
     uint32_t speed;               /* Mb/s, 0 while down */
-    uint32_t changes;             /* link changes since the driver started */
+    uint32_t changes;             /* link changes since the driver started (stats'
+                                   * link_changes is this count too) */
     char     chip[16];            /* NUL-padded */
 };
 
@@ -107,7 +112,8 @@ void     srv_rx(struct srv *v, const uint8_t *frame, size_t len);
 void     srv_rx_done(struct srv *v);
 /* Transmit descriptors came back: carry on with the tx ring. */
 void     srv_tx_room(struct srv *v);
-/* The link changed: NETDEV_SIG_LINK to the session. */
+/* The link changed (the driver has counted it in info's `changes`):
+ * NETDEV_SIG_LINK to the session. */
 void     srv_link(struct srv *v);
 /* The session ended (the driver is stopping): everything closed. */
 void     srv_end(struct srv *v);

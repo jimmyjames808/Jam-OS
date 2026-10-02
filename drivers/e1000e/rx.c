@@ -12,88 +12,51 @@
  *
  * To decide, the driver reads a frame's length (from the descriptor) and
  * bytes 12-17 (copied once out of the buffer); a kept frame is copied
- * without its tag (netframe_untag) straight into the next slot of the
- * session's rx ring. With no session the frame is counted
- * (rx_no_session); with the ring full it is dropped and counted
- * (rx_ring_full): the driver never waits for netstack. The buffer is the
+ * without its tag (netframe_untag) into the driver's scratch copy and
+ * handed to the netdev server (srv_rx), which puts it into the session's
+ * rx ring, or drops and counts it with no session (rx_no_session) or the
+ * ring full (rx_ring_full): the driver never waits for netstack. The
+ * loop publishes the ring once per batch (srv_rx_done). The buffer is the
  * driver's from the moment the chip sets DD until the descriptor goes
  * back with the tail (RDT), so the chip can't change it in between. */
 #include "e1000e.h"
 
-/* A kept frame (len bytes at buf, tagged) into the session's rx ring, if
- * there is a session and room (*room, as read once this pass). */
-static void deliver(struct e1k *t, const uint8_t *buf, uint32_t len, uint32_t *room)
-{
-    if (t->s.ch == HANDLE_INVALID) {
-        t->st.rx_no_session++;
-        return;
-    }
-    if (*room == 0) {
-        t->st.rx_ring_full++;
-        return;
-    }
-    size_t n = netframe_untag(netdev_slot_frame(&t->s.rx), NETDEV_FRAME_MAX, buf, len);
-    if (n < NETDEV_FRAME_MIN) {
-        t->st.rx_bad++;   /* can't happen: netframe_rx_check bounded the length */
-        return;
-    }
-    netdev_commit(&t->s.rx, (uint32_t)n);
-    (*room)--;
-    t->st.rx_frames++;
-    t->st.rx_bytes += n;
-}
-
-static void keep_or_drop(struct e1k *t, const uint8_t *buf, uint32_t len, uint32_t *room)
+/* A frame (len bytes at buf, as it was on the wire): to the server
+ * untagged if it is ours, else counted under its reason (rx_drop, which
+ * the stats add up: loop.c). */
+static void keep_or_drop(struct e1k *t, const uint8_t *buf, uint32_t len)
 {
     uint8_t head[NETFRAME_TAGGED] = { 0 };
     for (unsigned k = 12; k < NETFRAME_TAGGED && k < len; k++)
         head[k] = buf[k];
     enum netframe_rx v = netframe_rx_check(head, len, t->vlan);
     t->rx_drop[v]++;
-    switch (v) {
-    case NETFRAME_RX_KEEP:
-        deliver(t, buf, len, room);
+    if (v != NETFRAME_RX_KEEP)
         return;
-    case NETFRAME_RX_UNTAGGED:
-        t->st.rx_untagged++;
-        return;
-    case NETFRAME_RX_PRIORITY:
-        t->st.rx_priority++;
-        return;
-    case NETFRAME_RX_OTHER_VLAN:
-    case NETFRAME_RX_OUTER:
-    case NETFRAME_RX_NESTED:
-        t->st.rx_other_vlan++;
-        return;
-    default:
-        t->st.rx_bad++;   /* a runt, or too long */
-        return;
-    }
+    size_t n = netframe_untag(t->frame, sizeof(t->frame), buf, len);
+    srv_rx(&t->v, t->frame, n);   /* n 0 can't happen (rx_check bounded it): rx_bad there */
 }
 
 /* One descriptor the chip has finished (status read once). */
-static void take(struct e1k *t, volatile uint8_t *d, uint8_t status, uint32_t i, uint32_t *room)
+static void take(struct e1k *t, volatile uint8_t *d, uint8_t status, uint32_t i)
 {
     uint32_t len = *(volatile uint16_t *)(d + RXD_LEN);
     uint8_t errors = *(volatile uint8_t *)(d + RXD_ERRORS);
     bool eop = status & RXD_EOP, split = t->rx_split;
     t->rx_split = !eop;   /* a frame not ending here: the rest of it goes too */
     if (split || !eop || (errors & RXD_ERR_MASK) || len > BUF_SIZE) {
-        t->st.rx_bad++;
+        t->rx_errors++;
         return;
     }
     /* The buffer is ours until the descriptor goes back (above), so it is
      * read as plain memory. */
-    keep_or_drop(t, t->bufs + RX_BUF_OFF + (size_t)i * BUF_SIZE, len, room);
+    keep_or_drop(t, t->bufs + RX_BUF_OFF + (size_t)i * BUF_SIZE, len);
 }
 
 unsigned rx_harvest(struct e1k *t)
 {
     if (!t->ring)
         return 0;
-    bool session = t->s.ch != HANDLE_INVALID;
-    uint32_t room = session ? netdev_room(&t->s.rx) : 0;
-    uint64_t before = session ? t->s.rx.count : 0;
     unsigned n = 0;
     uint32_t last = 0;
     for (; n < RX_DESCS; n++) {
@@ -103,7 +66,7 @@ unsigned rx_harvest(struct e1k *t)
         if (!(status & RXD_DD))
             break;
         __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the frame and length after DD */
-        take(t, d, status, i, &room);
+        take(t, d, status, i);
         *(volatile uint64_t *)(d + RXD_LEN) = 0;   /* status 0: the chip's again */
         last = i;
         t->rx_next = (i + 1) % RX_DESCS;
@@ -112,7 +75,5 @@ unsigned rx_harvest(struct e1k *t)
         __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* the cleared descriptors before the tail */
         wr32(t, E1K_RDT, last);
     }
-    if (session && t->s.rx.count != before && netdev_publish(&t->s.rx))
-        session_signal(t, NETDEV_SIG_RX);
     return n;
 }

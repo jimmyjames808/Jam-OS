@@ -6,9 +6,12 @@
 Fails (exit 1, naming every offender) if the driver's object uses a symbol
 it may not. A driver is compiled with nothing but <jam/driver.h>,
 <jam/task.h>, <jam/abi.h>, <jam/status.h>, <jam/netframe.h> and
-<jam/netdev.h> (static inline functions only), the generated <idl/*.h> and
-the compiler's freestanding headers on its include path (-nostdinc), so neither a kernel
-nor a libos header can even be included; this check closes the other door:
+<jam/netdev.h> (static inline functions only), <jam/netserver.h> (whose
+code, drivers/lib/netserver.c, the Makefile links into a network driver's
+own object, so it is checked here as that driver's code), the generated
+<idl/*.h> and the compiler's freestanding headers on its include path
+(-nostdinc), so neither a kernel nor a libos header can even be included;
+this check closes the other door:
 declaring a function yourself (`void *kmalloc(size_t);`, libos's
 `printf`) and calling it, or calling into another driver. The Makefile
 links each driver's objects into one relocatable object first (`ld -r`),

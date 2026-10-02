@@ -233,11 +233,11 @@ bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);
 bool t_rtl8125_stays_off(void);
 
-/* netsrv.c: the RTL8125 driver's netdev server (drivers/rtl8125/server.c,
+/* netsrv.c: the network drivers' netdev server (drivers/lib/netserver.c,
  * linked in) over a fake card, the test as netstack. */
-bool t_rtl8125_server_session(void);
-bool t_rtl8125_server_tx(void);
-bool t_rtl8125_server_rx(void);
+bool t_netserver_session(void);
+bool t_netserver_tx(void);
+bool t_netserver_rx(void);
 
 /* netstack.c: netstack's core and lwIP over a fake edge, in-process;
  * netctl.c: its control channel, in-process and as bin/netstack. */

@@ -8,7 +8,7 @@
  *     frame sent is tagged in software by tx.c; every frame received is
  *     kept only if it carries that VLAN's tag (rx.c). It runs the send
  *     test (`netsend`: sendtest.c) or serves netdev to netstack (full.c,
- *     server.c).
+ *     with the network drivers' server, <jam/netserver.h>).
  * main.c has the steps and the list of every register the driver writes;
  * notx.h the rule that only tx.c can reach a transmit register.
  *
@@ -21,8 +21,9 @@
  * rings, their buffers, the tally dump), census.c and probe.c (the
  * listen-only probe), rx.c (full mode's receive path), tx.c (THE transmit
  * path), sendtest.c (the ARP send test, arp.h its frames), full.c (the
- * netdev service: the card as server.c sees it), server.c (the netdev
- * protocol, the session, its rings and events; nothing of the chip).
+ * netdev service: the card as the server sees it). The server itself (the
+ * netdev protocol, the session, its rings and events; nothing of the
+ * chip) is drivers/lib/netserver.c, which the e1000e links too.
  *
  * Registers, bits and the order of bring-up follow OpenBSD's rge(4)
  * driver (sys/dev/pci/if_rge.c and if_rgereg.h, by Kevin Lo, ISC
@@ -33,9 +34,9 @@
 
 #include <jam/driver.h>
 #include <jam/netframe.h>
+#include <jam/netserver.h>
 #include "args.h"
 #include "notx.h"
-#include "server.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
 
@@ -453,7 +454,7 @@ void     tx_log(const struct rtl *t);
 
 /* ---- full.c: full mode's service, the netdev server for netstack --------------------- */
 
-/* Serve netdev (server.c) on DR_SERVE until devmgr stops the driver. */
+/* Serve netdev (<jam/netserver.h>) on DR_SERVE until devmgr stops the driver. */
 void     full_run(struct rtl *t, struct outcome *o);
 void     full_report(const struct rtl *t, const struct outcome *o);
 

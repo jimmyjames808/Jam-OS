@@ -1,17 +1,18 @@
-/* rtl8125: the netdev server (drv/rtl8125): the netdev protocol on
- * DR_SERVE and on a session's channel, the session's rings and events,
- * and the frames between them and the driver (server.h has the model).
+/* netserver: the netdev server every network driver links (drv/rtl8125,
+ * drv/e1000e): the netdev protocol on DR_SERVE and on a session's
+ * channel, the session's rings and events, and the frames between them
+ * and the driver (<jam/netserver.h> has the model).
  *
  * The rings are netstack's to write at any moment, so everything read
  * from them goes through <jam/netdev.h>'s ring code: its counts read once
  * and clamped, a tx slot's length and flags read once and checked before
  * that many bytes are copied into v->frame, and the frame sent from that
  * copy (the driver then copies it again into its own DMA buffer, where it
- * is tagged and checked: tx.c). A bad slot is skipped and counted, never
+ * is tagged and checked: its tx.c). A bad slot is skipped and counted, never
  * sent. The driver never waits for room in the rx ring: a full one drops
  * the frame and counts it. */
 #include <jam/netframe.h>
-#include "server.h"
+#include <jam/netserver.h>
 
 #define BUDGET   64u      /* requests taken from one channel per srv_work */
 
@@ -145,6 +146,11 @@ static status_t op_stats(void *ctx, uint8_t counts[256])
     struct srv *v = ctx;
     struct netdev_stats s = v->st;
     s.ring_errors = v->ring_errors_past + (v->open ? v->s.tx.errors + v->s.rx.errors : 0);
+    /* The driver's own count, so it is info's `changes` exactly (changes
+     * before the server started included), as <jam/netdev.h> says. */
+    struct srv_info i = { 0 };
+    v->dev->info(v->ctx, &i);
+    s.link_changes = i.changes;
     v->dev->stats(v->ctx, &s);
     for (unsigned k = 0; k < sizeof(s.reserved) / sizeof(s.reserved[0]); k++)
         s.reserved[k] = 0;
@@ -303,7 +309,6 @@ void srv_tx_room(struct srv *v)
 
 void srv_link(struct srv *v)
 {
-    v->st.link_changes++;
     if (v->open)
         (void)drv_event_signal(v->s.to_stack, 0, NETDEV_SIG_LINK);
 }
