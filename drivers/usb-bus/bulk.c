@@ -8,13 +8,14 @@
  * and a length, never bytes in a message, and usb-bus itself never maps
  * the buffer.
  *
- * One bulk transfer runs at a time, controller-wide (g_hc.bulk; a device
- * task wanting one while another's runs waits its turn), inside the
- * request that asked for it, like a control transfer: the TD is one
- * Normal TRB per buffer page it touches (the pages are not contiguous for
- * the device), chained, with the interrupt on the last; then a bounded
- * wait that keeps servicing the controller. bulk_event matches the
- * transfer's events. A short packet ends an IN transfer early: its event
+ * A transfer runs inside the request that asked for it, like a control
+ * transfer: the TD is one Normal TRB per buffer page it touches (the
+ * pages are not contiguous for the device), chained, with the interrupt
+ * on the last; then a bounded wait that keeps servicing the controller.
+ * bulk_event matches the transfer's events. One runs at a time per device
+ * (d->td), since the device's task serves one request at a time; other
+ * devices' transfers run meanwhile, so a stick that stops answering holds
+ * up only its own requests. A short packet ends an IN transfer early: its event
  * names the TRB it happened in (Interrupt on Short Packet), and the
  * controller skips the rest of the TD.
  *
@@ -219,16 +220,16 @@ status_t bulk_open(struct usbdev *d, struct iface *f, int chan, uint8_t ep_in, u
 
 /* ---- a transfer ------------------------------------------------------------------ */
 
-/* Queue the TD: one Normal TRB per page of [offset, offset + length). TD
+/* Queue d's TD: one Normal TRB per page of [offset, offset + length). TD
  * Size (xHCI 4.11.2.4) is the packets still to come after each TRB, at
  * most 31. */
-static void td_queue(struct hc *h, struct ep *e, const struct bulk *b, bool in, uint32_t offset,
-                     uint32_t length)
+static void td_queue(struct usbdev *d, struct ep *e, const struct bulk *b, bool in,
+                     uint32_t offset, uint32_t length)
 {
-    h->bulk.first = e->ring.enq;
-    h->bulk.ntrb = 0;
+    d->td.first = e->ring.enq;
+    d->td.ntrb = 0;
     uint32_t off = offset, left = length;
-    while (left && h->bulk.ntrb < BULK_TRBS) {
+    while (left && d->td.ntrb < BULK_TRBS) {
         uint32_t n = PAGE - off % PAGE;
         if (n > left)
             n = left;
@@ -239,32 +240,31 @@ static void td_queue(struct hc *h, struct ep *e, const struct bulk *b, bool in, 
             packets = 31;
         ring_push(&e->ring, lo32(a), hi32(a), n | packets << 17,
                   TRB_TYPE(TRB_NORMAL) | (left ? TRB_CH : TRB_IOC) | (in ? TRB_ISP : 0));
-        h->bulk.len[h->bulk.ntrb++] = n;
+        d->td.len[d->td.ntrb++] = n;
         off += n;
     }
 }
 
-void bulk_event(struct hc *h, uint64_t trb, uint32_t cc, uint32_t residual)
+void bulk_event(struct usbdev *d, uint64_t trb, uint32_t cc, uint32_t residual)
 {
-    struct usbdev *d = dev_by_slot(h->bulk.slot);
-    if (h->bulk.done || !trb || !d)
+    if (d->td.done || !trb)
         return;
     /* Which TRB of the TD: ring indices wrap past the Link TRB. */
-    uint32_t idx = ring_index(&d->eps[h->bulk.dci].ring, trb);
+    uint32_t idx = ring_index(&d->eps[d->td.dci].ring, trb);
     if (idx >= RING_TRBS - 1)
         return;
-    uint32_t k = (idx + (RING_TRBS - 1) - h->bulk.first) % (RING_TRBS - 1);
-    if (k >= h->bulk.ntrb)
+    uint32_t k = (idx + (RING_TRBS - 1) - d->td.first) % (RING_TRBS - 1);
+    if (k >= d->td.ntrb)
         return;   /* a leftover of an earlier transfer */
-    if (cc == CC_SUCCESS && k != h->bulk.ntrb - 1)
+    if (cc == CC_SUCCESS && k != d->td.ntrb - 1)
         return;   /* not the end yet */
     uint32_t moved = 0;
     for (uint32_t i = 0; i < k; i++)
-        moved += h->bulk.len[i];
-    moved += h->bulk.len[k] - (residual < h->bulk.len[k] ? residual : h->bulk.len[k]);
-    h->bulk.actual = moved;
-    h->bulk.cc = cc;
-    h->bulk.done = true;
+        moved += d->td.len[i];
+    moved += d->td.len[k] - (residual < d->td.len[k] ? residual : d->td.len[k]);
+    d->td.actual = moved;
+    d->td.cc = cc;
+    d->td.done = true;
 }
 
 /* Has d left the bus? Its root port, or a hub on the way up, reports a
@@ -298,22 +298,22 @@ static bool branch_lost(struct usbdev *d, uint64_t *next)
     return v == 0xffffffff || !(v & PS_CCS) || (v & PS_CSC);
 }
 
-/* Wait for the queued TD; its completion code (CC_TIMEOUT, CC_GONE: ours). */
+/* Wait for d's queued TD; its completion code (CC_TIMEOUT, CC_GONE: ours). */
 static uint32_t td_wait(struct hc *h, struct usbdev *d, uint32_t timeout_ms)
 {
     uint64_t deadline = drv_clock_ns() + (uint64_t)timeout_ms * NS_PER_MS, look = 0;
     bool lost = false;
-    while (!h->bulk.done && !lost && !d->gone && !h->dead && !h->stopping &&
+    while (!d->td.done && !lost && !d->gone && !h->dead && !h->stopping &&
            drv_clock_ns() < deadline) {
         hc_wait(h, deadline);
-        lost = !h->bulk.done && branch_lost(d, &look);
+        lost = !d->td.done && branch_lost(d, &look);
     }
     /* Not busy from here: the events of a TD that Stop Endpoint cuts
      * short must not count as a result. */
-    h->bulk.busy = false;
-    task_kick();   /* the next transfer's turn */
-    if (h->bulk.done)
-        return h->bulk.cc;
+    d->td.busy = false;
+    h->bulk_running--;
+    if (d->td.done)
+        return d->td.cc;
     return lost || d->gone || h->dead || h->stopping ? CC_GONE : CC_TIMEOUT;
 }
 
@@ -344,19 +344,18 @@ status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uin
     struct ep *e = &d->eps[ep_dci(in ? b->in : b->out)];
     if (!e->configured)
         return ERR_BAD_STATE;
-    while (h->bulk.busy && !h->dead && !h->stopping && !d->gone && in_task())
-        task_wait(drv_clock_ns() + 50 * NS_PER_MS);   /* another device's transfer runs */
-    if (h->dead || h->stopping || d->gone || h->bulk.busy)
+    if (h->dead || h->stopping || d->gone)
         return ERR_PEER_CLOSED;
-    if (f->bulk != b || !e->configured)
-        return ERR_BAD_STATE;   /* released while this one waited its turn */
-    h->bulk.busy = true;
-    h->bulk.done = false;
-    h->bulk.slot = d->slot;
-    h->bulk.dci = e->dci;
-    h->bulk.cc = 0;
-    h->bulk.actual = 0;
-    td_queue(h, e, b, in, offset, length);
+    if (d->td.busy)
+        return ERR_BAD_STATE;   /* never: the device's task runs one request at a time */
+    d->td.busy = true;
+    d->td.done = false;
+    d->td.dci = e->dci;
+    d->td.cc = 0;
+    d->td.actual = 0;
+    if (++h->bulk_running > h->bulk_peak)
+        h->bulk_peak = h->bulk_running;
+    td_queue(d, e, b, in, offset, length);
     hc_doorbell(h, d->slot, e->dci);
     uint32_t cc = td_wait(h, d, timeout_ms);
     if (cc == CC_TIMEOUT || cc == CC_GONE) {
@@ -371,7 +370,7 @@ status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uin
     }
     status_t st = td_status(d, e, cc);
     if (st == OK)
-        *actual = h->bulk.actual;
+        *actual = d->td.actual;
     return st;
 }
 

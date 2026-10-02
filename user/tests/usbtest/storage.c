@@ -37,6 +37,9 @@
  * and with tools/storage-test.sh's two more disks, behind the hub (so at
  * full speed), found by their serials:
  *   storage_disk2  "jamos-disk2": the same read and write checks
+ *   storage_apart  while a READ waits on the slow disk below, the second
+ *                  disk reads 64 KiB at its own pace: usb-bus runs each
+ *                  device's bulk transfers apart from the others'
  *   storage_unplug device_del in the middle of reads: the read fails
  *                  (it doesn't hang), the block channel closes, the
  *                  driver exits 0
@@ -706,6 +709,89 @@ static bool t_storage_unplug(void)
 
 /* ---- the slow disk ------------------------------------------------------------------------------ */
 
+/* The slow disk's usb-storage, started by the first check that needs it. */
+static bool slow_start(void)
+{
+    if (slow.proc)
+        return true;
+    struct raw r;
+    CHECK(find_disk(SLOW, &r));
+    handle_t usb;
+    CHECK_ST(take_disk(&r, &usb), OK);
+    return drive_start(&slow, usb, "usb-storage-slow");
+}
+
+/* A READ of count blocks at lba into p's buffer, sent without waiting for
+ * its answer. */
+static status_t read_send(const struct pch *p, uint64_t lba, uint32_t count)
+{
+    struct block_read_req q = { .txid = 1, .ordinal = BLOCK_READ, .lba = lba, .count = count };
+    return jam_channel_write(p->ch, &q, sizeof(q), NULL, 0);
+}
+
+/* That READ's answer, if it comes by deadline (ERR_SHOULD_WAIT: not yet). */
+static status_t read_answer(const struct pch *p, uint64_t deadline)
+{
+    signals_t seen = 0;
+    status_t st = jam_object_wait_one(p->ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+    if (st != OK)
+        return st == ERR_TIMED_OUT ? ERR_SHOULD_WAIT : st;
+    struct block_read_rep r;
+    uint32_t n = 0;
+    struct channel_read_args a = { .h = p->ch, .bytes_cap = sizeof(r),
+                                   .bytes = (uint64_t)(uintptr_t)&r,
+                                   .actual_bytes = (uint64_t)(uintptr_t)&n };
+    st = jam_channel_read(&a);
+    return st == OK ? idl_rep_status(&r, n, sizeof(r)) : st;
+}
+
+/* While a READ waits on the slow disk (its data phase can take the whole
+ * 5 s), the second disk reads 64 KiB: about a quarter of a second at its
+ * 256 KiB/s, since usb-bus runs each device's bulk transfers apart (one
+ * transfer at a time for the whole bus would hold it until the slow one
+ * ends). A READ the slow disk answers at once (QEMU's throttling lets a
+ * burst through) doesn't count: the next one is tried. */
+static bool apart(const struct pch *sp, const struct pch *fast)
+{
+    uint64_t took = 0;
+    status_t st = OK, slow_st = OK;
+    unsigned tries = 0;
+    bool tried = false;
+    for (; tries < 8 && !tried && slow_st != ERR_PEER_CLOSED; tries++) {
+        CHECK_ST(read_send(sp, 48 * (uint64_t)tries, 48), OK);
+        slow_st = read_answer(sp, in(300 * NS_PER_MS));
+        if (slow_st != ERR_SHOULD_WAIT)
+            continue;
+        uint64_t t0 = now();
+        st = rd(fast, 0, BUF_SIZE / disk2.bs, 0);
+        took = now() - t0;
+        tried = true;
+        slow_st = read_answer(sp, in(BLK_WAIT));
+    }
+    printf("usbtest: 64 KiB from the second disk in %lu ms while a READ waited on the slow one "
+           "(try %u; the slow READ: %s)\n", (unsigned long)(took / NS_PER_MS), tries,
+           status_str(slow_st));
+    CHECK(tried);
+    CHECK_ST(st, OK);
+    CHECK(took < 2 * NS_PER_S);
+    return true;
+}
+
+static bool t_storage_apart(void)
+{
+    CHECK(disk2.storage != HANDLE_INVALID);
+    int e = part_of_type(&disk2, 0x0c, 0x0b);
+    CHECK(e >= 0);
+    if (!slow_start())
+        return false;
+    struct pch sp = { 0 }, fast = { 0 };
+    bool ok = part_open(&slow, 0, true, &sp) && part_open(&disk2, (uint8_t)e, true, &fast) &&
+              apart(&sp, &fast);
+    part_close(&sp);
+    part_close(&fast);
+    return ok;
+}
+
 /* A disk too slow for a READ's 5 s (QEMU reads this one at 4 KiB/s, in
  * bursts: a READ of 24 KiB may pass at once or wait 6 s). What must hold
  * whatever the bursts do: a READ that gets no data in time fails
@@ -715,11 +801,7 @@ static bool t_storage_unplug(void)
  * channels closed. */
 static bool t_storage_timeout(void)
 {
-    struct raw r;
-    CHECK(find_disk(SLOW, &r));
-    handle_t usb;
-    CHECK_ST(take_disk(&r, &usb), OK);
-    if (!drive_start(&slow, usb, "usb-storage-slow"))
+    if (!slow_start())
         return false;
     struct pch p = { 0 };
     if (!part_open(&slow, 0, true, &p))
@@ -785,12 +867,14 @@ void storage_tests(void)
      * timing out. */
     struct raw r;
     if (!find_disk(DISK2, &r) || !find_disk(SLOW, &r)) {
-        printf("usbtest: storage_disk2, storage_unplug, storage_timeout: no disks with serials "
-               DISK2 " and " SLOW " (the tools/storage-test.sh scenario): skipped\n");
-        skipped += 3;
+        printf("usbtest: storage_disk2, storage_apart, storage_unplug, storage_timeout: no disks "
+               "with serials " DISK2 " and " SLOW " (the tools/storage-test.sh scenario): "
+               "skipped\n");
+        skipped += 4;
         return;
     }
     run("storage_disk2", t_storage_disk2);
+    run("storage_apart", t_storage_apart);
     run("storage_unplug", t_storage_unplug);
     drive_stop(&disk2);
     run("storage_timeout", t_storage_timeout);

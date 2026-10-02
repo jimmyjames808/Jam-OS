@@ -24,7 +24,8 @@
  *     turn), which is also how the controller runs them (xHCI 4.6.1);
  *   - a device's default endpoint: one control transfer at a time
  *     (usb_control);
- *   - the bulk transfer: one at a time (bulk.c);
+ *   - a device's requests, its bulk transfers among them: one at a time,
+ *     since one task serves them (other devices' go on meanwhile);
  *   - the default address: between its reset and Address Device a device
  *     answers at USB address 0, and so would any other device reset in the
  *     same tree (a hub repeats downstream packets to every enabled port).

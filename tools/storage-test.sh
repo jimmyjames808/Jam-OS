@@ -16,8 +16,9 @@
 # driver taking over a disk left mid-READ, the ESP's FAT32 boot sector
 # through a read-only `block` channel, out-of-range requests, a write to
 # the data partition. On the second disk: the same reads and writes at full
-# speed through the hub, then the monitor script unplugs it while it is
-# being read ("unplug the second disk now" -> device_del). On the slow disk:
+# speed through the hub, a read while a READ waits on the slow disk (it
+# must not wait for that one), then the monitor script unplugs it while it
+# is being read ("unplug the second disk now" -> device_del). On the slow disk:
 # a READ times out (it doesn't hang), and then a later one works or the
 # driver gives up after three in a row.
 # QEMU_XHCI (e.g. msi=on,msix=off) and QEMU_SMP pass through.
@@ -48,9 +49,9 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-grep -q "usbtest: 16 passed, 6 skipped" "$log" || ok=0
+grep -q "usbtest: 17 passed, 6 skipped" "$log" || ok=0
 grep -q "run complete: no problems" "$log" || ok=0
-for t in bulk stall bind esp range write stop disk2 unplug timeout; do
+for t in bulk stall bind esp range write stop disk2 apart unplug timeout; do
     grep -q "usbtest: storage_$t ok" "$log" || { echo "$name: storage_$t did not pass"; ok=0; }
 done
 # usb-storage's own lines: the takeover's reset recovery, both disks'

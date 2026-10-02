@@ -81,6 +81,16 @@ void ep_close(struct usbdev *d, struct ep *e)
     d->ep_drop &= ~(1u << e->dci);
 }
 
+/* A hub's status-change report (p, n bytes): bit 0 the hub itself, bit k
+ * port k. Bits past its ports are dropped: nothing would ever clear them,
+ * and the bus would never settle. */
+static void hub_changes(struct usbdev *d, const uint8_t *p, uint32_t n)
+{
+    for (uint32_t port = 0; port <= d->hub_ports && port / 8 < n; port++)
+        if (p[port / 8] & (1u << (port % 8)))
+            d->hub_change[port / 32] |= 1u << (port % 32);
+}
+
 static void intr_event(struct usbdev *d, struct ep *e, uint64_t trb, uint32_t cc,
                        uint32_t residual)
 {
@@ -106,8 +116,7 @@ static void intr_event(struct usbdev *d, struct ep *e, uint64_t trb, uint32_t cc
         e->reports++;
         e->errors_in_row = 0;
         if (e->owner == EP_OWNER_HUB) {
-            for (uint32_t i = 0; i < n && i < sizeof(d->hub_change); i++)
-                ((uint8_t *)d->hub_change)[i] |= p[i];
+            hub_changes(d, p, n);
         } else if (e->owner == EP_OWNER_CLIENT) {
             bool dropped = false;
             if (!serve_report(e->chan, p, n, &dropped)) {
@@ -135,8 +144,7 @@ static void intr_event(struct usbdev *d, struct ep *e, uint64_t trb, uint32_t cc
         drv_log("usb %s: interrupt ep %02x: %s", d->path, e->addr, cc_str(cc));
 }
 
-void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc,
-                        uint32_t residual)
+void usb_transfer_event(uint8_t slot, uint8_t dci, uint64_t trb, uint32_t cc, uint32_t residual)
 {
     struct usbdev *d = dev_by_slot(slot);
     if (dci == 1) {
@@ -146,8 +154,8 @@ void usb_transfer_event(struct hc *h, uint8_t slot, uint8_t dci, uint64_t trb, u
     }
     if (!d || dci >= 32 || !d->eps[dci].dci)
         return;
-    if (h->bulk.busy && h->bulk.slot == slot && h->bulk.dci == dci) {
-        bulk_event(h, trb, cc, residual);
+    if (d->td.busy && d->td.dci == dci) {
+        bulk_event(d, trb, cc, residual);
         return;
     }
     intr_event(d, &d->eps[dci], trb, cc, residual);

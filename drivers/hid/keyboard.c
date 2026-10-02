@@ -127,40 +127,47 @@ void kbd_init(struct hid *h)
     hid_set_leds(h, k->leds);
 }
 
-void kbd_report(struct hid *h, const uint8_t *r, uint32_t n, uint64_t now)
+/* The usages in report r (n bytes, slots 2..7), each once, into keys;
+ * how many. -1: a phantom report (see the header), to be ignored whole. */
+static int report_keys(const uint8_t *r, uint32_t n, uint8_t keys[6])
 {
-    struct kbd *k = &h->kbd;
-    if (n < 3) {
-        k->short_reports++;
-        return;
-    }
-    uint8_t keys[6];
-    uint32_t nk = 0;
+    int nk = 0;
     for (uint32_t i = 2; i < n && i < 8; i++) {
         uint8_t u = r[i];
-        if (u >= 0x01 && u <= 0x03) {   /* phantom state: ignore the report */
-            k->rollover++;
-            return;
-        }
+        if (u >= 0x01 && u <= 0x03)
+            return -1;
         bool dup = u == 0;
-        for (uint32_t j = 0; j < nk && !dup; j++)
+        for (int j = 0; j < nk && !dup; j++)
             dup = keys[j] == u;
         if (!dup)
             keys[nk++] = u;
     }
+    return nk;
+}
 
-    uint8_t want = r[0], cur = k->mods;
-    uint8_t leds = k->leds;
-    for (int i = 0; i < 8; i++) {                 /* 1. modifiers down */
+/* Step 1 (down) or 3 (up): each modifier of `want` that changes from
+ * *cur, sent with the modifier byte as it is after it. */
+static void mods_change(struct hid *h, uint8_t want, uint8_t *cur, bool down)
+{
+    for (int i = 0; i < 8; i++) {
         uint8_t bit = (uint8_t)(1u << i);
-        if ((want & bit) && !(cur & bit)) {
-            cur |= bit;
-            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_DOWN, cur, 0);
+        if (down && (want & bit) && !(*cur & bit)) {
+            *cur |= bit;
+            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_DOWN, *cur, 0);
+        } else if (!down && !(want & bit) && (*cur & bit)) {
+            *cur &= (uint8_t)~bit;
+            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_UP, *cur, 0);
         }
     }
-    for (uint32_t j = k->nheld; j-- > 0;) {       /* 2. keys released */
+}
+
+/* Step 2: the keys held that are not in keys[0..nk) go UP. */
+static void keys_released(struct hid *h, const uint8_t *keys, int nk, uint8_t cur)
+{
+    struct kbd *k = &h->kbd;
+    for (uint32_t j = k->nheld; j-- > 0;) {
         bool still = false;
-        for (uint32_t i = 0; i < nk && !still; i++)
+        for (int i = 0; i < nk && !still; i++)
             still = keys[i] == k->held[j].raw;
         if (still)
             continue;
@@ -172,37 +179,55 @@ void kbd_report(struct hid *h, const uint8_t *r, uint32_t n, uint64_t now)
             k->repeating = false;
         hid_key(h, gone.usage, INPUT_KEY_UP, cur, gone.codepoint);
     }
-    for (int i = 0; i < 8; i++) {                 /* 3. modifiers up */
-        uint8_t bit = (uint8_t)(1u << i);
-        if (!(want & bit) && (cur & bit)) {
-            cur &= (uint8_t)~bit;
-            hid_key(h, (uint16_t)(U_LCTRL + i), INPUT_KEY_UP, cur, 0);
-        }
+}
+
+/* Step 4, for one key of the report: DOWN if it is new (a lock key also
+ * toggles its LED; a repeatable one starts repeating). */
+static void key_pressed(struct hid *h, uint8_t raw, uint8_t cur, uint64_t now)
+{
+    struct kbd *k = &h->kbd;
+    for (uint32_t j = 0; j < k->nheld; j++)
+        if (k->held[j].raw == raw)
+            return;
+    if (k->nheld == 6)
+        return;
+    struct kbd_held nh = { .raw = raw };
+    translate(raw, cur, k->leds, &nh.usage, &nh.codepoint);
+    k->held[k->nheld++] = nh;
+    if (raw == U_CAPS)
+        k->leds ^= LED_CAPS;
+    else if (raw == U_NUMLOCK)
+        k->leds ^= LED_NUM;
+    else if (raw == U_SCROLL)
+        k->leds ^= LED_SCROLL;
+    if (repeats(raw)) {
+        k->repeating = true;
+        k->rep_raw = raw;
+        k->rep_usage = nh.usage;
+        k->rep_next = now + REPEAT_DELAY_NS;
     }
-    for (uint32_t i = 0; i < nk; i++) {           /* 4. keys pressed */
-        bool held = false;
-        for (uint32_t j = 0; j < k->nheld && !held; j++)
-            held = k->held[j].raw == keys[i];
-        if (held || k->nheld == 6)
-            continue;
-        uint8_t raw = keys[i];
-        struct kbd_held nh = { .raw = raw };
-        translate(raw, cur, k->leds, &nh.usage, &nh.codepoint);
-        k->held[k->nheld++] = nh;
-        if (raw == U_CAPS)
-            k->leds ^= LED_CAPS;
-        else if (raw == U_NUMLOCK)
-            k->leds ^= LED_NUM;
-        else if (raw == U_SCROLL)
-            k->leds ^= LED_SCROLL;
-        if (repeats(raw)) {
-            k->repeating = true;
-            k->rep_raw = raw;
-            k->rep_usage = nh.usage;
-            k->rep_next = now + REPEAT_DELAY_NS;
-        }
-        hid_key(h, nh.usage, INPUT_KEY_DOWN, cur, nh.codepoint);
+    hid_key(h, nh.usage, INPUT_KEY_DOWN, cur, nh.codepoint);
+}
+
+void kbd_report(struct hid *h, const uint8_t *r, uint32_t n, uint64_t now)
+{
+    struct kbd *k = &h->kbd;
+    if (n < 3) {
+        k->short_reports++;
+        return;
     }
+    uint8_t keys[6];
+    int nk = report_keys(r, n, keys);
+    if (nk < 0) {
+        k->rollover++;   /* phantom state: ignore the report */
+        return;
+    }
+    uint8_t cur = k->mods, leds = k->leds;
+    mods_change(h, r[0], &cur, true);    /* 1. modifiers down */
+    keys_released(h, keys, nk, cur);     /* 2. keys released */
+    mods_change(h, r[0], &cur, false);   /* 3. modifiers up */
+    for (int i = 0; i < nk; i++)         /* 4. keys pressed */
+        key_pressed(h, keys[i], cur, now);
     k->mods = cur;
     if (k->leds != leds && !h->stop)
         hid_set_leds(h, k->leds);

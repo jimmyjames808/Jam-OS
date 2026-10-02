@@ -1,11 +1,21 @@
 /* hid: what the driver's files share (hid.c: the device and the reports;
- * keyboard.c: the keyboard layer; mouse.c: the mouse layer; report.c and
- * fixtures.c: the report descriptor parser and its self-test, report.h).
- * See hid.c for the driver. */
+ * desc.c: walking its descriptors; keyboard.c: the keyboard layer;
+ * mouse.c: the mouse layer; report.c and fixtures.c: the report
+ * descriptor parser and its self-test, report.h). See hid.c for the
+ * driver. */
 #pragma once
 
 #include <jam/driver.h>
 #include "report.h"
+
+#define BUF_SIZE 1024   /* h->buf: descriptors, then reports */
+
+/* Descriptor types (USB 2.0 table 9-5, HID 1.11 7.1) */
+#define DESC_CONFIG    0x02
+#define DESC_INTERFACE 0x04
+#define DESC_ENDPOINT  0x05
+#define DESC_HID       0x21
+#define DESC_REPORT    0x22
 
 #define REPEAT_DELAY_NS  (500 * NS_PER_MS)   /* held this long: REPEAT starts */
 #define REPEAT_PERIOD_NS (NS_PER_S / 30)     /* then 30 a second */
@@ -86,6 +96,15 @@ void hid_set_leds(struct hid *h, uint8_t leds);
  * gone. */
 void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons,
                bool buttons_changed);
+
+/* desc.c: this interface's HID descriptor (h->report_desc_len) and
+ * interrupt IN endpoint (h->ep_in, h->max_packet), from the configuration
+ * descriptor in h->buf (n bytes). */
+void hid_parse_config(struct hid *h, uint32_t n);
+/* desc.c: the report descriptor in h->buf (n bytes) in one line into out
+ * (cap bytes): "keyboard id 1, consumer control id 3, vendor (page 0xff00
+ * usage 0x1) id 6". */
+void hid_summarise_report(const struct hid *h, uint32_t n, char *out, uint32_t cap);
 
 /* mouse.c: boot or report protocol for this mouse, from its report
  * descriptor (h->buf, h->report_desc_read bytes), which is logged in hex;

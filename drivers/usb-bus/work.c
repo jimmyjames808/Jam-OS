@@ -7,8 +7,8 @@
  * scan after hub_setup, a retry). serve.c starts a device task for every
  * device with requests queued on its interface channels; work_dispatch
  * also starts one for a device with endpoint upkeep queued (intr.c).
- * usb_busy says whether port work is still pending or running (the
- * RESULTS lines wait until it settles). */
+ * usb_busy says whether port work is still pending, running or waiting
+ * for a failed port's retry (the RESULTS lines wait until it settles). */
 #include "usbbus.h"
 
 #define STOP_WAIT_MS 2000   /* how long the tasks get to end when the driver stops */
@@ -30,12 +30,17 @@ void usb_start(struct hc *h)
     started = true;
 }
 
+/* Has hub d work: a change to look at, or a failed port waiting for its
+ * retry? */
 static bool hub_pending(const struct usbdev *d)
 {
     if (d->hub_scan_all)
         return true;
     for (int k = 0; k < 8; k++)
         if (d->hub_change[k])
+            return true;
+    for (int p = 1; p < 16; p++)
+        if (d->port_retry_at[p])
             return true;
     return false;
 }
@@ -45,6 +50,8 @@ bool usb_busy(void)
     for (int i = 0; i < 8; i++)
         if (g_hc.port_changed[i])
             return true;
+    if (root_retry_waiting())
+        return true;
     for (int i = 0; i < MAX_DEVS; i++) {
         struct usbdev *d = &g_devs[i];
         if (d->used && !d->gone && d->is_hub && hub_pending(d))
@@ -107,6 +114,17 @@ static void start_ports(uint32_t *bits, uint32_t hub_id, unsigned first, unsigne
     }
 }
 
+/* Hub d's ports with a change (every port, after hub_setup) get tasks. */
+static void hub_dispatch(struct usbdev *d)
+{
+    if (d->hub_scan_all) {
+        d->hub_scan_all = false;
+        for (uint8_t p = 1; p <= d->hub_ports; p++)
+            d->hub_change[p / 32] |= 1u << (p % 32);
+    }
+    start_ports(d->hub_change, d->id, 0, d->hub_ports);
+}
+
 void work_dispatch(struct hc *h)
 {
     if (!started || h->dead || h->stopping)
@@ -116,14 +134,8 @@ void work_dispatch(struct hc *h)
         struct usbdev *d = &g_devs[i];
         if (!d->used || d->gone)
             continue;
-        if (d->is_hub && d->configured && d->hub_ports) {
-            if (d->hub_scan_all) {
-                d->hub_scan_all = false;
-                for (uint8_t p = 1; p <= d->hub_ports; p++)
-                    d->hub_change[p / 32] |= 1u << (p % 32);
-            }
-            start_ports(d->hub_change, d->id, 0, d->hub_ports);
-        }
+        if (d->is_hub && d->configured && d->hub_ports)
+            hub_dispatch(d);
         if ((d->ep_recover | d->ep_drop) && !task_find(TASK_DEVICE, d->id, 0))
             (void)task_start(TASK_DEVICE, d->id, 0, device_task);   /* no slot: next round */
     }
@@ -135,9 +147,13 @@ void work_dispatch(struct hc *h)
  * as they are until hc_shutdown halts and resets the controller right
  * after, which clears them all (a Disable Slot per device could outlast
  * devmgr's STOP_WAIT). Their DMA pages are kept, not reused, until then
- * (dev_free). */
+ * (dev_free). After a task overflowed its stack nothing here is done: the
+ * stacks, and the heap next to them (the device table's), can't be
+ * trusted, and the driver's exit closes every channel anyway. */
 void usb_stop_all(struct hc *h)
 {
+    if (g_task_overflow)
+        return;
     task_kick();
     uint64_t end = drv_clock_ns() + STOP_WAIT_MS * NS_PER_MS;
     while ((tasks_live(TASK_PORT) || tasks_live(TASK_DEVICE)) && drv_clock_ns() < end) {

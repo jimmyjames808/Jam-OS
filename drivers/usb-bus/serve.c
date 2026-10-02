@@ -637,8 +637,8 @@ int driver_main(const struct driver_start *s)
         r = q;
     if (q == 0)
         bulk_unpin_parked();   /* halted and reset: nothing runs into them now */
-    drv_log("stopped: %lu interrupts, %lu events, DMA pool peak %u of %u pages", h->irqs,
-            h->events, h->pool_peak, POOL_PAGES);
+    drv_log("stopped: %lu interrupts, %lu events, DMA pool peak %u of %u pages, at most %u bulk "
+            "transfer(s) at once", h->irqs, h->events, h->pool_peak, POOL_PAGES, h->bulk_peak);
     if (g_task_overflow)
         r = 7;
     tasks_free();

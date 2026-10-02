@@ -149,6 +149,8 @@ static status_t u_open_interrupt_in(void *ctx, uint8_t endpoint, handle_t *repor
             drv_object_wait_one(old, SIG_PEER_CLOSED, 0, &seen) != OK)
             return ERR_ALREADY_BOUND;
         ep_close(d, e);
+        if (d->gone)
+            return ERR_PEER_CLOSED;   /* it went while the endpoint stopped */
     }
     handle_t a, b;
     status_t st = drv_channel_create(&a, &b);

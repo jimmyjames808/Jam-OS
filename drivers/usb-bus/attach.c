@@ -391,6 +391,19 @@ static bool (*const steps[])(struct attach *a) = {
 
 /* ---- attach and detach ------------------------------------------------------ */
 
+/* d's channels closed (their peers see PEER_CLOSED) and forgotten: their
+ * slots may serve other devices' channels from now on, so nothing of d
+ * may name them again (a late report, the ep_close of a task still in one
+ * of d's requests). */
+static void close_channels(struct usbdev *d)
+{
+    serve_iface_gone(d->id);
+    for (int k = 0; k < 32; k++)
+        d->eps[k].chan = -1;
+    for (int i = 0; i < d->nifs; i++)
+        d->ifs[i].devmgr_chan = -1;
+}
+
 static void attach_failed(struct usbdev *d, const char *step, uint32_t cc)
 {
     g_failed++;
@@ -405,7 +418,7 @@ static void attach_failed(struct usbdev *d, const char *step, uint32_t cc)
         drv_log("usb %s: slot context had TT hub slot %u, TT port %u, MTT %u, route %05x",
                 d->path, d->tt_slot, d->tt_port, d->tt_mtt, d->route);
     d->gone = true;   /* freed by enumerate's dev_put */
-    serve_iface_gone(d->id);
+    close_channels(d);
     g_last_change_ns = drv_clock_ns();
 }
 
@@ -469,7 +482,7 @@ static void mark_gone(struct usbdev *d, const char *why, bool quiet)
     for (int i = 0; i < MAX_DEVS; i++)
         if (g_devs[i].used && !g_devs[i].gone && g_devs[i].parent == me)
             mark_gone(&g_devs[i], "its hub went away", quiet);
-    serve_iface_gone(d->id);   /* its interface and report channels: the peers see PEER_CLOSED */
+    close_channels(d);
     if (!quiet)
         drv_log("usb %s: %04x:%04x detached (%s)", d->path, d->vid, d->pid, why);
     if (d->vid && g_first_report_done && !quiet)
