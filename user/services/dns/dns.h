@@ -9,7 +9,8 @@
  *   resolver.c  the queries in flight: one record each, its own id,
  *               port, retries and deadline, so a slow server or a slow
  *               name holds up only its own askers;
- *   main.c      the process: `/svc/dns`, the loop and the edge
+ *   main.c, socks.c, askers.c (dnsd.h)
+ *               the process: `/svc/dns`, the loop and the edge
  *               (struct dns_io).
  *
  * The edge is all the resolver does to the world: send a datagram from
@@ -136,7 +137,7 @@ void     dns_cache_flush(struct dns_cache *c);
 #define DNS_PORT_MIN     1024u   /* local ports are random in DNS_PORT_MIN..65535 */
 #define DNS_PORT_TRIES   4u      /* ports tried when the edge says one is taken */
 
-/* The edge, all of it (main.c fills it; utest's is a script). */
+/* The edge, all of it (socks.c fills it; utest's is a script). */
 struct dns_io {
     void *ctx;   /* passed to each call */
     /* Send msg from local port `port` (the edge opens a socket on it at

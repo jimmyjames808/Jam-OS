@@ -699,6 +699,7 @@ static const struct {
     { "dnsres_ports", t_dnsres_ports },
     { "dnsres_cache", t_dnsres_cache },
     { "dnsres_hostile", t_dnsres_hostile },
+    { "dnsd_sockets", t_dnsd_sockets },
     { "update_manifest", t_update_manifest },
     { "update_manifest_refusals", t_update_manifest_refusals },
     { "update_manifest_damage", t_update_manifest_damage },
