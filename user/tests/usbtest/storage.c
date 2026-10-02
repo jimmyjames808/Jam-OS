@@ -58,7 +58,8 @@
 #include "usbtest.h"
 
 #define BLK_WAIT   (60 * NS_PER_S)
-#define BUF_SIZE   65536u
+#define BUF_SIZE   65536u      /* a block channel's buffer (block.idl) */
+#define BULK_BUF   (68u << 10) /* usb-bus's bulk buffer (usb.open_bulk): 64 KiB and a page */
 #define STEP_MS    5000u       /* a bulk transfer by hand */
 #define RAW_CBW    0xf000u     /* where the hand-made CBW and CSW sit in the bulk buffer */
 #define RAW_CSW    0xf200u
@@ -172,7 +173,7 @@ static bool find_disk(const char *serial, struct raw *r)
 static void raw_close(struct raw *r)
 {
     if (r->buf)
-        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)r->buf, BUF_SIZE);
+        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)r->buf, BULK_BUF);
     r->buf = NULL;
     if (r->ch)
         jam_handle_close(r->ch);
@@ -268,7 +269,7 @@ static bool t_storage_bulk(void)
         return true;
     }
     CHECK_ST(st, OK);
-    CHECK(size == BUF_SIZE);
+    CHECK(size == BULK_BUF);
     uint64_t va = 0;
     st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, VMAR_READ | VMAR_WRITE, &va);
     jam_handle_close(vmo);
@@ -284,9 +285,9 @@ static bool t_storage_bulk(void)
     CHECK_ST(a, ERR_BAD_STATE);
     CHECK_ST(b, ERR_BAD_STATE);
     /* transfers outside the buffer, of nothing, or with a bad timeout */
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), BUF_SIZE - 12, 13, 100, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), BULK_BUF - 12, 13, 100, &n), ERR_OUT_OF_RANGE);
     CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0xffffffffu, 13, 100, &n), ERR_OUT_OF_RANGE);
-    CHECK_ST(usb_bulk_out_until(r->ch, soon(), 0, BUF_SIZE + 1, 100, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(usb_bulk_out_until(r->ch, soon(), 0, BULK_BUF + 1, 100, &n), ERR_OUT_OF_RANGE);
     CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 0, 100, &n), ERR_INVALID_ARGS);
     CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, 0, &n), ERR_INVALID_ARGS);
     CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, 60001, &n), ERR_INVALID_ARGS);

@@ -36,7 +36,11 @@ static inline uint32_t lo32(uint64_t v) { return (uint32_t)v; }
 #define MAX_CHANS    96     /* served channels (interfaces and report channels) */
 #define MAX_TASKS    48     /* tasks at once (task.c): a port's or a device's work */
 #define CFG_MAX      4096   /* biggest configuration descriptor we read */
-#define BULK_SIZE    65536u /* a class driver's bulk buffer (usb.open_bulk) */
+/* A class driver's bulk buffer (usb.open_bulk): 64 KiB of data and a page
+ * more, which usb-storage keeps for its command, status and sense, so a
+ * 64 KiB block request is one SCSI command, not two (a cheap stick's
+ * every command costs milliseconds). */
+#define BULK_SIZE    (68u << 10)
 #define BULK_PAGES   (BULK_SIZE / PAGE)
 #define BULK_TRBS    (BULK_PAGES + 1)   /* a transfer's TRBs at most: one per page it touches */
 
