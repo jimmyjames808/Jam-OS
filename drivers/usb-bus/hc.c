@@ -221,11 +221,9 @@ static void add_protocol(struct hc *x, uint32_t off, uint32_t v)
             v >> 24, (v >> 16) & 0xff, first, first + count - 1, name >> 28, dw3 & 0x1f);
     if (x->nproto < MAX_PROTOS && first && count) {
         x->proto[x->nproto].major = (uint8_t)(v >> 24);
-        x->proto[x->nproto].minor = (uint8_t)(v >> 16);
         x->proto[x->nproto].first = first;
         x->proto[x->nproto].count = count;
         x->proto[x->nproto].slot_type = dw3 & 0x1f;
-        x->proto[x->nproto].psic = (uint8_t)(name >> 28);
         x->nproto++;
     }
 }
@@ -503,7 +501,6 @@ static void event(struct hc *h, volatile struct trb *e, uint32_t d3)
         if (h->cmd.busy && ptr == h->cmd.trb) {
             h->cmd.done = true;
             h->cmd.cc = status >> 24;
-            h->cmd.param = status & 0xffffff;
             h->cmd.slot = d3 >> 24;
         } else if ((status >> 24) != CC_RING_STOPPED) {
             h->spurious_events++;

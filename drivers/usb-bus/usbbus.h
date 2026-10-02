@@ -253,10 +253,9 @@ struct hc {
     const char *handoff;             /* how the BIOS handoff went, for the RESULTS line */
     /* Supported Protocol capabilities: which root ports speak which USB */
     struct {
-        uint8_t major, minor;        /* USB revision (BCD) */
+        uint8_t major;               /* USB major revision (BCD): 2 or 3 */
         uint8_t first, count;        /* root ports first .. first + count - 1 */
         uint8_t slot_type;           /* Protocol Slot Type (for Enable Slot) */
-        uint8_t psic;                /* Protocol Speed ID Count */
     } proto[MAX_PROTOS];
     unsigned nproto;                 /* entries in proto[] */
 
@@ -286,7 +285,7 @@ struct hc {
     struct {
         bool busy, done;             /* issued; its completion event came */
         uint64_t trb;                /* its device address (matches the event's pointer) */
-        uint32_t cc, slot, param;    /* from the event: completion code, slot id, parameter */
+        uint32_t cc, slot;           /* from the event: completion code, slot id */
     } cmd;
 
     uint32_t bulk_running, bulk_peak;   /* bulk transfers running now (devices), and the most */
