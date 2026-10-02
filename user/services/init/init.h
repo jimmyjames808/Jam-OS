@@ -1,13 +1,13 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the console, serialin, devmgr, the mixer, the music
- * player, netstack, logd, netlog and the shell, each started as services.c says; splash.c
+ * player, netstack, logd, netlog, sntp and the shell, each started as services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog); update.c
+ * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog, sntp); update.c
  * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
@@ -113,8 +113,8 @@ void     splash_shell_ready(void);
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
 /* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS, LOGD, NETLOG, SHELL,
-       NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS, LOGD, NETLOG,
+       SNTP, SHELL, NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
@@ -231,6 +231,9 @@ void     net_given_up(void);
 /* /svc/net's shared channel, client end (init's: services.c publishes a
  * duplicate), or 0. */
 handle_t net_svc_channel(void);
+/* /svc/net-listen's, the same: its openers may listen (take a fixed port
+ * below NET_PORT_EPHEMERAL). */
+handle_t net_listen_channel(void);
 /* Start netlog (shell.c's NETLOG, once /data is mounted) if the settings
  * name a Mac (`net.host`) and don't say `netlog = off`; otherwise it is
  * marked given up for this boot, said once. */
@@ -245,6 +248,10 @@ status_t net_dhcp_start(void);
 uint64_t net_dhcp_wait(uint64_t t, bool data);
 /* Start the resolver (shell.c's DNS) with /svc/dns's server end. */
 status_t net_dns_start(void);
+/* Start bin/sntp (shell.c's SNTP, once /data is mounted) with the root's
+ * RIGHT_ROOT_CLOCK and `ntp.server`, unless the settings say `ntp = off`
+ * (then it is given up on for this boot, said once). */
+status_t net_sntp_start(void);
 /* Service i (DHCP or DNS; any other is ignored) is given up on. */
 void     net_service_given_up(unsigned i);
 

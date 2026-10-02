@@ -134,7 +134,8 @@ void     dns_cache_flush(struct dns_cache *c);
 #define DNS_MAX_WAITERS  8u      /* askers of one name in flight */
 #define DNS_TRIES        4u      /* sends of one name (servers taken in turn) */
 #define DNS_TRY_MS       1000u   /* the first try's wait; each next one 1 s longer: 10 s in all */
-#define DNS_PORT_MIN     1024u   /* local ports are random in DNS_PORT_MIN..65535 */
+#define DNS_PORT_MIN     49152u  /* local ports are random in DNS_PORT_MIN..65535: below it a
+                                  * port is a listening program's (netstack's listen.h) */
 #define DNS_PORT_TRIES   4u      /* ports tried when the edge says one is taken */
 
 /* The edge, all of it (socks.c fills it; utest's is a script). */

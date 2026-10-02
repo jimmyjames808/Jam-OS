@@ -628,6 +628,7 @@ status_t services_start(unsigned i)
            : i == DNS      ? net_dns_start()
            : i == LOGD     ? start_logd()
            : i == NETLOG   ? net_netlog_start()
+           : i == SNTP     ? net_sntp_start()
                            : start_shell();
 }
 
@@ -672,7 +673,8 @@ void services_given_up(unsigned i)
     net_service_given_up(i);   /* the DHCP client's and the resolver's */
     if (i == NETSTACK) {
         net_given_up();
-        publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets it */
+        publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets them */
+        publish(SVC_NET_LISTEN, HANDLE_INVALID, false);
         tell_mounts();
     }
     for (unsigned k = 0; i == MIXER && k < 2; k++) {
@@ -706,4 +708,5 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     publish(SVC_AUDIOCTL, audio_cli[1], true);
     publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
     publish(SVC_NET, net_svc_channel(), true);
+    publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
 }

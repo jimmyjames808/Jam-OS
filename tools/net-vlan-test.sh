@@ -3,19 +3,21 @@
 # "the join"): every frame Jam OS sends is tagged 802.1Q VLAN 21, and with
 # `vlan=off` none is sent at all. Two plain boots with QEMU's e1000e and
 # tools/netpeer.py (its DHCP and DNS servers, netlog's receiver
-# (--netlog), the update server serving this build (--update), an echo
-# request to the guest every half second (--ping 10.2.21.100) and the
-# frames the driver must drop (--noise)); only net.host = 10.2.21.174 in
-# the stick's settings, so the address comes by DHCP:
+# (--netlog), the update server serving this build (--update), an SNTP
+# server with the Mac's time (--ntp), an echo request to the guest every
+# half second (--ping 10.2.21.100) and the frames the driver must drop
+# (--noise)); only net.host = 10.2.21.174 in the stick's settings, so the
+# address comes by DHCP:
 #   net-vlan      tools/shell-tests/net-vlan.txt: the DHCP lease, netlog
 #                 sending this boot's log, `host` and `ping <name>`, `ping`
 #                 by address through the gateway, `update -n` fetching the
-#                 build (checked by init, nothing loaded), netstack
-#                 answering ARP and the peer's pings. The peer and the pcap
+#                 build (checked by init, nothing loaded), sntp setting
+#                 the clock from the gateway, netstack answering ARP and
+#                 the peer's pings. The peer and the pcap
 #                 each check every frame from the guest is tagged 21
 #                 (tools/qemu-test.sh); then the pcap is read again here
 #                 and its frames counted per path (ARP, DHCP, DNS, echo
-#                 requests, echo replies, netlog, update): every path must
+#                 requests, echo replies, netlog, update, SNTP): every path must
 #                 have sent at least one frame, none may be unknown, and
 #                 the peer must have seen exactly the pcap's frames;
 #   net-vlan-off  tools/shell-tests/net-vlan-off.txt: the same commands on
@@ -55,7 +57,7 @@ for run in net-vlan net-vlan-off; do
     [ $run = net-vlan-off ] && words="shell vlan=off" none=1
     rm -rf "$out/$run.netlog"
     QEMU_IMAGE="$img" QEMU_NET=1 QEMU_NET_NONE=$none \
-        QEMU_NET_PEER="--netlog $out/$run.netlog --update $out/net-vlan.spec.json --ping 10.2.21.100 --noise 5" \
+        QEMU_NET_PEER="--netlog $out/$run.netlog --update $out/net-vlan.spec.json --ntp $(date +%s) --ping 10.2.21.100 --noise 5" \
         QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/$run.txt \
         tools/qemu-test.sh "$out" $run $words > "$out/$run.out" 2>&1 ||
         fail "$run: the script or the VLAN checks (see $out/$run.out, $out/$run.log)"
@@ -71,8 +73,8 @@ sys.path.insert(0, "tools")
 import importlib
 pcv = importlib.import_module("pcap-vlan-check")
 
-PATHS = ["arp", "dhcp", "dns", "echo request", "echo reply", "netlog", "update"]
-UDP = {67: "dhcp", 53: "dns", 5021: "netlog", 5022: "update"}
+PATHS = ["arp", "dhcp", "dns", "echo request", "echo reply", "netlog", "update", "sntp"]
+UDP = {67: "dhcp", 53: "dns", 5021: "netlog", 5022: "update", 123: "sntp"}
 
 
 def path(f):
@@ -120,6 +122,7 @@ grep -aq "update: .* -> .*: checked by init in .* not loaded (-n)" "$log" ||
 [ "$(grep -ac "kexec: kexec_load from init" "$log")" -eq 0 ] ||
     fail "net-vlan: update -n loaded a build"
 ls "$out/net-vlan.netlog/"*.txt > /dev/null 2>&1 || fail "net-vlan: no log file from netlog"
+want net-vlan "off: set from the gateway (10.2.21.1, stratum 2"
 
 # --- net-vlan-off: nothing at all ---
 log=$out/net-vlan-off.log

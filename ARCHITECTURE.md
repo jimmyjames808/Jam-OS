@@ -692,7 +692,7 @@ untagged frame can't leave.
 
 ```
  the shell (net, ping, host, update), programs     /svc/net  /svc/dns
- dhcp (netctl) · dns · netlog · update (bin/update)
+ dhcp (netctl) · dns · netlog · sntp · update (bin/update)
  netstack: lwIP, one loop                           /svc/net, netctl
  ───── netdev: two ring VMOs and two events per session ─────────
  drv/rtl8125 (the PC) · drv/e1000e (QEMU)           tag, check, DMA
@@ -797,7 +797,26 @@ restarts:
   datagrams queued a socket (one more is dropped and counted), each copied
   into netstack's own heap so a slow reader never holds lwIP's buffers. A
   program can't send to a broadcast, multicast or loopback address, can't
-  bind a port below 1024, and sends no raw packets.
+  bind a port below 1024 (nor one below 49152 without the listen
+  permission, below), and sends no raw packets.
+- **`/svc/net-listen`**, the listen permission: the same protocol on a
+  second shared channel init makes and publishes (netstack's SR_USER + 2),
+  whose openers may also bind a fixed UDP port from 1024 to 49151, where
+  servers live and where a peer sends unasked; TCP's `listen` and `accept`
+  will ask the same (`listen_may_accept`, `user/services/netstack/listen.h`).
+  netstack learns the permission from the channel an opener came through,
+  set once at connect, never from anything the program says, so it can't
+  be forged: a program has it only if it holds that channel. The shell
+  gives it only to a program whose list says `svc net listen` (which
+  grants `/svc/net` too; the bare name `svc net-listen` is no want);
+  `allow` shows it to the owner as "accepting connections from the
+  network" for a program on `/data`, and `tools/checkwants.py` approves it
+  for the boot image. Without it a program binds port 0 (netstack picks
+  from 49152) or a port of its own picking from 49152 (the resolver's
+  random source ports) and still gets every reply on them: UDP can't tell
+  a reply from a datagram nobody asked for, so what the permission guards
+  is a port someone else could know in advance. Nothing in the boot image
+  listens but `bin/wantlisten`, the allow test's program.
 
 **The address.** `net.address = <address>/<prefix> [<gateway> [<dns>
 [<dns>]]]` in `/data/etc/settings` is a static address, given to netstack
@@ -829,6 +848,32 @@ move a 64 KiB window, and without them it sends again from the last ack
 panicked boot's log. It logs only when its state changes, so its own lines
 can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
 
+**sntp** (`user/services/sntp`) sets the clock from the network (SNTP, RFC
+4330; the checks in `ntp.c`, a core with no I/O that utest drives). init
+starts it once `/data`'s settings are read, unless `ntp = off`, with
+`ntp.server` as its argument, `/svc/net` and `/svc/dns`, and the root with
+`RIGHT_ROOT_CLOCK` only: it is the one service besides init and the shell
+that may set the clock. Without `ntp.server` it asks the network's gateway
+(the DHCP lease's router, which on the owner's network is also its DNS
+server), then `pool.ntp.org` if the gateway gives no time. It waits for an
+address, then sends up to 4 requests 2 s apart from a port netstack picks,
+connected to the server's port 123; each request carries 64 random bits
+as its transmit timestamp and nothing of our clock, and only a reply whose
+origin is exactly those bits, from a synchronized server (mode 4, version
+3 or 4, stratum 1-15, no leap alarm, both timestamps, root delay / 2 + root
+dispersion under 1 s, sent after it was received, a round trip under 5 s,
+a time from 2026 to 2199) is believed. Anything else is counted and said
+in one line, never used: a kiss-o'-death too only if its origin matches.
+The time is the server's transmit time plus half the round trip less the
+server's own time, at the uptime the reply came, which is what the kernel
+keeps. The first time it takes the whole step, but a step over 60 s needs
+a second reply, to a second nonce, that agrees within a second. Then it
+asks every hour and moves the clock at most 5 s a time (a step cut short
+asks again in 64 s), so a lying server can only drag it slowly. A round
+with no time backs off from 16 s to 1024 s. It sets the clock with
+`WALLCLOCK_NET`, and logs each set with the offset it found
+([Time and settings](#time-and-settings)).
+
 **update** (`user/services/update`, `user/services/init/update.c`). The
 shell's `update [-n] [address]` takes an offer channel from init
 (`initctl.update_offer`) and runs `bin/update` with that channel and
@@ -854,14 +899,15 @@ signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
 | dns | `/svc/net`; the server end of `/svc/dns` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net`, its offer channel to init | yes: the fetch's replies and the manifest |
+| sntp | `/svc/net`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | init | the fetched build's copies, `kexec_load` | the manifest only (a strict parser); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
 its netdev channels); netstack's loop never waits (its waiting calls are
 on `connect.c`'s thread); dns writes its calls to netstack without waiting
-and takes the answers off its port. dhcp, netlog and `bin/update` serve
-nobody, so they may block, always with a deadline. init's update check
+and takes the answers off its port. dhcp, netlog, sntp and `bin/update`
+serve nobody, so they may block, always with a deadline. init's update check
 hashes on a worker thread; its loop does only the `kexec_load` and
 `/esp`'s stat.
 
@@ -931,8 +977,8 @@ not the one-shot `netprobe` and `netsend`.
   handles they need: on a plain boot the bootfs server, the console,
   the boot splash (once; the shell waits for it), serialin, devmgr, the
   mixer, the music player, netstack, dhcp (without a static address), dns,
-  logd (once `/data` is there), netlog (when `net.host` is set) and the
-  shell, restarting
+  logd (once `/data` is there), netlog (when `net.host` is set), sntp
+  (once `/data` is there, unless `ntp = off`) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
   on, except the console and the shell, which nobody could do without
@@ -944,8 +990,9 @@ not the one-shot `netprobe` and `netsend`.
   each a channel per opener; `music`, a channel per opener; `devmgr`, a
   channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`, a channel per opener;
-  `net`, netstack's sockets for programs, and `dns`, the resolver, each a
-  channel per opener). The services it starts
+  `net`, netstack's sockets for programs, `net-listen`, the same with the
+  listen permission ([Networking](#networking)), and `dns`, the resolver,
+  each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
@@ -998,7 +1045,8 @@ not the one-shot `netprobe` and `netsend`.
 - **The program's list** (`<wants.h>`, [M8.6-SVC.md](docs/history/M8.6-SVC.md)):
   a program declares in its source what it wants (`JAM_WANTS("svc
   music\n" "mount /data r\n")`: services, mounts read-only or writable,
-  and the root resource's powers it needs); the text is an ELF note
+  the root resource's powers it needs, and `svc net listen` for the
+  network with the permission to listen, [Networking](#networking)); the text is an ELF note
   under a `PT_NOTE` program header, and `tools/checkwants.py` checks every
   program's list when the boot image is built (that is the build's
   approval; the services that kill drivers and services are for tests
@@ -1361,14 +1409,19 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   (`kernel/dev/wallclock.c`), so it needs no tick. At boot the kernel has
   only the real-time clock's reading, taken as UTC until someone says
   otherwise: a PC keeps its RTC in UTC or (Windows) in local time, and the
-  RTC can't say which. init sets it (`wallclock_set`, RIGHT_MANAGE on the
-  root resource) at the start of shell mode and again whenever `/data`
+  RTC can't say which. init sets it (`wallclock_set`, RIGHT_ROOT_CLOCK on
+  the root resource) at the start of shell mode and again whenever `/data`
   comes: it reads the RTC (`rtc_read`), takes it as the setting `rtc`
   says (`local`, the default; `utc`; or a zone's name: the RTC keeps
   that zone's time, e.g. Windows set to another zone than the one Jam OS
   shows), and gives the kernel the time
   zone too, a name. Any program reads the time without a handle
-  (`wallclock_get`): it is the uptime plus an offset.
+  (`wallclock_get`): it is the uptime plus an offset. Once the network has an
+  address, bin/sntp sets it from the network's time
+  ([Networking](#networking)), marking it `WALLCLOCK_NET` (the one flag
+  `wallclock_set` takes; a set without it clears it): init then keeps
+  that time when `/data` comes back and gives the kernel only the zone,
+  `date -z` keeps the mark, and `date -r` says where the time came from.
 - **Time zones are libos's** (`<wallclock.h>`): the calendar, a small
   table of named zones with their daylight-time rules (Australia's,
   Auckland, London, New York, Los Angeles; `Australia/Sydney` the
@@ -1379,8 +1432,8 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 - **Settings that survive a reboot**: `/data/etc/settings`, plain text,
   one `key = value` a line, `#` comments (`<settings.h>` has the format
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
-  `music.folder`, and the network's `net.address`, `net.host` and
-  `netlog`: [Networking](#networking)). init reads them when `/data`
+  `music.folder`, and the network's `net.address`, `net.host`,
+  `netlog`, `ntp` and `ntp.server`: [Networking](#networking)). init reads them when `/data`
   comes (the clock, the network's address) and when the mixer, the music
   player, netstack and netlog start; the shell's
   `vol master`, `music vol`, `music start <folder>` and `date -z` write
