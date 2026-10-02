@@ -1,0 +1,41 @@
+# speed (tools/speed-test.sh runs this): a plain boot with QEMU's e1000e
+# and the network peer, net.address set in the stick's settings; the
+# peer's relay joins 10.2.21.174:5201 (TCP and UDP) to tools/speed.py's
+# server on the Mac, and a port on the Mac to the guest's 5202, where
+# tools/speed.py's client connects to `speed -l`. bin/speed sends, then
+# receives, then sends UDP datagrams; then it listens, the Mac's client
+# sends and receives, and Ctrl+C stops it. The numbers are QEMU's.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait jam>
+send speed 10.2.21.174 -t 3
+wait 60 speed: connected to 10.2.21.174 port 5201: sending for 3 s over TCP
+wait 60 speed: sent
+wait 60 speed: the other side got
+wait jam>
+send speed mac.jam -r -t 3
+wait 60 speed: connected to 10.2.21.174 port 5201: receiving for 3 s over TCP
+wait 60 speed: received
+wait jam>
+send speed 10.2.21.174 -u -t 2
+wait 60 speed: sending UDP to 10.2.21.174 port 5201 for 2 s
+wait 60 datagrams sent,
+wait 60 speed: the Mac got
+wait jam>
+send speed 10.2.21.174 5299 -t 1; echo st=$?
+wait 60 speed: 10.2.21.174 port 5299:
+wait st=1
+wait jam>
+send speed -l 5202
+wait 30 speed: listening on 10.2.21.5 port 5202
+# tools/speed.py client connects now: sends 3 s, then receives 3 s
+wait 120 speed: 10.2.21.174: receiving for 3 s
+wait 60 speed: received
+wait 120 speed: 10.2.21.174: sending for 3 s
+wait 60 speed: the other side got
+sleep 2
+type \x03
+wait jam>
+send reboot -f
+wait reboot: resetting

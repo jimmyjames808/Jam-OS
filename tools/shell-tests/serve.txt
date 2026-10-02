@@ -1,0 +1,70 @@
+# serve (tools/serve-test.sh runs this): a plain boot with QEMU's e1000e
+# and the network peer, net.address set in the stick's settings and two
+# files on /data; the peer's --tcp-forward joins two ports on the Mac to
+# the guest's 8080 and 8081, where tools/servecheck.py fetches from it
+# (curl) while this script waits. serve serves a file in the background
+# and a second on another port, refuses a port served already, a folder
+# and a port below 1024, logs a line per request, lists both, and stops
+# them; a program without the listen permission (bin/nolisten) is refused.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+seen 30 serve: ready
+wait jam>
+send serve
+wait serve: nothing is served
+wait jam>
+send serve /data/serve.bin
+wait 30 serve: serving /data/serve.bin (5.0 MiB) on port 8080, in the background
+wait curl http://10.2.21.5:8080/ -o serve.bin
+wait jam>
+send serve /data/page.html 8081; echo st=$?
+wait 30 serve: serving /data/page.html
+wait st=0
+wait jam>
+send serve /data/page.html 8081; echo st=$?
+wait a file is served on that port already
+wait st=1
+wait jam>
+send serve /data; echo st=$?
+wait serve: /data: a folder
+wait st=1
+wait jam>
+send serve /data/serve.bin 80; echo st=$?
+wait serve: 80: a port is 1024..65535
+wait st=2
+wait jam>
+# tools/servecheck.py starts now: two downloads at once, HEAD, a range,
+# the second file, a request that isn't HTTP, a head over 8 KiB
+wait 300 GET /any/thing?x=1 200, 5242880 bytes
+seen 300 GET / 200, 5242880 bytes
+wait 120 HEAD / 200, 0 bytes
+wait 120 GET / 206, 100 bytes
+wait 120 GET / 200, 43 bytes
+wait 120 ? 400, 0 bytes
+wait 120 ? 431, 0 bytes
+send serve
+wait serve: port 8080: /data/serve.bin (5.0 MiB)
+wait serve: port 8081: /data/page.html
+wait jam>
+send serve stop 8081
+wait serve: stopped 1 file
+wait jam>
+send serve stop
+wait serve: stopped 1 file
+wait jam>
+send serve stop
+wait serve: nothing was served
+wait jam>
+send serve
+wait serve: nothing is served
+wait jam>
+send run nolisten
+wait 30 nolisten: a listener on port 8081 through /svc/net: ERR_ACCESS_DENIED
+wait nolisten: /svc/net-listen in its namespace: no
+wait nolisten: PASS
+wait jam>
+send sleep 5
+wait jam>
+send reboot -f
+wait reboot: resetting
