@@ -276,7 +276,7 @@ static bool run_tests(void)
  * that order of precedence), which init passes on to devmgr and devmgr to
  * the RTL8125's driver: its listen-only probe, its ARP send test, or its
  * netdev service for netstack (no other boot binds the network chip; a
- * reboot doesn't keep it); vlan=<id> (only
+ * reboot keeps `net` alone: kexec_next_cmdline); vlan=<id> (only
  * when there is a VLAN: boot_vlan), which init passes on to devmgr and
  * devmgr to every network driver; bootdisk=0x<id>, which init passes on
  * to devmgr (the boot disk); `splashhang` (a test's: the splash never

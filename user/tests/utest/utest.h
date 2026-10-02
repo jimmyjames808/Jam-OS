@@ -260,6 +260,7 @@ bool t_ipv4_text(void);
 /* netdrv.c: bin/netstack over a fake driver's netdev rings (netpkt.c's
  * frames, as netstack.c's). */
 bool t_netdrv_ping_and_link(void);
+bool t_netdrv_link_flap(void);
 bool t_netdrv_restart(void);
 bool t_netdrv_hostile_driver(void);
 /* netsock.c: programs' sockets and pings on /svc/net, through bin/netstack
@@ -271,6 +272,8 @@ bool t_netsock_iface(void);
 bool t_netsock_limits(void);
 bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
+bool t_netsock_busy_client(void);
+bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
 /* netlisten.c: the listen permission (netstack's listen.h, <wants.h>'s
  * `svc net listen`); sntp.c: bin/sntp's request and checks (ntp.c). */
@@ -287,6 +290,16 @@ bool t_netdev_ring_counts(void);
 bool t_netdev_ring_one_thread(void);
 bool t_netdev_ring_exchange(void);
 bool t_netdev_vlan_word(void);
+
+/* sockring.c: a socket's rings (<sockring.h>): counts, datagrams and a
+ * byte stream round rings that wrap, the end, the wake flags, a hostile
+ * peer, a fake netstack thread's exchange with the rights it hands out. */
+bool t_sockring_counts(void);
+bool t_sockring_dgram(void);
+bool t_sockring_stream(void);
+bool t_sockring_wake(void);
+bool t_sockring_hostile(void);
+bool t_sockring_exchange(void);
 
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the

@@ -12,7 +12,7 @@ another VLAN, or longer than 1518 bytes.
 
     pcap-vlan-check.py [--vlan N] [--expect-none] [--min N]
                        [--exclude-src MAC] file.pcap
-    pcap-vlan-check.py [--vlan N] --pc MAC file.pcap
+    pcap-vlan-check.py [--vlan N] --pc MAC [--mac MAC] file.pcap
     pcap-vlan-check.py --selftest
 
 --expect-none: the file must have no frame at all (the vlan=off run).
@@ -28,7 +28,9 @@ ARP, IPv4 and ICMP checksums right); it also counts the PC's ARP probes
 and the replies to them, the Mac's pings and which the PC answered (a
 +/- pattern and the missing sequence numbers), and says whether the Mac's
 own frames show their tags (if none does, the capture can't see tags).
-PASS needs at least one frame from the PC and none bad."""
+PASS needs at least one frame from the PC and none bad. --mac MAC (the
+Mac's adapter): a frame from neither address is bad too (on a cable with
+only the two, it is the PC's with another source address)."""
 import argparse
 import os
 import struct
@@ -194,7 +196,7 @@ def garbled(frame):
     return None
 
 
-def pc_report(fs, pc, vlan, out):
+def pc_report(fs, pc, vlan, out, mac=None):
     """The direct-cable capture: every frame from the PC's MAC `pc` must be
     tagged `vlan` and sane; pings to it and its ARP probes are counted, and
     the Mac's own frames say whether the capture shows tags at all."""
@@ -218,6 +220,12 @@ def pc_report(fs, pc, vlan, out):
             if et == 0x0800 and len(p) >= 28 and p[9] == 1 and p[(p[0] & 15) * 4] == 0:
                 hl = (p[0] & 15) * 4
                 answered.add((p[16:20], be16(p, hl + 4), be16(p, hl + 6)))
+            continue
+        if mac is not None and f[6:12] != mac:
+            bad += 1   # neither the PC's nor the Mac's: the PC's under another address
+            if bad + odd <= 8:
+                print("pcap-vlan-check: frame %d from neither the PC nor the Mac (%s): %s" %
+                      (i, f[6:12].hex(), f[:48].hex()), file=out)
             continue
         mine_tagged += be16(f, 12) == 0x8100
         mine_untagged += be16(f, 12) != 0x8100
@@ -247,14 +255,14 @@ def pc_report(fs, pc, vlan, out):
     return bad == 0 and odd == 0
 
 
-def check_pc(path, pc, vlan=21, out=sys.stdout):
+def check_pc(path, pc, vlan=21, out=sys.stdout, mac=None):
     """True if every frame from `pc` in the capture at path is tagged and sane."""
     try:
         fs = frames(path)
     except (OSError, ValueError) as err:
         print("pcap-vlan-check: %s: %s: FAIL" % (path, err), file=out)
         return False
-    ok = pc_report(fs, pc, vlan, out)
+    ok = pc_report(fs, pc, vlan, out, mac)
     ok = ok and any(f[6:12] == pc for f in fs)
     print("pcap-vlan-check: %s: %d frames, %s" % (os.path.basename(path), len(fs),
                                                  "PASS" if ok else "FAIL"), file=out)
@@ -354,6 +362,14 @@ def selftest_pc(d, null):
         if check_pc(p, pc, out=null) != want:
             print("pcap-vlan-check selftest: --pc case %d: want %s" % (i, want))
             fails += 1
+    # --mac: a frame from neither (untagged, another source) is bad; the good case still passes
+    stray = b"\xff" * 6 + bytes.fromhex("020000000003") + probe[16:]   # untagged
+    for fs, m, want in (([probe, reply, ask, ans], mac, True), ([probe, stray], mac, False),
+                        ([probe, stray], None, True)):   # without --mac: taken as the Mac's
+        write_pcap(p, fs)
+        if check_pc(p, pc, out=null, mac=m) != want:
+            print("pcap-vlan-check selftest: --pc --mac %s: want %s" % (m and m.hex(), want))
+            fails += 1
     write_pcapng(p, cases[0][0])
     if not check_pc(p, pc, out=null):
         print("pcap-vlan-check selftest: --pc over pcapng failed")
@@ -369,6 +385,7 @@ def main():
     ap.add_argument("--min", type=int, default=0)
     ap.add_argument("--exclude-src")
     ap.add_argument("--pc")
+    ap.add_argument("--mac")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -376,7 +393,9 @@ def main():
     if not a.pcap:
         ap.error("a pcap file is needed")
     if a.pc:
-        return 0 if check_pc(a.pcap, bytes.fromhex(a.pc.replace(":", "")), a.vlan) else 1
+        mac = bytes.fromhex(a.mac.replace(":", "")) if a.mac else None
+        return 0 if check_pc(a.pcap, bytes.fromhex(a.pc.replace(":", "")), a.vlan,
+                             mac=mac) else 1
     exclude = bytes.fromhex(a.exclude_src.replace(":", "")) if a.exclude_src else None
     return 0 if check(a.pcap, a.vlan, a.expect_none, a.min, exclude) else 1
 

@@ -22,6 +22,10 @@
 #   5. The probe's own files (probe.c, census.c) call nothing of tx.c.
 #   6. The mode and the VLAN are each set in one place: one assignment of
 #      ->mode and one of ->vlan, both in main.c.
+#   7. Nothing goes round rules 1-3 by name: the registers' mapping (->r)
+#      is named only in regs.c, tx.c and main.c (which maps it), and the
+#      transmit ring (TX_RING_OFF) and buffers (txbufs) only in tx.c, ring.c
+#      (which makes and frees them) and rtl8125.h (M9-REVIEW item 6).
 #
 # Then it checks itself: tools/checknotx-tests/ breaks every part of every
 # rule once, and each rule must catch exactly its offences there
@@ -50,6 +54,14 @@ rules()
         if [ "$base" = probe.c ] || [ "$base" = census.c ]; then
             grep -n -E '\btx_[a-z_]+\(' "$f" | sed "s|^|5 $f:|"
         fi
+        case $base in
+        regs.c|tx.c|main.c) ;;
+        *) grep -n -E -- '->r\b' "$f" | sed "s|^|7 $f:|" ;;
+        esac
+        case $base in
+        tx.c|ring.c|rtl8125.h) ;;
+        *) grep -n -E '\b(TX_RING_OFF|txbufs)\b' "$f" | sed "s|^|7 $f:|" ;;
+        esac
     done
     gates "$dir"
     once "$dir" mode
@@ -107,7 +119,7 @@ fi
 bad=$(rules "$here/checknotx-tests")
 [ -z "${CHECKNOTX_SHOW:-}" ] || echo "$bad"   # CHECKNOTX_SHOW=1: what the self-check caught
 # Each rule's offences there, counted (every part of a rule has one).
-for want in 1:2 2:3 3:1 4:4 5:1 6:2; do
+for want in 1:2 2:3 3:1 4:4 5:1 6:2 7:3; do
     r=${want%:*}
     n=$(echo "$bad" | grep -c "^$r ")
     if [ "$n" != "${want#*:}" ]; then
@@ -115,4 +127,4 @@ for want in 1:2 2:3 3:1 4:4 5:1 6:2; do
         exit 1
     fi
 done
-echo "checknotx: drivers/rtl8125 transmits only through tx.c's gate (6 rules, each self-checked)"
+echo "checknotx: drivers/rtl8125 transmits only through tx.c's gate (7 rules, each self-checked)"
