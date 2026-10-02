@@ -142,9 +142,13 @@ void work_dispatch(struct hc *h)
  * as they are until hc_shutdown halts and resets the controller right
  * after, which clears them all (a Disable Slot per device could outlast
  * devmgr's STOP_WAIT). Their DMA pages are kept, not reused, until then
- * (dev_free). */
+ * (dev_free). After a task overflowed its stack nothing here is done: the
+ * stacks, and the heap next to them (the device table's), can't be
+ * trusted, and the driver's exit closes every channel anyway. */
 void usb_stop_all(struct hc *h)
 {
+    if (g_task_overflow)
+        return;
     task_kick();
     uint64_t end = drv_clock_ns() + STOP_WAIT_MS * NS_PER_MS;
     while ((tasks_live(TASK_PORT) || tasks_live(TASK_DEVICE)) && drv_clock_ns() < end) {
