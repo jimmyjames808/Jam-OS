@@ -87,7 +87,7 @@ syscall path returns an error.
 | Syscall glue (`sysc_*`, `sys_*`) | `kernel/abi/` |
 | Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
-| System services (bootfs, console, devmgr, fat, init, logd, mixer, music, netstack, serialin, shell) | `user/services/<name>/` |
+| System services (bootfs, console, devmgr, fat, init, logd, mixer, music, netstack, serialin, shell, update) | `user/services/<name>/` |
 | Apps (fractal, life, tetris, snake, mines, sysmon, jamjar, jamcover, demo, splash, play) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
 | Test programs (utest, usbtest, hdatest, mixtest, nettest, contest, ramfs, soakload, wantdebug) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |

@@ -9,7 +9,9 @@ lwIP, on the netdev rings, started by init), R1 (the transmit path, the
 its PC runs are pending), stage 4 (sockets for programs: `/svc/net`,
 `ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores) and stages 6a
 and 7a (netlog's and `update`'s cores, init's update check, the Mac
-tools). The sections below say what each one built and left for the next.
+tools), and stage 7b (`update` over the network, in QEMU:
+[below](#stage-7b-built-update-over-the-network)). The sections below say
+what each one built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -1104,7 +1106,8 @@ deadline, so the service-loop rule holds by construction):
   that follows keeps the fetched build instead of reloading the stick's.
   Then the shell prints `0.0.28-m8.6 (2079f35) -> 0.0.29-m9 (...)` and
   reboots through the normal path (logs synced, devmgr stopped,
-  kexec). `update -n` loads without rebooting.
+  kexec). `update -n` fetches and checks without loading anything
+  (as built: [stage 7b](#stage-7b-built-update-over-the-network)).
 - **What it means:** the fetched build runs until a power-off or until
   `/esp` changes; a panic comes back in it too. The stick is never
   written (question 4). Downgrades are allowed (the owner runs it); the
@@ -1251,6 +1254,72 @@ use it. What is there, and how it differs from the sections above:
    5021 with netlog-recv.py's `Receiver(folder, sock=None).handle(dgram)`
    (it returns the ack) and the test compares the file with the boot's
    log from its first line, the receiver started late and paused.
+
+## Stage 7b, built: `update` over the network
+
+Built 2026-10-02 on stage 4's sockets; tested in QEMU (the PC run waits
+for the RTL8125's transmit fix). What is there, and what changed from the
+edges above:
+
+- **The shell starts the fetcher, not init** (the plan's second option,
+  the simpler one): `update [-n] [address]` (cmd/update.c) reads the
+  server's address (`net.host` in /data/etc/settings, or the argument),
+  takes an offer channel with `initctl.update_offer` and runs
+  `bin/update` (user/services/update) as a helper (`sh_run_helper`): its
+  list is `svc net`, its only other handle the offer channel, its
+  arguments the address, `load` or `check`, and the running version and
+  git commit. init needs no new method, and its authority is unchanged:
+  only init's loop calls `kexec_load`, on copies only it holds. A
+  refused or failed update returns 1 and nothing else happens; an
+  accepted one is followed by the shell's own `reboot`.
+- **bin/update**: `net_wait_up` (10 s), a socket from `udp(0)`
+  connected to the server's port 5022, `net_recv_arm`, then a loop of
+  `updfetch_poll` and, whenever the socket's channel is readable,
+  `net_sock_take` into `updfetch_reply` (the server's datagrams only);
+  Ctrl+C (the helper's stop channel) is looked at every 100 ms.
+  `begin` makes two page-rounded VMOs, `store` writes them; at DONE it
+  writes one `struct update_offer` with read-only duplicates
+  (`RIGHT_READ | RIGHT_TRANSFER`) and waits up to 60 s for the answer.
+  It says what the server has, each quarter fetched, the fetch's counts,
+  and `0.0.28-m8.6 (2079f35) -> 0.0.29-m9 (abc1234)`, or why not: no
+  answer at all, the server stopped answering, its answers don't match
+  its manifest, init's refusal. Measured in QEMU (e1000e, the peer in
+  Python): 9.7 MB in 7-8 s, ~6900 requests, 0-2 sent again.
+- **`update -n`** is a check only, not a load: a new offer flag,
+  `UPDATE_OFFER_CHECK_ONLY` (<update.h>), makes init check everything and
+  answer without `kexec_load`, so the stored kernel stays the running
+  build's (the plan said "loads without rebooting"; nothing loaded is
+  safer: a panic can't start a build nobody switched to).
+- **The hash is off init's loop** (the service-loop question 7a left):
+  the loop reads the offer, parses the manifest and compares the lengths;
+  the copy and the SHA-256s run on a worker thread (`update check`, a
+  16 KiB static stack), which queues a packet with the offer's key when
+  done; the loop then calls `kexec_load`, notes /esp and answers. In
+  QEMU a 9.7 MB build: 225-260 ms hashed on the worker, ~90 ms left in
+  the loop (`kexec_load` copying 18 MB into the region, and /esp's stat).
+  A new offer channel while a check runs is `ERR_BAD_STATE`.
+- **The git commit is in the build**: the Makefile writes
+  `build/build.txt` (`git 2079f35`, `-dirty` when tracked files had
+  changes; rewritten only when it changes) into bootfs as `build.txt`.
+  The shell's `version` shows it (`Jam OS 0.0.28-m8.6, git 2079f35`),
+  `update` sends it as the old side, and tools/update-server.py takes the
+  manifest's `git` from the served boot image's `build.txt` (else the
+  tree's), so the manifest names the build, not the tree.
+- **Tests:** tools/update-net-test.sh (one QEMU run, QEMU_NET; the peer's
+  `--update` serves update-server.py's `PlannedServer` with build B, and
+  each `update` gets the next plan: a damaged kernel byte and a wrong
+  manifest hash refused by init, a truncated boot image and a server gone
+  mid-fetch failed by the fetcher, `update -n`, then `update` into B;
+  B's version and git after the kexec; one `kexec_load`; every frame
+  tagged 21). updtest gained an unknown flag (refused) and a check-only
+  offer (accepted, not loaded), so tools/update-test.sh counts 13
+  refusals. tools/bootfs-edit.py makes the test builds' boot images.
+- **The owner's workflow** ([README](../README.md#boot-a-real-pc)): once,
+  `net.host = 10.2.21.174` in the PC's settings; on the Mac `make`, then
+  `python3 tools/update-server.py` left running; on the PC `update`.
+- **Not done:** the PC run (after the RTL8125 fix); a build fetched by
+  `update` reports "the stored kernel came from /esp" at its next boot
+  (init/reboot.c's line, which can't know: the build itself is right).
 
 ## Where tracks meet
 

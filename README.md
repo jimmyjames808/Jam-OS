@@ -73,9 +73,11 @@ a real desktop PC, which is where every milestone is tested.
   21; a static address from `net.address` in `/data/etc/settings`; `net`
   shows the address, the link and the counts (`net stats`: all of them)
   and `ping <address>` pings; programs whose list asks for `svc net` get
-  UDP sockets.
+  UDP sockets; `update` runs the build the Mac serves, by kexec
+  ([below](#boot-a-real-pc)); `version` names the git commit a build was
+  made from.
 
-Not yet: networking on the PC (DHCP, DNS, the log to the Mac, `update`),
+Not yet: networking on the PC (DHCP, DNS, the log to the Mac),
 power management. Status and plans:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -124,6 +126,25 @@ and leaves `/data` alone; it asks for your password, because macOS does
 not mount the stick's boot partition by itself. The details, and the PC
 Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 
+To try a build without moving the stick, over the network (VLAN 21; so
+far tested in QEMU only):
+
+1. Once, on the PC: `net.host = 10.2.21.174` (the Mac's address) in
+   `/data/etc/settings`, beside `net.address`.
+2. On the Mac: `make`, then `python3 tools/update-server.py`, left running
+   (it serves `build/jamos.elf` and `build/bootfs.img` on UDP port 5022;
+   run `make` again whenever you like, it picks up the new build at the
+   next `update`).
+3. On the PC: `update`. It fetches the build, init checks each file's size
+   and SHA-256 against the manifest, the screen says `old -> new` (version
+   and git commit), and the PC reboots into it. `update -n` fetches and
+   checks only.
+
+The fetched build lives in RAM: it survives `reboot` and a panic, and a
+power-off brings back the stick's. `make flash` is still how a build
+stays. Updates are not signed yet: anyone on VLAN 21 who answers as the
+Mac could run their own kernel, so `update` runs only when you type it.
+
 ## Where things live
 
 | Path | What |
@@ -144,7 +165,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), update (`update`'s fetcher: the build the Mac serves, offered to init) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
