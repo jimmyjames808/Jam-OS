@@ -351,6 +351,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             ctl_serve((unsigned)(pkt.key - KEY_CTL));
         } else if (pkt.key == KEY_SPLASH) {
             splash_event();
+        } else if (pkt.key == KEY_UPDATE) {
+            update_event();
         }
     }
 }

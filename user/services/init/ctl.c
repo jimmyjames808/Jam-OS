@@ -29,7 +29,8 @@
  *
  * shell_ready (the shell, once it is up) lets the boot splash give the
  * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
- * /esp's kernel and boot image the stored copy now (reboot.c). */
+ * /esp's kernel and boot image the stored copy now (reboot.c);
+ * update_offer hands out a channel for a fetched build (update.c). */
 #include <devmgr.h>
 #include <idl/initctl.h>
 #include <idl/usbbus.h>
@@ -295,10 +296,18 @@ static status_t op_kernel_load(void *ctx, uint64_t *kernel_bytes, uint64_t *boot
     return init_kernel_load(kernel_bytes, bootfs_bytes, read_ms);
 }
 
+static status_t op_update_offer(void *ctx, handle_t *out_offer)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    return update_offer_new(ctl_port, KEY_UPDATE, out_offer);
+}
+
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
-    .kernel_load = op_kernel_load,
+    .kernel_load = op_kernel_load, .update_offer = op_update_offer,
 };
 
 static void ctl_close(struct ctl *c)

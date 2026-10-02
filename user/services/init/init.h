@@ -7,7 +7,8 @@
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings.
+ * /data/etc/settings; update.c checks a fetched build and makes it the
+ * stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -109,6 +110,7 @@ enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSV
 #define KEY_CTL      0x200u   /* + CTL_*: requests on a control channel */
 #define KEY_SPLASH   0x300u   /* the splash's channel (splash.c) */
 #define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
+#define KEY_UPDATE   0x500u   /* an update's offer channel (update.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -210,6 +212,21 @@ status_t init_reboot_kexec(void);
  * stored copy now (and noted as such); their sizes and the read's time.
  * ERR_NOT_FOUND without them; kexec_load's errors (the old copy stays). */
 status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32_t *read_ms);
+/* The stored copy came from somewhere else (an update): /esp's kernel and
+ * boot image as they are now are noted as its, so the next reboot keeps
+ * it and reads nothing unless the stick changes. Without /esp nothing is
+ * noted now (its first mount notes it, reboot_note_esp). */
+void     reboot_keep_stored(void);
+
+/* ---- update.c: a fetched build checked and made the stored kernel (<update.h>) ----- */
+
+/* initctl.update_offer: a new offer channel (replacing an older one, whose
+ * sender sees ERR_PEER_CLOSED); ours bound on port with key (call
+ * update_event on its packets), *client to hand over. */
+status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
+/* A packet on the offer channel: the offer (checked, loaded if it passes,
+ * answered), or its sender gone. Either way the channel is closed. */
+void     update_event(void);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

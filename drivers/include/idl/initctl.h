@@ -19,6 +19,7 @@
 #define INITCTL_SHELL_READY      0x00120005u
 #define INITCTL_REBOOT_FIRMWARE  0x00120006u
 #define INITCTL_KERNEL_LOAD      0x00120007u
+#define INITCTL_UPDATE_OFFER     0x00120008u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -83,6 +84,14 @@ struct initctl_kernel_load_rep {
     uint64_t kernel_bytes;
     uint64_t bootfs_bytes;
     uint32_t read_ms;
+} __attribute__((packed));
+struct initctl_update_offer_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_update_offer_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define INITCTL_REQ_MAX 40u   /* bytes: the biggest request */
@@ -265,6 +274,46 @@ static inline status_t initctl_kernel_load_until(handle_t ch, uint64_t deadline_
 static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
 {
     return initctl_kernel_load_until(ch, DEADLINE_NEVER, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
+}
+
+/* A channel for one offer of a fetched build (<update.h>): the caller
+ * writes one struct update_offer on it with the kernel's and the boot
+ * image's VMOs; init copies both, checks each length and SHA-256 against
+ * the manifest in the offer, makes them the kernel's stored copy
+ * (kexec_load, this boot's command line) and notes /esp's files as seen,
+ * so `reboot` starts the fetched build; then it writes one struct
+ * update_answer and closes the channel. Any refusal leaves the stored
+ * kernel as it was. A newer offer channel closes an older one. Nothing is
+ * written to the stick. The shell's channel only (the tests' programs
+ * that ask for `svc init`; bin/update's channel comes from init itself). */
+static inline status_t initctl_update_offer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_offer)
+{
+    struct initctl_update_offer_req idl_q;
+    struct initctl_update_offer_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_UPDATE_OFFER;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_offer)
+            *out_offer = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+static inline status_t initctl_update_offer(handle_t ch, handle_t *out_offer)
+{
+    return initctl_update_offer_until(ch, DEADLINE_NEVER, out_offer);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -490,6 +539,39 @@ static inline status_t initctl_kernel_load_result(const void *idl_rep, struct id
     return OK;
 }
 
+/* initctl_update_offer without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_update_offer_result. */
+static inline status_t initctl_update_offer_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_update_offer_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_UPDATE_OFFER;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_update_offer_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_update_offer_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_offer)
+{
+    const struct initctl_update_offer_rep *idl_r = (const struct initctl_update_offer_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_offer)
+        *out_offer = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -504,6 +586,7 @@ struct initctl_ops {
     status_t (*shell_ready)(void *ctx);
     status_t (*reboot_firmware)(void *ctx);
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
+    status_t (*update_offer)(void *ctx, handle_t *out_offer);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -613,6 +696,27 @@ static inline status_t initctl_reply_kernel_load(struct idl_txn idl_txn, status_
     idl_r.bootfs_bytes = bootfs_bytes;
     idl_r.read_ms = read_ms;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.update_offer request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_update_offer(struct idl_txn idl_txn, status_t idl_st, handle_t offer)
+{
+    struct initctl_update_offer_rep idl_r;
+    handle_t idl_hs[1] = { offer };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(offer != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -752,6 +856,29 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         idl_r->kernel_bytes = out_kernel_bytes;
         idl_r->bootfs_bytes = out_bootfs_bytes;
         idl_r->read_ms = out_read_ms;
+        return sizeof(*idl_r);
+    }
+    case INITCTL_UPDATE_OFFER: {
+        const struct initctl_update_offer_req *idl_q = (const struct initctl_update_offer_req *)req;
+        struct initctl_update_offer_rep *idl_r = (struct initctl_update_offer_rep *)rep;
+        handle_t out_offer = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->update_offer) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->update_offer(ctx, &out_offer);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_offer != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_offer != HANDLE_INVALID)
+                drv_handle_close(out_offer);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_offer;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }
