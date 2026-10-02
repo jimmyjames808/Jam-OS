@@ -11,7 +11,9 @@
 # nothing), and none of the notices `utest impostor`'s lines would make if
 # the console trusted a line's name rather than the kernel's mark of its
 # writer. Then a `verbose` boot: the log is on the shell's screen as
-# before. QEMU_SMP passes through.
+# before. Then a plain boot with the stick in from the start
+# (screen-atboot.txt): it is mounted, and no notice says so (only its pull
+# is news). QEMU_SMP passes through.
 # Usage: tools/screen-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 out=$1 name=${2:-screen}
@@ -51,6 +53,18 @@ if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-test
      tools/qemu-test.sh "$out" "$name-verbose" shell verbose > "$out/$name-verbose.out" 2>&1; then
     echo "$name-verbose: the shell script FAILED"
     ok=0
+fi
+
+# A stick in at boot: mounted while the machine starts, so no news.
+if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen-atboot.txt \
+     QEMU_USB="-drive if=none,id=aimg,format=raw,file=$a -device usb-storage,id=sb,bus=xhci.0,port=2,drive=aimg " \
+     tools/qemu-test.sh "$out" "$name-atboot" shell > "$out/$name-atboot.out" 2>&1; then
+    echo "$name-atboot: the shell script FAILED (see $out/$name-atboot.log)"
+    tail -3 "$out/$name-atboot.out"
+    ok=0
+fi
+if grep -aq "console: notice: a stick is at" "$out/$name-atboot.log"; then
+    echo "$name-atboot: a notice for the stick that was in at boot"; ok=0
 fi
 
 python3 - "$out" <<'PY' || ok=0

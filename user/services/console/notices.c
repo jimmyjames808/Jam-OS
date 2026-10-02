@@ -11,7 +11,11 @@
  *     (`mount -w`) or a filesystem service's restart comes back within
  *     that and says nothing, and while devmgr is being started again
  *     (all its mounts go and come back) nothing is said for up to HOLD.
- *     The boot stick's first mounts at boot are not news.
+ *     What is mounted while the machine starts is not news: the boot
+ *     stick's first mounts, and a stick that was in at boot. Starting
+ *     lasts until the splash gives the screen back (the shell is the first
+ *     thing seen), or, with no splash, until the boot's mounts first
+ *     settle.
  *   /data not there SETTLE_DATA after /esp came (a damaged volume, or a
  *     partition fat can't read): nothing is saved, logs and settings
  *     included.
@@ -59,6 +63,8 @@ static uint32_t told;            /* what the screen was last told */
 static uint64_t changed_at;      /* when `mounts` last changed (0: settled) */
 static uint64_t hold_until;      /* devmgr is being restarted: say nothing before */
 static bool     boot_known;      /* the boot stick's mounts were taken as they are */
+static bool     starting = true; /* the boot isn't over: what mounts is no news */
+static bool     lent_seen;       /* the screen was lent out (the splash) while starting */
 static uint64_t esp_at;          /* /esp came without /data at this time (0: no) */
 static bool     data_said;       /* "/data is not mounted" was said */
 static char     crashed[32];     /* the last process the kernel said crashed */
@@ -317,9 +323,23 @@ uint64_t notice_deadline(void)
     return d;
 }
 
+/* Every stick mounted now is taken as it is: no news. */
+static void take_sticks(void)
+{
+    told = (told & M_BOOT) | (mounts & ~M_BOOT);
+}
+
 void notice_tick(bool shown)
 {
     uint64_t t = now();
+    if (starting) {
+        if (screen_lent()) {
+            lent_seen = true;
+        } else if (lent_seen) {   /* the splash is over: the shell is what's seen */
+            starting = false;
+            take_sticks();
+        }
+    }
     if (shown)
         return;   /* the log itself is on the screen: whatever is left waits */
     if (esp_at && !data_said && t >= esp_at + SETTLE_DATA) {
@@ -338,6 +358,10 @@ void notice_tick(bool shown)
         boot_known = (mounts & M_BOOT) == M_BOOT;
         if (boot_known && data_said)
             say("/data is mounted now");
+    }
+    if (starting) {
+        take_sticks();
+        starting = lent_seen;   /* no splash: the first settle ends it */
     }
     if (mounts != told)
         announce_mounts();
@@ -360,7 +384,8 @@ void notice_reset(void)
 {
     mounts = told = 0;
     changed_at = hold_until = esp_at = crashed_at = window_start = 0;
-    boot_known = data_said = false;
+    boot_known = data_said = lent_seen = false;
+    starting = true;
     crashed[0] = crash_why[0] = said[0] = '\0';
     memset(recent_at, 0, sizeof(recent_at));
     in_window = swallowed = recent_next = 0;
