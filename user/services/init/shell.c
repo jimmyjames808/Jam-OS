@@ -132,8 +132,12 @@ static void tell_follower(unsigned i)
 
 void tell_mounts(void)
 {
+    /* The shell first: it is what someone types at, and it takes no views
+     * (each of the others' views is a call to that mount's service). */
+    tell_follower(SHELL);
     for (unsigned i = 0; i < NSVC; i++)
-        tell_follower(i);
+        if (i != SHELL)
+            tell_follower(i);
 }
 
 status_t shell_kill_service(const char *name, uint64_t *koid)

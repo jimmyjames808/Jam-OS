@@ -15,6 +15,7 @@
 
 #define MOUNT_WAIT (30 * NS_PER_S)    /* devmgr syncs, then stops the service */
 #define BACK_WAIT  (10 * NS_PER_S)    /* the mount back in our namespace */
+#define SEEN_WAIT  NS_PER_S           /* a stick init has just mounted: ours a moment later */
 #define POLL       (50 * NS_PER_MS)
 
 static int list(void)
@@ -74,8 +75,15 @@ SH_CMD(mount)
         sh_tty("mount: %s %s\n", path, fixed(path));
         return 1;
     }
-    status_t st = sh_is_mount(path) ? fs_statfs(path, &total, &free_bytes, &ro, label)
-                                    : ERR_NOT_FOUND;
+    /* init says "/usbN mounted" in the log before it has told us (its
+     * main loop sends every follower the change after the mounts watcher
+     * made it), so a mount just announced may take a moment to arrive. */
+    status_t st = ERR_NOT_FOUND;
+    for (uint64_t until = now() + SEEN_WAIT; sh_is_mount(path); jam_nanosleep(now() + POLL)) {
+        st = fs_statfs(path, &total, &free_bytes, &ro, label);
+        if (st != ERR_NOT_FOUND || now() >= until)
+            break;
+    }
     if (st != OK) {
         sh_tty("mount: %s: %s\n", path, st == ERR_NOT_FOUND ? "not mounted" : sh_why(st));
         return 1;
