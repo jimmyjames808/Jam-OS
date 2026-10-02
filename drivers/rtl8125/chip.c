@@ -234,9 +234,11 @@ uint32_t chip_log_after_reset(struct rtl *t, uint16_t *rcode)
 }
 
 /* rge_init's MAC settings for the 8125B, in its order, over the OCP window
- * (their meaning is not documented anywhere public; rge's values). Left
- * out: the transmit descriptor fetch number (TDFNR), the PCIe settings
- * through CSI and the ASPM/CLKREQ changes. */
+ * (their meaning is not documented anywhere public; rge's values). The
+ * transmit descriptor fetch number (TDFNR) is tx.c's to write. Left out:
+ * 0xf1 bit 7, 0x382, the EEE idle timer, the PCIe settings through CSI
+ * (0x70c, 0x98) and the ASPM/CLKREQ changes (docs/M9-PLAN.md has the
+ * step-by-step comparison with rge_init). */
 static void mac_setup(struct rtl *t)
 {
     wr8(t, RTL_RSS_CTRL, 0);   /* one queue: no RSS */

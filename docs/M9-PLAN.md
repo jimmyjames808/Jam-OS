@@ -6,7 +6,9 @@ merged:** stage 0 (the listen-only probe; it ran on the PC:
 (the netdev contract, `vlan=`, the QEMU harness), stage 3 (netstack on
 lwIP, on the netdev rings, started by init), R1 (the transmit path, the
 `netsend` test and the netdev server: [below](#r1-progress-the-full-driver);
-its PC runs are pending), stage 5a (the DHCP and DNS cores) and stages 6a
+its first PC runs found transmit unreliable, a descriptor-size mismatch, now
+fixed and waiting for the next PC run:
+[the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage 5a (the DHCP and DNS cores) and stages 6a
 and 7a (netlog's and `update`'s cores, init's update check, the Mac
 tools). The sections below say what each one built and left for the next.
 
@@ -314,9 +316,11 @@ carrying 21 (untagged too: a native VLAN)`.
   the PHY's setup (also over OCP), receive and transmit configuration,
   maximum frame size 1522 (1518 plus the tag), then bus mastering on.
   The safe-rebind rule holds: reset first, bus mastering after.
-- **Rings:** one transmit and one receive descriptor ring (16-byte
-  descriptors, though rge's receive descriptor for the 8125 is 32 bytes:
-  [stage 0](#stage-0-built-the-pc-run) with an ownership bit, 256 each, the queue-0 rings only:
+- **Rings:** one transmit and one receive descriptor ring (32-byte
+  descriptors both ways, as rge's for the 8125: receive since
+  [stage 0](#stage-0-built-the-pc-run), transmit since
+  [the first PC runs](#r1-the-pc-result-and-the-transmit-fix); with an
+  ownership bit, 256 each, the queue-0 rings only:
   no RSS, no second queue), 2 KiB buffers, all in contiguous DMA memory
   the driver pins with its `dma_cap` (64-bit addresses are fine: no
   DMA32 needed).
@@ -357,8 +361,10 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   `vlan=` (`netdev_vlan_args`), else "no VLAN: the network stays off" and
   the chip is never touched. In full mode: the receive filter is our
   address and broadcasts (no multicast, not promiscuous), the tags kept
-  (rx.c drops and counts the rest); the 16-byte transmit descriptors of
-  rge's 8125B and a 256-entry ring; one MSI-X vector for receive,
+  (rx.c drops and counts the rest); rge's 32-byte transmit descriptors
+  (16-byte ones until the first PC runs showed the chip reading them in
+  32-byte steps: [below](#r1-the-pc-result-and-the-transmit-fix)) and a
+  256-entry ring; one MSI-X vector for receive,
   transmit-done and link change; link changes counted and logged (the
   first 12, then one in 64); wake-on-LAN off in both modes (rge_wol:
   CFG3, CFG5, MAC OCP c0b6), left off at exit; pause still not
@@ -376,17 +382,22 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   in main.c; each rule is self-tested on `tools/checknotx-tests/`.
 - **The tally check** (the plan's PAUSE check), at every exit: the chip's
   count of frames sent between the start and the end against what tx.c
-  queued; a `tx check:` log line and the RESULTS line say `chip tally +N
-  (equal)` or `(DIFFERS)`.
+  queued and took back (`drivers/rtl8125/txdesc.h`, `rtl_tx_verdict`):
+  taken back <= sent <= queued is progress, and only more sent than
+  queued means the chip sent frames of its own. A `tx check:` log line
+  and the RESULTS line say `tx N queued, chip sent M, K back (equal)`, or
+  `FEWER SENT`, `MORE SENT`, `NOT ALL BACK`.
 - **The send test, `netsend`** (boot entry "Jam OS (network: send
   test)"): full mode on the kernel's VLAN, the link (10 s at most), the
   first frame kept on the VLAN (5 s at most, then it sends anyway: the
-  switch port forwards), then three ARP probes (RFC 5227: sender IP
+  switch port forwards), then twenty ARP probes (RFC 5227: sender IP
   0.0.0.0, target 10.2.21.1, VLAN 21's router; a driver word `arpto=`
-  could change it), one second apart, each tagged by tx.c; it waits for
-  the router's reply (tagged 21, kept by rx.c; the send test alone reads
-  an ARP body, of kept frames only, to recognise it), logs each round
-  trip, then stops. Nothing else is ever sent.
+  could change it, but no boot entry passes one), 200 ms apart, each
+  tagged by tx.c; it watches for the router's replies (tagged 21, kept by
+  rx.c; the send test alone reads an ARP body, of kept frames only, to
+  recognise it), logs per probe its descriptor, when it was queued, when
+  the chip handed the descriptor back and when the reply came, then the
+  answered pattern and the waits, then stops. Nothing else is ever sent.
 - **The netdev server (R1b)**: full mode without `netsend` serves
   abi/idl/netdev.idl on DR_SERVE exactly as `<jam/netdev.h>` says
   (the server, which knows nothing of the chip, was built as
@@ -431,29 +442,163 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   goes on (the probe, the send test); the firmware arms it again at its
   next start.
 
-**The owner's run:** boot "Jam OS (network: send test)", the cable in.
-It takes about 10 s after the link. On the Mac (on VLAN 21's Wi-Fi),
-before booting: `sudo tcpdump -i en0 -e -n arp` shows the probes,
-broadcast on VLAN 21 (`who-has 10.2.21.1 tell 0.0.0.0`, from the PC's
-MAC; the Wi-Fi side sees them untagged). The router's reply is unicast to
-the PC, so the Mac may not see it. Then bring back the `[rtl8125]` lines and the RESULTS line starting
-`rtl8125: netsend`.
+The owner's first runs of `netsend` and `net`, what they showed and the
+next run: the section below.
 
-**What it should show:** `wake-on-LAN off: cfg3 ... -> ..., cfg5 ... ->
-...` (the WoL bits cleared); `transmit ring: 256 descriptors at ...,
-vlan 21 on every frame`; `receiver on, transmitter on: rxcfg 0x41..0c0a
-(tag stripping off)` (accept bits 0x0a: our address and broadcasts); the link as before (1000 full in about 2 s);
-`first frame on vlan 21 ... ms after the link`; `probe 1: reply in N ms`
-three times (a router answers in well under 1 ms on the LAN); `rx on vlan
-21: N kept ...; dropped: ... untagged ..., other vlans ...` (the native
-and the other VLANs dropped); `tx: 3 queued, 3 sent, 0 with an error`;
-`tx check: ... equal: the chip sent nothing of its own`; and the RESULTS
-line `netsend vlan 21, link 1000 full in 2.x s, 3 of 3 ARP probes to
-10.2.21.1 answered (ms a/b/c), tx 3 queued, chip tally +3 (equal), rx kept
-N dropped M`. If the probes go unanswered but the chip's tally says +3,
-the frames left: look at the Mac's tcpdump (did they arrive tagged 21?).
-If the tally says +0, the transmitter did not run: the `transmit ring`
-and `receiver on` lines and the `REFUSED` lines say why.
+#### R1: the PC result and the transmit fix
+
+**The PC runs (2026-10-02, build 8d98b62; boot-0067 `netsend`, boot-0069
+and boot-0070 `net`, netstack at 10.2.21.240):**
+
+- `netsend`: link 1000 full in 2.5 s, the first VLAN 21 frame 2 s later;
+  probe 1 no reply, probe 2 no reply, probe 3 answered in 3.9 ms (so the
+  tag and the receive path work on the real network). `tx: 3 queued, 1
+  sent, ... 2 still out; ... 69912 doorbell(s) again`, the chip's tally
+  +2, and the tx check called that "THE CHIP SENT FRAMES THE DRIVER DID
+  NOT QUEUE" (wrong: 1 back, 2 sent, 3 queued is progress).
+- `net`, first boot: the Mac's pings to 10.2.21.240 got no reply at all,
+  yet the chip sent 110 frames in that boot (its tally survives reboots
+  and power-off on standby power: 2 at the start of boot-0069, 112 at the
+  start of boot-0070). Second boot: `ping -c 10` lost seq 3, 5 and 7;
+  `ping -c 100 -i 0.2` lost 61, the answered ones in 3.1/5.3/11.6 ms. The
+  driver logged no tx counts: `reboot` ended it before its stop lines.
+
+**The cause: the descriptor's size.** rge_init sets bit 0 of MAC OCP
+register 0xeb58, and so did the driver (chip.c copies rge's list), but
+it wrote 16-byte transmit descriptors where rge's `struct rge_tx_desc`
+is 32 bytes (command and status, extended status, the 64-bit address,
+16 bytes left 0; OpenBSD's if_rgereg.h). With that bit set the 8125B
+steps through the ring 32 bytes at a time: it read the driver's even
+descriptors only (each one correctly, as the command word and the
+address sit at the same offsets in both sizes) and never an odd one. The
+driver takes descriptors back in order, so it waited at descriptor 1 for
+good. That is `netsend` exactly (descriptors 0 and 2 sent, the tally 2;
+1 never sent, never back), about every other frame lost in the ping
+runs, and worse with time, since the ring never drained: with 255
+descriptors outstanding nothing more is queued at all (likely the first
+`net` boot's silence after its 110 frames). The doorbell storm came on
+top: tx_reap rang the doorbell again at every look while a descriptor was
+still the chip's (rge_txeof does so once per pass), and each doorbell
+with nothing the chip could take raised "transmit descriptor
+unavailable", whose interrupt rang it again.
+
+**Did anything untagged leave?** Not by this reading: the chip took
+addresses and lengths only from the first 16 bytes of the driver's own
+descriptors, which tx.c wrote and which point at its tagged buffers. The
+driver's end-of-ring bit sat where the chip saw entry 127's unused half,
+so past entry 127 the chip would have read the tally dump area and zeros
+(no ownership bit), and it never got that far. The next run's capture
+checks it on the wire.
+
+**What changed** (branch commits, one each):
+
+1. **32-byte descriptors** (`drivers/rtl8125/txdesc.h`, rge's layout; the
+   ring 8 KiB, the tally after it). tx_enable reads 0xeb58 back and leaves
+   the transmitter off unless its bit 0 says 32 bytes: the log line
+   `transmit descriptors: 32 bytes; the chip's format bit (mac 0xeb58
+   bit 0) is 1: they agree`. utest `rtl8125_txdesc`.
+2. **The doorbell again at most once a second**: for a descriptor still
+   the chip's, the first extra doorbell 1 ms after it was queued, then a
+   gap growing fourfold to 1 s (`rtl_kick_due`), counted. utest
+   `rtl8125_kick`.
+3. **The tx check's wording** (above). utest `rtl8125_tx_verdict`.
+4. **Stalls are explained in the log.** A descriptor still the chip's
+   100 ms after its doorbell is a stall; the first six (one a second at
+   most) log `tx STALL:` lines: its 32 bytes and its neighbours' command
+   words, the transmit registers read back (ring address against ours,
+   command, TXCFG, TXSTART, TDFNR, interrupt status and mask, 0xeb58) and
+   the chip's tally against the descriptors back: "it SENT frames it has
+   not handed back" (no write-back) or "it NEVER FETCHED this
+   descriptor". Every frame's wait from the doorbell to its descriptor
+   back is timed: min/avg/max in the `tx:` lines, the RESULTS line and
+   netdev.stats (`tx_wait_*`, `tx_stalls`, `tx_kicks`, from its reserved
+   words). A `tx so far:` line at most every 10 s while frames move, so a
+   run that `reboot` ends still leaves its counts.
+5. **`netsend` sends 20 probes 200 ms apart** and logs each (above).
+6. **`tools/pcap-vlan-check.py --pc MAC`** for a capture taken at the
+   Mac's end of a cable straight to the PC.
+
+**rge_init next to the driver, step by step** (rge's order; "done" means
+the driver does the same, with the same values):
+
+| rge | the driver |
+|---|---|
+| rge_stop, rge_chipinit (reset, out-of-band exit, PHY power) | done (chip_reset), without rge_hw_init's tables (MAC break points, PCIe PHY values) or rge_phy_config's PHY tuning and patch: the owner's call, question 5 |
+| the station address written | not written: the chip's own is kept |
+| the receive and transmit lists cleared, end-of-ring on the last | done; transmit descriptors now 32 bytes |
+| config unlock (EECMD) | done |
+| register 0xf1 bit 7 cleared | **left out** (meaning not published) |
+| rge_disable_aspm_clkreq, twice | **left out**: ASPM is already off on the PC (`pcie:` line), CLKREQ is power saving |
+| the EEE transmit idle timer (0x6048) | **left out**: EEE plus is off |
+| receive and transmit ring addresses | done (transmit: tx.c) |
+| RXCFG 0x41000c00, TXCFG 0x03000700 | done |
+| CSI 0x70c: top byte 0x27 | **left out** (no CSI access; a PCIe setting, said to be the ASPM entry latency, and ASPM is off) |
+| 0x382 = 0x221b | **left out** (meaning not published; Linux's start-up writes it too) |
+| RSS off, one queue, CFG1 speed-down off, MAC c140, c142, **eb58 bit 0**, e614, e63e, c0b4, eb6a, eb50, e056 | done; eb58 bit 0 now matches the descriptor size |
+| TDFNR = 0x10 | done (tx.c, before the MAC settings rather than among them, inside the same unlock) |
+| MAC e040, ea1c, e0c0, e052, d430, DLLPR, EEE plus off, ea1c bit 2, the TCAM clear (eb54), 0x1880, INT_CFG0, the timers, 32 moderation registers, c0ac, e098, e032 | done |
+| CSI 0x98 bits 15:8 cleared | **left out** (no CSI access) |
+| MAC e092 | done |
+| tag stripping (VLANSTRIP) | never: the plan's rule |
+| CPLUSCMD receive checksum | **left out**: no checksum offload |
+| RXMAXSIZE | 2048, not rge's jumbo size |
+| the RXDV gate off, 2 ms, rge_iff, lock, 10 us, rge_ifmedia_upd | done (no pause advertised) |
+| CMD = TXENB \| RXENB | done (tx_enable, after the format check) |
+| rge_setup_intr(SIM): timer moderation | not used: one interrupt per event (IM 0) |
+| rge_encap: address and extended status, then OWN with SOF, EOF, EOR and the length | done, with a release fence before OWN and a full fence before the doorbell; the ring is ordinary write-back memory (x86 DMA snoops it), the registers uncached (VMO_CACHE_UC) |
+| rge_txstart: TXSTART (0x90) = 1, 16 bits, once per batch | the same write, once per frame |
+| rge_txeof: the doorbell again once per pass when stopped at an owned descriptor | at most once a second per descriptor (change 2) |
+| the ring aligned to 256 bytes (RGE_ALIGN) | 8 KiB into a page-aligned VMO (a static assert) |
+
+If the next run still stalls with "NEVER FETCHED", the steps marked
+**left out** that touch the chip's DMA are the next suspects, in this
+order: 0x382, CSI 0x70c, CSI 0x98, 0xf1.
+
+**The next PC run: a cable straight to the Mac.** The PC's port goes to
+a one-port bridge, so the Mac can't watch the switch. Instead the PC's
+cable goes straight into the Mac's USB Ethernet adapter (en11, which has
+the VLAN 21 interface vlan0, service "Home Devices VLAN"): isolated from
+the home network, so even a wrong frame goes nowhere, and the Mac sees
+every byte the PC sends.
+
+1. Unplug the PC's network cable from the bridge and plug it into the
+   Mac's USB Ethernet adapter.
+2. Turn the Mac's Wi-Fi off.
+3. Give vlan0 the router's address for the test, so the send test's
+   probes (always for 10.2.21.1) get an answer:
+   `sudo networksetup -setmanual "Home Devices VLAN" 10.2.21.1
+   255.255.255.0`. Nothing else is on this cable, so the address clashes
+   with nothing.
+4. Start the capture on the parent interface, which shows the tags (and
+   any untagged frame): `sudo tcpdump -i en11 -e -nn -XX -w
+   ~/pc-capture.pcap`. Leave it running for both boots.
+5. Boot "Jam OS (network: send test)". It is done about 10 s after the
+   link (20 probes, 200 ms apart, then 2 s for late replies).
+6. Reboot into "Jam OS (network)". When the shell is up, on the Mac:
+   `ping -c 100 -i 0.2 10.2.21.240`. Then wait 10 s (the `tx so far`
+   line) and `reboot` the PC.
+7. Stop tcpdump (Ctrl+C). Put things back: `sudo networksetup -setdhcp
+   "Home Devices VLAN"`, Wi-Fi on, the PC's cable back into the bridge.
+8. Check the capture: the PC's MAC is on the driver's `mac:` line in the
+   boot log (`/data/logs/boot-NNNN.txt`; it stays out of every doc), then
+   `python3 tools/pcap-vlan-check.py --pc <that MAC> ~/pc-capture.pcap`.
+
+**Bring back:** both boots' `[rtl8125]` lines (above all `transmit
+descriptors: ...`, the 20 `probe` lines, `send test:`, `tx:`, `tx so
+far:`, `tx check:` and any `tx STALL:`), both RESULTS lines starting
+`rtl8125:`, the Mac's ping summary and the checker's output.
+
+**What a fixed driver shows:** `they agree`; every probe `back after`
+well under a millisecond and answered (`++++++++++++++++++++`); `tx: 20
+queued, 20 sent ... 0 still out; ... 0 doorbell(s) again`; `tx check: 20
+queued, 20 sent by the chip ..., 20 completions seen: equal`; no `tx
+STALL` line; the RESULTS line `netsend vlan 21, link ..., 20/20 probes to
+10.2.21.1 answered ++++++++++++++++++++, ..., tx 20 queued, chip sent 20,
+20 back (equal), wait ..., 0 stalled, ...`; the ping 0% loss; the checker
+`from the PC: N frame(s), 0 NOT tagged 21, 0 garbled`, every ping
+answered, and PASS. If it still fails, the `tx STALL` lines say whether
+the chip never fetched the descriptor or sent it without writing it
+back, and the capture says what actually left.
 
 ### The PHY firmware patch
 
