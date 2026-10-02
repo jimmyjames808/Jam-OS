@@ -240,6 +240,7 @@ struct pci_dev_info {
     uint16_t vendor, device;   /* PCI vendor and device ids */
     /* class code, subclass, programming interface, revision */
     uint8_t  class_code, subclass, prog_if, revision;
+    uint16_t reserved;         /* 0 */
     uint32_t flags;            /* PCI_INFO_* */
     uint16_t msi_vectors;      /* 0 = no MSI capability */
     uint16_t msix_vectors;     /* 0 = no MSI-X capability */
