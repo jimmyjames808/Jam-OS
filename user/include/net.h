@@ -61,7 +61,7 @@
 #define NET_LATER_PER_OPENER   8u      /* waits, echoes and chip_counts in flight an opener */
 #define NET_LATER_MAX          64u     /* ... of all openers together */
 #define NET_PROG_LATER         48u     /* ... of them ordinary openers' */
-#define NET_PROG_RING_BYTES    (8u << 20)   /* ring bytes of ordinary openers' sockets */
+#define NET_PROG_RING_BYTES    (16u << 20)  /* ring bytes of ordinary openers' sockets */
 #define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
 #define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
 #define NET_PORT_LOW           1024u   /* udp: ports below are refused; up to ... */

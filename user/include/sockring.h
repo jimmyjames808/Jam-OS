@@ -168,7 +168,8 @@
 
 #define SOCKRING_HDR        4096u            /* the header page; the rings follow */
 #define SOCKRING_MIN        4096u            /* a ring's size: a power of two ... */
-#define SOCKRING_MAX        (256u * 1024)    /* ... from SOCKRING_MIN to here */
+#define SOCKRING_MAX        (2u << 20)       /* ... from SOCKRING_MIN to here (a whole
+                                              * scaled TCP window) */
 #define SOCKRING_ALIGN      16u              /* a datagram record starts on this */
 #define SOCKRING_DGRAM_MAX  1472u            /* a datagram's bytes: one frame, never fragmented */
 #define SOCKRING_DGRAM_HDR  16u              /* struct sockring_dgram */
@@ -177,9 +178,11 @@
 #define SOCKRING_UDP_TX     (16u * 1024)
 #define SOCKRING_UDP_RX     (32u * 1024)
 /* Ring bytes (sockring_bytes, the header included) one opener's sockets
- * may hold together, and all sockets together. */
-#define SOCKRING_OPENER_BYTES (2u << 20)
-#define SOCKRING_TOTAL_BYTES  (16u << 20)
+ * may hold together (a TCP connection with both rings at SOCKRING_MAX and
+ * room to spare), and all sockets together (<net.h>'s NET_PROG_RING_BYTES
+ * of it ordinary programs'). */
+#define SOCKRING_OPENER_BYTES (8u << 20)
+#define SOCKRING_TOTAL_BYTES  (24u << 20)
 #define SOCKRING_MAGIC      0x474e5253u      /* "SRNG" */
 
 /* Framings (sockring_info.framing). */

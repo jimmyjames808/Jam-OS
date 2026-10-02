@@ -848,7 +848,7 @@ restarts:
   (`sock_connect`, `sock_state`; closing it closes the socket) and its
   **rings** (`user/include/sockring.h`): one VMO netstack makes and maps,
   a header page, a tx ring the program writes and an rx ring netstack
-  writes (4 KiB to 256 KiB each; UDP's 16 and 32 KiB by default), and two
+  writes (4 KiB to 2 MiB each; UDP's 16 and 32 KiB by default), and two
   events, the netdev rings' model. A datagram is a record (16 bytes of
   address, port and length, then at most 1472 bytes); while datagrams flow
   neither side makes a call or a system call per datagram, only a signal
@@ -866,9 +866,9 @@ restarts:
   nothing once the program's end of the channel closes; a socket whose
   opener went is ended (its status says CLOSED) but kept until then.
   Limits: 32 openers, 16 sockets an opener and 48 in all, 8 requests in
-  flight an opener and 64 in all, 2 MiB of ring bytes an opener and 16 MiB
+  flight an opener and 64 in all, 8 MiB of ring bytes an opener and 24 MiB
   in all; of each, ordinary programs together get only their share
-  (24 openers, 24 sockets, 48 requests, 8 MiB), and the rest is the
+  (24 openers, 24 sockets, 48 requests, 16 MiB), and the rest is the
   network's own services' (`/svc/net-sys`, below). A program can't send to
   a broadcast, multicast or loopback address, can't bind a port below 1024
   (nor one below 49152 without the listen permission, below), and sends no

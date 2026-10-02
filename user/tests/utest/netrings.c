@@ -38,7 +38,7 @@
 #include "netpkt.h"
 #include "utest.h"
 
-#define BIG (SOCKRING_MAX)   /* a ring size: 256 KiB */
+#define BIG (SOCKRING_MAX)   /* a ring size: 2 MiB */
 
 static uint8_t f[NETDEV_FRAME_MAX];
 static struct net_dgram dg;
