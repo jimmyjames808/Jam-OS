@@ -62,6 +62,7 @@ bool sh_input(const char *who, int argc, char **argv, int i, const char **data, 
  * line (typing ahead); sh_poll_key returns them instead (top uses q). */
 bool sh_interrupted(void);
 int  sh_poll_key(uint64_t deadline);   /* the next key's codepoint, -1 on timeout */
+void sh_drop_typeahead(void);          /* forget the keys kept for the next line */
 /* Sleep up to ns; false if interrupted. */
 bool sh_sleep(uint64_t ns);
 

@@ -10,13 +10,18 @@
 
 #define ANSWER_WAIT (120 * NS_PER_S)   /* the owner's y or n */
 
-/* Keys typed before the question is on the screen are no answer to it:
- * thrown away, before it is shown. false if Ctrl+C was among them. */
+/* Keys that reached the shell before the question is on the screen are no
+ * answer to it: thrown away, before it is shown, both those waiting on the
+ * keys channel and those the shell already kept for the line editor while
+ * it was busy. false if Ctrl+C was among them. A key still
+ * on its way when the question is shown (typed in the same instant as
+ * Enter, over a slow serial line) can't be told from an answer. */
 static bool drop_typed_ahead(void)
 {
     while (sh_poll_key(now()) >= 0)
         if (sh_interrupted())
             return false;
+    sh_drop_typeahead();
     return true;
 }
 

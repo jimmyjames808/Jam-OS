@@ -25,8 +25,9 @@ wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
 wait jam>
-# a y typed with the command, before the question, is no answer to it
-type allow /data/s; echo st-$T=$?\ry
+# a y typed ahead, before the question, is no answer to it (typed during
+# the sleep, so it has reached the shell before `allow` asks)
+type sleep 1; allow /data/s; echo st-$T=$?\ry
 wait allow s: every mount (write)? y/n
 type n
 wait st-x=1

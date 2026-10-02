@@ -224,6 +224,11 @@ bool sh_sleep(uint64_t ns)
     return !interrupted;
 }
 
+void sh_drop_typeahead(void)
+{
+    ahead_first = ahead_n = 0;
+}
+
 bool sh_typeahead(struct input_key_event *ev)
 {
     if (!ahead_n)
