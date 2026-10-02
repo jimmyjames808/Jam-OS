@@ -22,9 +22,12 @@
  *     thread is cancelled by exactly one of the two. A thread that is
  *     cancelled before it reaches ring 3 leaves from arch_enter_user's
  *     return-to-user check.
- *   - Teardown runs once: when nthreads drops to 0 on a dying process (the
- *     last thread leaving), or in process_kill if there were no threads.
- *     nthreads can't rise again once the process is dying.
+ *   - Teardown runs once, by whoever claims it (`teardown`, under the
+ *     lock): the last thread leaving a dying process, or process_kill when
+ *     there are no threads (also for a NEW process whose last handle
+ *     closed, which nothing else would ever tear down: a job_kill waiting
+ *     for it would wait forever). nthreads can't rise again once the
+ *     process is dying.
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
@@ -41,7 +44,8 @@
  *     back would then panic.)
  *   - A NEW process whose last handle closes can never be started: it is
  *     marked dying under the lock (on_zero_handles can't sleep, so it can't
- *     tear down); what it owns is freed when its last reference goes. */
+ *     tear down); what it owns is freed by the next process_kill (a
+ *     job_kill), or else when its last reference goes. */
 #include <jam/aspace.h>
 #include <jam/dbghook.h>
 #include <jam/irq.h>
@@ -71,7 +75,7 @@ struct process {
     struct aspace      *as;                      /* (L) a reference; NULL once torn down */
     int                 state;                   /* (L) PROCESS_* */
     bool                killed;                  /* (L) */
-    bool                finished;                /* (L) teardown done */
+    bool                teardown;  /* (L) process_finish is claimed: its claimer runs it, once */
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     bool                starting;                /* (L) process_start is making the first thread */
     bool                listed;                  /* on job's list (job_link); cleared at teardown */
@@ -432,7 +436,6 @@ static void process_finish(struct process *p)
     p->obj_charged = false;
     p->listed = false;
     p->state = PROCESS_DEAD;
-    p->finished = true;
     punlock(p, f);
     if (listed)    /* before SIG_TERMINATED: job_kill waits for exactly this */
         job_detach_process(job, &p->job_link);
@@ -454,7 +457,13 @@ void process_kill(struct process *p, int64_t code, bool killed)
 {
     uint64_t f = plock(p);
     if (p->state >= PROCESS_DYING) {
+        /* Dying already: only a never-started process whose last handle
+         * closed (no threads, teardown unclaimed) is left to tear down. */
+        bool finish = p->state == PROCESS_DYING && !p->nthreads && !p->teardown;
+        p->teardown |= finish;
         punlock(p, f);
+        if (finish)
+            process_finish(p);
         return;
     }
     p->state = PROCESS_DYING;
@@ -466,6 +475,7 @@ void process_kill(struct process *p, int64_t code, bool killed)
             thread_cancel(u->t);
     }
     bool finish = p->nthreads == 0;
+    p->teardown |= finish;
     punlock(p, f);
     if (finish)
         process_finish(p);
@@ -552,6 +562,7 @@ static bool thread_left(struct process *p)
             p->exit_code = 0;
         }
         finish = p->state == PROCESS_DYING;
+        p->teardown |= finish;
     }
     punlock(p, f);
     return finish;

@@ -263,6 +263,47 @@ KTEST(proc_never_started)
     job_unref(j);
 }
 
+static volatile int dying_kill_done;   /* the helper's job_kill returned */
+
+static void dying_killer(void *arg)
+{
+    unsigned killed;
+    (void)job_kill(arg, &killed);   /* ERR_CANCELED only if the test gives up on it */
+    __atomic_store_n(&dying_kill_done, 1, __ATOMIC_RELEASE);
+}
+
+/* The same process, never started and without handles, but still
+ * referenced (its thread object holds it): a job_kill must tear it down
+ * and return, not wait forever for a SIG_TERMINATED nobody would raise. */
+KTEST(proc_kill_unstartable_returns)
+{
+    struct job *j = kt_fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "unstartable", &p), OK);
+    struct uthread *u;
+    KT_EQ(uthread_create(p, "t", &u), OK);
+    kobject_ref(process_kobject(p));   /* ours, to look at it afterwards */
+    struct khandle kh = khandle_from_new(process_kobject(p), PROCESS_RIGHTS);
+    khandle_release(&kh);   /* the last handle: DYING, still referenced */
+    __atomic_store_n(&dying_kill_done, 0, __ATOMIC_RELAXED);
+    struct thread *t = thread_create("kt-dying-kill", dying_killer, j, PRIO_DEFAULT);
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (!__atomic_load_n(&dying_kill_done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        thread_sleep_ms(1);
+    bool done = __atomic_load_n(&dying_kill_done, __ATOMIC_ACQUIRE);
+    if (!done)
+        thread_cancel(t);   /* stuck in job_kill's wait: let it go */
+    thread_join(t);
+    KT_ASSERT(done);
+    struct process_info info;
+    process_get_info(p, &info);
+    KT_EQ(info.state, PROCESS_DEAD);
+    kobject_unref(uthread_kobject(u));
+    kobject_unref(process_kobject(p));
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
 /* job_kill kills everything in a job and the jobs below it,
  * including a process whose parent is gone (nobody holds a handle to it),
  * waits until they are all dead, and the killed jobs take nothing new. */
