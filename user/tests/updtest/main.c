@@ -18,10 +18,12 @@
  *                  half (the length), a VMO shorter than the length it
  *                  claims, a manifest of garbage, cut short, signed (this
  *                  build can't check a signature) or of another format,
- *                  an offer with a bad magic or one handle, and two files
- *                  that match their manifest but are no kernel (the
- *                  kernel's own refusal). The script's `reboot` then shows
- *                  the stored kernel unchanged.
+ *                  an offer with a bad magic, one handle or an unknown
+ *                  flag, and two files that match their manifest but are
+ *                  no kernel (the kernel's own refusal); and the build
+ *                  as it is, offered UPDATE_OFFER_CHECK_ONLY: accepted,
+ *                  not loaded. The script's `reboot` then shows the
+ *                  stored kernel unchanged.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -43,6 +45,7 @@ struct build {
     uint32_t manifest_len;
     handle_t vmo[UPDATE_FILES];
     uint64_t bytes[UPDATE_FILES];
+    uint32_t flags;   /* the offer's (UPDATE_OFFER_CHECK_ONLY) */
 };
 
 static handle_t initctl;
@@ -109,7 +112,8 @@ static status_t offer(const struct build *b, unsigned handles, uint32_t magic,
         if ((st = jam_handle_duplicate(b->vmo[nh], RIGHT_SAME, &hs[nh])) != OK)
             break;
     if (st == OK) {
-        *o = (struct update_offer){ .magic = magic, .manifest_len = b->manifest_len };
+        *o = (struct update_offer){ .magic = magic, .manifest_len = b->manifest_len,
+                                    .flags = b->flags };
         memcpy(o->bytes, b->bytes, sizeof(o->bytes));
         memcpy(o->manifest, b->manifest, b->manifest_len);
         st = jam_channel_write(ch, o, sizeof(*o), hs, handles);   /* moves the handles */
@@ -280,6 +284,10 @@ int main(int argc, char **argv)
         bad_manifests(&b);
         expect("bad magic", &b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
         expect("one handle", &b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+        b.flags = UPDATE_OFFER_CHECK_ONLY << 1;
+        expect("unknown flag", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+        b.flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
+        expect("check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
         not_a_kernel();
     }
     printf("updtest: %s: %s\n", argv[1], failures ? "FAILED" : "PASS");

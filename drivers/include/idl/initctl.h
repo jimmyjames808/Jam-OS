@@ -283,9 +283,12 @@ static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_byt
  * (kexec_load, this boot's command line) and notes /esp's files as seen,
  * so `reboot` starts the fetched build; then it writes one struct
  * update_answer and closes the channel. Any refusal leaves the stored
- * kernel as it was. A newer offer channel closes an older one. Nothing is
- * written to the stick. The shell's channel only (the tests' programs
- * that ask for `svc init`; bin/update's channel comes from init itself). */
+ * kernel as it was. A newer offer channel closes an older one; while an
+ * offer is still being checked: ERR_BAD_STATE. An offer with
+ * UPDATE_OFFER_CHECK_ONLY is checked and answered, nothing loaded. Nothing
+ * is written to the stick. The shell's channel only (the tests' programs
+ * that ask for `svc init`): the shell's `update` hands the channel to
+ * bin/update, the fetcher, which holds nothing else of init's. */
 static inline status_t initctl_update_offer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_offer)
 {
     struct initctl_update_offer_req idl_q;

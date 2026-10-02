@@ -5,7 +5,8 @@
 #   1. `run updtest bad`: every damaged offer refused, each for its own
 #      reason (a changed byte, a wrong length, a short VMO, a garbage, cut,
 #      signed or future manifest, a malformed offer, two files that match
-#      their manifest but are no kernel); then `reboot` (kexec): the stored
+#      their manifest but are no kernel), and the good build offered check
+#      only (accepted, not loaded); then `reboot` (kexec): the stored
 #      kernel was left alone, so the next boot is the stick's build (no
 #      /boot/update-marker.txt).
 #   2. `run updtest good`: the build accepted and stored; `reboot` reads
@@ -30,24 +31,9 @@ stick="$out/update-stick.img"
 cp build/jamos.img "$stick"
 marker="update-marker: the fetched build $$"
 printf '%s\n' "$marker" > "$out/update-marker.txt"
-# The boot image again, with the marker: its files unpacked and packed anew.
-python3 - build/bootfs.img "$out/update-bootfs" <<'EOF' || { echo "update-test: can't unpack"; exit 1; }
-import os, struct, sys
-img, to = open(sys.argv[1], "rb").read(), sys.argv[2]
-magic, ver, count, size = struct.unpack_from("<8sIIQ", img, 0)
-assert magic == b"JAMBOOTF", "not a boot image"
-with open(to + ".list", "w") as lst:
-    for i in range(count):
-        name, off, n = struct.unpack_from("<56sQQ", img, 24 + 72 * i)
-        name = name.split(b"\0")[0].decode()
-        path = os.path.join(to, name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "wb").write(img[off:off + n])
-        lst.write("%s=%s\n" % (name, path))
-EOF
-# shellcheck disable=SC2046
-python3 tools/mkbootfs.py "$out/bootfs-marked.img" $(cat "$out/update-bootfs.list") \
-    "update-marker.txt=$out/update-marker.txt" > /dev/null || { echo "update-test: can't pack"; exit 1; }
+# The boot image again, with the marker.
+python3 tools/bootfs-edit.py build/bootfs.img "$out/bootfs-marked.img" \
+    "update-marker.txt=$out/update-marker.txt" || { echo "update-test: can't pack"; exit 1; }
 python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
     > "$out/manifest" || { echo "update-test: no manifest"; exit 1; }
 mmd -i "$stick@@64M" ::/update &&
@@ -93,8 +79,10 @@ QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.tx
     fail "the script (see $out/update.log)"
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
-[ "$(grep -ac "init: update: refused: " "$log")" -eq 12 ] ||
-    fail "not 12 refusals logged by init"
+[ "$(grep -ac "init: update: refused: " "$log")" -eq 13 ] ||
+    fail "not 13 refusals logged by init"
+grep -aq "init: update: .* and not loaded (check only)" "$log" ||
+    fail "init didn't check the check-only offer"
 grep -aq "updtest: good: PASS" "$log" || fail "the good build wasn't accepted"
 grep -aq "init: update: .* and stored: .reboot. starts it" "$log" ||
     fail "init didn't say it stored the build"
@@ -104,7 +92,7 @@ grep -aq "init: update: .* and stored: .reboot. starts it" "$log" ||
 grep -aq "init: kexec: .* read in\|reading /esp" "$log" && fail "a reboot read /esp's files"
 [ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 1 ] ||
     fail "not exactly one build loaded (the good one)"
-rm -rf "$stick" "$out/update-bootfs" "$out/update-bootfs.list"
+rm -f "$stick"
 if [ $fails -eq 0 ]; then
     echo "update-test: PASS"
     exit 0

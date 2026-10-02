@@ -256,10 +256,13 @@ void     reboot_keep_stored(void);
 
 /* initctl.update_offer: a new offer channel (replacing an older one, whose
  * sender sees ERR_PEER_CLOSED); ours bound on port with key (call
- * update_event on its packets), *client to hand over. */
+ * update_event on its packets), *client to hand over. ERR_BAD_STATE while
+ * the last offer is still being checked. */
 status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
-/* A packet on the offer channel: the offer (checked, loaded if it passes,
- * answered), or its sender gone. Either way the channel is closed. */
+/* A packet with the offer channel's key: the offer (its copy and hash
+ * handed to a worker thread), the worker done (then loaded if it passed,
+ * and answered), or the sender gone. After the answer the channel is
+ * closed. */
 void     update_event(void);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */

@@ -32,7 +32,13 @@
  * the one `reboot` and a panic start. It answers one struct update_answer
  * on the channel and closes it. Any refusal leaves the stored kernel as it
  * was. Nothing is ever written to the stick: the fetched build runs until
- * a power-off or until /esp changes. */
+ * a power-off or until /esp changes. An offer with UPDATE_OFFER_CHECK_ONLY
+ * is checked the same way and answered, but nothing is loaded (the shell's
+ * `update -n`).
+ *
+ * Who offers: the shell's `update` takes the offer channel from init
+ * (initctl.update_offer) and hands it to bin/update (user/services/update),
+ * the fetcher, which holds only that channel and /svc/net. */
 #pragma once
 
 #include <stddef.h>
@@ -82,13 +88,15 @@ struct update_offer {
     uint64_t bytes[UPDATE_FILES];             /* each file's length as fetched (its VMO may
                                                * be longer: page-rounded) */
     uint32_t manifest_len;                    /* bytes of manifest[] used */
-    uint32_t flags;                           /* 0 */
+    uint32_t flags;                           /* 0, or UPDATE_OFFER_CHECK_ONLY */
     uint8_t  manifest[UPDATE_MANIFEST_MAX];   /* as fetched, not parsed */
 };
 
+#define UPDATE_OFFER_CHECK_ONLY 1u   /* check it, load nothing: the stored kernel stays */
+
 /* Which check refused an offer. */
 enum update_why {
-    UPDATE_ACCEPTED,    /* the stored kernel is the offered build */
+    UPDATE_ACCEPTED,    /* the stored kernel is the offered build (CHECK_ONLY: it would be) */
     UPDATE_BAD_OFFER,   /* the message itself: its size, magic, flags or handles */
     UPDATE_BAD_MANIFEST,/* the manifest doesn't parse (status says how) */
     UPDATE_BAD_SIZE,    /* a file's length isn't the manifest's */

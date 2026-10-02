@@ -16,18 +16,47 @@
  * (reboot.c), so the next `reboot` starts the fetched build instead of
  * reloading the stick's. Nothing is written to the stick.
  *
+ * Who does what (the service-loop rule): the loop reads the offer, parses
+ * the manifest and compares the lengths, all quick; the copy and the hash
+ * (a few hundred milliseconds for a build, up to UPDATE_FILE_MAX per file)
+ * run on a worker thread, so the loop goes on serving meanwhile. The
+ * worker touches only its struct check and the VMOs in it, and when it is
+ * done it queues a packet with the offer channel's key; the loop then
+ * calls kexec_load itself (init's power is used from the loop only),
+ * notes /esp, answers and closes the channel.
+ *
  * One offer channel at a time; each takes one offer, gets one answer
- * (struct update_answer) and is closed. The copy and the hash run in
- * init's loop: a few hundred milliseconds for a build, bounded by
- * UPDATE_FILE_MAX per file, and asked for only by the owner. */
+ * (struct update_answer) and is closed. While a check runs, a new offer
+ * channel is refused (ERR_BAD_STATE). */
 #include <update.h>
 #include "init.h"
 
-#define CHUNK (64u << 10)   /* bytes copied and hashed at a time */
+#define CHUNK        (64u << 10)        /* bytes copied and hashed at a time */
+#define WORKER_STACK (16u << 10)
+#define WORKER_END   (2 * NS_PER_S)     /* its packet came: it ends within this */
+#define QUEUE_TRIES  100                /* a full port: tries 10 ms apart */
+
+/* An offer being checked: the loop's until the worker starts, the
+ * worker's until it sets `done` (RELEASE), the loop's again once it has
+ * read `done` (ACQUIRE). */
+struct check {
+    struct update_offer   *o;                    /* the message (heap) */
+    handle_t               hs[UPDATE_FILES];     /* the sender's VMOs */
+    struct update_manifest m;                    /* parsed by the loop */
+    handle_t               mine[UPDATE_FILES];   /* init's copies (0: not made) */
+    struct update_answer   a;
+    uint64_t               t0;                   /* uptime ns: the offer read */
+    uint64_t               hash_ms;              /* the worker's copy and hash */
+    bool                   done;                 /* the worker has finished */
+};
 
 static handle_t offer;      /* our end of the offer channel (0: none) */
 static handle_t offer_port;
 static uint64_t offer_key;
+static struct check *busy;  /* the check on the worker (NULL: none) */
+static handle_t worker;     /* its thread */
+static bool worker_stuck;   /* a worker didn't end: its stack can't be used again */
+static uint8_t worker_stack[WORKER_STACK];
 
 static void drop_offer(void)
 {
@@ -40,6 +69,8 @@ static void drop_offer(void)
 
 status_t update_offer_new(handle_t port, uint64_t key, handle_t *client)
 {
+    if (busy || worker_stuck)
+        return ERR_BAD_STATE;   /* the last offer's check isn't finished */
     drop_offer();
     handle_t mine, theirs;
     status_t st = jam_channel_create(&mine, &theirs);
@@ -103,68 +134,75 @@ static void refuse(struct update_answer *a, uint32_t why, uint32_t file, status_
     a->status = st;
 }
 
-/* Both files copied and checked into mine[]; false (a filled in) if not. */
-static bool check_files(const struct update_offer *o, const struct update_manifest *m,
-                        const handle_t hs[UPDATE_FILES], handle_t mine[UPDATE_FILES],
-                        struct update_answer *a)
+/* The worker's job: both files copied into c->mine and their SHA-256s
+ * compared with the manifest's (a refusal goes in c->a). */
+static void hash_files(struct check *c)
 {
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
-        if (o->bytes[f] != m->file[f].size) {
-            refuse(a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
-            return false;
+        uint8_t digest[SHA256_BYTES];
+        status_t st = copy_and_hash(c->hs[f], c->m.file[f].size, &c->mine[f], digest);
+        if (st != OK) {
+            refuse(&c->a, UPDATE_SHORT_VMO, f, st);
+            return;
+        }
+        if (memcmp(digest, c->m.file[f].sha256, SHA256_BYTES)) {
+            refuse(&c->a, UPDATE_BAD_HASH, f, ERR_INVALID_ARGS);
+            return;
         }
     }
+}
+
+/* The worker thread: hash_files, then tell the loop (a packet with the
+ * offer channel's key: update_event sees `done`). */
+static void worker_main(void *arg)
+{
+    struct check *c = arg;
+    uint64_t t0 = now();
+    hash_files(c);
+    c->hash_ms = (now() - t0) / NS_PER_MS;
+    __atomic_store_n(&c->done, true, __ATOMIC_RELEASE);   /* update_event's ACQUIRE load */
+    struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
+    for (int i = 0; i < QUEUE_TRIES && jam_port_queue(offer_port, &pkt) != OK; i++)
+        jam_nanosleep(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
+}
+
+/* The quick checks of an offer of n bytes with nh handles, in the loop:
+ * false (c->a filled in) if refused. */
+static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
+{
+    const struct update_offer *o = c->o;
+    if (n != sizeof(*o) || nh != UPDATE_FILES || o->txid || o->magic != UPDATE_OFFER_MAGIC ||
+        (o->flags & ~UPDATE_OFFER_CHECK_ONLY) || o->manifest_len > UPDATE_MANIFEST_MAX) {
+        refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
+        return false;
+    }
+    status_t st = update_manifest_parse(o->manifest, o->manifest_len, &c->m);
+    if (st != OK) {
+        refuse(&c->a, UPDATE_BAD_MANIFEST, 0, st);
+        return false;
+    }
+    memcpy(c->a.version, c->m.version, sizeof(c->a.version));
+    memcpy(c->a.git, c->m.git, sizeof(c->a.git));
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
-        uint8_t digest[SHA256_BYTES];
-        status_t st = copy_and_hash(hs[f], m->file[f].size, &mine[f], digest);
-        if (st != OK) {
-            refuse(a, UPDATE_SHORT_VMO, f, st);
-            return false;
-        }
-        if (memcmp(digest, m->file[f].sha256, SHA256_BYTES)) {
-            refuse(a, UPDATE_BAD_HASH, f, ERR_INVALID_ARGS);
+        if (o->bytes[f] != c->m.file[f].size) {
+            refuse(&c->a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
             return false;
         }
     }
     return true;
 }
 
-/* The whole check of an offer of n bytes with nh handles; *a filled in. */
-static void check(const struct update_offer *o, uint32_t n, const handle_t *hs, uint32_t nh,
-                  struct update_answer *a)
+static void say(const struct check *c)
 {
-    if (n != sizeof(*o) || nh != UPDATE_FILES || o->txid || o->magic != UPDATE_OFFER_MAGIC ||
-        o->flags || o->manifest_len > UPDATE_MANIFEST_MAX) {
-        refuse(a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
-        return;
-    }
-    struct update_manifest m;
-    status_t st = update_manifest_parse(o->manifest, o->manifest_len, &m);
-    if (st != OK) {
-        refuse(a, UPDATE_BAD_MANIFEST, 0, st);
-        return;
-    }
-    memcpy(a->version, m.version, sizeof(a->version));
-    memcpy(a->git, m.git, sizeof(a->git));
-    handle_t mine[UPDATE_FILES] = { HANDLE_INVALID, HANDLE_INVALID };
-    if (check_files(o, &m, hs, mine, a)) {
-        st = jam_kexec_load(shell_root(), mine[UPDATE_KERNEL], mine[UPDATE_BOOTFS], NULL, 0, 0);
-        if (st == OK)
-            reboot_keep_stored();
-        else
-            refuse(a, UPDATE_NOT_LOADED, 0, st);
-    }
-    for (uint32_t f = 0; f < UPDATE_FILES; f++)
-        if (mine[f])
-            jam_handle_close(mine[f]);
-}
-
-static void say(const struct update_answer *a, const struct update_offer *o)
-{
+    const struct update_answer *a = &c->a;
+    const struct update_offer *o = c->o;
     if (a->why == UPDATE_ACCEPTED) {
-        printf("init: update: %s (%s) checked in %u ms (kernel %lu bytes, bootfs %lu bytes) "
-               "and stored: `reboot` starts it\n", a->version, a->git, a->check_ms,
-               (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS]);
+        bool only = o->flags & UPDATE_OFFER_CHECK_ONLY;
+        printf("init: update: %s (%s) checked in %u ms (kernel %lu bytes, bootfs %lu bytes, "
+               "hashed in %lu ms off the loop) %s\n", a->version, a->git, a->check_ms,
+               (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
+               (unsigned long)c->hash_ms,
+               only ? "and not loaded (check only)" : "and stored: `reboot` starts it");
         return;
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
@@ -172,6 +210,52 @@ static void say(const struct update_answer *a, const struct update_offer *o)
     printf("init: update: refused: %s%s%s (%s); the stored kernel is unchanged\n",
            update_why_str(a->why), per_file ? ": " : "", per_file ? update_file_name(a->file) : "",
            status_str(a->status));
+}
+
+/* The end of a check, in the loop: the copies loaded unless refused or
+ * check-only, the answer said and written, everything let go. */
+static void finish(struct check *c, uint32_t nh)
+{
+    bool only = c->o->flags & UPDATE_OFFER_CHECK_ONLY;
+    if (c->a.why == UPDATE_ACCEPTED && !only) {
+        status_t st = jam_kexec_load(shell_root(), c->mine[UPDATE_KERNEL],
+                                     c->mine[UPDATE_BOOTFS], NULL, 0, 0);
+        if (st == OK)
+            reboot_keep_stored();
+        else
+            refuse(&c->a, UPDATE_NOT_LOADED, 0, st);
+    }
+    uint64_t ms = (now() - c->t0) / NS_PER_MS;
+    c->a.check_ms = ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
+    say(c);
+    (void)jam_channel_write(offer, &c->a, sizeof(c->a), NULL, 0);   /* a gone sender reads nothing */
+    for (uint32_t f = 0; f < UPDATE_FILES; f++) {
+        if (f < nh && c->hs[f])
+            jam_handle_close(c->hs[f]);
+        if (c->mine[f])
+            jam_handle_close(c->mine[f]);
+    }
+    free(c->o);
+    free(c);
+    drop_offer();   /* one offer per channel */
+}
+
+/* The worker said it is done: wait for its thread to end (its stack is
+ * reused), then finish. */
+static void worker_done(void)
+{
+    struct check *c = busy;
+    busy = NULL;
+    signals_t seen;
+    status_t st = jam_object_wait_one(worker, SIG_TERMINATED, now() + WORKER_END, &seen);
+    jam_handle_close(worker);
+    worker = HANDLE_INVALID;
+    if (st != OK) {
+        init_say("init: update: the check's thread didn't end (%s): no more updates this boot",
+                 status_str(st));
+        worker_stuck = true;
+    }
+    finish(c, UPDATE_FILES);
 }
 
 /* The offer message into o (a whole one, or what there was of it). */
@@ -189,29 +273,50 @@ static status_t read_offer(struct update_offer *o, uint32_t *n, handle_t hs[UPDA
     return st == ERR_BUFFER_TOO_SMALL ? OK : st;
 }
 
+/* A new offer read: refused at once, or handed to the worker (or, if no
+ * thread can start, hashed here after all). */
+static void start_check(struct check *c, const handle_t *hs, uint32_t n, uint32_t nh)
+{
+    c->t0 = now();
+    c->a.magic = UPDATE_ANSWER_MAGIC;
+    for (uint32_t i = UPDATE_FILES; i < nh; i++)
+        jam_handle_close(hs[i]);   /* one too many: refused below */
+    for (uint32_t i = 0; i < UPDATE_FILES && i < nh; i++)
+        c->hs[i] = hs[i];
+    if (!check_offer(c, n, nh)) {
+        finish(c, nh);
+        return;
+    }
+    busy = c;
+    if (thread_spawn("update check", worker_main, c, worker_stack, sizeof(worker_stack),
+                     &worker) == OK)
+        return;
+    busy = NULL;
+    worker_main(c);   /* its packet comes, and finds nothing busy: ignored */
+    finish(c, UPDATE_FILES);
+}
+
 void update_event(void)
 {
+    if (busy) {
+        if (__atomic_load_n(&busy->done, __ATOMIC_ACQUIRE))
+            worker_done();
+        return;   /* else: the sender's end closed or wrote again meanwhile; seen at the end */
+    }
     if (!offer)
         return;
+    struct check *c = calloc(1, sizeof(*c));
     struct update_offer *o = calloc(1, sizeof(*o));
     handle_t hs[UPDATE_FILES + 1];
     uint32_t n = 0, nh = 0;
-    status_t st = o ? read_offer(o, &n, hs, &nh) : ERR_NO_MEMORY;
-    if (st == ERR_SHOULD_WAIT) {
-        free(o);
-        return;   /* nothing yet */
-    }
+    status_t st = c && o ? read_offer(o, &n, hs, &nh) : ERR_NO_MEMORY;
     if (st == OK) {
-        uint64_t t0 = now();
-        struct update_answer a = { .magic = UPDATE_ANSWER_MAGIC };
-        check(o, n, hs, nh, &a);
-        uint64_t ms = (now() - t0) / NS_PER_MS;
-        a.check_ms = ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
-        say(&a, o);
-        (void)jam_channel_write(offer, &a, sizeof(a), NULL, 0);   /* a gone sender reads nothing */
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(hs[i]);
+        c->o = o;
+        start_check(c, hs, n, nh);
+        return;
     }
     free(o);
-    drop_offer();   /* one offer per channel; a closed one ends here too */
+    free(c);
+    if (st != ERR_SHOULD_WAIT)
+        drop_offer();   /* the sender is gone (or we can't read): the channel ends here */
 }
