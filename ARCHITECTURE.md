@@ -641,9 +641,9 @@ Not built yet; these rules bind every future path that can transmit.
   any that die (killing devmgr takes its drivers with its job); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
-  its services in it under `/svc` (`audio` and `audioctl`, the mixer's;
-  `music`, a channel per opener; `devmgr`, a channel per opener, and
-  `devmgr-ctl`, each devmgr's;
+  its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
+  each a channel per opener; `music`, a channel per opener; `devmgr`, a
+  channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
@@ -680,7 +680,8 @@ Not built yet; these rules bind every future path that can transmit.
   given, which is the only permission system for files and services.
   **Services**: `svc_open(name)` gives the caller a channel of its own
   where the service hands them out (the `svc` protocol's `connect`,
-  `abi/idl/svc.idl`: the music player and devmgr's queries do), else a duplicate of the
+  `abi/idl/svc.idl`: the music player, the mixer's two and devmgr's
+  queries do), else a duplicate of the
   shared one; `svc_get` keeps one and opens it again once its service
   has restarted. `/` lists `svc`, `/svc` the names. **Views**: a mount's
   service hands out narrower channels onto the same volume (`fs.view`,
@@ -849,6 +850,10 @@ restarted mixer serves the same channels: `audio`
 (`abi/idl/audio.idl`), published as `/svc/audio` (a program whose list
 asks for it plays sound), and `audioctl` (every stream's volume and the
 master volume, `/svc/audioctl`: the shell's `vol` and test programs).
+Each opener of either gets a channel of its own (`svc.connect`), so a
+late answer goes only to the program that asked; it ends with the mixer
+that made it, and the next open waits on the shared channel for the
+restarted one.
 `open_output` gives a client a stream of its own: a channel (start,
 stop, drain, position, its volume; closing it ends the stream), a ring
 VMO (a header page with the client's `write` and the mixer's `read`

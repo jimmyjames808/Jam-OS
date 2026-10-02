@@ -295,8 +295,8 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 
 #define SVC_NAME_MAX   10            /* bytes of a service's name */
 /* The services init publishes (tools/checkwants.py reads this list). */
-#define SVC_AUDIO      "audio"       /* the mixer: open a sound stream (abi/idl/audio.idl) */
-#define SVC_AUDIOCTL   "audioctl"    /* the mixer's volumes (audioctl.idl) */
+#define SVC_AUDIO      "audio"       /* the mixer: sound streams, a channel per opener (audio.idl) */
+#define SVC_AUDIOCTL   "audioctl"    /* the mixer's volumes, a channel per opener (audioctl.idl) */
 #define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
 #define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
 #define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */

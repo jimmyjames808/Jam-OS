@@ -651,7 +651,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     make_audio_channels();
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
-    publish(SVC_AUDIO, audio_cli[0], false);
-    publish(SVC_AUDIOCTL, audio_cli[1], false);
+    publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
+    publish(SVC_AUDIOCTL, audio_cli[1], true);
     publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
 }

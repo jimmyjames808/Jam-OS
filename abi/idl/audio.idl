@@ -1,7 +1,9 @@
 # audio: programs' sound output, served by the mixer (user/services/mixer).
-# A program finds it as its startup role SR_AUDIO (the shell gets it from
-# init and gives every program it runs a duplicate); `open_output` on it
-# makes a stream. The ring and its header are described in
+# A program whose list asks for it finds it as /svc/audio. Each opener
+# (libos's svc_open, svc_get) gets a channel of its own: the svc
+# protocol's connect (abi/idl/svc.idl), answered on the shared channel
+# (the mixer's startup role SR_AUDIO, published by init); `open_output` on
+# it makes a stream. The ring and its header are described in
 # <mixer.h>, which also has the client side (mixer_open, mixer_write, ...);
 # the plan is docs/A2-PLAN.md.
 # Format: see tools/genidl.py.
@@ -9,20 +11,21 @@
 # The stream methods are named stream_* so the generated audio_stream_*
 # calls stay clear of the client library's audio_* (<audio.h>).
 #
-# Reconnect: init holds the SR_AUDIO channel across mixer restarts, so a
-# call on it made while the mixer is down waits (bounded by the caller's
-# deadline) for the restarted mixer. A stream does not survive the mixer:
-# its channel reports ERR_PEER_CLOSED; close the stream and open a new one
-# on SR_AUDIO.
+# Reconnect: an opener's channel ends with the mixer that made it
+# (ERR_PEER_CLOSED); open /svc/audio again (svc_get does), whose connect
+# waits (bounded by the caller's deadline) on the shared channel, which
+# init holds across mixer restarts, for the restarted mixer. A stream does
+# not survive the mixer either: its channel reports ERR_PEER_CLOSED; close
+# the stream and open a new one.
 
 protocol audio 22
 
-# On SR_AUDIO: a new stream, stopped, with an empty ring. Only rate 48000,
+# On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
 # channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client
 # library converts). name: a label for `vol` (NUL-padded, printable ASCII;
 # anything else is replaced by '?'). Results: `stream`, a channel of its own
 # that speaks the methods below (closing it ends the stream; refused on
-# SR_AUDIO); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
+# /svc/audio); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
 # header page and then `frames` frames of samples (left, right:
 # little-endian s16); `event`, its wake-ups (wait, signal: the SPACE and
 # DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,

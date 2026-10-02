@@ -2,13 +2,15 @@
 # shell's `vol` and `hda` and the test programs: every stream's volume,
 # the master volume and the sound card's query channels. init publishes
 # it as /svc/audioctl; the shell has it, and the programs whose lists ask
-# for it.
+# for it. Each opener gets a channel of its own (the svc protocol's
+# connect, as for `audio`).
 # Format: see tools/genidl.py. The plan is docs/A2-PLAN.md.
 #
-# Reconnect: init holds this channel across mixer restarts, so a call
-# made while the mixer is down waits (bounded by the caller's deadline)
-# for the restarted mixer. Volumes are not kept across a restart: a new
-# mixer starts with every volume at 0 dB.
+# Reconnect: an opener's channel ends with the mixer that made it
+# (ERR_PEER_CLOSED); open /svc/audioctl again (svc_get does), whose
+# connect waits on the shared channel init holds across mixer restarts.
+# Volumes are not kept across a restart: a new mixer starts with every
+# volume at 0 dB.
 
 protocol audioctl 23
 

@@ -37,6 +37,7 @@ static void packet(struct mixer *m, const struct port_packet *p)
 {
     uint32_t low = (uint32_t)(p->key & 0xff);
     struct stream *s;
+    struct client *c;
     if (p->key == KEY_SVC) {
         m->svc_pending = true;
     } else if (p->key == KEY_CTL) {
@@ -48,6 +49,8 @@ static void packet(struct mixer *m, const struct port_packet *p)
     } else if (low == KEY_OUT) {
         if (m->out.ch && (uint32_t)(p->key >> 8) == m->out.gen)
             m->out.pending = true;
+    } else if (low >= KEY_CLIENT && (c = clients_keyed(m, p->key)) != NULL) {
+        c->pending = true;
     } else if (low >= KEY_EVENT && (s = keyed(m, p->key, KEY_EVENT)) != NULL) {
         stream_event(m, s);
     } else if (low >= KEY_STREAM && (s = keyed(m, p->key, KEY_STREAM)) != NULL) {
@@ -57,7 +60,7 @@ static void packet(struct mixer *m, const struct port_packet *p)
 
 static bool anything_pending(const struct mixer *m)
 {
-    if (m->svc_pending || m->ctl_pending || m->out.pending)
+    if (m->svc_pending || m->ctl_pending || m->out.pending || clients_pending(m))
         return true;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->s[i].used && m->s[i].pending)
@@ -71,6 +74,7 @@ static void serve_all(struct mixer *m)
         serve_svc(m);
     if (m->ctl_pending)
         serve_ctl(m);
+    clients_serve(m);
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->s[i].used && m->s[i].pending)
             serve_stream(m, &m->s[i]);
