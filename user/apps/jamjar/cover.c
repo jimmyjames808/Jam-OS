@@ -168,7 +168,7 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE
                                     : C.small + (size_t)e->slot * COVER_SMALL * COVER_SMALL;
-        scale_pm(src, side, side, side, dst->px, size, size);
+        scale_pm(&(struct picture){ src, side, side, side }, dst->px, size, size);
     }
     unlock();
     float r = (float)size / 10.0f;

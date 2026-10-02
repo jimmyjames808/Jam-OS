@@ -84,7 +84,7 @@ static void label(const struct surf *s, int x, int y, int size, uint64_t hash, u
     uint64_t st = hash ^ 0x6a616d6a6172ull;
     fill(s, x, y, size, size, bg);
     float f = (float)size;
-    panel(s, x, y, size, size, size / 7, mixc(C_BG, c0, 90), 256);
+    panel(s, &(struct rect){ x, y, size, size }, size / 7, mixc(C_BG, c0, 90), 256);
     /* A soft sheen from the top left: three discs, fainter as they grow. */
     for (int i = 0; i < 3; i++)
         disc_aa(s, (float)x + f * 0.32f, (float)y + f * 0.28f, f * (0.12f + 0.065f * i),
@@ -213,9 +213,10 @@ static bool redraw(struct art_slot *c, uint64_t hash, int kind, uint32_t bg)
     return true;
 }
 
-void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, const char *path,
+void art_cover(const struct surf *s, const struct rect *r, uint64_t hash, const char *path,
                uint32_t bg)
 {
+    int x = r->x, y = r->y, size = r->w;
     if (size < 4)
         return;
     int kind = path ? cover_ready(hash, path, size, false) : COVER_NONE;
@@ -240,12 +241,12 @@ void art_cover(const struct surf *s, int x, int y, int size, uint64_t hash, cons
     }
     c->used = ++draws;
     struct surf src = { c->px, size, size, size };
-    blit(s, x, y, &src, 0, 0, size, size);
+    blit(s, x, y, &src, &(struct rect){ 0, 0, size, size });
 }
 
 void art_draw(const struct surf *s, int x, int y, int size, uint64_t hash, uint32_t bg)
 {
-    art_cover(s, x, y, size, hash, NULL, bg);
+    art_cover(s, &(struct rect){ x, y, size, size }, hash, NULL, bg);
 }
 
 void art_mark(const struct surf *s, int x, int y, int size)

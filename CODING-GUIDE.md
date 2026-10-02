@@ -130,6 +130,11 @@ be compatible with that.
   syscalls take six. More means a struct (as `@channel_call_args` does).
   Exempt: IDL-generated signatures, and the `sys_*` handle layer, which
   mirrors its syscall (it may take the syscall's `@struct` instead).
+  libfun's drawing calls take a `struct rect` (a `struct picture` to
+  scale from); the ones whose shape is no rectangle may take up to eight:
+  `line_aa` and `ring_aa` (float end points or a centre, a width, the
+  colour and its alpha) and `text2` (a position, a scale, two colours, a
+  shadow or not).
 
 ### Headers
 

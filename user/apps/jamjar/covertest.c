@@ -265,9 +265,9 @@ static void test_helper(void)
     uint32_t src[16], dst[4];
     for (int i = 0; i < 16; i++)
         src[i] = i % 4 < 2 ? 0xffff0000u : 0x80000080u;
-    scale_pm(src, 4, 4, 4, dst, 2, 2);
+    scale_pm(&(struct picture){ src, 4, 4, 4 }, dst, 2, 2);
     ok = dst[0] == 0xffff0000u && dst[1] == 0x80000080u && dst[2] == dst[0] && dst[3] == dst[1];
-    scale_pm(src, 4, 4, 4, dst, 1, 1);   /* half and half */
+    scale_pm(&(struct picture){ src, 4, 4, 4 }, dst, 1, 1);   /* half and half */
     ok &= dst[0] == 0xc0800040u;
     fun_check(ok, "scaling down averages areas (premultiplied)");
 }
@@ -292,7 +292,7 @@ static void work_all(void)
 static bool shows(uint64_t h, const char *p, int size)
 {
     struct surf s = { spx, size, size, size };
-    art_cover(&s, 0, 0, size, h, p, C_PANEL);
+    art_cover(&s, &(struct rect){ 0, 0, size, size }, h, p, C_PANEL);
     uint32_t want = 0xff000000u | (uint32_t)(name_hash(p) & 0xffffff);
     return (spx[(size_t)size / 2 * size + size / 2] | 0xff000000u) == want;
 }

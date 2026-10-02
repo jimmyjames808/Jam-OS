@@ -81,7 +81,7 @@ void roulette_draw(const struct roulette *r, const struct library *l, const stru
     fill(s, 0, cy - band / 2, lo->w, u, C_BERRY0);
     fill(s, 0, cy + band / 2 - u, lo->w, u, C_BERRY0);
     int tw = text_width(2 * u, "jam roulette") + 48 * u, ty = cy - big / 2 - 100 * u;
-    panel(s, (lo->w - tw) / 2, ty, tw, 52 * u, 26 * u, ROUL_BG, 256);
+    panel(s, &(struct rect){ (lo->w - tw) / 2, ty, tw, 52 * u }, 26 * u, ROUL_BG, 256);
     text_in(s, &(struct rect){ 0, ty, lo->w, 52 * u }, 2 * u, C_GOLD, "jam roulette");
     for (uint32_t i = 0; i < r->ntiles; i++) {
         float d = (float)i - r->pos;
@@ -91,11 +91,11 @@ void roulette_draw(const struct roulette *r, const struct library *l, const stru
         bool centre = d > -0.5f && d <= 0.5f;
         int sz = centre ? big : size;
         const struct lib_album *al = &l->album[r->tile[i]];
-        art_cover(s, x - sz / 2, cy - sz / 2, sz, al->hash, l->track[al->first].path, ROUL_BG);
+        const struct rect at = { x - sz / 2, cy - sz / 2, sz, sz };
+        art_cover(s, &at, al->hash, l->track[al->first].path, ROUL_BG);
         float far = d < 0 ? -d : d;
         if (!centre)   /* the further from the pointer, the darker (corners kept round) */
-            panel(s, x - sz / 2, cy - sz / 2, sz, sz, sz / 7, ROUL_BG,
-                  (uint32_t)(far > 4 ? 200 : 60 + far * 35));
+            panel(s, &at, sz / 7, ROUL_BG, (uint32_t)(far > 4 ? 200 : 60 + far * 35));
     }
     /* The pointer: a gold triangle over the middle, kicked by each label. */
     float py = (float)(cy - big / 2 - 14 * u) - r->kick * 8.0f * (float)u;

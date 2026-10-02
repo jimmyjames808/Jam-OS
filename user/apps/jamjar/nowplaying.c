@@ -25,17 +25,18 @@ static void mss(uint64_t ms, char *buf, size_t cap)
 static void icon(int b, bool paused, float cx, float cy, float k, uint32_t c)
 {
     if (b == BTN_STOP) {
-        panel(&scr.s, (int)(cx - k * 0.5f), (int)(cy - k * 0.5f), (int)k, (int)k, (int)(k / 6), c,
-              256);
+        panel(&scr.s, &(struct rect){ (int)(cx - k * 0.5f), (int)(cy - k * 0.5f), (int)k, (int)k },
+              (int)(k / 6), c, 256);
     } else if (b == BTN_PLAY && paused) {
         float t[6] = { cx - k * 0.45f, cy - k * 0.62f, cx - k * 0.45f, cy + k * 0.62f,
                        cx + k * 0.62f, cy };
         poly_aa(&scr.s, t, 3, c, 255);
     } else if (b == BTN_PLAY) {
-        panel(&scr.s, (int)(cx - k * 0.5f), (int)(cy - k * 0.55f), (int)(k * 0.34f),
-              (int)(k * 1.1f), (int)(k / 8), c, 256);
-        panel(&scr.s, (int)(cx + k * 0.16f), (int)(cy - k * 0.55f), (int)(k * 0.34f),
-              (int)(k * 1.1f), (int)(k / 8), c, 256);
+        struct rect bar = { (int)(cx - k * 0.5f), (int)(cy - k * 0.55f), (int)(k * 0.34f),
+                            (int)(k * 1.1f) };
+        panel(&scr.s, &bar, (int)(k / 8), c, 256);
+        bar.x = (int)(cx + k * 0.16f);
+        panel(&scr.s, &bar, (int)(k / 8), c, 256);
     } else {
         float d = b == BTN_NEXT ? 1.0f : -1.0f;   /* a triangle and a bar */
         float t[6] = { cx - d * k * 0.45f, cy - k * 0.5f, cx - d * k * 0.45f, cy + k * 0.5f,
@@ -74,10 +75,10 @@ static void progress(const struct app *a, uint64_t t)
     const struct rect *r = &lo->progress;
     int u = lo->u;
     uint64_t el = now_elapsed(a, t), len = a->snap.length_ms;
-    panel(&scr.s, r->x, r->y, r->w, r->h, r->h / 2, C_LINE, 256);
+    panel(&scr.s, r, r->h / 2, C_LINE, 256);
     int fw = len ? (int)((uint64_t)r->w * el / len) : 0;
     if (fw > r->h)
-        panel(&scr.s, r->x, r->y, fw, r->h, r->h / 2, C_BERRY2, 256);
+        panel(&scr.s, &(struct rect){ r->x, r->y, fw, r->h }, r->h / 2, C_BERRY2, 256);
     if (len)
         disc_aa(&scr.s, (float)(r->x + fw), (float)r->y + (float)r->h / 2, 7.0f * u, C_GOLD,
                 255);
@@ -143,10 +144,10 @@ static void volume(const struct app *a)
     int32_t cb = a->drag_vol ? a->vol_shown : a->snap.volume;
     float sx = (float)(r->x - 32 * u), cy = (float)r->y + (float)r->h / 2;
     speaker(sx, cy, (float)u, cb <= -960 ? 0 : cb < -300 ? 1 : 2);
-    panel(&scr.s, r->x, r->y + r->h / 4, r->w, r->h / 2, r->h / 4, C_LINE, 256);
+    panel(&scr.s, &(struct rect){ r->x, r->y + r->h / 4, r->w, r->h / 2 }, r->h / 4, C_LINE, 256);
     int fw = (int)(vol_pos(cb) * (float)r->w);
     if (fw > 0)
-        panel(&scr.s, r->x, r->y + r->h / 4, fw, r->h / 2, r->h / 4, C_GOLD, 256);
+        panel(&scr.s, &(struct rect){ r->x, r->y + r->h / 4, fw, r->h / 2 }, r->h / 4, C_GOLD, 256);
     disc_aa(&scr.s, (float)(r->x + fw), cy, 8.0f * u,
             a->drag_vol || rect_has(r, a->mx, a->my) ? C_CREAM : C_GOLD, 255);
     char db[24];
@@ -162,7 +163,7 @@ static void order_pill(const struct app *a)
     const struct rect *r = &a->lo.mode;
     int u = a->lo.u;
     bool hover = rect_has(r, a->mx, a->my);
-    panel(&scr.s, r->x, r->y, r->w, r->h, r->h / 2, hover ? C_LINE : C_ROW, 256);
+    panel(&scr.s, r, r->h / 2, hover ? C_LINE : C_ROW, 256);
     const char *what = a->ordered ? "in order" : "shuffle";
     struct rect t = *r;
     text_in(&scr.s, &t, u, a->ordered ? C_CREAM : C_GOLD, what);
@@ -176,17 +177,23 @@ static const char *state_word(uint8_t playing)
     return playing < 4 ? w[playing] : "";
 }
 
+/* One line of str in r's column at y, cut short to r's width. */
+static void line_at(const struct rect *r, int y, int scale, uint32_t c, const char *str)
+{
+    text_clip(&scr.s, &(struct rect){ r->x, y, r->w, TEXT_H(scale) }, scale, c, str);
+}
+
 static void names(const struct app *a)
 {
     const struct layout *lo = &a->lo;
     const struct rect *r = &lo->title;
-    int u = lo->u, y = r->y, w = r->w;
+    int u = lo->u, y = r->y;
     const struct snap *s = &a->snap;
     if (!s->link) {
         text(&scr.s, r->x, y, u, C_FAINT, "NO PLAYER");
-        text_clip(&scr.s, r->x, y + 28 * u, lo->tb, C_DIM, w, "Library only");
-        text_clip(&scr.s, r->x, y + 70 * u, u, C_FAINT, w, "start jamjar from the shell");
-        text_clip(&scr.s, r->x, y + 92 * u, u, C_FAINT, w, "(its `jamjar` command) to play");
+        line_at(r, y + 28 * u, lo->tb, C_DIM, "Library only");
+        line_at(r, y + 70 * u, u, C_FAINT, "start jamjar from the shell");
+        line_at(r, y + 92 * u, u, C_FAINT, "(its `jamjar` command) to play");
         return;
     }
     if (snap_stale(s, now()))
@@ -195,21 +202,21 @@ static void names(const struct app *a)
         text(&scr.s, r->x, y, u, s->playing == 1 ? C_GOLD : C_FAINT, state_word(s->playing));
     y += 28 * u;
     if (!s->path[0]) {
-        text_clip(&scr.s, r->x, y, lo->tb, C_DIM, w, "Nothing playing");
-        text_clip(&scr.s, r->x, y + 46 * u, u, C_FAINT, w, "Enter plays the selection,");
-        text_clip(&scr.s, r->x, y + 68 * u, u, C_FAINT, w, "a plays everything, r spins");
+        line_at(r, y, lo->tb, C_DIM, "Nothing playing");
+        line_at(r, y + 46 * u, u, C_FAINT, "Enter plays the selection,");
+        line_at(r, y + 68 * u, u, C_FAINT, "a plays everything, r spins");
         if (s->note[0])
-            text_clip(&scr.s, r->x, y + 100 * u, u, C_ROSE, w, s->note);
+            line_at(r, y + 100 * u, u, C_ROSE, s->note);
         return;
     }
     const struct track_names *n = &a->now;
-    text_clip(&scr.s, r->x, y, lo->tb, C_CREAM, w, n->title);
+    line_at(r, y, lo->tb, C_CREAM, n->title);
     y += TEXT_H(lo->tb) + 10 * u;
-    text_clip(&scr.s, r->x, y, u, C_CREAM, w, n->artist[0] ? n->artist : "(no artist)");
+    line_at(r, y, u, C_CREAM, n->artist[0] ? n->artist : "(no artist)");
     y += TEXT_H(u) + 6 * u;
     char line[NAME_MAX + 16];
     snprintf(line, sizeof(line), "%s%s%s", n->album, n->year[0] ? "  " : "", n->year);
-    text_clip(&scr.s, r->x, y, u, C_DIM, w, line);
+    line_at(r, y, u, C_DIM, line);
 }
 
 /* Under the controls, if there is room: where the music comes from, and
@@ -237,22 +244,22 @@ static void info(const struct app *a)
     }
     y += TEXT_H(u) + 10 * u;
     if (y + TEXT_H(u) <= r->y + r->h)
-        text_clip(&scr.s, r->x, y, u, C_FAINT, r->w,
-                  "space pause   n next   p back   / search   r roulette   ? keys");
+        line_at(r, y, u, C_FAINT,
+                "space pause   n next   p back   / search   r roulette   ? keys");
 }
 
 void draw_now(struct app *a, uint64_t t)
 {
     const struct layout *lo = &a->lo;
     int u = lo->u;
-    panel(&scr.s, lo->now.x, lo->now.y, lo->now.w, lo->now.h, 14 * u, C_PANEL, 256);
+    panel(&scr.s, &lo->now, 14 * u, C_PANEL, 256);
     const struct rect *ar = &lo->art;
     const char *slash = strrchr(a->snap.path, '/');
     if (a->snap.path[0] && slash) {
-        art_cover(&scr.s, ar->x, ar->y, ar->w, album_hash(a->snap.path,
-                  (size_t)(slash - a->snap.path)), a->snap.path, C_PANEL);
+        art_cover(&scr.s, ar, album_hash(a->snap.path, (size_t)(slash - a->snap.path)),
+                  a->snap.path, C_PANEL);
     } else {
-        panel(&scr.s, ar->x, ar->y, ar->w, ar->h, ar->w / 7, C_ROW, 256);
+        panel(&scr.s, ar, ar->w / 7, C_ROW, 256);
         art_mark(&scr.s, ar->x + ar->w / 5, ar->y + ar->h / 5, ar->w * 3 / 5);
     }
     names(a);

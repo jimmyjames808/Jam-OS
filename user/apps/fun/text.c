@@ -251,9 +251,9 @@ int text_width(int scale, const char *str)
     return w * (scale < 1 ? 1 : scale);
 }
 
-int text_clip(const struct surf *s, int x, int y, int scale, uint32_t c, int max_w,
-              const char *str)
+int text_clip(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str)
 {
+    int x = r->x, y = r->y, max_w = r->w;
     if (text_width(scale, str) <= max_w)
         return text(s, x, y, scale, c, str);
     /* As many whole characters as fit before "..."; not even the dots fit:

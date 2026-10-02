@@ -97,20 +97,34 @@ void     gfx_present(void);
 /* Copy all of it (after something else may have drawn on the screen). */
 void     gfx_present_all(void);
 
+/* A rectangle on a surface: what the drawing calls take, what a layout
+ * hands out and what a click is tested against. */
+struct rect {
+    int x, y, w, h;     /* top-left corner and size, pixels */
+};
+static inline bool rect_has(const struct rect *r, int x, int y)
+{
+    return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h;
+}
+
 /* Drawing (all clipped to the surface). */
 void fill(const struct surf *s, int x, int y, int w, int h, uint32_t c);
-/* Blend c over the rectangle at alpha a (0..256). */
-void blend(const struct surf *s, int x, int y, int w, int h, uint32_t c, uint32_t a);
-/* A filled rectangle with rounded corners, blended at alpha a; r: corner radius. */
-void panel(const struct surf *s, int x, int y, int w, int h, int r, uint32_t c, uint32_t a);
-/* A rectangle's outline, t pixels thick. */
-void frame(const struct surf *s, int x, int y, int w, int h, int t, uint32_t c);
-/* A vertical gradient from c0 (top) to c1 (bottom). */
-void vgrad(const struct surf *s, int x, int y, int w, int h, uint32_t c0, uint32_t c1);
+static inline void fill_rect(const struct surf *s, const struct rect *r, uint32_t c)
+{
+    fill(s, r->x, r->y, r->w, r->h, c);
+}
+/* Blend c over r at alpha a (0..256). */
+void blend(const struct surf *s, const struct rect *r, uint32_t c, uint32_t a);
+/* r filled with rounded corners (of radius `radius`), blended at alpha a. */
+void panel(const struct surf *s, const struct rect *r, int radius, uint32_t c, uint32_t a);
+/* r's outline, t pixels thick. */
+void frame(const struct surf *s, const struct rect *r, int t, uint32_t c);
+/* r filled with a vertical gradient from c0 (top) to c1 (bottom). */
+void vgrad(const struct surf *s, const struct rect *r, uint32_t c0, uint32_t c1);
 void line(const struct surf *s, int x0, int y0, int x1, int y1, uint32_t c);
-/* src (w x h at sx, sy) to dst at x, y; blit_key skips pixels == key. */
-void blit(const struct surf *dst, int x, int y, const struct surf *src, int sx, int sy, int w,
-          int h);
+/* The part `from` of src to dst with its top left at x, y; blit_key: all
+ * of src, skipping pixels == key. */
+void blit(const struct surf *dst, int x, int y, const struct surf *src, const struct rect *from);
 void blit_key(const struct surf *dst, int x, int y, const struct surf *src, uint32_t key);
 /* A surface of its own memory (zeroed); px NULL on failure. */
 struct surf surf_new(int w, int h);
@@ -128,10 +142,14 @@ uint32_t px_over(uint32_t dst, uint32_t src);
 void fill_pm(const struct surf *s, int x, int y, int w, int h, uint32_t src);
 /* An image whose pixels are premultiplied 0xAARRGGBB, over dst at x, y. */
 void blit_pm(const struct surf *dst, int x, int y, const struct surf *src);
-/* src (sw x sh premultiplied pixels, `stride` a row) to dw x dh at dst
- * (dw a row): area averaging to make smaller, bilinear to make bigger
- * (scale.c). */
-void scale_pm(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh);
+/* Premultiplied pixels to read from: w x h of them, `stride` a row. */
+struct picture {
+    const uint32_t *px;
+    int             w, h, stride;
+};
+/* src to dw x dh at dst (dw a row): area averaging to make smaller,
+ * bilinear to make bigger (scale.c). */
+void scale_pm(const struct picture *src, uint32_t *dst, int dw, int dh);
 /* Anti-aliased (each edge pixel's coverage as alpha), in rgb at alpha a
  * (0..255), positions in pixels (a pixel's centre is at +0.5): a filled
  * circle of radius r, and a line `width` pixels wide with round ends. */
@@ -145,15 +163,6 @@ void ring_aa(const struct surf *s, float cx, float cy, float r, float width, uin
              uint32_t a);
 void poly_aa(const struct surf *s, const float *xy, int n, uint32_t rgb, uint32_t a);
 
-/* A rectangle on a surface: what a layout hands out and a click is tested
- * against. */
-struct rect {
-    int x, y, w, h;     /* top-left corner and size, pixels */
-};
-static inline bool rect_has(const struct rect *r, int x, int y)
-{
-    return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h;
-}
 /* A block of colour c with an edge e pixels wide, lit from the top left so
  * it stands out of the surface (e < 0: lit from the bottom right, so it is
  * sunk into it), and a soft gradient down its face. */
@@ -167,7 +176,7 @@ void card(const struct surf *s, const struct rect *r, int radius);
 /* A filled circle of radius rad around (cx, cy), blended at alpha a. */
 static inline void disc(const struct surf *s, int cx, int cy, int rad, uint32_t c, uint32_t a)
 {
-    panel(s, cx - rad, cy - rad, 2 * rad, 2 * rad, rad, c, a);
+    panel(s, &(struct rect){ cx - rad, cy - rad, 2 * rad, 2 * rad }, rad, c, a);
 }
 
 /* Text: the 8x16 font, proportional (each glyph as wide as its ink, digits
@@ -177,7 +186,8 @@ static inline void disc(const struct surf *s, int cx, int cy, int rad, uint32_t 
  * returns the x after the text; text_shadow draws a soft dark shadow first
  * (for text over pictures). A '\a' in the text switches to the colour `alt`
  * until the next '\a' (textf takes it as a normal character). text_clip
- * draws at most max_w pixels of it, cut short with "..." if it is wider. */
+ * draws it at r's top left, at most r->w pixels of it, cut short with
+ * "..." if it is wider (r->h is not looked at: give it TEXT_H(scale)). */
 int  text(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str);
 int  text_shadow(const struct surf *s, int x, int y, int scale, uint32_t c, const char *str);
 int  text2(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t alt, bool shadow,
@@ -185,7 +195,7 @@ int  text2(const struct surf *s, int x, int y, int scale, uint32_t c, uint32_t a
 int  textf(const struct surf *s, int x, int y, int scale, uint32_t c, const char *fmt, ...)
          __attribute__((format(printf, 6, 7)));
 int  text_width(int scale, const char *str);
-int  text_clip(const struct surf *s, int x, int y, int scale, uint32_t c, int max_w,
+int  text_clip(const struct surf *s, const struct rect *r, int scale, uint32_t c,
                const char *str);
 /* The code point at *s, moving *s past it (past one byte, with UTF8_BAD,
  * when it is malformed; 0 at the end, not moving). */

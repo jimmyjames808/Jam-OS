@@ -12,16 +12,9 @@ static float cover(int i, float a, float b)
     return ((float)(i + 1) < b ? (float)(i + 1) : b) - ((float)i > a ? (float)i : a);
 }
 
-/* The source image box() reads. */
-struct box_src {
-    const uint32_t *px;          /* its pixels */
-    int             w, h;        /* its size */
-    int             stride;      /* pixels a row */
-};
-
 /* One output pixel of box(): the area [x0, x1) x [y0, y1) of s averaged,
  * partial pixels weighted by how much of them it covers. */
-static uint32_t box_pixel(const struct box_src *s, float x0, float x1, float y0, float y1)
+static uint32_t box_pixel(const struct picture *s, float x0, float x1, float y0, float y1)
 {
     float acc[4] = { 0, 0, 0, 0 }, wsum = 0;
     for (int sy = (int)y0; sy < s->h && (float)sy < y1; sy++) {
@@ -40,26 +33,25 @@ static uint32_t box_pixel(const struct box_src *s, float x0, float x1, float y0,
     return o;
 }
 
-/* src (sw x sh, `stride` pixels a row) to dst (dw x dh): each output pixel
- * the average of the source area it covers. For making smaller; scale_pm
- * picks. */
-static void box(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
+/* src to dst (dw x dh): each output pixel the average of the source area
+ * it covers. For making smaller; scale_pm picks. */
+static void box(const struct picture *s, uint32_t *dst, int dw, int dh)
 {
-    const struct box_src s = { src, sw, sh, stride };
-    float fx = (float)sw / (float)dw, fy = (float)sh / (float)dh;
+    float fx = (float)s->w / (float)dw, fy = (float)s->h / (float)dh;
     for (int y = 0; y < dh; y++) {
         float y0 = (float)y * fy, y1 = y0 + fy;
         for (int x = 0; x < dw; x++) {
             float x0 = (float)x * fx;
-            dst[(size_t)y * dw + x] = box_pixel(&s, x0, x0 + fx, y0, y1);
+            dst[(size_t)y * dw + x] = box_pixel(s, x0, x0 + fx, y0, y1);
         }
     }
 }
 
 /* Bilinear, for making bigger (pixel centres line up). */
-static void bilinear(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw,
-                     int dh)
+static void bilinear(const struct picture *s, uint32_t *dst, int dw, int dh)
 {
+    const uint32_t *src = s->px;
+    int sw = s->w, sh = s->h, stride = s->stride;
     for (int y = 0; y < dh; y++) {
         float fy = ((float)y + 0.5f) * (float)sh / (float)dh - 0.5f;
         fy = fy < 0 ? 0 : fy;
@@ -82,10 +74,10 @@ static void bilinear(const uint32_t *src, int sw, int sh, int stride, uint32_t *
     }
 }
 
-void scale_pm(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
+void scale_pm(const struct picture *src, uint32_t *dst, int dw, int dh)
 {
-    if (dw <= sw && dh <= sh)
-        box(src, sw, sh, stride, dst, dw, dh);
+    if (dw <= src->w && dh <= src->h)
+        box(src, dst, dw, dh);
     else
-        bilinear(src, sw, sh, stride, dst, dw, dh);
+        bilinear(src, dst, dw, dh);
 }

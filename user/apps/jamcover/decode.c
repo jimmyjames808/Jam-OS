@@ -39,9 +39,9 @@ status_t cover_decode(const uint8_t *pic, size_t n, uint32_t *small, uint32_t *l
     const uint32_t *px = (const uint32_t *)rgba;
     int side = pw < ph ? pw : ph, ox = (pw - side) / 2, oy = (ph - side) / 2;
     const uint32_t *sq = px + (size_t)oy * pw + ox;
-    scale_pm(sq, side, side, pw, small, JAMCOVER_SMALL, JAMCOVER_SMALL);
+    scale_pm(&(struct picture){ sq, side, side, pw }, small, JAMCOVER_SMALL, JAMCOVER_SMALL);
     if (large)
-        scale_pm(sq, side, side, pw, large, JAMCOVER_LARGE, JAMCOVER_LARGE);
+        scale_pm(&(struct picture){ sq, side, side, pw }, large, JAMCOVER_LARGE, JAMCOVER_LARGE);
     stbi_arena_reset();
     *w = pw;
     *h = ph;

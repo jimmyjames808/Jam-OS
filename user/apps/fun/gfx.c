@@ -222,8 +222,9 @@ void fill(const struct surf *s, int x, int y, int w, int h, uint32_t c)
     }
 }
 
-void blend(const struct surf *s, int x, int y, int w, int h, uint32_t c, uint32_t a)
+void blend(const struct surf *s, const struct rect *r, uint32_t c, uint32_t a)
 {
+    int x = r->x, y = r->y, w = r->w, h = r->h;
     if (!clip(s, &x, &y, &w, &h))
         return;
     for (int j = y; j < y + h; j++) {
@@ -233,8 +234,9 @@ void blend(const struct surf *s, int x, int y, int w, int h, uint32_t c, uint32_
     }
 }
 
-void panel(const struct surf *s, int x, int y, int w, int h, int r, uint32_t c, uint32_t a)
+void panel(const struct surf *s, const struct rect *at, int radius, uint32_t c, uint32_t a)
 {
+    int x = at->x, y = at->y, w = at->w, h = at->h, r = radius;
     if (r * 2 > h)
         r = h / 2;
     if (r * 2 > w)
@@ -254,14 +256,15 @@ void panel(const struct surf *s, int x, int y, int w, int h, int r, uint32_t c, 
         }
         if (in * 2 >= w)
             continue;
-        blend(s, x + in, y + j, 1, 1, c, edge_a);
-        blend(s, x + w - 1 - in, y + j, 1, 1, c, edge_a);
-        blend(s, x + in + 1, y + j, w - 2 * in - 2, 1, c, a);
+        blend(s, &(struct rect){ x + in, y + j, 1, 1 }, c, edge_a);
+        blend(s, &(struct rect){ x + w - 1 - in, y + j, 1, 1 }, c, edge_a);
+        blend(s, &(struct rect){ x + in + 1, y + j, w - 2 * in - 2, 1 }, c, a);
     }
 }
 
-void frame(const struct surf *s, int x, int y, int w, int h, int t, uint32_t c)
+void frame(const struct surf *s, const struct rect *r, int t, uint32_t c)
 {
+    int x = r->x, y = r->y, w = r->w, h = r->h;
     fill(s, x, y, w, t, c);
     fill(s, x, y + h - t, w, t, c);
     fill(s, x, y + t, t, h - 2 * t, c);
@@ -276,7 +279,7 @@ void bevel(const struct surf *s, const struct rect *r, int e, uint32_t c)
     uint32_t dark = scalec(c, 118), shade = scalec(c, 164);
     uint32_t top = sunk ? dark : light, left = sunk ? shade : soft;
     uint32_t bottom = sunk ? light : dark, right = sunk ? soft : shade;
-    vgrad(s, r->x, r->y, r->w, r->h, mixc(c, 0xffffff, 26), scalec(c, 214));
+    vgrad(s, r, mixc(c, 0xffffff, 26), scalec(c, 214));
     /* Ring i of the edge: each side one pixel, the corners mitred. */
     for (int i = 0; i < e && 2 * i < r->w && 2 * i < r->h; i++) {
         fill(s, r->x + i, r->y + i, r->w - 2 * i, 1, top);
@@ -290,20 +293,23 @@ void glow(const struct surf *s, const struct rect *r, int reach, uint32_t c)
 {
     int step = reach / 5 > 1 ? reach / 5 : 1;
     for (int g = 5; g >= 1; g--)
-        panel(s, r->x - g * step, r->y - g * step, r->w + 2 * g * step, r->h + 2 * g * step,
+        panel(s,
+              &(struct rect){ r->x - g * step, r->y - g * step, r->w + 2 * g * step,
+                              r->h + 2 * g * step },
               2 * step + g * step, c, 22);
 }
 
 void card(const struct surf *s, const struct rect *r, int radius)
 {
-    panel(s, r->x - 2, r->y - 2, r->w + 4, r->h + 4, radius + 2, 0x3b4c86, 170);
-    panel(s, r->x, r->y, r->w, r->h, radius, 0x0c1022, 240);
+    panel(s, &(struct rect){ r->x - 2, r->y - 2, r->w + 4, r->h + 4 }, radius + 2, 0x3b4c86, 170);
+    panel(s, r, radius, 0x0c1022, 240);
 }
 
-void vgrad(const struct surf *s, int x, int y, int w, int h, uint32_t c0, uint32_t c1)
+void vgrad(const struct surf *s, const struct rect *r, uint32_t c0, uint32_t c1)
 {
+    int h = r->h;
     for (int j = 0; j < h; j++)
-        fill(s, x, y + j, w, 1, mixc(c0, c1, h > 1 ? (uint32_t)(j * 256 / (h - 1)) : 0));
+        fill(s, r->x, r->y + j, r->w, 1, mixc(c0, c1, h > 1 ? (uint32_t)(j * 256 / (h - 1)) : 0));
 }
 
 void line(const struct surf *s, int x0, int y0, int x1, int y1, uint32_t c)
@@ -328,10 +334,9 @@ void line(const struct surf *s, int x0, int y0, int x1, int y1, uint32_t c)
     }
 }
 
-void blit(const struct surf *dst, int x, int y, const struct surf *src, int sx, int sy, int w,
-          int h)
+void blit(const struct surf *dst, int x, int y, const struct surf *src, const struct rect *from)
 {
-    int x0 = x, y0 = y;
+    int x0 = x, y0 = y, sx = from->x, sy = from->y, w = from->w, h = from->h;
     if (!clip(dst, &x, &y, &w, &h))
         return;
     sx += x - x0;

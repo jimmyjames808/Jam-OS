@@ -71,7 +71,7 @@ static void draw_background(const struct model *m)
 {
     struct surf *s = &bg;
     char a[96];
-    vgrad(s, 0, 0, s->w, s->h, 0x182044, 0x05060c);
+    vgrad(s, &(struct rect){ 0, 0, s->w, s->h }, 0x182044, 0x05060c);
     text_shadow(s, lay.title.x, lay.title.y, 2 * u, INK, "SYSTEM MONITOR");
     snprintf(a, sizeof(a), "Jam OS %s    %s    q: quit", m->version, m->brand);
     text(s, lay.title.x + lay.title.w - text_width(u, a), lay.title.y + 8 * u, u, INK_DIM, a);
@@ -87,8 +87,9 @@ static void draw_background(const struct model *m)
     }
     for (uint32_t k = 0; k < m->ncpu; k++) {
         const struct rect *r = &lay.cpu[k];
-        panel(s, r->x - 1, r->y - 1, r->w + 2, r->h + 2, 6 * u + 1, type_rgb(m->cpu[k].type), 90);
-        panel(s, r->x, r->y, r->w, r->h, 6 * u, 0x0c1022, 256);
+        panel(s, &(struct rect){ r->x - 1, r->y - 1, r->w + 2, r->h + 2 }, 6 * u + 1,
+              type_rgb(m->cpu[k].type), 90);
+        panel(s, r, 6 * u, 0x0c1022, 256);
     }
     card(s, &lay.table, 8 * u);
     for (int c = 0; c < NCOLS; c++)
@@ -113,7 +114,7 @@ static void graph(const struct rect *r, const struct history *h, uint32_t max, u
 {
     const struct surf *s = &scr.s;
     int step = 2 * u;
-    fill(s, r->x, r->y, r->w, r->h, WELL);
+    fill_rect(s, r, WELL);
     max = max ? max : 1;
     for (int k = 0; k < h->n && (k + 1) * step <= r->w; k++) {
         uint32_t v = hist_back(h, k) > max ? max : hist_back(h, k);
@@ -127,11 +128,12 @@ static void graph(const struct rect *r, const struct history *h, uint32_t max, u
 static void hbar(const struct rect *r, uint64_t part, uint64_t whole, uint32_t rgb)
 {
     int fw = whole ? (int)(part * (uint64_t)r->w / whole) : 0;
-    panel(&scr.s, r->x, r->y, r->w, r->h, r->h / 2, WELL, 256);
+    panel(&scr.s, r, r->h / 2, WELL, 256);
     if (part && fw < r->h)
         fw = r->h;   /* anything at all shows as a dot */
     if (fw)
-        panel(&scr.s, r->x, r->y, fw > r->w ? r->w : fw, r->h, r->h / 2, rgb, 256);
+        panel(&scr.s, &(struct rect){ r->x, r->y, fw > r->w ? r->w : fw, r->h }, r->h / 2, rgb,
+              256);
 }
 
 static void percent(char *buf, size_t cap, uint32_t pm)
@@ -202,7 +204,7 @@ static void draw_tile(const struct cpu_view *c, const struct rect *r)
     /* Under the text: the bar (now) and the graph (before). */
     int top = ty + TEXT_H(u) + 3 * u, gh = r->y + r->h - 6 * u - top;
     struct rect bar = { r->x + in, top, 8 * u, gh };
-    fill(s, bar.x, bar.y, bar.w, bar.h, WELL);
+    fill_rect(s, &bar, WELL);
     int bh = (int)(c->pm * (uint32_t)gh / 1000);
     fill(s, bar.x, bar.y + gh - bh, bar.w, bh, rgb);
     struct rect g = { bar.x + bar.w + 5 * u, top, r->x + r->w - in - (bar.x + bar.w + 5 * u), gh };
@@ -219,11 +221,13 @@ static void draw_procs(const struct model *m)
     for (int i = 0; i < m->ntop && i < lay.rows; i++, y += lay.row_h) {
         const struct proc_view *p = &m->top[i];
         if (i % 2 == 0)
-            blend(s, lay.table.x + 6 * u, y, lay.table.w - 12 * u, lay.row_h, 0x3b4c86, 40);
+            blend(s, &(struct rect){ lay.table.x + 6 * u, y, lay.table.w - 12 * u, lay.row_h },
+                  0x3b4c86, 40);
         /* The CPU column's box fills with the process's share of one CPU. */
         struct rect box = column_box(2, y);
         int bw = (int)((p->pm > 1000 ? 1000 : p->pm) * (uint32_t)box.w / 1000);
-        blend(s, box.x + box.w - bw, y + 3 * u, bw, lay.row_h - 6 * u, load_rgb(p->pm), 70);
+        blend(s, &(struct rect){ box.x + box.w - bw, y + 3 * u, bw, lay.row_h - 6 * u },
+              load_rgb(p->pm), 70);
         snprintf(a, sizeof(a), "%lu", (unsigned long)p->koid);
         column_text(s, 0, y, INK_SOFT, a);
         column_text(s, 1, y, INK, p->name);
@@ -238,7 +242,7 @@ static void draw_procs(const struct model *m)
 
 void draw(const struct model *m)
 {
-    blit(&scr.s, 0, 0, &bg, 0, 0, scr.w, scr.h);
+    blit(&scr.s, 0, 0, &bg, &(struct rect){ 0, 0, scr.w, scr.h });
     draw_cards(m);
     for (uint32_t k = 0; k < m->ncpu; k++)
         draw_tile(&m->cpu[k], &lay.cpu[k]);

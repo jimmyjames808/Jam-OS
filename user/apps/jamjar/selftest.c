@@ -94,7 +94,7 @@ static void test_utf8(void)
     bool inside = true;
     for (int max_w = 0; max_w < 30; max_w += 3) {
         memset(tp, 0, sizeof(tp));
-        text_clip(&ts, 0, 0, 1, 0xffffff, max_w, "Kill Jay Z");
+        text_clip(&ts, &(struct rect){ 0, 0, max_w, TEXT_H(1) }, 1, 0xffffff, "Kill Jay Z");
         for (int i = 0; i < 40 * 20; i++)
             inside &= !tp[i] || i % 40 < max_w;
     }
