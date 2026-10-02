@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `edu` (id 2). Client: edu_<method>(ch, args..., &results...)
- * (and edu_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and edu_<method>_until with a deadline) over drv_channel_call, or
+ * edu_<method>_send and edu_<method>_result without waiting. Server:
  * fill a struct edu_ops and run edu_serve(ch, &ops, ctx), or
- * edu_serve_one / edu_dispatch for a loop of your own. */
+ * edu_serve_one / edu_dispatch_on for a loop of your own;
+ * edu_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -150,10 +152,140 @@ static inline status_t edu_dma_start(handle_t ch, uint32_t len, uint64_t *out_de
     return edu_dma_start_until(ch, DEADLINE_NEVER, len, out_device_addr);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* edu_factorial without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then edu_factorial_result. */
+static inline status_t edu_factorial_send(handle_t ch, uint32_t idl_txid, uint32_t n)
+{
+    struct edu_factorial_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = EDU_FACTORIAL;
+    idl_q.n = n;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to edu_factorial_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t edu_factorial_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_result)
+{
+    const struct edu_factorial_rep *idl_r = (const struct edu_factorial_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_result)
+        *out_result = idl_r->result;
+    return OK;
+}
+
+/* edu_dma_roundtrip without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then edu_dma_roundtrip_result. */
+static inline status_t edu_dma_roundtrip_send(handle_t ch, uint32_t idl_txid, uint32_t len)
+{
+    struct edu_dma_roundtrip_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = EDU_DMA_ROUNDTRIP;
+    idl_q.len = len;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to edu_dma_roundtrip_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t edu_dma_roundtrip_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct edu_dma_roundtrip_rep *idl_r = (const struct edu_dma_roundtrip_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* edu_raise_irq without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then edu_raise_irq_result. */
+static inline status_t edu_raise_irq_send(handle_t ch, uint32_t idl_txid)
+{
+    struct edu_raise_irq_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = EDU_RAISE_IRQ;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to edu_raise_irq_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t edu_raise_irq_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_latency_ns)
+{
+    const struct edu_raise_irq_rep *idl_r = (const struct edu_raise_irq_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_latency_ns)
+        *out_latency_ns = idl_r->latency_ns;
+    return OK;
+}
+
+/* edu_dma_start without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then edu_dma_start_result. */
+static inline status_t edu_dma_start_send(handle_t ch, uint32_t idl_txid, uint32_t len)
+{
+    struct edu_dma_start_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = EDU_DMA_START;
+    idl_q.len = len;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to edu_dma_start_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t edu_dma_start_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_device_addr)
+{
+    const struct edu_dma_start_rep *idl_r = (const struct edu_dma_start_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_device_addr)
+        *out_device_addr = idl_r->device_addr;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with edu_reply_<method> (now, or later from anywhere). */
 struct edu_ops {
     status_t (*factorial)(void *ctx, uint32_t n, uint32_t *out_result);
     status_t (*dma_roundtrip)(void *ctx, uint32_t len);
@@ -161,17 +293,83 @@ struct edu_ops {
     status_t (*dma_start)(void *ctx, uint32_t len, uint64_t *out_device_addr);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (EDU_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t edu_dispatch(const struct edu_ops *ops, void *ctx, const void *req, uint32_t n,
-                                    void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the edu.factorial request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t edu_reply_factorial(struct idl_txn idl_txn, status_t idl_st, uint32_t result)
+{
+    struct edu_factorial_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.result = result;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the edu.dma_roundtrip request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t edu_reply_dma_roundtrip(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct edu_dma_roundtrip_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the edu.raise_irq request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t edu_reply_raise_irq(struct idl_txn idl_txn, status_t idl_st, uint64_t latency_ns)
+{
+    struct edu_raise_irq_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.latency_ns = latency_ns;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the edu.dma_start request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t edu_reply_dma_start(struct idl_txn idl_txn, status_t idl_st, uint64_t device_addr)
+{
+    struct edu_dma_start_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.device_addr = device_addr;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (EDU_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t edu_dispatch_on(handle_t ch, const struct edu_ops *ops, void *ctx,
+                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                       uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -251,6 +449,13 @@ static inline uint32_t edu_dispatch(const struct edu_ops *ops, void *ctx, const 
     return sizeof(*idl_h);
 }
 
+/* edu_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t edu_dispatch(const struct edu_ops *ops, void *ctx, const void *req, uint32_t n,
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return edu_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -274,7 +479,7 @@ static inline status_t edu_serve_one(handle_t ch, const struct edu_ops *ops, voi
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = edu_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = edu_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

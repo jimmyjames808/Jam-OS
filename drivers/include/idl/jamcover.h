@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `jamcover` (id 26). Client: jamcover_<method>(ch, args..., &results...)
- * (and jamcover_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and jamcover_<method>_until with a deadline) over drv_channel_call, or
+ * jamcover_<method>_send and jamcover_<method>_result without waiting. Server:
  * fill a struct jamcover_ops and run jamcover_serve(ch, &ops, ctx), or
- * jamcover_serve_one / jamcover_dispatch for a loop of your own. */
+ * jamcover_serve_one / jamcover_dispatch_on for a loop of your own;
+ * jamcover_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -64,25 +66,84 @@ static inline status_t jamcover_decode(handle_t ch, uint64_t len, uint32_t large
     return jamcover_decode_until(ch, DEADLINE_NEVER, len, large, out_w, out_h);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* jamcover_decode without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then jamcover_decode_result. */
+static inline status_t jamcover_decode_send(handle_t ch, uint32_t idl_txid, uint64_t len, uint32_t large)
+{
+    struct jamcover_decode_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = JAMCOVER_DECODE;
+    idl_q.len = len;
+    idl_q.large = large;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to jamcover_decode_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t jamcover_decode_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_w, uint32_t *out_h)
+{
+    const struct jamcover_decode_rep *idl_r = (const struct jamcover_decode_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_w)
+        *out_w = idl_r->w;
+    if (out_h)
+        *out_h = idl_r->h;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with jamcover_reply_<method> (now, or later from anywhere). */
 struct jamcover_ops {
     status_t (*decode)(void *ctx, uint64_t len, uint32_t large, uint32_t *out_w, uint32_t *out_h);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (JAMCOVER_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t jamcover_dispatch(const struct jamcover_ops *ops, void *ctx, const void *req, uint32_t n,
-                                         void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the jamcover.decode request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t jamcover_reply_decode(struct idl_txn idl_txn, status_t idl_st, uint32_t w, uint32_t h)
+{
+    struct jamcover_decode_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.w = w;
+    idl_r.h = h;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (JAMCOVER_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t jamcover_dispatch_on(handle_t ch, const struct jamcover_ops *ops, void *ctx,
+                                            const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                            uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -114,6 +175,13 @@ static inline uint32_t jamcover_dispatch(const struct jamcover_ops *ops, void *c
     return sizeof(*idl_h);
 }
 
+/* jamcover_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t jamcover_dispatch(const struct jamcover_ops *ops, void *ctx, const void *req, uint32_t n,
+                                         void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return jamcover_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -137,7 +205,7 @@ static inline status_t jamcover_serve_one(handle_t ch, const struct jamcover_ops
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = jamcover_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = jamcover_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

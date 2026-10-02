@@ -63,7 +63,7 @@ bool usb_busy(void)
 /* ---- the tasks ---------------------------------------------------------------- */
 
 /* A port's work: t->dev_id the hub (0: a root port), t->port the port. */
-static void port_task(struct task *t)
+static void port_task(struct usb_task *t)
 {
     if (!t->dev_id) {
         root_port(&g_hc, t->port);
@@ -79,7 +79,7 @@ static void port_task(struct task *t)
 
 /* A device's queued requests and endpoint upkeep, round after round
  * until there are none (each round lets the other tasks run first). */
-void device_task(struct task *t)
+void device_task(struct usb_task *t)
 {
     struct usbdev *d = dev_find(t->dev_id);
     if (!d)
@@ -91,7 +91,7 @@ void device_task(struct task *t)
             did = true;
         if (!did)
             break;
-        task_yield();
+        task_yield(g_tasks);
     }
     dev_put(d);
 }
@@ -104,10 +104,10 @@ static void start_ports(uint32_t *bits, uint32_t hub_id, unsigned first, unsigne
 {
     for (unsigned p = first; p <= nports && p < 256; p++) {
         uint32_t bit = 1u << (p % 32);
-        if (!(bits[p / 32] & bit) || task_find(TASK_PORT, hub_id, (uint8_t)p))
+        if (!(bits[p / 32] & bit) || usb_task_find(TASK_PORT, hub_id, (uint8_t)p))
             continue;
         bits[p / 32] &= ~bit;
-        if (!task_start(TASK_PORT, hub_id, (uint8_t)p, port_task)) {
+        if (!usb_task_start(TASK_PORT, hub_id, (uint8_t)p, port_task)) {
             bits[p / 32] |= bit;
             return;
         }
@@ -136,8 +136,8 @@ void work_dispatch(struct hc *h)
             continue;
         if (d->is_hub && d->configured && d->hub_ports)
             hub_dispatch(d);
-        if ((d->ep_recover | d->ep_drop) && !task_find(TASK_DEVICE, d->id, 0))
-            (void)task_start(TASK_DEVICE, d->id, 0, device_task);   /* no slot: next round */
+        if ((d->ep_recover | d->ep_drop) && !usb_task_find(TASK_DEVICE, d->id, 0))
+            (void)usb_task_start(TASK_DEVICE, d->id, 0, device_task);   /* no slot: next round */
     }
 }
 
@@ -154,11 +154,11 @@ void usb_stop_all(struct hc *h)
 {
     if (g_task_overflow)
         return;
-    task_kick();
+    task_kick(g_tasks);
     uint64_t end = drv_clock_ns() + STOP_WAIT_MS * NS_PER_MS;
     while ((tasks_live(TASK_PORT) || tasks_live(TASK_DEVICE)) && drv_clock_ns() < end) {
-        tasks_run();
-        hc_wait_idle(h, tasks_next_wake(end));
+        task_run(g_tasks);
+        hc_wait_idle(h, task_next_wake(g_tasks, end));
     }
     if (tasks_live(TASK_PORT) || tasks_live(TASK_DEVICE))
         drv_log("%u task(s) still running after %u ms: stopping anyway",

@@ -1,7 +1,7 @@
 /* usb-bus internals, shared by its files: the xHCI host controller
  * (hc.c; command.c: the command ring; ring.c: the DMA page pool and
  * transfer rings), the tasks that serve ports and devices side by side
- * (task.c), the USB device
+ * (task.c, on libos's <jam/task.h>), the USB device
  * model (devices.c: the device table and contexts; control.c: control
  * transfers and descriptors; intr.c: interrupt-IN endpoints; config.c:
  * configurations and interfaces; bulk.c: bulk endpoints and transfers;
@@ -10,11 +10,12 @@
  * work the main loop drives (work.c), the `usb` protocol (iface.c), and
  * the channels, the `usbbus` protocol and the main loop (serve.c). See
  * serve.c for the overview.
- * Only <jam/driver.h> and the generated IDL headers are included, like
- * every driver. */
+ * Only <jam/driver.h>, <jam/task.h> and the generated IDL headers are
+ * included, like every driver. */
 #pragma once
 
 #include <jam/driver.h>
+#include <jam/task.h>
 
 #define PAGE      4096u
 
@@ -506,34 +507,25 @@ void hc_set_dcbaa(const struct hc *h, uint32_t slot, uint64_t addr);
 #define TASK_PORT   1   /* a port's work: dev_id the hub (0: a root port), port (0: the hub) */
 #define TASK_DEVICE 2   /* a device's requests and endpoint upkeep: dev_id */
 
-/* A task (task.c's header has the model). */
-struct task {
-    uint8_t kind;           /* TASK_*, 0: a free slot */
-    bool done;              /* its function returned */
+/* What usb-bus adds to a task of its set (task.c's header has the model). */
+struct usb_task {
+    uint8_t kind;           /* TASK_*, 0: a free slot (its function returned) */
     uint8_t port;           /* TASK_PORT: the port */
     uint32_t dev_id;        /* TASK_PORT: the hub's id, 0 for a root port; TASK_DEVICE: its id */
-    void (*fn)(struct task *t);   /* what it runs */
-    uint64_t sp;            /* its stack pointer while switched out */
-    uint8_t *stack;         /* its stack (drv_malloc), kept for the slot's next task */
-    uint64_t wake_at;       /* runs again at this uptime (ns), */
-    uint64_t seen;          /* or as soon as there was a task_kick since it last ran */
+    void (*fn)(struct usb_task *t);   /* what it runs */
 };
 
+extern struct task_set *g_tasks;          /* the driver's tasks (<jam/task.h>) */
 extern bool g_task_overflow;              /* a stack overflowed: the driver stops (exit 7) */
-void tasks_reset(void);                   /* fresh state at the driver's start */
-void tasks_free(void);                    /* the free slots' stacks back to the heap */
+bool tasks_reset(void);                   /* fresh state at the driver's start; false: no memory */
+void tasks_free(void);                    /* the set's memory back to the heap */
 /* Start fn as a task of this kind and run it until it first waits (main
  * loop only). NULL if every slot is taken or there is no memory. */
-struct task *task_start(uint8_t kind, uint32_t dev_id, uint8_t port, void (*fn)(struct task *t));
-struct task *task_find(uint8_t kind, uint32_t dev_id, uint8_t port);   /* a live one, or NULL */
+struct usb_task *usb_task_start(uint8_t kind, uint32_t dev_id, uint8_t port,
+                                void (*fn)(struct usb_task *t));
+/* A live one, or NULL. */
+struct usb_task *usb_task_find(uint8_t kind, uint32_t dev_id, uint8_t port);
 bool in_task(void);                       /* called from a task (not the main loop)? */
-/* In a task: let the main loop run until deadline (at most 50 ms) or
- * the next task_kick. Returns at once in the main loop. */
-void task_wait(uint64_t deadline);
-void task_yield(void);                    /* the same with no deadline: the next round */
-void task_kick(void);                     /* something happened: waiting tasks look again */
-bool tasks_run(void);                     /* run every task that may go on; true if any did */
-uint64_t tasks_next_wake(uint64_t next);  /* the earliest a task may go on (now: one may now) */
 unsigned tasks_live(uint8_t kind);
 /* The default address of root port rp's tree: taken by a task from the
  * device's reset until its Address Device is over (task.c's header). */
@@ -694,7 +686,7 @@ bool root_retry_waiting(void);            /* is a failed root port waiting for i
 /* Start a task for every port and device with work and none yet (main
  * loop only). */
 void work_dispatch(struct hc *h);
-void device_task(struct task *t);         /* a TASK_DEVICE's work (serve.c starts it) */
+void device_task(struct usb_task *t);         /* a TASK_DEVICE's work (serve.c starts it) */
 void usb_reset_state(void);
 void usb_start(struct hc *h);             /* the first scan of every root port */
 /* Shutdown: every task given up to 2 s to end, then every device

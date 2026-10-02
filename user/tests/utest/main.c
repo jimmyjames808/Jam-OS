@@ -662,6 +662,12 @@ static const struct {
     { "settings_parse", t_settings_parse },
     { "settings_edit", t_settings_edit },
     { "settings_file", t_settings_file },
+    { "tasks_yield_and_wait", t_tasks_yield_and_wait },
+    { "tasks_start_slots_cap", t_tasks_start_slots_cap },
+    { "idl_answer_later", t_idl_answer_later },
+    { "idl_later_blocking_clients", t_idl_later_blocking_clients },
+    { "idl_later_handles", t_idl_later_handles },
+    { "idl_async_through_port", t_idl_async_through_port },
 };
 
 int main(int argc, char **argv)

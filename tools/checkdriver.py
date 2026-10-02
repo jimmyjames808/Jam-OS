@@ -5,8 +5,8 @@
 
 Fails (exit 1, naming every offender) if the driver's object uses a symbol
 it may not. A driver is compiled with nothing but <jam/driver.h>,
-<jam/abi.h>, <jam/status.h>, the generated <idl/*.h> and the compiler's
-freestanding headers on its include path (-nostdinc), so neither a kernel
+<jam/task.h>, <jam/abi.h>, <jam/status.h>, the generated <idl/*.h> and
+the compiler's freestanding headers on its include path (-nostdinc), so neither a kernel
 nor a libos header can even be included; this check closes the other door:
 declaring a function yourself (`void *kmalloc(size_t);`, libos's
 `printf`) and calling it, or calling into another driver. The Makefile
@@ -16,8 +16,8 @@ it needs from outside is left undefined.
 
 Allowed undefined symbols:
   - every function declared (not defined) in the given headers: driver.h's
-    drv_* and driver_main, status.h's status_str; parsed from the headers,
-    so the list can't drift from the surface;
+    drv_* and driver_main, task.h's task_*, status.h's status_str; parsed
+    from the headers, so the list can't drift from the surface;
   - memcpy, memmove, memset, memcmp: GCC may emit calls to these for
     struct copies, initialisers and loops even with -ffreestanding
     -fno-builtin (they are the freestanding environment's contract), and

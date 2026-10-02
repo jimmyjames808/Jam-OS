@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `svc` (id 25). Client: svc_<method>(ch, args..., &results...)
- * (and svc_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and svc_<method>_until with a deadline) over drv_channel_call, or
+ * svc_<method>_send and svc_<method>_result without waiting. Server:
  * fill a struct svc_ops and run svc_serve(ch, &ops, ctx), or
- * svc_serve_one / svc_dispatch for a loop of your own. */
+ * svc_serve_one / svc_dispatch_on for a loop of your own;
+ * svc_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -59,25 +61,86 @@ static inline status_t svc_connect(handle_t ch, handle_t *out_channel)
     return svc_connect_until(ch, DEADLINE_NEVER, out_channel);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* svc_connect without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then svc_connect_result. */
+static inline status_t svc_connect_send(handle_t ch, uint32_t idl_txid)
+{
+    struct svc_connect_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = SVC_CONNECT;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to svc_connect_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t svc_connect_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_channel)
+{
+    const struct svc_connect_rep *idl_r = (const struct svc_connect_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_channel)
+        *out_channel = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with svc_reply_<method> (now, or later from anywhere). */
 struct svc_ops {
     status_t (*connect)(void *ctx, handle_t *out_channel);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (SVC_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t svc_dispatch(const struct svc_ops *ops, void *ctx, const void *req, uint32_t n,
-                                    void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the svc.connect request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t svc_reply_connect(struct idl_txn idl_txn, status_t idl_st, handle_t channel)
+{
+    struct svc_connect_rep idl_r;
+    handle_t idl_hs[1] = { channel };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(channel != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (SVC_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t svc_dispatch_on(handle_t ch, const struct svc_ops *ops, void *ctx,
+                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                       uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -113,6 +176,13 @@ static inline uint32_t svc_dispatch(const struct svc_ops *ops, void *ctx, const 
     return sizeof(*idl_h);
 }
 
+/* svc_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t svc_dispatch(const struct svc_ops *ops, void *ctx, const void *req, uint32_t n,
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return svc_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -136,7 +206,7 @@ static inline status_t svc_serve_one(handle_t ch, const struct svc_ops *ops, voi
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = svc_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = svc_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

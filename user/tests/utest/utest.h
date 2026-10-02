@@ -5,7 +5,8 @@
  * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
  * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>; time.c:
- * <wallclock.h> and <settings.h>), the
+ * <wallclock.h> and <settings.h>; tasks.c: <jam/task.h>; idl.c: the IDL's
+ * deferred replies and asynchronous calls), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -72,6 +73,17 @@ bool t_time_wallclock_calls(void);
 bool t_settings_parse(void);
 bool t_settings_edit(void);
 bool t_settings_file(void);
+
+/* tasks.c: libos's cooperative tasks (<jam/task.h>). */
+bool t_tasks_yield_and_wait(void);
+bool t_tasks_start_slots_cap(void);
+
+/* idl.c: answering later and calls that don't wait (tools/genidl.py), on
+ * the test protocol idltest. */
+bool t_idl_answer_later(void);
+bool t_idl_later_blocking_clients(void);
+bool t_idl_later_handles(void);
+bool t_idl_async_through_port(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

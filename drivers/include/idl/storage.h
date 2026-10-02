@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `storage` (id 14). Client: storage_<method>(ch, args..., &results...)
- * (and storage_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and storage_<method>_until with a deadline) over drv_channel_call, or
+ * storage_<method>_send and storage_<method>_result without waiting. Server:
  * fill a struct storage_ops and run storage_serve(ch, &ops, ctx), or
- * storage_serve_one / storage_dispatch for a loop of your own. */
+ * storage_serve_one / storage_dispatch_on for a loop of your own;
+ * storage_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -185,10 +187,155 @@ static inline status_t storage_disk_id(handle_t ch, uint32_t *out_mbr_id)
     return storage_disk_id_until(ch, DEADLINE_NEVER, out_mbr_id);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* storage_info without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_info_result. */
+static inline status_t storage_info_send(handle_t ch, uint32_t idl_txid)
+{
+    struct storage_info_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_INFO;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_info_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_info_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
+{
+    const struct storage_info_rep *idl_r = (const struct storage_info_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_vendor && idl_i < 8; idl_i++)
+        out_vendor[idl_i] = idl_r->vendor[idl_i];
+    for (uint32_t idl_i = 0; out_product && idl_i < 16; idl_i++)
+        out_product[idl_i] = idl_r->product[idl_i];
+    if (out_block_size)
+        *out_block_size = idl_r->block_size;
+    if (out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (out_partitions)
+        *out_partitions = idl_r->partitions;
+    return OK;
+}
+
+/* storage_partition without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_partition_result. */
+static inline status_t storage_partition_send(handle_t ch, uint32_t idl_txid, uint8_t index)
+{
+    struct storage_partition_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_PARTITION;
+    idl_q.index = index;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_partition_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_partition_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
+{
+    const struct storage_partition_rep *idl_r = (const struct storage_partition_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_type)
+        *out_type = idl_r->type;
+    if (out_start)
+        *out_start = idl_r->start;
+    if (out_blocks)
+        *out_blocks = idl_r->blocks;
+    return OK;
+}
+
+/* storage_open_partition without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_open_partition_result. */
+static inline status_t storage_open_partition_send(handle_t ch, uint32_t idl_txid, uint8_t index, uint8_t read_only)
+{
+    struct storage_open_partition_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_OPEN_PARTITION;
+    idl_q.index = index;
+    idl_q.read_only = read_only;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_open_partition_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_open_partition_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_block)
+{
+    const struct storage_open_partition_rep *idl_r = (const struct storage_open_partition_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_block)
+        *out_block = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* storage_disk_id without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_disk_id_result. */
+static inline status_t storage_disk_id_send(handle_t ch, uint32_t idl_txid)
+{
+    struct storage_disk_id_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_DISK_ID;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_disk_id_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_disk_id_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_mbr_id)
+{
+    const struct storage_disk_id_rep *idl_r = (const struct storage_disk_id_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_mbr_id)
+        *out_mbr_id = idl_r->mbr_id;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with storage_reply_<method> (now, or later from anywhere). */
 struct storage_ops {
     status_t (*info)(void *ctx, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions);
     status_t (*partition)(void *ctx, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks);
@@ -196,17 +343,97 @@ struct storage_ops {
     status_t (*disk_id)(void *ctx, uint32_t *out_mbr_id);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (STORAGE_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t storage_dispatch(const struct storage_ops *ops, void *ctx, const void *req, uint32_t n,
-                                        void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the storage.info request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t vendor[8], const uint8_t product[16], uint32_t block_size, uint64_t blocks, uint8_t partitions)
+{
+    struct storage_info_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
+        idl_r.vendor[idl_i] = vendor[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.product[idl_i] = product[idl_i];
+    idl_r.block_size = block_size;
+    idl_r.blocks = blocks;
+    idl_r.partitions = partitions;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the storage.partition request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_partition(struct idl_txn idl_txn, status_t idl_st, uint8_t type, uint64_t start, uint64_t blocks)
+{
+    struct storage_partition_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.type = type;
+    idl_r.start = start;
+    idl_r.blocks = blocks;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the storage.open_partition request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_open_partition(struct idl_txn idl_txn, status_t idl_st, handle_t block)
+{
+    struct storage_open_partition_rep idl_r;
+    handle_t idl_hs[1] = { block };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(block != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the storage.disk_id request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_disk_id(struct idl_txn idl_txn, status_t idl_st, uint32_t mbr_id)
+{
+    struct storage_disk_id_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.mbr_id = mbr_id;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (STORAGE_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t storage_dispatch_on(handle_t ch, const struct storage_ops *ops, void *ctx,
+                                           const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                           uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -311,6 +538,13 @@ static inline uint32_t storage_dispatch(const struct storage_ops *ops, void *ctx
     return sizeof(*idl_h);
 }
 
+/* storage_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t storage_dispatch(const struct storage_ops *ops, void *ctx, const void *req, uint32_t n,
+                                        void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return storage_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -334,7 +568,7 @@ static inline status_t storage_serve_one(handle_t ch, const struct storage_ops *
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = storage_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = storage_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `audioctl` (id 23). Client: audioctl_<method>(ch, args..., &results...)
- * (and audioctl_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and audioctl_<method>_until with a deadline) over drv_channel_call, or
+ * audioctl_<method>_send and audioctl_<method>_result without waiting. Server:
  * fill a struct audioctl_ops and run audioctl_serve(ch, &ops, ctx), or
- * audioctl_serve_one / audioctl_dispatch for a loop of your own. */
+ * audioctl_serve_one / audioctl_dispatch_on for a loop of your own;
+ * audioctl_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -173,10 +175,148 @@ static inline status_t audioctl_device(handle_t ch, uint32_t index, handle_t *ou
     return audioctl_device_until(ch, DEADLINE_NEVER, index, out_device);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* audioctl_streams without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_streams_result. */
+static inline status_t audioctl_streams_send(handle_t ch, uint32_t idl_txid)
+{
+    struct audioctl_streams_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_STREAMS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_streams_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_streams_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
+{
+    const struct audioctl_streams_rep *idl_r = (const struct audioctl_streams_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_count)
+        *out_count = idl_r->count;
+    if (out_master)
+        *out_master = idl_r->master;
+    for (uint32_t idl_i = 0; out_list && idl_i < 640; idl_i++)
+        out_list[idl_i] = idl_r->list[idl_i];
+    return OK;
+}
+
+/* audioctl_set_volume without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_set_volume_result. */
+static inline status_t audioctl_set_volume_send(handle_t ch, uint32_t idl_txid, uint32_t id, int32_t centibels)
+{
+    struct audioctl_set_volume_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_SET_VOLUME;
+    idl_q.id = id;
+    idl_q.centibels = centibels;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_set_volume_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_set_volume_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_centibels)
+{
+    const struct audioctl_set_volume_rep *idl_r = (const struct audioctl_set_volume_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_centibels)
+        *out_centibels = idl_r->centibels;
+    return OK;
+}
+
+/* audioctl_set_master without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_set_master_result. */
+static inline status_t audioctl_set_master_send(handle_t ch, uint32_t idl_txid, int32_t centibels)
+{
+    struct audioctl_set_master_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_SET_MASTER;
+    idl_q.centibels = centibels;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_set_master_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_set_master_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_centibels)
+{
+    const struct audioctl_set_master_rep *idl_r = (const struct audioctl_set_master_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_centibels)
+        *out_centibels = idl_r->centibels;
+    return OK;
+}
+
+/* audioctl_device without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_device_result. */
+static inline status_t audioctl_device_send(handle_t ch, uint32_t idl_txid, uint32_t index)
+{
+    struct audioctl_device_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_DEVICE;
+    idl_q.index = index;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_device_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_device_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_device)
+{
+    const struct audioctl_device_rep *idl_r = (const struct audioctl_device_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_device)
+        *out_device = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with audioctl_reply_<method> (now, or later from anywhere). */
 struct audioctl_ops {
     status_t (*streams)(void *ctx, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640]);
     status_t (*set_volume)(void *ctx, uint32_t id, int32_t centibels, int32_t *out_centibels);
@@ -184,17 +324,92 @@ struct audioctl_ops {
     status_t (*device)(void *ctx, uint32_t index, handle_t *out_device);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (AUDIOCTL_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t audioctl_dispatch(const struct audioctl_ops *ops, void *ctx, const void *req, uint32_t n,
-                                         void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the audioctl.streams request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_streams(struct idl_txn idl_txn, status_t idl_st, uint32_t count, int32_t master, const uint8_t list[640])
+{
+    struct audioctl_streams_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.count = count;
+    idl_r.master = master;
+    for (uint32_t idl_i = 0; idl_i < 640; idl_i++)
+        idl_r.list[idl_i] = list[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the audioctl.set_volume request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_set_volume(struct idl_txn idl_txn, status_t idl_st, int32_t centibels)
+{
+    struct audioctl_set_volume_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.centibels = centibels;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the audioctl.set_master request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_set_master(struct idl_txn idl_txn, status_t idl_st, int32_t centibels)
+{
+    struct audioctl_set_master_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.centibels = centibels;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the audioctl.device request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_device(struct idl_txn idl_txn, status_t idl_st, handle_t device)
+{
+    struct audioctl_device_rep idl_r;
+    handle_t idl_hs[1] = { device };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(device != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (AUDIOCTL_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t audioctl_dispatch_on(handle_t ch, const struct audioctl_ops *ops, void *ctx,
+                                            const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                            uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -288,6 +503,13 @@ static inline uint32_t audioctl_dispatch(const struct audioctl_ops *ops, void *c
     return sizeof(*idl_h);
 }
 
+/* audioctl_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t audioctl_dispatch(const struct audioctl_ops *ops, void *ctx, const void *req, uint32_t n,
+                                         void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return audioctl_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -311,7 +533,7 @@ static inline status_t audioctl_serve_one(handle_t ch, const struct audioctl_ops
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = audioctl_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = audioctl_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

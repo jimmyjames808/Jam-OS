@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `console` (id 12). Client: console_<method>(ch, args..., &results...)
- * (and console_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and console_<method>_until with a deadline) over drv_channel_call, or
+ * console_<method>_send and console_<method>_result without waiting. Server:
  * fill a struct console_ops and run console_serve(ch, &ops, ctx), or
- * console_serve_one / console_dispatch for a loop of your own. */
+ * console_serve_one / console_dispatch_on for a loop of your own;
+ * console_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -399,10 +401,325 @@ static inline status_t console_show_log(handle_t ch, uint8_t on, const uint8_t o
     return console_show_log_until(ch, DEADLINE_NEVER, on, only);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* console_write without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_write_result. */
+static inline status_t console_write_send(handle_t ch, uint32_t idl_txid, uint16_t length, const uint8_t text[2048])
+{
+    struct console_write_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_WRITE;
+    idl_q.length = length;
+    for (uint32_t idl_i = 0; idl_i < 2048; idl_i++)
+        idl_q.text[idl_i] = text[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_write_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_write_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_write_rep *idl_r = (const struct console_write_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* console_size without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_size_result. */
+static inline status_t console_size_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_size_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_SIZE;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_size_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_size_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_cols, uint16_t *out_rows)
+{
+    const struct console_size_rep *idl_r = (const struct console_size_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_cols)
+        *out_cols = idl_r->cols;
+    if (out_rows)
+        *out_rows = idl_r->rows;
+    return OK;
+}
+
+/* console_clear without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_clear_result. */
+static inline status_t console_clear_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_clear_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_CLEAR;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_clear_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_clear_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_clear_rep *idl_r = (const struct console_clear_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* console_open_keys without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_open_keys_result. */
+static inline status_t console_open_keys_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_open_keys_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_OPEN_KEYS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_open_keys_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_open_keys_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_keys)
+{
+    const struct console_open_keys_rep *idl_r = (const struct console_open_keys_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_keys)
+        *out_keys = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* console_connect_input without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_connect_input_result. */
+static inline status_t console_connect_input_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_connect_input_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_CONNECT_INPUT;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_connect_input_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_connect_input_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_source)
+{
+    const struct console_connect_input_rep *idl_r = (const struct console_connect_input_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_source)
+        *out_source = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* console_lend_screen without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_lend_screen_result. */
+static inline status_t console_lend_screen_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_lend_screen_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_LEND_SCREEN;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_lend_screen_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_lend_screen_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+{
+    const struct console_lend_screen_rep *idl_r = (const struct console_lend_screen_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 2)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_screen)
+        *out_screen = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_lease)
+        *out_lease = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    idl_m->nh = 0;
+    if (out_width)
+        *out_width = idl_r->width;
+    if (out_height)
+        *out_height = idl_r->height;
+    if (out_pitch)
+        *out_pitch = idl_r->pitch;
+    if (out_red_shift)
+        *out_red_shift = idl_r->red_shift;
+    if (out_green_shift)
+        *out_green_shift = idl_r->green_shift;
+    if (out_blue_shift)
+        *out_blue_shift = idl_r->blue_shift;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
+/* console_new_client without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_new_client_result. */
+static inline status_t console_new_client_send(handle_t ch, uint32_t idl_txid, uint8_t level)
+{
+    struct console_new_client_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_NEW_CLIENT;
+    idl_q.level = level;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_new_client_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_new_client_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_client)
+{
+    const struct console_new_client_rep *idl_r = (const struct console_new_client_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_client)
+        *out_client = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* console_blank without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_blank_result. */
+static inline status_t console_blank_send(handle_t ch, uint32_t idl_txid, uint8_t on)
+{
+    struct console_blank_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_BLANK;
+    idl_q.on = on;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_blank_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_blank_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_blank_rep *idl_r = (const struct console_blank_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* console_show_log without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_show_log_result. */
+static inline status_t console_show_log_send(handle_t ch, uint32_t idl_txid, uint8_t on, const uint8_t only[32])
+{
+    struct console_show_log_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_SHOW_LOG;
+    idl_q.on = on;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.only[idl_i] = only[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_show_log_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_show_log_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_show_log_rep *idl_r = (const struct console_show_log_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with console_reply_<method> (now, or later from anywhere). */
 struct console_ops {
     status_t (*write)(void *ctx, uint16_t length, const uint8_t text[2048]);
     status_t (*size)(void *ctx, uint16_t *out_cols, uint16_t *out_rows);
@@ -415,17 +732,190 @@ struct console_ops {
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (CONSOLE_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx, const void *req, uint32_t n,
-                                        void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the console.write request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_write(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct console_write_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the console.size request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_size(struct idl_txn idl_txn, status_t idl_st, uint16_t cols, uint16_t rows)
+{
+    struct console_size_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.cols = cols;
+    idl_r.rows = rows;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the console.clear request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_clear(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct console_clear_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the console.open_keys request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_open_keys(struct idl_txn idl_txn, status_t idl_st, handle_t keys)
+{
+    struct console_open_keys_rep idl_r;
+    handle_t idl_hs[1] = { keys };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(keys != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the console.connect_input request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_connect_input(struct idl_txn idl_txn, status_t idl_st, handle_t source)
+{
+    struct console_connect_input_rep idl_r;
+    handle_t idl_hs[1] = { source };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(source != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the console.lend_screen request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_lend_screen(struct idl_txn idl_txn, status_t idl_st, uint32_t width, uint32_t height, uint32_t pitch, uint8_t red_shift, uint8_t green_shift, uint8_t blue_shift, uint64_t size, handle_t screen, handle_t lease)
+{
+    struct console_lend_screen_rep idl_r;
+    handle_t idl_hs[2] = { screen, lease };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(screen != HANDLE_INVALID && lease != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.width = width;
+    idl_r.height = height;
+    idl_r.pitch = pitch;
+    idl_r.red_shift = red_shift;
+    idl_r.green_shift = green_shift;
+    idl_r.blue_shift = blue_shift;
+    idl_r.size = size;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
+}
+
+/* Answer the console.new_client request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_new_client(struct idl_txn idl_txn, status_t idl_st, handle_t client)
+{
+    struct console_new_client_rep idl_r;
+    handle_t idl_hs[1] = { client };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(client != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the console.blank request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_blank(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct console_blank_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the console.show_log request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_show_log(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct console_show_log_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (CONSOLE_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops *ops, void *ctx,
+                                           const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                           uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -631,6 +1121,13 @@ static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx
     return sizeof(*idl_h);
 }
 
+/* console_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx, const void *req, uint32_t n,
+                                        void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return console_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -654,7 +1151,7 @@ static inline status_t console_serve_one(handle_t ch, const struct console_ops *
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = console_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = console_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

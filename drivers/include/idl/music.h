@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `music` (id 24). Client: music_<method>(ch, args..., &results...)
- * (and music_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and music_<method>_until with a deadline) over drv_channel_call, or
+ * music_<method>_send and music_<method>_result without waiting. Server:
  * fill a struct music_ops and run music_serve(ch, &ops, ctx), or
- * music_serve_one / music_dispatch for a loop of your own. */
+ * music_serve_one / music_dispatch_on for a loop of your own;
+ * music_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -561,10 +563,462 @@ static inline status_t music_stereo(handle_t ch, uint8_t *out_playing, uint32_t 
     return music_stereo_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* music_start without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_start_result. */
+static inline status_t music_start_send(handle_t ch, uint32_t idl_txid, const uint8_t folder[256])
+{
+    struct music_start_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_START;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.folder[idl_i] = folder[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_start_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_start_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_found, uint8_t *out_reading)
+{
+    const struct music_start_rep *idl_r = (const struct music_start_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_found)
+        *out_found = idl_r->found;
+    if (out_reading)
+        *out_reading = idl_r->reading;
+    return OK;
+}
+
+/* music_stop without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_stop_result. */
+static inline status_t music_stop_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_stop_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_STOP;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_stop_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_stop_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_was_playing)
+{
+    const struct music_stop_rep *idl_r = (const struct music_stop_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_was_playing)
+        *out_was_playing = idl_r->was_playing;
+    return OK;
+}
+
+/* music_next without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_next_result. */
+static inline status_t music_next_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_next_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_NEXT;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_next_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_next_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct music_next_rep *idl_r = (const struct music_next_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* music_status without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_status_result. */
+static inline status_t music_status_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_status_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_STATUS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_status_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_status_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+{
+    const struct music_status_rep *idl_r = (const struct music_status_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_playing)
+        *out_playing = idl_r->playing;
+    if (out_tracks)
+        *out_tracks = idl_r->tracks;
+    if (out_bad)
+        *out_bad = idl_r->bad;
+    if (out_started)
+        *out_started = idl_r->started;
+    if (out_elapsed_ms)
+        *out_elapsed_ms = idl_r->elapsed_ms;
+    if (out_length_ms)
+        *out_length_ms = idl_r->length_ms;
+    if (out_volume)
+        *out_volume = idl_r->volume;
+    for (uint32_t idl_i = 0; out_folder && idl_i < 256; idl_i++)
+        out_folder[idl_i] = idl_r->folder[idl_i];
+    for (uint32_t idl_i = 0; out_path && idl_i < 256; idl_i++)
+        out_path[idl_i] = idl_r->path[idl_i];
+    for (uint32_t idl_i = 0; out_title && idl_i < 128; idl_i++)
+        out_title[idl_i] = idl_r->title[idl_i];
+    for (uint32_t idl_i = 0; out_note && idl_i < 128; idl_i++)
+        out_note[idl_i] = idl_r->note[idl_i];
+    return OK;
+}
+
+/* music_set_volume without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_set_volume_result. */
+static inline status_t music_set_volume_send(handle_t ch, uint32_t idl_txid, int32_t centibels)
+{
+    struct music_set_volume_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_SET_VOLUME;
+    idl_q.centibels = centibels;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_set_volume_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_set_volume_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_centibels)
+{
+    const struct music_set_volume_rep *idl_r = (const struct music_set_volume_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_centibels)
+        *out_centibels = idl_r->centibels;
+    return OK;
+}
+
+/* music_prev without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_prev_result. */
+static inline status_t music_prev_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_prev_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_PREV;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_prev_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_prev_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct music_prev_rep *idl_r = (const struct music_prev_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* music_play without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_play_result. */
+static inline status_t music_play_send(handle_t ch, uint32_t idl_txid, const uint8_t folder[256], const uint8_t first[256], uint8_t order)
+{
+    struct music_play_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_PLAY;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.folder[idl_i] = folder[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.first[idl_i] = first[idl_i];
+    idl_q.order = order;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_play_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_play_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_found, uint8_t *out_reading)
+{
+    const struct music_play_rep *idl_r = (const struct music_play_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_found)
+        *out_found = idl_r->found;
+    if (out_reading)
+        *out_reading = idl_r->reading;
+    return OK;
+}
+
+/* music_levels without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_levels_result. */
+static inline status_t music_levels_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_levels_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_LEVELS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_levels_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_levels_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+{
+    const struct music_levels_rep *idl_r = (const struct music_levels_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_playing)
+        *out_playing = idl_r->playing;
+    if (out_serial)
+        *out_serial = idl_r->serial;
+    if (out_elapsed_ms)
+        *out_elapsed_ms = idl_r->elapsed_ms;
+    if (out_length_ms)
+        *out_length_ms = idl_r->length_ms;
+    if (out_volume)
+        *out_volume = idl_r->volume;
+    if (out_sleep_s)
+        *out_sleep_s = idl_r->sleep_s;
+    for (uint32_t idl_i = 0; out_bands && idl_i < 16; idl_i++)
+        out_bands[idl_i] = idl_r->bands[idl_i];
+    if (out_level)
+        *out_level = idl_r->level;
+    return OK;
+}
+
+/* music_pause without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_pause_result. */
+static inline status_t music_pause_send(handle_t ch, uint32_t idl_txid, uint8_t on)
+{
+    struct music_pause_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_PAUSE;
+    idl_q.on = on;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_pause_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_pause_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_paused)
+{
+    const struct music_pause_rep *idl_r = (const struct music_pause_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_paused)
+        *out_paused = idl_r->paused;
+    return OK;
+}
+
+/* music_sleep without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_sleep_result. */
+static inline status_t music_sleep_send(handle_t ch, uint32_t idl_txid, uint32_t seconds)
+{
+    struct music_sleep_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_SLEEP;
+    idl_q.seconds = seconds;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_sleep_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_sleep_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_seconds)
+{
+    const struct music_sleep_rep *idl_r = (const struct music_sleep_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_seconds)
+        *out_seconds = idl_r->seconds;
+    return OK;
+}
+
+/* music_spectrum without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_spectrum_result. */
+static inline status_t music_spectrum_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_spectrum_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_SPECTRUM;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_spectrum_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_spectrum_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
+{
+    const struct music_spectrum_rep *idl_r = (const struct music_spectrum_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_playing)
+        *out_playing = idl_r->playing;
+    if (out_serial)
+        *out_serial = idl_r->serial;
+    if (out_elapsed_ms)
+        *out_elapsed_ms = idl_r->elapsed_ms;
+    if (out_length_ms)
+        *out_length_ms = idl_r->length_ms;
+    if (out_volume)
+        *out_volume = idl_r->volume;
+    if (out_sleep_s)
+        *out_sleep_s = idl_r->sleep_s;
+    for (uint32_t idl_i = 0; out_bands && idl_i < 64; idl_i++)
+        out_bands[idl_i] = idl_r->bands[idl_i];
+    if (out_level)
+        *out_level = idl_r->level;
+    return OK;
+}
+
+/* music_stereo without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_stereo_result. */
+static inline status_t music_stereo_send(handle_t ch, uint32_t idl_txid)
+{
+    struct music_stereo_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = MUSIC_STEREO;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to music_stereo_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_stereo_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+{
+    const struct music_stereo_rep *idl_r = (const struct music_stereo_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_playing)
+        *out_playing = idl_r->playing;
+    if (out_serial)
+        *out_serial = idl_r->serial;
+    if (out_elapsed_ms)
+        *out_elapsed_ms = idl_r->elapsed_ms;
+    if (out_length_ms)
+        *out_length_ms = idl_r->length_ms;
+    if (out_volume)
+        *out_volume = idl_r->volume;
+    if (out_sleep_s)
+        *out_sleep_s = idl_r->sleep_s;
+    for (uint32_t idl_i = 0; out_left && idl_i < 64; idl_i++)
+        out_left[idl_i] = idl_r->left[idl_i];
+    for (uint32_t idl_i = 0; out_right && idl_i < 64; idl_i++)
+        out_right[idl_i] = idl_r->right[idl_i];
+    if (out_level)
+        *out_level = idl_r->level;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with music_reply_<method> (now, or later from anywhere). */
 struct music_ops {
     status_t (*start)(void *ctx, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading);
     status_t (*stop)(void *ctx, uint8_t *out_was_playing);
@@ -580,17 +1034,252 @@ struct music_ops {
     status_t (*stereo)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (MUSIC_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, const void *req, uint32_t n,
-                                      void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the music.start request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_start(struct idl_txn idl_txn, status_t idl_st, uint32_t found, uint8_t reading)
+{
+    struct music_start_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.found = found;
+    idl_r.reading = reading;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.stop request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_stop(struct idl_txn idl_txn, status_t idl_st, uint8_t was_playing)
+{
+    struct music_stop_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.was_playing = was_playing;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.next request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_next(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct music_next_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.status request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_status(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t tracks, uint32_t bad, uint32_t started, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, const uint8_t folder[256], const uint8_t path[256], const uint8_t title[128], const uint8_t note[128])
+{
+    struct music_status_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.playing = playing;
+    idl_r.tracks = tracks;
+    idl_r.bad = bad;
+    idl_r.started = started;
+    idl_r.elapsed_ms = elapsed_ms;
+    idl_r.length_ms = length_ms;
+    idl_r.volume = volume;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_r.folder[idl_i] = folder[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_r.path[idl_i] = path[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
+        idl_r.title[idl_i] = title[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
+        idl_r.note[idl_i] = note[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.set_volume request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_set_volume(struct idl_txn idl_txn, status_t idl_st, int32_t centibels)
+{
+    struct music_set_volume_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.centibels = centibels;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.prev request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_prev(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct music_prev_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.play request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_play(struct idl_txn idl_txn, status_t idl_st, uint32_t found, uint8_t reading)
+{
+    struct music_play_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.found = found;
+    idl_r.reading = reading;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.levels request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_levels(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t serial, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, uint32_t sleep_s, const uint8_t bands[16], uint8_t level)
+{
+    struct music_levels_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.playing = playing;
+    idl_r.serial = serial;
+    idl_r.elapsed_ms = elapsed_ms;
+    idl_r.length_ms = length_ms;
+    idl_r.volume = volume;
+    idl_r.sleep_s = sleep_s;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.bands[idl_i] = bands[idl_i];
+    idl_r.level = level;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.pause request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_pause(struct idl_txn idl_txn, status_t idl_st, uint8_t paused)
+{
+    struct music_pause_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.paused = paused;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.sleep request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_sleep(struct idl_txn idl_txn, status_t idl_st, uint32_t seconds)
+{
+    struct music_sleep_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.seconds = seconds;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.spectrum request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_spectrum(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t serial, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, uint32_t sleep_s, const uint8_t bands[64], uint8_t level)
+{
+    struct music_spectrum_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.playing = playing;
+    idl_r.serial = serial;
+    idl_r.elapsed_ms = elapsed_ms;
+    idl_r.length_ms = length_ms;
+    idl_r.volume = volume;
+    idl_r.sleep_s = sleep_s;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_r.bands[idl_i] = bands[idl_i];
+    idl_r.level = level;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the music.stereo request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_stereo(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t serial, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, uint32_t sleep_s, const uint8_t left[64], const uint8_t right[64], uint8_t level)
+{
+    struct music_stereo_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.playing = playing;
+    idl_r.serial = serial;
+    idl_r.elapsed_ms = elapsed_ms;
+    idl_r.length_ms = length_ms;
+    idl_r.volume = volume;
+    idl_r.sleep_s = sleep_s;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_r.left[idl_i] = left[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_r.right[idl_i] = right[idl_i];
+    idl_r.level = level;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (MUSIC_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *ops, void *ctx,
+                                         const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                         uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -897,6 +1586,13 @@ static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, co
     return sizeof(*idl_h);
 }
 
+/* music_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t music_dispatch(const struct music_ops *ops, void *ctx, const void *req, uint32_t n,
+                                      void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return music_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -920,7 +1616,7 @@ static inline status_t music_serve_one(handle_t ch, const struct music_ops *ops,
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = music_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = music_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

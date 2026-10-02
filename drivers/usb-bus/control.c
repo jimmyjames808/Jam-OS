@@ -98,7 +98,7 @@ static bool ep0_take(struct usbdev *d)
 {
     struct hc *h = &g_hc;
     while (d->ctl.locked && !d->gone && !h->dead && !h->stopping && in_task())
-        task_wait(drv_clock_ns() + 50 * NS_PER_MS);
+        task_wait(g_tasks, drv_clock_ns() + 50 * NS_PER_MS);
     if (d->ctl.locked || d->gone || h->dead || h->stopping)
         return false;
     d->ctl.locked = true;
@@ -108,7 +108,7 @@ static bool ep0_take(struct usbdev *d)
 static void ep0_give(struct usbdev *d)
 {
     d->ctl.locked = false;
-    task_kick();
+    task_kick(g_tasks);
 }
 
 /* One control transfer, with d's EP0 taken. */

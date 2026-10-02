@@ -1,4 +1,5 @@
-/* <jam/driver.h>: the ONLY header a driver includes.
+/* <jam/driver.h>: the ONLY header a driver includes (with the generated
+ * protocol headers, and <jam/task.h> for cooperative tasks).
  *
  * A driver is a process (drv/<name> in bootfs, started by devmgr) that
  * touches the world only through the handles it was given. Each function
@@ -7,10 +8,10 @@
  * turns the startup message into the struct driver_start.
  *
  * Drivers are compiled with only this header (plus <jam/abi.h>,
- * <jam/status.h>, the generated protocol headers and the compiler's freestanding
- * headers) on the include path, and tools/checkdriver.py fails the build
- * if a driver object uses a symbol not declared here. No libos, no kernel
- * structs, no other driver. */
+ * <jam/status.h>, <jam/task.h>, the generated protocol headers and the
+ * compiler's freestanding headers) on the include path, and
+ * tools/checkdriver.py fails the build if a driver object uses a symbol
+ * not declared there. No libos, no kernel structs, no other driver. */
 #pragma once
 
 #include <stdarg.h>

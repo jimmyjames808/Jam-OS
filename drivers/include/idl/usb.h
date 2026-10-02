@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `usb` (id 10). Client: usb_<method>(ch, args..., &results...)
- * (and usb_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and usb_<method>_until with a deadline) over drv_channel_call, or
+ * usb_<method>_send and usb_<method>_result without waiting. Server:
  * fill a struct usb_ops and run usb_serve(ch, &ops, ctx), or
- * usb_serve_one / usb_dispatch for a loop of your own. */
+ * usb_serve_one / usb_dispatch_on for a loop of your own;
+ * usb_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -505,10 +507,419 @@ static inline status_t usb_clear_halt(handle_t ch, uint8_t endpoint)
     return usb_clear_halt_until(ch, DEADLINE_NEVER, endpoint);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* usb_info without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_info_result. */
+static inline status_t usb_info_send(handle_t ch, uint32_t idl_txid)
+{
+    struct usb_info_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_INFO;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_info_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_info_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
+{
+    const struct usb_info_rep *idl_r = (const struct usb_info_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_vendor)
+        *out_vendor = idl_r->vendor;
+    if (out_product)
+        *out_product = idl_r->product;
+    if (out_speed)
+        *out_speed = idl_r->speed;
+    if (out_interface_number)
+        *out_interface_number = idl_r->interface_number;
+    if (out_class_code)
+        *out_class_code = idl_r->class_code;
+    if (out_subclass)
+        *out_subclass = idl_r->subclass;
+    if (out_protocol)
+        *out_protocol = idl_r->protocol;
+    if (out_num_endpoints)
+        *out_num_endpoints = idl_r->num_endpoints;
+    if (out_alt_setting)
+        *out_alt_setting = idl_r->alt_setting;
+    if (out_address)
+        *out_address = idl_r->address;
+    return OK;
+}
+
+/* usb_get_descriptor without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_get_descriptor_result. */
+static inline status_t usb_get_descriptor_send(handle_t ch, uint32_t idl_txid, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient)
+{
+    struct usb_get_descriptor_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_GET_DESCRIPTOR;
+    idl_q.type = type;
+    idl_q.index = index;
+    idl_q.lang = lang;
+    idl_q.length = length;
+    idl_q.interface_recipient = interface_recipient;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_get_descriptor_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_get_descriptor_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    const struct usb_get_descriptor_rep *idl_r = (const struct usb_get_descriptor_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    for (uint32_t idl_i = 0; out_data && idl_i < 1024; idl_i++)
+        out_data[idl_i] = idl_r->data[idl_i];
+    return OK;
+}
+
+/* usb_control_in without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_control_in_result. */
+static inline status_t usb_control_in_send(handle_t ch, uint32_t idl_txid, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length)
+{
+    struct usb_control_in_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_CONTROL_IN;
+    idl_q.request_type = request_type;
+    idl_q.request = request;
+    idl_q.value = value;
+    idl_q.index = index;
+    idl_q.length = length;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_control_in_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_control_in_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    const struct usb_control_in_rep *idl_r = (const struct usb_control_in_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    for (uint32_t idl_i = 0; out_data && idl_i < 1024; idl_i++)
+        out_data[idl_i] = idl_r->data[idl_i];
+    return OK;
+}
+
+/* usb_control_out without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_control_out_result. */
+static inline status_t usb_control_out_send(handle_t ch, uint32_t idl_txid, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+{
+    struct usb_control_out_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_CONTROL_OUT;
+    idl_q.request_type = request_type;
+    idl_q.request = request;
+    idl_q.value = value;
+    idl_q.index = index;
+    idl_q.length = length;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_q.data[idl_i] = data[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_control_out_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_control_out_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct usb_control_out_rep *idl_r = (const struct usb_control_out_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* usb_open_interrupt_in without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_open_interrupt_in_result. */
+static inline status_t usb_open_interrupt_in_send(handle_t ch, uint32_t idl_txid, uint8_t endpoint)
+{
+    struct usb_open_interrupt_in_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_OPEN_INTERRUPT_IN;
+    idl_q.endpoint = endpoint;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_open_interrupt_in_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_open_interrupt_in_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
+{
+    const struct usb_open_interrupt_in_rep *idl_r = (const struct usb_open_interrupt_in_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_reports)
+        *out_reports = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    if (out_max_packet)
+        *out_max_packet = idl_r->max_packet;
+    if (out_interval_ms)
+        *out_interval_ms = idl_r->interval_ms;
+    return OK;
+}
+
+/* usb_endpoint_stats without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_endpoint_stats_result. */
+static inline status_t usb_endpoint_stats_send(handle_t ch, uint32_t idl_txid, uint8_t endpoint)
+{
+    struct usb_endpoint_stats_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_ENDPOINT_STATS;
+    idl_q.endpoint = endpoint;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_endpoint_stats_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_endpoint_stats_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
+{
+    const struct usb_endpoint_stats_rep *idl_r = (const struct usb_endpoint_stats_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_reports)
+        *out_reports = idl_r->reports;
+    if (out_dropped)
+        *out_dropped = idl_r->dropped;
+    if (out_errors)
+        *out_errors = idl_r->errors;
+    if (out_open)
+        *out_open = idl_r->open;
+    return OK;
+}
+
+/* usb_set_interface without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_set_interface_result. */
+static inline status_t usb_set_interface_send(handle_t ch, uint32_t idl_txid, uint8_t alt_setting)
+{
+    struct usb_set_interface_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_SET_INTERFACE;
+    idl_q.alt_setting = alt_setting;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_set_interface_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_set_interface_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct usb_set_interface_rep *idl_r = (const struct usb_set_interface_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* usb_open_bulk without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_open_bulk_result. */
+static inline status_t usb_open_bulk_send(handle_t ch, uint32_t idl_txid, uint8_t ep_in, uint8_t ep_out)
+{
+    struct usb_open_bulk_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_OPEN_BULK;
+    idl_q.ep_in = ep_in;
+    idl_q.ep_out = ep_out;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_open_bulk_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_open_bulk_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_buffer, uint32_t *out_size)
+{
+    const struct usb_open_bulk_rep *idl_r = (const struct usb_open_bulk_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_buffer)
+        *out_buffer = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
+/* usb_bulk_in without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_bulk_in_result. */
+static inline status_t usb_bulk_in_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint32_t timeout_ms)
+{
+    struct usb_bulk_in_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_BULK_IN;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    idl_q.timeout_ms = timeout_ms;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_bulk_in_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_bulk_in_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_actual)
+{
+    const struct usb_bulk_in_rep *idl_r = (const struct usb_bulk_in_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    return OK;
+}
+
+/* usb_bulk_out without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_bulk_out_result. */
+static inline status_t usb_bulk_out_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint32_t timeout_ms)
+{
+    struct usb_bulk_out_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_BULK_OUT;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    idl_q.timeout_ms = timeout_ms;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_bulk_out_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_bulk_out_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_actual)
+{
+    const struct usb_bulk_out_rep *idl_r = (const struct usb_bulk_out_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    return OK;
+}
+
+/* usb_clear_halt without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then usb_clear_halt_result. */
+static inline status_t usb_clear_halt_send(handle_t ch, uint32_t idl_txid, uint8_t endpoint)
+{
+    struct usb_clear_halt_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = USB_CLEAR_HALT;
+    idl_q.endpoint = endpoint;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to usb_clear_halt_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t usb_clear_halt_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct usb_clear_halt_rep *idl_r = (const struct usb_clear_halt_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with usb_reply_<method> (now, or later from anywhere). */
 struct usb_ops {
     status_t (*info)(void *ctx, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address);
     status_t (*get_descriptor)(void *ctx, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024]);
@@ -523,17 +934,222 @@ struct usb_ops {
     status_t (*clear_halt)(void *ctx, uint8_t endpoint);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (USB_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t usb_dispatch(const struct usb_ops *ops, void *ctx, const void *req, uint32_t n,
-                                    void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the usb.info request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_info(struct idl_txn idl_txn, status_t idl_st, uint16_t vendor, uint16_t product, uint8_t speed, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t num_endpoints, uint8_t alt_setting, uint8_t address)
+{
+    struct usb_info_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.vendor = vendor;
+    idl_r.product = product;
+    idl_r.speed = speed;
+    idl_r.interface_number = interface_number;
+    idl_r.class_code = class_code;
+    idl_r.subclass = subclass;
+    idl_r.protocol = protocol;
+    idl_r.num_endpoints = num_endpoints;
+    idl_r.alt_setting = alt_setting;
+    idl_r.address = address;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.get_descriptor request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_get_descriptor(struct idl_txn idl_txn, status_t idl_st, uint16_t actual, const uint8_t data[1024])
+{
+    struct usb_get_descriptor_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
+        idl_r.data[idl_i] = data[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.control_in request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_control_in(struct idl_txn idl_txn, status_t idl_st, uint16_t actual, const uint8_t data[1024])
+{
+    struct usb_control_in_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
+        idl_r.data[idl_i] = data[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.control_out request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_control_out(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct usb_control_out_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.open_interrupt_in request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_open_interrupt_in(struct idl_txn idl_txn, status_t idl_st, handle_t reports, uint16_t max_packet, uint8_t interval_ms)
+{
+    struct usb_open_interrupt_in_rep idl_r;
+    handle_t idl_hs[1] = { reports };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(reports != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.max_packet = max_packet;
+    idl_r.interval_ms = interval_ms;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the usb.endpoint_stats request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_endpoint_stats(struct idl_txn idl_txn, status_t idl_st, uint64_t reports, uint64_t dropped, uint64_t errors, uint8_t open)
+{
+    struct usb_endpoint_stats_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.reports = reports;
+    idl_r.dropped = dropped;
+    idl_r.errors = errors;
+    idl_r.open = open;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.set_interface request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_set_interface(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct usb_set_interface_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.open_bulk request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_open_bulk(struct idl_txn idl_txn, status_t idl_st, handle_t buffer, uint32_t size)
+{
+    struct usb_open_bulk_rep idl_r;
+    handle_t idl_hs[1] = { buffer };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(buffer != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.size = size;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the usb.bulk_in request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_bulk_in(struct idl_txn idl_txn, status_t idl_st, uint32_t actual)
+{
+    struct usb_bulk_in_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.bulk_out request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_bulk_out(struct idl_txn idl_txn, status_t idl_st, uint32_t actual)
+{
+    struct usb_bulk_out_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the usb.clear_halt request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_clear_halt(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct usb_clear_halt_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (USB_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t usb_dispatch_on(handle_t ch, const struct usb_ops *ops, void *ctx,
+                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                       uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -782,6 +1398,13 @@ static inline uint32_t usb_dispatch(const struct usb_ops *ops, void *ctx, const 
     return sizeof(*idl_h);
 }
 
+/* usb_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t usb_dispatch(const struct usb_ops *ops, void *ctx, const void *req, uint32_t n,
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return usb_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -805,7 +1428,7 @@ static inline status_t usb_serve_one(handle_t ch, const struct usb_ops *ops, voi
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = usb_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = usb_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

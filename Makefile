@@ -269,26 +269,29 @@ endef
 $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 
 # ---- drivers (ARCHITECTURE.md "The migration rule") -------------------------
-# A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>),
-# the generated <idl/*.h> and the compiler's freestanding headers
+# A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>,
+# and <jam/task.h>, libos's cooperative tasks), the generated <idl/*.h>
+# and the compiler's freestanding headers
 # (stdint/stddef/stdbool/stdarg): -nostdinc drops every other include path,
 # and DRV_INC holds copies of just those files. -fno-builtin: no call is
 # assumed to be a C library function. tools/checkdriver.py then fails the
-# build if a driver object uses any symbol driver.h doesn't provide (see
+# build if a driver object uses any symbol those headers don't declare (see
 # its header for the exact list), so declaring a libos or kernel function
 # yourself doesn't work either. `make check` proves the check rejects what
 # it should. A driver's files are compiled with the user flags, linked into
 # one object (ld -r), checked, and linked with crt0, driver_crt (main ->
 # driver_main) and libos into drv/<name>.
-DRV_SURFACE := drivers/include/jam/driver.h kernel/include/jam/abi.h kernel/include/jam/status.h
+DRV_SURFACE := drivers/include/jam/driver.h drivers/include/jam/task.h kernel/include/jam/abi.h \
+               kernel/include/jam/status.h
 DRV_INC     := $(BUILD)/driver-include
-DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h \
+DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/abi.h \
+               $(DRV_INC)/jam/status.h \
                $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
 DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c))
 
-$(DRV_INC)/jam/driver.h: drivers/include/jam/driver.h
+$(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h: $(DRV_INC)/jam/%.h: drivers/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h: $(DRV_INC)/jam/%.h: kernel/include/jam/%.h

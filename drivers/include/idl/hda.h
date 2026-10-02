@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `hda` (id 21). Client: hda_<method>(ch, args..., &results...)
- * (and hda_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and hda_<method>_until with a deadline) over drv_channel_call, or
+ * hda_<method>_send and hda_<method>_result without waiting. Server:
  * fill a struct hda_ops and run hda_serve(ch, &ops, ctx), or
- * hda_serve_one / hda_dispatch for a loop of your own. */
+ * hda_serve_one / hda_dispatch_on for a loop of your own;
+ * hda_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -582,10 +584,454 @@ static inline status_t hda_query(handle_t ch, handle_t *out_channel)
     return hda_query_until(ch, DEADLINE_NEVER, out_channel);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* hda_dump without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_dump_result. */
+static inline status_t hda_dump_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_dump_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_DUMP;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_dump_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_dump_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
+{
+    const struct hda_dump_rep *idl_r = (const struct hda_dump_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_text)
+        *out_text = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    if (out_length)
+        *out_length = idl_r->length;
+    if (out_codecs)
+        *out_codecs = idl_r->codecs;
+    return OK;
+}
+
+/* hda_info without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_info_result. */
+static inline status_t hda_info_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_info_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_INFO;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_info_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_info_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+{
+    const struct hda_info_rep *idl_r = (const struct hda_info_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_codec)
+        *out_codec = idl_r->codec;
+    if (out_pin)
+        *out_pin = idl_r->pin;
+    if (out_dac)
+        *out_dac = idl_r->dac;
+    if (out_pcm)
+        *out_pcm = idl_r->pcm;
+    if (out_formats)
+        *out_formats = idl_r->formats;
+    if (out_amp)
+        *out_amp = idl_r->amp;
+    if (out_jack)
+        *out_jack = idl_r->jack;
+    if (out_count)
+        *out_count = idl_r->count;
+    for (uint32_t idl_i = 0; out_nodes && idl_i < 8; idl_i++)
+        out_nodes[idl_i] = idl_r->nodes[idl_i];
+    for (uint32_t idl_i = 0; out_text && idl_i < 240; idl_i++)
+        out_text[idl_i] = idl_r->text[idl_i];
+    return OK;
+}
+
+/* hda_open_output without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_open_output_result. */
+static inline status_t hda_open_output_send(handle_t ch, uint32_t idl_txid, uint32_t rate, uint8_t channels, uint8_t bits)
+{
+    struct hda_open_output_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_OPEN_OUTPUT;
+    idl_q.rate = rate;
+    idl_q.channels = channels;
+    idl_q.bits = bits;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_open_output_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_open_output_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+{
+    const struct hda_open_output_rep *idl_r = (const struct hda_open_output_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 2)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_stream)
+        *out_stream = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_ring)
+        *out_ring = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    if (out_period)
+        *out_period = idl_r->period;
+    return OK;
+}
+
+/* hda_start without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_start_result. */
+static inline status_t hda_start_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_start_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_START;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_start_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_start_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct hda_start_rep *idl_r = (const struct hda_start_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* hda_stop without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_stop_result. */
+static inline status_t hda_stop_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_stop_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_STOP;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_stop_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_stop_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct hda_stop_rep *idl_r = (const struct hda_stop_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* hda_position without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_position_result. */
+static inline status_t hda_position_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_position_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_POSITION;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_position_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_position_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
+{
+    const struct hda_position_rep *idl_r = (const struct hda_position_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_frames)
+        *out_frames = idl_r->frames;
+    if (out_offset)
+        *out_offset = idl_r->offset;
+    return OK;
+}
+
+/* hda_wait_period without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_wait_period_result. */
+static inline status_t hda_wait_period_send(handle_t ch, uint32_t idl_txid, uint64_t after)
+{
+    struct hda_wait_period_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_WAIT_PERIOD;
+    idl_q.after = after;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_wait_period_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_wait_period_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
+{
+    const struct hda_wait_period_rep *idl_r = (const struct hda_wait_period_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_frames)
+        *out_frames = idl_r->frames;
+    if (out_offset)
+        *out_offset = idl_r->offset;
+    return OK;
+}
+
+/* hda_set_gain without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_set_gain_result. */
+static inline status_t hda_set_gain_send(handle_t ch, uint32_t idl_txid, int32_t centibels)
+{
+    struct hda_set_gain_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_SET_GAIN;
+    idl_q.centibels = centibels;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_set_gain_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_set_gain_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    const struct hda_set_gain_rep *idl_r = (const struct hda_set_gain_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_gain)
+        *out_gain = idl_r->gain;
+    if (out_step)
+        *out_step = idl_r->step;
+    if (out_min)
+        *out_min = idl_r->min;
+    if (out_max)
+        *out_max = idl_r->max;
+    return OK;
+}
+
+/* hda_get_gain without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_get_gain_result. */
+static inline status_t hda_get_gain_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_get_gain_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_GET_GAIN;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_get_gain_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_get_gain_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    const struct hda_get_gain_rep *idl_r = (const struct hda_get_gain_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_gain)
+        *out_gain = idl_r->gain;
+    if (out_step)
+        *out_step = idl_r->step;
+    if (out_min)
+        *out_min = idl_r->min;
+    if (out_max)
+        *out_max = idl_r->max;
+    return OK;
+}
+
+/* hda_set_bits without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_set_bits_result. */
+static inline status_t hda_set_bits_send(handle_t ch, uint32_t idl_txid, uint32_t bits)
+{
+    struct hda_set_bits_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_SET_BITS;
+    idl_q.bits = bits;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_set_bits_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_set_bits_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    const struct hda_set_bits_rep *idl_r = (const struct hda_set_bits_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_bits)
+        *out_bits = idl_r->bits;
+    if (out_pcm)
+        *out_pcm = idl_r->pcm;
+    return OK;
+}
+
+/* hda_jacks without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_jacks_result. */
+static inline status_t hda_jacks_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_jacks_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_JACKS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_jacks_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_jacks_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+{
+    const struct hda_jacks_rep *idl_r = (const struct hda_jacks_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_count)
+        *out_count = idl_r->count;
+    if (out_state)
+        *out_state = idl_r->state;
+    if (out_changes)
+        *out_changes = idl_r->changes;
+    for (uint32_t idl_i = 0; out_pins && idl_i < 16; idl_i++)
+        out_pins[idl_i] = idl_r->pins[idl_i];
+    for (uint32_t idl_i = 0; out_states && idl_i < 16; idl_i++)
+        out_states[idl_i] = idl_r->states[idl_i];
+    for (uint32_t idl_i = 0; out_text && idl_i < 1024; idl_i++)
+        out_text[idl_i] = idl_r->text[idl_i];
+    return OK;
+}
+
+/* hda_query without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_query_result. */
+static inline status_t hda_query_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_query_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_QUERY;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_query_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_query_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_channel)
+{
+    const struct hda_query_rep *idl_r = (const struct hda_query_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_channel)
+        *out_channel = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with hda_reply_<method> (now, or later from anywhere). */
 struct hda_ops {
     status_t (*dump)(void *ctx, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs);
     status_t (*info)(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240]);
@@ -601,17 +1047,259 @@ struct hda_ops {
     status_t (*query)(void *ctx, handle_t *out_channel);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (HDA_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const void *req, uint32_t n,
-                                    void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the hda.dump request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_dump(struct idl_txn idl_txn, status_t idl_st, handle_t text, uint32_t length, uint32_t codecs)
+{
+    struct hda_dump_rep idl_r;
+    handle_t idl_hs[1] = { text };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(text != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.length = length;
+    idl_r.codecs = codecs;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the hda.info request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_info(struct idl_txn idl_txn, status_t idl_st, uint32_t codec, uint32_t pin, uint32_t dac, uint32_t pcm, uint32_t formats, uint32_t amp, uint32_t jack, uint32_t count, const uint8_t nodes[8], const uint8_t text[240])
+{
+    struct hda_info_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.codec = codec;
+    idl_r.pin = pin;
+    idl_r.dac = dac;
+    idl_r.pcm = pcm;
+    idl_r.formats = formats;
+    idl_r.amp = amp;
+    idl_r.jack = jack;
+    idl_r.count = count;
+    for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
+        idl_r.nodes[idl_i] = nodes[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
+        idl_r.text[idl_i] = text[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.open_output request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_open_output(struct idl_txn idl_txn, status_t idl_st, handle_t stream, handle_t ring, uint32_t size, uint32_t period)
+{
+    struct hda_open_output_rep idl_r;
+    handle_t idl_hs[2] = { stream, ring };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(stream != HANDLE_INVALID && ring != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.size = size;
+    idl_r.period = period;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
+}
+
+/* Answer the hda.start request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_start(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct hda_start_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.stop request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_stop(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct hda_stop_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.position request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_position(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
+{
+    struct hda_position_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.frames = frames;
+    idl_r.offset = offset;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.wait_period request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_wait_period(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
+{
+    struct hda_wait_period_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.frames = frames;
+    idl_r.offset = offset;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.set_gain request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_set_gain(struct idl_txn idl_txn, status_t idl_st, int32_t gain, uint32_t step, int32_t min, int32_t max)
+{
+    struct hda_set_gain_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.gain = gain;
+    idl_r.step = step;
+    idl_r.min = min;
+    idl_r.max = max;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.get_gain request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_get_gain(struct idl_txn idl_txn, status_t idl_st, int32_t gain, uint32_t step, int32_t min, int32_t max)
+{
+    struct hda_get_gain_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.gain = gain;
+    idl_r.step = step;
+    idl_r.min = min;
+    idl_r.max = max;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.set_bits request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_set_bits(struct idl_txn idl_txn, status_t idl_st, uint32_t bits, uint32_t pcm)
+{
+    struct hda_set_bits_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.bits = bits;
+    idl_r.pcm = pcm;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.jacks request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_jacks(struct idl_txn idl_txn, status_t idl_st, uint32_t count, uint32_t state, uint32_t changes, const uint8_t pins[16], const uint8_t states[16], const uint8_t text[1024])
+{
+    struct hda_jacks_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.count = count;
+    idl_r.state = state;
+    idl_r.changes = changes;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.pins[idl_i] = pins[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.states[idl_i] = states[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
+        idl_r.text[idl_i] = text[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda.query request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_query(struct idl_txn idl_txn, status_t idl_st, handle_t channel)
+{
+    struct hda_query_rep idl_r;
+    handle_t idl_hs[1] = { channel };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(channel != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (HDA_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, void *ctx,
+                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                       uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -917,6 +1605,13 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
     return sizeof(*idl_h);
 }
 
+/* hda_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const void *req, uint32_t n,
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return hda_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -940,7 +1635,7 @@ static inline status_t hda_serve_one(handle_t ch, const struct hda_ops *ops, voi
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = hda_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = hda_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;
