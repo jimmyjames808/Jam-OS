@@ -1,7 +1,7 @@
 /* rtl8125: the driver's DMA memory (drv/rtl8125).
  *
  * One contiguous VMO holds the receive ring (256 descriptors of 32
- * bytes), the transmit ring (256 of 16 bytes: tx.c fills it) and the
+ * bytes), the transmit ring (256 of 32 bytes: tx.c fills it) and the
  * tally dump. The 2 KiB receive buffers (two per page) are an ordinary
  * VMO, pinned page by page; in full mode the transmit buffers are another
  * one of the same shape: the driver's own copy of every frame it sends,

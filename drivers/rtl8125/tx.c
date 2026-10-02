@@ -19,33 +19,24 @@
  *      so what is checked next is what the chip reads;
  *   2. bytes 12-15 of that buffer are checked once more, with its length
  *      (netframe_tx_check), right before the descriptor is handed over;
- *   3. the descriptor (rge's 16-byte struct rge_tx_desc on the 8125):
+ *   3. the descriptor (rge's 32-byte struct rge_tx_desc, txdesc.h):
  *      address, then length with start and end of frame, then the
  *      ownership bit; the chip's own tag insertion (the descriptor's VLAN
- *      field) stays 0;
+ *      field) stays 0, and so do its last 16 bytes;
  *   4. the doorbell (TXSTART).
+ * The transmitter goes on only if the chip reads descriptors of that size
+ * (MAC OCP 0xeb58 bit 0, read back: txdesc.h), so it never takes an
+ * address or a length from the wrong bytes.
  * Descriptors come back in tx_reap; the chip's own count of frames sent is
  * compared with tx.queued at the end (regs.c, tally_tx_check).
  *
  * Registers and values: OpenBSD's rge(4) (if_rge.c rge_init, rge_encap,
- * rge_txeof, rge_txstart; if_rgereg.h), ISC licence. */
+ * rge_txeof, rge_txstart, rge_tx_list_init; if_rgereg.h), ISC licence. */
 #include "rtl8125.h"
 
 #define RTL_TXCFG_CONFIG 0x03000700u   /* rge's RGE_TXCFG_CONFIG: interframe gap, DMA burst */
 #define RTL_TDFNR_8125   0x10          /* rge_init: descriptors fetched at once */
 #define RTL_TXSTART_GO   0x0001        /* RGE_TXSTART_START: queue 0 has work */
-
-/* The transmit descriptor (struct rge_tx_desc) */
-#define TX_DESC_CMDSTS   0
-#define TX_DESC_EXTSTS   4             /* checksum and VLAN insertion: always 0 here */
-#define TX_DESC_ADDR     8
-#define TX_OWN           0x80000000u   /* the chip's until it has sent the frame */
-#define TX_EOR           0x40000000u   /* the last descriptor: the ring wraps after it */
-#define TX_SOF           0x20000000u
-#define TX_EOF           0x10000000u
-#define TX_ERR           0x00800000u
-#define TX_EXCESSCOLL    0x00100000u
-#define TX_COLL          0x000f0000u
 
 /* May the driver transmit at all? Every entry point asks first. */
 static bool gate(struct rtl *t, const char *what)
@@ -79,12 +70,19 @@ static void txw32(struct rtl *t, uint32_t reg, uint32_t v)
 
 static volatile uint8_t *desc(const struct rtl *t, uint32_t i)
 {
-    return t->ring + TX_RING_OFF + (i % TX_DESCS) * TX_DESC_SIZE;
+    return t->ring + TX_RING_OFF + (i % TX_DESCS) * RTL_TXD_SIZE;
 }
 
 static uint32_t eor(uint32_t i)
 {
-    return i % TX_DESCS == TX_DESCS - 1 ? TX_EOR : 0;
+    return i % TX_DESCS == TX_DESCS - 1 ? RTL_TXD_EOR : 0;
+}
+
+/* Descriptor i's buffer (two per page), as the chip sees it. */
+static uint64_t buf_addr(const struct rtl *t, uint32_t i)
+{
+    i %= TX_DESCS;
+    return t->txbuf_addr[i / 2] + (i % 2) * TX_BUF;
 }
 
 status_t tx_arm(struct rtl *t)
@@ -93,11 +91,13 @@ status_t tx_arm(struct rtl *t)
         return ERR_ACCESS_DENIED;
     if (!t->txbufs || !t->ring)
         return ERR_BAD_STATE;
-    for (uint32_t i = 0; i < TX_DESCS; i++) {
+    for (uint32_t i = 0; i < TX_DESCS; i++) {   /* rge_tx_list_init */
         volatile uint8_t *d = desc(t, i);
-        *(volatile uint64_t *)(d + TX_DESC_ADDR) = t->txbuf_addr[i / 2] + (i % 2) * TX_BUF;
-        *(volatile uint32_t *)(d + TX_DESC_EXTSTS) = 0;
-        *(volatile uint32_t *)(d + TX_DESC_CMDSTS) = eor(i);   /* the driver's: OWN clear */
+        for (uint32_t k = RTL_TXD_RESERVED; k < RTL_TXD_SIZE; k += 4)
+            *(volatile uint32_t *)(d + k) = 0;
+        *(volatile uint64_t *)(d + RTL_TXD_ADDR) = buf_addr(t, i);
+        *(volatile uint32_t *)(d + RTL_TXD_EXTSTS) = 0;
+        *(volatile uint32_t *)(d + RTL_TXD_CMDSTS) = eor(i);   /* the driver's: OWN clear */
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);
     t->tx_prod = t->tx_cons = 0;
@@ -106,8 +106,8 @@ status_t tx_arm(struct rtl *t)
     txw32(t, RTL_TXDESC_HI, (uint32_t)(ring >> 32));
     txw32(t, RTL_TXCFG, RTL_TXCFG_CONFIG);
     txw8(t, RTL_TDFNR, RTL_TDFNR_8125);
-    drv_log("transmit ring: %u descriptors at %#lx, vlan %u on every frame", TX_DESCS,
-            (unsigned long)ring, t->vlan);
+    drv_log("transmit ring: %u descriptors of %u bytes at %#lx, vlan %u on every frame",
+            TX_DESCS, RTL_TXD_SIZE, (unsigned long)ring, t->vlan);
     return OK;
 }
 
@@ -115,6 +115,16 @@ status_t tx_enable(struct rtl *t)
 {
     if (!gate(t, "tx_enable"))
         return ERR_ACCESS_DENIED;
+    uint16_t fmt = mac_rd(t, RTL_MAC_TXD_FORMAT);
+    bool ok = rtl_txd_format_ok(fmt);
+    drv_log("transmit descriptors: %u bytes; the chip's format bit (mac %#x bit 0) is %u: %s",
+            RTL_TXD_SIZE, RTL_MAC_TXD_FORMAT, fmt & RTL_MAC_TXD_32,
+            ok ? "they agree" : "THEY DISAGREE");
+    if (!ok) {
+        drv_report("the chip would read transmit descriptors of another size (mac %#x = %#x): "
+                   "the transmitter stays OFF", RTL_MAC_TXD_FORMAT, fmt);
+        return ERR_BAD_STATE;
+    }
     txw8(t, RTL_CMD, RTL_CMD_TXENB | RTL_CMD_RXENB);   /* rge_init: both at once */
     t->tx_on = true;
     return OK;
@@ -139,11 +149,10 @@ status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len)
         return ERR_INVALID_ARGS;
     }
     volatile uint8_t *d = desc(t, i);
-    *(volatile uint64_t *)(d + TX_DESC_ADDR) = t->txbuf_addr[i / 2] + (i % 2) * TX_BUF;
-    *(volatile uint32_t *)(d + TX_DESC_EXTSTS) = 0;
+    *(volatile uint64_t *)(d + RTL_TXD_ADDR) = buf_addr(t, i);
+    *(volatile uint32_t *)(d + RTL_TXD_EXTSTS) = 0;
     __atomic_thread_fence(__ATOMIC_RELEASE);   /* buffer and address before the ownership */
-    *(volatile uint32_t *)(d + TX_DESC_CMDSTS) =
-        TX_OWN | TX_SOF | TX_EOF | eor(i) | (uint32_t)n;
+    *(volatile uint32_t *)(d + RTL_TXD_CMDSTS) = rtl_txd_cmd(i, TX_DESCS, (uint32_t)n);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* the descriptor before the doorbell */
     t->tx_prod++;
     t->tx.queued++;
@@ -159,18 +168,18 @@ unsigned tx_reap(struct rtl *t)
     bool waiting = false;
     while (t->tx_cons != t->tx_prod) {
         volatile uint8_t *d = desc(t, t->tx_cons);
-        uint32_t st = *(volatile uint32_t *)(d + TX_DESC_CMDSTS);
-        if (st & TX_OWN) {
+        uint32_t st = *(volatile uint32_t *)(d + RTL_TXD_CMDSTS);
+        if (st & RTL_TXD_OWN) {
             waiting = true;
             break;
         }
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (st & TX_ERR)
+        if (st & RTL_TXD_ERR)
             t->tx.errors++;
         else
             t->tx.done++;
-        t->tx.collisions += !!(st & (TX_COLL | TX_EXCESSCOLL));
-        *(volatile uint32_t *)(d + TX_DESC_CMDSTS) = eor(t->tx_cons);
+        t->tx.collisions += !!(st & (RTL_TXD_COLL | RTL_TXD_EXCESSCOLL));
+        *(volatile uint32_t *)(d + RTL_TXD_CMDSTS) = eor(t->tx_cons);
         t->tx_cons++;
         n++;
     }

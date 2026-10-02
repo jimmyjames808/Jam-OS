@@ -37,6 +37,7 @@
 #include <jam/netserver.h>
 #include "args.h"
 #include "notx.h"
+#include "txdesc.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
 
@@ -182,14 +183,17 @@
 #define RX_ERRSUM       0x00100000u
 #define RX_LEN          0x00003fffu   /* bytes received, the CRC included */
 #define RX_CRC          4u
-/* One contiguous VMO: the receive ring, the transmit ring (16-byte
- * descriptors, tx.c), then the tally dump (64-byte aligned). */
+/* One contiguous VMO: the receive ring, the transmit ring (32-byte
+ * descriptors, txdesc.h; tx.c fills it), then the tally dump (64-byte
+ * aligned). */
 #define RX_RING_BYTES   (RX_DESCS * RX_DESC_SIZE)   /* 8 KiB */
 #define TX_DESCS        256
-#define TX_DESC_SIZE    16
 #define TX_RING_OFF     RX_RING_BYTES
-#define TALLY_OFF       (TX_RING_OFF + TX_DESCS * TX_DESC_SIZE)   /* 12 KiB */
-#define RING_VMO        (4 * 4096)
+#define TX_RING_BYTES   (TX_DESCS * RTL_TXD_SIZE)   /* 8 KiB */
+#define TALLY_OFF       (TX_RING_OFF + TX_RING_BYTES)   /* 16 KiB */
+#define RING_VMO        (5 * 4096)
+_Static_assert(TX_RING_OFF % RTL_TXD_RING_ALIGN == 0, "rge aligns the rings to 256 bytes");
+_Static_assert(TALLY_OFF % 64 == 0 && TALLY_OFF + 64 <= RING_VMO, "the tally dump fits");
 #define BUF_BYTES       (RX_DESCS * RX_BUF)
 #define BUF_PAGES       (BUF_BYTES / 4096)
 #define TX_BUF          2048      /* the driver's own copy of each frame sent: two per page */
