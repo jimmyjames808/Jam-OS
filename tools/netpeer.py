@@ -25,11 +25,17 @@ What it does with each frame from the guest:
   - noise (--noise S, or `noise` on stdin): frames the guest's driver must
     drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
     broadcast ARP request on the VLAN), counted as sent.
+  - DHCP and DNS (add_dhcp_dns, always on): a DHCP server on port 67
+    (leases from 10.2.21.100, router and DNS server 10.2.21.1, the lease
+    --dhcp-lease seconds) and a DNS server on port 53 (one.one.one.one,
+    mac.jam, router.jam, the CNAME www.jam, fastN.jam = 10.9.0.N;
+    slow.jam is never answered, every other name is NXDOMAIN), counted
+    as dhcp_* and dns_* in the summary.
 
 Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
-               [--log FILE]
+               [--log FILE] [--dhcp-lease S]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -46,8 +52,10 @@ As a module (import netpeer, with tools/ on sys.path): Peer(listen, qemu,
 vlan) and its poll, send, send_raw, noise, add_udp and summary; the frame
 builders (eth, arp, ipv4, udp, icmp) and classify."""
 import argparse
+import collections
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -180,7 +188,8 @@ class Peer:
     def add_udp(self, port, fn):
         """fn(peer, src_ip, sport, dst_ip, payload) answers a datagram to
         `port` on any address: its result (bytes) goes back as a datagram
-        from that address and port; None: no answer."""
+        from that address and port; a UdpReply, from and to the addresses
+        it names; None: no answer."""
         self.udp_handlers[port] = fn
 
     def ping(self, addr):
@@ -276,6 +285,10 @@ class Peer:
             sport, dport = struct.unpack_from("!HH", body, 0)
             fn = self.udp_handlers.get(dport)
             out = fn(self, src, sport, dst, body[8:]) if fn else None
+            if isinstance(out, UdpReply):   # addressed by the handler (DHCP's broadcasts)
+                self.send(eth(out.mac, PEER_MAC, ETH_IPV4, ipv4(
+                    out.src, out.dst, 17, udp(out.src, out.dst, dport, sport, out.data))))
+                return
             if out is not None:
                 reply = ipv4(dst, src, 17, udp(dst, src, dport, sport, out))
         if reply is None:
@@ -296,6 +309,178 @@ def summary_line(s):
              " " + json.dumps(s["bad_kinds"]) if s["bad_kinds"] else "",
              s["arp_replies"], s["echo_replies"], s["ping_replies"], s["pings"], s["sent"],
              s["result"]))
+
+
+# ---- DHCP and DNS ------------------------------------------------------------------
+
+UdpReply = collections.namedtuple("UdpReply", "data src dst mac")   # addresses as bytes
+
+DHCP_SERVER = "10.2.21.1"      # the peer's DHCP server, router and DNS server
+DHCP_FIRST = 100               # leases from 10.2.21.100 up, one per MAC
+DHCP_COOKIE = 0x63825363
+DNS_TTL = 300
+DNS_SLOW = "slow.jam"          # asked, never answered (the slow-peer test)
+DNS_NONE = "nothing.jam"       # NXDOMAIN (as every name not below)
+DNS_NAMES = {"one.one.one.one": ["1.1.1.1", "1.0.0.1"], "mac.jam": ["10.2.21.174"],
+             "router.jam": ["10.2.21.1"]}
+DNS_CNAMES = {"www.jam": "mac.jam"}
+DNS_FAST = re.compile(r"fast(\d{1,3})\.jam$")   # fastN.jam: 10.9.0.N (N 1..254)
+
+
+def dhcp_options(data):
+    """{code: bytes} of a DHCP message's options (after the cookie), or None."""
+    if len(data) < 240 or struct.unpack_from("!I", data, 236)[0] != DHCP_COOKIE:
+        return None
+    opts, i = {}, 240
+    while i < len(data):
+        code = data[i]
+        if code == 255:
+            break
+        if code == 0:
+            i += 1
+            continue
+        if i + 2 > len(data) or i + 2 + data[i + 1] > len(data):
+            return None
+        opts[code] = opts.get(code, b"") + data[i + 2:i + 2 + data[i + 1]]
+        i += 2 + data[i + 1]
+    return opts
+
+
+class DhcpServer:
+    """A DHCP server for the guest (RFC 2131): an address per MAC from
+    10.2.21.<DHCP_FIRST> up, with the mask /24, the router and DNS server
+    10.2.21.1 and a lease of `lease` seconds; OFFER for a DISCOVER, ACK for
+    a REQUEST of the address it gave that MAC (NAK for any other: an
+    INIT-REBOOT for an address it never gave), nothing for a REQUEST that
+    names another server. Answers go to ciaddr when the client has one,
+    else to the broadcast address. Counts in the peer's: dhcp_<type>."""
+
+    NAMES = {1: "discovers", 2: "offers", 3: "requests", 4: "declines", 5: "acks", 6: "naks",
+             7: "releases"}
+
+    def __init__(self, peer, lease=3600):
+        self.peer, self.lease, self.leases = peer, lease, {}
+        self.server = ip_bytes(DHCP_SERVER)
+        for n in list(self.NAMES.values()) + ["bad"]:
+            peer.counts["dhcp_" + n] = 0
+
+    def count(self, what):
+        self.peer.counts["dhcp_" + what] += 1
+
+    def address(self, mac):
+        if mac not in self.leases:
+            self.leases[mac] = ip_bytes("10.2.21.%d" % (DHCP_FIRST + len(self.leases)))
+        return self.leases[mac]
+
+    def reply(self, req, mtype, yiaddr):
+        opts = struct.pack("!BBB", 53, 1, mtype) + struct.pack("!BB4s", 54, 4, self.server)
+        if mtype != 6:
+            opts += struct.pack("!BBI", 51, 4, self.lease)
+            opts += struct.pack("!BB4s", 1, 4, ip_bytes("255.255.255.0"))
+            opts += struct.pack("!BB4s", 3, 4, self.server)   # the router
+            opts += struct.pack("!BB4s", 6, 4, self.server)   # the DNS server
+        msg = (struct.pack("!BBBB4sHH4s4s4s4s", 2, 1, 6, 0, req[4:8], 0, struct.unpack_from(
+               "!H", req, 10)[0], req[12:16], yiaddr, b"\0" * 4, b"\0" * 4) + req[28:44] +
+               b"\0" * 192 + struct.pack("!I", DHCP_COOKIE) + opts + b"\xff")
+        self.count(self.NAMES[mtype])
+        unicast = req[12:16] != b"\0" * 4 and mtype != 6
+        return UdpReply(msg, self.server, req[12:16] if unicast else b"\xff" * 4,
+                        req[28:34] if unicast else BROADCAST)
+
+    def handle(self, peer, src, sport, dst, data):
+        opts = dhcp_options(data)
+        if opts is None or data[0] != 1 or data[1:3] != b"\x01\x06" or len(opts.get(53, b"")) != 1:
+            self.count("bad")
+            return None
+        mtype, mac = opts[53][0], bytes(data[28:34])
+        if mtype not in self.NAMES:
+            self.count("bad")
+            return None
+        self.count(self.NAMES[mtype])
+        if mtype == 1:
+            return self.reply(data, 2, self.address(mac))
+        if mtype == 7:
+            self.leases.pop(mac, None)
+        if mtype != 3 or opts.get(54, self.server) != self.server:
+            return None   # a DECLINE, a RELEASE, or a REQUEST to another server
+        want = opts.get(50) or bytes(data[12:16])
+        ok = self.leases.get(mac) == want
+        return self.reply(data, 5 if ok else 6, want if ok else b"\0" * 4)
+
+
+def dns_name(data, i):
+    """The (uncompressed) name at data[i:] and the offset after it, or None."""
+    labels = []
+    while i < len(data) and data[i]:
+        n = data[i]
+        if n > 63 or i + 1 + n > len(data):
+            return None
+        labels.append(data[i + 1:i + 1 + n].decode("ascii", "replace"))
+        i += 1 + n
+    return (".".join(labels), i + 1) if i < len(data) else None
+
+
+def dns_encode(name):
+    return b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\0"
+
+
+class DnsServer:
+    """A DNS server for the guest (RFC 1035, A records): DNS_NAMES, the
+    CNAME www.jam -> mac.jam (with its A record in the same reply),
+    fastN.jam = 10.9.0.N; slow.jam is never answered (counted); every other
+    name is NXDOMAIN; another type, no answer (NOERROR). Counts in the
+    peer's: dns_queries, dns_answered, dns_nxdomain, dns_slow, dns_bad."""
+
+    def __init__(self, peer):
+        self.peer = peer
+        for n in ("queries", "answered", "nxdomain", "slow", "bad"):
+            peer.counts["dns_" + n] = 0
+
+    def count(self, what):
+        self.peer.counts["dns_" + what] += 1
+
+    def records(self, name):
+        """[(owner, type, rdata)] for name, or None (NXDOMAIN)."""
+        name = name.lower()
+        m = DNS_FAST.match(name)
+        if m and 1 <= int(m.group(1)) <= 254:
+            return [(name, 1, ip_bytes("10.9.0.%s" % m.group(1)))]
+        if name in DNS_CNAMES:
+            target = DNS_CNAMES[name]
+            return [(name, 5, dns_encode(target))] + [(target, 1, ip_bytes(a))
+                                                      for a in DNS_NAMES[target]]
+        if name in DNS_NAMES:
+            return [(name, 1, ip_bytes(a)) for a in DNS_NAMES[name]]
+        return None
+
+    def handle(self, peer, src, sport, dst, data):
+        q = dns_name(data, 12) if len(data) >= 12 else None
+        ident, flags, qd = struct.unpack_from("!HHH", data, 0) if len(data) >= 6 else (0, 0, 0)
+        if q is None or flags & 0x8000 or qd != 1 or q[1] + 4 > len(data):
+            self.count("bad")
+            return None
+        self.count("queries")
+        name, end = q
+        qtype = struct.unpack_from("!H", data, end)[0]
+        if name.lower() == DNS_SLOW:
+            self.count("slow")
+            return None
+        recs = self.records(name)
+        if recs is not None and qtype != 1:
+            recs = [r for r in recs if r[1] == qtype]
+        rcode = 3 if recs is None else 0
+        self.count("nxdomain" if recs is None else "answered")
+        out = struct.pack("!HHHHHH", ident, 0x8080 | (flags & 0x0100) | rcode, 1,
+                          len(recs or []), 0, 0) + data[12:end + 4]
+        for owner, rtype, rdata in recs or []:
+            out += dns_encode(owner) + struct.pack("!HHIH", rtype, 1, DNS_TTL, len(rdata)) + rdata
+        return out
+
+
+def add_dhcp_dns(peer, lease=3600):
+    """The peer's DHCP server on port 67 and DNS server on port 53."""
+    peer.add_udp(67, DhcpServer(peer, lease).handle)
+    peer.add_udp(53, DnsServer(peer).handle)
 
 
 def free_ports(n):
@@ -411,10 +596,79 @@ def selftest():
     expect(fresh.summary(expect_none=True)["result"] == "PASS", "no frames, expect-none: PASS")
     fresh.handle(tag(req, VLAN))
     expect(fresh.summary(expect_none=True)["result"] == "FAIL", "a frame, expect-none: FAIL")
+    selftest_dhcp_dns(g, devnull, expect)
     for f in fails:
         print("netpeer selftest: FAILED: " + f)
     print("netpeer selftest: %s" % ("PASS" if not fails else "FAIL"))
     return 0 if not fails else 1
+
+
+def selftest_dhcp_dns(g, devnull, expect):
+    """The DHCP and DNS servers against the fake guest g (a socket)."""
+    peer = Peer(0, g.getsockname()[1], VLAN, devnull)
+    add_dhcp_dns(peer, lease=60)
+    g.connect(("127.0.0.1", peer.listen))
+    gmac, zero, bcast = bytes.fromhex("525400abcdef"), b"\0" * 4, b"\xff" * 4
+
+    def dhcp(mtype, ciaddr=zero, src=zero, dst=bcast, opts=b""):
+        msg = (struct.pack("!BBBB4sHH4s4s4s4s", 1, 1, 6, 0, b"jamx", 0, 0x8000, ciaddr, zero,
+                           zero, zero) + gmac + b"\0" * 202 + struct.pack("!I", DHCP_COOKIE) +
+               struct.pack("!BBB", 53, 1, mtype) + opts + b"\xff")
+        dmac = PEER_MAC if dst != bcast else BROADCAST
+        g.send(tag(eth(dmac, gmac, ETH_IPV4, ipv4(src, dst, 17, udp(src, dst, 68, 67, msg))), VLAN))
+        peer.poll(0.5)
+        try:
+            u = untag(g.recv(65536))
+        except socket.timeout:
+            return None
+        return u, dhcp_options(u[42:])
+
+    def dns(name, port=5353):
+        q = struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + dns_encode(name) + b"\0\1\0\1"
+        src = ip_bytes("10.2.21.100")
+        g.send(tag(eth(PEER_MAC, gmac, ETH_IPV4, ipv4(src, ip_bytes(DHCP_SERVER), 17,
+                                                      udp(src, ip_bytes(DHCP_SERVER), port, 53,
+                                                          q))), VLAN))
+        peer.poll(0.5)
+        try:
+            u = untag(g.recv(65536))
+        except socket.timeout:
+            return None
+        return u[42:] if struct.unpack_from("!HH", u, 34) == (53, port) else b""
+
+    g.settimeout(0.5)
+    r = dhcp(1)   # DISCOVER: an OFFER of 10.2.21.100, broadcast, with every option
+    expect(r and r[0][:6] == BROADCAST and r[0][30:34] == bcast and r[1].get(53) == b"\2" and
+           r[0][58:62] == ip_bytes("10.2.21.100") and r[1].get(1) == ip_bytes("255.255.255.0") and
+           r[1].get(3) == r[1].get(6) == r[1].get(54) == ip_bytes(DHCP_SERVER) and
+           r[1].get(51) == struct.pack("!I", 60), "DHCP: the OFFER")
+    sid = struct.pack("!BB4s", 54, 4, ip_bytes(DHCP_SERVER))
+    r = dhcp(3, opts=struct.pack("!BB4s", 50, 4, ip_bytes("10.2.21.100")) + sid)
+    expect(r and r[1].get(53) == b"\5" and r[0][58:62] == ip_bytes("10.2.21.100"), "DHCP: the ACK")
+    r = dhcp(3, opts=struct.pack("!BB4s", 50, 4, ip_bytes("10.2.21.99")))   # INIT-REBOOT, not ours
+    expect(r and r[1].get(53) == b"\6" and r[0][:6] == BROADCAST, "DHCP: a NAK")
+    other = struct.pack("!BB4s", 54, 4, ip_bytes("10.2.21.2"))
+    expect(dhcp(3, opts=struct.pack("!BB4s", 50, 4, ip_bytes("10.2.21.100")) + other) is None,
+           "DHCP: a REQUEST to another server: no answer")
+    me = ip_bytes("10.2.21.100")   # a renewal: unicast both ways
+    r = dhcp(3, ciaddr=me, src=me, dst=ip_bytes(DHCP_SERVER))
+    expect(r and r[1].get(53) == b"\5" and r[0][:6] == gmac and r[0][30:34] == me,
+           "DHCP: a renewal's ACK, unicast")
+    expect(peer.counts["dhcp_offers"] == 1 and peer.counts["dhcp_acks"] == 2 and
+           peer.counts["dhcp_naks"] == 1 and peer.counts["dhcp_requests"] == 4, "DHCP's counts")
+    a = dns("one.one.one.one")
+    expect(a and struct.unpack_from("!HHHH", a, 0) == (0x1234, 0x8180, 1, 2) and
+           ip_bytes("1.1.1.1") in a and ip_bytes("1.0.0.1") in a, "DNS: one.one.one.one")
+    a = dns("www.jam")
+    expect(a and struct.unpack_from("!H", a, 6)[0] == 2 and dns_encode("mac.jam") in a and
+           a.endswith(ip_bytes("10.2.21.174")), "DNS: a CNAME and its A record")
+    a = dns("fast7.jam")
+    expect(a and a.endswith(ip_bytes("10.9.0.7")), "DNS: fast7.jam")
+    a = dns(DNS_NONE)
+    expect(a and struct.unpack_from("!H", a, 2)[0] & 15 == 3, "DNS: NXDOMAIN")
+    expect(dns(DNS_SLOW) is None and peer.counts["dns_slow"] == 1, "DNS: the slow name unanswered")
+    expect(peer.counts["dns_queries"] == 5 and peer.counts["bad"] == 0, "DNS's counts")
+    g.settimeout(2)
 
 
 # ---- the command line ----------------------------------------------------------
@@ -443,6 +697,7 @@ def stdin_command(peer, line, a):
 def run(a):
     log = open(a.log, "a") if a.log else None
     peer = Peer(a.listen, a.qemu, a.vlan, log)
+    add_dhcp_dns(peer, a.dhcp_lease)
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
@@ -483,6 +738,7 @@ def main():
     ap.add_argument("--listen", type=int, default=0)
     ap.add_argument("--qemu", type=int, default=0)
     ap.add_argument("--vlan", type=int, default=VLAN)
+    ap.add_argument("--dhcp-lease", type=int, default=3600)
     ap.add_argument("--expect-none", action="store_true")
     ap.add_argument("--noise", type=float, default=0)
     ap.add_argument("--duration", type=float, default=0)
