@@ -2,8 +2,12 @@
  *
  * One port carries everything the driver waits for: the chip's MSI-X
  * vector (received frames, finished transmits and link changes, all on
- * the one vector devmgr made) and devmgr closing our channel (it is
- * stopping). Every wait has a deadline of at most a second, so a lost
+ * the one vector devmgr made), devmgr closing our channel (it is
+ * stopping), and in full mode the netdev server's packets (server.h:
+ * requests on DR_SERVE and the session channel, netstack's transmit
+ * signal), whose work srv_work does at the top of each step. After the
+ * chip's work the server is told: the rx ring published once per batch,
+ * transmit descriptors freed, the link changed. Every wait has a deadline of at most a second, so a lost
  * interrupt costs time, never a stall, and the link and the rings are
  * polled then too. Nothing waits inside a step but the short, bounded
  * register waits (the service-loop rule, CODING-GUIDE.md).
@@ -32,11 +36,21 @@ static void service(struct rtl *t, bool by_irq)
 {
     if (t->mode == RTL_MODE_PROBE) {
         (void)census_harvest(t, by_irq);
-    } else {
-        (void)rx_harvest(t);
-        (void)tx_reap(t);
+        (void)chip_link_poll(t);
+        return;
     }
+    (void)rx_harvest(t);
+    unsigned freed = tx_reap(t);
     (void)chip_link_poll(t);
+    if (!t->srv)
+        return;
+    srv_rx_done(t->srv);   /* the rx ring published once per batch */
+    if (freed)
+        srv_tx_room(t->srv);
+    if (t->link_seq != t->link_told) {
+        t->link_told = t->link_seq;
+        srv_link(t->srv);
+    }
 }
 
 static void interrupt(struct rtl *t, uint64_t fires)
@@ -57,9 +71,20 @@ static void interrupt(struct rtl *t, uint64_t fires)
     wr32(t, RTL_IMR, t->mode == RTL_MODE_PROBE ? RTL_IMR_PROBE : RTL_IMR_FULL);
 }
 
+/* The netdev server's work, if there is a server; true while it waits for
+ * more (the next port wait then doesn't sleep). */
+static bool server_work(struct rtl *t)
+{
+    return t->srv && srv_work(t->srv);
+}
+
 bool loop_step(struct rtl *t, uint64_t deadline)
 {
-    uint64_t cap = drv_clock_ns() + POLL_MAX_NS;
+    uint64_t now = drv_clock_ns(), cap = now + POLL_MAX_NS;
+    if (server_work(t))
+        cap = now;   /* more is waiting: look at the port without sleeping */
+    if (t->srv && t->srv->stopping)
+        return false;
     struct port_packet p;
     status_t st = drv_port_wait(t->port, deadline < cap ? deadline : cap, &p);
     if (st == OK && p.key == KEY_SERVE)
@@ -68,11 +93,13 @@ bool loop_step(struct rtl *t, uint64_t deadline)
         interrupt(t, p.signal.count);
         return true;
     }
+    if (st == OK && t->srv && srv_packet(t->srv, &p))
+        return true;   /* srv_work does it, at the next step */
     if (st != OK && st != ERR_TIMED_OUT) {
         drv_log("port wait failed (%s): polling", status_str(st));
         delay_us(1000);
     }
-    t->ev.polls++;
+    t->ev.polls += cap != now;   /* a wait that didn't sleep is not a poll */
     service(t, false);
     return true;
 }
