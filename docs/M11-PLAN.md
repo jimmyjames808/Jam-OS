@@ -97,7 +97,7 @@ can get a policy later once real faults have been seen.
 *Recommendation:* the first PC runs of DMA remapping and of interrupt
 remapping use a boot entry of their own ("Jam OS (IOMMU)", the boot word
 `iommu=on`), so the everyday entry keeps working while they are new; once
-the PC checks (stage 4) pass, it is on by default, and the boot word
+the PC checks (stage 5) pass, it is on by default, and the boot word
 `iommu=off` (added by pressing E in Limine's menu, as `smp=loader` is
 today) runs without it, for troubleshooting.
 
