@@ -504,7 +504,13 @@ KTEST(wake_affine_channel_call)
     KT_ASSERT(client_aff >= AFF_CALLS / 2);
 
     /* Server not allowed on the caller's CPU: it goes to the caller's idle
-     * HT sibling when there is one (QEMU needs -smp N,threads=2). */
+     * HT sibling when there is one (QEMU needs -smp N,threads=2). With two
+     * CPUs that mask would be empty (CPU 0 and c are both left out). */
+    if (cpu_count < 3) {
+        kprintf("wake-affine: 2 CPUs, no CPU for a server kept off cpu %u: not tested\n", c);
+        kt_unpin_self();
+        return;
+    }
     cpumask_t not_c = any;
     not_c.bits[c / 64] &= ~(1ull << (c % 64));
     not_c.bits[0] &= ~1ull;   /* nor CPU 0, where this thread waits */
