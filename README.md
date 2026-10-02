@@ -68,8 +68,15 @@ a real desktop PC, which is where every milestone is tested.
   services under `/svc` and the mounts it wants, read-only or writable).
   A program copied to `/data` runs once the owner has said yes to its list
   with `allow`.
+- Networking, under way (M9, so far in QEMU with its e1000e card): a
+  network stack in a process of its own (lwIP), every frame tagged VLAN
+  21; a static address from `net.address` in `/data/etc/settings`; `net`
+  shows the address, the link and the counts (`net stats`: all of them)
+  and `ping <address>` pings; programs whose list asks for `svc net` get
+  UDP sockets.
 
-Not yet: networking, power management. Status and plans:
+Not yet: networking on the PC (DHCP, DNS, the log to the Mac, `update`),
+power management. Status and plans:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run in QEMU
