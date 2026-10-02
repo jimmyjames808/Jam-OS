@@ -3,8 +3,8 @@
 Jam OS is developed against one machine, and every milestone is checked on
 it. This page is the one place its facts are written down; other docs link
 here. The facts come from Jam OS's own boot log and device listings on that
-PC (the Devices and usb-bus runs of 2026-09-29, and the boot logs saved on
-the stick on 2026-10-01).
+PC (the Devices and usb-bus runs of 2026-09-29, the boot logs saved on
+the stick on 2026-10-01, and the network runs of 2026-10-02).
 
 ## The machine
 
@@ -16,7 +16,7 @@ the stick on 2026-10-01).
 | Memory | 32 GB (Jam OS manages 32049 MiB) |
 | Display | NVIDIA RTX 4080 SUPER (01:00.0, 10de:2702), monitor on it. UEFI GOP framebuffer 2560x1440, 32 bpp, at physical 0x4000000000 (256 GiB: Resizable BAR on). No iGPU PCI function: the UHD 770 is disabled in firmware |
 | PCI | 24 functions on 6 buses |
-| Serial | a working COM1 UART, but no cable; logs come off the PC as files on the stick (each boot's log in `/data/logs/`) and as photos of the screen |
+| Serial | a working COM1 UART, but no cable; logs come off the PC as files on the stick (each boot's log in `/data/logs/`), over the network to the Mac (netlog, on the "Jam OS (network)" boot: [The network](#the-network)) and as photos of the screen |
 
 **PCIDs.** Alder Lake and Raptor Lake have an erratum (Intel ADL063,
 RPL042): with PCIDs on, INVLPG may leave global TLB entries behind. Intel's
@@ -95,13 +95,70 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 
 | Function | Device | Notes |
 |---|---|---|
-| 05:00.0 | Realtek RTL8125 2.5 GbE, 10ec:8125 rev 05 | MSI (1, maskable) and MSI-X (32; table at BAR4+0x0, PBA at BAR4+0x800). BAR0 I/O 0x3000, BAR2 mem64 64 KiB (the registers), BAR4 mem64 16 KiB (MSI-X only), so the registers never share a page with the MSI-X table. An Ethernet cable is ready: this is M9's NIC. PCI revision 05 is the RTL8125B (the chip's own id is read by the probe). The switch port is a trunk, checked from the Mac on 2026-10-02: untagged is the home network, tagged 21 is VLAN 21 ([M9-PLAN.md](M9-PLAN.md#questions-for-the-owner)). The boot entry "Jam OS (network: listen only)" runs the listen-only probe `drv/rtl8125` on it; no other boot touches it. The probe on 2026-10-02: the chip's id 641 (RTL8125B), PCIe gen 2 x1, PHY 001cc840 with no patch loaded, link 1000 full in 2.2 s, MSI-X and 64-bit DMA work, wake-on-LAN armed by the firmware; the port carries VLANs 10, 11, 20 and 21 tagged plus the home network untagged ([the results](M9-PLAN.md#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)) |
+| 05:00.0 | Realtek RTL8125B 2.5 GbE, 10ec:8125 rev 05 | drv/rtl8125: [The network](#the-network) |
 | 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. Codec 0 is a Realtek ALC897 (10ec:0897, subsystem 1043:8841); the front-panel headphone jack is its pin 1b, fed by DAC 02 through mixer 0c. Codec address 2 is reported but never answers (likely the disabled iGPU's HDMI codec). The whole graph: `hda` in the shell, `[hda]` lines in the boot log, and [A1-PLAN.md](history/A1-PLAN.md#the-hardware) |
 | 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |
 | 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | not used: storage is the USB stick; no driver planned |
 | | SATA, SMBus, I2C/SPI functions, 6 bridges | |
+
+## The network
+
+**The chip** (05:00.0, 10ec:8125 rev 05): a Realtek RTL8125B, by its own
+id (`xid 641` in the transmit configuration register). MSI (1, maskable)
+and MSI-X (32 vectors; table at BAR4+0x0, PBA at BAR4+0x800). BAR0 is I/O
+0x3000, BAR2 mem64 64 KiB (the registers), BAR4 mem64 16 KiB (MSI-X only),
+so the registers never share a page with the MSI-X table. From the
+listen-only probe on 2026-10-02 (boot-0065, build f6c57bf;
+[the results](M9-PLAN.md#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)):
+PCIe gen 2 x1 with ASPM off; the PHY's id 001cc840 with no firmware patch
+loaded (the board's firmware loads none), the MAC's ROM code with no break
+points; with no firmware tables at all it resets in 1 ms and links at
+**1000 full in 2.2 s** (it advertises 2.5G too: the switch port is
+gigabit); MSI-X works, and so does 64-bit DMA (its rings and buffers above
+4 GiB, no DMA32 needed). The firmware leaves the receiver and transmitter
+off and **wake-on-LAN armed** (magic packet); the driver turns
+wake-on-LAN off while Jam OS runs, and the firmware arms it again at its
+next start. The chip's count of frames sent survives reboots and
+power-off on standby power, so the driver compares counts from its own
+start.
+
+**Its transmit descriptors are 32 bytes**, as OpenBSD's `rge` writes them:
+the driver turns on the chip's format bit for them (MAC OCP 0xeb58 bit 0,
+part of rge's start-up), and with it the chip steps through the ring 32
+bytes at a time. The driver's first PC runs (2026-10-02, build 8d98b62)
+wrote 16-byte ones, so the chip read every other descriptor and transmit
+stalled; since 41ccd54 the descriptors are 32 bytes and the driver leaves
+the transmitter off unless the chip's bit agrees (the log's `transmit
+descriptors: 32 bytes; ... they agree`). The receive descriptor is 32
+bytes too. ([The result and the fix](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix).)
+On 41ccd54 (boot-0073, the send test): 20 of 20 ARP probes to 10.2.21.1
+answered, each descriptor back from the chip 0.04 ms after its doorbell,
+and the chip's count of frames sent equal to the driver's.
+<!-- TODO(main session): the receive fix (the PC's receiving stopped about 75 s into boot-0075) and its PC result, once merged. -->
+
+**The switch port** is a trunk. Untagged it carries the home network
+(10.2.0.0/24); tagged it carries VLANs 10, 11, 20 and 21 (the probe saw
+frames on each, and the switch's LLDP untagged). Jam OS uses VLAN 21 only
+(10.2.21.0/24, "Home Devices VLAN": its DHCP server, router and DNS server
+are all 10.2.21.1, and it reaches the internet) and its driver drops every
+other frame. Narrowing the port on the switch to VLAN 21 tagged alone
+would make the switch enforce the rule too; it isn't needed. The PC's
+cable goes to a one-port bridge, so the Mac can't watch the PC's port; a
+capture needs a cable from the PC straight to the Mac's USB Ethernet
+adapter ([M9-PLAN.md](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix)).
+
+**The Mac** is on VLAN 21 too, by Wi-Fi at **10.2.21.174** (kept by a
+router reservation and a fixed "Private Wi-Fi address"): the PC's
+`net.host`, where netlog sends the log and `update` fetches a build. Both
+stay inside VLAN 21 and cross no firewall. The PC's own address is
+`net.address` in its settings, or a lease from 10.2.21.1 without it.
+
+Which boot entry uses the chip: "Jam OS (network)" (the netdev service,
+with netstack on it), "Jam OS (network: send test)" and "Jam OS (network:
+listen only)"; the everyday entries leave it alone
+([TESTING.md](TESTING.md#the-boot-menu)).
 
 ## Flash and boot the stick
 

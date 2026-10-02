@@ -81,10 +81,10 @@
 #define LWIP_UDPLITE            0
 #define LWIP_TCP                0
 #define LWIP_IGMP               0
-#define LWIP_DHCP               0    /* user/services/dhcp (planned) */
+#define LWIP_DHCP               0    /* a process of its own: user/services/dhcp */
 #define LWIP_AUTOIP             0
 #define LWIP_ACD                0
-#define LWIP_DNS                0    /* user/services/dns (planned) */
+#define LWIP_DNS                0    /* a process of its own: user/services/dns */
 /* With no address yet, a datagram to the DHCP client's port 68 is taken
  * whatever its destination address (a server may answer to the address
  * it offers). Only netctl's DHCP socket can be on port 68: programs get

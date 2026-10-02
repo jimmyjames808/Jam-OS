@@ -1,23 +1,26 @@
 # M9 plan: networking
 
-Status (2026-10-02): the plan, with the owner's answers. **Built and
-merged:** stage 0 (the listen-only probe; it ran on the PC:
-[results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)), stage 1
-(the netdev contract, `vlan=`, the QEMU harness), stage 3 (netstack on
-lwIP, on the netdev rings, started by init), R1 (the transmit path, the
-`netsend` test and the netdev server: [below](#r1-progress-the-full-driver);
-its first PC runs found transmit unreliable, a descriptor-size mismatch, now
-fixed and waiting for the next PC run:
-[the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage 4 (sockets for programs: `/svc/net`,
-`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores), stage 5b
-(bin/dhcp, bin/dns and `/svc/dns`, `host`, `ping <name>`, the slow-peer
-test: [below](#stage-5b-built-dhcp-and-dns-as-services)) and stages 6a
-and 7a (netlog's and `update`'s cores, init's update check, the Mac
-tools), stage 6b (bin/netlog:
-[below](#stage-6b-built-netlog-on-the-network)) and stage 7b (`update`
-over the network, in QEMU:
-[below](#stage-7b-built-update-over-the-network)). The sections below say
-what each one built and left for the next.
+Status (2026-10-02): every stage up to 8 is built and merged; next the
+review (stage 9), then the PC sign-off ([ROADMAP](ROADMAP.md#now-m9-networking)
+has what it needs). Built: stage 0 (the listen-only probe; it ran on the
+PC: [results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)),
+stage 1 (the netdev contract, `vlan=`, the QEMU harness), stage 2
+(drv/e1000e), stage 3 (netstack on lwIP, on the netdev rings, started by
+init), R1 (the transmit path, the `netsend` test and the netdev server:
+[below](#r1-progress-the-full-driver); its first PC runs found transmit
+unreliable, a descriptor-size mismatch, fixed and run again on the PC:
+[the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage
+4 (sockets for programs: `/svc/net`, `ping`, `net`:
+[below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS
+cores), stage 5b (bin/dhcp, bin/dns and `/svc/dns`, `host`, `ping
+<name>`, the slow-peer test: [below](#stage-5b-built-dhcp-and-dns-as-services)),
+stages 6a and 7a (netlog's and `update`'s cores, init's update check, the
+Mac tools), stage 6b (bin/netlog:
+[below](#stage-6b-built-netlog-on-the-network)), stage 7b (`update` over
+the network, in QEMU: [below](#stage-7b-built-update-over-the-network))
+and stage 8 (the join: [below](#stage-8-built-the-join)). The design as
+built is in [ARCHITECTURE.md](../ARCHITECTURE.md#networking); the
+sections below say what each stage built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -449,8 +452,8 @@ Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
   goes on (the probe, the send test); the firmware arms it again at its
   next start.
 
-The owner's first runs of `netsend` and `net`, what they showed and the
-next run: the section below.
+The owner's first runs of `netsend` and `net`, what they showed, the
+fix and the second run: the section below.
 
 #### R1: the PC result and the transmit fix
 
@@ -607,6 +610,22 @@ STALL` line; the RESULTS line `netsend vlan 21, link ..., 20/20 probes to
 answered, and PASS. If it still fails, the `tx STALL` lines say whether
 the chip never fetched the descriptor or sent it without writing it
 back, and the capture says what actually left.
+
+**The second PC run (2026-10-02, build 41ccd54, the PC on its usual
+network, not the direct cable; boot-0073 `netsend`, boot-0075 `net` with
+`net.address = 10.2.21.240/24 ...` and `net.host = 10.2.21.174`):**
+
+- `netsend`: `transmit descriptors: 32 bytes; ... they agree`; link 1000
+  full in 2.5 s; 20 of 20 probes answered (`++++++++++++++++++++`, the
+  router's replies in 2.7 to 56.8 ms); every descriptor back 0.042 to
+  0.053 ms after its doorbell; `tx: 20 queued, 20 sent, ... 0 still out;
+  ... 0 doorbell(s) again`; `tx check: ... equal`. **Transmit is fixed.**
+- `net`: link 1000 full in 3.2 s; netlog's datagrams reached the Mac
+  ("the Mac answers again" at 5.3 s, the files in the Mac's folder); the
+  `tx so far` lines to the end of the boot (117 s): 132 queued, 132 sent
+  by the chip, 132 back, 0 stalled, the wait 0.04 to 0.33 ms. But
+  receiving stopped: the Mac's pings were answered and then not, and
+  netlog said "the Mac doesn't answer" at 78 s for good.
 
 #### R1: receive on the PC
 
@@ -1660,12 +1679,58 @@ edges above:
   tagged 21). updtest gained an unknown flag (refused) and a check-only
   offer (accepted, not loaded), so tools/update-test.sh counts 13
   refusals. tools/bootfs-edit.py makes the test builds' boot images.
-- **The owner's workflow** ([README](../README.md#boot-a-real-pc)): once,
+- **The owner's workflow** ([README](../README.md#the-network)): once,
   `net.host = 10.2.21.174` in the PC's settings; on the Mac `make`, then
   `python3 tools/update-server.py` left running; on the PC `update`.
-- **Not done:** the PC run (after the RTL8125 fix); a build fetched by
-  `update` reports "the stored kernel came from /esp" at its next boot
-  (init/reboot.c's line, which can't know: the build itself is right).
+- **Not done:** the PC run (after the RTL8125 fix). A build fetched by
+  `update` reported "the stored kernel came from /esp" at its next boot;
+  stage 8 changed the line to what init knows.
+
+## Stage 8, built: the join
+
+Built 2026-10-02 on everything above.
+
+- **`tools/net-vlan-test.sh`**: one QEMU boot with every path that
+  transmits, and the same commands on a `vlan=off` boot
+  ([TESTING](TESTING.md#area-scripts)). The peer runs its DHCP and DNS
+  servers, netlog's receiver, the update server (serving the running
+  build), an echo request to the guest every half second and the
+  driver's must-drop frames; the stick's settings have only `net.host`,
+  so the address comes by DHCP. The shell script (`net-vlan.txt`) waits
+  for the lease and netlog, then `net`, `host one.one.one.one`, `ping
+  mac.jam -c 2`, `ping 1.1.1.1 -c 3`, `update -n`. Besides the peer's and
+  the pcap's checks of the rule, the test reads the pcap once more and
+  counts the frames of each path; a path that sent nothing, or a frame
+  from no known path, fails it. In QEMU (2 CPUs, 2026-10-02): 7129 frames,
+  every one tagged 21: ARP 3, DHCP 2, DNS 2, echo requests 5, echo
+  replies 12 (of the peer's 15 pings: the first came before the lease),
+  netlog 13, update 7092 (9.9 MB in 0.6 s). The `vlan=off` boot: not one
+  frame (the peer sent its 20 must-drop frames all the same); the e1000e
+  says "no VLAN: the network stays off (the chip is left alone)" and
+  ends, netstack has no session, `net` shows no card, `host` and `ping
+  <name>` have no DNS server, `ping 1.1.1.1` no route, `update` no
+  address, and 10 s later still nothing has been sent.
+- **No program of its own for UDP sockets**: the test's UDP comes from
+  the programs that use `/svc/net` sockets (dns, netlog, `bin/update`;
+  dhcp on netctl's socket). utest's `netsock_*` cover the socket calls
+  themselves over the fake driver.
+- **Not in it**: netstack's ICMP errors (port and protocol unreachable)
+  are sent only for a datagram to a closed port, which the peer doesn't
+  send; utest's `netstack_udp_unreachable` covers them, and they leave
+  through the same driver path as every other frame.
+- **The docs**: ARCHITECTURE's Networking as built (the layers, the
+  driver's rule and its checks, netdev, netstack, `/svc/net` and its
+  limits, dhcp, dns, netlog, `update`, what each process holds, the
+  service-loop rule as applied), its services and protocols tables;
+  README's network commands, settings keys and the Mac's two tools;
+  HARDWARE's network section (the chip, the transmit fix, the port, the
+  Mac); ROADMAP's "Now: M9".
+- **A stale line fixed**: after an `update`, the next boot said "the
+  stored kernel came from /esp/boot/jamos.elf", though the stored kernel
+  was the fetched build. init (reboot.c) now says what it knows:
+  `init: kexec: noted /esp/boot/jamos.elf (N bytes) and
+  /esp/boot/bootfs.img (N bytes): a reboot reads them only if they
+  change`.
 
 ## Where tracks meet
 

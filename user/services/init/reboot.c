@@ -61,8 +61,9 @@ void reboot_note_esp(void)
     if (noted || stat_file(KERNEL_FILE, &kernel) != OK || stat_file(BOOTFS_FILE, &bootfs) != OK)
         return;
     noted = true;
-    printf("init: kexec: the stored kernel came from " KERNEL_FILE " (%lu bytes) and "
-           BOOTFS_FILE " (%lu bytes)\n", (unsigned long)kernel.size, (unsigned long)bootfs.size);
+    printf("init: kexec: noted " KERNEL_FILE " (%lu bytes) and " BOOTFS_FILE " (%lu bytes): "
+           "a reboot reads them only if they change\n", (unsigned long)kernel.size,
+           (unsigned long)bootfs.size);
 }
 
 /* Does /esp hold another kernel or boot image than the one stored? false

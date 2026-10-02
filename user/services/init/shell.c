@@ -358,7 +358,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         } else if (pkt.key == KEY_MOUNTS) {
             tell_mounts();
             data_came();
-            reboot_note_esp();   /* the first /esp: what the stored kernel came from */
+            reboot_note_esp();   /* the first /esp: its files as the stored kernel's */
         } else if (pkt.key == KEY_LASTBOOT) {
             lastboot_event();
         } else if (pkt.key >= KEY_CTL && pkt.key < KEY_CTL + CTL_COUNT) {

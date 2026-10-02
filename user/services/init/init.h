@@ -251,8 +251,9 @@ void     net_service_given_up(unsigned i);
 /* ---- reboot.c -------------------------------------------------------------------- */
 
 /* /esp is mounted (now or again): the first time, note the size and
- * modification time of its kernel and boot image, which the stored kernel
- * was loaded from. */
+ * modification time of its kernel and boot image, as the files the stored
+ * kernel stands for (usually it was loaded from them; after an update it
+ * is the fetched build, which this boot can't tell apart). */
 void     reboot_note_esp(void);
 /* Reboot by kexec: into the stored kernel, or, if /esp's kernel or boot
  * image changed since reboot_note_esp, into the files on /esp. Returns

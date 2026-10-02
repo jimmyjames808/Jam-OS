@@ -63,7 +63,7 @@ run_kexec() {
 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
         "seen 30 console: the screen is back" \
         "seen 60 logd: writing /data/logs/boot-0001.txt" \
-        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "send reboot" \
         "wait 30 init: kexec: /esp unchanged: the stored kernel, no files read" \
         "wait 30 init: /data synced" "wait 60 driver(s) stopped; exiting" \
@@ -103,7 +103,7 @@ run_changed() {
     mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
         { fail changed "can't write the second stick's kernel"; return; }
     run changed shell "wait 120 Jam OS shell" "wait jam>" \
-        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw,throttling.bps-read=2000000" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
@@ -129,7 +129,7 @@ run_load() {
     mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
         { fail load "can't write the second stick's kernel"; return; }
     run load shell "wait 120 Jam OS shell" "wait jam>" \
-        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
@@ -155,7 +155,7 @@ run_broken() {
     mcopy -o -i "$stick2@@1M" "$out/jamos-cut.elf" ::/boot/jamos.elf ||
         { fail broken "can't write the second stick's kernel"; return; }
     run broken shell "wait 120 Jam OS shell" "wait jam>" \
-        "seen 60 init: kexec: the stored kernel came from /esp/boot/jamos.elf" \
+        "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \

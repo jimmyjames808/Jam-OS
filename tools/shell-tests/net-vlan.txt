@@ -1,0 +1,41 @@
+# Every path that transmits, in one boot (tools/net-vlan-test.sh runs
+# this): QEMU's e1000e and the network peer (tools/netpeer.py: its DHCP
+# and DNS servers, netlog's receiver on port 5021, the update server on
+# port 5022 serving this build, and an echo request to 10.2.21.100 every
+# half second from the Mac's address), only net.host = 10.2.21.174 in the
+# stick's settings, so the address comes by DHCP. The lease (dhcp),
+# netlog sending this boot's log, `host` and `ping <name>` (dns, then
+# ICMP), `ping` by address through the gateway, `update -n` fetching the
+# peer's build (checked by init, nothing loaded); netstack answers ARP
+# and the peer's pings meanwhile. tools/net-vlan-test.sh counts the frames
+# of each path in the pcap.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 60 dhcp: lease 10.2.21.100/24 from 10.2.21.1: gateway 10.2.21.1, DNS 10.2.21.1
+seen 60 netlog: sending this boot's log to 10.2.21.174 port 5021
+wait jam>
+send net
+wait address  10.2.21.100/24, gateway 10.2.21.1
+wait VLAN 21
+wait jam>
+send host one.one.one.one
+wait one.one.one.one has address 1.1.1.1
+wait jam>
+send ping mac.jam -c 2
+wait PING mac.jam (10.2.21.174): 56 data bytes
+wait 10.2.21.174: 2 sent, 2 received
+wait jam>
+send ping 1.1.1.1 -c 3
+wait --- 1.1.1.1: 3 sent, 3 received, 0% lost
+wait jam>
+send update -n
+wait 60 update: asking 10.2.21.174:5022 for its build
+wait 60 checked by init in
+wait not loaded (-n)
+wait jam>
+send net
+wait pings answered
+wait jam>
+sleep 2
+send reboot -f
+wait reboot: resetting
