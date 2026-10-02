@@ -93,12 +93,6 @@ Known limits it left:
 Larger pieces that fit the design and would be worth a milestone each.
 None has a plan yet; the order is the current preference.
 
-- **A faster call path.** A process-to-process call costs 1407 ns
-  ([BENCH.md](BENCH.md)), and most of that is not the price of isolation:
-  one call is several kernel entries, copies and handle lookups. A
-  combined reply-and-wait call, a direct hand-off to a waiting server and
-  one copy should bring it to roughly 400-600 ns (an estimate). Scheduled
-  as M11.5.
 - **Shared request rings.** A client and a service share a ring of
   requests and replies in a VMO and make a system call only when the other
   side is asleep: the third level after copied messages and shared VMOs
