@@ -164,11 +164,15 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
  * driver's hardware; with its query channel usb-bus, and through it any
  * USB device's interfaces; with init's, every service and the reboot. The
  * build allows the last two only in user/tests/ (tools/checkwants.py), and
- * a file on /data is never one of the tree's tests. */
+ * a file on /data is never one of the tree's tests. The root's debug power
+ * either: `debug_command` panics the machine, crashes it on purpose and
+ * runs the stress test. */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT };
 
 const char *sh_wants_refused(const struct wants *w)
 {
+    if (w->rights & WANT_RIGHT_DEBUG)
+        return "right debug";
     for (unsigned i = 0; i < w->n; i++)
         for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
             if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))

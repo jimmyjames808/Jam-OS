@@ -3,7 +3,8 @@
 # and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
 # program can't change /data/etc (even with /data writable); a changed file
 # is refused until allowed again; a program whose list asks for devmgr's or
-# init's channels (a copy of bin/utest) is refused, approval or not;
+# init's channels (a copy of bin/utest) or for the kernel's debug commands
+# (a copy of bin/wantdebug) is refused, approval or not;
 # `allow -r` takes it back; only a file on /data can be allowed, and a shell
 # init didn't start can't.
 # Run: QEMU_INPUT=tools/shell-tests/allow.txt tools/qemu-test.sh build/test allow shell
@@ -49,6 +50,16 @@ send allow /data/u; echo st-$T=$?
 wait allow: /data/u: asks for devmgr, which no program from /data may have
 wait st-x=1
 wait jam>
+# nor the kernel's debug commands (panic, the crash tests): from /boot the
+# list is given as it stands, from /data never
+send run wantdebug; echo st-$T=$?
+wait wantdebug: right debug held
+wait st-x=0
+wait jam>
+send cp /boot/bin/wantdebug /data/d && allow /data/d; echo st-$T=$?
+wait allow: /data/d: asks for right debug, which no program from /data may have
+wait st-x=1
+wait jam>
 # a program's /data is a view: etc can't change, the rest can
 send run utest fs-put /data/etc/allow x
 wait fs-put: /data/etc/allow: ERR_ACCESS_DENIED
@@ -67,7 +78,11 @@ send write -a /data/s x; run /data/s 1; echo st-$T=$?
 wait run: /data/s changed since it was allowed: `allow /data/s` again
 wait st-x=126
 wait jam>
-# an approval does not let in a list that asks for devmgr or init
+# an approval does not let in a list that asks for devmgr, init or debug
+send cp /boot/bin/wantdebug /data/s; run /data/s; echo st-$T=$?
+wait run: /data/s: asks for right debug, which no program from /data may have
+wait st-x=126
+wait jam>
 send cp /boot/bin/utest /data/s; run /data/s env two; echo st-$T=$?
 wait run: /data/s: asks for devmgr, which no program from /data may have
 wait st-x=126

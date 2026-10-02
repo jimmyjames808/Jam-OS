@@ -735,7 +735,9 @@ Not built yet; these rules bind every future path that can transmit.
   that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that
   asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
   `init`) is refused, approval or not: they reach drivers, devices and
-  the filesystems unguarded, past every view. Whoever holds
+  the filesystems unguarded, past every view; so is one that asks for
+  `right debug` (the kernel's debug commands panic and crash the machine
+  on purpose). Whoever holds
   the stick can edit the file on another computer, as they could replace
   the kernel. User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
