@@ -103,19 +103,27 @@ static status_t attach(struct net_sock *s, handle_t ch, uint16_t port, const han
         s->map_len = len;
         st = sockring_attach(&s->r, s->map, len, SOCKRING_DGRAM, tx, rx);
     }
+    if (st == OK)   /* asleep from the start: the first datagram wakes a loop bound on it */
+        (void)sockring_sleep(&s->r.rx, 1);
     if (st != OK)
         net_close(s);
     return st;
 }
 
-status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out)
+status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes,
+                            struct net_sock *out)
 {
     handle_t ch = HANDLE_INVALID, hs[3] = { 0 };
     uint32_t tx = 0, rx = 0;
     *out = (struct net_sock){ 0 };
-    status_t st = net_udp_rings_until(net, now() + CALL_WAIT, port, 0, 0, &ch, &hs[0], &hs[1],
-                                      &hs[2], &port, &tx, &rx);
+    status_t st = net_udp_rings_until(net, now() + CALL_WAIT, port, tx_bytes, rx_bytes, &ch,
+                                      &hs[0], &hs[1], &hs[2], &port, &tx, &rx);
     return st == OK ? attach(out, ch, port, hs, tx, rx) : st;
+}
+
+status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out)
+{
+    return net_udp_open_rings(net, port, 0, 0, out);
 }
 
 status_t net_udp_open_async(handle_t net, uint32_t txid, uint16_t port)

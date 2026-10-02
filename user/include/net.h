@@ -163,6 +163,11 @@ status_t net_get_chip_counters(handle_t net, void *out);
  * with its rings (net.udp_rings, the default sizes), mapped. Errors: the
  * call's, the map's. */
 status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out);
+/* The same with rings of tx_bytes and rx_bytes (0: the default; else a
+ * power of two in SOCKRING_MIN..SOCKRING_MAX): a socket that must hold more
+ * datagrams than SOCKRING_UDP_RX does, or fewer. */
+status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes,
+                            struct net_sock *out);
 /* The same without waiting, for a service's loop: send the request with
  * the caller's txid (not 0); when the reply comes on net (idl_reply_read),
  * net_udp_opened takes the socket from it. */

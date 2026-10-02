@@ -35,6 +35,7 @@ struct fake {
     handle_t job, proc, ctl;            /* netstack, its job, netctl's client end */
     handle_t net;                       /* /svc/net's shared channel, client end */
     handle_t listen;                    /* /svc/net-listen's, the same */
+    handle_t sys;                       /* /svc/net-sys's, the same */
     handle_t dev;                       /* our end of netstack's device channel */
     handle_t svc;                       /* our end of the driver channel handed out */
     handle_t session, tx_vmo, rx_vmo, to_driver, to_stack;   /* the session's, ours */
@@ -226,20 +227,22 @@ static bool ended_by_netstack(void)
 
 static bool start(void)
 {
-    handle_t ctl_srv, dev_cli, net_srv, listen_srv;
+    handle_t ctl_srv, dev_cli, net_srv, listen_srv, sys_srv;
     fk = (struct fake){ .link = NETDEV_LINK_UP | NETDEV_LINK_FULL, .changes = 1 };
     CHECK_ST(new_job(&fk.job), OK);
     CHECK_ST(jam_channel_create(&fk.ctl, &ctl_srv), OK);
     CHECK_ST(jam_channel_create(&fk.dev, &dev_cli), OK);
     CHECK_ST(jam_channel_create(&fk.net, &net_srv), OK);
     CHECK_ST(jam_channel_create(&fk.listen, &listen_srv), OK);
+    CHECK_ST(jam_channel_create(&fk.sys, &sys_srv), OK);
     const char *argv[] = { "bin/netstack" };
     struct spawn_handle x[] = { { SR_USER + 0, ctl_srv }, { SR_DEVMGR_DEVICE, dev_cli },
-                                { SR_USER + 1, net_srv }, { SR_USER + 2, listen_srv } };
+                                { SR_USER + 1, net_srv }, { SR_USER + 2, listen_srv },
+                                { SR_USER + 3, sys_srv } };
     struct spawn_args a = {
-        .path = "bin/netstack", .argc = 1, .argv = argv, .job = fk.job, .extra = x, .nextra = 4,
+        .path = "bin/netstack", .argc = 1, .argv = argv, .job = fk.job, .extra = x, .nextra = 5,
     };
-    CHECK_ST(spawn(&a, &fk.proc), OK);   /* consumes the four */
+    CHECK_ST(spawn(&a, &fk.proc), OK);   /* consumes the five */
     CHECK(connected());
     CHECK_ST(netctl_set_ipv4(fk.ctl, OUR_IP, MASK24, GW_IP), OK);
     CHECK(announced());
@@ -256,6 +259,7 @@ static bool stop(void)
     jam_handle_close(fk.ctl);
     jam_handle_close(fk.net);
     jam_handle_close(fk.listen);
+    jam_handle_close(fk.sys);
     jam_handle_close(fk.proc);
     struct job_info ji;
     for (uint64_t end = now() + WAIT;;) {   /* a killed process's pages: bounded */
@@ -513,4 +517,9 @@ handle_t netdrv_net(void)
 handle_t netdrv_net_listen(void)
 {
     return fk.listen;
+}
+
+handle_t netdrv_net_sys(void)
+{
+    return fk.sys;
 }
