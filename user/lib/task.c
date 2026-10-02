@@ -79,19 +79,13 @@ bool task_set_destroy(struct task_set *s)
 {
     if (!s || s->cur)
         return false;
-    bool all = true;
+    bool none_live = true;
     for (uint32_t i = 0; i < s->opts.max_tasks; i++) {
-        struct task *t = &s->slots[i];
-        if (t->live) {
-            all = false;   /* its frames are on that stack: keep it */
-            continue;
-        }
-        free(t->stack);
-        t->stack = NULL;
+        none_live = none_live && !s->slots[i].live;
+        free(s->slots[i].stack);   /* a live task is abandoned: never switched to again */
     }
-    if (all)
-        free(s);
-    return all;
+    free(s);
+    return none_live;
 }
 
 /* The first code a new task runs: task_switch "returns" into

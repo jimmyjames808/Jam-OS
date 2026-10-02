@@ -662,6 +662,8 @@ static const struct {
     { "settings_parse", t_settings_parse },
     { "settings_edit", t_settings_edit },
     { "settings_file", t_settings_file },
+    { "tasks_yield_and_wait", t_tasks_yield_and_wait },
+    { "tasks_start_slots_cap", t_tasks_start_slots_cap },
 };
 
 int main(int argc, char **argv)

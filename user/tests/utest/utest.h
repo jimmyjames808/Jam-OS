@@ -5,7 +5,7 @@
  * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
  * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>; time.c:
- * <wallclock.h> and <settings.h>), the
+ * <wallclock.h> and <settings.h>; tasks.c: <jam/task.h>), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -72,6 +72,10 @@ bool t_time_wallclock_calls(void);
 bool t_settings_parse(void);
 bool t_settings_edit(void);
 bool t_settings_file(void);
+
+/* tasks.c: libos's cooperative tasks (<jam/task.h>). */
+bool t_tasks_yield_and_wait(void);
+bool t_tasks_start_slots_cap(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

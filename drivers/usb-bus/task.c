@@ -79,7 +79,7 @@ bool tasks_reset(void)
 void tasks_free(void)
 {
     if (g_tasks)
-        (void)task_set_destroy(g_tasks);   /* a task still live keeps its stack */
+        (void)task_set_destroy(g_tasks);   /* a task still running is abandoned */
     g_tasks = NULL;
 }
 

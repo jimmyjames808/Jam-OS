@@ -61,9 +61,9 @@ struct task_opts {
 
 /* A set of up to o->max_tasks tasks. NULL: bad options or no memory. */
 struct task_set *task_set_create(const struct task_opts *o);
-/* Give back the set's memory. A task that hasn't ended is abandoned (never
- * run again); its stack, and then the set itself, are kept rather than
- * freed: false. True: everything freed. Not from one of its tasks. */
+/* Free the set and its stacks: false if a task hadn't ended (it is
+ * abandoned, never run again: whatever it holds stays held). From one of
+ * its own tasks: refused (false, nothing freed). */
 bool task_set_destroy(struct task_set *s);
 
 /* Start fn(arg) as a task. From the loop it runs at once, until it first
