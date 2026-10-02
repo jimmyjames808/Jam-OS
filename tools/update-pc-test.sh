@@ -60,7 +60,8 @@ open(sys.argv[2], "wb").write(data.replace(old + b"\0", new + b"\0"))
 print(new.decode())
 EOF
 ) || { echo "update-pc-test: can't make build B's kernel"; exit 1; }
-printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" > "$out/pctest-build.txt"
+printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
+    > "$out/pctest-build.txt"
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "build.txt=$out/pctest-build.txt" ||
     { echo "update-pc-test: can't make build B's boot image"; exit 1; }

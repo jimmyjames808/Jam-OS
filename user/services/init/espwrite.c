@@ -239,8 +239,8 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     file_close(&f);
     if (st == OK)
         sha256_done(&h, digest);
-    say("%s%s: %lu KiB read and hashed in %lu ms (%s)", path + 1, suffix, (unsigned long)(size >> 10),
-        ms_since(t0), status_str(st));
+    say("%s%s: %lu KiB read and hashed in %lu ms (%s)", path + 1, suffix,
+        (unsigned long)(size >> 10), ms_since(t0), status_str(st));
     return st;
 }
 

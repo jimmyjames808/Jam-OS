@@ -10,12 +10,15 @@
  * disk_write hands its sectors here instead of to the disk, up to
  * HOLD_MAX. An unlink's are held too (fsops.c), and sent before it is
  * answered: freeing a file changes a FAT sector per 128 clusters in each
- * FAT copy, two writes per 64 KiB of the file otherwise. They go out (hold_release) when anything needs them on the
- * medium: any other write (so it keeps its place after them), a flush, a
- * full hold, or the file's sync or close. A read from the disk meanwhile
- * gets the held sectors laid over what it read (hold_overlay), and the
- * writes a file read makes FatFs do while writes are held (its window
- * moving off a changed FAT sector: fileops.c) join them. Held sectors are kept as runs of consecutive sectors (a sector
+ * FAT copy, two writes per 64 KiB of the file otherwise. What is held goes
+ * out (disk_release) when anything needs it on the medium: any other
+ * write (so that one keeps its place after it), a flush, a full hold, or
+ * the file's sync or close. A read from the disk meanwhile gets the held
+ * sectors laid over what it read (hold_overlay), and the writes a file
+ * read makes FatFs do while writes are held (its window moving off a
+ * changed FAT sector: fileops.c) join them.
+ *
+ * Order. Held sectors are kept as runs of consecutive sectors (a sector
  * right after a run's end joins it), and go out run by run in the order
  * the runs began, a block buffer's worth per write: the file's data in
  * 64 KiB writes, then each FAT copy's changed sectors in one. So the data

@@ -156,7 +156,7 @@ bool t_fat_gather(void)
         pattern[i] = (uint8_t)(i * 13 + i / 4096);
     if (!ramdisk_create(&disk, DISK_MIB * MIB_SECTORS) || !fat_start(&r, &disk, false))
         return false;
-    CHECK_ST(t_sync(&r), OK);   /* answered once fat has formatted and mounted: none of it counted */
+    CHECK_ST(t_sync(&r), OK);   /* answered once fat has formatted and mounted: not counted */
     uint32_t gathered = 0, plain = 0;
     if (!put_big(&r, "/gathered.bin", FS_GATHER, &gathered) ||
         !put_big(&r, "/plain.bin", 0, &plain))
