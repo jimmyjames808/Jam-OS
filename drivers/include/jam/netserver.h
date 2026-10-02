@@ -6,8 +6,8 @@
  * send function (the driver's transmit path: the copy, the tag and the
  * last check are the driver's, never this file's), the free transmit
  * descriptors, the card's info and the counts only the driver has.
- * Received frames come in by srv_rx, already kept for the VLAN and
- * untagged by the driver. So utest (user/tests/utest/netsrv.c) runs this
+ * Received frames come in by srv_rx, already kept for the network mode
+ * and untagged by the driver. So utest (user/tests/utest/netsrv.c) runs this
  * file as it is against a fake device and a fake netstack.
  *
  * Its code is linked into each network driver's own object (the Makefile's
@@ -44,7 +44,7 @@
 /* netdev.info's answer, from the driver. */
 struct srv_info {
     uint8_t  mac[6];
-    uint16_t vlan;
+    uint16_t vlan;                /* the mode: 1..4094, or NETFRAME_MODE_UNTAGGED */
     uint32_t link;                /* NETDEV_LINK_* */
     uint32_t speed;               /* Mb/s, 0 while down */
     uint32_t changes;             /* link changes since the driver started (stats'

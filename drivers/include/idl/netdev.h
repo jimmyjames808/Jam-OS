@@ -55,9 +55,11 @@ struct netdev_open_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* The card. mac: its address (6 bytes, as on the wire). vlan: the VLAN
- * every frame is tagged with and the only one received (1..4094: a driver
- * without one doesn't serve). mtu: the largest payload, 1500
+/* The card. mac: its address (6 bytes, as on the wire). vlan: the mode,
+ * the VLAN every frame is tagged with and the only one received
+ * (1..4094), or 0x1000 (NETFRAME_MODE_UNTAGGED, <jam/netframe.h>): no
+ * frame tagged, only untagged ones received (a driver with the network
+ * off doesn't serve). mtu: the largest payload, 1500
  * (NETDEV_MTU: frames of 14..1514 bytes). link: NETDEV_LINK_* bits (up,
  * full duplex). speed: Mb/s, 0 while down. changes: link changes since
  * the driver started (each also signals NETDEV_SIG_LINK on the session's

@@ -8,9 +8,11 @@
 # Control only: frames never travel in calls. `open` hands out two ring
 # VMOs and two events; their layout, the wake bits, the trust rules and
 # the rights are in <jam/netdev.h>, with the ring code both sides use.
-# The driver owns the VLAN: it tags every frame netstack sends and passes
-# on only frames of its VLAN (docs/M9-PLAN.md "Where the VLAN tag is
-# enforced"); `info` says which VLAN, and nobody else tells netstack.
+# The driver owns the network mode: with a VLAN it tags every frame
+# netstack sends and passes on only frames of its VLAN (docs/M9-PLAN.md
+# "Where the VLAN tag is enforced"); untagged, it sends no tagged frame
+# and passes on only untagged ones. `info` says which, and nobody else
+# tells netstack.
 #
 # Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
 # fails with ERR_PEER_CLOSED, or a session channel that closes, means the
@@ -20,9 +22,11 @@
 
 protocol netdev 27
 
-# The card. mac: its address (6 bytes, as on the wire). vlan: the VLAN
-# every frame is tagged with and the only one received (1..4094: a driver
-# without one doesn't serve). mtu: the largest payload, 1500
+# The card. mac: its address (6 bytes, as on the wire). vlan: the mode,
+# the VLAN every frame is tagged with and the only one received
+# (1..4094), or 0x1000 (NETFRAME_MODE_UNTAGGED, <jam/netframe.h>): no
+# frame tagged, only untagged ones received (a driver with the network
+# off doesn't serve). mtu: the largest payload, 1500
 # (NETDEV_MTU: frames of 14..1514 bytes). link: NETDEV_LINK_* bits (up,
 # full duplex). speed: Mb/s, 0 while down. changes: link changes since
 # the driver started (each also signals NETDEV_SIG_LINK on the session's

@@ -43,6 +43,11 @@
 #define NET_PORT_DHCP_SERVER   67u
 #define NET_PORT_DHCP_CLIENT   68u
 
+/* net_info.vlan on an untagged network: <jam/netframe.h>'s
+ * NETFRAME_MODE_UNTAGGED, the driver's (netdev.idl's info), which netstack
+ * passes on as it is. */
+#define NET_VLAN_UNTAGGED 0x1000u
+
 /* The interface (net.iface). */
 struct net_info {
     uint32_t address, mask, gateway;   /* 0: none */
@@ -50,7 +55,8 @@ struct net_info {
     uint8_t  mac[6];
     bool     device;                   /* a card's driver has a session with netstack */
     bool     link;                     /* its link is up */
-    uint16_t vlan;                     /* the VLAN every frame is tagged with (0: no card) */
+    uint16_t vlan;                     /* the VLAN every frame is tagged with (0: no card;
+                                        * NET_VLAN_UNTAGGED: none, untagged frames only) */
     uint32_t speed;                    /* Mb/s, 0 while down */
     uint32_t version;                  /* changes to the address and DNS servers (wait_change) */
 };

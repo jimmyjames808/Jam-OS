@@ -282,7 +282,8 @@ static inline status_t netctl_stats(handle_t ch, uint64_t *out_rx_frames, uint64
 }
 
 /* The network card netstack runs on: `session` 1 while it has a session
- * with the card's driver (netdev.idl), the VLAN the driver tags with, the
+ * with the card's driver (netdev.idl), the VLAN the driver tags with
+ * (0x1000: untagged, netdev.idl's info), the
  * link speed in Mb/s (0 while down), sessions opened since netstack
  * started (one more after each driver restart), the driver's ring counts
  * found out of range, rx slots refused (a bad length or flags), frames
