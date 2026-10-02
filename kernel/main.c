@@ -89,6 +89,14 @@ static void print_boot_info(const struct boot_info *bi)
 static struct boot_info *boot;
 static uint32_t boot_disk;   /* boot_disk_id(): set once in kmain_stage2 */
 
+/* The VLAN every frame Jam OS sends is tagged with, and the only one it
+ * receives (ARCHITECTURE.md "Networking"): this, unless the boot word
+ * `vlan=` says otherwise. The one place the number lives: init hears it
+ * from the kernel, devmgr from init, each network driver from devmgr. */
+#define BOOT_VLAN_DEFAULT 21
+static uint32_t boot_vlan;   /* 0: no VLAN, the network stays off; set once in kmain_stage2 */
+static char vlan_word[16];   /* "vlan=<boot_vlan>" for init ("" with no VLAN) */
+
 uint32_t boot_disk_id(void)
 {
     return boot_disk;
@@ -186,6 +194,18 @@ static void boot_disk_init(void)
         kprintf("boot disk:   no MBR disk id (devmgr takes the first Jam OS disk)\n");
 }
 
+/* The network's VLAN from the boot words (cmdline_vlan's rules). */
+static void boot_vlan_init(void)
+{
+    boot_vlan = cmdline_vlan(cmdline_get(), BOOT_VLAN_DEFAULT);
+    if (boot_vlan)
+        ksnprintf(vlan_word, sizeof(vlan_word), "vlan=%u", boot_vlan);
+    if (boot_vlan)
+        kprintf("network:     VLAN %u\n", boot_vlan);
+    else
+        kprintf("network:     no VLAN (the vlan= word): the network stays off\n");
+}
+
 /* ACPI, the local APIC and the clocks (TSC, the wall clock), then how
  * fast the screen redraws. */
 static void clocks_init(void)
@@ -253,10 +273,12 @@ static bool run_tests(void)
  * stay in the boot protocol); `netprobe` or `netsend` (one of them; the
  * probe if both), which init passes on to devmgr and devmgr to the
  * RTL8125's driver: its listen-only probe, or its ARP send test (no other
- * boot binds the network chip; a reboot doesn't keep it); bootdisk=0x<id>, which init
- * passes on to devmgr (the boot disk); `splashhang` (a test's: the splash
- * never finishes, and init must start the shell anyway). */
-#define INIT_WORDS_MAX 5
+ * boot binds the network chip; a reboot doesn't keep it); vlan=<id> (only
+ * when there is a VLAN: boot_vlan), which init passes on to devmgr and
+ * devmgr to every network driver; bootdisk=0x<id>, which init passes on
+ * to devmgr (the boot disk); `splashhang` (a test's: the splash never
+ * finishes, and init must start the shell anyway). */
+#define INIT_WORDS_MAX 6
 
 static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
 {
@@ -269,6 +291,8 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
         words[n++] = "netprobe";
     else if (cmdline_has("netsend"))
         words[n++] = "netsend";
+    if (boot_vlan)
+        words[n++] = vlan_word;
     static char disk_word[24];
     if (boot_disk) {
         ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
@@ -299,10 +323,16 @@ static bool run_user_space(bool shell, bool nousb)
     const char *mode = nousb ? "shell-nousb" : soak_arg[0] ? soak_arg : "shell";
     const char *words[INIT_WORDS_MAX];
     unsigned nwords = init_words(shell, words);
+    /* The regression run (init.cfg's programs, mode "init") gets the VLAN
+     * alone of the words, so its network drivers start as a plain boot's
+     * would; the others describe a plain boot's devices and look. */
+    const char *const run_words[1] = { vlan_word };
     bool ok = true;
-    if (cmdline_has("init") || shell)
-        ok &= userboot_run_init(shell ? 0 : cmdline_get_u64("init_timeout", 300, 300),
-                                shell ? mode : NULL, words, nwords);
+    if (shell)
+        ok &= userboot_run_init(0, mode, words, nwords);
+    else if (cmdline_has("init"))
+        ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300), "init", run_words,
+                                boot_vlan ? 1 : 0);
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", words, nwords);
     return ok;
@@ -335,6 +365,7 @@ _Noreturn static void kmain_stage2(void *arg)
     pmm_stats(&total, &free);
     kprintf("pmm:         %lu MiB managed, %lu MiB free\n", total >> 8, free >> 8);
     boot_disk_init();
+    boot_vlan_init();
     bootfs_init(boot);   /* only needs the heap; before the tests that use it */
     /* After a kexec: the previous kernel's record (did it panic?) and log,
      * before anything could panic into a stored kernel (kexec.h). */

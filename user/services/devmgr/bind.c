@@ -124,6 +124,13 @@ static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *x
     return OK;
 }
 
+/* w onto argv (argc of them so far), unless it is NULL. */
+static void add_arg(const char **argv, int *argc, const char *w)
+{
+    if (w)
+        argv[(*argc)++] = w;
+}
+
 /* b's driver in job, with the n handles in x (arriving with xr[i]), which
  * spawn consumes whatever happens. */
 static status_t spawn_driver(const struct binding *b, handle_t job, const struct spawn_handle *x,
@@ -134,19 +141,28 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * `ps`, for the shell's `kill`. The service is also told its mount,
      * and the one that may format a blank partition is told so; a hid,
      * "hidboot" when devmgr was; a PCI driver, its match-table row's word
-     * ("netprobe"). */
+     * ("netprobe"), and a network card's (class 02) the VLAN when there
+     * is one ("vlan=21": without it the driver keeps the network off). */
     const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
-    char mount[16] = "";
-    if (b->kind == BIND_FS)
+    char mount[16] = "", vlan[16] = "";
+    const char *argv[4] = { name ? name : b->path };
+    int argc = 1;
+    if (b->kind == BIND_FS) {
         snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
-    const char *argv[3] = { name ? name : b->path, b->kind == BIND_FS ? mount : NULL,
-                            b->kind == BIND_FS ? fs_format_arg(b) : NULL };
+        add_arg(argv, &argc, mount);
+        add_arg(argv, &argc, fs_format_arg(b));
+    }
     if (b->kind == BIND_USB)
-        argv[1] = usb_driver_arg(b);   /* "hidboot" or none */
-    if (b->kind == BIND_PCI)
-        argv[1] = pci_driver_arg(b->path);   /* "netprobe", "netsend" or none */
+        add_arg(argv, &argc, usb_driver_arg(b));   /* "hidboot" or none */
+    if (b->kind == BIND_PCI) {
+        add_arg(argv, &argc, pci_driver_arg(b->path));   /* "netprobe", "netsend" or none */
+        if (net_vlan && b->info.class_code == PCI_CLASS_NETWORK) {
+            snprintf(vlan, sizeof(vlan), "vlan=%u", net_vlan);
+            add_arg(argv, &argc, vlan);
+        }
+    }
     struct spawn_args a = {
-        .path = b->path, .name = name, .argc = argv[2] ? 3 : argv[1] ? 2 : 1, .argv = argv,
+        .path = b->path, .name = name, .argc = argc, .argv = argv,
         .job = job,
         .extra = x, .nextra = n, .extra_rights = xr,
     };

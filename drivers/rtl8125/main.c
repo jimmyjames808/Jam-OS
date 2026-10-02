@@ -199,7 +199,7 @@ int driver_main(const struct driver_start *ds)
     *t = (struct rtl){ 0 };
     *o = (struct outcome){ 0 };
     t->mode = a.mode;   /* the one place the mode is set: tx.c's gate reads it */
-    t->vlan = a.vlan;   /* and the VLAN, from rtl_vlan_arg alone */
+    t->vlan = a.vlan;   /* and the VLAN, from netdev_vlan_args alone */
     t->since = drv_clock_ns();
     if (!take_handles(t, ds))
         return 0;

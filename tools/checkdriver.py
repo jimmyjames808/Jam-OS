@@ -5,8 +5,8 @@
 
 Fails (exit 1, naming every offender) if the driver's object uses a symbol
 it may not. A driver is compiled with nothing but <jam/driver.h>,
-<jam/task.h>, <jam/abi.h>, <jam/status.h>, <jam/netframe.h> (static
-inline functions only), the generated <idl/*.h> and
+<jam/task.h>, <jam/abi.h>, <jam/status.h>, <jam/netframe.h> and
+<jam/netdev.h> (static inline functions only), the generated <idl/*.h> and
 the compiler's freestanding headers on its include path (-nostdinc), so neither a kernel
 nor a libos header can even be included; this check closes the other door:
 declaring a function yourself (`void *kmalloc(size_t);`, libos's

@@ -361,14 +361,14 @@ bool t_rtl8125_args(void)
         { "vlan= 21", 0 }, { "vlan=2a", 0 }, { "vlan=99999999999", 0 }, { "vlan", 0 },
     };
     for (unsigned k = 0; k < sizeof(vl) / sizeof(vl[0]); k++) {
-        const char *w[1] = { vl[k].w };
-        if (rtl_vlan_arg(w, 1) != vl[k].v)
-            FAIL("\"%s\": vlan %u, want %u", vl[k].w, rtl_vlan_arg(w, 1), vl[k].v);
+        uint16_t got = args_of("netsend", vl[k].w, NULL).vlan;
+        if (got != vl[k].v)
+            FAIL("\"%s\": vlan %u, want %u", vl[k].w, got, vl[k].v);
     }
     CHECK_EQ(args_of("vlan=21", "vlan=21", NULL).vlan, 21);
     CHECK_EQ(args_of("vlan=21", "vlan=20", NULL).vlan, 0);   /* two answers: none */
     CHECK_EQ(args_of("vlan=21", "vlan=x", NULL).vlan, 0);
-    CHECK_EQ(rtl_vlan_arg(NULL, 0), 0);
+    CHECK_EQ(netdev_vlan_args(NULL, 0), 0);
     /* the send test's target */
     CHECK_EQ(args_of("arpto=10.2.21.254", NULL, NULL).arp_target, 0x0a0215fe);
     CHECK_EQ(args_of("arpto=0.0.0.0", NULL, NULL).arp_target, 0);
