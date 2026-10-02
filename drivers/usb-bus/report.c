@@ -236,8 +236,8 @@ void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *h
     uint32_t n = 0, nh = 0, ni = 0, nhid = 0, np = 0;
     for (int i = 0; g_devs && i < MAX_DEVS; i++) {
         struct usbdev *d = &g_devs[i];
-        if (!d->used || !d->vid)
-            continue;
+        if (!d->used || d->gone || !d->vid)
+            continue;   /* a gone one may wait a moment for a task to let go of it */
         n++;
         nh += d->is_hub;
         np += d->problem != NULL;
@@ -263,7 +263,7 @@ static void usb_report_summary(const char *when)
     usb_counts(&n, &nh, &ni, &nhid, &np);
     uint32_t kbd = 0, mouse = 0;
     for (int i = 0; i < MAX_DEVS; i++)
-        for (int k = 0; g_devs[i].used && k < g_devs[i].nifs; k++) {
+        for (int k = 0; g_devs[i].used && !g_devs[i].gone && k < g_devs[i].nifs; k++) {
             struct iface *f = &g_devs[i].ifs[k];
             kbd += f->cls == 3 && f->sub == 1 && f->proto == 1;
             mouse += f->cls == 3 && f->sub == 1 && f->proto == 2;
