@@ -766,6 +766,12 @@ static const struct {
     { "netsock_hostile", t_netsock_hostile },
     { "netsock_slow_reader", t_netsock_slow_reader },
     { "netsock_dhcp", t_netsock_dhcp },
+    { "netlisten_udp", t_netlisten_udp },
+    { "netlisten_wants", t_netlisten_wants },
+    { "sntp_request_and_reply", t_sntp_request_and_reply },
+    { "sntp_checks", t_sntp_checks },
+    { "sntp_times", t_sntp_times },
+    { "sntp_fuzz", t_sntp_fuzz },
 };
 
 int main(int argc, char **argv)

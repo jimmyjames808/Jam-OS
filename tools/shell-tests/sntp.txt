@@ -1,0 +1,49 @@
+# SNTP (tools/sntp-test.sh runs this): a plain boot with QEMU's e1000e,
+# the RTC at 2026-01-15 and the network peer's SNTP server
+# (tools/netpeer.py --ntp: 2031-02-27 23:06:40 UTC at its start, each
+# answer after a forged one the guest must ignore). bin/sntp asks the
+# gateway once the DHCP lease is there, ignores the forged replies, has
+# the big step confirmed by a second reply and sets the clock: `date -u`
+# jumps to 2031 and `date -r` says the network set it; `date -z` keeps
+# it; a restarted sntp asks again and finds almost nothing to move; and
+# when /data comes back (devmgr killed and started again), init keeps the
+# network's time instead of reading the RTC again.
+wait 120 Jam OS shell
+seen 60 init: the clock: 2026-01-15 01:02
+seen 60 dhcp: lease 10.2.21.100/24
+seen 90 sntp: asking the gateway, then pool.ntp.org for the time
+seen 90 off: set from the gateway (10.2.21.1, stratum 2
+wait jam>
+send date -u
+wait 30 Thu 27 Feb 2031
+wait jam>
+send date -r
+wait set from the network (sntp)
+wait jam>
+send date -z Europe/London
+wait date: the zone is Europe/London now
+wait jam>
+send date -r
+wait set from the network (sntp), zone Europe/London
+wait jam>
+send date -z Australia/Sydney
+wait date: the zone is Australia/Sydney now
+wait jam>
+send kill sntp
+wait 10 init: bin/sntp was killed
+wait 60 off: set from the gateway (10.2.21.1, stratum 2
+send date -u
+wait 30 Thu 27 Feb 2031
+wait jam>
+send kill devmgr
+# (init's line goes to the kernel log, the shell's through the console: their
+# order on the serial port isn't fixed, hence `seen`)
+wait 10 shell: killed process
+seen 30 init: devmgr and its drivers are gone
+wait 60 init: /data mounted
+wait 30 kept (set from the network)
+send date -u
+wait 30 Thu 27 Feb 2031
+wait jam>
+send reboot -f
+wait reboot: resetting

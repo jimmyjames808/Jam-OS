@@ -28,6 +28,10 @@ KTEST(wallclock_check_refuses)
     KT_EQ(wallclock_check(&c, 999), ERR_INVALID_ARGS);   /* an uptime still to come */
     c.flags = WALLCLOCK_SET;
     KT_EQ(wallclock_check(&c, 2000), ERR_INVALID_ARGS);
+    c.flags = WALLCLOCK_NET | WALLCLOCK_RTC;
+    KT_EQ(wallclock_check(&c, 2000), ERR_INVALID_ARGS);
+    c.flags = WALLCLOCK_NET;                              /* the one flag a setter may pass */
+    KT_EQ(wallclock_check(&c, 2000), OK);
     c.flags = 0;
     c.reserved = 1;
     KT_EQ(wallclock_check(&c, 2000), ERR_INVALID_ARGS);

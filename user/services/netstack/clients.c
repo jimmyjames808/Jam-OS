@@ -11,6 +11,7 @@
  * reply goes to the opener that sent the request and to no other. */
 #include <idl/svc.h>
 #include "ctl.h"
+#include "listen.h"
 #include "progs.h"
 
 #define KEY_NET 2u   /* the shared channel (main.c's keys are below 0x10) */
@@ -232,7 +233,7 @@ static status_t op_chip_counts(void *ctx, struct idl_txn txn, uint8_t out_counts
 static status_t op_udp(void *ctx, uint16_t port, handle_t *out_socket, uint16_t *out_port)
 {
     struct opener *o = ctx;
-    if (port && port < NET_PORT_LOW)
+    if (!listen_may_bind(o, port))
         return ERR_ACCESS_DENIED;
     if (o->socks >= NET_SOCKETS_PER_OPENER)
         return ERR_NO_RESOURCES;
@@ -284,10 +285,9 @@ static const struct net_ops shared_ops = { .iface = op_iface, .counts = op_count
 
 /* ---- the channels ------------------------------------------------------------------ */
 
-/* svc.connect on the shared channel: a channel of the caller's own. */
-static status_t on_connect(void *ctx, handle_t *out)
+status_t progs_connect(void *ctx, handle_t *out)
 {
-    (void)ctx;
+    bool listen = ctx && *(const bool *)ctx;
     for (unsigned i = 0; i < NET_OPENERS; i++) {
         struct opener *o = &pg.o[i];
         if (o->ch)
@@ -305,15 +305,16 @@ static status_t on_connect(void *ctx, handle_t *out)
             return st;
         }
         *o = (struct opener){ .ch = mine, .gen = o->gen, .pending = true,
-                              .echo_id = (uint16_t)((os_random_u32() & ~0x1fu) | i) };
+                              .echo_id = (uint16_t)((os_random_u32() & ~0x1fu) | i),
+                              .listen = listen };
         *out = theirs;
         return OK;
     }
     return ERR_NO_RESOURCES;
 }
 
-static uint32_t shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
-                                uint32_t *rhn)
+uint32_t progs_shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                               uint32_t *rhn)
 {
     return net_dispatch(&shared_ops, ctx, req, n, rep, rhs, rhn);
 }
@@ -322,7 +323,7 @@ static void serve_shared(void)
 {
     pg.shared_pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = svc_serve_request(pg.shared, shared_dispatch, on_connect, NULL);
+        status_t st = svc_serve_request(pg.shared, progs_shared_dispatch, progs_connect, NULL);
         if (st == OK)
             continue;
         if (st != ERR_SHOULD_WAIT) {

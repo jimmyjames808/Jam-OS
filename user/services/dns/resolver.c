@@ -67,7 +67,7 @@ static uint16_t random_port(struct dns_resolver *r)
     uint16_t port = 0;
     for (unsigned guard = 0; guard < 8 && (!port || port_in_use(r, port)); guard++)
         port = (uint16_t)(DNS_PORT_MIN + r->io->random(r->io->ctx) % (65536u - DNS_PORT_MIN));
-    return port;   /* 8 collisions in a row with 16 of 64512 ports: not in practice */
+    return port;   /* 8 collisions in a row with 16 of 16384 ports: not in practice */
 }
 
 /* End q: free its record, then answer every asker. */

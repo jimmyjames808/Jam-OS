@@ -1,0 +1,13 @@
+# SNTP from a server named in the settings (tools/sntp-test.sh runs
+# this): `ntp.server = router.jam` in the stick's settings, the network
+# peer's DNS (router.jam is 10.2.21.1) and SNTP server. bin/sntp resolves
+# the name through /svc/dns and sets the clock from its address.
+wait 120 Jam OS shell
+seen 90 sntp: asking router.jam for the time
+seen 90 off: set from router.jam (10.2.21.1, stratum 2
+wait jam>
+send date -u
+wait 30 Thu 27 Feb 2031
+wait jam>
+send reboot -f
+wait reboot: resetting

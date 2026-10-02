@@ -55,6 +55,7 @@ struct opener {
     uint16_t echo_id;   /* its ICMP echo id: the slot in the low 5 bits, random above */
     unsigned socks;     /* sockets it holds */
     unsigned later;     /* its requests in flight */
+    bool     listen;    /* came through /svc/net-listen: may listen (listen.h) */
 };
 
 /* A datagram queued for a socket (malloc'd, its bytes after it). */
@@ -128,6 +129,12 @@ uint64_t progs_tick(void);
 bool     progs_pending(void);
 /* An opener's slot, if it still holds that generation. */
 struct opener *progs_opener(unsigned slot, uint32_t gen);
+/* svc.connect on a shared channel: a new opener's channel into *out;
+ * ctx NULL, or a bool saying whether it may listen (listen.c's channel). */
+status_t progs_connect(void *ctx, handle_t *out);
+/* What a shared channel answers besides connect (iface, counts). */
+uint32_t progs_shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                               uint32_t *rhn);
 
 /* ---- sock.c ---------------------------------------------------------------- */
 
