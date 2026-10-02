@@ -847,7 +847,9 @@ only when the client waits for room or the mixer sleeps. The mixer never
 maps a client's ring (the client could shrink it): it copies frames out
 with `vmo_read`, once a period. It holds the driver's stream open only
 while a stream plays, sends `wait_period` without waiting for the answer
-(one thread, one port), and at each period's end mixes until four
+(one thread, one port; `audioctl.device`, which asks devmgr and each of
+its services in turn, has a thread of its own so it never holds up the
+mixing), and at each period's end mixes until four
 periods are written ahead of the play position (128-171 ms): each
 stream at its Q15 gain, summed in 32 bits with 8 bits below the 16-bit
 step, the master gain, a lookahead limiter instead of clipping (it does
