@@ -44,12 +44,19 @@ that a bug fix comes with a test is in
   over `tools/checkdriver-tests/`); the docs match the tree
   (`tools/checkdocs.py`: links, anchors, and the repo paths, file names,
   headers and make targets named in backticks); no audio file is tracked
-  (`tools/checkaudio.sh`); and the RTL8125 probe can't transmit
-  (`tools/checknotx.sh`: only `drivers/rtl8125/regs.c` writes registers,
-  each write through the guard in `drivers/rtl8125/notx.h`, no write names
-  a transmit register and the transmitter enable bit is never or-ed into a
-  value; it checks each of its rules against `tools/checknotx-tests/bad.c`
-  first).
+  (`tools/checkaudio.sh`); and the RTL8125 driver transmits only through
+  `drivers/rtl8125/tx.c`, behind its gate (`tools/checknotx.sh`: registers
+  are written only in `regs.c`, each write through the guard in
+  `drivers/rtl8125/notx.h` that refuses every transmit register, and in
+  `tx.c`, each write behind the gate; no `regs.c` write names a transmit
+  register; the transmitter enable bit is named only in `notx.h` and
+  `tx.c`; every function `tx.c` gives other files starts with the gate,
+  which is "full mode and a valid VLAN"; the probe's files call nothing of
+  `tx.c`; the mode and the VLAN are set once, in `main.c`. It checks each
+  rule against `tools/checknotx-tests/` first, counting its offences
+  there); and the network test peer and the pcap check pass their own
+  self-tests on the host (`tools/netpeer.py --selftest`,
+  `tools/pcap-vlan-check.py --selftest`).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -63,8 +70,10 @@ and the scripts boot whatever image is there, so run `make -s image` (and
 any QEMU test: a stale image fails tests that the new code would pass.
 
 Copies `build/jamos.img`, sets the boot entry's command line, boots it
-headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device),
-waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
+headless (q35, OVMF, the stick on qemu-xhci port 1 as the device `stick`, the `edu` test device,
+a `virtio-rng` at 00:02.0 that no driver binds: a spare MSI-X function for
+utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
+`QEMU_NET` asks for one), waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 (serial) and `<name>.png` (the screen; needs Pillow). Environment:
 
 | Variable | Default | What |
@@ -81,6 +90,10 @@ waits until the kernel halts or idles, and leaves `<outdir>/<name>.log`
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
 | `QEMU_SPLASH` | 0 | 1: keep the boot splash (otherwise the boot word `nosplash` is added, so the tests see the text log) |
+| `QEMU_NET` | | `1`: a network card and the test peer ([below](#the-network-peer)); `<peer port>:<qemu port>`: the same card and pcap, with a peer you run yourself |
+| `QEMU_NET_VLAN` | 21 | the VLAN the peer and the pcap check want every frame tagged with |
+| `QEMU_NET_NONE` | 0 | 1: no frame at all may leave the guest (the `vlan=off` run) |
+| `QEMU_NET_PEER` | | more flags for `tools/netpeer.py`, e.g. `--noise 2` |
 
 Examples:
 
@@ -92,6 +105,42 @@ QEMU_XHCI=msi=on,msix=off tools/qemu-test.sh build/test msi init
 make run                                                  # interactive: the shell, a USB keyboard, serial on stdio
 make debug                                                # the same, stopped for gdb on :1234
 ```
+
+### The network peer
+
+With `QEMU_NET=1` the machine gets QEMU's e1000e (8086:10d3, its option
+ROM left out so the firmware never sends on it) on a `-netdev dgram`:
+each Ethernet frame the guest sends is one UDP datagram on 127.0.0.1 to
+`tools/netpeer.py`, and each datagram the peer sends back is a frame the
+guest receives. `tools/qemu-test.sh` picks two free UDP ports
+(`netpeer.py --free-ports 2`, so agents can test at once), starts the
+peer, and stops it when QEMU ends. QEMU's user networking (slirp) is not
+used: it doesn't speak 802.1Q, and the tests must not need the internet.
+
+The peer checks the rule ([ARCHITECTURE](../ARCHITECTURE.md#networking)):
+every frame from the guest must be tagged 802.1Q with the VLAN; an
+untagged, priority-tagged (VLAN 0), other-VLAN, QinQ, runt or over-long
+frame is logged in hex and fails the run. It strips the tag and answers
+as a small network, tagging every reply: ARP for any IPv4 address (not
+probes from 0.0.0.0 nor gratuitous ARPs), ICMP echo for any address (so
+`ping 1.1.1.1` works in QEMU), and UDP on ports that have a handler
+(`Peer.add_udp`: where DHCP, DNS, netlog and the update server hook in).
+`--noise <s>` sends, every s seconds, four frames the guest's driver must
+drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
+broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
+its counts `<name>.peer.json`.
+
+Independently, `-object filter-dump,queue=rx` writes every frame the
+guest's card sends (and none the peer sends) to `<outdir>/<name>.pcap`,
+and `tools/pcap-vlan-check.py` checks it for the same rule: two separate
+checks, sharing no code. The run fails if either finds a frame that isn't
+tagged with the VLAN, or (`QEMU_NET_NONE=1`) any frame at all.
+
+The peer also runs by hand (`--listen P --qemu Q`, its header has the
+flags), reads commands on stdin with `--stdin` (`send <hex>` tagged,
+`raw <hex>` as it is, `noise`, `stats`, `quit`), and is a module for test
+scripts (`sys.path` with `tools/`, `import netpeer`: `Peer`, the frame
+builders, `classify`).
 
 ## The boot menu
 
@@ -111,6 +160,7 @@ machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the shell as it comes (a plain boot keeps it off the shell's screen but for notices and the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. No other boot binds the network chip, and a `reboot` doesn't keep the word |
+| Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver-without-the-netdev-server)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends three ARP probes for 10.2.21.1 tagged with the VLAN, waits for the replies, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
 | Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
@@ -331,6 +381,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `clock-1.txt`, `clock-2.txt` | the date, the time zones, the settings across a reboot | use `tools/clock-test.sh` |
 | `nousb.txt` | safe mode | command line `nousb` instead of `shell` |
 | `netprobe.txt` | the boot word `netprobe` reaches devmgr (its line), and with no RTL8125 (QEMU) nothing is bound for it | use `tools/netprobe-test.sh` |
+| `netsend.txt` | the same for the boot word `netsend` | use `tools/netprobe-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) refused, approval or not, `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
@@ -405,7 +456,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/screen-test.sh <outdir>` | the screen on a plain boot (`screen.txt`, booted with the splash, and `screen-verbose.txt`): after the splash the shell's banner and prompt and no kernel log (no pixel of the log's colours) and no RESULTS box; a stick plugged in (one notice: `mount -w` and `mount -r` in between add none) and pulled out, the boot stick pulled out and back, each a yellow notice and a `console: notice:` line in the log; `ktest` puts its lines on the screen while it runs; `run utest impostor` (processes called init, devmgr and logd write lines the real ones make notices of: the log has them, and no notice); `run console selftest` (log lines made into notices or not, by their text and their writer: crashes, kills asked for, give-ups, `/data` full, impostors); then a `verbose` boot whose shell screen has the log; then a plain boot with a stick in from the start (`screen-atboot.txt`): no notice for it, one when it is pulled out |
 | `tools/mixer-test.sh <outdir>` | the mixer (`mixer.txt`): intel-hda with an hda-output codec (`mixer=off`) into QEMU's wav backend; `mixtest` passes (the protocol's refusals and clamps; two openers of `/svc/audio` and of `/svc/audioctl` each answered on their own channel; the per-opener stream cap, 4 each and 16 in all; `audioctl.device`'s query channel to the driver answers but refuses `open_output` and `query`, at most 8 at once; tone programs at once; one killed; the master and an `audioctl` volume; the mixer killed and the hda driver killed mid-tone, each played on; a stream left empty lets the mixer close the output and its next write wakes it; two programs on `<audio.h>` at once); the WAV, segment by segment: 440 Hz and 1000 Hz at once with the second at -6 dB (amplitude ratio within 3 %), the killed client's partner with no gap (QEMU's own buffer drops on a busy host, traced with `hda_audio_overrun`, are told apart from a gap), -6 dB master and -12 dB `audioctl` volume heard, the library's 44.1 kHz and 48 kHz tones together; the log's stream, restart and output lines; the codec's verbs: muted whenever nothing plays |
 | `tools/music-test.sh <outdir>` | the music player (`music.txt`): a folder tree made by the script (ffmpeg, mtools) on `/data/music`: six 2 s tones (MP3 at 44.1, 48 VBR and 22.05 kHz, WAV at 48 and 44.1 kHz) under names with spaces, apostrophes, `$`, `~`, parentheses and UTF-8 (`JAŸ-Z`), an upper-case `.WAV` and `.Mp3`, a garbage `.mp3`, `.DS_Store`/`._` dotfiles, a text file and an empty folder tree; and a second stick of three 8 s WAVs. In the capture (100 ms FFT windows up to a 1000 Hz marker beep typed 2 s after `music stop`): the tracks heard are the log's `track N:` lines in order, the first six are the six tracks once each, at least seven heard, never the same twice in a row; the 1500 Hz `beep` mixed over a track; the stop fades. The log: every title (`Artist - Title` from the path), the garbage file skipped, no dotfile tried, the mixer restart reopened, the pulled stick stopping it after three unreadable files |
-| `tools/netprobe-test.sh <outdir>` | the RTL8125 probe's boot word in QEMU, which has no RTL8125 (the probe itself runs on the PC only): a `shell netprobe` boot (`netprobe.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log never mentions the probe. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length), `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, nothing else), `rtl8125_stays_off` (the driver without the word, and with it but without hardware, ends at once with exit 0 and an empty job) |
+| `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`) and a `shell netsend` boot (`netsend.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log never mentions either. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe or the send test without hardware, ends at once with exit 0 and an empty job) |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
 
 ## The other tools

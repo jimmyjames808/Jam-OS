@@ -367,6 +367,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "hidboot";
     if (init_netprobe)
         argv[argc++] = "netprobe";
+    else if (init_netsend)
+        argv[argc++] = "netsend";
     if (init_vlan)
         argv[argc++] = init_vlan;
     if (init_bootdisk)

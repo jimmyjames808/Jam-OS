@@ -8,11 +8,12 @@
  * never exits; an option word "splash" after it plays the boot splash
  * first (splash.c). The option word "hidboot" (with any mode) is passed
  * on to devmgr, which passes it to every hid: mice stay in the boot
- * protocol; so is "netprobe" in shell mode (devmgr binds the RTL8125's
- * listen-only probe), "vlan=<id>" (the network's VLAN, for the network
- * drivers) and "bootdisk=0x<id>" (the disk the machine booted from:
- * devmgr's boot disk). Otherwise (no mode, or "init", whose one option
- * word is "vlan=<id>") it starts the bootfs server (bin/bootfs: the boot
+ * protocol; so is "netprobe" or "netsend" in shell mode (devmgr binds the
+ * RTL8125's driver for its listen-only probe or its ARP send test),
+ * "vlan=<id>" (the network's VLAN, for the network drivers) and
+ * "bootdisk=0x<id>" (the disk the machine booted from: devmgr's boot
+ * disk). Otherwise (no mode, or "init", whose one option word is
+ * "vlan=<id>") it starts the bootfs server (bin/bootfs: the boot
  * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
  * devmgr has bound its drivers, and runs the programs listed in init.cfg
@@ -48,6 +49,7 @@ static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs 
 
 bool init_hidboot;
 bool init_netprobe;
+bool init_netsend;
 const char *init_bootdisk;
 const char *init_vlan;
 bool init_splashhang;
@@ -416,13 +418,14 @@ int main(int argc, char **argv)
         return 1;
     /* The option words after the mode (argv[2] on): "splash" (the kernel's
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
-     * plays first), "hidboot", "netprobe", "vlan=<id>", "bootdisk=0x<id>",
-     * "splashhang". */
+     * plays first), "hidboot", "netprobe", "netsend", "vlan=<id>",
+     * "bootdisk=0x<id>", "splashhang". */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
         init_hidboot |= !strcmp(argv[i], "hidboot");
         init_netprobe |= !strcmp(argv[i], "netprobe");
+        init_netsend |= !strcmp(argv[i], "netsend");
         if (!strncmp(argv[i], "bootdisk=", 9))
             init_bootdisk = argv[i];
         if (!strncmp(argv[i], "vlan=", 5))

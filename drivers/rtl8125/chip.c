@@ -1,18 +1,21 @@
 /* rtl8125: the chip (drv/rtl8125): what the firmware left, which chip it
- * is, reset, the receive-only bring-up, autonegotiation, the link, and
- * the stop. The order and values are rge's (if_rge.c: rge_attach,
+ * is, reset, wake-on-LAN off, the bring-up, autonegotiation, the link,
+ * and the stop. The order and values are rge's (if_rge.c: rge_attach,
  * rge_init, rge_stop, rge_reset, rge_exit_oob, rge_set_phy_power,
- * rge_ifmedia_upd), with everything about transmitting left out and
- * without the firmware tables (the MAC's break points, the PCIe PHY
- * table, the PHY's tuning and its patch: the owner's call, M9-PLAN
- * question 5): the chip runs on whatever the board's firmware loaded,
- * and chip_log_after_reset says what that was. Every wait is bounded. */
+ * rge_wol, rge_ifmedia_upd), without the firmware tables (the MAC's
+ * break points, the PCIe PHY table, the PHY's tuning and its patch: the
+ * owner's call, M9-PLAN question 5; the PC's stage-0 run linked without
+ * them): the chip runs on whatever the board's firmware loaded, and
+ * chip_log_after_reset says what that was. Nothing here writes a
+ * transmit register: in full mode chip_start asks tx.c to (notx.h).
+ * Every wait is bounded. */
 #include "rtl8125.h"
 
 #define RESET_FIFO_NS  (150 * NS_PER_MS)   /* rge: 3000 x 50 us, twice */
 #define RESET_WAIT_NS  (10 * NS_PER_MS)    /* rge: RGE_TIMEOUT x 100 us */
 #define PHY_STATE_NS   (100 * NS_PER_MS)   /* rge: RGE_TIMEOUT x 1 ms */
-#define LINK_LINES     12                  /* link-change lines logged at most */
+#define LINK_LINES     12                  /* link-change lines logged in full ... */
+#define LINK_EVERY     64                  /* ... then one change in this many */
 
 /* Poll reg (1 or 2 bytes wide) until (value & mask) == want or ns pass. */
 static bool wait_reg(struct rtl *t, uint32_t reg, unsigned width, uint16_t mask, uint16_t want,
@@ -109,9 +112,9 @@ status_t chip_identify(struct rtl *t)
 }
 
 /* Into the log only (the owner's own hardware); never into a doc. */
-void chip_log_mac(struct rtl *t)
+void chip_read_mac(struct rtl *t)
 {
-    uint8_t m[6], o[6];
+    uint8_t *m = t->mac, o[6];
     uint32_t a0 = rd32(t, RTL_ADDR0);
     uint16_t a1 = rd16(t, RTL_ADDR1);
     for (unsigned i = 0; i < 6; i++) {
@@ -274,31 +277,59 @@ static void mac_setup(struct rtl *t)
     mac_mod(t, 0xe092, 0x00ff, 0);
 }
 
-void chip_rx_start(struct rtl *t)
+void chip_wol_off(struct rtl *t)
 {
+    uint8_t cfg3 = rd8(t, RTL_CFG3), cfg5 = rd8(t, RTL_CFG5);
+    mac_mod(t, MAC_WOL_PME, 0x0001, 0);
+    set8(t, RTL_EECMD, RTL_EECMD_WRITECFG);
+    clr8(t, RTL_CFG5, RTL_CFG5_WOL_ANY);
+    clr8(t, RTL_CFG3, RTL_CFG3_WOL_LINK | RTL_CFG3_WOL_MAGIC);
+    clr8(t, RTL_EECMD, RTL_EECMD_WRITECFG);
+    drv_log("wake-on-LAN off: cfg3 %#x -> %#x, cfg5 %#x -> %#x", cfg3, rd8(t, RTL_CFG3), cfg5,
+            rd8(t, RTL_CFG5));
+}
+
+/* rge_iff. The probe: every frame, every multicast group (promiscuous).
+ * Full mode: our own address and broadcasts only; no multicast (nothing
+ * Jam OS runs joins a group). */
+static void rx_filter(struct rtl *t)
+{
+    uint32_t cfg = rd32(t, RTL_RXCFG) & ~(RTL_RXCFG_VLANSTRIP | RTL_RXCFG_ACCEPT);
+    bool probe = t->mode == RTL_MODE_PROBE;
+    wr32(t, RTL_RXCFG, cfg | (probe ? RTL_RXCFG_ACCEPT : RTL_RXCFG_INDIV | RTL_RXCFG_BROAD));
+    wr32(t, RTL_MAR0, probe ? 0xffffffffu : 0);
+    wr32(t, RTL_MAR4, probe ? 0xffffffffu : 0);
+}
+
+status_t chip_start(struct rtl *t)
+{
+    bool full = t->mode == RTL_MODE_FULL;
     set8(t, RTL_EECMD, RTL_EECMD_WRITECFG);
     wr32(t, RTL_RXDESC_LO, (uint32_t)t->ring_addr);
     wr32(t, RTL_RXDESC_HI, (uint32_t)(t->ring_addr >> 32));
+    status_t st = full ? tx_arm(t) : OK;   /* the transmit ring's address: tx.c's to write */
     wr32(t, RTL_RXCFG, RTL_RXCFG_8125B);   /* the tag stripping (RXCFG 23:22) stays off */
     mac_setup(t);
     wr16(t, RTL_RXMAXSIZE, RX_BUF);         /* a whole frame always fits one buffer */
     clr8(t, RTL_PPSW, 0x08);                /* the RXDV gate off */
     delay_us(2000);
-    /* rge_iff, promiscuous: every frame, every multicast group. */
-    wr32(t, RTL_RXCFG, (rd32(t, RTL_RXCFG) & ~RTL_RXCFG_VLANSTRIP) | RTL_RXCFG_ACCEPT);
-    wr32(t, RTL_MAR0, 0xffffffffu);
-    wr32(t, RTL_MAR4, 0xffffffffu);
+    rx_filter(t);
     clr8(t, RTL_EECMD, RTL_EECMD_WRITECFG);
     delay_us(10);
     chip_autoneg(t);
-    wr8(t, RTL_CMD, RTL_CMD_RXENB);         /* the receiver only */
-    wr32(t, RTL_IMR, RTL_IMR_PROBE);        /* rge_setup_intr(NONE), receive bits only */
+    if (full && st == OK)
+        st = tx_enable(t);                  /* the transmitter and the receiver */
+    else
+        wr8(t, RTL_CMD, RTL_CMD_RXENB);     /* the receiver only */
+    wr32(t, RTL_IMR, full ? RTL_IMR_FULL : RTL_IMR_PROBE);   /* rge_setup_intr(NONE) */
     wr32(t, RTL_TIMERINT(0), 0);
     wr16(t, RTL_IM, 0);
     t->rx_on = true;
-    drv_log("receiver on: rxcfg %#x (tag stripping %s), rxmaxsize %u, imr %#x, command %#x",
-            rd32(t, RTL_RXCFG), rd32(t, RTL_RXCFG) & RTL_RXCFG_VLANSTRIP ? "ON" : "off",
-            rd16(t, RTL_RXMAXSIZE), rd32(t, RTL_IMR), rd8(t, RTL_CMD));
+    drv_log("receiver on%s: rxcfg %#x (tag stripping %s), rxmaxsize %u, imr %#x, command %#x",
+            t->tx_on ? ", transmitter on" : "", rd32(t, RTL_RXCFG),
+            rd32(t, RTL_RXCFG) & RTL_RXCFG_VLANSTRIP ? "ON" : "off", rd16(t, RTL_RXMAXSIZE),
+            rd32(t, RTL_IMR), rd8(t, RTL_CMD));
+    return st;
 }
 
 /* rge_ifmedia_upd for "auto": 10/100/1000/2500, and never pause. */
@@ -335,24 +366,42 @@ void chip_link_str(uint16_t ps, char *buf, size_t size)
                  ps & RTL_PHYSTAT_TXFLOW ? ", PAUSE TX" : "");
 }
 
-bool chip_link_poll(struct rtl *t, uint64_t since)
+void chip_link_summary(const struct rtl *t, char *buf, size_t size)
+{
+    if (!t->link_at) {
+        drv_snprintf(buf, size, "no link in 10 s");
+        return;
+    }
+    char s[40];
+    chip_link_str(t->phystat, s, sizeof(s));
+    uint64_t ms = (t->link_at - t->an_at) / NS_PER_MS;   /* from autonegotiation's start */
+    drv_snprintf(buf, size, "link %s in %lu.%lu s", s, (unsigned long)(ms / 1000),
+                 (unsigned long)(ms % 1000 / 100));
+}
+
+/* The link as PHYSTAT has it, kept in t (and, once the netdev server is
+ * built, told to netstack). Every change is counted; the first
+ * LINK_LINES are logged, then one in LINK_EVERY. */
+bool chip_link_poll(struct rtl *t)
 {
     uint16_t ps = rd16(t, RTL_PHYSTAT);
     bool up = ps & RTL_PHYSTAT_LINK;
-    if (ps == t->phystat && up == t->link)
-        return up;
+    if (ps == 0xffff || (ps == t->phystat && up == t->link))
+        return t->link;   /* no change (or the chip is gone: keep what we knew) */
     if (up != t->link && t->link_at)
-        t->c.link_changes++;   /* changes after the first link-up */
+        t->ev.link_changes++;   /* changes after the first link-up */
     if (up && !t->link_at)
         t->link_at = drv_clock_ns();
     t->link = up;
     t->phystat = ps;
-    if (t->link_lines++ < LINK_LINES) {
+    unsigned n = t->link_lines++;
+    if (n < LINK_LINES || n % LINK_EVERY == 0) {
         char s[48];
         chip_link_str(ps, s, sizeof(s));
-        uint64_t ms = (drv_clock_ns() - since) / NS_PER_MS;
-        drv_log("link: %s (phystat %#06x) at %lu.%02lu s", s, ps, (unsigned long)(ms / 1000),
-                (unsigned long)(ms % 1000 / 10));
+        uint64_t ms = (drv_clock_ns() - t->since) / NS_PER_MS;
+        drv_log("link: %s (phystat %#06x) at %lu.%02lu s%s", s, ps, (unsigned long)(ms / 1000),
+                (unsigned long)(ms % 1000 / 10),
+                n == LINK_LINES - 1 ? " (further changes: one line in 64)" : "");
     }
     return up;
 }
@@ -361,8 +410,8 @@ void chip_stop(struct rtl *t)
 {
     wr32(t, RTL_RXCFG, rd32(t, RTL_RXCFG) & ~(RTL_RXCFG_ACCEPT | RTL_RXCFG_RUNT |
                                              RTL_RXCFG_ERRPKT));
-    hw_reset(t);   /* the receiver off with the rest: the command register is 0 after it */
+    hw_reset(t);   /* receiver and transmitter off: the command register is 0 after it */
     mac_mod(t, 0xc0ac, 0x1f80, 0);
-    t->rx_on = false;
+    t->rx_on = t->tx_on = false;
     drv_log("stopped: command %#x, imr %#x", rd8(t, RTL_CMD), rd32(t, RTL_IMR));
 }

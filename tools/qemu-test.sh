@@ -35,6 +35,22 @@
 # The boot splash (a plain boot's animation) is left out with the boot
 # word `nosplash`, so the tests see the text log as before; QEMU_SPLASH=1
 # keeps it (tools/splash-test.sh).
+# The machine has no network card (-nic none) unless QEMU_NET asks for one;
+# it always has a spare MSI-X function with no driver, a virtio-rng,
+# first so it takes 00:02.0, where q35's default network card was (the
+# other functions keep their addresses; utest's driver_handle_limits
+# tries a driver's handles on it).
+# QEMU_NET=1: QEMU's e1000e (8086:10d3; no option ROM, so the firmware
+# never sends on it) on a `-netdev dgram` to tools/netpeer.py, which this
+# script starts on two free UDP ports and stops at the end (its log in
+# <outdir>/<name>.peer.log, its summary in <name>.peer.json); every frame
+# the guest sends is also dumped to <outdir>/<name>.pcap and checked by
+# tools/pcap-vlan-check.py. The run fails if either finds a frame from the
+# guest that isn't tagged with the VLAN (QEMU_NET_VLAN, default 21).
+# QEMU_NET_NONE=1: no frame at all may leave (the vlan=off run).
+# QEMU_NET_PEER: more netpeer flags (e.g. "--noise 2").
+# QEMU_NET=<peer port>:<qemu port>: the same card and pcap, with a peer
+# the caller runs (and checks) itself.
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -55,6 +71,31 @@ mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
 
 log="$out/$name.log" mon="build/.qemu-$name.sock"   # unix socket paths max out at 104 bytes
+nic="-nic none"
+ppid= pcap="$out/$name.pcap"
+if [ -n "${QEMU_NET:-}" ]; then
+    rm -f "$pcap" "$out/$name.peer.log" "$out/$name.peer.json" "$out/$name.peer.ready"
+    case $QEMU_NET in
+    *:*) pport=${QEMU_NET%%:*} qport=${QEMU_NET#*:} ;;
+    *)
+        set -- $(python3 tools/netpeer.py --free-ports 2)
+        pport=$1 qport=$2
+        none=
+        [ "${QEMU_NET_NONE:-0}" = 1 ] && none=--expect-none
+        python3 tools/netpeer.py --listen "$pport" --qemu "$qport" --vlan "${QEMU_NET_VLAN:-21}" \
+            $none ${QEMU_NET_PEER:-} --log "$out/$name.peer.log" \
+            --summary "$out/$name.peer.json" --ready "$out/$name.peer.ready" \
+            > "$out/$name.peer.out" 2>&1 &
+        ppid=$!
+        j=0
+        while [ $j -lt 50 ] && [ ! -s "$out/$name.peer.ready" ]; do sleep 0.1; j=$((j + 1)); done
+        [ -s "$out/$name.peer.ready" ] || { echo "$name: the network peer didn't start"; exit 1; } ;;
+    esac
+    nic="-netdev dgram,id=net0,local.type=inet,local.host=127.0.0.1,local.port=$qport"
+    nic="$nic,remote.type=inet,remote.host=127.0.0.1,remote.port=$pport"
+    nic="$nic -device e1000e,netdev=net0,romfile="
+    nic="$nic -object filter-dump,id=dump0,netdev=net0,queue=rx,file=$pcap"
+fi
 ser="build/.qemu-$name.ser"
 rm -f "$log" "$mon" "$ser"
 if [ -n "${QEMU_INPUT:-}" ]; then
@@ -65,12 +106,14 @@ fi
 qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
     -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
+    -device virtio-rng-pci,vectors=2 \
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
     -blockdev driver=file,node-name=stickfile,filename="$img" \
     -blockdev driver=raw,node-name=usbstick,file=stickfile \
     -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
     ${QEMU_USB:-} ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
+    $nic \
     $serial -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
 qpid=$!
@@ -125,12 +168,27 @@ if [ -n "${QEMU_SAVE:-}" ]; then
     cp "$img" "$QEMU_SAVE"
 fi
 rm -f "$img" "$out/$name.vars" "$out/$name.ppm" "$mon" "$ser"
+# The network: the peer's verdict, then the pcap's (QEMU_NET).
+net_ok=1
+if [ -n "$ppid" ]; then
+    kill $ppid 2>/dev/null || true
+    wait $ppid 2>/dev/null || net_ok=0
+    cat "$out/$name.peer.out"
+fi
+if [ -n "${QEMU_NET:-}" ]; then
+    none=
+    [ "${QEMU_NET_NONE:-0}" = 1 ] && none=--expect-none
+    python3 tools/pcap-vlan-check.py --vlan "${QEMU_NET_VLAN:-21}" $none "$pcap" || net_ok=0
+fi
+[ $net_ok = 1 ] || echo "$name: FAILED (network: a frame not tagged ${QEMU_NET_VLAN:-21}, or one too many)"
 if [ -n "$fpid" ]; then
     fst=0
     wait $fpid || fst=$?
     cat "$out/$name.feed"
     [ $fst -eq 0 ] && [ $i -lt $limit ] || { echo "$name: FAILED (input script)"; exit 1; }
+    [ $net_ok = 1 ] || exit 1
     exit 0
 fi
+[ $net_ok = 1 ] || exit 1
 grep -q "starting the stored kernel: the next boot" "$log" && { echo "$name: PANIC"; exit 1; }
 grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }
