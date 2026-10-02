@@ -1,0 +1,35 @@
+# net-vlan.txt's commands on a `vlan=off` boot (tools/net-vlan-test.sh
+# runs this, with the same peer and settings): the driver says the network
+# stays off and ends without touching the chip, netstack gets no session
+# and `net` shows no card, and each command that would send says why it
+# can't. Then 10 s more, so DHCP, netlog and netstack's retries have
+# their time. Not one frame may leave (the peer's --expect-none and the
+# pcap's).
+wait 120 Jam OS shell
+seen 60 [e1000e] no VLAN: the network stays off (the chip is left alone)
+seen 30 netstack: no session with the network driver yet
+wait jam>
+send net
+wait address  none yet
+wait link     no network card
+wait jam>
+send host one.one.one.one
+wait 30 host: one.one.one.one: no DNS server yet
+wait jam>
+send ping mac.jam -c 2
+wait 30 ping: mac.jam: no DNS server yet
+wait jam>
+send ping 1.1.1.1 -c 3
+wait 30 ping: no address, no link or no route
+wait jam>
+send update -n
+wait 60 update: the network has no address
+wait the running build is unchanged
+wait jam>
+sleep 10
+send net
+wait link     no network card
+wait frames   0 in (0 refused), 0 out (0 dropped)
+wait jam>
+send reboot -f
+wait reboot: resetting
