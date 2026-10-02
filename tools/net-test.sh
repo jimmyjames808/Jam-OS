@@ -1,9 +1,11 @@
 #!/bin/sh
 # The network driver in QEMU (drivers/e1000e on QEMU's 82574L) against
 # user/tests/nettest, a hostile netstack (docs/M9-PLAN.md stage 2). Each
-# scenario is one `shell` boot with QEMU_NET (tools/qemu-test.sh: the card
-# on -netdev dgram, every frame the guest sends dumped to a pcap and
-# checked by tools/pcap-vlan-check.py):
+# scenario is one `init` boot whose init.cfg runs `nettest <mode>` (a
+# copy of the stick with its bootfs changed: init's regression mode runs
+# no netstack, which in shell mode holds the card's one session), with
+# QEMU_NET (tools/qemu-test.sh: the card on -netdev dgram, every frame
+# the guest sends dumped to a pcap and checked by tools/pcap-vlan-check.py):
 #   vlan      `nettest vlan`: the session rules, then every bad slot (bad
 #             lengths, flags, frames already tagged 0x8100/0x88a8/0x9100,
 #             produced counts out of range, a thread rewriting EtherTypes
@@ -158,30 +160,65 @@ print(n, nested)
 PY
 }
 
-# One boot of `shell <words>` running `nettest <mode>` with the scenario
-# peer; the peer's summary in $out/<name>.nt.json.
+# A copy of build/jamos.img whose bootfs has init.cfg = "bin/nettest
+# <mode>": the `init` boot runs it as a test suite, with devmgr's control
+# channel and no netstack (init's regression mode starts none; in shell
+# mode netstack holds the card's one session), so nettest can open it.
+# $1: the image, $2: the mode.
+nettest_image() {
+    python3 - build/bootfs.img "$1.bootfs" "$2" "$1.d" <<'PY'
+import os, struct, subprocess, sys
+src, dst, mode, tmp = sys.argv[1:5]
+data = open(src, "rb").read()
+magic, _, count, _ = struct.unpack_from("<8sIIQ", data, 0)
+assert magic == b"JAMBOOTF", "not a bootfs image"
+args = []
+for i in range(count):
+    name, off, size = struct.unpack_from("<56sQQ", data, 24 + 72 * i)
+    name = name.rstrip(b"\0").decode()
+    path = os.path.join(tmp, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    body = data[off:off + size] if name != "init.cfg" else b"bin/nettest %s\n" % mode.encode()
+    open(path, "wb").write(body)
+    args.append("%s=%s" % (name, path))
+subprocess.run([sys.executable, "tools/mkbootfs.py", dst] + args, check=True,
+               stdout=subprocess.DEVNULL)
+PY
+    cp build/jamos.img "$1"
+    mcopy -o -i "$1@@1M" "$1.bootfs" ::/boot/bootfs.img
+    rm -rf "$1.bootfs" "$1.d"
+}
+
+# The `init` boot of nettest_image's stick, with the words $5...: $1 the
+# run's name, $2 the mode, $3 QEMU_NET, $4 QEMU_NET_NONE. The run must end
+# with no problems: the driver stopped cleanly when devmgr did, and every
+# job is empty.
+run_nettest() {
+    name=$1 mode=$2 net=$3 none=$4
+    shift 4
+    nettest_image "$out/$name.stick" "$mode"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IMAGE=$out/$name.stick QEMU_NET=$net \
+        QEMU_NET_NONE=$none tools/qemu-test.sh "$out" "$name" init "$@" > "$out/$name.out" 2>&1 || {
+        echo "$name: the QEMU run failed:"
+        tail -5 "$out/$name.out"
+        ok=0
+    }
+    rm -f "$out/$name.stick"
+    want_line "$name" "run complete: no problems"
+}
+
+# run_nettest with the scenario peer; its summary in $out/<name>.nt.json.
 run_peer() {
     name=$1 mode=$2
-    shift 2
-    set -- $(python3 tools/netpeer.py --free-ports 2) "$@"
+    set -- $(python3 tools/netpeer.py --free-ports 2)
     pport=$1 qport=$2
-    shift 2
     rm -f "$out/$name.nt.ready" "$out/$name.nt.json" "$out/$name.nt.log"
     python3 "$peer_py" --listen "$pport" --qemu "$qport" --summary "$out/$name.nt.json" \
         --ready "$out/$name.nt.ready" --log "$out/$name.nt.log" > "$out/$name.nt.out" 2>&1 &
     ppid=$!
     j=0
     while [ $j -lt 50 ] && [ ! -s "$out/$name.nt.ready" ]; do sleep 0.1; j=$((j + 1)); done
-    script=$out/$name.txt
-    printf 'wait 120 Jam OS shell\nwait jam>\nsend nettest %s; echo nt-""done\n' "$mode" > "$script"
-    printf 'wait 240 nettest %s: \nwait nt-done\nwait jam>\nsend reboot -f\nwait reboot: resetting\n' \
-        "$mode" >> "$script"
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_NET=$pport:$qport QEMU_INPUT=$script \
-        tools/qemu-test.sh "$out" "$name" shell "$@" > "$out/$name.out" 2>&1 || {
-        echo "$name: the QEMU run failed:"
-        tail -5 "$out/$name.out"
-        ok=0
-    }
+    run_nettest "$name" "$mode" "$pport:$qport" 0
     kill $ppid 2>/dev/null || true
     wait $ppid 2>/dev/null || { echo "$name: the peer failed: $(tail -1 "$out/$name.nt.out")"; ok=0; }
 }
@@ -212,16 +249,7 @@ scenario_vlan() {
 }
 
 scenario_vlan_off() {
-    printf 'wait 120 Jam OS shell\nwait jam>\nsend nettest off; echo nt-""done\n' \
-        > "$out/net-off.txt"
-    printf 'wait 60 nettest off: \nwait nt-done\nwait jam>\nsend reboot -f\nwait reboot: resetting\n' \
-        >> "$out/net-off.txt"
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_NET=1 QEMU_NET_NONE=1 QEMU_INPUT=$out/net-off.txt \
-        tools/qemu-test.sh "$out" net-off shell vlan=off > "$out/net-off.out" 2>&1 || {
-        echo "net-off: the QEMU run failed (or a frame left):"
-        tail -5 "$out/net-off.out"
-        ok=0
-    }
+    run_nettest net-off off 1 1 vlan=off
     want_line net-off "[e1000e] no VLAN: the network stays off"
     want_line net-off "nettest off: 1 passed"
     if grep -aqE "e1000e\] (transmitter on|rings:|address)" "$out/net-off.log"; then
