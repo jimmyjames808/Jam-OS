@@ -17,11 +17,17 @@ static struct {
     size_t  n;
 } cap[TP_CAP];
 static unsigned ncap;
+static unsigned room = TP_CAP;   /* frames the edge takes before it is full (tp_room) */
+
+void tp_room(unsigned frames)
+{
+    room = frames;
+}
 
 status_t tp_edge_tx(void *ctx, const uint8_t *frame, size_t len)
 {
     (void)ctx;
-    if (ncap >= TP_CAP || len > PKT_FRAME_MAX)
+    if (ncap >= TP_CAP || ncap >= room || len > PKT_FRAME_MAX)
         return ERR_NO_RESOURCES;
     memcpy(cap[ncap].f, frame, len);
     cap[ncap++].n = len;

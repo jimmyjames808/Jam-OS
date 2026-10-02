@@ -39,8 +39,8 @@ QEMU_IMAGE="$img" QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} \
     QEMU_NET_PEER="--tcp-relay 5201:$hport --udp-relay 5201:$hport --tcp-forward $fport:10.2.21.5:5202" \
     QEMU_INPUT=tools/shell-tests/speed.txt tools/qemu-test.sh "$out" speed shell || ok=0
 wait $cpid 2>/dev/null || true
-grep -a "\] speed: \(sent\|received\|the \|[0-9]* datagrams\)" "$log" | tr -d '\r' |
-    sed 's/^.*\] speed:/speed-test: guest: speed:/' || true
+grep -a "^speed: \(sent\|received\|the \|[0-9]* datagrams\)" "$log" | tr -d '\r' |
+    sed 's/^speed:/speed-test: guest: speed:/' || true
 sed 's/^/speed-test: the Mac (server): /' "$out/speed.server.log" | grep -v waiting || true
 sed 's/^/speed-test: the Mac (client): /' "$out/speed.client.log" || true
 grep -q "FAILED" "$out/speed.client.log" && ok=0

@@ -888,7 +888,9 @@ restarts:
   them, so a slow reader stops its own sender and lwIP holds no received
   byte; bytes go from the tx ring into lwIP only as the peer's window takes
   them (and a segment more), so a peer that stops reading holds no more
-  than its window. A listener's connections get their rings when their
+  than its window. A segment the card's full tx ring refuses stays in
+  lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
+  the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
   handshake finishes (the bytes that come first wait there), counted
   against the listener's opener. Limits: 64 connections an opener, 256 in
   all (192 for ordinary programs), 4 listeners an opener, 16 in all, a
@@ -897,7 +899,9 @@ restarts:
   so a SYN flood fills only its listener's backlog and never takes a
   program's pcb. Initial sequence numbers come from the kernel's random
   source, and a segment whose ACK is for bytes never sent is dropped before
-  lwIP (RFC 5961). Closing a connection with bytes unread resets it.
+  lwIP (RFC 5961), as is a segment with no ACK, RST or SYN flag on a
+  connection past its SYN (RFC 9293: lwIP would take its bytes). Closing
+  a connection with bytes unread resets it.
 - **`/svc/net-sys`**, the network's own services' reserve: the same
   protocol on a third shared channel (netstack's SR_USER + 3), whose
   openers are counted apart from programs', so no program can take the
@@ -944,7 +948,17 @@ ARP probe of the offered address (an ACKed address is taken as free).
 own askers) and holds `/svc/net-sys`. Each name in flight has a socket of its
 own on a random port with a random id (`os_random`), 16 names at most and
 8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
-at most a day). libos's `dns_lookup` (`<dns.h>`) is the client.
+at most a day). libos's `dns_lookup` (`<dns.h>`) is the client. Its fair
+shares are netstack's: **`/svc/dns-sys`** is the same protocol on a second
+shared channel (dns's SR_USER + 1), whose openers are the network's own
+services (init grants it to sntp; `tools/checkwants.py` allows `svc
+dns-sys` only under `user/services/`, `allow` refuses it for `/data`;
+libos's `dns_svc` prefers it). Ordinary openers (`/svc/dns`) get 12 of the
+16 openers, 12 of the 16 names in flight (a name counts as theirs while no
+system asker waits for it) and 6 of a name's 8 askers; the rest is the
+reserve, so a program asking for names that never answer can't stop sntp
+resolving `pool.ntp.org`. The class is fixed at connect by the channel an
+opener came through.
 
 **netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net-sys`
 and, after a panic, the panicked boot's log read-only. init starts it when
@@ -960,7 +974,7 @@ can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
 **sntp** (`user/services/sntp`) sets the clock from the network (SNTP, RFC
 4330; the checks in `ntp.c`, a core with no I/O that utest drives). init
 starts it once `/data`'s settings are read, unless `ntp = off`, with
-`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns`, and the root with
+`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns-sys`, and the root with
 `RIGHT_ROOT_CLOCK` only: it is the one service besides init and the shell
 that may set the clock. Without `ntp.server` it asks the network's gateway
 (the DHCP lease's router, which on the owner's network is also its DNS
@@ -1041,23 +1055,32 @@ a `make flash`.
 | Process | Holds | Parses network data |
 |---|---|---|
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
-| netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
+| netstack | the network cards' devmgr device channels; the server ends of netctl, `/svc/net`, `/svc/net-listen` and `/svc/net-sys` | yes: Ethernet, ARP, IPv4, ICMP, UDP, TCP |
 | dhcp | netctl | yes: DHCP replies |
-| dns | `/svc/net-sys`; the server end of `/svc/dns` | yes: DNS replies |
+| dns | `/svc/net-sys`; the server ends of `/svc/dns` and `/svc/dns-sys` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
-| sntp | `/svc/net-sys`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
+| bin/serve | `/svc/net` and `/svc/net-listen`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
+| bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
 its netdev channels); netstack's loop never waits (its waiting calls are
-on `connect.c`'s thread); dns writes its calls to netstack without waiting
-and takes the answers off its port. dhcp, netlog, sntp and `bin/update`
-serve nobody, so they may block, always with a deadline. init's update
-check hashes on a worker thread, and `update -w`'s stick write runs on
-the same worker after it; its loop does only the `kexec_load` and
-`/esp`'s stat.
+on `connect.c`'s thread), and TCP's frames that find the card's ring full
+wait for the driver's room signal, not in the loop; dns writes its calls
+to netstack without waiting and takes the answers off its port. init
+gives netstack the static address the same way (`set_ipv4` and
+`set_dns` sent, their answers from its port), and doesn't wait for a
+stopped DHCP client to end. bin/serve serves every client from one wait
+set (file reads sent without waiting); asking netstack for a listener
+waits, so a thread of its own that serves nobody does it. dhcp, netlog,
+sntp, `bin/update`, `fetch` and `speed` serve nobody, so they may block,
+always with a deadline. init's update check hashes on a worker thread,
+and `update -w`'s stick write runs on the same worker after it; its loop
+does only the `kexec_load` and `/esp`'s stat.
 
 **Waiting on many sockets** (`user/include/netwait.h`, libos;
 [M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
@@ -1073,6 +1096,21 @@ one stays on it, so a wait costs the entries that are ready or were
 signalled, not all of them. Hung up (netstack's end of the channel closed,
 a stream closed) and errors are always reported. This is what M13's
 `poll`, `select` and `epoll` will be built on.
+
+**The programs on TCP** ([M9.5-PLAN](docs/M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed);
+the commands are in [README](README.md#the-network)). Each holds only
+what its job needs, because each parses what a stranger sends. `fetch`
+and `speed` are helpers of the shell's (`bin/fetch`, `bin/speed`): the
+shell opens what `fetch` writes into (a `.part` file, renamed once the
+body is whole, or a pipe) and gives it that and nothing else; both stop
+on Ctrl+C through the helper's stop channel and end with 130. `serve` is
+bin/serve, a service init starts and keeps (as the music player): the
+shell opens the file read-only and hands it over on `/svc/serve`, which
+only the shell holds, so the file server serves exactly the files it was
+given, never a path from a request, and needs no mount. HTTP is
+`<http.h>`'s, strict and bounded (a head at most 16 KiB and 64 lines,
+anything unclear refused rather than guessed at); `http://` only (no
+TLS).
 
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
 that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
@@ -1141,8 +1179,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
   listen permission, `net-sys`, the same for the network's services
-  ([Networking](#networking)), `dns`, the resolver, and `serve`, the file
-  server, each a channel per opener). The services it starts
+  ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
+  for the network's services, and `serve`, the file server, each a
+  channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the

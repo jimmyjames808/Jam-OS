@@ -8,7 +8,9 @@
  * holds up nobody else); CNAMEs, in one reply and over several, and
  * their limit; NXDOMAIN, SERVFAIL, TC; askers joining a query, cancelled
  * askers, a full table; ports the edge says are taken; the cache's
- * bounds; and mutated replies. */
+ * bounds; mutated replies; and the fair shares (ordinary askers' names
+ * in flight and askers of one name, each asker's class kept through
+ * cancels). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -469,5 +471,75 @@ bool t_dnsres_hostile(void)
     }
     CHECK_EQ(dns_deadline(&res), DEADLINE_NEVER);
     guard_close(&g);
+    return true;
+}
+
+/* The query for name (in flight), or NULL. */
+static const struct dns_query *query_of(const char *name)
+{
+    for (unsigned i = 0; i < DNS_MAX_QUERIES; i++)
+        if (res.q[i].used && !strcmp(res.q[i].name, name))
+            return &res.q[i];
+    return NULL;
+}
+
+/* One name's askers, each class: the ordinary share, then the totals; a
+ * cancelled asker takes its class with it, whichever asker moves into its
+ * place. n0 starts with 2 ordinary askers. */
+static bool waiter_shares(void)
+{
+    for (unsigned k = 0; k < DNS_PROG_WAITERS - 2; k++)
+        CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 170 + k, false), OK);
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 180, false), ERR_NO_RESOURCES);
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 210, true), OK);
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 211, true), OK);
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 212, true), ERR_NO_RESOURCES);   /* DNS_MAX_WAITERS */
+    const struct dns_query *q = query_of("n0.jam");
+    CHECK(q && q->nwait == DNS_MAX_WAITERS && __builtin_popcount(q->sys) == 2);
+    for (unsigned k = 0; k < DNS_PROG_WAITERS - 2; k++)
+        dns_cancel(&res, 170 + k);
+    CHECK(q->nwait == 4 && __builtin_popcount(q->sys) == 2);
+    for (unsigned k = 0; k < q->nwait; k++)
+        CHECK_EQ((q->sys >> k) & 1u, q->cookies[k] >= 200);
+    for (unsigned k = 0; k < DNS_PROG_WAITERS - 2; k++)
+        CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 170 + k, false), OK);
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 180, false), ERR_NO_RESOURCES);
+    return true;
+}
+
+/* The fair shares (<dns.h>'s DNS_PROG_*): ordinary askers get
+ * DNS_PROG_QUERIES names in flight and DNS_PROG_WAITERS askers of one
+ * name; system askers the rest, up to the totals. Cookies 100 and up are
+ * ordinary askers, 200 and up system ones. */
+bool t_dnsres_shares(void)
+{
+    char name[16];
+    dreset(1);
+    for (unsigned k = 0; k < DNS_PROG_QUERIES; k++) {
+        snprintf(name, sizeof(name), "n%u.jam", k);
+        CHECK_ST(dns_ask_as(&res, 0, name, 100 + k, false), OK);
+    }
+    CHECK_ST(dns_ask_as(&res, 0, "o0.jam", 150, false), ERR_NO_RESOURCES);   /* the share */
+    for (unsigned k = 0; k < DNS_MAX_QUERIES - DNS_PROG_QUERIES; k++) {
+        snprintf(name, sizeof(name), "s%u.jam", k);
+        CHECK_ST(dns_ask_as(&res, 0, name, 200 + k, true), OK);   /* the reserve */
+    }
+    CHECK_ST(dns_ask_as(&res, 0, "s9.jam", 250, true), ERR_NO_RESOURCES);   /* the total */
+    CHECK_ST(dns_ask_as(&res, 0, "n0.jam", 160, false), OK);   /* joining: no new name */
+    CHECK(waiter_shares());
+    /* A name only ordinary askers wait for counts against their share,
+     * whoever asked first: s1 once its system asker goes, n0 once its
+     * system askers go (until then it was the system's). */
+    CHECK_ST(dns_ask_as(&res, 0, "s1.jam", 152, false), OK);
+    dns_cancel(&res, 201);
+    dns_cancel(&res, 210);
+    dns_cancel(&res, 211);
+    dns_cancel(&res, 101);
+    dns_cancel(&res, 102);   /* n1 and n2 end: 11 names ordinary askers hold, 14 in all */
+    CHECK(!query_of("n1.jam") && !query_of("n2.jam"));
+    CHECK_ST(dns_ask_as(&res, 0, "o1.jam", 153, false), OK);
+    CHECK_ST(dns_ask_as(&res, 0, "o2.jam", 154, false), ERR_NO_RESOURCES);
+    CHECK_ST(dns_ask_as(&res, 0, "s9.jam", 250, true), OK);
+    CHECK_ST(dns_ask(&res, 0, "s10.jam", 251), ERR_NO_RESOURCES);   /* dns_ask: a system asker */
     return true;
 }

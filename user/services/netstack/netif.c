@@ -296,10 +296,14 @@ static void session_event(struct dev *d)
     }
 }
 
-/* The to_stack event fired: clear its bits, then look. */
+/* The to_stack event fired with `seen` up: clear those bits, then act on
+ * them. Only those: a bit the driver raised after the binding fired (a
+ * link change just after a frame) stays up, and the binding made again
+ * below fires at once for it; cleared with the rest it would be lost, and
+ * a link change is never signalled twice. */
 static void to_stack_event(struct dev *d, signals_t seen)
 {
-    (void)jam_event_signal(d->to_stack, TO_STACK_BITS, 0);   /* ours: can't fail */
+    (void)jam_event_signal(d->to_stack, seen & TO_STACK_BITS, 0);   /* ours: can't fail */
     if (seen & NETDEV_SIG_LINK)
         ask_link(d);
     if (seen & NETDEV_SIG_TX_ROOM) {

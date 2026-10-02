@@ -15,7 +15,7 @@
  * services that have a namespace get the part of it their grants name
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
- * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns, the
+ * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns-sys, the
  * splash the mixer, the file server /svc/net and /svc/net-listen. init
  * keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
@@ -63,11 +63,12 @@ struct follower {
 static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, NULL };
 static const char *const music_grants[] = { "*:r", "/svc/" SVC_AUDIO, NULL };
 static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
-/* The network's own services reach netstack through /svc/net-sys, its
- * reserve no program can use up (libos's net_svc prefers it). */
+/* The network's own services reach netstack through /svc/net-sys and the
+ * resolver through /svc/dns-sys, the reserves no program can use up
+ * (libos's net_svc and dns_svc prefer them). */
 static const char *const netlog_grants[] = { "/svc/" SVC_NET_SYS, NULL };
 static const char *const dns_grants[] = { "/svc/" SVC_NET_SYS, NULL };
-static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS, NULL };
+static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS_SYS, NULL };
 /* The file server: what its list says (`svc net listen`; it is given its
  * files by the shell, no mount). */
 static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN, NULL };
@@ -237,6 +238,7 @@ static void ended(unsigned i)
     s->running = false;
     uint64_t t = now();
     services_closed(i);
+    net_ended(i);
     if (followers[i].ns) {
         jam_handle_close(followers[i].ns);
         followers[i].ns = HANDLE_INVALID;
@@ -359,7 +361,9 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
            "server and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
-        uint64_t deadline = start_due(now());
+        uint64_t t = now(), deadline = start_due(t), net = net_due(t);
+        if (net < deadline)
+            deadline = net;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st != OK && st != ERR_TIMED_OUT)
@@ -380,6 +384,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             splash_event();
         } else if (pkt.key == KEY_UPDATE) {
             update_event();
+        } else if (pkt.key == KEY_NETCTL) {
+            net_netctl_event();
         }
     }
 }

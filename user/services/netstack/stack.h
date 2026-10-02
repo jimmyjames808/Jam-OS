@@ -285,8 +285,19 @@ struct stack_tcp_counts {
     uint32_t pcbs_none;      /* times a pcb was wanted and none was free */
     uint32_t bad_acks;       /* segments with bytes and an ACK for bytes never sent or long
                               * acked, dropped before lwIP (RFC 5961 section 5) */
+    uint32_t no_acks;        /* segments with no ACK, RST or SYN flag to a connection past
+                              * SYN_SENT, dropped before lwIP (RFC 9293 3.10.7.4) */
 };
 void     stack_tcp_get_counts(struct stack_tcp_counts *out);
+/* A frame found the edge full (its tx said ERR_NO_RESOURCES) since the
+ * last stack_tx_resume. lwIP keeps a TCP segment it couldn't send and, on
+ * its own, sends it again only on its next timer (TCP_TMR_INTERVAL), so the
+ * loop waits for room on the card and then calls stack_tx_resume. */
+bool     stack_tx_blocked(void);
+/* The edge has room again: what lwIP holds for each TCP connection
+ * (segments not sent, an ACK owed) goes now, the connections in turn,
+ * until the edge is full again (stack_tx_blocked). */
+void     stack_tx_resume(void);
 
 /* ---- port/sys_arch.c --------------------------------------------------------- */
 

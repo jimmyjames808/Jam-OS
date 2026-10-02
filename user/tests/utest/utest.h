@@ -283,6 +283,7 @@ bool t_nettcp_pool_full(void);
 bool t_nettcp_malformed(void);
 bool t_nettcp_fuzz(void);
 bool t_nettcp_hostile_ring(void);
+bool t_nettcp_card_full(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
 bool t_netctl_set_and_clear(void);
@@ -390,8 +391,10 @@ bool t_dnsres_failures(void);
 bool t_dnsres_ports(void);
 bool t_dnsres_cache(void);
 bool t_dnsres_hostile(void);
+bool t_dnsres_shares(void);
 /* dnsd.c: bin/dns's sockets (socks.c) against a fake netstack */
 bool t_dnsd_sockets(void);
+bool t_dnsd_shares(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
  * <updwire.h>) and the manifest's signature; updfetch.c: the fetcher's

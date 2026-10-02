@@ -19,6 +19,8 @@
  * while the card's tx ring has room for a datagram, at most SOCK_TX_BUDGET
  * records a socket a turn, the sockets in turn; with no room the rest
  * stays in the rings until the driver says it has some (dev_tx_room_came).
+ * TCP's segments are lwIP's to send: one the card refused stays in lwIP,
+ * and goes when the driver says it has room (sock_tcp_card).
  *
  * A ring the program broke (a count out of range, a bad record) is looked
  * at again only when the program signals: garbage costs netstack one look
@@ -340,6 +342,22 @@ void sock_ring_event(unsigned i, uint32_t gen)
 static void room_came(void)
 {
     pg.card_full = false;
+    if (pg.tcp_card_wait) {
+        pg.tcp_card_wait = false;
+        stack_tx_resume();
+    }
+}
+
+bool sock_tcp_card(void)
+{
+    if (pg.tcp_card_wait || !stack_tx_blocked())
+        return false;
+    if (dev_tx_wait(pg.dev, 1)) {
+        pg.tcp_card_wait = true;
+        return false;
+    }
+    stack_tx_resume();   /* room came while we looked */
+    return true;
 }
 
 void sock_flush(void)

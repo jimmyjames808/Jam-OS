@@ -2,7 +2,7 @@
 # runs this, with the same peer and settings): the driver says the network
 # stays off and ends without touching the chip, netstack gets no session
 # and `net` shows no card, and each command that would send says why it
-# can't. Then 10 s more, so DHCP, netlog and netstack's retries have
+# can't (fetch, serve and speed wait for an address that never comes). Then 10 s more, so DHCP, netlog and netstack's retries have
 # their time. Not one frame may leave (the peer's --expect-none and the
 # pcap's).
 wait 120 Jam OS shell
@@ -25,6 +25,21 @@ wait jam>
 send update -n
 wait 60 update: the network has no address
 wait the running build is unchanged
+wait jam>
+send fetch http://10.2.21.174:8000/small.txt /data/x; echo st=$?
+wait 60 fetch: 10.2.21.174 port 8000: no answer in time
+wait st=1
+wait jam>
+send serve /data/served.bin; echo st=$?
+wait 60 serve: /data/served.bin on port 8080:
+wait st=1
+wait jam>
+send serve stop
+wait serve: nothing was served
+wait jam>
+send speed 10.2.21.174 -t 1; echo st=$?
+wait 60 speed: 10.2.21.174 port 5201: ERR_TIMED_OUT
+wait st=1
 wait jam>
 sleep 10
 send net

@@ -11,11 +11,16 @@
  * goes out to the server's port 53 once the socket opens; the server's
  * answer reaches the resolver through the loop's port and its socket is
  * closed once no query uses it; a port released while its open is still
- * in flight is closed when the open is answered, and its slot freed. */
+ * in flight is closed when the open is answered, and its slot freed.
+ * And the askers' fair shares (askers.c, bin/dns's loop for them on a
+ * thread): ordinary openers of /svc/dns up to DNS_PROG_OPENERS and their
+ * names in flight up to DNS_PROG_QUERIES, the next of each refused, while
+ * an opener of /svc/dns-sys still connects and has a name in flight. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <idl/net.h>
+#include <idl/svc.h>
 #include <os.h>
 #include <sockring.h>
 #include "dnsd.h"
@@ -237,5 +242,113 @@ bool t_dnsd_sockets(void)
     jam_handle_close(fake_net);
     jam_handle_close(D.net);
     jam_handle_close(D.port);
+    return true;
+}
+
+/* ---- the fair shares, through /svc/dns and /svc/dns-sys ------------------------------- */
+
+static bool loop_stop;   /* the askers' loop ends (atomic) */
+
+/* bin/dns's loop as far as the askers go: their packets, then their work.
+ * The fake netstack never answers: every name stays in flight. */
+static void askers_loop(void *arg)
+{
+    (void)arg;
+    while (!__atomic_load_n(&loop_stop, __ATOMIC_ACQUIRE)) {
+        struct port_packet p;
+        if (jam_port_wait(D.port, now() + 20 * NS_PER_MS, &p) == OK) {
+            uint32_t low = (uint32_t)(p.key & 0xff);
+            if (low != KEY_NET && !(low >= KEY_SOCK && low < KEY_SOCK + SOCK_SLOTS))
+                askers_packet(p.key);
+        }
+        askers_serve();
+    }
+}
+
+static uint32_t txc = 0x40000000u;   /* our resolves' txids */
+
+/* Ask ch for name, then for a name that isn't one (answered at once, so
+ * an opener's requests being served in order, a refusal of the first
+ * comes before it): the first's status, or ERR_SHOULD_WAIT when it is in
+ * flight (no answer yet). */
+static status_t asked(handle_t ch, const char *name)
+{
+    uint8_t field[DNS_TEXT_MAX] = { 0 }, bad[DNS_TEXT_MAX] = { 0 };
+    memcpy(field, name, strlen(name));
+    memcpy(bad, "a..b", 4);
+    uint32_t t1 = idl_txid_next(&txc), t2 = idl_txid_next(&txc);
+    if (dns_resolve_send(ch, t1, field, DNS_TIMEOUT_MAX) != OK ||
+        dns_resolve_send(ch, t2, bad, DNS_TIMEOUT_MAX) != OK)
+        return ERR_INTERNAL;
+    for (;;) {   /* each turn a reply, until the second's (bounded by the wait) */
+        signals_t seen;
+        _Alignas(8) uint8_t rep[DNS_REP_MAX];
+        struct idl_msg m;
+        if (jam_object_wait_one(ch, SIG_READABLE, now() + 2 * S, &seen) != OK ||
+            idl_reply_read(ch, rep, sizeof(rep), &m) != OK)
+            return ERR_TIMED_OUT;
+        uint8_t n;
+        uint32_t a[4], ttl;
+        status_t st = dns_resolve_result(rep, &m, &n, &a[0], &a[1], &a[2], &a[3], &ttl);
+        if (m.txid == t1)
+            return st;
+        if (m.txid == t2)
+            return ERR_SHOULD_WAIT;
+    }
+}
+
+/* Ordinary openers to their share and their names to theirs; a system
+ * opener still connects and has a name resolved. */
+static bool takes_shares(handle_t shared, handle_t sys, handle_t o[DNS_PROG_OPENERS], handle_t *s)
+{
+    for (unsigned k = 0; k < DNS_PROG_OPENERS; k++)
+        CHECK_ST(svc_connect_until(shared, now() + 2 * S, &o[k]), OK);
+    handle_t x;
+    CHECK_ST(svc_connect_until(shared, now() + 2 * S, &x), ERR_NO_RESOURCES);
+    CHECK_ST(svc_connect_until(sys, now() + 2 * S, s), OK);
+    char name[16];
+    for (unsigned k = 0; k < DNS_PROG_QUERIES; k++) {
+        snprintf(name, sizeof(name), "n%u.jam", k);
+        CHECK_ST(asked(o[k / DNS_PER_OPENER], name), ERR_SHOULD_WAIT);
+    }
+    CHECK_ST(asked(o[2], "o.jam"), ERR_NO_RESOURCES);   /* the ordinary names' share */
+    CHECK_ST(asked(*s, "sys.jam"), ERR_SHOULD_WAIT);   /* the reserve */
+    return true;
+}
+
+bool t_dnsd_shares(void)
+{
+    static uint8_t stack[16384] __attribute__((aligned(16)));
+    handle_t fake_net, shared, shared_srv, sys, sys_srv, th, s = HANDLE_INVALID;
+    handle_t o[DNS_PROG_OPENERS] = { 0 };
+    memset(&D, 0, sizeof(D));
+    memset(&F, 0, sizeof(F));
+    CHECK_ST(jam_port_create(&D.port), OK);
+    CHECK_ST(jam_channel_create(&D.net, &fake_net), OK);
+    CHECK_ST(jam_channel_create(&shared, &shared_srv), OK);
+    CHECK_ST(jam_channel_create(&sys, &sys_srv), OK);
+    socks_init();
+    dns_init(&D.r, &D.io);
+    uint32_t server = SERVER;
+    dns_set_servers(&D.r, &server, 1);
+    CHECK_ST(askers_init(shared_srv, sys_srv), OK);
+    __atomic_store_n(&loop_stop, false, __ATOMIC_RELEASE);
+    CHECK_ST(thread_spawn("dns-askers", askers_loop, NULL, stack, sizeof(stack), &th), OK);
+    bool ok = takes_shares(shared, sys, o, &s);
+    __atomic_store_n(&loop_stop, true, __ATOMIC_RELEASE);
+    CHECK(wait_threads(&th, 1));
+    CHECK(ok);
+    CHECK(D.refused_shares == 1);
+    for (unsigned k = 0; k < DNS_PROG_OPENERS; k++)
+        if (o[k])
+            jam_handle_close(o[k]);
+    handle_t hs[] = { s, shared, shared_srv, sys, sys_srv, fake_net, D.net, D.port };
+    for (unsigned k = 0; k < sizeof(hs) / sizeof(hs[0]); k++)
+        if (hs[k])
+            jam_handle_close(hs[k]);
+    for (unsigned k = 0; k < DNS_OPENERS; k++)
+        if (D.a[k].ch)
+            jam_handle_close(D.a[k].ch);
+    memset(&D, 0, sizeof(D));
     return true;
 }

@@ -21,9 +21,12 @@ and joins it to an ordinary socket on 127.0.0.1:
                                   guest's ports), and what comes back on it
                                   goes to the guest from that address and
                                   PORT (tools/speed.py's UDP side).
-Each may be given more than once (comma-separated). Counted in the peer's
-summary: relay_conns, relay_bytes_to_guest, relay_bytes_from_guest,
-relay_resets, relay_dgrams_in, relay_dgrams_out.
+Each may be given more than once (comma-separated). A SYN from the guest
+to a port nothing is relayed to is answered with a reset, as a closed port
+on the Mac would be (`speed` to such a port says it was refused). Counted
+in the peer's summary: relay_conns, relay_bytes_to_guest,
+relay_bytes_from_guest, relay_resets, relay_refused, relay_dgrams_in,
+relay_dgrams_out.
 
 The TCP is a test peer's, like tools/tcppeer.py's: in-order receiving (a
 segment out of order is dropped and answered with a duplicate ACK), every
@@ -39,6 +42,7 @@ import socket
 import struct
 import threading
 import time
+import types
 
 MSS = 1460
 WINDOW = 65535          # our window at most (no window scaling)
@@ -269,7 +273,8 @@ class Relay:
         self.udp_by_guest = {}       # (guest addr, guest port, our addr, our port) -> socket
         self.next_port = FORWARD_PORT0
         for k in ("relay_conns", "relay_bytes_to_guest", "relay_bytes_from_guest",
-                  "relay_resets", "relay_retransmits", "relay_dgrams_in", "relay_dgrams_out"):
+                  "relay_resets", "relay_refused", "relay_retransmits", "relay_dgrams_in",
+                  "relay_dgrams_out"):
             peer.counts[k] = 0
         for port, hostport in (udp or {}).items():
             peer.add_udp(port, self.udp_handler(port, hostport))
@@ -302,8 +307,11 @@ class Relay:
         if hl < 20 or hl > len(body):
             return False
         c = self.streams.get((src, sport, dport))
-        if c is None and dport in self.relays and flags & F_SYN and not flags & F_ACK:
-            c = self.accept(mac, src, sport, dst, dport, seq, wnd, self.options(body, hl))
+        if c is None and flags & F_SYN and not flags & F_ACK:
+            if dport in self.relays:
+                self.accept(mac, src, sport, dst, dport, seq, wnd, self.options(body, hl))
+            else:
+                self.refuse(mac, src, sport, dst, dport, seq)
             return True
         if c is None:
             return False
@@ -323,6 +331,15 @@ class Relay:
                 opts[2] = struct.unpack_from("!H", body, k + 2)[0]
             k += body[k + 1]
         return opts
+
+    def refuse(self, mac, src, sport, dst, dport, seq):
+        """The guest's SYN to a port nothing is relayed to: a reset that acks
+        it, as a closed port answers (RFC 9293 3.10.7.1)."""
+        hdr = struct.pack("!HHIIBBHHH", dport, sport, 0, (seq + 1) & M32, 5 << 4, F_RST | F_ACK,
+                          0, 0, 0)
+        self.send_segment(types.SimpleNamespace(mine=(dst, dport), theirs=(src, sport), mac=mac),
+                          hdr, b"")
+        self.count("relay_refused")
 
     def accept(self, mac, src, sport, dst, dport, seq, wnd, opts):
         """The guest's SYN to a relayed port: our SYN-ACK, and a connect to the Mac."""

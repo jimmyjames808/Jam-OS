@@ -1,10 +1,14 @@
 /* speed: the network's throughput against tools/speed.py on the Mac. It is
- * bin/speed (user/apps/speed) run as any program (its list: the network
- * with the listen permission, and the resolver), so Ctrl+C kills it; this
- * command is here for `help`. */
+ * bin/speed (user/apps/speed), run as a helper (sh_run_helper: its list,
+ * the network with the listen permission and the resolver; its lines
+ * printed as the shell's), so Ctrl+C stops it cleanly: it says so and ends
+ * with 130, as `fetch` does. */
 #include "sh.h"
+
+#define SPEED_PATH "bin/speed"
 
 SH_CMD(speed)
 {
-    return sh_run_program(argc, argv);
+    struct spawn_handle x[2];   /* sh_run_helper adds its two */
+    return sh_run_helper(SPEED_PATH, argc, (const char *const *)argv, x, 0);
 }

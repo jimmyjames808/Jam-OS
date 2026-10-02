@@ -217,27 +217,56 @@ static bool errors_noted(struct net_sock *h, uint64_t more_than)
     return true;
 }
 
-static bool garbage_rings(struct net_sock *h, struct net_sock *g)
+/* netstack's count of h's tx ring, as it last published it. */
+static uint64_t taken(const struct net_sock *h)
+{
+    return __atomic_load_n(&((const struct sockring_page *)h->map)->tx_cons.count,
+                           __ATOMIC_ACQUIRE);
+}
+
+/* netstack took h's tx ring up to exactly `at`. It writes the status line
+ * before its count (a program that sees a record taken sees why it was
+ * refused), so an error seen doesn't yet say where the count ends: the next
+ * scribble starts from the count waited for here. */
+static bool taken_to(const struct net_sock *h, uint64_t at)
+{
+    uint64_t end = now() + NETDRV_WAIT;
+    while (taken(h) != at && now() < end)
+        ;
+    CHECK_EQ(taken(h), at);
+    return true;
+}
+
+static uint64_t errors_of(struct net_sock *h)
 {
     struct sockring_status st;
-    uint64_t c = 0;   /* netstack's count of h's tx ring: it starts at 0 */
-    scribble(h, UINT64_MAX, 0);                  /* far ahead */
+    sockring_status_get(&h->r, &st);
+    return st.ring_errors;
+}
+
+/* The tx ring starts as zeros: empty records (no bytes, to 0:0), each taken
+ * and refused, as h has no peer. */
+static bool garbage_rings(struct net_sock *h, struct net_sock *g)
+{
+    scribble(h, UINT64_MAX, 0);                  /* far ahead: clamped to a ring */
     CHECK(errors_noted(h, 0));
-    CHECK(others_served(g, 2));
-    sockring_status_get(&h->r, &st);
-    c = __atomic_load_n(&((struct sockring_page *)h->map)->tx_cons.count, __ATOMIC_ACQUIRE);
-    scribble(h, c - 16, 0);                      /* backwards */
-    CHECK(errors_noted(h, st.ring_errors));
-    sockring_status_get(&h->r, &st);
-    scribble(h, c + 40, 0x80);                   /* off a record's edge, an unknown flag */
-    CHECK(errors_noted(h, st.ring_errors));
+    CHECK(others_served(g, 2));                  /* netstack's look at h is over */
+    uint64_t c = taken(h);
+    CHECK(c && c % SOCKRING_ALIGN == 0 && c <= h->r.tx.size);
+    uint64_t e = errors_of(h);
+    scribble(h, c - 16, 0);                      /* backwards: nothing taken */
+    CHECK(errors_noted(h, e) && taken_to(h, c));
+    e = errors_of(h);
+    scribble(h, c + 40, 0x80);                   /* an unknown flag, off a record's edge: */
+    CHECK(errors_noted(h, e) && taken_to(h, c + 32));   /* the two whole records only */
+    c += 32;
     static const uint32_t lens[] = { SOCKRING_DGRAM_MAX + 1, 0xffff, 20 };
     for (unsigned i = 0; i < 3; i++) {
-        c = __atomic_load_n(&((struct sockring_page *)h->map)->tx_cons.count, __ATOMIC_ACQUIRE);
-        sockring_status_get(&h->r, &st);
-        raw_record(h, c, lens[i], i == 2);           /* too long, or with flags */
+        e = errors_of(h);
+        raw_record(h, c, lens[i], i == 2);       /* too long, or with flags */
         scribble(h, c + 64, 0);
-        CHECK(errors_noted(h, st.ring_errors));
+        CHECK(errors_noted(h, e) && taken_to(h, c + 64));   /* all 64 bytes dropped */
+        c += 64;
     }
     CHECK(others_served(g, 3));
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none of it sent */

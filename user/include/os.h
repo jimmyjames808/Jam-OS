@@ -321,6 +321,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_NET        "net"         /* netstack: UDP sockets and ping, a channel per opener (net.idl) */
 #define SVC_NET_SYS    "net-sys"     /* netstack for the network's own services (their reserve): user/services/ only */
 #define SVC_DNS        "dns"         /* the resolver: names to addresses, a channel per opener (dns.idl) */
+#define SVC_DNS_SYS    "dns-sys"     /* the resolver for the network's own services (their reserve): user/services/ only */
 #define SVC_NET_LISTEN "net-listen"  /* /svc/net whose openers may also listen; a list asks for it
                                       * as `svc net listen` (<wants.h>) */
 #define SVC_SERVE      "serve"       /* the file server, a channel per opener (serve.idl) */

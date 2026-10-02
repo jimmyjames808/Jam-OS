@@ -1,7 +1,20 @@
 /* dns: /svc/dns, the askers' side. The shared channel (init keeps its
  * server end across our restarts and publishes the client end) answers
  * only svc.connect: each opener gets a channel of its own, DNS_OPENERS
- * at once, on which it sends resolve, a `later` method. A resolve is a
+ * at once, on which it sends resolve, a `later` method.
+ *
+ * The fair shares: /svc/dns-sys is a second shared channel, the same in
+ * every way but one: its openers are system askers (the network's own
+ * services; init grants it to sntp, and no program from /data may have
+ * it). Ordinary openers together get at most DNS_PROG_OPENERS of the
+ * DNS_OPENERS, and their resolves at most DNS_PROG_QUERIES names in
+ * flight and DNS_PROG_WAITERS askers of one name (the resolver's
+ * dns_ask_as); the rest is the system askers' reserve. A class is fixed
+ * at connect by the channel the opener came through: nothing sent later
+ * can change it. One program can still take its class's whole share (the
+ * resolver can't tell its openers from another program's).
+ *
+ * A resolve is a
  * request in flight (struct request) until its answer comes from the
  * resolver (io->answer: askers_answer, which may run inside dns_ask, for
  * a cached name or an address), or its timeout passes (askers_tick): then
@@ -96,7 +109,7 @@ static status_t op_resolve(void *ctx, struct idl_txn txn, const uint8_t name[256
                            .asker = (unsigned)(a - D.a), .txn = txn,
                            .deadline = t + (uint64_t)timeout_ms * NS_PER_MS };
     a->inflight++;
-    status_t st = dns_ask(&D.r, t, text, q->cookie);
+    status_t st = dns_ask_as(&D.r, t, text, q->cookie, a->sys);
     if (st != OK) {   /* no answer comes: the reply is this */
         request_done(q);
         return st;
@@ -138,10 +151,24 @@ static void serve_asker(unsigned i)
 
 /* ---- the shared channel ------------------------------------------------------------ */
 
-/* svc.connect: a channel of the caller's own. */
+/* Ordinary openers now. */
+static unsigned prog_openers(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < DNS_OPENERS; i++)
+        n += D.a[i].ch && !D.a[i].sys;
+    return n;
+}
+
+/* svc.connect: a channel of the caller's own; ctx is non-NULL on
+ * /svc/dns-sys's shared channel. */
 static status_t on_connect(void *ctx, handle_t *out)
 {
-    (void)ctx;
+    bool sys = ctx != NULL;
+    if (!sys && prog_openers() >= DNS_PROG_OPENERS) {
+        D.refused_shares++;
+        return ERR_NO_RESOURCES;
+    }
     for (unsigned i = 0; i < DNS_OPENERS; i++) {
         struct asker *a = &D.a[i];
         if (a->ch)
@@ -158,7 +185,7 @@ static status_t on_connect(void *ctx, handle_t *out)
             jam_handle_close(theirs);
             return st;
         }
-        *a = (struct asker){ .ch = mine, .gen = a->gen, .pending = true };
+        *a = (struct asker){ .ch = mine, .gen = a->gen, .pending = true, .sys = sys };
         *out = theirs;
         return OK;
     }
@@ -175,30 +202,38 @@ static uint32_t shared_dispatch(void *ctx, const void *req, uint32_t n, void *re
     return dns_dispatch(&shared_ops, ctx, req, n, rep, rhs, rhn);
 }
 
-static void serve_shared(void)
+/* One of the shared channels (*ch; sys: /svc/dns-sys's). */
+static void serve_shared(handle_t *ch, bool *pending, bool sys)
 {
-    D.shared_pending = false;
+    *pending = false;
     for (unsigned k = 0; k < BUDGET; k++) {
-        status_t st = svc_serve_request(D.shared, shared_dispatch, on_connect, NULL);
+        status_t st = svc_serve_request(*ch, shared_dispatch, on_connect, sys ? &D : NULL);
         if (st == OK)
             continue;
         if (st != ERR_SHOULD_WAIT) {
             /* Every holder is gone, init's too: no new openers. */
-            printf("dns: /svc/dns's channel is closed (%s): no new openers\n", status_str(st));
-            jam_handle_close(D.shared);
-            D.shared = HANDLE_INVALID;
+            printf("dns: /svc/%s's channel is closed (%s): no new openers\n",
+                   sys ? SVC_DNS_SYS : SVC_DNS, status_str(st));
+            jam_handle_close(*ch);
+            *ch = HANDLE_INVALID;
         }
         return;
     }
-    D.shared_pending = true;
+    *pending = true;
 }
 
-status_t askers_init(handle_t shared)
+status_t askers_init(handle_t shared, handle_t shared_sys)
 {
     D.shared = shared;
     D.shared_pending = true;   /* connects may be queued from before a restart */
-    return jam_port_bind(D.port, shared, KEY_SHARED, SIG_READABLE | SIG_PEER_CLOSED,
-                         PORT_BIND_PERSISTENT);
+    D.shared_sys = shared_sys;
+    D.shared_sys_pending = shared_sys != 0;
+    status_t st = jam_port_bind(D.port, shared, KEY_SHARED, SIG_READABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_PERSISTENT);
+    if (st == OK && shared_sys)
+        st = jam_port_bind(D.port, shared_sys, KEY_SHARED_SYS, SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
+    return st;
 }
 
 void askers_packet(uint64_t key)
@@ -206,6 +241,10 @@ void askers_packet(uint64_t key)
     uint32_t low = (uint32_t)(key & 0xff), gen = (uint32_t)(key >> 8);
     if (key == KEY_SHARED) {
         D.shared_pending = D.shared != 0;
+        return;
+    }
+    if (key == KEY_SHARED_SYS) {
+        D.shared_sys_pending = D.shared_sys != 0;
         return;
     }
     unsigned i = low - KEY_ASKER;
@@ -216,7 +255,9 @@ void askers_packet(uint64_t key)
 void askers_serve(void)
 {
     if (D.shared && D.shared_pending)
-        serve_shared();
+        serve_shared(&D.shared, &D.shared_pending, false);
+    if (D.shared_sys && D.shared_sys_pending)
+        serve_shared(&D.shared_sys, &D.shared_sys_pending, true);
     for (unsigned i = 0; i < DNS_OPENERS; i++)
         if (D.a[i].ch && D.a[i].pending)
             serve_asker(i);
@@ -224,7 +265,7 @@ void askers_serve(void)
 
 bool askers_pending(void)
 {
-    if (D.shared && D.shared_pending)
+    if ((D.shared && D.shared_pending) || (D.shared_sys && D.shared_sys_pending))
         return true;
     for (unsigned i = 0; i < DNS_OPENERS; i++)
         if (D.a[i].ch && D.a[i].pending)

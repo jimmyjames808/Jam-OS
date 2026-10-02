@@ -24,12 +24,14 @@
 #include <net.h>
 #include "dns.h"
 
-#define SR_DNS (SR_USER + 0)   /* the server end of /svc/dns's shared channel */
+#define SR_DNS     (SR_USER + 0)   /* the server end of /svc/dns's shared channel */
+#define SR_DNS_SYS (SR_USER + 1)   /* /svc/dns-sys's: the network's own services' */
 
 /* Port keys: the low byte says what fired, the bits above a slot's
  * generation (a stale packet for a reused slot is ignored). */
 #define KEY_SHARED 1u
 #define KEY_NET    2u            /* our opener channel to netstack */
+#define KEY_SHARED_SYS 3u        /* /svc/dns-sys's shared channel */
 #define KEY_ASKER  0x10u         /* + an asker's slot */
 #define KEY_SOCK   0x40u         /* + a socket's slot */
 #define BUDGET     16u           /* messages read off one channel a turn */
@@ -61,6 +63,7 @@ struct asker {
     uint32_t gen;
     unsigned inflight;  /* its resolves waiting for an answer */
     bool     pending;   /* requests may be queued */
+    bool     sys;       /* it came through /svc/dns-sys: a system asker (the reserve) */
 };
 
 /* A resolve waiting for its answer. */
@@ -83,6 +86,9 @@ struct dnsd {
     bool     net_pending;
     handle_t shared;           /* /svc/dns's shared channel (0: closed) */
     bool     shared_pending;
+    handle_t shared_sys;       /* /svc/dns-sys's (0: none, or closed) */
+    bool     shared_sys_pending;
+    uint32_t refused_shares;   /* connects refused for the ordinary openers' share */
     uint64_t next_cookie;
     struct dns_resolver r;
     struct dns_io io;
@@ -105,7 +111,11 @@ status_t socks_serve(void);
 bool     socks_pending(void);
 
 /* askers.c */
-status_t askers_init(handle_t shared);
+/* Serve /svc/dns's shared channel and /svc/dns-sys's (0: none; its
+ * openers are system askers, which may use the reserve: DNS_PROG_OPENERS
+ * and the resolver's DNS_PROG_QUERIES and DNS_PROG_WAITERS bound the
+ * others). */
+status_t askers_init(handle_t shared, handle_t shared_sys);
 void     askers_packet(uint64_t key);
 void     askers_serve(void);
 bool     askers_pending(void);

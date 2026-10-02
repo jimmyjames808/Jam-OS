@@ -19,6 +19,8 @@
 #define DNS_ADDRS_MAX    4u       /* addresses in one answer */
 #define DNS_TEXT_MAX     256u     /* bytes of a name, with its NUL (dns.idl's field) */
 #define DNS_OPENERS      16u      /* channels from /svc/dns's connect at once */
+#define DNS_PROG_OPENERS 12u      /* of them, ordinary ones (/svc/dns): the rest are the
+                                   * network's own services' (/svc/dns-sys) */
 #define DNS_PER_OPENER   8u       /* resolves in flight on one opener's channel */
 #define DNS_TIMEOUT_MAX  60000u   /* ms: the longest timeout a resolve may ask for */
 
@@ -29,9 +31,11 @@ struct dns_answer {
     uint32_t ttl;
 };
 
-/* /svc/dns: libos's own channel to it (svc_get: opened again after the
- * resolver restarts), or HANDLE_INVALID when the program's list didn't
- * ask for it. Don't close it. */
+/* The resolver: libos's own channel to it (svc_get: opened again after
+ * the resolver restarts): /svc/dns-sys when the namespace has it (the
+ * network's own services: the resolver's reserve), else /svc/dns, or
+ * HANDLE_INVALID when the program's list asked for neither. Don't close
+ * it. */
 handle_t dns_svc(void);
 /* The IPv4 addresses of name (a host name, or a dotted address answered
  * as it is), waiting until the deadline at most (at most DNS_TIMEOUT_MAX

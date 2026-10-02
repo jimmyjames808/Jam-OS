@@ -9,7 +9,9 @@
  * the backlog full, the listener closed); a slow reader whose window
  * closes and opens with its reads and never holds a byte in lwIP; and
  * resets (refused, by the peer, by netstack, one out of the window
- * ignored). nettcp.h has the fixture; tcpabuse.c the hostile tests. */
+ * ignored); and the card's tx ring full (the segments wait in lwIP and go
+ * when room comes, each byte once). nettcp.h has the fixture; tcpabuse.c
+ * the hostile tests. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -38,6 +40,7 @@ bool fix_up(void)
     struct stack_ipv4 ip = { OUR_IP, MASK24, GW_IP };
     stack_set_ipv4(&ip);
     ntcp_init();
+    tp_room(TP_CAP);
     tp_arp(pkt_peer_mac, PEER_IP);
     tp_arp(pkt_other_mac, OTHER_IP);
     tp_forget();
@@ -581,6 +584,49 @@ bool t_nettcp_reset(void)
     fix_free(&x);
     CHECK(fix_turn(&x, s, 8, &n, true));
     CHECK(rst_last(s, n, x.p.rcv));
+    CHECK(fix_down());
+    return true;
+}
+
+/* The card's tx ring full: the segments wait in lwIP and go as soon as the
+ * loop says there is room again (stack_tx_resume, which netstack calls on
+ * the driver's NETDEV_SIG_TX_ROOM), not on lwIP's next timer; each byte
+ * once, in order. */
+bool t_nettcp_card_full(void)
+{
+    static struct tp_seg s[TP_CAP];
+    static uint8_t buf[4000], got[4000];
+    struct cx x;
+    CHECK(fix_up());
+    CHECK(fix_connect(&x, 8096, 16384, 16384));
+    tp_forget();
+    tp_room(0);
+    tp_fill(7, 0, buf, sizeof(buf));   /* 3 segments: the initial congestion window's */
+    CHECK_EQ(sockring_stream_write(&x.prog.tx, buf, sizeof(buf)), sizeof(buf));
+    fix_publish(&x, &x.prog.tx);
+    ntcp_work();
+    CHECK_EQ(tp_caught(), 0);
+    CHECK(stack_tx_blocked());
+    ntcp_work();   /* a turn of its own sends nothing more: lwIP holds them */
+    CHECK_EQ(tp_caught(), 0);
+    tp_room(1);
+    stack_tx_resume();   /* room for one: one goes, and the edge is full again */
+    CHECK_EQ(tp_caught(), 1);
+    CHECK(stack_tx_blocked());
+    tp_room(TP_CAP);
+    stack_tx_resume();
+    CHECK(!stack_tx_blocked());
+    unsigned n, others;
+    size_t have = 0;
+    CHECK(tp_read(&x.p, s, TP_CAP, &n, &others));
+    CHECK_EQ(n, 3);
+    CHECK_EQ(tp_absorb(&x.p, s, n, got, sizeof(got), &have), 3);
+    CHECK_EQ(have, sizeof(buf));
+    CHECK(tp_same(7, 0, got, sizeof(got)));
+    tp_send(&x.p, TP_ACK, NULL, 0);
+    CHECK(fix_turn(&x, s, TP_CAP, &n, false));
+    CHECK_EQ(n, 0);   /* nothing sent twice */
+    fix_free(&x);
     CHECK(fix_down());
     return true;
 }

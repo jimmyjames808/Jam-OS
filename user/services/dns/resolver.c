@@ -161,7 +161,36 @@ static bool cached(struct dns_resolver *r, uint64_t now, const char *name, uint6
     return true;
 }
 
+/* Names in flight that no system asker waits for. */
+static unsigned prog_queries(const struct dns_resolver *r)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < DNS_MAX_QUERIES; i++)
+        n += r->q[i].used && !r->q[i].sys;
+    return n;
+}
+
+/* q's ordinary askers. */
+static unsigned prog_waiters(const struct dns_query *q)
+{
+    return q->nwait - (unsigned)__builtin_popcount(q->sys);
+}
+
+/* Join the asker `cookie` to q (room checked). */
+static void join(struct dns_query *q, uint64_t cookie, bool sys)
+{
+    if (sys)
+        q->sys |= (uint8_t)(1u << q->nwait);
+    q->cookies[q->nwait++] = cookie;
+}
+
 status_t dns_ask(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie)
+{
+    return dns_ask_as(r, now, name, cookie, true);
+}
+
+status_t dns_ask_as(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie,
+                    bool sys)
 {
     r->stats.asked++;
     uint32_t literal;
@@ -182,19 +211,32 @@ status_t dns_ask(struct dns_resolver *r, uint64_t now, const char *name, uint64_
         return ERR_BAD_STATE;
     struct dns_query *q = in_flight(r, norm);
     if (q) {
-        if (q->nwait == DNS_MAX_WAITERS)
+        if (q->nwait == DNS_MAX_WAITERS || (!sys && prog_waiters(q) >= DNS_PROG_WAITERS))
             return ERR_NO_RESOURCES;
-        q->cookies[q->nwait++] = cookie;
+        join(q, cookie, sys);
         return OK;
     }
+    if (!sys && prog_queries(r) >= DNS_PROG_QUERIES)
+        return ERR_NO_RESOURCES;
     if (!(q = free_query(r)))
         return ERR_NO_RESOURCES;
-    *q = (struct dns_query){ .used = true, .ttl = DNS_TTL_MAX, .nwait = 1 };
-    q->cookies[0] = cookie;
+    *q = (struct dns_query){ .used = true, .ttl = DNS_TTL_MAX };
+    join(q, cookie, sys);
     memcpy(q->name, norm, len + 1);
     memcpy(q->cur, norm, len + 1);
     ask(r, q, now);
     return OK;
+}
+
+/* q's asker k goes: the last one moves to its place, with its class. */
+static void drop_waiter(struct dns_query *q, unsigned k)
+{
+    unsigned last = --q->nwait;
+    unsigned moved = (q->sys >> last) & 1u;
+    q->sys &= (uint8_t)~(1u << last);
+    q->cookies[k] = q->cookies[last];
+    if (k != last)
+        q->sys = (uint8_t)((q->sys & ~(1u << k)) | (moved << k));
 }
 
 void dns_cancel(struct dns_resolver *r, uint64_t cookie)
@@ -206,7 +248,7 @@ void dns_cancel(struct dns_resolver *r, uint64_t cookie)
         unsigned k = 0;
         while (k < q->nwait) {
             if (q->cookies[k] == cookie)
-                q->cookies[k] = q->cookies[--q->nwait];   /* the last one moves here */
+                drop_waiter(q, k);   /* k now holds the one that was last */
             else
                 k++;
         }

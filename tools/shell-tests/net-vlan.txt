@@ -6,7 +6,10 @@
 # stick's settings, so the address comes by DHCP. The lease (dhcp),
 # netlog sending this boot's log, `host` and `ping <name>` (dns, then
 # ICMP), `ping` by address through the gateway, `update -n` fetching the
-# peer's build (checked by init, nothing loaded); sntp sets the clock
+# peer's build (checked by init, nothing loaded), TCP: `fetch` of a file
+# from tools/httptest.py (the peer's --tcp-relay 8000), `serve` of a file
+# on /data that curl on the Mac fetches (--tcp-forward to port 8080) and
+# a second of `speed` to tools/speed.py (--tcp-relay 5201); sntp sets the clock
 # from the gateway (the peer's SNTP server); netstack answers ARP and the
 # peer's pings meanwhile. tools/net-vlan-test.sh counts the frames
 # of each path in the pcap.
@@ -33,6 +36,22 @@ send update -n
 wait 60 update: asking 10.2.21.174:5022 for its build
 wait 60 checked by init in
 wait not loaded (-n)
+wait jam>
+send fetch http://10.2.21.174:8000/small.txt | wc -c
+wait 60 fetch: 190 bytes
+wait 190
+wait jam>
+send serve /data/served.bin
+wait 30 serve: serving /data/served.bin (
+wait jam>
+# tools/net-vlan-test.sh's curl on the Mac fetches it now
+wait 120 GET / 200, 65536 bytes
+send serve stop
+wait serve: stopped 1 file
+wait jam>
+send speed 10.2.21.174 -t 1
+wait 60 speed: connected to 10.2.21.174 port 5201: sending for 1 s over TCP
+wait 60 speed: the other side got
 wait jam>
 send net
 wait pings answered
