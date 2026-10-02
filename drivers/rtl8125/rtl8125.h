@@ -194,7 +194,8 @@ struct census {
     uint32_t by_irq, by_poll;     /* frames found after an interrupt / at a 1 s poll */
     uint32_t irqs, polls;         /* interrupt packets (fires coalesced) / 1 s timeouts */
     uint32_t isr_seen;            /* every ISR bit seen */
-    uint32_t link_changes;
+    uint32_t link_changes;        /* after the first link-up, seen by PHYSTAT */
+    uint32_t linkchg_irqs;        /* interrupts with the link-change bit */
 };
 
 struct rtl {
@@ -214,6 +215,7 @@ struct rtl {
     /* the link */
     bool     link;
     uint16_t phystat;             /* the last PHYSTAT read */
+    uint64_t an_at;               /* when autonegotiation was started (uptime, ns) */
     uint64_t link_at;             /* when it came up (uptime, ns), 0: not yet */
     unsigned link_lines;          /* link-change lines logged (capped) */
     struct census c;

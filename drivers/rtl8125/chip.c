@@ -201,8 +201,10 @@ status_t chip_reset(struct rtl *t)
     drv_log("reset: %lu ms, out of band %s, phy %s, command now %#x", (unsigned long)
             ((drv_clock_ns() - t0) / NS_PER_MS), oob ? "yes (left it)" : "no",
             phy_up ? "ready" : "NOT ready after 100 ms", cmd);
-    if (cmd == 0xff)
+    if (cmd == 0xff) {
+        drv_report("xid %03x: the chip stopped answering during its reset", t->xid);
         return ERR_NOT_FOUND;
+    }
     return OK;
 }
 
@@ -312,6 +314,7 @@ void chip_autoneg(struct rtl *t)
     mii_wr(t, MII_GTCR, (uint16_t)((mii_rd(t, MII_GTCR) & ~(GTCR_1000_FDX | GTCR_1000_HDX)) |
                                    GTCR_1000_FDX | GTCR_1000_HDX));
     mii_wr(t, MII_BMCR, BMCR_RESET | BMCR_AUTOEN | BMCR_STARTNEG);
+    t->an_at = drv_clock_ns();
     uint16_t a = mii_rd(t, MII_ANAR);
     drv_log("autonegotiation: advertising anar %#06x gtcr %#06x 2500 %s, pause %s", a,
             mii_rd(t, MII_GTCR), phy_rd(t, PHY_ADV_2500) & PHY_ADV_2500_FD ? "yes" : "no",

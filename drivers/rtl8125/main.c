@@ -87,16 +87,23 @@ static bool step(struct rtl *t, uint64_t deadline, uint64_t since, bool listenin
     if (st == OK && p.key == KEY_SERVE)
         return false;
     if (st == OK && p.key == KEY_IRQ) {
+        /* rge_intr: the mask off while the status is read and acked, and
+         * on again at the end, so status that came meanwhile fires anew. */
         t->c.irqs += (uint32_t)p.signal.count;
         (void)drv_interrupt_ack(t->irq);   /* before the status: a new fire is not lost */
+        wr32(t, RTL_IMR, 0);
         uint32_t isr = rd32(t, RTL_ISR);
-        if (isr && isr != 0xffffffffu)
+        if (isr == 0xffffffffu)
+            isr = 0;   /* the chip is gone: its registers read all ones */
+        if (isr)
             wr32(t, RTL_ISR, isr);
         if ((isr & RTL_ISR_TX_ANY) && !(t->c.isr_seen & RTL_ISR_TX_ANY))
             drv_log("WARNING: transmit status bits in isr %#x", isr);
         t->c.isr_seen |= isr;
+        t->c.linkchg_irqs += !!(isr & RTL_ISR_LINKCHG);
         (void)census_harvest(t, true);
         (void)chip_link_poll(t, since);
+        wr32(t, RTL_IMR, RTL_IMR_PROBE);
         return true;
     }
     if (st != OK && st != ERR_TIMED_OUT) {
@@ -156,13 +163,13 @@ struct outcome {
     bool     cut;              /* devmgr stopped it early */
 };
 
-static void report(const struct rtl *t, const struct outcome *o, uint64_t since)
+static void report(const struct rtl *t, const struct outcome *o)
 {
     char link[48] = "no link in 10 s";
     if (t->link_at) {
         char s[40];
         chip_link_str(t->phystat, s, sizeof(s));
-        uint64_t ms = (t->link_at - since) / NS_PER_MS;
+        uint64_t ms = (t->link_at - t->an_at) / NS_PER_MS;   /* from autonegotiation's start */
         drv_snprintf(link, sizeof(link), "link %s in %lu.%lu s", s, (unsigned long)(ms / 1000),
                      (unsigned long)(ms % 1000 / 100));
     }
@@ -211,8 +218,9 @@ static void probe(struct rtl *t, struct outcome *o, uint64_t since)
         o->cut = !listen_60s(t, since);
     (void)census_harvest(t, false);
     census_log(&t->c);
-    drv_log("interrupts: %u packet(s), %u poll(s) without one, isr bits seen %#x, link changes "
-            "%u, ocp timeouts %u", t->c.irqs, t->c.polls, t->c.isr_seen, t->c.link_changes,
+    drv_log("interrupts: %u packet(s), %u poll(s) without one, isr bits seen %#x; link changes "
+            "%u, interrupts with the link bit %u (the first link-up's included); ocp timeouts %u",
+            t->c.irqs, t->c.polls, t->c.isr_seen, t->c.link_changes, t->c.linkchg_irqs,
             t->ocp_timeouts);
     st = tally_dump(t, &o->end);
     o->end_ok = st == OK;
@@ -273,7 +281,7 @@ int driver_main(const struct driver_start *ds)
         t->bus_master = false;
     ring_free(t);
     if (o->reset)
-        report(t, o, since);
+        report(t, o);
     drv_log("done in %lu ms: the chip reset, bus mastering %s, nothing pinned%s",
             (unsigned long)((drv_clock_ns() - since) / NS_PER_MS),
             t->bus_master ? "STILL ON" : "off", t->ring_pinned || t->buf_pinned ? " (NOT)" : "");
