@@ -46,12 +46,12 @@
  * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
  * `committed` and the charge move together. Its own table pages (mid and
  * leaf, `tables`) are charged the same way, one unit each from creation to
- * free (were they free, a job allowed 0 pages could make the kernel allocate
+ * free (uncharged, a job allowed 0 pages could make the kernel allocate
  * 128 MiB of leaf tables for one 64 GiB VMO). The page is
  * charged BEFORE any table is made for it, so a refused commit builds
  * nothing; if a table it needs is refused, the page's charge is undone.
- * Tables stay (charged) until shrink or destroy frees them, as before
- * (decommit leaves them). Contiguous VMOs are charged whole when the job is
+ * Tables stay (charged) until shrink or destroy frees them (decommit
+ * leaves them). Contiguous VMOs are charged whole when the job is
  * set. Kernel VMOs have no job. Physical VMOs own no memory: only their
  * struct (one handle unit) is ever charged.
  *

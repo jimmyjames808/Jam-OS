@@ -546,10 +546,9 @@ static bool thread_left(struct process *p)
     /* Credit the job while we still count, BEFORE counting ourselves out:
      * the thread that brings nthreads to 0 tears p down (dropping p->job)
      * and signals SIG_TERMINATED, and whoever sees that must see every
-     * thread's credit. Crediting after the count (as first written) let the
-     * last thread finish while another was still between its count and its
-     * credit; the PC stress test caught it at 14 s ("a dead process left
-     * something charged to its job"). */
+     * thread's credit. Crediting after the count would let the last thread
+     * finish while another is still between its count and its credit (a
+     * dead process with something still charged to its job). */
     job_uncharge(p->job, JOB_LIMIT_THREADS, 1);
     job_uncharge(p->job, JOB_LIMIT_PAGES, UTHREAD_KMEM_PAGES);
     uint64_t f = plock(p);
@@ -674,10 +673,8 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         DBG_HOOK(DBG_PROCESS_START, &hk);
     /* Created suspended: nothing of p may run until `starting` is clear
      * again (below), or p's own first thread could call thread_start inside
-     * the window and be refused. The PC stress test hit exactly that within
-     * a second: the new thread preempted its creator on the same CPU and
-     * reached thread_start first ("user process exited with the wrong
-     * code"). */
+     * the window and be refused: the new thread can preempt its creator on
+     * the same CPU and reach thread_start first. */
     struct thread *t = hk.fail ? NULL
                                : thread_try_create_suspended(u->name, uthread_main, u, prio,
                                                              mask, PRIO_USER_MAX);

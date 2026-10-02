@@ -275,9 +275,9 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
      * otherwise hand out a RES_MMIO over that function (and pci_bar_resource
      * then turns this one's decode on). Only functions with memory decode
      * on claim addresses: a disabled one can hold a stale or unassigned BAR
-     * value (the PC's first run refused the xHCI's 64 KiB BAR because of
-     * one). The whole BAR is checked, not only a sub-page BAR's slack: a
-     * page-aligned BAR can overlap too (test: m6p2_bar_overlaps_live_function). */
+     * value, which must not refuse a live function's real BAR. The whole
+     * BAR is checked, not only a sub-page BAR's slack: a page-aligned BAR
+     * can overlap too (test: m6p2_bar_overlaps_live_function). */
     for (uint32_t i = 0; i < pci_count(); i++) {
         struct pci_dev *o = pci_get(i);
         if (!o || o == p->dev || !(pci_cfg_read(o, 0x04, 2) & 0x2))

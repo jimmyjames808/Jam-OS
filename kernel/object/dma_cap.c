@@ -232,7 +232,7 @@ static void quarantine(struct dma_cap *c)
     struct q_batch *b = kzalloc(sizeof(*b));
     if (!b) {
         /* No memory for the bookkeeping: Bus Master Enable is off, so
-         * release at once, as before the quarantine existed. */
+         * release them at once. */
         vmo_release_cap_pins(c);
         return;
     }
