@@ -1,0 +1,37 @@
+# netlog (tools/netlog-test.sh runs this): a plain boot with QEMU's
+# e1000e, net.address and net.host = 10.2.21.174 in the stick's settings,
+# and the network peer hosting tools/netlog-recv.py's receiver, which
+# starts 5 s late and pauses mid-way (the peer's --netlog-late and
+# --netlog-pause). netlog says once that the Mac doesn't answer and once
+# that it answers again, each time. Then netlog is killed (init starts it
+# again: it goes on in the same file), netstack is killed (netlog waits for
+# it and goes on), and a panic restarts the machine by kexec: the next
+# boot's netlog sends that boot's log and the panicked one's. The script
+# checks the lines on the serial port; tools/netlog-test.sh compares the
+# files with them.
+wait 120 Jam OS shell
+seen 60 netlog: sending this boot's log to 10.2.21.174 port 5021
+seen 60 netlog: the Mac doesn't answer
+wait 60 netlog: the Mac answers again
+wait 60 netlog: the Mac doesn't answer
+wait 60 netlog: the Mac answers again
+sleep 2
+send kill netlog
+wait 30 init: bin/netlog was killed
+wait 30 netlog: sending this boot's log to 10.2.21.174 port 5021
+sleep 2
+send kill netstack
+wait 30 netlog: netstack has gone
+wait 60 netstack: address 10.2.21.5/24
+sleep 3
+send crash panic yes
+wait 60 KERNEL PANIC
+wait 30 starting the stored kernel
+wait 60 loader:      Jam OS kexec
+seen 120 netlog: sending this boot's log and the last boot's
+wait 120 the last boot panicked:
+seen 60 netlog: the last boot's log is sent
+wait jam>
+sleep 3
+send reboot -f
+wait reboot: resetting
