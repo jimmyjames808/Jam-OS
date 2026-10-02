@@ -586,6 +586,11 @@ Not built yet; these rules bind every future path that can transmit.
   driven natively (references: Linux `r8169`, FreeBSD `re`; check whether
   this revision needs Realtek's PHY firmware patch). No USB adapter; the
   Wi-Fi is not planned.
+- The NIC's driver belongs to netstack the way the sound cards belong to
+  the mixer: init asks devmgr for the NIC's device channel (by its PCI
+  class, 02 00 00) before it publishes `/svc/devmgr` and gives it to
+  netstack alone ([Drivers and services](#drivers-and-services),
+  "Authority"); no other program can reach the driver's `netdev`.
 - **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
   and nothing is ever sent untagged or on another VLAN** (the network it
   runs on must not see Jam OS traffic elsewhere). The VLAN is set in one
