@@ -375,14 +375,19 @@ bool t_rtl8125_txq_guard(void)
     return true;
 }
 
-/* tx.c's gate: full mode and a VLAN, nothing else. */
+/* tx.c's gate: full mode and a network mode (a VLAN, or untagged),
+ * nothing else. */
 bool t_rtl8125_tx_gate(void)
 {
     CHECK(rtl_tx_allowed(RTL_MODE_FULL, 21) && rtl_tx_allowed(RTL_MODE_FULL, 1));
     CHECK(rtl_tx_allowed(RTL_MODE_FULL, 4094));
+    CHECK(rtl_tx_allowed(RTL_MODE_FULL, NETFRAME_MODE_UNTAGGED));
     CHECK(!rtl_tx_allowed(RTL_MODE_FULL, 0) && !rtl_tx_allowed(RTL_MODE_FULL, 4095));
     CHECK(!rtl_tx_allowed(RTL_MODE_FULL, 0x10015));
+    CHECK(!rtl_tx_allowed(RTL_MODE_FULL, 0x1001) && !rtl_tx_allowed(RTL_MODE_FULL, 0x11000));
     CHECK(!rtl_tx_allowed(RTL_MODE_PROBE, 21) && !rtl_tx_allowed(RTL_MODE_OFF, 21));
+    CHECK(!rtl_tx_allowed(RTL_MODE_PROBE, NETFRAME_MODE_UNTAGGED));
+    CHECK(!rtl_tx_allowed(RTL_MODE_OFF, NETFRAME_MODE_UNTAGGED));
     CHECK(!rtl_tx_allowed((enum rtl_mode)7, 21));
     return true;
 }
@@ -421,6 +426,8 @@ bool t_rtl8125_args(void)
             FAIL("\"%s\": vlan %u, want %u", vl[k].w, got, vl[k].v);
     }
     CHECK_EQ(args_of("vlan=21", "vlan=21", NULL).vlan, 21);
+    CHECK_EQ(args_of("netsend", "vlan=none", NULL).vlan, NETFRAME_MODE_UNTAGGED);
+    CHECK_EQ(args_of("vlan=none", "vlan=21", NULL).vlan, 0);   /* two answers: none */
     CHECK_EQ(args_of("vlan=21", "vlan=20", NULL).vlan, 0);   /* two answers: none */
     CHECK_EQ(args_of("vlan=21", "vlan=x", NULL).vlan, 0);
     CHECK_EQ(netdev_vlan_args(NULL, 0), 0);
