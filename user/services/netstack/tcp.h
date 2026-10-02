@@ -129,3 +129,9 @@ void     ntcp_unlisten(struct ntcp_listener *l);
 
 /* Connections and listeners in use now. */
 void     ntcp_census(uint32_t *conns, uint32_t *listeners);
+/* Bytes moved since netstack started. */
+struct ntcp_counts {
+    uint64_t bytes_in;    /* put in connections' rx rings */
+    uint64_t bytes_out;   /* taken from their tx rings into lwIP */
+};
+void     ntcp_get_counts(struct ntcp_counts *out);

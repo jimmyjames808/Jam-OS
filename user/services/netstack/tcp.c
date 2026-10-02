@@ -30,6 +30,7 @@ static unsigned            nclosing;   /* connections with `closing` (their FIN'
 static unsigned            nretry;     /* connections with `retry` */
 static bool                freed;      /* an ack or an end freed lwIP memory since the last turn */
 static uint8_t             chunk[TCP_CHUNK];   /* bytes on their way from a tx ring into lwIP */
+static struct ntcp_counts  counts;     /* since netstack started */
 
 /* ---- small helpers ---------------------------------------------------------- */
 
@@ -161,6 +162,7 @@ static size_t on_rx(void *ctx, const uint8_t *data, size_t n)
         return 0;
     }
     uint32_t k = sockring_stream_write(&c->r.rx, data, min32(n, UINT32_MAX));
+    counts.bytes_in += k;
     if (k && sockring_publish(&c->r.rx))
         signal_prog(c, SOCKRING_SIG_RX);
     watch_rx(c);
@@ -202,6 +204,7 @@ static void pump_tx(struct ntcp_conn *c)
             break;
         }
         budget -= n;
+        counts.bytes_out += n;
         moved = true;
     }
     if (moved && sockring_publish(&c->r.tx))
@@ -316,6 +319,7 @@ static void *on_accepted(void *lctx, struct stack_tcp *t)
         l->refused++;
         return NULL;
     }
+    c->t = t;   /* the rings function may ask stack_tcp_ends */
     if (l->req.rings(l, c) != OK) {
         slot_clear(c);
         l->refused++;
@@ -327,7 +331,6 @@ static void *on_accepted(void *lctx, struct stack_tcp *t)
         l->refused++;
         return NULL;
     }
-    c->t = t;
     c->connected = true;
     c->window = min32(l->req.rx_size, STACK_TCP_WND);
     state_set(c, SOCKRING_STATE_OPEN, OK);
@@ -505,6 +508,11 @@ void ntcp_work(void)
 bool ntcp_pending(void)
 {
     return work_head != NULL;
+}
+
+void ntcp_get_counts(struct ntcp_counts *out)
+{
+    *out = counts;
 }
 
 void ntcp_census(uint32_t *nconns, uint32_t *nlisteners)

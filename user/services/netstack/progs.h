@@ -89,6 +89,8 @@ struct opener {
     unsigned socks;       /* sockets it holds */
     unsigned later;       /* its requests in flight */
     uint64_t ring_bytes;  /* its sockets' ring bytes (sockring_bytes) */
+    unsigned tcp;         /* its TCP connections (tcpsock.c), its listeners' waiting ones too */
+    unsigned listeners;   /* its TCP listeners */
 };
 
 /* A socket's ring memory (sockmem.h has its calls). */
@@ -139,6 +141,9 @@ struct share {
     unsigned socks;             /* sockets */
     unsigned later;             /* requests in flight */
     uint64_t ring_bytes;        /* its sockets' sockring_bytes */
+    unsigned tcp;               /* TCP connections (tcpsock.c) */
+    unsigned listeners;         /* TCP listeners */
+    unsigned backlog;           /* their backlogs, added up */
 };
 
 struct progs {
@@ -223,3 +228,5 @@ void     sock_flush(void);
 void     sock_census(uint32_t *queued, uint32_t *open);
 /* Point stack.h's stack_udp_input and ctl.h's ctl_dhcp_open here. */
 void     sock_hooks(void);
+/* May a program send to a? Unicast, and not its subnet's broadcast. */
+bool     sock_sendable(uint32_t a);

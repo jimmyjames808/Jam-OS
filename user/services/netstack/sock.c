@@ -46,8 +46,7 @@ static uint64_t key_of(unsigned i, uint32_t base)
     return (base + i) | (uint64_t)pg.s[i].gen << 8;
 }
 
-/* May a program send to a? Unicast, and not its subnet's broadcast. */
-static bool sendable(uint32_t a)
+bool sock_sendable(uint32_t a)
 {
     if (!ctl_unicast(a))
         return false;
@@ -237,8 +236,9 @@ static status_t refusal(const struct sock *s, struct sockring_dgram *h)
     }
     if (!h->port)
         return ERR_INVALID_ARGS;
-    if (s->dhcp ? h->port != NET_PORT_DHCP_SERVER || (h->addr != BROADCAST && !sendable(h->addr))
-                : !sendable(h->addr))
+    if (s->dhcp ? h->port != NET_PORT_DHCP_SERVER ||
+                      (h->addr != BROADCAST && !sock_sendable(h->addr))
+                : !sock_sendable(h->addr))
         return ERR_INVALID_ARGS;
     return OK;
 }
@@ -290,7 +290,7 @@ static bool tx_one(struct sock *s)
     if (s->st_dirty)   /* before the count: a program that sees it taken sees why it was refused */
         sockring_status_put(&s->r, &s->st);
     if (e->count != before && sockring_publish(e))
-        (void)jam_event_signal(s->m.to_prog, 0, SOCKRING_SIG_TX_ROOM);   /* gone: its channel says */
+        (void)jam_event_signal(s->m.to_prog, 0, SOCKRING_SIG_TX_ROOM);   /* gone: the channel says */
     bool full = !broken && k < SOCK_TX_BUDGET && !dev_tx_room(pg.dev, SOCK_CARD_ROOM);
     if (broken)   /* our flag up, whatever the ring holds: the next look waits for a signal */
         __atomic_store_n(&e->cons->waits, 1, __ATOMIC_RELAXED);
@@ -370,7 +370,7 @@ static status_t op_connect(void *ctx, uint32_t address, uint16_t port)
     struct sock *s = ctx;
     if (s->dhcp)
         return ERR_NOT_SUPPORTED;
-    if ((address || port) && (!port || !sendable(address)))
+    if ((address || port) && (!port || !sock_sendable(address)))
         return ERR_INVALID_ARGS;
     s->peer = address;
     s->peer_port = address ? port : 0;

@@ -67,6 +67,21 @@
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
 #define NET_PORT_DHCP_CLIENT   68u
+/* TCP (net.idl's tcp, tcp_listener, accept): connections (a listener's
+ * waiting ones count against its opener), listeners and the listeners'
+ * backlogs, each limited per opener, in all, and for ordinary openers
+ * together (the rest is the network services' reserve). */
+#define NET_TCP_MAX              256u   /* connections of all openers */
+#define NET_PROG_TCP             192u   /* ... of them ordinary openers' */
+#define NET_TCP_PER_OPENER       64u    /* ... one opener's */
+#define NET_LISTENERS_MAX        16u    /* listeners of all openers */
+#define NET_PROG_LISTENERS       12u    /* ... of them ordinary openers' */
+#define NET_LISTENERS_PER_OPENER 4u     /* ... one opener's */
+#define NET_BACKLOG_MAX          16u    /* a listener's half-open and waiting connections */
+#define NET_BACKLOG_TOTAL        128u   /* every listener's backlog together */
+#define NET_PROG_BACKLOG         96u    /* ... ordinary openers' listeners' */
+#define NET_TCP_TX               (16u * 1024)   /* a connection's rings unless it asks: tx ... */
+#define NET_TCP_RX               (64u * 1024)   /* ... and rx (a whole window, 64240 bytes) */
 _Static_assert(NET_DGRAM_MAX == SOCKRING_DGRAM_MAX, "one datagram size");
 
 /* The interface (net.iface). */
@@ -117,12 +132,20 @@ struct net_counters {
     uint64_t dgrams_refused;   /* tx records refused (an address, port 0, no route, a bad record) */
     uint32_t ring_bytes;       /* sockets' ring bytes now (sockring_bytes), every opener's */
     uint32_t refused_shares;   /* opens and requests refused for an ordinary opener's share */
-    uint64_t reserved[8];      /* 0 */
+    /* TCP */
+    uint32_t tcp_conns;        /* connections now (a listener's waiting ones too) */
+    uint32_t tcp_listeners;    /* listeners now */
+    uint64_t tcp_bytes_in;     /* bytes put in connections' rx rings */
+    uint64_t tcp_bytes_out;    /* bytes taken from connections' tx rings into lwIP */
+    uint32_t tcp_refused;      /* connections a listener reset: no room for them under the limits */
+    uint32_t tcp_dropped;      /* segments lwIP dropped (malformed, out of the window, no room) */
+    uint64_t reserved[4];      /* 0 */
 };
 #define NET_COUNTERS_SIZE 256u
 
 struct idl_msg;        /* <idl/common.h>: a reply read off a channel */
 struct netwait_sock;   /* <netwait.h>: a socket as a wait set takes it */
+struct netwait_handle; /* <netwait.h>: a handle as a wait set takes it */
 
 /* A datagram received. */
 struct net_dgram {
@@ -226,6 +249,98 @@ status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint
  * change of the socket's status, room in its tx ring): look, and wait
  * again. */
 status_t net_sock_wait(struct net_sock *s, uint64_t deadline);
+
+/* ---- TCP ---- */
+/* A TCP connection is a net_sock whose rings carry bytes (<sockring.h>'s
+ * byte-stream framing): net_read and net_write move them, net_shutdown
+ * ends this side's direction (a FIN after the last byte), and net_close
+ * closes it (a reset if bytes it never read are left). Its window is its
+ * rx ring's free room: a program that reads slowly stops its sender, and
+ * nobody else. net_sock_waitable puts it in a wait set (READ: bytes or the
+ * peer's end; WRITE: room; HUP and ERROR: CLOSED, and why). Its status
+ * line (net_tcp_status) says CONNECTING, OPEN or CLOSED and the error. */
+
+/* Open a connection to addr:port (net.tcp), rings of tx_bytes and rx_bytes
+ * (0: NET_TCP_TX, NET_TCP_RX), without waiting for the handshake: the
+ * socket is CONNECTING. net.tcp's errors. */
+status_t net_tcp_open(handle_t net, uint32_t addr, uint16_t port, uint32_t tx_bytes,
+                      uint32_t rx_bytes, struct net_sock *out);
+/* Wait until it is OPEN (OK), CLOSED (its error: ERR_NOT_FOUND refused,
+ * ERR_TIMED_OUT no answer, ...) or the deadline (ERR_TIMED_OUT, still
+ * CONNECTING). */
+status_t net_tcp_wait_open(struct net_sock *s, uint64_t deadline);
+/* Wait until it is CLOSED: OK when both directions ended and our FIN was
+ * acked (every byte we sent arrived: what a program that must know waits
+ * for after net_shutdown and reading to the end), else why it closed;
+ * ERR_TIMED_OUT at the deadline. */
+status_t net_tcp_wait_closed(struct net_sock *s, uint64_t deadline);
+/* net_tcp_open with the default rings, then net_tcp_wait_open: on a
+ * failure the socket is closed again and *out empty. */
+status_t net_tcp_connect(handle_t net, uint32_t addr, uint16_t port, uint64_t deadline,
+                         struct net_sock *out);
+/* The connection's status line now: state (SOCKRING_STATE_*) and error. */
+void     net_tcp_status(const struct net_sock *s, uint32_t *state, status_t *error);
+
+/* Up to len bytes into the tx ring, as many as there is room for now
+ * (netstack woken if it sleeps): how many. 0 with no room, after
+ * net_shutdown, or once CLOSED. */
+size_t   net_write_some(struct net_sock *s, const void *data, size_t len);
+/* All len bytes, waiting for room: OK once they are all in the ring (sent
+ * as the peer's window allows). *out_n (may be NULL): how many went in.
+ * ERR_TIMED_OUT at the deadline; the connection's error once it is CLOSED
+ * (ERR_PEER_CLOSED if it closed with none); ERR_BAD_STATE after
+ * net_shutdown; ERR_PEER_CLOSED: netstack is gone. */
+status_t net_write(struct net_sock *s, const void *data, size_t len, uint64_t deadline,
+                   size_t *out_n);
+/* Up to cap bytes out of the rx ring now: how many (0: none yet, or the
+ * peer's end: net_read says which). */
+size_t   net_read_some(struct net_sock *s, void *buf, size_t cap);
+/* At least one byte (up to cap), waiting for it: OK with *out_n > 0; OK
+ * with *out_n 0: the peer ended its direction (no byte will come). The
+ * connection's error once it is CLOSED with nothing left to read;
+ * ERR_TIMED_OUT at the deadline (a deadline already past: ERR_SHOULD_WAIT
+ * when nothing is there); ERR_PEER_CLOSED: netstack is gone. */
+status_t net_read(struct net_sock *s, void *buf, size_t cap, uint64_t deadline, size_t *out_n);
+/* No more bytes from this side: SOCKRING_END on the tx ring, a FIN after
+ * the last byte. Reading goes on. ERR_BAD_STATE: no rings. */
+status_t net_shutdown(struct net_sock *s);
+
+/* A listener (net.tcp_listener): its channel (closing it stops listening)
+ * and its port. */
+struct net_listener {
+    handle_t ch;          /* the listener's channel */
+    uint16_t port;        /* its port */
+    bool     asked;       /* an accept was sent and its answer not taken yet */
+    uint32_t txid;        /* ... its txid */
+    uint32_t last_txid;   /* the counter for those (idl_txid_next) */
+};
+
+/* Listen on port (1024 and up, 0: netstack picks one) for at most backlog
+ * (1..NET_BACKLOG_MAX) connections half-open or waiting, each with rings of
+ * tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX). net is an opener of
+ * /svc/net-listen (svc_get(SVC_NET_LISTEN): the program's list says `svc
+ * net listen`); on any other ERR_ACCESS_DENIED. net.tcp_listener's errors. */
+status_t net_tcp_listen(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
+                        uint32_t rx_bytes, struct net_listener *out);
+/* The next connection, waiting for one until the deadline (ERR_TIMED_OUT;
+ * a deadline already past: ERR_SHOULD_WAIT when none is waiting): the
+ * socket into *out, its peer's address and port into *peer and *peer_port
+ * (may be NULL). ERR_PEER_CLOSED: netstack is gone. */
+status_t net_tcp_accept(struct net_listener *l, uint64_t deadline, struct net_sock *out,
+                        uint32_t *peer, uint16_t *peer_port);
+/* Without waiting (a loop or a wait set): ask for the next connection (once
+ * until its answer is taken), and take the answer once l's channel is
+ * readable (net_listener_waitable): ERR_SHOULD_WAIT: not there yet. A
+ * failed answer is returned and the next take asks again. */
+status_t net_tcp_accept_send(struct net_listener *l);
+status_t net_tcp_accept_take(struct net_listener *l, struct net_sock *out, uint32_t *peer,
+                             uint16_t *peer_port);
+/* l as a wait set takes it (netwait_add_handle): READ when an answer to
+ * net_tcp_accept_send is there, HUP when netstack is gone. */
+void     net_listener_waitable(const struct net_listener *l, struct netwait_handle *out);
+/* Stop listening: the connections waiting are reset (nothing to do if
+ * l->ch is 0). */
+void     net_listener_close(struct net_listener *l);
 
 /* ---- without waiting (a service's loop) ---- */
 /* Put a datagram in the tx ring (netstack woken if it sleeps): OK. A
