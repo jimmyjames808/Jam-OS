@@ -82,9 +82,11 @@
 # RIGHT_WRITE (vmo's handle is gone once this succeeds), so its code can be
 # mapped executable. Needs RIGHT_ROOT_VMEX on root (only init and the
 # shell: a program from /data, docs/history/M8.6-SVC.md), RIGHT_READ and
-# RIGHT_MAP on vmo, and vmo must be a paged VMO with that one handle and
-# no mapping or pin anywhere, so nobody can change its bytes afterwards
-# (ERR_BAD_STATE otherwise; then vmo is gone too).
+# RIGHT_MAP on vmo, and vmo must be a paged VMO with that one handle,
+# no mapping or pin anywhere and no write running (ERR_BAD_STATE
+# otherwise; then vmo is gone too). The VMO is sealed: every later write,
+# resize, commit, decommit, writable mapping or pin is ERR_BAD_STATE, even
+# one from a call that started before this one.
 57  vmo_make_exec     status    handle_t vmo, handle_t root, handle_t *out
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------

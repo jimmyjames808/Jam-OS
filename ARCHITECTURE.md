@@ -726,8 +726,10 @@ Not built yet; these rules bind every future path that can transmit.
   <list>` into `/data/etc/allow` (`allow -l` lists, `allow -r <name>`
   takes back). To run it the shell reads the file into a VMO only it
   holds, turns that handle into one that may execute and not write
-  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX` and refuses a VMO with
-  another handle, a mapping or a pin), hashes those bytes, and starts it
+  (`vmo_make_exec`, which needs `RIGHT_ROOT_VMEX`, refuses a VMO with
+  another handle, a mapping, a pin or a write in progress, and seals it: the
+  VMO itself refuses every later write, even from a call that started
+  before), hashes those bytes, and starts it
   only if a line has that path and hash, with the list read from the
   same bytes. No program can mark one: every program's `/data` is a view
   that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that

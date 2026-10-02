@@ -65,9 +65,21 @@
  * before its pages are committed and looked up, so no decommit or shrink
  * can slip in between; decommit and shrink refuse to touch a page any
  * range covers. A range is `busy` while it is being set up or torn down,
- * and unmap/unpin ignore busy ranges. */
+ * and unmap/unpin ignore busy ranges.
+ *
+ * Sealing (vmo_seal, for vmo_make_exec): a sealed VMO's bytes and size
+ * never change again. Every call that could change them (vmo_write,
+ * vmo_commit, vmo_decommit, vmo_set_size) enters as a writer under the
+ * lock: refused once sealed, and counted in `writers` until it returns, so
+ * vmo_seal refuses while one is still copying. A writable user mapping,
+ * a writable kernel mapping and a pin (a device may write) are refused
+ * under the lock when they are recorded; vmo_seal refuses while any
+ * mapping or pin exists. Both sides test under the one lock, so a call
+ * that took its reference before the seal either finishes before it (and
+ * the seal fails) or is refused after it: none lands afterwards. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
+#include <jam/dbghook.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
@@ -93,6 +105,7 @@ struct vmo_range {
     struct list_node node;        /* on the VMO's ranges list (VMO lock) */
     enum range_kind  kind;        /* a kernel mapping or a pin */
     bool             busy;        /* being set up or unmapped: not findable */
+    bool             writes;      /* a pin or a writable mapping: refused on a sealed VMO */
     uint64_t         first, end;  /* page indices */
     uint64_t         key;         /* mapping: base va; pin: pin id */
     struct kobject  *cap;         /* pin: the DMA capability (referenced) */
@@ -121,6 +134,8 @@ struct vmo {
     uint64_t         phys;                /* contiguous / physical: first byte */
     unsigned         order;               /* contiguous: buddy order it came from */
     uint64_t         next_pin_id;         /* the next pin's id */
+    bool             sealed;              /* vmo_seal: bytes and size fixed for good; lock */
+    uint32_t         writers;             /* write-path calls in progress (writer_enter); lock */
     struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
     struct list_node umaps;               /* struct vmo_umap: user mappings (reverse map) */
     struct mutex     resize;              /* serialises vmo_set_size */
@@ -140,6 +155,25 @@ static void vunlock(struct vmo *v, uint64_t f)
 static bool in_bounds(uint64_t offset, uint64_t len, uint64_t size)
 {
     return offset <= size && len <= size - offset;
+}
+
+/* Start a call that may change v's bytes or size: ERR_BAD_STATE once v is
+ * sealed. Every OK is paired with writer_exit when the call is done. */
+static status_t writer_enter(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    status_t st = v->sealed ? ERR_BAD_STATE : OK;
+    if (st == OK)
+        v->writers++;
+    vunlock(v, f);
+    return st;
+}
+
+static void writer_exit(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    v->writers--;
+    vunlock(v, f);
 }
 
 /* ---- pages and tables ------------------------------------------------- */
@@ -519,12 +553,9 @@ status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len)
     return OK;
 }
 
-status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len)
+/* vmo_write's copy, as a writer (writer_enter). */
+static status_t write_bytes(struct vmo *v, uint64_t offset, const void *buf, uint64_t len)
 {
-    if (v->kind == VMO_PHYS)
-        return ERR_NOT_SUPPORTED;
-    if (!in_bounds(offset, len, vmo_size(v)))
-        return ERR_OUT_OF_RANGE;
     if (v->kind == VMO_CONTIG) {
         memcpy((char *)phys_to_virt(v->phys) + offset, buf, len);
         return OK;
@@ -537,6 +568,7 @@ status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len
         status_t st = get_page(v, offset >> PAGE_SHIFT, true, &p);
         if (st != OK)
             return st;
+        DBG_HOOK(DBG_VMO_WRITE_COPY, v);
         memcpy((char *)page_to_virt(p) + in, src, n);
         page_put(p);
         src += n;
@@ -544,6 +576,20 @@ status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len
         len -= n;
     }
     return OK;
+}
+
+status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len)
+{
+    if (v->kind == VMO_PHYS)
+        return ERR_NOT_SUPPORTED;
+    if (!in_bounds(offset, len, vmo_size(v)))
+        return ERR_OUT_OF_RANGE;
+    status_t st = writer_enter(v);
+    if (st != OK)
+        return st;
+    st = write_bytes(v, offset, buf, len);
+    writer_exit(v);
+    return st;
 }
 
 /* ---- size, commit, decommit -------------------------------------------- */
@@ -648,20 +694,23 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
     if (size > VMO_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
+    status_t st = writer_enter(v);
+    if (st != OK)
+        return st;
     mutex_lock(&v->resize);
     uint64_t f = vlock(v);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
     if (first < end && ranges_overlap_locked(v, first, end)) {
-        vunlock(v, f);
-        mutex_unlock(&v->resize);
-        return ERR_BAD_STATE;
+        st = ERR_BAD_STATE;
+    } else {
+        __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
     }
-    __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
     vunlock(v, f);
-    if (first < end)
+    if (st == OK && first < end)
         shrink_pages(v, first, end);
     mutex_unlock(&v->resize);
-    return OK;
+    writer_exit(v);
+    return st;
 }
 
 status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len)
@@ -670,13 +719,17 @@ status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len)
         return ERR_OUT_OF_RANGE;
     if (v->kind != VMO_PAGED || len == 0)
         return OK;   /* contiguous and physical VMOs are always committed */
-    return commit_pages(v, offset >> PAGE_SHIFT, ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT);
+    status_t st = writer_enter(v);
+    if (st != OK)
+        return st;
+    st = commit_pages(v, offset >> PAGE_SHIFT, ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT);
+    writer_exit(v);
+    return st;
 }
 
-status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
+/* vmo_decommit's work, as a writer (writer_enter). */
+static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len)
 {
-    if (v->kind != VMO_PAGED)
-        return ERR_NOT_SUPPORTED;
     uint64_t f = vlock(v);
     if (!in_bounds(offset, len, v->size)) {
         vunlock(v, f);
@@ -718,12 +771,27 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
     return st;
 }
 
-bool vmo_unmapped_paged(struct vmo *v)
+status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
+{
+    if (v->kind != VMO_PAGED)
+        return ERR_NOT_SUPPORTED;
+    status_t st = writer_enter(v);
+    if (st != OK)
+        return st;
+    st = decommit_pages(v, offset, len);
+    writer_exit(v);
+    return st;
+}
+
+status_t vmo_seal(struct vmo *v)
 {
     uint64_t f = vlock(v);
-    bool ok = v->kind == VMO_PAGED && list_empty(&v->umaps) && list_empty(&v->ranges);
+    bool ok = v->kind == VMO_PAGED && list_empty(&v->umaps) && list_empty(&v->ranges) &&
+              v->writers == 0;
+    if (ok)
+        v->sealed = true;
     vunlock(v, f);
-    return ok;
+    return ok ? OK : ERR_BAD_STATE;
 }
 
 /* ---- user mappings (reverse map, see aspace_vmo.h) ------------------------ */
@@ -731,9 +799,15 @@ bool vmo_unmapped_paged(struct vmo *v)
 status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
 {
     uint64_t f = vlock(v);
-    if (check && u->end > v->size >> PAGE_SHIFT) {
+    /* (A split, unchecked, copies a mapping that exists already: on a
+     * sealed VMO that is never a writable one.) */
+    status_t st = !check                            ? OK
+                  : u->end > v->size >> PAGE_SHIFT  ? ERR_OUT_OF_RANGE
+                  : u->writable && v->sealed        ? ERR_BAD_STATE
+                                                    : OK;
+    if (st != OK) {
         vunlock(v, f);
-        return ERR_OUT_OF_RANGE;
+        return st;
     }
     list_add_tail(&v->umaps, &u->node);
     vunlock(v, f);
@@ -838,9 +912,12 @@ uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
 static status_t range_add(struct vmo *v, struct vmo_range *r)
 {
     uint64_t f = vlock(v);
-    if (r->end > v->size >> PAGE_SHIFT) {
+    status_t st = r->end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
+                  : r->writes && v->sealed       ? ERR_BAD_STATE
+                                                 : OK;
+    if (st != OK) {
         vunlock(v, f);
-        return ERR_OUT_OF_RANGE;
+        return st;
     }
     if (r->kind == RANGE_PIN)
         r->key = v->next_pin_id++;
@@ -894,6 +971,7 @@ status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned v
     if (!r)
         return ERR_NO_MEMORY;
     r->kind = RANGE_MAP;
+    r->writes = (vm_flags & VM_WRITE) != 0;
     r->first = offset >> PAGE_SHIFT;
     r->end = ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT;
     status_t st = range_add(v, r);
@@ -982,6 +1060,7 @@ static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
         return ERR_NO_MEMORY;
     }
     r->kind = RANGE_PIN;
+    r->writes = true;   /* the device may write */
     r->first = first;
     r->end = end;
     r->v = v;
