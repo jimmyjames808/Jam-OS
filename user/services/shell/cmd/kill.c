@@ -10,16 +10,16 @@
 SH_CMD(kill)
 {
     if (argc != 2) {
-        sh_say("usage: kill <name>\n");
-        return 0;
+        sh_tty("usage: kill <name>\n");
+        return 2;
     }
     if (!strcmp(argv[1], "init")) {
         /* Nobody restarts init: it supervises everything else (killed, the
          * kernel prints its RESULTS box while the rest runs on
          * unsupervised). devmgr may go: init starts it again, with its
          * drivers. */
-        sh_say("kill: %s is not restarted by anyone: not killing it\n", argv[1]);
-        return 0;
+        sh_tty("kill: %s is not restarted by anyone: not killing it\n", argv[1]);
+        return 1;
     }
     uint8_t name[32] = { 0 };
     uint64_t koid = 0;
@@ -31,11 +31,13 @@ SH_CMD(kill)
         sh_flush();
         st = initctl_kill_until(sh_initctl(), now() + KILL_WAIT, name, &koid);
     }
-    if (st == OK)
+    if (st == OK) {
         sh_say("shell: killed process %lu (%s)\n", (unsigned long)koid, argv[1]);
-    else if (st == ERR_NOT_FOUND)
-        sh_say("kill: no process called \"%s\"\n", argv[1]);
+        return 0;
+    }
+    if (st == ERR_NOT_FOUND)
+        sh_tty("kill: no process called \"%s\"\n", argv[1]);
     else
-        sh_say("kill %s: %s\n", argv[1], status_str(st));
-    return 0;
+        sh_tty("kill %s: %s\n", argv[1], status_str(st));
+    return 1;
 }

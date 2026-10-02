@@ -730,7 +730,10 @@ Not built yet; these rules bind every future path that can transmit.
   another handle, a mapping or a pin), hashes those bytes, and starts it
   only if a line has that path and hash, with the list read from the
   same bytes. No program can mark one: every program's `/data` is a view
-  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. Whoever holds
+  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that
+  asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
+  `init`) is refused, approval or not: they reach drivers, devices and
+  the filesystems unguarded, past every view. Whoever holds
   the stick can edit the file on another computer, as they could replace
   the kernel. User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
@@ -847,7 +850,9 @@ only when the client waits for room or the mixer sleeps. The mixer never
 maps a client's ring (the client could shrink it): it copies frames out
 with `vmo_read`, once a period. It holds the driver's stream open only
 while a stream plays, sends `wait_period` without waiting for the answer
-(one thread, one port), and at each period's end mixes until four
+(one thread, one port; `audioctl.device`, which asks devmgr and each of
+its services in turn, has a thread of its own so it never holds up the
+mixing), and at each period's end mixes until four
 periods are written ahead of the play position (128-171 ms): each
 stream at its Q15 gain, summed in 32 bits with 8 bits below the 16-bit
 step, the master gain, a lookahead limiter instead of clipping (it does

@@ -154,6 +154,13 @@ int sh_readdir(const char *abs, struct sh_dirent *out, int cap)
     return n;
 }
 
+void sh_readdir_cut(const char *who, const char *abs, int n, int cap)
+{
+    struct fs_entry e;
+    if (n == cap && fs_readdir(abs, (uint32_t)cap, &e) == OK)
+        sh_tty("%s: %s: more than %d entries: only %d of them here\n", who, abs, cap, cap);
+}
+
 status_t sh_read(const char *abs, const void **data, uint64_t *size)
 {
     struct jfile f;

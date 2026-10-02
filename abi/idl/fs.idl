@@ -6,6 +6,10 @@
 # server and never leave the mount. Errors are ERR_* (the server maps its
 # own codes): ERR_NOT_FOUND, ERR_ALREADY_EXISTS, ERR_NO_SPACE (full),
 # ERR_ACCESS_DENIED (read-only), ERR_INVALID_ARGS (a bad name), ERR_IO.
+# ERR_PEER_CLOSED: the service ended (its stick pulled, `mount -w`, a
+# restart): whoever gave the mount gives the new channel when there is one
+# (init sends its followers' namespaces the change, libos's ns_update), and
+# every file opened through the old one is closed.
 # Format: see tools/genidl.py.
 
 protocol fs 16

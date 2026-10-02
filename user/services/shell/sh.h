@@ -136,7 +136,6 @@ const char *sh_history_at(unsigned i);         /* i-th of the last 32, NULL if g
 handle_t sh_root(void);
 handle_t sh_pci(void);          /* RES_PCI, for pci_enum (`devices`), or 0 */
 handle_t sh_devmgr(void);       /* devmgr's query channel (the newest), or 0 */
-handle_t sh_devmgr_ctl(void);   /* its control channel: only for test programs */
 /* The first hda driver (abi/idl/hda.idl) with a path to a jack set up, as
  * the mixer hands it out (a query channel: no output stream), for the
  * caller to close; or HANDLE_INVALID (cmd/hda.c). */
@@ -187,6 +186,10 @@ bool     sh_on_data(const char *abs);
  * ERR_INVALID_ARGS: not an ELF file, or its list is broken. */
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w);
+/* The first service w asks for that no program from /data may have (its
+ * name, "devmgr"), or NULL: devmgr's channels and init's reach drivers,
+ * devices, the filesystems unguarded and every service, past every view. */
+const char *sh_wants_refused(const struct wants *w);
 /* Ready to run if the owner allowed exactly this file (a line of
  * /data/etc/allow with its path and hash): sh_program_file's outputs.
  * false (said why on the screen) otherwise. */
@@ -297,6 +300,9 @@ const char *sh_basename(const char *path);
 status_t    sh_stat(const char *abs, bool *dir, uint64_t *size);
 /* Entries of directory abs (sorted, at most cap); -1 if not a directory. */
 int         sh_readdir(const char *abs, struct sh_dirent *out, int cap);
+/* sh_readdir gave n entries of abs, cap at most: say on the terminal if
+ * there are more, which `who` (the command) then didn't show. */
+void        sh_readdir_cut(const char *who, const char *abs, int n, int cap);
 /* A whole file's bytes and a NUL after them: valid until the next sh_read.
  * ERR_OUT_OF_RANGE: more than SH_FILE_MAX. */
 status_t    sh_read(const char *abs, const void **data, uint64_t *size);

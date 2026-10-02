@@ -1,43 +1,56 @@
-# allow: programs on /data (docs/history/M8.6-SVC.md): a copy of bin/utest
-# on /data is refused until allowed; `allow` shows its list and asks, n
-# keeps it refused, y lets it run; `allow -l` lists it; a program (even
-# the allowed one, even with /data writable) can't change /data/etc; a
-# changed file is refused until allowed again; `allow -r` takes it back;
-# only a file on /data can be allowed, and a shell init didn't start can't.
+# allow: programs on /data (docs/history/M8.6-SVC.md): a copy of
+# bin/soakload on /data is refused until allowed; `allow` shows its list
+# and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
+# program can't change /data/etc (even with /data writable); a changed file
+# is refused until allowed again; a program whose list asks for devmgr's or
+# init's channels (a copy of bin/utest) is refused, approval or not;
+# `allow -r` takes it back; only a file on /data can be allowed, and a shell
+# init didn't start can't.
 # Run: QEMU_INPUT=tools/shell-tests/allow.txt tools/qemu-test.sh build/test allow shell
 wait 120 Jam OS shell
 wait jam>
 seen 60 init: /data mounted
 send T=x
 wait jam>
-send cp /boot/bin/utest /data/u && echo ok-$T-copied
+send cp /boot/bin/soakload /data/s && cp /boot/bin/utest /data/u && echo ok-$T-copied
 wait ok-x-copied
 wait jam>
-send run /data/u env one; echo st-$T=$?
-wait run: /data/u is not allowed to run: `allow /data/u` first
+send run /data/s 1; echo st-$T=$?
+wait run: /data/s is not allowed to run: `allow /data/s` first
 wait st-x=126
 wait jam>
-send allow /data/u; echo st-$T=$?
-wait allow u: devmgr, devmgr-ctl, every mount (write), the kernel's klog? y/n
+send allow /data/s; echo st-$T=$?
+wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
 wait jam>
-send allow /data/u; echo st-$T=$?
-wait allow u: devmgr
+# a y typed with the command, before the question, is no answer to it
+type allow /data/s; echo st-$T=$?\ry
+wait allow s: every mount (write)? y/n
+type n
+wait st-x=1
+wait jam>
+send allow /data/s; echo st-$T=$?
+wait allow s: every mount (write)? y/n
 type y
-wait allow: /data/u may run
+wait allow: /data/s may run
 wait st-x=0
 wait jam>
 send allow -l
-wait /data/u: devmgr, devmgr-ctl, every mount (write), the kernel's klog (sha-256
+wait /data/s: every mount (write) (sha-256
 wait jam>
-send run /data/u env one; echo st-$T=$?
-wait arg: one
-wait run: /data/u exited with code 0
+send run /data/s 1; echo st-$T=$?
+wait soakload:
+wait run: /data/s exited with code 0
 wait st-x=0
 wait jam>
+# devmgr's and init's channels reach past every view: never from /data
+send allow /data/u; echo st-$T=$?
+wait allow: /data/u: asks for devmgr, which no program from /data may have
+wait st-x=1
+wait jam>
 # a program's /data is a view: etc can't change, the rest can
-send run /data/u fs-put /data/etc/allow x
+send run utest fs-put /data/etc/allow x
 wait fs-put: /data/etc/allow: ERR_ACCESS_DENIED
 wait jam>
 send run utest fs-put /data/ETC/new x
@@ -46,23 +59,28 @@ wait jam>
 send run utest fs-put /data/ok.txt fine
 wait fs-put: /data/ok.txt: OK
 wait jam>
-send cat /data/etc/allow | grep -c /data/u | grep ^1$ && echo ok-$T-unchanged
+send cat /data/etc/allow | grep -c /data/s | grep ^1$ && echo ok-$T-unchanged
 wait ok-x-unchanged
 wait jam>
 # the file changes: refused until it is allowed again
-send write -a /data/u x; run /data/u env two; echo st-$T=$?
-wait run: /data/u changed since it was allowed: `allow /data/u` again
+send write -a /data/s x; run /data/s 1; echo st-$T=$?
+wait run: /data/s changed since it was allowed: `allow /data/s` again
 wait st-x=126
 wait jam>
-send allow -r u; echo st-$T=$?
-wait allow: u may no longer run
+# an approval does not let in a list that asks for devmgr or init
+send cp /boot/bin/utest /data/s; run /data/s env two; echo st-$T=$?
+wait run: /data/s: asks for devmgr, which no program from /data may have
+wait st-x=126
+wait jam>
+send allow -r s; echo st-$T=$?
+wait allow: s may no longer run
 wait st-x=0
 wait jam>
 send allow -l
 wait allow: no program on /data is allowed to run
 wait jam>
-send allow -r u; echo st-$T=$?
-wait allow: u: not allowed
+send allow -r s; echo st-$T=$?
+wait allow: s: not allowed
 wait st-x=1
 wait jam>
 send allow /boot/bin/utest; echo st-$T=$?

@@ -1,9 +1,11 @@
 /* logd: saves each boot's kernel log as /data/logs/boot-NNNN.txt.
  *
  * init starts it once /data is mounted, with
- *   SR_RESOURCE  the root resource with RIGHT_READ: klog_open (nothing else
- *                of the root's is used);
- *   SR_NS        a namespace holding /data.
+ *   SR_RESOURCE  the root resource with RIGHT_ROOT_KLOG: klog_open (nothing
+ *                else of the root's);
+ *   SR_NS        a namespace holding /data, a view that leaves its top-level
+ *                etc alone (<fsview.h>);
+ *   SR_USER + 2  the server end of its `logctl` channel (LOGD_SR_CTL).
  * It opens a kernel log reader and reads from byte 0, so the file starts
  * with what was logged before /data (or logd) existed, as far back as the
  * kernel's ring still holds it; then it follows the log, appending each
@@ -161,7 +163,7 @@ static bool open_source(void)
     status_t st = jam_klog_open(startup_handle(SR_RESOURCE), &src.h);
     if (st != OK)
         printf("logd: can't read the kernel log (%s): SR_RESOURCE must be the root with "
-               "RIGHT_READ\n", status_str(st));
+               "RIGHT_ROOT_KLOG\n", status_str(st));
     return st == OK;
 }
 
@@ -267,10 +269,10 @@ static status_t op_flush(void *ctx)
 
 static const struct logctl_ops ctl_ops = { .flush = op_flush };
 
-/* Answer what is queued on the control channel. OK, or what /data failed
- * a flush with (the caller was told; the main loop then treats /data as
- * gone). */
-static status_t serve_ctl(void)
+/* Answer what is queued on the control channel. A flush that /data failed
+ * is its caller's to hear; the main loop finds /data gone at its next
+ * write. */
+static void serve_ctl(void)
 {
     status_t st = OK;
     ctl_pending = false;
@@ -282,7 +284,6 @@ static status_t serve_ctl(void)
         jam_handle_close(ctl);   /* its holder is gone */
         ctl = HANDLE_INVALID;
     }
-    return OK;
 }
 
 /* No /data (any more): close the file, say so once, try again later. */
@@ -315,7 +316,7 @@ int main(int argc, char **argv)
         status_t st = OK;
         uint64_t t = now();
         if (ctl && ctl_pending)
-            (void)serve_ctl();   /* always OK: a failed flush is its caller's to hear */
+            serve_ctl();
         if (!up && t >= retry_at)
             st = try_open();
         if (up)

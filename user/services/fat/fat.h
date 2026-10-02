@@ -154,6 +154,12 @@ bool     path_is_root(const char *p);
 bool     path_inside(const char *p, const char *dir);
 /* Are two resolved paths the same, compared without case? */
 bool     path_same(const char *a, const char *b);
+/* A name or label read from the volume (NUL-terminated UTF-8), made safe to
+ * show, in place: every control character (C0, DEL, and C1 as UTF-8)
+ * becomes '?'. Another computer can write any name; one that holds them
+ * can't be opened through fat anyway (path_resolve refuses them, and '?'
+ * too), and on a terminal they would move the cursor or clear the screen. */
+void     name_shown(char *s);
 /* The generic FRESULT -> ERR_* mapping (the methods refine FR_DENIED). */
 status_t fr_status(FRESULT r);
 /* A FAT date and time (the clock's own zone) as seconds since 1970 counted

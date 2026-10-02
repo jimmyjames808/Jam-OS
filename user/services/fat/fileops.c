@@ -4,10 +4,12 @@
  * closing its end closes the file. The table's size (FAT_MAX_FILES) bounds
  * what clients can make fat hold: 64 KiB and two handles per slot.
  *
- * fat never maps a transfer buffer: the client's handle can shrink the VMO
- * (RIGHT_WRITE allows vmo_set_size), and a mapping of it would fault under
- * FatFs. Data goes between the VMO and one buffer of fat's own (bounce)
- * with vmo_read / vmo_write, which answer a shrunken buffer with an error.
+ * fat never maps a transfer buffer: data goes between the VMO and one
+ * buffer of fat's own (bounce) with vmo_read / vmo_write, which answer a
+ * buffer that is not what it was with an error, so nothing a client does
+ * to its handle can make fat fault. (The client's handle has no
+ * RIGHT_RESIZE, so it can't change the size either; the bounce stays as
+ * the one copy that also keeps FatFs off memory a client can write.)
  *
  * FatFs's f_lseek past the end of a file open for writing grows it with
  * whatever the clusters held before. Here a write or truncate past the end

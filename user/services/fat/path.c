@@ -2,7 +2,8 @@
  * canonical here ("." and ".." resolved, so nothing FatFs sees can name a
  * place outside the volume), names are checked against FAT's long-name
  * rules (FatFs would quietly drop a trailing dot or space; here it is an
- * error), FRESULT codes become ERR_* and FAT timestamps Unix seconds. */
+ * error), names read from the volume are made safe to show, FRESULT
+ * codes become ERR_* and FAT timestamps Unix seconds. */
 #include "fat.h"
 
 static bool name_ok(const char *name, size_t len)
@@ -100,6 +101,19 @@ bool path_same(const char *a, const char *b)
         if (next_folded(&a) != next_folded(&b))
             return false;
     return !*a && !*b;
+}
+
+void name_shown(char *s)
+{
+    size_t o = 0;
+    for (size_t i = 0; s[i]; i++) {
+        unsigned char c = (unsigned char)s[i];
+        bool c1 = c == 0xc2 && (unsigned char)s[i + 1] >= 0x80 && (unsigned char)s[i + 1] <= 0x9f;
+        if (c1)
+            i++;   /* U+0080..U+009F: two bytes, one '?' */
+        s[o++] = c < 0x20 || c == 0x7f || c1 ? '?' : (char)c;
+    }
+    s[o] = '\0';
 }
 
 status_t fr_status(FRESULT r)

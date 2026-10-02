@@ -3,15 +3,16 @@
  * driver's stream channel); streams.c the streams (the `audio` service
  * channel, each stream's channel and event, the `audioctl` control
  * channel); output.c the driver's side (finding the hda driver, its one
- * output stream, the periods, the mixing). docs/A2-PLAN.md has the
- * design; <mixer.h> the ring.
+ * output stream, the periods, the mixing); device.c a second thread for
+ * audioctl.device, which calls devmgr and its services and so must not
+ * hold up the loop. docs/A2-PLAN.md has the design; <mixer.h> the ring.
  *
  * Time is the driver's: at the end of each period it played (2048 frames,
  * 42.7 ms) the mixer mixes until OUT_LEAD periods are written ahead of
  * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
  * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
- * late before anything is lost. Nothing here is shared between threads:
- * there is one. */
+ * late before anything is lost. The loop's state is its own: device.c's
+ * thread reads only m->devmgr and m->ctl, which never change. */
 #pragma once
 
 #include <mixer.h>
@@ -148,9 +149,20 @@ void     out_serve(struct mixer *m);
 uint64_t out_tick(struct mixer *m);
 /* The driver's play position now (a call to it), or the last one known. */
 uint64_t out_position(struct mixer *m);
-/* The driver's gain in centibels (hda.get_gain), or 0 if it can't say. */
+/* The driver's gain in centibels (hda.get_gain), or 0 if it can't say (no
+ * driver found yet: this never goes looking for one). */
 int32_t  out_device_gain(struct mixer *m);
 /* audioctl.device: the index-th hda driver devmgr runs, as a query channel
  * (hda.query: everything but open_output) into *out, the caller's.
- * ERR_NOT_FOUND: no such driver. */
+ * ERR_NOT_FOUND: no such driver. Calls devmgr and its services: device.c's
+ * thread calls it, never the loop. Uses only m->devmgr. */
 status_t out_query(struct mixer *m, uint32_t index, handle_t *out);
+
+/* ---- device.c ----------------------------------------------------------------- */
+
+struct audioctl_device_req;
+/* Start the thread that answers audioctl.device (without one, device_ask
+ * answers in the loop, as slow as that is). */
+void device_init(struct mixer *m);
+/* An audioctl.device request read from m->ctl: answered by the thread. */
+void device_ask(struct mixer *m, const struct audioctl_device_req *q);

@@ -1,0 +1,19 @@
+# A console started again late in a boot draws only the last 256 KiB of
+# the kernel log (console main.c, CATCH_UP_DRAWN), not the whole 4 MiB
+# ring: eight rounds of the klog gap test put about 550 KiB of filler into
+# the log, then `kill console`; the new console says what it drew, and the
+# shell comes back on it.
+# Run: QEMU_INPUT=tools/shell-tests/console-restart.txt tools/qemu-test.sh build/test console-restart shell
+wait 120 Jam OS shell
+wait jam>
+send ktest console_klog_read_after_gap loops=8
+wait 120 jam>
+send kill console
+wait 30 of the last 256 KiB (of
+wait 30 Jam OS shell
+wait jam>
+send echo ok-$?-back
+wait ok-0-back
+wait jam>
+send reboot -f
+wait reboot: resetting

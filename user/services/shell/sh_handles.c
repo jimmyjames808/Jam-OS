@@ -1,8 +1,11 @@
 /* The handles init gives the shell (shell mode), besides the console's
  * (main.c):
- *   SR_RESOURCE   the root resource with RIGHT_READ (log) and RIGHT_MANAGE
- *                 (ktest, bench, stress, ps, mem through debug_command;
- *                 reboot); no RIGHT_MAP / RIGHT_SLICE
+ *   SR_RESOURCE   the root resource with RIGHT_ROOT_KLOG (the log),
+ *                 RIGHT_ROOT_SYSINFO (ps, top), RIGHT_ROOT_CLOCK (date),
+ *                 RIGHT_ROOT_DEBUG (ktest, bench, stress, mem through
+ *                 debug_command), RIGHT_ROOT_REBOOT (reboot when init
+ *                 doesn't answer) and RIGHT_ROOT_VMEX (programs from /data);
+ *                 no RIGHT_MAP / RIGHT_SLICE
  *   SR_USER + 1   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
  *   SR_USER + 2   a channel from init: on the boot after a panic the first
  *                 shell finds a line to print on it (INIT_SHELL_NOTE:
@@ -94,7 +97,3 @@ handle_t sh_devmgr(void)
     return svc_get(SVC_DEVMGR);
 }
 
-handle_t sh_devmgr_ctl(void)
-{
-    return svc_get(SVC_DEVMGR_CTL);
-}

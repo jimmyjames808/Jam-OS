@@ -84,6 +84,7 @@ static status_t op_readdir(void *ctx, const uint8_t path[256], uint32_t index,
         st = dirs_read(p, index, &fi);
     if (st != OK)
         return st;
+    name_shown(fi.fname);
     size_t n = strnlen(fi.fname, FS_PATH_MAX - 1);
     memcpy(out_name, fi.fname, n);   /* out_name came zeroed */
     *out_is_dir = (fi.fattrib & AM_DIR) ? 1 : 0;
@@ -174,7 +175,11 @@ static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
     *out_total = (uint64_t)(fs->n_fatent - 2) * cluster;
     *out_free = (uint64_t)nfree * cluster;
     *out_read_only = vol.read_only ? 1 : 0;
-    memcpy(out_label, label, strnlen(label, 15));   /* out_label came zeroed */
+    name_shown(label);
+    size_t n = strnlen(label, 15);
+    while (n && ((unsigned char)label[n] & 0xc0) == 0x80)
+        n--;   /* not in the middle of a character */
+    memcpy(out_label, label, n);   /* out_label came zeroed */
     return OK;
 }
 

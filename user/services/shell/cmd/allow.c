@@ -10,6 +10,16 @@
 
 #define ANSWER_WAIT (120 * NS_PER_S)   /* the owner's y or n */
 
+/* Keys typed before the question is on the screen are no answer to it:
+ * thrown away, before it is shown. false if Ctrl+C was among them. */
+static bool drop_typed_ahead(void)
+{
+    while (sh_poll_key(now()) >= 0)
+        if (sh_interrupted())
+            return false;
+    return true;
+}
+
 /* The owner's answer: true for y, false for n, Ctrl+C or no answer. */
 static bool ask(void)
 {
@@ -80,6 +90,13 @@ static int allow_file(const char *arg)
         return 1;
     }
     jam_handle_close(vmo);
+    const char *bad = sh_wants_refused(&w);
+    if (bad) {
+        sh_tty("allow: %s: asks for %s, which no program from /data may have\n", arg, bad);
+        return 1;
+    }
+    if (!drop_typed_ahead())
+        return 1;
     sh_say("allow %s: %s? y/n ", sh_basename(abs), w.text[0] ? w.text : "nothing but its terminal");
     sh_flush();
     if (!ask())

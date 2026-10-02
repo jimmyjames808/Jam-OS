@@ -3,7 +3,8 @@
 # offset 0, write takes what the client put there. Transfers larger than
 # the buffer (64 KiB) are split by the client (libos does). Closing the
 # channel closes the file (a written file's directory entry is updated
-# then, as by sync).
+# then, as by sync). ERR_PEER_CLOSED: the filesystem service ended; the
+# file is closed, and is opened again through the mount's new `fs` channel.
 # Format: see tools/genidl.py.
 
 protocol file 17

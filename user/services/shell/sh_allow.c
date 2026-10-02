@@ -158,6 +158,24 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
 
 /* ---- the file itself ----------------------------------------------------------------- */
 
+/* Services no program from /data may have, whatever the owner says: with
+ * devmgr's control channel a program gets the filesystems' own channels
+ * (DEVMGR_MOUNTS: /data unguarded, so it could approve itself) and any
+ * driver's hardware; with its query channel usb-bus, and through it any
+ * USB device's interfaces; with init's, every service and the reboot. The
+ * build allows the last two only in user/tests/ (tools/checkwants.py), and
+ * a file on /data is never one of the tree's tests. */
+static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT };
+
+const char *sh_wants_refused(const struct wants *w)
+{
+    for (unsigned i = 0; i < w->n; i++)
+        for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
+            if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))
+                return refused[k];
+    return NULL;
+}
+
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w)
 {
@@ -228,6 +246,13 @@ bool sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct 
     if (st != OK) {
         sh_tty("run: %s: %s\n", path, st == ERR_INVALID_ARGS ? "not a program it can run" :
                                        sh_why(st));
+        return false;
+    }
+    const char *bad = sh_wants_refused(w);
+    if (bad) {
+        /* An approval written before this rule, or on another computer. */
+        sh_tty("run: %s: asks for %s, which no program from /data may have\n", path, bad);
+        jam_handle_close(*vmo);
         return false;
     }
     struct find f = { .path = path, .hex = hex };

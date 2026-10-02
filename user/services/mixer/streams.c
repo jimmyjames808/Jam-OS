@@ -6,7 +6,7 @@
  * later, once its frames have been heard), position and the volume; its
  * closing drops the stream. The control channel (SR_AUDIO_CTL) lists the
  * streams, sets any stream's volume and the master volume, and hands out
- * the sound card's query channels (`device`, output.c).
+ * the sound card's query channels (`device`: device.c's thread).
  *
  * `played` for a stream comes from its period history (output.c's
  * remember): the driver frames each period's frames went to, so the play
@@ -449,23 +449,48 @@ static status_t do_set_master(void *ctx, int32_t cb, int32_t *out)
     return OK;
 }
 
-static status_t do_device(void *ctx, uint32_t index, handle_t *out_device)
-{
-    return out_query(ctx, index, out_device);
-}
-
 static const struct audioctl_ops ctl_ops = {
     .streams = do_streams,
     .set_volume = do_set_volume,
     .set_master = do_set_master,
-    .device = do_device,
-};
+};   /* device: device.c, on a thread of its own */
+
+/* One message from the control channel; `device` goes to its thread
+ * (device.c), the rest are answered here. */
+static status_t ctl_serve_one(struct mixer *m)
+{
+    _Alignas(8) uint8_t q[AUDIOCTL_REQ_MAX];
+    _Alignas(8) uint8_t r[AUDIOCTL_REP_MAX];
+    handle_t hs[IDL_READ_HANDLES];
+    uint32_t n = 0, nh = 0;
+    status_t st = drv_channel_read(m->ctl, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    if (st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(m->ctl, n, nh);
+    if (st != OK)
+        return st;
+    if (nh) {
+        idl_close_all(hs, nh);
+        idl_reply_status(m->ctl, q, n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    const struct idl_req_hdr *hdr = (const void *)q;
+    if (n == sizeof(struct audioctl_device_req) && hdr->ordinal == AUDIOCTL_DEVICE) {
+        device_ask(m, (const void *)q);
+        return OK;
+    }
+    handle_t rhs[IDL_REP_HANDLES];
+    uint32_t rhn = 0;
+    uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, r, rhs, &rhn);
+    if (!rn || jam_channel_write(m->ctl, r, rn, rhs, rhn) != OK)
+        idl_close_all(rhs, rhn);   /* not sent: they're still ours */
+    return OK;
+}
 
 void serve_ctl(struct mixer *m)
 {
     m->ctl_pending = false;
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = audioctl_serve_one(m->ctl, &ctl_ops, m);
+        status_t st = ctl_serve_one(m);
         if (st != OK) {
             if (st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
                 printf("mixer: reading the control channel: %s\n", status_str(st));
