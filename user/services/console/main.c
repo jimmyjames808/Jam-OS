@@ -192,16 +192,18 @@ int main(int argc, char **argv)
         if (st != OK)
             printf("console: kernel log: port_bind: %s; its lines show only with program "
                    "output\n", status_str(st));
+        /* Past the end: 0 bytes and the end. If that fails, end stays 0 and
+         * everything is drawn, as a console did before it looked. */
         uint64_t end = 0;
         char c;
-        jam_klog_read(klog, UINT64_MAX, &c, 1, &end);   /* past the end: 0 bytes, the end */
+        jam_klog_read(klog, UINT64_MAX, &c, 1, &end);
         draw_from = end > CATCH_UP_DRAWN ? end - CATCH_UP_DRAWN : 0;
         catching_up = true;
         klog_event();   /* the boot log so far: no news in it */
         catching_up = false;
         printf("console: the kernel log so far: drew %lu lines of the last %lu KiB (of %lu "
-               "KiB)\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
-               (unsigned long)(end >> 10));
+               "KiB)%s\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
+               (unsigned long)(end >> 10), draw_from ? "; `dmesg` shows the rest" : "");
         notice_settle();
     } else {
         printf("console: no kernel log (%s)\n", status_str(st));
