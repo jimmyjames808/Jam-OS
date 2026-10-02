@@ -111,6 +111,15 @@ static void newline(void)
         scroll();
 }
 
+/* One printable character at the cursor, then the cursor on. */
+static void glyph_locked(char ch)
+{
+    cells[cy][cx] = (struct cell){ ch, cur_fg, cur_bg };
+    draw_cell(cx, cy);
+    if (++cx >= cols)
+        newline();
+}
+
 static void putc_locked(char ch)
 {
     switch (ch) {
@@ -122,7 +131,7 @@ static void putc_locked(char ch)
         return;
     case '\t':
         do
-            putc_locked(' ');
+            glyph_locked(' ');
         while (cx % TAB);
         return;
     case '\b':
@@ -137,10 +146,7 @@ static void putc_locked(char ch)
             return;
         ch = '?';
     }
-    cells[cy][cx] = (struct cell){ ch, cur_fg, cur_bg };
-    draw_cell(cx, cy);
-    if (++cx >= cols)
-        newline();
+    glyph_locked(ch);
 }
 
 /* The boot framebuffer's physical range, kept even when the console can't
