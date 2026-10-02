@@ -158,8 +158,9 @@ be compatible with that.
 - **Never `#include` a `.c` file.** Shared code goes in a library (libos,
   libfun) or a component's own `.c` with an internal header.
 - **Shared helpers live once.** Before writing `now()`, a time constant, a
-  string builder or a test helper, look first: kernel `jam/time.h` and
-  `ktest.h`; user `os.h`, libos and `check.h`; drivers `<jam/driver.h>`
+  string builder, a lock or a test helper, look first: kernel `jam/time.h`
+  and `ktest.h`; user `os.h` (a lock between a program's threads is
+  `lock_take`), libos and `check.h`; drivers `<jam/driver.h>`
   (which has its own `NS_PER_*`, since drivers can't include kernel
   headers). Copy-paste across components is a review failure.
 

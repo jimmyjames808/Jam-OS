@@ -25,7 +25,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | A2 | Audio: mixer, `audio` protocol, WAV and MP3 playback, `music`, jamjar | done (the same sign-off) |
 | AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
-| M8.6 | Cleanup and polish ([M8.6-PLAN.md](M8.6-PLAN.md)) | next |
+| M8.6 | Cleanup and polish ([M8.6-PLAN.md](M8.6-PLAN.md)) | under way: the M8.5 review and tracks A, B and C merged; the code check under way |
 | M9 | Networking | later |
 | M10 | ACPI power, tickless idle | later |
 | M10.5 | S3 sleep | later |
@@ -42,23 +42,22 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | G2-G4 | Toolkit and fonts, mode setting, 3D | after G1 |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
-## Next: M8.6, cleanup and polish
+## Now: M8.6, cleanup and polish
 
-The row below has the whole list. First the independent review of
-M8.5's code; then three tracks at once: A (keyboard and mouse ready early
-in boot, the block cache, the boot disk and the other small items), B
+The row below has the whole list. The independent review of M8.5's code
+and the three tracks are merged: A (keyboard and mouse ready early in
+boot, the block cache, the boot disk and the other small items), B
 (`/svc` with per-program views, `allow` for programs on `/data`, `play`
 and jamjar's cover decoding split into small programs, the root
 resource's `RIGHT_READ` split), C (the log off the screen, UTF-8 in the
-log, `kernel load`, the date and time, settings); the code check last.
+log, `kernel load`, the date and time, settings). The code check is under
+way; then the PC sign-off.
 
 The audio track (A1, A2, AS) and M8.5 are done:
 [what they delivered](HISTORY.md#audio-a1-a2-as-and-m85-kexec).
 
 M8 (storage) is done: [what it delivered](HISTORY.md#m8-storage).
 Known limits it left:
-- Only programs in `/boot` can be run: a file on `/data` or `/esp` does
-  not come with the right to execute it (M8.6 adds `allow`).
 - A panic's own text is not in that boot's log file: logd can only save
   what it had synced. Since M8.5 the next boot saves the whole log next
   to it as `boot-NNNN-crash.txt`.

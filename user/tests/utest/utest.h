@@ -89,6 +89,7 @@ bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit, struct pro
 bool wait_threads(const handle_t *th, unsigned n);
 bool t_fpu_state_survives_preemption(void);
 bool t_many_threads(void);
+bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);
 bool t_job_kill_reaps_orphans(void);
 

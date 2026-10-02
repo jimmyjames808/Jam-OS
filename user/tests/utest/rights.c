@@ -81,7 +81,8 @@ bool t_root_powers(void)
     }
     if (jam_handle_duplicate(root, RIGHT_ROOT_CLOCK, &h) == OK) {
         status_t st = jam_rtc_read(h, &rt);
-        CHECK(st == OK || st == ERR_NOT_FOUND || st == ERR_TIMED_OUT);   /* a machine without an RTC */
+        /* NOT_FOUND, TIMED_OUT: a machine without an RTC */
+        CHECK(st == OK || st == ERR_NOT_FOUND || st == ERR_TIMED_OUT);
         CHECK_ST(jam_handle_close(h), OK);
     }
     CHECK_ST(jam_handle_close(v), OK);   /* never consumed: every call was refused */

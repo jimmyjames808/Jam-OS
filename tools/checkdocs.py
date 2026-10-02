@@ -3,9 +3,10 @@
 
     python3 tools/checkdocs.py
 
-Every Markdown file of ours (not third_party/, build/, .claude/, and not
-docs/history/, whose finished plans keep the paths of their time) is read,
-and these must hold:
+Every Markdown file of ours (not third_party/, build/, .claude/) is read,
+and these must hold (in docs/history/, whose finished plans and reviews
+keep the paths of their time, only the links: they are how a reader
+gets around, so they must still lead somewhere):
 
   links      [text](target): a relative target exists; a #anchor exists
              as a heading in the target (or in this file for a bare #anchor).
@@ -30,7 +31,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKIP_DIRS = {"third_party", "build", ".claude", ".git", os.path.join("docs", "history")}
+SKIP_DIRS = {"third_party", "build", ".claude", ".git"}
+LINKS_ONLY = os.path.join("docs", "history")   # its spans are of their time
 INCLUDE_DIRS = ["kernel/include", "drivers/include", "user/include"]
 SOURCE_EXT = (".c", ".h", ".S", ".py", ".sh", ".idl", ".def", ".ld", ".cfg", ".conf")
 
@@ -157,7 +159,8 @@ def main():
                     why = check_link(md, m.group(1))
                     if why:
                         problems.append(f"{md}:{n}: {why}")
-                for m in SPAN.finditer(line):
+                spans = [] if md.startswith(LINKS_ONLY + os.sep) else SPAN.finditer(line)
+                for m in spans:
                     why = check_span(m.group(1), top, names, targets)
                     if why:
                         problems.append(f"{md}:{n}: {why}")

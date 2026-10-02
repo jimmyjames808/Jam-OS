@@ -16,8 +16,12 @@
  *
  * A stick may be pulled while this runs. A file call that fails then is
  * not a failure of the system: the cycle is "cut short" and counted as
- * such, with its status in the log. What counts as FAILED is wrong data
- * where every call said OK, and any failure of the other three kinds.
+ * such, with its status in the log. But a pull also ends the filesystem
+ * service the call was talking to (devmgr stops it when its stick goes),
+ * so a failed call whose service is still there GONE_WAIT later was not
+ * a pull: it is FAILED (a full volume, ERR_NO_SPACE, is cut short). What
+ * counts as FAILED is that, wrong data where every call said OK, and any
+ * failure of the other three kinds.
  *
  * Started with a channel (SR_USER): one message on it (or its other end
  * closing) stops the load; the reply is struct soakload_result. With
@@ -35,6 +39,7 @@ JAM_WANTS("mount * rw\n");
 #define RO_MAX     (64 * 1024)    /* bytes of a read-only file read twice */
 #define RO_FILES   4              /* files of a read-only root read per pass */
 #define SAID_MAX   12             /* lines of each kind before they are only counted */
+#define GONE_WAIT  (30 * NS_PER_S)   /* a pulled stick's filesystem service has ended by then */
 
 static bool stop;                 /* set once by main; the workers poll it */
 static struct soakload_result res;   /* the workers' atomic adds */
@@ -64,9 +69,19 @@ static void failed(const char *what, const char *where, status_t st)
         printf("soakload: FAILED %s (%s, %s)\n", what, where, status_str(st));
 }
 
-/* A file call failed: the mount went away under us, or could not answer. */
-static void cut_short(const char *what, const char *path, status_t st)
+/* A file call on the filesystem fs (a duplicate of the mount's channel)
+ * failed with st: cut short if its stick was pulled (fs's service ends) or
+ * is full, else FAILED. */
+static void file_error(handle_t fs, const char *what, const char *path, status_t st)
 {
+    signals_t seen = 0;
+    bool gone = st == ERR_NO_SPACE ||
+                (jam_object_wait_one(fs, SIG_PEER_CLOSED, now() + GONE_WAIT, &seen) == OK &&
+                 (seen & SIG_PEER_CLOSED));
+    if (!gone) {
+        failed(what, path, st);   /* "write (/data/soak-1.tmp, ERR_IO)": its stick is there */
+        return;
+    }
     if (__atomic_add_fetch(&res.cut_short, 1, __ATOMIC_RELAXED) <= SAID_MAX)
         printf("soakload: %s of %s cut short: %s\n", what, path, status_str(st));
 }
@@ -76,12 +91,12 @@ static void cut_short(const char *what, const char *path, status_t st)
 static uint8_t wbuf[FILE_MAX], rbuf[FILE_MAX];
 
 /* Read n bytes at 0 into rbuf and compare with wbuf. */
-static bool read_back(struct jfile *f, const char *path, size_t n, const char *when)
+static bool read_back(handle_t fs, struct jfile *f, const char *path, size_t n, const char *when)
 {
     size_t done = 0;
     status_t st = file_read(f, 0, rbuf, n, &done);
     if (st != OK) {
-        cut_short(when, path, st);
+        file_error(fs, when, path, st);
         return false;
     }
     if (done != n || memcmp(rbuf, wbuf, n)) {
@@ -91,8 +106,8 @@ static bool read_back(struct jfile *f, const char *path, size_t n, const char *w
     return true;
 }
 
-/* One file on a writable mount, start to finish. */
-static void write_cycle(const char *mount, uint64_t *seed)
+/* One file on the writable mount (its filesystem fs), start to finish. */
+static void write_cycle(handle_t fs, const char *mount, uint64_t *seed)
 {
     char path[NS_NAME_MAX + 24];
     snprintf(path, sizeof(path), "%s/soak-%u.tmp", mount, (unsigned)(rnd(seed) % 4));
@@ -104,33 +119,34 @@ static void write_cycle(const char *mount, uint64_t *seed)
     struct jfile f;
     status_t st = file_open(path, FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
     if (st != OK) {
-        cut_short("open", path, st);
+        file_error(fs, "open", path, st);
         return;
     }
     st = file_write(&f, 0, wbuf, n, &done);
     if (st == OK && done == n)
         st = file_sync(&f);
     bool ok = st == OK && done == n;
-    if (!ok)
-        cut_short("write", path, st);
-    ok = ok && read_back(&f, path, n, "read");
+    if (!ok)   /* done short with OK: the volume is full */
+        file_error(fs, "write", path, st == OK ? ERR_NO_SPACE : st);
+    ok = ok && read_back(fs, &f, path, n, "read");
     file_close(&f);
     if (ok && (st = file_open(path, FS_READ, &f)) == OK) {
-        ok = read_back(&f, path, n, "second read");
+        ok = read_back(fs, &f, path, n, "second read");
         file_close(&f);
     } else if (ok) {
-        cut_short("reopen", path, st);
+        file_error(fs, "reopen", path, st);
         ok = false;
     }
     st = fs_unlink(path);
     if (ok && st != OK)
-        cut_short("unlink", path, st);
+        file_error(fs, "unlink", path, st);
     else if (ok)
         add(&res.file_cycles);
 }
 
-/* A read-only mount: the first files of its root, each read twice. */
-static void read_pass(const char *mount)
+/* A read-only mount (its filesystem fs): the first files of its root,
+ * each read twice. */
+static void read_pass(handle_t fs, const char *mount)
 {
     static uint8_t again[RO_MAX];
     unsigned files = 0;
@@ -149,7 +165,7 @@ static void read_pass(const char *mount)
         status_t s1 = file_read(&f, 0, rbuf, n, &a), s2 = file_read(&f, 0, again, n, &b);
         file_close(&f);
         if (s1 != OK || s2 != OK)
-            cut_short("read", path, s1 != OK ? s1 : s2);
+            file_error(fs, "read", path, s1 != OK ? s1 : s2);
         else if (a != b || memcmp(rbuf, again, a))
             failed("two reads of one file differ", path, OK);
         else
@@ -168,13 +184,19 @@ static void files_main(void *arg)
         bool any = false;
         for (unsigned i = 0; ns_mount_at(i, mount) && !stopped(); i++) {
             bool ro = true;
-            if (fs_statfs(mount, NULL, NULL, &ro, NULL) != OK)
+            handle_t fs;
+            if (ns_channel(mount, &fs) != OK)
                 continue;   /* gone: its stick was pulled */
+            if (fs_statfs(mount, NULL, NULL, &ro, NULL) != OK) {
+                jam_handle_close(fs);
+                continue;   /* the same */
+            }
             any = true;
             if (ro)
-                read_pass(mount);
+                read_pass(fs, mount);
             else
-                write_cycle(mount, &seed);
+                write_cycle(fs, mount, &seed);
+            jam_handle_close(fs);
         }
         jam_nanosleep(now() + (any ? 20 : 200) * NS_PER_MS);
     }

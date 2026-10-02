@@ -21,6 +21,11 @@
 # the stopped one shorter than 3 s, ending in a fade (its last 1 ms well
 # under its peak) and no click (no jump between samples bigger than its
 # sine's own). QEMU_SMP passes through.
+# QEMU's hda-codec drops its whole buffer (2048 frames) when its audio
+# backend falls behind on a busy host (tools/mixer-test.sh has the story):
+# the capture then skips 2048 frames, a phase jump the guest never made.
+# QEMU runs with the trace event hda_audio_overrun, so such a drop is
+# known; each one traced excuses one click and 2048 frames of length.
 # Usage: tools/play-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -81,15 +86,20 @@ for f in s48 m44 u8 x24 garbage cut float long; do
 done
 
 devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16 \
--device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
+-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0 \
+-trace hda_audio_overrun"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IMAGE="$stick" QEMU_EXTRA="$devs" \
     QEMU_INPUT=tools/shell-tests/play.txt \
     tools/qemu-test.sh "$out" play shell > "$out/play.out" 2>&1 ||
     { echo "play: the script failed"; grep "serial-feed: .*no '" "$out/play.out"; ok=0; }
 rm -f "$stick"
 
-python3 - "$wav" <<'PY' || ok=0
+drops=$(grep -ac "hda_audio_overrun" "$out/play.out" || true)
+[ "$drops" = 0 ] || echo "play: QEMU dropped its codec buffer $drops time(s) (the host was late)"
+
+python3 - "$wav" "$drops" <<'PY' || ok=0
 import math, struct, sys
+drops = int(sys.argv[2])
 data = open(sys.argv[1], "rb").read()
 i = data.find(b"data")
 if data[:4] != b"RIFF" or i < 0:
@@ -121,6 +131,16 @@ want = [("s48", 1500, 440, 660, False), ("m44", 1000, 1000, 1000, True),
         ("u8", 1000, 500, 500, True), ("x24", 1000, 750, 750, True),
         ("long", None, 300, 300, True)]
 fails = []
+left = [drops]   # QEMU buffer drops traced, not yet spent excusing a check
+
+def excused(what):
+    """A failed check one traced drop explains: spend it, say so."""
+    if left[0] <= 0:
+        return False
+    left[0] -= 1
+    print("play: %s: excused by a QEMU buffer drop" % what)
+    return True
+
 if len(segs) != len(want):
     sys.exit("play: the capture has %d sounds (%s), want %d"
              % (len(segs), ", ".join("%.0f ms" % ((b - a + 1) / 48.0) for a, b in segs), len(want)))
@@ -133,7 +153,8 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
     after = (segs[segs.index((a, b)) + 1][0] if (a, b) != segs[-1] else n) - b - 1
     print("play: %s: %.1f ms, %.2f Hz left, %.2f Hz right, peak %d, %d frames of silence after"
           % (name, dur, fl, fr_, peaks[name], after))
-    if ms and abs(dur - ms) > ms * 0.02:
+    short = ms and ms - dur > ms * 0.02 and ms - dur <= ms * 0.02 + drops * 2048 / 48.0
+    if ms and abs(dur - ms) > ms * 0.02 and not (short and excused("%s lasts %.1f ms" % (name, dur))):
         fails.append("%s lasts %.1f ms, want %d within 2 %%" % (name, dur, ms))
     if abs(fl - hl) > hl * 0.01 or abs(fr_ - hr) > hr * 0.01:
         fails.append("%s is %.2f/%.2f Hz, want %d/%d within 1 %%" % (name, fl, fr_, hl, hr))
@@ -141,13 +162,14 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         fails.append("%s: the channels differ" % name)
     # The stopped one is the capture's last sound: what follows it is only
     # how long the output stayed open after its fade drained (0 to about
-    # a period, 42.7 ms), so any silence at all will do; its fade is
-    # checked below.
-    if after < (1 if name == "long" else 2400):
+    # a period, 42.7 ms), so it may be none at all; that it ended in its
+    # fade, not cut off, is checked below.
+    if name != "long" and after < 2400:
         fails.append("%s: only %d frames of silence after it" % (name, after))
     # No click: no step between samples bigger than the sine's own.
     jump = max(abs(x[k + 1] - x[k]) for x in (l, r) for k in range(len(x) - 1))
-    if jump > peaks[name] * 2 * math.pi * max(hl, hr) / 48000 * 1.3 + 300:
+    if jump > peaks[name] * 2 * math.pi * max(hl, hr) / 48000 * 1.3 + 300 and \
+            not excused("%s: a jump of %d" % (name, jump)):
         fails.append("%s: a jump of %d between samples (a click)" % (name, jump))
     if name == "long":
         if dur > 3000:
@@ -155,6 +177,11 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         endp = max(abs(v) for v in l[-48:])
         if endp > 0.5 * peaks[name]:
             fails.append("long: no fade: its last 1 ms reaches %d of %d" % (endp, peaks[name]))
+        # Its last sample is the fade's end (a 240th of the tone or less),
+        # not the tone cut off when the capture stopped.
+        endv = max(abs(l[-1]), abs(r[-1]))
+        if endv > 0.02 * peaks[name]:
+            fails.append("long: cut off at %d of %d, not faded to nothing" % (endv, peaks[name]))
 # -v -20 played x24's stream at -20 dB in the mixer (Q15 3277: a tenth),
 # the device at its -30 dB like the others.
 ratio = peaks["x24"] / float(peaks["s48"])

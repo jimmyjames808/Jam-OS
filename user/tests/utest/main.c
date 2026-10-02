@@ -571,6 +571,7 @@ static const struct {
     { "job_kill_reaps_orphans", t_job_kill_reaps_orphans },
     { "fpu_state_survives_preemption", t_fpu_state_survives_preemption },
     { "many_threads", t_many_threads },
+    { "lock_take", t_lock_take },
     { "driver_processes", t_driver_processes },
     { "driver_killed", t_driver_killed },
     { "edu_process", t_edu_process },

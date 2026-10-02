@@ -366,7 +366,8 @@ static bool drive_start(struct drive *v, handle_t usb, const char *name)
         jam_handle_close(usb);
         FAIL("channel_create: %s", status_str(st));
     }
-    const struct spawn_handle x[2] = { { SR_DRIVER(DR_USB), usb }, { SR_DRIVER(DR_SERVE), theirs } };
+    const struct spawn_handle x[2] = { { SR_DRIVER(DR_USB), usb },
+                                       { SR_DRIVER(DR_SERVE), theirs } };
     const char *argv[] = { name };
     struct spawn_args a = {
         .path = "drv/usb-storage", .name = name, .argc = 1, .argv = argv,
@@ -650,7 +651,7 @@ static bool t_storage_stop(void)
     return true;
 }
 
-/* ---- the second disk -------------------------------------------------------------------------- */
+/* ---- the second disk ----------------------------------------------------------- */
 
 static bool t_storage_disk2(void)
 {
@@ -706,7 +707,7 @@ static bool t_storage_unplug(void)
     return true;
 }
 
-/* ---- the slow disk ------------------------------------------------------------------------------ */
+/* ---- the slow disk ------------------------------------------------------------- */
 
 /* The slow disk's usb-storage, started by the first check that needs it. */
 static bool slow_start(void)
@@ -839,7 +840,7 @@ static bool t_storage_timeout(void)
     return true;
 }
 
-/* ---- all of them --------------------------------------------------------------------------------- */
+/* ---- all of them --------------------------------------------------------------- */
 
 void storage_tests(void)
 {

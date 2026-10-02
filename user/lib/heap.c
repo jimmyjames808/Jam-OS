@@ -15,8 +15,8 @@
  * blocks together at the bottom and big holes whole.
  *
  * free walks the list (O(free blocks)): fine for the programs here, which
- * keep few; big buffers can still come from VMOs of their own. A spinlock
- * makes it safe for several threads. */
+ * keep few; big buffers can still come from VMOs of their own. A lock
+ * (lock_take) makes it safe for several threads. */
 #include <os.h>
 
 #define ALIGN       16u
@@ -32,19 +32,17 @@ struct block {
 
 static uint8_t      *heap_base, *heap_next, *heap_end;
 static struct block *free_list;
-static int           heap_lock;
+static bool          heap_lock;
 static int           heap_failed;
 
 static void lock(void)
 {
-    while (__atomic_exchange_n(&heap_lock, 1, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(&heap_lock, __ATOMIC_RELAXED))
-            __builtin_ia32_pause();
+    lock_take(&heap_lock);
 }
 
 static void unlock(void)
 {
-    __atomic_store_n(&heap_lock, 0, __ATOMIC_RELEASE);
+    lock_give(&heap_lock);
 }
 
 static struct block **next_of(struct block *b)

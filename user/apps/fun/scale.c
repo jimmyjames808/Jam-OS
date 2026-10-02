@@ -6,32 +6,52 @@
  * covers with it, and bin/jamcover makes them. */
 #include "internal.h"
 
+/* How much of source cell [i, i + 1) the span [a, b) covers. */
+static float cover(int i, float a, float b)
+{
+    return ((float)(i + 1) < b ? (float)(i + 1) : b) - ((float)i > a ? (float)i : a);
+}
+
+/* The source image box() reads. */
+struct box_src {
+    const uint32_t *px;          /* its pixels */
+    int             w, h;        /* its size */
+    int             stride;      /* pixels a row */
+};
+
+/* One output pixel of box(): the area [x0, x1) x [y0, y1) of s averaged,
+ * partial pixels weighted by how much of them it covers. */
+static uint32_t box_pixel(const struct box_src *s, float x0, float x1, float y0, float y1)
+{
+    float acc[4] = { 0, 0, 0, 0 }, wsum = 0;
+    for (int sy = (int)y0; sy < s->h && (float)sy < y1; sy++) {
+        float wy = cover(sy, y0, y1);
+        for (int sx = (int)x0; sx < s->w && (float)sx < x1; sx++) {
+            float w = wy * cover(sx, x0, x1);
+            uint32_t p = s->px[(size_t)sy * s->stride + sx];
+            for (int c = 0; c < 4; c++)
+                acc[c] += w * (float)(p >> (8 * c) & 0xff);
+            wsum += w;
+        }
+    }
+    uint32_t o = 0;
+    for (int c = 0; c < 4; c++)
+        o |= (uint32_t)(acc[c] / (wsum > 0 ? wsum : 1) + 0.5f) << (8 * c);
+    return o;
+}
+
 /* src (sw x sh, `stride` pixels a row) to dst (dw x dh): each output pixel
- * the average of the source area it covers, partial pixels weighted by how
- * much of them it covers. For making smaller; scale_pm picks. */
+ * the average of the source area it covers. For making smaller; scale_pm
+ * picks. */
 static void box(const uint32_t *src, int sw, int sh, int stride, uint32_t *dst, int dw, int dh)
 {
+    const struct box_src s = { src, sw, sh, stride };
     float fx = (float)sw / (float)dw, fy = (float)sh / (float)dh;
     for (int y = 0; y < dh; y++) {
         float y0 = (float)y * fy, y1 = y0 + fy;
         for (int x = 0; x < dw; x++) {
-            float x0 = (float)x * fx, x1 = x0 + fx, acc[4] = { 0, 0, 0, 0 }, wsum = 0;
-            for (int sy = (int)y0; sy < sh && (float)sy < y1; sy++) {
-                float wy = ((float)(sy + 1) < y1 ? (float)(sy + 1) : y1) -
-                           ((float)sy > y0 ? (float)sy : y0);
-                for (int sx = (int)x0; sx < sw && (float)sx < x1; sx++) {
-                    float w = wy * (((float)(sx + 1) < x1 ? (float)(sx + 1) : x1) -
-                                    ((float)sx > x0 ? (float)sx : x0));
-                    uint32_t p = src[(size_t)sy * stride + sx];
-                    for (int c = 0; c < 4; c++)
-                        acc[c] += w * (float)(p >> (8 * c) & 0xff);
-                    wsum += w;
-                }
-            }
-            uint32_t o = 0;
-            for (int c = 0; c < 4; c++)
-                o |= (uint32_t)(acc[c] / (wsum > 0 ? wsum : 1) + 0.5f) << (8 * c);
-            dst[(size_t)y * dw + x] = o;
+            float x0 = (float)x * fx;
+            dst[(size_t)y * dw + x] = box_pixel(&s, x0, x0 + fx, y0, y1);
         }
     }
 }

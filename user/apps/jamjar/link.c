@@ -7,7 +7,7 @@
  * the track heard changes (and once a second, for the folder and the
  * note). What it learns goes into a snapshot that link_get copies out.
  *
- * Sharing: `lock` (a spinlock: every hold is a copy of a few hundred
+ * Sharing: `lock` (lock_take: every hold is a copy of a few hundred
  * bytes, never a call) guards snap, the queue and the result. The UI
  * signals `wake` after queueing, so a command goes out at once rather
  * than at the next poll. */
@@ -31,13 +31,12 @@ static struct {
 
 static void lock(void)
 {
-    while (__atomic_test_and_set(&L.lock, __ATOMIC_ACQUIRE))
-        __builtin_ia32_pause();
+    lock_take(&L.lock);
 }
 
 static void unlock(void)
 {
-    __atomic_clear(&L.lock, __ATOMIC_RELEASE);
+    lock_give(&L.lock);
 }
 
 static void result(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

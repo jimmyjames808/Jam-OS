@@ -174,8 +174,11 @@ USER_OBJS   := $(LIBOS_OBJS) $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*
                $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
                $(foreach p,$(USER_PROGS),$(call prog_objs,$(p)))
 
-.SECONDARY: $(UINC)
-$(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
+# Copies named one by one (static pattern rules, not .SECONDARY pattern
+# targets): GNU make 3.81, the Mac's, spins forever under -j when an
+# order-only prerequisite is a .SECONDARY file a pattern rule would make
+# and it doesn't exist yet (a new header or IDL file).
+$(UINC): $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 
@@ -213,11 +216,10 @@ FATFS_HDRS  := $(FATFS_STAGE)/ff.h $(FATFS_STAGE)/diskio.h
 FATFS_OBJS  := $(FATFS_STAGE)/ff.o $(FATFS_STAGE)/ffunicode.o
 FATFS_INC   := -I$(FATFS_STAGE) -I$(FATFS_PORT)
 
-.SECONDARY: $(FATFS_HDRS) $(FATFS_OBJS:.o=.c)
-$(FATFS_STAGE)/%.h: $(FATFS_SRC)/%.h
+$(FATFS_HDRS): $(FATFS_STAGE)/%.h: $(FATFS_SRC)/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
-$(FATFS_STAGE)/%.c: $(FATFS_SRC)/%.c
+$(FATFS_OBJS:.o=.c): $(FATFS_STAGE)/%.c: $(FATFS_SRC)/%.c
 	@mkdir -p $(dir $@)
 	cp $< $@
 
@@ -238,6 +240,10 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 # <stdlib.h>/<string.h> it includes, which are libos's
 # (user/apps/jamcover/port).
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
+# utest tests the music player's folder walk and spectrum (utest/music.c):
+# the player's own objects, linked in, and its header.
+EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o
+EXTRA_CFLAGS_utest := -iquote user/services/music
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -282,14 +288,13 @@ DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DR
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c))
 
-.SECONDARY: $(DRV_HDRS)
 $(DRV_INC)/jam/driver.h: drivers/include/jam/driver.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h: $(DRV_INC)/jam/%.h: kernel/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
-$(DRV_INC)/idl/%.h: drivers/include/idl/%.h | $(IDL_OK)
+$(filter $(DRV_INC)/idl/%,$(DRV_HDRS)): $(DRV_INC)/idl/%.h: drivers/include/idl/%.h | $(IDL_OK)
 	@mkdir -p $(dir $@)
 	cp $< $@
 

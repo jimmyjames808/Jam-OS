@@ -26,6 +26,11 @@
 # files equal on both channels, no clicks (bad and cut excepted: frames are
 # missing there), Ctrl+C's fade. From `play -n`: all 441000 frames of
 # long.mp3 and the decoding cost per second of audio (printed).
+# QEMU's hda-codec drops its whole buffer (2048 frames) when its audio
+# backend falls behind on a busy host (tools/mixer-test.sh has the story):
+# the capture then skips 2048 frames, a phase jump the guest never made.
+# QEMU runs with the trace event hda_audio_overrun, so such a drop is
+# known; each one traced excuses one click and 2048 frames of length.
 # QEMU_SMP passes through. Usage: tools/mp3-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -104,7 +109,8 @@ for f in a44.mp3 v48.mp3 m22.mp3 tag.mp3 l2.mp2 bad.mp3 cut.mp3 garbage.mp3 id3.
 done
 
 devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16 \
--device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
+-device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0 \
+-trace hda_audio_overrun"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-180} QEMU_IMAGE="$stick" QEMU_EXTRA="$devs" \
     QEMU_INPUT=tools/shell-tests/mp3.txt \
     tools/qemu-test.sh "$out" mp3 shell > "$out/mp3.out" 2>&1 ||
@@ -119,8 +125,12 @@ case "$cost" in
 *) echo "mp3: play -n did not decode long.mp3's 441000 frames"; ok=0 ;;
 esac
 
-python3 - "$wav" <<'PY' || ok=0
+drops=$(grep -ac "hda_audio_overrun" "$out/mp3.out" || true)
+[ "$drops" = 0 ] || echo "mp3: QEMU dropped its codec buffer $drops time(s) (the host was late)"
+
+python3 - "$wav" "$drops" <<'PY' || ok=0
 import math, struct, sys
+drops = int(sys.argv[2])
 data = open(sys.argv[1], "rb").read()
 i = data.find(b"data")
 if data[:4] != b"RIFF" or i < 0:
@@ -161,6 +171,16 @@ want = [("a44", 2490 * .98, 2490 * 1.02, 440, 660, False, True),
         ("cut", 2490 * .50, 2490 * .70, 440, 660, False, False),
         ("long", None, None, 600, 600, False, True)]
 fails = []
+left = [drops]   # QEMU buffer drops traced, not yet spent excusing a check
+
+def excused(what):
+    """A failed check one traced drop explains: spend it, say so."""
+    if left[0] <= 0:
+        return False
+    left[0] -= 1
+    print("mp3: %s: excused by a QEMU buffer drop" % what)
+    return True
+
 if len(segs) != len(want):
     sys.exit("mp3: the capture has %d sounds (%s), want %d"
              % (len(segs), ", ".join("%.0f ms" % ((b - a + 1) / 48.0) for a, b in segs), len(want)))
@@ -172,7 +192,9 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
     after = (segs[idx + 1][0] if idx + 1 < len(segs) else n) - b - 1
     print("mp3: %s: %.1f ms, %.2f Hz left, %.2f Hz right, peak %d, %d frames of silence after"
           % (name, dur, fl, fr_, peak, after))
-    if lo is not None and not lo <= dur <= hi:
+    short = lo is not None and lo - drops * 2048 / 48.0 <= dur < lo
+    if lo is not None and not lo <= dur <= hi and \
+            not (short and excused("%s lasts %.1f ms" % (name, dur))):
         fails.append("%s lasts %.1f ms, want %.0f-%.0f" % (name, dur, lo, hi))
     # bad's middle holds what the decoder made of the noise (junk frames
     # before it resynchronises), which adds zero crossings: 5 % there.
@@ -183,8 +205,9 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
     if mono and l != r:
         fails.append("%s: the channels differ" % name)
     # long is the capture's last sound, stopped by Ctrl+C: what follows it is
-    # only how long the output stayed open after its fade (0 to a period).
-    if after < (1 if name == "long" else 2400):
+    # only how long the output stayed open after its fade (0 to a period,
+    # so maybe none); that it ended in its fade is checked below.
+    if name != "long" and after < 2400:
         fails.append("%s: only %d frames of silence after it" % (name, after))
     if peak < 2000:
         fails.append("%s: peak %d, too quiet for a quarter-scale tone at -30 dB" % (name, peak))
@@ -192,7 +215,8 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
         # No click: no step between samples much bigger than the sine's own
         # (MP3's coding noise allowed for).
         jump = max(abs(x[k + 1] - x[k]) for x in (l, r) for k in range(len(x) - 1))
-        if jump > peak * 2 * math.pi * max(hl, hr) / 48000 * 1.3 + 300:
+        if jump > peak * 2 * math.pi * max(hl, hr) / 48000 * 1.3 + 300 and \
+                not excused("%s: a jump of %d" % (name, jump)):
             fails.append("%s: a jump of %d between samples (a click)" % (name, jump))
     if name == "long":
         if dur > 3000:
@@ -200,6 +224,11 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
         endp = max(abs(v) for v in l[-48:])
         if endp > 0.5 * peak:
             fails.append("long: no fade: its last 1 ms reaches %d of %d" % (endp, peak))
+        # Its last sample is the fade's end (a 240th of the tone or less),
+        # not the tone cut off when the capture stopped.
+        endv = max(abs(l[-1]), abs(r[-1]))
+        if endv > 0.02 * peak:
+            fails.append("long: cut off at %d of %d, not faded to nothing" % (endv, peak))
 if fails:
     sys.exit("mp3: " + "; ".join(fails))
 PY

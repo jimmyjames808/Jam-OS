@@ -167,6 +167,11 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
  * exits when fn returns. *out gets its thread handle. */
 status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
                       size_t stack_size, handle_t *out);
+/* A lock for our threads (user/lib/lock.c): *l false is free. A waiter
+ * pauses briefly, then sleeps 20 us between tries. Short holds only;
+ * never taken twice by one thread. */
+void     lock_take(bool *l);
+void     lock_give(bool *l);
 
 /* files ---------------------------------------------------------------------------
  * The namespace: the mount points a program was given, each with its `fs`
@@ -234,7 +239,7 @@ struct ns_msg {
     uint32_t txid;                              /* 0: not a call */
     uint32_t kind;                              /* NS_MOUNT, NS_UNMOUNT or NS_SET */
     uint32_t count;                             /* paths used, at most NS_MAX_ENTRIES */
-    uint32_t connect;                           /* bit i: service i hands out channels (svc.connect) */
+    uint32_t connect;                           /* bit i: service i hands out channels */
     char     path[NS_MAX_ENTRIES][NS_NAME_MAX]; /* mount points and /svc/<name>, NUL-terminated */
 };
 /* An ns_msg is sent only as long as the paths it uses. */

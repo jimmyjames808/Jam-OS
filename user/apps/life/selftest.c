@@ -108,6 +108,32 @@ static void test_parallel(void)
     fun_check(ok, "random soup 512x512, 64 generations: all CPUs == one CPU");
 }
 
+static void nothing(uint32_t item, uint32_t worker, void *arg)
+{
+    (void)item, (void)worker, (void)arg;
+}
+
+/* libfun's pool: after pool_rest (what gfx_key does before the app waits)
+ * every worker sleeps at once. With the spin before sleeping made endless,
+ * only the rest can put them to sleep, however late it comes. */
+static void test_pool_rest(uint32_t n)
+{
+    if (n < 2) {
+        fun_check(true, "pool_rest: one thread, no workers to rest");
+        return;
+    }
+    pool_set_spin(UINT32_MAX);
+    pool_run(nothing, NULL, 4 * n);
+    pool_rest();
+    uint64_t deadline = now() + 5 * NS_PER_S;
+    while (pool_asleep() < n - 1 && now() < deadline)
+        jam_nanosleep(now() + NS_PER_MS);
+    uint32_t asleep = pool_asleep();
+    pool_set_spin(0);   /* back to the default: any still spinning sleep soon */
+    say("life: pool_rest: %u of %u workers asleep\n", asleep, n - 1);
+    fun_check(asleep == n - 1, "pool_rest: every worker asleep at once, not spinning");
+}
+
 /* How much faster all CPUs are on a big world (information only). */
 static void speed(uint32_t n)
 {
@@ -145,6 +171,7 @@ int life_selftest(void)
     test_blinker_ages();
     test_rpentomino();
     test_parallel();
+    test_pool_rest(n);
     speed(n);
     return fun_selftest_end();
 }
