@@ -11,7 +11,7 @@ allow, and every driver and service runs as a separate user process that
 the kernel supervises through those handles. It boots from a USB stick on
 a real desktop PC, which is where every milestone is tested.
 
-![The Jam OS shell in QEMU: uname, date, free, the services under /svc, mount and ps](docs/images/shell.png)
+![The Jam OS shell in QEMU: uname, date, free, the services under /svc, mount and ps](docs/images/shell-m86.png)
 
 ## What works today
 
