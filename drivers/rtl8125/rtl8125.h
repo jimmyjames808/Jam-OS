@@ -37,6 +37,7 @@
 #include <jam/netserver.h>
 #include "args.h"
 #include "notx.h"
+#include "rxdesc.h"
 #include "txdesc.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
@@ -167,22 +168,9 @@
 
 /* ---- the DMA memory (ring.c) -------------------------------------------------------- */
 
-/* rge's receive descriptor on the 8125 is 32 bytes (struct rge_rx_desc,
- * with RXCFG 0x41000c00): the buffer's address at 16, extended status at
- * 24, command and status at 28. */
+/* The receive descriptors (rxdesc.h's, 32 bytes each). */
 #define RX_DESCS        256
-#define RX_DESC_SIZE    32
 #define RX_BUF          2048      /* bytes per buffer: two per page */
-#define RX_DESC_ADDR    16
-#define RX_DESC_EXTSTS  24
-#define RX_DESC_CMDSTS  28
-#define RX_OWN          0x80000000u   /* the chip's until it has filled it */
-#define RX_EOR          0x40000000u   /* the last descriptor: the ring wraps after it */
-#define RX_SOF          0x02000000u
-#define RX_EOF          0x01000000u
-#define RX_ERRSUM       0x00100000u
-#define RX_LEN          0x00003fffu   /* bytes received, the CRC included */
-#define RX_CRC          4u
 /* One contiguous VMO: the receive ring, the transmit ring (32-byte
  * descriptors, txdesc.h; tx.c fills it), then the tally dump (64-byte
  * aligned). */

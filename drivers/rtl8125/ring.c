@@ -29,11 +29,7 @@ static status_t dma_vmo(struct rtl *t, uint64_t bytes, uint32_t flags, handle_t 
 
 static void rx_arm(struct rtl *t, unsigned i)
 {
-    volatile uint8_t *d = t->ring + i * RX_DESC_SIZE;
-    *(volatile uint32_t *)(d + RX_DESC_EXTSTS) = 0;
-    __atomic_thread_fence(__ATOMIC_RELEASE);   /* the rest before the ownership bit */
-    *(volatile uint32_t *)(d + RX_DESC_CMDSTS) =
-        RX_OWN | RX_BUF | (i == RX_DESCS - 1 ? RX_EOR : 0);
+    rtl_rxd_arm(t->ring + i * RX_DESC_SIZE, i, RX_DESCS, RX_BUF);
 }
 
 static void log_where(const struct rtl *t)
