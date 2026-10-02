@@ -435,7 +435,7 @@ int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
         return ERR_INVALID_ARGS;
     cmd[len] = '\0';
     struct job *scope = job_root_of(t->job);
-    int64_t r = dbgcmd_run_from(cmd, len, scope, t->job);
+    int64_t r = dbgcmd_run(cmd, len, scope);
     job_unref(scope);
     return r;
 }

@@ -62,11 +62,11 @@ struct run {
 };
 
 static spinlock_t busy_lock = SPINLOCK_INIT("dbgcmd");
-static bool busy;
+static bool busy;   /* a command runs: changed under busy_lock, read by dbgcmd_busy (atomic) */
 
 bool dbgcmd_busy(void)
 {
-    return busy;
+    return __atomic_load_n(&busy, __ATOMIC_RELAXED);
 }
 
 /* "word rest": the word's length; *rest after the spaces. */
@@ -147,10 +147,11 @@ static int64_t exec(const char *cmd, struct job *scope)
     if (is(cmd, n, "ktest")) {
         /* Devices devmgr gave to drivers are theirs: the tests skip them. */
         __atomic_store_n(&pci_hide_in_use, true, __ATOMIC_RELAXED);
-        uint32_t busy = 0;
+        uint32_t in_use = 0;
         for (uint32_t i = 0; i < pci_count(); i++)
-            busy += pci_in_use(pci_get(i));
-        kprintf("ktest: from the shell: %u PCI function(s) in use by drivers are skipped\n", busy);
+            in_use += pci_in_use(pci_get(i));
+        kprintf("ktest: from the shell: %u PCI function(s) in use by drivers are skipped\n",
+                in_use);
         /* User space runs meanwhile: global counts are not checked
          * (ktest.h: KT_GLOBAL_EQ, KT_SKIP_LIVE, the leak check logs). */
         struct ktest_opts o;
@@ -177,7 +178,7 @@ static int64_t exec(const char *cmd, struct job *scope)
 #endif
     if (is(cmd, n, "stress")) {
         uint64_t s = 0;
-        parse_u64(rest, &s);
+        (void)parse_u64(rest, &s);   /* dbgcmd_check saw it parse */
         return stress_run(s) ? 0 : 1;
     }
     if (is(cmd, n, "devices")) {
@@ -187,7 +188,6 @@ static int64_t exec(const char *cmd, struct job *scope)
     if (is(cmd, n, "crash"))
         return *rest ? selftest_crash_run(rest) : selftest_crash_list();
     if (is(cmd, n, "memmap")) {
-
         kmain_print_memmap();
         return 0;
     }
@@ -226,7 +226,7 @@ static void run_thread(void *arg)
     r->result = exec(r->cmd, r->scope);
     kprintf("dbgcmd: %s -> %ld\n", r->cmd, r->result);
     uint64_t f = spin_lock_irqsave(&busy_lock);
-    busy = false;
+    __atomic_store_n(&busy, false, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&busy_lock, f);
     event_signal(r->done, 0, SIG_SIGNALED);
     run_put(r);
@@ -234,12 +234,6 @@ static void run_thread(void *arg)
 
 int64_t dbgcmd_run(const char *cmd, size_t len, struct job *scope)
 {
-    return dbgcmd_run_from(cmd, len, scope, NULL);
-}
-
-int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct job *caller)
-{
-    (void)caller;   /* no command looks at who asked */
     status_t st = dbgcmd_check(cmd, len);
     if (st != OK)
         return st;
@@ -257,8 +251,8 @@ int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct j
     r->refs = 2;
 
     uint64_t f = spin_lock_irqsave(&busy_lock);
-    bool was = busy;
-    busy = true;
+    bool was = __atomic_load_n(&busy, __ATOMIC_RELAXED);
+    __atomic_store_n(&busy, true, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&busy_lock, f);
     if (was) {
         r->refs = 1;
@@ -275,7 +269,7 @@ int64_t dbgcmd_run_from(const char *cmd, size_t len, struct job *scope, struct j
                                             crash ? &cpu0 : NULL);
     if (!t) {
         f = spin_lock_irqsave(&busy_lock);
-        busy = false;
+        __atomic_store_n(&busy, false, __ATOMIC_RELAXED);
         spin_unlock_irqrestore(&busy_lock, f);
         r->refs = 1;
         run_put(r);
