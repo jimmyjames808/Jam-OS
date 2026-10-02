@@ -252,19 +252,11 @@ bool fs_check_ended(struct binding *b, bool no_volume)
     return true;
 }
 
-status_t disk_remount(unsigned n, bool test, bool writable)
+/* b's running service stopped in order and started again on a `block`
+ * channel opened read-write or read-only (its slot freed if it can't
+ * start). */
+static status_t fs_restart(struct binding *b, bool writable)
 {
-    struct binding *b = NULL;
-    for (unsigned i = 0; i < ndevs && !b; i++)
-        if (devs[i].kind == BIND_FS && devs[i].path && devs[i].other && devs[i].test == test &&
-            devs[i].usbn == n)
-            b = &devs[i];
-    if (!b)
-        return ERR_NOT_FOUND;
-    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->ready)
-        return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
-    if (b->rw == writable)
-        return OK;
     uint64_t t0 = now();
     char path[16];
     snprintf(path, sizeof(path), "%s", fs_mount_path(b));
@@ -289,4 +281,20 @@ status_t disk_remount(unsigned n, bool test, bool writable)
         mounts_update();
     }
     return st;
+}
+
+status_t disk_remount(unsigned n, bool test, bool writable)
+{
+    struct binding *b = NULL;
+    for (unsigned i = 0; i < ndevs && !b; i++)
+        if (devs[i].kind == BIND_FS && devs[i].path && devs[i].other && devs[i].test == test &&
+            devs[i].usbn == n)
+            b = &devs[i];
+    if (!b)
+        return ERR_NOT_FOUND;
+    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->ready)
+        return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
+    if (b->rw == writable)
+        return OK;
+    return fs_restart(b, writable);
 }
