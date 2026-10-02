@@ -134,7 +134,7 @@ static status_t confirm(struct net_sock *s, struct ntp_result *r)
 /* Ask the server at addr, up to TRIES times: OK and *r, or why not. */
 static status_t ask_server(handle_t net, uint32_t addr, struct ntp_result *r)
 {
-    struct net_sock s;
+    struct net_sock s = { 0 };   /* net_close does nothing to one that didn't open */
     status_t st = net_udp_open(net, 0, &s);
     if (st == OK)
         st = net_connect(&s, addr, NTP_PORT);   /* only the server's datagrams come */
