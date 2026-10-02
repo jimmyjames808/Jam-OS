@@ -407,7 +407,7 @@ Every driver and service is a userspace process from the start.
 - **`object_wait_one`** for simple waits.
 - **Protocols** are written in a small IDL (`abi/idl/*.idl`), turned into C
   structs, client stubs and server dispatch by `tools/genidl.py`
-  (`drivers/include/idl/`). Today: `null` and `edu` (tests), `usbbus` and
+  (`drivers/include/idl/`). Today: `null`, `edu` and `idltest` (tests), `usbbus` and
   `usb` (usb-bus to devmgr and to class drivers), `input` and `console`,
   `storage` and `block` (usb-storage to devmgr and to a filesystem),
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
@@ -419,6 +419,48 @@ Every driver and service is a userspace process from the start.
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
+- **Generated calls in three shapes** (`tools/genidl.py` has the
+  details): the blocking `<proto>_<method>` / `_until`; a call that
+  doesn't wait (`<proto>_<method>_send` with a txid of the caller's own,
+  the reply read off a port-bound channel with `idl_reply_read` and
+  decoded by `<proto>_<method>_result`); and on the server, a method
+  marked `later` may keep its request (`struct idl_txn`) and answer it
+  after its handler returned, with `<proto>_reply_<method>`. One channel
+  end uses blocking calls or calls that don't wait, never both (the
+  kernel's txids could match the caller's).
+
+## How a service waits
+
+A service or driver that serves several clients runs one loop on one
+port, so while it handles one request every other client waits behind it.
+
+- **The rule: a loop that serves several clients never blocks inside a
+  request.** No blocking call to another process, no wait for a process
+  to end, no sleep longer than its own hardware needs. Instead it
+  - **answers later**: keeps the request and replies when the answer is
+    there (a `later` method and `<proto>_reply_<method>`; hda's
+    `wait_period` and devmgr's `MOUNTS` waiters do this by hand);
+  - **calls without waiting**: sends the request
+    (`<proto>_<method>_send`), goes on serving, and takes the reply from
+    its port like any other event (`idl_reply_read`,
+    `<proto>_<method>_result`);
+  - or runs a job of several steps as a **cooperative task**
+    (`<jam/task.h>`, libos): straight-line code that gives the loop back
+    at each wait (`task_wait`) and is run again when its deadline passes
+    or the loop kicks it. usb-bus runs every port and every device this
+    way, so a slow device holds up only itself.
+- **Allowed:** short waits with a deadline on the loop's own hardware (a
+  register poll, a command the device answers within milliseconds:
+  [CODING-GUIDE](CODING-GUIDE.md#every-hardware-wait-is-bounded)), and
+  blocking calls in code that serves nobody: a program, a shell command,
+  or a thread of its own that serves nothing else.
+- **Data at packet or sample rate** goes through shared rings with an
+  event, not a call each (the mixer's streams; M9's `netdev`).
+- **Not followed everywhere yet:** devmgr's and init's loops still make
+  blocking calls of up to 2 to 25 s (listed in
+  [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time));
+  they move to these tools one at a time. Services written from now on
+  (M9's netstack and its driver first) follow the rule from the start.
 
 ## Scheduler
 
@@ -506,7 +548,7 @@ Every driver and service is a userspace process from the start.
 | Component | Uses | Provides | Built |
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
-| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`) | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
 | console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |

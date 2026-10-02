@@ -363,6 +363,22 @@ fractions. User programs may use floating point and SIMD freely.
   loops over hardware-provided chains (PCI capability lists, USB
   descriptors) carry a guard counter (`find_cap`'s `guard < 48`).
 
+### A loop that serves never blocks
+
+- A loop that serves several clients (a service, a driver) **never
+  blocks inside a request**: no blocking call to another process
+  (`<proto>_<method>`, `_until`), no wait for a process to end, no long
+  sleep. Answer later (a `later` method, `<proto>_reply_<method>`), call
+  without waiting (`<proto>_<method>_send`, the reply from the port), or
+  run the steps as a task (`<jam/task.h>`).
+- Allowed: short, bounded waits on the loop's own hardware (above), and
+  blocking calls where nobody else is waiting: a program, a shell
+  command, a thread that serves nothing.
+- *Why:* every other client waits behind the call, and a server that
+  hangs holds up everyone who asks the loop anything (one `kill` can hold
+  devmgr's loop for its 15 s wait today).
+  The model and the tools: [ARCHITECTURE.md](ARCHITECTURE.md#how-a-service-waits).
+
 ### Recursion and the stack
 
 - **No recursion in the kernel.** Use an explicit list or loop
@@ -467,8 +483,14 @@ fractions. User programs may use floating point and SIMD freely.
 3. Handles travel only as results. Bulk data goes through a shared VMO,
    not large `u8[N]` arrays (max 4096 per array, 8192 per message).
 4. `make idl`; commit `drivers/include/idl/<name>.h`. Never edit it.
-5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`.
-   Client: `<name>_<method>` or `_until` with a deadline.
+5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`
+   (or `<name>_serve_one` in a loop of your own). A method the server may
+   answer after its handler returned is marked `later`: its handler gets
+   the request's `struct idl_txn` and may return `IDL_LATER`, then answers
+   with `<name>_reply_<method>`. Client: `<name>_<method>` or `_until`
+   with a deadline; from a loop that serves others,
+   `<name>_<method>_send` and `<name>_<method>_result`
+   ([a loop that serves never blocks](#a-loop-that-serves-never-blocks)).
 6. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c` does).
 
 ### Add a shell command
