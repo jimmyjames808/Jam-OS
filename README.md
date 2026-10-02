@@ -145,7 +145,8 @@ To build for a VLAN, copy `local.mk.example` to `local.mk` (git ignores
 it) and set `JAMOS_VLAN := 21` (your VLAN), or give it once:
 `make JAMOS_VLAN=21`. Every `make` says which default it built
 (`network default: VLAN 21 (local.mk)`, `network default: untagged (no
-local.mk)`), and `version`'s build.txt records it. The boot word
+local.mk)`), and the boot image's `build.txt` records it (`net vlan21`,
+`net untagged`). The boot word
 `vlan=<id>`, `vlan=none` or `vlan=off` (the network card left off
 altogether) overrides it for one boot, and a `reboot` keeps it. `update`
 refuses a build whose default differs from the running one's unless given
