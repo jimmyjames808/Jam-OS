@@ -717,6 +717,7 @@ static const struct {
     { "netlog_mac_away", t_netlog_mac_away },
     { "netlog_ring_dropped", t_netlog_ring_dropped },
     { "netlog_forged_acks", t_netlog_forged_acks },
+    { "netlog_sender_restarted", t_netlog_sender_restarted },
     { "netlog_crash_stream", t_netlog_crash_stream },
     { "netlog_klog_source", t_netlog_klog_source },
     { "netserver_session", t_netserver_session },
@@ -755,6 +756,13 @@ static const struct {
     { "netdrv_ping_and_link", t_netdrv_ping_and_link },
     { "netdrv_restart", t_netdrv_restart },
     { "netdrv_hostile_driver", t_netdrv_hostile_driver },
+    { "netsock_udp", t_netsock_udp },
+    { "netsock_ping", t_netsock_ping },
+    { "netsock_iface", t_netsock_iface },
+    { "netsock_limits", t_netsock_limits },
+    { "netsock_hostile", t_netsock_hostile },
+    { "netsock_slow_reader", t_netsock_slow_reader },
+    { "netsock_dhcp", t_netsock_dhcp },
 };
 
 int main(int argc, char **argv)

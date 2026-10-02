@@ -1,13 +1,13 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the console, serialin, devmgr, the mixer, the music
- * player, logd and the shell, each started as services.c says; splash.c
+ * player, netstack, logd, netlog and the shell, each started as services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings; net.c the network services (netstack); update.c
+ * /data/etc/settings; net.c the network services (netstack, netlog); update.c
  * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
@@ -113,7 +113,8 @@ void     splash_shell_ready(void);
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
 /* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, LOGD, SHELL, NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, LOGD, NETLOG, SHELL,
+       NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
@@ -227,6 +228,13 @@ void     net_settings(void);
 void     net_devmgr_gone(void);
 /* netstack is given up on: calls waiting for it fail now. */
 void     net_given_up(void);
+/* /svc/net's shared channel, client end (init's: services.c publishes a
+ * duplicate), or 0. */
+handle_t net_svc_channel(void);
+/* Start netlog (shell.c's NETLOG, once /data is mounted) if the settings
+ * name a Mac (`net.host`) and don't say `netlog = off`; otherwise it is
+ * marked given up for this boot, said once. */
+status_t net_netlog_start(void);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 

@@ -461,9 +461,9 @@ Every driver and service is a userspace process from the start.
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
   filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
-  mixer), `netctl` (netstack's control channel). devmgr's own protocol is still
-  written by hand (`user/include/devmgr.h`). Planned: `netdev`, `socket`,
-  `power`. Bulk data
+  mixer), `netctl` (netstack's control channel), `net` (UDP sockets and
+  ping for programs, `/svc/net`). devmgr's own protocol is still
+  written by hand (`user/include/devmgr.h`). Planned: `netdev`, `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
@@ -746,7 +746,8 @@ bind every future path that can transmit.
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
   each a channel per opener; `music`, a channel per opener; `devmgr`, a
   channel per opener, and `devmgr-ctl`, each devmgr's;
-  `init`, the shell's control channel; `logd`, a channel per opener). The services it starts
+  `init`, the shell's control channel; `logd`, a channel per opener;
+  `net`, netstack's sockets for programs, a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
@@ -783,7 +784,7 @@ bind every future path that can transmit.
   **Services**: `svc_open(name)` gives the caller a channel of its own
   where the service hands them out (the `svc` protocol's `connect`,
   `abi/idl/svc.idl`: the music player, the mixer's two, devmgr's
-  queries and logd do), else a duplicate of the
+  queries, logd and netstack's `net` do), else a duplicate of the
   shared one; `svc_get` keeps one and opens it again once its service
   has restarted. `/` lists `svc`, `/svc` the names. **Views**: a mount's
   service hands out narrower channels onto the same volume (`fs.view`,

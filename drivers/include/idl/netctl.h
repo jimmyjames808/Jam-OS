@@ -18,6 +18,7 @@
 #define NETCTL_INFO             0x001c0004u
 #define NETCTL_STATS            0x001c0005u
 #define NETCTL_DEVICE           0x001c0006u
+#define NETCTL_DHCP_OPEN        0x001c0007u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct netctl_set_ipv4_req {
@@ -103,6 +104,14 @@ struct netctl_device_rep {
     uint64_t rx_bad;
     uint64_t tx_full;
     uint8_t chip[16];
+} __attribute__((packed));
+struct netctl_dhcp_open_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct netctl_dhcp_open_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define NETCTL_REQ_MAX 20u   /* bytes: the biggest request */
@@ -311,6 +320,43 @@ static inline status_t netctl_device_until(handle_t ch, uint64_t deadline_ns, ui
 static inline status_t netctl_device(handle_t ch, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
 {
     return netctl_device_until(ch, DEADLINE_NEVER, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
+}
+
+/* The DHCP client's socket (user/services/dhcp): a socket channel that
+ * speaks net.idl's sock_* methods, bound to port 68, which may send to
+ * port 67 only, of 255.255.255.255 or a unicast address, from the
+ * interface's address or from 0.0.0.0 while it has none, and receives
+ * every datagram to port 68, broadcasts included. Programs on /svc/net
+ * can do none of this. One at a time: ERR_ALREADY_BOUND while the last
+ * one's channel is open. Closing the channel closes the socket. */
+static inline status_t netctl_dhcp_open_until(handle_t ch, uint64_t deadline_ns, handle_t *out_socket)
+{
+    struct netctl_dhcp_open_req idl_q;
+    struct netctl_dhcp_open_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NETCTL_DHCP_OPEN;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_socket)
+            *out_socket = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+static inline status_t netctl_dhcp_open(handle_t ch, handle_t *out_socket)
+{
+    return netctl_dhcp_open_until(ch, DEADLINE_NEVER, out_socket);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -559,6 +605,39 @@ static inline status_t netctl_device_result(const void *idl_rep, struct idl_msg 
     return OK;
 }
 
+/* netctl_dhcp_open without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then netctl_dhcp_open_result. */
+static inline status_t netctl_dhcp_open_send(handle_t ch, uint32_t idl_txid)
+{
+    struct netctl_dhcp_open_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = NETCTL_DHCP_OPEN;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to netctl_dhcp_open_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t netctl_dhcp_open_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_socket)
+{
+    const struct netctl_dhcp_open_rep *idl_r = (const struct netctl_dhcp_open_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_socket)
+        *out_socket = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -572,6 +651,7 @@ struct netctl_ops {
     status_t (*info)(void *ctx, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link);
     status_t (*stats)(void *ctx, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used);
     status_t (*device)(void *ctx, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16]);
+    status_t (*dhcp_open)(void *ctx, handle_t *out_socket);
 };
 
 /* Answer the netctl.set_ipv4 request kept in txn: idl_st and, if it is OK, the
@@ -695,6 +775,27 @@ static inline status_t netctl_reply_device(struct idl_txn idl_txn, status_t idl_
     for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
         idl_r.chip[idl_i] = chip[idl_i];
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the netctl.dhcp_open request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t netctl_reply_dhcp_open(struct idl_txn idl_txn, status_t idl_st, handle_t socket)
+{
+    struct netctl_dhcp_open_rep idl_r;
+    handle_t idl_hs[1] = { socket };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(socket != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -877,6 +978,29 @@ static inline uint32_t netctl_dispatch_on(handle_t ch, const struct netctl_ops *
         idl_r->tx_full = out_tx_full;
         for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
             idl_r->chip[idl_i] = out_chip[idl_i];
+        return sizeof(*idl_r);
+    }
+    case NETCTL_DHCP_OPEN: {
+        const struct netctl_dhcp_open_req *idl_q = (const struct netctl_dhcp_open_req *)req;
+        struct netctl_dhcp_open_rep *idl_r = (struct netctl_dhcp_open_rep *)rep;
+        handle_t out_socket = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->dhcp_open) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->dhcp_open(ctx, &out_socket);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_socket != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_socket != HANDLE_INVALID)
+                drv_handle_close(out_socket);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_socket;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }

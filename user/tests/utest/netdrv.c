@@ -13,7 +13,8 @@
  * devmgr again, opens a new session, keeps its address); a hostile driver:
  * slots with bad lengths and flags refused and counted, an rx or tx count
  * out of range ends the session (counted) and netstack opens a new one;
- * killed, its job is empty. */
+ * killed, its job is empty. netsock.c runs its socket tests on this
+ * harness (netdrv.h). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -22,6 +23,7 @@
 #include <idl/netdev.h>
 #include <jam/netdev.h>
 #include <os.h>
+#include "netdrv.h"
 #include "netpkt.h"
 #include "utest.h"
 
@@ -31,6 +33,7 @@
 /* The fake devmgr and driver, and netstack under test. */
 struct fake {
     handle_t job, proc, ctl;            /* netstack, its job, netctl's client end */
+    handle_t net;                       /* /svc/net's shared channel, client end */
     handle_t dev;                       /* our end of netstack's device channel */
     handle_t svc;                       /* our end of the driver channel handed out */
     handle_t session, tx_vmo, rx_vmo, to_driver, to_stack;   /* the session's, ours */
@@ -63,6 +66,7 @@ static status_t f_stats(void *ctx, uint8_t out_counts[256])
 {
     (void)ctx;
     memset(out_counts, 0, 256);
+    out_counts[0] = 42;   /* rx_frames: netsock.c looks for it */
     return OK;
 }
 
@@ -221,17 +225,19 @@ static bool ended_by_netstack(void)
 
 static bool start(void)
 {
-    handle_t ctl_srv, dev_cli;
+    handle_t ctl_srv, dev_cli, net_srv;
     fk = (struct fake){ .link = NETDEV_LINK_UP | NETDEV_LINK_FULL, .changes = 1 };
     CHECK_ST(new_job(&fk.job), OK);
     CHECK_ST(jam_channel_create(&fk.ctl, &ctl_srv), OK);
     CHECK_ST(jam_channel_create(&fk.dev, &dev_cli), OK);
+    CHECK_ST(jam_channel_create(&fk.net, &net_srv), OK);
     const char *argv[] = { "bin/netstack" };
-    struct spawn_handle x[] = { { SR_USER + 0, ctl_srv }, { SR_DEVMGR_DEVICE, dev_cli } };
+    struct spawn_handle x[] = { { SR_USER + 0, ctl_srv }, { SR_DEVMGR_DEVICE, dev_cli },
+                                { SR_USER + 1, net_srv } };
     struct spawn_args a = {
-        .path = "bin/netstack", .argc = 1, .argv = argv, .job = fk.job, .extra = x, .nextra = 2,
+        .path = "bin/netstack", .argc = 1, .argv = argv, .job = fk.job, .extra = x, .nextra = 3,
     };
-    CHECK_ST(spawn(&a, &fk.proc), OK);   /* consumes ctl_srv and dev_cli */
+    CHECK_ST(spawn(&a, &fk.proc), OK);   /* consumes ctl_srv, dev_cli and net_srv */
     CHECK(connected());
     CHECK_ST(netctl_set_ipv4(fk.ctl, OUR_IP, MASK24, GW_IP), OK);
     CHECK(announced());
@@ -246,6 +252,7 @@ static bool stop(void)
     drop_session();
     jam_handle_close(fk.dev);
     jam_handle_close(fk.ctl);
+    jam_handle_close(fk.net);
     jam_handle_close(fk.proc);
     struct job_info ji;
     for (uint64_t end = now() + WAIT;;) {   /* a killed process's pages: bounded */
@@ -387,4 +394,46 @@ bool t_netdrv_hostile_driver(void)
     CHECK(errs >= 2);
     CHECK(stop());
     return true;
+}
+
+/* ---- for netsock.c (netdrv.h) ------------------------------------------------------ */
+
+bool netdrv_start(void)
+{
+    return start();
+}
+
+bool netdrv_stop(void)
+{
+    return stop();
+}
+
+bool netdrv_send(const uint8_t *frame, size_t len)
+{
+    return drv_send(frame, len);
+}
+
+status_t netdrv_recv(uint8_t *f, uint32_t *n, uint64_t wait)
+{
+    return drv_recv(f, n, wait);
+}
+
+bool netdrv_ping(uint32_t seq, bool arp)
+{
+    return ping(seq, arp);
+}
+
+bool netdrv_serve_session(void)
+{
+    return serve(fk.session);
+}
+
+handle_t netdrv_ctl(void)
+{
+    return fk.ctl;
+}
+
+handle_t netdrv_net(void)
+{
+    return fk.net;
 }

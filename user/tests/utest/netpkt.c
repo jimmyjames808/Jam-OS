@@ -123,6 +123,31 @@ size_t pkt_udp(uint8_t *f, uint32_t dport, size_t data)
     return 34 + 8 + data;
 }
 
+size_t pkt_udp_from(uint8_t *f, const uint8_t *src_mac, uint32_t src, uint32_t sport,
+                    uint32_t dst, uint32_t dport, const void *data, size_t len)
+{
+    pkt_eth(f, dst == 0xffffffffu ? pkt_bcast : pkt_our_mac, src_mac, ETH_IPV4);
+    uint8_t *u = f + 34;
+    pkt_put16(u, sport);
+    pkt_put16(u + 2, dport);
+    pkt_put16(u + 4, (uint32_t)(8 + len));
+    pkt_put16(u + 6, 0);
+    memcpy(u + 8, data, len);
+    pkt_ipv4(f, 17, src, dst, 8 + len);
+    return 34 + 8 + len;
+}
+
+size_t pkt_echo_reply_to(uint8_t *f, const uint8_t *req, size_t icmp_len)
+{
+    pkt_eth(f, pkt_our_mac, pkt_peer_mac, ETH_IPV4);
+    memmove(f + 34, req + 34, icmp_len);   /* f may be req */
+    f[34] = 0;
+    pkt_put16(f + 36, 0);
+    pkt_put16(f + 36, ~pkt_sum16(f + 34, icmp_len) & 0xffff);
+    pkt_ipv4(f, 1, pkt_get32(req + 30), OUR_IP, icmp_len);
+    return 34 + icmp_len;
+}
+
 /* ---- checks ---------------------------------------------------------------- */
 
 bool pkt_frame_ok(const uint8_t *f, size_t n)

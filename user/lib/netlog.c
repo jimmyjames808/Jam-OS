@@ -6,9 +6,13 @@
  * count for the live log), so going back is just reading again from the
  * acked offset, and whatever the ring dropped meanwhile shows up as a
  * read that starts later than asked (NETLOG_F_LOST). Acks are trusted
- * only as far as what was sent: an ack past the highest byte ever sent,
+ * only as far as the source goes: an ack past what the source holds now,
  * for another boot or stream, or of the wrong shape is ignored; an ack
- * below the last one (an old one, reordered) changes nothing. */
+ * below the last one (an old one, reordered) changes nothing. An ack past
+ * what this sender sent, but within the source, is a receiver that has
+ * more than this sender knows: bin/netlog was started again (init restarts
+ * it) and the Mac kept its file. The stream skips to it; otherwise the
+ * restarted sender could never get past its first window. */
 #include <crashlog.h>
 #include <netlog.h>
 #include <wire.h>
@@ -161,6 +165,27 @@ void netlog_add_crash(struct netlog *n, const struct netlog_source *crash)
     stream_on(&n->s[NETLOG_CRASH], crash);
 }
 
+/* How far the source goes now: an ended stream's end; the live log's
+ * current end (a read past it gives no bytes and says where the end is). */
+static uint64_t source_now(const struct netlog_stream *s)
+{
+    if (s->src.end != UINT64_MAX)
+        return s->src.end;
+    uint8_t none[1];
+    uint64_t first = 0;
+    int64_t got = s->src.read(s->src.ctx, UINT64_MAX, none, 0, &first);
+    return got == 0 && first != UINT64_MAX ? first : 0;
+}
+
+bool netlog_wants_text(const struct netlog *n, unsigned stream)
+{
+    if (stream >= NETLOG_STREAMS)
+        return false;
+    const struct netlog_stream *s = &n->s[stream];
+    uint64_t window = n->silent ? NETLOG_TEXT_MAX : NETLOG_WINDOW;
+    return s->on && !s->done && s->next - s->acked < window;
+}
+
 static bool unacked(const struct netlog *n)
 {
     for (unsigned i = 0; i < NETLOG_STREAMS; i++)
@@ -259,11 +284,15 @@ void netlog_ack(struct netlog *n, const void *dgram, size_t len, uint64_t now)
     uint8_t i = 0;
     uint64_t boot = 0, acked = 0;
     if (netlog_ack_decode(dgram, len, &i, &boot, &acked) != OK || boot != n->boot_id ||
-        !n->s[i].on || acked > n->s[i].high) {
+        !n->s[i].on || (acked > n->s[i].high && acked > source_now(&n->s[i]))) {
         n->ignored++;
         return;
     }
     struct netlog_stream *s = &n->s[i];
+    if (acked > s->high) {
+        s->high = acked;   /* a receiver that has more than this sender sent: skip to it */
+        n->skipped++;
+    }
     n->acks++;
     n->quiet = 0;
     n->wait = NETLOG_RESEND;   /* the Mac is there: what is missing was lost on the way */

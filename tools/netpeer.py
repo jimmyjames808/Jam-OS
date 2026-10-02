@@ -22,6 +22,12 @@ What it does with each frame from the guest:
     MAC, an ICMP echo request from the Mac's address (10.2.21.174) to
     ADDR; the guest's echo replies to them are checked (checksum, id,
     sequence) and counted (ping_replies in the summary).
+  - netlog (--netlog FOLDER): datagrams to port 5021 go to
+    tools/netlog-recv.py's Receiver, which writes the guest's logs into
+    FOLDER and gives the ack sent back; --netlog-late S drops them (as if
+    nobody listened) until S seconds after the first one, --netlog-pause
+    BYTES:S drops them for S seconds once a stream has BYTES (a receiver
+    paused mid-way). Counted as netlog_in / netlog_dropped.
   - noise (--noise S, or `noise` on stdin): frames the guest's driver must
     drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
     broadcast ARP request on the VLAN), counted as sent.
@@ -29,7 +35,7 @@ What it does with each frame from the guest:
 Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
-               [--log FILE]
+               [--log FILE] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -46,6 +52,7 @@ As a module (import netpeer, with tools/ on sys.path): Peer(listen, qemu,
 vlan) and its poll, send, send_raw, noise, add_udp and summary; the frame
 builders (eth, arp, ipv4, udp, icmp) and classify."""
 import argparse
+import importlib.util
 import json
 import os
 import select
@@ -289,6 +296,34 @@ class Peer:
                     expect_none=expect_none, result="PASS" if ok else "FAIL")
 
 
+def add_netlog(peer, folder, late=0.0, pause=None):
+    """Port 5021 answered by tools/netlog-recv.py's Receiver (files into
+    folder). late: datagrams dropped until late seconds after the first;
+    pause (bytes, seconds): once a stream holds bytes, dropped for seconds."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netlog-recv.py")
+    spec = importlib.util.spec_from_file_location("netlog_recv", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rx = mod.Receiver(folder, None, say=peer.log)
+    st = {"first": None, "until": 0.0, "paused": pause is None}
+    for k in ("netlog_in", "netlog_dropped"):
+        peer.counts[k] = 0
+
+    def handle(p, src, sport, dst, data):
+        t = time.monotonic()
+        p.counts["netlog_in"] += 1
+        st["first"] = st["first"] or t
+        if not st["paused"] and max([s.have for s in rx.streams.values()] or [0]) >= pause[0]:
+            st["paused"], st["until"] = True, t + pause[1]
+            p.log("netlog: the receiver pauses for %g s" % pause[1])
+        if t < st["first"] + late or t < st["until"]:
+            p.counts["netlog_dropped"] += 1
+            return None
+        return rx.handle(data)
+    peer.add_udp(mod.PORT, handle)
+    return rx
+
+
 def summary_line(s):
     return ("netpeer: %d frames from the guest, %d tagged %d, %d bad%s; answered %d ARP, %d echo; "
             "%d of %d pings answered; sent %d -> %s" %
@@ -443,6 +478,10 @@ def stdin_command(peer, line, a):
 def run(a):
     log = open(a.log, "a") if a.log else None
     peer = Peer(a.listen, a.qemu, a.vlan, log)
+    if a.netlog:
+        b, _, secs = (a.netlog_pause or "").partition(":")
+        add_netlog(peer, a.netlog, a.netlog_late,
+                   (int(b), float(secs)) if a.netlog_pause else None)
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
@@ -491,6 +530,9 @@ def main():
     ap.add_argument("--ready")
     ap.add_argument("--log")
     ap.add_argument("--ping")
+    ap.add_argument("--netlog", help="answer netlog (port 5021) into this folder")
+    ap.add_argument("--netlog-late", type=float, default=0)
+    ap.add_argument("--netlog-pause", help="BYTES:SECONDS")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

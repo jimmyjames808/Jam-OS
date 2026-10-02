@@ -52,3 +52,11 @@ protocol netctl 28
 # dropped because the tx ring was full, and the chip's name
 # (NUL-padded). All 0 without a card.
 6  device  ()  -> (u8 session, u16 vlan, u32 speed, u32 sessions, u64 ring_errors, u64 rx_bad, u64 tx_full, u8[16] chip)
+# The DHCP client's socket (user/services/dhcp): a socket channel that
+# speaks net.idl's sock_* methods, bound to port 68, which may send to
+# port 67 only, of 255.255.255.255 or a unicast address, from the
+# interface's address or from 0.0.0.0 while it has none, and receives
+# every datagram to port 68, broadcasts included. Programs on /svc/net
+# can do none of this. One at a time: ERR_ALREADY_BOUND while the last
+# one's channel is open. Closing the channel closes the socket.
+7  dhcp_open  ()  -> (handle socket)

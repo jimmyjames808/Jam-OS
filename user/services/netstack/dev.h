@@ -32,6 +32,7 @@
 #define DEV_RETRY_MIN (250 * NS_PER_MS)   /* after a failed connect, doubling ... */
 #define DEV_RETRY_MAX (5 * NS_PER_S)      /* ... up to this */
 #define DEV_RX_BUDGET NETDEV_SLOTS        /* frames taken per turn of the loop */
+#define DEV_STATS_AGAIN (2 * NS_PER_S)    /* a netdev.stats unanswered this long is sent again */
 
 /* Port keys (main.c's are below 0x10). */
 #define KEY_CONNECT  0x10u   /* the thread's channel: a session, or why none */
@@ -82,6 +83,10 @@ struct dev {
     bool     rx_pending;         /* the rx ring may hold frames */
     bool     tx_dirty;           /* frames put but not published */
     bool     info_out;           /* a netdev.info is out on the session channel */
+    bool     stats_out;          /* a netdev.stats is out on it (dev_ask_stats) */
+    uint32_t last_txid;          /* idl_txid_next's counter for the session channel */
+    uint32_t stats_txid;
+    uint64_t stats_at;           /* ns: when it went (one unanswered this long is asked again) */
     bool     link_up;            /* the link as last heard from the driver */
     uint32_t info_txid;
     uint32_t changes;            /* the link-change count last seen */
@@ -111,3 +116,10 @@ uint64_t dev_work(struct dev *d);
 bool     dev_pending(const struct dev *d);
 /* netctl.device's answer. */
 void     dev_get_report(const struct dev *d, struct dev_report *out);
+/* Ask the driver for its counts (netdev.stats) without waiting; the answer
+ * goes to dev_stats_done (once for every ask while one is out).
+ * ERR_NOT_FOUND: no session; else the write's status. */
+status_t dev_ask_stats(struct dev *d);
+/* The driver's counts (NETDEV_STATS_SIZE bytes), or why there are none
+ * (ERR_PEER_CLOSED: the session ended first; counts NULL). */
+extern void (*dev_stats_done)(status_t st, const uint8_t *counts);

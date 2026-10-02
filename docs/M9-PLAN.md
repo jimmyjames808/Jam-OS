@@ -8,9 +8,11 @@ lwIP, on the netdev rings, started by init), R1 (the transmit path, the
 `netsend` test and the netdev server: [below](#r1-progress-the-full-driver);
 its first PC runs found transmit unreliable, a descriptor-size mismatch, now
 fixed and waiting for the next PC run:
-[the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage 5a (the DHCP and DNS cores) and stages 6a
+[the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage 4 (sockets for programs: `/svc/net`,
+`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores), stages 6a
 and 7a (netlog's and `update`'s cores, init's update check, the Mac
-tools). The sections below say what each one built and left for the next.
+tools) and stage 6b (bin/netlog:
+[below](#stage-6b-built-netlog-on-the-network)). The sections below say what each one built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -974,6 +976,107 @@ the netdev contract; 3b plugs netstack into it.
   the full counts with the chip's), `ping <address or name> [count]`,
   `host <name>`, `update`.
 
+#### Stage 4, built: sockets for programs
+
+- **One call per datagram, not a ring per socket (the choice).** Each
+  datagram is one message on the socket's channel, its bytes a fixed
+  `u8[1472]` array. M9's traffic is small (ping, DHCP, DNS, the log; the
+  biggest is `update`'s ~7000 datagrams with 32 in flight), a call costs
+  a few microseconds, and netstack never waits inside one: a `sock_recv`
+  with nothing queued is a `later` method, answered when a datagram comes
+  or its timeout passes. Rings for sockets stay a design idea for TCP and
+  bulk transfers ([ROADMAP](ROADMAP.md#design-ideas-not-scheduled)).
+- **The protocol** (`abi/idl/net.idl`, id 29; libos's `<net.h>` on top):
+  on an opener's channel `iface` (address, mask, gateway, DNS servers,
+  MAC, device, link, VLAN, speed, and a `version` that counts address and
+  DNS changes), `wait_change(version, timeout_ms)` (`later`), `counts`
+  (`struct net_counters`: netstack's, the card session's and the
+  programs'), `chip_counts` (`later`: the driver's `netdev.stats`),
+  `udp(port)` (a socket: its own channel and its port), `echo(address,
+  seq, size, timeout_ms)` (`later`: the round trip, TTL and size). On a
+  socket's channel `sock_send_to(address, port, len, data)` (0:0 is the
+  connected peer), `sock_recv(timeout_ms)` (`later`; 0: don't wait),
+  `sock_connect(address, port)` (only that peer's datagrams, and the
+  default for sends), `sock_state`. The shared channel answers only
+  `svc.connect`, `iface` and `counts` (an answer that came later there
+  could go to any of its holders). What changed from the plan above:
+  `wait_up` is `wait_change` (also how DNS hears of new servers;
+  `net_wait_up` loops on it), and the names (`iface`, `udp`, `echo`,
+  `counts`, `sock_*`) keep the generated `net_*` calls clear of
+  `<net.h>`'s.
+- **Limits** (`<net.h>`): 32 openers, 16 sockets an opener and 32 in all
+  (lwIP's pool is 33: the DHCP socket has the last), 8 requests in flight
+  an opener (`wait_change`, `echo`, `chip_counts`) and 64 in all, 32
+  datagrams queued a socket. A queued datagram is copied into netstack's
+  own heap (so a slow reader never holds lwIP's 128 receive buffers; at
+  most about 1.5 MiB in all); one more is dropped and counted (the
+  socket's `dropped`, netstack's `dgrams_dropped`). Requests are served 8
+  a channel a turn. Ports below 1024 are refused (`ERR_ACCESS_DENIED`),
+  a taken one is `ERR_ALREADY_BOUND`, port 0 picks one from 49152.
+- **What a program can't do:** send to a broadcast (the subnet's or
+  255.255.255.255), multicast, loopback, 0.0.0.0/8 or 240.0.0.0/4, or
+  receive broadcasts; send raw packets: an echo is built by netstack (one
+  raw ICMP socket for all of them), with the opener's echo id (its slot
+  in the low 5 bits, `os_random` bits above), and a reply goes only to
+  the echo in flight with that id, seq and peer. An ICMP unreachable
+  quoting one of our echoes answers it `ERR_NOT_FOUND`.
+- **The DHCP socket** (netctl's `dhcp_open`, method 7: only netctl's
+  holder, init or the DHCP client, can have one): port 68, broadcasts
+  allowed, sends to port 67 only (255.255.255.255 or a unicast address),
+  out of the interface without a route, from 0.0.0.0 while there is no
+  address; every datagram to port 68 is taken, the server's answer to an
+  address not yet ours too (`LWIP_IP_ACCEPT_UDP_PORT` in lwipopts.h).
+  One at a time; it speaks `sock_*` like any socket.
+- **netstack:** `progs.h` (the model), `clients.c` (the shared channel,
+  openers, requests in flight, echo matching), `sock.c` (sockets and
+  their queues), `stack.c`'s UDP and echo edge (`stack_udp_*`,
+  `stack_echo_*`: still the only file that sees lwIP), `netif.c` asks the
+  driver's counts without waiting. **init** makes `/svc/net`'s channel
+  once (net.c), gives netstack the server end at `SR_USER + 1` and
+  publishes the client end (a channel per opener); `svc net` is in the
+  shell's list. **The shell:** `net`, `net stats`, `ping <address> [-c
+  n] [-s size]` (an echo a second on a channel of its own, Ctrl+C at any
+  time).
+- **Tests:** utest's `netsock_*` (over the fake driver), and
+  `tools/ping-test.sh` (`net.txt`: `ping 1.1.1.1` through QEMU's e1000e
+  and the peer) ([TESTING](TESTING.md#netstack)). The slow-peer rule for
+  netstack is `netsock_slow_reader`; its QEMU form (`tools/net-test.sh
+  slow`) comes with 5b's DNS.
+
+**The edges 5b, 6b and 7b use** (a loop that serves others uses the
+forms that don't wait: `net_sendto_async`, `net_recv_arm`, then
+`net_sock_take` until `ERR_SHOULD_WAIT` whenever the socket's channel
+is readable; the generated `net_udp_send`/`net_udp_result` and
+`net_wait_change_send`/`_result` for the opener's calls; a program
+that serves nobody may block):
+1. **bin/dhcp** (netctl only): `netctl_dhcp_open(netctl, &h)`,
+   `net_sock_adopt(&s, h, NET_PORT_DHCP_CLIENT)`; `dhcp_io.send` is
+   `net_sendto_async(&s, to, NET_PORT_DHCP_SERVER, msg, len)`; each
+   datagram from `net_sock_take` goes to `dhcp_input`. netctl has no
+   link-change wait: poll `netctl_info`'s `link` (once a second) for
+   `dhcp_start`, or add a `later` method to netctl in 5b.
+2. **bin/dns** (`/svc/net` and its `/svc/dns` server end): the servers
+   from `net_info`'s `dns`, again whenever `wait_change` answers;
+   `dns_io.send(port, ...)` opens a socket with `udp(port)` at the port's
+   first use (`ERR_ALREADY_BOUND`: the resolver picks another port) and
+   `net_sendto_async` to the server's port 53; `release` is
+   `net_close`; each socket's channel on dns's port, its datagrams to
+   `dns_input`. 16 names in flight is exactly an opener's 16 sockets.
+3. **bin/netlog** (`/svc/net`, a klog reader): `net_wait_up(net,
+   DEADLINE_NEVER, &i)`, `net_udp_open(net, 0, &s)`, `net_connect(&s,
+   host, 5021)` (only the Mac's datagrams come in); `io.send` is
+   `net_sendto_async(&s, 0, 0, ...)`; acks from `net_sock_take` to
+   `netlog_ack`.
+4. **bin/update** (`/svc/net`): `net_udp_open(net, 0, &s)`,
+   `net_connect(&s, host, 5022)`; `io.send` is `net_sendto_async`;
+   replies from `net_sock_take` to `updfetch_reply`. A socket queues 32
+   datagrams, the fetcher's window. ARP keeps one waiting packet per
+   address (lwipopts.h's `ARP_QUEUEING` off), so of the first burst, sent
+   before the Mac's MAC is known, only the last goes; the fetcher asks
+   again after 300 ms.
+5. **init:** `/svc/net` is in its namespace: netlog's and update's
+   grants name it (`"/svc/" SVC_NET`).
+
 ### DHCP and DNS: processes of their own
 
 As the roadmap says, and for the same reason as `bin/play` and
@@ -1082,7 +1185,7 @@ deadline, so the service-loop rule holds by construction):
 
 ### netlog: the log over UDP to the Mac
 
-- **bin/netlog** (planned user/services/netlog), started by init in
+- **bin/netlog** (user/services/netlog), started by init in
   shell mode when `net.host` is set and netlog isn't switched off
   (question 8). It holds a kernel log reader (`RIGHT_ROOT_KLOG`, as logd
   does), `/svc/net` and nothing else.
@@ -1110,6 +1213,58 @@ deadline, so the service-loop rule holds by construction):
 - **The Mac:** tools/netlog-recv.py (new) writes one file per boot
   (named by the boot's start time, in a folder given on its command
   line), prints the lines as they come, and says where a gap is.
+
+#### Stage 6b, built: netlog on the network
+
+Built 2026-10-02 on stage 4's sockets and 6a's core. What is there, and
+how it differs from the edges above:
+
+- **bin/netlog** (`user/services/netlog/main.c`, one file): argv is
+  `net.host` and the boot id in hex; the root with `RIGHT_ROOT_KLOG` only
+  (a klog reader), a namespace with `/svc/net` only, and after a panic
+  `SR_CRASHLOG` read-only. It blocks in `net_wait_up` (it serves nobody),
+  opens a socket with `udp(0)` and connects it to `net.host`:5021, then
+  loops: the socket's channel (each ack from `net.host`:5021 to
+  `netlog_ack`), `netlog_poll`, one port wait for the socket, the log
+  growing or the poll's deadline. It waits for the log only while the live
+  stream's window has room (`netlog_wants_text`, new in the core): a klog
+  reader stays readable while the log is past its last read, which a full
+  window leaves it, so waiting for it then would spin. netstack ending
+  closes the socket: "netlog: netstack has gone", then `wait_up` again, a
+  new socket, the same place in the log. Memory: the core's datagram, one
+  received datagram; the log is the kernel's ring.
+- **The boot id comes from init**, not from netlog: init's net.c works it
+  out once a boot (`wallclock_get`: UTC now less the uptime; 0 without a
+  clock) and passes it to every netlog it starts. Worked out by each
+  netlog, a restart after a `/data` remount (which reads the RTC again,
+  to the second) could move it and start a second file on the Mac.
+- **A restarted netlog** (init restarts it like any service) starts at
+  byte 0 while the Mac already has more than a window. 6a's core ignored
+  every ack past what it had sent, so it went back to 0 for ever. The core
+  now believes an ack past what it sent if it is within what the source
+  holds now (the live log's end, or an ended stream's length), and skips
+  there (`skipped`, utest `netlog_sender_restarted`). An ack past the
+  source's end is still ignored.
+- **init** (net.c): `NETLOG` is a service of shell mode, after logd and
+  before the shell; it waits for `/data` (its settings). Started when
+  `net.host` is an IPv4 address and `netlog` isn't `off`; otherwise one
+  line says why and it is not started this boot. The read-only duplicate
+  of `SR_CRASHLOG` is taken in `net_init`, before lastboot.c lets the log
+  go; each netlog start gets a duplicate of it.
+- **Its lines** ("sending this boot's log [and the last boot's (name)]
+  to ...", "netstack has gone", "no network", and the core's three) are
+  state changes only. In the QEMU test netlog said 7 lines in the first
+  boot (two late or paused receivers, a restart, netstack's restart) and
+  sent 81 datagrams for two boots' logs and a crash log.
+- **The settings keys** (`<settings.h>`): `net.host` (the Mac's address,
+  10.2.21.174 for the owner) and `netlog = off`. netstack refuses
+  broadcasts from programs, so netlog can send only to that one address.
+- **Not done:** `net` in the shell doesn't show netlog's state (it would
+  need a channel to netlog). On a boot without the network card (the
+  everyday entry binds no RTL8125 yet) but with `net.address` set,
+  netstack has an address with no card: netlog says once that the Mac
+  doesn't answer and tries every 30 s, sending nothing that leaves.
+- **Test:** `tools/netlog-test.sh` ([TESTING](TESTING.md#netstack)).
 
 ### update: a new build from the Mac
 
@@ -1183,7 +1338,7 @@ touches a USB disk and never starts agents of its own.
 | **1. The contract and the harness** | Q | netdev.idl and netdev.h (rings, events, counters); `vlan=` from the kernel to init, devmgr and network drivers, kept by kexec; init claims class 02 00 00 and holds the channels; QEMU: `-nic none` by default, the spare MSI-X device, QEMU_NET; tools/netpeer.py (frames over dgram, the tag check, ARP and ICMP echo) and tools/pcap-vlan-check.py; TESTING's boot words | abi/idl/netdev.idl, drivers/include/jam/netdev.h, `kernel/main.c` (the word), `kernel/kexec/load.c`, init's and devmgr's argument passing, `tools/qemu-test.sh`, the Makefile's QEMU flags, `user/tests/utest/supervise.c`, tools/netpeer.py, tools/pcap-vlan-check.py, `docs/TESTING.md` | nothing (runs beside 0) |
 | **2. e1000e** | Q | drv/e1000e: rings, MSI-X, link, the netdev server, netframe.h on both paths; user/tests/nettest (holds the NIC through devmgr's control channel: hostile transmit frames, receive census); tools/net-test.sh scenarios `vlan` (only VLAN 21 frames leave, whatever the test writes), `vlan-off` (no frame at all), `rx` (untagged and other-VLAN dropped) | drivers/e1000e/, user/tests/nettest/, tools/net-test.sh, one match line in devmgr | 0, 1 |
 | **3. netstack core** | S | lwIP vendored (VERSIONS.md); the NO_SYS port (clock, memory, the options file); the netif over the netdev rings; the loop; netctl's `set_ipv4`/`set_dns`/`clear`; `net.address`; init starts netstack with the device channels; a utest of the ring netif against a fake driver; end-to-end: the peer's ICMP echo answered | third_party/lwip/, user/services/netstack/, abi/idl/netctl.idl, user/services/init/net.c (new: netstack and the later network services' starts) | 1 (2 for the end-to-end run) |
-| **4. Sockets** | S | net.idl and the socket channels, `/svc/net` (per opener, limits), `ping`, `net`, the settings keys, `svc net` in lists; tools/shell-tests/net.txt: `ping 1.1.1.1` in QEMU | abi/idl/net.idl, netstack's client side, `user/include/os.h` (the name), `tools/checkwants.py`, the shell's net and ping commands | 2, 3 |
+| **4. Sockets** (built) | S | net.idl and the socket channels, `/svc/net` (per opener, limits), `ping`, `net`, the settings keys, `svc net` in lists; tools/shell-tests/net.txt: `ping 1.1.1.1` in QEMU | abi/idl/net.idl, netstack's client side, `user/include/os.h` (the name), `tools/checkwants.py`, the shell's net and ping commands | 2, 3 |
 | **5. DHCP and DNS** | F | dhcp, dns, dns.idl, `/svc/dns`, `host`, `ping <name>`; the peer's DHCP and DNS (and its slow name); the slow-peer test (DNS, netstack, the driver's ring) | user/services/dhcp/, user/services/dns/, abi/idl/dns.idl, the shell's host command, the peer's DHCP and DNS parts | 4 |
 | **6. netlog** | G | netlog, the crash log stream, tools/netlog-recv.py; a QEMU test that the whole log arrives, from its first line, with the receiver started late and paused | user/services/netlog/, tools/netlog-recv.py, a netlog scenario in tools/net-test.sh | 4 |
 | **7. update** | H | tools/update-server.py; bin/update; `initctl.update` and init's check (planned user/services/init/update.c); the shell's `update`; a QEMU test: build A boots, the peer serves build B (another version string), `update` runs it by kexec; a bad hash, a wrong size and a truncated file are refused with the running build untouched | tools/update-server.py, user/services/update/, `abi/idl/initctl.idl` (one method), init's update file, the shell's update command, tools/update-test.sh | 4 |

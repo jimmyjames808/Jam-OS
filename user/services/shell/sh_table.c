@@ -79,6 +79,15 @@ static const struct sh_cmd cmds[] = {
       "  from /usb0/music or /data/music, search, play, pause, next, back, volume, a\n"
       "  sleep timer, jam roulette; keys and the mouse, ? for the keys. q quits it and\n"
       "  the music plays on (it drives the same player as `music`)"),
+    C(net, C_SYSTEM, "net [stats]",
+      "the network: the address, gateway and DNS servers, the link (speed, VLAN,\n"
+      "  MAC) and the frames in and out, as netstack sees them. net stats: every count\n"
+      "  netstack keeps and the network card's own. The address comes from\n"
+      "  net.address in /data/etc/settings (e.g. 10.2.21.50/24 10.2.21.1 10.2.21.1)"),
+    C(ping, C_SYSTEM, "ping <address> [-c count] [-s size]",
+      "ICMP echo requests to an IPv4 address, one a second (default 4, 56 data\n"
+      "  bytes): a line per reply with its round trip and TTL, or \"no reply\" after\n"
+      "  1 s, then a summary. Ctrl+C stops it. e.g. ping 1.1.1.1 -c 10"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),

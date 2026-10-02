@@ -41,8 +41,10 @@
 #define PBUF_POOL_SIZE          128
 #define PBUF_POOL_BUFSIZE       1536
 #define MEMP_NUM_PBUF           16   /* pbufs pointing at memory lwIP doesn't own (PBUF_REF) */
-#define MEMP_NUM_RAW_PCB        4    /* raw ICMP for ping */
-#define MEMP_NUM_UDP_PCB        24   /* programs' sockets (stage 4's limits), DHCP, DNS */
+#define MEMP_NUM_RAW_PCB        4    /* raw ICMP for programs' pings (one is used) */
+/* Programs' sockets (<net.h> NET_SOCKETS_MAX: DNS's names in flight
+ * share it with netlog, update and the shell) and the DHCP client's. */
+#define MEMP_NUM_UDP_PCB        33
 
 /* ---- the link: Ethernet with ARP, no tags ---------------------------------- */
 #define LWIP_ARP                1
@@ -83,6 +85,11 @@
 #define LWIP_AUTOIP             0
 #define LWIP_ACD                0
 #define LWIP_DNS                0    /* user/services/dns (planned) */
+/* With no address yet, a datagram to the DHCP client's port 68 is taken
+ * whatever its destination address (a server may answer to the address
+ * it offers). Only netctl's DHCP socket can be on port 68: programs get
+ * ports from 1024 up. (lwIP's own DHCP, which would set this, is out.) */
+#define LWIP_IP_ACCEPT_UDP_PORT(port) ((port) == PP_NTOHS(68))
 /* A socket bound to port 0 gets a random port to start from (LWIP_RAND). */
 #define LWIP_RANDOMIZE_INITIAL_LOCAL_PORTS 1
 

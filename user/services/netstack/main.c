@@ -10,11 +10,14 @@
  *                     The first one's closing (devmgr died, with every
  *                     driver) ends netstack, and init starts it again
  *                     with the new devmgr's
- * Not built yet: /svc/net for programs (planned net.idl).
+ *   SR_USER + 1       the server end of /svc/net's shared channel
+ *                     (abi/idl/net.idl), programs' sockets and pings
+ *                     (progs.h); init keeps a duplicate and publishes the
+ *                     client end
  *
- * This file is the loop: one port, and lwIP's timers and the next
- * reconnect as the port wait's deadline (and connect.c's thread, which
- * makes the calls that may wait). Nothing in the loop blocks
+ * This file is the loop: one port, and lwIP's timers, the programs'
+ * timeouts and the next reconnect as the port wait's deadline (and
+ * connect.c's thread, which makes the calls that may wait). Nothing in the loop blocks
  * (ARCHITECTURE.md "How a service waits"): every request is answered at
  * once, frames are handled to the end as they arrive, and lwIP needs no
  * locks. The control channel is bound PERSISTENT and served a budget at a
@@ -23,9 +26,11 @@
 #include <os.h>
 #include "ctl.h"
 #include "dev.h"
+#include "progs.h"
 #include "stack.h"
 
 #define SR_NETCTL (SR_USER + 0)
+#define SR_NET    (SR_USER + 1)
 #define KEY_CTL   1u
 
 struct loop {
@@ -72,6 +77,8 @@ static status_t setup(void)
         st = stack_start(&stack_no_device);
     if (st == OK)
         st = dev_init(&l.dev, l.port);
+    if (st == OK)
+        st = progs_init(l.port, startup_handle(SR_NET), &l.dev);
     if (st != OK) {
         printf("netstack: can't set up (%s)\n", status_str(st));
         return st;
@@ -91,19 +98,23 @@ int main(int argc, char **argv)
     for (;;) {
         if (l.ctl_pending)
             serve_ctl();
+        progs_serve();
         uint64_t deadline = stack_poll();
+        uint64_t t = progs_tick();
+        if (t < deadline)
+            deadline = t;
         uint64_t retry = dev_work(&l.dev);   /* last: it sends what the others queued */
         if (retry < deadline)
             deadline = retry;
-        if (l.ctl_pending || dev_pending(&l.dev))
+        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending())
             continue;
         struct port_packet p;
         status_t st = jam_port_wait(l.port, deadline, &p);
         if (st == OK && p.key == KEY_CTL)
             l.ctl_pending = l.ctl != 0;
-        else if (st == OK)
+        else if (st == OK && !progs_packet(&p))
             dev_packet(&l.dev, &p);
-        else if (st != ERR_TIMED_OUT)
+        else if (st != OK && st != ERR_TIMED_OUT)
             break;
     }
     printf("netstack: its port failed: ending\n");

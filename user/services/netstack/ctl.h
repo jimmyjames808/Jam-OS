@@ -23,6 +23,14 @@ status_t ctl_serve(handle_t ch);
  * (netif.c's dev_get_report); NULL (a test's): no card, all 0. */
 extern void (*ctl_device_report)(struct dev_report *out);
 
+/* Called after the address, the gateway or the DNS servers changed
+ * (clients.c bumps iface's version); NULL: nobody to tell. */
+extern void (*ctl_changed)(void);
+/* netctl.dhcp_open's socket (sock.c's); NULL (a test's): ERR_NOT_SUPPORTED. */
+extern status_t (*ctl_dhcp_open)(handle_t *out);
+/* The DNS servers set (0: none). */
+void ctl_dns(uint32_t out[2]);
+
 /* What netctl.set_ipv4 accepts (its comment in netctl.idl). */
 bool ctl_ipv4_valid(const struct stack_ipv4 *ip);
 /* A unicast address a host may use or talk to: not in 0.0.0.0/8,

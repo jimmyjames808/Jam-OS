@@ -92,6 +92,9 @@ static void detach(struct dev *d, const char *why)
     d->tx_map = d->rx_map = NULL;
     d->gen++;
     d->rx_pending = d->tx_dirty = d->info_out = false;
+    if (d->stats_out && dev_stats_done)
+        dev_stats_done(ERR_PEER_CLOSED, NULL);
+    d->stats_out = false;
     d->rep.session = false;
     d->rep.speed = 0;
     d->link_up = false;
@@ -193,11 +196,35 @@ static void connect_reply(struct dev *d)
  * session channel. */
 static void ask_link(struct dev *d)
 {
-    static uint32_t last_txid;
     if (d->info_out)
         return;
-    d->info_txid = idl_txid_next(&last_txid);
+    d->info_txid = idl_txid_next(&d->last_txid);
     d->info_out = netdev_info_send(d->session, d->info_txid) == OK;
+}
+
+void (*dev_stats_done)(status_t st, const uint8_t *counts);
+
+status_t dev_ask_stats(struct dev *d)
+{
+    if (!d->session)
+        return ERR_NOT_FOUND;
+    if (d->stats_out && now() - d->stats_at < DEV_STATS_AGAIN)
+        return OK;   /* its answer goes to every asker; a lost one's is never taken */
+    d->stats_at = now();
+    d->stats_txid = idl_txid_next(&d->last_txid);
+    status_t st = netdev_stats_send(d->session, d->stats_txid);
+    d->stats_out = st == OK;
+    return st;
+}
+
+/* The driver's answer to dev_ask_stats. */
+static void stats_reply(struct dev *d, const void *rep, struct idl_msg *m)
+{
+    uint8_t counts[NETDEV_STATS_SIZE];
+    d->stats_out = false;
+    status_t st = netdev_stats_result(rep, m, counts);
+    if (dev_stats_done)
+        dev_stats_done(st, st == OK ? counts : NULL);
 }
 
 /* Replies on the session channel, or its end. */
@@ -212,6 +239,10 @@ static void session_event(struct dev *d)
         if (st == ERR_PEER_CLOSED) {
             detach(d, "the driver closed it");
             return;
+        }
+        if (st == OK && d->stats_out && m.txid == d->stats_txid) {
+            stats_reply(d, rep, &m);
+            continue;
         }
         if (st != OK || !d->info_out || m.txid != d->info_txid) {
             idl_msg_drop(&m);   /* not ours to take */

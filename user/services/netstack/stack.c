@@ -14,19 +14,23 @@
  *
  * State is file-static: one interface per process, one thread. */
 #include "lwip/etharp.h"
+#include "lwip/inet_chksum.h"
 #include "lwip/init.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/raw.h"
 #include "lwip/stats.h"
 #include "lwip/timeouts.h"
+#include "lwip/udp.h"
 #include "netif/ethernet.h"
 #include "stack.h"
 
 #define ETHERTYPE_IPV4   0x0800u
-#define IP_PROTO_ICMP    1u
 #define ICMP_ECHO_REPLY  0u
 #define ICMP_UNREACHABLE 3u
+#define ICMP_ECHO        8u
+#define ICMP_HDR         8u       /* type, code, checksum, id, seq */
 
 _Static_assert(PBUF_POOL_BUFSIZE >= STACK_FRAME_MAX, "a received frame must fit one pbuf");
 
@@ -38,6 +42,13 @@ static struct stack_counts counts;      /* ours; lwIP's are added in stack_get_c
 static uint8_t            txbuf[STACK_FRAME_MAX];   /* the frame being sent, flattened */
 static uint64_t           icmp_tokens = STACK_ICMP_ERR_PER_S;   /* ICMP errors allowed now */
 static uint64_t           icmp_topped;  /* ns: when icmp_tokens was last topped up */
+static struct raw_pcb    *echo_pcb;     /* raw ICMP: programs' echo requests and their replies */
+static uint8_t            udpbuf[STACK_UDP_MAX];   /* a datagram being handed to stack_udp_input */
+
+void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const uint8_t *data,
+                        size_t len);
+void (*stack_echo_input)(uint32_t peer, uint16_t id, uint16_t seq, uint8_t ttl, size_t len,
+                         bool unreachable);
 
 static status_t refuse_tx(void *ctx, const uint8_t *frame, size_t len)
 {
@@ -133,6 +144,8 @@ static err_t nif_init(struct netif *n)
     return ERR_OK;
 }
 
+static u8_t echo_in(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr);
+
 status_t stack_start(const struct stack_edge *e)
 {
     if (started)
@@ -140,6 +153,9 @@ status_t stack_start(const struct stack_edge *e)
     if (!lwip_ready) {
         lwip_init();
         lwip_ready = true;
+        echo_pcb = raw_new(IP_PROTO_ICMP);   /* the pool is empty only if this failed */
+        if (echo_pcb)
+            raw_recv(echo_pcb, echo_in, NULL);
     }
     edge = *e;
     if (!netif_add(&nif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4, NULL, nif_init,
@@ -259,4 +275,153 @@ void stack_get_counts(struct stack_counts *out)
     out->bad_checksums = lwip_stats.ip.chkerr + lwip_stats.icmp.chkerr + lwip_stats.udp.chkerr;
     out->rx_buffers_used = lwip_stats.memp[MEMP_PBUF_POOL]->used;
     out->heap_used = (uint32_t)lwip_stats.mem.used;
+}
+
+/* ---- programs' UDP sockets ----------------------------------------------------- */
+
+static uint32_t be16(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 8 | p[1];
+}
+
+static status_t from_err(err_t e)
+{
+    switch (e) {
+    case ERR_OK:  return OK;
+    case ERR_RTE: return ERR_BAD_STATE;      /* no address, no route, or the link down */
+    case ERR_MEM: return ERR_NO_MEMORY;
+    case ERR_VAL: return ERR_INVALID_ARGS;   /* a broadcast without SOF_BROADCAST */
+    case ERR_USE: return ERR_ALREADY_BOUND;
+    default:      return ERR_NO_RESOURCES;   /* ERR_IF: the device refused the frame */
+    }
+}
+
+/* lwIP's receive callback, every socket's: the datagram (copied out of
+ * the pbuf, which could in principle be a chain) to stack_udp_input. */
+static void udp_in(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
+                   u16_t port)
+{
+    (void)pcb;
+    if (stack_udp_input && p->tot_len <= STACK_UDP_MAX) {
+        u16_t n = pbuf_copy_partial(p, udpbuf, p->tot_len, 0);
+        stack_udp_input(arg, from_lwip(ip_2_ip4(addr)), port, udpbuf, n);
+    }
+    pbuf_free(p);
+}
+
+status_t stack_udp_open(uint16_t port, bool bcast, void *ctx, struct stack_udp **out,
+                        uint16_t *out_port)
+{
+    if (!started)
+        return ERR_BAD_STATE;
+    struct udp_pcb *pcb = udp_new();
+    if (!pcb)
+        return ERR_NO_RESOURCES;
+    if (bcast)
+        ip_set_option(pcb, SOF_BROADCAST);
+    err_t e = udp_bind(pcb, IP4_ADDR_ANY, port);
+    if (e != ERR_OK) {
+        udp_remove(pcb);
+        return e == ERR_USE ? ERR_ALREADY_BOUND : ERR_NO_RESOURCES;
+    }
+    udp_recv(pcb, udp_in, ctx);
+    *out = (struct stack_udp *)pcb;
+    *out_port = pcb->local_port;
+    return OK;
+}
+
+void stack_udp_close(struct stack_udp *u)
+{
+    if (u)
+        udp_remove((struct udp_pcb *)u);
+}
+
+status_t stack_udp_send(struct stack_udp *u, uint32_t to, uint16_t port, const void *data,
+                        size_t len, bool on_link)
+{
+    struct udp_pcb *pcb = (struct udp_pcb *)u;
+    if (len > STACK_UDP_MAX)
+        return ERR_INVALID_ARGS;
+    if (!started || !netif_is_link_up(&nif))
+        return ERR_BAD_STATE;
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+    if (!p)
+        return ERR_NO_MEMORY;
+    memcpy(p->payload, data, len);
+    ip4_addr_t dst = to_lwip(to);
+    uint64_t dropped = counts.tx_dropped;
+    err_t e = on_link ? udp_sendto_if(pcb, p, &dst, port, &nif) : udp_sendto(pcb, p, &dst, port);
+    pbuf_free(p);
+    if (e == ERR_OK && counts.tx_dropped != dropped)
+        return ERR_NO_RESOURCES;   /* lwIP doesn't pass on every refusal (one queued for ARP) */
+    return from_err(e);
+}
+
+/* ---- programs' pings ----------------------------------------------------------- */
+
+/* The raw ICMP socket's callback, ahead of lwIP's own ICMP input: an
+ * intact echo reply, or a destination unreachable about one of our echo
+ * requests, goes to stack_echo_input and is eaten (1); anything else goes
+ * on to lwIP (0: lwIP still owns p). p starts at the IP header, which
+ * lwIP's IP input checked, and the pbuf is trimmed to the datagram. */
+static u8_t echo_in(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
+{
+    (void)arg;
+    (void)pcb;
+    if (!stack_echo_input || p->len != p->tot_len || p->len < 20 + ICMP_HDR)
+        return 0;
+    const uint8_t *ip = p->payload;
+    size_t ihl = (size_t)(ip[0] & 0x0f) * 4;
+    if (ihl < 20 || p->len < ihl + ICMP_HDR)
+        return 0;
+    const uint8_t *m = ip + ihl;
+    size_t n = p->len - ihl;
+    if (m[0] == ICMP_ECHO_REPLY && inet_chksum(m, (u16_t)n) == 0) {
+        stack_echo_input(from_lwip(ip_2_ip4(addr)), (uint16_t)be16(m + 4), (uint16_t)be16(m + 6),
+                         ip[8], n - ICMP_HDR, false);
+        pbuf_free(p);
+        return 1;
+    }
+    /* Unreachable: our request's IP header and its first 8 bytes inside. */
+    const uint8_t *in = m + ICMP_HDR;
+    size_t in_ihl = n >= ICMP_HDR + 20 ? (size_t)(in[0] & 0x0f) * 4 : 0;
+    if (m[0] != ICMP_UNREACHABLE || in_ihl < 20 || n < ICMP_HDR + in_ihl + ICMP_HDR ||
+        in[9] != IP_PROTO_ICMP || in[in_ihl] != ICMP_ECHO)
+        return 0;
+    uint32_t peer = (uint32_t)in[16] << 24 | (uint32_t)in[17] << 16 | (uint32_t)in[18] << 8 |
+                    in[19];
+    stack_echo_input(peer, (uint16_t)be16(in + in_ihl + 4), (uint16_t)be16(in + in_ihl + 6), 0,
+                     0, true);
+    pbuf_free(p);
+    return 1;
+}
+
+status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size)
+{
+    if (size > STACK_UDP_MAX)
+        return ERR_INVALID_ARGS;
+    if (!started || !echo_pcb)
+        return ERR_BAD_STATE;
+    struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)(ICMP_HDR + size), PBUF_RAM);
+    if (!p)
+        return ERR_NO_MEMORY;
+    uint8_t *m = p->payload;
+    m[0] = ICMP_ECHO;
+    m[1] = 0;
+    m[2] = m[3] = 0;
+    m[4] = (uint8_t)(id >> 8);
+    m[5] = (uint8_t)id;
+    m[6] = (uint8_t)(seq >> 8);
+    m[7] = (uint8_t)seq;
+    for (size_t i = 0; i < size; i++)
+        m[ICMP_HDR + i] = (uint8_t)i;
+    u16_t sum = inet_chksum(m, (u16_t)(ICMP_HDR + size));   /* in the wire's byte order */
+    memcpy(m + 2, &sum, sizeof(sum));
+    ip4_addr_t dst = to_lwip(to);
+    uint64_t dropped = counts.tx_dropped;
+    err_t e = raw_sendto(echo_pcb, p, &dst);
+    pbuf_free(p);
+    if (e == ERR_OK && counts.tx_dropped != dropped)
+        return ERR_NO_RESOURCES;
+    return from_err(e);
 }

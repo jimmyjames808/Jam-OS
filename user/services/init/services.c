@@ -42,7 +42,8 @@
  *             "nousb" (the safe mode boot entry) is passed on: no USB
  *             controller driver. Its mounts (/data, /esp) are followed from
  *             then on (mounts.c). The NIC's device channel goes to netstack
- *             the same way: each network card's goes to netstack (net.c)
+ *             the same way: each network card's goes to netstack (net.c),
+ *             whose /svc/net (a channel per opener) init publishes here
  *   mixer     bin/mixer, once devmgr runs: a duplicate of each HD Audio
  *             controller's device channel (SR_DEVMGR_DEVICE, one handle
  *             each; none without one: the mixer then has no output), and the
@@ -70,6 +71,8 @@
  *             boot's log as /data/logs/boot-NNNN.txt. On the boot after a
  *             panic it also gets the panicked boot's log and a channel for
  *             its answer (lastboot.c), and saves that log first
+ *   netlog    bin/netlog, once /data is mounted, if its settings say so:
+ *             net.c says with what
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client; no connect_input), root with SHELL_ROOT,
  *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), a channel from
@@ -77,7 +80,8 @@
  *             (SR_NS, followed: every mount, /data's etc included, and
  *             every service: devmgr's channels, init's control channel
  *             /svc/init, made anew for each shell (ctl.c: kill, sync,
- *             reboot, mount), the mixer's, the music player's, logd's).
+ *             reboot, mount), the mixer's, the music player's, logd's,
+ *             netstack's /svc/net).
  *             On the boot after a panic the first shell waits for logd's
  *             answer (lastboot.c) and finds its one line queued on the
  *             SR_USER + 2 channel (INIT_SHELL_NOTE) when it starts
@@ -621,6 +625,7 @@ status_t services_start(unsigned i)
            : i == MUSIC    ? start_music()
            : i == NETSTACK ? net_start()
            : i == LOGD     ? start_logd()
+           : i == NETLOG   ? net_netlog_start()
                            : start_shell();
 }
 
@@ -662,8 +667,11 @@ void services_closed(unsigned i)
 
 void services_given_up(unsigned i)
 {
-    if (i == NETSTACK)
+    if (i == NETSTACK) {
         net_given_up();
+        publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets it */
+        tell_mounts();
+    }
     for (unsigned k = 0; i == MIXER && k < 2; k++) {
         jam_handle_close(audio_srv[k]);   /* calls waiting for a mixer fail now */
         audio_srv[k] = HANDLE_INVALID;
@@ -694,4 +702,5 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
     publish(SVC_AUDIOCTL, audio_cli[1], true);
     publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
+    publish(SVC_NET, net_svc_channel(), true);
 }
