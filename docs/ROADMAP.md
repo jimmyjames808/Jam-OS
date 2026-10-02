@@ -31,8 +31,10 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M10.5 | S3 sleep | later |
 | M11 | IOMMU | later |
 | M11.5 | Performance pass: the IPC fast path, a Linux column in BENCH.md | later |
+| M11.6 | Services that outlive their process | later |
 | M12 | Interface review, before anything is frozen | later |
 | G1 | A compositor that speaks Wayland | after M12 |
+| M12.5 | User-space pagers: mapped files, programs loaded on demand | later |
 | M13 | POSIX on musl | stretch |
 | M14 | Stable syscall ABI | stretch |
 | M14.5 | Maybe: dynamic linking | stretch, only if porting needs it |
@@ -73,7 +75,9 @@ Known limits it left:
 | M10.5 | S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |
 | M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` | DMA outside a driver's pinned VMOs is blocked |
 | M11.5 | Performance pass, as M5.5 was, before M12 reviews and M14 freezes the system calls: the IPC fast path (one reply-and-wait call, a direct hand-off to a waiting server, one copy of the message, no FPU save on a voluntary switch, no failed read before each wait), the file and block calls' deadlines made cheaper, and every number measured again on the PC. BENCH.md gains a Linux column measured on the same PC (default and `mitigations=off`), per-operation lines (a cached 4 KiB read, a block read) next to per-call ones, and a column with the lock checker off | a process-to-process call on the PC at 600 ns or less (1407 ns today), nothing given up in isolation or restart |
+| M11.6 | Services that outlive their process. A service's queues and state live outside the process (in VMOs and kernel objects the service is handed back when it restarts), so a restarted service reconnects to them and its clients never see the crash; a warm spare makes the restart fast. First for fat and the mixer, then the drivers. Built on M11.5's call path, before M12 reviews the interfaces it changes. The demonstration: a file copy on the PC that finishes with the right checksum while fat is killed again and again, its throughput printed next to the kill rate | killing fat or the mixer during use is not seen by their clients (no error, no gap in the sound); kill-to-first-answer measured and in BENCH.md |
 | M12 | Interface review: the system calls and the service protocols reviewed and reshaped while changing them is cheap, before POSIX builds on them and M14 freezes them. The second cleanup point after M8.6, by fresh agents | the review's findings fixed; nothing frozen yet |
+| M12.5 | User-space pagers. A process (a filesystem service) supplies the pages of a VMO on demand: mapped files (a cached read becomes a memory copy, and M13's `mmap` has something to stand on), programs loaded on demand instead of read whole, and the clean way to run programs from `/data` (the pages come from fat, checked against the approved hash). Pager failures (a pulled stick) end in a clean error, never a kernel hang | a file mapped and read through its pages; a program on `/data` runs from a pager; pulling the stick under a mapping fails the access cleanly |
 | M13 | POSIX on musl: file descriptors over handles, `posix_spawn` (no `fork`), paths through the namespace, then ported programs | unmodified POSIX programs (shell utilities, a small C program) build and run |
 | M14 | Stable syscall ABI: frozen only after POSIX has put its weight on it; versioned and documented | old binaries keep running on new kernels |
 | M14.5 | Maybe: dynamic linking. A loader for shared libraries and `dlopen`, for porting big software built around them (LibreOffice, Python's C extensions, GTK or Qt apps, plugins). Static linking stays the default for Jam OS's own programs. `allow` must then cover the libraries a program loads as well as the program file (each approved by its hash), and a program's list names the libraries it may load. Only worth doing when such a port is a goal | a ported program loads a shared library and a plugin with `dlopen`, and a changed library is refused until approved |
@@ -99,15 +103,6 @@ None has a plan yet; the order is the current preference.
   requests and replies in a VMO and make a system call only when the other
   side is asleep: the third level after copied messages and shared VMOs
   for bulk data. The ring layout would be generated from the IDL.
-- **User-space pagers.** A process (a filesystem service) supplies the
-  pages of a VMO on demand. It gives mapped files (a cached read becomes a
-  memory copy), programs loaded on demand, and the clean way to run
-  programs from `/data`.
-- **Services that outlive their process.** A service's queues and state
-  live outside the process, so a restarted service reconnects to them and
-  its clients never see the crash; with a warm spare the restart is fast
-  enough to measure as a benchmark. Today a restart is visible to every
-  client.
 - **A service dependency graph.** devmgr and init know the order by code
   (filesystems, then USB class drivers, then the bus drivers). Declared
   dependencies would drive start, stop and restart order instead.
