@@ -38,7 +38,11 @@ fetcher starts again from the manifest. Malformed datagrams get no answer.
 
 The version comes from the kernel's own `jamos_version` symbol in the ELF
 file (so it is the build's, not the source's), else from kernel/main.c;
-the git hash is the tree's when the snapshot is made."""
+the git hash from the boot image's build.txt (the Makefile writes the
+commit the build was made from), else the tree's when the snapshot is made.
+
+For tests, tools/netpeer.py --update SPEC answers port 5022 with
+peer_handler(SPEC): this server with a plan of damaged builds (below)."""
 import argparse
 import collections
 import hashlib
@@ -141,6 +145,34 @@ def build_version(kernel):
     return m.group(1) if m else "unknown"
 
 
+BOOTFS_HEADER = struct.Struct("<8sIIQ")    # tools/mkbootfs.py's
+BOOTFS_ENTRY = struct.Struct("<56sQQ")
+
+
+def bootfs_file(img, name):
+    """The bytes of file `name` in a boot image, or None."""
+    if len(img) < BOOTFS_HEADER.size:
+        return None
+    magic, _, count, _ = BOOTFS_HEADER.unpack_from(img, 0)
+    if magic != b"JAMBOOTF":
+        return None
+    for i in range(count):
+        at = BOOTFS_HEADER.size + BOOTFS_ENTRY.size * i
+        if at + BOOTFS_ENTRY.size > len(img):
+            return None
+        n, off, size = BOOTFS_ENTRY.unpack_from(img, at)
+        if n.split(b"\0")[0] == name.encode():
+            return img[off:off + size] if off + size <= len(img) else None
+    return None
+
+
+def build_git(bootfs):
+    """The commit in the boot image's build.txt ("git 2079f35\\n"), or None."""
+    text = bootfs_file(bootfs, "build.txt") or b""
+    m = re.match(rb"git ([0-9a-f]{7,40}(-dirty)?)\n", text)
+    return m.group(1).decode() if m else None
+
+
 def git_hash():
     try:
         h = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], check=True,
@@ -185,7 +217,8 @@ class Server:
     def snapshot(self):
         kernel, bootfs = read_stable(self.paths, self.settle)
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
-                        self.git or git_hash())
+                        self.git or build_git(bootfs) or git_hash())
+        text, kernel, bootfs = self.prepare(text, kernel, bootfs)
         sid = 0
         while not sid or sid in self.snaps:
             sid = secrets.randbits(32)
@@ -194,6 +227,10 @@ class Server:
             self.snaps.popitem(last=False)
         self.log("update-server: snapshot %08x: %s" % (sid, text.decode().split("\n")[1:3]))
         return sid
+
+    def prepare(self, text, kernel, bootfs):
+        """A snapshot's manifest and files as served (PlannedServer's hook)."""
+        return text, kernel, bootfs
 
     def answer(self, dgram):
         """The reply to one datagram, or None (not a request of ours)."""
@@ -225,6 +262,80 @@ class Server:
         rep = self.answer(dgram)
         if rep is not None:
             self.sock.sendto(rep, peer)
+
+
+# ---- a server for tests: a plan of damaged builds ------------------------------------
+
+PLANS = ("good", "damage", "wronghash", "truncated", "gone")
+GONE_AFTER = 300        # replies to a "gone" client before the server stops answering it
+
+
+class PlannedServer(Server):
+    """The server as the PC's tests meet it (tools/update-net-test.sh, through
+    tools/netpeer.py --update): each new client (address and port: one
+    `update` run) gets the next plan in the list, then "good":
+      good       the build as it is
+      damage     a byte of the kernel changed after the manifest was made
+                 (bytes damaged on the way): init refuses its SHA-256
+      wronghash  the manifest's SHA-256 for the boot image is wrong: init
+                 refuses it
+      truncated  the boot image served is half the size the manifest says:
+                 its pieces carry that size, so the fetcher ignores them
+                 and gives up
+      gone       no answer after GONE_AFTER replies (the server stopped
+                 mid-fetch): the fetcher gives up"""
+
+    def __init__(self, kernel_path, bootfs_path, plan, log=print, version=None, git=None):
+        super().__init__(kernel_path, bootfs_path, None, log=log, version=version, git=git,
+                         settle=0.0)
+        for p in plan:
+            if p not in PLANS:
+                raise ValueError("no plan %r (%s)" % (p, ", ".join(PLANS)))
+        self.plan = list(plan)
+        self.clients = {}       # (address, port) -> [plan, replies]
+        self.current = "good"   # the plan of the request being answered
+
+    def prepare(self, text, kernel, bootfs):
+        if self.current == "damage":
+            k = bytearray(kernel)
+            k[len(k) // 2] ^= 0x20
+            kernel = bytes(k)
+        elif self.current == "wronghash":
+            good = hashlib.sha256(bootfs).hexdigest().encode()
+            text = text.replace(good, hashlib.sha256(b"not the boot image").hexdigest().encode())
+        elif self.current == "truncated":
+            bootfs = bootfs[:len(bootfs) // 2]
+        return text, kernel, bootfs
+
+    def handle(self, client, dgram):
+        """The reply to dgram from client (address, port), or None."""
+        if client not in self.clients:
+            plan = self.plan.pop(0) if self.plan else "good"
+            self.clients[client] = [plan, 0]
+            self.log("update-server: %s:%d gets the plan %r" % (client[0], client[1], plan))
+        c = self.clients[client]
+        if c[0] == "gone" and c[1] >= GONE_AFTER:
+            return None
+        self.current = c[0]
+        rep = self.answer(dgram)
+        if rep is not None:
+            c[1] += 1
+        return rep
+
+
+def peer_handler(spec_path, log):
+    """tools/netpeer.py's handler for port 5022: a PlannedServer from the
+    JSON file spec_path ({"kernel": path, "bootfs": path, "plan": [...],
+    and optionally "version", "git"})."""
+    import json
+    with open(spec_path) as f:
+        spec = json.load(f)
+    server = PlannedServer(spec["kernel"], spec["bootfs"], spec.get("plan", []), log=log,
+                           version=spec.get("version"), git=spec.get("git"))
+
+    def handle(peer, src, sport, dst, payload):
+        return server.handle((socket.inet_ntoa(src), sport), payload)
+    return handle
 
 
 # ---- the self-test's client: updfetch.c's window, in Python --------------------------
@@ -308,6 +419,39 @@ class Client:
                     between()
                     between = None
         return [bytes(o) for o in out]
+
+
+def check_plans(kpath, bpath, check):
+    """PlannedServer: each client its plan, in order, then "good"."""
+    s = PlannedServer(kpath, bpath, ["damage", "wronghash", "truncated", "gone"],
+                      log=lambda s: None, version="0.0.29-test", git="abcdef0")
+
+    def ask(client, f, sid, off, length):
+        rep = s.handle(client, REQ.pack(MAGIC, VERSION, REQUEST, f, 0, sid, off, length, 0))
+        return (REP.unpack_from(rep), rep[REP.size:]) if rep else (None, b"")
+
+    def whole(client, f, sid, size):
+        return b"".join(ask(client, f, sid, off, CHUNK_MAX)[1] for off in range(0, size, CHUNK_MAX))
+
+    results = {}
+    for n, plan in enumerate(["damage", "wronghash", "truncated", "gone", "good"]):
+        client = ("10.2.21.5", 50000 + n)
+        fields, text = ask(client, MANIFEST, 0, 0, CHUNK_MAX)
+        m = parse_manifest(text)
+        sid = fields[5]
+        (ksize, ksha), (bsize, bsha) = m[2]
+        if plan == "truncated":
+            results[plan] = ask(client, BOOTFS, sid, bsize - 10, 10)[0][4] == RANGE
+        elif plan == "gone":
+            for _ in range(GONE_AFTER):
+                ask(client, KERNEL, sid, 0, 10)
+            results[plan] = ask(client, KERNEL, sid, 0, 10)[0] is None
+        else:
+            k, b = whole(client, KERNEL, sid, ksize), whole(client, BOOTFS, sid, bsize)
+            good = hashlib.sha256(k).hexdigest() == ksha and hashlib.sha256(b).hexdigest() == bsha
+            results[plan] = good if plan == "good" else not good
+    for plan, ok in results.items():
+        check("the test plan %r" % plan, ok)
 
 
 def self_test():
@@ -402,6 +546,14 @@ def self_test():
     if os.path.exists(elf):
         v = elf_symbol_string(open(elf, "rb").read(), b"jamos_version")
         check("build/jamos.elf's jamos_version is %r" % v, bool(v) and VERSION_RE.match(v.encode()))
+    # 7. The git hash from a boot image's build.txt; the test plans.
+    entry_at = BOOTFS_HEADER.size + BOOTFS_ENTRY.size
+    img = (BOOTFS_HEADER.pack(b"JAMBOOTF", 1, 1, entry_at + 16) +
+           BOOTFS_ENTRY.pack(b"build.txt", entry_at, 16) + b"git 0123abc-dirty\n"[:16])
+    check("a cut build.txt has no git hash", build_git(img) is None)
+    img = img[:entry_at - 16] + struct.pack("<QQ", entry_at, 18) + b"git 0123abc-dirty\n"
+    check("a boot image's git hash", build_git(img) == "0123abc-dirty")
+    check_plans(kpath, bpath, check)
     stop.set()
     if fails:
         print("update-server self-test: FAIL (%d)" % len(fails))
@@ -425,7 +577,8 @@ def main():
         return self_test()
     if a.manifest:
         k, b = (open(p, "rb").read() for p in a.manifest)
-        sys.stdout.write(manifest(k, b, a.version or build_version(k), a.git or git_hash()).decode())
+        sys.stdout.write(manifest(k, b, a.version or build_version(k),
+                                  a.git or build_git(b) or git_hash()).decode())
         return 0
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((a.bind, a.port))

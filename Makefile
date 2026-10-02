@@ -62,7 +62,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl check compdb includes
+.PHONY: all image run debug clean font usb flash syscalls idl check compdb includes FORCE
 
 all: $(KERNEL) $(BOOTFS)
 
@@ -393,16 +393,29 @@ SPLASH_FILES := $(if $(filter 2,$(words $(wildcard $(SPLASH_PAIR)))),$(SPLASH_PA
 boot/splash.mpg: $(SPLASH_FILES)
 	$(if $(SPLASH_FILES),tools/mksplash.sh $(SPLASH_SRC) $@)
 
+# build.txt in bootfs: the git commit the build was made from ("git
+# 2079f35", "-dirty" when tracked files had changes), which `version` and
+# `update` show and tools/update-server.py puts in the manifest. Written
+# again only when it changes, so an unchanged tree packs nothing anew.
+BUILD_INFO := $(BUILD)/build.txt
+$(BUILD_INFO): FORCE
+	@mkdir -p $(BUILD)
+	@h=$$(git rev-parse --short=7 HEAD 2>/dev/null) || h=0000000; \
+	 [ $$h = 0000000 ] || git diff --quiet HEAD -- 2>/dev/null || h=$$h-dirty; \
+	 printf 'git %s\n' "$$h" > $@.new; \
+	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+FORCE:
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
 BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
-                splash.mpg=boot/splash.mpg
+                splash.mpg=boot/splash.mpg build.txt=$(BUILD_INFO)
 
 # Every program's list (<wants.h>) is checked first: what the build
 # approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg tools/mkbootfs.py tools/checkwants.py user/include/os.h
+           boot/splash.mpg $(BUILD_INFO) tools/mkbootfs.py tools/checkwants.py user/include/os.h
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 

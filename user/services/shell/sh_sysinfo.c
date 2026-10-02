@@ -11,6 +11,25 @@ bool sh_sysinfo(struct sys_info *s, const char *who)
     return st == OK;
 }
 
+void sh_build_git(char *out, size_t cap)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size = 0;
+    snprintf(out, cap, "unknown");
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "build.txt", &data, &size) != OK ||
+        size < 5 || memcmp(data, "git ", 4))
+        return;
+    const char *p = (const char *)data + 4;
+    size_t n = 0;
+    while (n < size - 4 && n + 1 < cap && p[n] > ' ' && p[n] < 0x7f)
+        n++;
+    if (!n)
+        return;
+    memcpy(out, p, n);
+    out[n] = '\0';
+}
+
 bool sh_cpus(struct cpu_stat *c, uint32_t *n, const char *who)
 {
     int64_t r = jam_cpu_stat(sh_root(), 0, c, SH_MAX_CPUS);

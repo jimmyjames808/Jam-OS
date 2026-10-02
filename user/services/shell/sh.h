@@ -258,6 +258,10 @@ void sh_fmt_uptime(uint64_t ns, char *buf, size_t cap);
 bool sh_sysinfo(struct sys_info *s, const char *who);
 bool sh_cpus(struct cpu_stat *c, uint32_t *n, const char *who);
 int  sh_procs(struct proc_stat *p, const char *who);
+/* The git commit this boot's build was made from (bootfs's build.txt, the
+ * Makefile's: "2079f35", "2079f35-dirty") into out (cap bytes), or
+ * "unknown" if the boot image has none. */
+void sh_build_git(char *out, size_t cap);
 /* Tenths of a percent, clamped to 0..1000. */
 unsigned    sh_permille(uint64_t part, uint64_t whole);
 /* "P", "E" or "-". */
@@ -342,7 +346,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music); SH_CMD(net); SH_CMD(ping);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
-SH_CMD(reboot); SH_CMD(kernel); SH_CMD(run); SH_CMD(allow);
+SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
 SH_CMD(mixtest);

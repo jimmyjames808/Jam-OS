@@ -17,7 +17,9 @@ What it does with each frame from the guest:
     address (the peer's MAC; not ARP probes from 0.0.0.0 nor gratuitous
     ones), ICMP echo for any address (so `ping 1.1.1.1` works in QEMU);
     UDP to a port with a handler (add_udp: later DHCP, DNS, netlog and the
-    update server hook in here). Every reply is tagged with the VLAN.
+    update server hook in here; --update SPEC: port 5022 is
+    tools/update-server.py's peer_handler, SPEC its JSON file). Every
+    reply is tagged with the VLAN.
   - pings (--ping ADDR): every half second, once it has seen the guest's
     MAC, an ICMP echo request from the Mac's address (10.2.21.174) to
     ADDR; the guest's echo replies to them are checked (checksum, id,
@@ -29,7 +31,7 @@ What it does with each frame from the guest:
 Run (one of):
     netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
-               [--log FILE]
+               [--log FILE] [--update SPEC]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -440,9 +442,22 @@ def stdin_command(peer, line, a):
     return True
 
 
+def update_handler(spec, log):
+    """--update SPEC: port 5022 answered by tools/update-server.py's
+    peer_handler (a build, and a plan of damaged ones for the tests)."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "update-server.py")
+    s = importlib.util.spec_from_file_location("update_server", path)
+    mod = importlib.util.module_from_spec(s)
+    s.loader.exec_module(mod)
+    return mod.peer_handler(spec, log)
+
+
 def run(a):
     log = open(a.log, "a") if a.log else None
     peer = Peer(a.listen, a.qemu, a.vlan, log)
+    if a.update:
+        peer.add_udp(5022, update_handler(a.update, peer.log))
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
@@ -491,6 +506,7 @@ def main():
     ap.add_argument("--ready")
     ap.add_argument("--log")
     ap.add_argument("--ping")
+    ap.add_argument("--update", metavar="SPEC")
     ap.add_argument("--free-ports", type=int, default=0)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

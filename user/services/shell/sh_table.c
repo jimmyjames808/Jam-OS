@@ -102,6 +102,13 @@ static const struct sh_cmd cmds[] = {
     C(kernel, C_SYSTEM, "kernel load",
       "read /esp's kernel and boot image now and store them for the next reboot\n"
       "  (and a panic): after `make flash`, load, then `reboot` reads nothing"),
+    C(update, C_SYSTEM, "update [-n] [server address]",
+      "run the build the Mac serves: on the Mac `make`, then tools/update-server.py\n"
+      "  left running; here `update` fetches it (bin/update), init checks each file's\n"
+      "  size and SHA-256 against the manifest, and the PC reboots into it: old -> new\n"
+      "  is shown. RAM only: a power-off brings back the stick's (`make flash` keeps\n"
+      "  one). The server is net.host in /data/etc/settings (e.g. 10.2.21.174).\n"
+      "  -n: fetch and check only, nothing loaded"),
     C(run, C_SYSTEM, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
