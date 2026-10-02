@@ -1260,8 +1260,12 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the jump). Any failure before the jump falls back to the firmware
-  reset; `reboot -f` always uses it. M9's `update` is meant to call
-  `kexec_load` with what it fetched.
+  reset; `reboot -f` always uses it. M9's `update` hands init a fetched
+  build on an offer channel (initctl.update_offer, `<update.h>`): init
+  copies it into VMOs of its own, checks each length and SHA-256 against
+  the manifest, calls `kexec_load` with the copies and notes `/esp`'s
+  files as seen, so `reboot` starts the fetched build
+  (`user/services/init/update.c`; the network side is not built yet).
 - **A stick whose files don't load** (a flash pulled half way, a damaged
   copy): the kernel refuses them and keeps the stored copy armed, so
   `reboot` starts that one, the last good build, after a short notice on

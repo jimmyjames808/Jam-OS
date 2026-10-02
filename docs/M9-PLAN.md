@@ -868,6 +868,95 @@ QEMU at once; main frozen while tracks run):
 Merge order: 0, 1, 2, 3, 4, then 5, 6, 7 as they finish, R1 when its PC
 run passes, 8, 9.
 
+## Stages 6a and 7a, built: netlog and update without the network
+
+Built 2026-10-02 (before sockets exist), so stages 6 and 7 split in two:
+6a/7a, everything that doesn't need `/svc/net`; 6b/7b, the programs that
+use it. What is there, and how it differs from the sections above:
+
+- **The manifest** ([`<update.h>`](../user/include/update.h), parser
+  `user/lib/update.c`): six lines, `jamos-update 1`, `version`, `git`,
+  `kernel <size> <sha256>`, `bootfs <size> <sha256>`, `signature` (no
+  value: a manifest whose signature line has one is refused,
+  ERR_NOT_SUPPORTED, until signing is built; a signature will cover the
+  bytes before its line). At most 1024 bytes, each file at most 32 MiB.
+- **init's check** (`user/services/init/update.c`): a new initctl method,
+  `update_offer`, hands out an offer channel; the sender writes one
+  `struct update_offer` (the manifest as fetched, each file's length, two
+  VMO handles); init copies each file into a VMO of its own, hashing the
+  bytes it writes, checks lengths and SHA-256s, calls `kexec_load` (this
+  boot's command line) and `reboot_keep_stored()` (reboot.c: `/esp`'s
+  files noted as seen), answers one `struct update_answer` and closes the
+  channel. Measured in QEMU: 530 ms for a 9 MB build.
+- **The protocol** ([`<updwire.h>`](../user/include/updwire.h)): a
+  20-byte request (snapshot, file 0/1/2, offset, length <= 1400) and a
+  24-byte reply header (the same, a status OK/GONE/RANGE/BAD, the file's
+  size). **The fetcher's window** ([`<updfetch.h>`](../user/include/updfetch.h)):
+  32 requests in flight, 300 ms before one is sent again, 10 sends at
+  most, the manifest again when the snapshot is gone (3 times at most); a
+  reply is stored only if it matches a request in flight exactly.
+- **netlog's core** ([`<netlog.h>`](../user/include/netlog.h)): the
+  datagram as planned plus two fields: the offset the PC was last acked
+  (a receiver that lost its files skips to it with a note) and a sequence
+  number (the receiver counts lost datagrams). Text is cut after the last
+  newline that fits; at most 16 datagrams per poll; a 500 ms first wait
+  doubling to 30 s; after 3 waits without an answer it says so once and
+  sends one datagram per try. Its sources: a klog reader, and the crash
+  log VMO (`netlog_crash_source`, checked with `crashlog_header_ok`).
+- **The Mac's tools**: `tools/update-server.py` (also `--manifest`) and
+  `tools/netlog-recv.py`, each with `--self-test`. The server waits until
+  both files have been unchanged for 1 s before a snapshot, but a snapshot
+  taken while `make` is between writing the kernel and the boot image
+  still pairs a new kernel with an old image: run `update` after `make`
+  has finished.
+- **Tests:** utest's `update_*`, `updwire_*`, `updfetch_*`, `netlog_*`;
+  `tools/update-test.sh` (init's check fed by `bin/updtest` from files);
+  the two self-tests ([TESTING.md](TESTING.md#area-scripts)).
+
+**The edges 7b connects:**
+1. `bin/update` (user/services/update/): a UDP socket from `/svc/net`
+   to `net.host`:5022, `updfetch_start`, then a loop of
+   `updfetch_poll(now)` (its return is the receive deadline) and
+   `updfetch_reply` for each datagram from the server's address. Its io:
+   `send` = the socket's send_to; `begin` = two VMOs of the manifest's
+   sizes, page-rounded (made again after a restart); `store` =
+   `jam_vmo_write`. At DONE it writes one `struct update_offer` on its
+   offer channel (the manifest bytes `begin` was given) and waits for
+   the `struct update_answer`, as `user/tests/updtest/main.c`'s `offer()`
+   does.
+2. initctl `update` (a `later` method, the next ordinal) in ctl.c: init
+   calls `update_offer_new()` itself, starts `bin/update` with `/svc/net`,
+   the server's address and the client end, and answers the pending txn
+   from `update_event()` (which today answers only the offer channel: it
+   needs a hook that hands the answer to ctl.c too). Or the shell makes
+   the offer channel (`initctl.update_offer`) and starts `bin/update`
+   itself; then init needs no change at all.
+3. The shell's `update [-n]`: the running version (sysinfo) and the
+   answer's version and git hash, then `reboot`. The running build's git
+   hash is nowhere on the PC today.
+4. tools/update-test.sh's network run: tools/netpeer.py answers port 5022
+   with `Server(kernel, bootfs, sock=None, ...).answer(dgram)` from
+   update-server.py (no socket needed); build B is the marked boot image
+   the script already makes.
+
+**The edges 6b connects:**
+1. `bin/netlog` (user/services/netlog/): `wait_up` on `/svc/net`, a UDP
+   socket to `net.host`:5021, the boot id from `wallclock_get` (UTC now
+   minus uptime; 0 if the clock isn't set), `netlog_klog_source` over a
+   klog reader, `netlog_start`; with a crash log, `netlog_crash_source`
+   and `netlog_add_crash`. The loop: `netlog_poll(now)` gives the
+   deadline; wait for the reader's `SIG_READABLE` or a datagram until
+   then; `netlog_ack` for each datagram from `net.host`:5021 only. io.say
+   is `printf`.
+2. init (net.c, stage 3's file): start it in shell mode when `net.host`
+   is set and netlog isn't off, with the root reduced to
+   `RIGHT_ROOT_KLOG`, `/svc/net`, and a read-only duplicate of
+   `SR_CRASHLOG` taken before lastboot.c lets the log go.
+3. tools/net-test.sh's `netlog` scenario: tools/netpeer.py answers port
+   5021 with netlog-recv.py's `Receiver(folder, sock=None).handle(dgram)`
+   (it returns the ack) and the test compares the file with the boot's
+   log from its first line, the receiver started late and paused.
+
 ## Where tracks meet
 
 - **devmgr's match table** (`user/services/devmgr/main.c`): one line each
