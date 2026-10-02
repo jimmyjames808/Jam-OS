@@ -6,8 +6,10 @@
  * writer reaches its peer without holding a reference on it, and why the
  * endpoints need no references on each other (which would be a cycle).
  *
- * Lock order: "channel pair" -> "channel" (one endpoint's object lock) ->
- * whatever observers take. Only one endpoint lock is ever held at a time.
+ * Lock order: "channel carry" (only for a message that carries an
+ * endpoint: see check_carried) -> "channel pair" -> "channel" (one
+ * endpoint's object lock) -> whatever observers take. Only one endpoint
+ * lock is ever held at a time.
  * Nothing that can close a channel (khandle_release, kobject_unref) runs
  * under either lock: dropped messages are freed after unlocking, because
  * their handles may be the last ones to another channel.
@@ -15,6 +17,7 @@
  * Each endpoint's object lock guards its message queue, its list of
  * channel_call waiters and its closed / peer_closed flags. */
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
@@ -69,6 +72,9 @@ struct channel {
 
 static uint64_t live_endpoints;
 static uint32_t next_txid;
+/* Held by a send that carries a channel endpoint from its cycle check to
+ * its queueing (check_carried). */
+static spinlock_t carry_lock = SPINLOCK_INIT("channel carry");
 
 uint64_t channel_live_count(void)
 {
@@ -307,6 +313,13 @@ static status_t check_carried(struct channel *ch, struct channel *peer, struct c
          * exactly these edges makes cycles -- direct or indirect, of any
          * length -- impossible, while sending an endpoint that only has plain
          * messages, or non-channel handles, queued still works.
+         * The check reads o's queue, which another pair's sender may be
+         * filling right now: two sends that each carry one endpoint into
+         * the other's queue would each see that queue still empty and close
+         * a 2-cycle together. So every send that carries an endpoint holds
+         * carry_lock from this check until its message is queued (test:
+         * channel_cycle_check_races_refused); queueing anything else adds
+         * no endpoint to any queue.
          * We take o's object lock here having only pair->lock held ("channel
          * pair" -> "channel"), and drop it before locking the peer, so no two
          * "channel" locks are ever held at once. */
@@ -357,6 +370,14 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
     return OK;
 }
 
+static bool carries_channel(struct chan_msg *m)
+{
+    for (uint32_t i = 0; i < m->nhandles; i++)
+        if (msg_handles(m)[i].obj->type == OBJ_CHANNEL)
+            return true;
+    return false;
+}
+
 /* Queue m on ch's peer, or hand it to the channel_call there waiting for
  * its txid. On success the message belongs to the peer; on failure it is
  * still the caller's. */
@@ -365,6 +386,8 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     struct chan_pair *pair = ch->pair;
     status_t st;
     bool filled = false;
+    bool carry = carries_channel(m);
+    uint64_t cf = carry ? spin_lock_irqsave(&carry_lock) : 0;
     uint64_t f = spin_lock_irqsave(&pair->lock);
     struct channel *peer = pair->ep[!ch->side];
     if (pair->ep[ch->side] != ch)
@@ -374,6 +397,7 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     else
         st = check_carried(ch, peer, m);
     if (st == OK) {
+        DBG_HOOK(DBG_CHANNEL_CARRIED, ch);
         spin_lock(&peer->base.lock);
         st = hand_over_locked(ch, peer, m, &filled);
         spin_unlock(&peer->base.lock);
@@ -387,6 +411,8 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
         spin_unlock(&ch->base.lock);
     }
     spin_unlock_irqrestore(&pair->lock, f);
+    if (carry)
+        spin_unlock_irqrestore(&carry_lock, cf);
     return st;
 }
 
