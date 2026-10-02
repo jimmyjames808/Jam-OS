@@ -324,6 +324,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `music.txt` | the music player: usage, errors, `music start` with the shell in use meanwhile (`ls`, `beep`, `vol`, `music status`, `music vol`, `music next`), past one whole shuffle, `music stop`; it plays on through Ctrl+C, `kill shell` and `kill mixer`; `music prev`, `pause` (and `status` paused), the sleep timer set, shown, off, and 33 s that runs out; a second stick pulled mid-song | use `tools/music-test.sh` |
 | `usb.txt` | the `usb` command | `QEMU_USB="-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"` |
 | `usbkeys.txt` | typing on a USB keyboard behind a hub; kill hid, the console, devmgr | use `tools/usbkeys-test.sh` |
+| `shell-forever.txt` | init never gives up on the shell or the console: each killed 12 times in a row (more than the 10 a minute that give any other service up), and the prompt still answers | |
 | `review-cad.txt` | a `run` program can't send Ctrl+Alt+Del | |
 | `review-killinit.txt` | the shell refuses to kill init; supervised services come back | |
 | `review-longline.txt` | a line longer than the screen row | |

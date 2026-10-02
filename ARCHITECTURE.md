@@ -632,7 +632,11 @@ Not built yet; these rules bind every future path that can transmit.
   handles they need: on a plain boot the bootfs server, the console,
   the boot splash (once; the shell waits for it), serialin, devmgr, the
   mixer, the music player, logd (once `/data` is there) and the shell, restarting
-  any that die (killing devmgr takes its drivers with its job); for the
+  any that die (killing devmgr takes its drivers with its job), backing
+  off up to 5 s; one that dies more than 10 times in a minute is given up
+  on, except the console and the shell, which nobody could do without
+  (an end of serialin's or the shell's that the console's took with it
+  doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's;

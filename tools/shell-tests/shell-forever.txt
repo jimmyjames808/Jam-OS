@@ -1,0 +1,103 @@
+# init never gives up on the shell or the console (init/shell.c,
+# never_given_up): any other service that ends more than 10 times in a
+# minute is not started again, but these two are, backing off to 5 s at
+# most. The shell is killed 12 times in a row, then the console 12 times
+# (each takes a new shell with it), and a prompt still answers.
+# Run: QEMU_INPUT=tools/shell-tests/shell-forever.txt tools/qemu-test.sh build/test shell-forever shell
+wait 120 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+seen 10 init: bin/shell ended 11 times in a minute: restarting it anyway
+send kill shell
+wait 30 Jam OS shell
+wait jam>
+send echo ok-$?-shell
+wait ok-0-shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+seen 10 init: bin/console ended 11 times in a minute: restarting it anyway
+send kill console
+wait 30 screen: taken by console
+wait 30 Jam OS shell
+wait jam>
+sleep 1
+send help
+wait Commands:
+wait jam>
+send reboot -f
+wait reboot: resetting
