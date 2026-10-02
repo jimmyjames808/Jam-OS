@@ -238,6 +238,11 @@ bool kexec_halted_will_wait(void)
     return true;
 }
 
+void kexec_reset_coming(void)
+{
+    __atomic_store_n(&handover, HAND_HALT, __ATOMIC_RELEASE);
+}
+
 _Noreturn void kexec_halted_wait(void)
 {
     uint64_t start = rdtsc();

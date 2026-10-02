@@ -295,3 +295,20 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   PCIDs are on ([PCIDs](#the-machine)).
 - The safe mode entry (`nousb`) starts no USB drivers; input then comes only
   from the serial port.
+- **`reboot -f` hangs.** It ends with the kernel's lines on the screen
+  (it takes the screen back from the console and redraws the log, init's
+  last lines included), one per reset method, each a second after the
+  last: `reboot: trying the ACPI reset register (io 0xcf9 = 0x6)` (this
+  PC's FADT: the PCH's hard reset), `reboot: trying 0xCF9's full reset`
+  (a power cycle), `reboot: trying the 8042 ...`, `reboot: trying a triple
+  fault ...`. What the screen shows tells where it stopped. Still the
+  shell's `rebooting through the firmware...` and nothing more: init is
+  stuck (its sync, the log or devmgr's stop); within 60 s the shell gives
+  up and resets by itself, and the kernel's redrawn log then shows init's
+  last line. A `trying` line that stays: that method was written and the
+  CPU stopped, but the board never came back (the firmware hung after the
+  reset); photograph it. Black or the board's logo and no boot menu: the
+  same, after the screen was reset. The last line `trying a triple fault
+  ... hold the power button`: no method reset the board. To try the full
+  reset first, add the boot word `reset=cf9` (E in Limine's menu, as for
+  `smp=loader` above; a `reboot` keeps it).

@@ -65,7 +65,10 @@ bool     dbgcmd_busy(void);
 /* The parse without running anything (tests): 0 if cmd is known. */
 status_t dbgcmd_check(const char *cmd, size_t len);
 
-/* Reset the machine: ACPI reset register, 0xCF9, 8042, triple fault. */
+/* Reset the machine through the firmware (dev/reboot.c): the other CPUs
+ * halted, bus mastering off, then the ACPI reset register, 0xCF9's full
+ * reset, the 8042 and a triple fault, each said on the screen first.
+ * Any context; never returns. */
 _Noreturn void machine_reboot(void);
 /* Which reset methods this machine offers, for the log / RESULTS. */
 void     reboot_describe(char *buf, size_t size);

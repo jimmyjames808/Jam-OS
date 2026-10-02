@@ -40,7 +40,7 @@ static const char *const kept_words[] = {
     "noplaceorder", "noaffinepair", "hidboot", "net",
 };
 /* ... and key=value words. */
-static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=" };
+static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=", "reset=" };
 
 /* A `vlan` word, well-formed or not ("vlan", "vlan=", "vlan=off",
  * "vlan=none", "vlan=21"): all are kept, and first, so a reboot, a panic

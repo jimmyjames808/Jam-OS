@@ -96,6 +96,11 @@ _Noreturn void kexec_panic_jump(void);
  * CPU that decides: it makes the jump if that one is an AP, or halts. */
 bool           kexec_halted_will_wait(void);
 _Noreturn void kexec_halted_wait(void);
+/* A firmware reset is coming (machine_reboot): a BSP halted by the NMI
+ * that comes next halts for good instead of waiting for a jump, and one
+ * already waiting stops waiting (it would give up after a while and
+ * start a reset of its own). */
+void           kexec_reset_coming(void);
 /* The panicking CPU faulted (a nested panic) after kexec_panic_begin said
  * it would jump: the screen is dark already, so rather than halt there
  * with nothing on it, reset through the firmware (debug/panic.c). The
