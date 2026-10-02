@@ -333,6 +333,13 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg);
  * colour (made from the path) instead of the file's; false: no job. */
 bool cover_test_start(void);
 bool cover_test_work(void);
+/* ... and then with real decodes by the helper: pic puts the picture for
+ * a path at the start of decoder_buffer() and returns its length (NULL:
+ * back to the one-colour pictures); a timed-out decode is tried again
+ * `after` ns later (0: the usual). Whether album hash is marked "no
+ * cover" for good. */
+void cover_test_retry(size_t (*pic)(const char *path), uint64_t after);
+bool cover_test_none(uint64_t hash);
 
 /* ---- the roulette (roulette.c) ----------------------------------------------------------- */
 
