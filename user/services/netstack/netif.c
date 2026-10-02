@@ -177,8 +177,10 @@ static status_t attach(struct dev *d, const struct dev_found *f, const handle_t 
         dev_tx_room_came();     /* a new, empty tx ring */
     d->backoff = 0;
     d->last_st = OK;
-    nstack_log("on %s, VLAN %u, MAC %02x:%02x:%02x:%02x:%02x:%02x", f->chip[0] ? f->chip : "?",
-               f->vlan, f->mac[0], f->mac[1], f->mac[2], f->mac[3], f->mac[4], f->mac[5]);
+    char m[NETDEV_MODE_TEXT];
+    nstack_log("on %s, %s, MAC %02x:%02x:%02x:%02x:%02x:%02x", f->chip[0] ? f->chip : "?",
+               netdev_mode_str(f->vlan, m), f->mac[0], f->mac[1], f->mac[2], f->mac[3], f->mac[4],
+               f->mac[5]);
     set_link(d, f->link, f->speed);
     return OK;
 }

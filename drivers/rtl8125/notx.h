@@ -42,7 +42,8 @@
  *
  * tx.c writes the transmit registers itself, and only after
  * rtl_tx_allowed: the driver runs in full mode (not the listen-only
- * probe) and has a valid VLAN to tag every frame with. The mode is set
+ * probe) with a network mode: a valid VLAN to tag every frame with, or
+ * untagged (no frame ever tagged: <jam/netframe.h>). The mode is set
  * once at the start, from the driver's arguments (args.h).
  *
  * user/tests/utest/netframe.c tests both functions; tools/checknotx.sh
@@ -123,7 +124,7 @@ static inline bool rtl_other_txq(uint32_t b)
 enum rtl_mode {
     RTL_MODE_OFF,     /* nothing: the chip is never touched */
     RTL_MODE_PROBE,   /* listen only (`netprobe`): no transmit code runs at all */
-    RTL_MODE_FULL,    /* receive and transmit on the configured VLAN */
+    RTL_MODE_FULL,    /* receive and transmit in the configured network mode */
 };
 
 /* May regs.c write `val` (width 1, 2 or 4 bytes, little-endian) at
@@ -152,8 +153,9 @@ static inline bool rtl_write_allowed(uint32_t reg, unsigned width, uint32_t val)
 }
 
 /* The gate at the top of every tx.c entry point: may the driver transmit
- * at all? Only in full mode, and only with a VLAN to tag frames with. */
+ * at all? Only in full mode, and only with a configured network mode: a
+ * VLAN to tag frames with, or untagged (`vlan` is the mode). */
 static inline bool rtl_tx_allowed(enum rtl_mode mode, uint32_t vlan)
 {
-    return mode == RTL_MODE_FULL && netframe_vlan_ok(vlan);
+    return mode == RTL_MODE_FULL && netframe_mode_ok(vlan);
 }

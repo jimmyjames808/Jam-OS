@@ -1,6 +1,7 @@
 #!/bin/sh
 # make check: in the RTL8125 driver (drivers/rtl8125) only tx.c can make
-# the chip transmit, only in full mode with a VLAN, and the listen-only
+# the chip transmit, only in full mode with a network mode (a VLAN, or
+# untagged), and the listen-only
 # probe has no path to it (docs/M9-PLAN.md, "Where the VLAN tag is
 # enforced"). Grep-level rules over the driver's sources; notx.h's guard
 # and gate enforce the same at run time (utest checks them).
@@ -18,11 +19,11 @@
 #   4. Every function tx.c gives other files starts with the gate (its
 #      first statement calls gate(t, ...) or rtl_tx_allowed(t->mode,
 #      t->vlan)); gate() itself starts with rtl_tx_allowed(t->mode,
-#      t->vlan); and notx.h's rtl_tx_allowed is "full mode and a valid
-#      VLAN".
+#      t->vlan); and notx.h's rtl_tx_allowed is "full mode and a
+#      configured network mode" (a VLAN or untagged: netframe_mode_ok).
 #   5. The probe's own files (probe.c, census.c) call nothing of tx.c.
-#   6. The mode and the VLAN are each set in one place: one assignment of
-#      ->mode and one of ->vlan, both in main.c.
+#   6. The mode and the network mode (->vlan) are each set in one place:
+#      one assignment of ->mode and one of ->vlan, both in main.c.
 #   7. Nothing goes round rules 1-3 by name: the registers' mapping (->r)
 #      is named only in regs.c, tx.c and main.c (which maps it), and the
 #      transmit ring (TX_RING_OFF) and buffers (txbufs) only in tx.c, ring.c
@@ -101,8 +102,8 @@ gates()
             print "4 " f ":" NR ": gate() does not start with rtl_tx_allowed(t->mode, t->vlan)"
         }
         END { if (!gatedef) print "4 " f ": no static bool gate(...)" }' "$tx"
-    grep -q 'return mode == RTL_MODE_FULL && netframe_vlan_ok(vlan);' "$1/notx.h" 2>/dev/null ||
-        echo "4 $1/notx.h: rtl_tx_allowed is not \"full mode and a valid VLAN\""
+    grep -q 'return mode == RTL_MODE_FULL && netframe_mode_ok(vlan);' "$1/notx.h" 2>/dev/null ||
+        echo "4 $1/notx.h: rtl_tx_allowed is not \"full mode and a configured network mode\""
 }
 
 # Rule 6: <field> is assigned (->field = ...) exactly once, in main.c.

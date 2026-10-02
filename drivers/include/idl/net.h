@@ -200,7 +200,8 @@ struct net_accept_rep {
  * mask and gateway (0: none), the DNS servers (0: none), its MAC address;
  * `device` 1 while a network card's driver has a session with netstack,
  * `link` 1 while its link is up; the VLAN every frame is tagged with (0
- * without a card), the link speed in Mb/s (0 while down); `version` counts
+ * without a card; 0x1000, NET_VLAN_UNTAGGED, on an untagged network), the
+ * link speed in Mb/s (0 while down); `version` counts
  * the changes to the address, gateway and DNS servers since netstack
  * started (1 at the start): pass it to wait_change. */
 static inline status_t net_iface_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)

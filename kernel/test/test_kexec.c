@@ -284,9 +284,10 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, ""));
 }
 
-/* Every vlan word is kept, even one that means "no VLAN", and before
- * the others, so a reboot never comes back on the default VLAN when this
- * boot had none. netprobe is not kept. */
+/* Every vlan word is kept (a VLAN, untagged, off, or one that means
+ * off), and before the others, so a reboot never comes back in the
+ * build's default mode when this boot chose another. netprobe is not
+ * kept. */
 KTEST(kexec_next_cmdline_vlan)
 {
     char buf[KEXEC_CMDLINE];
@@ -294,6 +295,10 @@ KTEST(kexec_next_cmdline_vlan)
     KT_ASSERT(!strcmp(buf, "vlan=21 shell"));
     kexec_next_cmdline("vlan=off nosplash", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "vlan=off nosplash"));
+    kexec_next_cmdline("shell vlan=none", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=none shell"));
+    kexec_next_cmdline("vlan=untagged verbose", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "vlan=untagged verbose"));
     kexec_next_cmdline("verbose vlan vlan= vlan=junk vlanx=3", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "vlan vlan= vlan=junk verbose"));
     kexec_next_cmdline("netprobe", buf, sizeof(buf));

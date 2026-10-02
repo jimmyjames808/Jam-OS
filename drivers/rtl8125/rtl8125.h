@@ -4,9 +4,11 @@
  * once at the start from its arguments (args.h):
  *   - the listen-only probe (`netprobe`): counts frames by tag for 60 s
  *     and sends nothing; no transmit code runs at all;
- *   - full mode: receive and transmit on the configured VLAN only. Every
- *     frame sent is tagged in software by tx.c; every frame received is
- *     kept only if it carries that VLAN's tag (rx.c). It runs the send
+ *   - full mode: receive and transmit in the configured network mode
+ *     only. With a VLAN every frame sent is tagged in software by tx.c
+ *     and every frame received is kept only if it carries that VLAN's tag
+ *     (rx.c); untagged, no frame is sent tagged and only untagged ones
+ *     are kept. It runs the send
  *     test (`netsend`: sendtest.c) or serves netdev to netstack (full.c,
  *     with the network drivers' server, <jam/netserver.h>).
  * main.c has the steps and the list of every register the driver writes;
@@ -268,7 +270,8 @@ struct rtl {
     volatile void *r;             /* BAR 2: the registers (64 KiB) */
     handle_t dev, dma, irq, serve, port;
     enum rtl_mode mode;           /* set once by main.c from the arguments; tx.c's gate */
-    uint16_t vlan;                /* the configured VLAN (1..4094), 0: none */
+    uint16_t vlan;                /* the network mode: a VLAN (1..4094) or
+                                   * NETFRAME_MODE_UNTAGGED; 0: off */
     uint32_t xid;                 /* TXCFG bits 30:26, 23:20 (0x641: 8125B) */
     uint32_t refused;             /* writes rtl_write_allowed refused (must stay 0) */
     uint32_t ocp_timeouts;        /* OCP and CSI waits that ran out */

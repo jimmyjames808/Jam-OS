@@ -50,9 +50,11 @@ void probe_report(const struct rtl *t, const struct outcome *o)
     const struct census *c = &t->c;
     uint32_t v = census_vlan(c, t->vlan), u = census_kind(c, NETFRAME_UNTAGGED);
     uint32_t other = c->frames - v - u;
-    drv_report("8125B xid %03x, phy %08x patch %04x, %s, %s%u frames: vlan %u: %u, untagged %u, "
+    char m[NETDEV_MODE_TEXT];
+    drv_report("8125B xid %03x, phy %08x patch %04x, %s, %s%u frames: %s: %u, untagged %u, "
                "other %u, irqs %u, %s%s%s -> %s", t->xid, o->phy, o->rcode, link,
-               t->link_at ? (o->cut ? "cut short: " : "60 s: ") : "", c->frames, t->vlan, v,
+               t->link_at ? (o->cut ? "cut short: " : "60 s: ") : "", c->frames,
+               netdev_mode_str(t->vlan, m), v,
                u, other, t->ev.irqs, o->txcheck, t->refused ? ", WRITES REFUSED" : "",
                guard_note(t), t->link_at ? census_verdict(c, t->vlan) : "nothing heard (no link)");
 }

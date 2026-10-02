@@ -4,13 +4,15 @@
  *   netprobe       the listen-only probe: nothing is ever sent;
  *   netsend        the send test: full mode, a few ARP probes, then stop
  *                  (sendtest.c);
- *   vlan=<n>       the VLAN every frame is tagged with, 1..4094
- *                  (ARCHITECTURE.md "Networking": the kernel decides it
- *                  and devmgr passes it on; the driver never takes it from
- *                  anyone else), read by <jam/netdev.h>'s
- *                  netdev_vlan_args: one valid value, else none;
+ *   vlan=<n>       the network mode: the VLAN every frame is tagged
+ *   vlan=none      with, 1..4094, or untagged (ARCHITECTURE.md
+ *                  "Networking": the kernel decides it and devmgr passes
+ *                  it on; the driver never takes it from anyone else),
+ *                  read by <jam/netdev.h>'s netdev_vlan_args: one valid
+ *                  value, else none;
  *   arpto=<a.b.c.d> the send test's target (default: VLAN 21's router).
- * Without a valid vlan= the network stays off: full mode doesn't start.
+ * Without a valid vlan= word the network stays off: full mode doesn't
+ * start.
  * `netprobe` wins over `netsend`: given both, nothing is sent.
  *
  * user/tests/utest/netframe.c tests these over hostile words. */
@@ -26,7 +28,8 @@
 struct rtl_args {
     enum rtl_mode mode;   /* RTL_MODE_PROBE or RTL_MODE_FULL */
     bool     sendtest;    /* `netsend`: full mode runs the ARP send test */
-    uint16_t vlan;        /* 1..4094; 0: none (or an invalid or conflicting vlan= word) */
+    uint16_t vlan;        /* the mode: 1..4094 or NETFRAME_MODE_UNTAGGED; 0: off (none, or an
+                           * invalid or conflicting vlan= word) */
     uint32_t arp_target;  /* the send test's target IPv4 address, host order */
     bool     bad_target;  /* an arpto= word that isn't an address (the default is used) */
 };
@@ -98,6 +101,6 @@ static inline struct rtl_args rtl_args_parse(const char *const *args, unsigned n
             a.mode = RTL_MODE_PROBE;
     if (a.mode == RTL_MODE_PROBE)
         a.sendtest = false;
-    a.vlan = netdev_vlan_args(args, n);   /* THE VLAN: the one place the driver learns it */
+    a.vlan = netdev_vlan_args(args, n);   /* THE MODE: the one place the driver learns it */
     return a;
 }

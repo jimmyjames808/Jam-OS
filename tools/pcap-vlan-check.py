@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check a pcap of the guest's frames: every one tagged 802.1Q with the
-VLAN (docs/M9-PLAN.md "Testing without the real NIC").
+VLAN, or in the untagged mode (--vlan none) none tagged at all
+(docs/M9-PLAN.md "Testing without the real NIC").
 
 QEMU's `-object filter-dump,...,queue=rx` on the NIC's netdev writes
 every frame the guest's NIC sends to a pcap file (tools/qemu-test.sh does
@@ -8,11 +9,13 @@ it when QEMU_NET is set). This reads that file on its own, sharing no code
 with tools/netpeer.py, so the rule has two independent checks: a frame
 fails if it is a runt (under 18 bytes), untagged, tagged with another
 TPID (QinQ 0x88a8, 0x9100), priority-tagged (VLAN 0), tagged with
-another VLAN, or longer than 1518 bytes.
+another VLAN, or longer than 1518 bytes. With --vlan none (or untagged)
+a frame fails if it is a runt (under 14 bytes), longer than 1514 bytes, or
+carries any tag at all: bytes 12-13 0x8100 (VLAN 0 too), 0x88a8 or 0x9100.
 
-    pcap-vlan-check.py [--vlan N] [--expect-none] [--min N]
+    pcap-vlan-check.py [--vlan N|none] [--expect-none] [--min N]
                        [--exclude-src MAC] file.pcap
-    pcap-vlan-check.py [--vlan N] --pc MAC [--mac MAC] file.pcap
+    pcap-vlan-check.py [--vlan N|none] --pc MAC [--mac MAC] file.pcap
     pcap-vlan-check.py --selftest
 
 --expect-none: the file must have no frame at all (the vlan=off run).
@@ -103,8 +106,44 @@ def frames_pcapng(data):
     return out
 
 
+TPIDS = (0x8100, 0x88A8, 0x9100)
+
+
+def parse_vlan(text):
+    """--vlan's value: a VLAN id 1..4094, or None for the untagged mode
+    ("none" or "untagged")."""
+    if text in ("none", "untagged"):
+        return None
+    v = int(text)
+    if not 1 <= v <= 4094:
+        raise ValueError("a VLAN is 1..4094, or none")
+    return v
+
+
+def rule_name(vlan):
+    """The rule in words: "tagged 21", "untagged"."""
+    return "untagged" if vlan is None else "tagged %d" % vlan
+
+
+def problem_untagged(frame):
+    """Why frame breaks the untagged mode's rule, or None."""
+    if len(frame) < 14:
+        return "runt (%d bytes)" % len(frame)
+    if len(frame) > 1514:
+        return "too long (%d bytes)" % len(frame)
+    tpid = struct.unpack_from(">H", frame, 12)[0]
+    if tpid == 0x8100:
+        vid = struct.unpack_from(">H", frame, 14)[0] & 0x0FFF if len(frame) >= 16 else 0
+        return "TAGGED (VLAN %d)" % vid
+    if tpid in TPIDS:
+        return "TAGGED (outer tag %04x)" % tpid
+    return None
+
+
 def problem(frame, vlan):
-    """Why frame breaks the rule, or None."""
+    """Why frame breaks the rule (tagged with vlan; None: untagged), or None."""
+    if vlan is None:
+        return problem_untagged(frame)
     if len(frame) < 18:
         return "runt (%d bytes)" % len(frame)
     if len(frame) > 1518:
@@ -142,8 +181,9 @@ def check(path, vlan=21, expect_none=False, minimum=0, exclude=None, out=sys.std
         extra = " (none expected)"
     elif len(fs) < minimum:
         extra = " (at least %d expected)" % minimum
-    print("pcap-vlan-check: %s: %d frames, %d not tagged %d%s: %s" %
-          (os.path.basename(path), len(fs), bad, vlan, extra, "PASS" if ok else "FAIL"), file=out)
+    print("pcap-vlan-check: %s: %d frames, %d not %s%s: %s" %
+          (os.path.basename(path), len(fs), bad, rule_name(vlan), extra, "PASS" if ok else "FAIL"),
+          file=out)
     return ok
 
 
@@ -240,9 +280,9 @@ def pc_report(fs, pc, vlan, out, mac=None):
                     order.append(key)
     pattern = "".join("+" if k in answered else "-" for k in order)
     missing = [str(k[2]) for k in order if k not in answered]
-    print("pcap-vlan-check: from the PC: %d frame(s), %d NOT tagged %d, %d garbled; ARP probes "
-          "%d, replies to it %d" % (sum(f[6:12] == pc for f in fs), bad, vlan, odd, probes,
-                                    probe_replies), file=out)
+    print("pcap-vlan-check: from the PC: %d frame(s), %d NOT %s, %d garbled; ARP probes "
+          "%d, replies to it %d" % (sum(f[6:12] == pc for f in fs), bad, rule_name(vlan), odd,
+                                    probes, probe_replies), file=out)
     print("pcap-vlan-check: pings to the PC: %d, answered %d %s%s" %
           (len(order), len(order) - len(missing), pattern[:100],
            "; no reply to seq " + " ".join(missing[:30]) if missing else ""), file=out)
@@ -293,7 +333,26 @@ def selftest():
         ([good + b"\0" * 1500], {}, False),                              # too long
         ([hdr + b"\x81\x00\x00\x16" + arp], {"vlan": 22}, True),
         ([hdr + arp, good], {"exclude": hdr[6:12]}, True),
+        # the untagged mode: untagged frames only, any tag fails
+        ([hdr + arp, hdr + arp], {"vlan": None}, True),
+        ([hdr + b"\x00\x40" + b"\0" * 46], {"vlan": None}, True),       # an 802.3 length
+        ([hdr + b"\x81\x01" + b"\0" * 46], {"vlan": None}, True),       # next to a TPID
+        ([hdr + arp, good], {"vlan": None}, False),                      # tagged 21
+        ([hdr + b"\x81\x00\xa0\x00" + arp], {"vlan": None}, False),     # VLAN 0
+        ([hdr + b"\x81\x00\x00\x0a" + arp], {"vlan": None}, False),     # VLAN 10
+        ([hdr + b"\x88\xa8\x00\x15" + arp], {"vlan": None}, False),     # 0x88a8
+        ([hdr + b"\x91\x00\x00\x15" + arp], {"vlan": None}, False),     # 0x9100
+        ([hdr + b"\x81\x00"], {"vlan": None}, False),                    # a tag cut short
+        ([hdr[:10]], {"vlan": None}, False),                             # runt
+        ([hdr + arp + b"\0" * 1473], {"vlan": None}, False),             # 1515 bytes
+        ([hdr + arp + b"\0" * 1472], {"vlan": None}, True),              # 1514 bytes
+        ([], {"vlan": None, "expect_none": True}, True),
+        ([hdr + arp], {"vlan": None, "expect_none": True}, False),
     ]
+    if parse_vlan("none") is not None or parse_vlan("untagged") is not None or \
+            parse_vlan("21") != 21:
+        print("pcap-vlan-check selftest: --vlan's words")
+        return 1
     fails = 0
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "t.pcap")
@@ -380,7 +439,7 @@ def selftest_pc(d, null):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("pcap", nargs="?")
-    ap.add_argument("--vlan", type=int, default=21)
+    ap.add_argument("--vlan", type=parse_vlan, default=21)
     ap.add_argument("--expect-none", action="store_true")
     ap.add_argument("--min", type=int, default=0)
     ap.add_argument("--exclude-src")

@@ -2,7 +2,7 @@
  * Never compiled. */
 static bool gate(struct rtl *t, const char *what)
 {
-    if (t->mode == RTL_MODE_FULL)                         /* rule 4: the gate without the VLAN */
+    if (t->mode == RTL_MODE_FULL)                         /* rule 4: the gate without the mode */
         return true;
     return false;
 }

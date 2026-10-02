@@ -65,7 +65,8 @@ static void make_files(struct fake *f)
         sha256_hex(d, hex[w]);
     }
     f->manifest_len = (size_t)snprintf(f->manifest, sizeof(f->manifest),
-                                       "jamos-update 1\nversion 1.0\ngit 1234567\nkernel %u %s\n"
+                                       "jamos-update 2\nversion 1.0\ngit 1234567\nnet vlan21\n"
+                                       "kernel %u %s\n"
                                        "bootfs %u %s\nsignature\n", KSIZE, hex[0], BSIZE, hex[1]);
 }
 

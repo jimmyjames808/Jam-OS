@@ -4,8 +4,9 @@
  *
  * This file is the server's view of the card (struct srv_dev): netstack's
  * frames go to tx.c's tx_send and nowhere else, so each is copied into
- * the driver's own buffer, tagged with the VLAN and checked there before
- * the chip may read it; rx.c's kept frames (our VLAN only, untagged) go to
+ * the driver's own buffer, tagged with the VLAN (untagged: refused if it
+ * carries a tag) and checked there before the chip may read it; rx.c's
+ * kept frames (the mode's only, untagged) go to
  * srv_rx; info and stats come from the driver's state and the chip's
  * tally counters. It runs until devmgr stops the driver (its channel
  * closes); a session ending (netstack gone or restarted) only ends the
@@ -104,8 +105,10 @@ void full_run(struct rtl *t, struct outcome *o)
     t->srv = &card.v;
     t->on_frame = on_frame;
     t->link_told = t->link_seq;
-    drv_log("netdev: serving on vlan %u: netstack's frames tagged by tx.c, ours kept by rx.c",
-            t->vlan);
+    char m[NETDEV_MODE_TEXT];
+    drv_log("netdev: serving %s: netstack's frames %s by tx.c, ours kept by rx.c",
+            netdev_mode_str(t->vlan, m),
+            t->vlan == NETFRAME_MODE_UNTAGGED ? "checked untagged" : "tagged");
     while (loop_step(t, DEADLINE_NEVER))
         ;
     o->cut = !t->tripped;   /* it ends only when devmgr stops it, or the guard the chip */
@@ -123,8 +126,10 @@ void full_report(const struct rtl *t, const struct outcome *o)
     chip_link_summary(t, link, sizeof(link));
     tx_wait_str(t, wait, sizeof(wait));
     const struct netdev_stats *s = &card.v.st;
-    drv_report("netdev vlan %u, %s, %lu session(s), rx %lu to netstack (%lu with none, %lu ring "
-               "full), tx %lu from netstack: %s, wait %s, %u stalled%s%s", t->vlan, link,
+    char m[NETDEV_MODE_TEXT];
+    drv_report("netdev %s, %s, %lu session(s), rx %lu to netstack (%lu with none, %lu ring "
+               "full), tx %lu from netstack: %s, wait %s, %u stalled%s%s",
+               netdev_mode_str(t->vlan, m), link,
                (unsigned long)s->sessions, (unsigned long)s->rx_frames,
                (unsigned long)s->rx_no_session, (unsigned long)s->rx_ring_full,
                (unsigned long)s->tx_frames, o->txcheck, wait, t->tx.stalls,

@@ -1,13 +1,15 @@
 /* rtl8125: full mode's receive path (drv/rtl8125).
  *
  * The chip keeps every tag (its tag stripping is off), so the driver sees
- * each frame as it was on the wire and keeps only what netframe_rx_check
- * keeps: 802.1Q-tagged with the configured VLAN, any priority. Untagged
+ * each frame as it was on the wire and keeps only what netframe_rx_mode
+ * keeps. With a VLAN: 802.1Q-tagged with it, any priority; untagged
  * frames (the trunk's native VLAN), priority-tagged ones (VLAN 0), other
- * VLANs, outer tags and a tag inside ours are dropped, each counted under
- * its reason; so are runts and frames too long. A kept frame loses its
- * tag on the way out (netframe_untag) into the driver's scratch copy and
- * goes to t->on_frame (the send test; later the netdev ring).
+ * VLANs, outer tags and a tag inside ours are dropped. Untagged: only
+ * untagged frames; every tagged one (VLAN 0 too) is dropped. Each drop is
+ * counted under its reason; so are runts and frames too long. A kept
+ * frame is copied out (netframe_rx_take: without its tag, in a VLAN mode)
+ * into the driver's scratch copy and goes to t->on_frame (the send test,
+ * or the netdev server: full.c).
  *
  * To decide, the driver reads a frame's length (from the descriptor) and
  * bytes 12-17 (copied once out of the buffer). The buffer is the
@@ -29,14 +31,15 @@ static void keep_or_drop(struct rtl *t, const struct rx_slot *s, uint64_t at)
     uint8_t head[NETFRAME_TAGGED] = { 0 };
     for (unsigned k = 12; k < NETFRAME_TAGGED && k < s->len; k++)
         head[k] = s->buf[k];
-    enum netframe_rx v = netframe_rx_check(head, s->len, t->vlan);
+    enum netframe_rx v = netframe_rx_mode(head, s->len, t->vlan);
     if (v != NETFRAME_RX_KEEP) {
         t->rx.drop[v]++;
         return;
     }
     /* The buffer is ours until ring_rx_done (above), so it is read as
      * plain memory: casting away volatile is safe here. */
-    size_t n = netframe_untag(t->frame, sizeof(t->frame), (const uint8_t *)s->buf, s->len);
+    size_t n = netframe_rx_take(t->frame, sizeof(t->frame), (const uint8_t *)s->buf, s->len,
+                                t->vlan);
     if (!n) {
         t->rx.drop[NETFRAME_RX_LONG]++;   /* can't happen: rx_check bounded the length */
         return;
@@ -74,9 +77,10 @@ void rx_log(const struct rtl *t)
     for (unsigned k = NETFRAME_RX_RUNT; k < NETFRAME_RX_KINDS && len < sizeof(drops); k++)
         len += (size_t)drv_snprintf(drops + len, sizeof(drops) - len, "%s%s %u",
                                     k == NETFRAME_RX_RUNT ? "" : ", ", reason[k], t->rx.drop[k]);
-    drv_log("rx on vlan %u: %u kept (%u with nobody to take them); dropped: %s; %u with the "
-            "error bit, %u split", t->vlan, t->rx.kept, t->rx.unused, drops, t->rx.errors,
-            t->rx.split);
+    char m[NETDEV_MODE_TEXT];
+    drv_log("rx, %s: %u kept (%u with nobody to take them); dropped: %s; %u with the error "
+            "bit, %u split", netdev_mode_str(t->vlan, m), t->rx.kept, t->rx.unused, drops,
+            t->rx.errors, t->rx.split);
 }
 
 /* Where the received frames went, next to tx_tick's "tx so far": what the

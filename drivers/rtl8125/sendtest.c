@@ -112,9 +112,11 @@ static void send_probe(struct rtl *t, unsigned k)
     s.last = (int)k;
 }
 
-/* Wait for the link, then for the first frame on our VLAN. False if cut. */
+/* Wait for the link, then for the first frame kept (on our VLAN, or
+ * untagged). False if cut. */
 static bool wait_ready(struct rtl *t)
 {
+    char m[NETDEV_MODE_TEXT];
     uint64_t t0 = drv_clock_ns();
     if (!loop_until(t, t0 + LINK_NS, LINK_POLL_NS, linked))
         return false;
@@ -126,10 +128,10 @@ static bool wait_ready(struct rtl *t)
     if (!loop_until(t, t0 + HEARD_NS, POLL_NS, heard))
         return false;
     if (s.heard_at)
-        drv_log("first frame on vlan %u %lu ms after the link", t->vlan,
+        drv_log("first frame kept (%s) %lu ms after the link", netdev_mode_str(t->vlan, m),
                 (unsigned long)((s.heard_at - t->link_at) / NS_PER_MS));
     else
-        drv_log("nothing heard on vlan %u in 5 s: sending anyway", t->vlan);
+        drv_log("nothing kept (%s) in 5 s: sending anyway", netdev_mode_str(t->vlan, m));
     return true;
 }
 
@@ -212,8 +214,10 @@ void sendtest_report(const struct rtl *t, const struct outcome *o)
     uint32_t dropped = 0;
     for (unsigned k = NETFRAME_RX_RUNT; k < NETFRAME_RX_KINDS; k++)
         dropped += t->rx.drop[k];
-    drv_report("netsend vlan %u, %s%s, %u/%u probes to %u.%u.%u.%u answered %s, reply %s-%s ms, "
-               "%s, wait %s, %u stalled, rx kept %u dropped %u%s%s", t->vlan, link,
+    char m[NETDEV_MODE_TEXT];
+    drv_report("netsend %s, %s%s, %u/%u probes to %u.%u.%u.%u answered %s, reply %s-%s ms, "
+               "%s, wait %s, %u stalled, rx kept %u dropped %u%s%s", netdev_mode_str(t->vlan, m),
+               link,
                o->cut ? ", CUT SHORT" : "", s.answered, PROBES, s.target >> 24,
                (s.target >> 16) & 0xff, (s.target >> 8) & 0xff, s.target & 0xff, s.pattern,
                ms(s.rtt_min, lo, sizeof(lo)), ms(s.rtt_max, hi, sizeof(hi)), o->txcheck, wait,

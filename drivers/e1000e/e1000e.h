@@ -9,20 +9,23 @@
  * chip.c (reset, the address, the PHY, flow control and VLAN offloads
  * off, link, the chip's counters), ring.c (the descriptor rings and
  * buffers in the driver's own DMA memory), rx.c (received frames: keep
- * our VLAN, untag, to the netdev server), tx.c (THE transmit path: copy,
+ * the mode's, untag, to the netdev server), tx.c (THE transmit path: copy,
  * tag, check, doorbell), loop.c (the one port everything arrives on, and
  * the card as the netdev server sees it). The server itself (info, stats,
  * open, the session and its rings) is the one every network driver
  * links, drivers/lib/netserver.c (<jam/netserver.h>).
  *
- * The VLAN rule (ARCHITECTURE.md "Networking"): every frame sent is
- * tagged 802.1Q with the VLAN devmgr passed (`vlan=<id>`), in software in
- * the driver's own buffer (netframe_tag), and checked once more right
- * before its descriptor is handed over (netframe_tx_check). The chip's own
- * tag insertion and stripping (CTRL.VME, the descriptors' VLE bit) and its
- * VLAN filter (RCTL.VFE) stay off, so tags pass as bytes both ways. With
- * no VLAN the chip is never touched. Flow control is off: the chip never
- * sends a PAUSE frame of its own.
+ * The network rule (ARCHITECTURE.md "Networking"), for the mode devmgr
+ * passed (`vlan=<id>` or `vlan=none`): with a VLAN every frame sent is
+ * tagged 802.1Q with it, in software in the driver's own buffer
+ * (netframe_tag); untagged, every frame is sent as netstack made it but
+ * never one that carries a tag (netframe_plain). Either way the copy is
+ * checked once more right before its descriptor is handed over
+ * (netframe_tx_final). The chip's own tag insertion and stripping
+ * (CTRL.VME, the descriptors' VLE bit) and its VLAN filter (RCTL.VFE) stay
+ * off, so tags pass as bytes both ways. With the network off the chip is
+ * never touched. Flow control is off: the chip never sends a PAUSE frame
+ * of its own.
  *
  * Registers and descriptors: the Intel 82574 GbE Controller Family
  * datasheet (section numbers below), and FreeBSD's em(4) driver (sys/dev/
@@ -235,7 +238,8 @@ struct e1k {
     volatile void *r;             /* BAR 0, the registers */
     handle_t dev, dma, irq, serve, port;
     uint16_t vid, did;            /* PCI ids, for the log */
-    uint16_t vlan;                /* 1..4094: every frame's tag (never 0 once running) */
+    uint16_t vlan;                /* the network mode: 1..4094, every frame's tag, or
+                                   * NETFRAME_MODE_UNTAGGED (never off once running) */
     uint8_t  mac[6];
     /* DMA memory: both descriptor rings in one VMO, every buffer in another */
     handle_t ring_vmo, buf_vmo;
@@ -307,7 +311,7 @@ uint64_t ring_tx_buf_addr(const struct e1k *t, uint32_t i);
 
 /* ---- rx.c -------------------------------------------------------------------------- */
 
-/* Every frame the chip has handed back: kept (our VLAN, untagged, to
+/* Every frame the chip has handed back: kept (the mode's, untagged, to
  * srv_rx) or dropped and counted. Returns how many. */
 unsigned rx_harvest(struct e1k *t);
 /* "rx so far", at most every 10 s and only while frames come. */
@@ -319,9 +323,9 @@ void     rx_tick(struct e1k *t);
 status_t tx_enable(struct e1k *t);
 void     tx_disable(struct e1k *t);
 /* One untagged frame of len bytes (the netdev server's send): copied,
- * tagged and checked into the next descriptor, which is queued; the
- * doorbell waits for tx_flush. OK; ERR_INVALID_ARGS (refused by the tag
- * check); ERR_NO_RESOURCES (no free descriptor); ERR_BAD_STATE (the
+ * tagged for a VLAN mode, and checked into the next descriptor, which is
+ * queued; the doorbell waits for tx_flush. OK; ERR_INVALID_ARGS (refused
+ * by the copy or the last check); ERR_NO_RESOURCES (no free descriptor); ERR_BAD_STATE (the
  * transmitter is off); ERR_ACCESS_DENIED (the gate). */
 status_t tx_send(struct e1k *t, const uint8_t *frame, size_t len);
 /* Free transmit descriptors (sent ones are taken back first if none is). */

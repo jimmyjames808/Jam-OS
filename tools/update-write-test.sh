@@ -56,7 +56,7 @@ EOF
 ) || { echo "update-write-test: can't make build B's kernel"; exit 1; }
 marker="update-marker: build B written $$"
 printf '%s\n' "$marker" > "$out/wtest-marker.txt"
-printf 'git b0b0b0b\n' > "$out/wtest-build.txt"
+printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" > "$out/wtest-build.txt"
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "update-marker.txt=$out/wtest-marker.txt" "build.txt=$out/wtest-build.txt" ||
     { echo "update-write-test: can't make build B's boot image"; exit 1; }

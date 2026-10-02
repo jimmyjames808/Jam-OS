@@ -11,6 +11,7 @@
  *     new BAR resources.
  * The hardware handles are handed over without RIGHT_DUPLICATE and
  * RIGHT_TRANSFER. */
+#include <jam/netdev.h>
 #include "internal.h"
 
 /* Per-driver job limits: 16 MiB, 256 handles, 16 threads, 1 MiB queued. */
@@ -141,10 +142,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * `ps`, for the shell's `kill`. The service is also told its mount,
      * and the one that may format a blank partition is told so; a hid,
      * "hidboot" when devmgr was; a PCI driver, its match-table row's word
-     * ("netprobe"), and a network card's (class 02) the VLAN when there
-     * is one ("vlan=21": without it the driver keeps the network off). */
+     * ("netprobe"), and a network card's (class 02) the network mode when
+     * there is one ("vlan=21", "vlan=none": without it the driver keeps
+     * the network off). */
     const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
-    char mount[16] = "", vlan[16] = "";
+    char mount[16] = "", vlan[NETDEV_MODE_TEXT] = "";
     const char *argv[4] = { name ? name : b->path };
     int argc = 1;
     if (b->kind == BIND_FS) {
@@ -157,7 +159,7 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     if (b->kind == BIND_PCI) {
         add_arg(argv, &argc, pci_driver_arg(b->path));   /* its row's word, or none */
         if (net_vlan && b->info.class_code == PCI_CLASS_NETWORK) {
-            snprintf(vlan, sizeof(vlan), "vlan=%u", net_vlan);
+            netdev_mode_word(net_vlan, vlan);
             add_arg(argv, &argc, vlan);
         }
     }

@@ -44,10 +44,13 @@ uint64_t cmdline_get_u64(const char *key, uint64_t dflt, uint64_t bare)
     return dflt;
 }
 
-/* The id in a `vlan` word's value (n bytes at v), or 0 if it isn't one:
- * 1 to 4 decimal digits, 1..4094. */
+/* The mode in a `vlan` word's value (n bytes at v): the id (1 to 4
+ * decimal digits, 1..4094), CMDLINE_VLAN_UNTAGGED for "none" or
+ * "untagged", or 0 (off) for anything else. */
 static uint32_t vlan_value(const char *v, size_t n)
 {
+    if ((n == 4 && !memcmp(v, "none", 4)) || (n == 8 && !memcmp(v, "untagged", 8)))
+        return CMDLINE_VLAN_UNTAGGED;
     if (n == 0 || n > 4)
         return 0;
     uint32_t id = 0;
@@ -75,7 +78,7 @@ uint32_t cmdline_vlan(const char *line, uint32_t dflt)
             uint32_t id = n > 5 ? vlan_value(p + 5, n - 5) : 0;
             vlan = seen && id != vlan ? 0 : id;
             if (!vlan)
-                return 0;   /* fail closed: one bad or disagreeing word is no VLAN */
+                return 0;   /* fail closed: one bad or disagreeing word is no network */
             seen = true;
         }
         p += n;

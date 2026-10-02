@@ -52,11 +52,11 @@
  * with it: "netprobe" (the boot word) binds drv/rtl8125 as the RTL8125's
  * listen-only probe, "netsend" as its ARP send test; without either, on
  * every boot, drv/rtl8125 serves netdev (the network; "net" is still
- * accepted and says so). The argument "vlan=<id>" (the
- * boot's VLAN, from the kernel through init) is passed on to the driver
- * of every network card (PCI class 02): the one way a network driver
- * learns the VLAN; without it (or with one that isn't valid) the drivers
- * start without a VLAN and keep the network off.
+ * accepted and says so). The argument "vlan=<id>" or "vlan=none" (the
+ * boot's network mode, from the kernel through init) is passed on to the
+ * driver of every network card (PCI class 02): the one way a network
+ * driver learns the mode; without it (or with one that isn't valid) the
+ * drivers start without one and keep the network off.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -406,8 +406,10 @@ int main(int argc, char **argv)
             boot_mbr_id = hex32(argv[i] + 9);
     }
     net_vlan = netdev_vlan_args((const char *const *)argv + 1, (uint32_t)argc - 1);
+    char word[NETDEV_MODE_TEXT];
+    netdev_mode_word(net_vlan, word);
     if (net_vlan)
-        say(false, "devmgr: network drivers get vlan=%u", net_vlan);
+        say(false, "devmgr: network drivers get %s", word);
     else
         say(false, "devmgr: no VLAN: network drivers keep the network off");
     /* devmgr runs until the control channel's clients are all gone (with

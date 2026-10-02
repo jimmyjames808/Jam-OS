@@ -9,9 +9,10 @@
  *   DR_IRQ(0)   MSI-X vector 0 (or MSI): every cause (chip.c routes them)
  *   DR_SERVE    the channel it serves abi/idl/netdev.idl on (the netdev
  *               server, <jam/netserver.h>; loop.c plugs the card in)
- * Arguments: `vlan=<id>` (devmgr passes the boot's VLAN to every network
- * driver; <jam/netdev.h> netdev_vlan_args). Without a valid one the chip
- * is never touched: "no VLAN: the network stays off", exit 0.
+ * Arguments: `vlan=<id>` or `vlan=none` (devmgr passes the boot's network
+ * mode to every network driver; <jam/netdev.h> netdev_vlan_args). Without
+ * a valid one the chip is never touched: "no VLAN: the network stays
+ * off", exit 0.
  *
  * Start, in this order: the registers mapped; the chip quiet and reset
  * (whatever a previous driver left queued is gone: the safe-rebind rule);
@@ -100,8 +101,9 @@ static status_t bring_up(struct e1k *t)
         return st;
     chip_irq_enable(t, true);
     (void)chip_link_poll(t);
-    drv_report("e1000e %04x:%04x (82574L): vlan %u, %s, rings %u/%u, link %s at start", t->vid,
-               t->did, t->vlan, t->irq != HANDLE_INVALID ? "msi-x vector 0" : "polled",
+    char m[NETDEV_MODE_TEXT];
+    drv_report("e1000e %04x:%04x (82574L): %s, %s, rings %u/%u, link %s at start", t->vid,
+               t->did, netdev_mode_str(t->vlan, m), t->irq != HANDLE_INVALID ? "msi-x vector 0" : "polled",
                RX_DESCS, TX_DESCS, t->link ? "up" : "down (autonegotiating)");
     return OK;
 }

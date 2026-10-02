@@ -12,12 +12,14 @@
  *
  *   tx ring   netstack produces, the driver consumes: plain Ethernet
  *             frames (no tag, no FCS), 14..1514 bytes. The driver copies
- *             each into its own DMA buffer, inserts the VLAN tag there and
+ *             each into its own DMA buffer, inserts the VLAN tag there
+ *             (in the untagged mode: refuses a frame that carries one) and
  *             checks the copy (<jam/netframe.h>), then gives it to the chip.
  *   rx ring   the driver produces, netstack consumes: the frames the chip
  *             received tagged with the driver's VLAN, the tag removed
  *             (14..1514 bytes, no FCS). Untagged, priority-tagged and
- *             other-VLAN frames never get here (dropped and counted).
+ *             other-VLAN frames never get here (dropped and counted); in
+ *             the untagged mode only untagged frames do.
  *
  * Each ring is one VMO of NETDEV_RING_BYTES: a header page (struct
  * netdev_ring) then NETDEV_SLOTS slots of NETDEV_SLOT_SIZE bytes (struct
@@ -107,18 +109,24 @@
  * Rings are never reused across sessions: each open makes new ones with
  * both counts 0.
  *
- * ---- The VLAN ------------------------------------------------------------------
- * A network driver is started by devmgr with the word `vlan=<id>`
- * (netdev_vlan_word) when the boot has a VLAN; without a valid one it
- * turns on neither receiver nor transmitter, logs "no VLAN: the network
- * stays off" and ends cleanly. netdev.info reports the VLAN: netstack
- * learns it from the driver and from nobody else. */
+ * ---- The network mode -----------------------------------------------------------
+ * A network driver is started by devmgr with the word `vlan=<id>` (tagged
+ * with that VLAN) or `vlan=none` (untagged) when the boot has a network
+ * (netdev_vlan_word; the modes are <jam/netframe.h>'s); without a valid
+ * one it turns on neither receiver nor transmitter, logs "no VLAN: the
+ * network stays off" and ends cleanly. netdev.info reports the mode in
+ * its `vlan` field (1..4094, or NETFRAME_MODE_UNTAGGED): netstack learns
+ * it from the driver and from nobody else. In the untagged mode the rings
+ * carry the same frames (untagged, 14..1514 bytes): the driver sends them
+ * as they are, never one whose EtherType is a tag's, and passes on only
+ * untagged frames. */
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <jam/abi.h>
+#include <jam/netframe.h>
 #include <jam/status.h>
 
 /* ---- sizes ------------------------------------------------------------------ */
@@ -236,13 +244,25 @@ _Static_assert(sizeof(struct netdev_stats) == NETDEV_STATS_SIZE, "netdev.stats' 
 
 /* ---- the VLAN word ---------------------------------------------------------------- */
 
-/* The VLAN id in a driver's start word "vlan=<id>" (1..4094, 1 to 4
- * decimal digits), or 0 if `word` is anything else (NULL included). */
+/* s is exactly the string t (both NUL-terminated). */
+static inline bool netdev_same(const char *s, const char *t)
+{
+    while (*s && *s == *t)
+        s++, t++;
+    return *s == *t;
+}
+
+/* The mode in a driver's start word: the VLAN id of "vlan=<id>" (1..4094,
+ * 1 to 4 decimal digits), NETFRAME_MODE_UNTAGGED for "vlan=none" or
+ * "vlan=untagged", or 0 (off) if `word` is anything else ("vlan=off" and
+ * NULL included). */
 static inline uint16_t netdev_vlan_word(const char *word)
 {
     if (!word || word[0] != 'v' || word[1] != 'l' || word[2] != 'a' || word[3] != 'n' ||
         word[4] != '=')
         return 0;
+    if (netdev_same(word + 5, "none") || netdev_same(word + 5, "untagged"))
+        return NETFRAME_MODE_UNTAGGED;
     uint32_t id = 0;
     unsigned n = 0;
     for (const char *p = word + 5; *p; p++, n++) {
@@ -253,21 +273,67 @@ static inline uint16_t netdev_vlan_word(const char *word)
     return n && id >= 1 && id <= 4094 ? (uint16_t)id : 0;
 }
 
-/* The VLAN of a driver's n start words: the one vlan= word's id; 0 (no
- * VLAN: stay down) if there is none, one isn't valid, or two disagree. */
+/* The mode of a driver's n start words: the vlan= word's (a VLAN id, or
+ * NETFRAME_MODE_UNTAGGED); 0 (off: stay down) if there is none, one isn't
+ * valid, or two disagree. */
 static inline uint16_t netdev_vlan_args(const char *const *args, uint32_t n)
 {
-    uint16_t vlan = 0;
+    uint16_t mode = 0;
     for (uint32_t i = 0; i < n; i++) {
         const char *w = args[i];
         if (!w || w[0] != 'v' || w[1] != 'l' || w[2] != 'a' || w[3] != 'n')
             continue;
-        uint16_t id = netdev_vlan_word(w);
-        if (!id || (vlan && id != vlan))
+        uint16_t m = netdev_vlan_word(w);
+        if (!m || (mode && m != mode))
             return 0;
-        vlan = id;
+        mode = m;
     }
-    return vlan;
+    return mode;
+}
+
+#define NETDEV_MODE_TEXT 16u   /* bytes for netdev_mode_word's and netdev_mode_str's text */
+
+/* `prefix` then the mode into out (NETDEV_MODE_TEXT bytes): the VLAN id
+ * in decimal, or `untagged` for NETFRAME_MODE_UNTAGGED. */
+static inline void netdev_mode_put(char out[NETDEV_MODE_TEXT], const char *prefix,
+                                   const char *untagged, uint16_t mode)
+{
+    size_t n = 0;
+    for (const char *p = prefix; *p; p++)
+        out[n++] = *p;
+    if (mode == NETFRAME_MODE_UNTAGGED) {
+        for (const char *p = untagged; *p; p++)
+            out[n++] = *p;
+    } else {
+        char d[4];
+        unsigned k = 0;
+        for (uint16_t v = mode; v && k < 4; v /= 10)
+            d[k++] = (char)('0' + v % 10);
+        while (k)
+            out[n++] = d[--k];
+    }
+    out[n] = '\0';
+}
+
+/* The start word that gives a driver `mode`: "vlan=21", "vlan=none"; ""
+ * (no word: the network off) for a mode that is off. */
+static inline void netdev_mode_word(uint16_t mode, char out[NETDEV_MODE_TEXT])
+{
+    if (netframe_mode_ok(mode))
+        netdev_mode_put(out, "vlan=", "none", mode);
+    else
+        out[0] = '\0';
+}
+
+/* The mode in words, for a log line: "VLAN 21", "untagged" or "off" (in
+ * out, NETDEV_MODE_TEXT bytes, which it returns). */
+static inline const char *netdev_mode_str(uint16_t mode, char out[NETDEV_MODE_TEXT])
+{
+    if (netframe_mode_ok(mode))
+        netdev_mode_put(out, mode == NETFRAME_MODE_UNTAGGED ? "" : "VLAN ", "untagged", mode);
+    else
+        netdev_mode_put(out, "off", "", 0);
+    return out;
 }
 
 /* ---- the ring logic, both sides --------------------------------------------------- */

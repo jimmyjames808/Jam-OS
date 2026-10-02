@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The network test peer: a small network on VLAN 21 for Jam OS in QEMU
-(docs/M9-PLAN.md "Testing without the real NIC"; docs/TESTING.md "The
-network peer").
+"""The network test peer: a small network on VLAN 21 (or, with --vlan
+none, an untagged one) for Jam OS in QEMU (docs/M9-PLAN.md "Testing
+without the real NIC"; docs/TESTING.md "The network peer").
 
 QEMU's `-netdev dgram` carries each Ethernet frame the guest's NIC sends as
 one UDP datagram (the frame's bytes, no FCS) to this peer on 127.0.0.1,
@@ -12,7 +12,12 @@ What it does with each frame from the guest:
   - checks the rule: every frame Jam OS sends is tagged 802.1Q with the
     VLAN (21; --vlan). Anything else (untagged, priority-tagged VLAN 0,
     another VLAN, an outer QinQ tag, a runt, one over 1518 bytes) is
-    counted as bad, logged (the first few in hex) and fails the run;
+    counted as bad, logged (the first few in hex) and fails the run. With
+    --vlan none (the untagged mode) it is the other way round: every frame
+    must be untagged (14..1514 bytes), and any tagged one (VLAN 0, VLAN 21
+    and QinQ too) is bad. Everything below then happens untagged: replies,
+    pings and DHCP go out with no tag, and the frames the driver must drop
+    are the tagged ones;
   - strips the tag and answers as a small network: ARP for any IPv4
     address (the peer's MAC; not ARP probes from 0.0.0.0 nor gratuitous
     ones), ICMP echo for any address (so `ping 1.1.1.1` works in QEMU);
@@ -64,7 +69,7 @@ What it does with each frame from the guest:
     later. Counted as ntp_queries, ntp_answered, ntp_forged.
 
 Run (one of):
-    netpeer.py --listen P --qemu Q [--vlan N] [--expect-none] [--noise S]
+    netpeer.py --listen P --qemu Q [--vlan N|none] [--expect-none] [--noise S]
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
@@ -98,12 +103,13 @@ import struct
 import sys
 import time
 
-VLAN = 21
+VLAN = 21                   # the default; None: the untagged mode (--vlan none)
 PEER_MAC = bytes.fromhex("024a414d0001")    # locally administered: "JAM" 0001
 BROADCAST = b"\xff" * 6
 TPID_8021Q, TPID_8021AD, TPID_9100 = 0x8100, 0x88A8, 0x9100
 ETH_ARP, ETH_IPV4 = 0x0806, 0x0800
 FRAME_MAX = 1518            # a tagged frame without FCS
+FRAME_MAX_PLAIN = 1514      # an untagged one
 BAD_LOGGED = 8              # bad frames logged in hex, at most
 PING_FROM = "10.2.21.174"   # the Mac's address: where --ping's requests come from
 PING_ID = 0x4a4d            # their ICMP id ("JM")
@@ -127,6 +133,21 @@ def classify(frame):
     if t != TPID_8021Q:
         return "outer", vid, inner
     return ("vlan" if vid else "priority"), vid, inner
+
+
+def parse_vlan(text):
+    """--vlan's value: a VLAN id 1..4094, or None for the untagged mode
+    ("none" or "untagged")."""
+    if text in ("none", "untagged"):
+        return None
+    v = int(text)
+    if not 1 <= v <= 4094:
+        raise ValueError("a VLAN is 1..4094, or none")
+    return v
+
+
+def vlan_name(vlan):
+    return "untagged" if vlan is None else "VLAN %d" % vlan
 
 
 def tag(frame, vlan, pcp=0):
@@ -223,8 +244,9 @@ class Peer:
         self.counts["sent"] += 1
 
     def send(self, frame):
-        """An untagged frame, sent tagged with the VLAN."""
-        self.send_raw(tag(frame, self.vlan))
+        """An untagged frame, sent tagged with the VLAN (as it is in the
+        untagged mode)."""
+        self.send_raw(frame if self.vlan is None else tag(frame, self.vlan))
 
     def add_udp(self, port, fn):
         """fn(peer, src_ip, sport, dst_ip, payload) answers a datagram to
@@ -280,12 +302,12 @@ class Peer:
                       udp(other, ip_bytes("10.2.21.88"), 1, 2, b"p" * 300))), True),
             (eth(bytes.fromhex("333300000001"), host, 0x86DD, b"\x60" + b"\0" * 59), True),
             (eth(g, host, 0x86DD, b"\x60" + b"\0" * 59), True),
-            (arp_other, False),                       # untagged: the trunk's native VLAN
-            (tag(arp_other, 10), False),
+            (tag(arp_other, VLAN) if self.vlan is None else arp_other, False),
+            (tag(arp_other, 10), False),              # untagged above: the native VLAN
             (tag(arp_guest, 20), False),
             (tag(arp_other, 0, pcp=3), False),        # a priority tag
-            (arp_other[:12] + struct.pack("!HHHH", TPID_8021AD, self.vlan, TPID_8021Q, self.vlan)
-             + arp_other[12:], False),                # QinQ over our VLAN
+            (arp_other[:12] + struct.pack("!HHHH", TPID_8021AD, self.vlan or VLAN, TPID_8021Q,
+                                          self.vlan or VLAN) + arp_other[12:], False),   # QinQ
         ]
         return frames
 
@@ -311,9 +333,9 @@ class Peer:
         dst = BROADCAST
         req = eth(dst, PEER_MAC, ETH_ARP,
                   arp(1, PEER_MAC, ip_bytes("10.2.21.1"), b"\0" * 6, ip_bytes("10.2.21.99")))
-        qinq = req[:12] + struct.pack("!HHHH", TPID_8021AD, self.vlan, TPID_8021Q,
-                                      self.vlan) + req[12:]
-        for f in (req,                     # untagged
+        v = self.vlan or VLAN
+        qinq = req[:12] + struct.pack("!HHHH", TPID_8021AD, v, TPID_8021Q, v) + req[12:]
+        for f in (tag(req, VLAN) if self.vlan is None else req,   # tagged 21, or untagged
                   tag(req, 10),            # another VLAN
                   tag(req, 0, pcp=5),      # a priority tag (VLAN 0)
                   qinq):                   # an outer tag over the VLAN's
@@ -331,13 +353,24 @@ class Peer:
             self.handle(frame)
             r, _, _ = select.select([self.sock], [], [], 0)
 
+    def rule_broken(self, frame, kind, vid):
+        """Why a frame from the guest breaks the rule, or None."""
+        if self.vlan is None:
+            if kind != "untagged" or len(frame) > FRAME_MAX_PLAIN:
+                return "too long" if kind == "untagged" else (
+                    "TAGGED " + (kind if kind != "vlan" else "vlan %d" % vid))
+            return None
+        if kind != "vlan" or vid != self.vlan or len(frame) > FRAME_MAX:
+            if len(frame) > FRAME_MAX:
+                return "too long"
+            return kind if kind != "vlan" else "vlan %d" % vid
+        return None
+
     def handle(self, frame):
         self.counts["frames"] += 1
         kind, vid, ethertype = classify(frame)
-        if kind != "vlan" or vid != self.vlan or len(frame) > FRAME_MAX:
-            what = kind if kind != "vlan" else "vlan %d" % vid
-            if len(frame) > FRAME_MAX:
-                what = "too long"
+        what = self.rule_broken(frame, kind, vid)
+        if what:
             self.counts["bad"] += 1
             self.bad_kinds[what] = self.bad_kinds.get(what, 0) + 1
             if self.counts["bad"] <= BAD_LOGGED:
@@ -345,7 +378,7 @@ class Peer:
                          (what, len(frame), frame[:64].hex()))
             return
         self.counts["good"] += 1
-        f = untag(frame)
+        f = frame if self.vlan is None else untag(frame)
         if self.guest_mac is None:
             self.guest_mac = f[6:12]
         if ethertype == ETH_ARP:
@@ -442,9 +475,10 @@ def add_netlog(peer, folder, late=0.0, pause=None):
 
 
 def summary_line(s):
-    return ("netpeer: %d frames from the guest, %d tagged %d, %d bad%s; answered %d ARP, %d echo; "
+    good = "untagged" if s["vlan"] is None else "tagged %d" % s["vlan"]
+    return ("netpeer: %d frames from the guest, %d %s, %d bad%s; answered %d ARP, %d echo; "
             "%d of %d pings answered; sent %d -> %s" %
-            (s["frames"], s["good"], s["vlan"], s["bad"],
+            (s["frames"], s["good"], good, s["bad"],
              " " + json.dumps(s["bad_kinds"]) if s["bad_kinds"] else "",
              s["arp_replies"], s["echo_replies"], s["ping_replies"], s["pings"], s["sent"],
              s["result"]))
@@ -781,12 +815,50 @@ def selftest():
     expect(fresh.summary(expect_none=True)["result"] == "FAIL", "a frame, expect-none: FAIL")
     selftest_dhcp_dns(g, devnull, expect)
     selftest_ntp(g, devnull, expect)
+    selftest_untagged(g, devnull, expect)
     problem = tcp_selftest()
     expect(problem is None, problem or "")
     for f in fails:
         print("netpeer selftest: FAILED: " + f)
     print("netpeer selftest: %s" % ("PASS" if not fails else "FAIL"))
     return 0 if not fails else 1
+
+
+def selftest_untagged(g, devnull, expect):
+    """The untagged mode (--vlan none) against the fake guest g: answers go
+    out untagged, untagged frames are good, every tagged one is bad (VLAN
+    21's too), and the noise to drop is tagged."""
+    peer = Peer(0, g.getsockname()[1], None, devnull)
+    g.connect(("127.0.0.1", peer.listen))
+    gmac, gip = bytes.fromhex("525400123457"), ip_bytes("10.2.21.51")
+    req = eth(BROADCAST, gmac, ETH_ARP, arp(1, gmac, gip, b"\0" * 6, ip_bytes("10.2.21.1")))
+    g.send(req)
+    peer.poll(1)
+    try:
+        r = g.recv(65536)
+        expect(classify(r)[0] == "untagged" and r[:6] == gmac and r[22:28] == PEER_MAC,
+               "untagged: the ARP reply goes untagged")
+    except socket.timeout:
+        expect(False, "untagged: no ARP reply")
+    expect(peer.counts["good"] == 1 and peer.counts["bad"] == 0, "untagged: the request is good")
+    for f in (tag(req, VLAN), tag(req, 10), tag(req, 0), req[:12] +
+              struct.pack("!HH", TPID_8021AD, 21) + tag(req, 21)[12:], req[:10],
+              req + b"\0" * 1500):
+        peer.handle(f)
+    expect(peer.counts["bad"] == 6 and peer.counts["good"] == 1, "untagged: tagged frames bad")
+    expect(peer.counts["arp_replies"] == 1, "untagged: a tagged request is never answered")
+    expect(peer.summary()["result"] == "FAIL", "untagged: a tagged frame fails the run")
+    peer.noise()
+    kinds = []
+    for _ in range(5):
+        try:
+            k = classify(g.recv(65536))
+            kinds.append(k[0] if k[0] != "vlan" else "vlan %d" % k[1])
+        except socket.timeout:
+            break
+    expect(kinds == ["vlan 21", "vlan 10", "priority", "outer", "untagged"],
+           "untagged noise: %s" % kinds)
+    expect(parse_vlan("none") is None and parse_vlan("21") == 21, "--vlan's words")
 
 
 def selftest_ntp(g, devnull, expect):
@@ -967,7 +1039,8 @@ def run(a):
     if a.ready:
         with open(a.ready, "w") as f:
             f.write("%d\n" % peer.listen)
-    peer.log("listening on 127.0.0.1:%d, QEMU at %d, VLAN %d" % (peer.listen, a.qemu, a.vlan))
+    peer.log("listening on 127.0.0.1:%d, QEMU at %d, %s" % (peer.listen, a.qemu,
+                                                            vlan_name(a.vlan)))
     end = time.monotonic() + a.duration if a.duration else None
     next_noise = time.monotonic() + a.noise if a.noise else None
     next_ping = time.monotonic() + a.ping_every if a.ping else None
@@ -1012,7 +1085,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--listen", type=int, default=0)
     ap.add_argument("--qemu", type=int, default=0)
-    ap.add_argument("--vlan", type=int, default=VLAN)
+    ap.add_argument("--vlan", type=parse_vlan, default=VLAN, help="1..4094, or none")
     ap.add_argument("--dhcp-lease", type=int, default=3600)
     ap.add_argument("--expect-none", action="store_true")
     ap.add_argument("--noise", type=float, default=0)
@@ -1043,8 +1116,8 @@ def main():
     if a.free_ports:
         print(" ".join(str(p) for p in free_ports(a.free_ports)))
         return 0
-    if not a.qemu or not 1 <= a.vlan <= 4094:
-        ap.error("--qemu <port> is needed, and --vlan must be 1..4094")
+    if not a.qemu:
+        ap.error("--qemu <port> is needed")
     return run(a)
 
 

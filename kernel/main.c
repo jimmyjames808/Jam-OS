@@ -90,13 +90,22 @@ static void print_boot_info(const struct boot_info *bi)
 static struct boot_info *boot;
 static uint32_t boot_disk;   /* boot_disk_id(): set once in kmain_stage2 */
 
-/* The VLAN every frame Jam OS sends is tagged with, and the only one it
- * receives (ARCHITECTURE.md "Networking"): this, unless the boot word
- * `vlan=` says otherwise. The one place the number lives: init hears it
- * from the kernel, devmgr from init, each network driver from devmgr. */
-#define BOOT_VLAN_DEFAULT 21
-static uint32_t boot_vlan;   /* 0: no VLAN, the network stays off; set once in kmain_stage2 */
-static char vlan_word[16];   /* "vlan=<boot_vlan>" for init ("" with no VLAN) */
+/* The network's mode (ARCHITECTURE.md "Networking"): the VLAN every frame
+ * Jam OS sends is tagged with and the only one it receives, or untagged
+ * (no frame ever tagged, only untagged ones received). The build chooses
+ * the default (the Makefile's JAMOS_NET_DEFAULT: `JAMOS_VLAN` in the
+ * git-ignored local.mk, untagged without one), and the boot word `vlan=`
+ * can say otherwise. The one place the mode lives: init hears it from the
+ * kernel, devmgr from init, each network driver from devmgr. */
+#ifndef JAMOS_NET_DEFAULT
+#error "JAMOS_NET_DEFAULT comes from the Makefile (local.mk's JAMOS_VLAN, or untagged)"
+#endif
+#define BOOT_VLAN_DEFAULT JAMOS_NET_DEFAULT
+_Static_assert((BOOT_VLAN_DEFAULT >= 1 && BOOT_VLAN_DEFAULT <= 4094) ||
+                   BOOT_VLAN_DEFAULT == CMDLINE_VLAN_UNTAGGED,
+               "the network's default is a VLAN (1..4094) or untagged");
+static uint32_t boot_vlan;   /* the mode, cmdline_vlan's: 0 is off; set once in kmain_stage2 */
+static char vlan_word[16];   /* "vlan=<id>" or "vlan=none" for init ("" with the network off) */
 
 uint32_t boot_disk_id(void)
 {
@@ -195,16 +204,23 @@ static void boot_disk_init(void)
         kprintf("boot disk:   no MBR disk id (devmgr takes the first Jam OS disk)\n");
 }
 
-/* The network's VLAN from the boot words (cmdline_vlan's rules). */
+/* The network's mode from the boot words (cmdline_vlan's rules). */
 static void boot_vlan_init(void)
 {
-    boot_vlan = cmdline_vlan(cmdline_get(), BOOT_VLAN_DEFAULT);
-    if (boot_vlan)
+    const char *line = cmdline_get();
+    boot_vlan = cmdline_vlan(line, BOOT_VLAN_DEFAULT);
+    /* Two defaults give one answer only when a word decided it. */
+    const char *from =
+        cmdline_vlan(line, 1) == cmdline_vlan(line, 2) ? "the vlan= word" : "the build's default";
+    if (boot_vlan == CMDLINE_VLAN_UNTAGGED) {
+        ksnprintf(vlan_word, sizeof(vlan_word), "vlan=none");
+        kprintf("network:     untagged (%s): no frame is sent tagged\n", from);
+    } else if (boot_vlan) {
         ksnprintf(vlan_word, sizeof(vlan_word), "vlan=%u", boot_vlan);
-    if (boot_vlan)
-        kprintf("network:     VLAN %u\n", boot_vlan);
-    else
-        kprintf("network:     no VLAN (the vlan= word): the network stays off\n");
+        kprintf("network:     VLAN %u (%s)\n", boot_vlan, from);
+    } else {
+        kprintf("network:     off (%s): the network stays off\n", from);
+    }
 }
 
 /* ACPI, the local APIC and the clocks (TSC, the wall clock), the random
@@ -276,9 +292,9 @@ static bool run_tests(void)
  * that order of precedence), which init passes on to devmgr and devmgr to
  * the RTL8125's driver: its listen-only probe, its ARP send test, or its
  * netdev service for netstack (no other boot binds the network chip; a
- * reboot keeps `net` alone: kexec_next_cmdline); vlan=<id> (only
- * when there is a VLAN: boot_vlan), which init passes on to devmgr and
- * devmgr to every network driver; bootdisk=0x<id>, which init passes on
+ * reboot keeps `net` alone: kexec_next_cmdline); vlan=<id> or
+ * vlan=none (only when the network is on: boot_vlan), which init passes
+ * on to devmgr and devmgr to every network driver; bootdisk=0x<id>, which init passes on
  * to devmgr (the boot disk); `splashhang` (a test's: the splash never
  * finishes, and init must start the shell anyway). */
 #define INIT_WORDS_MAX 6
@@ -328,8 +344,8 @@ static bool run_user_space(bool shell, bool nousb)
     const char *mode = nousb ? "shell-nousb" : soak_arg[0] ? soak_arg : "shell";
     const char *words[INIT_WORDS_MAX];
     unsigned nwords = init_words(shell, words);
-    /* The regression run (init.cfg's programs, mode "init") gets the VLAN
-     * alone of the words, so its network drivers start as a plain boot's
+    /* The regression run (init.cfg's programs, mode "init") gets the vlan=
+     * word alone of the words, so its network drivers start as a plain boot's
      * would; the others describe a plain boot's devices and look. */
     const char *const run_words[1] = { vlan_word };
     bool ok = true;

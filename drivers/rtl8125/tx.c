@@ -4,21 +4,24 @@
  * file that writes one.
  *
  * Every function here that other files call starts with the gate
- * (rtl_tx_allowed): the driver must be in full mode, with a valid VLAN.
- * The listen-only probe never gets past it, and neither does a driver
- * started without a VLAN. The register writers check the same gate again
+ * (rtl_tx_allowed): the driver must be in full mode, with a network mode
+ * (a valid VLAN, or untagged). The listen-only probe never gets past it,
+ * and neither does a driver started with the network off. The register writers check the same gate again
  * right before each write.
  *
  * Sending a frame (tx_send), in this order:
  *   1. the caller's untagged frame (14..1514 bytes) is copied, each byte
  *      read once, into this driver's own transmit buffer for the next
- *      descriptor, with the 802.1Q tag (TPID 0x8100, priority 0, the
- *      VLAN) inserted after the two addresses and short frames padded
- *      with zeros (netframe_tag; a frame that already carries a tag is
- *      refused). Nothing outside the driver can see or write that buffer,
- *      so what is checked next is what the chip reads;
- *   2. bytes 12-15 of that buffer are checked once more, with its length
- *      (netframe_tx_check), right before the descriptor is handed over;
+ *      descriptor (netframe_tx_copy): with a VLAN, the 802.1Q tag (TPID
+ *      0x8100, priority 0, the VLAN) inserted after the two addresses and
+ *      short frames padded with zeros to 64 (netframe_tag); untagged, the
+ *      frame as it is, padded to 60 (netframe_plain). Either way a frame
+ *      that already carries a tag is refused, so netstack never chooses
+ *      one. Nothing outside the driver can see or write that buffer, so
+ *      what is checked next is what the chip reads;
+ *   2. that buffer is checked once more, with its length, right before
+ *      the descriptor is handed over (netframe_tx_final: bytes 12-15
+ *      exactly the tag, or untagged bytes 12-13 not a tag's TPID);
  *   3. the descriptor (rge's 32-byte struct rge_tx_desc, txdesc.h):
  *      address, then length with start and end of frame, then the
  *      ownership bit; the chip's own tag insertion (the descriptor's VLAN
@@ -49,7 +52,7 @@ static bool gate(struct rtl *t, const char *what)
     if (rtl_tx_allowed(t->mode, t->vlan))
         return true;
     if (t->tx.gate++ < 4)
-        drv_log("REFUSED %s: not in full mode with a VLAN (mode %u, vlan %u)", what,
+        drv_log("REFUSED %s: not in full mode with a network mode (mode %u, vlan %u)", what,
                 (unsigned)t->mode, t->vlan);
     return false;
 }
@@ -191,8 +194,10 @@ status_t tx_arm(struct rtl *t)
     txw32(t, RTL_TXDESC_HI, (uint32_t)(ring >> 32));
     txw32(t, RTL_TXCFG, RTL_TXCFG_CONFIG);
     txw8(t, RTL_TDFNR, RTL_TDFNR_8125);
-    drv_log("transmit ring: %u descriptors of %u bytes at %#lx, vlan %u on every frame",
-            TX_DESCS, RTL_TXD_SIZE, (unsigned long)ring, t->vlan);
+    char m[NETDEV_MODE_TEXT];
+    drv_log("transmit ring: %u descriptors of %u bytes at %#lx, %s%s", TX_DESCS, RTL_TXD_SIZE,
+            (unsigned long)ring, netdev_mode_str(t->vlan, m),
+            t->vlan == NETFRAME_MODE_UNTAGGED ? ": no frame ever tagged" : " on every frame");
     return OK;
 }
 
@@ -227,9 +232,9 @@ status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len)
     }
     uint32_t i = t->tx_prod % TX_DESCS;
     uint8_t *buf = t->txbufs + (size_t)i * TX_BUF;
-    size_t n = netframe_tag(buf, TX_BUF, frame, len, t->vlan);
+    size_t n = netframe_tx_copy(buf, TX_BUF, frame, len, t->vlan);
     /* The last look, at the bytes the chip will read, right before it may. */
-    if (!n || !netframe_tx_check(buf, n, t->vlan)) {
+    if (!n || !netframe_tx_final(buf, n, t->vlan)) {
         t->tx.refused++;
         return ERR_INVALID_ARGS;
     }
