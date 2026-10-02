@@ -1,14 +1,13 @@
 # M9 plan: networking
 
-Status: the plan (2026-10-02, on main 2079f35, M8.6 done), with the
-owner's answers. **Stage 0, the listen-only probe, is built and ran on
-the PC** ([results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)).
-**Stage 1 part A (the netdev contract, `vlan=`) and stage 3a (netstack's
-core without a device)** ([below](#stage-3a-built-the-core-without-a-device))
-are merged.
-R1's first half (the transmit path, the VLAN filter and the `netsend`
-test) is built and waits for its PC run
-([below](#r1-progress-the-full-driver-without-the-netdev-server)).
+Status (2026-10-02): the plan, with the owner's answers. **Built and
+merged:** stage 0 (the listen-only probe; it ran on the PC:
+[results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)), stage 1
+(the netdev contract, `vlan=`, the QEMU harness), stage 3a (netstack's
+core on lwIP), R1's first half (the transmit path and the `netsend` test,
+waiting for its PC run), stage 5a (the DHCP and DNS cores) and stages 6a
+and 7a (netlog's and `update`'s cores, init's update check, the Mac
+tools). The sections below say what each one built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
