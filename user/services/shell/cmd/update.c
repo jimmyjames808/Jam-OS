@@ -1,6 +1,6 @@
 /* update: run the build the Mac serves (tools/update-server.py), without
  * moving the stick (docs/M9-PLAN.md "update: a new build from the Mac").
- *   update [-n] [server address]
+ *   update [-n | -w] [server address]
  * The server is net.host in /data/etc/settings unless given. The shell
  * takes an offer channel from init (initctl.update_offer) and starts
  * bin/update (user/services/update) with it: the fetcher holds only that
@@ -8,8 +8,13 @@
  * against the manifest (signed by the key in this build's boot image) and
  * makes it the stored kernel (<update.h>). Then the shell reboots into it,
  * the normal way (`reboot`). -n: fetched and checked, nothing loaded, no
- * reboot. Only RAM changes: `make flash` keeps a build for good. A build
- * without a key fetches nothing: init would refuse every build. */
+ * reboot. By default only RAM changes; -w: init also writes the build to
+ * the stick (the stick's own build kept as "Jam OS (previous build)"), so
+ * it survives a power-off; if that write fails, init says how far it got
+ * and that the stick still boots, and the shell doesn't reboot (`reboot`
+ * runs the loaded build). Only init can write the stick: the shell and
+ * bin/update just ask. A build without a key fetches nothing: init would
+ * refuse every build. */
 #include <idl/initctl.h>
 #include <ipv4.h>
 #include <settings.h>
@@ -54,15 +59,17 @@ static bool server(const char *given, char *out, size_t cap)
 
 SH_CMD(update)
 {
-    bool check_only = false;
-    const char *given = NULL;
+    const char *mode = "load", *given = NULL;   /* bin/update's: load, check (-n), write (-w) */
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-n") && !check_only) {
-            check_only = true;
+        if (!strcmp(argv[i], "-n") && !strcmp(mode, "load")) {
+            mode = "check";
+        } else if (!strcmp(argv[i], "-w") && !strcmp(mode, "load")) {
+            mode = "write";
         } else if (argv[i][0] != '-' && !given) {
             given = argv[i];
         } else {
-            sh_tty("usage: update [-n] [server address]   (-n: fetch and check only)\n");
+            sh_tty("usage: update [-n | -w] [server address]\n"
+                   "  -n: fetch and check only; -w: write it to the stick too\n");
             return 2;
         }
     }
@@ -80,10 +87,10 @@ SH_CMD(update)
         return 1;
     }
     struct spawn_handle x[3] = { { SR_USER + 0, ch } };
-    const char *args[] = { "update", host, check_only ? "check" : "load", s.version, git, NULL };
+    const char *args[] = { "update", host, mode, s.version, git, NULL };
     sh_flush();
     int code = sh_run_helper(UPDATE_PATH, 5, args, x, 1);
-    if (code || check_only)
+    if (code || !strcmp(mode, "check"))
         return code;
     char *reboot_args[] = { "reboot", NULL };
     return shc_reboot(1, reboot_args);

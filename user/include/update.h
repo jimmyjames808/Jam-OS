@@ -39,10 +39,14 @@
  * copies to the kernel (kexec_load) as the stored kernel,
  * the one `reboot` and a panic start. It answers one struct update_answer
  * on the channel and closes it. Any refusal leaves the stored kernel as it
- * was. Nothing is ever written to the stick: the fetched build runs until
- * a power-off or until /esp changes. An offer with UPDATE_OFFER_CHECK_ONLY
- * is checked the same way and answered, but nothing is loaded (the shell's
- * `update -n`).
+ * was. By default nothing is written to the stick: the fetched build runs
+ * until a power-off or until /esp changes. An offer with
+ * UPDATE_OFFER_CHECK_ONLY is checked the same way and answered, but
+ * nothing is loaded (the shell's `update -n`). One with UPDATE_OFFER_WRITE
+ * (`update -w`) is loaded and then also written to the stick's ESP by init
+ * (init's espwrite.c: init alone can make the ESP writable); if that write
+ * fails the answer is UPDATE_NOT_WRITTEN: the build is loaded all the same,
+ * and the stick still boots (write_step and stick say how far it got).
  *
  * Who offers: the shell's `update` takes the offer channel from init
  * (initctl.update_offer) and hands it to bin/update (user/services/update),
@@ -117,6 +121,40 @@ struct update_offer {
 };
 
 #define UPDATE_OFFER_CHECK_ONLY 1u   /* check it, load nothing: the stored kernel stays */
+/* Also write it to the stick (`update -w`): once checked and loaded, init
+ * writes the build to the boot stick's ESP, keeping the stick's own build
+ * as the previous one (boot/prev-jamos.elf, boot/prev-bootfs.img: the boot
+ * menu's "Jam OS (previous build)"), so it survives a power-off. Never
+ * with CHECK_ONLY. */
+#define UPDATE_OFFER_WRITE      2u
+/* A test's (bin/updtest): the stick write fails at step s (enum
+ * update_write_step: ROOM, PREV, NEW or SWITCH) as if the ESP's service
+ * had died there, once: flags |= UPDATE_OFFER_FAIL(s). Only with WRITE. */
+#define UPDATE_OFFER_FAIL_SHIFT 8u
+#define UPDATE_OFFER_FAIL_MASK  (0xffu << UPDATE_OFFER_FAIL_SHIFT)
+#define UPDATE_OFFER_FAIL(s)    ((uint32_t)(s) << UPDATE_OFFER_FAIL_SHIFT)
+
+/* How far a stick write got (struct update_answer's write_step): DONE, or
+ * the step that failed. Each step is whole before the next begins. */
+enum update_write_step {
+    UPDATE_WRITE_NONE,    /* no stick write asked for */
+    UPDATE_WRITE_OPEN,    /* the ESP made writable for init (devmgr's ESP_WRITE) */
+    UPDATE_WRITE_ROOM,    /* an earlier write's leftovers removed; room for two builds */
+    UPDATE_WRITE_PREV,    /* the stick's build copied as the previous build, read back */
+    UPDATE_WRITE_NEW,     /* the new build written under temporary names, read back */
+    UPDATE_WRITE_SWITCH,  /* the names switched: the stick's build is the new one */
+    UPDATE_WRITE_DONE,    /* all of it, and the ESP read-only again */
+    UPDATE_WRITE_STEPS,
+};
+
+/* What the stick boots after a stick write (struct update_answer's stick). */
+enum update_stick {
+    UPDATE_STICK_NONE,      /* no stick write asked for */
+    UPDATE_STICK_OLD,       /* its build, as before (untouched, or put back) */
+    UPDATE_STICK_NEW,       /* the new build; the old one as "Jam OS (previous build)" */
+    UPDATE_STICK_PREVIOUS,  /* only "Jam OS (previous build)" (the old build) is sure to */
+    UPDATE_STICK_STATES,
+};
 
 /* Which check refused an offer. */
 enum update_why {
@@ -130,6 +168,8 @@ enum update_why {
     UPDATE_NO_KEY,      /* this build has no update key (or no valid one): updates are off */
     UPDATE_UNSIGNED,    /* the manifest has no signature */
     UPDATE_BAD_SIGNATURE, /* not this build's key's signature, or the manifest changed */
+    UPDATE_NOT_WRITTEN, /* loaded (the stored kernel is the new build), but the stick write
+                         * failed: write_step, status and stick say where and what */
     UPDATE_WHY_COUNT,
 };
 
@@ -143,7 +183,14 @@ struct update_answer {
     uint32_t check_ms;                        /* the copy and the check */
     char     version[UPDATE_VERSION_MAX + 1]; /* the manifest's, if it parsed ("" if not) */
     char     git[UPDATE_GIT_MAX + 1];
+    uint32_t write_step;                      /* UPDATE_OFFER_WRITE: enum update_write_step */
+    uint32_t stick;                           /* ... enum update_stick */
+    uint32_t write_ms;                        /* ... the stick write's time */
 };
 
 /* "the SHA-256 isn't the manifest's", ...: why, in words. */
 const char *update_why_str(uint32_t why);
+/* A stick write's step ("writing the new build"), and what the stick
+ * boots ("the stick boots the new build ..."), in words. */
+const char *update_write_step_str(uint32_t step);
+const char *update_stick_str(uint32_t stick);

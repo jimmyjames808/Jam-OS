@@ -18,7 +18,12 @@
  * hardware switches; kexec_next_cmdline). A refusal at any step leaves the
  * stored kernel as it was. On success /esp's files are noted as seen
  * (reboot.c), so the next `reboot` starts the fetched build instead of
- * reloading the stick's. Nothing is written to the stick.
+ * reloading the stick's. Nothing is written to the stick, unless the offer
+ * asks (UPDATE_OFFER_WRITE, `update -w`): then, once the build is loaded,
+ * the worker writes it to the stick's ESP too (espwrite.c, which alone
+ * holds the ESP writable, through devmgr's ESP channel that only init
+ * has), and the answer comes when that is done. A failed stick write
+ * leaves the build loaded and the stick bootable (UPDATE_NOT_WRITTEN).
  *
  * Who does what (the service-loop rule): the loop reads the offer, parses
  * the manifest, checks its signature (one Ed25519 check over at most 1 KiB,
@@ -29,7 +34,9 @@
  * worker touches only its struct check and the VMOs in it, and when it is
  * done it queues a packet with the offer channel's key; the loop then
  * calls kexec_load itself (init's power is used from the loop only),
- * notes /esp, answers and closes the channel.
+ * notes /esp, answers and closes the channel. A stick write is a second
+ * job for the worker, started from the loop after kexec_load, on the same
+ * stack once the first thread has ended; it ends the same way.
  *
  * One offer channel at a time; each takes one offer, gets one answer
  * (struct update_answer) and is closed. While a check runs, a new offer
@@ -38,7 +45,7 @@
 #include "init.h"
 
 #define CHUNK        (64u << 10)        /* bytes copied and hashed at a time */
-#define WORKER_STACK (16u << 10)
+#define WORKER_STACK (64u << 10)        /* the stick write's calls go deeper than the hash */
 #define WORKER_END   (2 * NS_PER_S)     /* its packet came: it ends within this */
 #define QUEUE_TRIES  100                /* a full port: tries 10 ms apart */
 
@@ -54,6 +61,8 @@ struct check {
     uint64_t               t0;                   /* uptime ns: the offer read */
     uint64_t               hash_ms;              /* the worker's copy and hash */
     uint64_t               verify_us;            /* the signature's check */
+    bool                   writing;              /* the worker's job: the stick write (WRITE) */
+    struct esp_write       w;                    /* ... that write (espwrite.c) */
     bool                   done;                 /* the worker has finished */
 };
 
@@ -159,14 +168,19 @@ static void hash_files(struct check *c)
     }
 }
 
-/* The worker thread: hash_files, then tell the loop (a packet with the
- * offer channel's key: update_event sees `done`). */
+/* The worker thread: hash_files (or, once the build is loaded, the stick
+ * write), then tell the loop (a packet with the offer channel's key:
+ * update_event sees `done`). */
 static void worker_main(void *arg)
 {
     struct check *c = arg;
     uint64_t t0 = now();
-    hash_files(c);
-    c->hash_ms = (now() - t0) / NS_PER_MS;
+    if (c->writing) {
+        esp_write_build(&c->w);
+    } else {
+        hash_files(c);
+        c->hash_ms = (now() - t0) / NS_PER_MS;
+    }
     __atomic_store_n(&c->done, true, __ATOMIC_RELEASE);   /* update_event's ACQUIRE load */
     struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
     for (int i = 0; i < QUEUE_TRIES && jam_port_queue(offer_port, &pkt) != OK; i++)
@@ -212,6 +226,20 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
     return true;
 }
 
+/* CHECK_ONLY, or WRITE (with a test's FAIL at a step that has one), or
+ * neither; nothing else. */
+static bool flags_ok(uint32_t flags)
+{
+    uint32_t fail = (flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT;
+    uint32_t rest = flags & ~UPDATE_OFFER_FAIL_MASK;
+    bool write = rest & UPDATE_OFFER_WRITE;
+    if (rest & ~(UPDATE_OFFER_CHECK_ONLY | UPDATE_OFFER_WRITE))
+        return false;
+    if (write && (rest & UPDATE_OFFER_CHECK_ONLY))
+        return false;
+    return !fail || (write && fail >= UPDATE_WRITE_ROOM && fail <= UPDATE_WRITE_SWITCH);
+}
+
 /* The quick checks of an offer of n bytes with nh handles, in the loop:
  * false (c->a filled in) if refused. A build without a key refuses every
  * offer, whatever it holds. */
@@ -219,7 +247,7 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
 {
     const struct update_offer *o = c->o;
     if (n != sizeof(*o) || nh != UPDATE_FILES || o->txid || o->magic != UPDATE_OFFER_MAGIC ||
-        (o->flags & ~UPDATE_OFFER_CHECK_ONLY) || o->manifest_len > UPDATE_MANIFEST_MAX) {
+        !flags_ok(o->flags) || o->manifest_len > UPDATE_MANIFEST_MAX) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
@@ -247,13 +275,25 @@ static void say(const struct check *c)
     const struct update_answer *a = &c->a;
     const struct update_offer *o = c->o;
     if (a->why == UPDATE_ACCEPTED) {
-        bool only = o->flags & UPDATE_OFFER_CHECK_ONLY;
+        bool only = o->flags & UPDATE_OFFER_CHECK_ONLY, wrote = o->flags & UPDATE_OFFER_WRITE;
         printf("init: update: %s (%s) checked in %u ms (signature %lu us; kernel %lu + bootfs "
                "%lu bytes hashed in %lu ms off the loop) %s\n",
                a->version, a->git, a->check_ms, (unsigned long)c->verify_us,
                (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
                (unsigned long)c->hash_ms,
-               only ? "and not loaded (check only)" : "and stored: `reboot` starts it");
+               only    ? "and not loaded (check only)"
+               : wrote ? "and stored, and written to the stick"
+                       : "and stored: `reboot` starts it");
+        if (wrote)
+            printf("init: update: the stick write took %u ms: `reboot` and a power-on start "
+                   "the new build\n", a->write_ms);
+        return;
+    }
+    if (a->why == UPDATE_NOT_WRITTEN) {
+        printf("init: update: %s (%s) stored, but the stick write failed (%s: %s); %s. "
+               "`reboot` starts the new build until the power goes off\n", a->version, a->git,
+               update_write_step_str(a->write_step), status_str(a->status),
+               update_stick_str(a->stick));
         return;
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
@@ -263,19 +303,9 @@ static void say(const struct check *c)
            status_str(a->status));
 }
 
-/* The end of a check, in the loop: the copies loaded unless refused or
- * check-only, the answer said and written, everything let go. */
-static void finish(struct check *c, uint32_t nh)
+/* The answer said and written, everything let go: the end of an offer. */
+static void answer(struct check *c, uint32_t nh)
 {
-    bool only = c->o->flags & UPDATE_OFFER_CHECK_ONLY;
-    if (c->a.why == UPDATE_ACCEPTED && !only) {
-        status_t st = jam_kexec_load(shell_root(), c->mine[UPDATE_KERNEL],
-                                     c->mine[UPDATE_BOOTFS], NULL, 0, 0);
-        if (st == OK)
-            reboot_keep_stored();
-        else
-            refuse(&c->a, UPDATE_NOT_LOADED, 0, st);
-    }
     uint64_t ms = (now() - c->t0) / NS_PER_MS;
     c->a.check_ms = ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
     say(c);
@@ -291,8 +321,81 @@ static void finish(struct check *c, uint32_t nh)
     drop_offer();   /* one offer per channel */
 }
 
+/* The stick write (UPDATE_OFFER_WRITE), the build loaded: started on the
+ * worker with a duplicate of devmgr's ESP channel (true: answered when it
+ * is done), or not (false: c->a says why). */
+static bool start_write(struct check *c)
+{
+    struct esp_write *w = &c->w;
+    *w = (struct esp_write){
+        .fail_at = (c->o->flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT,
+    };
+    for (uint32_t f = 0; f < UPDATE_FILES; f++) {
+        w->vmo[f] = c->mine[f];
+        w->size[f] = c->m.file[f].size;
+        w->sha256[f] = c->m.file[f].sha256;
+    }
+    handle_t esp = shell_devmgr_esp();
+    status_t st = worker_stuck ? ERR_BAD_STATE : esp ? OK : ERR_NOT_FOUND;
+    if (st == OK)
+        st = jam_handle_duplicate(esp, RIGHT_SAME, &w->esp);
+    if (st == OK) {
+        c->writing = true;
+        c->done = false;
+        busy = c;
+        st = thread_spawn("update write", worker_main, c, worker_stack, sizeof(worker_stack),
+                          &worker);
+        if (st == OK) {
+            printf("init: update: %s (%s) stored; writing it to the stick\n", c->a.version,
+                   c->a.git);
+            return true;
+        }
+        busy = NULL;   /* no thread: not written here in the loop either (it takes seconds) */
+        jam_handle_close(w->esp);
+    }
+    refuse(&c->a, UPDATE_NOT_WRITTEN, 0, st);
+    c->a.write_step = UPDATE_WRITE_OPEN;
+    c->a.stick = UPDATE_STICK_OLD;
+    return false;
+}
+
+/* The worker's stick write is done: the stick's files noted as they are
+ * now (the stored kernel is the new build either way), then the answer. */
+static void write_done(struct check *c)
+{
+    struct esp_write *w = &c->w;
+    jam_handle_close(w->esp);
+    if (w->noted)
+        reboot_keep_written(w->file_size, w->mtime);
+    c->a.write_step = w->step;
+    c->a.stick = w->stick;
+    c->a.write_ms = w->write_ms;
+    if (w->st != OK)
+        refuse(&c->a, UPDATE_NOT_WRITTEN, 0, w->st);
+    answer(c, UPDATE_FILES);
+}
+
+/* The end of a check, in the loop: the copies loaded unless refused or
+ * check-only (and then, for UPDATE_OFFER_WRITE, the stick write started:
+ * answered when it is done), else the answer now. */
+static void finish(struct check *c, uint32_t nh)
+{
+    uint32_t flags = c->o->flags;
+    if (c->a.why == UPDATE_ACCEPTED && !(flags & UPDATE_OFFER_CHECK_ONLY)) {
+        status_t st = jam_kexec_load(shell_root(), c->mine[UPDATE_KERNEL],
+                                     c->mine[UPDATE_BOOTFS], NULL, 0, 0);
+        if (st != OK)
+            refuse(&c->a, UPDATE_NOT_LOADED, 0, st);
+        else
+            reboot_keep_stored();
+        if (st == OK && (flags & UPDATE_OFFER_WRITE) && start_write(c))
+            return;
+    }
+    answer(c, nh);
+}
+
 /* The worker said it is done: wait for its thread to end (its stack is
- * reused), then finish. */
+ * reused), then finish the check, or the stick write. */
 static void worker_done(void)
 {
     struct check *c = busy;
@@ -306,7 +409,10 @@ static void worker_done(void)
                  status_str(st));
         worker_stuck = true;
     }
-    finish(c, UPDATE_FILES);
+    if (c->writing)
+        write_done(c);
+    else
+        finish(c, UPDATE_FILES);
 }
 
 /* The offer message into o (a whole one, or what there was of it). */

@@ -32,7 +32,19 @@
  *                  The script's `reboot` then shows the stored kernel
  *                  unchanged.
  *   updtest nokey  on a build without an update key: the build offered,
- *                  plain and check-only, refused for that alone.
+ *                  plain, check-only and to be written to the stick,
+ *                  refused for that alone.
+ *   updtest writefail
+ *                  the build offered to be written to the stick
+ *                  (UPDATE_OFFER_WRITE) with a test's failure
+ *                  (UPDATE_OFFER_FAIL) at each step that has one: making
+ *                  room, keeping the previous build, half way through the
+ *                  new kernel, between the two renames; each answered
+ *                  UPDATE_NOT_WRITTEN at that step with the stick booting
+ *                  its old build (put back, after the renames); and a write
+ *                  with check-only, a failure without a write and a
+ *                  failure at no step refused. tools/update-write-test.sh
+ *                  then boots the stick from cold.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -44,7 +56,7 @@ JAM_WANTS("svc init\n"
           "mount /data r\n");
 
 #define DIR         "/data/update/"
-#define ANSWER_WAIT (60 * NS_PER_S)   /* init copies and hashes ~9 MB */
+#define ANSWER_WAIT (300 * NS_PER_S)  /* init copies and hashes ~10 MB, and may write the stick */
 #define CHUNK       (64u << 10)       /* bytes copied at a time */
 
 /* One offer: the manifest's text and the two files, each a VMO and the
@@ -313,6 +325,49 @@ static status_t make_nak(struct build *b)
     return st;
 }
 
+/* b offered with flags, as a stick write: the answer must be `why`, the
+ * write must have got to `step`, and the stick must boot `stick`. */
+static void expect_write(const char *name, struct build *b, uint32_t flags, uint32_t why,
+                         uint32_t step, uint32_t stick)
+{
+    struct update_answer a;
+    memset(&a, 0, sizeof(a));
+    b->flags = flags;
+    status_t st = offer(b, 2, UPDATE_OFFER_MAGIC, &a);
+    b->flags = 0;
+    bool ok = st == OK && a.why == why && (why == UPDATE_ACCEPTED) == (a.status == OK) &&
+              a.write_step == step && a.stick == stick;
+    failures += !ok;
+    printf("updtest: %s: %s (%s), %s, %s, in %u ms: %s\n", name,
+           st == OK ? update_why_str(a.why) : "-", status_str(st == OK ? a.status : st),
+           update_write_step_str(a.write_step), update_stick_str(a.stick), a.write_ms,
+           ok ? "as expected" : "FAILED");
+}
+
+/* Stick writes that fail (a test's failure, UPDATE_OFFER_FAIL, at each
+ * step that has one: as if the ESP's service died there): the build is
+ * loaded, and the stick still boots its old build; offers that can't be
+ * (a write with check-only, a failure without a write) are refused. */
+static void write_failures(struct build *b)
+{
+    static const struct { const char *name; uint32_t step; } at[] = {
+        { "write fails making room", UPDATE_WRITE_ROOM },
+        { "write fails keeping the previous build", UPDATE_WRITE_PREV },
+        { "write fails half way through the new kernel", UPDATE_WRITE_NEW },
+        { "write fails between the two renames", UPDATE_WRITE_SWITCH },
+    };
+    for (unsigned i = 0; i < sizeof(at) / sizeof(at[0]); i++)
+        expect_write(at[i].name, b, UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(at[i].step),
+                     UPDATE_NOT_WRITTEN, at[i].step, UPDATE_STICK_OLD);
+    b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_CHECK_ONLY;
+    expect("write and check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_FAIL(UPDATE_WRITE_NEW);
+    expect("a failure without a write", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(UPDATE_WRITE_DONE);
+    expect("a failure at no step", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = 0;
+}
+
 /* Every refusal, each on an offer channel of its own; the build offered
  * check-only (accepted, not loaded). */
 static void bad(struct build *b)
@@ -340,9 +395,13 @@ static void bad(struct build *b)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (strcmp(argv[1], "good") && strcmp(argv[1], "bad") &&
-                      strcmp(argv[1], "nokey"))) {
-        printf("usage: updtest good|bad|nokey\n");
+    enum { GOOD, BAD, NOKEY, WRITEFAIL, MODES };
+    static const char *const modes[MODES] = { "good", "bad", "nokey", "writefail" };
+    unsigned mode = 0;
+    while (argc == 2 && mode < MODES && strcmp(argv[1], modes[mode]))
+        mode++;
+    if (argc != 2 || mode == MODES) {
+        printf("usage: updtest good|bad|nokey|writefail\n");
         return 2;
     }
     initctl = svc_get(SVC_INIT);
@@ -353,12 +412,16 @@ int main(int argc, char **argv)
         printf("updtest: no init channel, or no " DIR " files (%s)\n", status_str(st));
         return 1;
     }
-    if (!strcmp(argv[1], "good")) {
+    if (mode == GOOD) {
         expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
-    } else if (!strcmp(argv[1], "nokey")) {
+    } else if (mode == NOKEY) {
         expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
         b.flags = UPDATE_OFFER_CHECK_ONLY;
         expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+        b.flags = UPDATE_OFFER_WRITE;
+        expect("no key, written to the stick", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+    } else if (mode == WRITEFAIL) {
+        write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
     } else {
         bad(&b);
     }

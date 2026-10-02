@@ -56,9 +56,10 @@ ARP, ICMP, UDP) with `/svc/net` sockets for programs; the DHCP client and
 the resolver as processes of their own (`host`, `ping <name>`); `ping`
 and `net`; netlog (the whole boot log to the Mac); `update` (the Mac's
 build fetched, its manifest's Ed25519 signature checked against the key
-in the running build, then its files, and run by kexec, in RAM only;
-signed since 2026-10-02, the owner's call: the first signed build goes on
-by `make flash`). The
+in the running build, then its files, and run by kexec, in RAM; signed
+since 2026-10-02, the owner's call: the first signed build goes on by
+`make flash`; `update -w` also has init write it to the stick, keeping
+the stick's build as "Jam OS (previous build)"). The
 slow-peer test passes (`tools/dns-test.sh`), and `tools/net-vlan-test.sh`
 runs every path that transmits in one boot with every frame tagged 21,
 and the same commands with `vlan=off` sending nothing.

@@ -202,6 +202,34 @@ const char *update_why_str(uint32_t why)
         [UPDATE_UNSIGNED] = "the manifest is not signed",
         [UPDATE_BAD_SIGNATURE] = "the signature isn't this build's key's (or the manifest "
                                  "changed)",
+        [UPDATE_NOT_WRITTEN] = "loaded, but the stick write failed",
     };
     return why < UPDATE_WHY_COUNT ? words[why] : "?";
+}
+
+const char *update_write_step_str(uint32_t step)
+{
+    static const char *const words[UPDATE_WRITE_STEPS] = {
+        [UPDATE_WRITE_NONE] = "no stick write",
+        [UPDATE_WRITE_OPEN] = "making the ESP writable",
+        [UPDATE_WRITE_ROOM] = "making room",
+        [UPDATE_WRITE_PREV] = "keeping the stick's build as the previous one",
+        [UPDATE_WRITE_NEW] = "writing the new build",
+        [UPDATE_WRITE_SWITCH] = "switching the names",
+        [UPDATE_WRITE_DONE] = "done",
+    };
+    return step < UPDATE_WRITE_STEPS ? words[step] : "?";
+}
+
+const char *update_stick_str(uint32_t stick)
+{
+    static const char *const words[UPDATE_STICK_STATES] = {
+        [UPDATE_STICK_NONE] = "the stick is as it was",
+        [UPDATE_STICK_OLD] = "the stick still boots its old build",
+        [UPDATE_STICK_NEW] = "the stick boots the new build (the old one is \"Jam OS (previous "
+                             "build)\")",
+        [UPDATE_STICK_PREVIOUS] = "the stick's default entry may not boot: pick \"Jam OS "
+                                  "(previous build)\" (the old build)",
+    };
+    return stick < UPDATE_STICK_STATES ? words[stick] : "?";
 }

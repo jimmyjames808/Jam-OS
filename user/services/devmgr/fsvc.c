@@ -2,8 +2,9 @@
  * the disks and the steps that decide what each is): starting one on a
  * partition, its handles and its mount path, the /usbN services of disks
  * that aren't the boot disk (one started at a time, so the numbers follow
- * the order the volumes were found in), a service that ended, and
- * DEVMGR_REMOUNT. */
+ * the order the volumes were found in), a service that ended,
+ * DEVMGR_REMOUNT, and DEVMGR_ESP_WRITE (the boot disk's ESP read-write
+ * for init alone: the same stop and restart, and no mount meanwhile). */
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/fsctl.h>
@@ -59,9 +60,10 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     if (!d || d->state == DISK_FREE || d->state == DISK_DOWN)
         return ERR_PEER_CLOSED;
     handle_t blk;
-    /* Read-only unless it is the boot disk's data partition, or another
-     * disk's partition after `mount -w`. */
-    bool read_only = b->other ? !b->rw : b->part != PART_DATA;
+    /* Read-only unless it is the boot disk's data partition, another
+     * disk's partition after `mount -w`, or the boot disk's ESP while init
+     * writes it (ESP_WRITE). */
+    bool read_only = !b->other && b->part == PART_DATA ? false : !b->rw;
     status_t st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part, read_only,
                                                &blk);
     if (st != OK)
@@ -297,4 +299,20 @@ status_t disk_remount(unsigned n, bool test, bool writable)
     if (b->rw == writable)
         return OK;
     return fs_restart(b, writable);
+}
+
+status_t disk_esp_write(bool writable, handle_t *out)
+{
+    struct binding *b = NULL;
+    for (unsigned i = 0; i < MAX_DISKS && !b; i++)
+        if (disks[i].state == DISK_BOOT && !disks[i].test && disks[i].fs[PART_ESP])
+            b = &devs[disks[i].fs[PART_ESP] - 1];
+    if (!b)
+        return ERR_NOT_FOUND;
+    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->client)
+        return ERR_BAD_STATE;   /* stopped, or restarting after a crash */
+    status_t st = b->rw == writable ? OK : fs_restart(b, writable);
+    if (st == OK && writable)
+        st = jam_handle_duplicate(b->client, RIGHT_SAME, out);
+    return st;
 }

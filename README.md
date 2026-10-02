@@ -104,7 +104,7 @@ the build tools (and Pillow for test screenshots).
 | `make run` | build the image and boot it in QEMU |
 | `make debug` | the same, stopped for gdb on :1234 |
 | `make usb DEV=/dev/diskN` | write the image to a USB stick, erasing it ([below](#boot-a-real-pc)) |
-| `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only |
+| `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only (the stick's kernel and boot image kept as "Jam OS (previous build)") |
 | `make check` | generated code current, the driver isolation check, the docs check, the include order, the signing tool's test vectors |
 | `make includes` | put `#include` lines in the order the check wants |
 | `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
@@ -144,7 +144,7 @@ leaves the network card alone. In QEMU, `tools/qemu-test.sh` with
 | `net stats` | every count netstack keeps, and the network card's own |
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
-| `update [-n] [address]` | fetch the build the Mac serves, have init check its signature and files, and reboot into it; `-n` fetches and checks only |
+| `update [-n \| -w] [address]` | fetch the build the Mac serves, have init check its signature and files, and reboot into it; `-n` fetches and checks only; `-w` has init write it to the stick too |
 
 The settings, in `/data/etc/settings` on the stick (edit `etc/settings`
 on the Mac, or in Jam OS), for example:
@@ -217,8 +217,16 @@ made without the key takes no update at all.
    `old -> new` (version and git commit), and the PC reboots into it.
 
 The fetched build lives in RAM: it survives `reboot` and a panic, and a
-power-off brings back the stick's. `make flash` is still how a build
-stays. A signature proves the build is one you signed, not that it is the
+power-off brings back the stick's. **`update -w`** keeps it: once init has
+checked and loaded the build, it also writes it to the stick (only init
+can: no program, the shell included, can write the boot partition), and
+the stick's own build stays on as the boot menu's **"Jam OS (previous
+build)"**, which `make flash` keeps the same way. The write takes a few
+seconds; the stick boots throughout (the old build first, under every
+name, then the new one), and if anything goes wrong the screen says how
+far it got, the new build stays loaded (`reboot` runs it), and the stick
+still boots the old one. `-w` needs a build with the key, as `update`
+does. A signature proves the build is one you signed, not that it is the
 newest: an older signed build is accepted too (the versions are printed).
 
 ## Where things live

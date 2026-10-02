@@ -288,7 +288,10 @@ static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_byt
  * kernel as it was. A newer offer channel closes an older one; while an
  * offer is still being checked: ERR_BAD_STATE. An offer with
  * UPDATE_OFFER_CHECK_ONLY is checked and answered, nothing loaded. Nothing
- * is written to the stick. The shell's channel only (the tests' programs
+ * is written to the stick unless the offer has UPDATE_OFFER_WRITE: then
+ * init, once it has loaded the build, also writes it to the stick's ESP
+ * (only init can: devmgr's ESP channel is its alone) and answers when that
+ * is done. The shell's channel only (the tests' programs
  * that ask for `svc init`): the shell's `update` hands the channel to
  * bin/update, the fetcher, which holds nothing else of init's. */
 static inline status_t initctl_update_offer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_offer)
