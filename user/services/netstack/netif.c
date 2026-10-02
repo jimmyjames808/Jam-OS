@@ -67,6 +67,16 @@ static void unmap_ring(void *map)
                              NETDEV_RING_BYTES);   /* nothing left to undo if it fails */
 }
 
+/* Plan the next connect: soon after a session that worked (backoff 0),
+ * later each time one fails in a row. */
+static void retry_later(struct dev *d)
+{
+    d->backoff = d->backoff ? d->backoff * 2 : DEV_RETRY_MIN;
+    if (d->backoff > DEV_RETRY_MAX)
+        d->backoff = DEV_RETRY_MAX;
+    d->retry_at = now() + d->backoff;
+}
+
 /* Drop the session (its handles, mappings and bindings) and plan a new one. */
 static void detach(struct dev *d, const char *why)
 {
@@ -87,8 +97,7 @@ static void detach(struct dev *d, const char *why)
     d->link_up = false;
     edge_off(d);
     nstack_log("the network driver's session ended (%s): asking for a new one", why);
-    d->backoff = DEV_RETRY_MIN;
-    d->retry_at = now() + d->backoff;
+    retry_later(d);
 }
 
 /* No session: say why (once per reason) and try again later. */
@@ -98,10 +107,7 @@ static void failed(struct dev *d, int32_t st)
         nstack_log("no session with the network driver yet (%s): trying again",
                    status_str(st));
     d->last_st = st;
-    d->backoff = d->backoff ? d->backoff * 2 : DEV_RETRY_MIN;
-    if (d->backoff > DEV_RETRY_MAX)
-        d->backoff = DEV_RETRY_MAX;
-    d->retry_at = now() + d->backoff;
+    retry_later(d);
 }
 
 static void set_link(struct dev *d, uint32_t link, uint32_t speed)
