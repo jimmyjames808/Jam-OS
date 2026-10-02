@@ -48,6 +48,7 @@ status_t userboot_root_job(struct job **out);
  * are dropped) follow it as argv[2...] ("splash": the boot splash plays
  * first; "hidboot": hid keeps mice in the boot protocol; "netprobe": the
  * RTL8125's listen-only probe runs; "netsend": its ARP send test runs;
+ * "net": its netdev service runs;
  * "vlan=<id>": the network's VLAN;
  * "splashhang": a
  * test's, the splash never finishes). */
