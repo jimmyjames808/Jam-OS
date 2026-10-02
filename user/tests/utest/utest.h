@@ -212,11 +212,19 @@ bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 
-/* netframe.c: <jam/netframe.h> over hand-made frames, and the RTL8125
- * probe's listen-only rule. */
+/* netframe.c: <jam/netframe.h> over hand-made and hostile frames, and the
+ * RTL8125 driver's pure parts (guard, gate, arguments, ARP). */
 bool t_netframe_classify(void);
 bool t_netframe_short_frames(void);
+bool t_netframe_tag(void);
+bool t_netframe_tag_refuses_tagged(void);
+bool t_netframe_tx_check(void);
+bool t_netframe_tag_copy_is_the_frame(void);
+bool t_netframe_rx(void);
 bool t_rtl8125_write_guard(void);
+bool t_rtl8125_tx_gate(void);
+bool t_rtl8125_args(void);
+bool t_rtl8125_arp(void);
 bool t_rtl8125_stays_off(void);
 
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */

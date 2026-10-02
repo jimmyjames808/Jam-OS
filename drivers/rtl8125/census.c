@@ -1,77 +1,11 @@
-/* rtl8125: the receive ring and the count of frames by tag (drv/rtl8125).
+/* rtl8125: the listen-only probe's count of frames by tag (drv/rtl8125).
  *
- * The ring (256 descriptors of 32 bytes) and the tally dump share one
- * contiguous VMO; the 2 KiB buffers (two per page) are an ordinary VMO,
- * pinned page by page. Neither asks for memory below 4 GiB, so on the PC
- * they normally land above it: main.c logs where, which is the test of
- * the chip's 64-bit DMA.
- *
- * Of each frame the driver reads its length (from the descriptor) and
+ * Of each frame the probe reads its length (from the descriptor) and
  * bytes 12-17 (copied once out of the buffer), and nothing else: the
  * count holds tags, VLAN ids and EtherTypes, never an address or a
- * payload byte (netframe.h). */
+ * payload byte (netframe.h). The probe accepts every frame and keeps
+ * every tag, so the count shows what the switch port carries. */
 #include "rtl8125.h"
-
-status_t ring_setup(struct rtl *t)
-{
-    status_t st = drv_vmo_create(RING_VMO, DRV_VMO_CONTIGUOUS, &t->ring_vmo);
-    if (st == OK)
-        st = drv_vmo_map(t->ring_vmo, 0, RING_VMO, VMAR_READ | VMAR_WRITE, (void **)&t->ring);
-    uint64_t addrs[RING_VMO / 4096];
-    if (st == OK && (st = drv_vmo_pin(t->ring_vmo, t->dma, 0, RING_VMO, addrs, &t->ring_pin)) == OK)
-        t->ring_pinned = true;
-    if (st == OK)
-        st = drv_vmo_create(BUF_BYTES, 0, &t->buf_vmo);
-    if (st == OK)
-        st = drv_vmo_map(t->buf_vmo, 0, BUF_BYTES, VMAR_READ | VMAR_WRITE, (void **)&t->bufs);
-    if (st == OK && (st = drv_vmo_pin(t->buf_vmo, t->dma, 0, BUF_BYTES, t->buf_addr,
-                                      &t->buf_pin)) == OK)
-        t->buf_pinned = true;
-    if (st != OK) {
-        drv_log("ring: can't set it up (%s)", status_str(st));
-        return st;
-    }
-    t->ring_addr = addrs[0];
-    for (unsigned i = 0; i < RX_DESCS; i++) {
-        volatile uint8_t *d = t->ring + i * RX_DESC_SIZE;
-        uint64_t a = t->buf_addr[i / 2] + (i % 2) * RX_BUF;
-        *(volatile uint64_t *)(d + RX_DESC_ADDR) = a;
-        *(volatile uint32_t *)(d + RX_DESC_EXTSTS) = 0;
-        *(volatile uint32_t *)(d + RX_DESC_CMDSTS) =
-            RX_OWN | RX_BUF | (i == RX_DESCS - 1 ? RX_EOR : 0);
-    }
-    __atomic_thread_fence(__ATOMIC_RELEASE);   /* the chip reads them once RXENB is set */
-    uint64_t lo = t->buf_addr[0], hi = t->buf_addr[0];
-    for (unsigned i = 1; i < BUF_PAGES; i++) {
-        lo = t->buf_addr[i] < lo ? t->buf_addr[i] : lo;
-        hi = t->buf_addr[i] > hi ? t->buf_addr[i] : hi;
-    }
-    drv_log("ring: %u descriptors at %#lx, tally at %#lx, buffers %#lx-%#lx: %s", RX_DESCS,
-            (unsigned long)t->ring_addr, (unsigned long)(t->ring_addr + TALLY_OFF),
-            (unsigned long)lo, (unsigned long)(hi + 4095),
-            t->ring_addr >= (1ull << 32) && lo >= (1ull << 32) ? "all above 4 GiB (64-bit DMA)"
-            : t->ring_addr >= (1ull << 32) || hi >= (1ull << 32) ? "partly above 4 GiB"
-            : "all below 4 GiB (the 64-bit DMA question stays open)");
-    return OK;
-}
-
-void ring_free(struct rtl *t)
-{
-    if (t->buf_pinned && drv_vmo_unpin(t->buf_vmo, t->dma, t->buf_pin) == OK)
-        t->buf_pinned = false;
-    if (t->ring_pinned && drv_vmo_unpin(t->ring_vmo, t->dma, t->ring_pin) == OK)
-        t->ring_pinned = false;
-    if (t->bufs)
-        (void)drv_vmo_unmap(t->bufs, BUF_BYTES);   /* nothing to do if it fails: we exit */
-    if (t->ring)
-        (void)drv_vmo_unmap(t->ring, RING_VMO);
-    t->bufs = t->ring = NULL;
-    if (t->buf_vmo)
-        drv_handle_close(t->buf_vmo);
-    if (t->ring_vmo)
-        drv_handle_close(t->ring_vmo);
-    t->buf_vmo = t->ring_vmo = HANDLE_INVALID;
-}
 
 static struct group *group_of(struct census *c, const struct netframe_class *f)
 {
@@ -108,38 +42,21 @@ void census_count(struct census *c, const struct netframe_class *f)
     g->other_types++;
 }
 
-/* Descriptor i handed back to the chip, with its buffer as it was. */
-static void rearm(struct rtl *t, unsigned i)
-{
-    volatile uint8_t *d = t->ring + i * RX_DESC_SIZE;
-    *(volatile uint32_t *)(d + RX_DESC_EXTSTS) = 0;
-    __atomic_thread_fence(__ATOMIC_RELEASE);   /* the rest before the ownership bit */
-    *(volatile uint32_t *)(d + RX_DESC_CMDSTS) =
-        RX_OWN | RX_BUF | (i == RX_DESCS - 1 ? RX_EOR : 0);
-}
-
 unsigned census_harvest(struct rtl *t, bool by_irq)
 {
     unsigned n = 0;
-    for (; n < RX_DESCS; n++) {
-        unsigned i = t->next;
-        volatile uint8_t *d = t->ring + i * RX_DESC_SIZE;
-        uint32_t st = *(volatile uint32_t *)(d + RX_DESC_CMDSTS);
-        if (st & RX_OWN)
-            break;
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the buffer after the status */
-        uint32_t len = st & RX_LEN;
-        if (st & RX_ERRSUM) {
+    struct rx_slot s;
+    for (; n < RX_DESCS && ring_rx_peek(t, &s); n++) {
+        if (s.status & RX_ERRSUM) {
             t->c.errors++;
-        } else if ((st & (RX_SOF | RX_EOF)) != (RX_SOF | RX_EOF) || len > RX_BUF) {
+        } else if (!s.whole) {
             t->c.split++;
         } else {
             /* Bytes 12-17 only, copied once; the rest of the frame is never read. */
             uint8_t head[NETFRAME_TAGGED] = { 0 };
-            const volatile uint8_t *b = t->bufs + (size_t)i * RX_BUF;
-            for (unsigned k = 12; k < NETFRAME_TAGGED && k < len; k++)
-                head[k] = b[k];
-            struct netframe_class f = netframe_classify(head, len);
+            for (unsigned k = 12; k < NETFRAME_TAGGED && k < s.len; k++)
+                head[k] = s.buf[k];
+            struct netframe_class f = netframe_classify(head, s.len);
             census_count(&t->c, &f);
             if (f.kind != NETFRAME_RUNT) {
                 if (by_irq)
@@ -148,8 +65,7 @@ unsigned census_harvest(struct rtl *t, bool by_irq)
                     t->c.by_poll++;
             }
         }
-        rearm(t, i);
-        t->next = (i + 1) % RX_DESCS;
+        ring_rx_done(t);
     }
     return n;
 }
@@ -205,14 +121,16 @@ uint32_t census_kind(const struct census *c, enum netframe_kind k)
 }
 
 /* docs/M9-PLAN.md "The first PC stage: listen only", reading the count. */
-const char *census_verdict(const struct census *c)
+const char *census_verdict(const struct census *c, uint16_t v)
 {
     uint32_t tagged = census_kind(c, NETFRAME_VLAN) + census_kind(c, NETFRAME_OUTER);
-    if (census_vlan(c, PROBE_VLAN))
-        return census_kind(c, NETFRAME_UNTAGGED) ? "trunk carrying 21 (untagged too: a native "
-                                                    "VLAN)" : "trunk carrying 21";
+    if (!v)
+        return "no vlan= given: counts only";
+    if (census_vlan(c, v))
+        return census_kind(c, NETFRAME_UNTAGGED) ? "trunk carrying our VLAN (untagged too: a "
+                                                    "native VLAN)" : "trunk carrying our VLAN";
     if (tagged)
-        return "tagged frames, but none on 21";
+        return "tagged frames, but none on our VLAN";
     if (census_kind(c, NETFRAME_UNTAGGED) || census_kind(c, NETFRAME_PRIORITY))
         return "only untagged frames: an access port";
     return "nothing heard";
