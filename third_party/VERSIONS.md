@@ -49,3 +49,22 @@ Vendored third-party code:
   for hostile input, so the helper checks a picture's size with stbi_info before decoding it
   (2048x1600 pixels at most) and gives it one bounded arena (40 MiB) for
   all of its memory: a picture that needs more fails to decode.
+- lwip/: lwIP 2.2.1 (the latest 2.2.x release), tag STABLE-2_2_1_RELEASE,
+  commit 77dcd25a72509eb83f72b033d219b1d40cd8eb95 (tag object 009c225),
+  from https://github.com/lwip-tcpip/lwip (the Savannah repository's
+  mirror; the same tag is at git.savannah.nongnu.org/git/lwip.git). The
+  release archive https://download.savannah.nongnu.org/releases/lwip/lwip-2.2.1.zip
+  (sha256 7b622662dba2383d71f874f2e494b54ae948531559c17acbe75797966d646878)
+  has the same src/ but with CRLF line ends; the files here are the tag's
+  (LF), unmodified. COPYING is lwIP's licence, BSD-3-Clause (sha256
+  ef4aac92e05e87cd...). Only what netstack compiles: src/core (def,
+  inet_chksum, init, ip, mem, memp, netif, pbuf, raw, stats, timeouts,
+  udp), src/core/ipv4 (etharp, icmp, ip4, ip4_addr), src/netif/ethernet.c,
+  and the headers those include (found from the build's dependency
+  files); TCP, IPv6, IP fragments, IGMP, DHCP, DNS, the sockets and
+  netconn APIs and apps/ are left out. Jam OS's configuration (NO_SYS,
+  the options file, the clock, its <string.h>) is
+  user/services/netstack/port. Known and handled outside lwIP: its ARP
+  input reads the 28-byte header without checking the frame holds it, so
+  netstack pads every short frame with zeros to 60 bytes first
+  (user/services/netstack/stack.c, tested by utest's netstack_malformed).
