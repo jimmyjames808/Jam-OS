@@ -21,7 +21,7 @@ static void send_slot(struct updfetch *f, struct updfetch_slot *s, uint64_t now)
 {
     struct updwire_req r = {
         .file = s->file, .snapshot = s->file == UPDWIRE_MANIFEST ? 0 : f->snapshot,
-        .offset = s->offset, .length = s->length,
+        .offset = s->offset, .length = s->length, .format = UPDATE_FORMAT,
     };
     uint8_t d[UPDWIRE_REQ_SIZE];
     if (updwire_req_encode(&r, d) == OK)

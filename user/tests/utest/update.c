@@ -409,10 +409,16 @@ bool t_updwire_golden(void)
     struct updwire_req q;
     CHECK_ST(updwire_req_decode(req, sizeof(req), &q), OK);
     CHECK(q.file == UPDWIRE_KERNEL && q.snapshot == 0x01020304 && q.offset == 0x0a0b0c0d &&
-          q.length == 1400);
+          q.length == 1400 && q.format == 0);   /* an older build's: no format said */
     uint8_t out[UPDWIRE_REP_MAX];
     CHECK_ST(updwire_req_encode(&q, out), OK);
     CHECK(!memcmp(out, req, sizeof(req)));
+    /* this build's: its manifest format in byte 7 */
+    q.format = UPDATE_FORMAT;
+    CHECK_ST(updwire_req_encode(&q, out), OK);
+    CHECK(out[7] == UPDATE_FORMAT && !memcmp(out, req, 7) && !memcmp(out + 8, req + 8, 12));
+    CHECK_ST(updwire_req_decode(out, UPDWIRE_REQ_SIZE, &q), OK);
+    CHECK_EQ(q.format, UPDATE_FORMAT);
     struct updwire_rep r;
     CHECK_ST(updwire_rep_decode(rep, sizeof(rep), &r), OK);
     CHECK(r.file == UPDWIRE_BOOTFS && r.status == UPDWIRE_OK && r.snapshot == 0x01020304 &&
@@ -442,12 +448,15 @@ bool t_updwire_hostile(void)
     for (size_t n = 0; n <= sizeof(good) + 1; n++)
         CHECK(updwire_req_decode(good, n, &q) == (n == sizeof(good) ? OK : ERR_INVALID_ARGS));
     CHECK(req_refused(good, 0, 0x4b) && req_refused(good, 4, 2) && req_refused(good, 5, 2));
-    CHECK(req_refused(good, 6, 3) && req_refused(good, 7, 1) && req_refused(good, 19, 1));
+    CHECK(req_refused(good, 6, 3) && req_refused(good, 18, 1) && req_refused(good, 19, 1));
+    memcpy(d, good, sizeof(good));
+    d[7] = 0xff;   /* any format is a request: the server says what it can make */
+    CHECK(updwire_req_decode(d, sizeof(good), &q) == OK && q.format == 0xff);
     CHECK(req_refused(good, 6, UPDWIRE_KERNEL));      /* a file needs a snapshot */
     CHECK(req_refused(good, 16, 0));                  /* length 0 */
     struct updwire_req bad[] = {
-        { UPDWIRE_KERNEL, 0, 0, 10 }, { UPDWIRE_FILES, 1, 0, 10 }, { UPDWIRE_KERNEL, 1, 0, 0 },
-        { UPDWIRE_KERNEL, 1, 0, UPDWIRE_CHUNK_MAX + 1 },
+        { UPDWIRE_KERNEL, 0, 0, 10, 2 }, { UPDWIRE_FILES, 1, 0, 10, 2 },
+        { UPDWIRE_KERNEL, 1, 0, 0, 2 }, { UPDWIRE_KERNEL, 1, 0, UPDWIRE_CHUNK_MAX + 1, 2 },
     };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
         CHECK_ST(updwire_req_encode(&bad[i], d), ERR_INVALID_ARGS);

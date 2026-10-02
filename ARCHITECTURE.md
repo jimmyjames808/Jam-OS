@@ -1003,8 +1003,12 @@ manifest and `update` moves it forward. A line the running build must
 act on to run the new one right is a must-understand line (its key
 starts with `!`): a build that doesn't know it refuses the update, once
 the signature has checked out, and says which line it needs ("needs a
-newer build"); it never skips one. Only a change of the signature scheme
-itself would need a new format, and then a `make flash`.
+newer build"); it never skips one. Each update request carries the
+manifest format the asking build reads (an older build's says nothing:
+format 2), and the server makes the manifest in the newest format that
+build reads, so a newer server always serves an older build. Only a
+change of the signature scheme itself would need a new format, and then
+a `make flash`.
 
 **What each process holds:**
 

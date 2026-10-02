@@ -45,8 +45,13 @@ made once: `build/host/jamos-sign keygen` (after `make`).
 
 The protocol (user/include/updwire.h has the byte layout; every field is
 little-endian): a request names a snapshot, a file (0 the manifest, 1 the
-kernel, 2 the boot image), an offset and a length of at most 1400 bytes;
-the reply carries the same, the file's size and the bytes. A request for
+kernel, 2 the boot image), an offset and a length of at most 1400 bytes,
+and the manifest format the asking build reads (0 from builds older than
+that field: format 2); the reply carries the same, the file's size and
+the bytes. A new snapshot's manifest is made in the newest format the
+asker reads (FORMAT_MIN..FORMAT_MAX are made here; one older than
+FORMAT_MIN is refused, BAD, with a log line saying the build needs `make
+flash`), so a newer server always serves an older build. A request for
 the manifest with snapshot 0 makes a snapshot: both files read into memory
 then (read again if either changed while being read, so a `make` running
 meanwhile can't mix two builds), and every later request for that snapshot
@@ -90,6 +95,7 @@ REQ = struct.Struct("<IBBBBIIHH")           # 20 bytes
 REP = struct.Struct("<IBBBBIIIHH")          # 24 bytes, then the data
 FILE_MAX = 32 << 20                         # <update.h> UPDATE_FILE_MAX
 MANIFEST_MAX = 1024
+FORMAT_MIN = FORMAT_MAX = 2                 # the manifest formats made here (<update.h>)
 SNAPSHOTS = 8
 SETTLE = 1.0                                # seconds both files must be unchanged
 VERSION_RE = re.compile(rb"[A-Za-z0-9._+-]{1,47}$")
@@ -122,15 +128,17 @@ def ext_ok(line):
     return bool(EXT_RE.match(line)) and len(key) <= 32 and key not in BASE_KEYS
 
 
-def manifest(kernel, bootfs, version, git, net, extra=()):
-    """The manifest's bytes for these two files' contents; extra: extension
-    lines (str), put before the signature line."""
+def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX):
+    """The manifest's bytes for these two files' contents, in format fmt;
+    extra: extension lines (str), put before the signature line."""
+    if not FORMAT_MIN <= fmt <= FORMAT_MAX:
+        raise ValueError("manifest format %d isn't made here" % fmt)
     if not VERSION_RE.match(version.encode()) or not GIT_RE.match(git.encode()):
         raise ValueError("bad version %r or git %r" % (version, git))
     if not net_ok(net):
         raise ValueError("the build has no network default (build.txt's net line: %r); "
                          "make it again" % (net,))
-    lines = ["jamos-update 2", "version " + version, "git " + git, "net " + net]
+    lines = ["jamos-update %d" % fmt, "version " + version, "git " + git, "net " + net]
     for name, data in (("kernel", kernel), ("bootfs", bootfs)):
         if not 1 <= len(data) <= FILE_MAX:
             raise ValueError("%s is %d bytes (1..%d)" % (name, len(data), FILE_MAX))
@@ -310,11 +318,12 @@ class Server:
         self.net = net
         self.snaps = collections.OrderedDict()   # id -> [manifest, kernel, bootfs]
 
-    def snapshot(self):
+    def snapshot(self, fmt=FORMAT_MAX):
+        """A new snapshot, its manifest in format fmt; its id."""
         kernel, bootfs = read_stable(self.paths, self.settle)
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
                         self.git or build_git(bootfs) or git_hash(),
-                        self.net or build_net(bootfs))
+                        self.net or build_net(bootfs), fmt=fmt)
         text, kernel, bootfs = self.prepare(text, kernel, bootfs)
         text = self.signed(text)
         sid = 0
@@ -338,13 +347,20 @@ class Server:
         """The reply to one datagram, or None (not a request of ours)."""
         if len(dgram) != REQ.size:
             return None
-        magic, ver, typ, f, res, sid, off, length, res2 = REQ.unpack(dgram)
-        if magic != MAGIC or ver != VERSION or typ != REQUEST or res or res2 or \
+        magic, ver, typ, f, fmt, sid, off, length, res2 = REQ.unpack(dgram)
+        if magic != MAGIC or ver != VERSION or typ != REQUEST or res2 or \
                 f > BOOTFS or not 1 <= length <= CHUNK_MAX or (not sid and f != MANIFEST):
             return None
+        # The manifest format the asker reads (0: a build older than the
+        # field, which reads 2): the newest made here that it reads.
+        want = 2 if fmt == 0 else min(fmt, FORMAT_MAX)
+        if want < FORMAT_MIN:
+            self.log("update-server: a build that reads manifest format %d asked; the oldest "
+                     "made here is %d (signed): it needs `make flash`" % (fmt, FORMAT_MIN))
+            return REP.pack(MAGIC, VERSION, REPLY, f, BAD, sid, off, 0, 0, 0)
         if not sid:
             try:
-                sid = self.snapshot()
+                sid = self.snapshot(want)
             except (OSError, ValueError) as e:
                 self.log("update-server: can't snapshot the build: %s" % e)
                 return None
@@ -488,8 +504,8 @@ class Client:
     def request(self, f, sid, off, length):
         self.sent += 1
         if self.rng.random() >= self.drop:      # the request lost on the way
-            self.sock.sendto(REQ.pack(MAGIC, VERSION, REQUEST, f, 0, sid, off, length, 0),
-                             self.addr)
+            self.sock.sendto(REQ.pack(MAGIC, VERSION, REQUEST, f, FORMAT_MAX, sid, off, length,
+                                      0), self.addr)
 
     def replies(self):
         while True:
@@ -695,13 +711,25 @@ def self_test():
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, sid2, 0, 1401, 0),     # too long
            REQ.pack(MAGIC, VERSION, REQUEST, 3, 0, sid2, 0, 10, 0),            # no such file
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, 0, 0, 10, 0),          # snapshot 0
-           REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 1, sid2, 0, 10, 0),       # reserved
+           REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 2, sid2, 0, 10, 1),       # reserved
            REQ.pack(MAGIC ^ 1, VERSION, REQUEST, KERNEL, 0, sid2, 0, 10, 0),   # magic
            REQ.pack(MAGIC, VERSION, REPLY, KERNEL, 0, sid2, 0, 10, 0),         # a reply
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, sid2, 0, 10, 0) + b"x", b"", b"\0" * 7]
     for d in bad:
         q.sock.sendto(d, addr)
     check("malformed requests get no answer", q.one(0.5) is None)
+    # 3b. The manifest in the format the asker reads: 2 for an older build's
+    # request (no format said), for 2, and for a newer build's 3 (the newest
+    # made here); none for 1 (before signing), which can't be made.
+    for fmt, want in ((0, b"jamos-update 2\n"), (2, b"jamos-update 2\n"),
+                      (3, b"jamos-update 2\n"), (1, None)):
+        q.sock.sendto(REQ.pack(MAGIC, VERSION, REQUEST, MANIFEST, fmt, 0, 0, CHUNK_MAX, 0), addr)
+        got = q.one()
+        if want is None:
+            check("a format-1 asker refused (BAD)", got and got[0][4] == BAD and not got[1])
+        else:
+            check("a format-%d asker gets format 2" % fmt,
+                  got and got[0][4] == OK and got[1].startswith(want))
     # 4. Old snapshots are dropped: the first fetch's is gone after SNAPSHOTS more.
     for _ in range(SNAPSHOTS):
         Client(addr).fetch_manifest()

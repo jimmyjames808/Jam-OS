@@ -87,8 +87,8 @@ static status_t fake_send(void *ctx, const uint8_t *d, size_t len)
 {
     struct fake *f = ctx;
     struct updwire_req q;
-    if (updwire_req_decode(d, len, &q) != OK)
-        return ERR_INVALID_ARGS;
+    if (updwire_req_decode(d, len, &q) != OK || q.format != UPDATE_FORMAT)
+        return ERR_INVALID_ARGS;   /* every request says the format this build reads */
     f->requests++;
     if (f->silent || (f->drop_req && f->requests % f->drop_req == 0))
         return OK;   /* lost on the way */

@@ -49,18 +49,18 @@ status_t updwire_req_encode(const struct updwire_req *r, uint8_t out[UPDWIRE_REQ
     wire_put32(out + 8, r->snapshot);
     wire_put32(out + 12, r->offset);
     wire_put16(out + 16, r->length);
+    out[7] = r->format;
     return OK;
 }
 
 status_t updwire_req_decode(const void *dgram, size_t len, struct updwire_req *out)
 {
     const uint8_t *p = dgram;
-    if (!p || len != UPDWIRE_REQ_SIZE || !head_ok(p, UPDWIRE_REQUEST) || p[7] ||
-        wire_get16(p + 18))
+    if (!p || len != UPDWIRE_REQ_SIZE || !head_ok(p, UPDWIRE_REQUEST) || wire_get16(p + 18))
         return ERR_INVALID_ARGS;
     struct updwire_req r = {
         .file = p[6], .snapshot = wire_get32(p + 8), .offset = wire_get32(p + 12),
-        .length = wire_get16(p + 16),
+        .length = wire_get16(p + 16), .format = p[7],
     };
     if (!req_ok(&r))
         return ERR_INVALID_ARGS;

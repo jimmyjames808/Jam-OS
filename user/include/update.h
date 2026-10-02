@@ -32,7 +32,10 @@
  * line. Another first line ("jamos-update 3") is another format, which
  * only a new signature scheme should ever need: refused too
  * (ERR_NOT_SUPPORTED, UPDATE_NEEDS_NEWER). So only a crypto change can
- * make the stick need `make flash` for an update to go on.
+ * make the stick need `make flash` for an update to go on. Every update
+ * request carries UPDATE_FORMAT (<updwire.h>), the format this build
+ * reads, and the server answers in it: a server that also makes a newer
+ * format still serves an older build the format it reads.
  *
  * A size is decimal bytes, 1..UPDATE_FILE_MAX, no leading zero; a SHA-256
  * is 64 lower-case hex digits; a VLAN has no leading zero. The `net` line
@@ -96,6 +99,7 @@
 #define UPDATE_KEY_BYTES    32u            /* an Ed25519 public key */
 #define UPDATE_SIG_BYTES    64u            /* an Ed25519 signature */
 #define UPDATE_KEY_FILE     "update.pub"   /* the public key, in the boot image (bootfs) */
+#define UPDATE_FORMAT       2u             /* the manifest format this build reads */
 #define UPDATE_EXT_KEY_MAX  32u            /* bytes of an extension line's key ('!' too) */
 #define UPDATE_EXT_MAX      200u           /* bytes of an extension line's value */
 

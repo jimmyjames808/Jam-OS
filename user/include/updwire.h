@@ -17,7 +17,12 @@
  * A request, UPDWIRE_REQ_SIZE bytes:
  *     0  u32 magic UPDWIRE_MAGIC       4  u8 version UPDWIRE_VERSION
  *     5  u8  type UPDWIRE_REQUEST      6  u8 file (UPDWIRE_MANIFEST...)
- *     7  u8  reserved, 0               8  u32 snapshot (0: a new one; manifest only)
+ *     7  u8  format: the manifest format the asker's build reads
+ *        (<update.h> UPDATE_FORMAT); 0 from a build older than this field,
+ *        which reads format 2. The server makes a new snapshot's manifest
+ *        in it (the newest it can, no newer), and refuses one it can't
+ *        (UPDWIRE_BAD): so any build can always fetch an update.
+ *     8  u32 snapshot (0: a new one; manifest only)
  *    12  u32 offset                   16  u16 length, 1..UPDWIRE_CHUNK_MAX
  *    18  u16 reserved, 0
  * A reply, UPDWIRE_REP_HDR bytes and then `length` bytes of the file:
@@ -62,6 +67,7 @@ struct updwire_req {
     uint32_t snapshot;   /* 0: a new one (manifest only) */
     uint32_t offset;     /* bytes into the file */
     uint16_t length;     /* 1..UPDWIRE_CHUNK_MAX */
+    uint8_t  format;     /* the manifest format the asker reads (0: format 2) */
 };
 
 struct updwire_rep {
@@ -79,7 +85,8 @@ struct updwire_rep {
 status_t updwire_req_encode(const struct updwire_req *r, uint8_t out[UPDWIRE_REQ_SIZE]);
 /* A datagram of len bytes as a request, checked field by field.
  * ERR_INVALID_ARGS: not one (wrong size, magic, version, type, file,
- * reserved bits, length; a snapshot of 0 for a file). */
+ * reserved bits, length; a snapshot of 0 for a file). Any format is one:
+ * the server decides what it can make. */
 status_t updwire_req_decode(const void *dgram, size_t len, struct updwire_req *out);
 /* A reply into out (cap bytes); its size into *len. ERR_INVALID_ARGS: r
  * breaks the rules above; ERR_BUFFER_TOO_SMALL: cap is too small. */
