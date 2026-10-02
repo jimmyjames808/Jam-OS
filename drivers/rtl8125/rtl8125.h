@@ -227,6 +227,9 @@ struct rxstats {
     uint32_t drop[NETFRAME_RX_KINDS];  /* dropped, by netframe_rx_check's reason */
     uint32_t errors, split;            /* the chip's error bit; not in one buffer */
     uint32_t unused;                   /* kept, but nobody was there to take them */
+    uint32_t addr_changed;             /* descriptors back with another value in their address
+                                        * field (the chip's write-back: rxdesc.h) */
+    uint64_t addr_first;               /* ... the first such value */
 };
 
 /* Full mode's transmit counts (tx.c). */

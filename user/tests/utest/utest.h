@@ -238,6 +238,7 @@ bool t_rtl8125_tx_verdict(void);
 
 /* rtlrx.c: drivers/rtl8125/rxdesc.h. */
 bool t_rtl8125_rxdesc(void);
+bool t_rtl8125_rxdesc_laps(void);
 
 /* netsrv.c: the network drivers' netdev server (drivers/lib/netserver.c,
  * linked in) over a fake card, the test as netstack. */

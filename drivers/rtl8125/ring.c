@@ -27,9 +27,17 @@ static status_t dma_vmo(struct rtl *t, uint64_t bytes, uint32_t flags, handle_t 
     return st;   /* ring_free undoes what was done, whatever failed */
 }
 
+/* Receive buffer i's device address (two buffers per page). */
+static uint64_t rx_buf_addr(const struct rtl *t, unsigned i)
+{
+    return t->buf_addr[i / 2] + (i % 2) * RX_BUF;
+}
+
+/* Descriptor i to the chip, whole: its buffer's address too, every time
+ * (rxdesc.h: the chip's write-back may have put a timestamp there). */
 static void rx_arm(struct rtl *t, unsigned i)
 {
-    rtl_rxd_arm(t->ring + i * RX_DESC_SIZE, i, RX_DESCS, RX_BUF);
+    rtl_rxd_arm(t->ring + i * RX_DESC_SIZE, rx_buf_addr(t, i), i, RX_DESCS, RX_BUF);
 }
 
 static void log_where(const struct rtl *t)
@@ -69,11 +77,8 @@ status_t ring_setup(struct rtl *t)
         return st;
     }
     t->ring_addr = addrs[0];
-    for (unsigned i = 0; i < RX_DESCS; i++) {
-        volatile uint8_t *d = t->ring + i * RX_DESC_SIZE;
-        *(volatile uint64_t *)(d + RX_DESC_ADDR) = t->buf_addr[i / 2] + (i % 2) * RX_BUF;
+    for (unsigned i = 0; i < RX_DESCS; i++)
         rx_arm(t, i);
-    }
     __atomic_thread_fence(__ATOMIC_RELEASE);   /* the chip reads them once RXENB is set */
     log_where(t);
     return OK;
@@ -108,6 +113,12 @@ bool ring_rx_peek(struct rtl *t, struct rx_slot *out)
     if (st & RX_OWN)
         return false;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the buffer after the status */
+    uint64_t addr = rtl_rxd_addr(d);
+    if (addr != rx_buf_addr(t, i)) {   /* the chip wrote there (rxdesc.h): counted, not used */
+        if (!t->rx.addr_changed)
+            t->rx.addr_first = addr;
+        t->rx.addr_changed++;
+    }
     uint32_t len = st & RX_LEN;
     *out = (struct rx_slot){
         .status = st,
