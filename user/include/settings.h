@@ -21,7 +21,9 @@
  *                  ipv4_config_parse); init gives it to netstack
  *   net.host       the Mac's IPv4 address ("10.2.21.174"): where netlog
  *                  sends the log (UDP port 5021, tools/netlog-recv.py);
- *                  set, netlog runs (init starts it)
+ *                  set, netlog runs (init starts it); and where the
+ *                  shell's `update` fetches a build (UDP port 5022,
+ *                  tools/update-server.py)
  *   netlog         `off`: no netlog even with net.host set (default on)
  * The shell's vol, music and date -z write them; init reads them when
  * /data is mounted.
