@@ -101,13 +101,14 @@
 #include "init.h"
 
 /* The root's powers each service gets (<jam/abi.h> RIGHT_ROOT_*; none can
- * map or slice): the console reads the log, draws (WRITE: the screen and
- * the serial port's output) and reboots on Ctrl+Alt+Del if init doesn't
+ * map or slice): the console reads the log, draws on the screen, mirrors
+ * it to the serial port's output and reboots on Ctrl+Alt+Del if init doesn't
  * answer; serialin reads the serial port; logd the log; the shell the
  * log, the system's figures, the clock, the kernel's debug commands, a
  * reboot when init doesn't answer, and programs from /data (VMEX). Only
  * init keeps RIGHT_ROOT_KEXEC. */
-#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_WRITE | RIGHT_ROOT_REBOOT)
+#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SCREEN | RIGHT_ROOT_SERIAL_OUT | \
+                      RIGHT_ROOT_REBOOT)
 #define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
                       RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
 

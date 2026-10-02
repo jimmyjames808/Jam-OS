@@ -5,11 +5,11 @@
  * Rights, all on a RES_ROOT handle (sysinfo_check_root; init hands each
  * service the root with only the ones it uses, none can map or slice):
  *   klog_open         RIGHT_ROOT_KLOG
- *   framebuffer_take  RIGHT_WRITE
+ *   framebuffer_take  RIGHT_ROOT_SCREEN
  *   debug_command     RIGHT_ROOT_DEBUG
  *   reboot            RIGHT_ROOT_REBOOT
  *   serial_open       RIGHT_ROOT_SERIAL
- *   serial_write      RIGHT_WRITE
+ *   serial_write      RIGHT_ROOT_SERIAL_OUT
  * and on the objects: klog_read, klog_name and serial_read need RIGHT_READ.
  *
  * Each new object costs its creator's job one JOB_LIMIT_HANDLES unit
@@ -391,7 +391,7 @@ int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
 int64_t sysc_framebuffer_take(handle_t root, uint64_t uinfo, uint64_t uvmo, uint64_t uowner)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SCREEN);
     if (st != OK)
         return st;
     struct fb_info info;
@@ -490,7 +490,7 @@ int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
 {
     SYSC_TABLE(t);
-    status_t st = sysinfo_check_root(t, root, RIGHT_WRITE);
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SERIAL_OUT);
     if (st != OK)
         return st;
     if (len > SERIAL_IO_MAX)

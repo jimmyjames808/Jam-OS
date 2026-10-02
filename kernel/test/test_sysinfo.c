@@ -63,7 +63,8 @@ KTEST(sysinfo_root_powers_apart)
 {
     static const rights_t powers[] = { RIGHT_ROOT_KLOG, RIGHT_ROOT_SERIAL, RIGHT_ROOT_SYSINFO,
                                        RIGHT_ROOT_CLOCK, RIGHT_ROOT_REBOOT, RIGHT_ROOT_KEXEC,
-                                       RIGHT_ROOT_DEBUG, RIGHT_ROOT_VMEX };
+                                       RIGHT_ROOT_DEBUG, RIGHT_ROOT_VMEX, RIGHT_ROOT_SCREEN,
+                                       RIGHT_ROOT_SERIAL_OUT };
     struct handle_table t;
     handle_table_init(&t);
     struct kobject *root = resource_root();

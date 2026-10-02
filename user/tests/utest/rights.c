@@ -73,6 +73,14 @@ bool t_root_powers(void)
     CHECK((h = root_without(RIGHT_ROOT_VMEX)) != HANDLE_INVALID);
     CHECK_ST(jam_vmo_make_exec(v, h, &out), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(h), OK);
+    struct fb_info fbi;
+    handle_t fbv, owner;
+    CHECK((h = root_without(RIGHT_ROOT_SCREEN)) != HANDLE_INVALID);
+    CHECK_ST(jam_framebuffer_take(h, &fbi, &fbv, &owner), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(h), OK);
+    CHECK((h = root_without(RIGHT_ROOT_SERIAL_OUT)) != HANDLE_INVALID);
+    CHECK_ST(jam_serial_write(h, "x", 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(h), OK);
     /* What we hold works: the figures and the clock where we have them. */
     handle_t root = startup_handle(SR_RESOURCE);
     if (jam_handle_duplicate(root, RIGHT_ROOT_SYSINFO, &h) == OK) {

@@ -508,7 +508,7 @@ Every driver and service is a userspace process from the start.
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (`drivers/usb-bus/task.c`) | yes |
 | hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
-| console | the framebuffer, `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
+| console | the framebuffer and COM1's output (the root's `RIGHT_ROOT_SCREEN` and `RIGHT_ROOT_SERIAL_OUT`, which no other program holds), `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
 | fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
@@ -1136,7 +1136,7 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   nothing drawn). init starts the stored kernel as it is unless `/esp`
   has another kernel or boot image than the ones it noted (size and
   modification time) when `/esp` was first mounted; then it reads both
-  and calls `kexec_load` (RIGHT_MANAGE on the root resource) to replace
+  and calls `kexec_load` (`RIGHT_ROOT_KEXEC` on the root resource) to replace
   the stored kernel. It syncs and flushes the log as before, stops the
   sound's clients for good (the music player, the splash and the mixer:
   the hda driver ends only once its client has gone), stops devmgr in

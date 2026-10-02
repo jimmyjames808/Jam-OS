@@ -162,7 +162,7 @@
 # cap, 0 included (buf is not touched then): how a reader that wants only
 # the recent log (the last 256 KiB, say) finds where to start.
 111 klog_read         i64       handle_t reader, uint64_t pos, void *buf, uint64_t cap, uint64_t *first
-# The screen (needs RIGHT_WRITE on the root): the boot framebuffer as a
+# The screen (needs RIGHT_ROOT_SCREEN on the root): the boot framebuffer as a
 # write-combining physical VMO + its geometry, and an owner token. From now
 # on the kernel stops drawing its log on the screen (it still keeps it and
 # sends it to serial); closing the last handle to the token (or the owner
@@ -195,7 +195,7 @@
 116 serial_read       i64       handle_t h, void *buf, uint64_t cap
 # Write bytes to COM1 as they are (no timestamp, not in the kernel log;
 # "\n" becomes "\r\n"): a terminal on the serial port sees what the console
-# shows (needs RIGHT_WRITE on the root). At most 4096 bytes per call.
+# shows (needs RIGHT_ROOT_SERIAL_OUT on the root). At most 4096 bytes per call.
 117 serial_write      status    handle_t root, const void *buf, uint64_t len
 # Name the file this boot's log is saved as (logd, once it has chosen it:
 # "boot-0042"; 1..31 of A-Z a-z 0-9 - _, else ERR_INVALID_ARGS). The kernel
