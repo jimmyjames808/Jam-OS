@@ -18,6 +18,8 @@ BUILD   := $(if $(filter 0,$(KTESTS)),build/noktests,build)
 KERNEL  := $(BUILD)/jamos.elf
 IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
+# The Mac's signing tool (tools/jamos-sign.c, below): one for both builds.
+SIGN_TOOL := build/host/jamos-sign
 IMAGE_MIB := 128
 # The ESP ends at 64 MiB (it starts at 1 MiB); the data partition (/data,
 # FAT32 "JAMOS-DATA") fills the rest of the image: 64 MiB in QEMU, the
@@ -64,7 +66,7 @@ endif
 
 .PHONY: all image run debug clean font usb flash syscalls idl check compdb includes FORCE
 
-all: $(KERNEL) $(BOOTFS)
+all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL)
 
 # System call glue. tools/gensyscalls.py turns abi/syscalls.def into the
 # numbers, the kernel dispatch table and the user wrappers. The output is
@@ -157,6 +159,16 @@ DRMP3_OBJ   := $(UOBJ)/user/lib/mp3port/dr_mp3_impl.c.o
 LIBOS_OBJS  += $(DRMP3_OBJ)
 $(DRMP3_OBJ): PROG_CFLAGS := -Iuser/lib/mp3port -Ithird_party/dr_mp3
 $(UOBJ)/user/lib/mp3.c.o: PROG_CFLAGS := -Ithird_party/dr_mp3
+# Monocypher (third_party/monocypher, vendored unmodified): Ed25519 as RFC
+# 8032 has it, for signed updates (<update.h>, user/lib/updsig.c). Into
+# libos; only a program that checks a signature (init, utest) links it in.
+# tools/jamos-sign, the Mac's side, is built from the same files.
+MONO_DIR    := third_party/monocypher/src
+MONO_SRCS   := $(MONO_DIR)/monocypher.c $(MONO_DIR)/optional/monocypher-ed25519.c
+MONO_HDRS   := $(MONO_DIR)/monocypher.h $(MONO_DIR)/optional/monocypher-ed25519.h
+MONO_OBJS   := $(MONO_SRCS:%=$(UOBJ)/%.o)
+LIBOS_OBJS  += $(MONO_OBJS)
+$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o: PROG_CFLAGS := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # The programs, by role: user/services/<name> (init, console, devmgr, ...),
 # user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
 # directory there with a .c file is the program bin/<name> in bootfs, except
@@ -265,8 +277,10 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
 # network drivers' netdev server over a fake card (utest/netsrv.c:
-# drivers/lib/netserver.c), and bin/dns's sockets and askers over a fake
-# netstack (utest/dnsd.c), and bin/sntp's request and checks (utest/sntp.c).
+# drivers/lib/netserver.c), bin/dns's sockets and askers over a fake
+# netstack (utest/dnsd.c), bin/sntp's request and checks (utest/sntp.c),
+# and the RTL8125 driver's guard over a fake chip (utest/rtlguard.c:
+# guard.c and the files it calls, built as user code).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
@@ -274,7 +288,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
                       $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o \
                       $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
-                      $(UOBJ)/user/services/sntp/ntp.c.o
+                      $(UOBJ)/user/services/sntp/ntp.c.o \
+                      $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx)
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp
@@ -384,6 +399,7 @@ check: all
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
+	$(SIGN_TOOL) self-test
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -410,16 +426,31 @@ $(BUILD_INFO): FORCE
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 FORCE:
 
+# update.pub in bootfs: the public half of the owner's update key
+# (`build/host/jamos-sign keygen` makes it, once, in ~/.config/jamos;
+# UPDATE_KEY names another file), which init checks every fetched build's
+# signature with (<update.h>). Without the file the build has no key, and
+# init refuses every `update`. Copied again only when it changes (or comes,
+# or goes), so an unchanged key packs nothing anew.
+UPDATE_KEY ?= $(HOME)/.config/jamos/update.pub
+UPDATE_PUB := $(BUILD)/update.pub
+$(UPDATE_PUB): FORCE
+	@mkdir -p $(BUILD)
+	@if [ -f "$(UPDATE_KEY)" ]; then cp "$(UPDATE_KEY)" $@.new; else : > $@.new; fi; \
+	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
 BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
-                splash.mpg=boot/splash.mpg build.txt=$(BUILD_INFO)
+                splash.mpg=boot/splash.mpg build.txt=$(BUILD_INFO) \
+                $(if $(wildcard $(UPDATE_KEY)),update.pub=$(UPDATE_PUB))
 
 # Every program's list (<wants.h>) is checked first: what the build
 # approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg $(BUILD_INFO) tools/mkbootfs.py tools/checkwants.py user/include/os.h
+           boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) tools/mkbootfs.py tools/checkwants.py \
+           user/include/os.h
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
@@ -461,6 +492,15 @@ run: $(IMAGE) $(BUILD)/ovmf-vars.fd
 # `x86_64-elf-gdb build/jamos.elf -ex "target remote :1234"`).
 debug: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS) -s -S -d int,cpu_reset -D $(BUILD)/qemu.log
+
+# jamos-sign (tools/jamos-sign.c): the update key and each manifest's
+# signature, on the Mac, from the same Monocypher the PC checks with.
+HOSTCC ?= cc
+$(SIGN_TOOL): tools/jamos-sign.c $(MONO_SRCS) $(MONO_HDRS) \
+              third_party/monocypher/tests/vectors-ed25519.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -I$(MONO_DIR) -I$(MONO_DIR)/optional \
+	    -o $@ tools/jamos-sign.c $(MONO_SRCS)
 
 # Write the image to a USB stick. Refuses anything that isn't external.
 usb: $(IMAGE)

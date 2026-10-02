@@ -3,14 +3,17 @@
 new build from the Mac"): build/jamos.elf, build/bootfs.img and their
 manifest, over UDP.
 
-    update-server.py [--build DIR] [--port 5022] [--bind ADDR] [--client ADDR]
-        serve DIR/jamos.elf and DIR/bootfs.img (default build/) until ^C
-    update-server.py --manifest KERNEL BOOTFS [--version V] [--git G]
-        print the manifest of those two files and exit
+    update-server.py [--build DIR] [--port 5022] [--bind ADDR] [--client ADDR] [--key KEY]
+        serve DIR/jamos.elf and DIR/bootfs.img (default build/) until ^C,
+        each manifest signed with KEY (default ~/.config/jamos/update.key)
+    update-server.py --manifest KERNEL BOOTFS [--version V] [--git G] [--key KEY]
+        print the manifest of those two files and exit (signed with KEY if
+        one is given, else with a bare signature line: unsigned)
     update-server.py --self-test
         the server against a Python client on 127.0.0.1: a whole fetch
         with requests and replies lost, a snapshot kept while the files
-        change, a dropped snapshot, malformed requests; exit 0 on PASS
+        change, a dropped snapshot, malformed requests, signed manifests;
+        exit 0 on PASS
 
 The manifest (user/include/update.h has the C side's rules, and its strict
 parser is user/lib/update.c):
@@ -20,10 +23,13 @@ parser is user/lib/update.c):
     git <short hash, -dirty if the tree has changes>
     kernel <size> <sha256>
     bootfs <size> <sha256>
-    signature
+    signature <128 hex digits>
 
-The signature line has no value: updates are unsigned in M9 (the owner's
-decision); it keeps the place for signing later.
+The signature is Ed25519's (RFC 8032) over every byte before its line, made
+by build/host/jamos-sign (tools/jamos-sign.c: the same Monocypher the PC
+checks with) with the owner's key; the PC refuses a manifest its own build's
+key didn't sign, and a build without a key refuses every one. The key is
+made once: `build/host/jamos-sign keygen` (after `make`).
 
 The protocol (user/include/updwire.h has the byte layout; every field is
 little-endian): a request names a snapshot, a file (0 the manifest, 1 the
@@ -73,7 +79,10 @@ SNAPSHOTS = 8
 SETTLE = 1.0                                # seconds both files must be unchanged
 VERSION_RE = re.compile(rb"[A-Za-z0-9._+-]{1,47}$")
 GIT_RE = re.compile(rb"[0-9a-f]{7,40}(-dirty)?$")
+SIG_RE = re.compile(rb"signature( [0-9a-f]{128})?$")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SIGN_TOOL = os.path.join(REPO, "build/host/jamos-sign")
+DEFAULT_KEY = os.path.expanduser("~/.config/jamos/update.key")
 
 
 # ---- the manifest ---------------------------------------------------------------
@@ -93,6 +102,17 @@ def manifest(kernel, bootfs, version, git):
     return text
 
 
+def sign(text, key):
+    """The manifest text (its last line a bare "signature") signed with the
+    secret key file `key`, by build/host/jamos-sign."""
+    if not os.access(SIGN_TOOL, os.X_OK):
+        raise OSError("no %s: run `make` first" % SIGN_TOOL)
+    p = subprocess.run([SIGN_TOOL, "sign", key], input=text, capture_output=True)
+    if p.returncode:
+        raise OSError("can't sign: %s" % p.stderr.decode(errors="replace").strip())
+    return p.stdout
+
+
 def parse_manifest(text):
     """The C parser's rules, for the self-test: (version, git, [(size, sha)]) or None."""
     lines = text.split(b"\n")
@@ -110,7 +130,7 @@ def parse_manifest(text):
                 not re.match(rb"[0-9a-f]{64}$", w[2]) or int(w[1]) > FILE_MAX:
             return None
         files.append((int(w[1]), w[2].decode()))
-    return (v[1].decode(), g[1].decode(), files) if lines[5] == b"signature" else None
+    return (v[1].decode(), g[1].decode(), files) if SIG_RE.match(lines[5]) else None
 
 
 def elf_symbol_string(data, name):
@@ -208,10 +228,10 @@ def read_stable(paths, settle, tries=10):
 
 class Server:
     def __init__(self, kernel_path, bootfs_path, sock, client=None, log=print,
-                 version=None, git=None, settle=SETTLE):
+                 version=None, git=None, settle=SETTLE, key=None):
         self.paths = [kernel_path, bootfs_path]
         self.sock, self.client, self.log = sock, client, log
-        self.version, self.git, self.settle = version, git, settle
+        self.version, self.git, self.settle, self.key = version, git, settle, key
         self.snaps = collections.OrderedDict()   # id -> [manifest, kernel, bootfs]
 
     def snapshot(self):
@@ -219,6 +239,7 @@ class Server:
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
                         self.git or build_git(bootfs) or git_hash())
         text, kernel, bootfs = self.prepare(text, kernel, bootfs)
+        text = self.signed(text)
         sid = 0
         while not sid or sid in self.snaps:
             sid = secrets.randbits(32)
@@ -231,6 +252,10 @@ class Server:
     def prepare(self, text, kernel, bootfs):
         """A snapshot's manifest and files as served (PlannedServer's hook)."""
         return text, kernel, bootfs
+
+    def signed(self, text):
+        """The manifest as served: signed with the key (PlannedServer's hook)."""
+        return sign(text, self.key) if self.key else text
 
     def answer(self, dgram):
         """The reply to one datagram, or None (not a request of ours)."""
@@ -266,7 +291,7 @@ class Server:
 
 # ---- a server for tests: a plan of damaged builds ------------------------------------
 
-PLANS = ("good", "damage", "wronghash", "truncated", "gone")
+PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig")
 GONE_AFTER = 300        # replies to a "gone" client before the server stops answering it
 
 
@@ -283,11 +308,17 @@ class PlannedServer(Server):
                  its pieces carry that size, so the fetcher ignores them
                  and gives up
       gone       no answer after GONE_AFTER replies (the server stopped
-                 mid-fetch): the fetcher gives up"""
+                 mid-fetch): the fetcher gives up
+      unsigned   the manifest's signature line bare: init refuses it
+      badsig     the manifest changed after it was signed (its version's
+                 last character): init refuses the signature
+    Every other manifest is signed with the spec's key (a throwaway test
+    key: the PC under test has its public half)."""
 
-    def __init__(self, kernel_path, bootfs_path, plan, log=print, version=None, git=None):
+    def __init__(self, kernel_path, bootfs_path, plan, log=print, version=None, git=None,
+                 key=None):
         super().__init__(kernel_path, bootfs_path, None, log=log, version=version, git=git,
-                         settle=0.0)
+                         settle=0.0, key=key)
         for p in plan:
             if p not in PLANS:
                 raise ValueError("no plan %r (%s)" % (p, ", ".join(PLANS)))
@@ -306,6 +337,15 @@ class PlannedServer(Server):
         elif self.current == "truncated":
             bootfs = bootfs[:len(bootfs) // 2]
         return text, kernel, bootfs
+
+    def signed(self, text):
+        if self.current == "unsigned":
+            return text
+        text = super().signed(text)
+        if self.current == "badsig":
+            at = text.index(b"\ngit ") - 1   # the version's last character
+            text = text[:at] + (b"X" if text[at:at + 1] != b"X" else b"Y") + text[at + 1:]
+        return text
 
     def handle(self, client, dgram):
         """The reply to dgram from client (address, port), or None."""
@@ -326,12 +366,13 @@ class PlannedServer(Server):
 def peer_handler(spec_path, log):
     """tools/netpeer.py's handler for port 5022: a PlannedServer from the
     JSON file spec_path ({"kernel": path, "bootfs": path, "plan": [...],
-    and optionally "version", "git"})."""
+    and optionally "version", "git", "key": the secret key to sign with})."""
     import json
     with open(spec_path) as f:
         spec = json.load(f)
     server = PlannedServer(spec["kernel"], spec["bootfs"], spec.get("plan", []), log=log,
-                           version=spec.get("version"), git=spec.get("git"))
+                           version=spec.get("version"), git=spec.get("git"),
+                           key=spec.get("key"))
 
     def handle(peer, src, sport, dst, payload):
         return server.handle((socket.inet_ntoa(src), sport), payload)
@@ -454,6 +495,36 @@ def check_plans(kpath, bpath, check):
         check("the test plan %r" % plan, ok)
 
 
+def check_signing(kpath, bpath, tmp, check):
+    """Signed manifests (build/host/jamos-sign): a throwaway key; a manifest
+    signed with it parses and checks; one changed byte, the "unsigned" and
+    "badsig" plans, and another key's signature don't."""
+    if not os.access(SIGN_TOOL, os.X_OK):
+        print("update-server self-test: signing skipped: no %s (run make)" % SIGN_TOOL)
+        return
+    keys = [os.path.join(tmp, d) for d in ("key1", "key2")]
+    for d in keys:
+        subprocess.run([SIGN_TOOL, "keygen", d], check=True, capture_output=True)
+
+    def verified(text, d):
+        return subprocess.run([SIGN_TOOL, "verify", os.path.join(d, "update.pub")], input=text,
+                              capture_output=True).returncode == 0
+    text = sign(manifest(b"k", b"b", "1.0", "abcdef0"), os.path.join(keys[0], "update.key"))
+    check("a signed manifest parses", parse_manifest(text) is not None)
+    check("its signature checks", verified(text, keys[0]))
+    check("another key's doesn't", not verified(text, keys[1]))
+    check("a changed byte doesn't", not verified(text.replace(b"1.0", b"1.1"), keys[0]))
+    s = PlannedServer(kpath, bpath, ["unsigned", "badsig"], log=lambda s: None,
+                      version="0.0.29-test", git="abcdef0",
+                      key=os.path.join(keys[0], "update.key"))
+    for n, plan in enumerate(["unsigned", "badsig", "good"]):
+        rep = s.handle(("10.2.21.5", 51000 + n),
+                       REQ.pack(MAGIC, VERSION, REQUEST, MANIFEST, 0, 0, 0, CHUNK_MAX, 0))
+        text = rep[REP.size:]
+        check("the plan %r: %s" % (plan, "signed" if plan == "good" else "refused"),
+              parse_manifest(text) is not None and verified(text, keys[0]) == (plan == "good"))
+
+
 def self_test():
     fails = []
     tmp = tempfile.mkdtemp(prefix="update-server-test.")
@@ -537,7 +608,7 @@ def self_test():
     good = manifest(b"k", b"b", "1.0", "abcdef0")
     check("a manifest parses", parse_manifest(good) is not None)
     for what, broken in (("no last newline", good[:-1]), ("a blank line after", good + b"\n"),
-                         ("signed", good.replace(b"signature", b"signature 00")),
+                         ("a short signature", good.replace(b"signature", b"signature 00")),
                          ("format 2", good.replace(b"jamos-update 1", b"jamos-update 2")),
                          ("a leading zero", good.replace(b"kernel 1", b"kernel 01"))):
         check("a manifest refused: " + what, parse_manifest(broken) is None)
@@ -554,6 +625,7 @@ def self_test():
     img = img[:entry_at - 16] + struct.pack("<QQ", entry_at, 18) + b"git 0123abc-dirty\n"
     check("a boot image's git hash", build_git(img) == "0123abc-dirty")
     check_plans(kpath, bpath, check)
+    check_signing(kpath, bpath, tmp, check)
     stop.set()
     if fails:
         print("update-server self-test: FAIL (%d)" % len(fails))
@@ -571,20 +643,28 @@ def main():
     ap.add_argument("--manifest", nargs=2, metavar=("KERNEL", "BOOTFS"))
     ap.add_argument("--version")
     ap.add_argument("--git")
+    ap.add_argument("--key", help="the secret key to sign with (default %s)" % DEFAULT_KEY)
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
     if a.manifest:
         k, b = (open(p, "rb").read() for p in a.manifest)
-        sys.stdout.write(manifest(k, b, a.version or build_version(k),
-                                  a.git or build_git(b) or git_hash()).decode())
+        text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash())
+        sys.stdout.write((sign(text, a.key) if a.key else text).decode())
         return 0
+    key = a.key or DEFAULT_KEY
+    if not os.path.exists(key):
+        print("update-server: no update key %s: the PC takes only signed builds.\n"
+              "  Make one, once: build/host/jamos-sign keygen (after make); then make and\n"
+              "  make flash, so the stick has a build with its public half." % key)
+        return 1
+    sign(b"signature\n", key)   # the key and the tool work, before anyone asks
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((a.bind, a.port))
     server = Server(os.path.join(a.build, "jamos.elf"), os.path.join(a.build, "bootfs.img"),
-                    sock, client=a.client, version=a.version, git=a.git)
-    print("update-server: serving %s on %s:%d" % (a.build, a.bind, a.port))
+                    sock, client=a.client, version=a.version, git=a.git, key=key)
+    print("update-server: serving %s on %s:%d, signed with %s" % (a.build, a.bind, a.port, key))
     try:
         while True:
             server.serve_one()

@@ -18,7 +18,9 @@ stages 6a and 7a (netlog's and `update`'s cores, init's update check, the
 Mac tools), stage 6b (bin/netlog:
 [below](#stage-6b-built-netlog-on-the-network)), stage 7b (`update` over
 the network, in QEMU: [below](#stage-7b-built-update-over-the-network))
-and stage 8 (the join: [below](#stage-8-built-the-join)). The design as
+and stage 8 (the join: [below](#stage-8-built-the-join)); then signed
+updates and `update -w`, the owner's later calls
+([below](#signed-updates-built), [and](#update--w-built)). The design as
 built is in [ARCHITECTURE.md](../ARCHITECTURE.md#networking); the
 sections below say what each stage built and left for the next.
 
@@ -88,13 +90,21 @@ the Mac's "Private Wi-Fi address" set to Fixed keep it from changing).
    `update` checks the manifest's sizes and SHA-256s (damage in transit),
    not who sent them; `update` runs only when the owner types it. The
    protocol keeps a place for a signature so signing can be added without
-   changing it (ROADMAP follow-up).
+   changing it.
+   **The owner, later the same day (2026-10-02): signed now**, in M9:
+   Ed25519 with Monocypher, the key in `~/.config/jamos`, a build without
+   a key refuses every `update`
+   ([as built](#signed-updates-built)).
 4. **Does `update` survive a power-off?** *Recommendation:* no. It
    replaces the stored kernel in RAM (the one `reboot` and a panic
    start), never the stick: the ESP stays read-only to Jam OS. `make
    flash` still makes a build permanent.
    **The owner (2026-10-02): RAM only**: `update` for quick testing,
    `make flash` for a build meant to stay.
+   **The owner, later the same day: RAM by default, and a flag to also
+   write the stick** (`update -w`; signed builds only; init alone writes
+   the ESP, keeping the stick's build as a previous one with its own boot
+   menu entry): [as built](#update--w-built).
 5. **The PHY firmware patch** ([below](#the-phy-firmware-patch)).
    *Recommendation:* no Realtek blob in the repo. Run without a patch
    first; only if the PC's link misbehaves, take the patch in the
@@ -703,6 +713,22 @@ tally standing still with `256 of 256` is the chip not receiving
 netstack` not is the driver's filter; `to netstack` growing but netstack's
 `off the ring` not is the ring or its wake; `into lwIP` growing with
 `buffers` climbing to 128 is a leak in netstack.
+
+#### After M9: failing closed and the other transmit queues
+
+M9.5's track F ([M9.5-PLAN](M9.5-PLAN.md#track-f-as-built)) built the
+review's design question A (the driver stops the chip and exits when its
+tally shows a frame it didn't queue or the link resolves to PAUSE TX,
+checked about once a second and after every reap instead of only at the
+exit), took `stats` off the loop (the last tally dump, never a wait) and
+prepared question C: the probe logs `txq before:`, `txq after
+bring-up:` and `txq at end:` (two lines each: the high-priority and
+queue 1 ring addresses at 0x28 and 0x2100, the tail and close pointers
+of queues 0 and 1 at 0x2800-0x2807, TXCFG's no-close bit 6, the doorbell
+at 0x90, MAC OCP 0xeb58, 0xe63e and 0xe614), and the guard already
+refuses writes to those queues' registers and the transmit-related OCP
+values. The lines to bring back from the next probe run, and what
+confirms each offset, are in that section.
 
 ### The PHY firmware patch
 
@@ -1440,13 +1466,13 @@ how it differs from the edges above:
 - **On the Mac:** `make` as always, then tools/update-server.py (new),
   left running. It serves `build/jamos.elf` and `build/bootfs.img` and
   a manifest: a format line, the build's version string and git hash,
-  and each file's size and SHA-256 (unsigned in M9, the owner's
-  decision; the manifest keeps a signature field, empty for now). It
+  and each file's size and SHA-256 (unsigned at first, the owner's
+  decision; the manifest kept a signature field, empty then). It
   snapshots the files when the manifest is asked for,
-  so a `make` running meanwhile can't mix two builds. (Later, with
-  signing: a host tool built from vendored Monocypher makes a key once in
-  ~/.config/jamos/, outside the repo, signs each manifest, and the public
-  half goes into the image.)
+  so a `make` running meanwhile can't mix two builds. (With signing,
+  [built later in M9](#signed-updates-built): a host tool built from
+  vendored Monocypher makes a key once in ~/.config/jamos/, outside the
+  repo, signs each manifest, and the public half goes into the image.)
 - **The protocol** (own, over UDP, port 5022 planned): stateless. A
   request names the snapshot, the file (manifest, kernel, boot image), an
   offset and a length (at most 1400 bytes); the reply carries the same
@@ -1731,6 +1757,110 @@ Built 2026-10-02 on everything above.
   `init: kexec: noted /esp/boot/jamos.elf (N bytes) and
   /esp/boot/bootfs.img (N bytes): a reboot reads them only if they
   change`.
+
+## Signed updates, built
+
+The owner's decision of 2026-10-02 ([question 3](#questions-for-the-owner)),
+built the same day:
+
+- **The crypto**: Ed25519 as RFC 8032 has it (EdDSA over edwards25519
+  with SHA-512), from Monocypher 4.0.2's optional `crypto_ed25519_*`
+  (`third_party/monocypher`, BSD-2-Clause; not Monocypher's default
+  EdDSA, which hashes with BLAKE2b). The PC checks with it (libos's
+  `user/lib/updsig.c`, linked only into init and utest) and the Mac signs
+  with it: `tools/jamos-sign.c`, built by `make` with the Mac's compiler
+  into `build/host/jamos-sign`. Its `self-test` (in `make check`) runs
+  Monocypher's own Ed25519 vectors (256 signatures, 257 public keys, 330
+  checks, 50 of them refusals); utest's `update_signature` checks RFC
+  8032's tests 1-3 and a manifest the tool signed, on Jam OS's build of
+  the same code.
+- **What is signed**: the manifest's bytes before its last line, exactly
+  as fetched (the format line, version, git commit, and each file's size
+  and SHA-256); the last line is `signature <128 hex digits>`. The format
+  is still `jamos-update 1` (the place was kept for this). init checks the
+  signature before it uses anything in the manifest, then the sizes and
+  hashes as before. A bare `signature` line parses but is refused
+  (`UPDATE_UNSIGNED`); a signature that doesn't check is
+  `UPDATE_BAD_SIGNATURE`.
+- **The key**: `build/host/jamos-sign keygen` writes
+  `~/.config/jamos/update.key` (the 32-byte seed as hex, mode 0600,
+  created exclusively: it never replaces a key) and `update.pub`. The
+  Makefile copies `update.pub` (or `UPDATE_KEY=<file>`) into the boot
+  image as `update.pub`; init reads it from its own boot image at each
+  offer. A build without it refuses every offer (`UPDATE_NO_KEY`), and
+  the shell's `update` says so before fetching anything.
+  `tools/update-server.py` signs every snapshot's manifest with the
+  secret key (`--key`; it won't serve without one). The tests make
+  throwaway keys in their own output folder (`tools/update-test-key.sh`)
+  and never read `~/.config`.
+- **The switch-over**: the builds on the stick before this one refuse a
+  manifest whose signature line has a value, so the first signed build
+  goes on by `make flash`; from then on `update` takes what the key
+  signs. A lost key means a new key and `make flash` again.
+- **Not covered by a signature**: which signed build is served. An
+  older build the owner signed is accepted like a newer one (the owner
+  types `update` and sees both versions).
+
+## update -w, built
+
+The owner's second decision of 2026-10-02 ([question 4](#questions-for-the-owner)):
+`update` stays RAM-only by default; `update -w` also writes the build to
+the boot stick's ESP, so it survives a power-off.
+
+- **The flow**: the shell passes `write` to bin/update, which offers the
+  build with `UPDATE_OFFER_WRITE`. init checks it as for any update
+  (signature first, so a keyless build refuses `-w` too), calls
+  `kexec_load`, and then starts the stick write on its worker thread (the
+  same static stack, after the hash's thread has ended): the loop keeps
+  serving. The answer comes when the write is done, and the shell then
+  reboots as for `update`; the next power-on boots the new build from the
+  stick.
+- **Authority**: `/esp` stays read-only to every program, init included,
+  through the namespace. devmgr got a third channel from init, the ESP
+  channel (startup role `DEVMGR_SR_ESP`, init's client end never handed
+  on), which may ask `DEVMGR_ESP_WRITE` and nothing else, and no other
+  channel (the control channel the shell and the tests hold included) may
+  ask it. devmgr stops the ESP's fat in order, starts it on a read-write
+  `block` channel, answers with a channel to it, and lists no `/esp`
+  while it is writable, so the writable channel is in no namespace; back
+  to read-only the same way. A crash of that fat restarts it the way it
+  was; a pulled stick ends it. The writer is `user/services/init/espwrite.c`.
+- **The order** (each step whole before the next): room (an earlier
+  write's `*.new` leftovers removed, free space for two builds checked);
+  the previous build (the older one removed, the stick's kernel and boot
+  image copied, not moved, to `/esp/boot/prev-jamos.elf.new` and
+  `prev-bootfs.img.new`, read back and compared, renamed); the new build
+  (from init's own checked copies, as `/esp/boot/jamos.elf.new` and
+  `bootfs.img.new`, synced, read back, each SHA-256 compared with the
+  signed manifest's); the switch (`jamos.elf` removed and the new one
+  renamed to it, then the boot image: FAT has no rename over a file). Then
+  the stick's two files are noted for `reboot` (they are the stored
+  kernel's), and the ESP goes back to read-only. The previous build's
+  names end in `jamos.elf` and `bootfs.img` because the kernel finds its
+  modules by those endings; the boot menu's "Jam OS (previous build)"
+  boots them, and `make flash` now keeps the stick's build the same way.
+- **Failures**: any error stops the write where it is and removes the
+  temporary files; the answer is `UPDATE_NOT_WRITTEN` with the step, the
+  error and what the stick boots, the build stays loaded (`reboot` runs
+  it), and the shell doesn't reboot. A failure during the switch puts the
+  old build back under the default names, copied again from the previous
+  build's files, if the ESP's fat still answers; if it doesn't (the stick
+  pulled, the power cut), "Jam OS (previous build)" boots the old build,
+  which is whole and checked before the switch begins. Only during the
+  switch's few directory writes can the default entry be without a kernel
+  or have the new kernel with the old boot image.
+- **What the read-back proves**: it reads through fat, whose cache may
+  answer it, so it checks what fat was given and wrote, not the flash.
+- **Measured in QEMU** (2026-10-02, `tools/update-write-test.sh`): the
+  whole write of a 10 MB build took about 17 s on QEMU's emulated USB
+  stick; the fetch over the network 1.3 s. The PC's stick will differ.
+- **Tests**: `tools/update-write-test.sh` (four cold boots of one stick
+  image: each step's failure injected by updtest's test flag,
+  `UPDATE_OFFER_FAIL`; `update -w` over the network; the written stick
+  booting B, its previous-build entry booting A) and
+  `tools/update-test.sh` (a keyless build refuses `-w`);
+  `tools/flash-test.sh` (`make flash` keeps the previous build)
+  ([TESTING](TESTING.md#area-scripts)).
 
 ## Where tracks meet
 

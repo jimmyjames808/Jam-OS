@@ -30,7 +30,10 @@
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels
  *             (SR_DEVMGR_CTL, SR_DEVMGR; init keeps a client end of each
- *             and publishes them as /svc/devmgr-ctl and /svc/devmgr) and a
+ *             and publishes them as /svc/devmgr-ctl and /svc/devmgr), the
+ *             server end of the ESP channel (DEVMGR_SR_ESP: the ESP made
+ *             writable, for `update -w`; init keeps the client end and
+ *             hands it to nobody, update.c's stick write alone uses it) and a
  *             copy of init's (ADMIN) console client end (SR_CONSOLE), so its
  *             HID drivers type into the console. init waits for its first
  *             binding pass (up to 30 s), then asks it for each HD Audio
@@ -127,6 +130,7 @@ static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
+static handle_t devmgr_esp; /* its ESP channel, client end: never handed on (update.c's) */
 /* Its device channels for the HD Audio controllers, the mixer's, and for
  * the network cards, held for netstack (0: none). */
 static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
@@ -152,6 +156,11 @@ handle_t shell_root(void)
 handle_t shell_devmgr(void)
 {
     return devmgr;
+}
+
+handle_t shell_devmgr_esp(void)
+{
+    return devmgr_esp;
 }
 
 handle_t shell_console(void)
@@ -348,17 +357,19 @@ static status_t start_devmgr(void)
         return OK;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
-    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID, ea = HANDLE_INVALID, eb = HANDLE_INVALID;
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_channel_create(&a, &b);
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK)
+        st = jam_channel_create(&ea, &eb);
+    if (st == OK)
         st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
     if (st != OK) {
-        handle_t left[] = { pci, a, b, qa, qb };
-        for (unsigned k = 0; k < 5; k++)
+        handle_t left[] = { pci, a, b, qa, qb, ea, eb };
+        for (unsigned k = 0; k < 7; k++)
             if (left[k])
                 jam_handle_close(left[k]);
         return st;
@@ -380,15 +391,17 @@ static status_t start_devmgr(void)
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                { SR_CONSOLE, c } };
-    st = svc_start(DEVMGR, argc, argv, x, 4);   /* consumes pci, b, qb and c */
+                                { SR_CONSOLE, c }, { DEVMGR_SR_ESP, eb } };
+    st = svc_start(DEVMGR, argc, argv, x, 5);   /* consumes pci, b, qb, c and eb */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
+        jam_handle_close(ea);
         return st;
     }
     devmgr = a;
     devmgr_q = qa;
+    devmgr_esp = ea;
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
     st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
@@ -641,6 +654,7 @@ void services_closed(unsigned i)
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
+        jam_handle_close(devmgr_esp);
         for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++) {
             if (devmgr_hda[k])
                 jam_handle_close(devmgr_hda[k]);
@@ -649,7 +663,7 @@ void services_closed(unsigned i)
         }
         memset(devmgr_hda, 0, sizeof(devmgr_hda));
         memset(devmgr_net, 0, sizeof(devmgr_net));
-        devmgr = devmgr_q = HANDLE_INVALID;
+        devmgr = devmgr_q = devmgr_esp = HANDLE_INVALID;
         publish(SVC_DEVMGR, HANDLE_INVALID, false);
         publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
