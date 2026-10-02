@@ -1,6 +1,7 @@
-/* The network for programs (user/lib/net.c): UDP sockets and ping on
- * netstack's /svc/net (abi/idl/net.idl; the design is docs/M9-PLAN.md
- * "Programs and sockets" and docs/M9.5-PLAN.md). A program's list asks
+/* The network for programs (user/lib/net.c, netsock.c, nettcp.c): UDP
+ * and TCP sockets and ping on netstack's /svc/net (abi/idl/net.idl; the
+ * design is docs/M9-PLAN.md "Programs and sockets" and docs/M9.5-PLAN.md;
+ * TCP's calls are under "TCP" below). A program's list asks
  * for it with `svc net`, or with `svc net listen` for /svc/net-listen too:
  * the same protocol, but its openers may take a fixed port below
  * NET_PORT_EPHEMERAL (open it with svc_get(SVC_NET_LISTEN) and pass it
