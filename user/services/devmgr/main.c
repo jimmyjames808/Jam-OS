@@ -49,13 +49,13 @@
  * "hidboot" (the boot word) is passed on to every drv/hid, which then
  * keeps mice in the boot protocol. A match-table row that names a word
  * binds only when devmgr was given that word, and its driver is started
- * with it: "netprobe" (the boot word) binds drv/rtl8125, the RTL8125's
- * listen-only probe; without it the network chip gets no driver at all.
- * The argument "vlan=<id>" (the boot's VLAN, from the kernel through
- * init) is passed on to the driver of every network card (PCI class 02):
- * the one way a network driver learns the VLAN; without it (or with one
- * that isn't valid) the drivers start without a VLAN and keep the
- * network off.
+ * with it: "netprobe" (the boot word) binds drv/rtl8125 as the RTL8125's
+ * listen-only probe, "netsend" as its ARP send test; without either the
+ * network chip gets no driver at all. The argument "vlan=<id>" (the
+ * boot's VLAN, from the kernel through init) is passed on to the driver
+ * of every network card (PCI class 02): the one way a network driver
+ * learns the VLAN; without it (or with one that isn't valid) the drivers
+ * start without a VLAN and keep the network off.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -97,9 +97,11 @@ static const struct {
      * use it is init's to say, not this table's: init asks for its device
      * channel and gives it to the mixer (<devmgr.h> "Trust"). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
-    /* The board's Realtek RTL8125: only the listen-only probe so far
-     * (docs/M9-PLAN.md stage 0), and only on a `netprobe` boot. */
+    /* The board's Realtek RTL8125: only on a `netprobe` boot (the
+     * listen-only probe, docs/M9-PLAN.md stage 0) or a `netsend` one (the
+     * ARP send test); the first row whose word devmgr has wins. */
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netprobe" },
+    { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netsend" },
 };
 
 struct binding devs[MAX_DEVS];
@@ -108,7 +110,7 @@ handle_t pci_res, port;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
-static bool netprobe;
+static bool netprobe, netsend;
 uint32_t boot_mbr_id;
 uint16_t net_vlan;
 uint64_t devmgr_started;
@@ -151,7 +153,7 @@ const char *bdf(const struct binding *b)
 /* Was devmgr given the boot word a match-table row asks for? */
 static bool pci_word_given(const char *word)
 {
-    return !strcmp(word, "netprobe") && netprobe;
+    return (!strcmp(word, "netprobe") && netprobe) || (!strcmp(word, "netsend") && netsend);
 }
 
 /* The driver for function i (NULL: none). */
@@ -165,18 +167,21 @@ static const char *match(const struct pci_dev_info *i)
             i->bus, i->dev, i->fn, i->vendor, i->device);
         return NULL;
     }
+    const char *missing = NULL;   /* the first row's word devmgr wasn't given */
     for (unsigned k = 0; k < sizeof(matches) / sizeof(matches[0]); k++) {
         if ((matches[k].vendor != 0xffff && matches[k].vendor != i->vendor) ||
             (matches[k].device != 0xffff && matches[k].device != i->device) ||
             (matches[k].class_code != ANY_CLASS && matches[k].class_code != cls))
             continue;
         if (matches[k].word && !pci_word_given(matches[k].word)) {
-            say(false, "devmgr: %02x:%02x.%x %04x:%04x: left alone (no %s)", i->bus, i->dev,
-                i->fn, i->vendor, i->device, matches[k].word);
-            return NULL;
+            missing = missing ? missing : matches[k].word;
+            continue;
         }
         return matches[k].path;
     }
+    if (missing)
+        say(false, "devmgr: %02x:%02x.%x %04x:%04x: left alone (no %s)", i->bus, i->dev, i->fn,
+            i->vendor, i->device, missing);
     return NULL;
 }
 
@@ -386,6 +391,7 @@ int main(int argc, char **argv)
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
         netprobe |= !strcmp(argv[i], "netprobe");
+        netsend |= !strcmp(argv[i], "netsend");
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }
@@ -414,6 +420,9 @@ int main(int argc, char **argv)
     if (netprobe)
         say(false, "devmgr: netprobe: an RTL8125 (10ec:8125) gets drv/rtl8125, which only "
             "listens");
+    else if (netsend)
+        say(false, "devmgr: netsend: an RTL8125 (10ec:8125) gets drv/rtl8125, which sends "
+            "ARP probes on the VLAN and stops");
     if (enumerate() != OK)
         return 1;
     bind_all();

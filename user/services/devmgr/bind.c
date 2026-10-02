@@ -155,7 +155,7 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     if (b->kind == BIND_USB)
         add_arg(argv, &argc, usb_driver_arg(b));   /* "hidboot" or none */
     if (b->kind == BIND_PCI) {
-        add_arg(argv, &argc, pci_driver_arg(b->path));   /* "netprobe" or none */
+        add_arg(argv, &argc, pci_driver_arg(b->path));   /* "netprobe", "netsend" or none */
         if (net_vlan && b->info.class_code == PCI_CLASS_NETWORK) {
             snprintf(vlan, sizeof(vlan), "vlan=%u", net_vlan);
             add_arg(argv, &argc, vlan);

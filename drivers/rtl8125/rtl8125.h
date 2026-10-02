@@ -1,16 +1,26 @@
-/* rtl8125: the listen-only probe's own pieces (drv/rtl8125).
+/* rtl8125: the driver's shared declarations (drv/rtl8125).
  *
- * The probe learns what the rest of the network milestone needs to know
- * about the PC's Realtek RTL8125B and the switch port behind it, and
- * sends nothing (main.c has the steps and the list of every register it
- * writes; notx.h the rule that refuses a transmit register).
+ * The driver for the PC's Realtek RTL8125B runs in one of two modes, set
+ * once at the start from its arguments (args.h):
+ *   - the listen-only probe (`netprobe`): counts frames by tag for 60 s
+ *     and sends nothing; no transmit code runs at all;
+ *   - full mode: receive and transmit on the configured VLAN only. Every
+ *     frame sent is tagged in software by tx.c; every frame received is
+ *     kept only if it carries that VLAN's tag (rx.c). Its only user so far
+ *     is the send test (`netsend`: sendtest.c); the netdev server that
+ *     netstack talks to is not built yet.
+ * main.c has the steps and the list of every register the driver writes;
+ * notx.h the rule that only tx.c can reach a transmit register.
  *
- * Files: main.c (the steps, the summary and the RESULTS line), regs.c
- * (register access through the guard, the chip's OCP windows to the MAC
- * and the PHY, waits, the tally counter dump), chip.c (the firmware's
- * state, the chip's identity, reset, receive-only bring-up,
- * autonegotiation, link, stop), census.c (the receive ring and the count
- * of frames by tag).
+ * Files: main.c (arguments, handles, the shared bring-up and shutdown,
+ * the list of registers), loop.c (the one event loop: interrupt, link,
+ * devmgr leaving), regs.c (register access through the guard, the OCP
+ * windows to the MAC and the PHY, waits, the tally counters), chip.c (the
+ * firmware's state, identity, reset, wake-on-LAN off, receive bring-up,
+ * autonegotiation, link, stop), ring.c (the DMA memory: both descriptor
+ * rings, their buffers, the tally dump), census.c and probe.c (the
+ * listen-only probe), rx.c (full mode's receive path), tx.c (THE transmit
+ * path), sendtest.c (the ARP send test, arp.h its frames).
  *
  * Registers, bits and the order of bring-up follow OpenBSD's rge(4)
  * driver (sys/dev/pci/if_rge.c and if_rgereg.h, by Kevin Lo, ISC
@@ -21,6 +31,7 @@
 
 #include <jam/driver.h>
 #include <jam/netframe.h>
+#include "args.h"
 #include "notx.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
@@ -93,6 +104,9 @@
 #define RTL_IMR_PROBE       (RTL_ISR_RX_OK | RTL_ISR_RX_ERR | RTL_ISR_RX_DESC_UNAVAIL | \
                              RTL_ISR_LINKCHG | RTL_ISR_RX_FIFO_OFLOW | RTL_ISR_PCS_TIMEOUT | \
                              RTL_ISR_SYSTEM_ERR)
+/* Full mode adds the transmitter's: done, error, nothing more to send
+ * (rge's RGE_INTRS without the timer). */
+#define RTL_IMR_FULL        (RTL_IMR_PROBE | RTL_ISR_TX_ANY)
 
 /* PHYSTAT bits */
 #define RTL_PHYSTAT_FDX     0x0001u
@@ -112,6 +126,7 @@
 #define RTL_CFG3_WOL_LINK   0x10
 #define RTL_CFG3_WOL_MAGIC  0x20
 #define RTL_CFG5_WOL_ANY    0x72      /* LANWAKE, unicast, multicast, broadcast wake */
+#define MAC_WOL_PME         0xc0b6    /* MAC OCP: bit 0 lets a wake event assert PME (rge_wol) */
 
 /* The OCP windows (rge_write_mac_ocp, rge_read_phy_ocp, ...) */
 #define RTL_OCP_BUSY        0x80000000u
@@ -145,7 +160,7 @@
 #define PHY_RAM_RCODE   0x801e    /* the PHY patch ("ram code") version */
 #define RCODE_8125B     0x0b99    /* the version rge's 8125B patch writes (RGE_MAC_R25B_RCODE_VER) */
 
-/* ---- the receive ring ------------------------------------------------------------ */
+/* ---- the DMA memory (ring.c) -------------------------------------------------------- */
 
 /* rge's receive descriptor on the 8125 is 32 bytes (struct rge_rx_desc,
  * with RXCFG 0x41000c00): the buffer's address at 16, extended status at
@@ -162,17 +177,25 @@
 #define RX_EOF          0x01000000u
 #define RX_ERRSUM       0x00100000u
 #define RX_LEN          0x00003fffu   /* bytes received, the CRC included */
-#define RING_BYTES      (RX_DESCS * RX_DESC_SIZE)   /* 8 KiB */
-#define TALLY_OFF       RING_BYTES                  /* the tally dump after it (64-aligned) */
+#define RX_CRC          4u
+/* One contiguous VMO: the receive ring, the transmit ring (16-byte
+ * descriptors, tx.c), then the tally dump (64-byte aligned). */
+#define RX_RING_BYTES   (RX_DESCS * RX_DESC_SIZE)   /* 8 KiB */
+#define TX_DESCS        256
+#define TX_DESC_SIZE    16
+#define TX_RING_OFF     RX_RING_BYTES
+#define TALLY_OFF       (TX_RING_OFF + TX_DESCS * TX_DESC_SIZE)   /* 12 KiB */
 #define RING_VMO        (4 * 4096)
 #define BUF_BYTES       (RX_DESCS * RX_BUF)
 #define BUF_PAGES       (BUF_BYTES / 4096)
+#define TX_BUF          2048      /* the driver's own copy of each frame sent: two per page */
+#define TXBUF_BYTES     (TX_DESCS * TX_BUF)
+#define TXBUF_PAGES     (TXBUF_BYTES / 4096)
 
 /* ---- state ----------------------------------------------------------------------- */
 
 #define CENSUS_GROUPS   16        /* distinct tags counted (untagged, priority, VLANs, ...) */
 #define CENSUS_TYPES    6         /* EtherTypes kept per group; the rest are "other" */
-#define PROBE_VLAN      21        /* the VLAN the verdict looks for (ARCHITECTURE "Networking") */
 
 /* One kind of frame by its tag, and the EtherTypes seen in it. */
 struct group {
@@ -184,41 +207,85 @@ struct group {
     uint32_t other_types;         /* frames of EtherTypes past the first CENSUS_TYPES */
 };
 
-/* The 60 s count; nothing in it is an address or a payload byte. */
+/* The probe's 60 s count; nothing in it is an address or a payload byte. */
 struct census {
     struct group g[CENSUS_GROUPS];
     unsigned ng;
     uint32_t lost;                /* frames of tags past the first CENSUS_GROUPS */
     uint32_t frames;              /* good, whole frames counted */
     uint32_t runts, errors, split;   /* too short; the chip's error bit; not in one buffer */
-    uint32_t by_irq, by_poll;     /* frames found after an interrupt / at a 1 s poll */
-    uint32_t irqs, polls;         /* interrupt packets (fires coalesced) / 1 s timeouts */
+    uint32_t by_irq, by_poll;    /* frames found after an interrupt / at a 1 s poll */
+};
+
+/* The loop's counts (loop.c, chip.c's link poll). */
+struct events {
+    uint32_t irqs, polls;         /* interrupt packets (fires coalesced) / waits that timed out */
     uint32_t isr_seen;            /* every ISR bit seen */
     uint32_t link_changes;        /* after the first link-up, seen by PHYSTAT */
     uint32_t linkchg_irqs;        /* interrupts with the link-change bit */
 };
 
+/* Full mode's receive counts (rx.c). */
+struct rxstats {
+    uint32_t kept;                     /* passed on, untagged */
+    uint32_t drop[NETFRAME_RX_KINDS];  /* dropped, by netframe_rx_check's reason */
+    uint32_t errors, split;            /* the chip's error bit; not in one buffer */
+    uint32_t unused;                   /* kept, but nobody was there to take them */
+};
+
+/* Full mode's transmit counts (tx.c). */
+struct txstats {
+    uint32_t queued;              /* frames handed to the chip (descriptor + doorbell) */
+    uint32_t done, errors;        /* taken back: sent / with the error bit */
+    uint32_t collisions;          /* taken back with a collision count */
+    uint32_t refused;             /* frames netframe_tag or the last check refused */
+    uint32_t full;                /* frames refused for want of a free descriptor */
+    uint32_t kicks;               /* doorbells rung again for frames still waiting */
+    uint32_t gate;                /* tx.c entries refused by the gate (must stay 0) */
+};
+
+struct rtl;
+/* Who takes full mode's received frames (the send test; later netdev):
+ * an untagged frame of len bytes, in the driver's scratch copy, found at
+ * `at` (uptime, ns). */
+typedef void rtl_frame_fn(struct rtl *t, const uint8_t *frame, size_t len, uint64_t at);
+
 struct rtl {
     volatile void *r;             /* BAR 2: the registers (64 KiB) */
     handle_t dev, dma, irq, serve, port;
+    enum rtl_mode mode;           /* set once by main.c from the arguments; tx.c's gate */
+    uint16_t vlan;                /* the configured VLAN (1..4094), 0: none */
     uint32_t xid;                 /* TXCFG bits 30:26, 23:20 (0x641: 8125B) */
     uint32_t refused;             /* writes rtl_write_allowed refused (must stay 0) */
     uint32_t ocp_timeouts;        /* OCP and CSI waits that ran out */
-    /* the receive ring, its buffers and the tally dump */
-    handle_t ring_vmo, buf_vmo;
-    uint8_t *ring, *bufs;         /* mapped */
-    uint64_t ring_pin, buf_pin;
-    bool     ring_pinned, buf_pinned, bus_master, rx_on;
+    uint8_t  mac[6];              /* the station address (the chip's) */
+    /* the DMA memory: rings and tally (ring_vmo), receive and transmit buffers */
+    handle_t ring_vmo, buf_vmo, txbuf_vmo;
+    uint8_t *ring, *bufs, *txbufs;   /* mapped */
+    uint64_t ring_pin, buf_pin, txbuf_pin;
+    bool     ring_pinned, buf_pinned, txbuf_pinned, bus_master, rx_on;
     uint64_t ring_addr;           /* device addresses */
     uint64_t buf_addr[BUF_PAGES];
-    unsigned next;                /* the next descriptor to look at */
+    uint64_t txbuf_addr[TXBUF_PAGES];
+    unsigned next;                /* the next receive descriptor to look at */
+    /* transmit: tx.c's (chip_stop's reset clears tx_on) */
+    uint32_t tx_prod, tx_cons;    /* descriptors handed over / taken back (free-running) */
+    bool     tx_on;               /* the transmitter is enabled */
+    struct txstats tx;
+    /* receive in full mode: rx.c's */
+    struct rxstats rx;
+    rtl_frame_fn *on_frame;       /* NULL: kept frames are counted only */
+    void    *user;                /* on_frame's own state */
+    uint8_t  frame[NETFRAME_MAX_IN];   /* the untagged copy handed to on_frame */
     /* the link */
     bool     link;
     uint16_t phystat;             /* the last PHYSTAT read */
+    uint64_t since;               /* when the driver started (uptime, ns) */
     uint64_t an_at;               /* when autonegotiation was started (uptime, ns) */
     uint64_t link_at;             /* when it came up (uptime, ns), 0: not yet */
-    unsigned link_lines;          /* link-change lines logged (capped) */
-    struct census c;
+    unsigned link_lines;          /* link-change lines logged */
+    struct events ev;
+    struct census c;              /* the probe's */
 };
 
 /* The 8125's tally counters as it dumps them (rge's struct rge_stats). */
@@ -230,6 +297,17 @@ struct tally {
     uint64_t rx_ok_phy, rx_ok_brd;
     uint32_t rx_ok_mul;
     uint16_t tx_abort, tx_underrun;
+};
+
+/* What a run's RESULTS line needs (main.c fills it). */
+struct outcome {
+    uint32_t phy;
+    uint16_t rcode;
+    bool     reset;            /* the chip was reset: the run has a RESULTS line */
+    bool     start_ok, end_ok; /* the tally dumps worked */
+    struct tally start, end;
+    bool     cut;              /* devmgr stopped it early */
+    char     txcheck[40];      /* tally_tx_check's short form, "chip tally +3 (equal)" */
 };
 
 /* ---- regs.c ---------------------------------------------------------------------- */
@@ -256,39 +334,118 @@ void     mii_wr(struct rtl *t, unsigned reg, uint16_t v);
 void     delay_us(uint64_t us);
 /* The tally counters into *out (needs the receiver on and bus mastering). */
 status_t tally_dump(struct rtl *t, struct tally *out);
+void     tally_log(const char *when, const struct tally *x);
+/* The plan's check that the chip sent nothing of its own (no PAUSE, no
+ * wake-on-LAN or management frames): the chip's count of frames sent
+ * between the two dumps against what tx.c handed it. Logged; true if
+ * they agree. `out` gets a short form for a RESULTS line. */
+bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, size_t size);
 
 /* ---- chip.c ---------------------------------------------------------------------- */
 
 void     chip_snapshot(struct rtl *t);
 /* The id from TXCFG; ERR_NOT_SUPPORTED (logged) for anything but the 8125B. */
 status_t chip_identify(struct rtl *t);
-void     chip_log_mac(struct rtl *t);
+/* The station address into t->mac, and into the log. */
+void     chip_read_mac(struct rtl *t);
 /* rge_stop + rge_exit_oob + PHY power: the chip quiet, owned by us. */
 status_t chip_reset(struct rtl *t);
 /* After reset: the PHY's id and patch version, the MAC MCU, the receive
  * registers' values. Returns the PHY's id (PHYID1 << 16 | PHYID2). */
 uint32_t chip_log_after_reset(struct rtl *t, uint16_t *rcode);
-/* The receive path on the ring at t->ring_addr, accept-all, tags kept. */
-void     chip_rx_start(struct rtl *t);
+/* Wake-on-LAN off (rge_wol(ifp, 0)): no magic packet, no link or frame
+ * wake, while Jam OS runs. */
+void     chip_wol_off(struct rtl *t);
+/* The chip's receive path on the rings (and in full mode, through tx.c,
+ * the transmit path), autonegotiation, interrupts on. The probe accepts
+ * every frame; full mode our address and broadcasts. Tags always kept. */
+status_t chip_start(struct rtl *t);
 void     chip_autoneg(struct rtl *t);
-/* PHYSTAT read; logs a change (capped). True if the link is up. */
-bool     chip_link_poll(struct rtl *t, uint64_t since);
+/* PHYSTAT read; logs a change (rate-limited). True if the link is up. */
+bool     chip_link_poll(struct rtl *t);
 void     chip_link_str(uint16_t phystat, char *buf, size_t size);
-/* The receiver off and the chip reset; no DMA after it returns. */
+/* "link 1000 full in 2.2 s" or "no link in 10 s", for a RESULTS line. */
+void     chip_link_summary(const struct rtl *t, char *buf, size_t size);
+/* Receiver and transmitter off, the chip reset; no DMA after it returns. */
 void     chip_stop(struct rtl *t);
 
-/* ---- census.c -------------------------------------------------------------------- */
+/* ---- ring.c ---------------------------------------------------------------------- */
 
-/* The ring and buffers: made, pinned (bus mastering must be on), armed. */
+/* The rings, the tally area and the receive buffers (and, in full mode,
+ * the transmit buffers): made, pinned (bus mastering must be on),
+ * receive descriptors armed. */
 status_t ring_setup(struct rtl *t);
 void     ring_free(struct rtl *t);
+/* One received frame the chip has handed back, if there is one. */
+struct rx_slot {
+    uint32_t status;              /* the descriptor's command and status word */
+    uint32_t len;                 /* bytes in the buffer, the CRC not counted (0 if under 4) */
+    const volatile uint8_t *buf;  /* the buffer (RX_BUF bytes) */
+    bool     whole;               /* one buffer, no error bit, fits: worth looking at */
+};
+bool     ring_rx_peek(struct rtl *t, struct rx_slot *out);
+/* The descriptor ring_rx_peek returned, back to the chip; on to the next. */
+void     ring_rx_done(struct rtl *t);
+
+/* ---- loop.c ---------------------------------------------------------------------- */
+
+/* The port, with the interrupt and devmgr's channel bound to it. */
+status_t loop_init(struct rtl *t);
+/* Wait for one event until `deadline` (at most a 1 s poll) and handle it:
+ * the interrupt (status read and acked under a masked IMR, received
+ * frames, finished transmits, the link), or the poll that stands in for a
+ * lost one. False when devmgr closed our channel: it is stopping. */
+bool     loop_step(struct rtl *t, uint64_t deadline);
+/* loop_step until `deadline` or until done(t) (NULL: never) is true,
+ * polling at least every poll_ns. False if devmgr is stopping. */
+bool     loop_until(struct rtl *t, uint64_t deadline, uint64_t poll_ns,
+                    bool (*done)(const struct rtl *t));
+
+/* ---- census.c and probe.c: the listen-only probe ------------------------------------ */
+
 /* Every frame the chip has handed back, counted; returns how many. */
 unsigned census_harvest(struct rtl *t, bool by_irq);
 /* One frame's tag into the count (pure: for the tests' sake too). */
 void     census_count(struct census *c, const struct netframe_class *f);
 void     census_log(const struct census *c);
-/* The verdict from the plan's rules, "trunk carrying 21", ... */
-const char *census_verdict(const struct census *c);
-/* Frames on VLAN v (tagged 802.1Q), untagged, every tagged one. */
+/* The verdict from the plan's rules for VLAN v, "trunk carrying 21", ... */
+const char *census_verdict(const struct census *c, uint16_t v);
+/* Frames on VLAN v (tagged 802.1Q), of one kind. */
 uint32_t census_vlan(const struct census *c, uint16_t v);
 uint32_t census_kind(const struct census *c, enum netframe_kind k);
+/* The probe after bring-up: the link, 60 s of listening, the count. */
+void     probe_run(struct rtl *t, struct outcome *o);
+void     probe_report(const struct rtl *t, const struct outcome *o);
+
+/* ---- rx.c: full mode's receive path ------------------------------------------------- */
+
+/* Every frame the chip has handed back: kept (our VLAN, untagged, to
+ * t->on_frame) or dropped and counted. Returns how many it looked at. */
+unsigned rx_harvest(struct rtl *t);
+void     rx_log(const struct rtl *t);
+
+/* ---- tx.c: THE transmit path (and nothing else transmits) --------------------------- */
+
+/* The transmit ring's address and configuration (inside chip_start's
+ * config unlock). Refused (logged) unless rtl_tx_allowed. */
+status_t tx_arm(struct rtl *t);
+/* The transmitter on, the receiver kept on (the command register). */
+status_t tx_enable(struct rtl *t);
+/* Send one untagged frame (len bytes, 14..1514): copied into the
+ * driver's own buffer with the VLAN's tag, checked there, handed to the
+ * chip, the doorbell rung. ERR_ACCESS_DENIED (gate), ERR_INVALID_ARGS
+ * (refused by netframe_tag or the last check), ERR_NO_RESOURCES (ring
+ * full), ERR_BAD_STATE (the transmitter is not on). */
+status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len);
+/* Take back the descriptors the chip has finished with; returns how many. */
+unsigned tx_reap(struct rtl *t);
+/* Frames handed over and not yet taken back. */
+uint32_t tx_pending(const struct rtl *t);
+void     tx_log(const struct rtl *t);
+
+/* ---- sendtest.c: `netsend` ---------------------------------------------------------- */
+
+/* The ARP send test after bring-up (full mode); RESULTS line at the end. */
+void     sendtest_run(struct rtl *t, const struct rtl_args *a, struct outcome *o);
+void     sendtest_report(const struct rtl *t, const struct outcome *o);
+

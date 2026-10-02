@@ -1,7 +1,10 @@
-/* rtl8125: register access (drv/rtl8125). The only file that touches the
- * chip's registers: every write passes rtl_write_allowed (notx.h) first,
- * so no transmit register can be written from anywhere in the driver
- * (tools/checknotx.sh checks that no other file calls drv_write*).
+/* rtl8125: register access (drv/rtl8125). Every register write in the
+ * driver goes through here, and every write here passes rtl_write_allowed
+ * (notx.h) first, so no transmit register can be written through it, in
+ * any mode. The one other file that writes registers is tx.c, and only
+ * the transmit ones, behind its own gate (tools/checknotx.sh checks that
+ * no other file calls drv_write*). Also the tally counters: their dump,
+ * and the comparison of the chip's count of frames sent with tx.c's.
  *
  * The 8125 hides most of its MAC and all of its PHY behind two 32-bit
  * windows (rge_write_mac_ocp, rge_read_phy_ocp in if_rge.c): the
@@ -172,4 +175,35 @@ status_t tally_dump(struct rtl *t, struct tally *out)
         ((uint8_t *)&x)[i] = p[i];
     *out = x;
     return OK;
+}
+
+void tally_log(const char *when, const struct tally *x)
+{
+    drv_log("tally %s: tx ok %lu err %lu abort %u underrun %u collisions %u/%u; rx ok %lu "
+            "(unicast %lu, broadcast %lu, multicast %u) err %u missed %u align %u", when,
+            (unsigned long)x->tx_ok, (unsigned long)x->tx_err, x->tx_abort, x->tx_underrun,
+            x->tx_1col, x->tx_mcol, (unsigned long)x->rx_ok, (unsigned long)x->rx_ok_phy,
+            (unsigned long)x->rx_ok_brd, x->rx_ok_mul, x->rx_err, x->miss, x->fae);
+}
+
+bool tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, size_t size)
+{
+    if (!o->start_ok || !o->end_ok) {
+        drv_log("tx check: the tally could not be read (%s), so it can't be compared",
+                o->start_ok ? "at the end" : "at the start");
+        drv_snprintf(out, size, "chip tally UNREAD");
+        return false;
+    }
+    uint64_t sent = o->end.tx_ok - o->start.tx_ok, err = o->end.tx_err - o->start.tx_err;
+    bool same = sent == t->tx.done && err == t->tx.errors &&
+                t->tx.queued == t->tx.done + t->tx.errors;
+    drv_log("tx check: the driver queued %u frame(s), %u came back sent and %u with an error; "
+            "the chip's tally: %lu sent, %lu errors: %s", t->tx.queued, t->tx.done,
+            t->tx.errors, (unsigned long)sent, (unsigned long)err,
+            same ? "equal: the chip sent nothing of its own"
+            : sent > t->tx.done ? "THE CHIP SENT FRAMES THE DRIVER DID NOT QUEUE"
+            : "they differ");
+    drv_snprintf(out, size, "chip tally +%lu%s", (unsigned long)sent, same ? " (equal)"
+                 : " (DIFFERS)");
+    return same;
 }

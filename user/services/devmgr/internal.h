@@ -139,8 +139,8 @@ extern uint16_t       net_vlan;
 #define PCI_CLASS_NETWORK 0x02u
 extern uint64_t       devmgr_started;   /* when devmgr started (uptime, ns) */
 /* The word a PCI driver at `path` is started with after its name, when
- * its match-table row asks for one and devmgr was given it ("netprobe"
- * for drv/rtl8125), else NULL. */
+ * its match-table row asks for one and devmgr was given it ("netprobe" or
+ * "netsend" for drv/rtl8125), else NULL. */
 const char *pci_driver_arg(const char *path);
 /* The first binding pass's counts, for DEVMGR_STATUS. */
 extern unsigned       nbound, nfailed, nskipped;
