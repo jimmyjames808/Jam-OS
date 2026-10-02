@@ -39,7 +39,7 @@ static struct {
     uint32_t remapping;      /* GSTS.IRES set */
     uint32_t qi_on;          /* GSTS.QIES set */
     uint32_t protected_mem;  /* PMEN.EPM or PRS set */
-    uint32_t faults;         /* FSTS shows a fault, or a record is full */
+    uint32_t faults;         /* units whose FSTS shows a recorded or lost fault */
 } seen;
 
 /* ---- building a line --------------------------------------------------------- */
@@ -307,7 +307,6 @@ static void log_faults(uint32_t idx, volatile uint8_t *r, uint64_t cap, uint64_t
             continue;
         uint64_t lo = rd64(r, (uint32_t)off);
         uint32_t sid = (uint32_t)VTD_FRCD_SID(hi);
-        seen.faults++;
         kprintf("vtd:         unit %u fault record %u: %02x:%02x.%x %s at %lx, reason %lx\n",
                 idx, i, sid >> 8, (sid >> 3) & 0x1f, sid & 7,
                 VTD_FRCD_TYPE1(hi) ? "read" : "write", lo & ~(uint64_t)0xfff, VTD_FRCD_REASON(hi));
