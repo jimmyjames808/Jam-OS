@@ -41,8 +41,9 @@ NET_DEFAULT := CMDLINE_VLAN_UNTAGGED
 NET_TEXT    := net untagged
 NET_SAY     := untagged
 else
-NET_ID := $(shell n='$(strip $(subst ',,$(JAMOS_VLAN)))'; case "$$n" in ''|0*|*[!0-9]*) ;; \
-            *) [ "$$n" -le 4094 ] 2>/dev/null && echo "$$n" ;; esac)
+# (the case patterns in parentheses: an unbalanced ")" would end $(shell))
+NET_ID := $(shell n='$(strip $(subst ',,$(JAMOS_VLAN)))'; case "$$n" in (''|0*|*[!0-9]*) ;; \
+            (*) [ "$$n" -le 4094 ] 2>/dev/null && echo "$$n" ;; esac)
 ifeq ($(NET_ID),)
 $(error JAMOS_VLAN must be none or a VLAN id 1..4094, not "$(JAMOS_VLAN)" ($(NET_FROM)))
 endif
