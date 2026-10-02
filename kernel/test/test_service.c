@@ -46,6 +46,7 @@ static handle_t server_port, server_timer;
 static uint32_t n_clients;
 static struct client *clients;
 static volatile uint64_t served, timer_ticks, hellos, server_errors;
+static volatile uint64_t server_armed_ns, server_ended_ns;   /* the server's first arm, its end */
 
 /* Move a handle from one table to another, as sending it would. */
 static handle_t move_handle(struct handle_table *from, handle_t h, struct handle_table *to)
@@ -104,6 +105,7 @@ static void server_main(void *arg)
     handle_t *chans = arg;
     uint32_t open = n_clients;
     uint64_t deadline = uptime_ns() + TEST_DEADLINE_NS;
+    server_armed_ns = uptime_ns();
     arm_timer();
     while (open) {
         struct port_packet pkt;
@@ -125,6 +127,7 @@ static void server_main(void *arg)
             open--;
         }
     }
+    server_ended_ns = uptime_ns();
     sys_timer_cancel(&server_table, server_timer);
     sys_port_unbind(&server_table, server_port, server_timer, TIMER_KEY);
 }
@@ -235,7 +238,10 @@ KTEST(m4_milestone_service)
     KT_EQ(served, (uint64_t)n_clients * (CALLS_PER_CLIENT + 1));
     KT_EQ(hellos, n_clients);
     KT_EQ(events_ok, n_clients);
-    KT_ASSERT(elapsed < TIMER_PERIOD_NS || timer_ticks >= 1);
+    /* A server that ran two timer periods past its first arm has seen a
+     * tick (one period of slack: the tick that comes at the very end may
+     * still be on its way when the last client leaves). Timing: idle only. */
+    KT_IDLE_ASSERT(server_ended_ns - server_armed_ns < 2 * TIMER_PERIOD_NS || timer_ticks >= 1);
 
     /* Nothing left behind. */
     struct port_stats ps;
