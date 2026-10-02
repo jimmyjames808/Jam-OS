@@ -22,8 +22,9 @@ void serial_write(const char *s, size_t len);
 /* Interrupt-driven output (serial.c). serial_start_irq routes COM1's
  * IRQ 4 once the I/O APIC is up ("noserialirq": stay synchronous);
  * serial_poll runs from CPU 0's tick; serial_panic makes output
- * synchronous for good, writing out what is queued first (panic path,
- * interrupts off). serial_async is the run-time switch. */
+ * synchronous for good, writing out what is queued first (its newest
+ * 4 KiB: panic path, interrupts off). serial_async is the run-time
+ * switch. */
 #define SERIAL_RING 65536   /* bytes, a power of two: ~5.7 s of output */
 void serial_start_irq(void);
 void serial_poll(void);
@@ -41,16 +42,19 @@ void serial_test_hold(bool on);
 
 /* The ring itself, exposed so tests can drive a small one. size is a power
  * of two; head/tail count bytes ever put/taken; put drops (and counts) when
- * full; get returns -1 when empty. No locking of its own. */
+ * full; get returns -1 when empty; keep_newest drops (and counts) all but
+ * the newest `keep` bytes and returns how many it dropped (a synchronous
+ * drain writes only those). No locking of its own. */
 struct serial_ring {
     char    *buf;          /* size bytes */
     uint32_t size;         /* a power of two */
     uint32_t head, tail;   /* bytes ever put / taken */
-    uint64_t dropped;      /* bytes dropped because it was full */
+    uint64_t dropped;      /* bytes dropped: the ring was full, or cut by keep_newest */
 };
 bool     serial_ring_put(struct serial_ring *r, char c);
 int      serial_ring_get(struct serial_ring *r);
 uint32_t serial_ring_used(const struct serial_ring *r);
+uint32_t serial_ring_keep_newest(struct serial_ring *r, uint32_t keep);
 
 /* COM1 input (serial.c "Input"). serial_rx_start turns the receive
  * interrupt on and calls notify(ctx) (interrupts off, under the rx lock)

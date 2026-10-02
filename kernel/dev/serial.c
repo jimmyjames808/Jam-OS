@@ -24,8 +24,9 @@
  *     RESULTS box says so).
  *   - Before the interrupt is routed (early boot), with "noserialirq", and
  *     after serial_panic, output is synchronous. serial_panic
- *     (interrupts off, other CPUs halted) first writes out whatever the
- *     ring still holds, so the panic text follows it in order.
+ *     (interrupts off, other CPUs halted) first writes out the newest
+ *     SYNC_DRAIN_MAX bytes the ring still holds, so the panic text follows
+ *     them in order; so does turning serial_async off.
  *   - serial_async is the run-time switch (the benchmark flips it).
  *
  * Input: while someone reads COM1 (serial_rx_start; the serial_open
@@ -68,7 +69,13 @@
 #define RX_STORM 2000    /* bad bytes a second: the receive interrupt goes off */
 #define FIFO_LEN 16
 #define SERIAL_RESCUES_MAX 8
-#define BROKEN_FLUSH 4096
+/* A synchronous drain (serial_panic, serial_set_async(false), a broken
+ * interrupt) writes at most the newest SYNC_DRAIN_MAX bytes: ~0.36 s at
+ * 115200 baud with the lock held and interrupts off, far below the 5 s
+ * after which the lock checker and the watchdog panic. The whole ring
+ * would take 5.7 s on a real UART (QEMU's has no baud delay). What is
+ * cut is counted in serial_dropped; the klog ring still has it. */
+#define SYNC_DRAIN_MAX 4096
 
 static bool present;
 static bool irq_routed;          /* the interrupt is wired: async possible */
@@ -119,6 +126,17 @@ uint32_t serial_ring_used(const struct serial_ring *r)
     return r->head - r->tail;
 }
 
+uint32_t serial_ring_keep_newest(struct serial_ring *r, uint32_t keep)
+{
+    uint32_t used = serial_ring_used(r);
+    if (used <= keep)
+        return 0;
+    uint32_t cut = used - keep;
+    r->tail += cut;
+    r->dropped += cut;
+    return cut;
+}
+
 /* ---- the UART ------------------------------------------------------------------ */
 
 bool serial_init(void)
@@ -146,6 +164,17 @@ static void put_sync(char c)
         if (spins > 100000)
             return;         /* never hang the kernel on a stuck UART */
     outb(COM1 + REG_DATA, (uint8_t)c);
+}
+
+/* tx_lock held (or every other CPU halted): write out what the ring holds,
+ * synchronously, keeping only the newest SYNC_DRAIN_MAX bytes. */
+static void drain_sync_locked(void)
+{
+    uint32_t cut = serial_ring_keep_newest(&tx, SYNC_DRAIN_MAX);
+    __atomic_add_fetch(&serial_dropped, cut, __ATOMIC_RELAXED);
+    int c;
+    while ((c = serial_ring_get(&tx)) >= 0)
+        put_sync((char)c);
 }
 
 /* tx_lock held: if the FIFO is empty, move up to FIFO_LEN bytes into it. */
@@ -292,19 +321,12 @@ void serial_poll(void)
     if (__atomic_load_n(&broken, __ATOMIC_RELAXED)) {
         /* Write out what is queued, synchronously, before anyone writes
          * synchronously after it, with this lock held so other CPUs' log
-         * lines wait (and keep their order). At most BROKEN_FLUSH bytes
-         * (~0.36 s at 115200 baud, far below the 5 s the lock checker and
-         * the watchdog allow); the rest is dropped and counted. This is
-         * detected within SERIAL_RESCUES_MAX ticks of the first queued
-         * byte, so little is queued by then. A failure path: synchronous
-         * output from here on. */
+         * lines wait (and keep their order). This is detected within
+         * SERIAL_RESCUES_MAX ticks of the first queued byte, so little is
+         * queued by then. A failure path: synchronous output from here on. */
         outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
-        int c;
-        for (int n = 0; n < BROKEN_FLUSH && (c = serial_ring_get(&tx)) >= 0; n++)
-            put_sync((char)c);
-        __atomic_add_fetch(&serial_dropped, serial_ring_used(&tx), __ATOMIC_RELAXED);
-        tx.tail = tx.head;
+        drain_sync_locked();
     }
     last_irqs = irqs;
     last_tail = tx.tail;
@@ -325,15 +347,14 @@ void serial_panic(void)
     outb(COM1 + REG_IER, 0);
     thre_on = false;
     __atomic_store_n(&hold, false, __ATOMIC_RELAXED);
-    int c;
-    while ((c = serial_ring_get(&tx)) >= 0)
-        put_sync((char)c);
+    drain_sync_locked();
 }
 
-/* The run-time switch, for the benchmark. Turning it off first drains the
- * ring synchronously with the lock held and the transmit interrupt off, so
- * synchronous writes that follow can't overtake or interleave with bytes
- * still queued. */
+/* The run-time switch (the benchmark; reboot and kexec_reboot turn it off
+ * for good). Turning it off first drains the ring synchronously (its
+ * newest SYNC_DRAIN_MAX bytes) with the lock held and the transmit
+ * interrupt off, so synchronous writes that follow can't overtake or
+ * interleave with bytes still queued. */
 void serial_set_async(bool on)
 {
     if (!present)
@@ -342,9 +363,7 @@ void serial_set_async(bool on)
     if (!on && __atomic_load_n(&serial_async, __ATOMIC_RELAXED)) {
         outb(COM1 + REG_IER, rx_ier);
         thre_on = false;
-        int c;
-        while ((c = serial_ring_get(&tx)) >= 0)
-            put_sync((char)c);
+        drain_sync_locked();
     }
     __atomic_store_n(&serial_async, on, __ATOMIC_RELAXED);
     if (on)

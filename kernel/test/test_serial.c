@@ -29,6 +29,29 @@ KTEST(serial_ring_drops_when_full)
     KT_EQ(r.dropped, 2);
 }
 
+/* A synchronous drain writes only the ring's newest bytes: the whole
+ * 64 KiB ring takes 5.7 s on a real UART with the lock held and interrupts
+ * off, past the 5 s after which the lock checker panics. (QEMU's UART has
+ * no baud delay, so the time itself can't be seen here.) */
+KTEST(serial_ring_keeps_newest)
+{
+    char buf[8];
+    struct serial_ring r = { buf, sizeof(buf), 0xfffffffau, 0xfffffffau, 0 };   /* near wrap */
+    for (int i = 0; i < 10; i++)
+        serial_ring_put(&r, (char)('a' + i));   /* a..h kept, i and j dropped: full */
+    KT_EQ(serial_ring_keep_newest(&r, 3), 5);
+    KT_EQ(serial_ring_used(&r), 3);
+    KT_EQ(r.dropped, 7);
+    for (int i = 0; i < 3; i++)
+        KT_EQ(serial_ring_get(&r), 'f' + i);
+    KT_EQ(serial_ring_get(&r), -1);
+    serial_ring_put(&r, 'x');
+    KT_EQ(serial_ring_keep_newest(&r, 3), 0);   /* less than keep: nothing cut */
+    KT_EQ(serial_ring_keep_newest(&r, 1), 0);
+    KT_EQ(serial_ring_get(&r), 'x');
+    KT_EQ(r.dropped, 7);
+}
+
 /* Queued output is sent by the UART's transmit interrupt (QEMU emulates
  * COM1 and its IRQ 4). The ring is shared: from the shell, the console
  * and the kernel log write to COM1 at the same time, so a full 32 KiB ring
