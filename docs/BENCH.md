@@ -285,3 +285,53 @@ Reading:
   netstack's) and is only 1.2-1.3x faster on one CPU.
 - `update`'s fetch in `tools/update-net-test.sh` (QEMU, 2 CPUs, after):
   10.2 MB in 0.8 s.
+
+## Path breakdown (M11.5 stage 0), QEMU 2026-10-02
+
+What one call costs, counted: `bench` ends with `path:` lines
+(`kernel/test/bench_path.c`; the probes and the trace are in
+`kernel/include/jam/pathstat.h`), and the path tests
+(`kernel/test/test_pathstat.c`) pin these numbers. Each case is counted
+over 1024 calls after 256 warm-up calls, counting only the call's own
+threads and leaving interrupt handlers out. **Counts, not times**, so
+QEMU's (TCG on the Mac, 4 CPUs, branch m11.5-perf) are the PC's; the
+exceptions are the cross-CPU case's IPIs (spin-idle avoids most on the
+PC) and the CR3 flushes (QEMU has no PCIDs: every load flushes; 0 on the
+PC). On the PC the same run also prints a timeline of each case: the
+median time of each step between named points of the path.
+
+Cases: **switch**, two kernel threads yielding on P (per switch);
+**kernel call**, channel_call between two kernel threads on P; **user
+call**, utest's `bench-call` against `bench-echo`, two processes on P
+(the line M11.5's target is about); **+ deadline**, the same with a
+deadline per call as libos's file calls have (`bench-dcall`);
+**thread->thread**, the same calls between two threads of one process;
+**P->P2**, the user call with the server on another P-core.
+
+| Per call (per switch for the switch) | switch | kernel call | user call | + deadline | thread->thread | P->P2 |
+|---|---|---|---|---|---|---|
+| system calls | 0 | 0 | **5**: call; read, write, a read that finds nothing, wait_one | 6 (+ clock_get) | 5 | 5 |
+| user copies in / out (bytes) | 0 | 0 | 5 / 5 (208 / 44) | 5 / 5 | 5 / 5 | 5 / 5 |
+| message copies in the kernel (bytes) | 0 | 4 (64) | 4 (64) | 4 (64) | 4 (64) | 4 (64) |
+| kmalloc / kfree | 0 | 2 / 2 | 2 / 2 | 2 / 2 | 2 / 2 | 2 / 2 |
+| job charges and credits (levels walked) | 0 | 0 | 4 (4) | 4 (4) | 4 (4) | 4 (4) |
+| handle-table operations | 0 | 0 | 5 | 5 | 5 | 5 |
+| spinlocks | **1** | 14 | **20** | 22 | 20 | 20 |
+| scheduler passes / switches | 1 / 1 | 2 / 2 | 2 / 2 | 2 / 2 | 2 / 2 | 2 / 4 |
+| wakes / IPIs | 0 / 0 | 2 / 0 | 2 / 0 | 2 / 0 | 2 / 0 | 2 / 2 |
+| FPU saves / restores / kept | 0 | 0 | 2 / 2 / 0 | 2 / 2 / 0 | 2 / 2 / 0 | 2 / 0 / 2 |
+| CR3 loads | 0 | 0 | 2 | 2 | 0 | 4 |
+| sleeper inserts / timer re-arms | 0 | 0 | 0 | **1 / 1** | 0 | 0 |
+| channel reads that found nothing | 0 | 0 | 1 | 1 | 1 | 1 |
+| observer callbacks | 0 | 1 | 1 | 1 | 1 | 1 |
+
+Reading:
+- The user call's 8 copies of the message bytes are 4 user copies (the
+  request in and out, the reply in and out) and 4 in the kernel (into the
+  message and out of it, each way); the other 6 user copies are the
+  argument structs and the lengths.
+- The switch line takes one spinlock (the run queue's) and one scheduler
+  pass. A user call takes 20 spinlocks, each through the lock checker
+  (`spin_lock + spin_unlock` is 26.7 ns with it on the PC).
+- A deadline costs a system call (the clock), two spinlocks (the sleeper
+  queue) and a timer re-arm on every call ([M11.5-PLAN.md](M11.5-PLAN.md#q4-how-should-deadlines-get-cheaper)).
