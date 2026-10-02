@@ -144,7 +144,7 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     if (b->kind == BIND_USB)
         argv[1] = usb_driver_arg(b);   /* "hidboot" or none */
     if (b->kind == BIND_PCI)
-        argv[1] = pci_driver_arg(b->path);   /* "netprobe" or none */
+        argv[1] = pci_driver_arg(b->path);   /* "netprobe", "netsend" or none */
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argv[2] ? 3 : argv[1] ? 2 : 1, .argv = argv,
         .job = job,

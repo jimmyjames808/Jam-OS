@@ -355,6 +355,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "hidboot";
     if (init_netprobe)
         argv[argc++] = "netprobe";
+    else if (init_netsend)
+        argv[argc++] = "netsend";
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
