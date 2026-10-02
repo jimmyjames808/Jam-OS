@@ -274,6 +274,11 @@ void     reboot_note_esp(void);
  * only if that failed (said in the log); the caller resets through the
  * firmware. */
 status_t init_reboot_kexec(void);
+/* Reset through the firmware (`reboot -f`, and when kexec can't be done):
+ * the same steps as init_reboot_kexec's before its jump (/data synced,
+ * the log flushed, devmgr's drivers stopped in order), then the reboot
+ * system call. Returns only if that failed (said in the log). */
+status_t init_reboot_firmware(void);
 /* initctl.kernel_load: /esp's kernel and boot image read and made the
  * stored copy now (and noted as such); their sizes and the read's time.
  * ERR_NOT_FOUND without them; kexec_load's errors (the old copy stays). */

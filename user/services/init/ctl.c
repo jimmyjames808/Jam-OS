@@ -19,9 +19,10 @@
  * one, or the files on /esp if they changed (reboot.c); if that can't be
  * done, and for reboot_firmware (`reboot -f`), it is a reset
  * through the firmware. Either way /data and every /usbN are flushed first,
- * for at most 2 s (mounts_sync), and logd saves the log's last lines, that
+ * for at most 2 s (mounts_sync), logd saves the log's last lines, that
  * one included (shell_flush_log), so a boot log ends with its own
- * shutdown. sync flushes the same way.
+ * shutdown, and devmgr stops every driver in order. sync flushes the same
+ * way.
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
  * devmgr (DEVMGR_REMOUNT) for /usbN and refused for every other path:
@@ -46,7 +47,6 @@
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* devmgr's REMOUNT: a sync, then its service's stop */
 #define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* devmgr's KILL: it waits for the driver to die */
-#define LOG_WAIT    NS_PER_S          /* logd's flush before a reboot */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
 
 struct ctl {
@@ -214,22 +214,12 @@ static status_t op_sync(void *ctx)
     return OK;
 }
 
-static status_t firmware_reboot(void)
-{
-    /* The files first, then the log with the line that says so, then the
-     * volume's clean mark: each bounded, 4 s in all. */
-    mounts_sync();
-    shell_flush_log(now() + LOG_WAIT);
-    mounts_settle();
-    return jam_reboot(shell_root());   /* comes back only if it failed */
-}
-
 static status_t op_reboot(void *ctx)
 {
     (void)ctx;
     (void)init_reboot_kexec();   /* comes back only if it failed, having said why */
     printf("init: rebooting through the firmware instead\n");
-    return firmware_reboot();
+    return init_reboot_firmware();
 }
 
 static status_t op_reboot_firmware(void *ctx)
@@ -237,7 +227,7 @@ static status_t op_reboot_firmware(void *ctx)
     const struct ctl *c = ctx;
     if (!c->admin)
         return ERR_ACCESS_DENIED;
-    return firmware_reboot();
+    return init_reboot_firmware();
 }
 
 /* "/usbN" -> N; false for any other path. */

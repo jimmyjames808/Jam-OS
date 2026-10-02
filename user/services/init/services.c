@@ -476,8 +476,8 @@ status_t shell_stop_devmgr(uint64_t deadline)
         (void)jam_object_wait_one(c->proc, SIG_TERMINATED, deadline, &seen);
     }
     struct svc *s = &svcs[DEVMGR];
-    if (!devmgr || !s->running)
-        return OK;
+    if (!devmgr || !s->running || s->given_up)
+        return OK;   /* none, or stopped already (a kexec that failed after it) */
     struct devmgr_rep r;
     status_t st = devmgr_call(devmgr, DEVMGR_SHUTDOWN, 0, 0, 0, &r, NULL, 0, NULL, deadline);
     signals_t seen;

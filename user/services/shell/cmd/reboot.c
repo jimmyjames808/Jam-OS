@@ -1,7 +1,9 @@
 /* reboot: restart the machine, through init (abi/idl/initctl.idl): by
  * kexec into a fresh copy of the system, or with -f through the firmware;
- * init syncs /data first either way, and falls back to the firmware by
- * itself. By ourselves (the firmware) if init doesn't do it.
+ * init syncs /data and stops the drivers first either way, and falls back
+ * to the firmware by itself. By ourselves (the firmware) if init doesn't
+ * answer within INIT_WAIT: then the kernel's reset lines on the screen
+ * follow init's last ones, which say where it stopped.
  *
  * A kexec reboot looks like switching the PC on: the screen is blanked to
  * the boot splash's background first (console.blank), and nothing is drawn

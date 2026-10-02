@@ -224,8 +224,9 @@ static inline status_t initctl_shell_ready(handle_t ch)
     return initctl_shell_ready_until(ch, DEADLINE_NEVER);
 }
 
-/* sync, then a reset through the firmware, never kexec (the shell's
- * `reboot -f`). Answers only if the reset failed. */
+/* A reset through the firmware, never kexec (the shell's `reboot -f`):
+ * sync, the log flushed, devmgr's drivers stopped in order (as for
+ * reboot), then the kernel's reset. Answers only if the reset failed. */
 static inline status_t initctl_reboot_firmware_until(handle_t ch, uint64_t deadline_ns)
 {
     struct initctl_reboot_firmware_req idl_q;

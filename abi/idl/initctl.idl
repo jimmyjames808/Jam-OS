@@ -44,8 +44,9 @@ protocol initctl 18
 # tells the boot splash (bin/splash) to hand the screen back to the
 # console; nothing to do if no splash is waiting (a later shell's call).
 5  shell_ready  () -> ()
-# sync, then a reset through the firmware, never kexec (the shell's
-# `reboot -f`). Answers only if the reset failed.
+# A reset through the firmware, never kexec (the shell's `reboot -f`):
+# sync, the log flushed, devmgr's drivers stopped in order (as for
+# reboot), then the kernel's reset. Answers only if the reset failed.
 6  reboot_firmware  () -> ()
 # Read /esp's boot/jamos.elf and boot/bootfs.img now and make them the
 # kernel's stored copy (kexec_load), the one `reboot` and a panic start:

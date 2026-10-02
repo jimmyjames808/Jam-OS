@@ -1730,7 +1730,11 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the jump). Any failure before the jump falls back to the firmware
-  reset; `reboot -f` always uses it. M9's `update` hands init a fetched
+  reset; `reboot -f` always uses it, after the same sync, log flush and
+  devmgr shutdown. The kernel's firmware reset (`kernel/dev/reboot.c`)
+  halts the other CPUs, takes the screen back, turns bus mastering off,
+  then tries the FADT's reset register, 0xCF9's full reset, the 8042 and
+  a triple fault, a second apart, each said on the screen first. M9's `update` hands init a fetched
   build on an offer channel (initctl.update_offer, `<update.h>`): init
   checks the manifest's signature with its build's key, copies the files
   into VMOs of its own, checks each length and SHA-256 against

@@ -20,12 +20,17 @@
  * so the reboot keeps the fetched build until the stick changes; `update
  * -w` notes the files it wrote (or left) on the stick, the same build.
  *
- * Then what a firmware reboot does too (/data synced, logd's last lines
- * written, the volume left clean), devmgr's shutdown (DEVMGR_SHUTDOWN: the
- * filesystems stopped clean, the class drivers, then the bus drivers'
- * final halt and reset, so no device is left writing memory), and
- * kexec_reboot. Any step that fails before the jump returns, and ctl.c
- * resets through the firmware instead. The screen already shows only the
+ * Then what a firmware reset does too (stop_everything: /data synced,
+ * logd's last lines written, the volume left clean, devmgr's shutdown,
+ * DEVMGR_SHUTDOWN: the filesystems stopped clean, the class drivers, then
+ * the bus drivers' final halt and reset, so no device is left writing
+ * memory or in the middle of a transfer), and kexec_reboot. Any step that
+ * fails before the jump returns, and ctl.c resets through the firmware
+ * instead (init_reboot_firmware: the same steps, then the reboot system
+ * call; `reboot -f` goes straight there). A board whose firmware hangs
+ * after a reset that caught a device mid-transfer (a USB stick half way
+ * through a command, a NIC writing a ring) is what the stopped drivers
+ * are for. The screen already shows only the
  * splash background: the shell or the console blanked it (console.blank)
  * before asking for the reboot. */
 #include <devmgr.h>
@@ -204,5 +209,16 @@ status_t init_reboot_kexec(void)
     printf("init: kexec: devmgr stopped in %lu ms, jumping\n", (unsigned long)ms);
     status_t st = jam_kexec_reboot(shell_root());   /* returns only if it failed */
     printf("init: kexec: the jump failed (%s)\n", status_str(st));
+    return st;
+}
+
+status_t init_reboot_firmware(void)
+{
+    uint64_t ms = stop_everything("firmware reset");
+    /* On the serial port, and on the screen once the kernel takes it
+     * back for its own lines (the reset's). */
+    printf("init: firmware reset: devmgr stopped in %lu ms, resetting\n", (unsigned long)ms);
+    status_t st = jam_reboot(shell_root());   /* returns only if it failed */
+    printf("init: firmware reset: the reset failed (%s)\n", status_str(st));
     return st;
 }
