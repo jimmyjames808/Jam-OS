@@ -9,7 +9,8 @@
 
 static handle_t shared;      /* /svc/net-listen's server end (0: none, or its clients gone) */
 static bool     pending;     /* requests may be queued on it */
-static bool     listening = true;   /* progs_connect's ctx: its openers may listen */
+/* progs_connect's ctx: its openers are ordinary ones that may listen */
+static const struct opener_kind listening = { .cls = CLASS_PROG, .listen = true };
 
 status_t listen_init(handle_t port, handle_t ch)
 {
@@ -38,7 +39,8 @@ void listen_serve(void)
         return;
     pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = svc_serve_request(shared, progs_shared_dispatch, progs_connect, &listening);
+        status_t st = svc_serve_request(shared, progs_shared_dispatch, progs_connect,
+                                        (void *)&listening);
         if (st == OK)
             continue;
         if (st != ERR_SHOULD_WAIT) {

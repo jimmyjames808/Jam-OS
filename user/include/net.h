@@ -1,47 +1,73 @@
 /* The network for programs (user/lib/net.c): UDP sockets and ping on
  * netstack's /svc/net (abi/idl/net.idl; the design is docs/M9-PLAN.md
- * "Programs and sockets"). A program's list asks for it with `svc net`,
- * or with `svc net listen` for /svc/net-listen too: the same protocol, but
- * its openers may take a fixed port below NET_PORT_EPHEMERAL (open it with
- * svc_get(SVC_NET_LISTEN) and pass it where these take `net`).
+ * "Programs and sockets" and docs/M9.5-PLAN.md). A program's list asks
+ * for it with `svc net`, or with `svc net listen` for /svc/net-listen too:
+ * the same protocol, but its openers may take a fixed port below
+ * NET_PORT_EPHEMERAL (open it with svc_get(SVC_NET_LISTEN) and pass it
+ * where these take `net`).
  *
- * Each datagram is one call on the socket's channel: netstack never waits
- * inside one (a sock_recv with nothing queued is answered when a datagram
- * comes or its timeout passes), and M9's traffic (DNS, DHCP, ping, the
- * log, an update's fetch) is a few thousand datagrams at most.
+ * A socket's datagrams go through its rings (<sockring.h>: one VMO
+ * mapped here, a tx and an rx ring, two events), not through calls: while
+ * datagrams flow, a send or a receive is a copy into or out of the ring,
+ * and a system call only to wake netstack (or this program) when the
+ * other side said it sleeps. The socket's channel carries the few control
+ * calls (connect, state) and tells, by closing, that netstack ended.
  *
  * Two ways to use a socket; don't mix them on one socket:
- *   - blocking, for programs and threads that serve nobody: net_sendto,
+ *   - blocking, for programs and threads that serve nobody: net_sendto
+ *     (OK once netstack sent the datagram, or its reason not to),
  *     net_recvfrom (with a deadline), net_ping;
- *   - without waiting, for a service's loop: net_sendto_async and
- *     net_recv_arm write requests and return; bind the socket's channel
- *     (s->ch) on the loop's port for SIG_READABLE | SIG_PEER_CLOSED and
- *     call net_sock_take when it fires, until it says ERR_SHOULD_WAIT
- *     (the binding fires on an edge): it reads the replies, counts the
- *     sends that failed, and hands over each datagram.
+ *   - without waiting, for a service's loop: net_sendto_async puts the
+ *     datagram in the ring and returns; net_sock_bind puts the socket on
+ *     the loop's port (its to_prog event and its channel's end), and when
+ *     the key fires the loop calls net_sock_take until it says
+ *     ERR_SHOULD_WAIT (the binding fires on an edge): each datagram, and
+ *     the sends netstack refused counted on the way;
+ *   - or in a wait set with other sockets and handles (<netwait.h>,
+ *     net_sock_waitable), with the calls that don't wait.
+ * The rings' `waits` flags (<sockring.h> "Waking") are set only by what
+ * sleeps: the blocking calls raise the one they need before they sleep and
+ * lower it when they wake; net_sock_bind raises rx's and leaves it up; a
+ * wait set raises and lowers its own. net_sendto_async and net_sock_take
+ * never touch them. So a blocking call on a socket that is also in a wait
+ * set lowers the set's flag: call netwait_touch after it.
  * The opener's channel (net_svc) waits with the generated calls
  * (net_wait_change_send and its _result, <idl/net.h>) in a loop. Addresses
  * are host-order numbers, the first byte highest (<netbytes.h> NET_IPV4,
- * <ipv4.h> for text). */
+ * <ipv4.h> for text).
+ *
+ * Fair shares: netstack serves two shared channels. /svc/net's openers
+ * are ordinary programs' and together may hold only NET_PROG_* of its
+ * openers, sockets, waits and ring bytes; /svc/net-sys's openers (init
+ * gives it to dns, netlog and update alone, and no program from /data may
+ * ask for it) may use the rest, so a program that takes its whole share
+ * can't stop the network's own services. net_svc opens /svc/net-sys when
+ * the namespace has it. */
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <os.h>
+#include <sockring.h>
 
 #define NET_DGRAM_MAX          1472u   /* bytes of a datagram: one frame, never fragmented */
-#define NET_OPENERS            32u     /* channels from /svc/net's connect at once */
+#define NET_OPENERS            32u     /* channels from the shared channels' connect at once */
+#define NET_PROG_OPENERS       24u     /* ... of them /svc/net's (ordinary programs') */
 #define NET_SOCKETS_PER_OPENER 16u     /* sockets one opener may hold */
-#define NET_SOCKETS_MAX        32u     /* sockets of all openers together */
-#define NET_RX_QUEUE           32u     /* datagrams queued a socket; more are dropped */
+#define NET_SOCKETS_MAX        48u     /* sockets of all openers together */
+#define NET_PROG_SOCKETS       24u     /* ... of them ordinary openers' */
 #define NET_LATER_PER_OPENER   8u      /* waits, echoes and chip_counts in flight an opener */
+#define NET_LATER_MAX          64u     /* ... of all openers together */
+#define NET_PROG_LATER         48u     /* ... of them ordinary openers' */
+#define NET_PROG_RING_BYTES    (8u << 20)   /* ring bytes of ordinary openers' sockets */
 #define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
 #define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
 #define NET_PORT_LOW           1024u   /* udp: ports below are refused; up to ... */
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
 #define NET_PORT_DHCP_CLIENT   68u
+_Static_assert(NET_DGRAM_MAX == SOCKRING_DGRAM_MAX, "one datagram size");
 
 /* net_info.vlan on an untagged network: <jam/netframe.h>'s
  * NETFRAME_MODE_UNTAGGED, the driver's (netdev.idl's info), which netstack
@@ -85,44 +111,62 @@ struct net_counters {
     uint64_t rx_bad;           /* rx slots refused (a bad length or flags) */
     uint64_t tx_full;          /* frames dropped: the tx ring was full */
     /* programs */
-    uint32_t openers;          /* /svc/net openers now */
+    uint32_t openers;          /* openers now (both shared channels') */
     uint32_t sockets;          /* sockets open now (the DHCP socket included) */
-    uint32_t queued;           /* datagrams queued on sockets now */
+    uint32_t queued;           /* bytes waiting in sockets' rx rings now */
     uint32_t later;            /* waits, echoes and chip_counts in flight now */
-    uint64_t dgrams_in;        /* datagrams queued for a socket */
-    uint64_t dgrams_dropped;   /* datagrams dropped: a socket's queue was full */
+    uint64_t dgrams_in;        /* datagrams put in a socket's rx ring */
+    uint64_t dgrams_dropped;   /* datagrams dropped: a socket's rx ring was full (or it had none) */
     uint64_t dgrams_out;       /* datagrams sent */
     uint64_t echoes_sent;      /* echo requests sent for programs (ping) */
     uint64_t echoes_answered;  /* of those, answered */
-    uint64_t reserved[10];     /* 0 */
+    uint64_t dgrams_refused;   /* tx records refused (an address, port 0, no route, a bad record) */
+    uint32_t ring_bytes;       /* sockets' ring bytes now (sockring_bytes), every opener's */
+    uint32_t refused_shares;   /* opens and requests refused for an ordinary opener's share */
+    uint64_t reserved[8];      /* 0 */
 };
 #define NET_COUNTERS_SIZE 256u
+
+struct idl_msg;        /* <idl/common.h>: a reply read off a channel */
+struct netwait_sock;   /* <netwait.h>: a socket as a wait set takes it */
 
 /* A datagram received. */
 struct net_dgram {
     uint32_t addr;                 /* who sent it */
     uint16_t port;                 /* from its port */
-    uint16_t len;                  /* bytes in data */
-    uint32_t dropped;              /* the socket's dropped datagrams so far (queue full) */
+    uint16_t len;                  /* bytes in data (the rest of data is 0) */
+    uint32_t dropped;              /* the socket's dropped datagrams so far (its rx ring full) */
     uint8_t  data[NET_DGRAM_MAX];
 };
 
-/* A socket, the caller's. */
+/* A socket, the caller's: its channel, and its rings mapped here. */
 struct net_sock {
-    handle_t ch;           /* the socket's channel (closing it closes the socket) */
-    uint16_t port;         /* its local port */
-    /* the forms that don't wait (net_sock_take) */
-    uint32_t last_txid;    /* idl_txid_next's counter for this channel */
-    uint32_t recv_txid;    /* the sock_recv in flight (0: none) */
-    uint32_t sends;        /* net_sendto_async calls not answered yet */
-    uint32_t send_errors;  /* of the answered, how many failed */
-    status_t last_error;   /* the last failure's status */
+    handle_t        ch;            /* the socket's channel (closing it closes the socket) */
+    uint16_t        port;          /* its local port */
+    handle_t        ring;          /* the rings' VMO (SOCKRING_VMO_RIGHTS); 0: no rings */
+    handle_t        to_stack;      /* netstack's event: signal only */
+    handle_t        to_prog;       /* ours: wait, and signal to clear */
+    uint8_t        *map;           /* the VMO, mapped (map_len bytes) */
+    uint64_t        map_len;
+    struct sockring r;             /* our ends of its two rings */
+    handle_t        waiter;        /* a port for the blocking forms (0: not made yet) */
+    handle_t        bound_port;    /* net_sock_bind's port and key (0: none) */
+    uint64_t        bound_key;
+    uint64_t        refused_seen;  /* the status line's tx_refused already counted */
+    uint32_t        send_errors;   /* sends netstack refused, as net_sock_take saw them */
+    status_t        last_error;    /* ... the last one's reason */
 };
 
-/* /svc/net: libos's own channel to it (svc_get: opened again after a
- * netstack restart), or HANDLE_INVALID when the program's list didn't ask
- * for it (or netstack isn't running). Don't close it. */
+/* The network's shared channel: /svc/net-sys when the namespace has it
+ * (the network's own services), else /svc/net. libos keeps it (svc_get:
+ * opened again after a netstack restart); HANDLE_INVALID when the
+ * program's list didn't ask for it (or netstack isn't running). Don't
+ * close it. */
 handle_t net_svc(void);
+/* A channel of the caller's own to the same (svc_open: the caller closes
+ * it), for a loop that binds it on its port. ERR_NOT_FOUND: neither name
+ * is in the namespace. */
+status_t net_svc_open(handle_t *out);
 /* The interface now. Errors: the call's (ERR_PEER_CLOSED: no netstack). */
 status_t net_info(handle_t net, struct net_info *out);
 /* Wait until the interface has an address (at once if it has), or the
@@ -133,26 +177,48 @@ status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out);
 status_t net_get_counters(handle_t net, struct net_counters *out);
 status_t net_get_chip_counters(handle_t net, void *out);
 
-/* A UDP socket on port (0: netstack picks one; 1..1023 refused; 1024..49151
- * only on an opener of /svc/net-listen: ERR_ACCESS_DENIED). */
+/* A UDP socket on port (0: netstack picks one; 1..1023 refused;
+ * 1024..49151 only on an opener of /svc/net-listen: ERR_ACCESS_DENIED)
+ * with its rings (net.udp_rings, the default sizes), mapped. Errors: the
+ * call's, the map's. */
 status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out);
-/* A socket whose channel came from elsewhere (netctl's dhcp_open), on port. */
-void     net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port);
-/* Close it (nothing to do if s->ch is 0). */
+/* The same with rings of tx_bytes and rx_bytes (0: the default; else a
+ * power of two in SOCKRING_MIN..SOCKRING_MAX): a socket that must hold more
+ * datagrams than SOCKRING_UDP_RX does, or fewer. */
+status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes,
+                            struct net_sock *out);
+/* The same without waiting, for a service's loop: send the request with
+ * the caller's txid (not 0); when the reply comes on net (idl_reply_read),
+ * net_udp_opened takes the socket from it. */
+status_t net_udp_open_async(handle_t net, uint32_t txid, uint16_t port);
+status_t net_udp_opened(const void *rep, struct idl_msg *m, struct net_sock *out);
+/* A socket whose channel came from elsewhere (netctl's dhcp_open), on
+ * port: asks for its rings (net.sock_rings, blocking) and maps them. On a
+ * failure the channel is closed and *s is empty. */
+status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port);
+/* Unbind it (net_sock_bind), unmap its rings and close everything
+ * (nothing to do if s->ch is 0). */
 void     net_close(struct net_sock *s);
 /* Only datagrams from addr:port from now on, and net_send goes there (0, 0:
  * anyone again). */
 status_t net_connect(struct net_sock *s, uint32_t addr, uint16_t port);
 
 /* ---- blocking ---- */
-/* len bytes (at most NET_DGRAM_MAX) to addr:port; OK when netstack sent it. */
+/* len bytes (at most NET_DGRAM_MAX) to addr:port, into the tx ring (waiting
+ * for room), then waiting until netstack took it: OK when it went to the
+ * card (or waits for the peer's ARP answer), else the reason netstack
+ * refused it (ERR_INVALID_ARGS: an address a program can't send to, or
+ * port 0; ERR_BAD_STATE: no address, the link down, no route; ...).
+ * ERR_TIMED_OUT: not taken within a few seconds (the card's ring full all
+ * that time: the datagram stays in the ring); ERR_PEER_CLOSED: netstack is
+ * gone. */
 status_t net_sendto(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
                     size_t len);
 /* To the peer net_connect set. */
 status_t net_send(struct net_sock *s, const void *data, size_t len);
 /* The next datagram, waiting until the deadline (DEADLINE_NEVER: no limit;
- * a deadline already past: ERR_SHOULD_WAIT if none is queued) for one:
- * ERR_TIMED_OUT then. */
+ * a deadline already past: ERR_SHOULD_WAIT if none is waiting) for one:
+ * ERR_TIMED_OUT then; ERR_PEER_CLOSED: netstack is gone. */
 status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline);
 /* One ping: an echo request of size data bytes, sequence seq, answered by
  * the deadline (at most NET_ECHO_TIMEOUT_MAX ms from now). *rtt_us and
@@ -161,18 +227,34 @@ status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline
  * address or no link. */
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,
                   uint32_t *rtt_us, uint8_t *ttl);
+/* Wait until s may have a datagram, or netstack is gone (a look says
+ * which), or the deadline (ERR_TIMED_OUT). It may also return early (a
+ * change of the socket's status, room in its tx ring): look, and wait
+ * again. */
+status_t net_sock_wait(struct net_sock *s, uint64_t deadline);
 
 /* ---- without waiting (a service's loop) ---- */
-/* Write a send request: its answer comes on s->ch (net_sock_take counts a
- * failure). ERR_SHOULD_WAIT: the channel's queue is full; try later. */
+/* Put a datagram in the tx ring (netstack woken if it sleeps): OK. A
+ * refusal of netstack's comes later (net_sock_take counts it).
+ * ERR_SHOULD_WAIT: the ring has no room now (nothing says when it has but a
+ * wait set's NETWAIT_WRITE: a loop counts it lost, or tries again later);
+ * ERR_INVALID_ARGS: len over NET_DGRAM_MAX; ERR_BAD_STATE: no rings. */
 status_t net_sendto_async(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
                           size_t len);
-/* Make sure a sock_recv (no timeout) is in flight. */
-status_t net_recv_arm(struct net_sock *s);
-/* Read s->ch: send answers are counted, and the first datagram is put in
- * *d (the next sock_recv is sent at once): OK. ERR_SHOULD_WAIT: no
- * datagram yet; ERR_PEER_CLOSED: netstack is gone (open the socket again);
- * another error: the socket's sock_recv failed (it is not sent again),
- * ERR_OUT_OF_RANGE among them when netstack said a length over
- * NET_DGRAM_MAX. */
+/* Watch s on the loop's port with `key`: its to_prog event and its
+ * channel's end (SIG_PEER_CLOSED), and rx's consumer flag raised for good,
+ * so a datagram netstack puts in the ring fires the key (one already there
+ * fires it at once). flags: PORT_BIND_PERSISTENT, or PORT_BIND_ONCE to bind
+ * again each turn. One port at a time; net_close unbinds. Not with a wait
+ * set or the blocking calls on the same socket (they lower the flag). */
+status_t net_sock_bind(struct net_sock *s, handle_t port, uint64_t key, uint32_t flags);
+void     net_sock_unbind(struct net_sock *s);
+/* s as a wait set takes it (netwait_add_sock): its rings, to_prog and
+ * channel; tx_need 0. Valid while s is open. */
+void     net_sock_waitable(struct net_sock *s, struct netwait_sock *out);
+/* The next datagram into *d: OK. ERR_SHOULD_WAIT: none now (the socket is
+ * set to wake the loop when one comes); ERR_PEER_CLOSED: netstack is gone
+ * (open the socket again). Records netstack refused since the last call
+ * are added to s->send_errors (s->last_error their reason); a broken record
+ * from netstack is skipped. */
 status_t net_sock_take(struct net_sock *s, struct net_dgram *d);

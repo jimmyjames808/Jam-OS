@@ -3,11 +3,18 @@
  * exist; tools/update-test.sh runs it in QEMU.
  *
  * The files: /data/update/manifest, jamos.elf and bootfs.img, put there
- * by the test script (the manifest made by tools/update-server.py, the
- * boot image a copy of the build's with one more file, update-marker.txt,
- * so the boot after the update shows which build runs). The shell gives
- * it what its list asks for: /data (read) and init's control channel,
- * whose update_offer is the channel bin/update's offer will travel on.
+ * by the test script (the manifest made by tools/update-server.py and
+ * signed with a throwaway test key whose public half is in the running
+ * build's boot image; the boot image a copy of the build's with one more
+ * file, update-marker.txt, so the boot after the update shows which build
+ * runs); manifest-otherkey, the same manifest signed with a second key;
+ * manifest-othernet, the same build's manifest saying the other network
+ * default (untagged for a VLAN build, vlan21 for an untagged one), signed
+ * with the first; nak.manifest, signed with the first, for two files that
+ * are no kernel.
+ * The shell gives it what its list asks for: /data (read) and init's
+ * control channel, whose update_offer is the channel bin/update's offer
+ * will travel on.
  *
  *   updtest good   the build as it is: accepted (init loads it as the
  *                  stored kernel; the script's `reboot` then runs it)
@@ -16,18 +23,34 @@
  *                  kernel or of the boot image changed (the SHA-256), the
  *                  kernel 4 KiB longer than the manifest says or cut to
  *                  half (the length), a VMO shorter than the length it
- *                  claims, a manifest of garbage, cut short, signed (this
- *                  build can't check a signature) or of another format,
- *                  an offer with a bad magic, one handle or an unknown
- *                  flag, two files that match their manifest but are
- *                  no kernel (the kernel's own refusal), and the build
- *                  with a manifest that says the other network default
- *                  (untagged for a VLAN build, vlan21 for an untagged one:
- *                  refused unless forced); and the build as it is, and
- *                  that same other-network one with UPDATE_OFFER_FORCE,
- *                  each offered UPDATE_OFFER_CHECK_ONLY: accepted, not
- *                  loaded. The script's `reboot` then shows the stored
- *                  kernel unchanged.
+ *                  claims, a manifest of garbage, cut short, with a
+ *                  signature too short to be one or of another format (the
+ *                  format), unsigned, changed after it was signed (one
+ *                  digit of a SHA-256), signed by another key, or carrying
+ *                  another manifest's signature (the signature), an offer
+ *                  with a bad magic, one handle or an unknown flag, the
+ *                  build signed as saying the other network default (its
+ *                  own refusal, unless forced), and two files that match
+ *                  their signed manifest but are no kernel (the kernel's
+ *                  own refusal); and the build as it is, and the
+ *                  other-network one with UPDATE_OFFER_FORCE, each offered
+ *                  UPDATE_OFFER_CHECK_ONLY: accepted, not loaded.
+ *                  The script's `reboot` then shows the stored kernel
+ *                  unchanged.
+ *   updtest nokey  on a build without an update key: the build offered,
+ *                  plain, check-only and to be written to the stick,
+ *                  refused for that alone.
+ *   updtest writefail
+ *                  the build offered to be written to the stick
+ *                  (UPDATE_OFFER_WRITE) with a test's failure
+ *                  (UPDATE_OFFER_FAIL) at each step that has one: making
+ *                  room, keeping the previous build, half way through the
+ *                  new kernel, between the two renames; each answered
+ *                  UPDATE_NOT_WRITTEN at that step with the stick booting
+ *                  its old build (put back, after the renames); and a write
+ *                  with check-only, a failure without a write and a
+ *                  failure at no step refused. tools/update-write-test.sh
+ *                  then boots the stick from cold.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -39,7 +62,7 @@ JAM_WANTS("svc init\n"
           "mount /data r\n");
 
 #define DIR         "/data/update/"
-#define ANSWER_WAIT (60 * NS_PER_S)   /* init copies and hashes ~9 MB */
+#define ANSWER_WAIT (300 * NS_PER_S)  /* init copies and hashes ~10 MB, and may write the stick */
 #define CHUNK       (64u << 10)       /* bytes copied at a time */
 
 /* One offer: the manifest's text and the two files, each a VMO and the
@@ -206,13 +229,23 @@ static void bad_files(const struct build *b)
     changed("VMO shorter than claimed", b, &short_vmo, UPDATE_SHORT_VMO);
 }
 
-/* b with another manifest text (len bytes). */
-static void bad_manifest(const struct build *b, const char *name, const void *text, size_t len)
+/* b with another manifest text (len bytes): refused for `why`. */
+static void bad_manifest(const struct build *b, const char *name, const void *text, size_t len,
+                         uint32_t why)
 {
     struct build v = *b;
     memcpy(v.manifest, text, len);
     v.manifest_len = (uint32_t)len;
-    expect(name, &v, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_MANIFEST, 0);
+    expect(name, &v, 2, UPDATE_OFFER_MAGIC, why, 0);
+}
+
+/* Where the manifest's signature line starts (after the last but one '\n'). */
+static size_t sig_line(const struct build *b)
+{
+    size_t at = b->manifest_len ? b->manifest_len - 1 : 0;
+    while (at > 0 && b->manifest[at - 1] != '\n')
+        at--;
+    return at;
 }
 
 static void bad_manifests(const struct build *b)
@@ -223,105 +256,186 @@ static void bad_manifests(const struct build *b)
         x = x * 1103515245u + 12345u;
         text[i] = (char)(x >> 16);
     }
-    bad_manifest(b, "garbage manifest", text, sizeof(text));
-    bad_manifest(b, "manifest cut short", b->manifest, b->manifest_len / 2);
-    size_t n = b->manifest_len;
+    bad_manifest(b, "garbage manifest", text, sizeof(text), UPDATE_BAD_MANIFEST);
+    bad_manifest(b, "manifest cut short", b->manifest, b->manifest_len / 2, UPDATE_BAD_MANIFEST);
+    size_t n = b->manifest_len, at = sig_line(b);
     memcpy(text, b->manifest, n);
-    if (n > 1 && n + 6 < sizeof(text)) {
-        memcpy(text + n - 1, " 00ff\n", 6);   /* "signature" with a value */
-        bad_manifest(b, "signed manifest", text, n + 5);
-    }
+    memcpy(text + at, "signature 00ff\n", 15);   /* a signature too short to be one */
+    bad_manifest(b, "short signature", text, at + 15, UPDATE_BAD_MANIFEST);
     memcpy(text, b->manifest, n);
     text[13] = '3';   /* "jamos-update 3" */
-    bad_manifest(b, "another format", text, n);
+    bad_manifest(b, "another format", text, n, UPDATE_BAD_MANIFEST);
+    memcpy(text, b->manifest, n);
+    memcpy(text + at, "signature\n", 10);
+    bad_manifest(b, "unsigned manifest", text, at + 10, UPDATE_UNSIGNED);
+    memcpy(text, b->manifest, n);
+    char *digit = &text[at - 2];   /* the boot image's SHA-256's last digit: signed */
+    *digit = *digit == '0' ? '1' : '0';
+    bad_manifest(b, "manifest changed after signing", text, n, UPDATE_BAD_SIGNATURE);
 }
 
-/* This build's network default (its build.txt), "untagged" if it has none. */
-static const char *running_net(void)
+/* Signatures that are good ones, but not of this manifest by this build's
+ * key: another key's (DIR "manifest-otherkey", the same build signed with
+ * a second throwaway key), and another manifest's (nak's) on this one. */
+static void wrong_signatures(const struct build *b, const struct build *nak)
 {
-    static char net[UPDATE_NET_MAX + 1];
-    const struct bootfs_view *fs;
-    const void *data;
-    uint64_t size = 0;
-    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "build.txt", &data, &size) != OK ||
-        update_build_net(data, (size_t)size, net) != OK)
-        snprintf(net, sizeof(net), "untagged");
-    return net;
+    struct build other = *b;
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "manifest-otherkey", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st == OK) {
+        st = jam_vmo_read(m, 0, other.manifest, n);
+        jam_handle_close(m);
+        other.manifest_len = (uint32_t)n;
+    }
+    if (st == OK) {
+        expect("another key's signature", &other, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_SIGNATURE, 0);
+    } else {
+        failures++;
+        printf("updtest: another key's signature: no " DIR "manifest-otherkey (%s): FAILED\n",
+               status_str(st));
+    }
+    char text[UPDATE_MANIFEST_MAX];
+    size_t at = sig_line(b), nat = sig_line(nak);
+    memcpy(text, b->manifest, at);
+    memcpy(text + at, nak->manifest + nat, nak->manifest_len - nat);
+    bad_manifest(b, "another manifest's signature", text, at + nak->manifest_len - nat,
+                 UPDATE_BAD_SIGNATURE);
 }
 
-/* b with its manifest's net line saying `net` (into v). False if b's
- * manifest has no net line or the result doesn't fit. */
-static bool with_net(const struct build *b, const char *net, struct build *v)
-{
-    static char text[UPDATE_MANIFEST_MAX + 1];
-    memcpy(text, b->manifest, b->manifest_len);
-    text[b->manifest_len] = '\0';
-    const char *at = strstr(text, "\nnet ");
-    const char *eol = at ? strchr(at + 5, '\n') : NULL;
-    if (!eol)
-        return false;
-    size_t head = (size_t)(at + 5 - text), tail = strlen(eol), nl = strlen(net);
-    if (head + nl + tail > sizeof(v->manifest))
-        return false;
-    *v = *b;
-    memcpy(v->manifest + head, net, nl);
-    memcpy(v->manifest + head + nl, eol, tail);
-    v->manifest_len = (uint32_t)(head + nl + tail);
-    return true;
-}
-
-/* The network default guard: the build with the other kind of default is
- * refused, and taken (check only) when forced. */
+/* The network default guard: the build, signed as saying the other kind
+ * of network default (DIR "manifest-othernet"), refused; forced, taken
+ * (check only). */
 static void other_net(const struct build *b)
 {
-    struct build v;
-    const char *other = strcmp(running_net(), "untagged") ? "untagged" : "vlan21";
-    if (!with_net(b, other, &v)) {
+    struct build v = *b;
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "manifest-othernet", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st == OK) {
+        st = jam_vmo_read(m, 0, v.manifest, n);
+        jam_handle_close(m);
+        v.manifest_len = (uint32_t)n;
+    }
+    if (st != OK) {
         failures++;
-        printf("updtest: the manifest has no net line: FAILED\n");
+        printf("updtest: another network default: no " DIR "manifest-othernet (%s): FAILED\n",
+               status_str(st));
         return;
     }
+    v.flags = 0;
     expect("another network default", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NET_CHANGE, 0);
     v.flags = UPDATE_OFFER_FORCE | UPDATE_OFFER_CHECK_ONLY;
     expect("another network default, forced (check only)", &v, 2, UPDATE_OFFER_MAGIC,
            UPDATE_ACCEPTED, 0);
 }
 
-/* Two files that match their manifest exactly but are no kernel: only
- * kexec_load can refuse them. */
-static void not_a_kernel(void)
+/* Two files that match their signed manifest exactly but are no kernel
+ * (8192 bytes of 0x55, 4096 of 0xaa; the test script signed DIR
+ * "nak.manifest" for them): only kexec_load can refuse them. Into *b. */
+static status_t make_nak(struct build *b)
 {
     static uint8_t k[8192], s[4096];
     memset(k, 0x55, sizeof(k));
     memset(s, 0xaa, sizeof(s));
-    uint8_t dk[SHA256_BYTES], ds[SHA256_BYTES];
-    char hk[2 * SHA256_BYTES + 1], hs[2 * SHA256_BYTES + 1];
-    sha256(k, sizeof(k), dk);
-    sha256(s, sizeof(s), ds);
-    sha256_hex(dk, hk);
-    sha256_hex(ds, hs);
-    struct build b = { .bytes = { sizeof(k), sizeof(s) } };
-    int n = snprintf(b.manifest, sizeof(b.manifest), "jamos-update 2\nversion not-a-kernel\n"
-                     "git 0000000\nnet %s\nkernel %u %s\nbootfs %u %s\nsignature\n",
-                     running_net(), (unsigned)sizeof(k), hk, (unsigned)sizeof(s), hs);
-    b.manifest_len = (uint32_t)n;
-    if (jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b.vmo[0]) != OK ||
-        jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b.vmo[1]) != OK ||
-        jam_vmo_write(b.vmo[0], 0, k, sizeof(k)) != OK ||
-        jam_vmo_write(b.vmo[1], 0, s, sizeof(s)) != OK) {
+    *b = (struct build){ .bytes = { sizeof(k), sizeof(s) } };
+    handle_t m;
+    uint64_t n = 0;
+    status_t st = file_read_vmo(DIR "nak.manifest", UPDATE_MANIFEST_MAX, &m, &n);
+    if (st != OK)
+        return st;
+    st = jam_vmo_read(m, 0, b->manifest, n);
+    jam_handle_close(m);
+    b->manifest_len = (uint32_t)n;
+    if (st == OK)
+        st = jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b->vmo[0]);
+    if (st == OK)
+        st = jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b->vmo[1]);
+    if (st == OK)
+        st = jam_vmo_write(b->vmo[0], 0, k, sizeof(k));
+    if (st == OK)
+        st = jam_vmo_write(b->vmo[1], 0, s, sizeof(s));
+    return st;
+}
+
+/* b offered with flags, as a stick write: the answer must be `why`, the
+ * write must have got to `step`, and the stick must boot `stick`. */
+static void expect_write(const char *name, struct build *b, uint32_t flags, uint32_t why,
+                         uint32_t step, uint32_t stick)
+{
+    struct update_answer a;
+    memset(&a, 0, sizeof(a));
+    b->flags = flags;
+    status_t st = offer(b, 2, UPDATE_OFFER_MAGIC, &a);
+    b->flags = 0;
+    bool ok = st == OK && a.why == why && (why == UPDATE_ACCEPTED) == (a.status == OK) &&
+              a.write_step == step && a.stick == stick;
+    failures += !ok;
+    printf("updtest: %s: %s (%s), %s, %s, in %u ms: %s\n", name,
+           st == OK ? update_why_str(a.why) : "-", status_str(st == OK ? a.status : st),
+           update_write_step_str(a.write_step), update_stick_str(a.stick), a.write_ms,
+           ok ? "as expected" : "FAILED");
+}
+
+/* Stick writes that fail (a test's failure, UPDATE_OFFER_FAIL, at each
+ * step that has one: as if the ESP's service died there): the build is
+ * loaded, and the stick still boots its old build; offers that can't be
+ * (a write with check-only, a failure without a write) are refused. */
+static void write_failures(struct build *b)
+{
+    static const struct { const char *name; uint32_t step; } at[] = {
+        { "write fails making room", UPDATE_WRITE_ROOM },
+        { "write fails keeping the previous build", UPDATE_WRITE_PREV },
+        { "write fails half way through the new kernel", UPDATE_WRITE_NEW },
+        { "write fails between the two renames", UPDATE_WRITE_SWITCH },
+    };
+    for (unsigned i = 0; i < sizeof(at) / sizeof(at[0]); i++)
+        expect_write(at[i].name, b, UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(at[i].step),
+                     UPDATE_NOT_WRITTEN, at[i].step, UPDATE_STICK_OLD);
+    b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_CHECK_ONLY;
+    expect("write and check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_FAIL(UPDATE_WRITE_NEW);
+    expect("a failure without a write", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(UPDATE_WRITE_DONE);
+    expect("a failure at no step", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = 0;
+}
+
+/* Every refusal, each on an offer channel of its own; the build offered
+ * check-only (accepted, not loaded). */
+static void bad(struct build *b)
+{
+    struct build nak;
+    status_t st = make_nak(&nak);
+    if (st != OK) {
         failures++;
-        printf("updtest: not a kernel: can't make its files: FAILED\n");
-        return;
+        printf("updtest: no " DIR "nak.manifest, or its files (%s): FAILED\n", status_str(st));
     }
-    expect("not a kernel", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
-    jam_handle_close(b.vmo[0]);
-    jam_handle_close(b.vmo[1]);
+    bad_files(b);
+    bad_manifests(b);
+    if (st == OK)
+        wrong_signatures(b, &nak);
+    expect("bad magic", b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
+    expect("one handle", b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = 1u << 31;   /* no such flag (the bits above CHECK_ONLY are WRITE, FORCE) */
+    expect("unknown flag", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    b->flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
+    expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    b->flags = 0;
+    other_net(b);
+    if (st == OK)
+        expect("not a kernel", &nak, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 2 || (strcmp(argv[1], "good") && strcmp(argv[1], "bad"))) {
-        printf("usage: updtest good|bad\n");
+    enum { GOOD, BAD, NOKEY, WRITEFAIL, MODES };
+    static const char *const modes[MODES] = { "good", "bad", "nokey", "writefail" };
+    unsigned mode = 0;
+    while (argc == 2 && mode < MODES && strcmp(argv[1], modes[mode]))
+        mode++;
+    if (argc != 2 || mode == MODES) {
+        printf("usage: updtest good|bad|nokey|writefail\n");
         return 2;
     }
     initctl = svc_get(SVC_INIT);
@@ -332,20 +446,18 @@ int main(int argc, char **argv)
         printf("updtest: no init channel, or no " DIR " files (%s)\n", status_str(st));
         return 1;
     }
-    if (!strcmp(argv[1], "good")) {
+    if (mode == GOOD) {
         expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    } else if (mode == NOKEY) {
+        expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+        b.flags = UPDATE_OFFER_CHECK_ONLY;
+        expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+        b.flags = UPDATE_OFFER_WRITE;
+        expect("no key, written to the stick", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+    } else if (mode == WRITEFAIL) {
+        write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
     } else {
-        bad_files(&b);
-        bad_manifests(&b);
-        expect("bad magic", &b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
-        expect("one handle", &b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-        b.flags = UPDATE_OFFER_CHECK_ONLY << 1;
-        expect("unknown flag", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-        b.flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
-        expect("check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
-        b.flags = 0;
-        other_net(&b);
-        not_a_kernel();
+        bad(&b);
     }
     printf("updtest: %s: %s\n", argv[1], failures ? "FAILED" : "PASS");
     return failures ? 1 : 0;

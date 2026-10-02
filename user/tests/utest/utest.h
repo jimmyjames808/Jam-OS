@@ -292,6 +292,14 @@ bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
 bool t_netsock_len_lies(void);
 bool t_netsock_dhcp(void);
+/* netrings.c: sockets' rings against netstack: the fair shares, a hostile
+ * program's rings, real UDP sockets in a wait set; and libos against a
+ * netstack that lies (netsock_len_lies). */
+bool t_netsock_shares(void);
+bool t_netsock_hostile_rings(void);
+bool t_netwait_udp(void);
+/* netbench.c: datagrams through a socket and netstack, timed (BENCH.md). */
+bool t_netsock_bench(void);
 /* netlisten.c: the listen permission (netstack's listen.h, <wants.h>'s
  * `svc net listen`); sntp.c: bin/sntp's request and checks (ntp.c). */
 bool t_netlisten_udp(void);
@@ -365,12 +373,14 @@ bool t_dnsres_hostile(void);
 bool t_dnsd_sockets(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
- * <updwire.h>); updfetch.c: the fetcher's window against a fake server
- * (<updfetch.h>); netlog.c: netlog's datagrams and sender (<netlog.h>). */
+ * <updwire.h>) and the manifest's signature; updfetch.c: the fetcher's
+ * window against a fake server (<updfetch.h>); netlog.c: netlog's
+ * datagrams and sender (<netlog.h>). */
 bool t_update_manifest(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
+bool t_update_signature(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);

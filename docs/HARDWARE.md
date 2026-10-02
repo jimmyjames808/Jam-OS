@@ -207,7 +207,10 @@ make flash                       # or: make flash DEV=/dev/diskN
 boot image's `build.txt`: `network default of this build: VLAN 21`) and,
 for an untagged build (made without `local.mk`) or an old one that
 doesn't say, asks before it goes on; then it finds the one external disk
-with Jam OS's two partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`
+with Jam OS's two partitions, mounts its ESP, keeps the stick's kernel and bootfs as the
+previous build (copied to `prev-jamos.elf` and `prev-bootfs.img`, the
+boot menu's "Jam OS (previous build)", replacing an older one; the PC's
+`update -w` does the same), copies the kernel, the bootfs and `limine.conf`
 under new names (`jamos.elf.new`, ...), compares all three, renames them
 over the old ones, compares again, and ejects the stick. It asks for your
 password: macOS does not mount an MBR partition of type 0xEF by itself,

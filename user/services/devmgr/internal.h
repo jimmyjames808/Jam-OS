@@ -52,11 +52,12 @@
 /* What a channel of devmgr's may ask (chans.c): the query channel the
  * queries, but never a device that has a device channel; a device channel
  * the queries about its own device alone; the control channel everything
- * (<devmgr.h> "Trust"). */
+ * but ESP_WRITE; init's ESP channel ESP_WRITE alone (<devmgr.h> "Trust"). */
 enum level {
     LEVEL_QUERY,
     LEVEL_DEVICE,
     LEVEL_CONTROL,
+    LEVEL_ESP,
 };
 
 /* Which channel a request came on, for request.c. */
@@ -111,7 +112,8 @@ struct binding {
     handle_t            ctl;        /* BIND_FS: our end of its `fsctl` channel (0: none) */
     /* BIND_FS on a disk that isn't the boot disk (disk.c): a /usbN mount. */
     bool                other;      /* it is one: never given FAT_ARG_FORMAT */
-    bool                rw;         /* its `block` channel is opened read-write (`mount -w`) */
+    bool                rw;         /* its `block` channel is opened read-write (`mount -w`;
+                                     * the boot disk's ESP: init's ESP_WRITE) */
     bool                ready;      /* it answered its first fs.stat: a mount */
     uint8_t             usbn;       /* the N of /usbN */
     uint32_t            probe;      /* that fs.stat's transaction id */
@@ -283,6 +285,11 @@ const char *fs_format_arg(const struct binding *b);
  * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
  * isn't serving. */
 status_t disk_remount(unsigned n, bool test, bool writable);
+/* DEVMGR_ESP_WRITE: the boot disk's ESP read-write (*out: a channel to its
+ * service, which is no mount meanwhile) or read-only again (out unused).
+ * ERR_NOT_FOUND: no boot disk with an ESP service; ERR_BAD_STATE: it
+ * isn't serving. */
+status_t disk_esp_write(bool writable, handle_t *out);
 /* A BIND_FS binding's handle for its service: FAT_SR_BLOCK, a new `block`
  * channel on its partition. ERR_PEER_CLOSED: the disk is gone. */
 status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);

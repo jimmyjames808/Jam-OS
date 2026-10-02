@@ -108,6 +108,9 @@
  *     the checks (address, port, length) run on the copies; netstack never
  *     keeps a pointer into a ring (lwIP gets copies, TCP_WRITE_FLAG_COPY);
  *   - after SOCKRING_END, bytes the producer adds are ignored and counted;
+ *   - a ring that was out of range or held a bad record is looked at again
+ *     only when the program signals SOCKRING_SIG_TX, so garbage costs
+ *     netstack one look a signal, not one a turn;
  *   - signals: `to_stack` is bound PERSISTENT, so a program that signals in
  *     a loop costs netstack one coalesced packet and a look at its own rings.
  * The program treats netstack's side the same way (the same code): netstack
@@ -137,7 +140,11 @@
  * rings, unmaps the VMO, shrinks it to 0 bytes (so no page it was charged
  * for outlives the socket in a program's hands) and closes its handles. A
  * program unmaps the VMO before it closes the channel: touching the mapping
- * afterwards faults. Closing an opener closes its sockets the same way.
+ * afterwards faults. netstack never shrinks or unmaps while the program's
+ * end of the channel is open (a wait set may read the rings until it sees
+ * SIG_PEER_CLOSED): a socket whose opener closes is only ended (state
+ * CLOSED, error ERR_PEER_CLOSED; no more datagrams either way) and kept,
+ * still counted, until the program closes it.
  * What netstack has not taken from the tx ring by then is dropped; a stream
  * that must be sure its bytes went sets SOCKRING_END and waits for the
  * status line to say the direction is done before it closes.

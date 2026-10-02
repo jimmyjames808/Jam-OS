@@ -5,27 +5,40 @@
 # channel of its own with the svc protocol's connect (abi/idl/svc.idl): a
 # reply that comes later (an echo, a wait) goes to that caller's channel
 # only. The shared channel itself answers connect, `iface` and `counts`.
+# The same protocol is served on a second shared channel, /svc/net-sys,
+# which init gives only the network's own services (dns, netlog, update;
+# never a program from /data): its openers are SYSTEM openers, which may
+# use a reserve of netstack's openers, sockets, waits and ring bytes that
+# ordinary programs' openers can't (<net.h> NET_PROG_*).
 # <net.h> has the client side (blocking helpers for programs, forms that
 # don't wait for services' loops) and the limits; docs/M9-PLAN.md
-# "Programs and sockets" the design.
+# "Programs and sockets" and docs/M9.5-PLAN.md the design.
 #
 # Addresses are IPv4 addresses as numbers, the first byte highest
 # (10.2.21.5 is 0x0a021505); ports are numbers. A datagram is at most
 # NET_DGRAM_MAX (1472) bytes: one Ethernet frame, never fragmented.
 #
 # Two kinds of channel speak this protocol:
-# - an opener's channel: iface, wait_change, counts, chip_counts, udp, echo.
-#   At most NET_OPENERS openers (connect: ERR_NO_RESOURCES). Closing it
-#   closes its sockets too.
-# - a socket's channel (from `udp`, or netctl's dhcp_open): the sock_*
-#   methods. Closing it closes the socket.
+# - an opener's channel: iface, wait_change, counts, chip_counts, udp,
+#   udp_rings, echo. At most NET_OPENERS openers (connect: ERR_NO_RESOURCES;
+#   NET_PROG_OPENERS of them ordinary ones). Closing it closes its sockets
+#   too.
+# - a socket's channel (from `udp` or `udp_rings`, or netctl's dhcp_open):
+#   the sock_* methods. Closing it closes the socket.
 # A method sent to the other kind of channel is ERR_NOT_SUPPORTED.
 #
-# Limits, so one program can't use netstack up: NET_SOCKETS_PER_OPENER
-# (16) sockets an opener, NET_SOCKETS_MAX (32) in all; NET_LATER_PER_OPENER
-# (8) waits, echoes and chip_counts in flight an opener; NET_RX_QUEUE (32)
-# datagrams queued a socket (one more that arrives is dropped and counted:
-# netstack never waits for a reader).
+# A socket's datagrams travel through its rings (<sockring.h>: one VMO
+# with a tx and an rx ring, and two events), never in a call: udp_rings
+# makes a socket with its rings, sock_rings gives a socket its rings.
+#
+# Limits, so one program can't use netstack up (<net.h>):
+# NET_SOCKETS_PER_OPENER (16) sockets an opener, NET_SOCKETS_MAX (48) in
+# all, NET_PROG_SOCKETS (24) of them ordinary openers'; NET_LATER_PER_OPENER
+# (8) waits, echoes and chip_counts in flight an opener; ring bytes
+# (sockring_bytes) SOCKRING_OPENER_BYTES an opener, SOCKRING_TOTAL_BYTES in
+# all, NET_PROG_RING_BYTES of them ordinary openers'. A datagram that
+# doesn't fit a socket's rx ring is dropped and counted (netstack never
+# waits for a reader).
 #
 # Reconnect: when netstack ends, every opener's and socket's channel sees
 # ERR_PEER_CLOSED; open /svc/net again (svc_get does), whose connect waits
@@ -60,14 +73,15 @@ protocol net 29
 # before the driver answered.
 4  chip_counts  ()  -> (u8[256] counts) later
 # On an opener's channel: a UDP socket on local port `port`, any local
-# address. port 0: netstack picks one (49152 and up). Results: `socket`,
-# a channel of its own that speaks the sock_* methods (closing it closes
-# the socket), and its port. ERR_ACCESS_DENIED: a port below 1024 (only
-# netctl's DHCP socket has one), or one below 49152 on an opener that
-# didn't come through /svc/net-listen (the listen permission, netstack's
-# listen.h); ERR_ALREADY_BOUND: the port is taken;
-# ERR_NO_RESOURCES: the opener has NET_SOCKETS_PER_OPENER sockets, or
-# NET_SOCKETS_MAX are open.
+# address, without its rings yet (sock_rings gives them). port 0: netstack
+# picks one (49152 and up). Results: `socket`, a channel of its own that
+# speaks the sock_* methods (closing it closes the socket), and its port.
+# ERR_ACCESS_DENIED: a port below 1024 (only netctl's DHCP socket has
+# one), or one below 49152 on an opener that didn't come through
+# /svc/net-listen (the listen permission, netstack's listen.h);
+# ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: the opener has
+# NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
+# ordinary opener's NET_PROG_SOCKETS are.
 5  udp  (u16 port)  -> (handle socket, u16 port)
 # On an opener's channel: an ICMP echo request (a ping) to `address` with
 # `size` bytes of data (0..NET_DGRAM_MAX) and sequence number `seq`, from
@@ -80,31 +94,33 @@ protocol net 29
 # link down, no route; or an echo with this seq to this address is in
 # flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already).
 6  echo  (u32 address, u16 seq, u16 size, u32 timeout_ms)  -> (u32 rtt_us, u8 ttl, u16 size) later
+# On an opener's channel: udp(port) and the socket's sock_rings(tx_bytes,
+# rx_bytes) in one call: the socket's channel, its rings' VMO and events
+# (<sockring.h>: SOCKRING_VMO_RIGHTS, SOCKRING_TO_STACK_RIGHTS,
+# SOCKRING_TO_PROG_RIGHTS; datagram framing), its port and the rings'
+# sizes. The errors of both.
+15  udp_rings  (u16 port, u32 tx_bytes, u32 rx_bytes)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u16 port, u32 tx_bytes, u32 rx_bytes)
 
-# On a socket's channel: send `len` bytes of `data` (the rest is ignored)
-# to address:port. Address 0 and port 0: the peer sock_connect set
-# (ERR_BAD_STATE if none). ERR_INVALID_ARGS: len over NET_DGRAM_MAX, port
-# 0, or an address a program can't send to (0.0.0.0/8, 127.0.0.0/8,
-# multicast, 240.0.0.0/4, a broadcast address: only the DHCP socket sends
-# to 255.255.255.255, and only to port 67); ERR_BAD_STATE: no address, the
-# link down, no route; ERR_NO_MEMORY: netstack's buffers are full;
-# ERR_NO_RESOURCES: the card's transmit ring was full. OK means the
-# datagram went to the card (or waits for the peer's ARP answer), not
-# that it arrived.
-16  sock_send_to  (u32 address, u16 port, u16 len, u8[1472] data)  -> ()
-# On a socket's channel: the next datagram queued for this socket: who
-# sent it, its port, its length and bytes (the rest of `data` is 0), and
-# `dropped`, datagrams this socket has dropped (its queue was full) since
-# it opened. Waits up to timeout_ms (0: ERR_SHOULD_WAIT at once if none is
-# queued; NET_WAIT_FOREVER: no timeout); ERR_TIMED_OUT then. One sock_recv
-# waits at a time: ERR_BAD_STATE for a second.
-17  sock_recv  (u32 timeout_ms)  -> (u32 address, u16 port, u16 len, u32 dropped, u8[1472] data) later
-# On a socket's channel: from now on only datagrams from address:port are
-# queued (others are dropped, not counted as dropped), and sock_send_to to
-# 0:0 goes there. Address 0 and port 0: any sender again. Datagrams queued
-# already stay. ERR_INVALID_ARGS: an address sock_send_to refuses;
-# ERR_NOT_SUPPORTED on the DHCP socket.
+# Ordinals 16 and 17 are not used again.
+
+# On a socket's channel: from now on only datagrams from address:port go
+# into its rx ring (others are dropped, not counted as dropped), and a tx
+# record to 0:0 goes there. Address 0 and port 0: any sender again.
+# Datagrams in the ring already stay. ERR_INVALID_ARGS: an address a
+# program can't send to; ERR_NOT_SUPPORTED on the DHCP socket.
 18  sock_connect  (u32 address, u16 port)  -> ()
 # On a socket's channel: its local port, the peer sock_connect set (0: none),
-# datagrams queued now, and dropped since it opened (its queue was full).
+# bytes waiting in its rx ring now, and datagrams dropped since it opened
+# (its rx ring was full; also the status line's rx_dropped).
 19  sock_state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
+# On a socket's channel: the socket's rings (<sockring.h>, datagram
+# framing): their VMO and events with the rights the header names, and
+# the rings' sizes. tx_bytes and rx_bytes: 0 for SOCKRING_UDP_TX and
+# SOCKRING_UDP_RX, else a ring size (sockring_size_ok). After it the
+# socket's datagrams go only through the rings: a tx record netstack
+# refuses (an address a program can't send to, port 0, no route) counts in
+# the status line's tx_refused, with its reason in `error`, and a datagram
+# that doesn't fit the rx ring in rx_dropped. Once a socket: ERR_BAD_STATE
+# for a second. ERR_INVALID_ARGS: a size not allowed; ERR_NO_RESOURCES:
+# over the opener's or all sockets' ring bytes; ERR_NO_MEMORY: no memory.
+20  sock_rings  (u32 tx_bytes, u32 rx_bytes)  -> (handle ring, handle to_stack, handle to_prog, u32 tx_bytes, u32 rx_bytes)

@@ -1,12 +1,13 @@
 /* utest: /svc/net against programs that take too much or send nonsense,
  * and netctl's DHCP socket, through bin/netstack over the fake driver
- * (netdrv.h; netsock.c has the ordinary use). The limits (openers,
- * sockets per opener and in all, requests in flight), hostile messages on
- * every kind of channel, closing in the middle of a receive or an echo,
- * a slow reader whose queue fills while everyone else is served at once
- * (the slow-peer rule), and the DHCP socket's broadcasts from 0.0.0.0,
- * which no program's socket can send. netdrv_stop checks that netstack's
- * job ends empty each time. */
+ * (netdrv.h; netsock.c has the ordinary use, netrings.c the rings' abuse
+ * and the fair shares). The limits (openers, sockets per opener, the
+ * ordinary openers' shares and the totals, requests in flight), hostile
+ * messages on every kind of channel, closing in the middle of a receive or
+ * an echo, a slow reader whose rx ring fills while everyone else is served
+ * at once (the slow-peer rule), and the DHCP socket's broadcasts from
+ * 0.0.0.0, which no program's socket can send. netdrv_stop checks that
+ * netstack's job ends empty each time. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -54,42 +55,75 @@ static bool counters(struct net_counters *c)
 
 /* ---- limits ------------------------------------------------------------------------ */
 
+/* An opener of the system channel (/svc/net-sys). */
+static bool sys_opener(handle_t *out)
+{
+    CHECK_ST(svc_connect_until(netdrv_net_sys(), now() + NETDRV_WAIT, out), OK);
+    return true;
+}
+
+/* n sockets on opener o into s[*k...]. */
+static bool socks(handle_t o, struct net_sock *s, unsigned *k, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++, (*k)++)
+        CHECK_ST(net_udp_open(o, 0, &s[*k]), OK);
+    return true;
+}
+
 bool t_netsock_limits(void)
 {
     static handle_t o[NET_OPENERS];
     static struct net_sock s[NET_SOCKETS_MAX];
+    const unsigned np = NET_PROG_OPENERS;
     struct net_sock x;
     struct net_counters c;
     handle_t extra;
+    unsigned k = 0;
     CHECK(netdrv_start());
-    for (unsigned i = 0; i < NET_OPENERS; i++)
+    /* Openers: ordinary ones (either of their channels) up to their share,
+     * system ones up to the total. */
+    for (unsigned i = 0; i < np; i++)
         CHECK(opener(&o[i]));
     CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &extra), ERR_NO_RESOURCES);
-    for (unsigned k = 0; k < NET_SOCKETS_PER_OPENER; k++) {
-        CHECK_ST(net_udp_open(o[0], 0, &s[k]), OK);
-        CHECK_ST(net_udp_open(o[1], 0, &s[NET_SOCKETS_PER_OPENER + k]), OK);
-    }
+    CHECK_ST(svc_connect_until(netdrv_net_listen(), now() + NETDRV_WAIT, &extra),
+             ERR_NO_RESOURCES);
+    for (unsigned i = np; i < NET_OPENERS; i++)
+        CHECK(sys_opener(&o[i]));
+    CHECK_ST(svc_connect_until(netdrv_net_sys(), now() + NETDRV_WAIT, &extra), ERR_NO_RESOURCES);
+    /* Sockets: NET_SOCKETS_PER_OPENER an opener, NET_PROG_SOCKETS for the
+     * ordinary ones together, NET_SOCKETS_MAX in all. */
+    CHECK(socks(o[0], s, &k, NET_SOCKETS_PER_OPENER));
     CHECK_ST(net_udp_open(o[0], 0, &x), ERR_NO_RESOURCES);   /* its 16 */
-    CHECK_ST(net_udp_open(o[2], 0, &x), ERR_NO_RESOURCES);   /* the 32 */
+    CHECK(socks(o[1], s, &k, NET_PROG_SOCKETS - NET_SOCKETS_PER_OPENER));
+    CHECK_ST(net_udp_open(o[2], 0, &x), ERR_NO_RESOURCES);   /* the programs' share */
+    CHECK(socks(o[np], s, &k, NET_SOCKETS_PER_OPENER));
+    CHECK(socks(o[np + 1], s, &k, NET_SOCKETS_MAX - k));
+    CHECK_ST(net_udp_open(o[np + 2], 0, &x), ERR_NO_RESOURCES);   /* all of them */
     CHECK(counters(&c));
     CHECK(c.openers == NET_OPENERS && c.sockets == NET_SOCKETS_MAX);
+    CHECK(c.refused_shares >= 3);
     net_close(&s[0]);
     EVENTUALLY_OK(net_udp_open(o[2], 0, &x));
     net_close(&x);
-    /* An opener's end closes its sockets, and frees its slot. */
+    /* An opener's end ends its sockets (their status says so; they stay
+     * until the program closes them), and frees its slot. */
     jam_handle_close(o[1]);
-    for (unsigned k = 0; k < NET_SOCKETS_PER_OPENER; k++) {
-        signals_t seen;
-        CHECK_ST(jam_object_wait_one(s[NET_SOCKETS_PER_OPENER + k].ch, SIG_PEER_CLOSED,
-                                     now() + NETDRV_WAIT, &seen), OK);
-        net_close(&s[NET_SOCKETS_PER_OPENER + k]);
+    for (k = NET_SOCKETS_PER_OPENER; k < NET_PROG_SOCKETS; k++) {
+        struct sockring_status ss;
+        uint64_t until = now() + NETDRV_WAIT;
+        do {
+            sockring_status_get(&s[k].r, &ss);
+        } while (ss.state != SOCKRING_STATE_CLOSED && now() < until);
+        CHECK_EQ(ss.state, SOCKRING_STATE_CLOSED);
+        CHECK_ST(ss.error, ERR_PEER_CLOSED);
+        net_close(&s[k]);
     }
     EVENTUALLY_OK(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &o[1]));
     /* Requests in flight: NET_LATER_PER_OPENER, then refused. */
     struct net_info in;
     CHECK_ST(net_info(o[4], &in), OK);
     uint32_t first = txc + 1;
-    for (unsigned k = 0; k <= NET_LATER_PER_OPENER; k++)
+    for (unsigned i = 0; i <= NET_LATER_PER_OPENER; i++)
         CHECK_ST(net_wait_change_send(o[3], idl_txid_next(&txc), in.version, NET_WAIT_FOREVER),
                  OK);
     _Alignas(8) uint8_t rep[NET_REP_MAX];
@@ -104,13 +138,13 @@ bool t_netsock_limits(void)
     CHECK_EQ(c.later, NET_LATER_PER_OPENER);
     for (unsigned i = 0; i < NET_OPENERS; i++)
         jam_handle_close(o[i]);
-    for (unsigned k = 1; k < NET_SOCKETS_PER_OPENER; k++)
-        net_close(&s[k]);
+    for (k = 1; k < NET_SOCKETS_MAX; k++)
+        net_close(&s[k]);   /* nothing to do for the ones closed already */
     uint64_t end = now() + NETDRV_WAIT;
     do {
         CHECK(counters(&c));
-    } while ((c.openers || c.sockets || c.later) && now() < end);
-    CHECK(!c.openers && !c.sockets && !c.later);
+    } while ((c.openers || c.sockets || c.later || c.ring_bytes) && now() < end);
+    CHECK(!c.openers && !c.sockets && !c.later && !c.ring_bytes);
     CHECK(netdrv_stop());
     return true;
 }
@@ -154,7 +188,7 @@ static bool garbage(handle_t ch, status_t big)
     CHECK(raw(ch, &h, sizeof(h), 0, ERR_NOT_SUPPORTED));
     h.ordinal = NETCTL_INFO;   /* another protocol's method */
     CHECK(raw(ch, &h, sizeof(h), 0, ERR_NOT_SUPPORTED));
-    struct net_sock_send_to_req q = { .txid = 78, .ordinal = NET_SOCK_SEND_TO, .len = 0xffff };
+    struct net_sock_connect_req q = { .txid = 78, .ordinal = NET_SOCK_CONNECT };
     CHECK(raw(ch, &q, sizeof(q) - 1, 0, ERR_INVALID_ARGS));   /* a byte short */
     memcpy(huge, &h, sizeof(h));
     CHECK(raw(ch, huge, sizeof(huge), 0, big));
@@ -183,17 +217,25 @@ bool t_netsock_hostile(void)
     CHECK_ST(net_sock_state(o, &a16, &a32, &a16, &a32, &a32), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(s.ch, &in), ERR_NOT_SUPPORTED);
     CHECK_ST(net_udp_until(netdrv_net(), now() + NETDRV_WAIT, 0, &h, &a16), ERR_NOT_SUPPORTED);
+    handle_t hs[3];
+    CHECK_ST(net_udp_rings_until(netdrv_net(), now() + NETDRV_WAIT, 0, 0, 0, &h, &hs[0], &hs[1],
+                                 &hs[2], &a16, &a32, &a32), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_sock_rings_until(o, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
+                                  &a32), ERR_NOT_SUPPORTED);
     CHECK_ST(net_echo_until(netdrv_net(), now() + NETDRV_WAIT, PEER_IP, 1, 0, 100, NULL, NULL,
                             NULL), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(netdrv_net(), &in), OK);   /* answered at once: allowed there */
-    /* Two sock_recvs at once: the second refused. */
-    CHECK_ST(net_sock_recv_send(s.ch, idl_txid_next(&txc), NET_WAIT_FOREVER), OK);
-    CHECK_ST(net_sock_recv_until(s.ch, now() + NETDRV_WAIT, NET_WAIT_FOREVER, &a32, &a16, &a16,
-                                 &a32, dg.data), ERR_BAD_STATE);
+    /* A socket's rings once; sizes that aren't ring sizes. */
+    CHECK_ST(net_sock_rings_until(s.ch, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
+                                  &a32), ERR_BAD_STATE);
+    static const uint32_t bad[] = { 1, 2048, 5000, SOCKRING_MAX * 2, 0xffffffffu };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        CHECK_ST(net_udp_rings_until(o, now() + NETDRV_WAIT, 0, bad[i], 0, &h, &hs[0], &hs[1],
+                                     &hs[2], &a16, &a32, &a32), ERR_INVALID_ARGS);
     /* Closing mid-receive, mid-echo and mid-wait: then their answers come. */
     CHECK(opener(&o2));
     CHECK_ST(net_udp_open(o2, 6001, &s2), OK);
-    CHECK_ST(net_recv_arm(&s2), OK);
+    CHECK_ST(net_sock_take(&s2, &dg), ERR_SHOULD_WAIT);   /* asleep on its rx ring */
     net_close(&s2);
     net_close(&s);
     CHECK(opener(&o3));
@@ -227,6 +269,8 @@ bool t_netsock_hostile(void)
 
 bool t_netsock_slow_reader(void)
 {
+    static uint8_t big[1000];
+    const uint32_t kept = SOCKRING_MIN / sockring_dgram_bytes(sizeof(big)), more = 8;
     handle_t a, b;
     struct net_sock sa, sb, silent;
     struct net_counters c0, c;
@@ -234,14 +278,16 @@ bool t_netsock_slow_reader(void)
     CHECK(netdrv_ping(1, true));
     CHECK(opener(&a));
     CHECK(opener(&b));
-    CHECK_ST(net_udp_open(a, 7000, &sa), OK);
+    CHECK_ST(net_udp_open_rings(a, 7000, 0, SOCKRING_MIN, &sa), OK);   /* a small rx ring */
     CHECK_ST(net_udp_open(a, 7002, &silent), OK);
     CHECK_ST(net_udp_open(b, 7001, &sb), OK);
-    CHECK_ST(net_recv_arm(&silent), OK);   /* waits for a peer that never answers */
+    CHECK_ST(net_sock_take(&silent, &dg), ERR_SHOULD_WAIT);   /* waits for a peer that never answers */
     CHECK(counters(&c0));
-    for (uint32_t i = 0; i < NET_RX_QUEUE + 8; i++)
-        CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 4000, OUR_IP, 7000, &i,
-                                          sizeof(i))));
+    for (uint32_t i = 0; i < kept + more; i++) {
+        memcpy(big, &i, sizeof(i));
+        CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 4000, OUR_IP, 7000, big,
+                                          sizeof(big))));
+    }
     /* Everyone else is served at once meanwhile. */
     uint64_t t0 = now();
     CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 4000, OUR_IP, 7001, "fast", 4)));
@@ -252,19 +298,19 @@ bool t_netsock_slow_reader(void)
     uint16_t port, pp;
     uint32_t peer, queued, dropped;
     CHECK_ST(net_sock_state(sa.ch, &port, &peer, &pp, &queued, &dropped), OK);
-    CHECK_EQ(queued, NET_RX_QUEUE);
-    CHECK_EQ(dropped, 8);
+    CHECK_EQ(queued, kept * sockring_dgram_bytes(sizeof(big)));   /* bytes in its rx ring */
+    CHECK_EQ(dropped, more);
     CHECK(counters(&c));
-    CHECK_EQ(c.dgrams_dropped - c0.dgrams_dropped, 8);
+    CHECK_EQ(c.dgrams_dropped - c0.dgrams_dropped, more);
     CHECK_EQ(c.rx_buffers_used, c0.rx_buffers_used);   /* lwIP's buffers aren't held */
-    CHECK_EQ(c.queued, NET_RX_QUEUE);
-    /* The queue, oldest first, then empty. */
-    for (uint32_t i = 0; i < NET_RX_QUEUE; i++) {
+    CHECK_EQ(c.queued, queued);
+    /* The ring, oldest first, then empty. */
+    for (uint32_t i = 0; i < kept; i++) {
         uint32_t v;
         CHECK_ST(net_recvfrom(&sa, &dg, now() + NETDRV_WAIT), OK);
         memcpy(&v, dg.data, sizeof(v));
         CHECK_EQ(v, i);
-        CHECK_EQ(dg.dropped, 8);
+        CHECK_EQ(dg.dropped, more);
     }
     CHECK_ST(net_recvfrom(&sa, &dg, 0), ERR_SHOULD_WAIT);
     CHECK_ST(net_sock_take(&silent, &dg), ERR_SHOULD_WAIT);
@@ -274,55 +320,6 @@ bool t_netsock_slow_reader(void)
     jam_handle_close(a);
     jam_handle_close(b);
     CHECK(netdrv_stop());
-    return true;
-}
-
-/* ---- a datagram longer than it can be (M9-REVIEW item 5) ----------------------------- */
-
-/* The sock_recv request s armed, read off the far end: its txid. */
-static bool recv_asked(handle_t far, uint32_t *txid)
-{
-    struct net_sock_recv_req q;
-    uint32_t n = 0, nh = 0;
-    CHECK_ST(drv_channel_read(far, &q, sizeof(q), &n, NULL, 0, &nh), OK);
-    CHECK(n == sizeof(q) && q.ordinal == NET_SOCK_RECV);
-    *txid = q.txid;
-    return true;
-}
-
-static bool recv_answer(handle_t far, uint32_t txid, uint16_t len)
-{
-    static struct net_sock_recv_rep r;
-    r = (struct net_sock_recv_rep){ .txid = txid, .status = OK, .address = PEER_IP,
-                                    .port = 4000, .len = len };
-    CHECK_ST(drv_channel_write(far, &r, sizeof(r), NULL, 0), OK);
-    return true;
-}
-
-/* libos's net_sock_take over a hand-made netstack: a reply saying more
- * bytes than a datagram holds (1472) is refused, so a caller never reads
- * past d->data; the socket then goes on. (net_recvfrom shares the check.) */
-bool t_netsock_len_lies(void)
-{
-    handle_t near, far;
-    struct net_sock s;
-    uint32_t txid;
-    CHECK_ST(jam_channel_create(&near, &far), OK);
-    net_sock_adopt(&s, near, 7000);
-    CHECK_ST(net_recv_arm(&s), OK);
-    CHECK(recv_asked(far, &txid));
-    CHECK(recv_answer(far, txid, NET_DGRAM_MAX + 1));
-    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
-    CHECK_ST(net_recv_arm(&s), OK);   /* as a caller does after a failed receive */
-    CHECK(recv_asked(far, &txid));
-    CHECK(recv_answer(far, txid, NET_DGRAM_MAX));
-    CHECK_ST(net_sock_take(&s, &dg), OK);
-    CHECK_EQ(dg.len, NET_DGRAM_MAX);
-    CHECK(recv_asked(far, &txid));   /* armed again by the take */
-    CHECK(recv_answer(far, txid, 0xffff));
-    CHECK_ST(net_sock_take(&s, &dg), ERR_OUT_OF_RANGE);
-    net_close(&s);
-    jam_handle_close(far);
     return true;
 }
 
@@ -422,7 +419,7 @@ bool t_netsock_dhcp(void)
     CHECK(netdrv_start());
     CHECK_ST(netctl_dhcp_open(netdrv_ctl(), &d), OK);
     CHECK_ST(netctl_dhcp_open(netdrv_ctl(), &d2), ERR_ALREADY_BOUND);
-    net_sock_adopt(&s, d, NET_PORT_DHCP_CLIENT);
+    CHECK_ST(net_sock_adopt(&s, d, NET_PORT_DHCP_CLIENT), OK);
     CHECK(opener(&o));
     CHECK_ST(net_udp_open(o, NET_PORT_DHCP_CLIENT, &x), ERR_ACCESS_DENIED);
     /* A program's socket gets no broadcast, and can't send one. */

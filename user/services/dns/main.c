@@ -100,7 +100,7 @@ static status_t setup(void)
         return ERR_BAD_HANDLE;
     }
     /* Before anything is served: nobody waits on us yet. */
-    status_t st = svc_open(SVC_NET, &D.net);
+    status_t st = net_svc_open(&D.net);
     if (st != OK) {
         printf("dns: no /svc/net (%s): ending\n", status_str(st));
         return st;

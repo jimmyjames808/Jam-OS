@@ -14,7 +14,7 @@
  * services that have a namespace get the part of it their grants name
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
- * etc left alone), netlog /svc/net, sntp /svc/net and /svc/dns, the
+ * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns, the
  * splash the mixer. init keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
@@ -61,9 +61,11 @@ struct follower {
 static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, NULL };
 static const char *const music_grants[] = { "*:r", "/svc/" SVC_AUDIO, NULL };
 static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
-static const char *const netlog_grants[] = { "/svc/" SVC_NET, NULL };
-static const char *const dns_grants[] = { "/svc/" SVC_NET, NULL };
-static const char *const sntp_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_DNS, NULL };
+/* The network's own services reach netstack through /svc/net-sys, its
+ * reserve no program can use up (libos's net_svc prefers it). */
+static const char *const netlog_grants[] = { "/svc/" SVC_NET_SYS, NULL };
+static const char *const dns_grants[] = { "/svc/" SVC_NET_SYS, NULL };
+static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS, NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
     [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },

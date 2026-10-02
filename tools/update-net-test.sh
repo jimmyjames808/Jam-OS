@@ -14,19 +14,24 @@
 #   3. truncated  the boot image served is half the manifest's size: the
 #                 fetch fails
 #   4. gone       the server stops answering mid-fetch: the fetch fails
-#   5. othernet   the manifest says the other network default (vlan21 for
-#                 an untagged build, untagged for a VLAN one): init
-#                 refuses it
-#   6. othernet   again, with `update -f -n`: taken when forced, checked,
+#   5. badsig     the manifest changed after it was signed: init refuses
+#                 the signature
+#   6. othernet   the manifest (signed) says the other network default
+#                 (vlan21 for an untagged build, untagged for a VLAN one):
+#                 init refuses it
+#   7. othernet   again, with `update -f -n`: taken when forced, checked,
 #                 nothing loaded
-#   7. `update -n`: build B fetched and checked, old -> new said, nothing
+#   8. `update -n`: build B fetched and checked, old -> new said, nothing
 #                 loaded
-#   8. `update`: build B stored and the shell reboots into it (kexec); the
+#   9. `update`: build B stored and the shell reboots into it (kexec); the
 #      next boot's `version` is B's, and /boot/update-marker.txt is there.
-# The running build stays untouched by 1-7: exactly one kexec_load (the
-# last), `version` still A's before it. Every frame the guest sent is tagged
-# VLAN 21 (the peer's and the pcap's checks, tools/qemu-test.sh: the run
-# boots with vlan=21, whatever this build's default).
+# Build A (the stick's) has a throwaway test key's public half
+# (tools/update-test-key.sh), and the server signs every manifest with it;
+# build B has it too. The running build stays untouched by 1-8: exactly one
+# kexec_load (the last), `version` still A's before it. Every frame the
+# guest sent is tagged VLAN 21 (the peer's and the pcap's checks,
+# tools/qemu-test.sh: the run boots with vlan=21, whatever this build's
+# default).
 # Usage: tools/update-net-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 out=$1
@@ -39,7 +44,8 @@ fail() {
 }
 
 img="$out/updnet.base.img"
-cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
+tools/update-test-key.sh "$out" "${QEMU_IMAGE:-build/jamos.img}" "$img" ||
+    { echo "update-net-test: can't make the test key's stick"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/updnet.settings"
 mmd -i "$img@@64M" ::/etc 2>/dev/null || true
@@ -62,12 +68,13 @@ marker="update-marker: build B $$"
 printf '%s\n' "$marker" > "$out/updnet-marker.txt"
 printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
     > "$out/updnet-build.txt"
-python3 tools/bootfs-edit.py build/bootfs.img "$out/bootfs-B.img" \
+python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "update-marker.txt=$out/updnet-marker.txt" "build.txt=$out/updnet-build.txt" ||
     { echo "update-net-test: can't make build B's boot image"; exit 1; }
 cat > "$out/updnet.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img",
- "plan": ["damage", "wronghash", "truncated", "gone", "othernet", "othernet"]}
+ "key": "$out/testkey/key1/update.key",
+ "plan": ["damage", "wronghash", "truncated", "gone", "badsig", "othernet", "othernet"]}
 EOF
 echo "update-net-test: build A $va, build B $vb"
 
@@ -89,6 +96,9 @@ wait 120 update: the server's answers don't match its manifest
 wait jam>
 send update
 wait 120 update: the server stopped answering: the fetch failed
+wait jam>
+send update
+wait 120 update: init refused it: the signature isn't this build's key's
 wait jam>
 send update
 wait 120 update: init refused it: its network default is
@@ -135,7 +145,9 @@ log="$out/updnet.log"
     fail "init didn't refuse the other network default"
 grep -aq "init: update: its network default is .*: taken (forced)" "$log" ||
     fail "init didn't take the other network default with -f"
-for plan in damage wronghash truncated gone othernet good; do
+[ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 1 ] ||
+    fail "the changed manifest wasn't refused for its signature"
+for plan in damage wronghash truncated gone badsig othernet good; do
     grep -aq "gets the plan '$plan'" "$out/updnet.peer.log" ||
         fail "the server never served the plan $plan"
 done

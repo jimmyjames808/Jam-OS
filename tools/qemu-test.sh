@@ -25,7 +25,9 @@
 #     sleep <seconds>
 # QEMU_SAVE=<file> keeps the run's stick image, with what the guest wrote
 # to it, as <file> (for a later run's QEMU_IMAGE: a second boot of the
-# same stick).
+# same stick). QEMU_BOOT_PREV=1 boots the stick's previous build
+# (boot/prev-jamos.elf and prev-bootfs.img, as the boot menu's "Jam OS
+# (previous build)" does) instead of boot/jamos.elf and bootfs.img.
 # The stick is the device "stick" on the block node "usbstick" (a
 # -blockdev, which outlives the device): a script pulls it with the monitor
 # command `device_del stick` and plugs it back with
@@ -74,10 +76,14 @@ mkdir -p "$out"
 
 img="$out/$name.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
+kfile=jamos.elf bfile=bootfs.img
+if [ "${QEMU_BOOT_PREV:-0}" = 1 ]; then   # the boot menu's "Jam OS (previous build)"
+    kfile=prev-jamos.elf bfile=prev-bootfs.img
+fi
 {
-    printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/jamos.elf\n'
-    printf '    module_path: boot():/boot/bootfs.img\n'
-    printf '    module_path: boot():/boot/jamos.elf\n    cmdline: %s\n' "$cmdline"
+    printf 'timeout: 0\n/test\n    protocol: limine\n    path: boot():/boot/%s\n' "$kfile"
+    printf '    module_path: boot():/boot/%s\n' "$bfile"
+    printf '    module_path: boot():/boot/%s\n    cmdline: %s\n' "$kfile" "$cmdline"
 } > "$out/$name.conf"
 mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"

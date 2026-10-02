@@ -56,13 +56,17 @@ none) main=net-untagged runs=net-untagged built=untagged says="untagged" ;;
 esac
 default=$(sed -n 's/^net //p' build/build.txt)
 img="$out/net-vlan.base.img"
-cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
+# The stick's build has a throwaway test key (tools/update-test-key.sh),
+# and the update server serves that build, signed with it.
+tools/update-test-key.sh "$out" "${QEMU_IMAGE:-build/jamos.img}" "$img" ||
+    { echo "net-vlan-test: can't make the test key's stick"; exit 1; }
 printf 'net.host = 10.2.21.174\n' > "$out/net-vlan.settings"
 mmd -i "$img@@64M" ::/etc 2>/dev/null || true
 mcopy -o -i "$img@@64M" "$out/net-vlan.settings" ::/etc/settings ||
     { echo "net-vlan-test: can't write the stick's settings"; exit 1; }
 cat > "$out/net-vlan.spec.json" <<EOF
-{"kernel": "build/jamos.elf", "bootfs": "build/bootfs.img", "plan": []}
+{"kernel": "build/jamos.elf", "bootfs": "$out/testkey/bootfs-key.img",
+ "key": "$out/testkey/key1/update.key", "plan": []}
 EOF
 # The untagged run's script: net-vlan.txt, with `net` saying untagged.
 sed 's/^wait VLAN 21$/wait , untagged, MAC/' tools/shell-tests/net-vlan.txt \

@@ -111,12 +111,10 @@ static void open_socket(uint64_t t)
 {
     handle_t h = HANDLE_INVALID;
     status_t st = netctl_dhcp_open_until(D.ctl, t + CALL_WAIT, &h);
+    if (st == OK)   /* its rings: a call that waits, but dhcp serves nobody */
+        st = net_sock_adopt(&D.s, h, NET_PORT_DHCP_CLIENT);
     if (st == OK) {
-        net_sock_adopt(&D.s, h, NET_PORT_DHCP_CLIENT);
-        st = jam_port_bind(D.port, h, KEY_SOCK, SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_PERSISTENT);
-        if (st == OK)
-            st = net_recv_arm(&D.s);
+        st = net_sock_bind(&D.s, D.port, KEY_SOCK, PORT_BIND_PERSISTENT);
         if (st != OK)
             net_close(&D.s);
     }
@@ -176,8 +174,6 @@ static void serve_socket(void)
         }
         if (st == OK && d.port == DHCP_SERVER_PORT)
             dhcp_input(&D.c, now(), d.data, d.len);
-        else if (st != OK)
-            (void)net_recv_arm(&D.s);   /* its recv failed: ask again */
     }
     D.more = true;   /* its budget is spent: the binding fires on edges only */
 }
