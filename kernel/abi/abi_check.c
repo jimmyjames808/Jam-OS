@@ -34,6 +34,8 @@ _Static_assert(sizeof(struct job_info) == 88, "job_info layout");
 _Static_assert(sizeof(struct process_info) == 32, "process_info layout");
 _Static_assert(sizeof(struct fb_info) == 32 && offsetof(struct fb_info, size) == 24,
                "fb_info layout");
+_Static_assert(sizeof(struct klog_line) == 16 && offsetof(struct klog_line, writer) == 8,
+               "klog_line layout");
 _Static_assert(sizeof(struct sys_info) == 144, "sys_info layout");
 _Static_assert(sizeof(struct cpu_stat) == 40, "cpu_stat layout");
 _Static_assert(sizeof(struct proc_stat) == 80, "proc_stat layout");

@@ -339,7 +339,15 @@ struct input_want {
     uint32_t reserved;    /* 0 */
 };
 
-/* console services (abi/syscalls.def 110-117) --------------------------------- */
+/* console services (abi/syscalls.def 110-119) --------------------------------- */
+
+/* klog_lines: who wrote the log line starting at byte `pos` of the log. */
+#define KLOG_WRITER_KERNEL  0ull            /* the kernel itself (never in a mark) */
+#define KLOG_WRITER_UNKNOWN 0xffffffffffffffffull   /* a copy (the panic screen's) */
+struct klog_line {
+    uint64_t pos;         /* where the line starts (klog_read's positions) */
+    uint64_t writer;      /* the writing process's koid, or KLOG_WRITER_* */
+};
 
 /* framebuffer_take: the boot framebuffer's geometry. The VMO covers
  * pitch * height bytes rounded up to a page; pixel (x, y) is the uint32_t

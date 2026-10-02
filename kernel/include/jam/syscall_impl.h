@@ -88,6 +88,7 @@ int64_t sysc_serial_open(handle_t root, uint64_t out);
 int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap);
 int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len);
 int64_t sysc_klog_name(handle_t reader, uint64_t name, uint64_t len);
+int64_t sysc_klog_lines(handle_t reader, uint64_t pos, uint64_t out, uint64_t cap, uint64_t known);
 int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on);
 int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
                                   uint64_t rights, uint32_t nhandles);

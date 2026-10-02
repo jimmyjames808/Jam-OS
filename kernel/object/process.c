@@ -49,6 +49,7 @@
 #include <jam/aspace.h>
 #include <jam/dbghook.h>
 #include <jam/irq.h>
+#include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -352,16 +353,24 @@ static enum out_kind out_add_locked(struct process *p, const char *buf, size_t n
     return kind;
 }
 
-/* No lock held. */
+/* No lock held. Each line is marked in the log as p's (klog_write_from),
+ * so a reader knows who wrote it whatever it says. */
 static void out_print(const struct process *p, const char *line, enum out_kind kind,
                       uint32_t dropped)
 {
-    if (dropped)
-        kprintf("[%s] (%u lines dropped: too much output)\n", p->name, dropped);
-    if (kind == OUT_REPORT)
-        report("%s", line);   /* prints it too */
-    else if (kind == OUT_PRINT)
-        kprintf("[%s] %s\n", p->name, line);
+    char buf[PROCESS_NAME_MAX + OUT_LINE + 8];   /* "[name] line\n" */
+    int n;
+    if (dropped) {
+        n = ksnprintf(buf, sizeof(buf), "[%s] (%u lines dropped: too much output)\n", p->name,
+                      dropped);
+        klog_write_from(p->base.koid, buf, (size_t)n < sizeof(buf) ? (size_t)n : sizeof(buf) - 1);
+    }
+    if (kind == OUT_REPORT) {
+        report_from(p->base.koid, line);   /* prints it too */
+    } else if (kind == OUT_PRINT) {
+        n = ksnprintf(buf, sizeof(buf), "[%s] %s\n", p->name, line);
+        klog_write_from(p->base.koid, buf, (size_t)n < sizeof(buf) ? (size_t)n : sizeof(buf) - 1);
+    }
 }
 
 size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)

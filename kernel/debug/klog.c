@@ -9,7 +9,17 @@
  * every other control character (escape sequences, C1's CSI) and each bad
  * piece of ill-formed UTF-8 (<jam/utf8.h>) goes in as one '?'. So a
  * process name or a program's line can't move a terminal's cursor, and
- * readers (the console, logd's files, dmesg) can trust what they read. */
+ * readers (the console, logd's files, dmesg) can trust what they read.
+ *
+ * Who wrote each line: a line a process starts (its debug_write and
+ * debug_report lines) gets a mark with the process's koid in a second ring,
+ * `marks`, under the same lock; the kernel's own lines get none, so a ktest
+ * flooding the log doesn't push the processes' marks out. `known_from` is
+ * where the marks are complete: a line at or past it with no mark is the
+ * kernel's, an older one's writer is not known any more. A writer that
+ * isn't the one whose line is unfinished starts a line of its own. A
+ * line's text can say anything ("[init] ...", a kernel-looking "user:
+ * process ..."): its mark is what a reader trusts (klog_lines). */
 #include <stdint.h>
 #include <jam/fbcon.h>
 #include <jam/klog.h>
@@ -27,6 +37,13 @@ static uint64_t head;           /* total bytes ever written; ring_lock (klog_hea
                                    without, so it is stored atomically) */
 static spinlock_t ring_lock = SPINLOCK_INIT("klog");
 static bool at_line_start = true;
+static uint64_t line_writer;    /* the writer of the unfinished line; ring_lock */
+
+/* KLOG_MARKS (klog.h): a power of two. Mark i of all ever made is at
+ * i % KLOG_MARKS; positions only grow, so the kept ones are sorted. */
+static struct klog_line marks[KLOG_MARKS];
+static uint64_t nmarks;         /* marks ever made; ring_lock */
+static uint64_t known_from;     /* every process line from here on has its mark; ring_lock */
 
 /* One lock across ring, serial and console so lines from different CPUs
  * never interleave. */
@@ -65,13 +82,36 @@ static void emit_clean(const char *s, size_t len)
     emit(s + run, len - run);
 }
 
-/* Every line starts with seconds since the TSC was calibrated. Interrupt
- * handlers may log: the lock is always taken with interrupts off. */
+/* ring_lock held: a line starts at the head, written by `writer`. */
+static void mark_locked(uint64_t writer)
+{
+    line_writer = writer;
+    if (writer == KLOG_WRITER_KERNEL)
+        return;   /* no mark: the kernel's */
+    struct klog_line *m = &marks[nmarks & (KLOG_MARKS - 1)];
+    if (nmarks >= KLOG_MARKS)
+        known_from = m->pos + 1;   /* that line's mark goes now */
+    *m = (struct klog_line){ .pos = head, .writer = writer };
+    nmarks++;
+}
+
 void klog_write(const char *s, size_t len)
 {
+    klog_write_from(KLOG_WRITER_KERNEL, s, len);
+}
+
+/* Every line starts with seconds since the TSC was calibrated. Interrupt
+ * handlers may log: the lock is always taken with interrupts off. */
+void klog_write_from(uint64_t writer, const char *s, size_t len)
+{
     uint64_t f = spin_lock_irqsave(&ring_lock);
+    if (len && !at_line_start && writer != line_writer) {
+        emit("\n", 1);   /* someone else's unfinished line: ours is a line of its own */
+        at_line_start = true;
+    }
     while (len) {
         if (at_line_start) {
+            mark_locked(writer);
             char stamp[24];
             uint64_t ns = tsc_hz ? uptime_ns() : 0;
             int n = ksnprintf(stamp, sizeof(stamp), "[%5lu.%06lu] ", ns / 1000000000,
@@ -96,9 +136,19 @@ void klog_write(const char *s, size_t len)
 void klog_write_raw(const char *s, size_t len)
 {
     uint64_t f = spin_lock_irqsave(&ring_lock);
-    emit_clean(s, len);
-    if (len)
-        at_line_start = s[len - 1] == '\n';
+    /* A copy of lines whose writers aren't known any more: each its mark. */
+    for (size_t i = 0; i < len;) {
+        if (at_line_start)
+            mark_locked(KLOG_WRITER_UNKNOWN);
+        size_t chunk = 0;
+        while (i + chunk < len && s[i + chunk] != '\n')
+            chunk++;
+        at_line_start = i + chunk < len;
+        if (at_line_start)
+            chunk++;
+        emit_clean(s + i, chunk);
+        i += chunk;
+    }
     spin_unlock_irqrestore(&ring_lock, f);
 }
 
@@ -158,4 +208,24 @@ size_t klog_read_kept(uint64_t pos, uint64_t keep, char *buf, size_t cap, uint64
 size_t klog_read_at(uint64_t pos, char *buf, size_t cap, uint64_t *first)
 {
     return klog_read_kept(pos, KLOG_SIZE, buf, cap, first);
+}
+
+size_t klog_lines(uint64_t pos, struct klog_line *out, size_t cap, uint64_t *known)
+{
+    uint64_t f = spin_lock_irqsave(&ring_lock);
+    /* The first kept mark at or past pos: a binary search over [lo, nmarks). */
+    uint64_t lo = nmarks > KLOG_MARKS ? nmarks - KLOG_MARKS : 0, hi = nmarks;
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        if (marks[mid & (KLOG_MARKS - 1)].pos < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    size_t n = 0;
+    for (; lo < nmarks && n < cap; lo++)
+        out[n++] = marks[lo & (KLOG_MARKS - 1)];
+    *known = known_from;
+    spin_unlock_irqrestore(&ring_lock, f);
+    return n;
 }

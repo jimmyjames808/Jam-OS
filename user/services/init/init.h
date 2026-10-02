@@ -129,6 +129,13 @@ status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_h
                    unsigned nx);
 /* The same with argv = { its path }. */
 status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx);
+/* writers.c: the table of log writers the console trusts (<logwriters.h>):
+ * made once, before the first console; a started devmgr's or logd's koid
+ * goes in (any other i is ignored); a read-only handle to it for a new
+ * console (HANDLE_INVALID if there is no table). */
+void     writers_init(void);
+void     writers_started(unsigned i, handle_t proc);
+handle_t writers_for_console(void);
 /* shell.c: every service that follows init's namespace gets it as it is now. */
 void     tell_mounts(void);
 

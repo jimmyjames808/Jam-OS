@@ -203,6 +203,15 @@
 # boot's log as <name>-crash.txt. Needs RIGHT_READ on a klog reader
 # (whoever follows the log names its copy).
 118 klog_name         status    handle_t reader, const char *name, uint64_t len
+# Who wrote the log's lines: the marks (struct klog_line) of the lines a
+# process wrote (its debug_write and debug_report lines) starting at or
+# past pos, in order, up to cap (at most 256 per call); the count. A
+# mark's writer is the process's koid, whatever the line's text says; the
+# kernel's own lines have no mark. *known gets where the marks are
+# complete: a line at or past it without one is the kernel's, an older
+# one's writer is not known (the kernel keeps the last 16384 marks).
+# Needs RIGHT_READ on a klog reader.
+119 klog_lines        i64       handle_t reader, uint64_t pos, struct klog_line *out, uint64_t cap, uint64_t *known
 
 # driver supervision and safe rebind ----------------------------------------
 # Bus Master Enable of the dma_cap's function, on (1) or off (0). Only the

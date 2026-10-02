@@ -579,6 +579,15 @@ jam_klog_name:
     ret
     .size jam_klog_name, . - jam_klog_name
 
+    .globl jam_klog_lines
+    .type jam_klog_lines, @function
+jam_klog_lines:
+    mov %rcx, %r10
+    mov $SYS_klog_lines, %eax
+    syscall
+    ret
+    .size jam_klog_lines, . - jam_klog_lines
+
     .globl jam_dma_cap_bus_master
     .type jam_dma_cap_bus_master, @function
 jam_dma_cap_bus_master:

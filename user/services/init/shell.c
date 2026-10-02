@@ -110,6 +110,7 @@ status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_h
     }
     s->running = true;
     s->started = now();
+    writers_started(i, s->proc);
     f->ns = ns;
     f->back = back;
     return OK;
@@ -323,6 +324,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         init_say("init: shell mode: no port (%s)", status_str(st));
         return false;
     }
+    writers_init();
     services_init(port, no_usb, splash, shell_arg);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);

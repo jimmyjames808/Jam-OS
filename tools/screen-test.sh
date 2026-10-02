@@ -8,7 +8,9 @@
 # above the prompt; `ktest` puts its log lines on the screen while it
 # runs. The log has the notices ("console: notice: ...") and exactly one
 # "a stick is at /usb0" before the pull (`mount -w` and `-r` said
-# nothing). Then a `verbose` boot: the log is on the shell's screen as
+# nothing), and none of the notices `utest impostor`'s lines would make if
+# the console trusted a line's name rather than the kernel's mark of its
+# writer. Then a `verbose` boot: the log is on the shell's screen as
 # before. QEMU_SMP passes through.
 # Usage: tools/screen-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
@@ -33,6 +35,13 @@ log="$out/$name.log"
 n=$(grep -ac "console: notice: a stick is at /usb0" "$log" || true)
 [ "$n" = 1 ] || { echo "$name: 'a stick is at /usb0' said $n times, want 1"; ok=0; }
 grep -aq "console: selftest PASSED" "$log" || { echo "$name: the console's selftest failed"; ok=0; }
+grep -aq "\[init\] init: bin/music ended 11 times" "$log" ||
+    { echo "$name: utest impostor's line in init's name is not in the log"; ok=0; }
+for fake in "music kept stopping" "the hid driver (usb 9:0)" "/data is full"; do
+    if grep -aq "console: notice: $fake" "$log"; then
+        echo "$name: a notice from an impostor: $fake"; ok=0
+    fi
+done
 if grep -aq "RESULTS (read these lines out)" "$log"; then
     echo "$name: a RESULTS box on a plain boot"; ok=0
 fi

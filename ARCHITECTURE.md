@@ -335,7 +335,10 @@ Every driver and service is a userspace process from the start.
   can be started (`starting`), so a failed start leaves it NEW and
   untouched. `debug_write` builds lines under a per-process spinlock but
   prints them with no lock held, 100 lines at once then 50/s per process
-  (the rest are dropped and counted).
+  (the rest are dropped and counted). The kernel log marks every line a
+  process writes with the process's koid (the kernel's own lines have no
+  mark), which `klog_lines` gives a reader: the name in front of a line is
+  only what its creator called the process, the mark is who wrote it.
 - `resource` is the root of hardware authority (MMIO ranges, PCI devices).
   Userboot hands init the root; init passes a PCI slice to devmgr, which
   gives each driver only its own device, BARs and interrupt.
@@ -1182,7 +1185,11 @@ decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
   in yellow (`user/services/console/notices.c`): another stick plugged
   in or pulled out, the Jam OS stick pulled out and back, `/data` full or
   not mounted, a service or driver that crashed and is being started
-  again or was given up on. Each is announced once things have settled
+  again or was given up on. Only lines the kernel marks as its own or as
+  init's, devmgr's or logd's real process count (`klog_lines`; init keeps
+  those three koids in a page the console reads, `<logwriters.h>`), so a
+  program that starts a process called "init" makes no notice. Each is
+  announced once things have settled
   (a remount says nothing), never twice within 30 s, at most four in
   10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
   comes, and the boot tests draw it from the kernel.
