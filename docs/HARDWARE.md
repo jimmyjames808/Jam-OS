@@ -136,7 +136,13 @@ bytes too. ([The result and the fix](M9-PLAN.md#r1-the-pc-result-and-the-transmi
 On 41ccd54 (boot-0073, the send test): 20 of 20 ARP probes to 10.2.21.1
 answered, each descriptor back from the chip 0.04 ms after its doorbell,
 and the chip's count of frames sent equal to the driver's.
-<!-- TODO(main session): the receive fix (the PC's receiving stopped about 75 s into boot-0075) and its PC result, once merged. -->
+Receiving stopped about 75 s into the first full boot (boot-0075): the
+chip clears each receive descriptor's buffer address (to 0) when it hands
+a frame back, so on the ring's second lap it had nowhere valid to write.
+The driver now writes the address with every hand-back, as rge does. On
+8ef3fac (the streamed logs of 2026-10-02 18:41): 7609 frames received in
+148 s, 0 missed, every descriptor's address cleared by the chip and set
+again; `ping 1.1.1.1`, `ping google.com`, `host`; `update` twice.
 
 **The switch port** is a trunk. Untagged it carries the home network
 (10.2.0.0/24); tagged it carries VLANs 10, 11, 20 and 21 (the probe saw

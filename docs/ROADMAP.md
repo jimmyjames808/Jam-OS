@@ -63,25 +63,23 @@ and the same commands with `vlan=off` sending nothing.
 **On the PC so far** (2026-10-02, [HARDWARE.md](HARDWARE.md#the-network)):
 the listen-only probe (the chip, the link, the trunk port); sending, after
 the transmit descriptor fix (20 of 20 ARP probes answered, the chip's
-count of frames sent equal to the driver's); the log reached the Mac.
-<!-- TODO(main session): the receive stall (receiving stopped about 75 s into the "Jam OS (network)" boot) and its fix. -->
+count of frames sent equal to the driver's); receiving, after the
+receive descriptor fix (it stopped about 75 s in: the chip wipes each
+receive descriptor's address, to 0, when it hands a frame back, and the
+driver now writes it again every time; 7609 frames in 148 s, 0 missed);
+`ping 1.1.1.1`, `ping google.com` and `host` from the PC; the Mac's pings
+answered; every boot's log on the Mac; and `update` from the Mac twice
+in a row, each new build running with no stick moved. The everyday boot
+is on the network since (the owner's call); "Jam OS (no network)" is
+`vlan=off`.
 
 **Left for M9:**
 1. The independent review and fix over all of M9 (the VLAN rule and the
    parsers first).
-2. On the PC, on one build, with `make flash`: the send test ("Jam OS
-   (network: send test)": 20 of 20 answered, `tx check: ... equal`); then
-   "Jam OS (network)" with `net.host = 10.2.21.174` in the settings and
-   the Mac running `tools/netlog-recv.py` and `tools/update-server.py`:
-   the link and a DHCP lease on VLAN 21, `ping 1.1.1.1`, `ping
-   one.one.one.one`, `host`, the Mac's pings answered over a long run,
-   `net stats` (the chip's frames sent equal to the driver's), the boot's
-   log on the Mac from its first line, and `make` on the Mac then
-   `update` on the PC running the new build.
-3. The sign-off: All tests and `soak 10` with the SanDisk mounted
-   read-write and pulled and replugged. Then M9 is done (HISTORY, the
-   version 0.0.29-m9), and the everyday boot binds the network chip (one
-   line in devmgr's match table).
+2. On the PC, on the reviewed build (`make flash`): a DHCP lease on
+   VLAN 21 (without `net.address`), then the sign-off: All tests and
+   `soak 10` with the SanDisk mounted read-write and pulled and
+   replugged. Then M9 is done (HISTORY, the version 0.0.29-m9).
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 

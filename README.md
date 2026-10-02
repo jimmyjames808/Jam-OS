@@ -78,10 +78,9 @@ a real desktop PC, which is where every milestone is tested.
   build without moving the stick ([below](#the-network)). `version`
   names the git commit a build was made from.
 
-Not yet: the network signed off on the PC (sending and the log to the Mac
-have run there; DHCP, DNS and `update` in QEMU only), power management.
+Not yet: the network signed off on the PC (everything but DHCP has run
+there: pings, names, the log to the Mac, `update`), power management.
 Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
-<!-- TODO(main session): once the PC's receive fix is merged and run, say so here. -->
 
 ## Build and run in QEMU
 
