@@ -154,20 +154,20 @@ static uint32_t find(uint64_t sector)
 static status_t place(uint64_t sector, uint32_t *at)
 {
     status_t st = held == HOLD_MAX ? disk_release() : OK;
+    if (st != OK)
+        return st;
     uint32_t r = runs;
-    while (st == OK && r > 0 && run_first[r - 1] + run_len[r - 1] != sector)
+    while (r > 0 && run_first[r - 1] + run_len[r - 1] != sector)
         r--;
-    if (st == OK && r == 0) {   /* follows no run */
-        if (runs == HOLD_RUNS)
-            st = disk_release();
+    if (r == 0) {   /* it follows no run: a new one */
+        if (runs == HOLD_RUNS && (st = disk_release()) != OK)
+            return st;
         r = runs++;
         run_first[r] = sector;
         run_len[r] = 0;
-    } else if (st == OK) {
+    } else {
         r--;
     }
-    if (st != OK)
-        return st;
     run_len[r]++;
     lba[held] = sector;
     run_of[held] = (uint8_t)r;
