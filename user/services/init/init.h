@@ -124,6 +124,7 @@ enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, 
 #define KEY_SPLASH   0x300u   /* the splash's channel (splash.c) */
 #define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
 #define KEY_UPDATE   0x500u   /* an update's offer channel (update.c) */
+#define KEY_NETCTL   0x600u   /* netstack's answers to init's netctl calls (net.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -221,13 +222,23 @@ void     settings_first_file(void);
 
 /* ---- net.c: the network services ------------------------------------------------ */
 
-/* netstack's control channel, made once before the loop. */
-void     net_init(void);
+/* netstack's control channel and /svc's network channels, made once
+ * before the loop; port: the loop's (netctl's answers come to it). */
+void     net_init(handle_t port);
 /* Start netstack (shell.c's NETSTACK) with the control channel's server
  * end and the network cards' device channels. */
 status_t net_start(void);
-/* /data/etc/settings' net.address to a running netstack (a short deadline). */
+/* /data/etc/settings' net.address to a running netstack: sent without
+ * waiting (a running DHCP client is stopped first; the address goes once
+ * its end has come, net_ended). */
 void     net_settings(void);
+/* KEY_NETCTL: netstack answered (the next call goes, or a failure is said). */
+void     net_netctl_event(void);
+/* At t: a netctl answer overdue is said and given up on. The next time
+ * one is due, or DEADLINE_NEVER. */
+uint64_t net_due(uint64_t t);
+/* Service i's end came to the loop (after services_closed's own work). */
+void     net_ended(unsigned i);
 /* devmgr ended: netstack, whose device channels were its, starts again. */
 void     net_devmgr_gone(void);
 /* netstack is given up on: calls waiting for it fail now. */

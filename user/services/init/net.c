@@ -63,16 +63,22 @@
  * The address: `net.address` in /data/etc/settings (<ipv4.h>
  * ipv4_config_parse: "10.2.21.50/24 10.2.21.1 10.2.21.1": address/prefix,
  * gateway, DNS servers) is given to netstack whenever it starts (again)
- * and whenever /data comes, with a short deadline: init's loop never waits
- * long for a service. Without it the DHCP client gets one. */
+ * and whenever /data comes. Without it the DHCP client gets one. init's
+ * loop never waits for netstack or the DHCP client: set_ipv4 and then
+ * set_dns are sent without waiting, and each answer is taken from the
+ * loop's port (KEY_NETCTL, net_netctl_event); an answer that doesn't come
+ * within CALL_WAIT is said once (net_due), and the next start of netstack
+ * or the next /data sends the address again. A DHCP client that runs when
+ * a static address appears is killed, and the address goes once its end
+ * has come to the loop (net_ended): the client shares netctl's client end,
+ * whose answers only one reader may take. */
 #include <idl/netctl.h>
 #include <ipv4.h>
 #include <settings.h>
 #include "init.h"
 
-#define CALL_WAIT      NS_PER_S
+#define CALL_WAIT      NS_PER_S          /* for netstack's answer to a netctl call */
 #define DHCP_DATA_WAIT (10 * NS_PER_S)   /* the DHCP client waits this long for /data */
-#define DHCP_STOP_WAIT NS_PER_S          /* for a stopped DHCP client to be gone */
 
 static handle_t ctl_srv, ctl_cli;   /* netctl's two ends, made once (0: none, or given up) */
 static handle_t net_srv, net_cli;   /* /svc/net's two ends, the same */
@@ -82,9 +88,22 @@ static bool     boot_id_known;
 static handle_t dns_srv, dns_cli;   /* /svc/dns's two ends, the same */
 static handle_t listen_srv, listen_cli;   /* /svc/net-listen's two ends, the same */
 static handle_t sys_srv, sys_cli;         /* /svc/net-sys's two ends, the same */
+static handle_t loop_port;                /* init's loop's port: netctl's answers */
 
-void net_init(void)
+/* The static address on its way to netstack (above, "The address"). */
+static struct {
+    bool               want;        /* to be sent: net_settings found one */
+    struct ipv4_config c;           /* it */
+    char               text[SETTINGS_VALUE_MAX];   /* as the settings say it */
+    uint32_t           last_txid;   /* idl_txid_next's counter */
+    uint32_t           txid;        /* the call whose answer is awaited (0: none) */
+    bool               dns;         /* that call is set_dns (else set_ipv4) */
+    uint64_t           deadline;    /* its answer by then (uptime ns) */
+} addr;
+
+void net_init(handle_t port)
 {
+    loop_port = port;
     handle_t log = startup_handle(SR_CRASHLOG);
     if (!log || jam_handle_duplicate(log, RIGHTS_BASIC | RIGHT_READ, &crashlog) != OK)
         crashlog = HANDLE_INVALID;   /* none: netlog sends only this boot's log */
@@ -175,28 +194,120 @@ static void no_dhcp(void)
         printf("init: net.address is set: the static address, no DHCP client\n");
         return;
     }
-    signals_t seen;
-    jam_job_kill(s->job);
-    (void)jam_object_wait_one(s->proc, SIG_TERMINATED, now() + DHCP_STOP_WAIT, &seen);
+    jam_job_kill(s->job);   /* its end comes to the loop: then the address goes (net_ended) */
     printf("init: net.address is set: the DHCP client is stopped, the static address wins\n");
+}
+
+/* No answer is awaited any more. */
+static void addr_idle(void)
+{
+    if (addr.txid)
+        (void)jam_port_unbind(loop_port, ctl_cli, KEY_NETCTL);   /* fired already: nothing to do */
+    addr.txid = 0;
+}
+
+/* Watch netctl's client end for the awaited answer: one ONCE binding (an
+ * older one replaced), which fires at once if the answer is there. */
+static status_t watch(void)
+{
+    (void)jam_port_unbind(loop_port, ctl_cli, KEY_NETCTL);   /* none: nothing to do */
+    return jam_port_bind(loop_port, ctl_cli, KEY_NETCTL, SIG_READABLE, PORT_BIND_ONCE);
+}
+
+static void addr_failed(status_t st)
+{
+    printf("init: settings: netstack didn't take net.address = %s (%s)\n", addr.text,
+           status_str(st));
+    addr_idle();
+    addr.want = false;   /* sent again by the next start of netstack, or the next /data */
+}
+
+/* Send the static address's next call (set_dns once set_ipv4 is taken), if
+ * netstack runs and no DHCP client does. */
+static void addr_send(bool dns)
+{
+    if (!addr.want || !ctl_cli || !svcs[NETSTACK].running || svcs[DHCP].running)
+        return;
+    addr_idle();   /* an older call's answer, if it still comes, is nobody's */
+    uint32_t txid = idl_txid_next(&addr.last_txid);
+    const struct ipv4_config *c = &addr.c;
+    status_t st = dns ? netctl_set_dns_send(ctl_cli, txid, c->dns[0], c->dns[1])
+                      : netctl_set_ipv4_send(ctl_cli, txid, c->address, c->mask, c->gateway);
+    if (st == OK)
+        st = watch();
+    if (st != OK) {
+        addr_failed(st);
+        return;
+    }
+    addr.txid = txid;
+    addr.dns = dns;
+    addr.deadline = now() + CALL_WAIT;
 }
 
 void net_settings(void)
 {
-    char v[SETTINGS_VALUE_MAX];
-    struct ipv4_config c;
-    if (!static_address(v, &c))
+    if (!static_address(addr.text, &addr.c))
         return;
     no_dhcp();
-    if (!ctl_cli || !svcs[NETSTACK].running)
+    addr.want = true;
+    addr_send(false);
+}
+
+/* One answer off netctl's client end: the awaited call's, or nobody's. */
+static void addr_answer(const void *rep, struct idl_msg *m)
+{
+    if (!addr.txid || m->txid != addr.txid) {
+        idl_msg_drop(m);   /* an older call's, or the DHCP client's from before it ended */
         return;
-    status_t st = netctl_set_ipv4_until(ctl_cli, now() + CALL_WAIT, c.address, c.mask,
-                                        c.gateway);
-    if (st == OK)
-        st = netctl_set_dns_until(ctl_cli, now() + CALL_WAIT, c.dns[0], c.dns[1]);
-    if (st != OK)
-        printf("init: settings: netstack didn't take net.address = %s (%s)\n", v,
-               status_str(st));
+    }
+    bool dns = addr.dns;
+    status_t st = dns ? netctl_set_dns_result(rep, m) : netctl_set_ipv4_result(rep, m);
+    addr.txid = 0;   /* its binding fired: none left */
+    if (st != OK) {
+        addr_failed(st);
+    } else if (!dns) {
+        addr_send(true);
+    } else {
+        addr.want = false;   /* both taken */
+    }
+}
+
+void net_netctl_event(void)
+{
+    for (unsigned k = 0; k < 8 && addr.txid; k++) {   /* a few stale answers at most */
+        _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
+        struct idl_msg m;
+        status_t st = idl_reply_read(ctl_cli, rep, sizeof(rep), &m);
+        if (st == ERR_SHOULD_WAIT)
+            break;
+        if (st != OK) {
+            idl_msg_drop(&m);
+            if (st == ERR_PEER_CLOSED)
+                addr_failed(st);
+            continue;
+        }
+        addr_answer(rep, &m);
+    }
+    if (addr.txid && watch() != OK)
+        addr_failed(ERR_NO_RESOURCES);   /* nothing would see the answer */
+}
+
+uint64_t net_due(uint64_t t)
+{
+    if (!addr.txid)
+        return DEADLINE_NEVER;
+    if (t < addr.deadline)
+        return addr.deadline;
+    addr_failed(ERR_TIMED_OUT);
+    return DEADLINE_NEVER;
+}
+
+void net_ended(unsigned i)
+{
+    if (i == NETSTACK)
+        addr_idle();   /* its answers went with it: its next start sends again */
+    if (i == DHCP)
+        addr_send(false);   /* a stopped client's end came: the static address may go */
 }
 
 uint64_t net_dhcp_wait(uint64_t t, bool data)

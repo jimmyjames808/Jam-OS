@@ -237,6 +237,7 @@ static void ended(unsigned i)
     s->running = false;
     uint64_t t = now();
     services_closed(i);
+    net_ended(i);
     if (followers[i].ns) {
         jam_handle_close(followers[i].ns);
         followers[i].ns = HANDLE_INVALID;
@@ -359,7 +360,9 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
            "server and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
-        uint64_t deadline = start_due(now());
+        uint64_t t = now(), deadline = start_due(t), net = net_due(t);
+        if (net < deadline)
+            deadline = net;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st != OK && st != ERR_TIMED_OUT)
@@ -380,6 +383,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             splash_event();
         } else if (pkt.key == KEY_UPDATE) {
             update_event();
+        } else if (pkt.key == KEY_NETCTL) {
+            net_netctl_event();
         }
     }
 }
