@@ -116,8 +116,8 @@ status_t mp3_sniff(mp3_read_fn read, void *ctx, uint64_t file_size, struct mp3_s
             continue;
         bool ok = false;
         if (!h.bytes) {
-            /* Free format: the next header like it, within a frame's
-             * largest size (Layer I at 448 kbps and 8 kHz is far less). */
+            /* Free format: the frame's length isn't in its header, so
+             * any header like it later in the window will do. */
             for (size_t j = i + 4; j + 4 <= n && !ok; j++)
                 ok = mp3_header_parse(buf + j, &h2) && same_stream(&h, &h2);
         } else if (i + h.bytes + 4 <= n) {
