@@ -33,7 +33,8 @@ enum { ST_FREE, ST_WANTED, ST_LOADING, ST_READY, ST_NONE };
 struct entry {
     uint64_t hash;                   /* 0: free */
     char     path[FS_PATH_MAX];      /* the track to read it from */
-    uint8_t  st, lst;                /* the small image's state, the large one's (ST_FREE: not wanted) */
+    uint8_t  st, lst;                /* the small image's state, the large one's (ST_FREE:
+                                      * not wanted) */
     uint32_t seq, lseq;              /* when last asked for (0: reading ahead) */
     int16_t  slot, lslot;            /* where its images are (-1: none) */
     uint64_t used;                   /* the draw count when last drawn */
@@ -152,7 +153,8 @@ bool cover_render(const struct surf *dst, uint64_t hash, int kind, uint32_t bg)
     int i = find(hash, false);
     const struct entry *e = i >= 0 ? &C.tab[i] : NULL;
     bool large = kind == COVER_LARGE_KIND;
-    bool ok = e && (large ? e->lst == ST_READY && e->lslot >= 0 : e->st == ST_READY && e->slot >= 0);
+    bool ok = e && (large ? e->lst == ST_READY && e->lslot >= 0
+                          : e->st == ST_READY && e->slot >= 0);
     if (ok) {
         int side = large ? (int)COVER_LARGE : (int)COVER_SMALL;
         const uint32_t *src = large ? C.large + (size_t)e->lslot * COVER_LARGE * COVER_LARGE

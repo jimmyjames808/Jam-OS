@@ -237,8 +237,9 @@ struct devmgr_mounts_rep {
  * fixed): FAT_SR_BLOCK, a `block` channel from storage.open_partition
  * (opened read-only for the ESP and for every /usbN not remounted),
  * FAT_SR_SERVE, its mount point as argv[1], and FAT_ARG_FORMAT as argv[2]
- * for the boot disk's data partition only. It is supervised like a driver: exit 0 is the end of it; a
- * crash, a kill or any other exit is restarted with backoff, each time
+ * for the boot disk's data partition only. It is supervised like a driver:
+ * exit 0 is the end of it; a crash, a kill or any other exit is restarted
+ * with backoff, each time
  * with a new `block` channel and a new `fs` channel, and given up on after
  * 5 restarts in a minute. */
 

@@ -234,7 +234,7 @@ struct ns_msg {
     uint32_t txid;                              /* 0: not a call */
     uint32_t kind;                              /* NS_MOUNT, NS_UNMOUNT or NS_SET */
     uint32_t count;                             /* paths used, at most NS_MAX_ENTRIES */
-    uint32_t connect;                           /* bit i: service i hands out channels (svc.connect) */
+    uint32_t connect;                           /* bit i: service i hands out channels */
     char     path[NS_MAX_ENTRIES][NS_NAME_MAX]; /* mount points and /svc/<name>, NUL-terminated */
 };
 /* An ns_msg is sent only as long as the paths it uses. */

@@ -36,7 +36,7 @@ struct tz_switch {
 
 /* A time zone. */
 struct tz {
-    char name[WALLCLOCK_ZONE_MAX];   /* as tz_parse was given it ("Australia/Sydney", "UTC+05:30") */
+    char name[WALLCLOCK_ZONE_MAX];   /* as tz_parse was given it: "Australia/Sydney", "UTC+05:30" */
     int  std_min, dst_min;           /* offsets, minutes east of UTC (equal: no daylight time) */
     char std_abbr[16], dst_abbr[8];  /* what dates show: "AEST", "AEDT"; "UTC+05:30" */
     struct tz_switch start, end;     /* daylight time from start to end (if any) */

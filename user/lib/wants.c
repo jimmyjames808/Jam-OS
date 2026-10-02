@@ -193,8 +193,9 @@ status_t wants_read(const uint8_t *elf, uint64_t size, struct wants *out)
     if (size < sizeof(eh))
         return ERR_INVALID_ARGS;
     memcpy(&eh, elf, sizeof(eh));
-    if (memcmp(eh.ident, "\x7f" "ELF", 4) || eh.ident[4] != 2 || eh.phentsize != sizeof(struct phdr) ||
-        eh.phnum > MAX_PHDRS || eh.phoff > size || eh.phnum * sizeof(struct phdr) > size - eh.phoff)
+    if (memcmp(eh.ident, "\x7f" "ELF", 4) || eh.ident[4] != 2 ||
+        eh.phentsize != sizeof(struct phdr) || eh.phnum > MAX_PHDRS || eh.phoff > size ||
+        eh.phnum * sizeof(struct phdr) > size - eh.phoff)
         return ERR_INVALID_ARGS;
     for (unsigned i = 0; i < eh.phnum; i++) {
         struct phdr ph;

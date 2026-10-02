@@ -86,7 +86,8 @@ status_t wav_parse(struct wav_info *w, wav_read_fn read, void *ctx, uint64_t fil
     *why = "";
     uint8_t b[40];
     status_t st = read_all(read, ctx, 0, b, 12);
-    if (st == ERR_OUT_OF_RANGE || (st == OK && (memcmp(b, "RIFF", 4) || memcmp(b + 8, "WAVE", 4)))) {
+    bool riff = st == OK && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WAVE", 4);
+    if (st == ERR_OUT_OF_RANGE || (st == OK && !riff)) {
         *why = "not a WAV file (no RIFF/WAVE header)";
         return ERR_WRONG_TYPE;
     }

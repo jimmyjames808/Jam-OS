@@ -110,7 +110,8 @@ static void label(const struct surf *s, int x, int y, int size, uint64_t hash, u
     for (int i = 0; i < n; i++) {
         uint32_t t = (uint32_t)(mix(&st) % 4) * 85;
         uint32_t c = i == gold ? C_GOLD : mixc(c0, c1, t);
-        float bx = (float)x + f / 2 + (px[i] - mx) * unit, by = (float)y + f / 2 + (py[i] - my) * unit;
+        float bx = (float)x + f / 2 + (px[i] - mx) * unit;
+        float by = (float)y + f / 2 + (py[i] - my) * unit;
         disc_aa(s, bx + rad * 0.12f, by + rad * 0.16f, rad, 0x000000, 70);   /* a shadow */
         disc_aa(s, bx, by, rad, c, 255);
         disc_aa(s, bx - rad * 0.38f, by - rad * 0.38f, rad * 0.26f, C_CREAM, 80);

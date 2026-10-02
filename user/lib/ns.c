@@ -571,7 +571,8 @@ handle_t svc_get(const char *name)
 struct grant {
     bool        all;                /* "*": every entry */
     bool        mounts;             /* "*:r", "*:w": every mount */
-    const char *point;              /* the path part ("/data", "/usb", "/svc/music"), not NUL-terminated */
+    const char *point;              /* the path part ("/data", "/usb", "/svc/music"), not
+                                     * NUL-terminated */
     size_t      len;                /* its length */
     bool        prefix;             /* ended in '*': every mount starting so */
     uint32_t    view;               /* FS_VIEW_* (":r", ":w"); 0: as we have it */
