@@ -937,9 +937,10 @@ stb_image, only after `stbi_info` has said the size (at most 2048 on a
 side and 2048x1600 pixels), with all of stb_image's memory from one
 40 MiB arena, and is cropped square and scaled to 256 and 512 pixels.
 jamjar reads the pixels back with `vmo_read` and never maps them. A
-picture that crashes the helper, or keeps it busy past 5 s, costs that
-album its cover: jamjar kills the helper and starts another for the next
-cover. The pictures it keeps are capped at 8 MiB.
+picture that crashes the helper, or keeps it busy past 5 s twice in a
+row (the second try 5 s after the first, in case the machine was only
+busy), costs that album its cover: jamjar kills the helper and starts
+another for the next cover. The pictures it keeps are capped at 8 MiB.
 
 ## Storage
 
