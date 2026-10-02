@@ -145,17 +145,20 @@
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
 
 # console services ----------------------------------------------------------
-# Rights are on a RES_ROOT handle (init hands the console and the shell
-# copies of the root with only the rights they need; RIGHT_MAP and
-# RIGHT_SLICE, which reach the hardware, are not among them).
-# A reader of the kernel log (needs RIGHT_READ on the root): SIG_READABLE
-# while the log holds bytes past what this reader last read (raised within
-# a tick of a new line).
+# Rights are on a RES_ROOT handle: each call that takes the root needs its
+# own power (RIGHT_ROOT_*, <jam/abi.h>), and init hands each program a copy
+# of the root with only the powers it uses (RIGHT_MAP and RIGHT_SLICE,
+# which reach the hardware, are never among them).
+# A reader of the kernel log (needs RIGHT_ROOT_KLOG on the root):
+# SIG_READABLE while the log holds bytes past what this reader last read
+# (raised within a tick of a new line).
 110 klog_open         status    handle_t root, handle_t *out
-# Copy log bytes starting at position `pos` (bytes ever written; the ring
-# keeps the last 64 KiB): returns how many, and *first gets the position
-# of the first one (> pos if older bytes are gone; pos past the end gives 0
-# bytes and *first = the current end).
+# Copy up to cap log bytes starting at position `pos` (bytes ever written;
+# the ring keeps the last 4 MiB, KLOG_SIZE): returns how many, and *first
+# gets the position of the first one (> pos if older bytes are gone). A
+# pos past the end gives 0 bytes and *first = the current end, with any
+# cap, 0 included (buf is not touched then): how a reader that wants only
+# the recent log (the last 256 KiB, say) finds where to start.
 111 klog_read         i64       handle_t reader, uint64_t pos, void *buf, uint64_t cap, uint64_t *first
 # The screen (needs RIGHT_WRITE on the root): the boot framebuffer as a
 # write-combining physical VMO + its geometry, and an owner token. From now
@@ -165,24 +168,24 @@
 # always draws. ERR_BAD_STATE while someone else owns it; ERR_NOT_FOUND
 # with no usable framebuffer.
 112 framebuffer_take  status    handle_t root, struct fb_info *info, handle_t *vmo, handle_t *owner
-# Run a kernel test entry point in a kernel thread (needs RIGHT_MANAGE on
-# the root): "ktest [prefix]", "bench", "stress <seconds>", "devices",
-# "ps", "mem", "kill <name>" (the first process of that name in the
-# caller's job tree; for restart tests), "panic" (a test), "crash [name]"
-# (list the crash tests, or run one: each panics on purpose but "bp";
-# ERR_NOT_FOUND for an unknown name), "memmap". Output goes to the
-# kernel log (follow it with a klog reader).
+# Run a kernel test entry point in a kernel thread (needs RIGHT_ROOT_DEBUG
+# on the root): "ktest [prefix] [words]", "soak begin" / "soak end ...",
+# "bench", "stress <seconds>", "devices", "ps", "mem", "panic" (a test),
+# "crash [name]" (list the crash tests, or run one: each panics on purpose
+# but "bp"; ERR_NOT_FOUND for an unknown name), "memmap"
+# (kernel/debug/dbgcmd.c has the words). Output goes to the kernel log
+# (follow it with a klog reader).
 # Blocks until done; returns the result (ktest: tests run; stress: 0 if it
 # passed, else 1; devices: PCI functions; crash: how many tests / 0),
 # ERR_NOT_SUPPORTED for an unknown command (or a kernel
 # without tests), ERR_BAD_STATE while one runs.
 
 113 debug_command     i64       handle_t root, const char *cmd, uint64_t len
-# Reset the machine (needs RIGHT_MANAGE on the root): the ACPI reset
+# Reset the machine (needs RIGHT_ROOT_REBOOT on the root): the ACPI reset
 # register, then port 0xCF9, then the keyboard controller, then a triple
 # fault. Returns only on a bad handle.
 114 reboot            status    handle_t root
-# COM1 input (needs RIGHT_READ on the root): one reader at a time
+# COM1 input (needs RIGHT_ROOT_SERIAL on the root): one reader at a time
 # (ERR_BAD_STATE while another handle is open). SIG_READABLE while bytes
 # are waiting; serial_read takes up to cap of them (0 if none). The receive
 # interrupt is on only while the object exists. ERR_NOT_FOUND: no UART.
@@ -214,8 +217,9 @@
 121 channel_write_rights status handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, const rights_t *rights, uint32_t nhandles
 
 # system information for the shell (uname, free, lscpu, top, ps, date) -------
-# All four need RIGHT_READ on a RES_ROOT handle and only read. Structs in
-# <jam/abi.h>.
+# All four only read. sys_info, cpu_stat and proc_list need
+# RIGHT_ROOT_SYSINFO on a RES_ROOT handle, rtc_read RIGHT_ROOT_CLOCK.
+# Structs in <jam/abi.h>.
 130 sys_info          status    handle_t root, struct sys_info *out
 # CPUs first.. (by index): fills up to cap entries, returns how many.
 131 cpu_stat          i64       handle_t root, uint32_t first, struct cpu_stat *out, uint32_t cap
@@ -232,11 +236,13 @@
 134 wallclock_get         status    struct wall_clock *out
 # Set it: in->utc_ns is UTC at uptime in->uptime_ns (not in the future),
 # in->zone the zone's name (printable ASCII, NUL-terminated; "" keeps the
-# one set before); flags and reserved 0. RIGHT_MANAGE on a RES_ROOT handle.
+# one set before); flags and reserved 0. RIGHT_ROOT_CLOCK on a RES_ROOT
+# handle.
 135 wallclock_set         status    handle_t root, const struct wall_clock *in
 
 # kexec: a fresh kernel started without the firmware (<jam/kexec.h>) -------
-# Both need RIGHT_MANAGE on a RES_ROOT handle, as reboot does.
+# On a RES_ROOT handle: kexec_load needs RIGHT_ROOT_KEXEC, kexec_reboot
+# RIGHT_ROOT_REBOOT (as reboot does).
 # Replace the stored kernel (the copy of this boot's kernel and bootfs the
 # kernel keeps ready in the region reserved at boot, for a reboot or a
 # panic) with the kernel ELF and the bootfs image in two VMOs (RIGHT_READ,

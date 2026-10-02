@@ -349,7 +349,8 @@ struct fb_info {
 
 /* system information for the shell (abi/syscalls.def 130-133) ----------------
  * Read-only views for uname / free / lscpu / top / ps / date. Each call
- * needs RIGHT_READ on a RES_ROOT handle (the shell's root has it). */
+ * needs a power on a RES_ROOT handle: RIGHT_ROOT_SYSINFO, or for rtc_read
+ * RIGHT_ROOT_CLOCK. */
 
 #define SYSINFO_HYBRID  (1u << 0)   /* the CPU has P-cores and E-cores */
 #define SYSINFO_KTESTS  (1u << 1)   /* the kernel was built with its tests */
