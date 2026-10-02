@@ -146,6 +146,11 @@ static status_t op_stats(void *ctx, uint8_t counts[256])
     struct srv *v = ctx;
     struct netdev_stats s = v->st;
     s.ring_errors = v->ring_errors_past + (v->open ? v->s.tx.errors + v->s.rx.errors : 0);
+    /* The driver's own count, so it is info's `changes` exactly (changes
+     * before the server started included), as <jam/netdev.h> says. */
+    struct srv_info i = { 0 };
+    v->dev->info(v->ctx, &i);
+    s.link_changes = i.changes;
     v->dev->stats(v->ctx, &s);
     for (unsigned k = 0; k < sizeof(s.reserved) / sizeof(s.reserved[0]); k++)
         s.reserved[k] = 0;
@@ -304,7 +309,6 @@ void srv_tx_room(struct srv *v)
 
 void srv_link(struct srv *v)
 {
-    v->st.link_changes++;
     if (v->open)
         (void)drv_event_signal(v->s.to_stack, 0, NETDEV_SIG_LINK);
 }

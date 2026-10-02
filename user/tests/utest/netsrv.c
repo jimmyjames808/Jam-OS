@@ -21,6 +21,7 @@
 
 struct card {
     uint32_t room;                /* free descriptors */
+    uint32_t changes;             /* link changes, info's count */
     uint32_t sent;                /* frames send took */
     uint8_t  last[NETDEV_FRAME_MAX];
     size_t   last_len;
@@ -51,9 +52,9 @@ static uint32_t card_room(void *ctx)
 
 static void card_info(void *ctx, struct srv_info *out)
 {
-    (void)ctx;
     *out = (struct srv_info){ .mac = { 2, 0, 0, 0, 0, 1 }, .vlan = 21, .link = NETDEV_LINK_UP,
-                              .speed = 1000, .changes = 3, .chip = "FAKE" };
+                              .speed = 1000, .changes = ((struct card *)ctx)->changes,
+                              .chip = "FAKE" };
 }
 
 static void card_stats(void *ctx, struct netdev_stats *s)
@@ -108,7 +109,7 @@ static void turn(struct bench *b)
 
 static bool bench_up(struct bench *b)
 {
-    *b = (struct bench){ .c.room = 255 };
+    *b = (struct bench){ .c.room = 255, .c.changes = 3 };   /* 3 before the server started */
     CHECK_ST(jam_port_create(&b->port), OK);
     CHECK_ST(jam_channel_create(&b->cli, &b->serve), OK);
     CHECK_ST(srv_init(&b->v, b->port, b->serve, &card_dev, &b->c), OK);
@@ -361,12 +362,14 @@ bool t_netserver_rx(void)
         srv_rx(&b.v, f, 64);
     srv_rx_done(&b.v);
     CHECK_ST(jam_object_signal(s.to_stack, NETDEV_SIG_LINK, 0), OK);
+    b.c.changes++;
     srv_link(&b.v);
     CHECK_ST(jam_object_wait_one(s.to_stack, NETDEV_SIG_LINK, 0, &seen), OK);
     struct netdev_stats st;
     CHECK(get_stats(&b, &st));
     CHECK(st.rx_frames == 3 + NETDEV_SLOTS && st.rx_ring_full == 5 && st.rx_no_session == 1);
-    CHECK(st.rx_bad == 1 && st.link_changes == 1);
+    CHECK(st.rx_bad == 1);
+    CHECK_EQ(st.link_changes, 4);   /* info's count: the 3 before the server, then 1 */
     CHECK_EQ(st.rx_bytes, 64 + 65 + 66 + 64ull * NETDEV_SLOTS);
     /* a hostile consumer count: no room, counted, nothing written */
     __atomic_store_n(&s.rxe.hdr->consumed, UINT64_MAX, __ATOMIC_RELEASE);
