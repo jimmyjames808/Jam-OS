@@ -38,7 +38,7 @@
 #include <jam/wallclock.h>
 #include <jam/x86.h>
 
-#define JAMOS_VERSION   "0.0.27-m8.5"
+#define JAMOS_VERSION   "0.0.28-m8.6"
 #define KERNEL_STACK_SZ (64 * 1024)
 
 _Noreturn void stack_switch_call(void *top, void (*fn)(void *), void *arg);

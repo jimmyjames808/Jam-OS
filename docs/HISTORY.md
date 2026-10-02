@@ -29,6 +29,57 @@ are the kernel's version string; hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## M8.6: cleanup and polish
+
+*2026-10-01 to 2026-10-02, 0.0.28-m8.6.* Signed off on the PC by the
+owner (All tests, `soak 10` with the SanDisk mounted read-write and pulled
+and replugged, `bench`) after a full QEMU regression of the merged tree:
+ktest 260 at 4 and 8 CPUs, utest 117, every area test and shell script.
+
+[The plan](history/M8.6-PLAN.md), in its order:
+- **The independent review of M8.5** ([M8.5-REVIEW.md](history/M8.5-REVIEW.md)):
+  the stored kernel's region down to 32 MiB, the crash loop at three
+  panics in a row.
+- **Track A:** the keyboard and mouse ready 0.29 s after the kernel's
+  start on the PC (6.3 s before), keys typed during the splash kept for the
+  shell; a write-through block cache with read-ahead (`mount -w` of a
+  15 GB stick from 20.4 s to 0.35 s); the boot disk is the one Limine
+  booted from; Ctrl+Alt+Del's wait; a `make flash` that checks what it
+  wrote; a 4 MiB log ring; linear FAT directory cursors.
+- **Track B:** `/svc`, a per-program view of the services it may open;
+  a program's list of what it wants (an ELF note, checked at build time),
+  approved by the owner with `allow` (SHA-256 of the file), which is also
+  what lets a program on `/data` run; `play` and jamjar's cover decoding
+  in small programs of their own; the root resource's powers split (the
+  log, the serial port, the clock, reboot, kexec, debug).
+- **Track C:** the kernel log off the screen on a plain boot, with a
+  short list of notices instead; UTF-8 in the log; `kernel load`; the
+  real date and time from the RTC with time zones; `/data/etc/settings`.
+- **The code check:** five fresh agents over the whole tree, reviewing
+  and fixing ([findings](history/M8.6-CHECK-KCORE.md), and KREST,
+  DRIVERS, SERVICES, LIBS beside it).
+- **The pre-M9 batch** ([ARCH-CHECK.md](history/ARCH-CHECK.md)): the
+  service-loop rule (a loop serving several clients never blocks inside a
+  request) with its tools (genidl's deferred replies and asynchronous
+  calls, libos's tasks); devmgr channels scoped to one device in place of
+  the sound card's special case; a channel of its own for each opener of
+  `/svc/audio`, `/svc/devmgr` and `/svc/logd`, and at most 4 streams each;
+  a VMO made executable is sealed; the screen and the serial port's
+  output get root powers of their own; the kernel marks each log line
+  with its writer, so only the real init, devmgr and logd make notices;
+  programs on `/data` never get `right debug`; init never gives up on
+  the console or the shell; driver isolation stated honestly (crash
+  isolation, not containment, until the IOMMU) with a threat model.
+
+What it taught:
+- A bump allocator for kernel virtual space strands page tables: ktest
+  at 8 CPUs reported 3 pages leaked only once bootfs grew past a size.
+- Waiting for USB to settle before input was most of the boot: the
+  devices were ready in a fraction of a second.
+- A key typed in the same instant as Enter can arrive after a question
+  it was typed before: what the shell can promise is only about keys
+  that have reached it.
+
 ## Audio (A1, A2, AS) and M8.5 (kexec)
 
 *2026-10-01, 0.0.25-m8 to 0.0.27-m8.5.* Signed off together on the PC:
@@ -325,7 +376,7 @@ Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
 - 2026-10-01, after the PC sign-off of the audio track and M8.5: M8.6's
-  decisions, listed in [its plan](M8.6-PLAN.md#the-owners-decisions-2026-10-01).
+  decisions, listed in [its plan](history/M8.6-PLAN.md#the-owners-decisions-2026-10-01).
   Programs on `/data` run only once the owner marks them with `allow`,
   which also approves what each declares it wants (services under
   `/svc`, mounts); the splash always plays to its end; `play` and

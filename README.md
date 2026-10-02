@@ -158,7 +158,6 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the real PC, and flashing the stick |
 | [docs/BENCH.md](docs/BENCH.md) | benchmark numbers from the PC |
-| [docs/M8.6-PLAN.md](docs/M8.6-PLAN.md) | the plan of the milestone under way (cleanup and polish) |
 | [docs/logo/README.md](docs/logo/README.md) | the logo's files and colours |
 
 ## Contributing

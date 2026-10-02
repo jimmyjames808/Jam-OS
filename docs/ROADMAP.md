@@ -25,8 +25,8 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | A2 | Audio: mixer, `audio` protocol, WAV and MP3 playback, `music`, jamjar | done (the same sign-off) |
 | AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
-| M8.6 | Cleanup and polish ([M8.6-PLAN.md](M8.6-PLAN.md)) | under way: the M8.5 review, tracks A, B and C and the code check merged; the pre-M9 batch under way |
-| M9 | Networking | later |
+| M8.6 | Cleanup and polish | done (2026-10-02: the full QEMU regression on the merged tree; the owner's PC sign-off: All tests, `soak 10` with the SanDisk pulled and replugged, `bench`) |
+| M9 | Networking | next: the plan |
 | M10 | ACPI power, tickless idle | later |
 | M10.5 | S3 sleep | later |
 | M11 | IOMMU | later |
@@ -42,18 +42,13 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | G2-G4 | Toolkit and fonts, mode setting, 3D | after G1 |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
-## Now: M8.6, cleanup and polish
+## Now: M9, networking
 
-The row below has the whole list. The independent review of M8.5's code
-and the three tracks are merged: A (keyboard and mouse ready early in
-boot, the block cache, the boot disk and the other small items), B
-(`/svc` with per-program views, `allow` for programs on `/data`, `play`
-and jamjar's cover decoding split into small programs, the root
-resource's `RIGHT_READ` split), C (the log off the screen, UTF-8 in the
-log, `kernel load`, the date and time, settings), and the code check. Now
-the pre-M9 batch ([the plan](M8.6-PLAN.md#after-the-code-check-the-pre-m9-batch-the-owner-2026-10-02):
-the architecture check's items and the code check's design questions);
-then the PC sign-off.
+The row below has the goal. First the plan (docs/M9-PLAN.md), with the
+owner, before any code: the NIC's driver, the netdev rings, netstack,
+VLAN 21 below the IP stack, netlog and `update`.
+
+M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
 The audio track (A1, A2, AS) and M8.5 are done:
 [what they delivered](HISTORY.md#audio-a1-a2-as-and-m85-kexec).
@@ -70,7 +65,6 @@ Known limits it left:
 | # | What | Done when |
 |---|---|---|
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
-| M8.6 | Cleanup and polish, in the order of [M8.6-PLAN.md](M8.6-PLAN.md): the independent review of M8.5's code; track A (keyboard and mouse ready early in boot, keys during the splash queued, a write-through block cache, the boot disk from Limine, Ctrl+Alt+Del's wait, a safe `make flash`, a bigger log ring); track B (`/svc` with per-program views, a program's list of what it wants approved by the owner with `allow`, which also marks programs on `/data` runnable, `play` and jamjar's cover decoding in programs of their own, the root resource's `RIGHT_READ` split); track C (the log and the RESULTS boxes off the screen with a short list of useful notices, UTF-8 in the log, `kernel load`, the real date and time from the RTC, settings in `/data/etc/settings`); then the code check against CODING-GUIDE.md and ARCHITECTURE.md by fresh agents, findings first; last, the pre-M9 batch: the architecture check's items and the code check's design questions (the service-loop rule and its tools, devmgr channels scoped to one device, driver isolation stated honestly, and more) | keyboard and mouse ready within about 2 s of the kernel's start (the boot log says); the code check's findings fixed or written into the guide; All tests and `soak 10` on the PC with the SanDisk pulled and replugged; `bench` run on the PC and its column in [BENCH.md](BENCH.md) (the first PC run since M5.5) |
 | M9 | First, how its services wait and what they hold ([ARCH-CHECK.md](history/ARCH-CHECK.md), claims 0, 2, 3): every new loop follows M8.6's service-loop rule (a loop serving several clients never blocks on a call inside a request; genidl's deferred replies and asynchronous calls and libos's tasks are the tools); the NIC gets a devmgr channel scoped to that one device, which init gives to netstack alone (as hda's goes to the mixer since M8.6). netdev is shared rings with events, never a call per packet; packets are parsed only in netstack, which holds no `dma_cap`; init makes each new service's channels once. Then: RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved; a service waiting on a slow peer delays only that peer's requests (a test) |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
 | M10.5 | S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |

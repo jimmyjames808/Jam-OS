@@ -12,7 +12,7 @@
  * handle_get error (ERR_ACCESS_DENIED: a right missing), or
  * ERR_WRONG_TYPE for another kind of resource. */
 status_t sysinfo_check_root(struct handle_table *t, handle_t h, rights_t need);
-/* The version string sys_info reports (kernel/main.c: "0.0.27-m8.5"). */
+/* The version string sys_info reports (kernel/main.c: "0.0.28-m8.6"). */
 extern const char jamos_version[];
 void     sysinfo_fill(struct sys_info *s);
 void     sysinfo_cpu(uint32_t i, struct cpu_stat *s);
