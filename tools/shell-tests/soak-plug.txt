@@ -12,7 +12,10 @@ wait jam>
 seen 60 init: /data mounted
 monitor device_add usb-storage,id=s2,bus=xhci.0,port=2,drive=s2img
 wait 60 init: /usb0 mounted
-send mount -w /usb0; echo mw-$?
+# init says "mounted" before it has passed the mount on to the shell: a
+# mount -w typed at once can find no /usb0 yet, so it is tried again (on
+# a writable /usb0 the second one just says so and succeeds).
+send mount -w /usb0 || sleep 2 && mount -w /usb0; echo mw-$?
 wait mw-0
 send soak loops=@LOOPS@ seed=@SEED@ load=@LOAD@
 wait 60 soak: begun on
