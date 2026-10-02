@@ -166,7 +166,8 @@ tagged with the VLAN, or (`QEMU_NET_NONE=1`) any frame at all. On the real
 PC the same tool reads a capture taken at the Mac's end of a cable
 straight to the PC: `tools/pcap-vlan-check.py --pc <the PC's MAC>
 capture.pcap` checks every frame the PC sent (tagged, padded, well-formed)
-and counts the pings it answered ([M9-PLAN.md](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix)).
+and counts the pings it answered; with `--mac <the Mac adapter's MAC>` a
+frame from neither address fails too (the PC's under another source) ([M9-PLAN.md](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix)).
 
 The peer also runs by hand (`--listen P --qemu Q`, its header has the
 flags), reads commands on stdin with `--stdin` (`send <hex>` tagged,
