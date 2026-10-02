@@ -7,7 +7,7 @@
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings; net.c the network services (netstack, netlog); update.c
+ * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog); update.c
  * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
@@ -113,7 +113,7 @@ void     splash_shell_ready(void);
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
 /* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, LOGD, NETLOG, SHELL,
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS, LOGD, NETLOG, SHELL,
        NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
@@ -235,6 +235,18 @@ handle_t net_svc_channel(void);
  * name a Mac (`net.host`) and don't say `netlog = off`; otherwise it is
  * marked given up for this boot, said once. */
 status_t net_netlog_start(void);
+/* Start the DHCP client (shell.c's DHCP) with a client end of netctl,
+ * unless the settings have a static net.address (then it is given up on,
+ * said in the log). */
+status_t net_dhcp_start(void);
+/* When the DHCP client may start, asked at t: 0 (now), or the time it may
+ * (/data's settings may still come and say the address is static). data:
+ * /data is mounted. */
+uint64_t net_dhcp_wait(uint64_t t, bool data);
+/* Start the resolver (shell.c's DNS) with /svc/dns's server end. */
+status_t net_dns_start(void);
+/* Service i (DHCP or DNS; any other is ignored) is given up on. */
+void     net_service_given_up(unsigned i);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 

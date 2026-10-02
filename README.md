@@ -70,14 +70,16 @@ a real desktop PC, which is where every milestone is tested.
   with `allow`.
 - Networking, under way (M9, so far in QEMU with its e1000e card): a
   network stack in a process of its own (lwIP), every frame tagged VLAN
-  21; a static address from `net.address` in `/data/etc/settings`; `net`
-  shows the address, the link and the counts (`net stats`: all of them)
-  and `ping <address>` pings; programs whose list asks for `svc net` get
-  UDP sockets; netlog sends the whole boot log to the Mac
+  21; the address from DHCP (bin/dhcp), or a static one from
+  `net.address` in `/data/etc/settings`; `net` shows the address, the
+  link and the counts (`net stats`: all of them); `host <name>` asks the
+  resolver (bin/dns) and `ping <address or name>` pings; programs whose
+  list asks for `svc net` get UDP sockets, and with `svc dns` names
+  (`dns_lookup`, `<dns.h>`); netlog sends the whole boot log to the Mac
   ([below](#the-pcs-log-on-the-mac)).
 
-Not yet: networking on the PC (DHCP, DNS, `update`; the log to the Mac
-is built but not yet run on the PC),
+Not yet: networking on the PC (DHCP, DNS and the log to the Mac are
+built but not yet run on the PC; `update`),
 power management. Status and plans:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -177,9 +179,9 @@ the boot from its first line. `--quiet` doesn't print the lines;
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), netlog (the log to the Mac) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater |

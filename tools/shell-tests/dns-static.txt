@@ -1,0 +1,14 @@
+# A static address (tools/dns-test.sh runs this): net.address set in the
+# stick's settings, QEMU's e1000e and the network peer. init doesn't start
+# the DHCP client (the script checks the log and the peer's DHCP counts
+# afterwards); the resolver asks the settings' DNS server.
+wait 120 Jam OS shell
+seen 60 init: net.address is set: the static address, no DHCP client
+seen 60 netstack: address 10.2.21.5/24
+seen 30 dns: serving /svc/dns
+wait jam>
+send host www.jam
+wait www.jam has address 10.2.21.174
+wait jam>
+send reboot -f
+wait reboot: resetting

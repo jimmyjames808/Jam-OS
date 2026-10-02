@@ -624,6 +624,8 @@ status_t services_start(unsigned i)
            : i == MIXER    ? start_mixer()
            : i == MUSIC    ? start_music()
            : i == NETSTACK ? net_start()
+           : i == DHCP     ? net_dhcp_start()
+           : i == DNS      ? net_dns_start()
            : i == LOGD     ? start_logd()
            : i == NETLOG   ? net_netlog_start()
                            : start_shell();
@@ -667,6 +669,7 @@ void services_closed(unsigned i)
 
 void services_given_up(unsigned i)
 {
+    net_service_given_up(i);   /* the DHCP client's and the resolver's */
     if (i == NETSTACK) {
         net_given_up();
         publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets it */

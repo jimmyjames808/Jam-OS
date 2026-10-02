@@ -1,0 +1,51 @@
+# DHCP and DNS (tools/dns-test.sh runs this): a plain boot with QEMU's
+# e1000e and the network peer (tools/netpeer.py: its DHCP server leases
+# 10.2.21.100 for 20 s, its DNS server answers one.one.one.one, mac.jam,
+# www.jam, fastN.jam, never slow.jam, NXDOMAIN for the rest), no
+# net.address in the settings. The DHCP client gets the lease and `net`
+# shows it; `host` resolves; `ping <name>` resolves and pings; Ctrl+C
+# stops a `host` waiting on the slow name; dnstest checks the slow-peer
+# rule (other lookups and pings answered promptly while slow.jam waits);
+# then netstack is killed: the DHCP client asks for its address again
+# (INIT-REBOOT) and the resolver, started again, answers.
+wait 120 Jam OS shell
+seen 60 netstack: link up
+seen 60 dhcp: lease 10.2.21.100/24 from 10.2.21.1: gateway 10.2.21.1, DNS 10.2.21.1, 20 s
+seen 30 dns: serving /svc/dns
+wait jam>
+send net
+wait address  10.2.21.100/24, gateway 10.2.21.1
+wait DNS      10.2.21.1
+wait jam>
+send host one.one.one.one
+wait one.one.one.one has address 1.1.1.1
+wait one.one.one.one has address 1.0.0.1
+wait (ttl
+wait jam>
+send host nothing.jam
+wait host: nothing.jam: no such name
+wait jam>
+send ping mac.jam -c 2
+wait PING mac.jam (10.2.21.174): 56 data bytes
+wait 10.2.21.174: 2 sent, 2 received
+wait jam>
+send ping nothing.jam
+wait ping: nothing.jam: no such name
+wait jam>
+send host slow.jam
+sleep 2
+type \x03
+wait host: slow.jam: stopped
+wait jam>
+send run dnstest
+wait 60 dnstest: 4 passed, 0 failed
+wait jam>
+send kill netstack
+wait 10 init: bin/netstack was killed
+wait 30 dhcp: link up: asking for 10.2.21.100 again
+wait 30 dhcp: lease 10.2.21.100/24 from 10.2.21.1
+send host www.jam
+wait www.jam has address 10.2.21.174
+wait jam>
+send reboot -f
+wait reboot: resetting

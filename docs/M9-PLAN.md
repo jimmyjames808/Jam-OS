@@ -9,7 +9,9 @@ lwIP, on the netdev rings, started by init), R1 (the transmit path, the
 its first PC runs found transmit unreliable, a descriptor-size mismatch, now
 fixed and waiting for the next PC run:
 [the result and the fix](#r1-the-pc-result-and-the-transmit-fix)), stage 4 (sockets for programs: `/svc/net`,
-`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores), stages 6a
+`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores), stage 5b
+(bin/dhcp, bin/dns and `/svc/dns`, `host`, `ping <name>`, the slow-peer
+test: [below](#stage-5b-built-dhcp-and-dns-as-services)) and stages 6a
 and 7a (netlog's and `update`'s cores, init's update check, the Mac
 tools) and stage 6b (bin/netlog:
 [below](#stage-6b-built-netlog-on-the-network)). The sections below say what each one built and left for the next.
@@ -1160,7 +1162,7 @@ deadline, so the service-loop rule holds by construction):
 - `bin/dns` (holds `/svc/net` and its `/svc/dns` server end):
   `dns_init(r, io)`; `dns_set_servers(r, servers, n)` from netstack's
   DNS list, again whenever it changes; `resolve` (a `later` method) calls
-  `dns_resolve(r, now, name, cookie)` with a cookie naming the request:
+  `dns_ask(r, now, name, cookie)` with a cookie naming the request:
   an error is the reply at once, OK means `answer` brings it; an asker
   whose channel closes: `dns_cancel(r, cookie)` for each of its
   requests; `dns_input(r, now, &datagram)` for each datagram on any of
@@ -1182,6 +1184,73 @@ deadline, so the service-loop rule holds by construction):
   and sets `io->random = io_random`, in effect `io->random = os_random_u32`.
   Never a fixed seed or a generator of the service's own: forged answers
   would be easy.
+
+#### Stage 5b, built: DHCP and DNS as services
+
+Built 2026-10-02 on stage 4's sockets. The cores are as 5a left them
+(the resolver's `dns_resolve` is now `dns_ask`: dns.idl's generated
+client call has the name).
+
+- **bin/dhcp** (`user/services/dhcp/main.c`): init starts it once
+  netstack runs, with a duplicate of netctl's client end and nothing
+  else, **unless `net.address` is set**: the static address wins. As
+  /data may come after netstack, the client waits for /data (10 s at
+  most, for a machine without one); if /data's settings have a static
+  address it is never started ("init: net.address is set: the static
+  address, no DHCP client"), and one already running is killed first
+  ("... is stopped, the static address wins"). Its loop serves nobody,
+  so it calls netstack with 1 s deadlines: `dhcp_open` (again every
+  second while it fails), `netctl.info` once a second for the link and
+  the MAC (netctl got no wait method: a poll costs nothing), and the
+  edge's `set_ipv4`/`set_dns`/`clear`. Link up: `dhcp_start` with the
+  last lease's address (INIT-REBOOT); link down, or netstack gone (the
+  socket closes): `dhcp_stop` (the address cleared), the client starts
+  over once netstack is back, asking for the same address. A new dhcp
+  process keeps nothing, but if netstack still has an address (the last
+  dhcp's lease) it is cleared and asked for again. Each lease is one log
+  line ("dhcp: lease 10.2.21.100/24 from 10.2.21.1: gateway ..., DNS
+  ..., 3600 s"); unchanged renewals say nothing. **No ARP probe**
+  (`io.probe` is NULL): netstack would need a way to send an RFC 5227
+  probe and hear the answer (lwIP's ACD module or an ARP-input hook), not
+  cheap here; an ACKed address is taken as free. No RELEASE: dhcp is
+  killed at a reboot, never stopped in order.
+- **bin/dns** (`user/services/dns/`: `main.c` the loop and the servers,
+  `socks.c` the sockets, `askers.c` `/svc/dns`; `dnsd.h`), with the
+  server end of `/svc/dns` (made once by init, kept across restarts,
+  published as a channel per opener) and `/svc/net` in its namespace.
+  **abi/idl/dns.idl** (id 30): `resolve(name u8[256], timeout_ms) ->
+  (count, addr0..3, ttl)`, `later`; the shared channel answers only
+  `svc.connect`. Limits: 16 openers, 8 resolves in flight an opener, and
+  the resolver's own 16 names (a socket each) and 8 askers a name; a
+  request's `timeout_ms` (1..60000) ends it with ERR_TIMED_OUT
+  (`dns_cancel`). Nothing in its loop waits for netstack: `iface` and
+  `wait_change` (the DNS servers, again at each change), and each
+  socket's `udp` open, are written with txids of its own on its opener
+  channel and answered off the port. A socket opens at a port's first
+  send; the datagram waits in its slot until the open is answered; a
+  port another program has can only be known then, so that try is lost
+  and the next one is told ERR_ALREADY_BOUND and picks another port. When
+  netstack ends, every socket closes: dns ends too and init starts it
+  again once netstack runs (only its cache is lost; libos's `dns_lookup`
+  asks the new one).
+- **libos `<dns.h>`**: `dns_lookup(name, deadline, &answer)` (blocking,
+  for programs; asked again once if the resolver restarted) and
+  `dns_lookup_on`. The shell's `host <name>` and `ping <name>` use a
+  helper of the shell's (`sh_lookup.c`) that writes the request without
+  waiting so Ctrl+C works. `svc dns` is in `<os.h>` and the shell's list.
+- **The peer** (`tools/netpeer.py`): a DHCP server (leases from
+  10.2.21.100, router and DNS 10.2.21.1, `--dhcp-lease`) and a DNS
+  server (a few names, a CNAME, `fastN.jam`, the slow name `slow.jam`
+  that is never answered, NXDOMAIN for the rest), always on
+  ([TESTING](TESTING.md#the-network-peer)).
+- **The slow-peer test** (the done-when; `tools/dns-test.sh`, which
+  takes the place of the planned `net-test.sh slow`): `bin/dnstest`, run
+  from the shell, asks for `slow.jam` on one thread and, while it waits,
+  20 other names and 3 pings by name, each under 200 ms; the slow name
+  ends ERR_TIMED_OUT after the resolver's 10 s. In QEMU (2 CPUs) the
+  slowest of the 20 took 4 ms. The same script checks a static boot
+  starts no DHCP client and that a netstack restart gets the lease back
+  ([TESTING](TESTING.md#dhcp-and-dns-end-to-end)).
 
 ### netlog: the log over UDP to the Mac
 

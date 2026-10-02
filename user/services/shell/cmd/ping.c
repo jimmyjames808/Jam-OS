@@ -1,7 +1,9 @@
 /* ping: ICMP echo through netstack (net.idl's echo): one request a second,
  * each reply (or its absence) a line, then a summary. Ctrl+C stops it at
  * once. The echoes go out on a /svc/net channel of ping's own, written
- * without waiting, so the wait for a reply can watch the keyboard too. */
+ * without waiting, so the wait for a reply can watch the keyboard too. A
+ * name is resolved first (sh_lookup: the resolver's first address). */
+#include <dns.h>
 #include <idl/net.h>
 #include <ipv4.h>
 #include <net.h>
@@ -97,10 +99,9 @@ static void summary(uint32_t addr, const struct tally *t)
     sh_say("\n");
 }
 
-static bool args(int argc, char **argv, uint32_t *addr, uint64_t *count, uint64_t *size)
+/* The target (an address or a name), the count and the size. */
+static bool args(int argc, char **argv, const char **target, uint64_t *count, uint64_t *size)
 {
-    const char *end = NULL;
-    bool have = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) {
             if (!sh_parse_u64(argv[++i], count) || !*count || *count > 1000000)
@@ -108,31 +109,42 @@ static bool args(int argc, char **argv, uint32_t *addr, uint64_t *count, uint64_
         } else if (!strcmp(argv[i], "-s") && i + 1 < argc) {
             if (!sh_parse_u64(argv[++i], size) || *size > NET_DGRAM_MAX)
                 return false;
-        } else if (!have && ipv4_parse(argv[i], addr, &end) && !*end) {
-            have = true;
+        } else if (!*target && argv[i][0] && argv[i][0] != '-') {
+            *target = argv[i];
         } else {
             return false;
         }
     }
-    return have;
+    return *target != NULL;
 }
 
 SH_CMD(ping)
 {
-    uint32_t addr = 0, last_txid = 0;
+    const char *target = NULL;
+    uint32_t last_txid = 0;
     uint64_t count = 4, size = SIZE;
-    if (!args(argc, argv, &addr, &count, &size)) {
-        sh_tty("usage: ping <address> [-c count] [-s size]   (e.g. ping 1.1.1.1 -c 10)\n");
+    if (!args(argc, argv, &target, &count, &size)) {
+        sh_tty("usage: ping <address|name> [-c count] [-s size]   (e.g. ping 1.1.1.1 -c 10)\n");
         return 2;
     }
+    struct dns_answer ans;
+    status_t st = sh_lookup(target, &ans);   /* an address is answered as it is */
+    if (st != OK) {
+        sh_say("ping: %s: %s\n", target, sh_lookup_why(st));
+        return 1;
+    }
+    uint32_t addr = ans.addr[0];
     handle_t ch;
-    status_t st = svc_open(SVC_NET, &ch);
+    st = svc_open(SVC_NET, &ch);
     if (st != OK) {
         sh_say("ping: no netstack (%s)\n", status_str(st));
         return 1;
     }
     char a[IPV4_TEXT_MAX];
-    sh_say("PING %s: %u data bytes\n", ipv4_format(addr, a), (unsigned)size);
+    if (strcmp(target, ipv4_format(addr, a)))
+        sh_say("PING %s (%s): %u data bytes\n", target, a, (unsigned)size);
+    else
+        sh_say("PING %s: %u data bytes\n", a, (unsigned)size);
     struct tally t = { 0 };
     for (uint64_t seq = 1; seq <= count; seq++) {
         uint64_t next = now() + INTERVAL;

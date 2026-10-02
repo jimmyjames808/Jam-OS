@@ -310,6 +310,8 @@ bool t_dnsres_failures(void);
 bool t_dnsres_ports(void);
 bool t_dnsres_cache(void);
 bool t_dnsres_hostile(void);
+/* dnsd.c: bin/dns's sockets (socks.c) against a fake netstack */
+bool t_dnsd_sockets(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
  * <updwire.h>); updfetch.c: the fetcher's window against a fake server

@@ -24,7 +24,8 @@ JAM_WANTS("mount * rw\n"
           "svc audioctl\n"
           "svc music\n"
           "svc devmgr\n"
-          "svc net\n");
+          "svc net\n"
+          "svc dns\n");
 
 #define LINE_MAX  240
 #define HIST      32
