@@ -372,6 +372,13 @@ void     delay_us(uint64_t us);
  * after the loop, and for the rare stall dumps. */
 void     tally_ask(struct rtl *t, uint64_t now);
 enum rtl_dump_step tally_look(struct rtl *t, uint64_t now);
+/* For whatever answers inside the loop (netdev.stats, the "so far" lines):
+ * the last dump that landed into *out, without waiting, and the next one
+ * asked for (1 ms after the last ask at the soonest), so a later request
+ * gets fresher counts. False (nothing written) while no dump has landed or
+ * the start's count is unknown: the chip's counts are then unknown. M9-REVIEW
+ * finding 13: a request never waits for the chip's DMA. */
+bool     tally_recent(struct rtl *t, uint64_t now, struct tally *out);
 status_t tally_dump(struct rtl *t, struct tally *out);
 void     tally_log(const char *when, const struct tally *x);
 /* The plan's check that the chip sent nothing of its own (no PAUSE, no

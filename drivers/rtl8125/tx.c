@@ -102,11 +102,14 @@ static void timed(struct txstats *x, uint64_t wait)
 }
 
 /* The chip's count of frames sent (good and errored) since the driver
- * started: the tally now, less the one at the start. False if unread. */
-static bool chip_sent(struct rtl *t, uint64_t *out)
+ * started, less the one at the start. `now`: a dump made now, waited for
+ * (bounded: only the stall dumps, a few a run, whose verdict needs a count
+ * from after the doorbell); else the last that landed (no wait). False if
+ * unread. */
+static bool chip_sent(struct rtl *t, bool now, uint64_t *out)
 {
     struct tally x;
-    if (!t->tally0_ok || tally_dump(t, &x) != OK)
+    if (!t->tally0_ok || (now ? tally_dump(t, &x) != OK : !tally_recent(t, drv_clock_ns(), &x)))
         return false;
     *out = x.tx_ok + x.tx_err - t->tally_tx0;
     return true;
@@ -140,7 +143,7 @@ static void stall_dump(struct rtl *t, uint32_t c, uint64_t waited)
             rd16(t, RTL_TXSTART), rd8(t, RTL_TDFNR), rd32(t, RTL_ISR), rd32(t, RTL_IMR),
             mac_rd(t, RTL_MAC_TXD_FORMAT));
     uint64_t sent;
-    if (!chip_sent(t, &sent))
+    if (!chip_sent(t, true, &sent))
         drv_log("tx STALL: the tally could not be read");
     else
         drv_log("tx STALL: the chip's tally says %lu sent, %u handed back: %s",
@@ -348,7 +351,7 @@ void tx_tick(struct rtl *t)
     char wait[48], chip[24] = "unread";
     tx_wait_str(t, wait, sizeof(wait));
     uint64_t sent;
-    if (chip_sent(t, &sent))
+    if (chip_sent(t, false, &sent))   /* the last dump: up to a second old */
         drv_snprintf(chip, sizeof(chip), "%lu", (unsigned long)sent);
     drv_log("tx so far: %lu queued, chip sent %s, %u back, %u pending; wait min/avg/max %s; %u "
             "stalled, %u doorbell(s) again, %u refused for a full ring",

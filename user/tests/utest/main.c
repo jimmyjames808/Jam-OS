@@ -675,6 +675,7 @@ static const struct {
     { "rtl8125_guard", t_rtl8125_guard },
     { "rtl8125_dump", t_rtl8125_dump },
     { "rtl8125_guard_fake", t_rtl8125_guard_fake },
+    { "rtl8125_stats_nowait", t_rtl8125_stats_nowait },
     { "rtl8125_rxdesc", t_rtl8125_rxdesc },
     { "rtl8125_rxdesc_laps", t_rtl8125_rxdesc_laps },
     { "dhcp_build", t_dhcp_build },

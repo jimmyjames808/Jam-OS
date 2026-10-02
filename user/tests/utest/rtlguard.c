@@ -283,3 +283,45 @@ bool t_rtl8125_guard_fake(void)
     CHECK_EQ(t->dump.landed, RTL_GUARD_UNREAD_MAX);
     return stopped(t, RTL_GUARD_UNREAD, now);
 }
+
+/* netdev.stats and the "so far" lines inside the loop (M9-REVIEW 13): a
+ * dump the chip never does used to cost every request 10 ms of the loop
+ * (tally_dump, still the start's and the end's); tally_recent answers from
+ * the last dump that landed, asks for the next one and never waits. */
+bool t_rtl8125_stats_nowait(void)
+{
+    struct rtl *t = fake(RTL_MODE_FULL);
+    struct tally x = { 0 };
+    uint64_t t0 = now();
+    CHECK_ST(tally_dump(t, &x), ERR_TIMED_OUT);            /* the old way: a wait ... */
+    uint64_t waited = now() - t0;
+    if (waited < RTL_DUMP_WAIT_NS)
+        FAIL("tally_dump gave up after %lu ns", (unsigned long)waited);
+    /* 64 requests a turn (netserver's budget), 20 turns: no answer yet,
+     * one dump out at a time, nothing waited for */
+    t = fake(RTL_MODE_FULL);
+    t0 = now();
+    for (unsigned i = 0; i < 64 * 20; i++)
+        if (tally_recent(t, now(), &x))
+            FAIL("request %u: counts before any dump landed", i);
+    uint64_t took = now() - t0;
+    if (took > 20 * MS)
+        FAIL("1280 requests took %lu us: they waited for the chip", (unsigned long)(took / 1000));
+    CHECK(t->dump.busy || t->dump.late);
+    CHECK_EQ(t->dump.landed, 0);
+    /* the chip does the dump: the next request has its counts and asks again */
+    chip_dumps(BASE + 4, 0);
+    uint64_t at = now();
+    t->dump.busy = true;                                   /* (it may have given up meanwhile) */
+    t->dump.asked_at = at;
+    CHECK(tally_recent(t, at + 2 * MS, &x));
+    CHECK_EQ(x.tx_ok, BASE + 4);
+    CHECK_EQ(x.rx_ok, 77);
+    CHECK(asked() && t->dump.busy);
+    CHECK(tally_recent(t, at + 3 * MS, &x));              /* the out one: the last counts */
+    CHECK_EQ(x.tx_ok, BASE + 4);
+    /* the guard sees the dump a request landed: one frame too many stops it */
+    t->tx.queued = 3;
+    guard_step(t, false, at + 4 * MS);
+    return stopped(t, RTL_GUARD_FOREIGN, at + 4 * MS);
+}

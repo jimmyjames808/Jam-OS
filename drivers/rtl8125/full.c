@@ -45,8 +45,11 @@ static void dev_info(void *ctx, struct srv_info *out)
         out->mac[i] = t->mac[i];
 }
 
-/* The driver's counts, added into s; the chip's since the driver started
- * (the tally now, less the one at the start: a short bounded DMA wait). */
+/* The driver's counts, added into s; the chip's since the driver started:
+ * the last tally dump that landed (at most about a second old: the guard
+ * asks for one every second) less the one at the start. Nothing here waits
+ * for the chip (tally_recent asks for the next dump and returns), so a
+ * netstack that floods `stats` can't hold up the loop (M9-REVIEW 13). */
 static void dev_stats(void *ctx, struct netdev_stats *s)
 {
     struct full *f = ctx;
@@ -65,8 +68,8 @@ static void dev_stats(void *ctx, struct netdev_stats *s)
     s->tx_stalls = x->stalls;
     s->tx_kicks = x->kicks;
     struct tally now;
-    if (!f->o->start_ok || tally_dump(t, &now) != OK)
-        return;   /* chip_counted stays 0: the chip's counts are unknown */
+    if (!f->o->start_ok || !tally_recent(t, drv_clock_ns(), &now))
+        return;   /* chip_counted stays 0: the chip's counts are unknown (yet) */
     const struct tally *a = &f->o->start;
     s->chip_counted = NETDEV_CHIP_TX_OK | NETDEV_CHIP_RX_OK | NETDEV_CHIP_TX_ERR |
                       NETDEV_CHIP_RX_ERR | NETDEV_CHIP_RX_MISSED;

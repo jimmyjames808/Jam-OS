@@ -194,6 +194,17 @@ static enum rtl_dump_step tally_wait(struct rtl *t)
     return s;
 }
 
+bool tally_recent(struct rtl *t, uint64_t now, struct tally *out)
+{
+    (void)tally_look(t, now);   /* one that landed meanwhile is the guard's too (guard_seen) */
+    if (rtl_dump_due(&t->dump, now, true))
+        tally_ask(t, now);
+    if (!t->tally0_ok || !t->dump.landed)
+        return false;
+    *out = t->tally_last;
+    return true;
+}
+
 status_t tally_dump(struct rtl *t, struct tally *out)
 {
     if (t->dump.busy)

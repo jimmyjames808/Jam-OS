@@ -241,6 +241,7 @@ bool t_rtl8125_tx_verdict(void);
 bool t_rtl8125_guard(void);
 bool t_rtl8125_dump(void);
 bool t_rtl8125_guard_fake(void);
+bool t_rtl8125_stats_nowait(void);
 
 /* rtlrx.c: drivers/rtl8125/rxdesc.h. */
 bool t_rtl8125_rxdesc(void);
