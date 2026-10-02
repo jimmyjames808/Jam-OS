@@ -514,6 +514,80 @@ gets a process that holds almost nothing.
   another program pings, and the driver: netstack not reading its
   receive ring makes the driver drop and count, never wait.
 
+#### Stage 5a, built: the DHCP and DNS cores
+
+Built 2026-10-02, before sockets exist: everything in DHCP and DNS that
+parses the network's bytes or keeps protocol state, as libraries with
+no I/O of their own, and their tests. `bin/dhcp` and `bin/dns` are
+built but only say "not built yet" and end; nothing starts them. The
+files: `user/services/dhcp/` (`dhcp.h`, `msg.c`: build and parse,
+`client.c`: the state machine), `user/services/dns/` (`dns.h`, `msg.c`:
+names, query, reply checks, `cache.c`, `resolver.c`: the queries in
+flight), `user/include/netbytes.h` (big-endian loads and stores, host
+order addresses); the tests are utest's
+([TESTING.md](TESTING.md#the-dhcp-and-dns-cores-utest)). What they do,
+where the plan above left it open:
+
+- **DHCP:** options 1, 3, 6, 51, 54, 58, 59 read, plus 53 and 52
+  (overload: options in the file and sname fields); a repeated option is
+  one long option (RFC 3396). Every message sent is 300 bytes with
+  option 61 (type 1 and the MAC), the host name `jamos`, the parameter
+  list and option 57 (1500). DISCOVER and the first REQUEST ask for a
+  broadcast answer (no address yet). Retransmits at 4, 8, ... 64 s, each
+  +- 1 s; four REQUESTs, then a new DISCOVER; after a NAK while
+  requesting a wait of 2 s doubling to 64 s; renewing and rebinding
+  retry at half the time left (at least 60 s). INIT-REBOOT when started
+  with the last address. The RFC 5227 ARP probe is a hook (none: no
+  probe; no answer in 10 s: the address is free); a conflict sends a
+  DECLINE and waits 10 s. A lease under 10 s counts as 10 s; T1 and T2
+  default to 1/2 and 7/8; the times count from the exchange's first
+  REQUEST.
+- **DNS:** each name in flight has **a socket of its own**, on a random
+  local port (1024 and up), and a random id, so a forged reply must
+  guess about 32 bits, not 16 (the plan said one socket); so at most 16
+  names are in flight, netstack's per-opener socket limit. Askers of a
+  name in flight share its query (8 at most). Tries at 1, 2, 3 and 4 s
+  over the servers in turn (10 s in all), each keeping its id and port;
+  SERVFAIL moves to the next server at once; TC is ERR_NOT_SUPPORTED (no
+  TCP); CNAMEs followed in one reply and over several, 8 at most.
+  Answers are cached under the name asked (32 names, TTL at most a day);
+  failures are not cached. An IPv4 literal is answered without a query.
+
+**What 5b connects** (the edge is a struct of function pointers each
+library calls; the caller's loop feeds the library and waits for its
+deadline, so the service-loop rule holds by construction):
+
+- `bin/dhcp` (holds netctl only): `dhcp_init(c, io, mac)`;
+  `dhcp_start(c, now, last_addr)` once the link is up (again with
+  `c->lease.addr` after the link or netstack comes back);
+  `dhcp_input(c, now, msg, len)` for each datagram on netctl's DHCP
+  socket; `dhcp_tick(c, now)` at `dhcp_deadline(c)`;
+  `dhcp_stop(c, now, true)` on an orderly shutdown. Its `struct
+  dhcp_io`: `send(ctx, to, msg, len)` from port 68 to port 67 of `to`
+  (255.255.255.255 or the server); `bound(ctx, lease)`: netctl's
+  set_ipv4 (address, mask, router) and set_dns, and the lease logged
+  once; `unbound(ctx, why)`: netctl's clear, logged; `probe(ctx, addr)`
+  (may stay NULL), answered with `dhcp_probe_done(c, now, addr,
+  conflict)`; `random(ctx)`.
+- `bin/dns` (holds `/svc/net` and its `/svc/dns` server end):
+  `dns_init(r, io)`; `dns_set_servers(r, servers, n)` from netstack's
+  DNS list, again whenever it changes; `resolve` (a `later` method) calls
+  `dns_resolve(r, now, name, cookie)` with a cookie naming the request:
+  an error is the reply at once, OK means `answer` brings it; an asker
+  whose channel closes: `dns_cancel(r, cookie)` for each of its
+  requests; `dns_input(r, now, &datagram)` for each datagram on any of
+  its sockets (local port, source address and port, bytes);
+  `dns_tick(r, now)` at `dns_deadline(r)`. Its `struct dns_io`:
+  `send(ctx, port, server, msg, len)`: open a UDP socket on `port` at its
+  first use (ERR_ALREADY_BOUND if taken: the resolver picks another),
+  send to the server's port 53; `release(ctx, port)`: close it;
+  `answer(ctx, cookie, st, addr, n, ttl)`: the `resolve` reply;
+  `random(ctx)`.
+- **Randomness:** libos has no random source yet. DNS ids and ports are
+  only as unguessable as `random`: 5b needs a real one (RDRAND, which
+  works in user space, checked by CPUID first; or one from the kernel).
+  A fixed seed would make forged answers easy.
+
 ### netlog: the log over UDP to the Mac
 
 - **bin/netlog** (planned user/services/netlog), started by init in

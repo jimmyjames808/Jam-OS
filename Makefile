@@ -242,9 +242,14 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # utest tests the music player's folder walk and spectrum (utest/music.c):
 # the player's own objects, linked in, and its header; and the RTL8125
-# probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h).
-EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o
-EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125
+# probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
+# and the DHCP client's and the resolver's cores (utest/dhcp*.c, dns*.c).
+EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
+                      $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \
+                      $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
+                      $(UOBJ)/user/services/dns/resolver.c.o
+EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
+                      -iquote user/services/dhcp -iquote user/services/dns
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.

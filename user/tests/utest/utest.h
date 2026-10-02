@@ -219,6 +219,41 @@ bool t_netframe_short_frames(void);
 bool t_rtl8125_write_guard(void);
 bool t_rtl8125_stays_off(void);
 
+/* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
+ * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the
+ * resolver's messages, its queries and its cache (user/services/dns/);
+ * netfuzz.c and nettest.h: what they share. */
+bool t_dhcp_build(void);
+bool t_dhcp_parse_sample(void);
+bool t_dhcp_parse_truncated(void);
+bool t_dhcp_parse_options(void);
+bool t_dhcp_parse_addresses(void);
+bool t_dhcp_overload(void);
+bool t_dhcp_fuzz(void);
+bool t_dhcpc_lease_cycle(void);
+bool t_dhcpc_retransmit(void);
+bool t_dhcpc_nak(void);
+bool t_dhcpc_wrong_replies(void);
+bool t_dhcpc_probe(void);
+bool t_dhcpc_reboot(void);
+bool t_dhcpc_times(void);
+bool t_dhcpc_stop(void);
+bool t_dhcpc_hostile(void);
+bool t_dns_names(void);
+bool t_dns_parse_samples(void);
+bool t_dns_parse_answers(void);
+bool t_dns_names_hostile(void);
+bool t_dns_parse_hostile(void);
+bool t_dns_fuzz(void);
+bool t_dnsres_basic(void);
+bool t_dnsres_retries(void);
+bool t_dnsres_slow_peer(void);
+bool t_dnsres_cname(void);
+bool t_dnsres_failures(void);
+bool t_dnsres_ports(void);
+bool t_dnsres_cache(void);
+bool t_dnsres_hostile(void);
+
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);
