@@ -1808,6 +1808,16 @@ built the same day:
 - **Not covered by a signature**: which signed build is served. An
   older build the owner signed is accepted like a newer one (the owner
   types `update` and sees both versions).
+- **A stable manifest** (the owner, 2026-10-02, after the `net` line made
+  format 2 and so another `make flash`): format 2 is the base for good,
+  its seven lines keep their meaning. New information goes in extension
+  lines (`<key> [<value>]`, anywhere before the signature line, signed),
+  which a build that doesn't know them skips; a must-understand line
+  (`!<key>`) is refused by a build that doesn't know it, with "needs a
+  newer build" (after the signature checks out). Each request carries the
+  format the build reads (byte 7, 0 from older builds: format 2) and the
+  server answers in it. Only a new signature scheme would need a new
+  format, and with it a stick flash. The grammar is in `<update.h>`.
 
 ## update -w, built
 
