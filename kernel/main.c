@@ -2,8 +2,9 @@
  * features, GDT/IDT, the physical and virtual memory managers and the heap,
  * then switches to a kernel stack for kmain_stage2: bootfs, ACPI, the local
  * APIC and TSC, the scheduler (this code becomes thread "main"), IPIs,
- * the I/O APIC, the timer, the other CPUs, PCI and resources. What runs
- * after that depends on the command line (boot/limine.conf): the tests,
+ * the I/O APIC, the timer, the other CPUs, PCI, the VT-d probe and
+ * resources. What runs after that depends on the command line
+ * (boot/limine.conf): the tests,
  * the benchmark, the stress test, a crash test, or user space (init). The
  * RESULTS box at the end repeats every report() line. */
 #include <stdint.h>
@@ -36,6 +37,7 @@
 #include <jam/sysinfo.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
+#include <jam/vtd.h>
 #include <jam/wallclock.h>
 #include <jam/x86.h>
 
@@ -412,6 +414,7 @@ _Noreturn static void kmain_stage2(void *arg)
     /* PCI enumeration and the resource tree, once every CPU is online
      * (the vector allocator spreads MSIs over them). */
     pci_init();
+    vtd_probe();   /* reads and logs the IOMMU's table and registers; writes nothing */
     resource_init();
     if (cmdline_has("pcilist"))
         pci_report();
