@@ -727,7 +727,10 @@ Not built yet; these rules bind every future path that can transmit.
   another handle, a mapping or a pin), hashes those bytes, and starts it
   only if a line has that path and hash, with the list read from the
   same bytes. No program can mark one: every program's `/data` is a view
-  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. Whoever holds
+  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that
+  asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
+  `init`) is refused, approval or not: they reach drivers, devices and
+  the filesystems unguarded, past every view. Whoever holds
   the stick can edit the file on another computer, as they could replace
   the kernel. User-space pagers
   ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the

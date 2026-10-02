@@ -80,7 +80,12 @@ static int allow_file(const char *arg)
         return 1;
     }
     jam_handle_close(vmo);
-    sh_say("allow %s: %s? y/n ", sh_basename(abs), w.text[0] ? w.text : "nothing but its terminal");
+    const char *bad = sh_wants_refused(&w);
+    if (bad) {
+        sh_tty("allow: %s: asks for %s, which no program from /data may have\n", arg, bad);
+        return 1;
+    }
+    sh_say("allow %s:%s? y/n ", sh_basename(abs), w.text[0] ? w.text : "nothing but its terminal");
     sh_flush();
     if (!ask())
         return 1;

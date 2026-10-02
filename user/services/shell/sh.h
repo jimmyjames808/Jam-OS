@@ -187,6 +187,10 @@ bool     sh_on_data(const char *abs);
  * ERR_INVALID_ARGS: not an ELF file, or its list is broken. */
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w);
+/* The first service w asks for that no program from /data may have (its
+ * name, "devmgr"), or NULL: devmgr's channels and init's reach drivers,
+ * devices, the filesystems unguarded and every service, past every view. */
+const char *sh_wants_refused(const struct wants *w);
 /* Ready to run if the owner allowed exactly this file (a line of
  * /data/etc/allow with its path and hash): sh_program_file's outputs.
  * false (said why on the screen) otherwise. */
