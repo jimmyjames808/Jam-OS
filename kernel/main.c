@@ -32,6 +32,7 @@
 #include <jam/serial.h>
 #include <jam/smp.h>
 #include <jam/string.h>
+#include <jam/sysinfo.h>
 #include <jam/time.h>
 #include <jam/userboot.h>
 #include <jam/wallclock.h>
@@ -371,7 +372,7 @@ _Noreturn void kmain(struct boot_info *bi)
     percpu_set_gs(&cpu0);   /* spinlocks need this_cpu() from here on */
     boot = bi;
     cmdline_set(bi->cmdline);
-    int has_serial = serial_init();
+    bool has_serial = serial_init();
     fbcon_init(&bi->fb, splash_boot());
 
     fbcon_set_colors(0xffb000, 0x101018);

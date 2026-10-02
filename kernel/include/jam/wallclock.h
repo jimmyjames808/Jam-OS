@@ -28,4 +28,4 @@ status_t wallclock_check(const struct wall_clock *in, uint64_t uptime_now);
 /* Seconds since 1970-01-01 of a date and time (proleptic Gregorian,
  * years 1970..9999). */
 int64_t  wallclock_civil_secs(unsigned year, unsigned month, unsigned day, unsigned hour,
-                          unsigned minute, unsigned second);
+                              unsigned minute, unsigned second);

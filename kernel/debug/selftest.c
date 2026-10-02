@@ -346,13 +346,13 @@ void selftest_run_smp(void)
     report("selftest: all passed");
 }
 
-static int has_word(const char *s, const char *w)
+static bool has_word(const char *s, const char *w)
 {
     size_t wl = strlen(w);
     for (const char *p = s; *p; p++)
         if ((p == s || p[-1] == ' ') && !memcmp(p, w, wl) && (p[wl] == ' ' || !p[wl]))
-            return 1;
-    return 0;
+            return true;
+    return false;
 }
 
 /* Deliberately unbounded: runs into the stack guard page. */
@@ -591,7 +591,7 @@ static const struct crash_test {
 };
 #define NCRASH (sizeof(crash_tests) / sizeof(crash_tests[0]))
 
-static int has_test_word(const char *cmdline, const char *name)
+static bool has_test_word(const char *cmdline, const char *name)
 {
     char w[24];
     ksnprintf(w, sizeof(w), "test%s", name);

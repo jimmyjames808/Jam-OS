@@ -321,8 +321,6 @@ void watchdog_fire(uint32_t cpu)
     lapic_send_nmi(cpus[cpu]->lapic_id);
 }
 
-extern int panic_in_progress;
-
 void nmi_handler(struct trap_frame *f)
 {
     if (__atomic_load_n(&panic_in_progress, __ATOMIC_ACQUIRE) ||

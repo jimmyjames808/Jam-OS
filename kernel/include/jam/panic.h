@@ -8,6 +8,9 @@
 #include <stdint.h>
 
 _Noreturn void panic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Set (atomically, once) by the first CPU to panic; the NMI handler reads
+ * it to halt instead of taking a halted CPU's NMI as news. */
+extern int panic_in_progress;
 _Noreturn void halt_forever(void);
 
 /* One line every panic screen shows under its message: what the kernel was

@@ -18,11 +18,11 @@
 static spinlock_t lock = SPINLOCK_INIT("wall clock");
 static int64_t  base_utc;               /* ns since 1970, at ... (lock) */
 static uint64_t base_up;                /* ... this uptime (lock) */
-static uint32_t flags;                  /* WALLWALLCLOCK_* (lock); 0: no clock */
+static uint32_t flags;                  /* WALLCLOCK_* (lock); 0: no clock */
 static char     zone[WALLCLOCK_ZONE_MAX];   /* (lock) */
 
 int64_t wallclock_civil_secs(unsigned year, unsigned month, unsigned day, unsigned hour,
-                         unsigned minute, unsigned second)
+                             unsigned minute, unsigned second)
 {
     /* days_from_civil (H. Hinnant): March-based years, so February is last. */
     int64_t y = (int64_t)year - (month <= 2);

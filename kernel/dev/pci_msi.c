@@ -110,9 +110,8 @@ status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on)
         spin_unlock_irqrestore(&pci_lock, f);
         return ERR_BAD_STATE;   /* the other kind is on */
     }
-    uint16_t cmd = rd(d, CFG_COMMAND, 2);
     if (on) {
-        wr(d, CFG_COMMAND, 2, cmd | CMD_INTX_OFF);
+        wr(d, CFG_COMMAND, 2, rd(d, CFG_COMMAND, 2) | CMD_INTX_OFF);
         if (msix) {
             ensure_memory(d);
             /* Enable under the function mask, then lift it: the entries'
@@ -135,7 +134,6 @@ status_t pci_msi_enable(struct pci_dev *d, bool msix, bool on)
          * with the last MSI gone could let an INTx the device has pending
          * fire into a line nobody handles, and an unbound function has no
          * business interrupting. */
-        (void)cmd;
     }
     (void)rd(d, CFG_COMMAND, 2);
     spin_unlock_irqrestore(&pci_lock, f);
