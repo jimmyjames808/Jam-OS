@@ -737,9 +737,13 @@ untagged frame. The checks are pure functions in one header both use,
 mode and a valid VLAN). For the RTL8125, `tools/checknotx.sh` (in `make
 check`, self-tested) holds the transmit registers to `tx.c` and the gate
 to the top of every entry, and keeps the listen-only probe's files from
-calling it. At its exit the RTL8125 driver compares the chip's own count
-of frames sent with the frames it queued (`tx check:`): more sent than
-queued would mean the chip sent frames of its own. utest's `netframe_*`
+calling it. While it runs, about once a second and after every reap, the
+RTL8125 driver compares the chip's own count of frames sent with the
+frames it queued; more sent than queued (frames of the chip's own), or a
+link that resolved to sending PAUSE, turns the transmitter off, resets
+the chip and ends the driver with an error, fail closed
+(`drivers/rtl8125/guard.c`); the same comparison is logged at its exit
+(`tx check:`). utest's `netframe_*`
 tests try every length, tag and edit. In QEMU two separate checks look at
 every frame the guest sends, `tools/netpeer.py` and
 `tools/pcap-vlan-check.py`, and `tools/net-vlan-test.sh` runs every path
