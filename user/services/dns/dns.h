@@ -132,6 +132,13 @@ void     dns_cache_flush(struct dns_cache *c);
 
 #define DNS_MAX_QUERIES  16u     /* names in flight at once: a socket each (netstack's cap) */
 #define DNS_MAX_WAITERS  8u      /* askers of one name in flight */
+/* The fair shares: ordinary askers (programs) may hold at most this many
+ * names in flight (names no system asker waits for), and be this many of
+ * one name's askers; the rest is the network's own services' reserve
+ * (system askers: dns_ask_as), so a program asking for names that never
+ * answer can't stop them resolving. */
+#define DNS_PROG_QUERIES 12u
+#define DNS_PROG_WAITERS 6u
 #define DNS_TRIES        4u      /* sends of one name (servers taken in turn) */
 #define DNS_TRY_MS       1000u   /* the first try's wait; each next one 1 s longer: 10 s in all */
 #define DNS_PORT_MIN     49152u  /* local ports are random in DNS_PORT_MIN..65535: below it a
@@ -172,6 +179,7 @@ struct dns_query {
     uint64_t deadline;                 /* the next send, or giving up */
     uint64_t cookies[DNS_MAX_WAITERS];
     uint8_t  nwait;
+    uint8_t  sys;                      /* bit k: cookies[k] is a system asker's */
 };
 
 struct dns_stats {
@@ -201,6 +209,13 @@ void     dns_set_servers(struct dns_resolver *r, const uint32_t *servers, unsign
  * names, or DNS_MAX_WAITERS askers of this one, in flight): no answer
  * comes. */
 status_t dns_ask(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie);
+/* dns_ask for an asker of a class: sys, a system asker (no limit but the
+ * totals; dns_ask is one); else an ordinary one, which also gets
+ * ERR_NO_RESOURCES when its name would be the DNS_PROG_QUERIES + 1st in
+ * flight that no system asker waits for, or its DNS_PROG_WAITERS + 1st
+ * ordinary asker. */
+status_t dns_ask_as(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie,
+                    bool sys);
 /* The asker went away: no answer for it. A query left with no askers
  * ends. */
 void     dns_cancel(struct dns_resolver *r, uint64_t cookie);

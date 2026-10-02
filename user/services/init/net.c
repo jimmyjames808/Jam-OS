@@ -34,10 +34,14 @@
  *             is stopped, if /data came after it) when they have one.
  *   dns       bin/dns, once netstack runs: the server end of /svc/dns's
  *             shared channel (SR_USER + 0, abi/idl/dns.idl), made once
- *             and kept as /svc/net's is, and /svc/net-sys in its namespace
- *             (shell.c's grants). Its client end is published here as
- *             /svc/dns (a channel per opener). It ends when netstack
- *             does, and is started again once netstack runs.
+ *             and kept as /svc/net's is, the same for /svc/dns-sys's
+ *             (SR_USER + 1: the network's own services, whose openers may
+ *             use a reserve of the resolver's that programs can't take),
+ *             and /svc/net-sys in its namespace (shell.c's grants). Both
+ *             client ends are published here (a channel per opener); only
+ *             sntp is granted /svc/dns-sys, and no program from /data may
+ *             ask for it. It ends when netstack does, and is started
+ *             again once netstack runs.
  *
  *   netlog    bin/netlog, once /data is mounted (its settings say whether):
  *             when `net.host` names the Mac and `netlog` isn't `off`. It
@@ -56,7 +60,7 @@
  *             with `ntp.server` as its argument (none: it asks the
  *             gateway, then pool.ntp.org), the root with RIGHT_ROOT_CLOCK
  *             only (it sets the kernel's clock: no other service has that
- *             power) and a namespace with /svc/net-sys and /svc/dns (shell.c's
+ *             power) and a namespace with /svc/net-sys and /svc/dns-sys (shell.c's
  *             grants). It waits for an address itself. A restart gets the
  *             settings as they are then.
  *
@@ -86,6 +90,7 @@ static handle_t crashlog;           /* SR_CRASHLOG read-only, for netlog (0: no 
 static uint64_t boot_id;            /* netlog's boot id, fixed at its first start */
 static bool     boot_id_known;
 static handle_t dns_srv, dns_cli;   /* /svc/dns's two ends, the same */
+static handle_t dsys_srv, dsys_cli; /* /svc/dns-sys's two ends, the same */
 static handle_t listen_srv, listen_cli;   /* /svc/net-listen's two ends, the same */
 static handle_t sys_srv, sys_cli;         /* /svc/net-sys's two ends, the same */
 static handle_t loop_port;                /* init's loop's port: netctl's answers */
@@ -121,6 +126,11 @@ void net_init(handle_t port)
     else if (jam_handle_duplicate(dns_cli, RIGHT_SAME, &d) != OK ||
              ns_svc_set(SVC_DNS, d, true) != OK)   /* a channel per opener */
         printf("init: /svc/dns isn't published: no names for programs\n");
+    if (jam_channel_create(&dsys_cli, &dsys_srv) != OK)
+        dsys_cli = dsys_srv = HANDLE_INVALID;   /* sntp shares the programs' openers */
+    else if (jam_handle_duplicate(dsys_cli, RIGHT_SAME, &d) != OK ||
+             ns_svc_set(SVC_DNS_SYS, d, true) != OK)
+        printf("init: /svc/dns-sys isn't published: no resolver reserve for sntp\n");
 }
 
 handle_t net_svc_channel(void)
@@ -355,10 +365,13 @@ status_t net_dns_start(void)
         svcs[DNS].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[] = { { SR_USER + 0, HANDLE_INVALID }, { SR_USER + 1, HANDLE_INVALID } };
     if (jam_handle_duplicate(dns_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
-    return svc_start1(DNS, x, 1);   /* consumes it */
+    unsigned n = 1;
+    if (dsys_srv && jam_handle_duplicate(dsys_srv, RIGHT_SAME, &x[1].h) == OK)
+        n++;   /* without it the resolver has no reserve: said in its log */
+    return svc_start1(DNS, x, n);   /* consumes them */
 }
 
 void net_service_given_up(unsigned i)
@@ -368,6 +381,10 @@ void net_service_given_up(unsigned i)
     jam_handle_close(dns_srv);   /* resolves waiting for a resolver fail now */
     dns_srv = HANDLE_INVALID;
     (void)ns_svc_remove(SVC_DNS);   /* nobody new gets it (none there: nothing to do) */
+    if (dsys_srv)
+        jam_handle_close(dsys_srv);
+    dsys_srv = HANDLE_INVALID;
+    (void)ns_svc_remove(SVC_DNS_SYS);   /* the same */
     tell_mounts();
 }
 

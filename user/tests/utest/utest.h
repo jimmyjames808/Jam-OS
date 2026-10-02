@@ -390,8 +390,10 @@ bool t_dnsres_failures(void);
 bool t_dnsres_ports(void);
 bool t_dnsres_cache(void);
 bool t_dnsres_hostile(void);
+bool t_dnsres_shares(void);
 /* dnsd.c: bin/dns's sockets (socks.c) against a fake netstack */
 bool t_dnsd_sockets(void);
+bool t_dnsd_shares(void);
 
 /* update.c: the update manifest's and protocol's parsers (<update.h>,
  * <updwire.h>) and the manifest's signature; updfetch.c: the fetcher's

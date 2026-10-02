@@ -5,6 +5,9 @@
  *                 (abi/idl/dns.idl); init keeps both ends, so a restarted
  *                 resolver serves the same channel, and publishes the
  *                 client end (a channel per opener)
+ *   SR_USER + 1   /svc/dns-sys's, the same: its openers are the network's
+ *                 own services, which may use the reserve (askers.c's
+ *                 fair shares); without it there is no reserve (said)
  *   SR_NS         /svc/net and nothing else: its sockets, and the DNS
  *                 servers netstack has (from the settings or DHCP)
  * It parses what strangers on the network send (msg.c), so it holds
@@ -105,6 +108,10 @@ static status_t setup(void)
         printf("dns: no /svc/net (%s): ending\n", status_str(st));
         return st;
     }
+    handle_t shared_sys = startup_handle(SR_DNS_SYS);
+    if (!shared_sys)
+        printf("dns: started without /svc/dns-sys's channel (SR_USER + 1): no reserve for the "
+               "network's services\n");
     socks_init();
     dns_init(&D.r, &D.io);
     st = jam_port_create(&D.port);
@@ -112,7 +119,7 @@ static status_t setup(void)
         st = jam_port_bind(D.port, D.net, KEY_NET, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
     if (st == OK)
-        st = askers_init(shared);
+        st = askers_init(shared, shared_sys);
     if (st != OK) {
         printf("dns: can't set up (%s)\n", status_str(st));
         return st;

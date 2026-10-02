@@ -15,7 +15,12 @@
 # Limits, so one program can't use the resolver up: DNS_OPENERS (16)
 # openers (connect: ERR_NO_RESOURCES), DNS_PER_OPENER (8) resolves in
 # flight an opener; 16 names in flight in all (the resolver's
-# DNS_MAX_QUERIES, a socket each), 8 callers of one name.
+# DNS_MAX_QUERIES, a socket each), 8 callers of one name. The fair
+# shares: /svc/dns-sys is the same protocol on a second shared channel,
+# for the network's own services (init grants it to sntp); the openers of
+# /svc/dns together get at most DNS_PROG_OPENERS (12) openers, 12 names in
+# flight and 6 callers of one name (ERR_NO_RESOURCES), the rest is the
+# services' reserve.
 #
 # Reconnect: when the resolver ends (it does when netstack does), every
 # opener's channel sees ERR_PEER_CLOSED; open /svc/dns again (svc_get

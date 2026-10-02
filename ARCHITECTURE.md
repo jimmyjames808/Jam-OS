@@ -944,7 +944,17 @@ ARP probe of the offered address (an ACKed address is taken as free).
 own askers) and holds `/svc/net-sys`. Each name in flight has a socket of its
 own on a random port with a random id (`os_random`), 16 names at most and
 8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
-at most a day). libos's `dns_lookup` (`<dns.h>`) is the client.
+at most a day). libos's `dns_lookup` (`<dns.h>`) is the client. Its fair
+shares are netstack's: **`/svc/dns-sys`** is the same protocol on a second
+shared channel (dns's SR_USER + 1), whose openers are the network's own
+services (init grants it to sntp; `tools/checkwants.py` allows `svc
+dns-sys` only under `user/services/`, `allow` refuses it for `/data`;
+libos's `dns_svc` prefers it). Ordinary openers (`/svc/dns`) get 12 of the
+16 openers, 12 of the 16 names in flight (a name counts as theirs while no
+system asker waits for it) and 6 of a name's 8 askers; the rest is the
+reserve, so a program asking for names that never answer can't stop sntp
+resolving `pool.ntp.org`. The class is fixed at connect by the channel an
+opener came through.
 
 **netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net-sys`
 and, after a panic, the panicked boot's log read-only. init starts it when
@@ -960,7 +970,7 @@ can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
 **sntp** (`user/services/sntp`) sets the clock from the network (SNTP, RFC
 4330; the checks in `ntp.c`, a core with no I/O that utest drives). init
 starts it once `/data`'s settings are read, unless `ntp = off`, with
-`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns`, and the root with
+`ntp.server` as its argument, `/svc/net-sys` and `/svc/dns-sys`, and the root with
 `RIGHT_ROOT_CLOCK` only: it is the one service besides init and the shell
 that may set the clock. Without `ntp.server` it asks the network's gateway
 (the DHCP lease's router, which on the owner's network is also its DNS
@@ -1043,10 +1053,10 @@ a `make flash`.
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
 | netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
 | dhcp | netctl | yes: DHCP replies |
-| dns | `/svc/net-sys`; the server end of `/svc/dns` | yes: DNS replies |
+| dns | `/svc/net-sys`; the server ends of `/svc/dns` and `/svc/dns-sys` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
-| sntp | `/svc/net-sys`, `/svc/dns`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
@@ -1141,8 +1151,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
   listen permission, `net-sys`, the same for the network's services
-  ([Networking](#networking)), `dns`, the resolver, and `serve`, the file
-  server, each a channel per opener). The services it starts
+  ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
+  for the network's services, and `serve`, the file server, each a
+  channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the

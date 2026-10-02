@@ -717,7 +717,12 @@ answer, and the clock is a number the test sets. They run in every
   time-out; **the slow-peer rule**: a name that is never answered while
   20 others are each answered the moment their reply comes; CNAMEs over
   several replies; SERVFAIL, TC, NXDOMAIN; shared and cancelled askers;
-  a full table; ports the edge says are taken; the cache's bounds.
+  a full table; ports the edge says are taken; the cache's bounds; the
+  fair shares (`dnsres_shares`): ordinary askers' 12 names in flight, the
+  13th refused while the system's reserve still takes 4, 6 ordinary
+  askers of one name and 2 system ones, each asker's class kept through
+  cancels whichever asker moves into its place, and a name counted as the
+  programs' once no system asker waits for it.
 - **bin/dns's sockets** (`dnsd_sockets`: user/services/dns/socks.c and
   the resolver, against a fake netstack served in-process with net.idl's
   generated server, `udp_rings`, and the socket's rings read and written
@@ -726,7 +731,11 @@ answer, and the clock is a number the test sets. They run in every
   known only when the open is answered) makes the next try use another
   port; the query goes to port 53, the answer comes back through the
   loop's port and the socket closes; a port released while its open is in
-  flight is closed when the open answers.
+  flight is closed when the open answers. `dnsd_shares`: askers.c with
+  bin/dns's loop for it on a thread, over `/svc/dns`'s and `/svc/dns-sys`'s
+  shared channels: 12 ordinary openers, the 13th refused (counted); their
+  12 names in flight (the fake netstack never answers), the 13th refused;
+  an opener of `/svc/dns-sys` still connects and has its name in flight.
 
 ### DHCP and DNS end to end
 

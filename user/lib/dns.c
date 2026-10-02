@@ -13,7 +13,8 @@ _Static_assert(sizeof(((struct dns_resolve_req *)0)->name) == DNS_TEXT_MAX, "dns
 
 handle_t dns_svc(void)
 {
-    return svc_get(SVC_DNS);
+    handle_t h = svc_get(SVC_DNS_SYS);
+    return h ? h : svc_get(SVC_DNS);
 }
 
 status_t dns_lookup_on(handle_t dns, const char *name, uint64_t deadline,
