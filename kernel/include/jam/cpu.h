@@ -19,6 +19,7 @@ struct cpu_features {
     bool pku, pks, waitpkg;                 /* CPUID 7.ECX[3], [31], [5] */
     bool cet_ss, cet_ibt, uintr;            /* CPUID 7.ECX[7], 7.EDX[20], 7.EDX[5] */
     bool mtrr, tsc_adjust;                  /* CPUID 1.EDX[12], 7.EBX[1] (IA32_TSC_ADJUST) */
+    bool rdrand, rdseed;                    /* CPUID 1.ECX[30], 7.EBX[18] (random.c) */
     uint32_t family, model, stepping;       /* CPUID 1.EAX, the extended fields folded in */
     uint32_t microcode;                     /* the running microcode revision, 0 if unknown */
     uint32_t max_leaf;                      /* highest basic CPUID leaf */

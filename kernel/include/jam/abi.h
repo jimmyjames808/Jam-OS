@@ -442,3 +442,7 @@ struct wall_clock {
 };
 #define WALLCLOCK_RTC 1u   /* the RTC's reading at boot as if UTC: nobody has set the clock */
 #define WALLCLOCK_SET 2u   /* set by wallclock_set: UTC */
+
+/* random_get: the most bytes one call gives (libos's os_random asks in
+ * pieces this size). The kernel makes them on its stack. */
+#define RANDOM_GET_MAX 256

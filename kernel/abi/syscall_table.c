@@ -435,6 +435,11 @@ static int64_t call_kexec_reboot(const struct syscall_frame *f)
     return sysc_kexec_reboot((handle_t)f->args[0]);
 }
 
+static int64_t call_random_get(const struct syscall_frame *f)
+{
+    return sysc_random_get(f->args[0], f->args[1]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -516,6 +521,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_wallclock_set] = call_wallclock_set,
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
+    [SYS_random_get] = call_random_get,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

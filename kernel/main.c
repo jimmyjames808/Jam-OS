@@ -25,6 +25,7 @@
 #include <jam/pci.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
+#include <jam/random.h>
 #include <jam/report.h>
 #include <jam/resource.h>
 #include <jam/sched.h>
@@ -72,9 +73,9 @@ static void print_boot_info(const struct boot_info *bi)
     kprintf("cpu id:      family %u model %x stepping %u, microcode %x\n", cpu_features.family,
             cpu_features.model, cpu_features.stepping, cpu_features.microcode);
     kprintf("cpu bits:    pcid=%d invpcid=%d pku=%d pks=%d waitpkg=%d cet-ss=%d cet-ibt=%d "
-            "uintr=%d\n", cpu_features.pcid, cpu_features.invpcid, cpu_features.pku,
-            cpu_features.pks, cpu_features.waitpkg, cpu_features.cet_ss, cpu_features.cet_ibt,
-            cpu_features.uintr);
+            "uintr=%d rdrand=%d rdseed=%d\n", cpu_features.pcid, cpu_features.invpcid,
+            cpu_features.pku, cpu_features.pks, cpu_features.waitpkg, cpu_features.cet_ss,
+            cpu_features.cet_ibt, cpu_features.uintr, cpu_features.rdrand, cpu_features.rdseed);
     pcid_report();
     kprintf("loader:      %s, cmdline \"%s\"\n", bi->loader_name, bi->cmdline);
     if (bi->fb.virt)
@@ -206,14 +207,15 @@ static void boot_vlan_init(void)
         kprintf("network:     no VLAN (the vlan= word): the network stays off\n");
 }
 
-/* ACPI, the local APIC and the clocks (TSC, the wall clock), then how
- * fast the screen redraws. */
+/* ACPI, the local APIC and the clocks (TSC, the wall clock), the random
+ * number generator, then how fast the screen redraws. */
 static void clocks_init(void)
 {
     acpi_init(boot->rsdp_phys);
     lapic_init_bsp(boot->x2apic);
     tsc_calibrate_with_loader(boot->tsc_hz_loader);
     wallclock_init();   /* the date from the RTC (it waits with udelay: after the TSC) */
+    random_init(boot);   /* after the TSC, ACPI and the date, which it mixes in */
     uint64_t redraw_us = fbcon_time_redraw(rdtsc) / (tsc_hz / 1000000);
     if (splash_boot())   /* quiet: nothing was drawn */
         kprintf("fbcon: %ux%u, quiet for the boot splash, mapped %s\n", boot->fb.width,

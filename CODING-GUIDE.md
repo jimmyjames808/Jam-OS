@@ -166,7 +166,8 @@ be compatible with that.
 - **Shared helpers live once.** Before writing `now()`, a time constant, a
   string builder, a lock or a test helper, look first: kernel `jam/time.h`
   and `ktest.h`; user `os.h` (a lock between a program's threads is
-  `lock_take`), libos and `check.h`; drivers `<jam/driver.h>`
+  `lock_take`; anything an attacker must not guess comes from `os_random`;
+  a fixed-seed generator is only for tests that must repeat), libos and `check.h`; drivers `<jam/driver.h>`
   (which has its own `NS_PER_*`, since drivers can't include kernel
   headers). Copy-paste across components is a review failure.
 

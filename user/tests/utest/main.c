@@ -725,6 +725,8 @@ static const struct {
     { "time_zones_switch", t_time_zones_switch },
     { "time_zones_local", t_time_zones_local },
     { "time_wallclock_calls", t_time_wallclock_calls },
+    { "random_get", t_random_get },
+    { "os_random", t_os_random },
     { "netdev_ring_counts", t_netdev_ring_counts },
     { "netdev_ring_one_thread", t_netdev_ring_one_thread },
     { "netdev_ring_exchange", t_netdev_ring_exchange },

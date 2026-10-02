@@ -25,6 +25,12 @@ microcode fixes it from revision 0x118 on this model, and the PC has
 `pcid:` lines say so on every boot
 ([ARCHITECTURE.md](../ARCHITECTURE.md#memory) has the rule).
 
+**Random numbers.** The i7-14700 has RDRAND and RDSEED: `cpu bits:` ends
+`rdrand=1 rdseed=1`, a few lines later the log should say `random:
+seeded from RDSEED, ...`, and the RESULTS box has no `random:` line (one there
+means the hardware failed its check, or is missing:
+[ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers)).
+
 ## USB
 
 One controller carries the keyboard, the mouse and the boot stick:

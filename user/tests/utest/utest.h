@@ -5,7 +5,8 @@
  * against hidmock.c;
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
  * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>; time.c:
- * <wallclock.h> and <settings.h>; tasks.c: <jam/task.h>; idl.c: the IDL's
+ * <wallclock.h> and <settings.h>; random.c: random_get and os_random;
+ * tasks.c: <jam/task.h>; idl.c: the IDL's
  * deferred replies and asynchronous calls; netstack.c and netctl.c:
  * netstack's core over a fake edge and its control channel), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
@@ -76,6 +77,10 @@ bool t_time_wallclock_calls(void);
 bool t_settings_parse(void);
 bool t_settings_edit(void);
 bool t_settings_file(void);
+
+/* random.c: the random_get system call and libos's os_random. */
+bool t_random_get(void);
+bool t_os_random(void);
 
 /* tasks.c: libos's cooperative tasks (<jam/task.h>). */
 bool t_tasks_yield_and_wait(void);

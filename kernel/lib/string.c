@@ -32,6 +32,13 @@ void *memset(void *dst, int c, size_t n)
     return ret;
 }
 
+void explicit_bzero(void *p, size_t n)
+{
+    memset(p, 0, n);
+    /* The compiler must assume the asm reads the zeroed bytes. */
+    __asm__ volatile("" : : "r"(p) : "memory");
+}
+
 int memcmp(const void *a, const void *b, size_t n)
 {
     const uint8_t *x = a, *y = b;
