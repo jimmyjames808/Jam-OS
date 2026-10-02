@@ -239,7 +239,8 @@ the clock was ([ARCHITECTURE.md](ARCHITECTURE.md#time-and-settings)).
   the PC `speed -l`, then on the Mac
   `python3 tools/speed.py client 10.2.21.241` (it sends) and
   `python3 tools/speed.py client 10.2.21.241 -r` (the PC sends). Both
-  sides say MB/s and Mbit/s.
+  sides say MB/s and Mbit/s. Ctrl+C stops `speed` (`speed -l` too); a port
+  nothing listens on is said to be refused.
 
 **The log on the Mac.** With `net.host` set, netlog sends each boot's
 whole log, from its first line, over UDP to that address (port 5021), and

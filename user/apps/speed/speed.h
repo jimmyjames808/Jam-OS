@@ -24,9 +24,11 @@
  *     (sent a few times), answered by "JSPR", u32 run, u32 datagrams
  *     received, u32 ms from the first to the last, u64 bytes.
  *
- * Files: main.c the arguments and the lines; tcp.c both TCP directions
- * and the listener; udp.c the datagrams. Exit: 0, 1 (it failed), 2
- * (usage). */
+ * Files: main.c the arguments, the lines and Ctrl+C; tcp.c both TCP
+ * directions and the listener; udp.c the datagrams. The shell runs it as
+ * a helper (its lines are the shell's; Ctrl+C is a byte on its stop
+ * channel). Exit: 0, 1 (it failed; a refused connection says so), 2
+ * (usage), 130 (Ctrl+C). */
 #pragma once
 
 #include <net.h>

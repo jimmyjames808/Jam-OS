@@ -9,6 +9,34 @@
 JAM_WANTS("svc net listen\n"
           "svc dns\n");
 
+#define ROLE_STOP (SR_USER + 2)   /* the shell's stop channel (sh_run_helper): Ctrl+C */
+
+/* Ctrl+C: the shell writes a byte on the stop channel. Every wait of the
+ * test is bounded, but a run, its report and a listener's wait for the
+ * Mac are long, so this thread, which serves nothing, ends the program at
+ * once (exit 130, as `fetch` does): its connection closes with it (a reset
+ * when bytes were unread, else a FIN), and the shell needn't kill it. */
+static void watch_stop(void *arg)
+{
+    signals_t seen;
+    handle_t stop = (handle_t)(uintptr_t)arg;
+    if (jam_object_wait_one(stop, SIG_READABLE, DEADLINE_NEVER, &seen) != OK)
+        return;   /* the shell went: it can't ask any more */
+    printf("speed: stopped\n");
+    jam_process_exit(130);
+}
+
+static void stop_watched(void)
+{
+    static uint8_t stack[4096] __attribute__((aligned(16)));
+    handle_t stop = startup_handle(ROLE_STOP), th;
+    if (!stop)
+        return;   /* run as a plain program: Ctrl+C kills it */
+    if (thread_spawn("speed-stop", watch_stop, (void *)(uintptr_t)stop, stack, sizeof(stack),
+                     &th) == OK)
+        jam_handle_close(th);
+}
+
 void put32(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t)(v >> 24);
@@ -102,6 +130,7 @@ int main(int argc, char **argv)
     struct opts o;
     if (!parse(argc, argv, &o))
         return usage();
+    stop_watched();
     if (o.listen)
         return tcp_listen((uint16_t)o.port);
     uint32_t addr;

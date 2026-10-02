@@ -113,8 +113,8 @@ static const struct sh_cmd cmds[] = {
       "  server` there; port 5201): sends for 5 s (-t) over TCP and says MB/s and\n"
       "  Mbit/s; -r: the Mac sends, this receives; -u: UDP datagrams instead (lost ones\n"
       "  counted). -l: wait for the Mac's `speed.py client <address>` (needs the listen\n"
-      "  permission: bin/speed's list has it). Ctrl+C stops it. QEMU's numbers are\n"
-      "  QEMU's"),
+      "  permission: bin/speed's list has it). Ctrl+C stops it (status 130). QEMU's\n"
+      "  numbers are QEMU's"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
