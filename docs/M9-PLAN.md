@@ -3,6 +3,9 @@
 Status: the plan (2026-10-02, on main 2079f35, M8.6 done), with the
 owner's answers. **Stage 0, the listen-only probe, is built** and waits
 for its PC run ([below](#stage-0-built-the-pc-run)); nothing else is.
+R1's first half (the transmit path, the VLAN filter and the `netsend`
+test) is built and waits for its PC run
+([below](#r1-progress-the-full-driver-without-the-netdev-server)).
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -329,6 +332,84 @@ carrying 21 (untagged too: a native VLAN)`.
   driver's own counts, for `net stats`.
 - **Exit:** receiver and transmitter off, the chip reset, everything
   unpinned.
+
+#### R1 progress: the full driver without the netdev server
+
+Built 2026-10-02 (R1's first half; the netdev server is the second):
+
+- **`<jam/netframe.h>`'s transmit and receive halves.** `netframe_tag`
+  copies an untagged frame (14..1514 bytes, each byte read once) into the
+  driver's own buffer with the tag (0x8100, priority 0, the VLAN) after
+  the addresses, pads short frames with zeros to 64 bytes and refuses a
+  frame whose EtherType is a tag (0x8100, 0x88a8, 0x9100);
+  `netframe_tx_check` is the last look at that copy (18..1518 bytes,
+  bytes 12-15 exactly the tag, 16-17 no tag) right before its descriptor
+  is handed over. `netframe_rx_check` keeps only 802.1Q frames with the
+  VLAN (any priority) and names the reason for every drop;
+  `netframe_untag` takes the tag off. utest's `netframe_*` tests try every
+  length, every tag EtherType, every edit of bytes 12-17, and a caller
+  that rewrites its frame after the copy.
+- **The driver's two modes** (`drivers/rtl8125/args.h`): `netprobe` is
+  stage 0's probe, unchanged in what it does; full mode needs a valid
+  `vlan=` (`netdev_vlan_args`), else "no VLAN: the network stays off" and
+  the chip is never touched. In full mode: the receive filter is our
+  address and broadcasts (no multicast, not promiscuous), the tags kept
+  (rx.c drops and counts the rest); the 16-byte transmit descriptors of
+  rge's 8125B and a 256-entry ring; one MSI-X vector for receive,
+  transmit-done and link change; link changes counted and logged (the
+  first 12, then one in 64); wake-on-LAN off in both modes (rge_wol:
+  CFG3, CFG5, MAC OCP c0b6), left off at exit; pause still not
+  advertised; still no firmware tables.
+- **One transmit path: `drivers/rtl8125/tx.c`.** Copy and tag, check the
+  copy, descriptor, doorbell. Every function it gives other files starts
+  with the gate: full mode and a valid VLAN (`rtl_tx_allowed` in
+  notx.h); its register writers check the gate again. regs.c's accessors
+  refuse every transmit register in every mode. `tools/checknotx.sh` (in
+  `make check`) checks six rules: registers written only in regs.c
+  (behind the guard) and tx.c (behind the gate), no transmit register
+  through regs.c, the transmitter enable named only in notx.h and tx.c,
+  the gate at the top of every tx.c entry point and what the gate is, no
+  call from the probe's files into tx.c, the mode and the VLAN set once
+  in main.c; each rule is self-tested on `tools/checknotx-tests/`.
+- **The tally check** (the plan's PAUSE check), at every exit: the chip's
+  count of frames sent between the start and the end against what tx.c
+  queued; a `tx check:` log line and the RESULTS line say `chip tally +N
+  (equal)` or `(DIFFERS)`.
+- **The send test, `netsend`** (boot entry "Jam OS (network: send
+  test)"): full mode on the kernel's VLAN, the link (10 s at most), the
+  first frame kept on the VLAN (5 s at most, then it sends anyway: the
+  switch port forwards), then three ARP probes (RFC 5227: sender IP
+  0.0.0.0, target 10.2.21.1, VLAN 21's router; a driver word `arpto=`
+  could change it), one second apart, each tagged by tx.c; it waits for
+  the router's reply (tagged 21, kept by rx.c; the send test alone reads
+  an ARP body, of kept frames only, to recognise it), logs each round
+  trip, then stops. Nothing else is ever sent.
+- Not built yet: the netdev server (R1b), so a boot without `netprobe`
+  or `netsend` still never binds the chip.
+
+**The owner's run:** boot "Jam OS (network: send test)", the cable in.
+It takes about 10 s after the link. On the Mac (on VLAN 21's Wi-Fi),
+before booting: `sudo tcpdump -i en0 -e -n arp` shows the probes,
+broadcast on VLAN 21 (`who-has 10.2.21.1 tell 0.0.0.0`, from the PC's
+MAC; the Wi-Fi side sees them untagged). The router's reply is unicast to
+the PC, so the Mac may not see it. Then bring back the `[rtl8125]` lines and the RESULTS line starting
+`rtl8125: netsend`.
+
+**What it should show:** `wake-on-LAN off: cfg3 ... -> ..., cfg5 ... ->
+...` (the WoL bits cleared); `transmit ring: 256 descriptors at ...,
+vlan 21 on every frame`; `receiver on, transmitter on: rxcfg 0x41..0c0a
+(tag stripping off)` (accept bits 0x0a: our address and broadcasts); the link as before (1000 full in about 2 s);
+`first frame on vlan 21 ... ms after the link`; `probe 1: reply in N ms`
+three times (a router answers in well under 1 ms on the LAN); `rx on vlan
+21: N kept ...; dropped: ... untagged ..., other vlans ...` (the native
+and the other VLANs dropped); `tx: 3 queued, 3 sent, 0 with an error`;
+`tx check: ... equal: the chip sent nothing of its own`; and the RESULTS
+line `netsend vlan 21, link 1000 full in 2.x s, 3 of 3 ARP probes to
+10.2.21.1 answered (ms a/b/c), tx 3 queued, chip tally +3 (equal), rx kept
+N dropped M`. If the probes go unanswered but the chip's tally says +3,
+the frames left: look at the Mac's tcpdump (did they arrive tagged 21?).
+If the tally says +0, the transmitter did not run: the `transmit ring`
+and `receiver on` lines and the `REFUSED` lines say why.
 
 ### The PHY firmware patch
 
