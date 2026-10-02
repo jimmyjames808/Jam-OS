@@ -459,6 +459,46 @@ matters `QEMU_XHCI`) pass through.
 | `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`) and a `shell netsend` boot (`netsend.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log never mentions either. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe or the send test without hardware, ends at once with exit 0 and an empty job) |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
 
+## The DHCP and DNS cores (utest)
+
+The DHCP client and the DNS resolver
+([M9-PLAN.md](M9-PLAN.md#stage-5a-built-the-dhcp-and-dns-cores)) are
+libraries with their I/O behind a struct of function pointers, so utest
+runs them with no network: a scripted edge records what they send and
+answer, and the clock is a number the test sets. They run in every
+`init` run (the user regression tier), in well under a second.
+
+- **Hostile input.** Every datagram a test hands a parser is copied to
+  end exactly at a page with no access (`user/tests/utest/netfuzz.c`), so
+  a read one byte past it faults and fails the run instead of reading
+  stale bytes. The fuzz tests (`dhcp_fuzz`, `dhcpc_hostile`, `dns_fuzz`,
+  `dnsres_hostile`) mutate valid datagrams `FUZZ_ROUNDS` (4000) times
+  per sample from a fixed seed (bit flips, special bytes, cuts, planted
+  pointers and big counts, bytes added), so a failure repeats.
+- **DHCP** (`dhcp_*`: user/services/dhcp/msg.c): the client's messages
+  byte for byte; an OFFER as VLAN 21's router sends it; every length it
+  can be cut to; options running past their field, a length byte
+  missing, wrong lengths, repeated and split options (RFC 3396), option
+  52's file and sname fields (and options running past them), masks,
+  routers, DNS servers and offered addresses that can't be used.
+  (`dhcpc_*`: client.c) a lease from DISCOVER to the probe and BOUND,
+  renewing, rebinding and expiry; retransmit times with their jitter;
+  NAKs while requesting and mid-renewal; replies with another xid,
+  server or address, or in the wrong state; a probe conflict;
+  INIT-REBOOT; T1 and T2; RELEASE.
+- **DNS** (`dns_*`: user/services/dns/msg.c): names, IPv4 literals, the
+  query byte for byte; replies as servers send them (compressed, a
+  CNAME, NXDOMAIN with an SOA); records for other names and classes,
+  duplicates, CNAME loops; every truncation; compression pointers to
+  themselves, forward, in loops and 17 deep; names over 253 characters;
+  bad label types and bytes; counts the bytes don't hold; data past the
+  end. (`dnsres_*`: resolver.c and cache.c) answers, the cache and its
+  TTL; replies from another server, port or id; the retries and a
+  time-out; **the slow-peer rule**: a name that is never answered while
+  20 others are each answered the moment their reply comes; CNAMEs over
+  several replies; SERVFAIL, TC, NXDOMAIN; shared and cancelled askers;
+  a full table; ports the edge says are taken; the cache's bounds.
+
 ## The other tools
 
 The rest of `tools/` builds, checks and flashes; the tests above use some
