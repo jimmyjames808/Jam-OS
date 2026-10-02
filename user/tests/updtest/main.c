@@ -384,7 +384,7 @@ static void bad(struct build *b)
         wrong_signatures(b, &nak);
     expect("bad magic", b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
     expect("one handle", b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
-    b->flags = UPDATE_OFFER_CHECK_ONLY << 1;
+    b->flags = 1u << 31;   /* no such flag (the bit above CHECK_ONLY is WRITE) */
     expect("unknown flag", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
     b->flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
     expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
