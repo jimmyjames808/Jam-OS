@@ -7,7 +7,8 @@
  *   DR_DMA      its dma_cap: bus mastering goes on after the reset
  *   DR_PCIDEV   its function (the ids, for the log)
  *   DR_IRQ(0)   MSI-X vector 0 (or MSI): every cause (chip.c routes them)
- *   DR_SERVE    the channel it serves abi/idl/netdev.idl on (serve.c)
+ *   DR_SERVE    the channel it serves abi/idl/netdev.idl on (the netdev
+ *               server, <jam/netserver.h>; loop.c plugs the card in)
  * Arguments: `vlan=<id>` (devmgr passes the boot's VLAN to every network
  * driver; <jam/netdev.h> netdev_vlan_args). Without a valid one the chip
  * is never touched: "no VLAN: the network stays off", exit 0.
@@ -107,17 +108,16 @@ static status_t bring_up(struct e1k *t)
 
 static void log_totals(const struct e1k *t)
 {
-    const struct netdev_stats *s = &t->st;
-    drv_log("rx: %lu given to netstack; dropped: %lu untagged, %lu vlan 0, %lu other vlans or "
-            "tags, %lu bad, %lu ring full, %lu with no session", (unsigned long)s->rx_frames,
-            (unsigned long)s->rx_untagged, (unsigned long)s->rx_priority,
-            (unsigned long)s->rx_other_vlan, (unsigned long)s->rx_bad,
-            (unsigned long)s->rx_ring_full, (unsigned long)s->rx_no_session);
-    drv_log("tx: %lu tagged and queued, %lu sent; refused: %lu bad length, %lu already tagged, "
-            "%lu bad flags; ring errors %lu; sessions %lu", (unsigned long)s->tx_frames,
-            (unsigned long)s->tx_done, (unsigned long)s->tx_bad_len,
-            (unsigned long)s->tx_bad_tag, (unsigned long)s->tx_bad_flags,
-            (unsigned long)(t->ring_errors_done + s->ring_errors), (unsigned long)s->sessions);
+    const struct netdev_stats *s = &t->v.st;
+    const uint64_t *d = t->rx_drop;
+    srv_log(&t->v);
+    drv_log("rx: dropped %lu untagged, %lu vlan 0, %lu other vlans or tags, %lu runts or too "
+            "long, %lu the chip flagged or spread; tx: %lu sent",
+            (unsigned long)d[NETFRAME_RX_UNTAGGED], (unsigned long)d[NETFRAME_RX_PRIORITY],
+            (unsigned long)(d[NETFRAME_RX_OTHER_VLAN] + d[NETFRAME_RX_OUTER] +
+                            d[NETFRAME_RX_NESTED]),
+            (unsigned long)(d[NETFRAME_RX_RUNT] + d[NETFRAME_RX_LONG]),
+            (unsigned long)t->rx_errors, (unsigned long)t->tx_done);
     drv_log("chip: sent %lu (the driver queued %lu: %s), received %lu, errors rx %lu tx %lu, "
             "missed %lu, pause frames sent %lu; %lu interrupt(s), %lu poll(s), icr bits %#x",
             (unsigned long)t->chip.tx_ok, (unsigned long)s->tx_frames,
@@ -129,7 +129,7 @@ static void log_totals(const struct e1k *t)
 
 static void stop(struct e1k *t)
 {
-    session_end(t, "the driver is stopping");
+    srv_end(&t->v);   /* the session, if any (nothing if the server never started) */
     if (t->bus_master || t->tx_on)
         chip_stop(t);   /* before bus mastering goes off, so no DMA is cut mid-frame */
     if (t->bus_master && drv_dma_bus_master(t->dma, 0) == OK)
@@ -153,9 +153,6 @@ int driver_main(const struct driver_start *ds)
     }
     *t = (struct e1k){ .vlan = vlan, .started = drv_clock_ns(), .port = HANDLE_INVALID,
                        .ring_vmo = HANDLE_INVALID, .buf_vmo = HANDLE_INVALID };
-    t->s = (struct session){ .ch = HANDLE_INVALID, .tx_vmo = HANDLE_INVALID,
-                             .rx_vmo = HANDLE_INVALID, .to_driver = HANDLE_INVALID,
-                             .to_stack = HANDLE_INVALID };
     if (!take_handles(t, ds))
         return 1;
     status_t st = bring_up(t);

@@ -7,7 +7,8 @@
  * asks for memory below 4 GiB (the 82574 does 64-bit DMA). Transmit
  * buffer i belongs to transmit descriptor i, so a buffer is free again
  * when its descriptor is reaped. None of it is ever shared with netstack:
- * the netdev rings are separate, ordinary memory (serve.c). */
+ * the netdev rings are separate, ordinary memory (the netdev server's:
+ * <jam/netserver.h>). */
 #include "e1000e.h"
 
 volatile uint8_t *ring_rx_desc(const struct e1k *t, uint32_t i)

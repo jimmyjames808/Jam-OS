@@ -9,9 +9,11 @@
  * chip.c (reset, the address, the PHY, flow control and VLAN offloads
  * off, link, the chip's counters), ring.c (the descriptor rings and
  * buffers in the driver's own DMA memory), rx.c (received frames: keep
- * our VLAN, untag, into netstack's ring), tx.c (THE transmit path: copy,
- * tag, check, doorbell), serve.c (the netdev server: info, stats, open
- * and the session), loop.c (the one port everything arrives on).
+ * our VLAN, untag, to the netdev server), tx.c (THE transmit path: copy,
+ * tag, check, doorbell), loop.c (the one port everything arrives on, and
+ * the card as the netdev server sees it). The server itself (info, stats,
+ * open, the session and its rings) is the one every network driver
+ * links, drivers/lib/netserver.c (<jam/netserver.h>).
  *
  * The VLAN rule (ARCHITECTURE.md "Networking"): every frame sent is
  * tagged 802.1Q with the VLAN devmgr passed (`vlan=<id>`), in software in
@@ -32,6 +34,7 @@
 #include <jam/driver.h>
 #include <jam/netdev.h>
 #include <jam/netframe.h>
+#include <jam/netserver.h>
 
 /* ---- registers (82574 datasheet 10.2; em's e1000_regs.h names) --------------------- */
 
@@ -223,17 +226,6 @@
 
 #define CHIP_NAME        "82574L"
 
-/* One netdev session (serve.c): what netdev.open handed out, our ends. */
-struct session {
-    handle_t ch;                  /* our end of the session channel; HANDLE_INVALID: none */
-    handle_t tx_vmo, rx_vmo;      /* the two ring VMOs (our handles: every right) */
-    void    *tx_map, *rx_map;     /* mapped NETDEV_RING_BYTES each */
-    handle_t to_driver, to_stack; /* the two events (ours) */
-    struct netdev_end tx, rx;     /* tx: we consume; rx: we produce */
-    bool     pending;             /* the channel may have messages */
-    bool     tx_wake;             /* NETDEV_SIG_TX came: look at the tx ring */
-};
-
 /* The chip's counters, added up (they clear on read). */
 struct chip_counts {
     uint64_t rx_ok, tx_ok, rx_err, tx_err, missed, pause_sent;
@@ -255,24 +247,23 @@ struct e1k {
     uint32_t rx_next;             /* the next receive descriptor to look at */
     bool     rx_split;            /* inside a frame that spans buffers: drop to its end */
     uint32_t tx_prod, tx_cons;    /* transmit descriptors filled / reaped (free-running) */
-    bool     tx_on, tx_blocked;   /* blocked: the descriptor ring was full, retry on reap */
+    uint32_t tx_tail;             /* tx_prod as last written to TDT (tx_flush) */
+    bool     tx_on;               /* the transmitter is on (tx_enable) */
     /* the link */
     bool     link, full;
     uint32_t speed;               /* Mb/s, 0 while down */
+    uint32_t link_changes;        /* since the driver started: netdev.info's `changes` */
     uint32_t link_lines;          /* link lines logged (capped) */
     uint64_t started;             /* driver start, uptime ns */
-    /* serving */
-    uint64_t gen;                 /* the session's generation: its port keys */
-    bool     serve_pending, serve_closed;
-    uint32_t session_lines;       /* session lines logged (capped) */
-    struct session s;
-    uint64_t ring_errors_done;    /* ring errors of sessions that ended */
-    struct netdev_stats st;       /* the counts netdev.stats answers */
+    /* the netdev server (netserver.c) and the counts only the driver has */
+    struct srv v;
     uint64_t rx_drop[NETFRAME_RX_KINDS];   /* by netframe_rx_check's reason */
+    uint64_t rx_errors;           /* flagged by the chip, spread over buffers, or too long */
+    uint64_t tx_done;             /* descriptors the chip reported sent */
     struct chip_counts chip;
     uint64_t irqs, polls;
     uint32_t icr_seen;            /* every ICR bit seen */
-    uint8_t  frame[NETDEV_FRAME_MAX];      /* a frame copied out of the tx ring */
+    uint8_t  frame[NETDEV_FRAME_MAX];      /* a kept frame, untagged, for srv_rx */
 };
 
 /* ---- chip.c ------------------------------------------------------------------------ */
@@ -311,8 +302,8 @@ uint64_t ring_tx_buf_addr(const struct e1k *t, uint32_t i);
 
 /* ---- rx.c -------------------------------------------------------------------------- */
 
-/* Every frame the chip has handed back: kept (our VLAN, untagged into the
- * session's rx ring) or dropped and counted. Returns how many. */
+/* Every frame the chip has handed back: kept (our VLAN, untagged, to
+ * srv_rx) or dropped and counted. Returns how many. */
 unsigned rx_harvest(struct e1k *t);
 
 /* ---- tx.c (THE transmit path) ------------------------------------------------------ */
@@ -320,28 +311,23 @@ unsigned rx_harvest(struct e1k *t);
 /* The transmit ring given to the chip and the transmitter on. */
 status_t tx_enable(struct e1k *t);
 void     tx_disable(struct e1k *t);
-/* Frames from the session's tx ring (at most NETDEV_SLOTS): each copied,
- * tagged, checked and queued; refused ones counted. */
-void     tx_pass(struct e1k *t);
+/* One untagged frame of len bytes (the netdev server's send): copied,
+ * tagged and checked into the next descriptor, which is queued; the
+ * doorbell waits for tx_flush. OK; ERR_INVALID_ARGS (refused by the tag
+ * check); ERR_NO_RESOURCES (no free descriptor); ERR_BAD_STATE (the
+ * transmitter is off); ERR_ACCESS_DENIED (the gate). */
+status_t tx_send(struct e1k *t, const uint8_t *frame, size_t len);
+/* Free transmit descriptors (sent ones are taken back first if none is). */
+uint32_t tx_room(struct e1k *t);
+/* One doorbell (TDT) for every descriptor tx_send queued since the last. */
+void     tx_flush(struct e1k *t);
 /* Sent descriptors taken back; returns how many. */
 unsigned tx_reap(struct e1k *t);
 
-/* ---- serve.c ----------------------------------------------------------------------- */
-
-/* Up to a batch of messages from DR_SERVE (session false) or the
- * session's channel (true). */
-void     serve_some(struct e1k *t, bool session);
-/* The session ended (its channel closed, or the driver stops). */
-void     session_end(struct e1k *t, const char *why);
-/* Tell netstack (if a session is open) on its to_stack event. */
-void     session_signal(struct e1k *t, signals_t bits);
-uint64_t session_key(const struct e1k *t, uint64_t kind);
-
 /* ---- loop.c ------------------------------------------------------------------------ */
 
+/* The driver's own port keys (the server's start at SRV_KEY_FIRST). */
 #define KEY_IRQ     1u
-#define KEY_SERVE   2u
-#define KEY_SESSION 3u            /* | generation << 8 */
-#define KEY_TX      4u            /* | generation << 8 */
+#define KEY_SERVE   2u            /* DR_SERVE's peer closed: devmgr is stopping us */
 
 status_t loop_run(struct e1k *t);

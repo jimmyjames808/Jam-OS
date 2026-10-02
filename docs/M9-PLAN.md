@@ -538,23 +538,27 @@ Built 2026-10-02 (`drivers/e1000e`, about 1500 lines; devmgr binds it to
   by writing it back; a 1 s poll stands in for a lost one and adds up the
   chip's 32-bit counters.
 - **Transmit** (`tx.c`, the only file that turns the transmitter on or
-  rings TDT, every entry behind a gate on the VLAN): netdev_take copies
-  the slot out of netstack's ring (bad length or flags: refused, counted),
-  netframe_tag copies it again into the descriptor's own buffer with the
-  tag (pre-tagged: refused, counted), netframe_tx_check looks at that
-  buffer once more, then the descriptor (VLE never set) and one doorbell
-  per pass. A full descriptor ring leaves the rest in netstack's ring
-  until descriptors come back.
+  rings TDT, every entry behind a gate on the VLAN): netdev_take (in the
+  netdev server) copies the slot out of netstack's ring (bad length or
+  flags: refused, counted), tx_send's netframe_tag copies it again into
+  the descriptor's own buffer with the tag (pre-tagged: refused,
+  counted), netframe_tx_check looks at that buffer once more, then the
+  descriptor (VLE never set); tx_flush rings one doorbell per pass. A
+  full descriptor ring leaves the rest in netstack's ring until
+  descriptors come back.
 - **Receive** (`rx.c`): netframe_rx_check on the length and bytes 12-17;
-  kept frames go untagged (netframe_untag) straight into netstack's rx
-  ring; the rest are counted by reason (`rx_untagged`, `rx_priority`,
+  kept frames go untagged (netframe_untag) to the netdev server
+  (`srv_rx`), which puts them into netstack's rx ring; the rest are
+  counted by reason (`rx_untagged`, `rx_priority`,
   `rx_other_vlan` for other VLANs, outer tags and a tag inside ours,
   `rx_bad`); no session or a full ring drops and counts.
-- **The netdev server** (`serve.c`): info, stats (the chip's GPTC, GPRC,
-  error and missed counters beside the driver's), open: a session channel
-  of its own, the rings and events with `<jam/netdev.h>`'s rights; one at
-  a time, an orphaned one ended at the next open; port keys carry the
-  session's generation. One loop, one port (`loop.c`).
+- **The netdev server** (built as its own serve.c; now the shared one,
+  see "One netdev server" below, with `loop.c` plugging the card in):
+  info, stats (the chip's GPTC, GPRC, error and missed counters beside
+  the driver's), open: a session channel of its own, the rings and
+  events with `<jam/netdev.h>`'s rights; one at a time, an orphaned one
+  ended at the next open; port keys carry the session's generation. One
+  loop, one port (`loop.c`).
 - **nettest** (`user/tests/nettest`) and **`tools/net-test.sh`**: in shell
   mode netstack holds the card's one session, so the script boots `init`
   from a copy of the stick whose bootfs runs `bin/nettest <mode>` from
@@ -651,6 +655,26 @@ copies, tags and checks), `room` (free transmit descriptors), `info` and
 link changes. The Makefile links the file into each driver's object
 (`DRV_LIB_<driver>`), so `tools/checkdriver.py` checks it as that
 driver's code. utest's `netserver_*` run it over a fake card.
+
+Both drivers use it: the RTL8125 (`full.c` plugs the card in) and the
+e1000e (`loop.c`; its own serve.c and the session halves of its tx.c and
+rx.c are gone). Each driver still owns its transmit path: the server
+only calls `send`, which is the driver's gated tx.c (`tx_send`: copy,
+tag, check). The e1000e queues descriptors in `tx_send` and rings TDT
+once per pass (`tx_flush`, after `srv_work`). What the e1000e's own
+server did that R1b's already had (so nothing was carried over): port
+keys with the session's generation; the event bit and the flag cleared
+before the tx ring is read, `netdev_sleep` after it (the RTL8125 version
+loops again instead of signalling itself); a full descriptor ring leaves
+frames in netstack's ring until a reap; the rx ring published only when
+a frame went in; an orphaned session ended at the next open; the chip's
+counters added up at every 1 s poll (driver-side). Two differences
+for the e1000e: `stats.tx_bytes` counts each frame plus its 4-byte tag
+(the e1000e counted short frames padded to 64), and session lines are no
+longer capped (one line per open and per end). One fix came with the
+move: `stats.link_changes` is now the driver's own count, the same as
+`info.changes` (the server counted only the changes it was told of, so
+the RTL8125's link coming up during bring-up was missing).
 
 ### netstack: lwIP, single-threaded
 

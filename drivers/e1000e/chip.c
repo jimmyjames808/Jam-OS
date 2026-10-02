@@ -209,14 +209,14 @@ bool chip_link_poll(struct e1k *t)
     t->link = up;
     t->speed = speed;
     t->full = full;
-    t->st.link_changes++;
+    t->link_changes++;
     uint32_t n = t->link_lines++;
     if (n < LINK_LINES || n % 64 == 0)
         drv_log("link %s%s%s at %lu ms (change %lu)", up ? "up " : "down",
                 up ? (speed == 1000 ? "1000" : speed == 100 ? "100" : "10") : "",
                 up ? (full ? " full" : " half") : "",
                 (unsigned long)((drv_clock_ns() - t->started) / NS_PER_MS),
-                (unsigned long)t->st.link_changes);
+                (unsigned long)t->link_changes);
     return true;
 }
 
