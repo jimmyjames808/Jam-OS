@@ -150,10 +150,18 @@ uint32_t pool_start(uint32_t n)
     for (uint32_t i = 1; i < n; i++) {
         void *stack = malloc(POOL_STACK);
         handle_t th;
-        if (!stack || jam_event_create(&pool.ev[i]) != OK)
+        if (!stack)
             break;
-        if (thread_spawn("worker", pool_worker, (void *)(uintptr_t)i, stack, POOL_STACK, &th) != OK)
+        if (jam_event_create(&pool.ev[i]) != OK) {
+            free(stack);
             break;
+        }
+        void *me = (void *)(uintptr_t)i;
+        if (thread_spawn("worker", pool_worker, me, stack, POOL_STACK, &th) != OK) {
+            jam_handle_close(pool.ev[i]);
+            free(stack);
+            break;
+        }
         jam_handle_close(th);
         pool.n = i + 1;
     }
