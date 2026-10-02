@@ -219,6 +219,20 @@ const char *vmm_cache_type(uint64_t pml4, uint64_t va)
     return "unmapped";
 }
 
+bool vmm_prepare_kernel(uint64_t va, uint64_t len)
+{
+    /* One page table (2 MiB of va) per lock hold: allocating and zeroing a
+     * thousand of them must not keep interrupts off for long. */
+    for (uint64_t a = ALIGN_DOWN(va, SIZE_2M); a < va + len; a += SIZE_2M) {
+        uint64_t f = spin_lock_irqsave(&pt_lock);
+        uint64_t *e = walk(kernel_pml4, a, 1, WALK_TRY);
+        spin_unlock_irqrestore(&pt_lock, f);
+        if (!e)
+            return false;
+    }
+    return true;
+}
+
 uint64_t vmm_kernel_pml4(void)
 {
     return kernel_pml4;

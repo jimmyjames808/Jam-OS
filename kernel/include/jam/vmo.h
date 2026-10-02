@@ -94,7 +94,8 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len);
  * at `offset` itself, not the start of its page. The mapping holds a VMO
  * reference until vmo_unmap_kernel, which needs interrupts on (it shoots
  * down other CPUs' TLBs) and no spinlock held, and gives the virtual range
- * back for reuse (page tables included). */
+ * back for reuse (page tables included). ERR_NO_MEMORY if the pages or the
+ * page tables can't be had (nothing is left mapped then). */
 status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned vm_flags,
                         void **va);
 status_t vmo_unmap_kernel(struct vmo *v, void *va);
