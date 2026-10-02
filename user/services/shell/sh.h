@@ -353,7 +353,7 @@ SH_CMD(sysmon); SH_CMD(jamjar);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
 SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);
-SH_CMD(cat); SH_CMD(hexdump); SH_CMD(wc);
+SH_CMD(cat); SH_CMD(hexdump); SH_CMD(sha256sum); SH_CMD(wc);
 SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq);
 /* shell */
 SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(unset);

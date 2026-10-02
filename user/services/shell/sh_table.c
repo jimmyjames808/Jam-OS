@@ -202,6 +202,8 @@ static const struct sh_cmd cmds[] = {
     C(cat, C_TEXT, "cat [file...]", "print files (or the pipe)"),
     C(hexdump, C_TEXT, "hexdump [-s offset] [-n bytes] [file]",
       "hex and ASCII, 16 bytes a line (also hd)"),
+    C(sha256sum, C_TEXT, "sha256sum [file...]",
+      "the SHA-256 of files (or the pipe), as the Mac's shasum -a 256 prints it"),
     C(wc, C_TEXT, "wc [-l|-w|-c] [file]", "count lines, words, bytes"),
     C(head, C_TEXT, "head [-n N] [file]", "the first N lines (default 10)"),
     C(tail, C_TEXT, "tail [-n N] [file]", "the last N lines (default 10)"),

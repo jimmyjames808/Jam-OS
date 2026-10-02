@@ -116,6 +116,13 @@ wait a binary file
 send hexdump -n 16 bin/init
 wait 60 00000000  7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  |.ELF............|
 wait 60 00000010
+send echo hello | sha256sum
+wait 60 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  -
+send sha256sum /esp/boot/bootfs.img && echo ok-$T-sumbig
+wait 60 ok-x-sumbig
+send hexdump -s 5000000 -n 20 /esp/boot/bootfs.img
+wait 60 004c4b50  
+wait 60 004c4b54
 send head -n 2 init.cfg | tail -1
 wait #     <path in bootfs> [arguments...]
 send wc init.cfg | grep init.cfg && echo ok-$T-wc
