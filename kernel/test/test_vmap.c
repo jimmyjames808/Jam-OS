@@ -85,7 +85,7 @@ KTEST(vmap_map_out_of_tables_fails)
     enum { SPARE = 2 };   /* pages left free: for the range's record, then a table or two */
     struct vmo *v;
     KT_EQ(vmo_create_physical(1ull << 45, 2ull << 30, VM_UC, &v), OK);
-    uint64_t free0 = kt_free_pages(), tables0 = vmm_kernel_table_pages();
+    uint64_t free0 = kt_free_pages_settled(), tables0 = vmm_kernel_table_pages();
     struct page *chain = NULL, *p;
     while ((p = pmm_alloc_pages(0, 0))) {
         p->private = (uint64_t)chain;
@@ -109,5 +109,7 @@ KTEST(vmap_map_out_of_tables_fails)
     uint64_t made = vmm_kernel_table_pages() - tables0;
     KT_ASSERT(made <= SPARE);
     kobject_unref(vmo_kobject(v));   /* panics if a range were left recorded */
-    KT_EQ(kt_free_pages() + made, free0);
+    /* Nothing kept but those tables. (Running out may also make others
+     * give pages back, such as empty slabs: more free pages is fine.) */
+    KT_ASSERT(kt_free_pages() + made >= free0);
 }
