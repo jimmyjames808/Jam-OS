@@ -132,6 +132,16 @@ drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
 broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
 its counts `<name>.peer.json`.
 
+It also serves DHCP and DNS on VLAN 21 (always; `add_dhcp_dns`): a DHCP
+server on port 67 (an address per MAC from 10.2.21.100, mask /24, router
+and DNS server 10.2.21.1, a lease of `--dhcp-lease` seconds, default
+3600; a NAK for a REQUEST of an address it didn't give; replies to
+`ciaddr` when the client has one, else broadcast) and a DNS server on
+port 53 (A records for `one.one.one.one` (two), `mac.jam`, `router.jam`,
+the CNAME `www.jam` to `mac.jam`, `fastN.jam` = 10.9.0.N; `slow.jam` is
+never answered; every other name, `nothing.jam` for one, is NXDOMAIN).
+Their counts are `dhcp_*` and `dns_*` in the summary.
+
 Independently, `-object filter-dump,queue=rx` writes every frame the
 guest's card sends (and none the peer sends) to `<outdir>/<name>.pcap`,
 and `tools/pcap-vlan-check.py` checks it for the same rule: two separate
@@ -386,6 +396,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `netprobe.txt` | the boot word `netprobe` reaches devmgr (its line), and with no RTL8125 (QEMU) nothing is bound for it | use `tools/netprobe-test.sh` |
 | `netsend.txt` | the same for the boot word `netsend` | use `tools/netprobe-test.sh` |
 | `net.txt` | `net`, `ping 1.1.1.1 -c 3`, Ctrl+C in a ping, `net stats` ([netstack](#netstack)) | use `tools/ping-test.sh` |
+| `dns.txt`, `dns-static.txt` | a DHCP lease, `net`, `host`, `ping <name>`, Ctrl+C on a name nobody answers, `run dnstest` (the slow-peer rule), netstack killed and the lease asked for again; a static `net.address` and no DHCP client ([DHCP and DNS](#dhcp-and-dns-end-to-end)) | use `tools/dns-test.sh` |
 | `netserve.txt` | the same for the boot word `net` | use `tools/netprobe-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) refused, approval or not, `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
@@ -496,6 +507,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/music-test.sh <outdir>` | the music player (`music.txt`): a folder tree made by the script (ffmpeg, mtools) on `/data/music`: six 2 s tones (MP3 at 44.1, 48 VBR and 22.05 kHz, WAV at 48 and 44.1 kHz) under names with spaces, apostrophes, `$`, `~`, parentheses and UTF-8 (`JAŸ-Z`), an upper-case `.WAV` and `.Mp3`, a garbage `.mp3`, `.DS_Store`/`._` dotfiles, a text file and an empty folder tree; and a second stick of three 8 s WAVs. In the capture (100 ms FFT windows up to a 1000 Hz marker beep typed 2 s after `music stop`): the tracks heard are the log's `track N:` lines in order, the first six are the six tracks once each, at least seven heard, never the same twice in a row; the 1500 Hz `beep` mixed over a track; the stop fades. The log: every title (`Artist - Title` from the path), the garbage file skipped, no dotfile tried, the mixer restart reopened, the pulled stick stopping it after three unreadable files |
 | `tools/net-test.sh <outdir> [vlan vlan-off rx]` | the e1000e driver against `nettest`, a hostile netstack ([M9-PLAN](M9-PLAN.md#stage-2-built-drve1000e-and-nettest)), one `init` boot per scenario from a copy of the stick whose bootfs runs `bin/nettest <mode>` from init.cfg (in shell mode netstack holds the card's one session), with `QEMU_NET` and a peer of the script's own (`tools/netpeer.py`'s `Peer` plus nettest's frames; it also fails on a tag inside VLAN 21's): `vlan` (the session rules; every bad length, flags, frames already tagged 0x8100, 0x88a8 and 0x9100, `produced` a ring and one ahead and then behind, a thread rewriting EtherTypes while the driver copies: each refusal counted exactly, and the peer and the pcap each hold exactly the frames the driver queued and the chip sent, all tagged 21 once), `vlan-off` (a `vlan=off` boot: the driver's "no VLAN" line, no service, no frame at all), `rx` (the peer's census of untagged, VLAN 0, other-VLAN, QinQ, nested, 1522-byte and VLAN 21 frames: only the VLAN 21 ones arrive, untagged and whole, every drop counter exact; then 300 frames with the ring unread: 256 given, 44 `rx_ring_full`); every run ends with the driver stopped cleanly and every job empty |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)) |
+| `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
 | `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`), a `shell netsend` boot (`netsend.txt`) and a `shell net` boot (`netserve.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log mentions none of them. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe, the send test or the netdev service without hardware, ends at once with exit 0 and an empty job); `netserver_session`, `netserver_tx`, `netserver_rx` (the network drivers' netdev server, `drivers/lib/netserver.c`, linked in, over a fake card with the test as netstack: info and stats, one session at a time, open refused on the session channel, a closed or orphaned session replaced, the rights open hands out; netstack's frames reach the card byte for byte, bad lengths, flags and tags counted and never sent, a card out of descriptors holds the ring until they come back, hostile counts bounded to a ring per turn; received frames into the rx ring with NETDEV_SIG_RX, a full ring and no session dropped and counted, NETDEV_SIG_LINK) |
 | `tools/update-test.sh <outdir>` | `update`'s check in init without a network (`bin/updtest` hands init the build from files on `/data/update/`, put there with mtools: this build's kernel, its boot image with one more file `update-marker.txt`, and their manifest from `tools/update-server.py --manifest`), one run, three boots: `run updtest bad` (12 damaged offers, each refused for its own reason: a kernel or boot-image byte changed, the kernel 4 KiB longer or cut to half, a VMO shorter than its length, a garbage, cut, signed or format-2 manifest, a bad magic, one handle, two files that match their manifest but are no kernel), then `reboot`: no marker (the stored kernel untouched); `run updtest good` (accepted and stored), then `reboot` reads nothing from `/esp` and the marker is there (the fetched build runs); exactly one `kexec_load` succeeded. utest covers the parsers and the fetcher: `update_manifest*` (the format, each line wrong each way, every prefix, every byte changed, random bytes), `updwire_*` (golden bytes from the Python tool, every truncation and field, random datagrams), `updfetch_*` (the window against a fake server on a scripted clock: clean, lossy with repeats, reordering and forged replies, the snapshot gone once and always, no answer, a bad or oversize manifest, a lying file size) |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
@@ -539,6 +551,42 @@ answer, and the clock is a number the test sets. They run in every
   20 others are each answered the moment their reply comes; CNAMEs over
   several replies; SERVFAIL, TC, NXDOMAIN; shared and cancelled askers;
   a full table; ports the edge says are taken; the cache's bounds.
+- **bin/dns's sockets** (`dnsd_sockets`: user/services/dns/socks.c and
+  the resolver, against a fake netstack served in-process with net.idl's
+  generated server): the open written without waiting and the first
+  query waiting for it; a port another program has (`ERR_ALREADY_BOUND`,
+  known only when the open is answered) makes the next try use another
+  port; the query goes to port 53, the answer comes back through the
+  loop's port and the socket closes; a port released while its open is in
+  flight is closed when the open answers.
+
+### DHCP and DNS end to end
+
+`tools/dns-test.sh <outdir>` boots twice with `QEMU_NET=1` and the
+peer's DHCP and DNS servers; both runs must pass the peer's and the
+pcap's VLAN checks.
+
+- `dns` (`tools/shell-tests/dns.txt`, no `net.address`, a 20 s lease so
+  it is renewed during the run): bin/dhcp's lease line (10.2.21.100/24,
+  gateway and DNS 10.2.21.1), `net` shows it, `host one.one.one.one`
+  (two addresses), `host nothing.jam` (no such name), `ping mac.jam -c 2`
+  (resolved, then 2 replies), `ping nothing.jam`, Ctrl+C on `host
+  slow.jam`, then `run dnstest` (user/tests/dnstest): **the slow-peer
+  rule** (the M9 done-when): one thread asks for `slow.jam`, which the
+  peer never answers, and while it waits 20 other names are each answered
+  in under 200 ms and `mac.jam` is pinged 3 times in under 200 ms each;
+  the slow lookup ends `ERR_TIMED_OUT` after the resolver's 10 s, not
+  sooner than 9 s; also NXDOMAIN, a CNAME, two addresses, an address as
+  a name, a bad name and the cache. Then `kill netstack`: bin/dhcp asks
+  for 10.2.21.100 again (INIT-REBOOT) and gets it, and the restarted
+  bin/dns answers `host www.jam`. Afterwards: two lease lines (renewals
+  aren't logged), at least 3 ACKs at the peer (2 leases and a renewal),
+  `slow.jam` asked at least 4 times.
+- `dns-static` (`tools/shell-tests/dns-static.txt`, `net.address =
+  10.2.21.5/24 10.2.21.1 10.2.21.1` in a copy of the stick's settings):
+  init says the static address wins and starts no DHCP client (no
+  `dhcp:` line in the log, no DHCP message at the peer), and `host
+  www.jam` works with the settings' DNS server.
 
 ## Random numbers
 
