@@ -16,7 +16,7 @@
  * a local port it chose to a server's port 53, release that port, answer
  * an asker, draw random numbers. The library never blocks; the caller
  * feeds it what arrives (dns_input), the time (dns_tick at
- * dns_deadline) and the askers (dns_resolve, dns_cancel). Every call
+ * dns_deadline) and the askers (dns_ask, dns_cancel). Every call
  * takes `now`, nanoseconds of uptime.
  *
  * Addresses are host-order uint32_t (<netbytes.h>). A name is text,
@@ -151,7 +151,7 @@ struct dns_io {
      * ERR_TIMED_OUT (no server answered), ERR_IO (the servers failed),
      * ERR_NOT_SUPPORTED (the answer needs TCP), ERR_OUT_OF_RANGE (more
      * than DNS_CNAME_MAX CNAMEs), ERR_BAD_STATE (no servers). Called once
-     * per accepted dns_resolve, maybe from inside it. */
+     * per accepted dns_ask, maybe from inside it. */
     void (*answer)(void *ctx, uint64_t cookie, status_t st, const uint32_t *addr, unsigned n,
                    uint32_t ttl_s);
     /* 32 random bits: query ids and local ports. */
@@ -198,7 +198,7 @@ void     dns_set_servers(struct dns_resolver *r, const uint32_t *servers, unsign
  * a name), ERR_BAD_STATE (no servers), ERR_NO_RESOURCES (DNS_MAX_QUERIES
  * names, or DNS_MAX_WAITERS askers of this one, in flight): no answer
  * comes. */
-status_t dns_resolve(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie);
+status_t dns_ask(struct dns_resolver *r, uint64_t now, const char *name, uint64_t cookie);
 /* The asker went away: no answer for it. A query left with no askers
  * ends. */
 void     dns_cancel(struct dns_resolver *r, uint64_t cookie);

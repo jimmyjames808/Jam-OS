@@ -1014,7 +1014,7 @@ deadline, so the service-loop rule holds by construction):
 - `bin/dns` (holds `/svc/net` and its `/svc/dns` server end):
   `dns_init(r, io)`; `dns_set_servers(r, servers, n)` from netstack's
   DNS list, again whenever it changes; `resolve` (a `later` method) calls
-  `dns_resolve(r, now, name, cookie)` with a cookie naming the request:
+  `dns_ask(r, now, name, cookie)` with a cookie naming the request:
   an error is the reply at once, OK means `answer` brings it; an asker
   whose channel closes: `dns_cancel(r, cookie)` for each of its
   requests; `dns_input(r, now, &datagram)` for each datagram on any of
