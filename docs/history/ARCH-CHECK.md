@@ -519,14 +519,14 @@ For the main session to apply with the owner's OK. `docs/ROADMAP.md` at
    >   a `mount` and 15 s for a `kill`. Meanwhile devmgr binds and
    >   restarts nothing and init answers nothing, Ctrl+Alt+Del included.
    >   M9's first step gives loops the tools to stop doing this
-   >   ([ARCH-CHECK.md](history/ARCH-CHECK.md)).
+   >   ([ARCH-CHECK.md](ARCH-CHECK.md)).
 
    and delete "init's loop waits up to 25 s for a `mount` and 15 s for a
    `kill`" from the bullet at lines 132-135 (now in the one above).
 
 2. **M9's row** (line 73), prepend to "What":
 
-   > First, how a service waits ([ARCH-CHECK.md](history/ARCH-CHECK.md),
+   > First, how a service waits ([ARCH-CHECK.md](ARCH-CHECK.md),
    > claim 0): a loop serving several clients never blocks on a call;
    > genidl gains deferred replies and asynchronous calls; usb-bus's
    > tasks become a libos library. Then a devmgr channel scoped to one
