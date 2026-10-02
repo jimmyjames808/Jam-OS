@@ -114,6 +114,17 @@ static void start_ports(uint32_t *bits, uint32_t hub_id, unsigned first, unsigne
     }
 }
 
+/* Hub d's ports with a change (every port, after hub_setup) get tasks. */
+static void hub_dispatch(struct usbdev *d)
+{
+    if (d->hub_scan_all) {
+        d->hub_scan_all = false;
+        for (uint8_t p = 1; p <= d->hub_ports; p++)
+            d->hub_change[p / 32] |= 1u << (p % 32);
+    }
+    start_ports(d->hub_change, d->id, 0, d->hub_ports);
+}
+
 void work_dispatch(struct hc *h)
 {
     if (!started || h->dead || h->stopping)
@@ -123,14 +134,8 @@ void work_dispatch(struct hc *h)
         struct usbdev *d = &g_devs[i];
         if (!d->used || d->gone)
             continue;
-        if (d->is_hub && d->configured && d->hub_ports) {
-            if (d->hub_scan_all) {
-                d->hub_scan_all = false;
-                for (uint8_t p = 1; p <= d->hub_ports; p++)
-                    d->hub_change[p / 32] |= 1u << (p % 32);
-            }
-            start_ports(d->hub_change, d->id, 0, d->hub_ports);
-        }
+        if (d->is_hub && d->configured && d->hub_ports)
+            hub_dispatch(d);
         if ((d->ep_recover | d->ep_drop) && !task_find(TASK_DEVICE, d->id, 0))
             (void)task_start(TASK_DEVICE, d->id, 0, device_task);   /* no slot: next round */
     }
