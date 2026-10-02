@@ -381,11 +381,13 @@ uint32_t sockring_stream_read(struct sockring_end *e, void *dst, uint32_t n);
 
 /* ---- the status line ---------------------------------------------------------------------- */
 
-/* netstack: write its copy *s to the status line (every field, `changes`
- * last with a release store). The caller bumps s->changes when state or
- * error changed, and signals SOCKRING_SIG_STATE then. */
+/* netstack: write its copy *s to the status line (every field; `state`
+ * after `error` and the counts, and `changes` last, both with release
+ * stores). The caller bumps s->changes when state or error changed, and
+ * signals SOCKRING_SIG_STATE then. */
 void     sockring_status_put(struct sockring *r, const struct sockring_status *s);
 /* The program: read the status line (`changes` first with an acquire load,
- * then each field once). Fields may be from two moments if netstack writes
- * meanwhile; `changes` tells. */
+ * then `state` with one, then each field once). Fields may be from two
+ * moments if netstack writes meanwhile (`changes` tells), but a `state`
+ * read never comes with an `error` older than it. */
 void     sockring_status_get(const struct sockring *r, struct sockring_status *out);

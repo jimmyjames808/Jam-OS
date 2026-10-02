@@ -283,11 +283,13 @@ uint32_t sockring_stream_read(struct sockring_end *e, void *dst, uint32_t n)
 void sockring_status_put(struct sockring *r, const struct sockring_status *s)
 {
     struct sockring_status *o = &r->page->status;
-    __atomic_store_n(&o->state, s->state, __ATOMIC_RELAXED);
     __atomic_store_n(&o->error, s->error, __ATOMIC_RELAXED);
     __atomic_store_n(&o->rx_dropped, s->rx_dropped, __ATOMIC_RELAXED);
     __atomic_store_n(&o->tx_refused, s->tx_refused, __ATOMIC_RELAXED);
     __atomic_store_n(&o->ring_errors, s->ring_errors, __ATOMIC_RELAXED);
+    /* After the error, with release: a reader that sees a state (CLOSED)
+     * sees the error that came with it, never an older one. */
+    __atomic_store_n(&o->state, s->state, __ATOMIC_RELEASE);
     __atomic_store_n(&o->changes, s->changes, __ATOMIC_RELEASE);
 }
 
@@ -296,7 +298,7 @@ void sockring_status_get(const struct sockring *r, struct sockring_status *out)
     const struct sockring_status *o = &r->page->status;
     *out = (struct sockring_status){ 0 };
     out->changes = __atomic_load_n(&o->changes, __ATOMIC_ACQUIRE);
-    out->state = __atomic_load_n(&o->state, __ATOMIC_RELAXED);
+    out->state = __atomic_load_n(&o->state, __ATOMIC_ACQUIRE);   /* its error is stored before it */
     out->error = __atomic_load_n(&o->error, __ATOMIC_RELAXED);
     out->rx_dropped = __atomic_load_n(&o->rx_dropped, __ATOMIC_RELAXED);
     out->tx_refused = __atomic_load_n(&o->tx_refused, __ATOMIC_RELAXED);
