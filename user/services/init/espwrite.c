@@ -22,7 +22,10 @@
  *           (not moved) as boot/prev-jamos.elf.new and prev-bootfs.img.new,
  *           read back and compared with what was read, then renamed: the
  *           boot menu's "Jam OS (previous build)" boots the stick's build
- *           now, and the default entry still does;
+ *           now, and the default entry still does. Not copied if the
+ *           previous build is the stick's already (the same bytes: an
+ *           earlier write stopped after this step); and if the stick's
+ *           build is the new one already, nothing at all is written;
  *   NEW     the new build written from init's own checked copies as
  *           boot/jamos.elf.new and bootfs.img.new, synced, read back, and
  *           their SHA-256s compared with the manifest's;
@@ -73,6 +76,7 @@ struct writer {
     uint8_t  old_sha[UPDATE_FILES][SHA256_BYTES];   /* ... and SHA-256s, as read */
     uint64_t said;                        /* uptime ns of the last progress line */
     uint64_t deadline;                    /* no call may wait past this (uptime ns) */
+    bool     already;                     /* the stick has the new build: nothing to write */
 };
 
 /* A call's deadline: FS_CALL_TIMEOUT from now, never past the write's. A
@@ -222,7 +226,7 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     uint64_t t0 = now();
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
-        say_progress(w, path, suffix, "read back", off, size, t0);
+        say_progress(w, path, suffix, "read", off, size, t0);
         st = read_at(w, &f, off, w->buf, n);   /* ERR_IO: shorter than it was written */
         if (st == OK)
             sha256_add(&h, w->buf, n);
@@ -235,7 +239,7 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     file_close(&f);
     if (st == OK)
         sha256_done(&h, digest);
-    say("%s%s: %lu KiB read back in %lu ms (%s)", path + 1, suffix, (unsigned long)(size >> 10),
+    say("%s%s: %lu KiB read and hashed in %lu ms (%s)", path + 1, suffix, (unsigned long)(size >> 10),
         ms_since(t0), status_str(st));
     return st;
 }
@@ -358,9 +362,69 @@ static status_t room(struct writer *w)
     return st;
 }
 
-/* PREV: the stick's build kept as the previous one. */
+/* The size of the file at path (ERR_NOT_FOUND: none). */
+static status_t size_of(struct writer *w, const char *path, uint64_t *size)
+{
+    uint8_t p[FS_PATH_MAX], dir = 0;
+    uint64_t mtime;
+    field(p, path, "");
+    status_t st = fs_stat_until(w->fs, until(w), p, size, &dir, &mtime);
+    return st == OK && dir ? ERR_WRONG_TYPE : st;
+}
+
+/* Do the files at paths hold exactly these sizes and SHA-256s? They are
+ * read only if every size is right. */
+static bool holds(struct writer *w, const char *const paths[UPDATE_FILES],
+                  const uint64_t size[UPDATE_FILES], const uint8_t *const sha[UPDATE_FILES])
+{
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        uint64_t n = 0;
+        if (size_of(w, paths[f], &n) != OK || n != size[f])
+            return false;
+    }
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        uint8_t got[SHA256_BYTES];
+        if (hash_file(w, paths[f], "", size[f], got) != OK || memcmp(got, sha[f], SHA256_BYTES))
+            return false;
+    }
+    return true;
+}
+
+/* Is the stick's build its previous one already (an earlier write that
+ * stopped after this step)? w->old_size and old_sha get the stick's build
+ * if the sizes match. */
+static bool previous_is_current(struct writer *w)
+{
+    const uint8_t *sha[UPDATE_FILES];
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        uint64_t p = 0;
+        if (size_of(w, cur[f], &w->old_size[f]) != OK || size_of(w, prev[f], &p) != OK ||
+            p != w->old_size[f])
+            return false;
+    }
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        if (hash_file(w, cur[f], "", w->old_size[f], w->old_sha[f]) != OK)
+            return false;
+        sha[f] = w->old_sha[f];
+    }
+    return holds(w, prev, w->old_size, sha);
+}
+
+/* PREV: the stick's build kept as the previous one (copied, unless it is
+ * that already). The stick may have the new build already (`update -w`
+ * of the build it was given before): then nothing is written at all. */
 static status_t keep_previous(struct writer *w)
 {
+    struct esp_write *j = w->job;
+    if (holds(w, cur, j->size, j->sha256)) {
+        say("the stick has this build already: nothing to write");
+        w->already = true;
+        return OK;
+    }
+    if (previous_is_current(w)) {
+        say("the previous build is the stick's build already: kept as it is");
+        return OK;
+    }
     status_t st = OK;
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
         st = unlink_file(w, prev[f], "");
@@ -440,7 +504,7 @@ static void steps(struct writer *w)
         say("%s ...", update_write_step_str(j->step));
         j->st = step[j->step](w);
         say("%s: %s in %lu ms", update_write_step_str(j->step), status_str(j->st), ms_since(t0));
-        if (j->st != OK)
+        if (j->st != OK || w->already)
             break;
     }
     if (j->st == OK) {

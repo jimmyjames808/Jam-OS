@@ -5,11 +5,14 @@
 # MBR and one FAT32 partition, type 0b). The boot stick here is QEMU's
 # with throttled writes (QEMU_STICK_THROTTLE); the network peer serves
 # build B, signed with the test key (as tools/update-write-test.sh makes
-# it). Three runs, each a cold boot of the same stick image (A):
+# it). Four runs, each a cold boot of the stick image A (`again`: of the
+# one `fast` left):
 #   fast    100 write commands a second and 10 MB/s (a cheap stick's
 #           small-write speed; PC_THROTTLE overrides it, "" for none):
 #           `update -w` answers "written" within PC_WAIT seconds (150);
 #           the stick holds B, with A as the previous build, no .new file;
+#   again   that stick boots B, and `update -w` of B again writes nothing
+#           ("the stick has this build already") and answers "written";
 #   stuck   3 write commands a second: the write can't finish in its time
 #           (espwrite.c WRITE_LIMIT), and `update -w` still answers, "not
 #           written", within 280 s; /esp is back read-only, and the stick
@@ -19,7 +22,8 @@
 #           (kexec within 60 s), and the next boot runs B (the stored
 #           kernel); the stick's default entry still boots A.
 # init's progress lines (`init: update: write: ...`) are printed.
-# PC_RUNS picks runs ("fast" alone: about 2 minutes; all three about 8);
+# PC_RUNS picks runs ("fast" alone: about 2 minutes; all four about 9;
+# `again` needs `fast` before it);
 # PC_SANDISK=0 leaves the second stick out.
 # Usage: tools/update-pc-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
@@ -102,9 +106,10 @@ stick() {
     rm -f "$i"
 }
 
-# boot <run> <throttle>: the stick (A) booted with the script <run>.txt.
+# boot <run> <throttle> [<image>]: the stick (A, or <image>) booted with
+# the script <run>.txt.
 boot() {
-    QEMU_IMAGE="$img" QEMU_SAVE="$out/$1-done.img" QEMU_NET=1 QEMU_USB="$usb" \
+    QEMU_IMAGE="${3:-$img}" QEMU_SAVE="$out/$1-done.img" QEMU_NET=1 QEMU_USB="$usb" \
         QEMU_STICK_THROTTLE="$2" QEMU_NET_PEER="--update $out/pctest.spec.json" \
         QEMU_TIMEOUT=$((limit + 420)) QEMU_INPUT="$out/$1.txt" \
         tools/qemu-test.sh "$out" "$1" shell > "$out/$1.out" 2>&1 ||
@@ -123,20 +128,29 @@ send update -w
 EOF
 }
 
-for run in ${PC_RUNS:-fast stuck reboot}; do
+slow="${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}"
+for run in ${PC_RUNS:-fast again stuck reboot}; do
     begin $run
     case $run in
-    fast)
-        cat >> "$out/fast.txt" <<EOF
+    fast|again)
+        cat >> "$out/$run.txt" <<EOF
 wait $limit stored and written to the stick (-w)
 wait jam>
 send reboot -f
 wait reboot: resetting
 EOF
-        boot fast "${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}"
-        grep -aq "init: update: .* and stored, and written to the stick" "$out/fast.log" ||
-            fail "fast: init didn't say it wrote the stick"
-        stick fast B A none ;;
+        if [ $run = fast ]; then
+            boot fast "$slow"
+            cp "$out/fast-done.img" "$out/again-stick.img"
+        else
+            boot again "$slow" "$out/again-stick.img"
+            rm -f "$out/again-stick.img"
+            grep -aq "init: update: write: the stick has this build already" "$out/again.log" ||
+                fail "again: the stick's build was written again"
+        fi
+        grep -aq "init: update: .* and stored, and written to the stick" "$out/$run.log" ||
+            fail "$run: init didn't say it wrote the stick"
+        stick $run B A none ;;
     stuck)
         cat >> "$out/stuck.txt" <<EOF
 wait 280 is stored, but init couldn't write it to the stick
@@ -171,7 +185,7 @@ EOF
         stick reboot A - any ;;
     esac
 done
-rm -f "$img" "$out/pctest-got"
+rm -f "$img" "$out/pctest-got" "$out/again-stick.img"
 if [ $fails -eq 0 ]; then
     echo "update-pc-test: PASS"
     exit 0
