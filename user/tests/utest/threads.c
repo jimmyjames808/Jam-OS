@@ -140,6 +140,43 @@ bool t_fpu_state_survives_preemption(void)
     return true;
 }
 
+/* ---- lock_take ---------------------------------------------------------------- */
+
+#define LOCK_THREADS 6
+#define LOCK_ROUNDS  20000
+static bool     lock_l;
+static uint64_t lock_count;   /* plain reads and writes, only under lock_l */
+
+static void lock_worker(void *arg)
+{
+    (void)arg;
+    for (unsigned i = 0; i < LOCK_ROUNDS; i++) {
+        lock_take(&lock_l);
+        uint64_t v = lock_count;
+        if (i % 64 == 0)
+            jam_nanosleep(now() + 50 * NS_PER_US);   /* a holder off the CPU: the others wait */
+        lock_count = v + 1;
+        lock_give(&lock_l);
+    }
+}
+
+bool t_lock_take(void)
+{
+    static uint8_t stacks[LOCK_THREADS][8192] __attribute__((aligned(64)));
+    handle_t th[LOCK_THREADS];
+    lock_count = 0;
+    for (unsigned i = 0; i < LOCK_THREADS; i++)
+        CHECK_ST(thread_spawn("lock", lock_worker, NULL, stacks[i], sizeof(stacks[i]), &th[i]),
+                 OK);
+    if (!wait_threads(th, LOCK_THREADS))
+        return false;
+    lock_take(&lock_l);
+    uint64_t n = lock_count;
+    lock_give(&lock_l);
+    CHECK_EQ(n, (uint64_t)LOCK_THREADS * LOCK_ROUNDS);   /* no increment lost */
+    return true;
+}
+
 /* ---- many threads ------------------------------------------------------------ */
 
 #define MANY 64

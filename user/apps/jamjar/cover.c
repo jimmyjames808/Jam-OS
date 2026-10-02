@@ -18,7 +18,7 @@
  * jar label (art.c). cover_render scales a kept image to the size drawn,
  * with rounded corners; art.c keeps that result.
  *
- * Sharing: `lock`, a spinlock, guards the table and the slots. The thread
+ * Sharing: `lock` (lock_take) guards the table and the slots. The thread
  * holds it only to pick work and to copy a finished image in; the UI holds
  * it while it scales from a slot, so a slot is never reused under it. */
 #include "jamjar.h"
@@ -58,13 +58,12 @@ static uint32_t tmp_large[COVER_LARGE * COVER_LARGE];
 
 static void lock(void)
 {
-    while (__atomic_test_and_set(&C.lock, __ATOMIC_ACQUIRE))
-        __builtin_ia32_pause();
+    lock_take(&C.lock);
 }
 
 static void unlock(void)
 {
-    __atomic_clear(&C.lock, __ATOMIC_RELEASE);
+    lock_give(&C.lock);
 }
 
 /* ---- the table ------------------------------------------------------------------------ */

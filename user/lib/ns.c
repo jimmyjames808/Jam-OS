@@ -43,19 +43,18 @@ static struct entry ents[NS_MAX_ENTRIES];   /* the first nents, in the order giv
 static unsigned nents;                      /* lock */
 static bool started;        /* the starter's first message was waited for; lock */
 static bool starter_gone;   /* SR_NS's other end is closed and its queue is empty; lock */
-static bool lock;           /* a spinlock: test-and-set, released with a clear */
+static bool lock;           /* lock_take's */
 
 const char *const NS_ALL[] = { "*", NULL };
 
 static void ns_lock(void)
 {
-    while (__atomic_test_and_set(&lock, __ATOMIC_ACQUIRE))
-        jam_nanosleep(now() + 20 * NS_PER_US);
+    lock_take(&lock);
 }
 
 static void ns_unlock(void)
 {
-    __atomic_clear(&lock, __ATOMIC_RELEASE);
+    lock_give(&lock);
 }
 
 /* A service's name: 1 to SVC_NAME_MAX bytes of [a-z0-9-], NUL-terminated
@@ -498,17 +497,16 @@ static struct {
     char     name[SVC_NAME_MAX + 1];   /* "" : a free slot */
     handle_t h;                        /* ours, handed out (never closed while open) */
 } kept[NS_MAX_SVCS];
-static bool kept_lock;   /* a spinlock like the table's; nothing is called under it */
+static bool kept_lock;   /* lock_take's, like the table's; nothing is called under it */
 
 static void kept_take(void)
 {
-    while (__atomic_test_and_set(&kept_lock, __ATOMIC_ACQUIRE))
-        jam_nanosleep(now() + 20 * NS_PER_US);
+    lock_take(&kept_lock);
 }
 
 static void kept_give(void)
 {
-    __atomic_clear(&kept_lock, __ATOMIC_RELEASE);
+    lock_give(&kept_lock);
 }
 
 /* The other end of h is gone. */
