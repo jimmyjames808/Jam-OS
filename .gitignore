@@ -3,3 +3,19 @@ build/
 .DS_Store
 compile_commands.json
 AGENTS.md
+
+# Music and recordings never go in the repository (the owner's library
+# stays on his sticks; tests make their own tones under build/). The boot
+# splash's own sound is inside boot/splash.mpg. `make check` also refuses
+# any tracked audio file (tools/checkaudio.sh).
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.aac
+*.ogg
+*.opus
+*.aif
+*.aiff
+*.wma
+music/

@@ -325,6 +325,7 @@ check: all
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py
 	python3 tools/sortincludes.py
+	sh tools/checkaudio.sh
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
