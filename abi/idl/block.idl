@@ -2,6 +2,9 @@
 # open_partition). Block numbers are relative to the partition's start;
 # nothing outside it can be reached through this channel. Data moves
 # through a shared buffer (map_buffer), never through messages.
+# ERR_PEER_CLOSED: the stick is gone, or usb-storage ended: the client (a
+# filesystem service) ends too; devmgr starts a new one on a new channel
+# when the disk is back.
 # Format: see tools/genidl.py.
 
 protocol block 15
