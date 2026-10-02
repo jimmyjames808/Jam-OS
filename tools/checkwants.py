@@ -17,7 +17,9 @@ same rules: printable ASCII lines, each one of
     right <name>          klog sysinfo clock debug
 
 and, the build's own policy, the services that kill drivers and services
-(devmgr-ctl, init) only for a program whose source is under user/tests/,
+(devmgr-ctl, init) and the file server's (serve: with it a program could
+put any file it can read on the network without the listen permission)
+only for a program whose source is under user/tests/,
 and netstack's reserve for the network's own services (net-sys) only for
 one under user/services/.
 A program without a list is fine (it gets its terminal only). Prints how
@@ -31,7 +33,7 @@ import sys
 OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
-TESTS_ONLY = {"devmgr-ctl", "init"}
+TESTS_ONLY = {"devmgr-ctl", "init", "serve"}
 SERVICES_ONLY = {"net-sys"}
 LISTEN = "net-listen"   # given only as `svc net listen` (<wants.h>)
 TEXT_MAX = 1024
@@ -113,7 +115,7 @@ def selftest():
             b"right clock\n", b"svc init\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
               b"svc net Listen\n", b"svc nope\n", b"right listen\n", b"svc init\n",
-              b"svc net-sys\n",
+              b"svc net-sys\n", b"svc serve\n",
               b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n"]   # 25 wants
     fails = []
     for t in take:
