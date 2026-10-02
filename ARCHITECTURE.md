@@ -30,7 +30,7 @@ built yet, it says so.
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
 | Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to Jam OS |
-| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers); uACPI and lwIP when power management and networking land |
+| Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
 | IOMMU | Not yet (M11). `dma_cap` gates pinning and bus mastering, not where a device writes: until VT-d a driver's device can reach all of RAM. The PC's firmware has a DMAR table |
@@ -67,8 +67,9 @@ Not yet:
   `dma_cap` and parses every USB device's descriptors, so a bug there
   gives a hostile device DMA over all of RAM: the largest exposure today.
   The other parsers of what comes from outside (usb-storage, fat, hid,
-  `play`, `jamcover`) hold no `dma_cap`; M9's network packets are to be
-  parsed only in netstack, which holds none either.
+  `play`, `jamcover`) hold no `dma_cap`, and neither do the processes
+  that parse what the network sends (netstack, dhcp, dns, netlog,
+  `bin/update`): the NIC's driver reads only a frame's length and tag.
 - **Anyone holding the stick.** The ESP, `/data/etc/allow` and the logs
   can be changed on another computer: FAT32 keeps no owners and nothing
   is signed, and authority never came from the filesystem.
@@ -114,10 +115,10 @@ Every driver and service is a userspace process from the start.
  ─────────────────────────────────────────────────────────────
  Services (processes): devmgr · console · serialin · bootfs ·
    fat (one per volume) · logd · mixer · music
-   later: netstack (lwIP) · power
+   netstack (lwIP) · dhcp · dns · netlog
+   later: power
  Drivers (processes): usb-bus (xHCI + hubs) → hid, usb-storage
-   hda (HD Audio)
-   later: NIC
+   hda (HD Audio) · rtl8125, e1000e (network cards)
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
    scheduler · VMOs & address spaces · PCI core · IRQ routing
@@ -461,9 +462,11 @@ Every driver and service is a userspace process from the start.
   `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
   filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
   channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
-  mixer), `netctl` (netstack's control channel), `net` (UDP sockets and
-  ping for programs, `/svc/net`). devmgr's own protocol is still
-  written by hand (`user/include/devmgr.h`). Planned: `netdev`, `power`. Bulk data
+  mixer), `netdev` (a network driver to netstack: rings and events),
+  `netctl` (netstack's control channel), `net` (UDP sockets and ping for
+  programs, `/svc/net`), `dns` (the resolver, `/svc/dns`). devmgr's own
+  protocol is still written by hand (`user/include/devmgr.h`). Planned:
+  `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
@@ -503,12 +506,13 @@ port, so while it handles one request every other client waits behind it.
   blocking calls in code that serves nobody: a program, a shell command,
   or a thread of its own that serves nothing else.
 - **Data at packet or sample rate** goes through shared rings with an
-  event, not a call each (the mixer's streams; M9's `netdev`).
+  event, not a call each (the mixer's streams, `netdev`).
 - **Not followed everywhere yet:** devmgr's and init's loops still make
   blocking calls of up to 2 to 25 s (listed in
   [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time));
-  they move to these tools one at a time. Services written from now on
-  (M9's netstack and its driver first) follow the rule from the start.
+  they move to these tools one at a time. The network's services and
+  drivers follow the rule from the start
+  ([Networking](#networking), "the service-loop rule, as applied").
 
 ## Scheduler
 
@@ -607,8 +611,12 @@ port, so while it handles one request every other client waits behind it.
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
 | mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
-| NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
-| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS) + `netdev` | `netctl` (the address); `socket` planned | yes: the netdev rings, `netctl`, started by init; no sockets yet ([M9-PLAN](docs/M9-PLAN.md#stage-3b-built-netstack-on-the-card-started-by-init)) |
+| rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame tagged with the VLAN ([Networking](#networking)) | yes (bound only on the "Jam OS (network)" boot until M9's PC sign-off) |
+| e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
+| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS), the network cards' device channels | `netctl` (the address, the DHCP socket), `/svc/net` (UDP sockets and ping for programs) | yes |
+| dhcp | `netctl` | the address, when the settings have no `net.address` | yes |
+| dns | `/svc/net` | `/svc/dns`: names to IPv4 addresses | yes |
+| netlog | the kernel log, `/svc/net` | each boot's log over UDP to the Mac | yes |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
 
 uACPI will live in the kernel; everything else is a process.
@@ -663,36 +671,206 @@ Rules for userspace drivers:
   has one the query channel refuses its service (`ERR_ACCESS_DENIED`).
   Holding the channel is the right to use the device; there is no flag
   and no role. init decides who gets which: every HD Audio controller's
-  to the mixer (each has one output stream, the mixer's), and at M9 the
-  NIC's to netstack. Console clients have a level fixed on their channel
+  to the mixer (each has one output stream, the mixer's), and every
+  network card's to netstack. Console clients have a level fixed on their channel
   when it is made (ADMIN, SHELL, PROGRAM), and a program started from the
   shell gets a PROGRAM channel and nothing of devmgr's.
 
 ## Networking
 
-Not built yet, but for a listen-only probe of the NIC that sends nothing
-([M9-PLAN.md](docs/M9-PLAN.md#stage-0-built-the-pc-run)); these rules
-bind every future path that can transmit.
+IPv4 with ARP, ICMP and UDP, through Jam OS's own NIC drivers and a
+network stack in a process of its own; no TCP and no IPv6 yet. The plan,
+its stages and the PC's runs are in [M9-PLAN.md](docs/M9-PLAN.md); the
+PC's chip and switch port in [HARDWARE.md](docs/HARDWARE.md#the-network).
 
-- The NIC is the board's own RTL8125 ([HARDWARE.md](docs/HARDWARE.md#other-devices)),
-  driven natively (references: Linux `r8169`, FreeBSD `re`; check whether
-  this revision needs Realtek's PHY firmware patch). No USB adapter; the
-  Wi-Fi is not planned.
-- The NIC's driver belongs to netstack the way the sound cards belong to
-  the mixer: init asks devmgr for the NIC's device channel (by its PCI
-  class, 02 00 00) before it publishes `/svc/devmgr` and gives it to
-  netstack alone ([Drivers and services](#drivers-and-services),
-  "Authority"); no other program can reach the driver's `netdev`.
-- **Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
-  and nothing is ever sent untagged or on another VLAN** (the network it
-  runs on must not see Jam OS traffic elsewhere). The VLAN is set in one
-  place (boot word `vlan=`, default 21) and added to every outgoing frame
-  (ARP and DHCP included) below the IP stack. Incoming untagged or
-  other-VLAN frames are dropped. With no VLAN configured the NIC stays
-  down (fail closed).
-- This covers every path that can transmit: the NIC driver, netlog,
-  and `update`. A change that
-  could transmit comes with a test proving an untagged frame can't leave.
+**Hard requirement: every frame Jam OS sends is tagged 802.1Q VLAN 21,
+and nothing is ever sent untagged or on another VLAN** (the network it
+runs on must not see Jam OS traffic elsewhere). Incoming untagged or
+other-VLAN frames are dropped. With no VLAN the NIC stays down (fail
+closed). A change that could transmit comes with a test proving an
+untagged frame can't leave.
+
+```
+ the shell (net, ping, host, update), programs     /svc/net  /svc/dns
+ dhcp (netctl) · dns · netlog · update (bin/update)
+ netstack: lwIP, one loop                           /svc/net, netctl
+ ───── netdev: two ring VMOs and two events per session ─────────
+ drv/rtl8125 (the PC) · drv/e1000e (QEMU)           tag, check, DMA
+```
+
+**The VLAN: one place.** The kernel reads the boot word `vlan=<1..4094>`
+(21 with no word; `vlan=off`, or anything that isn't a VLAN id, means
+none) and passes it to init, init to devmgr, and devmgr to every network
+driver as an argument; kexec keeps it, so `reboot`, a panic and `update`
+come back on the same VLAN. netstack is never asked: a word from netstack
+can't change the VLAN. `net` shows the driver's.
+
+**The drivers** (`drivers/rtl8125` for the PC's RTL8125B,
+`drivers/e1000e` for QEMU's 82574L) put the tag on in software, below
+netstack, so a netstack that is buggy or taken over still can't send an
+untagged frame. The checks are pure functions in one header both use,
+`<jam/netframe.h>`:
+- **Transmit**: netstack's frame (14 to 1514 bytes, untagged) is copied
+  out of its ring slot, then copied again into the driver's own DMA buffer
+  with the tag (TPID 0x8100, priority 0, the VLAN) after the addresses,
+  padded with zeros to 64 bytes (`netframe_tag`); a frame whose EtherType
+  is already a tag (0x8100, 0x88a8, 0x9100) is refused, so no frame leaves
+  with a tag netstack chose. The copy is checked once more
+  (`netframe_tx_check`: bytes 12-15 exactly the tag) right before its
+  descriptor goes to the NIC; netstack can't see that buffer, so changing
+  its ring afterwards changes nothing. The NIC's own tag insertion is never
+  used (one wrong descriptor bit would be an untagged frame).
+- **Receive**: the NIC's tag stripping is off; `netframe_rx_check` keeps
+  only 802.1Q frames on the VLAN (any priority) and takes the tag off;
+  untagged, priority-tagged, other-VLAN and QinQ frames are dropped and
+  counted by reason.
+- A driver reads a frame's length and bytes 12-17, never the addresses or
+  the payload: everything else is parsed above it, in processes with no
+  `dma_cap`. Flow control is off (pause not advertised, so the NIC sends
+  no PAUSE frames of its own), wake-on-LAN is off while Jam OS runs, and
+  no firmware tables are loaded.
+- **Without a valid VLAN** a driver turns on neither receiver nor
+  transmitter, logs `no VLAN: the network stays off`, and ends.
+
+**Machine checks of the rule.** Each driver has one transmit file
+(`tx.c`); every function it gives other files starts with a gate (full
+mode and a valid VLAN). For the RTL8125, `tools/checknotx.sh` (in `make
+check`, self-tested) holds the transmit registers to `tx.c` and the gate
+to the top of every entry, and keeps the listen-only probe's files from
+calling it. At its exit the RTL8125 driver compares the chip's own count
+of frames sent with the frames it queued (`tx check:`): more sent than
+queued would mean the chip sent frames of its own. utest's `netframe_*`
+tests try every length, tag and edit. In QEMU two separate checks look at
+every frame the guest sends, `tools/netpeer.py` and
+`tools/pcap-vlan-check.py`, and `tools/net-vlan-test.sh` runs every path
+that transmits in one boot, then the same commands on a `vlan=off` boot,
+which must send nothing ([TESTING.md](docs/TESTING.md#area-scripts)).
+
+**netdev: rings, not calls** (`abi/idl/netdev.idl`,
+`<jam/netdev.h>`). `info` (MAC, VLAN, MTU, link, speed, a count of link
+changes, the chip), `stats` (the driver's counts and the chip's) and
+`open`, which gives a session channel, two ring VMOs (transmit and
+receive: a header page, then 256 slots of 2 KiB) and two events (one per
+waiter). The driver makes the rings in ordinary memory; netstack can map
+them but not resize or pass them on. A side signals the other only when
+it said it is sleeping: no call per frame. One session at a time; closing
+the session channel ends it, and a session whose opener has gone is ended
+at the next `open`. The driver treats every count and length netstack
+writes as hostile (clamped to the ring, read once, the frame copied before
+it is checked); netstack treats the receive ring the same way and ends a
+session whose counts are out of range. The server side is one file every
+network driver links, `drivers/lib/netserver.c`: the driver plugs in its
+transmit path and its counts. A full receive ring, or no session, drops
+and counts; the driver never waits for netstack.
+
+**Who reaches the driver.** init claims every network function's devmgr
+device channel (class 02 00 00) before it publishes `/svc/devmgr`, and
+gives them to netstack alone ([Drivers and services](#drivers-and-services),
+"Authority"); a test program reaches a driver only through devmgr's
+control channel, which only programs under `user/tests/` may ask for.
+
+**netstack** (`user/services/netstack`) is lwIP 2.2.1 in its NO_SYS mode:
+one loop on one port (the receive event, every client's channel, lwIP's
+timers as the wait's deadline), so nothing locks. In: IPv4, ARP, ICMP
+(echo replies: the PC answers pings), UDP. Out: TCP, IPv6, fragments and
+reassembly, IP options, IGMP, and lwIP's own DHCP, DNS and VLAN code. Its
+memory is static (about 275 KiB: lwIP's heap, 128 receive buffers, fixed
+pools); a full pool drops the frame and counts it. `stack.c` is the only
+file that sees lwIP. The calls that may wait (devmgr's GET_SERVICE,
+`netdev.info` and `open`, 2 s each) run on a thread of its own that
+serves nothing (`connect.c`), which hands the session to the loop; a
+session that closes is asked for again, the address and ARP table kept.
+It logs state changes only (link, address), never a packet. It serves two
+channels, both made once by init, which keeps the server ends across
+restarts:
+- **netctl** (`abi/idl/netctl.idl`): `set_ipv4` (refuses any address a
+  host can't have), `set_dns`, `clear`, `info`, `stats`, `device`, and
+  `dhcp_open` (a socket on port 68 that may broadcast and send from
+  0.0.0.0). Held by init and dhcp; never published.
+- **`/svc/net`** (`abi/idl/net.idl`, libos's `<net.h>`), a channel per
+  opener: `iface`, `wait_change` (answers when the address or DNS servers
+  change), `counts`, `chip_counts`, `echo` (a ping, built by netstack),
+  and `udp(port)`, a socket on a channel of its own (`sock_send_to`,
+  `sock_recv`, `sock_connect`, `sock_state`; closing the channel closes the
+  socket). One datagram per call, at most 1472 bytes. Limits: 32 openers,
+  16 sockets an opener and 32 in all, 8 requests in flight an opener, 32
+  datagrams queued a socket (one more is dropped and counted), each copied
+  into netstack's own heap so a slow reader never holds lwIP's buffers. A
+  program can't send to a broadcast, multicast or loopback address, can't
+  bind a port below 1024, and sends no raw packets.
+
+**The address.** `net.address = <address>/<prefix> [<gateway> [<dns>
+[<dns>]]]` in `/data/etc/settings` is a static address, given to netstack
+whenever it starts and whenever `/data` comes; without it the DHCP client
+asks for one.
+
+**dhcp** (`user/services/dhcp`) holds a duplicate of netctl's client end
+and nothing else; init starts it only without `net.address`. An RFC 2131
+client: DISCOVER, OFFER, REQUEST, ACK, renewal and rebinding, the address
+cleared when the lease ends; after a restart of its own or netstack's it
+asks for the same address again (INIT-REBOOT). One log line per lease. No
+ARP probe of the offered address (an ACKed address is taken as free).
+
+**dns** (`user/services/dns`) serves `/svc/dns` (`abi/idl/dns.idl`:
+`resolve`, answered when the reply comes, so a slow name holds up only its
+own askers) and holds `/svc/net`. Each name in flight has a socket of its
+own on a random port with a random id (`os_random`), 16 names at most and
+8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
+at most a day). libos's `dns_lookup` (`<dns.h>`) is the client.
+
+**netlog** (`user/services/netlog`) holds a kernel log reader, `/svc/net`
+and, after a panic, the panicked boot's log read-only. init starts it when
+`net.host` is set and `netlog` isn't `off`. It sends the log from its
+first line (the 4 MiB ring still has the whole boot when the network comes
+up) over UDP to `net.host` port 5021 and nowhere else, up to 1400 bytes
+of it a datagram with the boot's id and the byte offset; the Mac's acks
+move a 64 KiB window, and without them it sends again from the last ack
+(after 500 ms, backing off to 30 s). After a panic it also sends the
+panicked boot's log. It logs only when its state changes, so its own lines
+can't multiply. On the Mac, `tools/netlog-recv.py` writes a file per boot.
+
+**update** (`user/services/update`, `user/services/init/update.c`). The
+shell's `update [-n] [address]` takes an offer channel from init
+(`initctl.update_offer`) and runs `bin/update` with that channel and
+`/svc/net` only. It fetches the manifest, kernel and boot image from the
+Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
+a snapshot, a file, an offset and a length; 32 in flight; the server keeps
+no state per client) and offers them to init as read-only VMOs. init
+copies them into VMOs only it holds, checks each size and SHA-256 against
+the manifest, calls `kexec_load` (which init alone may) and notes `/esp`'s
+files as seen, so the `reboot` that follows starts the fetched build
+([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. Only RAM
+changes: a power-off brings back the stick's build. Updates are not
+signed: the hashes catch damage, not a device on VLAN 21 posing as the Mac
+([ROADMAP](docs/ROADMAP.md#smaller-follow-ups)).
+
+**What each process holds:**
+
+| Process | Holds | Parses network data |
+|---|---|---|
+| drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
+| netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
+| dhcp | netctl | yes: DHCP replies |
+| dns | `/svc/net`; the server end of `/svc/dns` | yes: DNS replies |
+| netlog | a klog reader, `/svc/net`, the panicked boot's log (read-only) | the Mac's acks |
+| bin/update | `/svc/net`, its offer channel to init | yes: the fetch's replies and the manifest |
+| init | the fetched build's copies, `kexec_load` | the manifest only (a strict parser); the files it copied are only hashed |
+
+**The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
+each driver runs one loop on one port (its interrupt, netstack's event,
+its netdev channels); netstack's loop never waits (its waiting calls are
+on `connect.c`'s thread); dns writes its calls to netstack without waiting
+and takes the answers off its port. dhcp, netlog and `bin/update` serve
+nobody, so they may block, always with a deadline. init's update check
+hashes on a worker thread; its loop does only the `kexec_load` and
+`/esp`'s stat.
+
+**Which boot uses the network.** QEMU's e1000e is bound on every boot
+that has one. The PC's RTL8125 is bound only by the boot entry "Jam OS
+(network)" (`net`; also the probe `netprobe` and the send test `netsend`:
+[TESTING.md](docs/TESTING.md#the-boot-menu)); the everyday boot leaves the
+chip alone until the PC has signed M9 off (one line in devmgr's match
+table).
 
 ## Userland
 
@@ -735,7 +913,9 @@ bind every future path that can transmit.
 - **init** holds the root capabilities and starts services with only the
   handles they need: on a plain boot the bootfs server, the console,
   the boot splash (once; the shell waits for it), serialin, devmgr, the
-  mixer, the music player, logd (once `/data` is there) and the shell, restarting
+  mixer, the music player, netstack, dhcp (without a static address), dns,
+  logd (once `/data` is there), netlog (when `net.host` is set) and the
+  shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
   on, except the console and the shell, which nobody could do without
@@ -747,7 +927,8 @@ bind every future path that can transmit.
   each a channel per opener; `music`, a channel per opener; `devmgr`, a
   channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`, a channel per opener;
-  `net`, netstack's sockets for programs, a channel per opener). The services it starts
+  `net`, netstack's sockets for programs, and `dns`, the resolver, each a
+  channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
@@ -1181,14 +1362,16 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 - **Settings that survive a reboot**: `/data/etc/settings`, plain text,
   one `key = value` a line, `#` comments (`<settings.h>` has the format
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
-  `music.folder`). init reads them when `/data` comes (the clock) and when
-  the mixer and the music player start (their volumes); the shell's
+  `music.folder`, and the network's `net.address`, `net.host` and
+  `netlog`: [Networking](#networking)). init reads them when `/data`
+  comes (the clock, the network's address) and when the mixer, the music
+  player, netstack and netlog start; the shell's
   `vol master`, `music vol`, `music start <folder>` and `date -z` write
   them. A write goes to `settings.new`, is synced, and then takes the old
   file's name, so a pulled stick leaves the old settings or the new ones,
   never half of either (a lone `settings.new` is read in their place).
   init writes a commented file with the defaults the first time `/data`
-  has none. M9's network settings are meant to live there too.
+  has none.
 
 ## Random numbers
 
@@ -1296,7 +1479,7 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   copies it into VMOs of its own, checks each length and SHA-256 against
   the manifest, calls `kexec_load` with the copies and notes `/esp`'s
   files as seen, so `reboot` starts the fetched build
-  (`user/services/init/update.c`; the network side is not built yet).
+  (`user/services/init/update.c`; the fetch: [Networking](#networking)).
 - **A stick whose files don't load** (a flash pulled half way, a damaged
   copy): the kernel refuses them and keeps the stored copy armed, so
   `reboot` starts that one, the last good build, after a short notice on

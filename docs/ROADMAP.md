@@ -26,7 +26,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
 | M8.6 | Cleanup and polish | done (PC 2026-10-02: `soak 10` passed (663 s on 28 CPUs, 4525 kernel tests and 17 utest runs, 0 FAILED) with the SanDisk mounted read-write; live `ktest` 248 passed and utest 117; `bench` in [BENCH.md](BENCH.md#m86-pc-2026-10-02)) |
-| M9 | Networking | next: the plan |
+| M9 | Networking | under way: built and tested in QEMU; the review, then the PC sign-off ([below](#now-m9-networking)) |
 | M10 | ACPI power, tickless idle | later |
 | M10.5 | S3 sleep | later |
 | M11 | IOMMU | later |
@@ -44,10 +44,44 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 
 ## Now: M9, networking
 
-The row below has the goal. First the plan, with the owner, before any
-code: [M9-PLAN.md](M9-PLAN.md) (the NIC's driver, the netdev rings,
-netstack, VLAN 21 enforced in the NIC's driver, netlog and `update`; its
-questions for the owner come first).
+The goal and the done-when are in [Later](#later)'s M9 row; the plan, with
+the owner's answers and what each stage built, is
+[M9-PLAN.md](M9-PLAN.md); the design as built is
+[ARCHITECTURE.md](../ARCHITECTURE.md#networking).
+
+**Built and tested in QEMU** (2026-10-02): the RTL8125B driver (the PC's)
+and QEMU's e1000e, each tagging every frame with VLAN 21 in software and
+dropping every other VLAN's; the netdev rings; netstack on lwIP (IPv4,
+ARP, ICMP, UDP) with `/svc/net` sockets for programs; the DHCP client and
+the resolver as processes of their own (`host`, `ping <name>`); `ping`
+and `net`; netlog (the whole boot log to the Mac); `update` (the Mac's
+build fetched, checked by init and run by kexec, in RAM only). The
+slow-peer test passes (`tools/dns-test.sh`), and `tools/net-vlan-test.sh`
+runs every path that transmits in one boot with every frame tagged 21,
+and the same commands with `vlan=off` sending nothing.
+
+**On the PC so far** (2026-10-02, [HARDWARE.md](HARDWARE.md#the-network)):
+the listen-only probe (the chip, the link, the trunk port); sending, after
+the transmit descriptor fix (20 of 20 ARP probes answered, the chip's
+count of frames sent equal to the driver's); the log reached the Mac.
+<!-- TODO(main session): the receive stall (receiving stopped about 75 s into the "Jam OS (network)" boot) and its fix. -->
+
+**Left for M9:**
+1. The independent review and fix over all of M9 (the VLAN rule and the
+   parsers first).
+2. On the PC, on one build, with `make flash`: the send test ("Jam OS
+   (network: send test)": 20 of 20 answered, `tx check: ... equal`); then
+   "Jam OS (network)" with `net.host = 10.2.21.174` in the settings and
+   the Mac running `tools/netlog-recv.py` and `tools/update-server.py`:
+   the link and a DHCP lease on VLAN 21, `ping 1.1.1.1`, `ping
+   one.one.one.one`, `host`, the Mac's pings answered over a long run,
+   `net stats` (the chip's frames sent equal to the driver's), the boot's
+   log on the Mac from its first line, and `make` on the Mac then
+   `update` on the PC running the new build.
+3. The sign-off: All tests and `soak 10` with the SanDisk mounted
+   read-write and pulled and replugged. Then M9 is done (HISTORY, the
+   version 0.0.29-m9), and the everyday boot binds the network chip (one
+   line in devmgr's match table).
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
@@ -66,7 +100,7 @@ Known limits it left:
 | # | What | Done when |
 |---|---|---|
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
-| M9 | First, how its services wait and what they hold ([ARCH-CHECK.md](history/ARCH-CHECK.md), claims 0, 2, 3): every new loop follows M8.6's service-loop rule (a loop serving several clients never blocks on a call inside a request; genidl's deferred replies and asynchronous calls and libos's tasks are the tools); the NIC gets a devmgr channel scoped to that one device, which init gives to netstack alone (as hda's goes to the mixer since M8.6). netdev is shared rings with events, never a call per packet; packets are parsed only in netstack, which holds no `dma_cap`; init makes each new service's channels once. Then: RTL8125 driver, lwIP, DHCP/DNS (processes), **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)); netlog (the kernel log over UDP to the Mac); `update` (fetch a new kernel + bootfs from the Mac and kexec). Find out first whether the switch port is a trunk or an access port on VLAN 21 | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved; a service waiting on a slow peer delays only that peer's requests (a test) |
+| M9 | Networking on the board's RTL8125, **VLAN 21 only** ([the rule](../ARCHITECTURE.md#networking)): every new loop follows M8.6's service-loop rule; the NIC's devmgr channel goes to netstack alone; netdev is shared rings with events, never a call per packet; packets are parsed only in processes that hold no `dma_cap`; init makes each new service's channels once. The RTL8125 driver, lwIP, DHCP and DNS as processes, netlog (the kernel log over UDP to the Mac), `update` (a new kernel and boot image from the Mac, by kexec). Status: [Now](#now-m9-networking) | `ping 1.1.1.1` on the PC through a userspace network stack; a PC run's full log arrives on the Mac; `make` on the Mac + `update` on the PC runs the new build with no stick moved; a service waiting on a slow peer delays only that peer's requests (a test) |
 | M10 | uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle | clean shutdown on real hardware |
 | M10.5 | S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |
 | M11 | IOMMU (VT-d) and interrupt remapping behind `dma_cap` (the PC's firmware has a DMAR table). Before G3 at the latest | DMA outside a driver's pinned VMOs is blocked, and a device's write to the interrupt window sends no interrupt; ARCHITECTURE then counts drivers as contained, not only crash-isolated |
@@ -92,8 +126,10 @@ None has a plan yet; the order is the current preference.
 - **Shared request rings.** A client and a service share a ring of
   requests and replies in a VMO and make a system call only when the other
   side is asleep: the third level after copied messages and shared VMOs
-  for bulk data. The ring layout would be generated from the IDL. The
-  first user is M9's netdev; then the fs and file calls (M11.5).
+  for bulk data. The ring layout would be generated from the IDL. netdev's
+  rings are written by hand this way; the first generated users would be
+  `/svc/net`'s sockets (one call per datagram today) and the fs and file
+  calls (M11.5).
 - **A service dependency graph.** devmgr stops in device-tree order;
   init starts and stops by a list. init already makes the mixer's
   and the music player's channels once, so their clients don't
