@@ -6,7 +6,8 @@
  * disks.c: devmgr's disks and mounts against diskmock.c; logd.c: logd;
  * mix.c: the mixer's arithmetic; mp3.c: <mp3.h>; text.c: <utf8.h>; time.c:
  * <wallclock.h> and <settings.h>; tasks.c: <jam/task.h>; idl.c: the IDL's
- * deferred replies and asynchronous calls), the
+ * deferred replies and asynchronous calls; netstack.c and netctl.c:
+ * netstack's core over a fake edge and its control channel), the
  * child modes it spawns (child.c) and the benchmark modes the kernel's
  * bench entry spawns (bench.c). */
 #pragma once
@@ -218,6 +219,17 @@ bool t_netframe_classify(void);
 bool t_netframe_short_frames(void);
 bool t_rtl8125_write_guard(void);
 bool t_rtl8125_stays_off(void);
+
+/* netstack.c: netstack's core and lwIP over a fake edge, in-process;
+ * netctl.c: its control channel, in-process and as bin/netstack. */
+bool t_netstack_arp(void);
+bool t_netstack_ping(void);
+bool t_netstack_udp_unreachable(void);
+bool t_netstack_malformed(void);
+bool t_netstack_fuzz(void);
+bool t_netstack_cleared(void);
+bool t_netctl_set_and_clear(void);
+bool t_netctl_process(void);
 
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);

@@ -676,6 +676,14 @@ static const struct {
     { "idl_later_blocking_clients", t_idl_later_blocking_clients },
     { "idl_later_handles", t_idl_later_handles },
     { "idl_async_through_port", t_idl_async_through_port },
+    { "netstack_arp", t_netstack_arp },
+    { "netstack_ping", t_netstack_ping },
+    { "netstack_udp_unreachable", t_netstack_udp_unreachable },
+    { "netstack_malformed", t_netstack_malformed },
+    { "netstack_fuzz", t_netstack_fuzz },
+    { "netstack_cleared", t_netstack_cleared },
+    { "netctl_set_and_clear", t_netctl_set_and_clear },
+    { "netctl_process", t_netctl_process },
 };
 
 int main(int argc, char **argv)
