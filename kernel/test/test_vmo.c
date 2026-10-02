@@ -692,7 +692,7 @@ KTEST(vmo_sys_rights)
     struct kobject *obj;
     rights_t r;
     KT_EQ(handle_get(&t, h, OBJ_VMO, 0, &obj, &r), OK);
-    KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP);
+    KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE);
     kobject_unref(obj);
 
     uint8_t in[16], out[16];
@@ -714,8 +714,22 @@ KTEST(vmo_sys_rights)
     KT_EQ(sys_vmo_get_size(&t, ro, &size), OK);
     KT_EQ(size, 3 * PG);
 
+    /* Writing without RIGHT_RESIZE: the contents, never the size or the
+     * pages (what a service hands a client for a buffer it maps itself). */
+    handle_t wn;
+    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE | RIGHT_READ | RIGHT_MAP, &wn), OK);
+    KT_EQ(sys_vmo_write(&t, wn, 0, in, 1), OK);
+    KT_EQ(sys_vmo_commit(&t, wn, 0, PG), OK);
+    KT_EQ(sys_vmo_set_size(&t, wn, PG), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_decommit(&t, wn, 0, PG), ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&t, wn), OK);
+    KT_EQ(handle_duplicate(&t, h, RIGHT_RESIZE, &wn), OK);   /* and resizing needs both */
+    KT_EQ(sys_vmo_set_size(&t, wn, PG), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_decommit(&t, wn, 0, PG), ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&t, wn), OK);
+
     /* Write-only handle. */
-    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE, &wo), OK);
+    KT_EQ(handle_duplicate(&t, h, RIGHT_WRITE | RIGHT_RESIZE, &wo), OK);
     KT_EQ(sys_vmo_read(&t, wo, 0, out, 1), ERR_ACCESS_DENIED);
     KT_EQ(sys_vmo_write(&t, wo, 0, in, 1), OK);
     KT_EQ(sys_vmo_commit(&t, wo, 0, 3 * PG), OK);

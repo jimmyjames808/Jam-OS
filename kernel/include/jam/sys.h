@@ -84,7 +84,7 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
  * (kernel/abi/vmo_sys.c; semantics as in <jam/vmo.h>) */
 
 /* New VMO (vmo_create flags); the handle gets
- * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP. VMO_CONTIGUOUS /
+ * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE. VMO_CONTIGUOUS /
  * VMO_DMA32 require dma_cap to name a valid OBJ_DMA_CAP handle
  * (ERR_ACCESS_DENIED otherwise); for other flags dma_cap is ignored. */
 status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
@@ -94,14 +94,15 @@ status_t sys_vmo_read(struct handle_table *t, handle_t h, uint64_t offset, void 
 status_t sys_vmo_write(struct handle_table *t, handle_t h, uint64_t offset, const void *buf,
                        uint64_t len);                                       /* RIGHT_WRITE */
 status_t sys_vmo_get_size(struct handle_table *t, handle_t h, uint64_t *size);   /* any */
-status_t sys_vmo_set_size(struct handle_table *t, handle_t h, uint64_t size);    /* RIGHT_WRITE */
+/* RIGHT_WRITE | RIGHT_RESIZE. */
+status_t sys_vmo_set_size(struct handle_table *t, handle_t h, uint64_t size);
 status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset,
                         uint64_t len);                                      /* RIGHT_WRITE */
 /* vmo_make_exec (abi/syscalls.def): RIGHT_ROOT_VMEX on root; h is gone
  * once this succeeds, and if the VMO turns out shared (ERR_BAD_STATE). */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out);
-status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset,
-                          uint64_t len);                                    /* RIGHT_WRITE */
+/* RIGHT_WRITE | RIGHT_RESIZE. */
+status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len);
 /* end VMOs */
 
 /* VMARs (address spaces) -------------------------------------------------------
