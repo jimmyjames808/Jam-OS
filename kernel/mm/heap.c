@@ -42,6 +42,7 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -395,6 +396,7 @@ struct kmem_cache *kmalloc_cache_for(size_t size)
 
 void *kmalloc(size_t size)
 {
+    PATH_COUNT(PATH_KMALLOC);
     if (size <= KMALLOC_MAX_SLAB)
         return kmem_cache_alloc(kmalloc_cache_for(size));
     unsigned order = 0;
@@ -421,6 +423,7 @@ void kfree(void *ptr)
 {
     if (!ptr)
         return;
+    PATH_COUNT(PATH_KFREE);
     struct page *p = virt_to_page(ptr);
     if (p->flags & PG_SLAB) {
         slab_free((struct slab *)p->private, ptr);

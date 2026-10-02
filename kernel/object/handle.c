@@ -8,6 +8,7 @@
 #include <jam/handle.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/process.h>
 #include <jam/string.h>
 
@@ -255,6 +256,7 @@ status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out
         return cst;
     for (;;) {
         uint64_t f = spin_lock_irqsave(&t->lock);
+        PATH_COUNT(PATH_HANDLE);
         if (t->free_head) {
             uint32_t idx = t->free_head - 1;
             struct handle_slot *s = &t->slots[idx];
@@ -296,6 +298,7 @@ status_t handle_get(struct handle_table *t, handle_t h, enum obj_type type, righ
                     struct kobject **obj, rights_t *rights)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, type, need);
     if (st == OK) {
@@ -311,6 +314,7 @@ status_t handle_get(struct handle_table *t, handle_t h, enum obj_type type, righ
 status_t handle_remove(struct handle_table *t, handle_t h, struct khandle *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     if (!s) {
         spin_unlock_irqrestore(&t->lock, f);
@@ -358,6 +362,7 @@ static status_t duplicate_locked(struct handle_table *t, const struct handle_slo
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_DUPLICATE);
     if (st == OK)
@@ -369,6 +374,7 @@ status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, h
 status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = check(s, OBJ_NONE, RIGHT_TRANSFER);
     if (st == OK)
@@ -380,6 +386,7 @@ status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out)
 status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, handle_t *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = s ? OK : ERR_BAD_HANDLE;
     if (st == OK) {
@@ -471,6 +478,7 @@ status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, h
     if (!kh->obj)
         return ERR_INVALID_ARGS;
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = intransit_slot(t, h);
     /* The slot was reserved by handle_take and held for us, so putting the
      * handle back is O(1) and can never fail: a failed send never loses a
@@ -500,6 +508,7 @@ status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
         return cst;
     while (got < n) {
         uint64_t f = spin_lock_irqsave(&t->lock);
+        PATH_COUNT(PATH_HANDLE);
         while (got < n && t->free_head) {
             uint32_t idx = t->free_head - 1;
             struct handle_slot *s = &t->slots[idx];
@@ -531,6 +540,7 @@ status_t handle_reserve(struct handle_table *t, uint32_t n, handle_t *out)
 status_t handle_commit(struct handle_table *t, handle_t h)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
+    PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = intransit_slot(t, h);
     status_t st = ERR_INTERNAL;
     if (s) {

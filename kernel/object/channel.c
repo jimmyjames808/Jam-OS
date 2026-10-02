@@ -20,6 +20,7 @@
 #include <jam/dbghook.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -151,8 +152,12 @@ static status_t msg_new(const void *bytes, uint32_t nbytes, const struct khandle
     m->nhandles = nhandles;
     if (nhandles)
         memcpy(msg_handles(m), handles, nhandles * sizeof(struct khandle));
-    if (nbytes)
+    if (nbytes) {
+        PATH_COUNT(PATH_KCOPY);
+        PATH_ADD(PATH_KCOPY_B, nbytes);
         memcpy(msg_bytes(m), bytes, nbytes);
+    }
+    PATH_MARK(PATH_MK_MSG_MADE);
     *out = m;
     return OK;
 }
@@ -168,8 +173,11 @@ static void msg_drop(struct chan_msg *m)
 /* Hand a message's contents to a reader, which now owns the handles. */
 static void msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *handles)
 {
-    if (m->nbytes)
+    if (m->nbytes) {
+        PATH_COUNT(PATH_KCOPY);
+        PATH_ADD(PATH_KCOPY_B, m->nbytes);
         memcpy(bytes, msg_bytes(m), m->nbytes);
+    }
     if (m->nhandles)
         memcpy(handles, msg_handles(m), m->nhandles * sizeof(struct khandle));
     msg_free(m);
@@ -413,6 +421,7 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     spin_unlock_irqrestore(&pair->lock, f);
     if (carry)
         spin_unlock_irqrestore(&carry_lock, cf);
+    PATH_MARK(PATH_MK_SENT);
     return st;
 }
 
@@ -492,6 +501,9 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
         refresh_writable(ch);
     if (m)
         msg_deliver_to(m, bytes, handles);
+    if (st == ERR_SHOULD_WAIT)
+        PATH_COUNT(PATH_EMPTY_READ);
+    PATH_MARK_ARG(PATH_MK_READ, st == ERR_SHOULD_WAIT);
     return st;
 }
 
@@ -513,6 +525,7 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
                       struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,
                       uint64_t deadline_ns)
 {
+    PATH_MARK(PATH_MK_CALL);
     if (!wbytes || wn < 4 || (rcap && !rbytes) || (rhcap && !rh))
         return ERR_INVALID_ARGS;
     struct chan_waiter w = { .txid = new_txid(), .thread = current_thread(), .reply = NULL };
@@ -573,6 +586,7 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
     if (w.node.next)   /* not answered: still listed */
         list_del(&w.node);
     spin_unlock_irqrestore(&ch->base.lock, f);
+    PATH_MARK(PATH_MK_REPLY);
 
     struct chan_msg *r = w.reply;
     if (!r)

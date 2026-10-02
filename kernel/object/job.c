@@ -55,6 +55,7 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/process.h>
 #include <jam/string.h>
 #include <jam/time.h>
@@ -298,6 +299,7 @@ void job_get_info(struct job *j, struct job_info *out)
 static void credit(struct job *j, const struct job *stop, uint32_t kind, uint64_t n)
 {
     for (; j != stop; j = j->parent) {
+        PATH_COUNT(PATH_JOB_LEVEL);
         uint64_t old = __atomic_fetch_sub(&j->used[kind], n, __ATOMIC_RELAXED);
         if (old < n)
             panic("job koid %lu: kind %u credited %lu with only %lu charged", j->base.koid,
@@ -310,7 +312,9 @@ status_t job_charge(struct job *j, uint32_t kind, uint64_t n)
     if (!j || !n)
         return OK;
     ASSERT(kind_ok(kind));
+    PATH_COUNT(PATH_JOB);
     for (struct job *l = j; l; l = l->parent) {
+        PATH_COUNT(PATH_JOB_LEVEL);
         uint64_t limit = __atomic_load_n(&l->limit[kind], __ATOMIC_RELAXED);
         uint64_t old = __atomic_load_n(&l->used[kind], __ATOMIC_RELAXED);
         do {
@@ -330,6 +334,7 @@ void job_uncharge(struct job *j, uint32_t kind, uint64_t n)
     if (!j || !n)
         return;
     ASSERT(kind_ok(kind));
+    PATH_COUNT(PATH_JOB);
     credit(j, NULL, kind, n);
 }
 

@@ -14,6 +14,7 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/process.h>
 #include <jam/sched.h>
@@ -150,6 +151,8 @@ _Noreturn void user_fault_kill(struct trap_frame *f, const char *why)
  * the returned value goes to user rax. */
 int64_t syscall_entry_c(struct syscall_frame *f)
 {
+    PATH_SYSCALL_NR(f->nr);
+    PATH_MARK_ARG(PATH_MK_SYS_ENTER, f->nr);
     irq_enable();
     int64_t r;
 #ifndef JAM_NO_KTESTS
@@ -167,6 +170,7 @@ int64_t syscall_entry_c(struct syscall_frame *f)
     if (f->user_rip >= USER_TOP)
         kill_current("sysret to a bad address", f->user_rip, 0);
     f->user_rflags = (f->user_rflags & USER_RFLAGS_OK) | RFLAGS_IF | 2;
+    PATH_MARK_ARG(PATH_MK_SYS_EXIT, f->nr);
     return r;
 }
 
@@ -254,6 +258,8 @@ status_t copy_from_user(void *dst, uint64_t usrc, size_t n)
         return ERR_INVALID_ARGS;
     if (!n)
         return OK;
+    PATH_COUNT(PATH_UCOPY_IN);
+    PATH_ADD(PATH_UCOPY_IN_B, n);
     return copy_user_raw(dst, (const void *)usrc, n) ? ERR_INVALID_ARGS : OK;
 }
 
@@ -264,6 +270,8 @@ status_t copy_to_user(uint64_t udst, const void *src, size_t n)
         return ERR_INVALID_ARGS;
     if (!n)
         return OK;
+    PATH_COUNT(PATH_UCOPY_OUT);
+    PATH_ADD(PATH_UCOPY_OUT_B, n);
     return copy_user_raw((void *)udst, src, n) ? ERR_INVALID_ARGS : OK;
 }
 
@@ -301,11 +309,17 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
         c->tss.rsp[0] = (uint64_t)next->stack_top;
         c->kernel_rsp = (uint64_t)next->stack_top;
     }
-    if (prev->ustate && thread_state(prev) != T_DEAD)
+    if (prev->ustate && thread_state(prev) != T_DEAD) {
+        PATH_SW_COUNT(prev, next, PATH_FPU_SAVE);
         fpu_save(prev->ustate);
+    }
     if (next->ustate)
         fpu_load(next);   /* skipped if this CPU still holds its state (fpu.c) */
+    PATH_SW_MARK(prev, next, PATH_MK_ARCH_FPU);
+    if (prev->aspace != next->aspace)
+        PATH_SW_COUNT(prev, next, PATH_CR3);
     aspace_switch(prev->aspace, next->aspace);
+    PATH_SW_MARK(prev, next, PATH_MK_ARCH_DONE);
 #ifndef JAM_NO_KTESTS
     /* The test hook returns the CR3 to load for `next` (its own test tables,
      * or the kernel's when this CPU is leaving a test thread), or 0 to leave

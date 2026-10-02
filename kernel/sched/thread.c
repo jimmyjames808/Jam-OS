@@ -7,6 +7,7 @@
 #include <jam/irq.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -299,6 +300,7 @@ void thread_detach(struct thread *t)
 
 void thread_yield(void)
 {
+    PATH_MARK(PATH_MK_YIELD);
     schedule();
 }
 

@@ -26,6 +26,7 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/report.h>
@@ -126,8 +127,11 @@ void fpu_restore(const void *area)
 void fpu_load(struct thread *t)
 {
     uint32_t cpu = this_cpu()->index;
-    if (__atomic_load_n(&fpu_opt, __ATOMIC_RELAXED) && fpu_owner[cpu] == t && t->fpu_cpu == cpu)
+    if (__atomic_load_n(&fpu_opt, __ATOMIC_RELAXED) && fpu_owner[cpu] == t && t->fpu_cpu == cpu) {
+        PATH_COUNT(PATH_FPU_KEPT);
         return;
+    }
+    PATH_COUNT(PATH_FPU_RESTORE);
     fpu_restore(t->ustate);
     fpu_owner[cpu] = t;
     t->fpu_cpu = cpu;

@@ -22,6 +22,7 @@
 #include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/serial.h>
@@ -355,6 +356,7 @@ static void sched_kick(uint32_t cpu)
         __atomic_add_fetch(&c->polled_wakes, 1, __ATOMIC_RELAXED);   /* racy statistic */
         return;
     }
+    PATH_COUNT(PATH_IPI);
     ipi_send(cpu, VEC_RESCHEDULE);
 }
 
@@ -440,6 +442,8 @@ uint64_t sched_cpu_idle_tsc(uint32_t i)
 
 void schedule(void)
 {
+    PATH_COUNT(PATH_SCHED);
+    PATH_MARK(PATH_MK_SCHED_IN);
     /* Interrupts off FIRST: until then this thread may migrate, and the
      * CPU pointer would be stale. */
     uint64_t flags = irq_save();
@@ -451,6 +455,7 @@ void schedule(void)
     }
     struct runqueue *rq = &rqs[c->index];
     spin_lock(&rq->lock);
+    PATH_MARK(PATH_MK_SCHED_LOCKED);
     cpu_set_need_resched(c, false);
     /* Whatever runs next, this CPU is no longer spinning in idle_loop (an
      * interrupt during the spin can switch the idle thread out from here). */
@@ -515,11 +520,14 @@ void schedule(void)
     rq->prev = prev;
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, thread_state(prev), cpu_ticks(c) };
+    PATH_SW_COUNT(prev, next, PATH_SWITCH);
+    PATH_SW_MARK(prev, next, PATH_MK_SCHED_PICKED);
     arch_thread_switch(prev, next);   /* kernel stack, FPU, address space */
     switch_context(&prev->rsp, next->rsp);
 
     /* Back on prev's stack, possibly much later and on another CPU. */
     finish_switch();
+    PATH_MARK(PATH_MK_SCHED_DONE);
     irq_restore(flags);
 }
 
@@ -605,6 +613,7 @@ static void thread_wake_common(struct thread *t, bool sync);
  * should run before what it is running now. */
 static void place_on(struct thread *t, uint32_t cpu)
 {
+    PATH_COUNT(PATH_WAKE);
     struct runqueue *rq = &rqs[cpu];
     uint64_t f = spin_lock_irqsave(&rq->lock);
     enqueue(rq, t, cpu);

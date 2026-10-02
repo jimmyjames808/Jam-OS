@@ -58,6 +58,7 @@
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
+#include <jam/pathstat.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/string.h>
@@ -224,12 +225,15 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const uint64_t
 void pcid_load(uint64_t pml4, uint64_t id, const uint64_t *gen)
 {
     if (__atomic_load_n(&usable, __ATOMIC_RELAXED) <= 0) {
+        PATH_COUNT(PATH_CR3_FLUSH);   /* without PCIDs every load drops the user entries */
         write_cr3(pml4);
         return;
     }
     bool keep;
     bool sw = __atomic_load_n(&on, __ATOMIC_SEQ_CST);
     uint32_t pcid = decide(&pcpu[this_cpu()->index], sw, id, gen, &keep);
+    if (!keep)
+        PATH_COUNT(PATH_CR3_FLUSH);
     write_cr3(pml4 | pcid | (keep ? CR3_NOFLUSH : 0));
 }
 

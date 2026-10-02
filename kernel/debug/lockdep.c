@@ -19,6 +19,7 @@
  * spinlock -> mutex edge can exist and no cycle can pass through both. */
 #include <jam/kprintf.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
@@ -374,6 +375,7 @@ static void wait_turn(const spinlock_t *l, uint16_t ticket)
 static void lock_common(spinlock_t *l, unsigned subclass)
 {
     preempt_disable();
+    PATH_COUNT(PATH_LOCK);
     acquire_checks(l, subclass);   /* before spinning: report, don't hang */
     uint16_t ticket = __atomic_fetch_add(&l->next, 1, __ATOMIC_RELAXED);
     wait_turn(l, ticket);

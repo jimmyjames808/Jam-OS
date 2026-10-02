@@ -8,6 +8,7 @@
 #include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/trap.h>
@@ -29,6 +30,7 @@ void trap_dispatch(struct trap_frame *f)
     bool from_user = f->cs & 3;
     if (f->vector >= 32) {
         struct cpu *c = this_cpu();
+        PATH_COUNT(PATH_IRQ);
         c->irq_depth++;
         irq_dispatch(f);
         c->irq_depth--;
@@ -37,6 +39,8 @@ void trap_dispatch(struct trap_frame *f)
             user_trap_return(f);
         return;
     }
+    if (f->vector != 2)
+        PATH_COUNT(PATH_TRAP);   /* not an NMI: it may land anywhere */
     switch (f->vector) {
     case 2:
         /* Never schedules or touches the user return path: NMIs stay

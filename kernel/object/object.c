@@ -10,6 +10,7 @@
 #include <jam/kprintf.h>
 #include <jam/object.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/sched.h>
 #include <jam/time.h>
 
@@ -167,6 +168,7 @@ void kobject_signal_locked(struct kobject *obj, signals_t clear, signals_t set)
     for (struct list_node *n = obj->observers.next; n != &obj->observers;) {
         struct observer *o = container_of(n, struct observer, node);
         n = n->next;
+        PATH_COUNT(PATH_OBSERVER);
         o->fire(o, now);
     }
 }
@@ -217,6 +219,7 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
         .thread = current_thread(),
         .hit = false,
     };
+    PATH_MARK(PATH_MK_WAIT_IN);
     uint64_t f = spin_lock_irqsave(&obj->lock);
     status_t st = OK;
     if (!(obj->signals & mask)) {
@@ -236,6 +239,7 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
     if (observed)
         *observed = obj->signals;
     spin_unlock_irqrestore(&obj->lock, f);
+    PATH_MARK(PATH_MK_WAIT_OUT);
     return st;
 }
 

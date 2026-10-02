@@ -3,6 +3,7 @@
  * sched.c. */
 #include <jam/lapic.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
@@ -81,8 +82,11 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
                container_of(pos, struct thread, sleep_node)->wake_at_tsc > t->wake_at_tsc)
             pos = pos->prev;
         list_add(pos, &t->sleep_node);
-        if (q->list.next == &t->sleep_node)
+        PATH_COUNT(PATH_SLEEPQ);
+        if (q->list.next == &t->sleep_node) {
+            PATH_COUNT(PATH_TIMER_ARM);
             sleepq_arm(q);   /* the new head */
+        }
         spin_unlock_irqrestore(&q->lock, f);
     }
     if (lock)
@@ -108,6 +112,7 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
     /* Registered for wakeup (wait queue / deadline): being preempted from
      * here on is harmless, so preemption can come back on. */
     preempt_enable_no_resched();
+    PATH_MARK(PATH_MK_BLOCK);
     if (!skip)
         schedule();
     /* Always take the queue lock before touching sleep_node when we may

@@ -22,6 +22,7 @@
  * may be what keeps that object alive. Each keeps a job reference. */
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/port.h>
 #include <jam/process.h>
 #include <jam/time.h>
@@ -351,6 +352,7 @@ status_t port_queue_user(struct port *p, const struct port_packet *pkt)
 
 status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out)
 {
+    PATH_MARK(PATH_MK_WAIT_IN);
     uint64_t f = spin_lock_irqsave(&p->base.lock);
     /* The queue is checked before the deadline: a waiter woken for a packet
      * just as it timed out still takes it, so no wakeup is wasted. */
@@ -383,5 +385,6 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
         binding_dequeued(p, b);
     else
         user_packet_free(e);
+    PATH_MARK(PATH_MK_WAIT_OUT);
     return OK;
 }
