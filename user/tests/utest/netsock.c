@@ -78,6 +78,23 @@ static bool sent_udp(uint32_t dst, uint32_t sport, uint32_t dport, const void *d
     return true;
 }
 
+/* As a service's loop does: wait for the socket's key on port, then take
+ * (a packet may be from before: a loop that finds nothing waits again). */
+static bool loop_take(handle_t port, uint64_t key, struct net_sock *s)
+{
+    uint64_t end = now() + NETDRV_WAIT;
+    for (;;) {   /* each turn is one wait, bounded by end */
+        struct port_packet pp;
+        CHECK_ST(jam_port_wait(port, end, &pp), OK);
+        CHECK_EQ(pp.key, key);
+        status_t st = net_sock_take(s, &dg);
+        if (st != ERR_SHOULD_WAIT) {
+            CHECK_ST(st, OK);
+            return true;
+        }
+    }
+}
+
 /* The reply to the async call txid on ch within `wait`: its status (and
  * results), or NO_REPLY. */
 static status_t reply_of(handle_t ch, uint32_t txid, uint64_t wait, uint32_t *rtt, uint8_t *ttl,
@@ -184,10 +201,7 @@ bool t_netsock_udp(void)
     CHECK_ST(net_sock_bind(&e, port_h, 77, PORT_BIND_PERSISTENT), OK);
     CHECK_ST(net_sock_take(&e, &dg), ERR_SHOULD_WAIT);
     CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 53, OUR_IP, e.port, "late", 4)));
-    struct port_packet pp;
-    CHECK_ST(jam_port_wait(port_h, now() + NETDRV_WAIT, &pp), OK);
-    CHECK_EQ(pp.key, 77);
-    CHECK_ST(net_sock_take(&e, &dg), OK);
+    CHECK(loop_take(port_h, 77, &e));
     CHECK(dg.port == 53 && dg.len == 4 && !memcmp(dg.data, "late", 4));
     /* Connected: only the peer's datagrams, and net_send goes to it. */
     CHECK_ST(net_connect(&s, PEER_IP, 40000), OK);

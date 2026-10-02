@@ -20,9 +20,18 @@
  * records a socket a turn, the sockets in turn; with no room the rest
  * stays in the rings until the driver says it has some (dev_tx_room_came).
  *
- * Closing: the VMO is unmapped and shrunk to nothing before its handles
- * close, so a program that keeps its handle holds no page charged to
- * netstack (the program unmaps first: libos's net_close). */
+ * A ring the program broke (a count out of range, a bad record) is looked
+ * at again only when the program signals: garbage costs netstack one look
+ * a signal, not one a turn.
+ *
+ * Closing: only once the program's end of the socket's channel is closed
+ * (a wait set may read the rings until it sees SIG_PEER_CLOSED) is the VMO
+ * unmapped and shrunk to nothing, before its handles close, so a program
+ * that keeps its handle holds no page charged to netstack (the program
+ * unmaps first: libos's net_close). A socket whose opener goes is ended
+ * but not closed: lwIP's socket and its port go at once, its status says
+ * CLOSED (ERR_PEER_CLOSED), and its rings and channel stay, still counted
+ * against the shares, until the program closes it. */
 #include <idl/net.h>
 #include "ctl.h"
 #include "progs.h"
@@ -216,11 +225,35 @@ void sock_close(unsigned i)
     s->pending = s->tx_ready = s->rx_dirty = s->st_dirty = false;
 }
 
+/* Socket s's opener went: end it (above, "Closing"). */
+static void sock_end(struct sock *s)
+{
+    stack_udp_close(s->u);   /* its port is free again; no more datagrams */
+    s->u = NULL;
+    s->tx_ready = false;
+    s->st.state = SOCKRING_STATE_CLOSED;
+    s->st.error = ERR_PEER_CLOSED;
+    s->st.changes++;
+    s->st_dirty = s->vmo != 0;
+}
+
 void sock_close_opener(unsigned slot)
 {
-    for (unsigned i = 0; i < NET_SOCKETS_MAX; i++)
-        if (pg.s[i].ch && pg.s[i].opener == slot && pg.s[i].opener_gen == pg.o[slot].gen)
-            sock_close(i);
+    for (unsigned i = 0; i < NET_SOCKETS_MAX; i++) {
+        struct sock *s = &pg.s[i];
+        if (!s->ch || !s->u || s->opener != slot || s->opener_gen != pg.o[slot].gen)
+            continue;
+        if (!s->vmo) {
+            sock_close(i);   /* no rings: nothing of the program's to keep */
+            continue;
+        }
+        if (pg.o[slot].ring_bytes >= s->bytes)
+            pg.o[slot].ring_bytes -= s->bytes;   /* the opener's count goes with it */
+        if (pg.o[slot].socks)
+            pg.o[slot].socks--;
+        s->opener_gen = 0;   /* owner() finds none from now on */
+        sock_end(s);
+    }
 }
 
 void sock_census(uint32_t *queued, uint32_t *open)
@@ -313,14 +346,19 @@ static bool tx_one(struct sock *s)
         else
             refused(s, st);
     }
-    if (e->errors != errors) {
+    bool broken = e->errors != errors;
+    if (broken) {
         s->st.ring_errors = e->errors + s->r.rx.errors;
         s->st_dirty = true;
     }
+    if (s->st_dirty)   /* before the count: a program that sees it taken sees why it was refused */
+        sockring_status_put(&s->r, &s->st);
     if (e->count != before && sockring_publish(e))
         (void)jam_event_signal(s->to_prog, 0, SOCKRING_SIG_TX_ROOM);   /* gone: its channel says */
-    bool full = k < SOCK_TX_BUDGET && !dev_tx_room(pg.dev, SOCK_CARD_ROOM);
-    if (full || k == SOCK_TX_BUDGET)
+    bool full = !broken && k < SOCK_TX_BUDGET && !dev_tx_room(pg.dev, SOCK_CARD_ROOM);
+    if (broken)   /* our flag up, whatever the ring holds: the next look waits for a signal */
+        __atomic_store_n(&e->cons->waits, 1, __ATOMIC_RELAXED);
+    else if (full || k == SOCK_TX_BUDGET)
         s->tx_ready = true;          /* more may wait: the next turn, or when the card has room */
     else if (!sockring_sleep(e, 1))
         s->tx_ready = true;          /* came while we looked */
@@ -334,7 +372,7 @@ void sock_tx_all(void)
     for (unsigned n = 0; n < SOCK_SLOTS; n++) {
         unsigned i = (pg.next_tx + n) % SOCK_SLOTS;
         struct sock *s = &pg.s[i];
-        if (!s->ch || !s->vmo || !s->tx_ready || !tx_one(s))
+        if (!s->ch || !s->vmo || !s->u || !s->tx_ready || !tx_one(s))
             continue;
         /* The card is full: ask to be told, and start here next time. */
         pg.next_tx = i;
@@ -350,7 +388,7 @@ bool sock_tx_pending(void)
     if (pg.card_full)
         return false;
     for (unsigned i = 0; i < SOCK_SLOTS; i++)
-        if (pg.s[i].ch && pg.s[i].vmo && pg.s[i].tx_ready)
+        if (pg.s[i].ch && pg.s[i].vmo && pg.s[i].u && pg.s[i].tx_ready)
             return true;
     return false;
 }
@@ -358,7 +396,7 @@ bool sock_tx_pending(void)
 void sock_ring_event(unsigned i, uint32_t gen)
 {
     struct sock *s = i < SOCK_SLOTS ? &pg.s[i] : NULL;
-    if (s && s->ch && s->vmo && s->gen == gen)
+    if (s && s->ch && s->vmo && s->u && s->gen == gen)
         s->tx_ready = true;   /* SIG_RX_ROOM needs nothing: a full rx ring drops */
 }
 

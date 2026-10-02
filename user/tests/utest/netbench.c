@@ -100,10 +100,9 @@ bool t_netsock_bench(void)
     uint64_t ns;
     CHECK(netdrv_start());
     CHECK(netdrv_ping(1, true));   /* netstack learns the peer's MAC */
-    CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &o), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_listen(), now() + NETDRV_WAIT, &o), OK);   /* fixed ports */
     CHECK_ST(net_udp_open(o, 6000, &a), OK);
-    CHECK_ST(net_udp_open(o, 6001, &b), OK);
-    CHECK_ST(net_recv_arm(&b), OK);
+    CHECK_ST(net_udp_open_rings(o, 6001, 64 * 1024, 64 * 1024, &b), OK);   /* a window's room */
     static const size_t sizes[] = { 64, NET_DGRAM_MAX };
     for (unsigned i = 0; i < 2; i++) {
         CHECK(round_trips(&a, sizes[i], &ns));

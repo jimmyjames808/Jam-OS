@@ -22,7 +22,15 @@
  *     the loop's port (its to_prog event and its channel's end), and when
  *     the key fires the loop calls net_sock_take until it says
  *     ERR_SHOULD_WAIT (the binding fires on an edge): each datagram, and
- *     the sends netstack refused counted on the way.
+ *     the sends netstack refused counted on the way;
+ *   - or in a wait set with other sockets and handles (<netwait.h>,
+ *     net_sock_waitable), with the calls that don't wait.
+ * The rings' `waits` flags (<sockring.h> "Waking") are set only by what
+ * sleeps: the blocking calls raise the one they need before they sleep and
+ * lower it when they wake; net_sock_bind raises rx's and leaves it up; a
+ * wait set raises and lowers its own. net_sendto_async and net_sock_take
+ * never touch them. So a blocking call on a socket that is also in a wait
+ * set lowers the set's flag: call netwait_touch after it.
  * The opener's channel (net_svc) waits with the generated calls
  * (net_wait_change_send and its _result, <idl/net.h>) in a loop. Addresses
  * are host-order numbers, the first byte highest (<netbytes.h> NET_IPV4,
@@ -113,7 +121,8 @@ struct net_counters {
 };
 #define NET_COUNTERS_SIZE 256u
 
-struct idl_msg;   /* <idl/common.h>: a reply read off a channel */
+struct idl_msg;        /* <idl/common.h>: a reply read off a channel */
+struct netwait_sock;   /* <netwait.h>: a socket as a wait set takes it */
 
 /* A datagram received. */
 struct net_dgram {
@@ -208,24 +217,31 @@ status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline
  * address or no link. */
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,
                   uint32_t *rtt_us, uint8_t *ttl);
-/* Wait until s may have something: a datagram, room in the tx ring, a
- * change of its status, netstack gone; or the deadline (ERR_TIMED_OUT). It
- * may also return early: look, and wait again. */
+/* Wait until s may have a datagram, or netstack is gone (a look says
+ * which), or the deadline (ERR_TIMED_OUT). It may also return early (a
+ * change of the socket's status, room in its tx ring): look, and wait
+ * again. */
 status_t net_sock_wait(struct net_sock *s, uint64_t deadline);
 
 /* ---- without waiting (a service's loop) ---- */
 /* Put a datagram in the tx ring (netstack woken if it sleeps): OK. A
  * refusal of netstack's comes later (net_sock_take counts it).
- * ERR_SHOULD_WAIT: the ring has no room now (the loop's key fires when it
- * has); ERR_INVALID_ARGS: len over NET_DGRAM_MAX; ERR_BAD_STATE: no rings. */
+ * ERR_SHOULD_WAIT: the ring has no room now (nothing says when it has but a
+ * wait set's NETWAIT_WRITE: a loop counts it lost, or tries again later);
+ * ERR_INVALID_ARGS: len over NET_DGRAM_MAX; ERR_BAD_STATE: no rings. */
 status_t net_sendto_async(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
                           size_t len);
-/* Watch s on the loop's port with `key`: its to_prog event (PERSISTENT)
- * and its channel's end (SIG_PEER_CLOSED). flags: PORT_BIND_PERSISTENT, or
- * PORT_BIND_ONCE to bind again each turn (net_sock_unbind first). One port
- * at a time; net_close unbinds. */
+/* Watch s on the loop's port with `key`: its to_prog event and its
+ * channel's end (SIG_PEER_CLOSED), and rx's consumer flag raised for good,
+ * so a datagram netstack puts in the ring fires the key (one already there
+ * fires it at once). flags: PORT_BIND_PERSISTENT, or PORT_BIND_ONCE to bind
+ * again each turn. One port at a time; net_close unbinds. Not with a wait
+ * set or the blocking calls on the same socket (they lower the flag). */
 status_t net_sock_bind(struct net_sock *s, handle_t port, uint64_t key, uint32_t flags);
 void     net_sock_unbind(struct net_sock *s);
+/* s as a wait set takes it (netwait_add_sock): its rings, to_prog and
+ * channel; tx_need 0. Valid while s is open. */
+void     net_sock_waitable(struct net_sock *s, struct netwait_sock *out);
 /* The next datagram into *d: OK. ERR_SHOULD_WAIT: none now (the socket is
  * set to wake the loop when one comes); ERR_PEER_CLOSED: netstack is gone
  * (open the socket again). Records netstack refused since the last call

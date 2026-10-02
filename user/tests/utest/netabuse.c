@@ -105,11 +105,17 @@ bool t_netsock_limits(void)
     net_close(&s[0]);
     EVENTUALLY_OK(net_udp_open(o[2], 0, &x));
     net_close(&x);
-    /* An opener's end closes its sockets, and frees its slot. */
+    /* An opener's end ends its sockets (their status says so; they stay
+     * until the program closes them), and frees its slot. */
     jam_handle_close(o[1]);
     for (k = NET_SOCKETS_PER_OPENER; k < NET_PROG_SOCKETS; k++) {
-        signals_t seen;
-        CHECK_ST(jam_object_wait_one(s[k].ch, SIG_PEER_CLOSED, now() + NETDRV_WAIT, &seen), OK);
+        struct sockring_status ss;
+        uint64_t until = now() + NETDRV_WAIT;
+        do {
+            sockring_status_get(&s[k].r, &ss);
+        } while (ss.state != SOCKRING_STATE_CLOSED && now() < until);
+        CHECK_EQ(ss.state, SOCKRING_STATE_CLOSED);
+        CHECK_ST(ss.error, ERR_PEER_CLOSED);
         net_close(&s[k]);
     }
     EVENTUALLY_OK(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &o[1]));

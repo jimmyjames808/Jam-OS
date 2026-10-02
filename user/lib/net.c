@@ -103,8 +103,6 @@ static status_t attach(struct net_sock *s, handle_t ch, uint16_t port, const han
         s->map_len = len;
         st = sockring_attach(&s->r, s->map, len, SOCKRING_DGRAM, tx, rx);
     }
-    if (st == OK)   /* asleep from the start: the first datagram wakes a loop bound on it */
-        (void)sockring_sleep(&s->r.rx, 1);
     if (st != OK)
         net_close(s);
     return st;

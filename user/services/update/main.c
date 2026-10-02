@@ -27,6 +27,11 @@ JAM_WANTS("svc net-sys\n");   /* the network's reserve (tools/checkwants.py: ser
 #define UP_WAIT     (10 * NS_PER_S)    /* for the network's address */
 #define ANSWER_WAIT (60 * NS_PER_S)    /* init copies and hashes the build */
 #define STOP_LOOK   (100 * NS_PER_MS)  /* how often the fetch looks for Ctrl+C */
+/* The socket's rx ring: the fetcher's whole window of replies (32 of at
+ * most a datagram each, 47.6 KiB as records) and room to spare. */
+#define UPDATE_RX_RING (64u * 1024)
+_Static_assert(UPDFETCH_WINDOW * (SOCKRING_DGRAM_HDR + NET_DGRAM_MAX) <= UPDATE_RX_RING,
+               "the window fits the ring");
 /* Bytes as MB with one decimal: the two arguments of "%lu.%u". */
 #define MB(b)       ((unsigned long)((b) / 1000000)), ((unsigned)((b) / 100000 % 10))
 
@@ -235,7 +240,7 @@ static status_t open_socket(uint32_t host)
                status_str(st));
         return st;
     }
-    st = net_udp_open(net, 0, &fetch.sock);
+    st = net_udp_open_rings(net, 0, 0, UPDATE_RX_RING, &fetch.sock);   /* a window of replies */
     if (st == OK)
         st = net_connect(&fetch.sock, host, UPDWIRE_PORT);
     if (st != OK)

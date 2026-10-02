@@ -108,6 +108,9 @@
  *     the checks (address, port, length) run on the copies; netstack never
  *     keeps a pointer into a ring (lwIP gets copies, TCP_WRITE_FLAG_COPY);
  *   - after SOCKRING_END, bytes the producer adds are ignored and counted;
+ *   - a ring that was out of range or held a bad record is looked at again
+ *     only when the program signals SOCKRING_SIG_TX, so garbage costs
+ *     netstack one look a signal, not one a turn;
  *   - signals: `to_stack` is bound PERSISTENT, so a program that signals in
  *     a loop costs netstack one coalesced packet and a look at its own rings.
  * The program treats netstack's side the same way (the same code): netstack

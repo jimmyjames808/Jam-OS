@@ -4,16 +4,28 @@
  * This side produces the tx ring and consumes the rx ring. While data
  * flows nothing here makes a system call: a datagram is copied into or out
  * of the ring and the count published, and netstack is signalled
- * (to_stack) only when its line says it sleeps. Waking works the other way
- * the same: before this side waits it clears its event's bits, raises its
- * flag and looks at the ring once more (sockring_sleep), so a datagram
- * netstack published meanwhile is never slept through.
+ * (to_stack) only when its line says it sleeps.
+ *
+ * Our own `waits` flags (rx's consumer flag, tx's producer flag) say
+ * whether netstack should signal `to_prog`. Only what waits sets them:
+ *   - a call that sleeps (net_recvfrom, net_sendto, net_sock_wait) clears
+ *     the event's bits, raises the flag it needs and looks once more
+ *     (sockring_sleep) before it sleeps, and lowers the flag when it wakes;
+ *   - a loop that sleeps on a port of its own: net_sock_bind raises rx's
+ *     consumer flag and leaves it up (netstack then signals once a turn in
+ *     which it put datagrams in the ring);
+ *   - a wait set (<netwait.h>) raises and lowers them itself.
+ * The calls that don't wait (net_sendto_async, net_sock_take) never touch
+ * the flags, so they work under any of the three. A datagram netstack
+ * publishes is never slept through: whoever waits raised its flag and
+ * looked again after it cleared the event's bits.
  *
  * netstack's side of the rings is trusted more than a program's, but the
  * same code reads it: its counts clamped, a broken record skipped. An
  * event can't say netstack died, so every wait here is on a port with the
  * event and the channel's end (SIG_PEER_CLOSED) both bound. */
 #include <net.h>
+#include <netwait.h>
 
 #define SEND_WAIT   (5 * NS_PER_S)   /* net_sendto: for room, then for netstack to take it */
 #define PROG_BITS   (SOCKRING_SIG_RX | SOCKRING_SIG_TX_ROOM | SOCKRING_SIG_STATE)
@@ -30,6 +42,12 @@ static bool gone(const struct net_sock *s)
 {
     signals_t seen = 0;
     return jam_object_wait_one(s->ch, SIG_PEER_CLOSED, 0, &seen) == OK;
+}
+
+/* Clear the event's bits, so a signal from now on is a new edge. */
+static void clear_bits(const struct net_sock *s)
+{
+    (void)jam_event_signal(s->to_prog, PROG_BITS, 0);   /* ours: can't fail */
 }
 
 /* Bind the event and the channel on port with key (both, or neither). */
@@ -51,11 +69,18 @@ status_t net_sock_bind(struct net_sock *s, handle_t port, uint64_t key, uint32_t
         return ERR_BAD_STATE;
     net_sock_unbind(s);
     status_t st = bind_both(s, port, key, key, flags);
-    if (st == OK) {
-        s->bound_port = port;
-        s->bound_key = key;
-    }
-    return st;
+    if (st != OK)
+        return st;
+    s->bound_port = port;
+    s->bound_key = key;
+    /* Up for good (sockring_sleep would lower it on finding datagrams):
+     * then, as sockring_sleep's fence and second look do, one datagram
+     * already there is signalled to ourselves, so the key fires for it. */
+    __atomic_store_n(&s->r.rx.cons->waits, 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (sockring_ready(&s->r.rx))
+        (void)jam_event_signal(s->to_prog, 0, SOCKRING_SIG_RX);   /* ours: can't fail */
+    return OK;
 }
 
 void net_sock_unbind(struct net_sock *s)
@@ -68,10 +93,14 @@ void net_sock_unbind(struct net_sock *s)
     s->bound_port = HANDLE_INVALID;
 }
 
-status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
+void net_sock_waitable(struct net_sock *s, struct netwait_sock *out)
 {
-    if (!has_rings(s))
-        return ERR_BAD_STATE;
+    *out = (struct netwait_sock){ .rings = &s->r, .to_prog = s->to_prog, .ch = s->ch };
+}
+
+/* Sleep on the socket's own port until a signal or the deadline. */
+static status_t sleep_port(struct net_sock *s, uint64_t deadline)
+{
     if (!s->waiter) {
         handle_t p = HANDLE_INVALID;
         status_t st = jam_port_create(&p);
@@ -86,6 +115,18 @@ status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
     }
     struct port_packet pkt;
     return jam_port_wait(s->waiter, deadline, &pkt);
+}
+
+status_t net_sock_wait(struct net_sock *s, uint64_t deadline)
+{
+    if (!has_rings(s))
+        return ERR_BAD_STATE;
+    if (gone(s))
+        return OK;   /* a look finds it: ERR_PEER_CLOSED */
+    clear_bits(s);
+    status_t st = sockring_sleep(&s->r.rx, 1) ? sleep_port(s, deadline) : OK;
+    sockring_awake(&s->r.rx);
+    return st;
 }
 
 /* Records netstack refused since we last looked: into send_errors. */
@@ -120,16 +161,7 @@ static status_t put(struct net_sock *s, uint32_t addr, uint16_t port, const void
 status_t net_sendto_async(struct net_sock *s, uint32_t addr, uint16_t port, const void *data,
                           size_t len)
 {
-    if (!has_rings(s))
-        return ERR_BAD_STATE;
-    for (;;) {
-        status_t st = put(s, addr, port, data, len);
-        if (st != ERR_SHOULD_WAIT)
-            return st;
-        /* Full: ask netstack for SIG_TX_ROOM, unless it made room meanwhile. */
-        if (sockring_sleep(&s->r.tx, sockring_dgram_bytes((uint32_t)len)))
-            return ERR_SHOULD_WAIT;
-    }
+    return has_rings(s) ? put(s, addr, port, data, len) : ERR_BAD_STATE;
 }
 
 /* Wait until the tx ring has `need` bytes of room (sockring_sleep's
@@ -139,11 +171,10 @@ static status_t wait_room(struct net_sock *s, uint32_t need, uint64_t deadline)
     while (sockring_room(&s->r.tx) < need) {
         if (gone(s))
             return ERR_PEER_CLOSED;
-        /* every bit: a binding fires when none of its bits was set before */
-        (void)jam_event_signal(s->to_prog, PROG_BITS, 0);   /* ours: can't fail */
+        clear_bits(s);   /* every bit: a binding fires when none of its bits was set before */
         if (!sockring_sleep(&s->r.tx, need))
             continue;
-        status_t st = net_sock_wait(s, deadline);
+        status_t st = sleep_port(s, deadline);
         sockring_awake(&s->r.tx);
         if (st != OK)
             return st;
@@ -211,19 +242,15 @@ status_t net_sock_take(struct net_sock *s, struct net_dgram *d)
     if (!has_rings(s))
         return ERR_BAD_STATE;
     note_refused(s);
-    sockring_awake(&s->r.rx);
-    for (;;) {
-        status_t st = take(s, d);
-        if (st != ERR_SHOULD_WAIT)
-            return st;
-        if (gone(s))
-            return ERR_PEER_CLOSED;
-        /* Clear the bits, then look once more with the flag up: a datagram
-         * published from now on signals the event, so the loop's key fires. */
-        (void)jam_event_signal(s->to_prog, PROG_BITS, 0);   /* ours: can't fail */
-        if (sockring_sleep(&s->r.rx, 1))
-            return ERR_SHOULD_WAIT;
-    }
+    status_t st = take(s, d);
+    if (st != ERR_SHOULD_WAIT)
+        return st;
+    if (gone(s))
+        return ERR_PEER_CLOSED;
+    /* Clear the bits, then look once more: a datagram published from now
+     * on is a new edge (for a loop bound with net_sock_bind). */
+    clear_bits(s);
+    return take(s, d);
 }
 
 status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline)

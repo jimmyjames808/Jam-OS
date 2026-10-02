@@ -15,6 +15,11 @@
  *                          program and pings; it can't shrink or copy the
  *                          VMO, and once it closes its socket netstack has
  *                          shrunk the VMO to nothing
+ *   netwait_udp            real UDP sockets (<net.h>) in a wait set
+ *                          (<netwait.h>): writable at once, readable when a
+ *                          datagram comes (netstack signals the flag the set
+ *                          raised), not again once it is taken (level), both
+ *                          sockets' datagrams reported
  *   netsock_len_lies       libos's net_sock_take over a hand-made netstack
  *                          whose rx records say more bytes than a datagram
  *                          holds: skipped (counted), never read past
@@ -26,6 +31,7 @@
 #include <idl/svc.h>
 #include <jam/netdev.h>
 #include <net.h>
+#include <netwait.h>
 #include <os.h>
 #include <sockring.h>
 #include "netdrv.h"
@@ -297,6 +303,81 @@ bool t_netsock_hostile_rings(void)
         CHECK(counters(&c));
     } while ((c.sockets || c.ring_bytes) && now() < end);
     CHECK(!c.sockets && !c.ring_bytes);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* ---- real sockets in a wait set ------------------------------------------------------ */
+
+/* Wait on w until entry `id` is reported with `bits`, or the deadline. */
+static bool reported(struct netwait *w, uint32_t id, uint32_t bits, uint64_t deadline)
+{
+    struct netwait_ready r[4];
+    uint32_t n = 0;
+    for (;;) {   /* each turn is one wait, bounded by the deadline */
+        status_t st = netwait_wait(w, deadline, r, 4, &n);
+        CHECK_ST(st, OK);
+        for (uint32_t k = 0; k < n; k++)
+            if (r[k].id == id && (r[k].ready & bits) == bits)
+                return true;
+    }
+}
+
+/* Nothing in w is ready for a little while. */
+static bool quiet(struct netwait *w)
+{
+    struct netwait_ready r[4];
+    uint32_t n = 0;
+    CHECK_ST(netwait_wait(w, now() + NETDRV_QUIET, r, 4, &n), ERR_TIMED_OUT);
+    return true;
+}
+
+static bool waits_on(struct netwait *w, struct net_sock *a, struct net_sock *b)
+{
+    struct netwait_sock ws;
+    uint32_t ia, ib;
+    net_sock_waitable(a, &ws);
+    CHECK_ST(netwait_add_sock(w, &ws, NETWAIT_READ, a, &ia), OK);
+    net_sock_waitable(b, &ws);
+    CHECK_ST(netwait_add_sock(w, &ws, NETWAIT_READ | NETWAIT_WRITE, b, &ib), OK);
+    CHECK(reported(w, ib, NETWAIT_WRITE, now() + NETDRV_WAIT));   /* room: writable at once */
+    CHECK_ST(netwait_modify(w, ib, NETWAIT_READ), OK);
+    CHECK(quiet(w));
+    CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 9, OUR_IP, a->port, "hi", 2)));
+    CHECK(reported(w, ia, NETWAIT_READ, now() + NETDRV_WAIT));
+    CHECK_ST(net_sock_take(a, &dg), OK);
+    CHECK(dg.len == 2 && !memcmp(dg.data, "hi", 2));
+    CHECK_ST(net_sock_take(a, &dg), ERR_SHOULD_WAIT);
+    CHECK(quiet(w));   /* level-triggered: taken, so no longer ready */
+    CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 9, OUR_IP, b->port, "b", 1)));
+    CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 9, OUR_IP, a->port, "a", 1)));
+    CHECK(reported(w, ib, NETWAIT_READ, now() + NETDRV_WAIT));
+    CHECK(reported(w, ia, NETWAIT_READ, now() + NETDRV_WAIT));
+    CHECK_ST(net_sock_take(a, &dg), OK);
+    CHECK_ST(net_sock_take(b, &dg), OK);
+    CHECK(quiet(w));
+    CHECK_ST(netwait_remove(w, ia), OK);
+    CHECK_ST(netwait_remove(w, ib), OK);
+    return true;
+}
+
+bool t_netwait_udp(void)
+{
+    handle_t o;
+    struct net_sock a, b;
+    struct netwait *w = NULL;
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));
+    CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &o), OK);
+    CHECK_ST(net_udp_open(o, 0, &a), OK);
+    CHECK_ST(net_udp_open(o, 0, &b), OK);
+    CHECK_ST(netwait_create(8, &w), OK);
+    bool ok = waits_on(w, &a, &b);
+    netwait_destroy(w);
+    net_close(&a);
+    net_close(&b);
+    jam_handle_close(o);
+    CHECK(ok);
     CHECK(netdrv_stop());
     return true;
 }
