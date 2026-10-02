@@ -10,10 +10,11 @@
  * A failed attempt is tried again from the reset, sooner at first: after
  * 100 ms, then twice as long each time (port_retry_ms; root_retries marks
  * the port changed when the time comes, as an event would), PORT_TRIES
- * attempts in all, then the port waits for an unplug. A device that left
- * or reconnected during the attempt (the PC's gaming mouse drops off the
- * bus and comes back while it starts) costs no attempt: its own port
- * change starts it over. */
+ * attempts in all, then the port waits for the device to be unplugged or
+ * plugged in again: any connect change starts the count over. A device
+ * that left or reconnected during the attempt (the PC's gaming mouse drops
+ * off the bus and comes back while it starts) costs no attempt: its own
+ * port change starts it over. */
 #include "usbbus.h"
 
 static uint8_t root_fail[256];       /* failed attach attempts in a row, per root port */
@@ -126,7 +127,7 @@ static void root_failed(struct hc *h, uint32_t p)
         drv_log("usb %u: attempt %u failed: trying again in %lu ms", p, root_fail[p],
                 (unsigned long)ms);
     } else {
-        drv_log("usb %u: %u attempts failed: the port waits for the device to be unplugged", p,
+        drv_log("usb %u: %u attempts failed: the port waits for the device to be replugged", p,
                 root_fail[p]);
     }
 }
@@ -227,6 +228,8 @@ void root_port(struct hc *h, uint32_t p)
         detach(d, v & PS_CSC ? "replugged" : "port disabled", false);
         d = NULL;
     }
+    if (v & PS_CSC)
+        root_fail[p] = 0;   /* a connection of its own: its attempts start over */
     if (d || root_fail[p] >= PORT_TRIES || h->stopping)
         return;
     root_retry_at[p] = 0;   /* this is the retry, if one was waiting */

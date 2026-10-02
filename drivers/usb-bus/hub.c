@@ -184,6 +184,8 @@ static bool hub_port_wants_attach(struct usbdev *hub, uint8_t port, uint16_t ps,
         detach(c, chg & 1 ? "replugged" : "port disabled", false);
         c = NULL;
     }
+    if (chg & 1)
+        hub->port_fail[port] = 0;   /* a connection of its own: its attempts start over */
     return !c && hub->port_fail[port] < PORT_TRIES && !g_hc.stopping;
 }
 
@@ -273,7 +275,7 @@ static void hub_port_failed(struct usbdev *hub, uint8_t port)
         drv_log("usb %s.%u: attempt %u failed: trying again in %lu ms", hub->path, port,
                 hub->port_fail[port], (unsigned long)ms);
     } else {
-        drv_log("usb %s.%u: %u attempts failed: the port waits for the device to be unplugged",
+        drv_log("usb %s.%u: %u attempts failed: the port waits for the device to be replugged",
                 hub->path, port, hub->port_fail[port]);
     }
 }

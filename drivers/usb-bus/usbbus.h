@@ -678,7 +678,7 @@ uint64_t hub_retries(uint64_t next);
 bool hub_port_lost(struct usbdev *hub, uint8_t port);
 void root_port(struct hc *h, uint32_t p);   /* a port task's work */
 void root_ports_reset(void);
-/* Attach attempts per port before it waits for an unplug, and the wait
+/* Attach attempts per port before it waits for a connect change, and the wait
  * before attempt n + 1 after n failed (0: no more). */
 #define PORT_TRIES 6
 uint64_t port_retry_ms(unsigned fails);
