@@ -1,5 +1,5 @@
 /* utest: the music player's folder walk (user/services/music/tracks.c,
- * compiled in here), on a tree in bin/ramfs. The walk is read a few
+ * linked in by the Makefile), on a tree in bin/ramfs. The walk is read a few
  * entries at a time so that the player answers its channel while a big
  * folder is read (docs/history/AUDIO-REVIEW.md, item 2): read one entry
  * per step it must take many steps and find exactly what one big step
@@ -9,10 +9,8 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <os.h>
+#include "music.h"
 #include "utest.h"
-
-#include "../../services/music/spectrum.c"
-#include "../../services/music/tracks.c"
 
 #define M "/m"
 

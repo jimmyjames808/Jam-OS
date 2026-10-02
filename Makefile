@@ -240,6 +240,10 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 # <stdlib.h>/<string.h> it includes, which are libos's
 # (user/apps/jamcover/port).
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
+# utest tests the music player's folder walk and spectrum (utest/music.c):
+# the player's own objects, linked in, and its header.
+EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o
+EXTRA_CFLAGS_utest := -iquote user/services/music
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
