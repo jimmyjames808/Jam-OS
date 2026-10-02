@@ -1055,23 +1055,32 @@ a `make flash`.
 | Process | Holds | Parses network data |
 |---|---|---|
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
-| netstack | the network cards' devmgr device channels; the server ends of netctl and `/svc/net` | yes: Ethernet, ARP, IPv4, ICMP, UDP |
+| netstack | the network cards' devmgr device channels; the server ends of netctl, `/svc/net`, `/svc/net-listen` and `/svc/net-sys` | yes: Ethernet, ARP, IPv4, ICMP, UDP, TCP |
 | dhcp | netctl | yes: DHCP replies |
 | dns | `/svc/net-sys`; the server ends of `/svc/dns` and `/svc/dns-sys` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
 | sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
+| bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
+| bin/serve | `/svc/net` and `/svc/net-listen`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
+| bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
 its netdev channels); netstack's loop never waits (its waiting calls are
-on `connect.c`'s thread); dns writes its calls to netstack without waiting
-and takes the answers off its port. dhcp, netlog, sntp and `bin/update`
-serve nobody, so they may block, always with a deadline. init's update
-check hashes on a worker thread, and `update -w`'s stick write runs on
-the same worker after it; its loop does only the `kexec_load` and
-`/esp`'s stat.
+on `connect.c`'s thread), and TCP's frames that find the card's ring full
+wait for the driver's room signal, not in the loop; dns writes its calls
+to netstack without waiting and takes the answers off its port. init
+gives netstack the static address the same way (`set_ipv4` and
+`set_dns` sent, their answers from its port), and doesn't wait for a
+stopped DHCP client to end. bin/serve serves every client from one wait
+set (file reads sent without waiting); asking netstack for a listener
+waits, so a thread of its own that serves nobody does it. dhcp, netlog,
+sntp, `bin/update`, `fetch` and `speed` serve nobody, so they may block,
+always with a deadline. init's update check hashes on a worker thread,
+and `update -w`'s stick write runs on the same worker after it; its loop
+does only the `kexec_load` and `/esp`'s stat.
 
 **Waiting on many sockets** (`user/include/netwait.h`, libos;
 [M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
@@ -1087,6 +1096,21 @@ one stays on it, so a wait costs the entries that are ready or were
 signalled, not all of them. Hung up (netstack's end of the channel closed,
 a stream closed) and errors are always reported. This is what M13's
 `poll`, `select` and `epoll` will be built on.
+
+**The programs on TCP** ([M9.5-PLAN](docs/M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed);
+the commands are in [README](README.md#the-network)). Each holds only
+what its job needs, because each parses what a stranger sends. `fetch`
+and `speed` are helpers of the shell's (`bin/fetch`, `bin/speed`): the
+shell opens what `fetch` writes into (a `.part` file, renamed once the
+body is whole, or a pipe) and gives it that and nothing else; both stop
+on Ctrl+C through the helper's stop channel and end with 130. `serve` is
+bin/serve, a service init starts and keeps (as the music player): the
+shell opens the file read-only and hands it over on `/svc/serve`, which
+only the shell holds, so the file server serves exactly the files it was
+given, never a path from a request, and needs no mount. HTTP is
+`<http.h>`'s, strict and bounded (a head at most 16 KiB and 64 lines,
+anything unclear refused rather than guessed at); `http://` only (no
+TLS).
 
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
 that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as

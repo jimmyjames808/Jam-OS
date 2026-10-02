@@ -27,7 +27,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
 | M8.6 | Cleanup and polish | done (PC 2026-10-02: `soak 10` passed (663 s on 28 CPUs, 4525 kernel tests and 17 utest runs, 0 FAILED) with the SanDisk mounted read-write; live `ktest` 248 passed and utest 117; `bench` in [BENCH.md](BENCH.md#m86-pc-2026-10-02)) |
 | M9 | Networking | under way: built and tested in QEMU; the review, then the PC sign-off ([below](#now-m9-networking)) |
-| M9.5 | Network streams: TCP and sockets on shared rings | later |
+| M9.5 | Network streams: TCP and sockets on shared rings | built and tested in QEMU ([below](#now-m9-networking)); its review, then the PC sign-off with M9's |
 | M11 | IOMMU | later |
 | M11.5 | Performance pass: the IPC fast path, a Linux column in BENCH.md | later |
 | M11.6 | Services that outlive their process | later |
@@ -90,6 +90,17 @@ is on the network since (the owner's call); "Jam OS (no network)" is
    VLAN 21 (without `net.address`), then the sign-off: All tests and
    `soak 10` with the SanDisk mounted read-write and pulled and
    replugged. Then M9 is done (HISTORY, the version 0.0.29-m9).
+
+**M9.5, network streams: built and tested in QEMU** (2026-10-02; the plan
+and what each track built: [M9.5-PLAN.md](M9.5-PLAN.md)): socket data on
+shared rings, TCP with stream sockets, wait sets over many sockets, the
+listen permission, fair shares with a reserve for the network's own
+services (netstack's and the resolver's), `sntp`, `fetch`, `serve` and
+`speed`; `tools/net-vlan-test.sh` runs the TCP paths too. Left: its
+independent review, then on the PC with M9's sign-off: `fetch` of a large
+file from the Mac and the Mac fetching a file the PC `serve`s, `speed`
+both ways (the numbers into [BENCH.md](BENCH.md)), the clock set by
+`sntp`, All tests and `soak 10`.
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
