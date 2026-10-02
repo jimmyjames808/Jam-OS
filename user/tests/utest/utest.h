@@ -228,6 +228,7 @@ bool t_netframe_tx_check(void);
 bool t_netframe_tag_copy_is_the_frame(void);
 bool t_netframe_rx(void);
 bool t_rtl8125_write_guard(void);
+bool t_rtl8125_txq_guard(void);
 bool t_rtl8125_tx_gate(void);
 bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);
@@ -235,6 +236,13 @@ bool t_rtl8125_stays_off(void);
 bool t_rtl8125_txdesc(void);
 bool t_rtl8125_kick(void);
 bool t_rtl8125_tx_verdict(void);
+
+/* rtlguard.c: drivers/rtl8125/guard.h, and guard.c (with regs.c, chip.c,
+ * tx.c) over a fake chip. */
+bool t_rtl8125_guard(void);
+bool t_rtl8125_dump(void);
+bool t_rtl8125_guard_fake(void);
+bool t_rtl8125_stats_nowait(void);
 
 /* rtlrx.c: drivers/rtl8125/rxdesc.h. */
 bool t_rtl8125_rxdesc(void);
@@ -300,6 +308,15 @@ bool t_sockring_stream(void);
 bool t_sockring_wake(void);
 bool t_sockring_hostile(void);
 bool t_sockring_exchange(void);
+
+/* netwait.c and netwaitrun.c: wait sets (<netwait.h>) over fake sockets
+ * (fakesock.c): the calls, timeouts, wakes and costs; a socket's life and
+ * plain handles; random traffic checked look by look against the rings;
+ * a fake netstack thread against the test blocking in the set. */
+bool t_netwait_api(void);
+bool t_netwait_states(void);
+bool t_netwait_level(void);
+bool t_netwait_stress(void);
 
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the

@@ -27,22 +27,28 @@
  *   f. bus mastering on, the rings (where they landed: 64-bit DMA), the
  *      bring-up (full mode: the transmit ring and enable, through tx.c),
  *      autonegotiation 10/100/1000/2500 without pause, the tally;
- *   g. the mode's run, on one MSI-X vector and the loop (loop.c);
+ *   g. the mode's run, on one MSI-X vector and the loop (loop.c), with
+ *      the guard's look at every step (guard.c): the chip's count of
+ *      frames sent against tx.c's, about once a second and after every
+ *      reap, and the link's PAUSE TX bit; a frame the driver didn't queue
+ *      or PAUSE TX stops the chip at once and ends the run;
  *   h. the tally again: the chip's count of frames sent against the
  *      driver's (0 for the probe), the plan's PAUSE check;
  *   i. receiver and transmitter off, the chip reset, bus mastering off,
  *      everything unpinned;
  *   j. one RESULTS line.
- * It always exits 0 (devmgr then leaves it finished): the probe and the
- * send test are run once, the netdev service ends only when devmgr stops
- * it, and the log says what went wrong. (A crash is restarted by devmgr
- * as usual.)
+ * It exits 0 (devmgr then leaves it finished): the probe and the send
+ * test are run once, the netdev service ends only when devmgr stops it,
+ * and the log says what went wrong. Only the guard's stop exits 1, so
+ * devmgr restarts it (backoff, and it gives up after 5 restarts in 60 s);
+ * a crash is restarted too, as usual.
  *
  * EVERY REGISTER THE DRIVER WRITES (offsets in BAR 2; rge's names):
  *   0x34 INT_CFG0     bit 0 cleared (the 8125B's interrupt type)
  *   0x37 CMD          0x80 stop request with the receive enable kept, then
  *                     the receive enable alone, 0x10 reset, then 0x08
- *                     (probe) or, from tx.c only, 0x0c (full mode)
+ *                     (probe) or, from tx.c only, 0x0c (full mode); 0
+ *                     when the guard stops the chip (guard.c)
  *   0x38 IMR          0, then the receive and link bits (probe), plus the
  *                     transmit bits (full mode)
  *   0x3c ISR          write-1-to-clear acknowledgements
@@ -80,7 +86,9 @@
  *   0x40 TXCFG        0x03000700
  *   0x57 TDFNR        0x10
  *   0x90 TXSTART      1: the doorbell
- * Never written: 0x28-0x2f (the high-priority ring), 0x00-0x05 (the
+ * Never written: 0x28-0x2f (the high-priority ring), the other transmit
+ * queues' ring addresses and tail and close pointers (0x2100, 0x2800,
+ * 0x0d30: notx.h refuses them; chip_txq_log reads them), 0x00-0x05 (the
  * address), 0xe0 CPLUSCMD, the CSI window, the MAC's and PHY's patch RAM,
  * and PCI config space. */
 #include "rtl8125.h"
@@ -149,6 +157,8 @@ static bool bring_up(struct rtl *t, struct outcome *o)
     if (chip_identify(t) != OK)
         return false;
     chip_read_mac(t);
+    if (t->mode == RTL_MODE_PROBE)
+        chip_txq_log(t, "before");   /* what the firmware left (reads only) */
     if (chip_reset(t) != OK)
         return false;
     o->reset = true;
@@ -177,6 +187,7 @@ static bool bring_up(struct rtl *t, struct outcome *o)
 static void finish(struct rtl *t, struct outcome *o)
 {
     if (t->rx_on) {
+        chip_txq_log(t, "at end");   /* full mode: queue 0's close pointer after N frames */
         if (t->mode == RTL_MODE_PROBE) {
             (void)census_harvest(t, false);
         } else {
@@ -184,6 +195,10 @@ static void finish(struct rtl *t, struct outcome *o)
             (void)tx_reap(t);
         }
         tally_at(t, "at end", &o->end, &o->end_ok);
+    } else if (t->tripped && t->dump.landed) {
+        o->end = t->tally_last;   /* the chip is reset: its last dump is the evidence */
+        o->end_ok = true;
+        tally_log("at the guard's stop", &o->end);
     }
     if (o->reset)
         (void)tally_tx_check(t, o, o->txcheck, sizeof(o->txcheck));   /* logged */
@@ -227,9 +242,10 @@ int driver_main(const struct driver_start *ds)
         sendtest_report(t, o);
     else if (o->reset)
         full_report(t, o);
-    drv_log("done in %lu ms: the chip reset, bus mastering %s, nothing pinned%s",
+    drv_log("done in %lu ms: the chip reset, bus mastering %s, nothing pinned%s%s",
             (unsigned long)((drv_clock_ns() - t->since) / NS_PER_MS),
             t->bus_master ? "STILL ON" : "off",
-            t->ring_pinned || t->buf_pinned || t->txbuf_pinned ? " (NOT)" : "");
-    return 0;
+            t->ring_pinned || t->buf_pinned || t->txbuf_pinned ? " (NOT)" : "",
+            t->tripped ? "; the guard stopped it: exit 1" : "");
+    return t->tripped ? 1 : 0;   /* devmgr restarts an error exit, and gives up on a loop */
 }

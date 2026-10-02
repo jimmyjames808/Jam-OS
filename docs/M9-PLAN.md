@@ -704,6 +704,22 @@ netstack` not is the driver's filter; `to netstack` growing but netstack's
 `off the ring` not is the ring or its wake; `into lwIP` growing with
 `buffers` climbing to 128 is a leak in netstack.
 
+#### After M9: failing closed and the other transmit queues
+
+M9.5's track F ([M9.5-PLAN](M9.5-PLAN.md#track-f-as-built)) built the
+review's design question A (the driver stops the chip and exits when its
+tally shows a frame it didn't queue or the link resolves to PAUSE TX,
+checked about once a second and after every reap instead of only at the
+exit), took `stats` off the loop (the last tally dump, never a wait) and
+prepared question C: the probe logs `txq before:`, `txq after
+bring-up:` and `txq at end:` (two lines each: the high-priority and
+queue 1 ring addresses at 0x28 and 0x2100, the tail and close pointers
+of queues 0 and 1 at 0x2800-0x2807, TXCFG's no-close bit 6, the doorbell
+at 0x90, MAC OCP 0xeb58, 0xe63e and 0xe614), and the guard already
+refuses writes to those queues' registers and the transmit-related OCP
+values. The lines to bring back from the next probe run, and what
+confirms each offset, are in that section.
+
 ### The PHY firmware patch
 
 Linux loads a "firmware patch" for the 8125B, `rtl_nic/rtl8125b-2.fw`

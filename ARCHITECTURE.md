@@ -737,9 +737,13 @@ untagged frame. The checks are pure functions in one header both use,
 mode and a valid VLAN). For the RTL8125, `tools/checknotx.sh` (in `make
 check`, self-tested) holds the transmit registers to `tx.c` and the gate
 to the top of every entry, and keeps the listen-only probe's files from
-calling it. At its exit the RTL8125 driver compares the chip's own count
-of frames sent with the frames it queued (`tx check:`): more sent than
-queued would mean the chip sent frames of its own. utest's `netframe_*`
+calling it. While it runs, about once a second and after every reap, the
+RTL8125 driver compares the chip's own count of frames sent with the
+frames it queued; more sent than queued (frames of the chip's own), or a
+link that resolved to sending PAUSE, turns the transmitter off, resets
+the chip and ends the driver with an error, fail closed
+(`drivers/rtl8125/guard.c`); the same comparison is logged at its exit
+(`tx check:`). utest's `netframe_*`
 tests try every length, tag and edit. In QEMU two separate checks look at
 every frame the guest sends, `tools/netpeer.py` and
 `tools/pcap-vlan-check.py`, and `tools/net-vlan-test.sh` runs every path
@@ -910,6 +914,21 @@ and takes the answers off its port. dhcp, netlog, sntp and `bin/update`
 serve nobody, so they may block, always with a deadline. init's update check
 hashes on a worker thread; its loop does only the `kexec_load` and
 `/esp`'s stat.
+
+**Waiting on many sockets** (`user/include/netwait.h`, libos;
+[M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
+A wait set is one port with up to 256 entries: sockets (their rings,
+`to_prog` event and channel) and any other handle, each with an interest
+(read, write). `netwait_wait` returns the ready entries. Readiness is
+computed from the socket's rings and status line whenever the set looks,
+never from signal bits, so the set is level-triggered and a coalesced or
+early signal can't lose a wake: a signal only says which entry to look
+at. An entry that is not ready is armed (its event's bits cleared, the
+rings' `waits` flags raised, one more look) and leaves the list; a ready
+one stays on it, so a wait costs the entries that are ready or were
+signalled, not all of them. Hung up (netstack's end of the channel closed,
+a stream closed) and errors are always reported. This is what M13's
+`poll`, `select` and `epoll` will be built on.
 
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
 that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
