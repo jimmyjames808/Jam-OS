@@ -123,6 +123,11 @@ kernel log ring and the block cache for the slow `/esp` read. The first
 ones below are the design questions M8 left open
 ([its review](history/M8-REVIEW.md) has the details):
 
+- **Signed updates** (the owner, 2026-10-02: unsigned in M9, signed
+  later): M9's `update` checks hashes against the Mac's manifest, which
+  catches damage but not a device on VLAN 21 posing as the Mac. Later: an
+  Ed25519 key kept on the Mac (Monocypher), its public half in the image,
+  the manifest's signature field filled and checked by init.
 - **GPT sticks** are not read (their partitions are not mounted).
 - devmgr and init are single-threaded loops that wait inside a
   request: devmgr up to 2 s per call to a usb-storage, 5 s for a

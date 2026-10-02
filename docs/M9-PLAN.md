@@ -65,6 +65,11 @@ the Mac's "Private Wi-Fi address" set to Fixed keep it from changing).
    public half built into each image; the PC refuses an update the key
    didn't sign. Costs one small vendored library (Monocypher, BSD-2 or
    CC0).
+   **The owner (2026-10-02): unsigned for now**, signing later. M9's
+   `update` checks the manifest's sizes and SHA-256s (damage in transit),
+   not who sent them; `update` runs only when the owner types it. The
+   protocol keeps a place for a signature so signing can be added without
+   changing it (ROADMAP follow-up).
 4. **Does `update` survive a power-off?** *Recommendation:* no. It
    replaces the stored kernel in RAM (the one `reboot` and a panic
    start), never the stick: the ESP stays read-only to Jam OS. `make
@@ -451,13 +456,13 @@ gets a process that holds almost nothing.
 - **On the Mac:** `make` as always, then tools/update-server.py (new),
   left running. It serves `build/jamos.elf` and `build/bootfs.img` and
   a manifest: a format line, the build's version string and git hash,
-  and each file's size and SHA-256, signed with the update key
-  (question 3). It snapshots the files when the manifest is asked for,
-  so a `make` running meanwhile can't mix two builds. A small host tool
-  built from the same vendored Monocypher makes the key once
-  (~/.config/jamos/, outside the repo) and signs; the public half goes
-  into the image. A build without a key works, and its `update` says
-  so and refuses.
+  and each file's size and SHA-256 (unsigned in M9, the owner's
+  decision; the manifest keeps a signature field, empty for now). It
+  snapshots the files when the manifest is asked for,
+  so a `make` running meanwhile can't mix two builds. (Later, with
+  signing: a host tool built from vendored Monocypher makes a key once in
+  ~/.config/jamos/, outside the repo, signs each manifest, and the public
+  half goes into the image.)
 - **The protocol** (own, over UDP, port 5022 planned): stateless. A
   request names the snapshot, the file (manifest, kernel, boot image), an
   offset and a length (at most 1400 bytes); the reply carries the same
@@ -466,7 +471,7 @@ gets a process that holds almost nothing.
   server keeps no state per client. Chosen over TFTP, which has
   lock-step blocks, extensions for speed and retransmission rules to get
   right, and over HTTP, which needs TCP (question 6); the Mac side is a
-  script of ours either way, since it must sign.
+  script of ours either way (and must sign, later).
 - **On the PC:** `update` in the shell asks init (`initctl.update`, a
   `later` method: init's loop goes on serving). init starts
   `bin/update`, the fetcher, with `/svc/net`, the server's address and
@@ -474,8 +479,9 @@ gets a process that holds almost nothing.
   no power. The fetcher fills two VMOs (each at most 32 MiB, the stored
   kernel's region) and sends them and the manifest to init. **init
   checks**: it copies both into VMOs only it holds (so the fetcher can't
-  change them after the check), checks the signature with the key built
-  into the image, the sizes and both SHA-256s, then calls `kexec_load`
+  change them after the check), checks the sizes and both SHA-256s
+  against the manifest (a signature too, once signing comes), then calls
+  `kexec_load`
   (which init alone may) with the new kernel, the new boot image and this
   boot's command line. It notes `/esp`'s files as seen, so the `reboot`
   that follows keeps the fetched build instead of reloading the stick's.
@@ -497,7 +503,7 @@ gets a process that holds almost nothing.
 | dns | `/svc/net`; its `/svc/dns` server end | yes (DNS replies) |
 | netlog | a klog reader, `/svc/net` | the Mac's acks |
 | bin/update | `/svc/net`, a channel to init | yes (fetch replies) |
-| init | gains: the signature check and `kexec_load` of a fetched build | no: checks bytes it copied, against a signature |
+| init | gains: the hash check and `kexec_load` of a fetched build | no: checks bytes it copied, against the manifest |
 
 init makes every one of these services' channels once and keeps their
 server ends across restarts, as for the mixer
@@ -520,7 +526,7 @@ touches a USB disk and never starts agents of its own.
 | **4. Sockets** | S | net.idl and the socket channels, `/svc/net` (per opener, limits), `ping`, `net`, the settings keys, `svc net` in lists; tools/shell-tests/net.txt: `ping 1.1.1.1` in QEMU | abi/idl/net.idl, netstack's client side, `user/include/os.h` (the name), `tools/checkwants.py`, the shell's net and ping commands | 2, 3 |
 | **5. DHCP and DNS** | F | dhcp, dns, dns.idl, `/svc/dns`, `host`, `ping <name>`; the peer's DHCP and DNS (and its slow name); the slow-peer test (DNS, netstack, the driver's ring) | user/services/dhcp/, user/services/dns/, abi/idl/dns.idl, the shell's host command, the peer's DHCP and DNS parts | 4 |
 | **6. netlog** | G | netlog, the crash log stream, tools/netlog-recv.py; a QEMU test that the whole log arrives, from its first line, with the receiver started late and paused | user/services/netlog/, tools/netlog-recv.py, a netlog scenario in tools/net-test.sh | 4 |
-| **7. update** | H | Monocypher vendored; the key and signing host tool; tools/update-server.py; bin/update; `initctl.update` and init's check (planned user/services/init/update.c); the shell's `update`; a QEMU test: build A boots, the peer serves build B (another version string), `update` runs it by kexec; a bad signature, a bad hash and a truncated file are refused with the running build untouched | third_party/monocypher/, the host tool, tools/update-server.py, user/services/update/, `abi/idl/initctl.idl` (one method), init's update file, the shell's update command, tools/update-test.sh | 4 |
+| **7. update** | H | tools/update-server.py; bin/update; `initctl.update` and init's check (planned user/services/init/update.c); the shell's `update`; a QEMU test: build A boots, the peer serves build B (another version string), `update` runs it by kexec; a bad hash, a wrong size and a truncated file are refused with the running build untouched | tools/update-server.py, user/services/update/, `abi/idl/initctl.idl` (one method), init's update file, the shell's update command, tools/update-test.sh | 4 |
 | **R1. RTL8125, full** | R | the transmit path (copy and tag), interrupts, link changes, the netdev server, tally counters, `netprobe` and its boot entry; tested on the PC only | drivers/rtl8125/, `boot/limine.conf` (the entry) | 0's PC run and the port answer; 1; 2 as the model |
 | **8. The join** | J | one QEMU run with every path that transmits (DHCP, DNS, ping, netlog, update's fetch) whose pcap has no frame but VLAN 21's, and the `vlan=off` run with none at all (tools/net-vlan-test.sh); the docs: ARCHITECTURE's Networking (what was built), the services table, the layers; README (commands, tools); HARDWARE (the port, the chip, the Mac's address) | tools/net-vlan-test.sh, the docs | all above |
 | **9. Review and fix** | | the independent review-and-fix agent over all of M9 (the standing rule): findings listed first, then High and Medium fixed one commit each with a test; the VLAN rule and the parsers first | whatever its findings touch | 8 |
@@ -550,8 +556,7 @@ run passes, 8, 9.
   service table conflict only trivially.
 - **The shell's command table**: 4 (net, ping), 5 (host), 7 (update).
 - **`user/include/os.h`**: 4 (net), 5 (dns).
-- **The Makefile**: lwIP (3), Monocypher and the host tool (7), the two
-  drivers and four services.
+- **The Makefile**: lwIP (3), the two drivers and four services.
 - **tools/net-test.sh and the peer**: 1 makes the peer, 2 makes the
   script; 5, 6, 7 each add a scenario and their part of the peer.
 
@@ -567,7 +572,7 @@ run passes, 8, 9.
 | `ping 1.1.1.1` (the peer answers), DHCP lease, DNS | tools/shell-tests/net.txt |
 | The slow-peer test | tools/net-test.sh `slow` |
 | netlog: the whole log, from its first line, with the receiver late | tools/net-test.sh `netlog` |
-| update: the new build runs; a bad signature, hash or length is refused | tools/update-test.sh |
+| update: the new build runs; a bad hash or length is refused | tools/update-test.sh |
 | A driver or netstack killed and restarted: the other reconnects, the address comes back | tools/net-test.sh `restart` |
 
 The existing suites keep passing with `-nic none` (stage 1 checks).
@@ -603,4 +608,3 @@ In order; the owner flashes with `make flash` each time:
 | `rtl8125b-2.fw` (linux-firmware) | `LICENCE.rtl_nic`: redistribution with the notice, no source | not used |
 | Intel 82574 datasheet | public | the e1000e driver |
 | lwIP 2.2.x | BSD-3-Clause | netstack |
-| Monocypher 4.x | BSD-2-Clause or CC0 | `update`'s signatures (question 3) |
