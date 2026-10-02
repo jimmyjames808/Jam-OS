@@ -141,9 +141,9 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         fails.append("%s: the channels differ" % name)
     # The stopped one is the capture's last sound: what follows it is only
     # how long the output stayed open after its fade drained (0 to about
-    # a period, 42.7 ms), so any silence at all will do; its fade is
-    # checked below.
-    if after < (1 if name == "long" else 2400):
+    # a period, 42.7 ms), so it may be none at all; that it ended in its
+    # fade, not cut off, is checked below.
+    if name != "long" and after < 2400:
         fails.append("%s: only %d frames of silence after it" % (name, after))
     # No click: no step between samples bigger than the sine's own.
     jump = max(abs(x[k + 1] - x[k]) for x in (l, r) for k in range(len(x) - 1))
@@ -155,6 +155,11 @@ for (a, b), (name, ms, hl, hr, mono) in zip(segs, want):
         endp = max(abs(v) for v in l[-48:])
         if endp > 0.5 * peaks[name]:
             fails.append("long: no fade: its last 1 ms reaches %d of %d" % (endp, peaks[name]))
+        # Its last sample is the fade's end (a 240th of the tone or less),
+        # not the tone cut off when the capture stopped.
+        endv = max(abs(l[-1]), abs(r[-1]))
+        if endv > 0.02 * peaks[name]:
+            fails.append("long: cut off at %d of %d, not faded to nothing" % (endv, peaks[name]))
 # -v -20 played x24's stream at -20 dB in the mixer (Q15 3277: a tenth),
 # the device at its -30 dB like the others.
 ratio = peaks["x24"] / float(peaks["s48"])

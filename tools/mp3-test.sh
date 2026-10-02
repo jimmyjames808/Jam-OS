@@ -183,8 +183,9 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
     if mono and l != r:
         fails.append("%s: the channels differ" % name)
     # long is the capture's last sound, stopped by Ctrl+C: what follows it is
-    # only how long the output stayed open after its fade (0 to a period).
-    if after < (1 if name == "long" else 2400):
+    # only how long the output stayed open after its fade (0 to a period,
+    # so maybe none); that it ended in its fade is checked below.
+    if name != "long" and after < 2400:
         fails.append("%s: only %d frames of silence after it" % (name, after))
     if peak < 2000:
         fails.append("%s: peak %d, too quiet for a quarter-scale tone at -30 dB" % (name, peak))
@@ -200,6 +201,11 @@ for idx, ((a, b), (name, lo, hi, hl, hr, mono, clicks)) in enumerate(zip(segs, w
         endp = max(abs(v) for v in l[-48:])
         if endp > 0.5 * peak:
             fails.append("long: no fade: its last 1 ms reaches %d of %d" % (endp, peak))
+        # Its last sample is the fade's end (a 240th of the tone or less),
+        # not the tone cut off when the capture stopped.
+        endv = max(abs(l[-1]), abs(r[-1]))
+        if endv > 0.02 * peak:
+            fails.append("long: cut off at %d of %d, not faded to nothing" % (endv, peak))
 if fails:
     sys.exit("mp3: " + "; ".join(fails))
 PY
