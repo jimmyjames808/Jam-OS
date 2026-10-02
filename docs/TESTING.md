@@ -52,7 +52,9 @@ that a bug fix comes with a test is in
   register; the transmitter enable bit is named only in `notx.h` and
   `tx.c`; every function `tx.c` gives other files starts with the gate,
   which is "full mode and a valid VLAN"; the probe's files call nothing of
-  `tx.c`; the mode and the VLAN are set once, in `main.c`. It checks each
+  `tx.c`; the mode and the VLAN are set once, in `main.c`; the registers'
+  mapping is named only in `regs.c`, `tx.c` and `main.c`, the transmit
+  ring and buffers only in `tx.c`, `ring.c` and the header. It checks each
   rule against `tools/checknotx-tests/` first, counting its offences
   there); and the network test peer and the pcap check pass their own
   self-tests on the host (`tools/netpeer.py --selftest`,
