@@ -227,6 +227,9 @@ void     net_settings(void);
 void     net_devmgr_gone(void);
 /* netstack is given up on: calls waiting for it fail now. */
 void     net_given_up(void);
+/* /svc/net's shared channel, client end (init's: services.c publishes a
+ * duplicate), or 0. */
+handle_t net_svc_channel(void);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 

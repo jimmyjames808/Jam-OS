@@ -117,6 +117,48 @@ void     stack_clear(void);
 void     stack_get(struct stack_state *out);
 void     stack_get_counts(struct stack_counts *out);
 
+/* ---- programs' UDP sockets and pings (sock.c, clients.c) ---------------------- */
+
+#define STACK_UDP_MAX 1472u   /* bytes of a datagram: one frame, never fragmented */
+
+/* An lwIP UDP socket, opaque outside stack.c. */
+struct stack_udp;
+
+/* Where every socket's datagrams go: ctx is the socket's (stack_udp_open),
+ * the bytes are stack.c's (copy them before returning). Called from inside
+ * stack_input. */
+extern void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const uint8_t *data,
+                               size_t len);
+/* A UDP socket on `port` (0: lwIP picks one from 49152 up), any local
+ * address. bcast: it may send and receive broadcasts (the DHCP socket
+ * only; any other gets lwIP's refusal of both). ERR_ALREADY_BOUND: the
+ * port is taken; ERR_NO_RESOURCES: lwIP's sockets are all in use;
+ * ERR_BAD_STATE: no stack_start. */
+status_t stack_udp_open(uint16_t port, bool bcast, void *ctx, struct stack_udp **out,
+                        uint16_t *out_port);
+void     stack_udp_close(struct stack_udp *u);
+/* Send len bytes (at most STACK_UDP_MAX) to to:port. on_link: out of the
+ * interface without a route, from its address or 0.0.0.0 while it has
+ * none (the DHCP socket's broadcasts). The caller checked `to`.
+ * ERR_BAD_STATE: no address, no route or the link down; ERR_NO_MEMORY:
+ * lwIP's heap is full; ERR_NO_RESOURCES: the device refused the frame;
+ * ERR_INVALID_ARGS: too long, or a broadcast from a socket without bcast. */
+status_t stack_udp_send(struct stack_udp *u, uint32_t to, uint16_t port, const void *data,
+                        size_t len, bool on_link);
+
+/* Where echo replies go (NULL: lwIP's own handling): from the peer that
+ * was pinged, the request's id and seq, the reply's TTL and data bytes; or
+ * unreachable (ttl and len 0): an ICMP destination unreachable carrying
+ * our echo request to `peer`. Called from inside stack_input; a reply that
+ * is not an intact echo reply (or unreachable about an echo) goes on to
+ * lwIP, which drops it. */
+extern void (*stack_echo_input)(uint32_t peer, uint16_t id, uint16_t seq, uint8_t ttl,
+                                size_t len, bool unreachable);
+/* An echo request (8 bytes of header, `size` of data) to `to`.
+ * ERR_BAD_STATE: no address, no route or the link down; ERR_NO_MEMORY:
+ * lwIP's heap is full; ERR_NO_RESOURCES: the device refused the frame. */
+status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
+
 /* ---- port/sys_arch.c --------------------------------------------------------- */
 
 /* A line to the log, "netstack: " in front, rate-limited with lwIP's

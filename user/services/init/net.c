@@ -11,9 +11,12 @@
  *             both ends, as for the mixer, so a restarted netstack serves
  *             the same channel; it is never published: init uses its
  *             client end for the static address, and the DHCP client
- *             (planned) gets a duplicate. netstack ends when devmgr does
- *             (its device channels close) and is started again with the
- *             new devmgr's.
+ *             (planned) gets a duplicate. Also the server end of
+ *             /svc/net's shared channel (SR_USER + 1, abi/idl/net.idl),
+ *             made once and kept the same way; services.c publishes its
+ *             client end (a channel per opener). netstack ends when devmgr
+ *             does (its device channels close) and is started again with
+ *             the new devmgr's.
  *
  * The address: `net.address` in /data/etc/settings (<ipv4.h>
  * ipv4_config_parse: "10.2.21.50/24 10.2.21.1 10.2.21.1": address/prefix,
@@ -29,11 +32,19 @@
 #define CALL_WAIT NS_PER_S
 
 static handle_t ctl_srv, ctl_cli;   /* netctl's two ends, made once (0: none, or given up) */
+static handle_t net_srv, net_cli;   /* /svc/net's two ends, the same */
 
 void net_init(void)
 {
     if (jam_channel_create(&ctl_cli, &ctl_srv) != OK)
         ctl_cli = ctl_srv = HANDLE_INVALID;
+    if (jam_channel_create(&net_cli, &net_srv) != OK)
+        net_cli = net_srv = HANDLE_INVALID;
+}
+
+handle_t net_svc_channel(void)
+{
+    return net_cli;
 }
 
 status_t net_start(void)
@@ -47,14 +58,18 @@ status_t net_start(void)
         svcs[NETSTACK].given_up = true;
         return OK;
     }
-    struct spawn_handle x[1 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[2 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID },
+                                                    { SR_USER + 1, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
+    unsigned n = 1;
+    if (net_srv && jam_handle_duplicate(net_srv, RIGHT_SAME, &x[1].h) == OK)
+        n++;   /* without it netstack serves no program: said in its log */
     handle_t cards[INIT_MAX_CLAIMED];
-    unsigned n = services_net_devices(cards, INIT_MAX_CLAIMED);
-    for (unsigned k = 0; k < n; k++)
-        x[1 + k] = (struct spawn_handle){ SR_DEVMGR_DEVICE, cards[k] };
-    return svc_start1(NETSTACK, x, 1 + n);   /* consumes them */
+    unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
+    for (unsigned k = 0; k < nc; k++)
+        x[n + k] = (struct spawn_handle){ SR_DEVMGR_DEVICE, cards[k] };
+    return svc_start1(NETSTACK, x, n + nc);   /* consumes them */
 }
 
 void net_settings(void)
@@ -90,5 +105,7 @@ void net_given_up(void)
 {
     if (ctl_srv)
         jam_handle_close(ctl_srv);   /* calls waiting for a netstack fail now */
-    ctl_srv = HANDLE_INVALID;
+    if (net_srv)
+        jam_handle_close(net_srv);
+    ctl_srv = net_srv = HANDLE_INVALID;
 }

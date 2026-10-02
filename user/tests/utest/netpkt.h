@@ -42,6 +42,13 @@ size_t pkt_echo(uint8_t *f, const uint8_t *src_mac, uint32_t src, uint32_t dst, 
                 size_t data);
 /* A UDP datagram from the peer to our port `dport` (checksum 0: none). */
 size_t pkt_udp(uint8_t *f, uint32_t dport, size_t data);
+/* A UDP datagram from src:sport (src_mac) to dst:dport (our MAC, or the
+ * broadcast MAC for 255.255.255.255) with len bytes of data, checksum 0. */
+size_t pkt_udp_from(uint8_t *f, const uint8_t *src_mac, uint32_t src, uint32_t sport,
+                    uint32_t dst, uint32_t dport, const void *data, size_t len);
+/* The peer's echo reply to our echo request `req` (icmp_len bytes of ICMP
+ * after a 20-byte IP header), to OUR_IP from the address req went to. */
+size_t pkt_echo_reply_to(uint8_t *f, const uint8_t *req, size_t icmp_len);
 
 /* Frame f (n bytes) as netstack must send it: untagged, 60..1514 bytes,
  * from our MAC. */

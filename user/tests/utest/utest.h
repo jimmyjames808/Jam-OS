@@ -255,6 +255,16 @@ bool t_ipv4_text(void);
 bool t_netdrv_ping_and_link(void);
 bool t_netdrv_restart(void);
 bool t_netdrv_hostile_driver(void);
+/* netsock.c: programs' sockets and pings on /svc/net, through bin/netstack
+ * over netdrv.c's fake driver; netabuse.c: its limits, hostile programs,
+ * a slow reader, netctl's DHCP socket. */
+bool t_netsock_udp(void);
+bool t_netsock_ping(void);
+bool t_netsock_iface(void);
+bool t_netsock_limits(void);
+bool t_netsock_hostile(void);
+bool t_netsock_slow_reader(void);
+bool t_netsock_dhcp(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

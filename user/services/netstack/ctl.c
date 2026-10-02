@@ -3,13 +3,29 @@
  * Each request is checked before anything changes (fail closed: an
  * address that can't be a host's is refused, not "fixed"), answered at
  * once (nothing here waits), and a change is logged once, as a state
- * change (never per request that changes nothing). */
+ * change (never per request that changes nothing); /svc/net's waiters
+ * hear of it through ctl_changed. dhcp_open hands out the DHCP client's
+ * socket (sock.c), the only one that may broadcast. */
 #include <idl/netctl.h>
 #include "ctl.h"
 
 static uint32_t dns[2];   /* the DNS servers set, 0: none */
 
 void (*ctl_device_report)(struct dev_report *out);
+void (*ctl_changed)(void);
+status_t (*ctl_dhcp_open)(handle_t *out);
+
+static void changed(void)
+{
+    if (ctl_changed)
+        ctl_changed();
+}
+
+void ctl_dns(uint32_t out[2])
+{
+    out[0] = dns[0];
+    out[1] = dns[1];
+}
 
 bool ctl_unicast(uint32_t a)
 {
@@ -53,6 +69,7 @@ static status_t op_set_ipv4(void *ctx, uint32_t address, uint32_t mask, uint32_t
     if (s.ip.address == address && s.ip.mask == mask && s.ip.gateway == gateway)
         return OK;
     stack_set_ipv4(&ip);
+    changed();
     char a[16], g[16];
     nstack_log("address %s/%u, gateway %s", ctl_fmt_ip(a, address), prefix_len(mask),
                gateway ? ctl_fmt_ip(g, gateway) : "none");
@@ -68,6 +85,7 @@ static status_t op_set_dns(void *ctx, uint32_t first, uint32_t second)
         return OK;
     dns[0] = first;
     dns[1] = second;
+    changed();
     char a[16], b[16];
     nstack_log("DNS servers %s, %s", first ? ctl_fmt_ip(a, first) : "none",
                second ? ctl_fmt_ip(b, second) : "none");
@@ -82,8 +100,10 @@ static status_t op_clear(void *ctx)
     bool had = s.ip.address || dns[0] || dns[1];
     stack_clear();
     dns[0] = dns[1] = 0;
-    if (had)
-        nstack_log("address and DNS servers cleared");
+    if (!had)
+        return OK;
+    changed();
+    nstack_log("address and DNS servers cleared");
     return OK;
 }
 
@@ -154,6 +174,12 @@ static status_t op_device(void *ctx, uint8_t *out_session, uint16_t *out_vlan,
     return OK;
 }
 
+static status_t op_dhcp_open(void *ctx, handle_t *out_socket)
+{
+    (void)ctx;
+    return ctl_dhcp_open ? ctl_dhcp_open(out_socket) : ERR_NOT_SUPPORTED;
+}
+
 static const struct netctl_ops ops = {
     .set_ipv4 = op_set_ipv4,
     .set_dns = op_set_dns,
@@ -161,6 +187,7 @@ static const struct netctl_ops ops = {
     .info = op_info,
     .stats = op_stats,
     .device = op_device,
+    .dhcp_open = op_dhcp_open,
 };
 
 status_t ctl_serve(handle_t ch)
