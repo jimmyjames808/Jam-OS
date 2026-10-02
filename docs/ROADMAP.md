@@ -44,9 +44,10 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 
 ## Now: M9, networking
 
-The row below has the goal. First the plan (docs/M9-PLAN.md), with the
-owner, before any code: the NIC's driver, the netdev rings, netstack,
-VLAN 21 below the IP stack, netlog and `update`.
+The row below has the goal. First the plan, with the owner, before any
+code: [M9-PLAN.md](M9-PLAN.md) (the NIC's driver, the netdev rings,
+netstack, VLAN 21 enforced in the NIC's driver, netlog and `update`; its
+questions for the owner come first).
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
