@@ -1,0 +1,23 @@
+# local.mk: this machine's build settings. Copy this file to local.mk at
+# the top of the tree (git ignores local.mk) and change it there; the
+# Makefile reads it if it is there.
+#
+# JAMOS_VLAN: the network's default mode, what a boot with no `vlan=` word
+# does (ARCHITECTURE.md "Networking"):
+#   none     plain untagged Ethernet: frames go out without a VLAN tag,
+#            and only untagged frames are taken in (the default without a
+#            local.mk: an ordinary home or office network);
+#   1..4094  every frame sent is tagged 802.1Q with that VLAN, and only
+#            frames tagged with it are taken in (a switch port that
+#            carries the VLAN tagged, a trunk).
+# Every `make` says which it built ("network default: VLAN 21
+# (local.mk)"), and build.txt in the boot image records it ("net
+# vlan21"). A boot word still overrides it: `vlan=<id>`, `vlan=none`, or
+# `vlan=off` (the network off). `update` refuses a build whose default
+# differs from the running one's unless given -f, and `make flash` asks
+# before it writes an untagged build.
+#
+# The owner's PC is on a trunk port and lives on VLAN 21
+# (docs/HARDWARE.md "The network"), so his local.mk says
+# `JAMOS_VLAN := 21`. As copied, this file changes nothing:
+JAMOS_VLAN := none

@@ -43,9 +43,12 @@ static const char *const kept_words[] = {
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=" };
 
 /* A `vlan` word, well-formed or not ("vlan", "vlan=", "vlan=off",
- * "vlan=21"): all are kept, and first, so a reboot, a panic and `update`
- * come back on the same VLAN, and a boot with no VLAN never comes back
- * on the default one because its word was dropped or didn't fit.
+ * "vlan=none", "vlan=21"): all are kept, and first, so a reboot, a panic
+ * and `update` come back in the same network mode, and a boot with the
+ * network off or untagged never comes back in the build's default mode
+ * because its word was dropped or didn't fit. (A boot with no word comes
+ * back in the next build's default: init's update check refuses a build
+ * whose default differs, unless forced.)
  * (`netprobe` and `netsend` are not kept: the listen-only probe and the
  * send test run only when their boot entry is picked.) */
 static bool vlan_word(const char *w, size_t n)

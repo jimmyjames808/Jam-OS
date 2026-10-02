@@ -15,6 +15,41 @@ OBJDUMP := $(CROSS)objdump
 # boot menu's "All tests" and "Benchmark" entries need the default KTESTS=1.
 KTESTS  ?= 1
 BUILD   := $(if $(filter 0,$(KTESTS)),build/noktests,build)
+
+# The network's default mode (ARCHITECTURE.md "Networking"): what a boot
+# with no `vlan=` word does. A build of the public tree sends plain
+# untagged Ethernet; a network that needs a VLAN sets JAMOS_VLAN in a
+# local.mk at the top of the tree (git-ignored; local.mk.example shows
+# how), e.g. `JAMOS_VLAN := 21`, or on the command line
+# (`make JAMOS_VLAN=21`). `none` (or `untagged`) is untagged; anything but
+# that or a VLAN id 1..4094 stops the build. The environment is not asked:
+# an exported JAMOS_VLAN nobody remembers must not change a build.
+-include local.mk
+NET_ORIGIN := $(origin JAMOS_VLAN)
+ifeq ($(NET_ORIGIN),undefined)
+JAMOS_VLAN := none
+NET_FROM   := $(if $(wildcard local.mk),local.mk sets no JAMOS_VLAN,no local.mk)
+else ifeq ($(NET_ORIGIN),file)
+NET_FROM   := local.mk
+else ifeq ($(NET_ORIGIN),command line)
+NET_FROM   := make command line
+else
+$(error JAMOS_VLAN comes from local.mk or the make command line, not the $(NET_ORIGIN))
+endif
+ifneq ($(filter none untagged,$(strip $(JAMOS_VLAN))),)
+NET_DEFAULT := CMDLINE_VLAN_UNTAGGED
+NET_TEXT    := net untagged
+NET_SAY     := untagged
+else
+NET_ID := $(shell n='$(strip $(subst ',,$(JAMOS_VLAN)))'; case "$$n" in ''|0*|*[!0-9]*) ;; \
+            *) [ "$$n" -le 4094 ] 2>/dev/null && echo "$$n" ;; esac)
+ifeq ($(NET_ID),)
+$(error JAMOS_VLAN must be none or a VLAN id 1..4094, not "$(JAMOS_VLAN)" ($(NET_FROM)))
+endif
+NET_DEFAULT := $(NET_ID)
+NET_TEXT    := net vlan$(NET_ID)
+NET_SAY     := VLAN $(NET_ID)
+endif
 KERNEL  := $(BUILD)/jamos.elf
 IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
@@ -51,6 +86,8 @@ endif
 S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
+NET_STAMP := $(BUILD)/net-default.txt
+
 # Drivers (the rules are further down, after the user programs'): every
 # drivers/<name>/*.c, and every test driver's drivers/test/<name>/*.c, is
 # the program drv/<name> in bootfs (libos + user/lib/driver_user.c).
@@ -65,6 +102,16 @@ endif
 .PHONY: all image run debug clean font usb flash syscalls idl check compdb includes FORCE
 
 all: $(KERNEL) $(BOOTFS)
+
+# kernel/main.c gets the network's default (JAMOS_NET_DEFAULT, above) and
+# is built again whenever it changes: the stamp is rewritten only then.
+# Every build says which default it has.
+$(BUILD)/kernel/main.o: CFLAGS += -DJAMOS_NET_DEFAULT=$(NET_DEFAULT)
+$(BUILD)/kernel/main.o: $(NET_STAMP)
+$(NET_STAMP): FORCE
+	@mkdir -p $(BUILD)
+	@echo "network default: $(NET_SAY) ($(NET_FROM))"
+	@echo "$(NET_TEXT)" > $@.new; if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 
 # System call glue. tools/gensyscalls.py turns abi/syscalls.def into the
 # numbers, the kernel dispatch table and the user wrappers. The output is
@@ -399,14 +446,16 @@ boot/splash.mpg: $(SPLASH_FILES)
 
 # build.txt in bootfs: the git commit the build was made from ("git
 # 2079f35", "-dirty" when tracked files had changes), which `version` and
-# `update` show and tools/update-server.py puts in the manifest. Written
-# again only when it changes, so an unchanged tree packs nothing anew.
+# `update` show and tools/update-server.py puts in the manifest, then the
+# network's default mode ("net vlan21", "net untagged"), which init's
+# update check and tools/flash-usb.sh read. Written again only when it
+# changes, so an unchanged tree packs nothing anew.
 BUILD_INFO := $(BUILD)/build.txt
-$(BUILD_INFO): FORCE
+$(BUILD_INFO): $(NET_STAMP) FORCE
 	@mkdir -p $(BUILD)
 	@h=$$(git rev-parse --short=7 HEAD 2>/dev/null) || h=0000000; \
 	 [ $$h = 0000000 ] || git diff --quiet HEAD -- 2>/dev/null || h=$$h-dirty; \
-	 printf 'git %s\n' "$$h" > $@.new; \
+	 printf 'git %s\n%s\n' "$$h" "$(NET_TEXT)" > $@.new; \
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 FORCE:
 
