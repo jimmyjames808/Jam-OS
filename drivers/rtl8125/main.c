@@ -72,7 +72,8 @@
  *   0xb8 PHYOCP       the PHY's window: a466, a468 (out of band exit),
  *                     a436 (the index to read the patch version), a428,
  *                     a5ea, a5d4 (2500 advertised), and the MII BMCR,
- *                     ANAR (pause bits cleared) and GTCR; and the read index
+ *                     ANAR (pause bits cleared) and GTCR (1000 advertised,
+ *                     test mode off); and the read index
  * and in full mode only, from tx.c only (notx.h):
  *   0x20, 0x24 TXDESC the transmit ring's address
  *   0x40 TXCFG        0x03000700

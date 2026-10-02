@@ -156,6 +156,7 @@
 #define ANAR_PAUSE_ASYM 0x0800u   /* asymmetric pause: never advertised */
 #define GTCR_1000_HDX   0x0100u
 #define GTCR_1000_FDX   0x0200u
+#define GTCR_TEST_MODE  0xe000u   /* 802.3 40.5.1.1: test modes 1-4 (0: normal) */
 
 /* PHY OCP registers (rge) */
 #define PHY_ADV_2500    0xa5d4    /* bit 7: advertise 2500BASE-T */
