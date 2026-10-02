@@ -39,6 +39,42 @@ static status_t edited(const char *from, const char *to, struct update_manifest 
     return update_manifest_parse(text, strlen(text), m);
 }
 
+/* Extension lines (a later build's): skipped wherever format 2 allows
+ * them, and still inside what the signature covers; the format's own
+ * lines read as before. */
+static bool manifest_extensions(void)
+{
+    struct update_manifest m;
+    CHECK_ST(edited("jamos-update 2\n", "jamos-update 2\nchannel nightly builds\n", &m), OK);
+    CHECK(!strcmp(m.version, "0.0.29-m9"));
+    CHECK_ST(edited("signature\n", "min-ram 2048\nreboot\nsignature\n", &m), OK);
+    CHECK_EQ(m.signed_len,
+             strlen(golden) - strlen("signature\n") + strlen("min-ram 2048\nreboot\n"));
+    CHECK_EQ(m.file[UPDATE_BOOTFS].size, 5);
+    static const char every[] =
+        "jamos-update 2\na 1\nversion 0.0.29-m9\nb ~!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}\n"
+        "git abcdef0-dirty\nc\nnet vlan21\nd x y z\n"
+        "kernel 10 e444dff1ba68a27e327484b63b7da2c32a32fc7a52a4a0587fcb10dbfdac1b44\ne-1 0\n"
+        "bootfs 5 5e846c64f2db12266e6b658a8e5b5b42cc225419b3ee1fca88acbb181ddfdb52\nf 9\n"
+        "signature\n";
+    CHECK_ST(update_manifest_parse(every, strlen(every), &m), OK);
+    CHECK(!strcmp(m.git, "abcdef0-dirty") && !strcmp(m.net, "vlan21"));
+    CHECK_EQ(m.file[UPDATE_KERNEL].size, 10);
+    CHECK_EQ(m.signed_len, strlen(every) - strlen("signature\n"));
+    /* the longest key and value */
+    char line[UPDATE_EXT_KEY_MAX + UPDATE_EXT_MAX + 3];
+    memset(line, 'k', UPDATE_EXT_KEY_MAX);
+    line[UPDATE_EXT_KEY_MAX] = ' ';
+    memset(line + UPDATE_EXT_KEY_MAX + 1, 'v', UPDATE_EXT_MAX);
+    memcpy(line + UPDATE_EXT_KEY_MAX + 1 + UPDATE_EXT_MAX, "\n", 2);
+    char with[sizeof(line) + 16];
+    snprintf(with, sizeof(with), "%ssignature\n", line);
+    CHECK_ST(edited("signature\n", with, &m), OK);
+    snprintf(with, sizeof(with), "%.*sv\nsignature\n", (int)(sizeof(line) - 2), line);
+    CHECK_ST(edited("signature\n", with, &m), ERR_INVALID_ARGS);   /* a value a byte longer */
+    return true;
+}
+
 bool t_update_manifest(void)
 {
     struct update_manifest m;
@@ -62,7 +98,7 @@ bool t_update_manifest(void)
     CHECK_ST(edited("net vlan21", "net vlan4094", &m), OK);
     CHECK_ST(edited("net vlan21", "net vlan1", &m), OK);
     CHECK(!strcmp(m.net, "vlan1"));
-    return true;
+    return manifest_extensions();
 }
 
 /* Each line wrong in each way: refused, with the status that says why. */
@@ -127,6 +163,21 @@ bool t_update_manifest_refusals(void)
         { "git abcdef0-dirty\n", "git abcdef0-dirty\r\n", ERR_INVALID_ARGS },
         { "git abcdef0-dirty\n", "\ngit abcdef0-dirty\n", ERR_INVALID_ARGS },
         { "version", "VERSION", ERR_INVALID_ARGS },
+        /* extension lines: their own rules */
+        { "signature\n", "Future 1\nsignature\n", ERR_INVALID_ARGS },   /* upper case */
+        { "signature\n", "fu_ture 1\nsignature\n", ERR_INVALID_ARGS },
+        { "signature\n", "future \nsignature\n", ERR_INVALID_ARGS },    /* an empty value */
+        { "signature\n", "future\t1\nsignature\n", ERR_INVALID_ARGS },
+        { "signature\n", "future 1\t2\nsignature\n", ERR_INVALID_ARGS },
+        { "signature\n", "future 1\x7f\nsignature\n", ERR_INVALID_ARGS },
+        { "signature\n", "future 1\r\nsignature\n", ERR_INVALID_ARGS },
+        { "signature\n", "future 1", ERR_INVALID_ARGS },                 /* no signature */
+        { "signature\n", "signature\nfuture 1\n", ERR_INVALID_ARGS },   /* after it */
+        { "signature\n", "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk 1\nsignature\n",
+          ERR_INVALID_ARGS },                                            /* a 33-byte key */
+        { "git abcdef0", "version 1\ngit abcdef0", ERR_INVALID_ARGS },  /* a line twice */
+        { "kernel 10", "signature\nkernel 10", ERR_INVALID_ARGS },
+        { "net vlan21\n", "net vlan21\njamos-update 2\n", ERR_INVALID_ARGS },
     };
     struct update_manifest m;
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

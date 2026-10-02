@@ -1,14 +1,15 @@
-/* The update manifest's parser (<update.h>): seven lines, strictly; the
- * public key file's; and the network default line of a build.txt, by the
- * manifest's rules. The signature's check is updsig.c's (it alone links
- * Monocypher in).
+/* The update manifest's parser (<update.h>): format 2's seven lines,
+ * strictly, and the extension lines between them, which it checks and
+ * skips; the public key file's; and the network default line of a
+ * build.txt, by the manifest's rules. The signature's check is updsig.c's
+ * (it alone links Monocypher in).
  *
  * The bytes come from the network (through bin/update, which parses them
  * to know what to fetch, and again in init, which trusts nobody's parse
  * but its own), so the parser reads only within len, copies nothing it
  * hasn't checked, and refuses everything the format doesn't allow rather
- * than skipping it. A cursor walks the text; each step takes one exact
- * token or fails. */
+ * than skipping it: what it skips is only a well-formed extension line.
+ * A cursor walks the text; each step takes one exact token or fails. */
 #include <update.h>
 
 /* The cursor over the manifest. */
@@ -156,6 +157,58 @@ static status_t take_file(struct cur *c, unsigned f, struct update_manifest *m)
     return OK;
 }
 
+/* The names of format 2's lines: no extension line may take one. */
+static bool base_key(const uint8_t *k, size_t n)
+{
+    static const char *const keys[] = {
+        "jamos-update", "version", "git", "net", "kernel", "bootfs", "signature",
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        if (strlen(keys[i]) == n && !memcmp(keys[i], k, n))
+            return true;
+    return false;
+}
+
+static bool key_char(uint8_t ch)
+{
+    return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+}
+
+/* One extension line ("<key>" or "<key> <value>\n") taken, if the next
+ * line is one: OK; ERR_NOT_FOUND if the next line is one of format 2's
+ * (left for the caller); ERR_INVALID_ARGS if it is neither. */
+static status_t take_extension(struct cur *c)
+{
+    size_t n = word_len(c);
+    if (base_key(c->p, n))
+        return ERR_NOT_FOUND;
+    if (!n || n > UPDATE_EXT_KEY_MAX)
+        return ERR_INVALID_ARGS;
+    for (size_t i = 0; i < n; i++)
+        if (!key_char(c->p[i]))
+            return ERR_INVALID_ARGS;
+    c->p += n;
+    if (take_text(c, " ")) {
+        size_t v = 0;
+        while (c->p + v < c->end && c->p[v] >= 0x20 && c->p[v] <= 0x7e)
+            v++;
+        if (!v || v > UPDATE_EXT_MAX)
+            return ERR_INVALID_ARGS;
+        c->p += v;
+    }
+    return take_text(c, "\n") ? OK : ERR_INVALID_ARGS;
+}
+
+/* Every extension line before the next line of format 2's (a later
+ * build's additions: skipped, unknown to this one). */
+static status_t skip_extensions(struct cur *c)
+{
+    status_t st;
+    while ((st = take_extension(c)) == OK)
+        ;
+    return st == ERR_NOT_FOUND ? OK : st;
+}
+
 /* The format line: version 2 only (1 had no `net` line); another number
  * is another format. */
 static status_t take_format(struct cur *c)
@@ -179,19 +232,25 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
     struct update_manifest m;
     memset(&m, 0, sizeof(m));
     status_t st = take_format(&c);
+    if (st == OK)
+        st = skip_extensions(&c);
     if (st != OK)
         return st;
     if (!take_text(&c, "version ") ||
-        !take_word(&c, version_char, m.version, UPDATE_VERSION_MAX) || !take_text(&c, "\n"))
+        !take_word(&c, version_char, m.version, UPDATE_VERSION_MAX) || !take_text(&c, "\n") ||
+        skip_extensions(&c) != OK)
         return ERR_INVALID_ARGS;
     if (!take_text(&c, "git ") || !take_word(&c, git_char, m.git, UPDATE_GIT_MAX) ||
-        !git_ok(m.git) || !take_text(&c, "\n"))
+        !git_ok(m.git) || !take_text(&c, "\n") || skip_extensions(&c) != OK)
         return ERR_INVALID_ARGS;
-    if (!take_net(&c, m.net))
+    if (!take_net(&c, m.net) || skip_extensions(&c) != OK)
         return ERR_INVALID_ARGS;
-    for (unsigned f = 0; f < UPDATE_FILES; f++)
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
         if ((st = take_file(&c, f, &m)) != OK)
             return st;
+        if (skip_extensions(&c) != OK)
+            return ERR_INVALID_ARGS;
+    }
     m.signed_len = (size_t)(c.p - (const uint8_t *)text);
     if (!take_text(&c, "signature"))
         return ERR_INVALID_ARGS;

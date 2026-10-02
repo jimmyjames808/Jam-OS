@@ -992,6 +992,16 @@ types `update` and sees both versions). Each build carries the key it
 will check the next update with, so the first build with a key, or with
 a new key, goes on the stick by `make flash`.
 
+**The manifest stays readable by every build to come** (its grammar is
+in `user/include/update.h`). Format 2 (`jamos-update 2`, then `version`,
+`git`, `net`, `kernel`, `bootfs`, `signature`, in that order) is the
+stable base: those lines keep their meaning for good. Anything a later
+build adds goes in a new extension line (`<key> [<value>]`, anywhere
+before the signature line, signed with the rest), which a build that
+doesn't know it skips, so an older build always takes a newer build's
+manifest and `update` moves it forward. Only a change of the signature
+scheme itself would need a new format, and then a `make flash`.
+
 **What each process holds:**
 
 | Process | Holds | Parses network data |

@@ -3,9 +3,11 @@
  * what the PC's two sides share: the manifest that names the build, and
  * the hand-off of a fetched build to init.
  *
- * The manifest (made by tools/update-server.py on the Mac) is text, seven
- * lines in this order, each ended by one '\n', single spaces, nothing
- * else (no '\r', no blank line, nothing after the last line):
+ * The manifest (made by tools/update-server.py on the Mac) is text: lines
+ * each ended by one '\n', single spaces, nothing else (no '\r', no blank
+ * line, nothing after the signature line). Format 2 is the stable base:
+ * these seven lines, in this order, mean what they say here for every
+ * build to come:
  *
  *     jamos-update 2
  *     version <the kernel's version string: 1..47 of A-Z a-z 0-9 . _ + ->
@@ -14,6 +16,18 @@
  *     kernel <size> <SHA-256>     build/jamos.elf
  *     bootfs <size> <SHA-256>     build/bootfs.img
  *     signature <signature>
+ *
+ * Extension lines carry what later builds add, so that a new piece of
+ * information never needs a new format: anywhere between the first line
+ * and the signature line, a line `<key>` or `<key> <value>`, the key 1..32
+ * of a-z 0-9 - (none of the seven names above), the value 1..UPDATE_EXT_MAX
+ * printable ASCII bytes (0x20..0x7e). A parser ignores an extension line
+ * it doesn't know (it is signed all the same: the signature covers every
+ * byte before its line), so an older build takes a newer manifest. This
+ * build knows no extension line. Another first line ("jamos-update 3") is
+ * another format, which only a new signature scheme should ever need:
+ * refused (ERR_NOT_SUPPORTED). So only a crypto change can make the stick
+ * need `make flash` for an update to go on.
  *
  * A size is decimal bytes, 1..UPDATE_FILE_MAX, no leading zero; a SHA-256
  * is 64 lower-case hex digits; a VLAN has no leading zero. The `net` line
@@ -77,6 +91,8 @@
 #define UPDATE_KEY_BYTES    32u            /* an Ed25519 public key */
 #define UPDATE_SIG_BYTES    64u            /* an Ed25519 signature */
 #define UPDATE_KEY_FILE     "update.pub"   /* the public key, in the boot image (bootfs) */
+#define UPDATE_EXT_KEY_MAX  32u            /* bytes of an extension line's key */
+#define UPDATE_EXT_MAX      200u           /* bytes of an extension line's value */
 
 /* The files of a build, in the manifest's order. */
 enum { UPDATE_KERNEL, UPDATE_BOOTFS, UPDATE_FILES };
@@ -98,11 +114,11 @@ struct update_manifest {
 /* Parse a manifest of len bytes (not NUL-terminated; any bytes at all),
  * strictly as the header above says, into *out (written only on
  * success). Only the format is checked here, not the signature: an
- * unsigned manifest parses (has_signature false). ERR_INVALID_ARGS: not a
- * manifest (a line missing, out of order, misspelt, a bad character, too
- * long, a signature that isn't 128 hex digits, anything after the end);
- * ERR_OUT_OF_RANGE: a size of 0 or over UPDATE_FILE_MAX;
- * ERR_NOT_SUPPORTED: another format version. */
+ * unsigned manifest parses (has_signature false). Extension lines it
+ * doesn't know are skipped. ERR_INVALID_ARGS: not a manifest (a line missing, out
+ * of order, misspelt, twice, a bad character, too long, a signature that
+ * isn't 128 hex digits, anything after the end); ERR_OUT_OF_RANGE: a size
+ * of 0 or over UPDATE_FILE_MAX; ERR_NOT_SUPPORTED: another format. */
 status_t update_manifest_parse(const void *text, size_t len, struct update_manifest *out);
 /* The network default a build.txt of len bytes records (its line
  * "net vlan21" or "net untagged", by the manifest's rules), into out
