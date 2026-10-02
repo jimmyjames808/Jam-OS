@@ -20,12 +20,12 @@ wait run: /data/s is not allowed to run: `allow /data/s` first
 wait st-x=126
 wait jam>
 send allow /data/s; echo st-$T=$?
-wait every mount (write)? y/n
+wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
 wait jam>
 send allow /data/s; echo st-$T=$?
-wait every mount (write)? y/n
+wait allow s: every mount (write)? y/n
 type y
 wait allow: /data/s may run
 wait st-x=0
