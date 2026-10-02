@@ -233,6 +233,7 @@ bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);
 bool t_rtl8125_stays_off(void);
 bool t_rtl8125_txdesc(void);
+bool t_rtl8125_kick(void);
 
 /* netsrv.c: the network drivers' netdev server (drivers/lib/netserver.c,
  * linked in) over a fake card, the test as netstack. */

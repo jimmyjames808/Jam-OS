@@ -248,7 +248,7 @@ struct txstats {
     uint32_t collisions;          /* taken back with a collision count */
     uint32_t refused;             /* frames netframe_tag or the last check refused */
     uint32_t full;                /* frames refused for want of a free descriptor */
-    uint32_t kicks;               /* doorbells rung again for frames still waiting */
+    uint32_t kicks;               /* doorbells rung again for frames still waiting (rtl_kick_due) */
     uint32_t gate;                /* tx.c entries refused by the gate (must stay 0) */
 };
 
@@ -279,6 +279,8 @@ struct rtl {
     /* transmit: tx.c's (chip_stop's reset clears tx_on) */
     uint32_t tx_prod, tx_cons;    /* descriptors handed over / taken back (free-running) */
     bool     tx_on;               /* the transmitter is enabled */
+    uint64_t tx_at[TX_DESCS];     /* when each descriptor was handed over (uptime, ns) */
+    struct rtl_kick kick;         /* the doorbell again for a descriptor still owned */
     struct txstats tx;
     /* receive in full mode: rx.c's */
     struct rxstats rx;

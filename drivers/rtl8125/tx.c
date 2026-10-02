@@ -154,6 +154,7 @@ status_t tx_send(struct rtl *t, const uint8_t *frame, size_t len)
     __atomic_thread_fence(__ATOMIC_RELEASE);   /* buffer and address before the ownership */
     *(volatile uint32_t *)(d + RTL_TXD_CMDSTS) = rtl_txd_cmd(i, TX_DESCS, (uint32_t)n);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* the descriptor before the doorbell */
+    t->tx_at[i] = drv_clock_ns();
     t->tx_prod++;
     t->tx.queued++;
     txw16(t, RTL_TXSTART, RTL_TXSTART_GO);
@@ -184,8 +185,10 @@ unsigned tx_reap(struct rtl *t)
         n++;
     }
     /* rge_txeof: some chips ignore a doorbell rung while they are still
-     * sending, so ring it again for frames still waiting. */
-    if (waiting && t->tx_on) {
+     * sending, so ring it again for a frame still waiting; not at every
+     * look, though (txdesc.h, rtl_kick_due): at most one a second. */
+    if (waiting && t->tx_on &&
+        rtl_kick_due(&t->kick, t->tx_cons, t->tx_at[t->tx_cons % TX_DESCS], drv_clock_ns())) {
         t->tx.kicks++;
         txw16(t, RTL_TXSTART, RTL_TXSTART_GO);
     }

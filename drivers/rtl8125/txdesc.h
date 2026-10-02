@@ -1,5 +1,6 @@
-/* rtl8125: the transmit descriptor, as pure functions (drv/rtl8125: tx.c
- * uses them, utest tests them in user/tests/utest/netframe.c).
+/* rtl8125: the transmit descriptor and the transmit path's bookkeeping,
+ * as pure functions (drv/rtl8125: tx.c uses them, utest tests them in
+ * user/tests/utest/rtltx.c).
  *
  * The descriptor. rge's 8125 descriptor (struct rge_tx_desc in OpenBSD's
  * if_rgereg.h, ISC licence) is 32 bytes: the command and status word,
@@ -11,7 +12,10 @@
  * 2026-10-02 (boot-0067) showed the mismatch the driver had then, bit set
  * and 16-byte descriptors: the chip sent the frames of descriptors 0 and
  * 2, never 1, and never handed 1 back. So the format is checked before
- * the transmitter goes on: the bit must say what RTL_TXD_SIZE says. */
+ * the transmitter goes on: the bit must say what RTL_TXD_SIZE says.
+ *
+ * The bookkeeping: when to ring the doorbell again for a descriptor the
+ * chip still owns (rtl_kick_due). */
 #pragma once
 
 #include <stdbool.h>
@@ -49,4 +53,39 @@ static inline uint32_t rtl_txd_cmd(uint32_t i, uint32_t n, uint32_t len)
 {
     return RTL_TXD_OWN | RTL_TXD_SOF | RTL_TXD_EOF | (i % n == n - 1 ? RTL_TXD_EOR : 0) |
            (len & RTL_TXD_LEN);
+}
+
+/* ---- the doorbell again, for a descriptor the chip still owns ----------------- */
+
+/* rge_txeof rings the doorbell again whenever it stops at a descriptor the
+ * chip still owns (some chips ignore a doorbell rung while they send).
+ * Done on every interrupt, that turned into a loop on the PC (69912 in
+ * 4 s): each doorbell with nothing the chip could take raised "transmit
+ * descriptor unavailable", whose interrupt rang it again. Here a stuck
+ * descriptor gets its first extra doorbell RTL_KICK_FIRST_NS after it was
+ * queued, then the gap grows fourfold up to RTL_KICK_MAX_NS: at most one
+ * a second however often the driver looks. */
+#define RTL_KICK_FIRST_NS 1000000ull       /* 1 ms */
+#define RTL_KICK_MAX_NS   1000000000ull    /* 1 s */
+
+struct rtl_kick {
+    uint32_t cons;        /* the descriptor being waited for (free-running index) */
+    bool     armed;       /* cons and at are valid */
+    uint64_t gap;         /* the gap after the next doorbell */
+    uint64_t at;          /* when the next doorbell is due (uptime, ns) */
+};
+
+/* The driver is waiting for descriptor `cons`, queued at `queued_at`:
+ * should it ring the doorbell again at `now`? Updates k. */
+static inline bool rtl_kick_due(struct rtl_kick *k, uint32_t cons, uint64_t queued_at,
+                                uint64_t now)
+{
+    if (!k->armed || k->cons != cons)   /* a new descriptor to wait for */
+        *k = (struct rtl_kick){ .cons = cons, .armed = true, .gap = RTL_KICK_FIRST_NS * 4,
+                                .at = queued_at + RTL_KICK_FIRST_NS };
+    if (now < k->at)
+        return false;
+    k->at = now + k->gap;
+    k->gap = k->gap * 4 > RTL_KICK_MAX_NS ? RTL_KICK_MAX_NS : k->gap * 4;
+    return true;
 }

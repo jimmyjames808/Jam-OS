@@ -670,6 +670,7 @@ static const struct {
     { "rtl8125_arp", t_rtl8125_arp },
     { "rtl8125_stays_off", t_rtl8125_stays_off },
     { "rtl8125_txdesc", t_rtl8125_txdesc },
+    { "rtl8125_kick", t_rtl8125_kick },
     { "dhcp_build", t_dhcp_build },
     { "dhcp_parse_sample", t_dhcp_parse_sample },
     { "dhcp_parse_truncated", t_dhcp_parse_truncated },
