@@ -37,6 +37,10 @@
 #define RTL_TXCFG_CONFIG 0x03000700u   /* rge's RGE_TXCFG_CONFIG: interframe gap, DMA burst */
 #define RTL_TDFNR_8125   0x10          /* rge_init: descriptors fetched at once */
 #define RTL_TXSTART_GO   0x0001        /* RGE_TXSTART_START: queue 0 has work */
+#define TX_STALL_NS      (100 * NS_PER_MS)   /* still the chip's this long after: stalled */
+#define STALL_DUMPS      6             /* stall dumps logged per run, ... */
+#define STALL_GAP_NS     NS_PER_S      /* ... at most one a second */
+#define TICK_NS          (10 * NS_PER_S)     /* tx_tick's line: at most one in 10 s */
 
 /* May the driver transmit at all? Every entry point asks first. */
 static bool gate(struct rtl *t, const char *what)
@@ -83,6 +87,83 @@ static uint64_t buf_addr(const struct rtl *t, uint32_t i)
 {
     i %= TX_DESCS;
     return t->txbuf_addr[i / 2] + (i % 2) * TX_BUF;
+}
+
+/* One frame's wait from its doorbell to its descriptor back, counted. */
+static void timed(struct txstats *x, uint64_t wait)
+{
+    if (!x->wait_n || wait < x->wait_min)
+        x->wait_min = wait;
+    if (wait > x->wait_max)
+        x->wait_max = wait;
+    x->wait_sum += wait;
+    x->wait_n++;
+}
+
+/* The chip's count of frames sent (good and errored) since the driver
+ * started: the tally now, less the one at the start. False if unread. */
+static bool chip_sent(struct rtl *t, uint64_t *out)
+{
+    struct tally x;
+    if (!t->tally0_ok || tally_dump(t, &x) != OK)
+        return false;
+    *out = x.tx_ok + x.tx_err - t->tally_tx0;
+    return true;
+}
+
+/* Everything that tells "the chip never fetched descriptor c" from "it
+ * sent the frame but never wrote the descriptor back": the descriptor's
+ * bytes and its neighbours', the transmit registers read back, and the
+ * chip's tally against the descriptors handed back. Reads only (the
+ * tally dump aside). */
+static void stall_dump(struct rtl *t, uint32_t c, uint64_t waited)
+{
+    volatile uint8_t *d = desc(t, c);
+    uint32_t w[RTL_TXD_SIZE / 4];
+    for (unsigned k = 0; k < RTL_TXD_SIZE / 4; k++)
+        w[k] = *(volatile uint32_t *)(d + 4 * k);
+    uint32_t before = *(volatile uint32_t *)(desc(t, c - 1) + RTL_TXD_CMDSTS);
+    uint32_t after = *(volatile uint32_t *)(desc(t, c + 1) + RTL_TXD_CMDSTS);
+    uint64_t ring = t->ring_addr + TX_RING_OFF;
+    uint32_t back = t->tx.done + t->tx.errors;
+    drv_log("tx STALL: descriptor %u (slot %u at %#lx) still the chip's %lu ms after its doorbell; "
+            "%u queued, %u back, %u doorbell(s) again", c, c % TX_DESCS, (unsigned long)(ring +
+            (c % TX_DESCS) * RTL_TXD_SIZE), (unsigned long)(waited / NS_PER_MS), t->tx.queued,
+            back, t->tx.kicks);
+    drv_log("tx STALL: it holds cmdsts %08x extsts %08x addr %08x%08x, then %08x %08x %08x %08x; "
+            "cmdsts before it %08x, after it %08x", w[0], w[1], w[3], w[2], w[4], w[5], w[6], w[7],
+            before, after);
+    drv_log("tx STALL: tx ring %#010x%08x (ours %#lx), command %#x, txcfg %#010x, txstart %#06x, "
+            "tdfnr %#x, isr %#x, imr %#x, mac eb58 %#06x", rd32(t, RTL_TXDESC_HI),
+            rd32(t, RTL_TXDESC_LO), (unsigned long)ring, rd8(t, RTL_CMD), rd32(t, RTL_TXCFG),
+            rd16(t, RTL_TXSTART), rd8(t, RTL_TDFNR), rd32(t, RTL_ISR), rd32(t, RTL_IMR),
+            mac_rd(t, RTL_MAC_TXD_FORMAT));
+    uint64_t sent;
+    if (!chip_sent(t, &sent))
+        drv_log("tx STALL: the tally could not be read");
+    else
+        drv_log("tx STALL: the chip's tally says %lu sent, %u handed back: %s",
+                (unsigned long)sent, back, sent > back
+                ? "it SENT frames it has not handed back (no write-back)"
+                : "it sent nothing more: it NEVER FETCHED this descriptor");
+}
+
+/* Descriptor tx_cons is still the chip's: a stall once TX_STALL_NS have
+ * passed, counted once, dumped for the first few (one a second at most). */
+static void check_stall(struct rtl *t, uint64_t now)
+{
+    uint32_t c = t->tx_cons;
+    uint64_t waited = now - t->tx_at[c % TX_DESCS];
+    if (waited < TX_STALL_NS || t->stall_cons == c + 1)
+        return;
+    t->stall_cons = c + 1;
+    t->tx.stalls++;
+    if (t->stall_dumps >= STALL_DUMPS ||
+        (t->stall_dumps && now - t->stall_dump_at < STALL_GAP_NS))
+        return;
+    t->stall_dumps++;
+    t->stall_dump_at = now;
+    stall_dump(t, c, waited);
 }
 
 status_t tx_arm(struct rtl *t)
@@ -167,6 +248,7 @@ unsigned tx_reap(struct rtl *t)
         return 0;
     unsigned n = 0;
     bool waiting = false;
+    uint64_t now = drv_clock_ns();
     while (t->tx_cons != t->tx_prod) {
         volatile uint8_t *d = desc(t, t->tx_cons);
         uint32_t st = *(volatile uint32_t *)(d + RTL_TXD_CMDSTS);
@@ -175,6 +257,7 @@ unsigned tx_reap(struct rtl *t)
             break;
         }
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        timed(&t->tx, now - t->tx_at[t->tx_cons % TX_DESCS]);
         if (st & RTL_TXD_ERR)
             t->tx.errors++;
         else
@@ -188,10 +271,12 @@ unsigned tx_reap(struct rtl *t)
      * sending, so ring it again for a frame still waiting; not at every
      * look, though (txdesc.h, rtl_kick_due): at most one a second. */
     if (waiting && t->tx_on &&
-        rtl_kick_due(&t->kick, t->tx_cons, t->tx_at[t->tx_cons % TX_DESCS], drv_clock_ns())) {
+        rtl_kick_due(&t->kick, t->tx_cons, t->tx_at[t->tx_cons % TX_DESCS], now)) {
         t->tx.kicks++;
         txw16(t, RTL_TXSTART, RTL_TXSTART_GO);
     }
+    if (waiting)
+        check_stall(t, now);
     return n;
 }
 
@@ -202,12 +287,57 @@ uint32_t tx_pending(const struct rtl *t)
     return t->tx_prod - t->tx_cons;
 }
 
+void tx_wait_str(const struct rtl *t, char *buf, size_t size)
+{
+    if (!rtl_tx_allowed(t->mode, t->vlan)) {
+        drv_snprintf(buf, size, "-");
+        return;
+    }
+    const struct txstats *x = &t->tx;
+    if (!x->wait_n) {
+        drv_snprintf(buf, size, "none timed");
+        return;
+    }
+    uint64_t avg = x->wait_sum / x->wait_n;
+    drv_snprintf(buf, size, "%lu.%03lu/%lu.%03lu/%lu.%03lu ms", (unsigned long)(x->wait_min /
+                 NS_PER_MS), (unsigned long)(x->wait_min % NS_PER_MS / NS_PER_US),
+                 (unsigned long)(avg / NS_PER_MS), (unsigned long)(avg % NS_PER_MS / NS_PER_US),
+                 (unsigned long)(x->wait_max / NS_PER_MS),
+                 (unsigned long)(x->wait_max % NS_PER_MS / NS_PER_US));
+}
+
 void tx_log(const struct rtl *t)
 {
     if (!rtl_tx_allowed(t->mode, t->vlan))
         return;
+    char wait[48];
+    tx_wait_str(t, wait, sizeof(wait));
     drv_log("tx: %u queued, %u sent, %u with an error, %u with collisions, %u still out; refused: "
             "%u by the tag check, %u for a full ring; %u doorbell(s) again; gate refusals %u",
             t->tx.queued, t->tx.done, t->tx.errors, t->tx.collisions, t->tx_prod - t->tx_cons,
             t->tx.refused, t->tx.full, t->tx.kicks, t->tx.gate);
+    drv_log("tx: doorbell to descriptor back, min/avg/max %s over %u frame(s); %u stalled "
+            "(still the chip's after %lu ms)", wait, t->tx.wait_n, t->tx.stalls,
+            (unsigned long)(TX_STALL_NS / NS_PER_MS));
+}
+
+void tx_tick(struct rtl *t)
+{
+    if (!gate(t, "tx_tick"))
+        return;
+    uint64_t now = drv_clock_ns();
+    uint32_t back = t->tx.done + t->tx.errors;
+    if (now - t->tick_at < TICK_NS || (t->tx.queued == t->tick_queued && back == t->tick_back))
+        return;
+    t->tick_at = now;
+    t->tick_queued = t->tx.queued;
+    t->tick_back = back;
+    char wait[48], chip[24] = "unread";
+    tx_wait_str(t, wait, sizeof(wait));
+    uint64_t sent;
+    if (chip_sent(t, &sent))
+        drv_snprintf(chip, sizeof(chip), "%lu", (unsigned long)sent);
+    drv_log("tx so far: %u queued, chip sent %s, %u back, %u pending; wait min/avg/max %s; %u "
+            "stalled, %u doorbell(s) again, %u refused for a full ring", t->tx.queued, chip, back,
+            t->tx_prod - t->tx_cons, wait, t->tx.stalls, t->tx.kicks, t->tx.full);
 }

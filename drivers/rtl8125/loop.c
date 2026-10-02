@@ -42,6 +42,7 @@ static void service(struct rtl *t, bool by_irq)
     }
     (void)rx_harvest(t);
     unsigned freed = tx_reap(t);
+    tx_tick(t);
     (void)chip_link_poll(t);
     if (!t->srv)
         return;

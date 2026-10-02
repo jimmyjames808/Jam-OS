@@ -169,6 +169,5 @@ void sendtest_report(const struct rtl *t, const struct outcome *o)
                "rx kept %u dropped %u%s", t->vlan, link, o->cut ? ", CUT SHORT"
                : "", s.answered, PROBES, s.target >> 24, (s.target >> 16) & 0xff,
                (s.target >> 8) & 0xff, s.target & 0xff, rtt, o->txcheck,
-
                t->rx.kept, dropped, t->refused || t->tx.gate ? ", WRITES REFUSED" : "");
 }

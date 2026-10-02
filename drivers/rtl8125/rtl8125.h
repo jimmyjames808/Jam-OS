@@ -250,6 +250,9 @@ struct txstats {
     uint32_t full;                /* frames refused for want of a free descriptor */
     uint32_t kicks;               /* doorbells rung again for frames still waiting (rtl_kick_due) */
     uint32_t gate;                /* tx.c entries refused by the gate (must stay 0) */
+    uint32_t stalls;              /* descriptors the chip still held TX_STALL_NS after queueing */
+    uint32_t wait_n;              /* frames timed from the doorbell to their descriptor back */
+    uint64_t wait_min, wait_max, wait_sum;   /* ... their waits, ns */
 };
 
 struct rtl;
@@ -281,6 +284,13 @@ struct rtl {
     bool     tx_on;               /* the transmitter is enabled */
     uint64_t tx_at[TX_DESCS];     /* when each descriptor was handed over (uptime, ns) */
     struct rtl_kick kick;         /* the doorbell again for a descriptor still owned */
+    uint32_t stall_cons;          /* the last descriptor counted as stalled, + 1 (0: none) */
+    unsigned stall_dumps;         /* stall dumps logged (a few per run) */
+    uint64_t stall_dump_at;       /* when the last was (uptime, ns) */
+    uint64_t tick_at;             /* when tx_tick last logged (uptime, ns) */
+    uint32_t tick_queued, tick_back;   /* the counts it logged then */
+    uint64_t tally_tx0;           /* the chip's tally of frames sent at the start (ok + error) */
+    bool     tally0_ok;           /* ... it was read */
     struct txstats tx;
     /* receive in full mode: rx.c's */
     struct rxstats rx;
@@ -354,7 +364,6 @@ void     tally_log(const char *when, const struct tally *x);
  * the chip's count of frames sent between the two dumps against what
  * tx.c queued and took back (txdesc.h, rtl_tx_verdict). Logged; true if
  * all three agree. `out` gets a short form for a RESULTS line. */
-
 bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out, size_t size);
 
 /* ---- chip.c ---------------------------------------------------------------------- */
@@ -460,6 +469,13 @@ unsigned tx_reap(struct rtl *t);
 /* Frames handed over and not yet taken back. */
 uint32_t tx_pending(const struct rtl *t);
 void     tx_log(const struct rtl *t);
+/* "min/avg/max ms" of the frames' waits from the doorbell to their
+ * descriptor back, or "none timed". */
+void     tx_wait_str(const struct rtl *t, char *buf, size_t size);
+/* At most every 10 s, and only when frames moved: one "tx so far" line
+ * (queued, sent by the chip, back, the waits), so a run that is killed
+ * (a reboot) still leaves the counts in the log. */
+void     tx_tick(struct rtl *t);
 
 /* ---- full.c: full mode's service, the netdev server for netstack --------------------- */
 

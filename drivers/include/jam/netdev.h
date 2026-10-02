@@ -217,7 +217,14 @@ struct netdev_stats {
     uint64_t chip_tx_err;      /* send errors (collisions, aborts) */
     uint64_t chip_rx_err;      /* receive errors (CRC, alignment) */
     uint64_t chip_rx_missed;   /* frames lost for want of a descriptor */
-    uint64_t reserved[9];      /* 0 */
+    /* the transmit ring as the driver saw it (0 where a driver doesn't keep them) */
+    uint64_t tx_wait_n;        /* frames timed from the doorbell to their descriptor back */
+    uint64_t tx_wait_min_ns;   /* ... the shortest, the mean and the longest wait */
+    uint64_t tx_wait_avg_ns;
+    uint64_t tx_wait_max_ns;
+    uint64_t tx_stalls;        /* descriptors the chip still held 100 ms after the doorbell */
+    uint64_t tx_kicks;         /* doorbells rung again for a descriptor still held */
+    uint64_t reserved[3];      /* 0 */
 };
 #define NETDEV_CHIP_TX_OK     (1u << 0)
 #define NETDEV_CHIP_RX_OK     (1u << 1)
