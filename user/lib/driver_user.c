@@ -227,6 +227,16 @@ status_t drv_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns,
     return jam_object_wait_one(h, mask, deadline_ns, observed);
 }
 
+status_t drv_event_create(handle_t *out)
+{
+    return jam_event_create(out);
+}
+
+status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set)
+{
+    return jam_event_signal(ev, clear, set);
+}
+
 /* ---- memory ------------------------------------------------------------------ */
 
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out)

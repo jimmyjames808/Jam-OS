@@ -108,6 +108,11 @@ status_t drv_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask
 status_t drv_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out);
 status_t drv_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns,
                              signals_t *observed);
+/* Events: an object with only user signal bits (SIG_USER_ALL), shared
+ * with a client to wake each other (netdev's rings, <jam/netdev.h>).
+ * drv_event_signal clears the bits in `clear`, then sets those in `set`. */
+status_t drv_event_create(handle_t *out);
+status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set);
 
 /* ---- memory --------------------------------------------------------------- */
 
