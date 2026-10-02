@@ -34,6 +34,12 @@ answered: Jam OS's tagging matches the port, and an untagged frame would
 land on the home network, which is exactly what the rule forbids. Stage 0
 still listens first to confirm it from the PC's own port.
 
+**The owner (2026-10-02):** VLAN 21 is the go-to network: the Mac works on
+it too (by Wi-Fi it was 10.2.21.174; by its USB Ethernet adapter with the
+VLAN 21 interface, 10.2.21.67), so netlog and `update` stay inside VLAN
+21 and cross no firewall. (The home network also has a 10.2.10.0/24
+Wi-Fi; Jam OS never needs it.)
+
 1. **Is the PC's switch port a trunk carrying VLAN 21 tagged, or an
    access port on VLAN 21?** You don't need to know: stage 0 listens
    (it transmits nothing) and tells us from the tags that arrive
