@@ -665,6 +665,7 @@ static const struct {
     { "netframe_tag_copy_is_the_frame", t_netframe_tag_copy_is_the_frame },
     { "netframe_rx", t_netframe_rx },
     { "rtl8125_write_guard", t_rtl8125_write_guard },
+    { "rtl8125_txq_guard", t_rtl8125_txq_guard },
     { "rtl8125_tx_gate", t_rtl8125_tx_gate },
     { "rtl8125_args", t_rtl8125_args },
     { "rtl8125_arp", t_rtl8125_arp },

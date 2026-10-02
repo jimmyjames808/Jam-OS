@@ -228,6 +228,7 @@ bool t_netframe_tx_check(void);
 bool t_netframe_tag_copy_is_the_frame(void);
 bool t_netframe_rx(void);
 bool t_rtl8125_write_guard(void);
+bool t_rtl8125_txq_guard(void);
 bool t_rtl8125_tx_gate(void);
 bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);

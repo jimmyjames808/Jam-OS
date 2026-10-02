@@ -77,8 +77,8 @@
 #define RTL_RXDESC_LO   0xe4     /* 32: the receive ring's address, low */
 #define RTL_RXDESC_HI   0xe8
 #define RTL_PPSW        0xf2     /* 8 */
-#define RTL_MACOCP      0xb0     /* 32: the window to the MAC's OCP registers */
-#define RTL_PHYOCP      0xb8     /* 32: the window to the PHY's OCP registers */
+/* RTL_MACOCP and RTL_PHYOCP, the OCP windows, are in notx.h (the guard reads
+ * what is written through them) */
 #define RTL_INTMITI(i)  (0x0a00 + (i) * 4)
 #define RTL_ADDR0       0x19e0   /* 32 + 16: the chip's own copy of its address */
 #define RTL_ADDR1       0x19e4
@@ -133,10 +133,6 @@
 #define RTL_CFG3_WOL_MAGIC  0x20
 #define RTL_CFG5_WOL_ANY    0x72      /* LANWAKE, unicast, multicast, broadcast wake */
 #define MAC_WOL_PME         0xc0b6    /* MAC OCP: bit 0 lets a wake event assert PME (rge_wol) */
-
-/* The OCP windows (rge_write_mac_ocp, rge_read_phy_ocp, ...) */
-#define RTL_OCP_BUSY        0x80000000u
-#define RTL_OCP_ADDR_SHIFT  16
 
 /* MII registers (802.3 clause 22), reached through the PHY's OCP space */
 #define MII_BMCR        0
@@ -391,6 +387,13 @@ bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out,
 /* ---- chip.c ---------------------------------------------------------------------- */
 
 void     chip_snapshot(struct rtl *t);
+/* Two `txq <when>:` lines, reads only (a MAC OCP read sets the window's
+ * read index, as every mac_rd): the registers a guard of the 8125's other
+ * transmit queues must cover (notx.h), so a PC run confirms their offsets
+ * (docs/M9.5-PLAN.md, track F): the high-priority and queue 1 ring
+ * addresses, the tail and close pointers of queues 0 and 1, TXCFG's
+ * no-close bit, the doorbell, MAC OCP 0xeb58, 0xe63e and 0xe614. */
+void     chip_txq_log(struct rtl *t, const char *when);
 /* The id from TXCFG; ERR_NOT_SUPPORTED (logged) for anything but the 8125B. */
 status_t chip_identify(struct rtl *t);
 /* The station address into t->mac, and into the log. */

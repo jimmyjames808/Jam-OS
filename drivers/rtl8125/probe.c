@@ -6,7 +6,9 @@
  * no file of the probe calls tx.c at all (tools/checknotx.sh). After the
  * shared bring-up (main.c) with every frame accepted and tags kept, it
  * waits for the link (10 s at most), listens for 60 s and counts frames
- * by tag, VLAN and EtherType (census.c), logging link changes; main.c
+ * by tag, VLAN and EtherType (census.c), logging link changes, and logs
+ * the registers a guard of the 8125's other transmit queues must cover
+ * (chip_txq_log: before the reset, after the bring-up, at the end); main.c
  * then compares the chip's count of frames sent (0) with the driver's (0)
  * and stops the chip. One RESULTS line with the verdict ("trunk carrying
  * our VLAN", ...). */
@@ -23,6 +25,7 @@ static bool linked(const struct rtl *t)
 
 void probe_run(struct rtl *t, struct outcome *o)
 {
+    chip_txq_log(t, "after bring-up");   /* the other queues' registers: reads only */
     o->cut = !loop_until(t, drv_clock_ns() + LINK_WAIT_NS, LINK_POLL_NS, linked);
     if (!o->cut && t->link) {
         drv_log("listening for 60 s: every frame accepted, tags kept, nothing sent");

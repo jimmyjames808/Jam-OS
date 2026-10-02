@@ -10,8 +10,9 @@
 #      refuses every transmit register), and tx.c, where every write is
 #      the line after rtl_tx_allowed(...) (the gate).
 #   2. No regs.c accessor (wr8/wr16/wr32/set8/clr8) names a transmit
-#      register: TXDESC, TXSTART, TXCFG, TDFNR, or an offset 0x20-0x2f,
-#      0x40-0x43, 0x57, 0x90-0x93 written as a number.
+#      register: TXDESC, TXHDESC, TXSTART, TXCFG, TDFNR, the other queues'
+#      TXQ_ registers, or an offset 0x20-0x2f, 0x40-0x43, 0x57, 0x90-0x93,
+#      0x2100-0x217f, 0x2800-0x283f, 0xd30-0xd3f written as a number.
 #   3. The transmitter enable bit (RTL_CMD_TXENB) is named only in notx.h
 #      and tx.c, and elsewhere only in tests of it (`& RTL_CMD_TXENB`).
 #   4. Every function tx.c gives other files starts with the gate (its
@@ -26,6 +27,11 @@
 #      is named only in regs.c, tx.c and main.c (which maps it), and the
 #      transmit ring (TX_RING_OFF) and buffers (txbufs) only in tx.c, ring.c
 #      (which makes and frees them) and rtl8125.h (M9-REVIEW item 6).
+#   8. The MAC OCP registers that change how the transmitter reads its
+#      ring (0xeb58, the descriptor format: RTL_MAC_TXD_FORMAT) or how many
+#      rings it has (0xe63e: RTL_MAC_TXQ_CTRL) are written (mac_wr,
+#      mac_mod) in chip.c's bring-up only (M9-REVIEW item 6 (c)); notx.h's
+#      guard checks the values written there at run time.
 #
 # Then it checks itself: tools/checknotx-tests/ breaks every part of every
 # rule once, and each rule must catch exactly its offences there
@@ -46,8 +52,13 @@ rules()
         *)      grep -n -E 'drv_write[0-9]+\(' "$f" | sed "s|^|1 $f:|" ;;
         esac
         grep -n -E '\b(wr8|wr16|wr32|set8|clr8)\(' "$f" |
-            grep -E 'TXDESC|TXSTART|TXCFG|TDFNR|\(t, *0x(2[0-9a-fA-F]|4[0-3]|57|9[0-3])\b' |
+            grep -E 'TXDESC|TXHDESC|TXSTART|TXCFG|TDFNR|TXQ_|\(t, *0x(2[0-9a-fA-F]|4[0-3]|57|9[0-3]|21[0-7][0-9a-fA-F]|28[0-3][0-9a-fA-F]|0?[dD]3[0-9a-fA-F])\b' |
             sed "s|^|2 $f:|"
+        if [ "$base" != chip.c ]; then
+            grep -n -E '\bmac_(wr|mod)\(' "$f" |
+                grep -E 'RTL_MAC_TXD_FORMAT|RTL_MAC_TXQ_CTRL|0x(eb58|EB58|e63e|E63E)\b' |
+                sed "s|^|8 $f:|"
+        fi
         if [ "$base" != notx.h ] && [ "$base" != tx.c ]; then
             grep -n 'TXENB' "$f" | grep -v -E '& *RTL_CMD_TXENB' | sed "s|^|3 $f:|"
         fi
@@ -119,7 +130,7 @@ fi
 bad=$(rules "$here/checknotx-tests")
 [ -z "${CHECKNOTX_SHOW:-}" ] || echo "$bad"   # CHECKNOTX_SHOW=1: what the self-check caught
 # Each rule's offences there, counted (every part of a rule has one).
-for want in 1:2 2:3 3:1 4:4 5:1 6:2 7:3; do
+for want in 1:2 2:7 3:1 4:4 5:1 6:2 7:3 8:2; do
     r=${want%:*}
     n=$(echo "$bad" | grep -c "^$r ")
     if [ "$n" != "${want#*:}" ]; then
@@ -127,4 +138,4 @@ for want in 1:2 2:3 3:1 4:4 5:1 6:2 7:3; do
         exit 1
     fi
 done
-echo "checknotx: drivers/rtl8125 transmits only through tx.c's gate (7 rules, each self-checked)"
+echo "checknotx: drivers/rtl8125 transmits only through tx.c's gate (8 rules, each self-checked)"

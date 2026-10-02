@@ -86,7 +86,9 @@
  *   0x40 TXCFG        0x03000700
  *   0x57 TDFNR        0x10
  *   0x90 TXSTART      1: the doorbell
- * Never written: 0x28-0x2f (the high-priority ring), 0x00-0x05 (the
+ * Never written: 0x28-0x2f (the high-priority ring), the other transmit
+ * queues' ring addresses and tail and close pointers (0x2100, 0x2800,
+ * 0x0d30: notx.h refuses them; chip_txq_log reads them), 0x00-0x05 (the
  * address), 0xe0 CPLUSCMD, the CSI window, the MAC's and PHY's patch RAM,
  * and PCI config space. */
 #include "rtl8125.h"
@@ -155,6 +157,8 @@ static bool bring_up(struct rtl *t, struct outcome *o)
     if (chip_identify(t) != OK)
         return false;
     chip_read_mac(t);
+    if (t->mode == RTL_MODE_PROBE)
+        chip_txq_log(t, "before");   /* what the firmware left (reads only) */
     if (chip_reset(t) != OK)
         return false;
     o->reset = true;
@@ -183,6 +187,7 @@ static bool bring_up(struct rtl *t, struct outcome *o)
 static void finish(struct rtl *t, struct outcome *o)
 {
     if (t->rx_on) {
+        chip_txq_log(t, "at end");   /* full mode: queue 0's close pointer after N frames */
         if (t->mode == RTL_MODE_PROBE) {
             (void)census_harvest(t, false);
         } else {
