@@ -27,15 +27,18 @@ wait 60 ktest zz-x
 wait jam>
 
 # ---- status ------------------------------------------------------------------------------
-send kill nosuch-$T && echo ok-$T-kill
+send kill nosuch-$T || echo ok-$T-kill
 wait kill: no process called "nosuch-x"
 wait ok-x-kill
 send kill; echo st-$T=$?
 wait usage: kill <name>
-wait st-x=0
+wait st-x=2
 send stress; echo st2-$T=$?
-wait stress : ERR_INVALID_ARGS
-wait st2-x=0
+wait usage: stress <seconds>
+wait st2-x=2
+send stress 0; echo st3-$T=$?
+wait stress 0: ERR_INVALID_ARGS
+wait st3-x=1
 send time memmap
 wait usable
 wait (status 0)
