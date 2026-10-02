@@ -515,6 +515,71 @@ filter stay off, so tags pass as bytes, as on the RTL8125.
   Network tests set the NIC with a new QEMU_NET variable. Ports are
   chosen free per run (several agents test at once).
 
+#### Stage 2, built: drv/e1000e and nettest
+
+Built 2026-10-02 (`drivers/e1000e`, about 1500 lines; devmgr binds it to
+8086:10d3, and only QEMU_NET runs have one):
+
+- **Bring-up** (main.c lists every register written): the chip quiet
+  (interrupts masked, receiver and transmitter off, the GIO master
+  disabled) and reset before bus mastering goes on (the safe-rebind rule);
+  the address from the EEPROM (RAL0 if it doesn't answer); our address and
+  broadcasts only (no multicast, not promiscuous); CTRL.VME, the VLAN
+  filter, checksum offload, interrupt delays and every flow-control
+  register off, pause not advertised (the PHY's ANAR through MDIC). No
+  valid `vlan=`: "no VLAN: the network stays off", the chip never touched,
+  exit 0.
+- **Rings:** 256 legacy descriptors each way in one contiguous VMO, 2 KiB
+  buffers (receive, then transmit, transmit buffer i for descriptor i) in
+  another, neither restricted to DMA32. **Interrupts:** MSI-X vector 0
+  for every cause (IVAR, as FreeBSD's em does for the 82574), ICR cleared
+  by writing it back; a 1 s poll stands in for a lost one and adds up the
+  chip's 32-bit counters.
+- **Transmit** (`tx.c`, the only file that turns the transmitter on or
+  rings TDT, every entry behind a gate on the VLAN): netdev_take copies
+  the slot out of netstack's ring (bad length or flags: refused, counted),
+  netframe_tag copies it again into the descriptor's own buffer with the
+  tag (pre-tagged: refused, counted), netframe_tx_check looks at that
+  buffer once more, then the descriptor (VLE never set) and one doorbell
+  per pass. A full descriptor ring leaves the rest in netstack's ring
+  until descriptors come back.
+- **Receive** (`rx.c`): netframe_rx_check on the length and bytes 12-17;
+  kept frames go untagged (netframe_untag) straight into netstack's rx
+  ring; the rest are counted by reason (`rx_untagged`, `rx_priority`,
+  `rx_other_vlan` for other VLANs, outer tags and a tag inside ours,
+  `rx_bad`); no session or a full ring drops and counts.
+- **The netdev server** (`serve.c`): info, stats (the chip's GPTC, GPRC,
+  error and missed counters beside the driver's), open: a session channel
+  of its own, the rings and events with `<jam/netdev.h>`'s rights; one at
+  a time, an orphaned one ended at the next open; port keys carry the
+  session's generation. One loop, one port (`loop.c`).
+- **nettest** (`user/tests/nettest`) and **`tools/net-test.sh`**: in shell
+  mode netstack holds the card's one session, so the script boots `init`
+  from a copy of the stick whose bootfs runs `bin/nettest <mode>` from
+  init.cfg (init's regression mode starts no netstack). `vlan`: the
+  session rules; every bad length, flags, frames already tagged with each
+  TPID (each refusal counted exactly), `produced` a ring and one ahead and
+  then behind, and a thread rewriting the slots' EtherType while the
+  driver copies them (2026-10-02 in QEMU: 892 of 2000 sent, 1108 refused);
+  the peer and the pcap each count exactly the frames the driver queued
+  and the chip sent (1157), all tagged 21 once, none with a tag inside.
+  A deliberately broken driver (frames sent untagged) fails it. `rx`: the
+  peer's census (5 untagged, 3 VLAN 0, 6 other VLANs, 4 QinQ, 2 nested, 1
+  of 1522 bytes, 10 on VLAN 21 at every priority and length up to 1514):
+  only the 10 arrive, whole and untagged, and each drop counter matches
+  (the 1522-byte frame never reaches the driver: QEMU's chip drops it,
+  RCTL.LPE being off); then 300 frames with the ring unread: 256 given,
+  44 counted as `rx_ring_full`, the driver still answering. `vlan-off`:
+  no frame at all, the driver finished, no service. Every run ends with
+  devmgr stopping the driver cleanly and every job empty.
+- netstack (stage 3b) opens a session on it and sees the link at
+  1000 Mb/s in shell mode; its end-to-end test (`tools/netstack-test.sh`)
+  is stage 3b's to run.
+- Two netdev servers exist now: this one and R1b's
+  (`drivers/rtl8125/server.c`, chip-independent, merged while this stage
+  was being tested). Moving the e1000e onto R1b's (a shared file both
+  drivers link) is a follow-up.
+
 ### netdev: rings, not calls
 
 Between a NIC driver and netstack (`abi/idl/` gains netdev.idl; the ring

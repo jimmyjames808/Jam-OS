@@ -12,6 +12,7 @@
 #include <check.h>
 #include <devmgr.h>
 #include <idl/hda.h>
+#include <idl/netdev.h>
 #include <idl/null.h>
 #include <os.h>
 #include "edu_check.h"
@@ -218,7 +219,8 @@ bool t_devmgr_query_channel(void)
  * device channel (in shell mode the mixer's, in this run init's own),
  * and the query channel never hands out a device that has one. The
  * control channel (the tests') hands it out, and the query channel still
- * hands out the others'. Skipped without an hda driver. */
+ * hands out the others'. A network card's (QEMU_NET) is held by init the
+ * same way, for netstack: refused too. Skipped without an hda driver. */
 bool t_devmgr_query_refuses_hda(void)
 {
     handle_t q = svc_get(SVC_DEVMGR), dm = devmgr();
@@ -239,14 +241,20 @@ bool t_devmgr_query_refuses_hda(void)
         uint8_t nodes[8], text[240];
         st = hda_info_until(ch, now() + 10 * NS_PER_S, &codec, &pin, &dac, &pcm, &formats, &amp,
                             &jack, &count, nodes, text);
-        CHECK_ST(jam_handle_close(ch), OK);
         bool hda = st != ERR_NOT_SUPPORTED;   /* another driver's service */
+        uint8_t mac[6], chip[16];
+        uint16_t vlan, mtu;
+        uint32_t link, speed, changes;
+        bool nic = !hda && netdev_info_until(ch, now() + 10 * NS_PER_S, mac, &vlan, &mtu, &link,
+                                             &speed, &changes, chip) != ERR_NOT_SUPPORTED;
+        CHECK_ST(jam_handle_close(ch), OK);
         hdas += hda;
+        bool claimed = hda || nic;   /* init holds a network card's device channel too */
         nh = 0;
         ch = HANDLE_INVALID;
         CHECK_ST(devmgr_call(q, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
-                             now() + 10 * NS_PER_S), hda ? ERR_ACCESS_DENIED : OK);
-        CHECK_EQ(nh, hda ? 0u : 1u);
+                             now() + 10 * NS_PER_S), claimed ? ERR_ACCESS_DENIED : OK);
+        CHECK_EQ(nh, claimed ? 0u : 1u);
         if (ch)
             CHECK_ST(jam_handle_close(ch), OK);
     }

@@ -104,6 +104,9 @@ static const struct {
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netprobe" },
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netsend" },
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "net" },
+    /* QEMU's Intel 82574L, the network tests' card (QEMU_NET; the PC has
+     * none). Like every network driver it gets the boot's vlan=. */
+    { 0x8086, 0x10d3, ANY_CLASS, "drv/e1000e", NULL },
 };
 
 struct binding devs[MAX_DEVS];
