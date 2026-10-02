@@ -870,7 +870,8 @@ that has one. The PC's RTL8125 is bound only by the boot entry "Jam OS
 (network)" (`net`; also the probe `netprobe` and the send test `netsend`:
 [TESTING.md](docs/TESTING.md#the-boot-menu)); the everyday boot leaves the
 chip alone until the PC has signed M9 off (one line in devmgr's match
-table).
+table). kexec keeps `net` (not the two one-shot tests), so a `reboot`, a
+panic and `update` on the network boot come back with the network.
 
 ## Userland
 

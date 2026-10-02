@@ -28,12 +28,16 @@
 #define BOOTFS_FILE_MAX (256ull << 20)
 
 /* Boot words the next kernel keeps: the hardware switches (TESTING.md
- * lists them), which it needs as much as this one did, and the ones that
- * choose how a plain boot looks. */
+ * lists them), which it needs as much as this one did, the ones that
+ * choose how a plain boot looks, and `net` (the PC's network card bound:
+ * a reboot, a panic and `update` on the network boot come back with the
+ * network, so netlog can send the panicked boot's log and the fetched
+ * build can be reached; `netprobe` and `netsend` are one-shot tests,
+ * not kept). */
 static const char *const kept_words[] = {
     "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
     "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nokmcache", "nospinidle",
-    "noplaceorder", "noaffinepair", "hidboot",
+    "noplaceorder", "noaffinepair", "hidboot", "net",
 };
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=" };
@@ -42,8 +46,8 @@ static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=
  * "vlan=21"): all are kept, and first, so a reboot, a panic and `update`
  * come back on the same VLAN, and a boot with no VLAN never comes back
  * on the default one because its word was dropped or didn't fit.
- * (`netprobe` is not kept: the listen-only probe runs only when its boot
- * entry is picked.) */
+ * (`netprobe` and `netsend` are not kept: the listen-only probe and the
+ * send test run only when their boot entry is picked.) */
 static bool vlan_word(const char *w, size_t n)
 {
     return n >= 4 && !memcmp(w, "vlan", 4) && (n == 4 || w[4] == '=');
