@@ -58,11 +58,13 @@ Vendored third-party code:
   has the same src/ but with CRLF line ends; the files here are the tag's
   (LF), unmodified. COPYING is lwIP's licence, BSD-3-Clause (sha256
   ef4aac92e05e87cd...). Only what netstack compiles: src/core (def,
-  inet_chksum, init, ip, mem, memp, netif, pbuf, raw, stats, timeouts,
-  udp), src/core/ipv4 (etharp, icmp, ip4, ip4_addr), src/netif/ethernet.c,
-  and the headers those include (found from the build's dependency
-  files); TCP, IPv6, IP fragments, IGMP, DHCP, DNS, the sockets and
-  netconn APIs and apps/ are left out. Jam OS's configuration (NO_SYS,
+  inet_chksum, init, ip, mem, memp, netif, pbuf, raw, stats, tcp,
+  tcp_in, tcp_out, timeouts, udp), src/core/ipv4 (etharp, icmp, ip4,
+  ip4_addr), src/netif/ethernet.c, and the headers those include (found
+  from the build's dependency files); IPv6, IP fragments, IGMP, DHCP, DNS,
+  the sockets and netconn APIs and apps/ are left out. The TCP files were
+  added from the same tag (checked byte for byte against the release
+  archive above, line ends aside). Jam OS's configuration (NO_SYS,
   the options file, the clock, its <string.h>) is
   user/services/netstack/port. Known and handled outside lwIP: its ARP
   input reads the 28-byte header without checking the frame holds it, so
