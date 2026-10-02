@@ -7,7 +7,7 @@
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings.
+ * /data/etc/settings; net.c the network services (netstack).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -106,7 +106,7 @@ void     splash_shell_ready(void);
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
 /* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, LOGD, SHELL, NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
@@ -205,6 +205,20 @@ void     settings_master(handle_t audioctl);
 void     settings_music(handle_t music);
 /* /data has no settings file: write one with the defaults, commented. */
 void     settings_first_file(void);
+
+/* ---- net.c: the network services ------------------------------------------------ */
+
+/* netstack's control channel, made once before the loop. */
+void     net_init(void);
+/* Start netstack (shell.c's NETSTACK) with the control channel's server
+ * end and the network cards' device channels. */
+status_t net_start(void);
+/* /data/etc/settings' net.address to a running netstack (a short deadline). */
+void     net_settings(void);
+/* devmgr ended: netstack, whose device channels were its, starts again. */
+void     net_devmgr_gone(void);
+/* netstack is given up on: calls waiting for it fail now. */
+void     net_given_up(void);
 
 /* ---- reboot.c -------------------------------------------------------------------- */
 

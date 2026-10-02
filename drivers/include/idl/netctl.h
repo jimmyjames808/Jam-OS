@@ -17,6 +17,7 @@
 #define NETCTL_CLEAR            0x001c0003u
 #define NETCTL_INFO             0x001c0004u
 #define NETCTL_STATS            0x001c0005u
+#define NETCTL_DEVICE           0x001c0006u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct netctl_set_ipv4_req {
@@ -86,6 +87,22 @@ struct netctl_stats_rep {
     uint32_t bad_checksums;
     uint32_t rx_buffers_used;
     uint32_t heap_used;
+} __attribute__((packed));
+struct netctl_device_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct netctl_device_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t session;
+    uint16_t vlan;
+    uint32_t speed;
+    uint32_t sessions;
+    uint64_t ring_errors;
+    uint64_t rx_bad;
+    uint64_t tx_full;
+    uint8_t chip[16];
 } __attribute__((packed));
 
 #define NETCTL_REQ_MAX 20u   /* bytes: the biggest request */
@@ -253,6 +270,47 @@ static inline status_t netctl_stats_until(handle_t ch, uint64_t deadline_ns, uin
 static inline status_t netctl_stats(handle_t ch, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
 {
     return netctl_stats_until(ch, DEADLINE_NEVER, out_rx_frames, out_rx_refused, out_tx_frames, out_tx_dropped, out_echo_replies, out_icmp_errors, out_icmp_limited, out_link_dropped, out_arp_dropped, out_ip_dropped, out_icmp_dropped, out_udp_dropped, out_bad_checksums, out_rx_buffers_used, out_heap_used);
+}
+
+/* The network card netstack runs on: `session` 1 while it has a session
+ * with the card's driver (netdev.idl), the VLAN the driver tags with, the
+ * link speed in Mb/s (0 while down), sessions opened since netstack
+ * started (one more after each driver restart), the driver's ring counts
+ * found out of range, rx slots refused (a bad length or flags), frames
+ * dropped because the tx ring was full, and the chip's name
+ * (NUL-padded). All 0 without a card. */
+static inline status_t netctl_device_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    struct netctl_device_req idl_q;
+    struct netctl_device_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NETCTL_DEVICE;
+    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
+                                       deadline_ns);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_session)
+        *out_session = idl_r.session;
+    if (idl_st == OK && out_vlan)
+        *out_vlan = idl_r.vlan;
+    if (idl_st == OK && out_speed)
+        *out_speed = idl_r.speed;
+    if (idl_st == OK && out_sessions)
+        *out_sessions = idl_r.sessions;
+    if (idl_st == OK && out_ring_errors)
+        *out_ring_errors = idl_r.ring_errors;
+    if (idl_st == OK && out_rx_bad)
+        *out_rx_bad = idl_r.rx_bad;
+    if (idl_st == OK && out_tx_full)
+        *out_tx_full = idl_r.tx_full;
+    for (uint32_t idl_i = 0; idl_st == OK && out_chip && idl_i < 16; idl_i++)
+        out_chip[idl_i] = idl_r.chip[idl_i];
+    return idl_st;
+}
+static inline status_t netctl_device(handle_t ch, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    return netctl_device_until(ch, DEADLINE_NEVER, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -456,6 +514,51 @@ static inline status_t netctl_stats_result(const void *idl_rep, struct idl_msg *
     return OK;
 }
 
+/* netctl_device without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then netctl_device_result. */
+static inline status_t netctl_device_send(handle_t ch, uint32_t idl_txid)
+{
+    struct netctl_device_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = NETCTL_DEVICE;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to netctl_device_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t netctl_device_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    const struct netctl_device_rep *idl_r = (const struct netctl_device_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_session)
+        *out_session = idl_r->session;
+    if (out_vlan)
+        *out_vlan = idl_r->vlan;
+    if (out_speed)
+        *out_speed = idl_r->speed;
+    if (out_sessions)
+        *out_sessions = idl_r->sessions;
+    if (out_ring_errors)
+        *out_ring_errors = idl_r->ring_errors;
+    if (out_rx_bad)
+        *out_rx_bad = idl_r->rx_bad;
+    if (out_tx_full)
+        *out_tx_full = idl_r->tx_full;
+    for (uint32_t idl_i = 0; out_chip && idl_i < 16; idl_i++)
+        out_chip[idl_i] = idl_r->chip[idl_i];
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -468,6 +571,7 @@ struct netctl_ops {
     status_t (*clear)(void *ctx);
     status_t (*info)(void *ctx, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link);
     status_t (*stats)(void *ctx, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used);
+    status_t (*device)(void *ctx, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16]);
 };
 
 /* Answer the netctl.set_ipv4 request kept in txn: idl_st and, if it is OK, the
@@ -566,6 +670,30 @@ static inline status_t netctl_reply_stats(struct idl_txn idl_txn, status_t idl_s
     idl_r.bad_checksums = bad_checksums;
     idl_r.rx_buffers_used = rx_buffers_used;
     idl_r.heap_used = heap_used;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the netctl.device request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t netctl_reply_device(struct idl_txn idl_txn, status_t idl_st, uint8_t session, uint16_t vlan, uint32_t speed, uint32_t sessions, uint64_t ring_errors, uint64_t rx_bad, uint64_t tx_full, const uint8_t chip[16])
+{
+    struct netctl_device_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.session = session;
+    idl_r.vlan = vlan;
+    idl_r.speed = speed;
+    idl_r.sessions = sessions;
+    idl_r.ring_errors = ring_errors;
+    idl_r.rx_bad = rx_bad;
+    idl_r.tx_full = tx_full;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.chip[idl_i] = chip[idl_i];
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -715,6 +843,40 @@ static inline uint32_t netctl_dispatch_on(handle_t ch, const struct netctl_ops *
         idl_r->bad_checksums = out_bad_checksums;
         idl_r->rx_buffers_used = out_rx_buffers_used;
         idl_r->heap_used = out_heap_used;
+        return sizeof(*idl_r);
+    }
+    case NETCTL_DEVICE: {
+        const struct netctl_device_req *idl_q = (const struct netctl_device_req *)req;
+        struct netctl_device_rep *idl_r = (struct netctl_device_rep *)rep;
+        uint8_t out_session = 0;
+        uint16_t out_vlan = 0;
+        uint32_t out_speed = 0;
+        uint32_t out_sessions = 0;
+        uint64_t out_ring_errors = 0;
+        uint64_t out_rx_bad = 0;
+        uint64_t out_tx_full = 0;
+        uint8_t out_chip[16];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            out_chip[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->device) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->device(ctx, &out_session, &out_vlan, &out_speed, &out_sessions, &out_ring_errors, &out_rx_bad, &out_tx_full, out_chip);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->session = out_session;
+        idl_r->vlan = out_vlan;
+        idl_r->speed = out_speed;
+        idl_r->sessions = out_sessions;
+        idl_r->ring_errors = out_ring_errors;
+        idl_r->rx_bad = out_rx_bad;
+        idl_r->tx_full = out_tx_full;
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->chip[idl_i] = out_chip[idl_i];
         return sizeof(*idl_r);
     }
     }

@@ -1,9 +1,9 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises nine services, each in a job of its own
+ * init starts and then supervises ten services, each in a job of its own
  * under init's: the bootfs server, the console, the boot splash, serialin,
- * devmgr, the mixer, the music player, logd and the shell. How each one is
+ * devmgr, the mixer, the music player, netstack, logd and the shell. How each one is
  * started and what it is given is in services.c; this file is the order,
  * the namespace they follow and the restarts.
  *
@@ -43,6 +43,7 @@ struct svc svcs[NSVC] = {
     [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
     [SERIALIN] = { "bin/serialin" },
     [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
+    [NETSTACK] = { "bin/netstack" },
     [LOGD] = { "bin/logd" }, [SHELL] = { "bin/shell" },
 };
 
@@ -256,6 +257,7 @@ static void data_came(void)
         settings_first_file();
         services_settings(MIXER);
         services_settings(MUSIC);
+        services_settings(NETSTACK);
     }
     had = has;
 }
@@ -274,7 +276,7 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for the console */
         if (i == LOGD && !mounted(DATA_MOUNT))
             continue;   /* waits for /data: a mount's packet wakes the loop */
-        if (i == MIXER && !services_devmgr_up() && !svcs[DEVMGR].given_up)
+        if ((i == MIXER || i == NETSTACK) && !services_devmgr_up() && !svcs[DEVMGR].given_up)
             continue;   /* waits for devmgr (started just before it) */
         if (i == SHELL && !splash_played() && t < splash_deadline()) {
             /* waits for the splash (its packet wakes the loop), at most until then */
@@ -329,7 +331,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
-           "devmgr, the mixer, the music player, logd and the shell\n",
+           "devmgr, the mixer, the music player, netstack, logd and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t deadline = start_due(now());

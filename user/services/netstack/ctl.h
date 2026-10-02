@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <os.h>
+#include "dev.h"
 #include "stack.h"
 
 /* Requests taken off the control channel per turn of the loop, so a
@@ -17,6 +18,10 @@
  * may be queued); else the read's status: ERR_SHOULD_WAIT (none left),
  * ERR_PEER_CLOSED (no client end is left). */
 status_t ctl_serve(handle_t ch);
+
+/* Where netctl.device's answer comes from: main.c points it at the card
+ * (netif.c's dev_get_report); NULL (a test's): no card, all 0. */
+extern void (*ctl_device_report)(struct dev_report *out);
 
 /* What netctl.set_ipv4 accepts (its comment in netctl.idl). */
 bool ctl_ipv4_valid(const struct stack_ipv4 *ip);
