@@ -91,6 +91,7 @@ static status_t next_msg(uint64_t deadline, struct input_key_event *ev, enum msg
             return st;   /* the console went away */
         if (!deadline)
             return ERR_TIMED_OUT;
+        pool_rest();   /* the app waits: no worker spins meanwhile */
         signals_t seen;
         st = jam_object_wait_one(scr.keys, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
         if (st != OK)

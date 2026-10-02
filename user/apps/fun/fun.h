@@ -28,7 +28,8 @@
  * ink width, fixed-width digits, integer scaling smoothed with scale2x),
  * an FPS counter, a little maths without libm, the CPU count (CPUID; there
  * is no system call for it), a thread pool that runs `items` of work on
- * every CPU (workers spin briefly between jobs, then sleep on an event),
+ * every CPU (workers spin briefly between jobs, then sleep on an event;
+ * at once when the app waits),
  * key decoding for both key sources (a USB keyboard: HID usages; a
  * serial terminal: codepoints), and the mouse for the apps that ask for it
  * (gfx_mouse_open): a pointer position, the buttons and the wheel, and an
@@ -285,6 +286,15 @@ uint32_t pool_threads(void);
 void     pool_run(void (*fn)(uint32_t item, uint32_t worker, void *arg), void *arg, uint32_t items);
 /* Work items each thread did in the last pool_run. */
 extern uint32_t pool_items_by[FUN_MAX_THREADS];
+/* The app is about to wait (for keys, a frame's time): the workers sleep
+ * now instead of spinning for the next batch. gfx_key and gfx_key_event
+ * call it before they block; an app that waits some other way calls it
+ * itself. */
+void     pool_rest(void);
+/* For the self-tests: the pauses the workers have spun between batches so
+ * far, and how many workers sleep now. */
+uint64_t pool_spins(void);
+uint32_t pool_asleep(void);
 
 /* ---- maths without libm ------------------------------------------------------------------ */
 
