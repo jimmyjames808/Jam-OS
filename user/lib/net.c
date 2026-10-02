@@ -21,6 +21,12 @@ handle_t net_svc(void)
     return h ? h : svc_get(SVC_NET);
 }
 
+status_t net_svc_open(handle_t *out)
+{
+    status_t st = svc_open(SVC_NET_SYS, out);
+    return st == ERR_NOT_FOUND ? svc_open(SVC_NET, out) : st;
+}
+
 /* The time from now to deadline in ms, rounded up, as a timeout_ms. */
 static uint32_t timeout_of(uint64_t deadline)
 {

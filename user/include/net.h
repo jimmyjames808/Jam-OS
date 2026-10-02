@@ -157,6 +157,10 @@ struct net_sock {
  * program's list didn't ask for it (or netstack isn't running). Don't
  * close it. */
 handle_t net_svc(void);
+/* A channel of the caller's own to the same (svc_open: the caller closes
+ * it), for a loop that binds it on its port. ERR_NOT_FOUND: neither name
+ * is in the namespace. */
+status_t net_svc_open(handle_t *out);
 /* The interface now. Errors: the call's (ERR_PEER_CLOSED: no netstack). */
 status_t net_info(handle_t net, struct net_info *out);
 /* Wait until the interface has an address (at once if it has), or the
