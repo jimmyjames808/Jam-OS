@@ -31,7 +31,7 @@ a real desktop PC, which is where every milestone is tested.
   shows up read-only at `/usb0`, `/usb1`, ... and `mount -w` makes it
   writable. Each boot's kernel log is saved to `/data/logs/` and can be
   read on another computer.
-- A console and a shell with about 75 commands, pipes, variables, Tab
+- A console and a shell with about 80 commands, pipes, variables, Tab
   completion and file commands (`ls cat cp mv rm mkdir write df mount`),
   plus a few apps: a Mandelbrot explorer, life, tetris, snake, minesweeper
   played with the mouse, and a graphical system monitor.
@@ -62,9 +62,13 @@ a real desktop PC, which is where every milestone is tested.
   After it the shell's screen holds the shell alone: the kernel log stays
   in `log` and `dmesg`, and only a few notices reach the screen (a stick
   plugged in or pulled out, a service that crashed, `/data` full).
+- Each program gets only what it asks for: a list in its own file (the
+  services under `/svc` and the mounts it wants, read-only or writable).
+  A program copied to `/data` runs once the owner has said yes to its list
+  with `allow`.
 
-Not yet: networking, power management, running
-programs from `/data`. Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
+Not yet: networking, power management. Status and plans:
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run in QEMU
 
@@ -130,7 +134,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `test/` (test drivers), `include/` (`<jam/driver.h>`, generated IDL headers) |
-| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace, the driver API, sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3) |
+| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8 and SHA-256 |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load) |
@@ -151,7 +155,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the real PC, and flashing the stick |
 | [docs/BENCH.md](docs/BENCH.md) | benchmark numbers from the PC |
-| [docs/M8.6-PLAN.md](docs/M8.6-PLAN.md) | the plan of the next milestone (cleanup and polish) |
+| [docs/M8.6-PLAN.md](docs/M8.6-PLAN.md) | the plan of the milestone under way (cleanup and polish) |
 | [docs/logo/README.md](docs/logo/README.md) | the logo's files and colours |
 
 ## Contributing
