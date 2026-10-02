@@ -241,9 +241,10 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 # (user/apps/jamcover/port).
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # utest tests the music player's folder walk and spectrum (utest/music.c):
-# the player's own objects, linked in, and its header.
+# the player's own objects, linked in, and its header; and the RTL8125
+# probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h).
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o
-EXTRA_CFLAGS_utest := -iquote user/services/music
+EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -270,7 +271,8 @@ $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 
 # ---- drivers (ARCHITECTURE.md "The migration rule") -------------------------
 # A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>,
-# and <jam/task.h>, libos's cooperative tasks), the generated <idl/*.h>
+# <jam/task.h>, libos's cooperative tasks, and <jam/netframe.h>, pure
+# functions over a network frame's bytes), the generated <idl/*.h>
 # and the compiler's freestanding headers
 # (stdint/stddef/stdbool/stdarg): -nostdinc drops every other include path,
 # and DRV_INC holds copies of just those files. -fno-builtin: no call is
@@ -285,13 +287,14 @@ DRV_SURFACE := drivers/include/jam/driver.h drivers/include/jam/task.h kernel/in
                kernel/include/jam/status.h
 DRV_INC     := $(BUILD)/driver-include
 DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/abi.h \
-               $(DRV_INC)/jam/status.h \
+               $(DRV_INC)/jam/status.h $(DRV_INC)/jam/netframe.h \
                $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
 DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c))
 
-$(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h: $(DRV_INC)/jam/%.h: drivers/include/jam/%.h
+$(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/netframe.h: \
+        $(DRV_INC)/jam/%.h: drivers/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 $(DRV_INC)/jam/abi.h $(DRV_INC)/jam/status.h: $(DRV_INC)/jam/%.h: kernel/include/jam/%.h
@@ -334,6 +337,7 @@ check: all
 	python3 tools/checkdocs.py
 	python3 tools/sortincludes.py
 	sh tools/checkaudio.sh
+	sh tools/checknotx.sh
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository

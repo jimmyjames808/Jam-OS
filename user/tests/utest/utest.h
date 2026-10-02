@@ -212,6 +212,13 @@ bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 
+/* netframe.c: <jam/netframe.h> over hand-made frames, and the RTL8125
+ * probe's listen-only rule. */
+bool t_netframe_classify(void);
+bool t_netframe_short_frames(void);
+bool t_rtl8125_write_guard(void);
+bool t_rtl8125_stays_off(void);
+
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);
