@@ -159,7 +159,10 @@ bool t_nettcp_limits(void)
         CHECK(counts(&c));
     } while ((c.tcp_conns || c.tcp_listeners || c.ring_bytes || c.openers) && now() < end);
     CHECK(!c.tcp_conns && !c.tcp_listeners && !c.ring_bytes && !c.openers);
-    CHECK(c.refused_shares >= 3);
+    /* The listeners' share and the connections': a third refusal comes
+     * only if the listener after a close is asked for before netstack saw
+     * the close (the retry loop above), which is a race. */
+    CHECK(c.refused_shares >= 2);
     CHECK(netdrv_stop());
     return true;
 }
