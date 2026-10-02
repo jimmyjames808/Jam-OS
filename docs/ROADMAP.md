@@ -96,6 +96,8 @@ Known limits it left:
 
 ## Later
 
+M11 to M12.5 run in three waves: [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md).
+
 | # | What | Done when |
 |---|---|---|
 | A3 | Maybe: USB audio devices (headsets, USB sound cards). HDMI/DisplayPort audio through the RTX is not planned | (not planned in detail) |
