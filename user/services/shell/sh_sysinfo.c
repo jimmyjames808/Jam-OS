@@ -1,6 +1,6 @@
 /* System, CPU and process figures for uname, uptime, lscpu, free, ps and
- * top: syscalls 130-132 (sys_info, cpu_stat, proc_list; RIGHT_READ on the
- * root resource) and how the commands show them. */
+ * top: syscalls 130-132 (sys_info, cpu_stat, proc_list; RIGHT_ROOT_SYSINFO
+ * on the root resource) and how the commands show them. */
 #include "sh.h"
 
 bool sh_sysinfo(struct sys_info *s, const char *who)

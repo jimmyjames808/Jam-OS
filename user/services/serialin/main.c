@@ -8,7 +8,7 @@
  * into the shell.
  *
  * Startup handles:
- *   SR_RESOURCE   the root resource with RIGHT_READ (serial_open)
+ *   SR_RESOURCE   the root resource with RIGHT_ROOT_SERIAL (serial_open)
  *   SR_USER + 0   the `input` channel to the console
  *
  * Exits 0 when the console closes the channel (it restarted: init starts

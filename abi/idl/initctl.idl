@@ -1,8 +1,10 @@
 # initctl: init's control channel, served by init in shell mode
-# (user/services/init/ctl.c). The shell holds one client end (startup role
-# SR_USER + 3: every method) and the console another (SR_USER + 8: reboot
-# only; the rest ERR_ACCESS_DENIED), so what a holder may ask is decided by
-# which channel it holds. After ERR_PEER_CLOSED there is nothing to
+# (user/services/init/ctl.c). One channel answers every method: init
+# publishes it as /svc/init, a new one for each shell it starts (the shell,
+# and the test programs whose lists ask for it, <wants.h>). The console
+# holds another (startup role SR_USER + 8: reboot only; the rest
+# ERR_ACCESS_DENIED), so what a holder may ask is decided by which channel
+# it holds. After ERR_PEER_CLOSED there is nothing to
 # reconnect to: init is gone, and with it whoever would restart anything;
 # `reboot` callers fall back to the reboot system call.
 # Format: see tools/genidl.py.

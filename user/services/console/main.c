@@ -19,9 +19,10 @@
  * checks (selftest.c), then exit.
  *
  * Startup handles:
- *   SR_RESOURCE     the root resource with RIGHT_READ (klog_open),
+ *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open),
  *                   RIGHT_WRITE (framebuffer_take, serial_write) and
- *                   RIGHT_MANAGE (reboot, on Ctrl+Alt+Del)
+ *                   RIGHT_ROOT_REBOOT (reboot, on Ctrl+Alt+Del, if init
+ *                   doesn't answer)
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
  *   SR_USER + 8     init's control channel (abi/idl/initctl.idl), which

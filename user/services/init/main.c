@@ -388,11 +388,9 @@ int main(int argc, char **argv)
 
     if (!check_root_resource())
         return 1;
-    /* Modes the kernel asks for (argv[1]) instead of init.cfg. */
-    /* A plain boot: the console, devmgr (connected to it), serial
-     * input and the shell; the safe mode entry: the same without USB. */
-    /* argv[2] "splash" (the kernel's choice: a plain boot without
-     * `verbose` or `nosplash`): the boot splash plays first. */
+    /* The option words after the mode (argv[2] on): "splash" (the kernel's
+     * choice: a plain boot without `verbose` or `nosplash`: the boot splash
+     * plays first), "hidboot", "bootdisk=0x<id>", "splashhang". */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -401,6 +399,9 @@ int main(int argc, char **argv)
             init_bootdisk = argv[i];
         init_splashhang |= !strcmp(argv[i], "splashhang");
     }
+    /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
+     * boot: the console, devmgr (connected to it), serial input and the
+     * shell; the safe mode entry: the same without USB. */
     if (argc > 1 && (!strcmp(argv[1], "shell") || !strcmp(argv[1], "shell-nousb"))) {
         init_shell(!strcmp(argv[1], "shell-nousb"), splash, NULL);
         return 1;

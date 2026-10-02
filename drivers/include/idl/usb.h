@@ -388,7 +388,7 @@ static inline status_t usb_set_interface(handle_t ch, uint8_t alt_setting)
     return usb_set_interface_until(ch, DEADLINE_NEVER, alt_setting);
 }
 
-/* ---- bulk endpoints (M8: mass storage) ----------------------------------
+/* ---- bulk endpoints (mass storage) ---------------------------------------
  * Open a bulk-IN / bulk-OUT pair of this interface (addresses with and
  * without bit 7; each one of this interface's bulk endpoints). usb-bus makes
  * a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
