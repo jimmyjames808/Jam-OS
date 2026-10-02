@@ -164,6 +164,8 @@ static bool bring_up(struct rtl *t, struct outcome *o)
     tally_at(t, "at start", &o->start, &o->start_ok);
     t->tally0_ok = o->start_ok;   /* tx.c's stall dumps and tx_tick count from it */
     t->tally_tx0 = o->start.tx_ok + o->start.tx_err;
+    t->tally_rx0 = o->start.rx_ok;
+    t->tally_miss0 = o->start.miss;
     if (st != OK)
         drv_log("bring-up failed (%s): stopping", status_str(st));
     return st == OK;

@@ -259,6 +259,11 @@ struct e1k {
     struct srv v;
     uint64_t rx_drop[NETFRAME_RX_KINDS];   /* by netframe_rx_check's reason */
     uint64_t rx_errors;           /* flagged by the chip, spread over buffers, or too long */
+    uint64_t rx_taken;            /* descriptors the chip handed back (every frame) */
+    uint64_t rx_tick_at;          /* when rx_tick last logged (uptime, ns) */
+    uint64_t rx_tick_taken;       /* rx_taken then */
+    uint32_t rxo_irqs;            /* interrupts with "receive overrun" (ICR.RXO) */
+    uint32_t rxdmt_irqs;          /* ... with "descriptors running low" (ICR.RXDMT0) */
     uint64_t tx_done;             /* descriptors the chip reported sent */
     struct chip_counts chip;
     uint64_t irqs, polls;
@@ -305,6 +310,8 @@ uint64_t ring_tx_buf_addr(const struct e1k *t, uint32_t i);
 /* Every frame the chip has handed back: kept (our VLAN, untagged, to
  * srv_rx) or dropped and counted. Returns how many. */
 unsigned rx_harvest(struct e1k *t);
+/* "rx so far", at most every 10 s and only while frames come. */
+void     rx_tick(struct e1k *t);
 
 /* ---- tx.c (THE transmit path) ------------------------------------------------------ */
 

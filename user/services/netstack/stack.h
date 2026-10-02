@@ -80,6 +80,8 @@ struct stack_counts {
     /* lwIP's memory in use now: back to where it was once every frame is
      * dealt with (a leak shows here). */
     uint32_t rx_buffers_used; /* receive buffers, of lwipopts.h's PBUF_POOL_SIZE */
+    uint32_t rx_buffers_most; /* ... the most ever in use at once */
+    uint32_t rx_buffers_none; /* times a frame found none free (refused) */
     uint32_t heap_used;       /* bytes of its heap, of MEM_SIZE */
 };
 

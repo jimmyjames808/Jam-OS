@@ -219,10 +219,13 @@ struct events {
     uint32_t isr_seen;            /* every ISR bit seen */
     uint32_t link_changes;        /* after the first link-up, seen by PHYSTAT */
     uint32_t linkchg_irqs;        /* interrupts with the link-change bit */
+    uint32_t rdu_irqs;            /* interrupts with "receive descriptor unavailable" */
+    uint32_t rx_oflow_irqs;       /* ... with "receive FIFO overflow" */
 };
 
 /* Full mode's receive counts (rx.c). */
 struct rxstats {
+    uint32_t taken;                    /* descriptors the chip handed back (every frame) */
     uint32_t kept;                     /* passed on, untagged */
     uint32_t drop[NETFRAME_RX_KINDS];  /* dropped, by netframe_rx_check's reason */
     uint32_t errors, split;            /* the chip's error bit; not in one buffer */
@@ -282,6 +285,10 @@ struct rtl {
     uint64_t tick_at;             /* when tx_tick last logged (uptime, ns) */
     uint32_t tick_queued, tick_back;   /* the counts it logged then */
     uint64_t tally_tx0;           /* the chip's tally of frames sent at the start (ok + error) */
+    uint64_t tally_rx0;           /* ... of frames received (ok) */
+    uint16_t tally_miss0;         /* ... of frames missed (no descriptor) */
+    uint64_t rx_tick_at;          /* when rx_tick last logged (uptime, ns) */
+    uint32_t rx_tick_taken;       /* rx.taken then */
     bool     tally0_ok;           /* ... it was read */
     struct txstats tx;
     /* receive in full mode: rx.c's */
@@ -442,6 +449,10 @@ void     probe_report(const struct rtl *t, const struct outcome *o);
  * t->on_frame) or dropped and counted. Returns how many it looked at. */
 unsigned rx_harvest(struct rtl *t);
 void     rx_log(const struct rtl *t);
+/* Full mode: "rx so far", at most every 10 s and only while frames come. */
+void     rx_tick(struct rtl *t);
+/* Receive descriptors the chip owns now (handed over, not yet filled). */
+unsigned ring_rx_owned(const struct rtl *t);
 
 /* ---- tx.c: THE transmit path (and nothing else transmits) --------------------------- */
 

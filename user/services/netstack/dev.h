@@ -61,6 +61,7 @@ struct dev_report {
     uint32_t speed;        /* Mb/s, 0 while the link is down */
     uint32_t sessions;     /* sessions opened since netstack started */
     uint64_t ring_errors;  /* the driver's counts out of range (both rings) */
+    uint64_t rx_taken;     /* frames taken off the rx ring (every session) */
     uint64_t rx_bad;       /* rx slots refused: a bad length or flags */
     uint64_t tx_full;      /* frames dropped: the tx ring was full */
     char     chip[16];

@@ -21,6 +21,8 @@
  * back with the tail (RDT), so the chip can't change it in between. */
 #include "e1000e.h"
 
+#define RX_TICK_NS (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
+
 /* A frame (len bytes at buf, as it was on the wire): to the server
  * untagged if it is ours, else counted under its reason (rx_drop, which
  * the stats add up: loop.c). */
@@ -66,6 +68,7 @@ unsigned rx_harvest(struct e1k *t)
         if (!(status & RXD_DD))
             break;
         __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the frame and length after DD */
+        t->rx_taken++;
         take(t, d, status, i);
         *(volatile uint64_t *)(d + RXD_LEN) = 0;   /* status 0: the chip's again */
         last = i;
@@ -76,4 +79,43 @@ unsigned rx_harvest(struct e1k *t)
         wr32(t, E1K_RDT, last);
     }
     return n;
+}
+
+/* Descriptors the chip may fill now: from the head (RDH) up to the tail
+ * (RDT), the ring's size less one when the driver keeps up. */
+static uint32_t rx_chips(struct e1k *t)
+{
+    uint32_t head = rd32(t, E1K_RDH), tail = rd32(t, E1K_RDT);
+    return (tail + RX_DESCS - head) % RX_DESCS;
+}
+
+/* Where the received frames went (the RTL8125's rx_tick has the same
+ * line): what the chip handed back and its own counts (frames it took in,
+ * frames it missed for want of a descriptor), what the driver kept and
+ * dropped, what went to netstack's ring, the descriptors the chip may
+ * fill, and the interrupts that say it ran short. */
+void rx_tick(struct e1k *t)
+{
+    uint64_t now = drv_clock_ns();
+    if (!t->ring || now - t->rx_tick_at < RX_TICK_NS || t->rx_taken == t->rx_tick_taken)
+        return;
+    t->rx_tick_at = now;
+    t->rx_tick_taken = t->rx_taken;
+    chip_counters(t);
+    const uint64_t *d = t->rx_drop;
+    const struct netdev_stats *s = &t->v.st;
+    /* two lines: a log line holds about 240 characters */
+    drv_log("rx so far: %lu from the chip (counted %lu, %lu missed), %lu kept; dropped %lu "
+            "untagged, %lu other vlans, %lu vlan 0, %lu bad; %lu to netstack, %lu ring full, %lu "
+            "no session", (unsigned long)t->rx_taken, (unsigned long)t->chip.rx_ok,
+            (unsigned long)t->chip.missed, (unsigned long)d[NETFRAME_RX_KEEP],
+            (unsigned long)d[NETFRAME_RX_UNTAGGED],
+            (unsigned long)(d[NETFRAME_RX_OTHER_VLAN] + d[NETFRAME_RX_OUTER] +
+                            d[NETFRAME_RX_NESTED]),
+            (unsigned long)d[NETFRAME_RX_PRIORITY],
+            (unsigned long)(d[NETFRAME_RX_RUNT] + d[NETFRAME_RX_LONG] + t->rx_errors),
+            (unsigned long)s->rx_frames, (unsigned long)s->rx_ring_full,
+            (unsigned long)s->rx_no_session);
+    drv_log("rx ring: %u of %u descriptors the chip's, next %u; %u overrun and %u running-low "
+            "interrupts", rx_chips(t), RX_DESCS, t->rx_next, t->rxo_irqs, t->rxdmt_irqs);
 }

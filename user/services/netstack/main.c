@@ -32,12 +32,15 @@
 #define SR_NETCTL (SR_USER + 0)
 #define SR_NET    (SR_USER + 1)
 #define KEY_CTL   1u
+#define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
 
 struct loop {
     handle_t   port;
     handle_t   ctl;           /* netctl's server end, 0 once its clients are all gone */
     bool       ctl_pending;   /* it may have requests queued */
     struct dev dev;           /* the network card */
+    uint64_t   rx_tick_at;    /* when rx_tick last logged (ns) */
+    uint64_t   rx_tick_taken; /* frames taken off the ring then */
 };
 
 static struct loop l;
@@ -45,6 +48,31 @@ static struct loop l;
 static void report(struct dev_report *out)
 {
     dev_get_report(&l.dev, out);
+}
+
+/* "rx so far", next to the driver's: frames taken off the rx ring, what
+ * lwIP did with them, and its receive buffers (a leak shows as buffers in
+ * use that never go back, then frames refused for want of one). At most
+ * every 10 s, and only while frames come. Next to the deadline it is
+ * looked at once a turn (a frame's arrival is a turn). */
+static void rx_tick(void)
+{
+    struct dev_report r;
+    dev_get_report(&l.dev, &r);
+    uint64_t t = now();
+    if (t - l.rx_tick_at < RX_TICK || r.rx_taken == l.rx_tick_taken)
+        return;
+    l.rx_tick_at = t;
+    l.rx_tick_taken = r.rx_taken;
+    struct stack_counts c;
+    stack_get_counts(&c);
+    /* printf, not nstack_log: the line is longer than its 160 characters */
+    printf("netstack: rx so far: %lu off the ring (%lu bad), %lu into lwIP (%lu refused); "
+           "buffers %u in use, %u at most, %u times none; dropped link %u arp %u ip %u icmp %u "
+           "udp %u; %lu pings answered\n", (unsigned long)r.rx_taken, (unsigned long)r.rx_bad,
+           (unsigned long)c.rx_frames, (unsigned long)c.rx_refused, c.rx_buffers_used,
+           c.rx_buffers_most, c.rx_buffers_none, c.link_dropped, c.arp_dropped, c.ip_dropped,
+           c.icmp_dropped, c.udp_dropped, (unsigned long)c.echo_replies);
 }
 
 static void serve_ctl(void)
@@ -104,6 +132,7 @@ int main(int argc, char **argv)
         if (t < deadline)
             deadline = t;
         uint64_t retry = dev_work(&l.dev);   /* last: it sends what the others queued */
+        rx_tick();
         if (retry < deadline)
             deadline = retry;
         if (l.ctl_pending || dev_pending(&l.dev) || progs_pending())

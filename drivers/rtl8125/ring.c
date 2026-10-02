@@ -130,6 +130,15 @@ bool ring_rx_peek(struct rtl *t, struct rx_slot *out)
     return true;
 }
 
+unsigned ring_rx_owned(const struct rtl *t)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < RX_DESCS; i++)
+        n += !!(*(const volatile uint32_t *)(t->ring + i * RX_DESC_SIZE + RX_DESC_CMDSTS) &
+                RX_OWN);
+    return n;
+}
+
 void ring_rx_done(struct rtl *t)
 {
     rx_arm(t, t->next);

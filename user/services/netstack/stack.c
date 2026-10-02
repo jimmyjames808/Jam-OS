@@ -274,6 +274,8 @@ void stack_get_counts(struct stack_counts *out)
     out->udp_dropped = lwip_stats.udp.drop;
     out->bad_checksums = lwip_stats.ip.chkerr + lwip_stats.icmp.chkerr + lwip_stats.udp.chkerr;
     out->rx_buffers_used = lwip_stats.memp[MEMP_PBUF_POOL]->used;
+    out->rx_buffers_most = lwip_stats.memp[MEMP_PBUF_POOL]->max;
+    out->rx_buffers_none = lwip_stats.memp[MEMP_PBUF_POOL]->err;
     out->heap_used = (uint32_t)lwip_stats.mem.used;
 }
 

@@ -85,6 +85,7 @@ static void service(struct e1k *t)
 {
     (void)rx_harvest(t);
     srv_rx_done(&t->v);   /* the rx ring published once per batch */
+    rx_tick(t);
     if (tx_reap(t))
         srv_tx_room(&t->v);   /* descriptors came back: frames left waiting go on */
     if (chip_link_poll(t))
@@ -101,6 +102,8 @@ static void interrupt(struct e1k *t, uint64_t fires)
     if (icr)
         wr32(t, E1K_ICR, icr);   /* write 1 to clear (with MSI-X a read doesn't) */
     t->icr_seen |= icr;
+    t->rxo_irqs += !!(icr & ICR_RXO);
+    t->rxdmt_irqs += !!(icr & ICR_RXDMT0);
     service(t);
 }
 

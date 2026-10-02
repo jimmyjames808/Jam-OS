@@ -43,6 +43,7 @@ static void service(struct rtl *t, bool by_irq)
     (void)rx_harvest(t);
     unsigned freed = tx_reap(t);
     tx_tick(t);
+    rx_tick(t);
     (void)chip_link_poll(t);
     if (!t->srv)
         return;
@@ -69,6 +70,8 @@ static void interrupt(struct rtl *t, uint64_t fires)
         drv_log("WARNING: transmit status bits in isr %#x", isr);
     t->ev.isr_seen |= isr;
     t->ev.linkchg_irqs += !!(isr & RTL_ISR_LINKCHG);
+    t->ev.rdu_irqs += !!(isr & RTL_ISR_RX_DESC_UNAVAIL);
+    t->ev.rx_oflow_irqs += !!(isr & RTL_ISR_RX_FIFO_OFLOW);
     service(t, true);
     wr32(t, RTL_IMR, t->mode == RTL_MODE_PROBE ? RTL_IMR_PROBE : RTL_IMR_FULL);
 }

@@ -300,6 +300,7 @@ static void drain_rx(struct dev *d)
         return;
     if (n > DEV_RX_BUDGET)
         n = DEV_RX_BUDGET;
+    d->rep.rx_taken += n;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t len;
         if (netdev_take(&d->rx, rxbuf, sizeof(rxbuf), &len) == OK)

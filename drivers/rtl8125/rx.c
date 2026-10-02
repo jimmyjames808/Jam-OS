@@ -15,6 +15,8 @@
  * ring_rx_done gives it back, so the chip can't change it in between. */
 #include "rtl8125.h"
 
+#define RX_TICK_NS (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
+
 static const char *const reason[NETFRAME_RX_KINDS] = {
     [NETFRAME_RX_KEEP] = "kept", [NETFRAME_RX_RUNT] = "runt", [NETFRAME_RX_LONG] = "too long",
     [NETFRAME_RX_UNTAGGED] = "untagged", [NETFRAME_RX_PRIORITY] = "vlan 0",
@@ -52,6 +54,7 @@ unsigned rx_harvest(struct rtl *t)
     unsigned n = 0;
     struct rx_slot s;
     for (; n < RX_DESCS && ring_rx_peek(t, &s); n++) {
+        t->rx.taken++;
         if (s.status & RX_ERRSUM)
             t->rx.errors++;
         else if (!s.whole)
@@ -74,4 +77,42 @@ void rx_log(const struct rtl *t)
     drv_log("rx on vlan %u: %u kept (%u with nobody to take them); dropped: %s; %u with the "
             "error bit, %u split", t->vlan, t->rx.kept, t->rx.unused, drops, t->rx.errors,
             t->rx.split);
+}
+
+/* Where the received frames went, next to tx_tick's "tx so far": what the
+ * chip handed back and its own tally (frames it took in and frames it
+ * missed for want of a descriptor), what the driver kept and dropped, what
+ * went to netstack's ring, the descriptors the chip holds (all 256 while
+ * the driver keeps up), the receive interrupts that say the chip ran out,
+ * and descriptors whose address field the chip changed (rxdesc.h). A
+ * receive that stops shows here as counts that stand still. */
+void rx_tick(struct rtl *t)
+{
+    if (t->mode != RTL_MODE_FULL)
+        return;
+    uint64_t now = drv_clock_ns();
+    if (now - t->rx_tick_at < RX_TICK_NS || t->rx.taken == t->rx_tick_taken)
+        return;
+    t->rx_tick_at = now;
+    t->rx_tick_taken = t->rx.taken;
+    char chip[48] = "tally unread";
+    struct tally x;
+    if (t->tally0_ok && tally_dump(t, &x) == OK)
+        drv_snprintf(chip, sizeof(chip), "tally %lu, %u missed",
+                     (unsigned long)(x.rx_ok - t->tally_rx0), (uint16_t)(x.miss - t->tally_miss0));
+    const uint32_t *d = t->rx.drop;
+    const struct netdev_stats *s = t->srv ? &t->srv->st : NULL;
+    /* two lines: a log line holds about 240 characters */
+    drv_log("rx so far: %u from the chip (%s), %u kept; dropped %u untagged, %u other vlans, %u "
+            "vlan 0, %u bad; %lu to netstack, %lu ring full, %lu no session", t->rx.taken, chip,
+            t->rx.kept, d[NETFRAME_RX_UNTAGGED],
+            d[NETFRAME_RX_OTHER_VLAN] + d[NETFRAME_RX_OUTER] + d[NETFRAME_RX_NESTED],
+            d[NETFRAME_RX_PRIORITY],
+            d[NETFRAME_RX_RUNT] + d[NETFRAME_RX_LONG] + t->rx.errors + t->rx.split,
+            (unsigned long)(s ? s->rx_frames : 0), (unsigned long)(s ? s->rx_ring_full : 0),
+            (unsigned long)(s ? s->rx_no_session : 0));
+    drv_log("rx ring: %u of %u descriptors the chip's, next %u; %u no-descriptor and %u "
+            "fifo-overflow interrupts; %u address field(s) changed by the chip (first %#lx)",
+            ring_rx_owned(t), RX_DESCS, t->next, t->ev.rdu_irqs, t->ev.rx_oflow_irqs,
+            t->rx.addr_changed, (unsigned long)t->rx.addr_first);
 }
