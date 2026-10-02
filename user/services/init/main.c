@@ -208,7 +208,7 @@ static bool start_devmgr(handle_t console)
     /* The programs we run reach it through our namespace. */
     handle_t dq = HANDLE_INVALID, dc = HANDLE_INVALID;
     if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
-        (void)ns_svc_set(SVC_DEVMGR, dq, false);   /* without it: the tests skip devmgr's */
+        (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
     if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
         (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
     /* Wait for its first binding pass. */

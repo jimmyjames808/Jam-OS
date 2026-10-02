@@ -642,7 +642,8 @@ Not built yet; these rules bind every future path that can transmit.
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's;
-  `music`, a channel per opener; `devmgr` and `devmgr-ctl`, each devmgr's;
+  `music`, a channel per opener; `devmgr`, a channel per opener, and
+  `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
@@ -679,7 +680,7 @@ Not built yet; these rules bind every future path that can transmit.
   given, which is the only permission system for files and services.
   **Services**: `svc_open(name)` gives the caller a channel of its own
   where the service hands them out (the `svc` protocol's `connect`,
-  `abi/idl/svc.idl`: the music player does), else a duplicate of the
+  `abi/idl/svc.idl`: the music player and devmgr's queries do), else a duplicate of the
   shared one; `svc_get` keeps one and opens it again once its service
   has restarted. `/` lists `svc`, `/svc` the names. **Views**: a mount's
   service hands out narrower channels onto the same volume (`fs.view`,

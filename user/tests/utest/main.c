@@ -578,6 +578,7 @@ static const struct {
     { "devmgr_query_channel", t_devmgr_query_channel },
     { "devmgr_query_refuses_hda", t_devmgr_query_refuses_hda },
     { "devmgr_device_channel", t_devmgr_device_channel },
+    { "devmgr_openers", t_devmgr_openers },
 
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },

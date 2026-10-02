@@ -1,19 +1,24 @@
 /* devmgr: its channels. init gives it the server ends of a control channel
  * (SR_DEVMGR_CTL) and a query channel (SR_DEVMGR), and asks the control
  * channel for device channels (DEVMGR_DEVICE_CHANNEL), each scoped to one
- * device and made here. Every channel is watched on devmgr's port, read
- * here and answered by request.c. What a channel may ask is decided by
- * which channel it is (its level, and a device channel's device), never by
- * who sent the request (<devmgr.h> "Trust").
+ * device and made here. A query channel also answers the svc protocol's
+ * connect (abi/idl/svc.idl) with a new query channel of the caller's own,
+ * so each opener of /svc/devmgr has one and a reply that comes after its
+ * caller gave up waits on that caller's channel, not a shared one. Every
+ * channel is watched on devmgr's port, read here and answered by
+ * request.c. What a channel may ask is decided by which channel it is
+ * (its level, and a device channel's device), never by who sent the
+ * request (<devmgr.h> "Trust").
  *
- * The table is bounded (MAX_CHANS): a device channel asked for past it is
- * ERR_NO_RESOURCES. A query or device channel whose clients are all gone
- * is dropped, and its slot is free again; devmgr lives as long as the
- * clients of slot 0 do (the control channel, or without one the query
+ * The table is bounded (MAX_CHANS): a device channel or a connect asked for
+ * past it is ERR_NO_RESOURCES. A query or device channel whose clients are
+ * all gone is dropped, and its slot is free again; devmgr lives as long as
+ * the clients of slot 0 do (the control channel, or without one the query
  * channel). */
+#include <idl/svc.h>
 #include "internal.h"
 
-#define MAX_CHANS 32   /* the control and query channels, device channels */
+#define MAX_CHANS 32   /* the control and query channels, the openers', device channels */
 #define SLOT_LIFE 0    /* the channel devmgr lives by */
 
 struct chan {
@@ -44,6 +49,20 @@ static bool allowed(const struct chan *c, uint32_t ordinal)
 {
     return c->lv == LEVEL_CONTROL || (c->lv == LEVEL_QUERY && query_ok(ordinal)) ||
            (c->lv == LEVEL_DEVICE && device_ok(ordinal));
+}
+
+static status_t add(enum level lv, uint32_t dev, handle_t *out);
+
+/* svc.connect on c: a query channel of the caller's own, if c is a query
+ * channel (no other kind hands them out). */
+static void on_connect(const struct chan *c, uint32_t txid)
+{
+    struct svc_connect_rep r = { .txid = txid, .status = ERR_NOT_SUPPORTED };
+    handle_t h = HANDLE_INVALID;
+    if (c->lv == LEVEL_QUERY)
+        r.status = add(LEVEL_QUERY, NO_DEVICE, &h);
+    if (jam_channel_write(c->h, &r, sizeof(r), &h, r.status == OK ? 1 : 0) != OK && h)
+        jam_handle_close(h);   /* the caller is gone: so is the new channel's only client */
 }
 
 /* Answer everything queued on c. Returns ERR_SHOULD_WAIT once the queue is
@@ -80,6 +99,10 @@ static status_t serve(const struct chan *c)
                 jam_handle_close(in[i]);
         if (n < 4)
             continue;   /* no txid: nobody to answer */
+        if (n == sizeof(struct svc_connect_req) && !nh && q->ordinal == SVC_CONNECT) {
+            on_connect(c, q->txid);
+            continue;
+        }
         if (whole && !nh && q->ordinal == DEVMGR_MOUNTS) {
             mounts_request(ch, q->txid, q->instance);   /* answered now or later */
             continue;
@@ -186,10 +209,10 @@ bool chans_device_owned(uint32_t dev)
     return false;
 }
 
-status_t chans_new_device(uint32_t dev, handle_t *out)
+/* A new channel of level lv (LEVEL_DEVICE: scoped to device dev) in a free
+ * slot, watched by the next chans_arm; *out: its client end. */
+static status_t add(enum level lv, uint32_t dev, handle_t *out)
 {
-    if (chans_device_owned(dev))
-        return ERR_BAD_STATE;   /* one holder of a device's channel at a time */
     for (unsigned i = 0; i < MAX_CHANS; i++) {
         struct chan *c = &chans[i];
         if (c->h || i == SLOT_LIFE)
@@ -199,10 +222,17 @@ status_t chans_new_device(uint32_t dev, handle_t *out)
         if (st != OK)
             return st;
         c->h = mine;
-        c->lv = LEVEL_DEVICE;
+        c->lv = lv;
         c->dev = dev;
-        *out = theirs;   /* watched by the next chans_arm */
+        *out = theirs;
         return OK;
     }
     return ERR_NO_RESOURCES;
+}
+
+status_t chans_new_device(uint32_t dev, handle_t *out)
+{
+    if (chans_device_owned(dev))
+        return ERR_BAD_STATE;   /* one holder of a device's channel at a time */
+    return add(LEVEL_DEVICE, dev, out);
 }

@@ -23,7 +23,11 @@
  *   the QUERY channel (/svc/devmgr; devmgr's own server end is its startup
  *     role SR_DEVMGR): STATUS, GET_SERVICE, GET_DRIVER (read-only views)
  *     and SUPERVISION; anything else is ERR_ACCESS_DENIED, and so is
- *     GET_SERVICE of a device that has a device channel (below);
+ *     GET_SERVICE of a device that has a device channel (below). It also
+ *     answers the svc protocol's connect (abi/idl/svc.idl) with a query
+ *     channel of the caller's own, and init marks /svc/devmgr so, so each
+ *     opener (libos's svc_open) has one: a reply that comes after its
+ *     caller stopped waiting is queued for that caller alone;
  *   DEVICE channels, each scoped to one device: made by DEVICE_CHANNEL on
  *     the control channel, at most one per device at a time. One answers
  *     GET_SERVICE, GET_DRIVER and SUPERVISION about its own device and

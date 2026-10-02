@@ -351,6 +351,38 @@ bool t_devmgr_device_channel(void)
     return edu_from_query(q, OK);
 }
 
+/* /svc/devmgr hands each opener a query channel of its own (svc.connect):
+ * a request written on one is answered on that one only, the shared
+ * channel's other holders never see it, and a closed opener's slot is
+ * free again (more opens, one after another, than devmgr has slots). */
+bool t_devmgr_openers(void)
+{
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID;
+    if (svc_open(SVC_DEVMGR, &a) != OK)
+        return true;   /* no devmgr: skipped */
+    CHECK_ST(svc_open(SVC_DEVMGR, &b), OK);
+    struct devmgr_req q = { 7, DEVMGR_STATUS, 0, 0, 0 };
+    CHECK_ST(jam_channel_write(a, &q, sizeof(q), NULL, 0), OK);   /* asked, not waited for */
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);
+    struct devmgr_rep r;
+    uint32_t n = 0, nh = 0;
+    CHECK_ST(drv_channel_read(a, &r, sizeof(r), &n, NULL, 0, &nh), OK);
+    CHECK(n >= DEVMGR_REP_HDR && r.txid == 7 && r.status == OK);
+    /* The opener's channel is a query channel like the shared one. */
+    CHECK_ST(dm_call(b, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+    CHECK_ST(dm_call(b, DEVMGR_KILL, 0xffff, 0xffff, &r, NULL, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    for (unsigned i = 0; i < 40; i++) {
+        CHECK_ST(svc_open(SVC_DEVMGR, &a), OK);
+        CHECK_ST(dm_call(a, DEVMGR_STATUS, 0, 0, &r, NULL, NULL), OK);
+        CHECK_ST(jam_handle_close(a), OK);
+    }
+    return true;
+}
+
 /* devmgr's supervision view of a device. */
 bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_rep *r)
 {

@@ -298,7 +298,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_AUDIO      "audio"       /* the mixer: open a sound stream (abi/idl/audio.idl) */
 #define SVC_AUDIOCTL   "audioctl"    /* the mixer's volumes (audioctl.idl) */
 #define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
-#define SVC_DEVMGR     "devmgr"      /* devmgr's queries (<devmgr.h>) */
+#define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
 #define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
 #define SVC_LOGD       "logd"        /* logd's control channel (logctl.idl) */

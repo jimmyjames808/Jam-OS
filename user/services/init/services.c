@@ -368,7 +368,7 @@ static status_t start_devmgr(void)
     unsigned cards = services_claim_class(devmgr, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
     if (cards > 1)
         printf("init: %u HD Audio controllers: all of them the mixer's\n", cards);
-    publish(SVC_DEVMGR, devmgr_q, false);
+    publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
     publish(SVC_DEVMGR_CTL, devmgr, false);
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     handle_t watch;
