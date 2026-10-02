@@ -865,6 +865,21 @@ nobody, so they may block, always with a deadline. init's update check
 hashes on a worker thread; its loop does only the `kexec_load` and
 `/esp`'s stat.
 
+**Waiting on many sockets** (`user/include/netwait.h`, libos;
+[M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
+A wait set is one port with up to 256 entries: sockets (their rings,
+`to_prog` event and channel) and any other handle, each with an interest
+(read, write). `netwait_wait` returns the ready entries. Readiness is
+computed from the socket's rings and status line whenever the set looks,
+never from signal bits, so the set is level-triggered and a coalesced or
+early signal can't lose a wake: a signal only says which entry to look
+at. An entry that is not ready is armed (its event's bits cleared, the
+rings' `waits` flags raised, one more look) and leaves the list; a ready
+one stays on it, so a wait costs the entries that are ready or were
+signalled, not all of them. Hung up (netstack's end of the channel closed,
+a stream closed) and errors are always reported. This is what M13's
+`poll`, `select` and `epoll` will be built on.
+
 **Which boot uses the network.** QEMU's e1000e is bound on every boot
 that has one. The PC's RTL8125 is too (the owner's call, 2026-10-02): as
 the netdev service on the everyday boot, as the probe with `netprobe` and
