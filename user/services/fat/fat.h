@@ -10,6 +10,7 @@
  *
  * Files: main.c the startup, mount and event loop; disk.c FatFs's disk
  * callbacks over `block`, the volume's dirty flag and get_fattime;
+ * hold.c the writes of an FS_GATHER file, held back and sent together;
  * cache.c the write-through block cache under them;
  * fsops.c the `fs` methods; dirs.c the cursors that make listing a
  * directory linear; fileops.c the open-file table and the `file` methods; views.c the narrower `fs` channels (fs.view); path.c paths,
@@ -67,6 +68,11 @@ struct fat_vol {
     bool        clean_on_disk;/* what the bit on the medium says now */
     uint32_t    fat0[2];      /* first sector of each FAT copy */
     unsigned    nfats;        /* copies (1 or 2) */
+
+    /* A held write (disk.c, FS_GATHER) failed to reach the disk: nothing
+     * more is written (FatFs's state is ahead of the disk) until fat starts
+     * again, and an FS_GATHER file's sync fails (ERR_IO). */
+    bool        hold_failed;
 };
 
 extern struct fat_vol vol;
@@ -118,11 +124,36 @@ void     disk_watch(void);
  * called dirty. */
 status_t disk_settle(bool durable);
 
+/* One block.write of `count` sectors at `sector` from the block buffer
+ * (vol.bbuf), then into the cache; count at most the buffer's worth. */
+status_t disk_block_write(uint64_t sector, uint32_t count);
+/* data is about to be written as `sector`: if that is FAT sector 0 of a
+ * FAT copy, its clean bit is cleared (the volume is in use). */
+void     disk_patch_dirty(uint8_t *data, uint64_t sector);
 /* One block.read of `count` sectors at `sector` into the block buffer
- * (vol.bbuf); count at most the buffer's worth. */
+ * (vol.bbuf), after what is held; count at most the buffer's worth. */
 status_t disk_block_read(uint64_t sector, uint32_t count);
 /* Sectors straight from the disk into buff, a buffer's worth per call. */
 status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff);
+
+/* ---- hold.c ----------------------------------------------------------------------- */
+
+/* While on, FatFs's writes are held back instead of written (around an
+ * FS_GATHER file's f_write: fileops.c); hold.c's header says when they go
+ * out. Without memory for the hold, writes go through as ever. */
+void     disk_hold(bool on);
+/* Is disk_write to hold (hold_put) instead of writing? */
+bool     hold_active(void);
+/* count sectors of buff for `sector` on, held: each replaces an earlier
+ * hold of the same sector; the cache gets them at once. */
+status_t hold_put(const uint8_t *buff, uint64_t sector, uint32_t count);
+/* buf holds count sectors at `sector` just read from the disk: the held
+ * ones among them, newer than the disk's, copied over them. */
+void     hold_overlay(uint64_t sector, uint32_t count, uint8_t *buf);
+/* Everything held, out on the disk now; its failure sets vol.hold_failed. */
+status_t disk_release(void);
+/* Sectors that went out held so far, and in how many block writes. */
+void     disk_hold_stats(uint64_t *sectors, uint64_t *writes);
 
 /* ---- cache.c ---------------------------------------------------------------------- */
 
@@ -139,6 +170,9 @@ status_t cache_read(uint64_t sector, uint32_t count, uint8_t *buff);
 /* count sectors at `sector` have been written to the disk with `data`:
  * the lines that hold any of them take the new bytes. */
 void     cache_wrote(uint64_t sector, uint32_t count, const uint8_t *data);
+/* count sectors at `sector` did not reach the disk after all (a held
+ * write that failed): the lines that hold any of them go. */
+void     cache_forget(uint64_t sector, uint32_t count);
 void     cache_stats(struct fat_cache_stats *out);
 
 /* ---- path.c ---------------------------------------------------------------------- */

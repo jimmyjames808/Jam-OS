@@ -33,6 +33,11 @@
  * false alarm, never a lie. fs.sync and fat's own end do flush the bit
  * (disk_settle(true)).
  *
+ * Writes held back (FS_GATHER): hold.c. While a file opened FS_GATHER is
+ * written, disk_write hands its sectors there; flushes, the dirty mark
+ * and any other write send what is held out first, and a read from the
+ * disk gets the held sectors laid over what it read.
+ *
  * Formatting. f_mkfs writes the boot sector first and the FATs after it,
  * so a format cut short (the stick pulled, the power gone) would leave a
  * boot sector that mounts over FATs full of whatever was there. Between
@@ -75,6 +80,16 @@ static status_t failed(const char *what, uint64_t lba, uint32_t count, status_t 
     return st;
 }
 
+status_t disk_block_write(uint64_t sector, uint32_t count)
+{
+    flushed = false;
+    status_t st = block_write_until(vol.block, deadline(), sector, count, 0);
+    if (st != OK)
+        return failed("write", sector, count, st);
+    cache_wrote(sector, count, vol.bbuf);   /* as written: the dirty bit patched */
+    return OK;
+}
+
 status_t disk_open(handle_t block)
 {
     uint32_t bs = 0, size = 0;
@@ -107,12 +122,13 @@ status_t disk_open(handle_t block)
     return OK;
 }
 
-/* block.sync, if anything was written since the last one. */
+/* block.sync (what is held first), if anything was written since the last one. */
 static status_t flush(void)
 {
-    if (flushed)
-        return OK;
-    status_t st = block_sync_until(vol.block, deadline());
+    status_t st = disk_release();
+    if (st != OK || flushed)
+        return st;
+    st = block_sync_until(vol.block, deadline());
     if (st != OK)
         return failed("sync", 0, 0, st);
     flushed = true;
@@ -188,9 +204,20 @@ static void patch(uint8_t *sector, bool clean)
         sector[clean_off] &= (uint8_t)~clean_mask;
 }
 
-/* Rewrite the bit in FAT sector 0 of every FAT copy, straight on the disk. */
+void disk_patch_dirty(uint8_t *data, uint64_t sector)
+{
+    for (unsigned i = 0; vol.track_dirty && i < vol.nfats; i++)
+        if (vol.fat0[i] == sector)
+            patch(data, false);
+}
+
+/* Rewrite the bit in FAT sector 0 of every FAT copy, straight on the disk
+ * (after what is held: the block buffer is used, and the order kept). */
 static status_t mark(bool clean)
 {
+    status_t held = vol.hold_failed ? ERR_IO : disk_release();   /* never clean after a lost hold */
+    if (held != OK)
+        return held;
     for (unsigned i = 0; i < vol.nfats; i++) {
         status_t st = block_read_until(vol.block, deadline(), vol.fat0[i], 1, 0);
         if (st != OK)
@@ -269,7 +296,10 @@ DSTATUS disk_status(BYTE pdrv)
 status_t disk_block_read(uint64_t sector, uint32_t count)
 {
     status_t st = block_read_until(vol.block, deadline(), sector, count, 0);
-    return st == OK ? OK : failed("read", sector, count, st);
+    if (st != OK)
+        return failed("read", sector, count, st);
+    hold_overlay(sector, count, vol.bbuf);   /* held sectors are newer than the disk's */
+    return OK;
 }
 
 status_t disk_read_direct(uint64_t sector, uint32_t count, uint8_t *buff)
@@ -301,6 +331,8 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         return RES_PARERR;
     if (vol.read_only)
         return RES_WRPRT;
+    if (vol.hold_failed)
+        return RES_ERROR;   /* FatFs is ahead of the disk: nothing more goes out */
     if (vol.track_dirty && vol.clean_on_disk && mark(false) != OK)
         return RES_ERROR;
     if (boot_holding && sector == 0) {
@@ -310,6 +342,10 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         sector++;
         count--;
     }
+    if (hold_active())
+        return hold_put(buff, sector, count) == OK ? RES_OK : RES_ERROR;
+    if (disk_release() != OK)
+        return RES_ERROR;   /* what is held goes first: writes keep their order */
     uint32_t per = vol.bbuf_size / FAT_SECTOR;
     while (count) {
         uint32_t n = count < per ? count : per;
@@ -317,13 +353,8 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         for (unsigned i = 0; vol.track_dirty && i < vol.nfats; i++)
             if (vol.fat0[i] >= sector && vol.fat0[i] - sector < n)
                 patch(vol.bbuf + (size_t)(vol.fat0[i] - sector) * FAT_SECTOR, false);
-        flushed = false;
-        status_t st = block_write_until(vol.block, deadline(), sector, n, 0);
-        if (st != OK) {
-            (void)failed("write", sector, n, st);   /* logged; FatFs gets RES_ERROR */
-            return RES_ERROR;
-        }
-        cache_wrote(sector, n, vol.bbuf);   /* as written: the dirty bit patched */
+        if (disk_block_write(sector, n) != OK)
+            return RES_ERROR;   /* logged */
         buff += (size_t)n * FAT_SECTOR;
         sector += n;
         count -= n;

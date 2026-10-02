@@ -27,7 +27,13 @@
  *
  * A read of CACHE_BYPASS sectors or more (big clusters read whole) goes
  * straight to the disk: it would only push the FAT and directory lines
- * out. */
+ * out.
+ *
+ * Writes held back (disk.c, a file opened FS_GATHER) are copied into the
+ * lines when they are held, so reads see them; a held write that then
+ * fails to reach the disk takes its lines with it (cache_forget), so what
+ * the cache holds is still never other than what the disk holds or is
+ * about to. */
 #include <idl/block.h>
 #include "fat.h"
 
@@ -144,6 +150,14 @@ void cache_wrote(uint64_t sector, uint32_t count, const uint8_t *data)
                (size_t)(to - from) * FAT_SECTOR);
         stats.updated += to - from;
     }
+}
+
+void cache_forget(uint64_t sector, uint32_t count)
+{
+    uint64_t end = sector + count;
+    for (unsigned i = 0; i < CACHE_LINES; i++)
+        if (lines[i].valid && lines[i].first < end && sector < lines[i].first + lines[i].count)
+            lines[i].valid = false;
 }
 
 void cache_stats(struct fat_cache_stats *out)

@@ -29,7 +29,13 @@
  *
  * A file is `unsynced` from its first change until its next f_sync; when
  * the last unsynced file is flushed the volume is settled (marked clean,
- * disk.c). */
+ * disk.c).
+ *
+ * FS_GATHER (<os.h>): a write to a file opened with it is held back in
+ * disk.c instead of going to the disk sector by sector, and goes out in
+ * big sorted writes by the file's sync or close at the latest. Its sync
+ * fails if a held write ever failed to go out (disk.c: then nothing more
+ * is written). */
 #include "fat.h"
 
 #define CLIENT_BUF_RIGHTS (RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER)
@@ -139,7 +145,9 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
     UINT put = 0;
     FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
     if (fr == FR_OK && length) {
+        disk_hold((h->flags & FS_GATHER) != 0);
         fr = f_write(&f->fil, bounce, length, &put);
+        disk_hold(false);
         f->unsynced = true;
     }
     if (fr != FR_OK)
@@ -178,9 +186,19 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
     return OK;
 }
 
+/* An FS_GATHER file's sync: what is held goes out first, and a held write
+ * that failed (now or before) is its failure too. */
 static status_t op_sync(void *ctx)
 {
-    return sync_open(((struct fat_file *)ctx)->o);
+    struct fat_file *h = ctx;
+    if (h->flags & FS_GATHER) {
+        status_t st = disk_release();
+        if (st == OK && vol.hold_failed)
+            st = ERR_IO;
+        if (st != OK)
+            return st;
+    }
+    return sync_open(h->o);
 }
 
 static const struct file_ops file_ops = {

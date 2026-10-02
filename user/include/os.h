@@ -234,7 +234,12 @@ void     lock_give(bool *l);
 #define FS_CREATE   4u    /* create it if missing */
 #define FS_TRUNCATE 8u    /* empty it on open */
 #define FS_APPEND   16u   /* every write goes to the end */
-#define FS_FLAGS    31u   /* all of them: any other bit is ERR_INVALID_ARGS */
+/* Writes may wait in the service (fat: at most 1 MiB) and go to the disk
+ * together, by file.sync or the close at the latest: far fewer, bigger
+ * disk writes, which a stick does many times faster than sector-sized
+ * ones. A stick pulled before the sync loses what waited. With FS_WRITE. */
+#define FS_GATHER   32u
+#define FS_FLAGS    63u   /* all of them: any other bit is ERR_INVALID_ARGS */
 #define FS_CALL_TIMEOUT (60 * NS_PER_S)
 
 #define NS_NAME_MAX    16  /* an entry's path with its NUL: "/data", "/svc/devmgr-ctl" */

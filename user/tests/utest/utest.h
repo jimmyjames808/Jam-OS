@@ -217,6 +217,7 @@ bool t_fat_gone_mounting(void);
 bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
+bool t_fat_gather(void);
 
 /* netframe.c: <jam/netframe.h> over hand-made and hostile frames, and the
  * RTL8125 driver's pure parts (guard, gate, arguments, ARP). */

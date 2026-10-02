@@ -15,7 +15,7 @@
 protocol fs 16
 
 # Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
-# FS_TRUNCATE 8, FS_APPEND 16 (<os.h>). `file` speaks the file protocol;
+# FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
 # `buffer` is the VMO its reads and writes go through; `size` is the file's
 # size now. Closing `file` closes the file.
 1  open  (u8[256] path, u32 flags) -> (handle file, handle buffer, u64 size)

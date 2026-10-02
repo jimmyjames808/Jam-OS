@@ -230,6 +230,11 @@ int main(int argc, char **argv)
     printf("fat %s: cache: %lu reads from it, %lu lines read, %lu big reads past it, %lu "
            "sectors written through it\n", vol.name, (unsigned long)cs.hits,
            (unsigned long)cs.fills, (unsigned long)cs.bypassed, (unsigned long)cs.updated);
+    uint64_t held, held_writes;
+    disk_hold_stats(&held, &held_writes);
+    if (held_writes)
+        printf("fat %s: %lu sectors held back (FS_GATHER) went out in %lu block writes\n",
+               vol.name, (unsigned long)held, (unsigned long)held_writes);
     if (vol.disk_gone) {
         printf("fat %s: the disk is gone: stopping\n", vol.name);
         return 0;

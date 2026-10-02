@@ -190,7 +190,9 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
                            status_t (*next)(void *, uint64_t, uint8_t *, size_t), void *ctx)
 {
     struct jfile f;
-    status_t st = open_file(w, path, ".new", FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
+    /* FS_GATHER: fat sends the file in 64 KiB writes, not a write per
+     * sector (a cluster, on the ESP): what makes a real stick quick. */
+    status_t st = open_file(w, path, ".new", FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
     if (st != OK)
         return st;
     uint64_t t0 = now();

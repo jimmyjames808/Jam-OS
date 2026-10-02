@@ -32,10 +32,10 @@ static status_t op_open(void *ctx, const uint8_t path[256], uint32_t flags, hand
                         handle_t *out_buffer, uint64_t *out_size)
 {
     (void)ctx;
-    const uint32_t known = FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_APPEND;
+    const uint32_t known = FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER;
     if ((flags & ~known) || !(flags & (FS_READ | FS_WRITE)))
         return ERR_INVALID_ARGS;
-    if ((flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND)) && !(flags & FS_WRITE))
+    if ((flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER)) && !(flags & FS_WRITE))
         return ERR_INVALID_ARGS;
     if ((flags & FS_WRITE) && vol.read_only)
         return ERR_ACCESS_DENIED;

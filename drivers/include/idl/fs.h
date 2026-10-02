@@ -123,7 +123,7 @@ struct fs_view_rep {
 /* ---- client ---------------------------------------------------------- */
 
 /* Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
- * FS_TRUNCATE 8, FS_APPEND 16 (<os.h>). `file` speaks the file protocol;
+ * FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
  * `buffer` is the VMO its reads and writes go through; `size` is the file's
  * size now. Closing `file` closes the file. */
 static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
