@@ -50,8 +50,8 @@
  * keeps mice in the boot protocol. A match-table row that names a word
  * binds only when devmgr was given that word, and its driver is started
  * with it: "netprobe" (the boot word) binds drv/rtl8125 as the RTL8125's
- * listen-only probe, "netsend" as its ARP send test; without either the
- * network chip gets no driver at all. The argument "vlan=<id>" (the
+ * listen-only probe, "netsend" as its ARP send test, "net" as its netdev
+ * service; without one of them the network chip gets no driver at all. The argument "vlan=<id>" (the
  * boot's VLAN, from the kernel through init) is passed on to the driver
  * of every network card (PCI class 02): the one way a network driver
  * learns the VLAN; without it (or with one that isn't valid) the drivers
@@ -98,10 +98,12 @@ static const struct {
      * channel and gives it to the mixer (<devmgr.h> "Trust"). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
     /* The board's Realtek RTL8125: only on a `netprobe` boot (the
-     * listen-only probe, docs/M9-PLAN.md stage 0) or a `netsend` one (the
-     * ARP send test); the first row whose word devmgr has wins. */
+     * listen-only probe, docs/M9-PLAN.md stage 0), a `netsend` one (the
+     * ARP send test) or a `net` one (the netdev service for netstack);
+     * the first row whose word devmgr has wins. */
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netprobe" },
     { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "netsend" },
+    { 0x10ec, 0x8125, ANY_CLASS, "drv/rtl8125", "net" },
     /* QEMU's Intel 82574L, the network tests' card (QEMU_NET; the PC has
      * none). Like every network driver it gets the boot's vlan=. */
     { 0x8086, 0x10d3, ANY_CLASS, "drv/e1000e", NULL },
@@ -113,7 +115,7 @@ handle_t pci_res, port;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
-static bool netprobe, netsend;
+static bool netprobe, netsend, net;
 uint32_t boot_mbr_id;
 uint16_t net_vlan;
 uint64_t devmgr_started;
@@ -156,7 +158,8 @@ const char *bdf(const struct binding *b)
 /* Was devmgr given the boot word a match-table row asks for? */
 static bool pci_word_given(const char *word)
 {
-    return (!strcmp(word, "netprobe") && netprobe) || (!strcmp(word, "netsend") && netsend);
+    return (!strcmp(word, "netprobe") && netprobe) || (!strcmp(word, "netsend") && netsend) ||
+           (!strcmp(word, "net") && net);
 }
 
 /* The driver for function i (NULL: none). */
@@ -395,6 +398,7 @@ int main(int argc, char **argv)
         hidboot |= !strcmp(argv[i], "hidboot");
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
+        net |= !strcmp(argv[i], "net");
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }
@@ -426,6 +430,9 @@ int main(int argc, char **argv)
     else if (netsend)
         say(false, "devmgr: netsend: an RTL8125 (10ec:8125) gets drv/rtl8125, which sends "
             "ARP probes on the VLAN and stops");
+    else if (net)
+        say(false, "devmgr: net: an RTL8125 (10ec:8125) gets drv/rtl8125, which serves netdev "
+            "on the VLAN");
     if (enumerate() != OK)
         return 1;
     bind_all();

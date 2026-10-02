@@ -455,8 +455,8 @@ static bool runs_and_leaves(const char *word, const char *word2)
 }
 
 /* Without a VLAN the driver touches nothing (no word; `netsend` alone or
- * with a bad vlan=); the probe, or the send test with a VLAN, but without
- * the hardware (no RTL8125: QEMU) say so and end. */
+ * with a bad vlan=); the probe, the send test or the netdev service with
+ * a VLAN, but without the hardware (no RTL8125: QEMU), say so and end. */
 bool t_rtl8125_stays_off(void)
 {
     return runs_and_leaves(NULL, NULL) && runs_and_leaves("netprobe", NULL) &&

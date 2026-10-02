@@ -15,7 +15,9 @@
  * back to the firmware (into whatever the stick holds).
  * initctl.kernel_load (the shell's `kernel
  * load`) reads and hands them over at once, and notes them as the stored
- * copy's: the reboot after it reads nothing.
+ * copy's: the reboot after it reads nothing. An update (update.c) makes a
+ * fetched build the stored copy and notes /esp's files as they are then,
+ * so the reboot keeps the fetched build until the stick changes.
  *
  * Then what a firmware reboot does too (/data synced, logd's last lines
  * written, the volume left clean), devmgr's shutdown (DEVMGR_SHUTDOWN: the
@@ -124,6 +126,16 @@ status_t init_kernel_load(uint64_t *kb, uint64_t *bb, uint32_t *ms)
     bootfs = b;
     noted = true;
     return OK;
+}
+
+void reboot_keep_stored(void)
+{
+    struct noted k, b;
+    if (stat_file(KERNEL_FILE, &k) != OK || stat_file(BOOTFS_FILE, &b) != OK)
+        return;   /* no /esp now: its first mount notes it (reboot_note_esp) */
+    kernel = k;
+    bootfs = b;
+    noted = true;
 }
 
 /* The stick's files didn't load (why): the stored copy is started

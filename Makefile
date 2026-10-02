@@ -260,12 +260,18 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # the player's own objects, linked in, and its header; and the RTL8125
 # probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
 # and netstack's core with lwIP, driven in-process over a fake edge
-# (utest/netstack.c: its stack.h and ctl.h, no lwIP header).
+# (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
+# client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
+# RTL8125's netdev server over a fake card (utest/netsrv.c: server.c).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
-                      $(NETSTACK_CORE) $(LWIP_OBJS)
+                      $(NETSTACK_CORE) $(LWIP_OBJS) \
+                      $(UOBJ)/user/services/dhcp/msg.c.o $(UOBJ)/user/services/dhcp/client.c.o \
+                      $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
+                      $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/rtl8125/server.c.o
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
-                      -iquote user/services/netstack
+                      -iquote user/services/netstack -iquote user/services/dhcp \
+                      -iquote user/services/dns
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.

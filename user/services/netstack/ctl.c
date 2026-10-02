@@ -9,6 +9,8 @@
 
 static uint32_t dns[2];   /* the DNS servers set, 0: none */
 
+void (*ctl_device_report)(struct dev_report *out);
+
 bool ctl_unicast(uint32_t a)
 {
     uint32_t top = a >> 24;
@@ -133,12 +135,32 @@ static status_t op_stats(void *ctx, uint64_t *out_rx_frames, uint64_t *out_rx_re
     return OK;
 }
 
+static status_t op_device(void *ctx, uint8_t *out_session, uint16_t *out_vlan,
+                          uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors,
+                          uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    (void)ctx;
+    struct dev_report r = { 0 };
+    if (ctl_device_report)
+        ctl_device_report(&r);
+    *out_session = r.session;
+    *out_vlan = r.vlan;
+    *out_speed = r.speed;
+    *out_sessions = r.sessions;
+    *out_ring_errors = r.ring_errors;
+    *out_rx_bad = r.rx_bad;
+    *out_tx_full = r.tx_full;
+    memcpy(out_chip, r.chip, sizeof(r.chip));
+    return OK;
+}
+
 static const struct netctl_ops ops = {
     .set_ipv4 = op_set_ipv4,
     .set_dns = op_set_dns,
     .clear = op_clear,
     .info = op_info,
     .stats = op_stats,
+    .device = op_device,
 };
 
 status_t ctl_serve(handle_t ch)

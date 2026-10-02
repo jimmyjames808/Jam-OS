@@ -607,7 +607,7 @@ port, so while it handles one request every other client waits behind it.
 | mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | NIC: Realtek RTL8125 2.5 GbE | its PCI device (MSI-X, DMA rings) | `netdev` | no |
-| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS) + `netdev` | `netctl` (the address); `socket` planned | the core and `netctl`; no device and not started yet ([M9-PLAN](docs/M9-PLAN.md#stage-3a-built-the-core-without-a-device)) |
+| netstack | lwIP (IPv4, ARP, ICMP, UDP; single-threaded, NO_SYS) + `netdev` | `netctl` (the address); `socket` planned | yes: the netdev rings, `netctl`, started by init; no sockets yet ([M9-PLAN](docs/M9-PLAN.md#stage-3b-built-netstack-on-the-card-started-by-init)) |
 | power | uACPI | shutdown, reboot, power button, later S3 | no |
 
 uACPI will live in the kernel; everything else is a process.
@@ -1260,8 +1260,12 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the jump). Any failure before the jump falls back to the firmware
-  reset; `reboot -f` always uses it. M9's `update` is meant to call
-  `kexec_load` with what it fetched.
+  reset; `reboot -f` always uses it. M9's `update` hands init a fetched
+  build on an offer channel (initctl.update_offer, `<update.h>`): init
+  copies it into VMOs of its own, checks each length and SHA-256 against
+  the manifest, calls `kexec_load` with the copies and notes `/esp`'s
+  files as seen, so `reboot` starts the fetched build
+  (`user/services/init/update.c`; the network side is not built yet).
 - **A stick whose files don't load** (a flash pulled half way, a damaged
   copy): the kernel refuses them and keeps the stored copy armed, so
   `reboot` starts that one, the last good build, after a short notice on

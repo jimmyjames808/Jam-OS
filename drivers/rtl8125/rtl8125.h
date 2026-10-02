@@ -6,9 +6,9 @@
  *     and sends nothing; no transmit code runs at all;
  *   - full mode: receive and transmit on the configured VLAN only. Every
  *     frame sent is tagged in software by tx.c; every frame received is
- *     kept only if it carries that VLAN's tag (rx.c). Its only user so far
- *     is the send test (`netsend`: sendtest.c); the netdev server that
- *     netstack talks to is not built yet.
+ *     kept only if it carries that VLAN's tag (rx.c). It runs the send
+ *     test (`netsend`: sendtest.c) or serves netdev to netstack (full.c,
+ *     server.c).
  * main.c has the steps and the list of every register the driver writes;
  * notx.h the rule that only tx.c can reach a transmit register.
  *
@@ -20,7 +20,9 @@
  * autonegotiation, link, stop), ring.c (the DMA memory: both descriptor
  * rings, their buffers, the tally dump), census.c and probe.c (the
  * listen-only probe), rx.c (full mode's receive path), tx.c (THE transmit
- * path), sendtest.c (the ARP send test, arp.h its frames).
+ * path), sendtest.c (the ARP send test, arp.h its frames), full.c (the
+ * netdev service: the card as server.c sees it), server.c (the netdev
+ * protocol, the session, its rings and events; nothing of the chip).
  *
  * Registers, bits and the order of bring-up follow OpenBSD's rge(4)
  * driver (sys/dev/pci/if_rge.c and if_rgereg.h, by Kevin Lo, ISC
@@ -33,6 +35,7 @@
 #include <jam/netframe.h>
 #include "args.h"
 #include "notx.h"
+#include "server.h"
 
 /* ---- registers (rge: if_rgereg.h) --------------------------------------------- */
 
@@ -284,6 +287,9 @@ struct rtl {
     uint64_t an_at;               /* when autonegotiation was started (uptime, ns) */
     uint64_t link_at;             /* when it came up (uptime, ns), 0: not yet */
     unsigned link_lines;          /* link-change lines logged */
+    uint32_t link_seq;            /* link changes seen (any PHYSTAT change), for netdev.info */
+    uint32_t link_told;           /* link_seq when the netdev server was last told */
+    struct srv *srv;              /* full mode's netdev server (full.c), NULL otherwise */
     struct events ev;
     struct census c;              /* the probe's */
 };
@@ -364,6 +370,8 @@ void     chip_autoneg(struct rtl *t);
 /* PHYSTAT read; logs a change (rate-limited). True if the link is up. */
 bool     chip_link_poll(struct rtl *t);
 void     chip_link_str(uint16_t phystat, char *buf, size_t size);
+/* The speed in Mb/s (0: down) and the duplex, from PHYSTAT. */
+uint32_t chip_link_speed(uint16_t phystat, bool *full);
 /* "link 1000 full in 2.2 s" or "no link in 10 s", for a RESULTS line. */
 void     chip_link_summary(const struct rtl *t, char *buf, size_t size);
 /* Receiver and transmitter off, the chip reset; no DMA after it returns. */
@@ -442,6 +450,12 @@ unsigned tx_reap(struct rtl *t);
 /* Frames handed over and not yet taken back. */
 uint32_t tx_pending(const struct rtl *t);
 void     tx_log(const struct rtl *t);
+
+/* ---- full.c: full mode's service, the netdev server for netstack --------------------- */
+
+/* Serve netdev (server.c) on DR_SERVE until devmgr stops the driver. */
+void     full_run(struct rtl *t, struct outcome *o);
+void     full_report(const struct rtl *t, const struct outcome *o);
 
 /* ---- sendtest.c: `netsend` ---------------------------------------------------------- */
 

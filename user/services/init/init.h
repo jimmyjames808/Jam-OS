@@ -7,7 +7,8 @@
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with devmgr's mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings.
+ * /data/etc/settings; net.c the network services (netstack); update.c
+ * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
@@ -38,6 +39,9 @@ extern bool init_netprobe;
 /* The option word "netsend" (main.c): the same for the RTL8125's ARP send
  * test (devmgr gets it only without "netprobe"). */
 extern bool init_netsend;
+/* The option word "net" (main.c): the same for the RTL8125's netdev
+ * service (devmgr gets it only without "netprobe" and "netsend"). */
+extern bool init_net;
 /* The option word "bootdisk=0x<id>" (main.c; NULL: none): the MBR disk id
  * the machine booted from, passed on to devmgr as it is. */
 extern const char *init_bootdisk;
@@ -109,7 +113,7 @@ void     splash_shell_ready(void);
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
 /* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSVC };
+enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, LOGD, SHELL, NSVC };
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
@@ -117,6 +121,7 @@ enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, LOGD, SHELL, NSV
 #define KEY_CTL      0x200u   /* + CTL_*: requests on a control channel */
 #define KEY_SPLASH   0x300u   /* the splash's channel (splash.c) */
 #define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
+#define KEY_UPDATE   0x500u   /* an update's offer channel (update.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -209,6 +214,20 @@ void     settings_music(handle_t music);
 /* /data has no settings file: write one with the defaults, commented. */
 void     settings_first_file(void);
 
+/* ---- net.c: the network services ------------------------------------------------ */
+
+/* netstack's control channel, made once before the loop. */
+void     net_init(void);
+/* Start netstack (shell.c's NETSTACK) with the control channel's server
+ * end and the network cards' device channels. */
+status_t net_start(void);
+/* /data/etc/settings' net.address to a running netstack (a short deadline). */
+void     net_settings(void);
+/* devmgr ended: netstack, whose device channels were its, starts again. */
+void     net_devmgr_gone(void);
+/* netstack is given up on: calls waiting for it fail now. */
+void     net_given_up(void);
+
 /* ---- reboot.c -------------------------------------------------------------------- */
 
 /* /esp is mounted (now or again): the first time, note the size and
@@ -224,6 +243,21 @@ status_t init_reboot_kexec(void);
  * stored copy now (and noted as such); their sizes and the read's time.
  * ERR_NOT_FOUND without them; kexec_load's errors (the old copy stays). */
 status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32_t *read_ms);
+/* The stored copy came from somewhere else (an update): /esp's kernel and
+ * boot image as they are now are noted as its, so the next reboot keeps
+ * it and reads nothing unless the stick changes. Without /esp nothing is
+ * noted now (its first mount notes it, reboot_note_esp). */
+void     reboot_keep_stored(void);
+
+/* ---- update.c: a fetched build checked and made the stored kernel (<update.h>) ----- */
+
+/* initctl.update_offer: a new offer channel (replacing an older one, whose
+ * sender sees ERR_PEER_CLOSED); ours bound on port with key (call
+ * update_event on its packets), *client to hand over. */
+status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
+/* A packet on the offer channel: the offer (checked, loaded if it passes,
+ * answered), or its sender gone. Either way the channel is closed. */
+void     update_event(void);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

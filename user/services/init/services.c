@@ -42,7 +42,7 @@
  *             "nousb" (the safe mode boot entry) is passed on: no USB
  *             controller driver. Its mounts (/data, /esp) are followed from
  *             then on (mounts.c). The NIC's device channel goes to netstack
- *             the same way once there is a NIC driver
+ *             the same way: each network card's goes to netstack (net.c)
  *   mixer     bin/mixer, once devmgr runs: a duplicate of each HD Audio
  *             controller's device channel (SR_DEVMGR_DEVICE, one handle
  *             each; none without one: the mixer then has no output), and the
@@ -161,6 +161,8 @@ void services_settings(unsigned i)
         settings_master(audio_cli[1]);
     if (i == MUSIC && svcs[MUSIC].running)
         settings_music(music_cli);
+    if (i == NETSTACK)
+        net_settings();
 }
 
 bool services_console_up(void)
@@ -367,6 +369,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "netprobe";
     else if (init_netsend)
         argv[argc++] = "netsend";
+    else if (init_net)
+        argv[argc++] = "net";
     if (init_vlan)
         argv[argc++] = init_vlan;
     if (init_bootdisk)
@@ -615,6 +619,7 @@ status_t services_start(unsigned i)
            : i == DEVMGR   ? start_devmgr()
            : i == MIXER    ? start_mixer()
            : i == MUSIC    ? start_music()
+           : i == NETSTACK ? net_start()
            : i == LOGD     ? start_logd()
                            : start_shell();
 }
@@ -640,6 +645,7 @@ void services_closed(unsigned i)
         publish(SVC_DEVMGR, HANDLE_INVALID, false);
         publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
+        net_devmgr_gone();
         tell_mounts();
         printf("init: devmgr and its drivers are gone: starting them again\n");
     }
@@ -656,6 +662,8 @@ void services_closed(unsigned i)
 
 void services_given_up(unsigned i)
 {
+    if (i == NETSTACK)
+        net_given_up();
     for (unsigned k = 0; i == MIXER && k < 2; k++) {
         jam_handle_close(audio_srv[k]);   /* calls waiting for a mixer fail now */
         audio_srv[k] = HANDLE_INVALID;
@@ -680,6 +688,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     first_arg = shell_arg;
     quiet_console = nolog_console = splash;
     make_audio_channels();
+    net_init();
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
     publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */

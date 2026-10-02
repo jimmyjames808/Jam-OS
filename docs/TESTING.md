@@ -125,7 +125,9 @@ as a small network, tagging every reply: ARP for any IPv4 address (not
 probes from 0.0.0.0 nor gratuitous ARPs), ICMP echo for any address (so
 `ping 1.1.1.1` works in QEMU), and UDP on ports that have a handler
 (`Peer.add_udp`: where DHCP, DNS, netlog and the update server hook in).
-`--noise <s>` sends, every s seconds, four frames the guest's driver must
+`--ping <address>` sends an ICMP echo request to the guest every half
+second (from 10.2.21.174, once it has seen the guest's MAC) and counts
+the replies (`ping_replies`). `--noise <s>` sends, every s seconds, four frames the guest's driver must
 drop (untagged, VLAN 10, a priority tag, QinQ) and one it must pass (a
 broadcast ARP request on the VLAN). Its log is `<outdir>/<name>.peer.log`,
 its counts `<name>.peer.json`.
@@ -160,7 +162,8 @@ machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the shell as it comes (a plain boot keeps it off the shell's screen but for notices and the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. No other boot binds the network chip, and a `reboot` doesn't keep the word |
-| Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver-without-the-netdev-server)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends three ARP probes for 10.2.21.1 tagged with the VLAN, waits for the replies, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
+| Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends three ARP probes for 10.2.21.1 tagged with the VLAN, waits for the replies, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
+| Jam OS (network) | `net` | the everyday boot, plus the RTL8125's netdev service ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN, which brings the chip up and serves netdev for netstack until devmgr stops it. Nothing starts netstack yet, so it receives (and drops: no session) and sends nothing; a `reboot` doesn't keep the word |
 | Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
 | Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
 | Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
@@ -382,6 +385,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `nousb.txt` | safe mode | command line `nousb` instead of `shell` |
 | `netprobe.txt` | the boot word `netprobe` reaches devmgr (its line), and with no RTL8125 (QEMU) nothing is bound for it | use `tools/netprobe-test.sh` |
 | `netsend.txt` | the same for the boot word `netsend` | use `tools/netprobe-test.sh` |
+| `netserve.txt` | the same for the boot word `net` | use `tools/netprobe-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) refused, approval or not, `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
@@ -403,13 +407,16 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 
 ## netstack
 
-netstack has no network device yet ([M9-PLAN](M9-PLAN.md#stage-3a-built-the-core-without-a-device)),
-so its tests are in utest, part of the `init` run
-([the tiers](#the-tiers)); no QEMU NIC is involved. utest links
-netstack's core (`user/services/netstack/stack.c`, `ctl.c`, lwIP) and
-drives it in-process over a fake edge that catches every frame lwIP
-sends; each is checked byte by byte, checksums included, and must be
-untagged and 60 bytes at least.
+Most of netstack's tests are in utest, part of the `init` run
+([the tiers](#the-tiers)), with no QEMU network card
+([M9-PLAN](M9-PLAN.md#stage-3a-built-the-core-without-a-device)). The
+`netstack_*` tests link netstack's core (`user/services/netstack/stack.c`,
+`ctl.c`, lwIP) and drive it in-process over a fake edge that catches
+every frame lwIP sends; the `netdrv_*` tests run bin/netstack as a
+process over a fake driver (the test plays devmgr's device channel and
+the driver: real ring VMOs and events, frames into the rx ring and out of
+the tx ring). Every frame is checked byte by byte (`user/tests/utest/netpkt.c`),
+checksums included, and must be untagged and 60 bytes at least.
 
 | Test | What |
 |---|---|
@@ -421,6 +428,19 @@ untagged and 60 bytes at least.
 | `netstack_cleared` | after `clear` neither ARP nor a ping is answered; a new address is announced by one gratuitous ARP and answered again; with the link down nothing is sent |
 | `netctl_set_and_clear` | the control channel served by `ctl.c` on a channel of the test's own: `set_ipv4` and `set_dns` show in `info`; 13 addresses a host can't have and 2 bad DNS servers refused, nothing changed; a /30 and a /8 taken; `clear`; a request of the wrong size refused |
 | `netctl_process` | bin/netstack started with its control channel at `SR_USER + 0`: set, a refusal, `info` (no device, link down), `stats` (nothing sent or received), `clear`; killed, its job empty |
+| `ipv4_text` | libos's `<ipv4.h>`: dotted quads (10 malformed ones refused), formatting, and init's `net.address` form (8 malformed ones refused) |
+| `netdrv_ping_and_link` | netstack finds the card through the device channel (GET_SERVICE), netdev.info and netdev.open; ARP and a ping through the rings; the link going down (`NETDEV_SIG_LINK`, netdev.info on the session): nothing sent; up again: the address announced, pings answered |
+| `netdrv_restart` | the driver's session closed (a driver restart): netstack asks devmgr again, opens a new session, announces its address, keeps it and its ARP entries; `netctl.device` counts 2 sessions |
+| `netdrv_hostile_driver` | rx slots of length 0, 1515 and 13 and with flags set: refused, counted, nothing answered, pings still answered; an rx `produced` five rings ahead and a tx `consumed` ahead of what was sent: netstack ends the session itself, counts the ring errors and opens a new one, which works; killed, its job empty |
+
+End to end, with QEMU's e1000e and the network peer:
+`tools/netstack-test.sh <outdir>` (`tools/shell-tests/netstack.txt`)
+writes `net.address = 10.2.21.5/24 ...` into a copy of the image's
+settings, boots with `QEMU_NET=1` and the peer's `--ping 10.2.21.5`
+(an echo request every half second, once it has seen the guest's MAC),
+kills netstack in the middle (init starts it again: a new session, the
+address again) and passes if the peer's and the pcap's VLAN checks pass
+and at least 8 pings were answered. It needs drv/e1000e (stage 2).
 
 ## Area scripts
 
@@ -456,8 +476,49 @@ matters `QEMU_XHCI`) pass through.
 | `tools/screen-test.sh <outdir>` | the screen on a plain boot (`screen.txt`, booted with the splash, and `screen-verbose.txt`): after the splash the shell's banner and prompt and no kernel log (no pixel of the log's colours) and no RESULTS box; a stick plugged in (one notice: `mount -w` and `mount -r` in between add none) and pulled out, the boot stick pulled out and back, each a yellow notice and a `console: notice:` line in the log; `ktest` puts its lines on the screen while it runs; `run utest impostor` (processes called init, devmgr and logd write lines the real ones make notices of: the log has them, and no notice); `run console selftest` (log lines made into notices or not, by their text and their writer: crashes, kills asked for, give-ups, `/data` full, impostors); then a `verbose` boot whose shell screen has the log; then a plain boot with a stick in from the start (`screen-atboot.txt`): no notice for it, one when it is pulled out |
 | `tools/mixer-test.sh <outdir>` | the mixer (`mixer.txt`): intel-hda with an hda-output codec (`mixer=off`) into QEMU's wav backend; `mixtest` passes (the protocol's refusals and clamps; two openers of `/svc/audio` and of `/svc/audioctl` each answered on their own channel; the per-opener stream cap, 4 each and 16 in all; `audioctl.device`'s query channel to the driver answers but refuses `open_output` and `query`, at most 8 at once; tone programs at once; one killed; the master and an `audioctl` volume; the mixer killed and the hda driver killed mid-tone, each played on; a stream left empty lets the mixer close the output and its next write wakes it; two programs on `<audio.h>` at once); the WAV, segment by segment: 440 Hz and 1000 Hz at once with the second at -6 dB (amplitude ratio within 3 %), the killed client's partner with no gap (QEMU's own buffer drops on a busy host, traced with `hda_audio_overrun`, are told apart from a gap), -6 dB master and -12 dB `audioctl` volume heard, the library's 44.1 kHz and 48 kHz tones together; the log's stream, restart and output lines; the codec's verbs: muted whenever nothing plays |
 | `tools/music-test.sh <outdir>` | the music player (`music.txt`): a folder tree made by the script (ffmpeg, mtools) on `/data/music`: six 2 s tones (MP3 at 44.1, 48 VBR and 22.05 kHz, WAV at 48 and 44.1 kHz) under names with spaces, apostrophes, `$`, `~`, parentheses and UTF-8 (`JAŸ-Z`), an upper-case `.WAV` and `.Mp3`, a garbage `.mp3`, `.DS_Store`/`._` dotfiles, a text file and an empty folder tree; and a second stick of three 8 s WAVs. In the capture (100 ms FFT windows up to a 1000 Hz marker beep typed 2 s after `music stop`): the tracks heard are the log's `track N:` lines in order, the first six are the six tracks once each, at least seven heard, never the same twice in a row; the 1500 Hz `beep` mixed over a track; the stop fades. The log: every title (`Artist - Title` from the path), the garbage file skipped, no dotfile tried, the mixer restart reopened, the pulled stick stopping it after three unreadable files |
-| `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`) and a `shell netsend` boot (`netsend.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log never mentions either. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe or the send test without hardware, ends at once with exit 0 and an empty job) |
+| `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`), a `shell netsend` boot (`netsend.txt`) and a `shell net` boot (`netserve.txt`) where devmgr says it has the word and binds and runs nothing for it, then a plain `shell` boot whose log mentions none of them. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe, the send test or the netdev service without hardware, ends at once with exit 0 and an empty job); `rtl8125_server_session`, `rtl8125_server_tx`, `rtl8125_server_rx` (`drivers/rtl8125/server.c` linked in, over a fake card with the test as netstack: info and stats, one session at a time, open refused on the session channel, a closed or orphaned session replaced, the rights open hands out; netstack's frames reach the card byte for byte, bad lengths, flags and tags counted and never sent, a card out of descriptors holds the ring until they come back, hostile counts bounded to a ring per turn; received frames into the rx ring with NETDEV_SIG_RX, a full ring and no session dropped and counted, NETDEV_SIG_LINK) |
+| `tools/update-test.sh <outdir>` | `update`'s check in init without a network (`bin/updtest` hands init the build from files on `/data/update/`, put there with mtools: this build's kernel, its boot image with one more file `update-marker.txt`, and their manifest from `tools/update-server.py --manifest`), one run, three boots: `run updtest bad` (12 damaged offers, each refused for its own reason: a kernel or boot-image byte changed, the kernel 4 KiB longer or cut to half, a VMO shorter than its length, a garbage, cut, signed or format-2 manifest, a bad magic, one handle, two files that match their manifest but are no kernel), then `reboot`: no marker (the stored kernel untouched); `run updtest good` (accepted and stored), then `reboot` reads nothing from `/esp` and the marker is there (the fetched build runs); exactly one `kexec_load` succeeded. utest covers the parsers and the fetcher: `update_manifest*` (the format, each line wrong each way, every prefix, every byte changed, random bytes), `updwire_*` (golden bytes from the Python tool, every truncation and field, random datagrams), `updfetch_*` (the window against a fake server on a scripted clock: clean, lossy with repeats, reordering and forged replies, the snapshot gone once and always, no answer, a bad or oversize manifest, a lying file size) |
 | `tools/sticks-test.sh <outdir>` | other sticks (`sticks.txt`): five more disk images (`tools/mkstick.py`) plugged and pulled through the monitor: an MBR FAT32 stick, one with no partition table, one made writable and pulled mid-copy, one with a blank FAT32-typed partition and a foreign one, one of noise. Afterwards, from the host: the file written after `mount -w` is on the image (mtools) and the refused ones are not; the images that were only read, or held nothing to mount, are byte for byte unchanged (never written, never formatted) |
+
+## The DHCP and DNS cores (utest)
+
+The DHCP client and the DNS resolver
+([M9-PLAN.md](M9-PLAN.md#stage-5a-built-the-dhcp-and-dns-cores)) are
+libraries with their I/O behind a struct of function pointers, so utest
+runs them with no network: a scripted edge records what they send and
+answer, and the clock is a number the test sets. They run in every
+`init` run (the user regression tier), in well under a second.
+
+- **Hostile input.** Every datagram a test hands a parser is copied to
+  end exactly at a page with no access (`user/tests/utest/netfuzz.c`), so
+  a read one byte past it faults and fails the run instead of reading
+  stale bytes. The fuzz tests (`dhcp_fuzz`, `dhcpc_hostile`, `dns_fuzz`,
+  `dnsres_hostile`) mutate valid datagrams `FUZZ_ROUNDS` (4000) times
+  per sample from a fixed seed (bit flips, special bytes, cuts, planted
+  pointers and big counts, bytes added), so a failure repeats.
+- **DHCP** (`dhcp_*`: user/services/dhcp/msg.c): the client's messages
+  byte for byte; an OFFER as VLAN 21's router sends it; every length it
+  can be cut to; options running past their field, a length byte
+  missing, wrong lengths, repeated and split options (RFC 3396), option
+  52's file and sname fields (and options running past them), masks,
+  routers, DNS servers and offered addresses that can't be used.
+  (`dhcpc_*`: client.c) a lease from DISCOVER to the probe and BOUND,
+  renewing, rebinding and expiry; retransmit times with their jitter;
+  NAKs while requesting and mid-renewal; replies with another xid,
+  server or address, or in the wrong state; a probe conflict;
+  INIT-REBOOT; T1 and T2; RELEASE.
+- **DNS** (`dns_*`: user/services/dns/msg.c): names, IPv4 literals, the
+  query byte for byte; replies as servers send them (compressed, a
+  CNAME, NXDOMAIN with an SOA); records for other names and classes,
+  duplicates, CNAME loops; every truncation; compression pointers to
+  themselves, forward, in loops and 17 deep; names over 253 characters;
+  bad label types and bytes; counts the bytes don't hold; data past the
+  end. (`dnsres_*`: resolver.c and cache.c) answers, the cache and its
+  TTL; replies from another server, port or id; the retries and a
+  time-out; **the slow-peer rule**: a name that is never answered while
+  20 others are each answered the moment their reply comes; CNAMEs over
+  several replies; SERVFAIL, TC, NXDOMAIN; shared and cancelled askers;
+  a full table; ports the edge says are taken; the cache's bounds.
 
 ## The other tools
 
@@ -480,6 +541,8 @@ of them. Each file's header says more.
 | `tools/flash-test.sh <outdir>` | `tools/flash-usb.sh` on a copy of the image attached with `hdiutil` (never a real disk; macOS): the new files are there, no `.new` file is left (a stale one placed first included), the data partition is unchanged |
 | `tools/mksplash.sh` | `boot/splash.mpg` from the owner's animation and its sound (ffmpeg); `make` runs it only when both source files are there (`SPLASH_SRC`) and one is newer |
 | `tools/bdf2c.py`, `tools/compdb.py` | `make font` (the console font from Spleen's BDF), `make compdb` |
+| `tools/update-server.py` | serves `build/jamos.elf`, `build/bootfs.img` and their manifest to the PC's `update` (UDP 5022, a snapshot per manifest request); `--manifest K B` prints a manifest; `--self-test` runs it against a Python client on 127.0.0.1 (a whole fetch with 10 % lost both ways and the files rebuilt half way: the snapshot's bytes; a new snapshot; GONE, RANGE, a short last piece; malformed requests unanswered; old snapshots dropped; the manifest's rules; the version from `build/jamos.elf`) |
+| `tools/netlog-recv.py <folder>` | receives the PC's log (UDP 5021): a file per boot, gaps reported; `--self-test` runs it against a Python sender on 127.0.0.1 (started late, paused, 10 % lost both ways, the PC's ring having dropped the start, a crash log, restarted with and without its files, hostile datagrams). utest's `netlog_*` cover the PC's side: golden and hostile datagrams, the whole log over a lossy reordering network, the Mac away ten minutes (one line said, the waits up to 30 s, one datagram per try), the ring dropping bytes before and during, forged acks, the crash log's stream, the live source over the real kernel log |
 
 ## Known noise
 

@@ -1,15 +1,16 @@
 /* rtl8125: the driver of the PC's Realtek RTL8125B (drv/rtl8125), started
  * by devmgr for 10ec:8125 only on a boot with `netprobe` (the boot menu's
- * "Jam OS (network: listen only)") or `netsend` ("Jam OS (network: send
- * test)"); any other boot never touches the chip.
+ * "Jam OS (network: listen only)"), `netsend` ("Jam OS (network: send
+ * test)") or `net` ("Jam OS (network)"); any other boot never touches the
+ * chip.
  *
  * The mode comes from the arguments, once (args.h):
  *   - `netprobe`: the listen-only probe (probe.c). Nothing is sent.
  *   - full mode, which needs a valid vlan=<n> (the kernel's VLAN, passed
  *     on by devmgr): without one, "no VLAN: the network stays off" and
  *     the chip is never touched. With `netsend` it runs the ARP send
- *     test (sendtest.c); without it there is nothing to do yet (the
- *     netdev server that netstack talks to is not built yet).
+ *     test (sendtest.c); otherwise it serves netdev to netstack (full.c,
+ *     server.c) until devmgr stops it.
  * Every frame full mode sends goes through tx.c, which tags it with the
  * VLAN; every frame it keeps went through rx.c's VLAN check.
  *
@@ -31,8 +32,10 @@
  *   i. receiver and transmitter off, the chip reset, bus mastering off,
  *      everything unpinned;
  *   j. one RESULTS line.
- * It always exits 0 (devmgr then leaves it finished): each mode is run
- * once, and its log says what went wrong.
+ * It always exits 0 (devmgr then leaves it finished): the probe and the
+ * send test are run once, the netdev service ends only when devmgr stops
+ * it, and the log says what went wrong. (A crash is restarted by devmgr
+ * as usual.)
  *
  * EVERY REGISTER THE DRIVER WRITES (offsets in BAR 2; rge's names):
  *   0x34 INT_CFG0     bit 0 cleared (the 8125B's interrupt type)
@@ -94,8 +97,8 @@ static bool will_run(const struct rtl_args *a)
         return false;
     }
     if (!a->sendtest) {
-        drv_log("vlan %u: the netdev server is not built yet; the chip is left alone", a->vlan);
-        return false;
+        drv_log("full mode on vlan %u: serving netdev for netstack", a->vlan);
+        return true;
     }
     uint32_t ip = a->arp_target;
     drv_log("netsend: full mode on vlan %u, ARP probes for %u.%u.%u.%u%s", a->vlan, ip >> 24,
@@ -206,14 +209,18 @@ int driver_main(const struct driver_start *ds)
     if (bring_up(t, o)) {
         if (t->mode == RTL_MODE_PROBE)
             probe_run(t, o);
-        else
+        else if (a.sendtest)
             sendtest_run(t, &a, o);
+        else
+            full_run(t, o);
     }
     finish(t, o);
     if (o->reset && t->mode == RTL_MODE_PROBE)
         probe_report(t, o);
-    else if (o->reset)
+    else if (o->reset && a.sendtest)
         sendtest_report(t, o);
+    else if (o->reset)
+        full_report(t, o);
     drv_log("done in %lu ms: the chip reset, bus mastering %s, nothing pinned%s",
             (unsigned long)((drv_clock_ns() - t->since) / NS_PER_MS),
             t->bus_master ? "STILL ON" : "off",
