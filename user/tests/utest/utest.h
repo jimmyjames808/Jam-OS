@@ -219,6 +219,27 @@ bool t_netframe_short_frames(void);
 bool t_rtl8125_write_guard(void);
 bool t_rtl8125_stays_off(void);
 
+/* update.c: the update manifest's and protocol's parsers (<update.h>,
+ * <updwire.h>); updfetch.c: the fetcher's window against a fake server
+ * (<updfetch.h>); netlog.c: netlog's datagrams and sender (<netlog.h>). */
+bool t_update_manifest(void);
+bool t_update_manifest_refusals(void);
+bool t_update_manifest_damage(void);
+bool t_updwire_golden(void);
+bool t_updwire_hostile(void);
+bool t_updfetch_clean(void);
+bool t_updfetch_lossy(void);
+bool t_updfetch_snapshot_gone(void);
+bool t_updfetch_failures(void);
+bool t_netlog_golden(void);
+bool t_netlog_hostile(void);
+bool t_netlog_whole_log(void);
+bool t_netlog_mac_away(void);
+bool t_netlog_ring_dropped(void);
+bool t_netlog_forged_acks(void);
+bool t_netlog_crash_stream(void);
+bool t_netlog_klog_source(void);
+
 /* mix.c: the mixer's arithmetic (<mixmath.h>). */
 bool t_mix_gains(void);
 bool t_mix_unity_is_exact(void);
