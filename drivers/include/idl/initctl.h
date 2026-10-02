@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `initctl` (id 18). Client: initctl_<method>(ch, args..., &results...)
- * (and initctl_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and initctl_<method>_until with a deadline) over drv_channel_call, or
+ * initctl_<method>_send and initctl_<method>_result without waiting. Server:
  * fill a struct initctl_ops and run initctl_serve(ch, &ops, ctx), or
- * initctl_serve_one / initctl_dispatch for a loop of your own. */
+ * initctl_serve_one / initctl_dispatch_on for a loop of your own;
+ * initctl_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -265,10 +267,235 @@ static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_byt
     return initctl_kernel_load_until(ch, DEADLINE_NEVER, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* initctl_kill without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_kill_result. */
+static inline status_t initctl_kill_send(handle_t ch, uint32_t idl_txid, const uint8_t name[32])
+{
+    struct initctl_kill_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_KILL;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.name[idl_i] = name[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_kill_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_kill_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_koid)
+{
+    const struct initctl_kill_rep *idl_r = (const struct initctl_kill_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_koid)
+        *out_koid = idl_r->koid;
+    return OK;
+}
+
+/* initctl_sync without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_sync_result. */
+static inline status_t initctl_sync_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_sync_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_SYNC;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_sync_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_sync_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_sync_rep *idl_r = (const struct initctl_sync_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* initctl_reboot without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_reboot_result. */
+static inline status_t initctl_reboot_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_reboot_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_REBOOT;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_reboot_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_reboot_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_reboot_rep *idl_r = (const struct initctl_reboot_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* initctl_mount without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_mount_result. */
+static inline status_t initctl_mount_send(handle_t ch, uint32_t idl_txid, const uint8_t path[16], uint8_t writable)
+{
+    struct initctl_mount_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_MOUNT;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    idl_q.writable = writable;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_mount_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_mount_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_mount_rep *idl_r = (const struct initctl_mount_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* initctl_shell_ready without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_shell_ready_result. */
+static inline status_t initctl_shell_ready_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_shell_ready_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_SHELL_READY;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_shell_ready_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_shell_ready_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_shell_ready_rep *idl_r = (const struct initctl_shell_ready_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* initctl_reboot_firmware without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_reboot_firmware_result. */
+static inline status_t initctl_reboot_firmware_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_reboot_firmware_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_REBOOT_FIRMWARE;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_reboot_firmware_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_reboot_firmware_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_reboot_firmware_rep *idl_r = (const struct initctl_reboot_firmware_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* initctl_kernel_load without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_kernel_load_result. */
+static inline status_t initctl_kernel_load_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_kernel_load_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_KERNEL_LOAD;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_kernel_load_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_kernel_load_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+{
+    const struct initctl_kernel_load_rep *idl_r = (const struct initctl_kernel_load_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_kernel_bytes)
+        *out_kernel_bytes = idl_r->kernel_bytes;
+    if (out_bootfs_bytes)
+        *out_bootfs_bytes = idl_r->bootfs_bytes;
+    if (out_read_ms)
+        *out_read_ms = idl_r->read_ms;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with initctl_reply_<method> (now, or later from anywhere). */
 struct initctl_ops {
     status_t (*kill)(void *ctx, const uint8_t name[32], uint64_t *out_koid);
     status_t (*sync)(void *ctx);
@@ -279,17 +506,129 @@ struct initctl_ops {
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (INITCTL_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx, const void *req, uint32_t n,
-                                        void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_kill(struct idl_txn idl_txn, status_t idl_st, uint64_t koid)
+{
+    struct initctl_kill_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.koid = koid;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.sync request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_sync(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_sync_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.reboot request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_reboot(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_reboot_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.mount request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_mount(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_mount_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.shell_ready request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_shell_ready(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_shell_ready_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.reboot_firmware request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_reboot_firmware(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_reboot_firmware_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.kernel_load request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_kernel_load(struct idl_txn idl_txn, status_t idl_st, uint64_t kernel_bytes, uint64_t bootfs_bytes, uint32_t read_ms)
+{
+    struct initctl_kernel_load_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.kernel_bytes = kernel_bytes;
+    idl_r.bootfs_bytes = bootfs_bytes;
+    idl_r.read_ms = read_ms;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (INITCTL_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops *ops, void *ctx,
+                                           const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                           uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -420,6 +759,13 @@ static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx
     return sizeof(*idl_h);
 }
 
+/* initctl_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx, const void *req, uint32_t n,
+                                        void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return initctl_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -443,7 +789,7 @@ static inline status_t initctl_serve_one(handle_t ch, const struct initctl_ops *
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = initctl_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = initctl_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

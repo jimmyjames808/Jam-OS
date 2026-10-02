@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `input` (id 11). Client: input_<method>(ch, args..., &results...)
- * (and input_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and input_<method>_until with a deadline) over drv_channel_call, or
+ * input_<method>_send and input_<method>_result without waiting. Server:
  * fill a struct input_ops and run input_serve(ch, &ops, ctx), or
- * input_serve_one / input_dispatch for a loop of your own. */
+ * input_serve_one / input_dispatch_on for a loop of your own;
+ * input_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -162,10 +164,148 @@ static inline status_t input_ready(handle_t ch, uint8_t kind, uint16_t vendor, u
     return input_ready_until(ch, DEADLINE_NEVER, kind, vendor, product);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* input_key without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then input_key_result. */
+static inline status_t input_key_send(handle_t ch, uint32_t idl_txid, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+{
+    struct input_key_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INPUT_KEY;
+    idl_q.usage = usage;
+    idl_q.state = state;
+    idl_q.mods = mods;
+    idl_q.codepoint = codepoint;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to input_key_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t input_key_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct input_key_rep *idl_r = (const struct input_key_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* input_mouse without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then input_mouse_result. */
+static inline status_t input_mouse_send(handle_t ch, uint32_t idl_txid, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+{
+    struct input_mouse_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INPUT_MOUSE;
+    idl_q.dx = dx;
+    idl_q.dy = dy;
+    idl_q.wheel = wheel;
+    idl_q.buttons = buttons;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to input_mouse_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t input_mouse_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct input_mouse_rep *idl_r = (const struct input_mouse_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* input_text without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then input_text_result. */
+static inline status_t input_text_send(handle_t ch, uint32_t idl_txid, uint16_t length, const uint8_t bytes[64])
+{
+    struct input_text_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INPUT_TEXT;
+    idl_q.length = length;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_q.bytes[idl_i] = bytes[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to input_text_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t input_text_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct input_text_rep *idl_r = (const struct input_text_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* input_ready without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then input_ready_result. */
+static inline status_t input_ready_send(handle_t ch, uint32_t idl_txid, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    struct input_ready_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INPUT_READY;
+    idl_q.kind = kind;
+    idl_q.vendor = vendor;
+    idl_q.product = product;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to input_ready_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t input_ready_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct input_ready_rep *idl_r = (const struct input_ready_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with input_reply_<method> (now, or later from anywhere). */
 struct input_ops {
     status_t (*key)(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
     status_t (*mouse)(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons);
@@ -173,17 +313,80 @@ struct input_ops {
     status_t (*ready)(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (INPUT_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t input_dispatch(const struct input_ops *ops, void *ctx, const void *req, uint32_t n,
-                                      void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the input.key request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t input_reply_key(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct input_key_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the input.mouse request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t input_reply_mouse(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct input_mouse_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the input.text request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t input_reply_text(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct input_text_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the input.ready request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t input_reply_ready(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct input_ready_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (INPUT_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t input_dispatch_on(handle_t ch, const struct input_ops *ops, void *ctx,
+                                         const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                         uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -260,6 +463,13 @@ static inline uint32_t input_dispatch(const struct input_ops *ops, void *ctx, co
     return sizeof(*idl_h);
 }
 
+/* input_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t input_dispatch(const struct input_ops *ops, void *ctx, const void *req, uint32_t n,
+                                      void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return input_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -283,7 +493,7 @@ static inline status_t input_serve_one(handle_t ch, const struct input_ops *ops,
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = input_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = input_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

@@ -57,24 +57,130 @@ static inline void idl_reply_status(handle_t ch, const void *req, uint32_t n, st
     drv_channel_write(ch, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
-/* Server: the next message didn't fit (n bytes, nh handles): bigger than
- * any request of the protocol. Take it off the queue anyway (or it would
- * block every later one), close its handles, answer ERR_INVALID_ARGS. */
-static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)
+/* Take the next message off ch, which didn't fit the caller's buffers
+ * (n bytes, nh handles), and drop it, closing its handles. *txid gets its
+ * txid and *got its length (under 4 bytes: no txid, *txid 0). OK, or
+ * drv_channel_read's status (ERR_SHOULD_WAIT or ERR_BUFFER_TOO_SMALL:
+ * another reader took it meanwhile), or ERR_NO_MEMORY. */
+static inline status_t idl_discard(handle_t ch, uint32_t n, uint32_t nh, uint32_t *txid,
+                                   uint32_t *got)
 {
     uint8_t *idl_b = (uint8_t *)drv_malloc(n ? n : 1);
     handle_t *idl_hs = (handle_t *)drv_malloc(nh ? nh * sizeof(handle_t) : 1);
     status_t idl_st = idl_b && idl_hs ? OK : ERR_NO_MEMORY;
     uint32_t idl_n = 0, idl_nh = 0;
+    *txid = 0;
+    *got = 0;
     if (idl_st == OK)
         idl_st = drv_channel_read(ch, idl_b, n, &idl_n, idl_hs, nh, &idl_nh);
     if (idl_st == OK) {
         idl_close_all(idl_hs, idl_nh);
-        idl_reply_status(ch, idl_b, idl_n, ERR_INVALID_ARGS);
-    } else if (idl_st == ERR_BUFFER_TOO_SMALL || idl_st == ERR_SHOULD_WAIT) {
-        idl_st = OK;   /* another reader took it meanwhile: look again */
+        *got = idl_n;
+        if (idl_n >= sizeof(uint32_t))
+            *txid = ((const struct idl_req_hdr *)idl_b)->txid;
     }
     drv_free(idl_hs);
     drv_free(idl_b);
     return idl_st;
+}
+
+/* Server: the next message didn't fit (n bytes, nh handles): bigger than
+ * any request of the protocol. Take it off the queue anyway (or it would
+ * block every later one), close its handles, answer ERR_INVALID_ARGS. */
+static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)
+{
+    uint32_t idl_txid = 0, idl_got = 0;
+    status_t idl_st = idl_discard(ch, n, nh, &idl_txid, &idl_got);
+    if (idl_st == OK && idl_got >= sizeof(uint32_t)) {
+        struct idl_rep_hdr idl_r = { idl_txid, ERR_INVALID_ARGS };
+        drv_channel_write(ch, &idl_r, sizeof(idl_r), NULL, 0);
+    } else if (idl_st == ERR_BUFFER_TOO_SMALL || idl_st == ERR_SHOULD_WAIT) {
+        idl_st = OK;   /* another reader took it meanwhile: look again */
+    }
+    return idl_st;
+}
+
+/* ---- answering later (a `later` method, or a loop of your own) ------- */
+
+/* A request to be answered later: the channel it came on (not owned:
+ * keep it open until the reply is written) and its txid. A `later`
+ * method's handler gets it; <proto>_reply_<method> answers it. */
+struct idl_txn {
+    handle_t ch;
+    uint32_t txid;
+};
+
+/* What a `later` method's handler returns when it answers with
+ * <proto>_reply_<method> (now or later) instead of through its results.
+ * Never a status on the wire. */
+#define IDL_LATER 1
+
+/* Server: write the reply rep (n bytes; its txid is set here) with nh
+ * handles to txn. The handles are moved in every case: sent, or closed
+ * when the write fails (ERR_PEER_CLOSED: the client is gone; a client
+ * that gave up waiting still gets the reply, as a message of its own). */
+static inline status_t idl_reply_write(struct idl_txn txn, void *rep, uint32_t n,
+                                       handle_t *hs, uint32_t nh)
+{
+    ((struct idl_rep_hdr *)rep)->txid = txn.txid;
+    status_t idl_st = drv_channel_write(txn.ch, rep, n, hs, nh);
+    if (idl_st != OK)
+        idl_close_all(hs, nh);
+    return idl_st;
+}
+
+/* ---- asynchronous calls ------------------------------------------------ */
+
+/* Client: the next txid from the counter *last, never 0. Use one counter
+ * per channel end, and only asynchronous calls on that end (a blocking
+ * call's txid comes from the kernel and could match one of these). */
+static inline uint32_t idl_txid_next(uint32_t *last)
+{
+    if (++*last == 0)
+        ++*last;
+    return *last;
+}
+
+/* A reply read off a channel, for <proto>_<method>_result. */
+struct idl_msg {
+    uint32_t txid;                    /* its txid: which call it answers */
+    uint32_t n;                       /* its bytes */
+    uint32_t nh;                      /* handles in hs, still to be taken */
+    handle_t hs[IDL_REP_HANDLES];
+};
+
+/* Client: close the handles of a reply nobody takes (its txid matches no
+ * call: a reply to a call that gave up). */
+static inline void idl_msg_drop(struct idl_msg *m)
+{
+    idl_close_all(m->hs, m->nh);
+    m->nh = 0;
+}
+
+/* Client: read the next reply off ch into rep (cap bytes: the protocol's
+ * <PROTO>_REP_MAX) and *m, then find its call by m->txid and decode it
+ * with that method's <proto>_<method>_result (or idl_msg_drop it).
+ * ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the server is gone
+ * (every call still waiting fails). A message too big for rep or with
+ * more than IDL_REP_HANDLES handles, or without a txid, is no reply of
+ * the protocol: dropped, its handles closed, ERR_INTERNAL with m->txid
+ * set (0 if it had none) so its call can fail. */
+static inline status_t idl_reply_read(handle_t ch, void *rep, uint32_t cap, struct idl_msg *m)
+{
+    m->txid = m->n = m->nh = 0;
+    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_REP_HANDLES, &m->nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        uint32_t idl_got = 0;
+        idl_st = idl_discard(ch, m->n, m->nh, &m->txid, &idl_got);
+        m->n = m->nh = 0;
+        return idl_st == ERR_NO_MEMORY ? idl_st : ERR_INTERNAL;
+    }
+    if (idl_st != OK)
+        return idl_st;
+    if (m->n < sizeof(uint32_t)) {
+        idl_msg_drop(m);
+        return ERR_INTERNAL;
+    }
+    m->txid = ((const struct idl_rep_hdr *)rep)->txid;
+    return OK;
 }

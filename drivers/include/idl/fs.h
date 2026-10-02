@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `fs` (id 16). Client: fs_<method>(ch, args..., &results...)
- * (and fs_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and fs_<method>_until with a deadline) over drv_channel_call, or
+ * fs_<method>_send and fs_<method>_result without waiting. Server:
  * fill a struct fs_ops and run fs_serve(ch, &ops, ctx), or
- * fs_serve_one / fs_dispatch for a loop of your own. */
+ * fs_serve_one / fs_dispatch_on for a loop of your own;
+ * fs_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -374,10 +376,330 @@ static inline status_t fs_view(handle_t ch, uint32_t flags, handle_t *out_fs)
     return fs_view_until(ch, DEADLINE_NEVER, flags, out_fs);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* fs_open without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_open_result. */
+static inline status_t fs_open_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256], uint32_t flags)
+{
+    struct fs_open_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_OPEN;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    idl_q.flags = flags;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_open_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_open_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+{
+    const struct fs_open_rep *idl_r = (const struct fs_open_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 2)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_file)
+        *out_file = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_buffer)
+        *out_buffer = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
+/* fs_stat without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_stat_result. */
+static inline status_t fs_stat_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+{
+    struct fs_stat_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_STAT;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_stat_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+{
+    const struct fs_stat_rep *idl_r = (const struct fs_stat_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    if (out_is_dir)
+        *out_is_dir = idl_r->is_dir;
+    if (out_mtime)
+        *out_mtime = idl_r->mtime;
+    return OK;
+}
+
+/* fs_readdir without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_readdir_result. */
+static inline status_t fs_readdir_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256], uint32_t index)
+{
+    struct fs_readdir_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_READDIR;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    idl_q.index = index;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_readdir_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_readdir_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+{
+    const struct fs_readdir_rep *idl_r = (const struct fs_readdir_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_name && idl_i < 256; idl_i++)
+        out_name[idl_i] = idl_r->name[idl_i];
+    if (out_is_dir)
+        *out_is_dir = idl_r->is_dir;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
+/* fs_mkdir without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_mkdir_result. */
+static inline status_t fs_mkdir_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+{
+    struct fs_mkdir_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_MKDIR;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_mkdir_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_mkdir_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_mkdir_rep *idl_r = (const struct fs_mkdir_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* fs_unlink without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_unlink_result. */
+static inline status_t fs_unlink_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+{
+    struct fs_unlink_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_UNLINK;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_unlink_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_unlink_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_unlink_rep *idl_r = (const struct fs_unlink_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* fs_rename without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_rename_result. */
+static inline status_t fs_rename_send(handle_t ch, uint32_t idl_txid, const uint8_t from[256], const uint8_t to[256])
+{
+    struct fs_rename_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_RENAME;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.from[idl_i] = from[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.to[idl_i] = to[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_rename_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_rename_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_rename_rep *idl_r = (const struct fs_rename_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* fs_sync without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_sync_result. */
+static inline status_t fs_sync_send(handle_t ch, uint32_t idl_txid)
+{
+    struct fs_sync_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_SYNC;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_sync_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_sync_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_sync_rep *idl_r = (const struct fs_sync_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* fs_statfs without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_statfs_result. */
+static inline status_t fs_statfs_send(handle_t ch, uint32_t idl_txid)
+{
+    struct fs_statfs_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_STATFS;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_statfs_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_statfs_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
+{
+    const struct fs_statfs_rep *idl_r = (const struct fs_statfs_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_total)
+        *out_total = idl_r->total;
+    if (out_free)
+        *out_free = idl_r->free;
+    if (out_read_only)
+        *out_read_only = idl_r->read_only;
+    for (uint32_t idl_i = 0; out_label && idl_i < 16; idl_i++)
+        out_label[idl_i] = idl_r->label[idl_i];
+    return OK;
+}
+
+/* fs_view without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_view_result. */
+static inline status_t fs_view_send(handle_t ch, uint32_t idl_txid, uint32_t flags)
+{
+    struct fs_view_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_VIEW;
+    idl_q.flags = flags;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_view_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_view_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_fs)
+{
+    const struct fs_view_rep *idl_r = (const struct fs_view_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_fs)
+        *out_fs = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with fs_reply_<method> (now, or later from anywhere). */
 struct fs_ops {
     status_t (*open)(void *ctx, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size);
     status_t (*stat)(void *ctx, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime);
@@ -390,17 +712,182 @@ struct fs_ops {
     status_t (*view)(void *ctx, uint32_t flags, handle_t *out_fs);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (FS_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t fs_dispatch(const struct fs_ops *ops, void *ctx, const void *req, uint32_t n,
-                                   void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the fs.open request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_open(struct idl_txn idl_txn, status_t idl_st, handle_t file, handle_t buffer, uint64_t size)
+{
+    struct fs_open_rep idl_r;
+    handle_t idl_hs[2] = { file, buffer };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(file != HANDLE_INVALID && buffer != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    idl_r.size = size;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
+}
+
+/* Answer the fs.stat request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint8_t is_dir, uint64_t mtime)
+{
+    struct fs_stat_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.size = size;
+    idl_r.is_dir = is_dir;
+    idl_r.mtime = mtime;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.readdir request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_readdir(struct idl_txn idl_txn, status_t idl_st, const uint8_t name[256], uint8_t is_dir, uint64_t size)
+{
+    struct fs_readdir_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_r.name[idl_i] = name[idl_i];
+    idl_r.is_dir = is_dir;
+    idl_r.size = size;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.mkdir request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_mkdir(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct fs_mkdir_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.unlink request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_unlink(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct fs_unlink_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.rename request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_rename(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct fs_rename_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.sync request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_sync(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct fs_sync_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.statfs request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_statfs(struct idl_txn idl_txn, status_t idl_st, uint64_t total, uint64_t free, uint8_t read_only, const uint8_t label[16])
+{
+    struct fs_statfs_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.total = total;
+    idl_r.free = free;
+    idl_r.read_only = read_only;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.label[idl_i] = label[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the fs.view request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_view(struct idl_txn idl_txn, status_t idl_st, handle_t fs)
+{
+    struct fs_view_rep idl_r;
+    handle_t idl_hs[1] = { fs };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(fs != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (FS_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, void *ctx,
+                                      const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                      uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -600,6 +1087,13 @@ static inline uint32_t fs_dispatch(const struct fs_ops *ops, void *ctx, const vo
     return sizeof(*idl_h);
 }
 
+/* fs_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t fs_dispatch(const struct fs_ops *ops, void *ctx, const void *req, uint32_t n,
+                                   void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return fs_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -623,7 +1117,7 @@ static inline status_t fs_serve_one(handle_t ch, const struct fs_ops *ops, void 
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = fs_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

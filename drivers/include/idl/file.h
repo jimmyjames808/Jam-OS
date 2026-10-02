@@ -2,9 +2,11 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `file` (id 17). Client: file_<method>(ch, args..., &results...)
- * (and file_<method>_until with a deadline) over drv_channel_call. Server:
+ * (and file_<method>_until with a deadline) over drv_channel_call, or
+ * file_<method>_send and file_<method>_result without waiting. Server:
  * fill a struct file_ops and run file_serve(ch, &ops, ctx), or
- * file_serve_one / file_dispatch for a loop of your own. */
+ * file_serve_one / file_dispatch_on for a loop of your own;
+ * file_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -180,10 +182,174 @@ static inline status_t file_sync(handle_t ch)
     return file_sync_until(ch, DEADLINE_NEVER);
 }
 
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* file_read without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_read_result. */
+static inline status_t file_read_send(handle_t ch, uint32_t idl_txid, uint64_t offset, uint32_t length)
+{
+    struct file_read_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_READ;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_read_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_read_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_actual)
+{
+    const struct file_read_rep *idl_r = (const struct file_read_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    return OK;
+}
+
+/* file_write without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_write_result. */
+static inline status_t file_write_send(handle_t ch, uint32_t idl_txid, uint64_t offset, uint32_t length)
+{
+    struct file_write_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_WRITE;
+    idl_q.offset = offset;
+    idl_q.length = length;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_write_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_write_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_actual)
+{
+    const struct file_write_rep *idl_r = (const struct file_write_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_actual)
+        *out_actual = idl_r->actual;
+    return OK;
+}
+
+/* file_truncate without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_truncate_result. */
+static inline status_t file_truncate_send(handle_t ch, uint32_t idl_txid, uint64_t size)
+{
+    struct file_truncate_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_TRUNCATE;
+    idl_q.size = size;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_truncate_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_truncate_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct file_truncate_rep *idl_r = (const struct file_truncate_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* file_stat without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_stat_result. */
+static inline status_t file_stat_send(handle_t ch, uint32_t idl_txid)
+{
+    struct file_stat_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_STAT;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_stat_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint64_t *out_mtime)
+{
+    const struct file_stat_rep *idl_r = (const struct file_stat_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    if (out_mtime)
+        *out_mtime = idl_r->mtime;
+    return OK;
+}
+
+/* file_sync without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_sync_result. */
+static inline status_t file_sync_send(handle_t ch, uint32_t idl_txid)
+{
+    struct file_sync_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_SYNC;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_sync_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_sync_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct file_sync_rep *idl_r = (const struct file_sync_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
- * A NULL handler answers ERR_NOT_SUPPORTED. */
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with file_reply_<method> (now, or later from anywhere). */
 struct file_ops {
     status_t (*read)(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual);
     status_t (*write)(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual);
@@ -192,17 +358,99 @@ struct file_ops {
     status_t (*sync)(void *ctx);
 };
 
-/* Decode the request of n bytes at req, call its handler, encode the reply
- * into rep (FILE_REP_MAX bytes) and the handles it carries into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0
- * means no reply (the request has no txid). No I/O; the caller sends the
- * reply with the handles, or closes them if it can't. */
-static inline uint32_t file_dispatch(const struct file_ops *ops, void *ctx, const void *req, uint32_t n,
-                                     void *rep, handle_t *rhs, uint32_t *rhn)
+/* Answer the file.read request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_read(struct idl_txn idl_txn, status_t idl_st, uint32_t actual)
+{
+    struct file_read_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.write request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_write(struct idl_txn idl_txn, status_t idl_st, uint32_t actual)
+{
+    struct file_write_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.actual = actual;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.truncate request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_truncate(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct file_truncate_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.stat request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint64_t mtime)
+{
+    struct file_stat_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.size = size;
+    idl_r.mtime = mtime;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.sync request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_sync(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct file_sync_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (FILE_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t file_dispatch_on(handle_t ch, const struct file_ops *ops, void *ctx,
+                                        const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                        uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
+    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -300,6 +548,13 @@ static inline uint32_t file_dispatch(const struct file_ops *ops, void *ctx, cons
     return sizeof(*idl_h);
 }
 
+/* file_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t file_dispatch(const struct file_ops *ops, void *ctx, const void *req, uint32_t n,
+                                     void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return file_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
@@ -323,7 +578,7 @@ static inline status_t file_serve_one(handle_t ch, const struct file_ops *ops, v
     }
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
-    uint32_t idl_rn = file_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    uint32_t idl_rn = file_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
     if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
         idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     return OK;

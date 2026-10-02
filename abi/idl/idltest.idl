@@ -1,0 +1,18 @@
+# idltest: the test protocol of answering later and of calls that don't
+# wait (tools/genidl.py's `later` methods, <proto>_<method>_send and
+# _result, <proto>_reply_<method>). Only utest serves and calls it, in
+# one process (user/tests/utest/idl.c).
+#
+# Reconnect: a test server keeps nothing; a client whose call fails with
+# ERR_PEER_CLOSED has lost the server for good.
+
+protocol idltest 3
+
+1  echo     (u32 value)            -> (u32 value)
+# Answered when `release` names the key (or at once if it was released
+# already): the key back, and how many waits were answered before it.
+2  wait     (u32 key)              -> (u32 key, u32 order) later
+# Answers every wait on key; how many it answered.
+3  release  (u32 key)              -> (u32 woken)
+# A VMO of `size` bytes, answered when `release` names `key`.
+4  make_vmo (u32 key, u32 size)    -> (handle vmo, u32 size_back) later

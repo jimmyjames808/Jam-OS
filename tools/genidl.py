@@ -19,7 +19,7 @@ The language, one statement per line, `#` starts a comment (comment lines
 right above a method are copied into the header):
 
     protocol <name> <id>
-    <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...)
+    <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later]
 
 name, method, arg, result   C identifiers (lower case by convention)
 id                          1..65535, unique over all protocols
@@ -29,6 +29,32 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             `handle` (RESULTS only, at most 8 per method)
 
 Either list may be empty: `()`.
+
+`later`: the server may answer the method later, after its handler has
+returned and the loop has served other requests (a `recv` that waits for
+data, a wait for a device). The handler gets the request's `struct
+idl_txn` (the channel it came on and its txid) and either answers now as
+usual or returns IDL_LATER, keeps the txn and answers with
+<proto>_reply_<method>(txn, status, results...) when it can, from
+anywhere in the server. Nothing changes for the client. A server that
+dispatches by hand uses <proto>_dispatch_on(ch, ...) so the txn has its
+channel.
+
+Every method also gets, for code that must not block (ARCHITECTURE.md
+"How a service waits"):
+    <proto>_<method>_send(ch, txid, args...)
+        the request, written without waiting, with a txid of the caller's
+        own (idl_txid_next). The reply comes back on ch like any message:
+        bind ch to a port, read it with idl_reply_read (its txid says which
+        call it answers) and decode it with
+    <proto>_<method>_result(rep, &msg, &results...)
+    <proto>_reply_<method>(txn, status, results...)
+        a reply from anywhere (a later method's, or one a hand-written loop
+        answers itself)
+Don't mix the two kinds of client calls on one channel end: a reply to an
+asynchronous call whose txid happens to equal a blocking call's waiting
+on the same end would go to that call (channel_call's txids are the
+kernel's).
 
 Handles travel only server -> client, in replies: the server's
 handler fills `handle_t *out_x` and the reply moves the handles to the
@@ -97,9 +123,10 @@ class Field:
 
 
 class Method:
-    def __init__(self, ordinal, name, args, results, doc):
+    def __init__(self, ordinal, name, args, results, doc, later):
         self.ordinal, self.name, self.args, self.results, self.doc = \
             ordinal, name, args, results, doc
+        self.later = later    # the server may answer after its handler returned
 
 
 class Protocol:
@@ -183,9 +210,10 @@ def parse(src):
             continue
         if name is None:
             fail(src, lineno, "the first statement must be 'protocol <name> <id>'")
-        m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*\))$", line)
+        m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*\))"
+                     r"(\s+later)?$", line)
         if not m:
-            fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>)'")
+            fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>) [later]'")
         ordinal, mname = int(m.group(1)), m.group(2)
         if mname in C_KEYWORDS:
             fail(src, lineno, f"bad method name '{mname}'")
@@ -195,8 +223,11 @@ def parse(src):
             fail(src, lineno, f"ordinal {ordinal} used twice")
         if mname in names:
             fail(src, lineno, f"method '{mname}' defined twice")
-        if mname in ("dispatch", "serve", "serve_one", "ops"):
-            fail(src, lineno, f"method name '{mname}' is reserved")
+        if mname in ("dispatch", "dispatch_on", "serve", "serve_one", "ops") or \
+                mname.startswith("reply_") or \
+                any(mname.endswith(x) for x in ("_until", "_send", "_result")):
+            fail(src, lineno, f"method name '{mname}' is reserved (dispatch, dispatch_on, "
+                              "serve, serve_one, ops, reply_*, *_until, *_send, *_result)")
         ordinals.add(ordinal)
         names.add(mname)
         args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
@@ -207,7 +238,7 @@ def parse(src):
                            (sum(f.size for f in results), "reply")):
             if HDR + size > MSG_MAX:
                 fail(src, lineno, f"{mname}: {what} is {HDR + size} bytes (max {MSG_MAX})")
-        methods.append(Method(ordinal, mname, args, results, doc))
+        methods.append(Method(ordinal, mname, args, results, doc, bool(m.group(5))))
         doc = []
     if name is None:
         sys.exit(f"{src}: no 'protocol' line")
@@ -288,29 +319,376 @@ def gen_common():
         "    drv_channel_write(ch, &idl_r, sizeof(idl_r), NULL, 0);",
         "}",
         "",
-        "/* Server: the next message didn't fit (n bytes, nh handles): bigger than",
-        " * any request of the protocol. Take it off the queue anyway (or it would",
-        " * block every later one), close its handles, answer ERR_INVALID_ARGS. */",
-        "static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)",
+        "/* Take the next message off ch, which didn't fit the caller's buffers",
+        " * (n bytes, nh handles), and drop it, closing its handles. *txid gets its",
+        " * txid and *got its length (under 4 bytes: no txid, *txid 0). OK, or",
+        " * drv_channel_read's status (ERR_SHOULD_WAIT or ERR_BUFFER_TOO_SMALL:",
+        " * another reader took it meanwhile), or ERR_NO_MEMORY. */",
+        "static inline status_t idl_discard(handle_t ch, uint32_t n, uint32_t nh, uint32_t *txid,",
+        "                                   uint32_t *got)",
         "{",
         "    uint8_t *idl_b = (uint8_t *)drv_malloc(n ? n : 1);",
         "    handle_t *idl_hs = (handle_t *)drv_malloc(nh ? nh * sizeof(handle_t) : 1);",
         "    status_t idl_st = idl_b && idl_hs ? OK : ERR_NO_MEMORY;",
         "    uint32_t idl_n = 0, idl_nh = 0;",
+        "    *txid = 0;",
+        "    *got = 0;",
         "    if (idl_st == OK)",
         "        idl_st = drv_channel_read(ch, idl_b, n, &idl_n, idl_hs, nh, &idl_nh);",
         "    if (idl_st == OK) {",
         "        idl_close_all(idl_hs, idl_nh);",
-        "        idl_reply_status(ch, idl_b, idl_n, ERR_INVALID_ARGS);",
-        "    } else if (idl_st == ERR_BUFFER_TOO_SMALL || idl_st == ERR_SHOULD_WAIT) {",
-        "        idl_st = OK;   /* another reader took it meanwhile: look again */",
+        "        *got = idl_n;",
+        "        if (idl_n >= sizeof(uint32_t))",
+        "            *txid = ((const struct idl_req_hdr *)idl_b)->txid;",
         "    }",
         "    drv_free(idl_hs);",
         "    drv_free(idl_b);",
         "    return idl_st;",
         "}",
         "",
+        "/* Server: the next message didn't fit (n bytes, nh handles): bigger than",
+        " * any request of the protocol. Take it off the queue anyway (or it would",
+        " * block every later one), close its handles, answer ERR_INVALID_ARGS. */",
+        "static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)",
+        "{",
+        "    uint32_t idl_txid = 0, idl_got = 0;",
+        "    status_t idl_st = idl_discard(ch, n, nh, &idl_txid, &idl_got);",
+        "    if (idl_st == OK && idl_got >= sizeof(uint32_t)) {",
+        "        struct idl_rep_hdr idl_r = { idl_txid, ERR_INVALID_ARGS };",
+        "        drv_channel_write(ch, &idl_r, sizeof(idl_r), NULL, 0);",
+        "    } else if (idl_st == ERR_BUFFER_TOO_SMALL || idl_st == ERR_SHOULD_WAIT) {",
+        "        idl_st = OK;   /* another reader took it meanwhile: look again */",
+        "    }",
+        "    return idl_st;",
+        "}",
+        "",
+        "/* ---- answering later (a `later` method, or a loop of your own) ------- */",
+        "",
+        "/* A request to be answered later: the channel it came on (not owned:",
+        " * keep it open until the reply is written) and its txid. A `later`",
+        " * method's handler gets it; <proto>_reply_<method> answers it. */",
+        "struct idl_txn {",
+        "    handle_t ch;",
+        "    uint32_t txid;",
+        "};",
+        "",
+        "/* What a `later` method's handler returns when it answers with",
+        " * <proto>_reply_<method> (now or later) instead of through its results.",
+        " * Never a status on the wire. */",
+        "#define IDL_LATER 1",
+        "",
+        "/* Server: write the reply rep (n bytes; its txid is set here) with nh",
+        " * handles to txn. The handles are moved in every case: sent, or closed",
+        " * when the write fails (ERR_PEER_CLOSED: the client is gone; a client",
+        " * that gave up waiting still gets the reply, as a message of its own). */",
+        "static inline status_t idl_reply_write(struct idl_txn txn, void *rep, uint32_t n,",
+        "                                       handle_t *hs, uint32_t nh)",
+        "{",
+        "    ((struct idl_rep_hdr *)rep)->txid = txn.txid;",
+        "    status_t idl_st = drv_channel_write(txn.ch, rep, n, hs, nh);",
+        "    if (idl_st != OK)",
+        "        idl_close_all(hs, nh);",
+        "    return idl_st;",
+        "}",
+        "",
+        "/* ---- asynchronous calls ------------------------------------------------ */",
+        "",
+        "/* Client: the next txid from the counter *last, never 0. Use one counter",
+        " * per channel end, and only asynchronous calls on that end (a blocking",
+        " * call's txid comes from the kernel and could match one of these). */",
+        "static inline uint32_t idl_txid_next(uint32_t *last)",
+        "{",
+        "    if (++*last == 0)",
+        "        ++*last;",
+        "    return *last;",
+        "}",
+        "",
+        "/* A reply read off a channel, for <proto>_<method>_result. */",
+        "struct idl_msg {",
+        "    uint32_t txid;                    /* its txid: which call it answers */",
+        "    uint32_t n;                       /* its bytes */",
+        "    uint32_t nh;                      /* handles in hs, still to be taken */",
+        "    handle_t hs[IDL_REP_HANDLES];",
+        "};",
+        "",
+        "/* Client: close the handles of a reply nobody takes (its txid matches no",
+        " * call: a reply to a call that gave up). */",
+        "static inline void idl_msg_drop(struct idl_msg *m)",
+        "{",
+        "    idl_close_all(m->hs, m->nh);",
+        "    m->nh = 0;",
+        "}",
+        "",
+        "/* Client: read the next reply off ch into rep (cap bytes: the protocol's",
+        " * <PROTO>_REP_MAX) and *m, then find its call by m->txid and decode it",
+        " * with that method's <proto>_<method>_result (or idl_msg_drop it).",
+        " * ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the server is gone",
+        " * (every call still waiting fails). A message too big for rep or with",
+        " * more than IDL_REP_HANDLES handles, or without a txid, is no reply of",
+        " * the protocol: dropped, its handles closed, ERR_INTERNAL with m->txid",
+        " * set (0 if it had none) so its call can fail. */",
+        "static inline status_t idl_reply_read(handle_t ch, void *rep, uint32_t cap, struct idl_msg *m)",
+        "{",
+        "    m->txid = m->n = m->nh = 0;",
+        "    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_REP_HANDLES, &m->nh);",
+        "    if (idl_st == ERR_BUFFER_TOO_SMALL) {",
+        "        uint32_t idl_got = 0;",
+        "        idl_st = idl_discard(ch, m->n, m->nh, &m->txid, &idl_got);",
+        "        m->n = m->nh = 0;",
+        "        return idl_st == ERR_NO_MEMORY ? idl_st : ERR_INTERNAL;",
+        "    }",
+        "    if (idl_st != OK)",
+        "        return idl_st;",
+        "    if (m->n < sizeof(uint32_t)) {",
+        "        idl_msg_drop(m);",
+        "        return ERR_INTERNAL;",
+        "    }",
+        "    m->txid = ((const struct idl_rep_hdr *)rep)->txid;",
+        "    return OK;",
+        "}",
+        "",
     ])
+
+
+def fill_request(m, U, q):
+    """Lines that fill request struct `q` from m's arguments (txid set by the caller)."""
+    out = [f"    {q}.ordinal = {U}_{m.name.upper()};"]
+    for f in m.args:
+        if f.array:
+            out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"        {q}.{f.name}[idl_i] = {f.name}[idl_i];")
+        else:
+            out.append(f"    {q}.{f.name} = {f.name};")
+    return out
+
+
+def copy_results(m, cond, r):
+    """Lines that copy reply `r`'s plain results to the caller's out_ pointers
+    (when `cond` holds, if given)."""
+    out = []
+    pre = f"{cond} && " if cond else ""
+    for f in m.results:
+        if f.handle:
+            continue
+        if f.array:
+            out.append(f"    for (uint32_t idl_i = 0; {pre}out_{f.name} && "
+                       f"idl_i < {f.array}; idl_i++)")
+            out.append(f"        out_{f.name}[idl_i] = {r}{f.name}[idl_i];")
+        else:
+            out.append(f"    if ({pre}out_{f.name})")
+            out.append(f"        *out_{f.name} = {r}{f.name};")
+    return out
+
+
+def gen_client_sync(p, m):
+    P, U = p.name, p.name.upper()
+    params = ["handle_t ch", "uint64_t deadline_ns"] + [f.in_param() for f in m.args] + \
+             [f.out_param() for f in m.results]
+    out = [""]
+    out += c_comment(m.doc)
+    out.append(f"static inline status_t {P}_{m.name}_until({', '.join(params)})")
+    out.append("{")
+    out.append(f"    struct {P}_{m.name}_req idl_q;")
+    out.append(f"    struct {P}_{m.name}_rep idl_r;")
+    out.append("    uint32_t idl_n = 0;")
+    out.append("    idl_q.txid = 0;")
+    out += fill_request(m, U, "idl_q")
+    hres = [f for f in m.results if f.handle]
+    if hres:
+        out.append(f"    handle_t idl_rh[{len(hres)}];")
+        out.append("    uint32_t idl_rhn = 0;")
+        out.append("    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), "
+                   "&idl_r, sizeof(idl_r), &idl_n,")
+        out.append(f"                                         idl_rh, {len(hres)}, &idl_rhn, "
+                   "deadline_ns);")
+        out.append("    if (idl_st == OK)")
+        out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
+        out.append(f"    if (idl_st == OK && idl_rhn != {len(hres)})")
+        out.append("        idl_st = ERR_INTERNAL;")
+        out.append("    if (idl_st != OK)")
+        out.append("        idl_close_all(idl_rh, idl_rhn);")
+    else:
+        out.append("    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, "
+                   "sizeof(idl_r), &idl_n,")
+        out.append("                                       deadline_ns);")
+        out.append("    if (idl_st == OK)")
+        out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
+    for k, f in enumerate(hres):
+        out.append(f"    if (idl_st == OK) {{")
+        out.append(f"        if (out_{f.name})")
+        out.append(f"            *out_{f.name} = idl_rh[{k}];")
+        out.append("        else")
+        out.append(f"            drv_handle_close(idl_rh[{k}]);")
+        out.append("    }")
+    out += copy_results(m, "idl_st == OK", "idl_r.")
+    out.append("    return idl_st;")
+    out.append("}")
+    plain = (["handle_t ch"] + [f.in_param() for f in m.args] +
+             [f.out_param() for f in m.results])
+    names = ["ch", "DEADLINE_NEVER"] + [f.name for f in m.args] + \
+            [f"out_{f.name}" for f in m.results]
+    out.append(f"static inline status_t {P}_{m.name}({', '.join(plain)})")
+    out.append("{")
+    out.append(f"    return {P}_{m.name}_until({', '.join(names)});")
+    out.append("}")
+    return out
+
+
+def gen_client_async(p, m):
+    P, U = p.name, p.name.upper()
+    out = [""]
+    params = ["handle_t ch", "uint32_t idl_txid"] + [f.in_param() for f in m.args]
+    out.append(f"/* {P}_{m.name} without waiting: the request, with the caller's txid (not 0).")
+    out.append(f" * The reply comes on ch: idl_reply_read, then {P}_{m.name}_result. */")
+    out.append(f"static inline status_t {P}_{m.name}_send({', '.join(params)})")
+    out.append("{")
+    out.append(f"    struct {P}_{m.name}_req idl_q;")
+    out.append("    if (!idl_txid)")
+    out.append("        return ERR_INVALID_ARGS;")
+    out.append("    idl_q.txid = idl_txid;")
+    out += fill_request(m, U, "idl_q")
+    out.append("    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);")
+    out.append("}")
+    hres = [f for f in m.results if f.handle]
+    params = ["const void *idl_rep", "struct idl_msg *idl_m"] + [f.out_param() for f in m.results]
+    out.append("")
+    out.append(f"/* The status and results of a reply to {P}_{m.name}_send (read with")
+    out.append(" * idl_reply_read). The reply's handles are taken in every case: moved to")
+    out.append(" * the results, or closed (on a failure, or for a NULL result). */")
+    out.append(f"static inline status_t {P}_{m.name}_result({', '.join(params)})")
+    out.append("{")
+    out.append(f"    const struct {P}_{m.name}_rep *idl_r = (const struct {P}_{m.name}_rep *)idl_rep;")
+    out.append("    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));")
+    out.append(f"    if (idl_st == OK && idl_m->nh != {len(hres)})")
+    out.append("        idl_st = ERR_INTERNAL;")
+    out.append("    if (idl_st != OK) {")
+    out.append("        idl_msg_drop(idl_m);")
+    out.append("        return idl_st;")
+    out.append("    }")
+    for k, f in enumerate(hres):
+        out.append(f"    if (out_{f.name})")
+        out.append(f"        *out_{f.name} = idl_m->hs[{k}];")
+        out.append("    else")
+        out.append(f"        drv_handle_close(idl_m->hs[{k}]);")
+    out.append("    idl_m->nh = 0;")
+    if not m.results:
+        out.append("    (void)idl_r;")
+    out += copy_results(m, None, "idl_r->")
+    out.append("    return OK;")
+    out.append("}")
+    return out
+
+
+def gen_server_reply(p, m):
+    P = p.name
+    hres = [f for f in m.results if f.handle]
+    params = ["struct idl_txn idl_txn", "status_t idl_st"] + [f.in_param() for f in m.results]
+    out = [""]
+    out.append(f"/* Answer the {P}.{m.name} request kept in txn: idl_st and, if it is OK, the")
+    out.append(" * results (handles are moved in every case: sent, or closed). A positive")
+    out.append(" * status is ERR_INTERNAL, and so is OK with a handle result left")
+    out.append(" * HANDLE_INVALID. Returns the write's status (idl_reply_write). */")
+    out.append(f"static inline status_t {P}_reply_{m.name}({', '.join(params)})")
+    out.append("{")
+    out.append(f"    struct {P}_{m.name}_rep idl_r;")
+    if hres:
+        out.append(f"    handle_t idl_hs[{len(hres)}] = {{ {', '.join(f.name for f in hres)} }};")
+    out.append("    if (idl_st > 0)")
+    out.append("        idl_st = ERR_INTERNAL;")
+    if hres:
+        ok = " && ".join(f"{f.name} != HANDLE_INVALID" for f in hres)
+        out.append(f"    if (idl_st == OK && !({ok}))")
+        out.append("        idl_st = ERR_INTERNAL;")
+    out.append("    idl_r.status = idl_st;")
+    out.append("    if (idl_st != OK)" + (" {" if hres else ""))
+    for k, f in enumerate(hres):
+        out.append(f"        if (idl_hs[{k}] != HANDLE_INVALID)")
+        out.append(f"            drv_handle_close(idl_hs[{k}]);")
+    out.append("        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), "
+               "NULL, 0);")
+    if hres:
+        out.append("    }")
+    for f in m.results:
+        if f.handle:
+            continue
+        if f.array:
+            out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"        idl_r.{f.name}[idl_i] = {f.name}[idl_i];")
+        else:
+            out.append(f"    idl_r.{f.name} = {f.name};")
+    hs = ("idl_hs", len(hres)) if hres else ("NULL", 0)
+    out.append(f"    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), {hs[0]}, {hs[1]});")
+    out.append("}")
+    return out
+
+
+def gen_dispatch_case(p, m):
+    P, U = p.name, p.name.upper()
+    out = [f"    case {U}_{m.name.upper()}: {{"]
+    out.append(f"        const struct {P}_{m.name}_req *idl_q = "
+               f"(const struct {P}_{m.name}_req *)req;")
+    out.append(f"        struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)rep;")
+    for f in m.results:
+        if f.handle:
+            out.append(f"        handle_t out_{f.name} = HANDLE_INVALID;")
+        elif f.array:
+            out.append(f"        uint8_t out_{f.name}[{f.array}];")
+            out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"            out_{f.name}[idl_i] = 0;")
+        else:
+            out.append(f"        {f.ctype} out_{f.name} = 0;")
+    if not m.results:
+        out.append("        (void)idl_r;")
+    out.append("        if (n != sizeof(*idl_q))")
+    out.append("            return sizeof(*idl_h);")
+    out.append(f"        if (!ops->{m.name}) {{")
+    out.append("            idl_h->status = ERR_NOT_SUPPORTED;")
+    out.append("            return sizeof(*idl_h);")
+    out.append("        }")
+    call = ["ctx"] + (["idl_txn"] if m.later else []) + [f"idl_q->{f.name}" for f in m.args] + \
+           [f"out_{f.name}" if f.array else f"&out_{f.name}" for f in m.results]
+    if m.later:
+        out.append("        struct idl_txn idl_txn = { ch, idl_h->txid };")
+    out.append(f"        status_t idl_st = ops->{m.name}({', '.join(call)});")
+    hres = [f for f in m.results if f.handle]
+    if m.later:
+        out.append(f"        /* IDL_LATER: the handler answers with {P}_reply_{m.name}. */")
+        out.append("        if (idl_st == IDL_LATER)" + (" {" if hres else ""))
+        for f in hres:
+            out.append(f"            if (out_{f.name} != HANDLE_INVALID)")
+            out.append(f"                drv_handle_close(out_{f.name});")
+        out.append("            return 0;")
+        if hres:
+            out.append("        }")
+    out.append("        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;")
+    if hres:
+        ok = " && ".join(f"out_{f.name} != HANDLE_INVALID" for f in hres)
+        out.append(f"        if (idl_h->status == OK && !({ok}))")
+        out.append("            idl_h->status = ERR_INTERNAL;   "
+                   "/* a handle result left unset */")
+        out.append("        if (idl_h->status != OK) {")
+        for f in hres:
+            out.append(f"            if (out_{f.name} != HANDLE_INVALID)")
+            out.append(f"                drv_handle_close(out_{f.name});")
+        out.append("            return sizeof(*idl_h);")
+        out.append("        }")
+        for k, f in enumerate(hres):
+            out.append(f"        rhs[{k}] = out_{f.name};")
+        out.append(f"        *rhn = {len(hres)};")
+    else:
+        out.append("        if (idl_h->status != OK)")
+        out.append("            return sizeof(*idl_h);")
+    for f in m.results:
+        if f.handle:
+            continue
+        if f.array:
+            out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"            idl_r->{f.name}[idl_i] = out_{f.name}[idl_i];")
+        else:
+            out.append(f"        idl_r->{f.name} = out_{f.name};")
+    out.append("        return sizeof(*idl_r);")
+    out.append("    }")
+    return out
 
 
 def gen_protocol(p):
@@ -319,9 +697,11 @@ def gen_protocol(p):
     out = [f"/* {BANNER.format(src=src)}",
            " *",
            f" * Protocol `{P}` (id {p.pid}). Client: {P}_<method>(ch, args..., &results...)",
-           f" * (and {P}_<method>_until with a deadline) over drv_channel_call. Server:",
+           f" * (and {P}_<method>_until with a deadline) over drv_channel_call, or",
+           f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
            f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
-           f" * {P}_serve_one / {P}_dispatch for a loop of your own. */",
+           f" * {P}_serve_one / {P}_dispatch_on for a loop of your own;",
+           f" * {P}_reply_<method> answers a request later. */",
            "#pragma once", "", "#include <idl/common.h>", "",
            f"#define {U}_PROTOCOL_ID {p.pid}u"]
     for m in p.methods:
@@ -345,100 +725,48 @@ def gen_protocol(p):
     out += ["", f"#define {U}_REQ_MAX {req_max}u   /* bytes: the biggest request */",
             f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest reply */", ""]
 
-    # client
     out.append("/* ---- client ---------------------------------------------------------- */")
     for m in p.methods:
-        params = ["handle_t ch", "uint64_t deadline_ns"] + [f.in_param() for f in m.args] + \
-                 [f.out_param() for f in m.results]
-        out.append("")
-        out += c_comment(m.doc)
-        out.append(f"static inline status_t {P}_{m.name}_until({', '.join(params)})")
-        out.append("{")
-        out.append(f"    struct {P}_{m.name}_req idl_q;")
-        out.append(f"    struct {P}_{m.name}_rep idl_r;")
-        out.append("    uint32_t idl_n = 0;")
-        out.append("    idl_q.txid = 0;")
-        out.append(f"    idl_q.ordinal = {U}_{m.name.upper()};")
-        for f in m.args:
-            if f.array:
-                out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
-                out.append(f"        idl_q.{f.name}[idl_i] = {f.name}[idl_i];")
-            else:
-                out.append(f"    idl_q.{f.name} = {f.name};")
-        hres = [f for f in m.results if f.handle]
-        if hres:
-            out.append(f"    handle_t idl_rh[{len(hres)}];")
-            out.append("    uint32_t idl_rhn = 0;")
-            out.append("    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), "
-                       "&idl_r, sizeof(idl_r), &idl_n,")
-            out.append(f"                                         idl_rh, {len(hres)}, &idl_rhn, "
-                       "deadline_ns);")
-            out.append("    if (idl_st == OK)")
-            out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
-            out.append(f"    if (idl_st == OK && idl_rhn != {len(hres)})")
-            out.append("        idl_st = ERR_INTERNAL;")
-            out.append("    if (idl_st != OK)")
-            out.append("        idl_close_all(idl_rh, idl_rhn);")
-        else:
-            out.append("    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, "
-                       "sizeof(idl_r), &idl_n,")
-            out.append("                                       deadline_ns);")
-            out.append("    if (idl_st == OK)")
-            out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
-        for k, f in enumerate(hres):
-            out.append(f"    if (idl_st == OK) {{")
-            out.append(f"        if (out_{f.name})")
-            out.append(f"            *out_{f.name} = idl_rh[{k}];")
-            out.append("        else")
-            out.append(f"            drv_handle_close(idl_rh[{k}]);")
-            out.append("    }")
-        for f in m.results:
-            if f.handle:
-                continue
-            if f.array:
-                out.append(f"    for (uint32_t idl_i = 0; idl_st == OK && out_{f.name} && "
-                           f"idl_i < {f.array}; idl_i++)")
-                out.append(f"        out_{f.name}[idl_i] = idl_r.{f.name}[idl_i];")
-            else:
-                out.append(f"    if (idl_st == OK && out_{f.name})")
-                out.append(f"        *out_{f.name} = idl_r.{f.name};")
-        out.append("    return idl_st;")
-        out.append("}")
-        plain = (["handle_t ch"] + [f.in_param() for f in m.args] +
-                 [f.out_param() for f in m.results])
-        names = ["ch", "DEADLINE_NEVER"] + [f.name for f in m.args] + \
-                [f"out_{f.name}" for f in m.results]
-        out.append(f"static inline status_t {P}_{m.name}({', '.join(plain)})")
-        out.append("{")
-        out.append(f"    return {P}_{m.name}_until({', '.join(names)});")
-        out.append("}")
+        out += gen_client_sync(p, m)
+    out.append("")
+    out.append("/* ---- client, asynchronous (tools/genidl.py) --------------------------- */")
+    for m in p.methods:
+        out += gen_client_async(p, m)
     out.append("")
 
-    # server
     out.append("/* ---- server ---------------------------------------------------------- */")
     out.append("")
     out.append(f"/* Handlers: return OK and fill the results, or an ERR_* for the client.")
-    out.append(" * A NULL handler answers ERR_NOT_SUPPORTED. */")
+    out.append(" * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler")
+    out.append(" * also gets the request's txn, and may return IDL_LATER and answer it")
+    out.append(f" * with {P}_reply_<method> (now, or later from anywhere). */")
     out.append(f"struct {P}_ops {{")
     for m in p.methods:
-        params = ["void *ctx"] + [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+        params = ["void *ctx"] + (["struct idl_txn idl_txn"] if m.later else []) + \
+                 [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
         out.append(f"    status_t (*{m.name})({', '.join(params)});")
     out.append("};")
+    for m in p.methods:
+        out += gen_server_reply(p, m)
     out.append("")
+    later = [m.name for m in p.methods if m.later]
     out += [
-        f"/* Decode the request of n bytes at req, call its handler, encode the reply",
-        f" * into rep ({U}_REP_MAX bytes) and the handles it carries into rhs",
-        " * (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's length: 0",
-        " * means no reply (the request has no txid). No I/O; the caller sends the",
-        " * reply with the handles, or closes them if it can't. */",
-        f"static inline uint32_t {P}_dispatch(const struct {P}_ops *ops, void *ctx, "
-        "const void *req, uint32_t n,",
-        " " * len(f"static inline uint32_t {P}_dispatch(") +
-        "void *rep, handle_t *rhs, uint32_t *rhn)",
+        f"/* Decode the request of n bytes at req, which came on ch, call its handler,",
+        f" * encode the reply into rep ({U}_REP_MAX bytes) and the handles it carries",
+        " * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's",
+        " * length: 0 means no reply (the request has no txid, or a `later`",
+        " * handler answers it itself). No I/O; the caller sends the reply with the",
+        " * handles, or closes them if it can't. */",
+        f"static inline uint32_t {P}_dispatch_on(handle_t ch, const struct {P}_ops *ops, "
+        "void *ctx,",
+        " " * len(f"static inline uint32_t {P}_dispatch_on(") +
+        "const void *req, uint32_t n, void *rep, handle_t *rhs,",
+        " " * len(f"static inline uint32_t {P}_dispatch_on(") + "uint32_t *rhn)",
         "{",
         "    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;",
         "    *rhn = 0;",
         "    (void)rhs;",
+        "    (void)ch;" if not later else None,
         "    if (n < sizeof(uint32_t))",
         "        return 0;",
         "    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;",
@@ -447,64 +775,24 @@ def gen_protocol(p):
         "        return sizeof(*idl_h);",
         "    switch (((const struct idl_req_hdr *)req)->ordinal) {",
     ]
+    out = [l for l in out if l is not None]
     for m in p.methods:
-        out.append(f"    case {U}_{m.name.upper()}: {{")
-        out.append(f"        const struct {P}_{m.name}_req *idl_q = "
-                   f"(const struct {P}_{m.name}_req *)req;")
-        out.append(f"        struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)rep;")
-        for f in m.results:
-            if f.handle:
-                out.append(f"        handle_t out_{f.name} = HANDLE_INVALID;")
-            elif f.array:
-                out.append(f"        uint8_t out_{f.name}[{f.array}];")
-                out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
-                out.append(f"            out_{f.name}[idl_i] = 0;")
-            else:
-                out.append(f"        {f.ctype} out_{f.name} = 0;")
-        if not m.results:
-            out.append("        (void)idl_r;")
-        out.append("        if (n != sizeof(*idl_q))")
-        out.append("            return sizeof(*idl_h);")
-        out.append(f"        if (!ops->{m.name}) {{")
-        out.append("            idl_h->status = ERR_NOT_SUPPORTED;")
-        out.append("            return sizeof(*idl_h);")
-        out.append("        }")
-        call = ["ctx"] + [f"idl_q->{f.name}" for f in m.args] + \
-               [f"out_{f.name}" if f.array else f"&out_{f.name}" for f in m.results]
-        out.append(f"        status_t idl_st = ops->{m.name}({', '.join(call)});")
-        out.append("        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;")
-        hres = [f for f in m.results if f.handle]
-        if hres:
-            ok = " && ".join(f"out_{f.name} != HANDLE_INVALID" for f in hres)
-            out.append(f"        if (idl_h->status == OK && !({ok}))")
-            out.append("            idl_h->status = ERR_INTERNAL;   "
-                       "/* a handle result left unset */")
-            out.append("        if (idl_h->status != OK) {")
-            for f in hres:
-                out.append(f"            if (out_{f.name} != HANDLE_INVALID)")
-                out.append(f"                drv_handle_close(out_{f.name});")
-            out.append("            return sizeof(*idl_h);")
-            out.append("        }")
-            for k, f in enumerate(hres):
-                out.append(f"        rhs[{k}] = out_{f.name};")
-            out.append(f"        *rhn = {len(hres)};")
-        else:
-            out.append("        if (idl_h->status != OK)")
-            out.append("            return sizeof(*idl_h);")
-        for f in m.results:
-            if f.handle:
-                continue
-            if f.array:
-                out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
-                out.append(f"            idl_r->{f.name}[idl_i] = out_{f.name}[idl_i];")
-            else:
-                out.append(f"        idl_r->{f.name} = out_{f.name};")
-        out.append("        return sizeof(*idl_r);")
-        out.append("    }")
+        out += gen_dispatch_case(p, m)
     out += [
         "    }",
         "    idl_h->status = ERR_NOT_SUPPORTED;",
         "    return sizeof(*idl_h);",
+        "}",
+        "",
+        f"/* {P}_dispatch_on without the channel" +
+        (f" (a `later` handler's txn then has none: use {P}_dispatch_on). */" if later else
+         " (the protocol has no `later` method). */"),
+        f"static inline uint32_t {P}_dispatch(const struct {P}_ops *ops, void *ctx, "
+        "const void *req, uint32_t n,",
+        " " * len(f"static inline uint32_t {P}_dispatch(") +
+        "void *rep, handle_t *rhs, uint32_t *rhn)",
+        "{",
+        f"    return {P}_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);",
         "}",
         "",
         "/* Take one message off ch and answer it. OK once a message was handled",
@@ -531,7 +819,8 @@ def gen_protocol(p):
         "    }",
         "    handle_t idl_rhs[IDL_REP_HANDLES];",
         "    uint32_t idl_rhn = 0;",
-        f"    uint32_t idl_rn = {P}_dispatch(ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);",
+        f"    uint32_t idl_rn = {P}_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, "
+        "&idl_rhn);",
         "    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
         "        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
         "    return OK;",
