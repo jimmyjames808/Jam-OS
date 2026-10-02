@@ -6,9 +6,9 @@ the PC** ([results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)).
 **Stage 1 part A (the netdev contract, `vlan=`) and stage 3a (netstack's
 core without a device)** ([below](#stage-3a-built-the-core-without-a-device))
 are merged.
-R1's first half (the transmit path, the VLAN filter and the `netsend`
-test) is built and waits for its PC run
-([below](#r1-progress-the-full-driver-without-the-netdev-server)).
+R1 (the transmit path, the VLAN filter, the `netsend` test and the
+netdev server) is built and waits for its PC runs
+([below](#r1-progress-the-full-driver)).
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -336,9 +336,9 @@ carrying 21 (untagged too: a native VLAN)`.
 - **Exit:** receiver and transmitter off, the chip reset, everything
   unpinned.
 
-#### R1 progress: the full driver without the netdev server
+#### R1 progress: the full driver
 
-Built 2026-10-02 (R1's first half; the netdev server is the second):
+Built 2026-10-02 (R1a: everything but the netdev server; R1b: the server):
 
 - **`<jam/netframe.h>`'s transmit and receive halves.** `netframe_tag`
   copies an untagged frame (14..1514 bytes, each byte read once) into the
@@ -387,8 +387,47 @@ Built 2026-10-02 (R1's first half; the netdev server is the second):
   the router's reply (tagged 21, kept by rx.c; the send test alone reads
   an ARP body, of kept frames only, to recognise it), logs each round
   trip, then stops. Nothing else is ever sent.
-- Not built yet: the netdev server (R1b), so a boot without `netprobe`
-  or `netsend` still never binds the chip.
+- **The netdev server (R1b)**: full mode without `netsend` serves
+  abi/idl/netdev.idl on DR_SERVE exactly as `<jam/netdev.h>` says
+  (`drivers/rtl8125/server.c`, which knows nothing of the chip, and
+  `full.c`, the card as the server sees it). `info` (MAC, VLAN, MTU 1500,
+  link and speed, link changes, "RTL8125B"); `stats` (the driver's
+  counts: frames and bytes each way, drops by reason, refusals by
+  length, flags and tag, ring errors, sessions, and the chip's tally
+  since the driver started, all five `chip_counted` bits); `open` gives
+  a session channel (info and stats on it; open refused there), the two
+  ring VMOs and the two events with the header's rights. One session: a
+  second open is ERR_BAD_STATE while the first has a client; a session
+  whose opener has gone is ended at the next open, and one whose channel
+  closes is ended then. netstack's frames go from the tx ring to tx.c's
+  `tx_send` and nowhere else (copied out of the slot, then copied,
+  tagged and checked again by tx.c); a pass takes at most a ring's worth
+  and stops when the chip's descriptors run out, carrying on when they
+  come back. Kept frames go into the rx ring, published once per batch
+  with NETDEV_SIG_RX when netstack waits; a full ring or no session drops
+  and counts. Link changes signal NETDEV_SIG_LINK. All of it on the
+  driver's one port. utest's `rtl8125_server_*` run `server.c` itself
+  over a fake card, the test as netstack.
+- **Which boot binds the chip:** the plan doesn't say when the everyday
+  boot starts the network, and nothing opens the driver yet (stage 3b
+  starts netstack with the device channel). So until then the service
+  runs only on a boot with the word `net` (boot entry "Jam OS
+  (network)"): the chip comes up on VLAN 21, receives and drops (no
+  session), and sends nothing (only netstack's frames are ever sent).
+  Making it the everyday boot is one line in devmgr's match table (the
+  row's word to NULL), for when 3b and the PC run are done.
+- **A PC check the `net` boot already gives** (optional, before netstack
+  uses it): boot "Jam OS (network)", leave it a few minutes with the
+  cable in, then `reboot`. The log should have `full mode on vlan 21:
+  serving netdev`, the link line, and at the stop `tx check: the driver
+  queued 0 frame(s) ... equal: the chip sent nothing of its own` with the
+  transmitter on the whole time (the plan's PAUSE check over a long run),
+  and `netdev: 0 session(s); rx 0 frame(s) to netstack, N with no
+  session` (N: VLAN 21's broadcasts and ours).
+- Wake-on-LAN stays off when the driver exits (not restored): the plan's
+  rule is "off while Jam OS runs", and the driver also exits while Jam OS
+  goes on (the probe, the send test); the firmware arms it again at its
+  next start.
 
 **The owner's run:** boot "Jam OS (network: send test)", the cable in.
 It takes about 10 s after the link. On the Mac (on VLAN 21's Wi-Fi),
