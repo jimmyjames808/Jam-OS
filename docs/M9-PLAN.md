@@ -24,6 +24,16 @@ sent untagged or on another VLAN.**
 
 Each has a recommendation; the plan assumes it until you say otherwise.
 
+**Found on the Mac (2026-10-02),** plugged into the port the PC will use
+(read-only checks): the port is a **trunk**. Untagged it gives the home
+network (10.2.0.0/24, router 10.2.0.1); tagged 21 it gives VLAN 21
+(10.2.21.0/24, "Home Devices VLAN": DHCP, router and DNS all 10.2.21.1,
+24 h leases, the internet reachable: 1.1.1.1 answered in 14 ms). The Mac
+was 10.2.21.67 on VLAN 21, by DHCP. So questions 1 and 2 are mostly
+answered: Jam OS's tagging matches the port, and an untagged frame would
+land on the home network, which is exactly what the rule forbids. Stage 0
+still listens first to confirm it from the PC's own port.
+
 1. **Is the PC's switch port a trunk carrying VLAN 21 tagged, or an
    access port on VLAN 21?** You don't need to know: stage 0 listens
    (it transmits nothing) and tells us from the tags that arrive
