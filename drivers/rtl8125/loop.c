@@ -11,7 +11,10 @@
  * wait has a deadline of at most a second, so a lost interrupt costs time,
  * never a stall, and the link and the rings are polled then too. Nothing
  * waits inside a step but the short, bounded register waits (the
- * service-loop rule, CODING-GUIDE.md).
+ * service-loop rule, CODING-GUIDE.md); the tally dump is asked for in one
+ * step and looked at in the next ones (the wait is 1 ms while one is out).
+ * Every step ends with the guard's look (guard.c), in every mode; when it
+ * stops the chip, the loop ends (loop_step false) and so does the run.
  *
  * An interrupt is handled as rge_intr does: the mask off while the
  * status is read and acknowledged, the work, then the mask on again, so
@@ -21,6 +24,7 @@
 #define KEY_IRQ      1
 #define KEY_SERVE    2
 #define POLL_MAX_NS  NS_PER_S
+#define DUMP_LOOK_NS NS_PER_MS   /* the wait while a tally dump is out */
 
 status_t loop_init(struct rtl *t)
 {
@@ -38,6 +42,7 @@ static void service(struct rtl *t, bool by_irq)
     if (t->mode == RTL_MODE_PROBE) {
         (void)census_harvest(t, by_irq);
         (void)chip_link_poll(t);
+        guard_step(t, false, drv_clock_ns());
         return;
     }
     (void)rx_harvest(t);
@@ -45,7 +50,8 @@ static void service(struct rtl *t, bool by_irq)
     tx_tick(t);
     rx_tick(t);
     (void)chip_link_poll(t);
-    if (!t->srv)
+    guard_step(t, freed, drv_clock_ns());   /* may stop the chip: t->tripped */
+    if (t->tripped || !t->srv)
         return;
     srv_rx_done(t->srv);   /* the rx ring published once per batch */
     if (freed)
@@ -73,7 +79,8 @@ static void interrupt(struct rtl *t, uint64_t fires)
     t->ev.rdu_irqs += !!(isr & RTL_ISR_RX_DESC_UNAVAIL);
     t->ev.rx_oflow_irqs += !!(isr & RTL_ISR_RX_FIFO_OFLOW);
     service(t, true);
-    wr32(t, RTL_IMR, t->mode == RTL_MODE_PROBE ? RTL_IMR_PROBE : RTL_IMR_FULL);
+    if (!t->tripped)
+        wr32(t, RTL_IMR, t->mode == RTL_MODE_PROBE ? RTL_IMR_PROBE : RTL_IMR_FULL);
 }
 
 /* The netdev server's work, if there is a server; true while it waits for
@@ -85,9 +92,17 @@ static bool server_work(struct rtl *t)
 
 bool loop_step(struct rtl *t, uint64_t deadline)
 {
+    if (t->tripped)
+        return false;   /* the guard stopped the chip: the run ends */
     uint64_t now = drv_clock_ns(), cap = now + POLL_MAX_NS;
-    if (server_work(t))
-        cap = now;   /* more is waiting: look at the port without sleeping */
+    bool poll = true;   /* a wait that ends without a packet is a poll ... */
+    if (server_work(t)) {
+        cap = now;      /* more is waiting: look at the port without sleeping */
+        poll = false;
+    } else if (t->dump.busy) {
+        cap = now + DUMP_LOOK_NS;   /* a tally dump is out: look at it soon (guard.c) */
+        poll = false;   /* ... but not this short look */
+    }
     if (t->srv && t->srv->stopping)
         return false;
     struct port_packet p;
@@ -96,7 +111,7 @@ bool loop_step(struct rtl *t, uint64_t deadline)
         return false;
     if (st == OK && p.key == KEY_IRQ) {
         interrupt(t, p.signal.count);
-        return true;
+        return !t->tripped;
     }
     if (st == OK && t->srv && srv_packet(t->srv, &p))
         return true;   /* srv_work does it, at the next step */
@@ -104,9 +119,9 @@ bool loop_step(struct rtl *t, uint64_t deadline)
         drv_log("port wait failed (%s): polling", status_str(st));
         delay_us(1000);
     }
-    t->ev.polls += cap != now;   /* a wait that didn't sleep is not a poll */
+    t->ev.polls += poll;
     service(t, false);
-    return true;
+    return !t->tripped;
 }
 
 bool loop_until(struct rtl *t, uint64_t deadline, uint64_t poll_ns,

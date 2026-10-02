@@ -320,6 +320,61 @@ bool t_rtl8125_write_guard(void)
     return true;
 }
 
+/* A 32-bit write through an OCP window, as regs.c's mac_wr and phy_wr make it. */
+static uint32_t ocp_write(uint16_t reg, uint16_t v)
+{
+    return RTL_OCP_BUSY | (uint32_t)(reg >> 1) << RTL_OCP_ADDR_SHIFT | v;
+}
+
+/* M9-REVIEW item 6 (c) and (d): the 8125's other transmit queues and its
+ * tail pointers refused in any width; through the OCP windows, a 16-byte
+ * descriptor format, a second transmit queue, pause advertised, a PHY
+ * test mode; every value the bring-up writes there still allowed. */
+bool t_rtl8125_txq_guard(void)
+{
+    /* queue 1's ring address and beyond, the tail and close pointers */
+    CHECK(!rtl_write_allowed(0x2100, 4, 0) && !rtl_write_allowed(0x2104, 4, 0));
+    CHECK(!rtl_write_allowed(0x217f, 1, 0) && !rtl_write_allowed(0x20fe, 4, 0));
+    CHECK(rtl_write_allowed(0x20fc, 4, 0) && rtl_write_allowed(0x2180, 4, 0));
+    CHECK(!rtl_write_allowed(0x2800, 2, 1) && !rtl_write_allowed(0x2804, 2, 1));
+    CHECK(!rtl_write_allowed(0x283f, 1, 0) && !rtl_write_allowed(0x27fe, 4, 0));
+    CHECK(rtl_write_allowed(0x27fc, 4, 0) && rtl_write_allowed(0x2840, 2, 0));
+    CHECK(!rtl_write_allowed(0x0d30, 4, 1) && !rtl_write_allowed(0x0d38, 4, 1));
+    CHECK(!rtl_write_allowed(0x0d2e, 4, 0) && rtl_write_allowed(0x0d2c, 2, 0));
+    CHECK(rtl_write_allowed(0x0d40, 4, 0));
+    /* the MAC window: the descriptor format bit as tx.c's descriptors say */
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXD_FORMAT, 0x0001)));
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXD_FORMAT, 0xff01)));
+    CHECK(!rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXD_FORMAT, 0x0000)));
+    CHECK(!rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXD_FORMAT, 0xfffe)));
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, (uint32_t)(RTL_MAC_TXD_FORMAT >> 1) << 16));  /* read */
+    /* one transmit queue: e63e's bits 11:10 stay 0 (chip.c's two writes pass) */
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXQ_CTRL, 0x0020)));
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXQ_CTRL, 0xf3ff)));
+    CHECK(!rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXQ_CTRL, 0x0400)));
+    CHECK(!rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_MAC_TXQ_CTRL, 0x0820)));
+    /* the bring-up's other MAC writes, and a PHY register at the same address */
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(0xc0bc, 0x00ff)));
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(0xe614, 0x0200)));
+    CHECK(rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_MAC_TXQ_CTRL, 0x0c00)));
+    /* the PHY window: ANAR without pause, GTCR without a test mode */
+    CHECK(rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_PHY_ANAR, 0x01e1)));
+    CHECK(!rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_PHY_ANAR, 0x05e1)));
+    CHECK(!rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_PHY_ANAR, 0x09e1)));
+    CHECK(rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_PHY_GTCR, 0x0300)));
+    CHECK(!rtl_write_allowed(RTL_PHYOCP, 4, ocp_write(RTL_PHY_GTCR, 0x2300)));
+    CHECK(rtl_write_allowed(RTL_PHYOCP, 4, (uint32_t)(RTL_PHY_ANAR >> 1) << 16));  /* read */
+    CHECK(rtl_write_allowed(RTL_MACOCP, 4, ocp_write(RTL_PHY_ANAR, 0x0c00)));   /* MAC's */
+    /* the windows are written whole: never a byte or half of one */
+    for (uint32_t r = RTL_MACOCP - 3; r < RTL_MACOCP + 4; r++)
+        for (unsigned w = 1; w <= 4; w *= 2)
+            if (r + w > RTL_MACOCP && rtl_write_allowed(r, w, 0) != (r == RTL_MACOCP && w == 4))
+                FAIL("a %u-byte write at %#x", w, r);
+    CHECK(!rtl_write_allowed(RTL_PHYOCP + 2, 2, 0x8000) && !rtl_write_allowed(0xbb, 1, 0x80));
+    CHECK(rtl_write_allowed(0xb4, 4, 0) && rtl_write_allowed(0xbc, 4, 0));
+    return true;
+}
+
 /* tx.c's gate: full mode and a VLAN, nothing else. */
 bool t_rtl8125_tx_gate(void)
 {

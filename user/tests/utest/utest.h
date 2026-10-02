@@ -228,6 +228,7 @@ bool t_netframe_tx_check(void);
 bool t_netframe_tag_copy_is_the_frame(void);
 bool t_netframe_rx(void);
 bool t_rtl8125_write_guard(void);
+bool t_rtl8125_txq_guard(void);
 bool t_rtl8125_tx_gate(void);
 bool t_rtl8125_args(void);
 bool t_rtl8125_arp(void);
@@ -235,6 +236,13 @@ bool t_rtl8125_stays_off(void);
 bool t_rtl8125_txdesc(void);
 bool t_rtl8125_kick(void);
 bool t_rtl8125_tx_verdict(void);
+
+/* rtlguard.c: drivers/rtl8125/guard.h, and guard.c (with regs.c, chip.c,
+ * tx.c) over a fake chip. */
+bool t_rtl8125_guard(void);
+bool t_rtl8125_dump(void);
+bool t_rtl8125_guard_fake(void);
+bool t_rtl8125_stats_nowait(void);
 
 /* rtlrx.c: drivers/rtl8125/rxdesc.h. */
 bool t_rtl8125_rxdesc(void);

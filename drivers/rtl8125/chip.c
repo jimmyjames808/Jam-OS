@@ -91,6 +91,22 @@ void chip_snapshot(struct rtl *t)
     log_pci_caps(t);
 }
 
+void chip_txq_log(struct rtl *t, const char *when)
+{
+    uint32_t txcfg = rd32(t, RTL_TXCFG);
+    drv_log("txq %s: q0 ring 0x%08x%08x, hi-prio 0x28 0x%08x%08x, q1 0x2100 0x%08x%08x; "
+            "tail/close q0 0x2800 0x%04x/0x%04x, q1 0x2804 0x%04x/0x%04x", when,
+            rd32(t, RTL_TXDESC_HI), rd32(t, RTL_TXDESC_LO), rd32(t, RTL_TXHDESC_HI),
+            rd32(t, RTL_TXHDESC_LO), rd32(t, RTL_TXQ_DESC + 4), rd32(t, RTL_TXQ_DESC),
+            rd16(t, RTL_TXQ_PTR), rd16(t, RTL_TXQ_PTR + 2), rd16(t, RTL_TXQ_PTR + 4),
+            rd16(t, RTL_TXQ_PTR + 6));
+    uint16_t eb58 = mac_rd(t, RTL_MAC_TXD_FORMAT), e63e = mac_rd(t, RTL_MAC_TXQ_CTRL);
+    drv_log("txq %s: txcfg 0x%08x (no-close bit 6: %u), doorbell 0x90 0x%04x; mac eb58 0x%04x "
+            "(32-byte bit 0: %u), e63e 0x%04x (tx queues bits 11:10: %u), e614 0x%04x", when,
+            txcfg, !!(txcfg & RTL_TXCFG_NOCLOSE), rd16(t, RTL_TXSTART), eb58,
+            eb58 & RTL_MAC_TXD_32, e63e, (e63e & RTL_MAC_TXQ_MASK) >> 10, mac_rd(t, 0xe614));
+}
+
 status_t chip_identify(struct rtl *t)
 {
     uint32_t txcfg = rd32(t, RTL_TXCFG);
@@ -248,8 +264,8 @@ static void mac_setup(struct rtl *t)
     mac_wr(t, 0xc142, 0xffff);
     mac_mod(t, RTL_MAC_TXD_FORMAT, 0, RTL_MAC_TXD_32);   /* 32-byte tx descriptors: txdesc.h */
     mac_mod(t, 0xe614, 0x0700, 0x0200);
-    mac_mod(t, 0xe63e, 0x0c00, 0);
-    mac_mod(t, 0xe63e, 0x0030, 0x0020);
+    mac_mod(t, RTL_MAC_TXQ_CTRL, RTL_MAC_TXQ_MASK, 0);   /* one transmit queue (notx.h) */
+    mac_mod(t, RTL_MAC_TXQ_CTRL, 0x0030, 0x0020);
     mac_mod(t, 0xc0b4, 0x0001, 0);
     mac_mod(t, 0xc0b4, 0, 0x0001);
     mac_mod(t, 0xc0b4, 0, 0x000c);

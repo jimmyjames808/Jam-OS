@@ -97,7 +97,7 @@ void rx_tick(struct rtl *t)
     t->rx_tick_taken = t->rx.taken;
     char chip[48] = "tally unread";
     struct tally x;
-    if (t->tally0_ok && tally_dump(t, &x) == OK)
+    if (tally_recent(t, now, &x))   /* the last dump (up to a second old): no wait */
         drv_snprintf(chip, sizeof(chip), "tally %lu, %u missed",
                      (unsigned long)(x.rx_ok - t->tally_rx0), (uint16_t)(x.miss - t->tally_miss0));
     const uint32_t *d = t->rx.drop;

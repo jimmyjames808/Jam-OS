@@ -265,8 +265,10 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # (utest/netstack.c: its stack.h and ctl.h, no lwIP header), the DHCP
 # client's and the resolver's cores (utest/dhcp*.c, dns*.c), and the
 # network drivers' netdev server over a fake card (utest/netsrv.c:
-# drivers/lib/netserver.c), and bin/dns's sockets and askers over a fake
-# netstack (utest/dnsd.c), and bin/sntp's request and checks (utest/sntp.c).
+# drivers/lib/netserver.c), bin/dns's sockets and askers over a fake
+# netstack (utest/dnsd.c), bin/sntp's request and checks (utest/sntp.c),
+# and the RTL8125 driver's guard over a fake chip (utest/rtlguard.c:
+# guard.c and the files it calls, built as user code).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
                       $(NETSTACK_CORE) $(LWIP_OBJS) \
@@ -274,7 +276,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/dns/msg.c.o $(UOBJ)/user/services/dns/cache.c.o \
                       $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o \
                       $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
-                      $(UOBJ)/user/services/sntp/ntp.c.o
+                      $(UOBJ)/user/services/sntp/ntp.c.o \
+                      $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx)
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp

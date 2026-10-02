@@ -15,7 +15,9 @@
  * Files: main.c (arguments, handles, the shared bring-up and shutdown,
  * the list of registers), loop.c (the one event loop: interrupt, link,
  * devmgr leaving), regs.c (register access through the guard, the OCP
- * windows to the MAC and the PHY, waits, the tally counters), chip.c (the
+ * windows to the MAC and the PHY, waits, the tally counters), guard.c
+ * (failing closed: the chip stopped when its tally shows a frame the
+ * driver didn't queue, or the link sends PAUSE; guard.h), chip.c (the
  * firmware's state, identity, reset, wake-on-LAN off, receive bring-up,
  * autonegotiation, link, stop), ring.c (the DMA memory: both descriptor
  * rings, their buffers, the tally dump), census.c and probe.c (the
@@ -36,6 +38,7 @@
 #include <jam/netframe.h>
 #include <jam/netserver.h>
 #include "args.h"
+#include "guard.h"
 #include "notx.h"
 #include "rxdesc.h"
 #include "txdesc.h"
@@ -74,8 +77,8 @@
 #define RTL_RXDESC_LO   0xe4     /* 32: the receive ring's address, low */
 #define RTL_RXDESC_HI   0xe8
 #define RTL_PPSW        0xf2     /* 8 */
-#define RTL_MACOCP      0xb0     /* 32: the window to the MAC's OCP registers */
-#define RTL_PHYOCP      0xb8     /* 32: the window to the PHY's OCP registers */
+/* RTL_MACOCP and RTL_PHYOCP, the OCP windows, are in notx.h (the guard reads
+ * what is written through them) */
 #define RTL_INTMITI(i)  (0x0a00 + (i) * 4)
 #define RTL_ADDR0       0x19e0   /* 32 + 16: the chip's own copy of its address */
 #define RTL_ADDR1       0x19e4
@@ -114,14 +117,11 @@
  * (rge's RGE_INTRS without the timer). */
 #define RTL_IMR_FULL        (RTL_IMR_PROBE | RTL_ISR_TX_ANY)
 
-/* PHYSTAT bits */
+/* PHYSTAT bits (LINK, RXFLOW and TXFLOW, which the guard reads, are in guard.h) */
 #define RTL_PHYSTAT_FDX     0x0001u
-#define RTL_PHYSTAT_LINK    0x0002u
 #define RTL_PHYSTAT_10      0x0004u
 #define RTL_PHYSTAT_100     0x0008u
 #define RTL_PHYSTAT_1000    0x0010u
-#define RTL_PHYSTAT_RXFLOW  0x0020u   /* pause frames honoured (flow control resolved on) */
-#define RTL_PHYSTAT_TXFLOW  0x0040u   /* pause frames sent: must stay 0 */
 #define RTL_PHYSTAT_2500    0x0400u
 
 #define RTL_MCUCMD_RXFIFO_EMPTY 0x10
@@ -133,10 +133,6 @@
 #define RTL_CFG3_WOL_MAGIC  0x20
 #define RTL_CFG5_WOL_ANY    0x72      /* LANWAKE, unicast, multicast, broadcast wake */
 #define MAC_WOL_PME         0xc0b6    /* MAC OCP: bit 0 lets a wake event assert PME (rge_wol) */
-
-/* The OCP windows (rge_write_mac_ocp, rge_read_phy_ocp, ...) */
-#define RTL_OCP_BUSY        0x80000000u
-#define RTL_OCP_ADDR_SHIFT  16
 
 /* MII registers (802.3 clause 22), reached through the PHY's OCP space */
 #define MII_BMCR        0
@@ -238,7 +234,8 @@ struct rxstats {
 
 /* Full mode's transmit counts (tx.c). */
 struct txstats {
-    uint32_t queued;              /* frames handed to the chip (descriptor + doorbell) */
+    uint64_t queued;              /* frames handed to the chip (descriptor + doorbell); 64 bits
+                                   * like the chip's tally, which the guard compares it with */
     uint32_t done, errors;        /* taken back: sent / with the error bit */
     uint32_t collisions;          /* taken back with a collision count */
     uint32_t refused;             /* frames netframe_tag or the last check refused */
@@ -248,6 +245,17 @@ struct txstats {
     uint32_t stalls;              /* descriptors the chip still held TX_STALL_NS after queueing */
     uint32_t wait_n;              /* frames timed from the doorbell to their descriptor back */
     uint64_t wait_min, wait_max, wait_sum;   /* ... their waits, ns */
+};
+
+/* The 8125's tally counters as it dumps them (rge's struct rge_stats). */
+struct tally {
+    uint64_t tx_ok, rx_ok, tx_err;
+    uint32_t rx_err;
+    uint16_t miss, fae;
+    uint32_t tx_1col, tx_mcol;
+    uint64_t rx_ok_phy, rx_ok_brd;
+    uint32_t rx_ok_mul;
+    uint16_t tx_abort, tx_underrun;
 };
 
 struct rtl;
@@ -284,13 +292,20 @@ struct rtl {
     unsigned stall_dumps;         /* stall dumps logged (a few per run) */
     uint64_t stall_dump_at;       /* when the last was (uptime, ns) */
     uint64_t tick_at;             /* when tx_tick last logged (uptime, ns) */
-    uint32_t tick_queued, tick_back;   /* the counts it logged then */
+    uint64_t tick_queued;         /* the counts it logged then */
+    uint32_t tick_back;
     uint64_t tally_tx0;           /* the chip's tally of frames sent at the start (ok + error) */
     uint64_t tally_rx0;           /* ... of frames received (ok) */
     uint16_t tally_miss0;         /* ... of frames missed (no descriptor) */
     uint64_t rx_tick_at;          /* when rx_tick last logged (uptime, ns) */
     uint32_t rx_tick_taken;       /* rx.taken then */
     bool     tally0_ok;           /* ... it was read */
+    /* the tally dump, asked for and looked at without waiting (regs.c), and
+     * the guard that reads it (guard.c) */
+    struct rtl_dump dump;
+    struct tally tally_last;      /* the last dump seen in memory (once dump.landed) */
+    uint64_t guard_seen;          /* dump.landed at the guard's last look */
+    enum rtl_guard_verdict tripped;   /* not GO: the guard stopped the chip (exit 1) */
     struct txstats tx;
     /* receive in full mode: rx.c's */
     struct rxstats rx;
@@ -309,17 +324,6 @@ struct rtl {
     struct srv *srv;              /* full mode's netdev server (full.c), NULL otherwise */
     struct events ev;
     struct census c;              /* the probe's */
-};
-
-/* The 8125's tally counters as it dumps them (rge's struct rge_stats). */
-struct tally {
-    uint64_t tx_ok, rx_ok, tx_err;
-    uint32_t rx_err;
-    uint16_t miss, fae;
-    uint32_t tx_1col, tx_mcol;
-    uint64_t rx_ok_phy, rx_ok_brd;
-    uint32_t rx_ok_mul;
-    uint16_t tx_abort, tx_underrun;
 };
 
 /* What a run's RESULTS line needs (main.c fills it). */
@@ -356,7 +360,21 @@ uint16_t mii_rd(struct rtl *t, unsigned reg);
 void     mii_wr(struct rtl *t, unsigned reg, uint16_t v);
 /* Busy-wait (short) or sleep (from 1 ms) for us microseconds. */
 void     delay_us(uint64_t us);
-/* The tally counters into *out (needs the receiver on and bus mastering). */
+/* The tally counters (they need the receiver on and bus mastering), in
+ * two halves the loop uses without waiting (guard.h): tally_ask asks the
+ * chip for a dump unless one is out; tally_look looks whether it has
+ * landed (then t->tally_last has it) or is late. tally_dump does both and
+ * waits, bounded (RTL_DUMP_WAIT_NS, twice if one was out): only before and
+ * after the loop, and for the rare stall dumps. */
+void     tally_ask(struct rtl *t, uint64_t now);
+enum rtl_dump_step tally_look(struct rtl *t, uint64_t now);
+/* For whatever answers inside the loop (netdev.stats, the "so far" lines):
+ * the last dump that landed into *out, without waiting, and the next one
+ * asked for (1 ms after the last ask at the soonest), so a later request
+ * gets fresher counts. False (nothing written) while no dump has landed or
+ * the start's count is unknown: the chip's counts are then unknown. M9-REVIEW
+ * finding 13: a request never waits for the chip's DMA. */
+bool     tally_recent(struct rtl *t, uint64_t now, struct tally *out);
 status_t tally_dump(struct rtl *t, struct tally *out);
 void     tally_log(const char *when, const struct tally *x);
 /* The plan's check that the chip sent nothing of its own (no PAUSE, no
@@ -369,6 +387,13 @@ bool     tally_tx_check(const struct rtl *t, const struct outcome *o, char *out,
 /* ---- chip.c ---------------------------------------------------------------------- */
 
 void     chip_snapshot(struct rtl *t);
+/* Two `txq <when>:` lines, reads only (a MAC OCP read sets the window's
+ * read index, as every mac_rd): the registers a guard of the 8125's other
+ * transmit queues must cover (notx.h), so a PC run confirms their offsets
+ * (docs/M9.5-PLAN.md, track F): the high-priority and queue 1 ring
+ * addresses, the tail and close pointers of queues 0 and 1, TXCFG's
+ * no-close bit, the doorbell, MAC OCP 0xeb58, 0xe63e and 0xe614. */
+void     chip_txq_log(struct rtl *t, const char *when);
 /* The id from TXCFG; ERR_NOT_SUPPORTED (logged) for anything but the 8125B. */
 status_t chip_identify(struct rtl *t);
 /* The station address into t->mac, and into the log. */
@@ -414,6 +439,17 @@ bool     ring_rx_peek(struct rtl *t, struct rx_slot *out);
 /* The descriptor ring_rx_peek returned, back to the chip; on to the next. */
 void     ring_rx_done(struct rtl *t);
 
+/* ---- guard.c: failing closed (guard.h) ---------------------------------------------- */
+
+/* One look of the guard, from the loop at every step (`reaped`: transmit
+ * descriptors came back in it): a landed dump checked against tx.c's
+ * queued count, PHYSTAT's PAUSE TX bit, the next dump asked for when due.
+ * A verdict other than GO stops the chip at once (transmitter off, reset),
+ * logs the evidence and sets t->tripped: the loop ends, the driver exits 1. */
+void     guard_step(struct rtl *t, bool reaped, uint64_t now);
+/* ", TRANSMITTER STOPPED: <why>" for a RESULTS line, or "". */
+const char *guard_note(const struct rtl *t);
+
 /* ---- loop.c ---------------------------------------------------------------------- */
 
 /* The port, with the interrupt and devmgr's channel bound to it. */
@@ -421,10 +457,12 @@ status_t loop_init(struct rtl *t);
 /* Wait for one event until `deadline` (at most a 1 s poll) and handle it:
  * the interrupt (status read and acked under a masked IMR, received
  * frames, finished transmits, the link), or the poll that stands in for a
- * lost one. False when devmgr closed our channel: it is stopping. */
+ * lost one; then the guard's look (guard.c). False when devmgr closed our
+ * channel (it is stopping) or the guard stopped the chip (t->tripped). */
 bool     loop_step(struct rtl *t, uint64_t deadline);
 /* loop_step until `deadline` or until done(t) (NULL: never) is true,
- * polling at least every poll_ns. False if devmgr is stopping. */
+ * polling at least every poll_ns. False if devmgr is stopping or the
+ * guard stopped the chip. */
 bool     loop_until(struct rtl *t, uint64_t deadline, uint64_t poll_ns,
                     bool (*done)(const struct rtl *t));
 
