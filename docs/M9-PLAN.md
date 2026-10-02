@@ -262,6 +262,42 @@ the `ring:` line (64-bit DMA); `interrupts:` (MSI-X delivery: frames
 found after an interrupt rather than at the 1 s poll); the census and
 the verdict; `tally at end` with tx ok 0 and no `WRITES REFUSED`.
 
+#### Stage 0 on the PC (2026-10-02, boot-0065): the results
+
+The probe ran once on the PC (main f6c57bf), with the Mac pinging the
+router and the cable pulled for 3 s. Its RESULTS line: `8125B xid 641,
+phy 001cc840 patch 0000, link 1000 full in 2.2 s, 60 s: 2583 frames:
+vlan 21: 597, untagged 514, other 1472, irqs 2584, tx tally 0 -> trunk
+carrying 21 (untagged too: a native VLAN)`.
+
+- **Nothing was sent:** the chip's own tally says `tx ok 0` at the start
+  and at the end, and no write was refused.
+- **What the firmware left:** receiver and transmitter off, not out of
+  band (no management firmware holding the chip), interrupts masked; the
+  transmit ring register held garbage (never armed); **wake-on-LAN armed**
+  (magic packet). Wake-on-LAN only listens; R1 turns it off while Jam OS
+  runs and the plan's rule (WoL off) stands.
+- **The chip:** RTL8125B (xid 641), PCIe gen 2 x1, ASPM off. The MAC has
+  no break points (ROM code); the PHY (id 001cc840) has no patch loaded
+  (version 0): the board's firmware loads none either. With no tables at
+  all it reset in 1 ms and linked at **1000 full in 2.2 s** (it advertised
+  2500 too: the switch port is gigabit). The cable pulled at 51 s was seen
+  (link down, back at 1000 full 3.2 s later, both by interrupt). So the
+  ROM code is enough so far: question 5's "no patch" holds.
+- **Interrupts and DMA:** MSI-X works (2584 interrupts, every frame found
+  after one, none by the 1 s poll); the ring, tally and buffers were above
+  4 GiB and the chip wrote them: 64-bit DMA works, no DMA32 needed.
+- **The port is a trunk carrying more than VLAN 21:** frames arrived
+  untagged (514: the home network, including the switch's LLDP) and
+  tagged 21 (597), 10 (554), 11 (464) and 20 (454). Jam OS's driver keeps
+  only VLAN 21 and drops the rest, as planned. The owner may also narrow
+  the port on the switch to VLAN 21 tagged only (no native VLAN, no 10,
+  11, 20), so the switch enforces the rule as well: defence in depth, not
+  needed for M9.
+- **For R1:** the 32-byte receive descriptor and receive configuration
+  0x41020c0f work as the probe set them; the register values after reset
+  are in the log (boot-0065, in the session scratchpad's logs10/).
+
 ### The RTL8125 driver
 
 `drv/rtl8125`, bound by devmgr to 10ec:8125, one process like
