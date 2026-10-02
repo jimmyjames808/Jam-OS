@@ -146,6 +146,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | how the system is designed, and why |
 | [CODING-GUIDE.md](CODING-GUIDE.md) | how the code is written and changed |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | issues, pull requests and what a change needs; [SECURITY.md](SECURITY.md) for reporting a security problem |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | milestones: done, next, later |
 | [docs/HISTORY.md](docs/HISTORY.md) | what each milestone delivered, bugs and lessons, decisions |
 | [docs/TESTING.md](docs/TESTING.md) | test tiers and exact commands |
