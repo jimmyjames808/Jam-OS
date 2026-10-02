@@ -25,7 +25,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | A2 | Audio: mixer, `audio` protocol, WAV and MP3 playback, `music`, jamjar | done (the same sign-off) |
 | AS | Boot splash: the logo animation with its sound, alpha blending | done (the same sign-off) |
 | M8.5 | Kexec for reboot and panic | done (PC 2026-10-01: All tests no problems, `soak 10` passed (645 s on 28 CPUs, 4495 kernel tests and 19 utest runs, 0 FAILED); a panic saves its log and restarts, `reboot` kexecs with all 28 CPUs; its independent review opens M8.6) |
-| M8.6 | Cleanup and polish | done (2026-10-02: the full QEMU regression on the merged tree; the owner's PC sign-off: All tests, `soak 10` with the SanDisk pulled and replugged, `bench`) |
+| M8.6 | Cleanup and polish | done (PC 2026-10-02: `soak 10` passed (663 s on 28 CPUs, 4525 kernel tests and 17 utest runs, 0 FAILED) with the SanDisk mounted read-write; live `ktest` 248 passed and utest 117; `bench` in [BENCH.md](BENCH.md#m86-pc-2026-10-02)) |
 | M9 | Networking | next: the plan |
 | M10 | ACPI power, tickless idle | later |
 | M10.5 | S3 sleep | later |

@@ -31,10 +31,14 @@ are the kernel's version string; hashes are commits on main.
 
 ## M8.6: cleanup and polish
 
-*2026-10-01 to 2026-10-02, 0.0.28-m8.6.* Signed off on the PC by the
-owner (All tests, `soak 10` with the SanDisk mounted read-write and pulled
-and replugged, `bench`) after a full QEMU regression of the merged tree:
-ktest 260 at 4 and 8 CPUs, utest 117, every area test and shell script.
+*2026-10-01 to 2026-10-02, 0.0.28-m8.6.* Signed off on the PC:
+`soak 10` passed (663 s on 28 CPUs, 4525 kernel tests, 17 utest runs, 3443
+file cycles, 0 FAILED) with the SanDisk mounted read-write, live `ktest`
+248 passed, utest 117, and `bench` run on the PC for the first time since
+M5.5 ([BENCH.md](BENCH.md#m86-pc-2026-10-02): every line through a context
+switch is slower than at M5.5, to find before M11.5). Before that, a full
+QEMU regression of the merged tree: ktest 260 at 4 and 8 CPUs, utest 117,
+every area test and shell script.
 
 [The plan](history/M8.6-PLAN.md), in its order:
 - **The independent review of M8.5** ([M8.5-REVIEW.md](history/M8.5-REVIEW.md)):

@@ -55,8 +55,8 @@ The same lines from the M8 sign-off build's All tests, 2026-10-01 (commit
 RESULTS box, IMG_0085): 1 server + 27 clients, 54,000 calls in 55 ms =
 975,166 channel_calls/s, average call 27,603 ns, worst 31 us; nested
 lock+unlock pair on 28 CPUs at once: average 51 ns, worst CPU 64 ns. The
-benchmark itself (the tables below) has not been run on the PC since
-M5.5.
+benchmark itself had not been run on the PC since M5.5 until M8.6's
+sign-off (the last section).
 
 Notes
 - M5 reading: user code pays little for the kernel boundary itself (a
@@ -195,3 +195,56 @@ Investigations:
   switches plus the TLB refills, which PCIDs remove (pcid off/on on the
   same line). The user echo server also does one failed channel_read per
   round trip that the kernel server doesn't (it reads before waiting).
+
+## M8.6, PC 2026-10-02
+
+The M8.6 sign-off build (commit 1789cac; its version string still read
+0.0.27-m8.5), `bench` from the shell twice in one boot (boot-0064), read
+from the log on the stick. The first run; the second agreed within a few
+percent on every line. M5.5's medians beside them.
+
+| Line | M8.6 (median / p99) | M5.5 median |
+|---|---|---|
+| timestamp cost | 8.9 / 9.9 ns | 8.5 ns |
+| spin_lock + spin_unlock | 26.7 / 27.5 ns | 26.5 ns |
+| kmalloc(64) + kfree, kmcache on | 19.2 / 19.3 ns | 19.2 ns |
+| page alloc + free, one CPU | 18.9 / 19.6 ns | 19.1 ns |
+| page alloc + free, all 28 CPUs at once | 23.3 / 24.4 ns | 24.0 ns |
+| kmalloc(64)+kfree, all 28 CPUs, kmcache on | 23.8 / 24.9 ns | 23.9 ns |
+| **context switch (yield, 2 threads, P)** | **92.0 / 94.8 ns** | 30.1 ns (**3x, watch**) |
+| **block+wake round trip, same CPU** | **580.4 / 604.0 ns** | 446.4 ns (+30%) |
+| **channel_call round trip, same CPU** | **670.8 / 708.6 ns** | 549.6 ns (+22%) |
+| cache-line round trip P->P2 / P->HT / P->E | 105.5 / 38.3 / 98.9 ns | 106.9 / 37.8 / 101.7 ns |
+| block+wake P->P2 (idle CPU), spinidle on | 1060.4 / 1075.5 ns | 1003.6 ns |
+| block+wake P->HT (idle CPU), spinidle on | 630.1 / 940.1 ns | 480.9 ns (+31%) |
+| block+wake P->E (idle CPU), spinidle on | 1067.5 / 1148.0 ns | 943.9 ns |
+| block+wake P->unpinned partner, affinepair on | 627.2 / 803.8 ns | 470.0 ns (+33%) |
+| IPI function call P->P2 / P->HT / P->E, spinidle on | 420.8 / 272.2 / 483.3 ns | 418.4 / 268.4 / 474.3 ns |
+| interrupt: vector on cpu18 -> port_wait wakes P (new) | 998.4 / 1501.1 ns | - |
+| channel_call P->P2 / P->HT / P->E, 1 client, spinidle on | 1454.7 / 714.8 / 1558.9 ns | 1385.6 / 586.0 / 1418.8 ns |
+| channel_call, P client, server unpinned | 668.9 / 703.9 ns | 543.0 ns |
+| channel_call, P client, server not on P | 714.3 / 780.6 ns | 589.8 ns |
+| placement of 19 busy threads, placeorder on | 0 share a core, 12 on E | 0 share, 12 on E |
+| serial_write of a 100-character line, serialirq on | 6517.4 ns / 17.6 us | 6514.1 ns |
+| sleep 100 us / 1000 us: how late it wakes, oneshot on | 400.9 / 404.2 ns | 349.8 / 348.8 ns |
+| TLB shootdown, 1 page, 27 other CPUs | 4502.1 / 5682.8 ns | 4485.1 ns |
+| address-space switch, pcid on | 67.8 / 68.1 ns | 67.9 ns |
+| XRSTOR + XSAVE of user FPU state, fpuopt on | 39.2 / 40.0 ns | 39.9 ns |
+| user: syscall round trip / clock_get / page fault | 30.5 / 44.6 / 714.3 ns | 30.1 / 44.9 / 745.1 ns |
+| user: process->process channel_call, same CPU, pcid on | 1532.9 / 1554.2 ns | 1406.9 ns (+9%) |
+| user: thread->thread channel_call, 1 process, fpuopt on | 1398.9 / 1424.9 ns | 1284.8 ns |
+| user: process->process channel_call P->P2 / P->HT / P->E, m55 on | 2228.3 / 1359.6 / 2316.4 ns | 2111.4 / 1195.3 / 2105.7 ns |
+
+Reading:
+- The allocators, IPIs, cache lines, timers, the serial port, TLB
+  shootdowns and syscalls are where M5.5 left them; the placement fix
+  holds on the PC (0 busy threads share a core).
+- **Every line through the scheduler's switch got slower since M5.5:** a
+  context switch 30 -> 92 ns, and each wake-and-switch line about +120 ns
+  (same-CPU block+wake +134, channel_call +121, P->HT +149, the user calls
+  +115 to +210). One cost added to every switch, not a scaling problem.
+  Candidates, unmeasured: M8's scheduler change (busy set before dequeue,
+  steals sent on to whole cores), the soak's and ktest's hooks on the
+  switch path, the lock checker's larger class table (78 classes in use).
+  To find before M11.5's IPC pass builds on these numbers.
+
