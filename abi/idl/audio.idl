@@ -3,7 +3,7 @@
 # (libos's svc_open, svc_get) gets a channel of its own: the svc
 # protocol's connect (abi/idl/svc.idl), answered on the shared channel
 # (the mixer's startup role SR_AUDIO, published by init); `open_output` on
-# it makes a stream. The ring and its header are described in
+# it makes a stream, at most 4 per opener (<mixer.h>). The ring and its header are described in
 # <mixer.h>, which also has the client side (mixer_open, mixer_write, ...);
 # the plan is docs/A2-PLAN.md.
 # Format: see tools/genidl.py.
@@ -31,7 +31,8 @@ protocol audio 22
 # DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,
 # how many frames ahead of what is heard the mixer takes samples (a
 # write is heard about `lead` frames after the mixer took it, at most).
-# ERR_NO_RESOURCES: 16 streams are open already. ERR_NOT_FOUND: there is
+# ERR_NO_RESOURCES: 16 streams are open already, or this opener's channel
+# holds MIXER_STREAMS_PER_CLIENT (4) of them. ERR_NOT_FOUND: there is
 # no audio output (no hda driver with a path to a jack).
 1  open_output  (u32 rate, u8 channels, u8 bits, u8[16] name) -> (handle stream, handle ring, handle event, u32 id, u32 frames, u32 lead)
 

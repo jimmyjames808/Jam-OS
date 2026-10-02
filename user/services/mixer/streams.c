@@ -32,6 +32,13 @@ struct call {
     struct stream *s;
 };
 
+/* What the service channel's handlers get: the opener streams count to. */
+struct opener {
+    struct mixer *m;
+    uint32_t      owner;   /* struct stream's */
+    uint32_t      gen;
+};
+
 bool any_playing(const struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
@@ -158,18 +165,32 @@ static status_t client_handles(const struct stream *s, handle_t *ring, handle_t 
     return st;
 }
 
+/* A free stream slot for opener o, or NULL: none free, or o holds
+ * MIXER_STREAMS_PER_CLIENT. */
+static struct stream *free_slot(struct mixer *m, const struct opener *o)
+{
+    struct stream *slot = NULL;
+    unsigned held = 0;
+    for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
+        struct stream *s = &m->s[i];
+        if (!s->used && !slot)
+            slot = s;
+        if (s->used && s->owner == o->owner && s->owner_gen == o->gen)
+            held++;
+    }
+    return held < MIXER_STREAMS_PER_CLIENT ? slot : NULL;
+}
+
 static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8_t bits,
                                const uint8_t name[16], handle_t *out_stream, handle_t *out_ring,
                                handle_t *out_event, uint32_t *out_id, uint32_t *out_frames,
                                uint32_t *out_lead)
 {
-    struct mixer *m = ctx;
+    const struct opener *o = ctx;
+    struct mixer *m = o->m;
     if (rate != MIXER_RATE || channels != MIXER_CHANNELS || bits != 16)
         return ERR_NOT_SUPPORTED;
-    struct stream *s = NULL;
-    for (unsigned i = 0; !s && i < MIXER_MAX_STREAMS; i++)
-        if (!m->s[i].used)
-            s = &m->s[i];
+    struct stream *s = free_slot(m, o);
     if (!s)
         return ERR_NO_RESOURCES;
     status_t st = out_find(m);
@@ -192,6 +213,8 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     }
     s->used = true;
     s->id = m->next_id++;
+    s->owner = o->owner;
+    s->owner_gen = o->gen;
     s->gain = MIX_UNITY;
     s->min_lead = UINT32_MAX;
     set_name(s, name);
@@ -354,10 +377,11 @@ static status_t serve_one(struct mixer *m, handle_t ch, const struct audio_ops *
     return OK;
 }
 
-status_t serve_audio(struct mixer *m, handle_t ch)
+status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
 {
+    struct opener o = { m, owner, owner ? m->c[owner - 1].gen : 0 };
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, ch, &svc_ops, m, NULL);
+        status_t st = serve_one(m, ch, &svc_ops, &o, NULL);
         if (st != OK)
             return st;
     }
@@ -366,7 +390,7 @@ status_t serve_audio(struct mixer *m, handle_t ch)
 
 void serve_svc(struct mixer *m)
 {
-    status_t st = serve_audio(m, m->svc);
+    status_t st = serve_audio(m, m->svc, 0);
     m->svc_pending = st == OK;
     if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
         printf("mixer: reading the service channel: %s\n", status_str(st));

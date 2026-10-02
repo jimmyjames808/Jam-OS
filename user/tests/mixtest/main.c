@@ -16,10 +16,14 @@
  * each a sound of its own with silence between (the WAV's segments):
  *   protocol       no sound: formats refused, the stream methods refused
  *                  on /svc/audio, drain on a stopped stream, volumes
- *                  clamped, an unknown id, the 17th stream refused
+ *                  clamped, an unknown id
  *   openers        no sound: two openers of /svc/audio, and of
  *                  /svc/audioctl, each get a channel of their own, and
  *                  what one asks is answered on its channel alone
+ *   stream_cap     no sound: an opener's fifth stream refused, other
+ *                  openers' up to 16 in all, the 17th refused; one closed
+ *                  frees a stream for another opener, not for one at its
+ *                  cap
  *   device         no sound: audioctl.device's query channel to the hda
  *                  driver answers info and the gain but refuses
  *                  open_output and query (so nobody but the mixer can take
@@ -293,7 +297,7 @@ static bool t_protocol(void)
     CHECK_ST(audio_open_output_until(svc(), soon(), 48000, 1, 16, name, &ch, &ring, &ev, &id,
                                      &frames, &lead), ERR_NOT_SUPPORTED);
     CHECK_ST(audio_stream_start_until(svc(), soon()), ERR_NOT_SUPPORTED);
-    struct mixer_stream s[MIXER_MAX_STREAMS + 1];
+    struct mixer_stream s[1];
     CHECK_ST(mixer_open(svc(), "proto", soon(), &s[0]), OK);
     CHECK(s[0].frames >= 4096 && s[0].lead > 0);
     uint64_t f;
@@ -306,15 +310,58 @@ static bool t_protocol(void)
     CHECK_ST(audioctl_set_volume_until(ctl(), soon(), 0xfffffff0u, -10, &got), ERR_NOT_FOUND);
     CHECK_ST(audioctl_set_volume_until(ctl(), soon(), s[0].id, -55, &got), OK);
     CHECK_EQ(got, -55);
-    unsigned opened = 1;
-    status_t st = OK;
-    while (opened <= MIXER_MAX_STREAMS && (st = mixer_open(svc(), "proto", soon(), &s[opened])) == OK)
-        opened++;
-    for (unsigned i = 0; i < opened; i++)
-        mixer_close(&s[i]);
-    CHECK_EQ(opened, MIXER_MAX_STREAMS);   /* (some other program may hold one: then fewer) */
-    CHECK_ST(st, ERR_NO_RESOURCES);
+    mixer_close(&s[0]);
     return true;
+}
+
+enum { CAP = MIXER_STREAMS_PER_CLIENT, OPENERS = MIXER_MAX_STREAMS / CAP + 1 };
+
+/* The cap's checks on OPENERS openers, each filled up as far as it went:
+ * the first ones to their cap (16 in all), the last none; an opener at its
+ * cap is refused even with a stream free, another opener isn't. */
+static bool cap_checks(const handle_t *o, struct mixer_stream (*s)[CAP], unsigned *held)
+{
+    for (unsigned i = 0; i + 1 < OPENERS; i++)
+        CHECK_EQ(held[i], CAP);   /* (some other program may hold one: then fewer) */
+    CHECK_EQ(held[OPENERS - 1], 0u);
+    struct mixer_stream x;
+    CHECK_ST(mixer_open(o[0], "cap", soon(), &x), ERR_NO_RESOURCES);
+    mixer_close(&s[1][--held[1]]);   /* one free in all; opener 0 is still at its cap */
+    CHECK_ST(mixer_open(o[0], "cap", soon(), &x), ERR_NO_RESOURCES);
+    status_t st;
+    uint64_t until = soon();   /* the mixer sees the close in its own time */
+    while ((st = mixer_open(o[OPENERS - 1], "cap", soon(), &s[OPENERS - 1][0])) ==
+               ERR_NO_RESOURCES && now() < until)
+        pause_ms(20);
+    CHECK_ST(st, OK);
+    held[OPENERS - 1] = 1;
+    return true;
+}
+
+/* One opener of /svc/audio holds MIXER_STREAMS_PER_CLIENT streams at most;
+ * each opener has a budget of its own, up to MIXER_MAX_STREAMS in all. */
+static bool t_stream_cap(void)
+{
+    handle_t o[OPENERS] = { 0 };
+    struct mixer_stream s[OPENERS][CAP];
+    unsigned held[OPENERS] = { 0 };
+    bool ok = true;
+    for (unsigned i = 0; ok && i < OPENERS; i++) {
+        ok = svc_open(SVC_AUDIO, &o[i]) == OK;
+        while (ok && held[i] < CAP && mixer_open(o[i], "cap", soon(), &s[i][held[i]]) == OK)
+            held[i]++;
+    }
+    if (ok)
+        ok = cap_checks(o, s, held);
+    else
+        printf("mixtest: %s: /svc/audio didn't open\n", cur);
+    for (unsigned i = 0; i < OPENERS; i++) {
+        while (held[i])
+            mixer_close(&s[i][--held[i]]);
+        if (o[i])
+            jam_handle_close(o[i]);
+    }
+    return ok;
 }
 
 /* A request written on ch and not waited for (txid 9): it must be
@@ -547,6 +594,7 @@ static const struct {
 } tests[] = {
     { "protocol", t_protocol, false },
     { "openers", t_openers, false },
+    { "stream_cap", t_stream_cap, false },
     { "device", t_device, false },
     { "two_at_once", t_two_at_once, true },
     { "client_killed", t_client_killed, true },

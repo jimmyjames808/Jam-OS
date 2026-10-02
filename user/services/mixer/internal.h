@@ -56,6 +56,9 @@ struct hist {
 struct stream {
     bool        used;
     uint32_t    id;                /* for `vol`, never reused while the mixer runs */
+    uint32_t    owner;             /* the opener it counts to: 0 the shared channel, else
+                                    * 1 + its clients.c slot */
+    uint32_t    owner_gen;         /* that slot's generation then (0 for the shared one) */
     uint32_t    gen;               /* the slot's generation (its port keys) */
     char        name[16];
     handle_t    ch, vmo, event;    /* our ends */
@@ -132,10 +135,10 @@ struct mixer {
 void serve_svc(struct mixer *m);
 void serve_ctl(struct mixer *m);
 /* Up to a budget of messages from an `audio` (or `audioctl`) channel ch,
- * the shared one or an opener's: OK if the budget was spent (more may be
- * queued), else the read's status (ERR_SHOULD_WAIT: empty;
- * ERR_PEER_CLOSED: its clients are gone). */
-status_t serve_audio(struct mixer *m, handle_t ch);
+ * the shared one or an opener's (`owner`: struct stream's), OK if the
+ * budget was spent (more may be queued), else the read's status
+ * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED: its clients are gone). */
+status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner);
 status_t serve_control(struct mixer *m, handle_t ch);
 void serve_stream(struct mixer *m, struct stream *s);
 /* A stream's event fired (MIXER_SIG_DATA): take the bit down, watch again. */

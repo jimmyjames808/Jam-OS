@@ -5,7 +5,8 @@
  * opener (libos's svc_open, svc_get) has one: a reply that comes after its
  * caller stopped waiting (a stream's handles, a query channel) waits on
  * that caller's channel, which goes with it, never on a channel others
- * read.
+ * read. The streams opened on an opener's channel count to it, at most
+ * MIXER_STREAMS_PER_CLIENT (streams.c).
  *
  * At most MIXER_CLIENTS openers at once: a connect past that is
  * ERR_NO_RESOURCES. An opener's channel is bound PERSISTENT on the port and
@@ -73,7 +74,7 @@ void clients_serve(struct mixer *m)
         if (!c->ch || !c->pending)
             continue;
         c->pending = false;
-        status_t st = c->ctl ? serve_control(m, c->ch) : serve_audio(m, c->ch);
+        status_t st = c->ctl ? serve_control(m, c->ch) : serve_audio(m, c->ch, i + 1);
         if (st == OK) {
             c->pending = true;   /* its budget is spent: more may be queued */
         } else if (st == ERR_PEER_CLOSED) {

@@ -853,7 +853,9 @@ master volume, `/svc/audioctl`: the shell's `vol` and test programs).
 Each opener of either gets a channel of its own (`svc.connect`), so a
 late answer goes only to the program that asked; it ends with the mixer
 that made it, and the next open waits on the shared channel for the
-restarted one.
+restarted one. An opener holds at most 4 of the 16 streams
+(`MIXER_STREAMS_PER_CLIENT` in `user/include/mixer.h`, where the number is
+argued): a program looping over the library can't starve the others.
 `open_output` gives a client a stream of its own: a channel (start,
 stop, drain, position, its volume; closing it ends the stream), a ring
 VMO (a header page with the client's `write` and the mixer's `read`
