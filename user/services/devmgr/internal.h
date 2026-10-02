@@ -1,5 +1,6 @@
-/* devmgr's own pieces: main.c (startup, the protocol, the event
- * loop), bind.c (starting and stopping a driver: its handles, its job),
+/* devmgr's own pieces: main.c (startup, the match table, the event
+ * loop), chans.c (its channels: reading requests, what each channel may
+ * ask), request.c (the answers), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
  * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
  * usb-storage serves: which one is the boot disk) and fsvc.c (their
@@ -123,10 +124,33 @@ extern bool           hidboot;
  * known. disk.c takes the Jam OS disk with that id as the boot disk. */
 extern uint32_t       boot_mbr_id;
 extern uint64_t       devmgr_started;   /* when devmgr started (uptime, ns) */
+/* The first binding pass's counts, for DEVMGR_STATUS. */
+extern unsigned       nbound, nfailed, nskipped;
+/* DEVMGR_SHUTDOWN was answered: the loop stops as if every client had left. */
+extern bool           shutdown_asked;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */
 bool in_bootfs(const char *path);
+
+/* chans.c. Take the channels init gave (the startup message); false if
+ * there is none to live by (no control or query channel). */
+bool     chans_init(void);
+/* Answer what is queued on every channel: ERR_SHOULD_WAIT once all are
+ * drained, ERR_PEER_CLOSED once the clients of the channel devmgr lives by
+ * are all gone, else a read's failure. */
+status_t chans_serve(void);
+/* Watch every channel that isn't watched (ONCE): ERR_SHOULD_WAIT when all
+ * are, else a bind's failure. */
+status_t chans_arm(void);
+/* A port packet: true if it was a channel's (watched again by the next
+ * chans_arm, read by the next chans_serve). */
+bool     chans_packet(uint64_t key);
+
+/* request.c. Answer one request that came on a channel of level lv: the
+ * reply, and *nh handles in hs, each to be sent with rs[i]. */
+void request_handle(const struct devmgr_req *q, enum level lv, struct devmgr_rep *r,
+                    handle_t *hs, rights_t *rs, uint32_t *nh);
 
 /* bind.c. Start b's driver (state RUNNING on success): its handles from
  * scratch (for a PCI function: woken to D0, a new dma_cap, interrupt
