@@ -150,7 +150,15 @@ frames on each, and the switch's LLDP untagged). Jam OS uses VLAN 21 only
 (10.2.21.0/24, "Home Devices VLAN": its DHCP server, router and DNS server
 are all 10.2.21.1, and it reaches the internet) and its driver drops every
 other frame. Narrowing the port on the switch to VLAN 21 tagged alone
-would make the switch enforce the rule too; it isn't needed. The PC's
+would make the switch enforce the rule too; it isn't needed.
+**The owner's builds are VLAN 21 through `local.mk`**: his tree on the
+Mac has a git-ignored `local.mk` at the top with `JAMOS_VLAN := 21`
+(`local.mk.example`), so every `make` there says `network default: VLAN
+21 (local.mk)` and the build tags every frame with 21 on a boot with no
+`vlan=` word. A build without it (a fresh clone, a worktree) is untagged:
+on this port it would land on the home network, so `update` refuses one
+(`update -f` forces it) and `make flash` asks before it writes one
+([ARCHITECTURE.md](../ARCHITECTURE.md#networking)). The PC's
 cable goes to a one-port bridge, so the Mac can't watch the PC's port; a
 capture needs a cable from the PC straight to the Mac's USB Ethernet
 adapter ([M9-PLAN.md](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix)).
@@ -195,8 +203,11 @@ erased and `/data` is not touched):
 make flash                       # or: make flash DEV=/dev/diskN
 ```
 
-`tools/flash-usb.sh` finds the one external disk with Jam OS's two
-partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`
+`tools/flash-usb.sh` first says the build's network default (from its
+boot image's `build.txt`: `network default of this build: VLAN 21`) and,
+for an untagged build (made without `local.mk`) or an old one that
+doesn't say, asks before it goes on; then it finds the one external disk
+with Jam OS's two partitions, mounts its ESP, copies the kernel, the bootfs and `limine.conf`
 under new names (`jamos.elf.new`, ...), compares all three, renames them
 over the old ones, compares again, and ejects the stick. It asks for your
 password: macOS does not mount an MBR partition of type 0xEF by itself,

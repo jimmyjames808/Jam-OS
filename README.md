@@ -70,8 +70,9 @@ a real desktop PC, which is where every milestone is tested.
   with `allow`.
 - Networking (M9, under way): Jam OS's own driver for the PC's Realtek
   RTL8125B (and for QEMU's e1000e, for the tests), a network stack in a
-  process of its own (lwIP: IPv4, ARP, ICMP, UDP), every frame tagged
-  VLAN 21 and nothing else ever sent; the address from DHCP or the
+  process of its own (lwIP: IPv4, ARP, ICMP, UDP), every frame in one
+  network mode and nothing else ever sent (plain untagged Ethernet by
+  default, or tagged with a VLAN you choose); the address from DHCP or the
   settings, names from DNS, `ping` and `host`, UDP sockets for programs
   (their list asks for `svc net`, and `svc dns` for names), the boot log
   sent to the Mac as it is written, and `update` to run the Mac's newest
@@ -129,21 +130,38 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## The network
 
-Jam OS sends on VLAN 21 only: every frame it sends is tagged 802.1Q VLAN
-21, and the boot word `vlan=off` keeps the network card off altogether
-([ARCHITECTURE.md](ARCHITECTURE.md#networking)). On the PC the everyday
-entry "Jam OS" is on the network; "Jam OS (no network)" (`vlan=off`)
-leaves the network card alone. In QEMU, `tools/qemu-test.sh` with
+Jam OS sends in one network mode only, and nothing else ever leaves
+([ARCHITECTURE.md](ARCHITECTURE.md#networking)):
+
+- **untagged** (the default of a build of this repository): plain
+  Ethernet, as on an ordinary home or office network. No frame is ever
+  sent with a VLAN tag, and tagged frames that arrive are dropped;
+- **a VLAN** (1..4094): every frame is tagged 802.1Q with it, and only
+  frames tagged with it are taken in. For a switch port that carries the
+  VLAN tagged. The owner's PC uses VLAN 21
+  ([docs/HARDWARE.md](docs/HARDWARE.md#the-network)).
+
+To build for a VLAN, copy `local.mk.example` to `local.mk` (git ignores
+it) and set `JAMOS_VLAN := 21` (your VLAN), or give it once:
+`make JAMOS_VLAN=21`. Every `make` says which default it built
+(`network default: VLAN 21 (local.mk)`, `network default: untagged (no
+local.mk)`), and `version`'s build.txt records it. The boot word
+`vlan=<id>`, `vlan=none` or `vlan=off` (the network card left off
+altogether) overrides it for one boot, and a `reboot` keeps it. `update`
+refuses a build whose default differs from the running one's unless given
+`-f`, and `make flash` asks before it writes an untagged build. On the PC
+the everyday entry "Jam OS" is on the network; "Jam OS (no network)"
+(`vlan=off`) leaves the network card alone. In QEMU, `tools/qemu-test.sh` with
 `QEMU_NET=1` gives the machine a card and a small network of its own
 ([TESTING.md](docs/TESTING.md#the-network-peer)).
 
 | Command | What it does |
 |---|---|
-| `net` | the address, gateway and DNS servers, the link (speed, VLAN) and the main counts |
+| `net` | the address, gateway and DNS servers, the link (speed, VLAN or untagged) and the main counts |
 | `net stats` | every count netstack keeps, and the network card's own |
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
-| `update [-n] [address]` | fetch the build the Mac serves, have init check it, and reboot into it; `-n` fetches and checks only |
+| `update [-n] [-f] [address]` | fetch the build the Mac serves, have init check it, and reboot into it; `-n` fetches and checks only; `-f` takes a build whose network default isn't this one's |
 
 The settings, in `/data/etc/settings` on the stick (edit `etc/settings`
 on the Mac, or in Jam OS), for example:
@@ -156,7 +174,7 @@ net.host = 10.2.21.174
 | Key | What |
 |---|---|
 | `net.address` | a static address: `<address>/<prefix> [<gateway> [<dns> [<dns>]]]`. Without it the DHCP client gets one |
-| `net.host` | the Mac's address on VLAN 21 (10.2.21.174 for the owner's): where the log goes and where `update` fetches from |
+| `net.host` | the Mac's address (10.2.21.174 for the owner's, on VLAN 21): where the log goes and where `update` fetches from |
 | `netlog` | `off`: don't send the log, even with `net.host` set |
 | `ntp.server` | where the clock comes from (SNTP): an IPv4 address or a name. Without it, the network's gateway, then `pool.ntp.org` if the gateway gives no time |
 | `ntp` | `off`: don't set the clock from the network (it stays the real-time clock's, as `rtc` says) |
@@ -200,12 +218,14 @@ the boot from its first line. `--quiet` doesn't print the lines;
    the boot image can come from two builds.
 2. On the PC: `update`. It fetches the build from `net.host`, init checks
    each file's size and SHA-256 against the manifest, the screen says
-   `old -> new` (version and git commit), and the PC reboots into it.
+   `old -> new` (version and git commit), and the PC reboots into it. A
+   build with another network default (the Mac's tree without `local.mk`,
+   say) is refused: `update -f` takes it anyway.
 
 The fetched build lives in RAM: it survives `reboot` and a panic, and a
 power-off brings back the stick's. `make flash` is still how a build
-stays. Updates are not signed yet: anyone on VLAN 21 who answers as the
-Mac could run their own kernel, so `update` runs only when you type it.
+stays. Updates are not signed yet: anyone on the network who answers as
+the Mac could run their own kernel, so `update` runs only when you type it.
 
 ## Where things live
 

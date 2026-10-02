@@ -57,7 +57,7 @@ across a restart: a restart is a bind from scratch.
 **Fail closed.** When unsure, refuse. Unknown flags, non-zero reserved
 fields and out-of-range values are `ERR_INVALID_ARGS`, never "ignored".
 New defaults are the safe ones: a new `dma_cap` turns bus mastering off;
-with no VLAN configured the NIC stays down.
+with no network mode configured the NIC stays down.
 *Why:* an ignored flag becomes a silent ABI promise; a permissive default
 is a hole nobody notices.
 
@@ -622,8 +622,11 @@ the exact commands and each script's QEMU setup are in
   `ktest: relax global counts on a live system`.
 - **The networking rule** (hard requirement,
   [ARCHITECTURE.md](ARCHITECTURE.md#networking)): every frame Jam OS sends
-  is tagged VLAN 21, nothing else ever leaves. A change that could
-  transmit needs a test that proves an untagged frame can't leave.
+  is in the configured mode, nothing else ever leaves: tagged with the
+  VLAN (the owner's builds: VLAN 21, from `local.mk`), or untagged and
+  never tagged (a public build's default). A change that could transmit
+  needs a test that proves no frame outside the mode can leave: an
+  untagged one in a VLAN mode, a tagged one in the untagged mode.
 - **Docs:** each fact has one home, and other docs link to it instead of
   copying it:
 

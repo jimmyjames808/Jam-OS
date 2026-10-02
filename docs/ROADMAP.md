@@ -59,7 +59,12 @@ and `net`; netlog (the whole boot log to the Mac); `update` (the Mac's
 build fetched, checked by init and run by kexec, in RAM only). The
 slow-peer test passes (`tools/dns-test.sh`), and `tools/net-vlan-test.sh`
 runs every path that transmits in one boot with every frame tagged 21,
-and the same commands with `vlan=off` sending nothing.
+and the same commands with `vlan=off` sending nothing. Since the owner's
+decision of 2026-10-02 the default mode is the build's: a build of the
+public tree is plain untagged Ethernet (`vlan=none`: never a tagged
+frame), the owner's builds are VLAN 21 through a git-ignored `local.mk`,
+and `update` and `make flash` won't move his PC to the other mode by
+accident; `tools/net-vlan-test.sh <out> none` runs every path untagged.
 
 **On the PC so far** (2026-10-02, [HARDWARE.md](HARDWARE.md#the-network)):
 the listen-only probe (the chip, the link, the trunk port); sending, after

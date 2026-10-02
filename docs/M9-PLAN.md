@@ -183,6 +183,14 @@ unit-tested in utest and used by both drivers.
 
 ### The VLAN number: one place
 
+(As built and since changed, the owner's decision of 2026-10-02: the
+default is the build's, not a constant. A build of the public tree is
+untagged, `vlan=none` at boot; the owner's builds are VLAN 21 through a
+git-ignored `local.mk`. Init's update check and `make flash` keep his PC
+from changing mode by accident. The rule and the words as they are now:
+[ARCHITECTURE.md](../ARCHITECTURE.md#networking). The plan as it was
+written follows.)
+
 - The kernel reads the boot word `vlan=<1..4094>`; with no word the
   VLAN is 21 (one constant, in `kernel/main.c` with the other boot
   words). `vlan=off` or any value that isn't a VLAN id means no VLAN.
