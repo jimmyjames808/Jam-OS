@@ -89,6 +89,7 @@ struct dev {
     uint32_t stats_txid;
     uint64_t stats_at;           /* ns: when it went (one unanswered this long is asked again) */
     bool     link_up;            /* the link as last heard from the driver */
+    unsigned link_lines;         /* link changes seen (set_link logs the first few) */
     uint32_t info_txid;
     uint32_t changes;            /* the link-change count last seen */
     struct dev_found found;      /* what the thread said about the card */
