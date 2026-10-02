@@ -123,8 +123,9 @@ static handle_t root, port;
 static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
-/* Its device channels for the HD Audio controllers, the mixer's (0: none). */
-static handle_t devmgr_hda[INIT_MAX_CLAIMED];
+/* Its device channels for the HD Audio controllers, the mixer's, and for
+ * the network cards, held for netstack (0: none). */
+static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
 static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) */
 /* The mixer's channels, made once: server ends (each mixer gets
@@ -321,6 +322,15 @@ unsigned services_claim_class(handle_t devmgr_ctl, uint32_t cls, handle_t *out, 
     return n;
 }
 
+unsigned services_net_devices(handle_t *out, unsigned max)
+{
+    unsigned n = 0;
+    for (unsigned k = 0; k < INIT_MAX_CLAIMED && n < max; k++)
+        if (devmgr_net[k] && jam_handle_duplicate(devmgr_net[k], RIGHT_SAME, &out[n]) == OK)
+            n++;
+    return n;
+}
+
 static status_t start_devmgr(void)
 {
     const struct bootfs_view *fs;
@@ -347,7 +357,7 @@ static status_t start_devmgr(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[5] = { "bin/devmgr" };
+    const char *argv[6] = { "bin/devmgr" };
     int argc = 1;
     if (nousb)
         argv[argc++] = "nousb";
@@ -355,6 +365,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "hidboot";
     if (init_netprobe)
         argv[argc++] = "netprobe";
+    if (init_vlan)
+        argv[argc++] = init_vlan;
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
@@ -378,6 +390,9 @@ static status_t start_devmgr(void)
     unsigned cards = services_claim_class(devmgr, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
     if (cards > 1)
         printf("init: %u HD Audio controllers: all of them the mixer's\n", cards);
+    unsigned nics = services_claim_class(devmgr, DEVMGR_CLASS_NET, devmgr_net, INIT_MAX_CLAIMED);
+    if (nics)
+        printf("init: %u network card(s): held for netstack\n", nics);
     publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
     publish(SVC_DEVMGR_CTL, devmgr, false);
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
@@ -611,10 +626,14 @@ void services_closed(unsigned i)
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
-        for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
+        for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++) {
             if (devmgr_hda[k])
                 jam_handle_close(devmgr_hda[k]);
+            if (devmgr_net[k])
+                jam_handle_close(devmgr_net[k]);
+        }
         memset(devmgr_hda, 0, sizeof(devmgr_hda));
+        memset(devmgr_net, 0, sizeof(devmgr_net));
         devmgr = devmgr_q = HANDLE_INVALID;
         publish(SVC_DEVMGR, HANDLE_INVALID, false);
         publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);

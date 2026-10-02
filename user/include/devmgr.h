@@ -250,6 +250,7 @@ struct devmgr_mounts_rep {
  * devices it gives away this way. */
 #define DEVMGR_PCI_CLASS      0xfffbu
 #define DEVMGR_CLASS_HDA      0x040300u   /* HD Audio (04 03 00): the mixer's */
+#define DEVMGR_CLASS_NET      0x020000u   /* Ethernet (02 00 00): netstack's (netdev.idl) */
 
 /* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
  * the partition (storage.idl's index, 0 to 3; DEVMGR_PART_* on the boot

@@ -38,6 +38,17 @@ static const char *const kept_words[] = {
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=" };
 
+/* A `vlan` word, well-formed or not ("vlan", "vlan=", "vlan=off",
+ * "vlan=21"): all are kept, and first, so a reboot, a panic and `update`
+ * come back on the same VLAN, and a boot with no VLAN never comes back
+ * on the default one because its word was dropped or didn't fit.
+ * (`netprobe` is not kept: the listen-only probe runs only when its boot
+ * entry is picked.) */
+static bool vlan_word(const char *w, size_t n)
+{
+    return n >= 4 && !memcmp(w, "vlan", 4) && (n == 4 || w[4] == '=');
+}
+
 static bool kept(const char *w, size_t n)
 {
     for (size_t i = 0; i < sizeof(kept_words) / sizeof(kept_words[0]); i++)
@@ -88,15 +99,17 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size)
         return;
     buf[0] = '\0';
     size_t at = 0;
-    for (const char *p = from; *p;) {
-        while (*p == ' ')
-            p++;
-        size_t n = 0;
-        while (p[n] && p[n] != ' ')
-            n++;
-        if (n && kept(p, n))
-            at = append_word(buf, size, at, p, n);
-        p += n;
+    for (int pass = 0; pass < 2; pass++) {   /* the vlan words, then the rest */
+        for (const char *p = from; *p;) {
+            while (*p == ' ')
+                p++;
+            size_t n = 0;
+            while (p[n] && p[n] != ' ')
+                n++;
+            if (n && (pass == 0 ? vlan_word(p, n) : !vlan_word(p, n) && kept(p, n)))
+                at = append_word(buf, size, at, p, n);
+            p += n;
+        }
     }
     for (const char *p = from; *p; p++) {
         if ((p != from && p[-1] != ' ') || !starts_with(p, "crashtest="))
