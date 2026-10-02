@@ -1,10 +1,11 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises fourteen services, each in a job of its
+ * init starts and then supervises fifteen services, each in a job of its
  * own under init's: the bootfs server, the console, the boot splash,
  * serialin, devmgr, the mixer, the music player, netstack, the DHCP
- * client, the resolver, logd, netlog, sntp and the shell. How each one is
+ * client, the resolver, logd, netlog, sntp, the file server and the shell.
+ * How each one is
  * started and what it is given is in services.c (the network's in net.c);
  * this file is the order,
  * the namespace they follow and the restarts.
@@ -15,7 +16,8 @@
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
  * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns, the
- * splash the mixer. init keeps its end of each one's
+ * splash the mixer, the file server /svc/net and /svc/net-listen. init
+ * keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
  * path again after it opens its file), so however often the namespace
@@ -48,7 +50,7 @@ struct svc svcs[NSVC] = {
     [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
     [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
     [LOGD] = { "bin/logd" }, [NETLOG] = { "bin/netlog" }, [SNTP] = { "bin/sntp" },
-    [SHELL] = { "bin/shell" },
+    [SERVE] = { "bin/serve" }, [SHELL] = { "bin/shell" },
 };
 
 /* A service that has a namespace, kept in step with init's. */
@@ -66,11 +68,14 @@ static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
 static const char *const netlog_grants[] = { "/svc/" SVC_NET_SYS, NULL };
 static const char *const dns_grants[] = { "/svc/" SVC_NET_SYS, NULL };
 static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS, NULL };
+/* The file server: what its list says (`svc net listen`; it is given its
+ * files by the shell, no mount). */
+static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN, NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
     [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },
     [SHELL] = { .only = NS_ALL }, [DNS] = { .only = dns_grants },
-    [SNTP] = { .only = sntp_grants },
+    [SNTP] = { .only = sntp_grants }, [SERVE] = { .only = serve_grants },
 };
 static handle_t port;
 
@@ -308,7 +313,7 @@ static uint64_t start_due(uint64_t t)
         }
         if (i == MUSIC && !svcs[MIXER].running && !svcs[MIXER].given_up)
             continue;   /* after the mixer (it opens its stream only on `music start`) */
-        if ((i == DHCP || i == DNS || i == SNTP) && !svcs[NETSTACK].running)
+        if ((i == DHCP || i == DNS || i == SNTP || i == SERVE) && !svcs[NETSTACK].running)
             continue;   /* after netstack (started just before them) */
         uint64_t dhcp_at = i == DHCP ? net_dhcp_wait(t, mounted(DATA_MOUNT)) : 0;
         if (dhcp_at) {   /* /data's settings may say the address is static */
@@ -350,8 +355,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
-           "devmgr, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp and the "
-           "shell\n",
+           "devmgr, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp, the file "
+           "server and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t deadline = start_due(now());

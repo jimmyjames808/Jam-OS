@@ -66,6 +66,12 @@
  *             ends, as the mixer's, so a restarted player serves the same
  *             channel, and publishes it as /svc/music (a channel per
  *             opener)
+ *   serve     bin/serve, the file server, after netstack: the server end
+ *             of the `serve` channel (SR_USER + 0; abi/idl/serve.idl), made
+ *             once and kept as the music player's, published as /svc/serve
+ *             (a channel per opener), and a namespace of /svc/net and
+ *             /svc/net-listen only (shell.c's grants: its list's `svc net
+ *             listen`). It has no mount: the shell hands it each file
  *   logd      bin/logd, once /data is mounted: root with RIGHT_ROOT_KLOG
  *             (the kernel log), a namespace holding only /data (SR_NS) and the server
  *             end of a `logctl` channel (SR_USER + 2; init keeps the client
@@ -142,6 +148,8 @@ static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) *
 static handle_t audio_srv[2], audio_cli[2];
 /* The music player's channel, made once in the same way (0: none). */
 static handle_t music_srv, music_cli;
+/* The file server's, the same. */
+static handle_t serve_srv, serve_cli;
 static bool nousb;
 static bool quiet_console;   /* the next console starts quiet (the splash's first one) */
 static bool nolog_console;   /* every console keeps the log off the screen (a splash boot) */
@@ -562,6 +570,26 @@ static status_t start_music(void)
     return svc_start1(MUSIC, x, 1);   /* no /svc/audio: it answers "no output" */
 }
 
+/* The file server: its server end again (the same channel as any server
+ * before it). Its namespace (the network, with the listen permission) is
+ * shell.c's grants. */
+static status_t start_serve(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (!serve_srv || bootfs_default(&fs) != OK ||
+        bootfs_lookup(fs, svcs[SERVE].path, &data, &size) != OK) {
+        printf("init: no %s (or no channel for it): no file server\n", svcs[SERVE].path);
+        svcs[SERVE].given_up = true;
+        return OK;
+    }
+    struct spawn_handle x[] = { { SR_USER + 0, dup_of(serve_srv) } };
+    if (!x[0].h)
+        return ERR_NO_RESOURCES;
+    return svc_start1(SERVE, x, 1);
+}
+
 /* The line the boot's first shell prints after a panic (lastboot.c), queued
  * on its init channel before it starts. */
 static void queue_banner(handle_t to)
@@ -642,6 +670,7 @@ status_t services_start(unsigned i)
            : i == LOGD     ? start_logd()
            : i == NETLOG   ? net_netlog_start()
            : i == SNTP     ? net_sntp_start()
+           : i == SERVE    ? start_serve()
                            : start_shell();
 }
 
@@ -700,6 +729,12 @@ void services_given_up(unsigned i)
         jam_handle_close(music_srv);   /* the shell's `music` fails now */
         music_srv = HANDLE_INVALID;
     }
+    if (i == SERVE && serve_srv) {
+        jam_handle_close(serve_srv);   /* the shell's `serve` fails now */
+        serve_srv = HANDLE_INVALID;
+        publish(SVC_SERVE, HANDLE_INVALID, false);
+        tell_mounts();
+    }
     if (i == MIXER || i == MUSIC) {   /* and nobody new gets them */
         publish(i == MIXER ? SVC_AUDIO : SVC_MUSIC, HANDLE_INVALID, false);
         if (i == MIXER)
@@ -722,6 +757,9 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
     publish(SVC_AUDIOCTL, audio_cli[1], true);
     publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
+    if (jam_channel_create(&serve_cli, &serve_srv) != OK)
+        serve_cli = serve_srv = HANDLE_INVALID;
+    publish(SVC_SERVE, serve_cli, true);
     publish(SVC_NET, net_svc_channel(), true);
     publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
     publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
