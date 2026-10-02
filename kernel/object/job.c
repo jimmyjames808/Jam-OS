@@ -43,7 +43,14 @@
  * and the wait pass second, so a caller inside the job (killing its own
  * job) still kills everything before its own wait is cancelled. A child
  * job it holds a reference on stays listed, so the walk continues from its
- * list node. */
+ * list node.
+ *
+ * Recursion: the walks over the tree (kill_tree, wait_tree, job_print_tree,
+ * job_list_processes, job_find_process) call themselves for each child
+ * job, against the rule of no recursion in the kernel. They are bounded by
+ * JOB_MAX_DEPTH (32): the biggest frame, job_print_tree's (two arrays of
+ * PRINT_MAX pointers), is about 600 bytes, so about 19 KiB of the 64 KiB
+ * kernel stack at the deepest. */
 #include <jam/channel.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
@@ -198,8 +205,7 @@ static struct job *next_child(struct job *j, const struct job *after)
     return c;
 }
 
-/* Mark the subtree killed and kill every process in it (no waiting). The
- * recursion is at most JOB_MAX_DEPTH deep. */
+/* Mark the subtree killed and kill every process in it (no waiting). */
 static unsigned kill_tree(struct job *j)
 {
     uint64_t f = jlock(j);
