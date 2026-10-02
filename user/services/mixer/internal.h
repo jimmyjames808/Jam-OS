@@ -6,7 +6,7 @@
  * (svc.connect); output.c the driver's side (finding the hda driver, its one
  * output stream, the periods, the mixing); device.c a second thread for
  * audioctl.device, which calls devmgr and the drivers and so must not
- * hold up the loop. docs/A2-PLAN.md has the design; <mixer.h> the ring.
+ * hold up the loop. docs/history/A2-PLAN.md has the design; <mixer.h> the ring.
  *
  * Time is the driver's: at the end of each period it played (2048 frames,
  * 42.7 ms) the mixer mixes until OUT_LEAD periods are written ahead of

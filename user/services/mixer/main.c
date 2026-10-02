@@ -1,5 +1,5 @@
 /* mixer: every program's sound through the one output stream of the HD
- * Audio driver (docs/A2-PLAN.md). init starts it in shell mode, after
+ * Audio driver (docs/history/A2-PLAN.md). init starts it in shell mode, after
  * devmgr, with
  *   SR_DEVMGR_DEVICE  devmgr's device channel for each HD Audio
  *                 controller (client ends, one handle each, at most

@@ -1,5 +1,5 @@
 /* The log of a boot that panicked, on the boot after it (kernel/kexec/,
- * docs/M8.5-PLAN.md "Revision 2"): what init and logd say about it.
+ * docs/history/M8.5-PLAN.md "Revision 2"): what init and logd say about it.
  *
  * The kernel hands init the panicked kernel's log as SR_CRASHLOG, a
  * read-only VMO (struct crashlog_header in <jam/startup.h>, then the

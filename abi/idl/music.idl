@@ -3,7 +3,7 @@
 # it in shell mode and keeps both ends of this channel, so a restarted
 # player serves the same channel; the shell holds a client end (startup
 # role SR_USER + 4) for its `music` command. The plan is
-# docs/A2-PLAN.md, "Music player".
+# docs/history/A2-PLAN.md, "Music player".
 # Format: see tools/genidl.py.
 #
 # Reconnect: init holds the channel across the player's restarts, so a

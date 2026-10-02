@@ -1,5 +1,5 @@
 #!/bin/sh
-# `play` in QEMU (docs/A2-PLAN.md, track 1): WAV files made here are put
+# `play` in QEMU (docs/history/A2-PLAN.md, track 1): WAV files made here are put
 # on the stick's data partition (mtools, as the Mac would copy them), and
 # the shell plays them (tools/shell-tests/play.txt) through intel-hda with
 # an hda-output codec whose samples go to a WAV capture (QEMU's wav audio

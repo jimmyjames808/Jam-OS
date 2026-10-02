@@ -150,7 +150,7 @@ fade-out uses `fill_pm`; `run splash --selftest` checks them all.
   join's fade-in; and `splash.mpg` decoded and drawn 1:1 whole, timed:
   every frame of its length at its rate, the background in the first
   frame's corner, its sound 48 kHz and as long as the video.
-- `tools/splash-test.sh` ([TESTING.md](TESTING.md#area-scripts)): five
+- `tools/splash-test.sh` ([TESTING.md](../TESTING.md#area-scripts)): five
   boots (the splash with the sound captured, a key skip at 2560x1440,
   `verbose`, `nosplash`, a panic at boot over the quiet screen).
   Every other test boots with `nosplash` (`tools/qemu-test.sh` adds it

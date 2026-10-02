@@ -13,7 +13,7 @@
 # pin's output off, and serves one output stream on that path's DAC. The
 # path is unmuted (at the gain below) only while the stream runs: start
 # opens it, stop, the stream's close and the driver's exit mute it again,
-# so the jack is silent whenever nothing plays (docs/A1-PLAN.md). Where an
+# so the jack is silent whenever nothing plays (docs/history/A1-PLAN.md). Where an
 # amp on the path can mute it (the PC's ALC897, QEMU's codecs with their
 # mixer) the amps are the mute, and the output stage (the pin's output and
 # EAPD) is on from the driver's start to its exit, so its power-up thump
@@ -44,7 +44,7 @@ protocol hda 21
 # node, read back from the codec, as one line (NUL-terminated).
 2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u32 count, u8[8] nodes, u8[240] text)
 
-# ---- the output stream (docs/A1-PLAN.md) ----
+# ---- the output stream (docs/history/A1-PLAN.md) ----
 # One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
 # 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
 # else: ERR_NOT_SUPPORTED); a second open while one is open:
@@ -86,7 +86,7 @@ protocol hda 21
 # periods (the DMA engine stalled).
 7  wait_period  (u64 after)  -> (u64 frames, u32 offset)
 
-# ---- the gain (docs/A1-PLAN.md, stage 3) ----
+# ---- the gain (docs/history/A1-PLAN.md, stage 3) ----
 # The path's volume: the output amp of the first node on the path that
 # has gain steps (the DAC's on the PC's ALC897 and QEMU's codecs), in
 # centibels (tenths of a dB; 0 is 0 dB, the amp's own unity step). The
@@ -108,7 +108,7 @@ protocol hda 21
 # DAC's best). ERR_INVALID_ARGS: another number.
 10  set_bits  (u32 bits)  -> (u32 bits, u32 pcm)
 
-# ---- the jacks (docs/A1-PLAN.md, stage 4) ----
+# ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
 # Every pin the codecs describe as a jack with presence detection, as the
 # driver tracks it (debounced; not read anew for this call). count: how
 # many (at most 16); pins and states: each one's node and state, in the

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The boot splash (user/apps/splash, docs/AS-PLAN.md) in QEMU, with
+# The boot splash (user/apps/splash, docs/history/AS-PLAN.md) in QEMU, with
 # QEMU_SPLASH=1 (tools/qemu-test.sh leaves the splash out otherwise) and an
 # intel-hda + hda-output codec writing what it plays to a WAV file (as
 # tools/mixer-test.sh). Six boots:

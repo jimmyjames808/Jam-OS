@@ -1,4 +1,4 @@
-/* music: the background music player (docs/A2-PLAN.md, "Music player").
+/* music: the background music player (docs/history/A2-PLAN.md, "Music player").
  * init starts it in shell mode, like the mixer, with
  *   SR_USER + 0   the server end of the `music` channel (abi/idl/music.idl);
  *                 init keeps both ends, so a restarted player serves the

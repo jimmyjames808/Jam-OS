@@ -54,7 +54,7 @@ Audio, all in user processes, on the PC's Realtek ALC897:
   kernel quiet behind it.
 
 M8.5, after a first version as Linux's kdump and the owner's Revision 2
-([the plan](M8.5-PLAN.md)): one kernel with two ways in. A fresh copy of
+([the plan](history/M8.5-PLAN.md)): one kernel with two ways in. A fresh copy of
 the system waits in reserved RAM (unmapped, checksummed). `reboot` and a
 panic both jump into it: the screen goes to the splash background, the
 next boot is a normal one, and after a panic logd saves the dead boot's

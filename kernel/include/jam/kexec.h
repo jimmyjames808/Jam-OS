@@ -1,5 +1,5 @@
 /* kexec: starting a fresh copy of Jam OS without the firmware, after a
- * reboot or a panic (kernel/kexec/; the plan is docs/M8.5-PLAN.md,
+ * reboot or a panic (kernel/kexec/; the plan is docs/history/M8.5-PLAN.md,
  * "Revision 2").
  *
  * At boot the kernel reserves a physically contiguous region of RAM

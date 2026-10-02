@@ -2,7 +2,7 @@
  * in the region with everything the new kernel needs to start, so a jump
  * copies nothing. One image serves both ways in (a reboot and a panic).
  *
- * The layout, from the region's base (docs/M8.5-PLAN.md has the table):
+ * The layout, from the region's base (docs/history/M8.5-PLAN.md has the table):
  *   [0, img_end)            the kernel's segments at base + (vaddr - virt_base),
  *                           the gaps and bss zero; img_end is the span
  *                           rounded up to 2 MiB

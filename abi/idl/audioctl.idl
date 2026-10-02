@@ -4,7 +4,7 @@
 # it as /svc/audioctl; the shell has it, and the programs whose lists ask
 # for it. Each opener gets a channel of its own (the svc protocol's
 # connect, as for `audio`).
-# Format: see tools/genidl.py. The plan is docs/A2-PLAN.md.
+# Format: see tools/genidl.py. The plan is docs/history/A2-PLAN.md.
 #
 # Reconnect: an opener's channel ends with the mixer that made it
 # (ERR_PEER_CLOSED); open /svc/audioctl again (svc_get does), whose

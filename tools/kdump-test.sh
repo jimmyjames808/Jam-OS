@@ -1,5 +1,5 @@
 #!/bin/sh
-# A panic starts the stored kernel (docs/M8.5-PLAN.md, "Revision 2"): a
+# A panic starts the stored kernel (docs/history/M8.5-PLAN.md, "Revision 2"): a
 # fresh copy of Jam OS whose boot is a normal one, except that logd first
 # saves the panicked boot's log and the shell prints one line about it.
 # Each case is a fresh boot of a stick image; the image is read afterwards

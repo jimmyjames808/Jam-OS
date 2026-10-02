@@ -1,5 +1,5 @@
 #!/bin/sh
-# `play` of MP3 files in QEMU (docs/A2-PLAN.md, "MP3"): tones made here
+# `play` of MP3 files in QEMU (docs/history/A2-PLAN.md, "MP3"): tones made here
 # are encoded with ffmpeg (libmp3lame, and its mp2 encoder), put on the
 # stick's data partition (mtools, as the Mac would copy them), and the
 # shell plays them (tools/shell-tests/mp3.txt) through the mixer, intel-hda

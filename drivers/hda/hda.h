@@ -428,7 +428,7 @@ void     hda_path_read_back(struct hda *h, struct codec *c, const struct path *p
  * before RUN and closes it right after RUN clears; main.c's set_gain
  * changes the gain. All on the driver's one thread. */
 
-#define GAIN_DEFAULT_CB  (-300)   /* -30 dB: quiet in headphones (docs/A1-PLAN.md, stage 3) */
+#define GAIN_DEFAULT_CB  (-300)   /* -30 dB: quiet in headphones (docs/history/A1-PLAN.md, stage 3) */
 
 struct output {
     const struct codec *c;     /* the path's codec as read back after set-up; NULL: no path */
@@ -469,7 +469,7 @@ void     hda_output_init(struct output *o, const struct codec *c, const struct p
  * failure is returned (on: the stage counts as off). ERR_NOT_FOUND: no
  * path. */
 status_t hda_output_stage(struct hda *h, struct output *o, bool on);
-/* The path opened (docs/A1-PLAN.md's steps 4-6). With o->mutes: the stage
+/* The path opened (docs/history/A1-PLAN.md's steps 4-6). With o->mutes: the stage
  * on if it isn't (it should be), and OUTPUT_SETTLE_NS waited since it went
  * on, then the path's inputs on its mixers and selectors unmuted (the
  * others stay muted) and every output amp on it unmuted (the volume amp

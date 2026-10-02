@@ -1,5 +1,5 @@
 #!/bin/sh
-# `beep` in QEMU (docs/A1-PLAN.md, stage 3): intel-hda (8086:2668) with an
+# `beep` in QEMU (docs/history/A1-PLAN.md, stage 3): intel-hda (8086:2668) with an
 # hda-output codec whose samples go to a WAV file (QEMU's wav audio
 # backend at 48 kHz 16-bit stereo). Unlike tools/hda-stream-test.sh the
 # codec keeps its mixer (mixer=on, the default): its DAC has an output amp

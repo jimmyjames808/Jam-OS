@@ -3,7 +3,7 @@
  * client side in libos (user/lib/mixer_client.c): open a stream on the
  * mixer's service channel (/svc/audio), write frames into its ring, start,
  * drain, close. The protocol is abi/idl/audio.idl; the design is
- * docs/A2-PLAN.md.
+ * docs/history/A2-PLAN.md.
  *
  * The ring is one VMO: MIXER_RING_HDR bytes of header (one page), then
  * `frames` frames of 48 kHz stereo s16 samples (4 bytes a frame). The

@@ -1,4 +1,4 @@
-/* beep: a tone in the headphones (docs/A1-PLAN.md, stage 3). A sine with
+/* beep: a tone in the headphones (docs/history/A1-PLAN.md, stage 3). A sine with
  * a 5 ms fade in and out (no click), made here in floating point, written
  * through <audio.h> as 48 kHz mono (the library makes it stereo and keeps
  * the device's ring written ahead); the device plays at its gain (`hda

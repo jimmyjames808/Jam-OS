@@ -1,23 +1,23 @@
 # A1 plan: HD Audio, a tone in the front-panel headphones
 
 Status: done, signed off on the PC on 2026-10-01 with A2, AS and M8.5
-([HISTORY.md](HISTORY.md#audio-a1-a2-as-and-m85-kexec)).
+([HISTORY.md](../HISTORY.md#audio-a1-a2-as-and-m85-kexec)).
 
-Goal ([roadmap](ROADMAP.md#later)): **`beep` in the shell plays a tone in
+Goal ([roadmap](../ROADMAP.md#later)): **`beep` in the shell plays a tone in
 the headphones plugged into the case's front panel on the real PC, and
 unplugging and replugging them is logged.** The driver is a process like
-every other ([ARCHITECTURE.md](../ARCHITECTURE.md#audio)); the kernel gains
+every other ([ARCHITECTURE.md](../../ARCHITECTURE.md#audio)); the kernel gains
 nothing.
 
 The source for every register, bit and verb is the Intel High Definition
 Audio Specification, revision 1.0a (2010); the driver's comments cite its
 sections. Linux's `snd-hda-*` and ALSA are GPL: read for hardware facts
 only if a quirk needs it, never copied or paraphrased
-([CODING-GUIDE.md](../CODING-GUIDE.md#licence-and-outside-code)).
+([CODING-GUIDE.md](../../CODING-GUIDE.md#licence-and-outside-code)).
 
 ## The hardware
 
-From the PC's own boot log ([HARDWARE.md](HARDWARE.md#other-devices)):
+From the PC's own boot log ([HARDWARE.md](../HARDWARE.md#other-devices)):
 
 | Function | What | A1 |
 |---|---|---|
@@ -197,7 +197,7 @@ different files and can run as two tracks at once.
 | **2. Output stream** (done) | the stream descriptor, BDL, position buffer, the 64 KiB ring, MSI (IOC and RIRB) through the port, clear-behind, `open_output/start/stop/position/wait_period`, the stop order at exit and at client close; TCSEL | `drivers/hda/{stream,irq}.c`, `hda.idl` (stream methods), a test program user/tests/hdatest/ (new) |
 | **3. `beep`** (the join of 1 and 2, done) | the path unmuted at the quiet default gain, `set_gain`/`get_gain`, the shell's `beep` and `hda gain`; the QEMU tone test | user/services/shell/cmd/beep.c (new), tools/beep-test.sh (new), `drivers/hda/main.c` |
 | **4. Jacks** (done) | unsolicited responses on (GCTL.UNSOL, the pin's enable, the RIRB interrupt), the tag -> pin table, the plugged/unplugged log lines, the polling fallback, `hda.jacks`, `hda` shows the jack state | drivers/hda/jack.c (new), `ctrl.c` (the RIRB's demultiplexer), `irq.c`, `hda.idl` (jacks) |
-| **5. Review** (done: [AUDIO-REVIEW.md](history/AUDIO-REVIEW.md)) | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
+| **5. Review** (done: [AUDIO-REVIEW.md](AUDIO-REVIEW.md)) | the independent review-and-fix pass over all of A1 (standing rule), then the PC sign-off | whatever its findings touch |
 
 ## Stage 2: what was built and learned
 

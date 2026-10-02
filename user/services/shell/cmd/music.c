@@ -1,5 +1,5 @@
 /* music: the background music player's controls (abi/idl/music.idl; the
- * player is bin/music, a service init runs, docs/A2-PLAN.md "Music
+ * player is bin/music, a service init runs, docs/history/A2-PLAN.md "Music
  * player"). The shell only asks: the player plays in its own job, so the
  * shell goes on meanwhile and Ctrl+C here never reaches it.
  *   music start [folder]   a relative folder is the shell's (cd); already

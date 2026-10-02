@@ -87,7 +87,7 @@ MP3s need no conversion: copy them as they are ([MP3](#mp3) below).
 ### Tests
 
 - utest `audio_formats`, `audio_resample`, `wav_parse`.
-- `tools/play-test.sh` ([TESTING.md](TESTING.md#area-scripts)): seven
+- `tools/play-test.sh` ([TESTING.md](../TESTING.md#area-scripts)): seven
   files on the stick image, played in QEMU into a WAV capture and checked
   (frequency per channel, length within 2 %, mono/stereo, silence after,
   no clicks, `-v`, refusals, Ctrl+C with a fade).
@@ -488,7 +488,7 @@ number.
   1152 zero frames each; a Xing frame: VBR, exact, not played; VBRI;
   mono with tags at both ends; a read error past dr_mp3's first 64 KiB;
   noise).
-- `tools/mp3-test.sh` ([TESTING.md](TESTING.md#area-scripts)) in QEMU.
+- `tools/mp3-test.sh` ([TESTING.md](../TESTING.md#area-scripts)) in QEMU.
   Numbers on 2026-10-01: 44.1 kHz stereo 192 kbps CBR 2490.0 ms for a
   2.49 s tone (LAME's delay and padding dropped exactly), 440.00/660.00
   Hz; 48 kHz mono VBR 1000.0 ms, 1000.00 Hz; 22.05 kHz MPEG-2 without a
@@ -525,7 +525,7 @@ the background: the shell stays free for other commands meanwhile.
 - **Its channel**: `abi/idl/music.idl` (protocol 24: `start`, `stop`,
   `next`, `status`, `set_volume`; jamjar later added `prev`, `play`,
   `levels`, `pause`, `sleep`, `spectrum` and `stereo`:
-  [MUSIC-GUI.md](history/MUSIC-GUI.md)). init makes it once and keeps both
+  [MUSIC-GUI.md](MUSIC-GUI.md)). init makes it once and keeps both
   ends, as it does the mixer's, so a restarted player serves the same
   channel and the shell's end (startup role SR_USER + 4) never goes
   stale. The player gets the server end (SR_USER + 0), a client end of
@@ -607,7 +607,7 @@ the name as it is (`JAŸ-Z`).
 
 ### Tests
 
-`tools/music-test.sh` ([TESTING.md](TESTING.md#area-scripts)). In QEMU on
+`tools/music-test.sh` ([TESTING.md](../TESTING.md#area-scripts)). In QEMU on
 2026-10-01: seven tracks heard in the log's order before the stop (the
 six once each, then a seventh), the 1500 Hz `beep` mixed over a track,
 the stop faded (the music's last millisecond at 842 of a tone's 8192), no

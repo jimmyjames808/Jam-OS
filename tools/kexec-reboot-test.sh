@@ -1,5 +1,5 @@
 #!/bin/sh
-# `reboot` by kexec (docs/M8.5-PLAN.md, "Revision 2"): the screen goes to
+# `reboot` by kexec (docs/history/M8.5-PLAN.md, "Revision 2"): the screen goes to
 # the splash background at once, init syncs, flushes the log, stops
 # devmgr's drivers in order and starts the kernel's stored copy of the
 # system: no firmware reset, so QEMU (-no-reboot) keeps running. Four runs:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The background music player in QEMU (docs/A2-PLAN.md, "Music player";
+# The background music player in QEMU (docs/history/A2-PLAN.md, "Music player";
 # tools/shell-tests/music.txt is what is typed). A folder tree is made on
 # the stick's data partition with mtools, as a Mac would copy a library:
 #   /data/music/A/Album/1. One.mp3                         300 Hz, MP3 44.1 kHz stereo

@@ -1,5 +1,5 @@
 /* splash: the boot splash. The owner's logo animation with its sound,
- * played while Jam OS starts (docs/AS-PLAN.md).
+ * played while Jam OS starts (docs/history/AS-PLAN.md).
  *
  * init starts it first on a plain boot, right after the console (init's
  * splash.c), with a PROGRAM-level console channel (SR_CONSOLE), init's

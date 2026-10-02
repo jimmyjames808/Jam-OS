@@ -146,7 +146,7 @@ Every driver and service is a userspace process from the start.
   "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
   interrupts on, the PCI core and resources; then either the boot-time
   tests (ktest, bench, stress) or userboot → init.
-- **The boot splash** ([docs/AS-PLAN.md](docs/AS-PLAN.md)): on a plain
+- **The boot splash** ([docs/history/AS-PLAN.md](docs/history/AS-PLAN.md)): on a plain
   boot (without `verbose`, `nosplash`, `nousb` or `soak`) fbcon's first
   act fills the screen with the splash's background and it draws no text
   from then on (quiet: the log still goes to the ring and serial; a panic
@@ -925,7 +925,7 @@ without one, so detection works either way. A change only logs: an unplug
 while playing stops nothing. `hda jacks` (`hda.jacks`) shows each jack's
 state and how it is watched.
 
-**The mixer** (`user/services/mixer`, [docs/A2-PLAN.md](docs/A2-PLAN.md))
+**The mixer** (`user/services/mixer`, [docs/history/A2-PLAN.md](docs/history/A2-PLAN.md))
 is the driver's only client but for the tests (`hdatest` holds devmgr's
 control channel): init asks devmgr for each sound card's device channel
 before anyone else can ask, and gives them to the mixer, so devmgr hands
@@ -975,7 +975,7 @@ position kept exactly); `beep` and `play` (WAV files, parsed by
 `<wav.h>`; `play -s` prints underruns, late periods and the least lead
 afterwards) use it.
 
-**MP3** ([docs/A2-PLAN.md](docs/A2-PLAN.md#mp3)): `play` picks a file's
+**MP3** ([docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#mp3)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
 source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
@@ -1000,7 +1000,7 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 4 % of a core under QEMU's emulation (`play -n`), far less on the PC.
 
 **The music player** (`user/services/music`,
-[docs/A2-PLAN.md](docs/A2-PLAN.md#music-player)) is a service init starts
+[docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#music-player)) is a service init starts
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start, stop, next, status,
@@ -1183,7 +1183,7 @@ shows nothing but the splash background from the moment `reboot` starts
 or the panic happens until the next boot's splash. After a panic the next
 boot saves the panicked boot's log first and the shell prints one line
 about it. Code in `kernel/kexec/`; the plan, with the layout and the
-decisions, is [docs/M8.5-PLAN.md](docs/M8.5-PLAN.md) ("Revision 2").
+decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
 
 - **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write

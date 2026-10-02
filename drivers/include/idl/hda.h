@@ -253,7 +253,7 @@ static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_
     return hda_info_until(ch, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
 }
 
-/* ---- the output stream (docs/A1-PLAN.md) ----
+/* ---- the output stream (docs/history/A1-PLAN.md) ----
  * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
  * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
  * else: ERR_NOT_SUPPORTED); a second open while one is open:
@@ -413,7 +413,7 @@ static inline status_t hda_wait_period(handle_t ch, uint64_t after, uint64_t *ou
     return hda_wait_period_until(ch, DEADLINE_NEVER, after, out_frames, out_offset);
 }
 
-/* ---- the gain (docs/A1-PLAN.md, stage 3) ----
+/* ---- the gain (docs/history/A1-PLAN.md, stage 3) ----
  * The path's volume: the output amp of the first node on the path that
  * has gain steps (the DAC's on the PC's ALC897 and QEMU's codecs), in
  * centibels (tenths of a dB; 0 is 0 dB, the amp's own unity step). The
@@ -506,7 +506,7 @@ static inline status_t hda_set_bits(handle_t ch, uint32_t bits, uint32_t *out_bi
     return hda_set_bits_until(ch, DEADLINE_NEVER, bits, out_bits, out_pcm);
 }
 
-/* ---- the jacks (docs/A1-PLAN.md, stage 4) ----
+/* ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
  * Every pin the codecs describe as a jack with presence detection, as the
  * driver tracks it (debounced; not read anew for this call). count: how
  * many (at most 16); pins and states: each one's node and state, in the

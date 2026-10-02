@@ -5,7 +5,7 @@
 # (the mixer's startup role SR_AUDIO, published by init); `open_output` on
 # it makes a stream, at most 4 per opener (<mixer.h>). The ring and its header are described in
 # <mixer.h>, which also has the client side (mixer_open, mixer_write, ...);
-# the plan is docs/A2-PLAN.md.
+# the plan is docs/history/A2-PLAN.md.
 # Format: see tools/genidl.py.
 #
 # The stream methods are named stream_* so the generated audio_stream_*

@@ -171,7 +171,7 @@ void hda_path_read_back(struct hda *h, struct codec *c, const struct path *p)
 }
 
 /* ---- the output: opened while a stream plays ---------------------------------------
- * Steps 4-6 of the path in docs/A1-PLAN.md, and their reverse. On the
+ * Steps 4-6 of the path in docs/history/A1-PLAN.md, and their reverse. On the
  * PC's ALC897 the output stage (step 6: pin 1b's control to output +
  * headphone amp, 0xc0, then EAPD on) goes on once at the driver's start
  * with every amp muted and stays on; each stream then unmutes mixer 0c's

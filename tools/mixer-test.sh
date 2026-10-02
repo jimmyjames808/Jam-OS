@@ -1,5 +1,5 @@
 #!/bin/sh
-# The mixer (user/services/mixer, docs/A2-PLAN.md) in QEMU: intel-hda
+# The mixer (user/services/mixer, docs/history/A2-PLAN.md) in QEMU: intel-hda
 # (8086:2668) with an hda-output codec whose samples go to a WAV file
 # (QEMU's wav audio backend at 48 kHz 16-bit stereo; the codec's
 # mixer=off, so the WAV holds exactly what the mixer wrote). The shell runs
