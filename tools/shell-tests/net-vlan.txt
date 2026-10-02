@@ -6,8 +6,9 @@
 # stick's settings, so the address comes by DHCP. The lease (dhcp),
 # netlog sending this boot's log, `host` and `ping <name>` (dns, then
 # ICMP), `ping` by address through the gateway, `update -n` fetching the
-# peer's build (checked by init, nothing loaded); netstack answers ARP
-# and the peer's pings meanwhile. tools/net-vlan-test.sh counts the frames
+# peer's build (checked by init, nothing loaded); sntp sets the clock
+# from the gateway (the peer's SNTP server); netstack answers ARP and the
+# peer's pings meanwhile. tools/net-vlan-test.sh counts the frames
 # of each path in the pcap.
 wait 120 Jam OS shell
 seen 60 netstack: link up

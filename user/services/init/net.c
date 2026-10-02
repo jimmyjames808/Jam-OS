@@ -17,7 +17,7 @@
  *             client end (a channel per opener). The same for
  *             /svc/net-listen's (SR_USER + 2): the same protocol, but its
  *             openers may also take the ports other programs can't (the
- *             listen permission, docs/M9.5-B.md); init publishes it, and
+ *             listen permission, docs/M9.5-PLAN.md); init publishes it, and
  *             the shell gives it only to a program whose list says `svc net
  *             listen`. netstack ends when devmgr does (its device channels
  *             close) and is started again with the new devmgr's.

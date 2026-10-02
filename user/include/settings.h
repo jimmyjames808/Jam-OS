@@ -25,6 +25,10 @@
  *                  shell's `update` fetches a build (UDP port 5022,
  *                  tools/update-server.py)
  *   netlog         `off`: no netlog even with net.host set (default on)
+ *   ntp            `off`: bin/sntp isn't started, the clock stays the
+ *                  RTC's (default on)
+ *   ntp.server     where bin/sntp asks the time: an IPv4 address or a
+ *                  name; without it the gateway, then pool.ntp.org
  * The shell's vol, music and date -z write them; init reads them when
  * /data is mounted.
  *

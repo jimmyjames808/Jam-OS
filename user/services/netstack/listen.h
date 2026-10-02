@@ -1,5 +1,5 @@
 /* netstack: the listen permission (listen.c; the design is
- * docs/M9.5-B.md "The listen permission").
+ * docs/M9.5-PLAN.md "Track B, built").
  *
  * Accepting what nobody asked for (a datagram to a port a program chose,
  * a TCP connection) is a permission of its own. netstack learns it from
