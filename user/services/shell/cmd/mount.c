@@ -90,6 +90,7 @@ SH_CMD(mount)
     }
     memcpy(field, path, strlen(path));
     sh_flush();
+    uint64_t t0 = now();
     st = initctl_mount_until(sh_initctl(), now() + MOUNT_WAIT, field, writable);
     if (st != OK) {
         sh_tty("mount: %s: %s\n", path,
@@ -102,7 +103,8 @@ SH_CMD(mount)
      * mounted and init has passed us the new channel. */
     for (uint64_t until = now() + BACK_WAIT; now() < until; jam_nanosleep(now() + POLL)) {
         if (fs_statfs(path, &total, &free_bytes, &ro, label) == OK && ro != writable) {
-            sh_say("mount: %s is now %s\n", path, how);
+            sh_say("mount: %s is now %s (in %lu ms)\n", path, how,
+                   (unsigned long)((now() - t0) / NS_PER_MS));
             return 0;
         }
     }

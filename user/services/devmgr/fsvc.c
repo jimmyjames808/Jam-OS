@@ -265,6 +265,7 @@ status_t disk_remount(unsigned n, bool test, bool writable)
         return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
     if (b->rw == writable)
         return OK;
+    uint64_t t0 = now();
     char path[16];
     snprintf(path, sizeof(path), "%s", fs_mount_path(b));
     /* The service stops in order (fsctl.stop): its files closed, what was
@@ -280,8 +281,9 @@ status_t disk_remount(unsigned n, bool test, bool writable)
     b->rw = writable;
     b->last = start_driver(b);   /* a new `block` channel, opened the new way */
     status_t st = b->last;
-    say(false, "devmgr: %s: its filesystem service started again, %s (%s)", path,
-        writable ? "read-write" : "read-only", status_str(st));
+    say(false, "devmgr: %s: its filesystem service started again, %s (%s), %lu ms after "
+        "the remount was asked for", path, writable ? "read-write" : "read-only",
+        status_str(st), (unsigned long)((now() - t0) / NS_PER_MS));
     if (st != OK) {
         fs_retire(b);
         mounts_update();
