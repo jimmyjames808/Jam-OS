@@ -425,6 +425,22 @@ layout in a header, planned drivers/include/jam/netdev.h, the way
   waits for the next `open`. The rings are VMOs, so M11.6 can later keep
   them across a restart.
 
+**As built (stage 1, `abi/idl/netdev.idl` and `drivers/include/jam/netdev.h`),
+three changes from the above:**
+- **No `link_wait`.** A link change signals `NETDEV_SIG_LINK` on the
+  session's event to netstack, and `info` carries a count of link changes
+  (`changes`), so a change is never missed and the driver keeps no
+  waiting request.
+- **`open` returns a session channel** (with the rings and events).
+  devmgr shares the driver's own channel among everyone it hands the
+  service to, so the driver could not see netstack go; closing the
+  session (or netstack dying) ends it, and a new `open` first ends a
+  session whose opener has gone.
+- **Two events, one per waiter** (`to_driver`, `to_stack`) rather than one
+  per direction: each waiter clears only its own bits, and netstack can
+  only signal the driver's (`to_driver` reaches it with RIGHT_SIGNAL
+  alone).
+
 **Who reaches the driver:** init claims every network function's
 devmgr device channel by class (02 00 00, with
 `services_claim_class`, as it does for HD Audio) before it publishes

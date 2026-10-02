@@ -340,6 +340,8 @@ check: all
 	python3 tools/sortincludes.py
 	sh tools/checkaudio.sh
 	sh tools/checknotx.sh
+	python3 tools/netpeer.py --selftest
+	python3 tools/pcap-vlan-check.py --selftest
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -394,7 +396,7 @@ QEMU_FLAGS := -M q35 -m 2G -smp 4 -cpu max \
     -device usb-storage,bus=xhci.0,drive=usbstick,bootindex=0 \
     -device usb-kbd,bus=xhci.0 \
     -device edu,dma_mask=0xffffffff \
-    -netdev user,id=net0 -device e1000e,netdev=net0 \
+    -nic none \
     -serial stdio -no-reboot
 
 run: $(IMAGE) $(BUILD)/ovmf-vars.fd
