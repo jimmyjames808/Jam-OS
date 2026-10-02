@@ -73,9 +73,11 @@ a real desktop PC, which is where every milestone is tested.
   21; a static address from `net.address` in `/data/etc/settings`; `net`
   shows the address, the link and the counts (`net stats`: all of them)
   and `ping <address>` pings; programs whose list asks for `svc net` get
-  UDP sockets.
+  UDP sockets; netlog sends the whole boot log to the Mac
+  ([below](#the-pcs-log-on-the-mac)).
 
-Not yet: networking on the PC (DHCP, DNS, the log to the Mac, `update`),
+Not yet: networking on the PC (DHCP, DNS, `update`; the log to the Mac
+is built but not yet run on the PC),
 power management. Status and plans:
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -124,6 +126,37 @@ and leaves `/data` alone; it asks for your password, because macOS does
 not mount the stick's boot partition by itself. The details, and the PC
 Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 
+## The PC's log on the Mac
+
+With `net.host` set in the stick's `/data/etc/settings`, netlog sends
+each boot's whole log, from its first line, over UDP to that address
+(port 5021), and after a panic the panicked boot's log too. On the stick
+(edit `etc/settings` on the Mac, or in Jam OS):
+
+```
+net.address = 10.2.21.240/24 10.2.21.1 10.2.21.1
+net.host = 10.2.21.174
+```
+
+`net.address` is the PC's own address until DHCP is built; `net.host`
+is the Mac's (on VLAN 21); `netlog = off` turns it off. On the PC, for
+now, boot the entry "Jam OS (network)": the everyday one leaves the
+network card alone. On the Mac, from
+the repository, leave this running:
+
+```sh
+python3 tools/netlog-recv.py ~/jamos-logs
+```
+
+It listens on port 5021 (allow incoming connections if macOS asks),
+prints the lines as they come, and writes one file per boot into
+`~/jamos-logs`: `boot-<the boot's start, local time>.txt`, and
+`boot-<...>-lastcrash.txt` for the log of a boot that panicked before
+it, each with a `.pos` file beside it (how much it has, so a restarted
+receiver goes on where it stopped). A receiver started late still gets
+the boot from its first line. `--quiet` doesn't print the lines;
+`--from <the PC's address>` takes datagrams only from it.
+
 ## Where things live
 
 | Path | What |
@@ -144,7 +177,7 @@ Jam OS is built for, are in [docs/HARDWARE.md](docs/HARDWARE.md).
 | `kernel/include/jam/` | kernel headers |
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings) |
+| `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), netlog (the log to the Mac) |
 | `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), nettest (a network driver as a hostile netstack sees it), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |

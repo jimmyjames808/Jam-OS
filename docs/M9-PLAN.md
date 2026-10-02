@@ -7,9 +7,10 @@ merged:** stage 0 (the listen-only probe; it ran on the PC:
 lwIP, on the netdev rings, started by init), R1 (the transmit path, the
 `netsend` test and the netdev server: [below](#r1-progress-the-full-driver);
 its PC runs are pending), stage 4 (sockets for programs: `/svc/net`,
-`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores) and stages 6a
+`ping`, `net`: [below](#stage-4-built-sockets-for-programs)), stage 5a (the DHCP and DNS cores), stages 6a
 and 7a (netlog's and `update`'s cores, init's update check, the Mac
-tools). The sections below say what each one built and left for the next.
+tools) and stage 6b (bin/netlog:
+[below](#stage-6b-built-netlog-on-the-network)). The sections below say what each one built and left for the next.
 
 Goal ([roadmap](ROADMAP.md#later)): **Jam OS on the network, through its
 own driver for the board's RTL8125 and a network stack in user space,
@@ -1039,7 +1040,7 @@ deadline, so the service-loop rule holds by construction):
 
 ### netlog: the log over UDP to the Mac
 
-- **bin/netlog** (planned user/services/netlog), started by init in
+- **bin/netlog** (user/services/netlog), started by init in
   shell mode when `net.host` is set and netlog isn't switched off
   (question 8). It holds a kernel log reader (`RIGHT_ROOT_KLOG`, as logd
   does), `/svc/net` and nothing else.
@@ -1067,6 +1068,58 @@ deadline, so the service-loop rule holds by construction):
 - **The Mac:** tools/netlog-recv.py (new) writes one file per boot
   (named by the boot's start time, in a folder given on its command
   line), prints the lines as they come, and says where a gap is.
+
+#### Stage 6b, built: netlog on the network
+
+Built 2026-10-02 on stage 4's sockets and 6a's core. What is there, and
+how it differs from the edges above:
+
+- **bin/netlog** (`user/services/netlog/main.c`, one file): argv is
+  `net.host` and the boot id in hex; the root with `RIGHT_ROOT_KLOG` only
+  (a klog reader), a namespace with `/svc/net` only, and after a panic
+  `SR_CRASHLOG` read-only. It blocks in `net_wait_up` (it serves nobody),
+  opens a socket with `udp(0)` and connects it to `net.host`:5021, then
+  loops: the socket's channel (each ack from `net.host`:5021 to
+  `netlog_ack`), `netlog_poll`, one port wait for the socket, the log
+  growing or the poll's deadline. It waits for the log only while the live
+  stream's window has room (`netlog_wants_text`, new in the core): a klog
+  reader stays readable while the log is past its last read, which a full
+  window leaves it, so waiting for it then would spin. netstack ending
+  closes the socket: "netlog: netstack has gone", then `wait_up` again, a
+  new socket, the same place in the log. Memory: the core's datagram, one
+  received datagram; the log is the kernel's ring.
+- **The boot id comes from init**, not from netlog: init's net.c works it
+  out once a boot (`wallclock_get`: UTC now less the uptime; 0 without a
+  clock) and passes it to every netlog it starts. Worked out by each
+  netlog, a restart after a `/data` remount (which reads the RTC again,
+  to the second) could move it and start a second file on the Mac.
+- **A restarted netlog** (init restarts it like any service) starts at
+  byte 0 while the Mac already has more than a window. 6a's core ignored
+  every ack past what it had sent, so it went back to 0 for ever. The core
+  now believes an ack past what it sent if it is within what the source
+  holds now (the live log's end, or an ended stream's length), and skips
+  there (`skipped`, utest `netlog_sender_restarted`). An ack past the
+  source's end is still ignored.
+- **init** (net.c): `NETLOG` is a service of shell mode, after logd and
+  before the shell; it waits for `/data` (its settings). Started when
+  `net.host` is an IPv4 address and `netlog` isn't `off`; otherwise one
+  line says why and it is not started this boot. The read-only duplicate
+  of `SR_CRASHLOG` is taken in `net_init`, before lastboot.c lets the log
+  go; each netlog start gets a duplicate of it.
+- **Its lines** ("sending this boot's log [and the last boot's (name)]
+  to ...", "netstack has gone", "no network", and the core's three) are
+  state changes only. In the QEMU test netlog said 7 lines in the first
+  boot (two late or paused receivers, a restart, netstack's restart) and
+  sent 81 datagrams for two boots' logs and a crash log.
+- **The settings keys** (`<settings.h>`): `net.host` (the Mac's address,
+  10.2.21.174 for the owner) and `netlog = off`. netstack refuses
+  broadcasts from programs, so netlog can send only to that one address.
+- **Not done:** `net` in the shell doesn't show netlog's state (it would
+  need a channel to netlog). On a boot without the network card (the
+  everyday entry binds no RTL8125 yet) but with `net.address` set,
+  netstack has an address with no card: netlog says once that the Mac
+  doesn't answer and tries every 30 s, sending nothing that leaves.
+- **Test:** `tools/netlog-test.sh` ([TESTING](TESTING.md#netstack)).
 
 ### update: a new build from the Mac
 
