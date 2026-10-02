@@ -303,6 +303,15 @@ bool t_sockring_wake(void);
 bool t_sockring_hostile(void);
 bool t_sockring_exchange(void);
 
+/* netwait.c and netwaitrun.c: wait sets (<netwait.h>) over fake sockets
+ * (fakesock.c): the calls, timeouts, wakes and costs; a socket's life and
+ * plain handles; random traffic checked look by look against the rings;
+ * a fake netstack thread against the test blocking in the set. */
+bool t_netwait_api(void);
+bool t_netwait_states(void);
+bool t_netwait_level(void);
+bool t_netwait_stress(void);
+
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the
  * resolver's messages, its queries and its cache (user/services/dns/);
