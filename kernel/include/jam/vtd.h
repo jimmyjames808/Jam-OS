@@ -14,6 +14,8 @@
 #include <stdint.h>
 
 /* ---- register offsets (VT-d chapter 11) ------------------------------------- */
+/* Advanced fault logging (0x058, CAP bit 3, GSTS bits 29:28 in 3.x) was
+ * removed in revision 4.0: those are reserved now and not defined here. */
 
 #define VTD_VER      0x000   /* 32: version, major in 7:4, minor in 3:0 */
 #define VTD_CAP      0x008   /* 64: capabilities */
@@ -27,7 +29,6 @@
 #define VTD_FEDATA   0x03c   /* 32: fault event interrupt data */
 #define VTD_FEADDR   0x040   /* 32: fault event interrupt address */
 #define VTD_FEUADDR  0x044   /* 32: its upper half */
-#define VTD_AFLOG    0x058   /* 64: advanced fault log */
 #define VTD_PMEN     0x064   /* 32: protected memory enable */
 #define VTD_PLMBASE  0x068   /* 32: protected low memory base */
 #define VTD_PLMLIMIT 0x06c   /* 32: and its limit */
@@ -44,7 +45,6 @@
 #define VTD_BITS(v, lo, n) (((uint64_t)(v) >> (lo)) & (((uint64_t)1 << (n)) - 1))
 
 #define VTD_CAP_ND(c)      VTD_BITS(c, 0, 3)    /* domain ids: 2^(4 + 2 * ND) */
-#define VTD_CAP_AFL(c)     VTD_BITS(c, 3, 1)    /* advanced fault logging */
 #define VTD_CAP_RWBF(c)    VTD_BITS(c, 4, 1)    /* write-buffer flush needed */
 #define VTD_CAP_PLMR(c)    VTD_BITS(c, 5, 1)    /* protected low memory region */
 #define VTD_CAP_PHMR(c)    VTD_BITS(c, 6, 1)    /* protected high memory region */
@@ -86,8 +86,6 @@
 
 #define VTD_GSTS_TES   (1u << 31)   /* translation enabled */
 #define VTD_GSTS_RTPS  (1u << 30)   /* root table pointer set */
-#define VTD_GSTS_FLS   (1u << 29)   /* fault log pointer set */
-#define VTD_GSTS_AFLS  (1u << 28)   /* advanced fault logging on */
 #define VTD_GSTS_WBFS  (1u << 27)   /* write-buffer flush in progress */
 #define VTD_GSTS_QIES  (1u << 26)   /* queued invalidation on */
 #define VTD_GSTS_IRES  (1u << 25)   /* interrupt remapping on */
