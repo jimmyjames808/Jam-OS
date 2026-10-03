@@ -107,7 +107,14 @@ bool run_child(const char *mode, uint32_t limit_kind, uint64_t limit, struct pro
 /* threads.c */
 /* Wait for n threads to end, closing their handles. */
 bool wait_threads(const handle_t *th, unsigned n);
+/* Does the kernel save AVX state (and the CPU have it)? */
+bool avx_usable(void);
+/* Load xmm0-15 (ymm0-15 for avx_round) from pat, spin, store them to got
+ * (256 or 512 bytes), all in one asm block. */
+void sse_round(const uint8_t *pat, uint8_t *got, uint64_t spins);
+void avx_round(const uint8_t *pat, uint8_t *got, uint64_t spins);
 bool t_fpu_state_survives_preemption(void);
+
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

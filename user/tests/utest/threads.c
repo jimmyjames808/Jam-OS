@@ -21,7 +21,7 @@ static bool have_avx;
 /* Counted by the workers (RELAXED adds), read once they have all ended. */
 static uint32_t fpu_errors, fpu_rounds, fpu_preempted;
 
-static bool avx_usable(void)
+bool avx_usable(void)
 {
     uint32_t r[4];
     cpu_cpuid(1, 0, r);
@@ -32,7 +32,7 @@ static bool avx_usable(void)
 
 /* Load 16 registers from pat, spin (preemption happens here), store them
  * to got: all in one asm block, so the compiler can't touch them between. */
-static void sse_round(const uint8_t *pat, uint8_t *got, uint64_t spins)
+void sse_round(const uint8_t *pat, uint8_t *got, uint64_t spins)
 {
     __asm__ volatile(
         "movdqu 0(%0), %%xmm0\n movdqu 16(%0), %%xmm1\n movdqu 32(%0), %%xmm2\n"
@@ -56,8 +56,7 @@ static void sse_round(const uint8_t *pat, uint8_t *got, uint64_t spins)
 
 /* The same with the full 256-bit ymm registers (upper halves are AVX
  * state, saved only by XSAVE). */
-__attribute__((target("avx"))) static void avx_round(const uint8_t *pat, uint8_t *got,
-                                                     uint64_t spins)
+__attribute__((target("avx"))) void avx_round(const uint8_t *pat, uint8_t *got, uint64_t spins)
 {
     __asm__ volatile(
         "vmovdqu 0(%0), %%ymm0\n vmovdqu 32(%0), %%ymm1\n vmovdqu 64(%0), %%ymm2\n"
