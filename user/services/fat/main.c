@@ -20,7 +20,6 @@
  * disk went away, mounted or not yet); 1 when the volume can't be served but might be later
  * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
  * partition holds no FAT volume fat can serve and nothing was formatted. */
-#include <fsview.h>
 #include <idl/fsctl.h>
 #include "fat.h"
 
@@ -155,13 +154,17 @@ static status_t op_stats(void *ctx, uint64_t *out_entries_read, uint64_t *out_ca
     return OK;
 }
 
-static const struct fsctl_ops ctl_ops = { .stop = op_stop, .stats = op_stats };
+const struct fsctl_ops fat_ctl_ops = { .stop = op_stop, .stats = op_stats };
 
 /* Serve until the fs channel's client is gone, the disk is, or fsctl.stop
  * was asked (OK), or something fails (its status). Each channel gets
- * FAT_BATCH requests per turn, so one busy client can't starve the others. */
+ * FAT_BATCH requests per turn, so one busy client can't starve the others.
+ * Every request is read into a slot of the state and run as an operation
+ * (request.c). */
 static status_t run(handle_t serve, handle_t ctl)
 {
+    const struct fat_chan fs = { .ch = serve, .id = FAT_CHAN_FS, .proto = FAT_PROTO_FS };
+    const struct fat_chan fc = { .ch = ctl, .id = FAT_CHAN_CTL, .proto = FAT_PROTO_CTL };
     status_t st = arm_fs(serve);
     if (st == OK)
         st = jam_port_bind(vol.port, vol.block, FAT_KEY_BLOCK, SIG_PEER_CLOSED, PORT_BIND_ONCE);
@@ -175,7 +178,7 @@ static status_t run(handle_t serve, handle_t ctl)
         if (st != OK)
             break;
         if (pkt.key == FAT_KEY_CTL) {
-            (void)fsctl_serve_one(ctl, &ctl_ops, NULL);   /* nothing queued: nothing to do */
+            (void)serve_one(&fc);   /* nothing queued: nothing to do */
         } else if (pkt.key == FAT_KEY_BLOCK) {
             vol.disk_gone = true;
         } else if (pkt.key & FAT_KEY_FILE_BIT) {
@@ -185,7 +188,7 @@ static status_t run(handle_t serve, handle_t ctl)
         } else if (pkt.key == FAT_KEY_FS) {
             for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++) {
                 files_reap();
-                st = fs_view_serve_one(serve, 0, &fat_fs_ops, NULL, views_add, NULL);
+                st = serve_one(&fs);
             }
             if (st == ERR_PEER_CLOSED)
                 return OK;

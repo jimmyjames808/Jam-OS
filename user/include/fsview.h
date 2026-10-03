@@ -38,3 +38,23 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n);
  * (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the client is gone). */
 status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops, void *ctx,
                            status_t (*add)(void *host, handle_t ch, uint32_t flags), void *host);
+
+/* One channel's server, as fs_view_serve_one's arguments. */
+struct fs_view_server {
+    uint32_t             flags;   /* the channel's view flags (0: the whole filesystem) */
+    const struct fs_ops *ops;     /* the filesystem's methods ... */
+    void                *ctx;     /* ... and their ctx */
+    /* serves a new view (fs.view): takes ch, whatever it returns */
+    status_t (*add)(void *host, handle_t ch, uint32_t flags);
+    void                *host;    /* add's */
+};
+
+/* What fs_view_serve_one does with a request, for one already read (a
+ * service that reads requests itself, into a slot of its state): the n
+ * bytes at req, which carried no handles (one that did is the caller's to
+ * refuse), answered into rep (FS_REP_MAX bytes) and rhs (IDL_REP_HANDLES
+ * slots; *rhn of them). Returns the reply's length (0: no reply, the
+ * request had no txid). No I/O but add's; the caller sends the reply with
+ * the handles, or closes them if it can't. */
+uint32_t fs_view_dispatch(const struct fs_view_server *v, const void *req, uint32_t n, void *rep,
+                          handle_t *rhs, uint32_t *rhn);

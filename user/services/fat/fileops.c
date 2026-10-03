@@ -8,12 +8,18 @@
  * they can outlive fat; each slot's channel and buffer, handles, are here
  * in fh[], by the same index.
  *
- * fat never maps a transfer buffer: data goes between the VMO and one
- * buffer of fat's own (bounce) with vmo_read / vmo_write, which answer a
- * buffer that is not what it was with an error, so nothing a client does
- * to its handle can make fat fault. (The client's handle has no
- * RIGHT_RESIZE, so it can't change the size either; the bounce stays as
- * the one copy that also keeps FatFs off memory a client can write.)
+ * fat never maps a transfer buffer: data goes between the VMO and the
+ * request's own buffer (its slot's bounce, request.c: op_bounce) with
+ * vmo_read / vmo_write, which answer a buffer that is not what it was with
+ * an error, so nothing a client does to its handle can make fat fault.
+ * (The client's handle has no RIGHT_RESIZE, so it can't change the size
+ * either; the bounce stays as the one copy that also keeps FatFs off
+ * memory a client can write, and a write's bytes in the state.)
+ *
+ * Every request and every close is an operation (request.c): an open's
+ * entry in opens[] is saved in the undo copy before anything changes it
+ * (undo_open), and the close of a file whose client has gone is an
+ * operation of its own (close_op).
  *
  * FatFs's f_lseek past the end of a file open for writing grows it with
  * whatever the clusters held before. Here a write or truncate past the end
@@ -42,9 +48,9 @@
  * the last unsynced file is flushed the volume is settled (marked clean,
  * disk.c).
  *
- * FS_GATHER (<os.h>): a write to a file opened with it is held back in
- * disk.c instead of going to the disk sector by sector, and goes out in
- * big sorted writes by the file's sync or close at the latest. Its sync
+ * FS_GATHER (<os.h>): a write to a file opened with it stays held
+ * (hold.c) after its request, instead of going out with it, and goes out
+ * in big sorted writes by the file's sync or close at the latest. Its sync
  * fails if a held write ever failed to go out (disk.c: then nothing more
  * is written). */
 #include "fat.h"
@@ -55,11 +61,11 @@
 static struct {
     handle_t ch;      /* our end of its `file` channel */
     handle_t vmo;     /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
-    bool     armed;   /* ch is bound to the port (ONCE) */
+    bool     armed;   /* ch is bound to the port (ONCE) ... */
+    uint32_t gen;     /* ... with this generation in its key */
 } fh[FAT_MAX_FILES];
 
-static uint8_t bounce[FAT_FILE_BUF];   /* between FatFs and a file's buffer VMO */
-static FIL     probe;                  /* files_is_open's look at a path's entry */
+static FIL probe;   /* files_is_open's look at a path's entry */
 
 static unsigned slot_of(const struct fat_file *f)
 {
@@ -82,6 +88,7 @@ bool files_unsynced(void)
 /* Flush o; once nothing is left unsynced, settle the volume. */
 static status_t sync_open(struct fat_open *o)
 {
+    undo_open(o);
     status_t st = fr_status(f_sync(&o->fil));
     if (st != OK)
         return st;
@@ -97,6 +104,7 @@ status_t files_sync_all(void)
         struct fat_open *o = &kept->opens[i];
         if (!o->refs || !o->unsynced)
             continue;
+        undo_open(o);
         status_t s = fr_status(f_sync(&o->fil));
         if (s == OK)
             o->unsynced = false;
@@ -174,15 +182,17 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
     if (length > FAT_FILE_BUF)
         return ERR_INVALID_ARGS;
     UINT got = 0;
+    uint8_t *bounce = op_bounce();
     if (length && offset < f_size(&f->fil)) {
         /* A read moves FatFs's window, which writes out the FAT sector an
          * FS_GATHER file's write left changed: while writes are held, it
-         * joins them (hold.c) instead of sending them all out early. */
-        disk_hold(hold_pending());
+         * stays held with them (hold.c) instead of sending them all out
+         * early. */
+        if (hold_pending())
+            op_gather();
         FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
         if (fr == FR_OK)
             fr = f_read(&f->fil, bounce, length, &got);
-        disk_hold(false);
         if (fr != FR_OK)
             return fr_status(fr);
     }
@@ -205,7 +215,15 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         offset = f_size(&f->fil);
     if (offset > FAT_FILE_MAX || length > FAT_FILE_MAX - offset)
         return ERR_OUT_OF_RANGE;
-    status_t st = length ? jam_vmo_read(fh[slot_of(h)].vmo, 0, bounce, length) : OK;
+    /* The bytes, into the state before FatFs sees them; a request run
+     * again takes them from there, never from the client's buffer again. */
+    uint8_t *bounce = op_bounce();
+    status_t st = OK;
+    if (length && !op_data_in()) {
+        st = jam_vmo_read(fh[slot_of(h)].vmo, 0, bounce, length);
+        if (st == OK)
+            op_data_copied();
+    }
     if (st == OK)
         st = grow_to(f, offset);
     if (st != OK)
@@ -213,9 +231,9 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
     UINT put = 0;
     FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
     if (fr == FR_OK && length) {
-        disk_hold((h->flags & FS_GATHER) != 0);
+        if (h->flags & FS_GATHER)
+            op_gather();   /* its writes stay held after this request */
         fr = f_write(&f->fil, bounce, length, &put);
-        disk_hold(false);
         f->unsynced = true;
     }
     if (fr != FR_OK)
@@ -255,42 +273,53 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
     return OK;
 }
 
-/* An FS_GATHER file's sync: what is held goes out first, and a held write
- * that failed (now or before) is its failure too. */
+/* An FS_GATHER file's sync: what is held goes out (with the request's
+ * send), and a held write that failed (before, or in that send) is its
+ * failure too. */
 static status_t op_sync(void *ctx)
 {
     struct fat_file *h = ctx;
     if (h->flags & FS_GATHER) {
-        status_t st = disk_release();
-        if (st == OK && kept->disk.hold_failed)
-            st = ERR_IO;
-        if (st != OK)
-            return st;
+        if (kept->disk.hold_failed)
+            return ERR_IO;
+        kept->post.release = true;
     }
     return sync_open(open_of(h));
 }
 
-static const struct file_ops file_ops = {
+const struct file_ops fat_file_ops = {
     .read = op_read, .write = op_write, .truncate = op_truncate, .stat = op_stat,
     .sync = op_sync,
 };
 
 /* ---- open and close ------------------------------------------------------------------- */
 
-/* Give the slot back: the buffer, the channel, the binding. */
-static void release(struct fat_file *f)
+/* Slot i's handles go: the buffer, the channel, the binding. */
+static void release_handles(unsigned i)
 {
-    unsigned i = slot_of(f);
     if (fh[i].vmo != HANDLE_INVALID)
         jam_handle_close(fh[i].vmo);
     if (fh[i].ch != HANDLE_INVALID) {
         if (fh[i].armed)
-            (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen));
+            (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, fh[i].gen));
         jam_handle_close(fh[i].ch);
     }
     fh[i].vmo = fh[i].ch = HANDLE_INVALID;
     fh[i].armed = false;
+}
+
+/* Give the slot back. */
+static void release(struct fat_file *f)
+{
+    release_handles(slot_of(f));
     f->used = false;
+}
+
+void files_drop_unknown(void)
+{
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++)
+        if (!kept->files[i].used && (fh[i].ch != HANDLE_INVALID || fh[i].vmo != HANDLE_INVALID))
+            release_handles(i);
 }
 
 /* The slot goes; its file is closed with its last slot. A writer that
@@ -298,6 +327,7 @@ static void release(struct fat_file *f)
 static void close_file(struct fat_file *f)
 {
     struct fat_open *o = open_of(f);
+    undo_open(o);
     bool was = o->unsynced, last = --o->refs == 0;
     FRESULT fr = last ? f_close(&o->fil) : was ? f_sync(&o->fil) : FR_OK;
     if (fr != FR_OK && !vol.disk_gone)
@@ -315,6 +345,18 @@ void files_close_all(void)
             close_file(&kept->files[i]);
 }
 
+/* f's close, as an operation of its own (request.c): its client has gone,
+ * or its channel failed. */
+static void close_op(struct fat_file *f)
+{
+    op_close_begin(f);
+    close_file(f);
+#ifdef FAT_RERUN_CHECK
+    op_close_again(f, close_file);
+#endif
+    op_close_end();
+}
+
 /* Wait (ONCE) for the next request or the client's close. */
 static status_t arm(struct fat_file *f)
 {
@@ -322,6 +364,7 @@ static status_t arm(struct fat_file *f)
     status_t st = jam_port_bind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen),
                                 SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE);
     fh[i].armed = st == OK;
+    fh[i].gen = f->gen;
     return st;
 }
 
@@ -423,6 +466,7 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
         return ERR_BAD_STATE;   /* open already: a writer has its file to itself */
     if (!f || (!o && !spare))
         return ERR_NO_RESOURCES;
+    undo_open(o ? o : spare);
     if (!o) {
         o = spare;
         memset(o, 0, sizeof(*o));
@@ -453,6 +497,15 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
  * channels. The close is visible at once as the channel's PEER_CLOSED, so
  * before each fs request every file whose client is gone is finished:
  * what it still had queued, then the close. */
+/* Slot i's channel, as serve_one takes it. */
+static struct fat_chan chan_of(struct fat_file *f)
+{
+    unsigned i = slot_of(f);
+    return (struct fat_chan){
+        .ch = fh[i].ch, .id = FAT_CHAN_FILE(i, f->gen), .proto = FAT_PROTO_FILE, .file = f,
+    };
+}
+
 void files_reap(void)
 {
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
@@ -460,9 +513,10 @@ void files_reap(void)
         if (!f->used || jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) != OK)
             continue;
         /* At most a channel's queue (the kernel caps it) of requests. */
-        while (!vol.disk_gone && file_serve_one(fh[i].ch, &file_ops, f) == OK)
+        const struct fat_chan c = chan_of(f);
+        while (!vol.disk_gone && serve_one(&c) == OK)
             ;
-        close_file(f);
+        close_op(f);
     }
 }
 
@@ -475,11 +529,12 @@ void files_event(uint64_t key)
     if (!f->used || f->gen != FAT_KEY_GEN(key))
         return;   /* a packet of a file closed since */
     fh[slot].armed = false;
+    const struct fat_chan c = chan_of(f);
     status_t st = OK;
     for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++)
-        st = file_serve_one(fh[slot].ch, &file_ops, f);
+        st = serve_one(&c);
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(f);   /* fires at once if more is queued */
     if (st != OK)
-        close_file(f);   /* the client closed it (ERR_PEER_CLOSED), or we can't go on */
+        close_op(f);   /* the client closed it (ERR_PEER_CLOSED), or we can't go on */
 }
