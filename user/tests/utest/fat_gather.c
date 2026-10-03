@@ -2,12 +2,15 @@
  * disk formatted as the ESP is: FAT32 with one-sector clusters, where
  * FatFs writes a file a sector at a time. A 1 MiB file written with
  * FS_GATHER costs the disk a few dozen block writes (64 KiB of data
- * each, every FAT copy's changed sectors in one), not the two thousand
- * and more it costs without; both files read back right, through the
+ * each, every FAT copy's changed sectors in one), fewer than without (fat
+ * holds each request's writes until it commits, so even then it is a few
+ * per request, not one per cluster); both files read back right, through the
  * same fat and a fresh one; removing one (an unlink's writes are held
  * too) costs a few writes, not one per FAT sector freed in each FAT
  * copy, and frees its space; a reader that shares the writer's file sees
- * what is held; and a held write that fails makes the file's sync fail
+ * what is held; a request whose writes don't fit the hold goes out in
+ * steps and leaves the file whole; and a held write that fails makes the
+ * file's sync fail
  * and stops fat writing (the volume stays dirty). This is what makes
  * `update -w` take seconds on a real stick instead of many minutes. */
 #define CHECK_PROG "utest"
@@ -21,6 +24,7 @@
 #define DISK_MIB   48u          /* FatFs formats this as FAT32, one sector a cluster */
 #define GATHER_MAX 40u          /* block writes the gathered file may cost (about 30) */
 #define UNLINK_MAX 10u          /* ... and removing a GFILE file (about 5; 35 not held) */
+#define PLAIN_MAX  80u          /* ... and the file written without FS_GATHER (16 requests) */
 
 static struct ramdisk disk;
 static uint8_t pattern[GFILE], got[GFILE];
@@ -130,6 +134,39 @@ static bool reader_sees_held(const struct fatrun *r)
     return true;
 }
 
+/* A request whose writes don't fit fat's hold (2304 sectors): a truncate
+ * that grows a file by GROW (6144 one-sector clusters of zeros) goes out
+ * in steps, and the file is whole: its size, zeros where it grew, the
+ * bytes before kept; removing it frees its space again. */
+static bool grow_in_steps(const struct fatrun *r)
+{
+    enum { GROW = 3u << 20 };
+    struct tfile f;
+    uint32_t done = 0;
+    uint64_t size = 0, total, before, after;
+    CHECK_ST(t_free(r, &total, &before), OK);
+    CHECK_ST(t_open(r, "/grown.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    CHECK_ST(t_write(&f, 0, pattern, FAT_BUF, &done), OK);
+    CHECK_ST(file_truncate_until(f.ch, now() + FAT_CALL_NS, FAT_BUF + GROW), OK);
+    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, NULL), OK);
+    CHECK_EQ(size, FAT_BUF + GROW);
+    for (uint32_t off = 0; off < FAT_BUF + GROW; off += GROW / 4) {
+        CHECK_ST(t_read(&f, off, got, FAT_BUF, &done), OK);
+        CHECK_EQ(done, FAT_BUF);
+        for (uint32_t i = 0; i < FAT_BUF; i++)
+            if (got[i] != (off ? 0 : pattern[i]))
+                FAIL("byte %u of /grown.bin is %#x", off + i, got[i]);
+    }
+    CHECK_ST(file_sync_until(f.ch, now() + FAT_CALL_NS), OK);
+    t_close(&f);
+    CHECK_ST(t_stat(r, "/grown.bin", &size, NULL, NULL), OK);
+    CHECK_EQ(size, FAT_BUF + GROW);
+    CHECK_ST(t_unlink(r, "/grown.bin"), OK);
+    CHECK_ST(t_free(r, &total, &after), OK);
+    CHECK_EQ(after, before);
+    return true;
+}
+
 /* A held write that fails: the file's sync says so, and fat writes
  * nothing more (the RAM disk works again, and still nothing is written). */
 static bool failed_hold(const struct fatrun *r)
@@ -169,9 +206,16 @@ bool t_fat_gather(void)
     if (gathered > GATHER_MAX)
         FAIL("1 MiB written FS_GATHER took %u block writes, want at most %u", gathered,
              GATHER_MAX);
-    CHECK(plain > 2048);   /* one per cluster, at least: why FS_GATHER is there */
+    /* Without FS_GATHER each request's writes still go out together after
+     * it (fat holds every request's writes until it commits): its data in
+     * one 64 KiB write and the FAT sectors it finished, a few writes per
+     * request rather than one per cluster. FS_GATHER, which carries them
+     * across requests, still costs fewer. */
+    if (plain > PLAIN_MAX || plain <= gathered)
+        FAIL("1 MiB written without FS_GATHER took %u block writes (with it %u), want at most "
+             "%u and more than with it", plain, gathered, PLAIN_MAX);
     if (!is_big(&r, "/gathered.bin") || !is_big(&r, "/plain.bin") || !unlink_cost(&r) ||
-        !copy_cost(&r) || !reader_sees_held(&r) || !fat_stop(&r))
+        !copy_cost(&r) || !reader_sees_held(&r) || !grow_in_steps(&r) || !fat_stop(&r))
         return false;
 
     /* A fresh fat (an empty cache): the bytes are on the disk. After the

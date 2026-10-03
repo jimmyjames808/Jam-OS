@@ -15,10 +15,10 @@
  * Today fat makes the VMO itself, at every start, before anything else:
  * a new VMO is zeros, as fat's tables were when they were its own static
  * memory, so fat starts exactly as it did. Its pages are committed as they
- * are touched; the hold's data, most of the state, is committed in one go
- * at the first hold (hold.c), so that running out of memory then is a
- * refusal (writes go through unheld, as when the hold's malloc failed)
- * and never a fault.
+ * are touched, but for two areas committed ahead, so that running out of
+ * memory is a refusal and never a fault: the undo copy's (at the start:
+ * every operation writes it) and the hold's data (hold.c, a chunk at a time
+ * as it grows).
  *
  * Its handle and mapping are this instance's own: fat never closes or
  * unmaps them; they go with the process. */
@@ -59,7 +59,7 @@ status_t state_open(void)
     if (st != OK)
         return st;
     kept = svcstate_user(&svc);   /* a new VMO: zeros, fresh */
-    return OK;
+    return state_commit(&kept->undo, sizeof(kept->undo));
 }
 
 status_t state_commit(const void *p, size_t len)

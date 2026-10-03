@@ -9,7 +9,9 @@
  * Each slot's flags and generation are in the state (kept->views); its
  * channel, a handle, is here, by the same index. A view's requests are
  * served as the fs channel's are (request.c: serve_one, fs_view_dispatch),
- * its flags taken from the state, never from a request. */
+ * its flags taken from the state, never from a request. Dropping a view is
+ * one store (its `used`), so it needs no operation of its own: a successor
+ * that finds a view whose client has gone drops it again. */
 #include "fat.h"
 
 static handle_t view_ch[FAT_VIEWS];   /* our end of slot i's channel */

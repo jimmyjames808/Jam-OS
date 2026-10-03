@@ -159,7 +159,7 @@ const struct fsctl_ops fat_ctl_ops = { .stop = op_stop, .stats = op_stats };
 /* Serve until the fs channel's client is gone, the disk is, or fsctl.stop
  * was asked (OK), or something fails (its status). Each channel gets
  * FAT_BATCH requests per turn, so one busy client can't starve the others.
- * Every request is read into a slot of the state and run from there
+ * Every request is read into a slot of the state and run as an operation
  * (request.c). */
 static status_t run(handle_t serve, handle_t ctl)
 {

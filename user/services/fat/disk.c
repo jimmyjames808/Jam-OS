@@ -33,10 +33,16 @@
  * false alarm, never a lie. fs.sync and fat's own end do flush the bit
  * (disk_settle(true)).
  *
- * Writes held back (FS_GATHER): hold.c. While a file opened FS_GATHER is
- * written, disk_write hands its sectors there; flushes, the dirty mark
- * and any other write send what is held out first, and a read from the
- * disk gets the held sectors laid over what it read.
+ * Writes held back: hold.c. While an operation runs (request.c), disk_write
+ * hands every sector there, and a flush (FatFs's CTRL_SYNC) or the clean
+ * mark (disk_settle) is only noted (kept->post): the operation's send does
+ * them after its commit, in that order, after what is held. A read from
+ * the disk gets the held sectors laid over what it read. The one write an
+ * operation makes before its commit is the dirty mark (below): it only
+ * ever says "may be inconsistent", so it is safe at any moment, and it
+ * must be on the medium before anything else the operation writes. Outside
+ * an operation (the format, fat's end) writes go straight out, after what
+ * is held.
  *
  * Formatting. f_mkfs writes the boot sector first and the FATs after it,
  * so a format cut short (the stick pulled, the power gone) would leave a
@@ -122,8 +128,7 @@ status_t disk_open(handle_t block)
     return OK;
 }
 
-/* block.sync (what is held first), if anything was written since the last one. */
-static status_t flush(void)
+status_t disk_flush(void)
 {
     status_t st = disk_release();
     if (st != OK || !kept->disk.unflushed)
@@ -176,7 +181,7 @@ status_t disk_commit_boot(const char *label)
     unsigned at = boot_label_at(boot, &backup);
     memset(boot + at, ' ', 11);
     memcpy(boot + at, label, strnlen(label, 11));
-    status_t st = flush();
+    status_t st = disk_flush();
     if (st != OK)
         return st;
     /* The backup first: the partition stays blank until sector 0 is there. */
@@ -191,7 +196,7 @@ status_t disk_commit_boot(const char *label)
             return failed("write", sector, 1, st);
         cache_wrote(sector, 1, vol.bbuf);
     }
-    return flush();
+    return disk_flush();
 }
 
 /* ---- the dirty flag ---------------------------------------------------------------- */
@@ -213,12 +218,15 @@ void disk_patch_dirty(uint8_t *data, uint64_t sector)
             patch(data, false);
 }
 
-/* Rewrite the bit in FAT sector 0 of every FAT copy, straight on the disk
- * (after what is held: the block buffer is used, and the order kept). */
+/* Rewrite the bit in FAT sector 0 of every FAT copy, straight on the disk.
+ * Clean: after what is held (what the bit vouches for goes first), and
+ * never after a lost hold. Dirty: at once, whatever is held (an
+ * uncommitted request's writes, which must not go out yet): a dirty mark
+ * ahead of time is only a false alarm. */
 static status_t mark(bool clean)
 {
     struct fat_disk *d = &kept->disk;
-    status_t held = d->hold_failed ? ERR_IO : disk_release();   /* never clean after a lost hold */
+    status_t held = !clean ? OK : d->hold_failed ? ERR_IO : disk_release();
     if (held != OK)
         return held;
     for (unsigned i = 0; i < d->nfats; i++) {
@@ -269,13 +277,19 @@ status_t disk_settle(bool durable)
 {
     if (vol.read_only)
         return OK;
+    if (op_running()) {   /* the operation's send does it, after its commit */
+        uint8_t want = durable ? FAT_SETTLE_SYNC : FAT_SETTLE;
+        if (kept->post.settle < want)
+            kept->post.settle = want;
+        return OK;
+    }
     status_t st = OK;
     if (kept->disk.track_dirty && !kept->disk.clean_on_disk) {
-        st = flush();   /* what the bit vouches for is on the medium first */
+        st = disk_flush();   /* what the bit vouches for is on the medium first */
         if (st == OK)
             st = mark(true);
     }
-    status_t st2 = durable ? flush() : OK;
+    status_t st2 = durable ? disk_flush() : OK;
     return st != OK ? st : st2;
 }
 
@@ -348,7 +362,7 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         sector++;
         count--;
     }
-    if (hold_active())
+    if (op_running())   /* held until the operation is committed (hold.c) */
         return hold_put(buff, sector, count) == OK ? RES_OK : RES_ERROR;
     if (disk_release() != OK)
         return RES_ERROR;   /* what is held goes first: writes keep their order */
@@ -376,7 +390,11 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
     case CTRL_SYNC:
         if (vol.read_only)
             return RES_OK;
-        return flush() == OK ? RES_OK : RES_ERROR;
+        if (op_running()) {   /* the operation's send flushes, after its commit */
+            kept->post.flush = true;
+            return RES_OK;
+        }
+        return disk_flush() == OK ? RES_OK : RES_ERROR;
     case GET_SECTOR_COUNT:
         /* FatFs's LBAs are 32 bits: a bigger partition is used up to there. */
         *(LBA_t *)buff = vol.blocks > 0xffffffffull ? 0xffffffffu : (LBA_t)vol.blocks;

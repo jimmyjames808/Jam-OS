@@ -1,58 +1,66 @@
-/* fat: writes held back (FS_GATHER, <os.h>), under disk.c's disk_write.
+/* fat: the hold. Every sector a request writes is held back here until
+ * the request is committed (docs/M11.6-PLAN.md, "Held writes become the
+ * write-ahead buffer"), and an FS_GATHER file's (<os.h>) stay held across
+ * requests until its sync or close.
  *
- * Why. FatFs writes a file's data a cluster at a time, and on the ESP a
- * cluster is one sector: a 6 MiB boot image was 13,000 one-sector WRITE
- * commands, plus each FAT copy's sector every 128 clusters. A cheap USB 2
- * stick takes milliseconds for every small write, however small, so
- * `update -w`'s 20 MiB took more than seven minutes on the owner's PC.
+ * Why, twice. Exactness: nothing of a request reaches the stick before its
+ * commit (request.c), so a successor that finds a request uncommitted
+ * finds the disk exactly as the request before left it, puts memory back
+ * (undo.c) and runs it again. Speed: FatFs writes a file's data a cluster
+ * at a time, and on the ESP a cluster is one sector: a 6 MiB boot image
+ * was 13,000 one-sector WRITE commands, plus each FAT copy's sector every
+ * 128 clusters, and a cheap USB 2 stick takes milliseconds for every small
+ * write; held, they go out in 64 KiB writes.
  *
- * What. While a file opened FS_GATHER is written (disk_hold, fileops.c),
- * disk_write hands its sectors here instead of to the disk, up to
- * FAT_HOLD_MAX. An unlink's are held too (fsops.c), and sent before it is
- * answered: freeing a file changes a FAT sector per 128 clusters in each
- * FAT copy, two writes per 64 KiB of the file otherwise. What is held goes
- * out (disk_release) when anything needs it on the medium: any other
- * write (so that one keeps its place after it), a flush, a full hold, or
- * the file's sync or close. A read from the disk meanwhile gets the held
- * sectors laid over what it read (hold_overlay), and the writes a file
- * read makes FatFs do while writes are held (its window moving off a
- * changed FAT sector: fileops.c) join them.
+ * What. While an operation runs (op_running) disk_write hands every
+ * sector here. After its commit, request.c's send puts them out
+ * (disk_release), unless they may stay held: an FS_GATHER file's writes
+ * (fileops.c), and the ones a read made while such writes were held
+ * (moving FatFs's window off a changed FAT sector), wait for any other
+ * request that writes, a flush, a full hold, or the file's sync or close.
+ * A read from the disk meanwhile gets the held sectors laid over what it
+ * read (hold_overlay).
  *
- * Where. The hold is part of fat's state (struct fat_hold in struct
- * fat_state, state.c), so that what it holds can outlive fat. Its data's
- * pages are committed at the first hold; without memory for them, writes
- * go through as ever.
+ * Undo. A request that writes a sector already held overwrites it in
+ * place. If an earlier, committed request held it, its bytes are saved
+ * first in the undo copy (undo_sector); when the copy has no room for
+ * more, the new bytes are held anew instead, after the old ones (the
+ * sector then goes out twice, in order, the newer last). What a request
+ * appends is undone by putting the counts back (undo.c).
+ *
+ * Room. A request starts with room for a whole request (FAT_OP_ROOM
+ * sectors, FAT_OP_RUNS runs): if the hold lacks it, what it holds (all
+ * committed) goes out first (hold_make_room). A request that still fills
+ * it goes out in steps: what is held is sent as the hold fills, said in
+ * the log (op_steps). Only two kinds can: an unlink or truncate of a file
+ * whose freed chain spans more FAT sectors than the hold (on /data's
+ * 32 KiB clusters, over about 2 GiB), and a write or truncate that grows a
+ * file by more than the hold (up to FAT_GROW_MAX). A death between steps
+ * can leave clusters that no file reaches (lost space, never a damaged
+ * file), so such a request can't be undone (undo_spend).
+ *
+ * Where. The hold is part of fat's state (struct fat_hold), so that what
+ * it holds can outlive fat. Its data's pages are committed a chunk
+ * (FAT_HOLD_CHUNK) at a time as it grows; with no memory for one, the
+ * write fails.
  *
  * Order. Held sectors are kept as runs of consecutive sectors (a sector
  * right after a run's end joins it), and go out run by run in the order
- * the runs began, a block buffer's worth per write: the file's data in
+ * the runs began, a block buffer's worth per write: a file's data in
  * 64 KiB writes, then each FAT copy's changed sectors in one. So the data
  * goes out before the FAT sectors that chain it, as FatFs wrote them, and
- * the directory entry that reaches both is written later still, by the
- * sync (which releases first); a later write to a sector already held
- * changes it in place.
+ * the directory entry that reaches both, written by the sync, later still.
  *
  * What is held is copied into the cache at once (reads see it), and
  * dropped from it if it fails to go out. Such a failure leaves FatFs's
  * idea of the volume (its FAT window, its free count) ahead of the disk,
  * so from then on fat writes nothing (kept->disk.hold_failed: disk_write
- * refuses, the volume is never marked clean), and the FS_GATHER file's
- * sync fails. A fresh fat (a remount, the next boot) reads the disk as it
- * is: at worst clusters no file reaches. */
+ * refuses, the volume is never marked clean), and the request whose send
+ * failed is answered with the failure. A fresh fat (a remount, the next
+ * boot) reads the disk as it is: at worst clusters no file reaches. */
 #include "fat.h"
 
-void disk_hold(bool on)
-{
-    struct fat_hold *h = &kept->hold;
-    if (on && !h->ready)   /* no memory: written through, as ever */
-        h->ready = state_commit(h->data, sizeof(h->data)) == OK;
-    h->holding = on && h->ready;
-}
-
-bool hold_active(void)
-{
-    return kept->hold.holding;
-}
+#define NO_RUN FAT_HOLD_RUNS   /* run_ending_at: no run ends there */
 
 bool hold_pending(void)
 {
@@ -112,6 +120,14 @@ status_t disk_release(void)
     return st;
 }
 
+status_t hold_make_room(void)
+{
+    const struct fat_hold *h = &kept->hold;
+    if (h->held + FAT_OP_ROOM <= FAT_HOLD_MAX && h->runs + FAT_OP_RUNS <= FAT_HOLD_RUNS)
+        return OK;
+    return disk_release();
+}
+
 /* Does a run hold any of count sectors at `sector`? */
 static bool overlaps(uint64_t sector, uint32_t count)
 {
@@ -127,13 +143,14 @@ void hold_overlay(uint64_t sector, uint32_t count, uint8_t *buf)
     const struct fat_hold *h = &kept->hold;
     if (!overlaps(sector, count))
         return;
-    for (uint32_t i = 0; i < h->held; i++)
+    for (uint32_t i = 0; i < h->held; i++)   /* in order: a sector held twice, the newer last */
         if (h->lba[i] >= sector && h->lba[i] - sector < count)
             memcpy(buf + (size_t)(h->lba[i] - sector) * FAT_SECTOR,
                    h->data + (size_t)i * FAT_SECTOR, FAT_SECTOR);
 }
 
-/* Where sector is held (an index into data), or FAT_HOLD_MAX if it isn't. */
+/* Where sector is held (its newest copy: an index into data), or
+ * FAT_HOLD_MAX if it isn't. */
 static uint32_t find(uint64_t sector)
 {
     const struct fat_hold *h = &kept->hold;
@@ -145,25 +162,57 @@ static uint32_t find(uint64_t sector)
     return FAT_HOLD_MAX;
 }
 
-/* A new place for sector: at the end of the run it follows, else a new
- * run. Everything goes out first when the hold is full. */
-static status_t place(uint64_t sector, uint32_t *at)
+/* The run that sector would continue (the newest whose end it is), or
+ * NO_RUN. */
+static uint32_t run_ending_at(uint64_t sector)
+{
+    const struct fat_hold *h = &kept->hold;
+    for (uint32_t r = h->runs; r-- > 0;)
+        if (h->run_first[r] + h->run_len[r] == sector)
+            return r;
+    return NO_RUN;
+}
+
+/* Room for one more sector (in a new run, if new_run): the data's pages
+ * committed a chunk ahead. */
+static bool has_room(bool new_run)
 {
     struct fat_hold *h = &kept->hold;
-    status_t st = h->held == FAT_HOLD_MAX ? disk_release() : OK;
-    if (st != OK)
-        return st;
-    uint32_t r = h->runs;
-    while (r > 0 && h->run_first[r - 1] + h->run_len[r - 1] != sector)
-        r--;
-    if (r == 0) {   /* it follows no run: a new one */
-        if (h->runs == FAT_HOLD_RUNS && (st = disk_release()) != OK)
+    if (h->held == FAT_HOLD_MAX || (new_run && h->runs == FAT_HOLD_RUNS))
+        return false;
+    if (h->held < h->ready)
+        return true;
+    uint32_t n = FAT_HOLD_MAX - h->ready < FAT_HOLD_CHUNK ? FAT_HOLD_MAX - h->ready
+                                                           : FAT_HOLD_CHUNK;
+    if (state_commit(h->data + (size_t)h->ready * FAT_SECTOR, (size_t)n * FAT_SECTOR) != OK)
+        return false;
+    h->ready += n;
+    return true;
+}
+
+/* A new place for sector, at *at: at the end of the run it follows, else
+ * (or if `again`: the sector is held already, and its new copy must go
+ * out after the old one, so in a run begun after every other) a new run.
+ * A full hold goes out first, in the middle of the operation: its steps
+ * (the header's "Room"). */
+static status_t place(uint64_t sector, bool again, uint32_t *at)
+{
+    struct fat_hold *h = &kept->hold;
+    uint32_t r = again ? NO_RUN : run_ending_at(sector);
+    if (!has_room(r == NO_RUN)) {
+        if (op_running())
+            op_steps();
+        status_t st = disk_release();
+        if (st != OK)
             return st;
+        r = NO_RUN;
+        if (!has_room(true))
+            return ERR_NO_MEMORY;   /* no pages for the hold: the write fails */
+    }
+    if (r == NO_RUN) {
         r = h->runs++;
         h->run_first[r] = sector;
         h->run_len[r] = 0;
-    } else {
-        r--;
     }
     h->run_len[r]++;
     h->lba[h->held] = sector;
@@ -175,10 +224,18 @@ static status_t place(uint64_t sector, uint32_t *at)
 status_t hold_put(const uint8_t *buff, uint64_t sector, uint32_t count)
 {
     struct fat_hold *h = &kept->hold;
+    op_wrote();
     for (uint32_t c = 0; c < count; c++, sector++, buff += FAT_SECTOR) {
         uint32_t i = find(sector);
+        bool again = false;
+        /* Held by an earlier, committed operation: saved before it is
+         * overwritten, or, with no room to save it, held anew after it. */
+        if (i != FAT_HOLD_MAX && i < op_hold_first() && !undo_sector(i)) {
+            i = FAT_HOLD_MAX;
+            again = true;
+        }
         if (i == FAT_HOLD_MAX) {
-            status_t st = place(sector, &i);
+            status_t st = place(sector, again, &i);
             if (st != OK)
                 return st;
         }
