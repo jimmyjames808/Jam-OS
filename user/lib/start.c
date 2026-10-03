@@ -96,6 +96,31 @@ static status_t read_message(handle_t ch, uint32_t *nbytes, uint32_t *nhandles)
     return st;
 }
 
+/* Point argv/environ at argc + envc NUL-terminated strings, all inside
+ * [s, s + len). */
+static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t envc)
+{
+    if (argc > STARTUP_MAX_STRS || envc > STARTUP_MAX_STRS - argc)
+        return ERR_INVALID_ARGS;
+    char *end = s + len;
+    unsigned n = argc + envc, slot = 0;
+    for (unsigned i = 0; i < n; i++) {
+        size_t l = strnlen(s, (size_t)(end - s));
+        if (s + l == end)
+            return ERR_INVALID_ARGS;   /* runs off the end */
+        if (i == argc)
+            slot++;                    /* skip argv's NULL */
+        str_ptrs[slot++] = s;
+        s += l + 1;
+    }
+    if (argc == n)
+        slot++;                        /* argv's NULL when there is no env */
+    str_ptrs[argc] = NULL;
+    str_ptrs[slot] = NULL;
+    environ = &str_ptrs[argc + 1];
+    return OK;
+}
+
 /* Check the message and point argv/environ into it. */
 static status_t parse_message(uint32_t nbytes, uint32_t nhandles, int *argc)
 {
@@ -104,30 +129,11 @@ static status_t parse_message(uint32_t nbytes, uint32_t nhandles, int *argc)
         return ERR_INVALID_ARGS;
     if (m->nhandles != nhandles || nhandles > STARTUP_MAX_HANDLES)
         return ERR_INVALID_ARGS;
-    if (m->argc > STARTUP_MAX_STRS || m->envc > STARTUP_MAX_STRS - m->argc)
-        return ERR_INVALID_ARGS;
     if (m->strings_len != nbytes - sizeof(*m))
         return ERR_INVALID_ARGS;
-
-    /* argc + envc NUL-terminated strings, all inside strings_len. */
-    char *s = (char *)msg_buf + sizeof(*m);
-    char *end = s + m->strings_len;
-    unsigned n = m->argc + m->envc, slot = 0;
-    for (unsigned i = 0; i < n; i++) {
-        size_t len = strnlen(s, (size_t)(end - s));
-        if (s + len == end)
-            return ERR_INVALID_ARGS;   /* runs off the end */
-        if (i == m->argc)
-            slot++;                    /* skip argv's NULL */
-        str_ptrs[slot++] = s;
-        s += len + 1;
-    }
-    if (m->argc == n)
-        slot++;                        /* argv's NULL when there is no env */
-    str_ptrs[m->argc] = NULL;
-    str_ptrs[slot] = NULL;
-    environ = &str_ptrs[m->argc + 1];
-
+    status_t st = point_strings((char *)msg_buf + sizeof(*m), m->strings_len, m->argc, m->envc);
+    if (st != OK)
+        return st;
     for (unsigned i = 0; i < nhandles; i++)
         msg_roles[i] = m->roles[i];
     msg_nhandles = nhandles;
