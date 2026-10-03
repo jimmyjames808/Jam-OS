@@ -156,6 +156,14 @@ static void publish(struct mixer *m)
             continue;
         const struct stream *s = &m->nums->s[i];
         (void)jam_vmo_write(w->vmo, MIXER_RING_MIXER, &s->read, sizeof(s->read));
+        /* `waiting` looked at again after `read` moved, as the client
+         * expects (it sets `waiting`, then reads `read`): one that began
+         * waiting since take() looked would otherwise sleep a whole slice. */
+        uint32_t waiting = 0;
+        if (!w->wake &&
+            jam_vmo_read(w->vmo, offsetof(struct mixer_ring, waiting),
+                         &waiting, sizeof(waiting)) == OK && waiting)
+            w->wake = true;
         if (w->wake)
             (void)jam_event_signal(w->event, 0, MIXER_SIG_SPACE);
         w->took = w->wake = false;
