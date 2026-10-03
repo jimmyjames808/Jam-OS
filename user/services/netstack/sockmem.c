@@ -62,3 +62,11 @@ bool sockmem_budget_ok(const struct opener *o, uint8_t cls, uint64_t bytes)
         return false;
     return progs_share_ok(cls, 0, 0, bytes);
 }
+
+bool sockmem_budget_fits(const struct opener *o, uint8_t cls, uint64_t bytes)
+{
+    uint64_t total = pg.held[CLASS_PROG].ring_bytes + pg.held[CLASS_SYS].ring_bytes;
+    return total + bytes <= SOCKRING_TOTAL_BYTES &&
+           (!o || o->ring_bytes + bytes <= SOCKRING_OPENER_BYTES) &&
+           (cls != CLASS_PROG || pg.held[CLASS_PROG].ring_bytes + bytes <= NET_PROG_RING_BYTES);
+}

@@ -793,6 +793,7 @@ static const struct {
     { "nettcp_listen_scale", t_nettcp_listen_scale },
     { "nettcp_heap_shares", t_nettcp_heap_shares },
     { "nettcp_limits", t_nettcp_limits },
+    { "nettcp_bulk_rings", t_nettcp_bulk_rings },
     { "netctl_set_and_clear", t_netctl_set_and_clear },
     { "netctl_process", t_netctl_process },
     { "ipv4_text", t_ipv4_text },

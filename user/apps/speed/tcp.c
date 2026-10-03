@@ -6,7 +6,6 @@
 #include "speed.h"
 
 #define CHUNK   (64u * 1024)
-#define TX_RING (64u * 1024)
 
 static uint8_t buf[CHUNK];
 
@@ -86,8 +85,10 @@ int tcp_client(uint32_t addr, uint16_t port, bool receive, uint32_t seconds)
     struct net_sock s;
     char a[IPV4_TEXT_MAX];
     status_t st = net_wait_up(net_svc(), now() + SPEED_WAIT, NULL);
-    /* A tx ring as big as TCP's window, so the ring never holds the sender back. */
-    if (st == OK && (st = net_tcp_open(net_svc(), addr, port, TX_RING, 0, &s)) == OK &&
+    /* Bulk rings both ways: a whole scaled window to receive into, and as
+     * much in flight when sending (<net.h> NET_TCP_BULK). */
+    if (st == OK &&
+        (st = net_tcp_open(net_svc(), addr, port, NET_TCP_BULK, NET_TCP_BULK, &s)) == OK &&
         (st = net_tcp_wait_open(&s, now() + SPEED_WAIT)) != OK)
         net_close(&s);
     ipv4_format(addr, a);
@@ -145,7 +146,7 @@ int tcp_listen(uint16_t port)
     struct net_listener l;
     status_t st = net ? net_wait_up(net, now() + SPEED_WAIT, NULL) : ERR_ACCESS_DENIED;
     if (st == OK)
-        st = net_tcp_listen(net, port, 4, TX_RING, 0, &l);
+        st = net_tcp_listen(net, port, 4, NET_TCP_BULK, NET_TCP_BULK, &l);
     if (st != OK) {
         printf("speed: can't listen on port %u: %s\n", port,
                st == ERR_ACCESS_DENIED ? "no listen permission (`svc net listen`)"

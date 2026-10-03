@@ -82,7 +82,14 @@
 #define NET_BACKLOG_TOTAL        128u   /* every listener's backlog together */
 #define NET_PROG_BACKLOG         96u    /* ... ordinary openers' listeners' */
 #define NET_TCP_TX               (16u * 1024)   /* a connection's rings unless it asks: tx ... */
-#define NET_TCP_RX               (64u * 1024)   /* ... and rx (a whole window, 64240 bytes) */
+#define NET_TCP_RX               (64u * 1024)   /* ... and rx (64 KiB: an unscaled window's) */
+/* The rings a bulk transfer asks for (fetch, serve, speed): a whole scaled
+ * window to receive (2 MiB: 1 Gb/s at 16 ms), and as much in flight when
+ * sending (a connection keeps at most its tx ring unacked, at least 64240
+ * bytes). A connection with both counts 4 MiB against its opener's
+ * SOCKRING_OPENER_BYTES; a listener's connection that doesn't fit with its
+ * listener's tx ring gets NET_TCP_TX instead (the rx ring is as asked). */
+#define NET_TCP_BULK             (2u << 20)
 _Static_assert(NET_DGRAM_MAX == SOCKRING_DGRAM_MAX, "one datagram size");
 
 /* net_info.vlan on an untagged network: <jam/netframe.h>'s

@@ -4,9 +4,13 @@
  * permission, ports below 1024, backlogs), the limits and fair shares on
  * connections and listeners (per opener, ordinary openers together, all),
  * accept's forms (at once, timing out, one at a time), an opener's end
- * resetting its connections, and the counts going back to nothing. The
+ * resetting its connections, and the counts going back to nothing
+ * (nettcp_limits); a listener with bulk tx rings whose connections outgrow
+ * its opener's ring bytes: the rest get the default tx ring, not a reset
+ * (nettcp_bulk_rings, the test as the peer on the fake driver too). The
  * bytes themselves are tools/tcp-test.sh's (QEMU, a real peer) and the
- * in-process nettcp_* tests'. Ends with netstack killed and its job empty. */
+ * in-process nettcp_* tests'. Each ends with netstack killed and its job
+ * empty. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -16,6 +20,7 @@
 #include <os.h>
 #include "netdrv.h"
 #include "netpkt.h"
+#include "tcppeer.h"
 #include "utest.h"
 
 #define PER    NET_TCP_PER_OPENER
@@ -163,6 +168,74 @@ bool t_nettcp_limits(void)
      * only if the listener after a close is asked for before netstack saw
      * the close (the retry loop above), which is a race. */
     CHECK(c.refused_shares >= 2);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* ---- bulk rings past an opener's bytes ---------------------------------------------- */
+
+/* The peer's SYN-ACK from netstack's listener for p: its sequence number
+ * into p->rcv. Other frames (none expected) are passed over. */
+static bool syn_ack(struct tp *p)
+{
+    uint8_t f[PKT_FRAME_MAX];
+    for (unsigned k = 0; k < 8; k++) {   /* a few frames at most */
+        uint32_t n;
+        const uint8_t *t;
+        size_t len;
+        CHECK_ST(netdrv_recv(f, &n, NETDRV_WAIT), OK);
+        if (!pkt_is_ipv4(f, n, PEER_IP, 6, &t, &len) || len < 20 || pkt_get16(t + 2) != p->port)
+            continue;
+        CHECK_EQ(t[13] & (TP_SYN | TP_ACK), TP_SYN | TP_ACK);
+        p->rcv = pkt_get32(t + 4) + 1;
+        return true;
+    }
+    FAIL("no SYN-ACK for port %u", p->port);
+}
+
+/* The peer connects from port `from` to the listener; the program accepts. */
+static bool peer_connects(struct net_listener *l, uint16_t from, struct net_sock *out)
+{
+    uint8_t f[PKT_FRAME_MAX];
+    struct tp p = { .ip = PEER_IP, .mac = pkt_peer_mac, .port = from, .our = l->port,
+                    .snd = 0x51000000u, .win = 0xffff };
+    CHECK(netdrv_send(f, tp_frame(f, &p, TP_SYN, NULL, 0)));
+    p.snd++;
+    CHECK(syn_ack(&p));
+    CHECK(netdrv_send(f, tp_frame(f, &p, TP_ACK, NULL, 0)));
+    CHECK_ST(net_tcp_accept(l, now() + NETDRV_WAIT, out, NULL, NULL), OK);
+    return true;
+}
+
+bool t_nettcp_bulk_rings(void)
+{
+    enum { N = 5 };
+    handle_t lo;
+    struct net_listener l;
+    static struct net_sock s[N];
+    unsigned fit = SOCKRING_OPENER_BYTES / (unsigned)sockring_bytes(NET_TCP_BULK, RING);
+    CHECK(fit < N);
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
+    CHECK(connect_on(netdrv_net_listen(), &lo));
+    CHECK_ST(net_tcp_listen(lo, 5100, NET_BACKLOG_MAX, NET_TCP_BULK, RING, &l), OK);
+    for (unsigned i = 0; i < N; i++) {
+        CHECK(peer_connects(&l, (uint16_t)(40000 + i), &s[i]));
+        CHECK_EQ(s[i].r.tx.size, i < fit ? NET_TCP_BULK : NET_TCP_TX);   /* past its bytes: */
+        CHECK_EQ(s[i].r.rx.size, RING);                                  /* the default tx */
+    }
+    struct net_counters c;
+    CHECK(counts(&c));
+    CHECK_EQ(c.tcp_refused, 0);
+    for (unsigned i = 0; i < N; i++)
+        net_close(&s[i]);
+    net_listener_close(&l);
+    jam_handle_close(lo);
+    uint64_t end = now() + NETDRV_WAIT;
+    do {
+        CHECK(counts(&c));
+    } while ((c.tcp_conns || c.tcp_listeners || c.ring_bytes || c.openers) && now() < end);
+    CHECK(!c.tcp_conns && !c.ring_bytes);
     CHECK(netdrv_stop());
     return true;
 }

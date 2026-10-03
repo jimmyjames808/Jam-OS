@@ -33,3 +33,6 @@ status_t sockmem_handles(const struct sockmem *m, handle_t hs[3]);
 /* May a socket of opener o (NULL: none, as the DHCP socket's) of class cls
  * have rings of `bytes` more? (o's, the class's share, the total.) */
 bool     sockmem_budget_ok(const struct opener *o, uint8_t cls, uint64_t bytes);
+/* The same question, nothing counted: does it fit (a listener's connection
+ * that doesn't gets the default tx ring instead of its listener's)? */
+bool     sockmem_budget_fits(const struct opener *o, uint8_t cls, uint64_t bytes);

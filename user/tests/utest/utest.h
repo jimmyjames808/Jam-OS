@@ -290,6 +290,7 @@ bool t_nettcp_listen_scale(void);
 bool t_nettcp_heap_shares(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
+bool t_nettcp_bulk_rings(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_process(void);
 bool t_ipv4_text(void);

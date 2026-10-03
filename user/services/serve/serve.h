@@ -32,7 +32,8 @@
 
 #define HEAD_MAX   8192u                 /* a request's head, at most (else 431) */
 #define CHUNK      (64u * 1024)          /* file bytes a client holds to send */
-#define TX_RING    (64u * 1024)          /* a client's tx ring */
+#define TX_RING    NET_TCP_BULK          /* a client's tx ring: its bytes in flight (netstack
+                                          * gives the default to those past its share) */
 #define RX_RING    4096u                 /* ... and rx (requests are small) */
 #define BACKLOG    4u                    /* connections waiting to be accepted, a file */
 #define HEAD_WAIT  (10 * NS_PER_S)

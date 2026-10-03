@@ -277,7 +277,14 @@ static status_t l_rings(struct ntcp_listener *nl, struct ntcp_conn *c)
     struct tsock *t;
     if (!o)
         return ERR_BAD_STATE;   /* its opener is going: the listener goes next */
-    status_t st = ts_new(o, l->cls, l->tx, l->rx, c, &t);
+    /* A big tx ring (a bulk sender's, as serve's) that doesn't fit the
+     * opener's bytes or the shares: the default one, so the client is
+     * served (slower) rather than reset. Only tx: the window the SYN-ACK
+     * announced is the rx ring's. */
+    uint32_t tx = l->tx;
+    if (tx > NET_TCP_TX && !sockmem_budget_fits(o, l->cls, sockring_bytes(tx, l->rx)))
+        tx = NET_TCP_TX;
+    status_t st = ts_new(o, l->cls, tx, l->rx, c, &t);
     if (st != OK)
         return st;
     stack_tcp_ends(c->t, &t->peer, &t->peer_port, &t->port);

@@ -124,7 +124,7 @@ status_t conn_open(struct conn *c, uint32_t addr, uint16_t port)
     uint64_t deadline = now() + CONNECT_WAIT;
     status_t st = net_wait_up(net_svc(), deadline, NULL);
     if (st == OK)
-        st = net_tcp_open(net_svc(), addr, port, 0, 0, &c->s);
+        st = net_tcp_open(net_svc(), addr, port, 0, NET_TCP_BULK, &c->s);   /* a whole window */
     if (st != OK)
         return st;
     c->open = true;

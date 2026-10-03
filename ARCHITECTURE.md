@@ -827,8 +827,8 @@ one loop on one port (the receive event, every client's channel, lwIP's
 timers as the wait's deadline), so nothing locks. In: IPv4, ARP, ICMP
 (echo replies: the PC answers pings), UDP, TCP. Out: IPv6, fragments and
 reassembly, IP options, IGMP, and lwIP's own DHCP, DNS and VLAN code. Its
-memory is static (lwIP's 1 MiB heap, mostly TCP's unacked bytes, 128
-receive buffers, fixed pools: 384 TCP pcbs, 1024 segments); a full pool
+memory is static (lwIP's 6 MiB heap, mostly TCP's unacked bytes, 128
+receive buffers, fixed pools: 384 TCP pcbs, 4608 segments); a full pool
 drops the frame and counts it. `stack.c` is the only
 file that sees lwIP. The calls that may wait (devmgr's GET_SERVICE,
 `netdev.info` and `open`, 2 s each) run on a thread of its own that
@@ -888,7 +888,20 @@ restarts:
   them, so a slow reader stops its own sender and lwIP holds no received
   byte; bytes go from the tx ring into lwIP only as the peer's window takes
   them (and a segment more), so a peer that stops reading holds no more
-  than its window. A segment the card's full tx ring refuses stays in
+  than its window. **Window scaling** (RFC 7323, shift 6) is on: with a
+  peer that scales too the window is the ring's room up to 2 MiB, counted
+  in 64-byte units and rounded down; with one that doesn't, up to 64240.
+  A connection keeps at most its tx ring's size unacked in lwIP (its send
+  buffer, at least 64240 bytes), so the default rings (16 KiB tx, 64 KiB
+  rx) behave as before scaling and a bulk program asks for big ones
+  (`<net.h>`'s `NET_TCP_BULK`, 2 MiB: `fetch`'s rx ring, `speed`'s both,
+  `serve`'s clients' tx rings). lwIP's heap is shared out: TCP never takes
+  its last 64 KiB (UDP, ARP, ICMP, TCP's ACKs), and a connection's bytes
+  past its first 64240 never the last 1 MiB beyond that or the last 1024
+  segments, so bulk senders can't starve the rest; a listener's
+  connection whose tx ring doesn't fit its opener's bytes gets the default
+  one instead of a reset ([M9.5-PLAN](docs/M9.5-PLAN.md#window-scaling-and-bulk-rings-as-built)
+  has the memory's worst case). A segment the card's full tx ring refuses stays in
   lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
   the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
   handshake finishes (the bytes that come first wait there), counted
