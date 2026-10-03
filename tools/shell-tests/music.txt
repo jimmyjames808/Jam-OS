@@ -102,8 +102,7 @@ send music status | grep -c "music: playing"; echo mu-""17 $?
 wait mu-17 0
 wait jam>
 send kill mixer
-wait 30 music: the mixer stream failed
-wait 30 music: track
+wait 30 mixer: restart (killed
 send music status | grep -c "music: playing"; echo mu-""18 $?
 wait mu-18 0
 wait jam>

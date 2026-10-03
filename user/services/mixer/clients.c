@@ -13,7 +13,10 @@
  * served a budget at a time, like the shared ones; once its client end is
  * gone it is closed and its slot (with a new generation) is free again.
  * A slot's numbers (used, ctl, gen) are in the state, its channel and
- * flag the process's own, at the same index. */
+ * flag the process's own, at the same index. The channel is put to the
+ * keeper (KEEP_CLIENT + its slot) before the state counts it, so an
+ * opener's channel outlives a restart; a put the keeper can't take refuses
+ * the connect. */
 #include <idl/svc.h>
 #include "internal.h"
 
@@ -29,14 +32,21 @@ status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
         if (st != OK)
             return st;
         c->gen++;
-        st = jam_port_bind(m->port, mine, (KEY_CLIENT + i) | (uint64_t)c->gen << 8,
-                           SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
+        uint64_t key = (KEY_CLIENT + i) | (uint64_t)c->gen << 8;
+        st = jam_port_bind(m->port, mine, key, SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
+        if (st == OK && keep_slot_put(m, KEEP_CLIENT + i, &mine, 1) != OK) {
+            (void)jam_port_unbind(m->port, mine, key);
+            st = ERR_NO_RESOURCES;
+        }
         if (st != OK) {
             jam_handle_close(mine);
             jam_handle_close(theirs);
             return st;
         }
         c->used = true;
+        m->nums->made_kind = MADE_CLIENT;
+        m->nums->made_index = i;
         c->ctl = ctl;
         w->ch = mine;
         w->pending = true;   /* a request may come before the first packet is read */
@@ -51,7 +61,10 @@ void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl
     const struct idl_req_hdr *q = svcstate_request(&m->state, slot, NULL);
     struct svc_connect_rep *r = svcstate_reply_area(&m->state, slot);
     handle_t h = HANDLE_INVALID;
+    m->nums->made_seq = 0;
     status_t st = clients_connect(m, ctl, &h);
+    if (st == OK)
+        m->nums->made_seq = m->state.h->slot[slot].seq;
     *r = (struct svc_connect_rep){ .txid = q->txid, .status = st };
     /* The caller gone: the new channel goes with it (req_answer closes it). */
     req_answer(m, slot, ch, sizeof(*r), &h, st == OK ? 1 : 0);
@@ -74,6 +87,19 @@ bool clients_pending(const struct mixer *m)
     return false;
 }
 
+void clients_drop(struct mixer *m, unsigned i)
+{
+    struct client *c = &m->nums->c[i];
+    struct client_own *w = &m->own_c[i];
+    if (w->ch) {   /* a binding holds its channel: let go of it first */
+        (void)jam_port_unbind(m->port, w->ch, (KEY_CLIENT + i) | (uint64_t)c->gen << 8);
+        jam_handle_close(w->ch);
+    }
+    *w = (struct client_own){ 0 };
+    c->used = false;
+    keep_slot_drop(m, KEEP_CLIENT + i);
+}
+
 void clients_serve(struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
@@ -87,9 +113,7 @@ void clients_serve(struct mixer *m)
         if (st == OK) {
             w->pending = true;   /* its budget is spent: more may be queued */
         } else if (st == ERR_PEER_CLOSED) {
-            jam_handle_close(w->ch);   /* its persistent binding goes with our only handle */
-            w->ch = HANDLE_INVALID;
-            c->used = false;
+            clients_drop(m, i);
         } else if (st != ERR_SHOULD_WAIT) {
             printf("mixer: reading an opener's channel: %s\n", status_str(st));
         }

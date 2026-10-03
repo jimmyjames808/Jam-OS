@@ -6,10 +6,17 @@
  *
  * The periods: at open, OUT_LEAD periods are mixed into the driver's ring
  * before it starts. Then a wait_period is always out, sent without
- * waiting for its answer (the answer arrives on the port with the txid we
- * chose, and calls made meanwhile on the same channel take only their
+ * waiting for its answer (the answer arrives on the port with a txid from
+ * our range, and calls made meanwhile on the same channel take only their
  * own replies); each answer is the end of a period, and the mixer mixes
  * until OUT_LEAD periods are written ahead of the play position again.
+ * The driver keeps one wait at a time and answers a second ERR_BAD_STATE:
+ * after a restart the successor can't know whether the dead instance's
+ * last wait reached the driver, so it sends one anyway, and a wait
+ * refused so means another of ours is out, whose answer will come. So any
+ * answer from our range that isn't refused ends a period, whichever wait
+ * it was (one older than the position known is only a prompt to ask
+ * again), and each such end sends the next: one wait stays out.
  * So a frame taken from a client is heard OUT_LEAD - 1 to OUT_LEAD
  * periods (128-171 ms) later, plus the limiter's MIX_LOOKAHEAD (1 ms).
  * An answer that comes with less than LATE_GUARD frames still ahead is
@@ -32,7 +39,13 @@
  *
  * A driver that dies closes its stream channel: the output is closed and
  * opened again on the restarted driver (devmgr hands out the channel its
- * restart serves); the streams keep their frames meanwhile. */
+ * restart serves); the streams keep their frames meanwhile.
+ *
+ * The driver's channel and its stream channel and ring are put to the
+ * keeper (internal.h): while the mixer restarts, the driver's stream runs
+ * on through the OUT_LEAD periods written ahead, and the successor maps
+ * the same ring and carries on (adopt.c). Closing the output tells the
+ * keeper to drop them, or the driver would never see its stream closed. */
 #include <devmgr.h>
 #include <idl/hda.h>
 #include <mixmath.h>
@@ -84,6 +97,9 @@ status_t out_find(struct mixer *m)
                             &jack, &count, nodes, text);
         if (st == OK && pin) {
             m->own_out.svc = ch;
+            /* Not kept: a successor asks devmgr again, which costs it time
+             * but no client anything. */
+            m->own_out.svc_kept = keep_slot_put(m, KEEP_DRIVER, &ch, 1) == OK && m->keep;
             printf("mixer: playing through sound card %u (codec %u, dac %02x, pin %02x)\n", i,
                    codec, dac, pin);
             return OK;
@@ -93,10 +109,20 @@ status_t out_find(struct mixer *m)
     return ERR_NOT_FOUND;
 }
 
-/* Ask for the end of the period after frame `after`, without waiting:
- * its txid committed first, so the answer is always one the state waits
- * for. */
-static void send_wait(struct mixer *m, uint64_t after)
+void out_forget_driver(struct mixer *m)
+{
+    struct out_own *w = &m->own_out;
+    if (w->svc)
+        jam_handle_close(w->svc);
+    w->svc = HANDLE_INVALID;
+    if (w->svc_kept)
+        keep_slot_drop(m, KEEP_DRIVER);
+    w->svc_kept = false;
+}
+
+/* Ask for the end of the period after frame `after`, without waiting
+ * (committed first: the state says a wait is out). */
+void out_send_wait(struct mixer *m, uint64_t after)
 {
     struct out *o = &m->nums->out;
     struct hda_wait_period_req q = {
@@ -148,7 +174,7 @@ static uint32_t take(struct mixer *m, struct stream *s, uint32_t want)
 /* Every `read` that moved since the last publish, into its stream's
  * header (after a commit: see the file's header); a client that was
  * waiting for room is woken. */
-static void publish(struct mixer *m)
+void out_publish(struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
         struct stream_own *w = &m->own_s[i];
@@ -254,8 +280,7 @@ static void count_late(struct mixer *m, uint64_t pos)
     }
 }
 
-/* A period ended: the play position is pos. */
-static void period_end(struct mixer *m, uint64_t pos)
+void out_fill(struct mixer *m, uint64_t pos)
 {
     struct out *o = &m->nums->out;
     uint32_t pf = o->period;
@@ -267,10 +292,17 @@ static void period_end(struct mixer *m, uint64_t pos)
     while (o->written < target)
         mix_period(m);
     state_commit(m);
-    publish(m);
+    out_publish(m);
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->nums->s[i].used)
             drain_check(m, &m->nums->s[i], pos, OK);
+}
+
+/* A period ended: the play position is pos (one older than the last
+ * known, from a wait sent before a restart, changes nothing). */
+static void period_end(struct mixer *m, uint64_t pos)
+{
+    out_fill(m, pos > m->nums->out.played ? pos : m->nums->out.played);
     if (all_idle(m)) {
         for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
             if (m->nums->s[i].used && m->nums->s[i].playing)
@@ -278,10 +310,10 @@ static void period_end(struct mixer *m, uint64_t pos)
         out_close(m, "every playing stream is empty");
         return;
     }
-    send_wait(m, pos);
+    out_send_wait(m, pos);
 }
 
-static status_t map_ring(struct mixer *m, handle_t vmo, uint32_t size, uint32_t period)
+status_t out_map(struct mixer *m, handle_t vmo, uint32_t size, uint32_t period)
 {
     struct out *o = &m->nums->out;
     uint32_t fb = o->frame_bytes, frames = size / fb, pf = period / fb;
@@ -339,18 +371,29 @@ static status_t open_stream(struct mixer *m)
     o->written = o->played = 0;
     o->waiting = false;
     w->pending = false;
-    st = map_ring(m, vmo, size, period);
+    st = out_map(m, vmo, size, period);
+    /* The ring's shape committed, then the stream kept: a successor that
+     * finds it kept finds the shape it has (internal.h's order, with the
+     * state first: until frames are taken nothing a client gave is in
+     * it). Not kept: refused, or the driver would stop and mute at the
+     * mixer's next restart. */
+    if (st == OK) {
+        state_commit(m);
+        handle_t hs[2] = { ch, vmo };
+        st = keep_slot_put(m, KEEP_OUT, hs, 2);
+        w->kept = st == OK && m->keep;
+    }
     if (st == OK)
         st = jam_port_bind(m->port, ch, KEY_OUT | (uint64_t)++o->gen << 8,
                            SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
     for (unsigned i = 0; st == OK && i < OUT_LEAD; i++)
         mix_period(m);
     state_commit(m);
-    publish(m);
+    out_publish(m);
     if (st == OK)
         st = hda_start_until(ch, now() + CALL_WAIT);
     if (st == OK)
-        send_wait(m, 0);
+        out_send_wait(m, 0);
     return st;
 }
 
@@ -362,8 +405,7 @@ static status_t out_open(struct mixer *m)
     if (st == OK)
         st = open_stream(m);
     if (st == ERR_PEER_CLOSED && !w->ch) {   /* the driver died since we found it */
-        jam_handle_close(w->svc);
-        w->svc = HANDLE_INVALID;
+        out_forget_driver(m);
         st = out_find(m);
         if (st == OK)
             st = open_stream(m);
@@ -390,8 +432,10 @@ void out_close(struct mixer *m, const char *why)
     if (w->ring)
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)w->ring,
                        (uint64_t)o->frames * o->frame_bytes);
+    if (w->ch)   /* a binding holds its channel: let go of it before closing */
+        (void)jam_port_unbind(m->port, w->ch, KEY_OUT | (uint64_t)o->gen << 8);
     if (w->ch)
-        jam_handle_close(w->ch);   /* the driver stops the stream and mutes the path */
+        jam_handle_close(w->ch);   /* the driver stops the stream and mutes the path ... */
     if (w->vmo)
         jam_handle_close(w->vmo);
     bool was = w->ch != HANDLE_INVALID && w->ring;
@@ -399,6 +443,9 @@ void out_close(struct mixer *m, const char *why)
     w->ch = w->vmo = HANDLE_INVALID;
     o->waiting = false;
     w->pending = false;
+    if (w->kept)
+        keep_slot_drop(m, KEEP_OUT);   /* ... once the keeper has let go of it too */
+    w->kept = false;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
         m->nums->s[i].nhist = 0;   /* heard, or never will be */
         if (m->nums->s[i].used)
@@ -440,9 +487,7 @@ status_t out_need(struct mixer *m)
 static void driver_gone(struct mixer *m, const char *why)
 {
     out_close(m, why);
-    if (m->own_out.svc)
-        jam_handle_close(m->own_out.svc);
-    m->own_out.svc = HANDLE_INVALID;
+    out_forget_driver(m);
     m->nums->out.retry_at = now() + RETRY_NS / 2;
 }
 
@@ -469,8 +514,10 @@ void out_serve(struct mixer *m)
             (void)idl_drain(w->ch, n, nh);   /* nothing of ours is that big: dropped */
             continue;
         }
-        if (st != OK || n < sizeof(struct idl_rep_hdr) || !o->waiting || r.txid != o->wait_txid)
-            continue;   /* not the answer we wait for (a stale one, or too big: dropped) */
+        if (st != OK || n < sizeof(struct idl_rep_hdr) || (r.txid & 0xffff0000u) != TXID_BASE)
+            continue;   /* not an answer to a wait (too big: dropped) */
+        if (r.status == ERR_BAD_STATE)
+            continue;   /* another of our waits is out (the file's header) */
         o->waiting = false;
         if (r.status != OK || n != sizeof(r)) {
             out_close(m, r.status == ERR_PEER_CLOSED ? "the driver went away"

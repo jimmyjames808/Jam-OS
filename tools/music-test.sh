@@ -123,10 +123,14 @@ for want in "music: track [0-9]+: A - One \(0:02\)" \
             "music: track [0-9]+: JAŸ-Z - Fünf ~ Ÿ \(0:02\)" \
             "music: track [0-9]+: Spaced Name - Five Spaced \(0:02\)" \
             "music: track [0-9]+: Loose \(0:02\)" \
-            "music: the mixer stream failed \(.*\): opening a new one" \
+            "mixer: restart \(killed.*output running" \
             "music: /usb0/music/A/Album/[123]. Long [123].wav: stopped at"; do
     tr -d '\r' < "$log" | grep -qE "$want" || { echo "music: no log line matching '$want'"; ok=0; }
 done
+if tr -d '\r' < "$log" | grep "music: the mixer stream failed"; then
+    echo "music: the player saw the mixer's restart"
+    ok=0
+fi
 if tr -d '\r' < "$log" | grep -E "music: .*(DS_Store|onthespot|notes.txt|_Loose)"; then
     echo "music: a dotfile or a non-music file was tried"
     ok=0

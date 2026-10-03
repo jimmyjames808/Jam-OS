@@ -21,9 +21,10 @@
 #       5  two programs on <audio.h> (play's and beep's library) at once:
 #          1000 Hz from 44.1 kHz samples (resampled) and 440 Hz, both at
 #          the tone's own amplitude (within 3 %)
-#       then at least 4 more segments of 440 Hz: the mixer killed mid-tone,
-#       the hda driver killed mid-tone (QEMU writes the WAV only while the
-#       driver's stream runs, so their gaps are not in it) and the stream
+#       then at least 4 more segments of 440 Hz: the mixer killed mid-tone
+#       (its restart adopts the stream: the tone program never knows), the
+#       hda driver killed mid-tone (QEMU writes the WAV only while the
+#       driver's stream runs, so its gap is not in it) and the stream
 #       left empty that wakes the mixer again (two: the mixer plays the
 #       empty stream's silence for a second before it closes the output);
 #   - the log: two programs' streams open at once; the killed client's
@@ -63,8 +64,7 @@ grep -aqE "mixer: stream [0-9]+ \(tone-a\) opened.*" "$log" &&
     { echo "mixer: the tone programs' streams were not opened"; ok=0; }
 for want in "(tone-b) closed (its channel closed)" \
             "init: bin/mixer was killed" \
-            "mixtest: tone tone-d: the mixer went away" \
-            "mixtest: tone tone-d: a new stream after" \
+            "mixer: restart (killed" \
             "mixer: output closed (the driver went away)" \
             "mixer: output closed (every playing stream is empty)" \
             "mixer: output closed (no stream plays)"; do

@@ -11,8 +11,14 @@
  *                 the mixer, and init starts it again with the new devmgr's
  *   SR_AUDIO      the server end of the `audio` channel (abi/idl/audio.idl)
  *   SR_AUDIO_CTL  the server end of the `audioctl` channel
- * init keeps a duplicate of both server ends, so a restarted mixer serves
- * the same channels and calls made meanwhile wait for it.
+ *   SR_STATE      its state VMO (<svcstate.h>), kept by init
+ *   SR_KEEP       its end of the keep channel (<keep.h>)
+ * and, when it replaces one that ended, argv[1]: "killed" (a deliberate
+ * kill) or "crashed". init keeps a duplicate of both server ends, so a
+ * restarted mixer serves the same channels and calls made meanwhile wait
+ * for it, and with the state and the keeper a restart is not seen by any
+ * client at all (adopt.c). Started without SR_STATE (a test), it makes a
+ * state of its own; without SR_KEEP, nothing outlives it.
  *
  * This file is the loop: one thread and one port (and device.c's thread,
  * which answers audioctl.device, the one call that waits on others). Channels are bound
@@ -83,11 +89,12 @@ static void serve_all(struct mixer *m)
         out_serve(m);
 }
 
-static status_t setup(struct mixer *m)
+static status_t setup(struct mixer *m, const char *restart)
 {
-    status_t st = state_init(m);
+    bool adopted = false;
+    status_t st = state_init(m, &adopted);
     if (st != OK) {
-        printf("mixer: can't make its state (%s)\n", status_str(st));
+        printf("mixer: can't map its state (%s)\n", status_str(st));
         return st;
     }
     for (unsigned i = 0; i < startup_handle_count(); i++) {
@@ -98,6 +105,7 @@ static status_t setup(struct mixer *m)
     }
     m->svc = startup_handle(SR_AUDIO);
     m->ctl = startup_handle(SR_AUDIO_CTL);
+    m->keep = startup_handle(SR_KEEP);
     if (!m->svc || !m->ctl) {
         printf("mixer: started without SR_AUDIO and SR_AUDIO_CTL: nothing to serve\n");
         return ERR_BAD_HANDLE;
@@ -115,22 +123,18 @@ static status_t setup(struct mixer *m)
         printf("mixer: can't set up its port (%s)\n", status_str(st));
         return st;
     }
-    m->nums->master_gain = MIX_UNITY;
-    m->nums->next_id = 1;
-    state_commit(m);
     m->svc_pending = m->ctl_pending = true;   /* calls may be queued from before a restart */
     device_init(m);
+    adopt(m, adopted, restart);
     return OK;
 }
 
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
     struct mixer *m = calloc(1, sizeof(*m));
     if (!m)
         return 1;
-    if (setup(m) != OK)
+    if (setup(m, argc > 1 ? argv[1] : NULL) != OK)
         return 1;
     printf("mixer: serving; %u streams at most, each a ring of %u frames; the output opens "
            "while one plays\n", MIXER_MAX_STREAMS, RING_FRAMES);

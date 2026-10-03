@@ -7,12 +7,11 @@
  * WAV file and checks the sound there.
  *
  * Every sound comes from a child process, `mixtest tone <name> <hz> <ms>
- * <centibels> [reopen] [pause]`, a separate program with only /svc/audio
- * in its namespace (as play is given): a sine at a quarter of full scale
- * with 5 ms fades, written ahead with mixer_write, drained, closed.
- * `reopen`: it must see the mixer go away once (ERR_PEER_CLOSED) and
- * then opens a new stream and plays the rest; `pause`: after 300 ms of
- * tone it waits 2 s with nothing written, then plays the rest. Phases,
+ * <centibels> [pause]`, a separate program with only /svc/audio in its
+ * namespace (as play is given): a sine at a quarter of full scale with
+ * 5 ms fades, written ahead with mixer_write, drained, closed; every call
+ * must succeed. `pause`: after 300 ms of tone it waits 2 s with nothing
+ * written, then plays the rest. Phases,
  * each a sound of its own with silence between (the WAV's segments):
  *   protocol       no sound: formats refused, the stream methods refused
  *                  on /svc/audio, drain on a stopped stream, volumes
@@ -37,8 +36,8 @@
  *   library_at_once  two programs on <audio.h> (beep's and play's
  *                  library) at once: 1000 Hz at 44.1 kHz (resampled) and
  *                  440 Hz at 48 kHz, each a stream named for `vol`
- *   mixer_killed   init kills the mixer mid-tone: the program sees
- *                  ERR_PEER_CLOSED, opens a new stream and plays the rest
+ *   mixer_killed   init kills the mixer mid-tone: the program never
+ *                  knows (its restart adopts the stream), plays it all
  *   driver_killed  init kills the hda driver mid-tone: the mixer opens
  *                  the output again on its restart, the stream plays on
  *   idle_wakes     a playing stream left empty: listed idle (the mixer
@@ -134,16 +133,14 @@ static status_t tone_open(const char *name, int32_t cb, struct mixer_stream *s)
     return st;
 }
 
-/* "mixtest tone <name> <hz> <ms> <cb> [reopen] [pause]": the exit code
- * says how it went (0 played it all as asked). */
+/* "mixtest tone <name> <hz> <ms> <cb> [pause]": the exit code says how
+ * it went (0 played it all as asked). */
 static int tone_main(int argc, char **argv)
 {
     const char *name = argv[2];
-    bool reopen = false, pause = false, went = false;
-    for (int i = 6; i < argc; i++) {
-        reopen |= !strcmp(argv[i], "reopen");
+    bool pause = false;
+    for (int i = 6; i < argc; i++)
         pause |= !strcmp(argv[i], "pause");
-    }
     struct tone t = { .re = 1, .frames = (uint64_t)number(argv[4]) * MIXER_RATE / 1000 };
     sin_cos(2 * 3.14159265358979323846 * number(argv[3]) / MIXER_RATE, &t.sim, &t.sre);
     struct mixer_stream s;
@@ -162,24 +159,12 @@ static int tone_main(int argc, char **argv)
         tone_next(&t, buf, (uint32_t)n);
         size_t done = 0;
         st = mixer_write(&s, buf, (size_t)n, now() + LONG, &done);
-        if (st == ERR_PEER_CLOSED && reopen && !went) {
-            uint64_t t0 = now();
-            printf("mixtest: tone %s: the mixer went away after %lu frames\n", name,
-                   (unsigned long)t.at);
-            mixer_close(&s);
-            went = true;
-            st = tone_open(name, (int32_t)number(argv[5]), &s);
-            if (st == OK)
-                st = mixer_write(&s, buf + 2 * done, (size_t)n - done, now() + LONG, &done);
-            printf("mixtest: tone %s: a new stream after %lu ms (%s)\n", name,
-                   (unsigned long)((now() - t0) / NS_PER_MS), status_str(st));
-        }
     }
     if (st == OK)
         st = mixer_drain(&s, now() + LONG);
     printf("mixtest: tone %s: %lu frames, %s\n", name, (unsigned long)t.at, status_str(st));
     mixer_close(&s);
-    return st != OK ? 1 : reopen && !went ? 2 : 0;
+    return st != OK ? 1 : 0;
 }
 
 /* "mixtest libtone <name> <rate> <hz> <ms>": a mono tone at `rate` Hz
@@ -552,7 +537,7 @@ static bool t_kill_mid_tone(const char *name, const char *who, const char *opt)
 
 static bool t_mixer_killed(void)
 {
-    return t_kill_mid_tone("tone-d", "mixer", "reopen");
+    return t_kill_mid_tone("tone-d", "mixer", NULL);
 }
 
 static bool t_driver_killed(void)

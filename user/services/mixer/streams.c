@@ -16,7 +16,14 @@
  *
  * Each request is read into a request slot of the state (req_take) and
  * answered from the slot's reply area after a commit (req_answer); a
- * drain answered later commits before its answer too (drain_reply). */
+ * successor runs the one in progress again with the same code (run_audio,
+ * run_control). A drain answered later is answered before the commit that
+ * forgets it (drain_reply): a successor that finds it still waiting
+ * answers it again, which the caller, already answered, never reads.
+ *
+ * A stream's channel, ring and event are put to the keeper (KEEP_STREAM +
+ * its slot) before the state counts the stream, so a restarted mixer
+ * serves the same stream; a put the keeper can't take refuses the open. */
 #include <idl/audio.h>
 #include <idl/audioctl.h>
 #include <idl/svc.h>
@@ -81,10 +88,10 @@ static void drain_reply(struct mixer *m, struct stream *s, status_t st)
         r.frames = s->drain_to;
         n = sizeof(r);
     }
-    s->draining = false;
-    state_commit(m);
     /* The client gone: nobody waits. */
     (void)jam_channel_write(stream_own(m, s)->ch, &r, n, NULL, 0);
+    s->draining = false;
+    state_commit(m);
 }
 
 void drain_check(struct mixer *m, struct stream *s, uint64_t pos, status_t st)
@@ -102,9 +109,12 @@ void stream_drop(struct mixer *m, struct stream *s, const char *why)
     struct stream_own *w = stream_own(m, s);
     if (s->draining)
         drain_reply(m, s, ERR_BAD_STATE);
+    uint32_t slot = (uint32_t)(s - m->nums->s);
     uint64_t key = (uint64_t)s->gen << 8;
-    (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + (uint32_t)(s - m->nums->s)) | key);
-    jam_handle_close(w->ch);   /* its persistent binding goes with our only handle */
+    /* A binding holds its object: let go of both before closing. */
+    (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + slot) | key);
+    (void)jam_port_unbind(m->port, w->ch, (KEY_STREAM + slot) | key);
+    jam_handle_close(w->ch);   /* the keeper's duplicates go below */
     jam_handle_close(w->vmo);
     jam_handle_close(w->event);
     printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s), %u late "
@@ -114,6 +124,7 @@ void stream_drop(struct mixer *m, struct stream *s, const char *why)
     uint32_t gen = s->gen;
     *s = (struct stream){ .gen = gen };
     *w = (struct stream_own){ 0 };
+    keep_slot_drop(m, KEEP_STREAM + slot);
 }
 
 /* ---- the service channel: open_output --------------------------------------------- */
@@ -207,11 +218,20 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     if (st != OK)
         return ERR_NOT_FOUND;   /* no driver with a path: nothing could ever be heard */
     struct stream_own *w = stream_own(m, s);
+    uint32_t slot = (uint32_t)(s - m->nums->s);
     handle_t theirs = HANDLE_INVALID, ring = HANDLE_INVALID, event = HANDLE_INVALID;
     st = make_stream(m, s, &theirs);
-    if (st == OK && (st = client_handles(w, &ring, &event)) != OK) {
-        (void)jam_port_unbind(m->port, w->event,
-                              (KEY_EVENT + (uint32_t)(s - m->nums->s)) | (uint64_t)s->gen << 8);
+    if (st == OK && (st = client_handles(w, &ring, &event)) == OK) {
+        handle_t kept[3] = { w->ch, w->vmo, w->event };
+        if (keep_slot_put(m, KEEP_STREAM + slot, kept, 3) != OK) {
+            st = ERR_NO_RESOURCES;
+            jam_handle_close(ring);
+            jam_handle_close(event);
+        }
+    }
+    if (w->ch && st != OK) {
+        (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8);
+        (void)jam_port_unbind(m->port, w->ch, (KEY_STREAM + slot) | (uint64_t)s->gen << 8);
         jam_handle_close(theirs);
         jam_handle_close(w->ch);
         jam_handle_close(w->vmo);
@@ -224,6 +244,9 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
         return st;
     }
     s->used = true;
+    m->nums->made_seq = m->state.h->slot[m->cur_slot].seq;
+    m->nums->made_kind = MADE_STREAM;
+    m->nums->made_index = slot;
     s->id = m->nums->next_id++;
     s->owner = o->owner;
     s->owner_gen = o->gen;
@@ -357,40 +380,47 @@ static void drain_begin(struct mixer *m, struct stream *s, unsigned slot,
     drain_check(m, s, m->own_out.ch ? m->nums->out.played : 0, OK);
 }
 
-/* One message from ch (port key `key`) with these ops (a stream: drain
- * handled here). */
-static status_t serve_one(struct mixer *m, handle_t ch, uint32_t key, const struct audio_ops *ops,
-                          void *ctx, struct stream *s)
+void run_audio(struct mixer *m, unsigned slot, handle_t ch, uint32_t owner, struct stream *s)
 {
-    unsigned slot;
-    status_t st = req_take(m, ch, key, REQ_CAP_AUDIO, &slot);
-    if (st != OK || slot == REQ_NONE)
-        return st;
     uint32_t n = 0;
     const void *q = svcstate_request(&m->state, slot, &n);
     const struct idl_req_hdr *hdr = q;
     if (s && n == sizeof(struct audio_stream_drain_req) && hdr->ordinal == AUDIO_STREAM_DRAIN) {
         drain_begin(m, s, slot, q);
-        return OK;
+        return;
     }
     if (!s && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
         clients_connect_reply(m, ch, slot, false);
-        return OK;
+        return;
     }
+    struct call c = { m, s };
+    struct opener o = { m, owner, owner ? m->nums->c[owner - 1].gen : 0 };
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = audio_dispatch(ops, ctx, q, n, svcstate_reply_area(&m->state, slot), rhs, &rhn);
+    m->cur_slot = slot;
+    uint32_t rn = audio_dispatch(s ? &stream_ops : &svc_ops, s ? (void *)&c : (void *)&o, q, n,
+                                 svcstate_reply_area(&m->state, slot), rhs, &rhn);
     req_answer(m, slot, ch, rn, rhs, rhn);
-    return OK;
+}
+
+/* One message from ch (port key `key`): a stream's (s), or an opener's
+ * `audio` one (`owner`). */
+static status_t serve_one(struct mixer *m, handle_t ch, uint32_t key, uint32_t owner,
+                          struct stream *s)
+{
+    unsigned slot;
+    status_t st = req_take(m, ch, key, REQ_CAP_AUDIO, &slot);
+    if (st == OK && slot != REQ_NONE)
+        run_audio(m, slot, ch, owner, s);
+    return st;
 }
 
 status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
 {
     uint32_t gen = owner ? m->nums->c[owner - 1].gen : 0;
-    struct opener o = { m, owner, gen };
     uint32_t key = owner ? (KEY_CLIENT + owner - 1) | gen << 8 : KEY_SVC;
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, ch, key, &svc_ops, &o, NULL);
+        status_t st = serve_one(m, ch, key, owner, NULL);
         if (st != OK)
             return st;
     }
@@ -407,12 +437,11 @@ void serve_svc(struct mixer *m)
 
 void serve_stream(struct mixer *m, struct stream *s)
 {
-    struct call c = { m, s };
     struct stream_own *w = stream_own(m, s);
     uint32_t key = (KEY_STREAM + (uint32_t)(s - m->nums->s)) | s->gen << 8;
     w->pending = false;
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, w->ch, key, &stream_ops, &c, s);
+        status_t st = serve_one(m, w->ch, key, 0, s);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)
@@ -502,36 +531,40 @@ static const struct audioctl_ops ctl_ops = {
     .set_master = do_set_master,
 };   /* device: device.c, on a thread of its own */
 
-/* One message from a control channel (ch, port key `key`: the shared one
- * or an opener's); `device` goes to its thread (device.c), the rest are
- * answered here. */
-static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
+/* `device` goes to its thread (device.c), the rest are answered here. */
+void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
 {
-    unsigned slot;
-    status_t st = req_take(m, ch, key, REQ_CAP_CTL, &slot);
-    if (st != OK || slot == REQ_NONE)
-        return st;
     uint32_t n = 0;
     const void *q = svcstate_request(&m->state, slot, &n);
     const struct idl_req_hdr *hdr = q;
     if (n == sizeof(struct audioctl_device_req) && hdr->ordinal == AUDIOCTL_DEVICE) {
-        st = device_ask(m, ch, q);
+        status_t st = device_ask(m, ch, key, slot, q);
         if (st == OK)
             req_answer(m, slot, ch, 0, NULL, 0);   /* answered by the thread */
         else
             req_status(m, slot, ch, st);
-        return OK;
+        return;
     }
     if (n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
         clients_connect_reply(m, ch, slot, true);
-        return OK;
+        return;
     }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, svcstate_reply_area(&m->state, slot), rhs,
                                     &rhn);
     req_answer(m, slot, ch, rn, rhs, rhn);
-    return OK;
+}
+
+/* One message from a control channel (ch, port key `key`: the shared one
+ * or an opener's). */
+static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
+{
+    unsigned slot;
+    status_t st = req_take(m, ch, key, REQ_CAP_CTL, &slot);
+    if (st == OK && slot != REQ_NONE)
+        run_control(m, slot, ch, key);
+    return st;
 }
 
 status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
