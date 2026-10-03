@@ -9,7 +9,8 @@
 # nothing served after `serve stop`. The guest's script checks the
 # shell's side, the request lines and a program without the listen
 # permission refused. The run must pass the peer's and the pcap's VLAN
-# checks (tools/qemu-test.sh).
+# checks (tools/qemu-test.sh). Then a boot with no network card:
+# `serve` says there is no network address yet (serve-nonet.txt).
 # Usage: tools/serve-test.sh <outdir>
 set -eu
 out=$1
@@ -36,6 +37,10 @@ QEMU_IMAGE="$img" QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} \
     QEMU_NET_PEER="--tcp-forward $p1:10.2.21.5:8080,$p2:10.2.21.5:8081" \
     QEMU_INPUT=tools/shell-tests/serve.txt tools/qemu-test.sh "$out" serve shell || ok=0
 wait $cpid || ok=0
+cp "${QEMU_IMAGE:-build/jamos.img}" "$out/serve-nonet.base.img"   # no net.address: no address
+QEMU_IMAGE="$out/serve-nonet.base.img" QEMU_INPUT=tools/shell-tests/serve-nonet.txt \
+    tools/qemu-test.sh "$out" serve-nonet shell || ok=0
+rm -f "$out/serve-nonet.base.img"
 sed 's/^/serve-test: /' "$out/servecheck.log"
 grep -a "serve: 10\.2\.21\." "$out/serve.log" | tr -d '\r' | sed 's/^.*serve:/serve-test: guest: serve:/' || true
 if [ $ok = 1 ]; then

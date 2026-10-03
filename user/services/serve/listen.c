@@ -35,6 +35,8 @@ static void worker(void *arg)
         struct share *sh = &shares[slot];
         handle_t net = svc_get(SVC_NET_LISTEN);
         st = net ? net_wait_up(net, now() + 5 * NS_PER_S, NULL) : ERR_ACCESS_DENIED;
+        if (st == ERR_TIMED_OUT)
+            st = ERR_BAD_STATE;   /* no address yet: not a server that didn't answer */
         if (st == OK)
             st = net_tcp_listen(net, sh->port, BACKLOG, TX_RING, RX_RING, &sh->lst);
         sh->listen_st = st;

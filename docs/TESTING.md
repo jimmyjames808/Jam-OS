@@ -497,6 +497,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `music.txt` | the music player: usage, errors, `music start` with the shell in use meanwhile (`ls`, `beep`, `vol`, `music status`, `music vol`, `music next`), past one whole shuffle, `music stop`; it plays on through Ctrl+C, `kill shell` and `kill mixer`; `music prev`, `pause` (and `status` paused), the sleep timer set, shown, off, and 33 s that runs out; a second stick pulled mid-song | use `tools/music-test.sh` |
 | `fetch.txt` | `fetch`: files saved, a pipe, redirects, hostile servers refused, Ctrl+C | use `tools/fetch-test.sh` |
 | `serve.txt` | `serve`: two files in the background, its refusals, its list and `serve stop`, while the Mac fetches; `run nolisten` refused | use `tools/serve-test.sh` |
+| `serve-nonet.txt` | `serve` with no network card: "no network address yet" after bin/serve's 5 s wait | use `tools/serve-test.sh` |
 | `speed.txt` | `speed`: TCP both ways, UDP, a refused port, `speed -l`, Ctrl+C | use `tools/speed-test.sh` |
 | `usb.txt` | the `usb` command | `QEMU_USB="-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"` |
 | `usbkeys.txt` | typing on a USB keyboard behind a hub; kill hid, the console, devmgr | use `tools/usbkeys-test.sh` |

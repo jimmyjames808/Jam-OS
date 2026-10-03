@@ -1,0 +1,12 @@
+# serve with no network (tools/serve-test.sh's second boot, no network
+# card): bin/serve waits 5 s for an address for its listener and none
+# comes; the shell says so (not that the server didn't answer).
+wait 120 Jam OS shell
+seen 60 serve: ready
+wait jam>
+send serve /boot/build.txt 8080; echo st=$?
+wait 30 serve: /boot/build.txt on port 8080: no network address yet
+wait st=1
+wait jam>
+send reboot -f
+wait reboot: resetting
