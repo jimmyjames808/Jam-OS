@@ -570,6 +570,8 @@ static const struct {
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
     { "job_kill_reaps_orphans", t_job_kill_reaps_orphans },
     { "fpu_state_survives_preemption", t_fpu_state_survives_preemption },
+    { "fpu_call_keeps_control_words", t_fpu_call_keeps_control_words },
+    { "fpu_ring3_switch_keeps_all", t_fpu_ring3_switch_keeps_all },
     { "many_threads", t_many_threads },
     { "lock_take", t_lock_take },
     { "driver_processes", t_driver_processes },

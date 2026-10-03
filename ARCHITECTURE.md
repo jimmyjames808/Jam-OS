@@ -24,7 +24,7 @@ built yet, it says so.
 | SMP | From day one |
 | Native API | Capability handles; a POSIX layer (musl) possible later |
 | Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
-| Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`) |
+| Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`); a call may clobber the vector registers, as a C call does ([The system call ABI](#the-system-call-abi)) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
@@ -435,6 +435,36 @@ Every driver and service is a userspace process from the start.
   error instead of panicking (thread structs and stacks, handle tables,
   page tables for kernel stacks, the timer service, `smp_call_others`).
 
+## The system call ABI
+
+- A system call is the `syscall` instruction: the number in rax, up to
+  six arguments in rdi, rsi, rdx, r10, r8 and r9 (more go in one struct,
+  `@struct` in `abi/syscalls.def`), the result in rax (`OK`, a negative
+  `ERR_*`, or a value). The wrappers `jam_<name>` (`user/lib/syscalls.S`,
+  declared in `user/include/jam_syscalls.h`) are generated, out-of-line C
+  functions.
+- **The register rule: a system call is a C function call.** The kernel
+  keeps every general register but rax, rcx and r11 (the instruction
+  itself overwrites rcx and r11), and keeps MXCSR and the x87 control
+  word. The vector registers (xmm, ymm) and the x87 stack are the
+  caller's to save, as across any call under the x86-64 C calling
+  convention: a thread switched out inside a call (blocked, or preempted
+  while the kernel ran it) comes back with them zeroed, never with
+  another thread's values. A switch inside a call therefore saves two
+  words, not the XSAVE state (`kernel/arch/x86_64/fpu.c`). Programs that
+  call through C functions (libos, and a POSIX layer later) need nothing;
+  code that issues `syscall` itself lists xmm0-15 as clobbered and keeps
+  nothing on the x87 stack. Linux keeps every register across a system
+  call; Jam OS does not.
+- An interrupt or an exception from ring 3 is not a call: everything is
+  kept (the full XSAVE state, as before).
+- Never dropped: PKRU (protection keys) and CET's shadow-stack state, if
+  either is ever turned on (neither is today). The rule applies only while
+  XCR0 holds nothing but x87, SSE and AVX, so enabling them falls back to
+  the full save until the call path keeps them. Switch `fpu_call`, boot
+  `nofpucall`: every switch saves the full state, for the benchmark's
+  comparison.
+
 ## IPC
 
 - **Channel**: bidirectional endpoint pair; message = up to 64 KiB of bytes +
@@ -583,6 +613,10 @@ port, so while it handles one request every other client waits behind it.
 - User FPU state: XSAVEOPT where available, and no XRSTOR when the
   CPU's registers still hold the incoming thread's state (last restored
   here, not restored elsewhere since). Switch `fpu_opt`, boot `nofpuopt`.
+  A thread switched out inside a system call keeps only MXCSR and the x87
+  control word, and is switched back in with a clean state
+  ([the register rule](#the-system-call-abi)); switch `fpu_call`, boot
+  `nofpucall`.
 - **Cancellable waits**: `thread_cancel(t)` sets a per-thread flag for
   good and wakes t. The cancellable waits (`thread_block_cancellable`,
   `waitqueue_wait_cancellable`, `thread_sleep_cancellable`,

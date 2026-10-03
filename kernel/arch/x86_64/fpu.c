@@ -20,7 +20,34 @@
  *     kernel threads (idle) in between keeps its registers. Anything else
  *     that loads the registers must forget the owner: fpu_clobbered()
  *     (only the benchmark does). A new area starts with fpu_cpu = none, so
- *     a thread struct reused at a freed owner's address can't match. */
+ *     a thread struct reused at a freed owner's address can't match.
+ *
+ * The system call rule (switch fpu_call, boot "nofpucall"). A system call
+ * is a function call: the wrappers are out-of-line functions, and under
+ * the x86-64 C calling convention every vector register and the x87 stack
+ * are the caller's to save across a call; only MXCSR and the x87 control
+ * word must survive it. So a thread switched out while it is inside a
+ * system call (blocked, or preempted while the kernel ran the call for
+ * it: t->in_syscall) has no live vector registers, and fpu_save_called
+ * keeps just those two words: it writes them into the area, which it
+ * turns into a clean state (XSTATE_BV says "initial" for every component,
+ * except x87 when its control word isn't the default, and then the x87
+ * part is empty), and forgets that the registers stand for the area. The
+ * switch back in is the usual XRSTOR, of a state that is almost all
+ * "initial", so the thread returns from its call with zeroed vector and
+ * x87 registers and its own MXCSR and control word: never another
+ * thread's values, nor stale ones of its own. A thread switched out of
+ * ring 3 by an interrupt or an exception (in_syscall is clear) is saved
+ * in full, as above.
+ *
+ * Components that must never be dropped: PKRU (user protection keys) is
+ * per-thread state that says what memory the thread may touch, not a
+ * scratch register, and CET's user state (shadow stacks) is the
+ * thread's return addresses. Neither is enabled here (XCR0 is x87, SSE
+ * and AVX at most; CET's state would be a supervisor component that only
+ * XSAVES handles, which this file doesn't use). The rule applies only
+ * while XCR0 holds nothing but x87, SSE and AVX (call_drop_ok), so turning
+ * either on falls back to the full save until fpu_save_called keeps it. */
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
@@ -39,16 +66,26 @@
 #define XCR0_SSE (1ull << 1)
 #define XCR0_AVX (1ull << 2)
 
-#define FXSAVE_SIZE  512
-#define MXCSR_OFF    24
-#define MXCSR_INIT   0x1f80   /* all SIMD exceptions masked, round to nearest */
-#define FCW_INIT     0x037f   /* all x87 exceptions masked, 64-bit precision */
+#define XCR0_DROPPABLE (XCR0_X87 | XCR0_SSE | XCR0_AVX)   /* what a system call may clobber */
+
+/* The legacy (FXSAVE) area, Intel SDM vol. 1, 10.5.1: FCW at 0, MXCSR at
+ * 24, the x87 environment and ST0-ST7 below 160, XMM0-XMM15 below 416.
+ * The XSAVE header follows at 512 (SDM vol. 1, 13.4.2). */
+#define FXSAVE_SIZE   512
+#define MXCSR_OFF     24
+#define X87_END       160
+#define XMM_END       416
+#define XSTATE_BV_OFF 512
+#define MXCSR_INIT    0x1f80   /* all SIMD exceptions masked, round to nearest */
+#define FCW_INIT      0x037f   /* all x87 exceptions masked, 64-bit precision */
 
 static uint64_t xcr0;
 static uint32_t area_size;
 static struct kmem_cache *area_cache;
 static bool has_xsaveopt;
+static bool call_drop_ok;   /* XCR0 holds only XCR0_DROPPABLE components */
 bool fpu_opt = true;
+bool fpu_call = true;
 static struct thread *fpu_owner[MAX_CPUS];   /* whose state this CPU's registers hold */
 #define FPU_CPU_NONE UINT32_MAX
 
@@ -80,11 +117,15 @@ void fpu_init_cpu(void)
             area_size = FXSAVE_SIZE;
         }
         area_cache = kmem_cache_create("fpu state", area_size, 64);
+        call_drop_ok = !(xcr0 & ~XCR0_DROPPABLE);
         __atomic_store_n(&fpu_opt, !cmdline_has("nofpuopt"), __ATOMIC_RELAXED);
-        report("fpu: %s, xcr0 %lx, %u-byte user state; smep=%d smap=%d umip=%d pcid=%d/%d "
-               "invpcid=%d", cpu_features.xsave ? (has_xsaveopt ? "XSAVEOPT" : "XSAVE") : "FXSAVE",
-               xcr0, area_size, cpu_features.smep, cpu_features.smap, cpu_features.umip,
-               cpu_features.pcid, pcid_is_on(), cpu_features.invpcid);
+        __atomic_store_n(&fpu_call, !cmdline_has("nofpucall"), __ATOMIC_RELAXED);
+        report("fpu: %s, xcr0 %lx, %u-byte user state, calls keep %s; smep=%d smap=%d umip=%d "
+               "pcid=%d/%d invpcid=%d",
+               cpu_features.xsave ? (has_xsaveopt ? "XSAVEOPT" : "XSAVE") : "FXSAVE", xcr0,
+               area_size, fpu_call_drop() ? "control words" : "everything", cpu_features.smep,
+               cpu_features.smap, cpu_features.umip, cpu_features.pcid, pcid_is_on(),
+               cpu_features.invpcid);
         return;
     }
     if (cpu_features.xsave)
@@ -120,6 +161,32 @@ void fpu_restore(const void *area)
                          "d"((uint32_t)(xcr0 >> 32)) : "memory");
     else
         __asm__ volatile("fxrstor64 (%0)" :: "r"(area) : "memory");
+}
+
+bool fpu_call_drop(void)
+{
+    return call_drop_ok && __atomic_load_n(&fpu_call, __ATOMIC_RELAXED);
+}
+
+/* The system call rule (see the top): keep MXCSR and the control word,
+ * leave the area a clean state, and make the next switch in restore it. */
+void fpu_save_called(struct thread *t)
+{
+    uint8_t *a = t->ustate;
+    uint16_t fcw;
+    uint32_t mxcsr;
+    __asm__ volatile("fnstcw %0" : "=m"(fcw));
+    __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
+    bool own_fcw = fcw != FCW_INIT;
+    if (!cpu_features.xsave)
+        memset(a, 0, XMM_END);   /* FXRSTOR loads every field: empty x87, zero XMM */
+    else if (own_fcw)
+        memset(a, 0, X87_END);   /* x87 is loaded from the area: make it empty */
+    if (cpu_features.xsave)      /* SSE and AVX (and x87 unless own_fcw): initial */
+        *(uint64_t *)(a + XSTATE_BV_OFF) = own_fcw ? XCR0_X87 : 0;
+    *(uint16_t *)a = fcw;
+    *(uint32_t *)(a + MXCSR_OFF) = mxcsr;   /* XRSTOR loads MXCSR whatever XSTATE_BV says */
+    t->fpu_cpu = FPU_CPU_NONE;   /* the registers no longer match the area */
 }
 
 /* Interrupts off: load t's state into this CPU's registers, unless they

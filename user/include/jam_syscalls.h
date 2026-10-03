@@ -2,7 +2,16 @@
  * change the .def and run `make syscalls`.
  *
  * System call wrappers (user/lib/syscalls.S). Negative results are
- * ERR_* codes from <jam/status.h>. */
+ * ERR_* codes from <jam/status.h>.
+ *
+ * The register rule. The kernel treats a system call as a C function
+ * call: at the `syscall` instruction it keeps every general register
+ * but rax (the result), rcx and r11, and keeps MXCSR and the x87
+ * control word; the vector registers (xmm/ymm) and the x87 stack are
+ * the caller's to save, as across any call. A call that blocks comes
+ * back with them zeroed (never another thread's values). Code that
+ * issues `syscall` itself must list them as clobbered
+ * (ARCHITECTURE.md, "The system call ABI"). */
 #pragma once
 
 #include <stdint.h>

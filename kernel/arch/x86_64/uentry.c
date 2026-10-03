@@ -153,6 +153,11 @@ int64_t syscall_entry_c(struct syscall_frame *f)
 {
     PATH_SYSCALL_NR(f->nr);
     PATH_MARK_ARG(PATH_MK_SYS_ENTER, f->nr);
+    /* Set and cleared with interrupts off, so a switch never sees it in
+     * between: from here until the return to ring 3 the vector registers
+     * are not live (the system call rule, fpu.c). */
+    struct thread *self = current_thread();
+    self->in_syscall = true;
     irq_enable();
     int64_t r;
 #ifndef JAM_NO_KTESTS
@@ -162,7 +167,8 @@ int64_t syscall_entry_c(struct syscall_frame *f)
 #endif
         r = syscall_dispatch(f);
     irq_disable();
-    return_to_user_work();
+    return_to_user_work();   /* a switch in here is still inside the call */
+    self->in_syscall = false;
     /* The CPU put a canonical address in rcx, but the frame may have been
      * changed since. sysretq to a non-canonical RIP faults in ring 0 with
      * the user's RSP and GS loaded; nothing legitimate returns at or above
@@ -310,8 +316,13 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
         c->kernel_rsp = (uint64_t)next->stack_top;
     }
     if (prev->ustate && thread_state(prev) != T_DEAD) {
-        PATH_SW_COUNT(prev, next, PATH_FPU_SAVE);
-        fpu_save(prev->ustate);
+        if (prev->in_syscall && fpu_call_drop()) {
+            PATH_SW_COUNT(prev, next, PATH_FPU_CALLED);
+            fpu_save_called(prev);   /* the control words only (fpu.c) */
+        } else {
+            PATH_SW_COUNT(prev, next, PATH_FPU_SAVE);
+            fpu_save(prev->ustate);
+        }
     }
     if (next->ustate)
         fpu_load(next);   /* skipped if this CPU still holds its state (fpu.c) */
@@ -347,6 +358,7 @@ _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, ui
     struct cpu *c = this_cpu();
     c->tss.rsp[0] = (uint64_t)t->stack_top;
     c->kernel_rsp = (uint64_t)t->stack_top;
+    t->in_syscall = false;   /* in ring 3 from here: its registers are live */
     fpu_reset_and_load(t);
     /* No TLS yet (FS is not saved per thread). The user GS base sits in
      * KERNEL_GS_BASE until the swapgs; keep both zero. */

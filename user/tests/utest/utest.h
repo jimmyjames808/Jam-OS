@@ -115,6 +115,10 @@ void sse_round(const uint8_t *pat, uint8_t *got, uint64_t spins);
 void avx_round(const uint8_t *pat, uint8_t *got, uint64_t spins);
 bool t_fpu_state_survives_preemption(void);
 
+/* fpucall.c: the system call rule for the FPU (ARCHITECTURE.md, "The
+ * system call ABI"). */
+bool t_fpu_call_keeps_control_words(void);
+bool t_fpu_ring3_switch_keeps_all(void);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

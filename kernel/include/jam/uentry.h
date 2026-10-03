@@ -54,6 +54,15 @@ void fpu_reset_and_load(struct thread *t);
 void fpu_clobbered(void);
 void fpu_save(void *area);
 void fpu_restore(const void *area);
-/* Run-time switch: XSAVEOPT and the skipped restore (boot "nofpuopt"). */
+/* Interrupts off, t switching out from inside a system call: keep only its
+ * MXCSR and x87 control word, so it comes back with clean registers
+ * (fpu.c, "The system call rule"). */
+void fpu_save_called(struct thread *t);
+/* Is the system call rule in force (fpu_call on, and nothing in XCR0 that
+ * must never be dropped)? */
+bool fpu_call_drop(void);
+/* Run-time switches: XSAVEOPT and the skipped restore (boot "nofpuopt");
+ * the system call rule (boot "nofpucall"). */
 extern bool fpu_opt;
+extern bool fpu_call;
 uint32_t fpu_area_size(void);

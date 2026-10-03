@@ -338,15 +338,15 @@ static void print_counts(const struct case_info *ci, const struct path_result *r
                                            PATH_HANDLE, PATH_LOCK };
     static const enum path_ev sched[] = { PATH_SCHED, PATH_SWITCH, PATH_WAKE, PATH_IPI,
                                           PATH_SLEEPQ, PATH_TIMER_ARM };
-    static const enum path_ev arch[] = { PATH_FPU_SAVE, PATH_FPU_RESTORE, PATH_FPU_KEPT,
-                                         PATH_CR3, PATH_CR3_FLUSH };
+    static const enum path_ev arch[] = { PATH_FPU_SAVE, PATH_FPU_CALLED, PATH_FPU_RESTORE,
+                                         PATH_FPU_KEPT, PATH_CR3, PATH_CR3_FLUSH };
     static const enum path_ev other[] = { PATH_EMPTY_READ, PATH_OBSERVER };
     print_group(r, units, "kernel entries", entries, 3);
     print_sys(r, units);
     print_group(r, units, "copies", copies, 6);
     print_group(r, units, "memory, handles, locks", memory, 6);
     print_group(r, units, "scheduler", sched, 6);
-    print_group(r, units, "FPU and address space", arch, 5);
+    print_group(r, units, "FPU and address space", arch, 6);
     print_group(r, units, "other", other, 2);
 }
 

@@ -15,6 +15,7 @@
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/syscall_nums.h>
+#include <jam/uentry.h>
 
 #include "bench_internal.h"
 
@@ -137,6 +138,7 @@ KTEST(pathstat_switch_counts)
     KT_EQ(per100(&r, PATH_KMALLOC), 0);
     KT_EQ(per100(&r, PATH_SYSCALL), 0);
     KT_EQ(per100(&r, PATH_FPU_SAVE), 0);
+    KT_EQ(per100(&r, PATH_FPU_CALLED), 0);
     KT_EQ(per100(&r, PATH_CR3), 0);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
@@ -176,7 +178,9 @@ KTEST(pathstat_kernel_call_counts)
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
  * calls (the call; the server's read, write, a read that finds nothing,
  * and its wait), 5 handle lookups, 2 messages, 2 job charges and 2
- * credits, and per switch one FPU save, one restore and one CR3 load. */
+ * credits, and per switch one restore and one CR3 load. Both threads
+ * switch out inside a system call, so no switch saves the FPU state: each
+ * keeps only its control words (the system call rule, fpu.c). */
 KTEST(pathstat_user_call_counts)
 {
     struct path_result r;
@@ -197,7 +201,8 @@ KTEST(pathstat_user_call_counts)
     KT_EQ(per100(&r, PATH_HANDLE), 500);
     KT_EQ(per100(&r, PATH_JOB), 400);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
-    KT_IDLE_EQ(per100(&r, PATH_FPU_SAVE), 200);
+    KT_IDLE_EQ(per100(&r, PATH_FPU_SAVE), fpu_call_drop() ? 0 : 200);
+    KT_IDLE_EQ(per100(&r, PATH_FPU_CALLED), fpu_call_drop() ? 200 : 0);
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
 }

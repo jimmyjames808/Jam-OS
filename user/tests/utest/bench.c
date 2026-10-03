@@ -42,7 +42,12 @@ static struct ubench_result res;
 static int64_t null_syscall(void)
 {
     int64_t r;
-    __asm__ volatile("syscall" : "=a"(r) : "a"((uint64_t)NULL_SYSCALL) : "rcx", "r11", "memory");
+    /* The system call rule (<jam_syscalls.h>): the vector registers are
+     * clobbered, as across any call. */
+    __asm__ volatile("syscall" : "=a"(r) : "a"((uint64_t)NULL_SYSCALL)
+                     : "rcx", "r11", "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
+                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13",
+                       "xmm14", "xmm15");
     return r;
 }
 
