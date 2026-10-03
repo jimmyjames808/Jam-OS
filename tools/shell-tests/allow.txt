@@ -7,7 +7,8 @@
 # shown as "accepting connections from the network" and given once
 # allowed; a program whose list asks for devmgr's or
 # init's channels (a copy of bin/utest) or for the kernel's debug commands
-# (a copy of bin/wantdebug) is refused, approval or not;
+# (a copy of bin/wantdebug) or for the ports below 1024 (a copy of
+# bin/serve) is refused, approval or not;
 # `allow -r` takes it back; only a file on /data can be allowed, and a shell
 # init didn't start can't.
 # Run: QEMU_INPUT=tools/shell-tests/allow.txt tools/qemu-test.sh build/test allow shell
@@ -50,10 +51,12 @@ wait run: /data/s exited with code 0
 wait st-x=0
 wait jam>
 # the listen permission: /svc/net refuses port 5000, /svc/net-listen takes it
+# but not a listener on port 80 (that is `svc net listen low`'s)
 send run wantlisten; echo st-$T=$?
 wait wantlisten: port 5000 on /svc/net: ERR_ACCESS_DENIED
 wait wantlisten: port 5000 on /svc/net-listen: OK
 wait wantlisten: port 0 on /svc/net: OK
+wait wantlisten: a listener on port 80 on /svc/net-listen: ERR_ACCESS_DENIED
 wait st-x=0
 wait jam>
 send cp /boot/bin/wantlisten /data/l && run /data/l; echo st-$T=$?
@@ -88,6 +91,12 @@ wait st-x=0
 wait jam>
 send cp /boot/bin/wantdebug /data/d && allow /data/d; echo st-$T=$?
 wait allow: /data/d: asks for right debug, which no program from /data may have
+wait st-x=1
+wait jam>
+# nor the ports below 1024 (`svc net listen low`, bin/serve's list): from
+# /data a program could pose as one of the system's services
+send cp /boot/bin/serve /data/v && allow /data/v; echo st-$T=$?
+wait allow: /data/v: asks for net-low, which no program from /data may have
 wait st-x=1
 wait jam>
 # a program's /data is a view: etc can't change, the rest can

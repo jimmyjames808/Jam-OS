@@ -372,7 +372,7 @@ status_t progs_connect(void *ctx, handle_t *out)
         }
         *o = (struct opener){ .ch = mine, .gen = o->gen, .pending = true, .cls = k->cls,
                               .echo_id = (uint16_t)((os_random_u32() & ~0x1fu) | i),
-                              .listen = k->listen };
+                              .listen = k->listen, .low = k->low };
         pg.held[k->cls].openers++;
         *out = theirs;
         return OK;

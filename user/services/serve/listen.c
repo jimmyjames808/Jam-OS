@@ -1,6 +1,6 @@
 /* serve: the listen worker. Asking netstack for a listener is a call that
  * waits for its answer (net.idl's tcp_listener, through libos's
- * net_tcp_listen, on /svc/net-listen's opener that libos keeps and opens
+ * net_tcp_listen, on /svc/net-low's opener that libos keeps and opens
  * again after a netstack restart), so the serving loop doesn't make it:
  * this thread, which serves nobody, does. The loop writes a share's slot
  * on `asks`; the worker fills the share's lst and listen_st, stores `done`
@@ -33,7 +33,7 @@ static void worker(void *arg)
         if (n != sizeof(slot) || slot >= SERVE_SHARES)
             continue;
         struct share *sh = &shares[slot];
-        handle_t net = svc_get(SVC_NET_LISTEN);
+        handle_t net = svc_get(SVC_NET_LISTEN_LOW);   /* every port, the low ones too */
         st = net ? net_wait_up(net, now() + 5 * NS_PER_S, NULL) : ERR_ACCESS_DENIED;
         if (st == ERR_TIMED_OUT)
             st = ERR_BAD_STATE;   /* no address yet: not a server that didn't answer */

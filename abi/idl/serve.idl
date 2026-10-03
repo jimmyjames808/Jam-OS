@@ -13,7 +13,8 @@
 
 protocol serve 31
 
-# Serve a file on `port` (SERVE_PORT_MIN and up). `name` is the file's path
+# Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
+# the permission for those below 1024 too). `name` is the file's path
 # as the owner gave it (NUL-terminated): for `info`, the log and the
 # Content-Type, never opened by the server. Answers at once with a channel
 # `give`: the caller writes one message on it, struct serve_give with the
@@ -22,6 +23,7 @@ protocol serve 31
 # OK once the server listens (it serves that file and nothing else, to
 # every path asked), else why not (ERR_ACCESS_DENIED: the server has no
 # listen permission; ERR_ALREADY_BOUND: another program has the port;
+# ERR_BAD_STATE: no network address yet (it waits 5 s for one);
 # netstack's other errors; ERR_INVALID_ARGS: a wrong message). The server
 # closes `give` after its answer, or if nothing comes on it in
 # SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or

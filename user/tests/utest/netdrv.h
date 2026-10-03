@@ -34,3 +34,5 @@ handle_t netdrv_net(void);
 handle_t netdrv_net_listen(void);
 /* /svc/net-sys's: its openers are system ones (netstack's reserve). */
 handle_t netdrv_net_sys(void);
+/* /svc/net-low's: its openers may listen on ports below 1024 too. */
+handle_t netdrv_net_listen_low(void);

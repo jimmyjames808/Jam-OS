@@ -14,6 +14,11 @@
  *                             fixed port below NET_PORT_EPHEMERAL (and,
  *                             with TCP, accept connections); never
  *                             written `svc net-listen`
+ *     svc net listen low      the same on ports below 1024 too: /svc/net
+ *                             and /svc/net-low (never written
+ *                             `svc net-low`); the build allows it
+ *                             only for a service (bin/serve), and `allow`
+ *                             never for a program on /data
  *     mount <point> r|rw      a mount, read-only or writable (writable
  *                             leaves the top-level `etc` alone); <point>
  *                             is /boot, /esp, /data, /usb* (every other

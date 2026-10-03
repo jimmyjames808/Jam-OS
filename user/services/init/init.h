@@ -249,6 +249,10 @@ handle_t net_svc_channel(void);
 /* /svc/net-listen's, the same: its openers may listen (take a fixed port
  * below NET_PORT_EPHEMERAL). */
 handle_t net_listen_channel(void);
+/* /svc/net-low's, the same: its openers may listen on ports below
+ * 1024 too (the shell gives it only to a program whose list says `svc net
+ * listen low`). */
+handle_t net_listen_low_channel(void);
 /* /svc/net-sys's client end (published: init's own network services and
  * bin/update reach netstack's reserve through it), or 0. */
 handle_t net_sys_channel(void);

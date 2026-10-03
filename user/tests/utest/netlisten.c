@@ -1,9 +1,10 @@
-/* utest: the listen permission (netstack's listen.h): which UDP ports an
- * opener of /svc/net may take and an opener of /svc/net-listen may, through
+/* utest: the listen permissions (netstack's listen.h): which UDP ports an
+ * opener of /svc/net may take, an opener of /svc/net-listen and one of
+ * /svc/net-low, and which TCP ports they may listen on, through
  * bin/netstack over the fake driver (netdrv.h); that a program without it
- * still gets datagrams on a port netstack picked; and the list's line for
- * it (<wants.h>): `svc net listen` grants both channels and says so to the
- * owner, and no other spelling is a want. */
+ * still gets datagrams on a port netstack picked; and the list's lines for
+ * them (<wants.h>): `svc net listen` and `svc net listen low` grant their
+ * channels and say so to the owner, and no other spelling is a want. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -69,6 +70,56 @@ static bool listen_opener(handle_t o)
     return true;
 }
 
+/* A TCP listener on port `port` through opener o: want. */
+static bool listens(handle_t o, uint16_t port, status_t want)
+{
+    struct net_listener l;
+    status_t st = net_tcp_listen(o, port, 1, 0, 0, &l);
+    if (st != want)
+        FAIL("listening on %u: %s, want %s", port, status_str(st), status_str(want));
+    if (st == OK)
+        net_listener_close(&l);
+    return true;
+}
+
+/* The low ports: refused to /svc/net-listen's opener lis, taken by
+ * /svc/net-low's low (but never DHCP's), TCP and UDP. */
+static bool low_ports(handle_t lis, handle_t low)
+{
+    CHECK(listens(lis, 80, ERR_ACCESS_DENIED));
+    CHECK(listens(lis, 1, ERR_ACCESS_DENIED));
+    CHECK(takes(lis, 53, ERR_ACCESS_DENIED));
+    CHECK(listens(low, 80, OK));
+    CHECK(listens(low, 1, OK));
+    CHECK(listens(low, 1023, OK));
+    CHECK(listens(low, 8080, OK));   /* and the ports above, as /svc/net-listen's */
+    CHECK(listens(low, 0, OK));
+    CHECK(takes(low, 53, OK));
+    CHECK(takes(low, 5000, OK));
+    CHECK(takes(low, NET_PORT_DHCP_CLIENT, ERR_ACCESS_DENIED));
+    CHECK(takes(low, NET_PORT_DHCP_SERVER, ERR_ACCESS_DENIED));
+    CHECK(listens(low, NET_PORT_DHCP_CLIENT, ERR_ACCESS_DENIED));
+    return true;
+}
+
+bool t_netlisten_low(void)
+{
+    handle_t plain, lis, low;
+    CHECK(netdrv_start());
+    CHECK_ST(svc_connect_until(netdrv_net(), now() + NETDRV_WAIT, &plain), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_listen(), now() + NETDRV_WAIT, &lis), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_listen_low(), now() + NETDRV_WAIT, &low), OK);
+    CHECK(listens(plain, 80, ERR_ACCESS_DENIED));
+    CHECK(listens(plain, 8080, ERR_ACCESS_DENIED));
+    bool ok = low_ports(lis, low);
+    jam_handle_close(plain);
+    jam_handle_close(lis);
+    jam_handle_close(low);
+    CHECK(ok);
+    CHECK(netdrv_stop());
+    return true;
+}
+
 bool t_netlisten_udp(void)
 {
     handle_t plain, lis, h;
@@ -124,7 +175,14 @@ bool t_netlisten_wants(void)
 {
     static const char *const listen[] = { "/svc/net", "/svc/net-listen", NULL };
     static const char *const net[] = { "/svc/net", NULL };
+    static const char *const low[] = { "/svc/net", "/svc/net-low", NULL };
     CHECK(parsed("svc net listen\n", listen, "net, accepting connections from the network"));
+    CHECK(parsed("svc net listen low\n", low,
+                 "net, accepting connections from the network, below port 1024 too"));
+    CHECK(parsed("svc net-low\n", NULL, NULL));   /* only the long form */
+    CHECK(parsed("svc net listen low now\n", NULL, NULL));
+    CHECK(parsed("svc net listen lower\n", NULL, NULL));
+    CHECK(parsed("svc net low\n", NULL, NULL));
     CHECK(parsed("svc net\n", net, "net"));
     CHECK(parsed("svc net-listen\n", NULL, NULL));     /* only the long form */
     CHECK(parsed("svc dns listen\n", NULL, NULL));

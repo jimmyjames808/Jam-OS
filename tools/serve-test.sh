@@ -1,7 +1,8 @@
 #!/bin/sh
 # serve end to end in QEMU (tools/shell-tests/serve.txt): two files put on
 # the stick's /data, served by bin/serve in the guest on ports 8080 and
-# 8081, fetched by curl on the Mac through the network peer's TCP relay
+# 80 (below 1024: serve's `svc net listen low`), fetched by curl on the
+# Mac through the network peer's TCP relay
 # (tools/netpeer.py --tcp-forward: two Mac ports to the guest's two), with
 # tools/servecheck.py checking every answer: two downloads at once with
 # their SHA-256, HEAD, a range, the second file's type, a request that
@@ -34,7 +35,7 @@ cpid=$!
 trap 'kill $cpid 2>/dev/null || true' EXIT
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} \
-    QEMU_NET_PEER="--tcp-forward $p1:10.2.21.5:8080,$p2:10.2.21.5:8081" \
+    QEMU_NET_PEER="--tcp-forward $p1:10.2.21.5:8080,$p2:10.2.21.5:80" \
     QEMU_INPUT=tools/shell-tests/serve.txt tools/qemu-test.sh "$out" serve shell || ok=0
 wait $cpid || ok=0
 cp "${QEMU_IMAGE:-build/jamos.img}" "$out/serve-nonet.base.img"   # no net.address: no address

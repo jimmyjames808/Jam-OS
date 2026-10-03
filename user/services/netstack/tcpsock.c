@@ -419,7 +419,7 @@ status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_
 {
     struct opener *o = ctx;
     uint32_t tx = tx_bytes ? tx_bytes : NET_TCP_TX, rx = rx_bytes ? rx_bytes : NET_TCP_RX;
-    if (!listen_may_accept(o) || (port && port < NET_PORT_LOW))
+    if (!listen_may_accept(o, port))
         return ERR_ACCESS_DENIED;
     if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx))
         return ERR_INVALID_ARGS;

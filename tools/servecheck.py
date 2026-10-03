@@ -3,7 +3,7 @@
 serves, fetch from Jam OS's `serve` through the network peer's
 --tcp-forward ports, as programs on the Mac would, and check every answer.
 
-    servecheck.py --log SERIAL_LOG --port P (the guest's 8080) --port2 P2 (8081)
+    servecheck.py --log SERIAL_LOG --port P (the guest's 8080) --port2 P2 (its 80)
                   --file FILE --page PAGE
 
 With one connection left open and silent the whole time (a slow client

@@ -5,13 +5,15 @@
  * and served PROGS_BUDGET requests a turn with a flag saying more may be
  * queued (a binding fires on edges only):
  * - the shared channels (startup roles SR_USER + 1, /svc/net, here;
- *   SR_USER + 2, /svc/net-listen, listen.c's; SR_USER + 3, /svc/net-sys,
- *   here; init keeps their server ends across restarts and publishes the
- *   client ends): each answers svc.connect with an opener's channel
- *   (progs_connect), and iface and counts. What kind of opener a channel
- *   makes is the channel's (struct opener_kind): /svc/net-sys's are system
- *   openers (init gives that name only to the network's own services), the
- *   others ordinary ones, and /svc/net-listen's may listen;
+ *   SR_USER + 2, /svc/net-listen, and SR_USER + 4, /svc/net-low,
+ *   listen.c's; SR_USER + 3, /svc/net-sys, here; init keeps their server
+ *   ends across restarts and publishes the client ends): each answers
+ *   svc.connect with an opener's channel (progs_connect), and iface and
+ *   counts. What kind of opener a channel makes is the channel's (struct
+ *   opener_kind): /svc/net-sys's are system openers (init gives that name
+ *   only to the network's own services), the others ordinary ones,
+ *   /svc/net-listen's may listen, and /svc/net-low's on ports below
+ *   1024 too;
  * - an opener's channel (clients.c): iface, counts, wait_change,
  *   chip_counts, udp, udp_rings, echo. What it starts is its own: its
  *   sockets (closed with it), its requests in flight (dropped with it) and
@@ -75,8 +77,9 @@ enum { CLASS_PROG, CLASS_SYS, CLASSES };
  * through (each shared channel's own, given as progs_connect's ctx), never
  * by anything the opener says. */
 struct opener_kind {
-    uint8_t cls;      /* CLASS_PROG (/svc/net, /svc/net-listen) or CLASS_SYS (/svc/net-sys) */
+    uint8_t cls;      /* CLASS_PROG (/svc/net, /svc/net-listen*) or CLASS_SYS (/svc/net-sys) */
     bool    listen;   /* may listen (/svc/net-listen: listen.h) */
+    bool    low;      /* ... on ports below NET_PORT_LOW too (/svc/net-low) */
 };
 
 struct opener {
@@ -85,6 +88,7 @@ struct opener {
     bool     pending;     /* requests may be queued */
     uint8_t  cls;         /* CLASS_PROG or CLASS_SYS */
     bool     listen;      /* came through /svc/net-listen: may listen (listen.h) */
+    bool     low;         /* came through /svc/net-low: ... on low ports too */
     uint16_t echo_id;     /* its ICMP echo id: the slot in the low 5 bits, random above */
     unsigned socks;       /* sockets it holds */
     unsigned later;       /* its requests in flight */

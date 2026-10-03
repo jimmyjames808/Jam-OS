@@ -64,7 +64,7 @@
 #define NET_PROG_RING_BYTES    (16u << 20)  /* ring bytes of ordinary openers' sockets */
 #define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
 #define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
-#define NET_PORT_LOW           1024u   /* udp: ports below are refused; up to ... */
+#define NET_PORT_LOW           1024u   /* ports below: only on /svc/net-low; up to ... */
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
 #define NET_PORT_DHCP_CLIENT   68u
@@ -209,7 +209,8 @@ status_t net_get_counters(handle_t net, struct net_counters *out);
 status_t net_get_chip_counters(handle_t net, void *out);
 
 /* A UDP socket on port (0: netstack picks one; 1..1023 refused;
- * 1024..49151 only on an opener of /svc/net-listen: ERR_ACCESS_DENIED)
+ * 1024..49151 only on an opener of /svc/net-listen, below 1024 only on one
+ * of /svc/net-low and never 67 or 68: ERR_ACCESS_DENIED)
  * with its rings (net.udp_rings, the default sizes), mapped. Errors: the
  * call's, the map's. */
 status_t net_udp_open(handle_t net, uint16_t port, struct net_sock *out);
@@ -329,7 +330,8 @@ struct net_listener {
     uint32_t last_txid;   /* the counter for those (idl_txid_next) */
 };
 
-/* Listen on port (1024 and up, 0: netstack picks one) for at most backlog
+/* Listen on port (1024 and up; below on an opener of /svc/net-low,
+ * svc_get(SVC_NET_LISTEN_LOW); 0: netstack picks one) for at most backlog
  * (1..NET_BACKLOG_MAX) connections half-open or waiting, each with rings of
  * tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX). net is an opener of
  * /svc/net-listen (svc_get(SVC_NET_LISTEN): the program's list says `svc

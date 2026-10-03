@@ -61,12 +61,14 @@ static bool add_grant(struct wants *w, const char *g, const char *shown)
     return true;
 }
 
-/* "svc <name>". The listening form of net is only ever written `svc net
- * listen` (want_net_listen), so the owner reads it as what it is. */
+/* "svc <name>". The listening forms of net are only ever written `svc net
+ * listen` and `svc net listen low` (want_net_listen), so the owner reads
+ * them as what they are. */
 static bool want_svc(struct wants *w, const char *name)
 {
     size_t n = strlen(name);
-    if (n < 1 || n > SVC_NAME_MAX || !strcmp(name, SVC_NET_LISTEN))
+    if (n < 1 || n > SVC_NAME_MAX || !strcmp(name, SVC_NET_LISTEN) ||
+        !strcmp(name, SVC_NET_LISTEN_LOW))
         return false;
     for (size_t i = 0; i < n; i++)
         if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9') ||
@@ -78,11 +80,17 @@ static bool want_svc(struct wants *w, const char *name)
 }
 
 /* "svc net listen": /svc/net, and /svc/net-listen, whose openers may also
- * take the ports servers are known by (and, with TCP, accept connections). */
-static bool want_net_listen(struct wants *w)
+ * take the ports servers are known by (and, with TCP, accept connections);
+ * "svc net listen low": /svc/net-low instead, the same on the
+ * system's ports below 1024 too. */
+static bool want_net_listen(struct wants *w, bool low)
 {
-    return add_grant(w, "/svc/" SVC_NET, SVC_NET) &&
-           add_grant(w, "/svc/" SVC_NET_LISTEN, "accepting connections from the network");
+    if (!add_grant(w, "/svc/" SVC_NET, SVC_NET))
+        return false;
+    if (low)
+        return add_grant(w, "/svc/" SVC_NET_LISTEN_LOW,
+                         "accepting connections from the network, below port 1024 too");
+    return add_grant(w, "/svc/" SVC_NET_LISTEN, "accepting connections from the network");
 }
 
 /* "mount <point> r|rw". */
@@ -120,12 +128,13 @@ static bool want_right(struct wants *w, const char *name)
     return false;
 }
 
-/* One line, its words split at single spaces (in place). */
+/* One line, its words split at single spaces (in place). A fifth word
+ * makes n 5, which no form has. */
 static bool want_line(struct wants *w, char *line)
 {
-    char *word[4];
+    char *word[5];
     unsigned n = 0;
-    for (char *p = line; *p && n < 4;) {
+    for (char *p = line; *p && n < 5;) {
         word[n++] = p;
         while (*p && *p != ' ')
             p++;
@@ -134,9 +143,9 @@ static bool want_line(struct wants *w, char *line)
     }
     if (n == 2 && !strcmp(word[0], "svc"))
         return want_svc(w, word[1]);
-    if (n == 3 && !strcmp(word[0], "svc") && !strcmp(word[1], SVC_NET) &&
-        !strcmp(word[2], "listen"))
-        return want_net_listen(w);
+    if ((n == 3 || n == 4) && !strcmp(word[0], "svc") && !strcmp(word[1], SVC_NET) &&
+        !strcmp(word[2], "listen") && (n == 3 || !strcmp(word[3], "low")))
+        return want_net_listen(w, n == 4);
     if (n == 3 && !strcmp(word[0], "mount"))
         return want_mount(w, word[1], word[2]);
     if (n == 2 && !strcmp(word[0], "right"))

@@ -3,7 +3,7 @@
  * runs, user/services/serve). The shell opens the file read-only and hands
  * it over; the server serves exactly that file, to every path asked, and
  * never opens anything itself. The shell is free again at once.
- *   serve <file> [port]   serve it on port (8080 unless given; 1024 and up)
+ *   serve <file> [port]   serve it on port (8080 unless given; 80 is fine too)
  *   serve                 what is served: file, port, clients, requests, bytes
  *   serve stop [port]     stop it (every file without a port)
  * Exit: 0, 1 (it can't), 2 (usage). */
@@ -28,7 +28,7 @@ static const char *address(char buf[IPV4_TEXT_MAX])
 static const char *why(status_t st)
 {
     switch (st) {
-    case ERR_ACCESS_DENIED:  return "bin/serve has no listen permission (its list: svc net listen)";
+    case ERR_ACCESS_DENIED:  return "bin/serve has no listen permission (svc net listen low)";
     case ERR_ALREADY_BOUND:  return "another program has that port";
     case ERR_ALREADY_EXISTS: return "a file is served on that port already (serve stop <port>)";
     case ERR_NO_RESOURCES:   return "4 files are served already (serve stop <port>)";

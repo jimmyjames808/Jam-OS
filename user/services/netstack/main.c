@@ -19,6 +19,8 @@
  *   SR_USER + 3       the same for /svc/net-sys, the network's own
  *                     services' (their openers use a reserve no program
  *                     can take: progs.h)
+ *   SR_USER + 4       the same for /svc/net-low, the programs
+ *                     that may listen on ports below 1024 too (listen.h)
  *
  * This file is the loop: one port, and lwIP's timers, the programs'
  * timeouts and the next reconnect as the port wait's deadline (and
@@ -41,6 +43,7 @@
 #define SR_NET        (SR_USER + 1)
 #define SR_NET_LISTEN (SR_USER + 2)
 #define SR_NET_SYS    (SR_USER + 3)
+#define SR_NET_LISTEN_LOW (SR_USER + 4)
 #define KEY_CTL   1u
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
 #define PACKETS_PER_TURN 32u        /* port packets taken a turn (each notes work) */
@@ -139,7 +142,8 @@ static status_t setup(void)
     if (st == OK)
         st = progs_init(l.port, startup_handle(SR_NET), startup_handle(SR_NET_SYS), &l.dev);
     if (st == OK)
-        st = listen_init(l.port, startup_handle(SR_NET_LISTEN));
+        st = listen_init(l.port, startup_handle(SR_NET_LISTEN),
+                         startup_handle(SR_NET_LISTEN_LOW));
     tcpsock_init();
     if (st != OK) {
         printf("netstack: can't set up (%s)\n", status_str(st));

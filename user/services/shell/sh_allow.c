@@ -166,13 +166,17 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
  * build allows the last two only in user/tests/ (tools/checkwants.py), and
  * a file on /data is never one of the tree's tests. Nor netstack's and the
  * resolver's reserves for the network's own services (net-sys, dns-sys): a
- * program could use them up. Nor
+ * program could use them up. Nor the ports below 1024 (net-low):
+ * they are where the well-known services live, so a program on them could
+ * pose as one of the system's to the network (a web or a time server, the
+ * ssh Jam OS will have), or take its port before the service starts; only
+ * a boot-image service may have them (tools/checkwants.py). Nor
  * the file server's channel: with it a program could put any file it can
  * read on the network without the listen permission. Nor the root's debug
  * power: `debug_command` panics the machine, crashes it on purpose and runs
  * the stress test. */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT, SVC_NET_SYS,
-                                       SVC_DNS_SYS, SVC_SERVE };
+                                       SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW };
 
 const char *sh_wants_refused(const struct wants *w)
 {

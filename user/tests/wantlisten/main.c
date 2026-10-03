@@ -3,13 +3,15 @@
  * tries a UDP socket on port 5000, a port only a listening program may
  * take, once on each channel it was given: /svc/net (refused) and
  * /svc/net-listen (taken), and says what each answered, then a port of
- * netstack's picking on /svc/net (taken). The shell's allow test
+ * netstack's picking on /svc/net (taken), then a TCP listener on port 80
+ * through /svc/net-listen (refused: ports below 1024 need `svc net listen
+ * low`, which only a service may have). The shell's allow test
  * (tools/shell-tests/allow.txt) runs it from /boot, then a copy from
  * /data, which `allow` shows the owner and runs once approved.
  *
  * Startup handles: none but its namespace (/svc/net and /svc/net-listen)
- * and its terminal. Exits 0 when /svc/net-listen took the port and
- * /svc/net didn't, 1 otherwise. */
+ * and its terminal. Exits 0 when /svc/net-listen took the port, /svc/net
+ * didn't and port 80 was refused, 1 otherwise. */
 #include <net.h>
 #include <os.h>
 #include <wants.h>
@@ -37,5 +39,13 @@ int main(int argc, char **argv)
     status_t plain = try_port(SVC_NET, net_svc(), PORT);
     status_t listen = try_port(SVC_NET_LISTEN, svc_get(SVC_NET_LISTEN), PORT);
     status_t picked = try_port(SVC_NET, net_svc(), 0);
-    return plain == ERR_ACCESS_DENIED && listen == OK && picked == OK ? 0 : 1;
+    struct net_listener l;
+    handle_t h = svc_get(SVC_NET_LISTEN);
+    status_t low = h ? net_tcp_listen(h, 80, 1, 0, 0, &l) : ERR_NOT_FOUND;
+    printf("wantlisten: a listener on port 80 on /svc/%s: %s\n", SVC_NET_LISTEN, status_str(low));
+    if (low == OK)
+        net_listener_close(&l);
+    bool ok = plain == ERR_ACCESS_DENIED && listen == OK && picked == OK &&
+              low == ERR_ACCESS_DENIED;
+    return ok ? 0 : 1;
 }

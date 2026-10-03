@@ -320,9 +320,10 @@ static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256])
  * address, without its rings yet (sock_rings gives them). port 0: netstack
  * picks one (49152 and up). Results: `socket`, a channel of its own that
  * speaks the sock_* methods (closing it closes the socket), and its port.
- * ERR_ACCESS_DENIED: a port below 1024 (only netctl's DHCP socket has
- * one), or one below 49152 on an opener that didn't come through
- * /svc/net-listen (the listen permission, netstack's listen.h);
+ * ERR_ACCESS_DENIED: a port below 1024 on an opener that didn't come
+ * through /svc/net-low (and 67 or 68 on any: netctl's DHCP socket
+ * has one), or one below 49152 on an opener that came through neither it
+ * nor /svc/net-listen (the listen permissions, netstack's listen.h);
  * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: the opener has
  * NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
  * ordinary opener's NET_PROG_SOCKETS are. */
@@ -650,19 +651,22 @@ static inline status_t net_tcp(handle_t ch, uint32_t address, uint16_t port, uin
     return net_tcp_until(ch, DEADLINE_NEVER, address, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
 }
 
-/* On an opener's channel that came through /svc/net-listen (the listen
- * permission, netstack's listen.h; ERR_ACCESS_DENIED on any other): listen
- * on TCP port `port` (NET_PORT_LOW and up; 0: netstack picks one,
- * NET_PORT_EPHEMERAL and up) for at most `backlog` (1..NET_BACKLOG_MAX)
- * connections half-open or waiting for accept. Each gets rings of
- * tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX) when its handshake
- * finishes, so bytes that come before accept wait in them; one that
- * doesn't fit the limits then is reset. Results: the listener's channel
- * (accept; closing it stops listening and resets the connections
- * waiting) and its port. ERR_ACCESS_DENIED also for a port below
- * NET_PORT_LOW; ERR_ALREADY_BOUND: the port is taken; ERR_INVALID_ARGS: a
- * backlog or ring size not allowed; ERR_NO_RESOURCES: the opener's, all
- * openers' or an ordinary opener's share of listeners or of backlog. */
+/* On an opener's channel that came through /svc/net-listen or
+ * /svc/net-low (the listen permissions, netstack's listen.h;
+ * ERR_ACCESS_DENIED on any other): listen on TCP port `port` (NET_PORT_LOW
+ * and up; through /svc/net-low from 1, but not 67 or 68; 0:
+ * netstack picks one, NET_PORT_EPHEMERAL and up) for at most `backlog`
+ * (1..NET_BACKLOG_MAX) connections half-open or waiting for accept. Each
+ * gets rings of tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX) when its
+ * handshake finishes, so bytes that come before accept wait in them; one
+ * whose tx ring doesn't fit its opener's ring bytes then gets NET_TCP_TX,
+ * and one that doesn't fit the limits even so is reset. Results: the
+ * listener's channel (accept; closing it stops listening and resets the
+ * connections waiting) and its port. ERR_ACCESS_DENIED also for a port
+ * below NET_PORT_LOW on a /svc/net-listen opener; ERR_ALREADY_BOUND: the
+ * port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
+ * ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
+ * share of listeners or of backlog. */
 static inline status_t net_tcp_listener_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
 {
     struct net_tcp_listener_req idl_q;

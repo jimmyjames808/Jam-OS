@@ -8,7 +8,8 @@
 #include <os.h>
 
 #define SERVE_PORT_DEFAULT 8080u
-#define SERVE_PORT_MIN     1024u                /* ports a file may be served on: from here */
+#define SERVE_PORT_MIN     1u                   /* ports a file may be served on: from here (below
+                                                 * 1024 with its `svc net listen low`) */
 #define SERVE_SHARES       4u                   /* files served at once, each on its port */
 #define SERVE_CLIENTS      24u                  /* connections at once, all files together */
 #define SERVE_PER_SHARE    16u                  /* ... of them one file's */

@@ -1,11 +1,12 @@
 # serve (tools/serve-test.sh runs this): a plain boot with QEMU's e1000e
 # and the network peer, net.address set in the stick's settings and two
 # files on /data; the peer's --tcp-forward joins two ports on the Mac to
-# the guest's 8080 and 8081, where tools/servecheck.py fetches from it
+# the guest's 8080 and 80, where tools/servecheck.py fetches from it
 # (curl) while this script waits. serve serves a file in the background
-# and a second on another port, refuses a port served already, a folder
-# and a port below 1024, logs a line per request, lists both, and stops
-# them; a program without the listen permission (bin/nolisten) is refused.
+# and a second on port 80 (below 1024: bin/serve's `svc net listen low`),
+# refuses a port served already, a folder and port 0, logs a line per
+# request, lists both, and stops them; a program without the listen
+# permission (bin/nolisten) is refused, port 80 too.
 wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
@@ -18,11 +19,11 @@ send serve /data/serve.bin
 wait 30 serve: serving /data/serve.bin (5.0 MiB) on port 8080, in the background
 wait curl http://10.2.21.5:8080/ -o serve.bin
 wait jam>
-send serve /data/page.html 8081; echo st=$?
-wait 30 serve: serving /data/page.html
+send serve /data/page.html 80; echo st=$?
+wait 30 on port 80, in the background
 wait st=0
 wait jam>
-send serve /data/page.html 8081; echo st=$?
+send serve /data/page.html 80; echo st=$?
 wait a file is served on that port already
 wait st=1
 wait jam>
@@ -30,8 +31,8 @@ send serve /data; echo st=$?
 wait serve: /data: a folder
 wait st=1
 wait jam>
-send serve /data/serve.bin 80; echo st=$?
-wait serve: 80: a port is 1024..65535
+send serve /data/serve.bin 0; echo st=$?
+wait serve: 0: a port is 1..65535
 wait st=2
 wait jam>
 # tools/servecheck.py starts now: two downloads at once, HEAD, a range,
@@ -45,9 +46,9 @@ wait 120 ? 400, 0 bytes
 wait 120 ? 431, 0 bytes
 send serve
 wait serve: port 8080: /data/serve.bin (5.0 MiB)
-wait serve: port 8081: /data/page.html
+wait serve: port 80: /data/page.html
 wait jam>
-send serve stop 8081
+send serve stop 80
 wait serve: stopped 1 file
 wait jam>
 send serve stop
@@ -61,7 +62,9 @@ wait serve: nothing is served
 wait jam>
 send run nolisten
 wait 30 nolisten: a listener on port 8081 through /svc/net: ERR_ACCESS_DENIED
+wait nolisten: a listener on port 80 through /svc/net: ERR_ACCESS_DENIED
 wait nolisten: /svc/net-listen in its namespace: no
+wait nolisten: /svc/net-low in its namespace: no
 wait nolisten: PASS
 wait jam>
 send sleep 5

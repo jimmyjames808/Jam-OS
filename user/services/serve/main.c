@@ -24,9 +24,10 @@
 #include <wants.h>
 #include "serve.h"
 
-/* What it wants (<wants.h>): the network, with the listen permission. init
- * starts it with exactly this (its grants in init's shell.c). */
-JAM_WANTS("svc net listen\n");
+/* What it wants (<wants.h>): the network, with the listen permission on
+ * every port, the system's below 1024 too (`serve <file> 80`). init starts
+ * it with exactly this (its grants in init's shell.c). */
+JAM_WANTS("svc net listen low\n");
 
 #define BATCH      32u
 #define BUDGET     16u                   /* requests from one control channel a turn */

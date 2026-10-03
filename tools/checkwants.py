@@ -13,6 +13,8 @@ same rules: printable ASCII lines, each one of
     svc <name>            a service init publishes (<os.h> SVC_*)
     svc net listen        /svc/net and the listen permission
                           (/svc/net-listen, never named on its own)
+    svc net listen low    the same on ports below 1024 too
+                          (/svc/net-low, never named on its own)
     mount <point> r|rw    <point>: /boot /esp /data /usb* *
     right <name>          klog sysinfo clock debug
 
@@ -21,7 +23,9 @@ and, the build's own policy, the services that kill drivers and services
 put any file it can read on the network without the listen permission)
 only for a program whose source is under user/tests/,
 and netstack's and the resolver's reserves for the network's own services
-(net-sys, dns-sys) only for one under user/services/.
+(net-sys, dns-sys) and the low ports (`svc net listen low`: the system's
+ports, where a program could pose as a service) only for one under
+user/services/.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -35,7 +39,7 @@ POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
 TESTS_ONLY = {"devmgr-ctl", "init", "serve"}
 SERVICES_ONLY = {"net-sys", "dns-sys"}
-LISTEN = "net-listen"   # given only as `svc net listen` (<wants.h>)
+LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
 TEXT_MAX = 1024
 WANTS_MAX = 24
 PT_NOTE = 4
@@ -84,9 +88,14 @@ def check_text(text, in_tests, svcs, in_services=False):
         w = line.split(" ")
         if len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
             n += 2   # /svc/net and /svc/net-listen
+        elif len(w) == 4 and w == ["svc", "net", "listen", "low"]:
+            if not in_services:
+                problems.append("'%s': only a service (user/services/) may ask for it" % line)
+            n += 2   # /svc/net and /svc/net-low
         elif len(w) == 2 and w[0] == "svc":
-            if w[1] == LISTEN:
-                problems.append("'%s': write it `svc net listen`" % line)
+            if w[1] in LISTEN:
+                problems.append("'%s': write it `svc net listen%s`" %
+                                (line, " low" if w[1].endswith("low") else ""))
             elif w[1] not in svcs:
                 problems.append("'%s': no such service (os.h's SVC_*)" % line)
             elif w[1] in TESTS_ONLY and not in_tests:
@@ -99,8 +108,8 @@ def check_text(text, in_tests, svcs, in_services=False):
         elif len(w) == 2 and w[0] == "right" and w[1] in RIGHTS:
             pass
         else:
-            problems.append("'%s': not a want (svc <name>, svc net listen, mount <point> r|rw, "
-                            "right <name>)" % line)
+            problems.append("'%s': not a want (svc <name>, svc net listen [low], "
+                            "mount <point> r|rw, right <name>)" % line)
             continue
         shown.append(line)
     if n > WANTS_MAX:
@@ -113,15 +122,21 @@ def selftest():
     svcs = services()
     take = [b"svc net\n", b"svc net listen\n", b"svc net listen\nsvc dns\nmount /data rw\n",
             b"right clock\n", b"svc init\n"]
+    take_services = [b"svc net listen low\n", b"svc net-sys\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
               b"svc net Listen\n", b"svc nope\n", b"right listen\n", b"svc init\n",
-              b"svc net-sys\n", b"svc dns-sys\n", b"svc serve\n",
+              b"svc net-sys\n", b"svc dns-sys\n", b"svc serve\n", b"svc net listen low\n",
+              b"svc net-low\n", b"svc net listen lower\n", b"svc net listen low now\n",
               b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n"]   # 25 wants
     fails = []
     for t in take:
         problems, _ = check_text(t, True, svcs)
         if problems:
             fails.append("refused %r: %s" % (t, problems))
+    for t in take_services:
+        problems, _ = check_text(t, False, svcs, True)
+        if problems:
+            fails.append("refused %r for a service: %s" % (t, problems))
     for t in refuse:
         problems, _ = check_text(t, False, svcs)
         if not problems:

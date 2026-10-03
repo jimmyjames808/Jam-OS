@@ -105,7 +105,7 @@ static const struct sh_cmd cmds[] = {
       "  (bin/serve, a service init runs: the shell stays free), e.g. serve\n"
       "  /data/big.bin, then on the Mac: curl http://<address>:8080/ -o big.bin. Every\n"
       "  path asked gets that file (GET and HEAD, ranges); nothing else is ever served.\n"
-      "  Port 8080 unless given (1024 and up); up to 4 files on 4 ports. serve alone:\n"
+      "  Port 8080 unless given (any, 80 too); up to 4 files on 4 ports. serve alone:\n"
       "  what is served (file, port, clients, requests, bytes). serve stop [port]:\n"
       "  stop it (all of them without a port). One log line per request"),
     C(speed, C_SYSTEM, "speed <host> [port] [-r] [-u] [-t seconds] | -l [port]",

@@ -324,6 +324,9 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_DNS_SYS    "dns-sys"     /* the resolver for the network's own services (their reserve): user/services/ only */
 #define SVC_NET_LISTEN "net-listen"  /* /svc/net whose openers may also listen; a list asks for it
                                       * as `svc net listen` (<wants.h>) */
+/* /svc/net-listen's permission on ports below 1024 too; a list asks for it as
+ * `svc net listen low`: user/services/ only, never a program on /data */
+#define SVC_NET_LISTEN_LOW "net-low"
 #define SVC_SERVE      "serve"       /* the file server, a channel per opener (serve.idl) */
 
 /* A channel to service `name` for the caller, who closes it. */

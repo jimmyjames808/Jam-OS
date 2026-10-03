@@ -718,6 +718,7 @@ void services_given_up(unsigned i)
         net_given_up();
         publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets them */
         publish(SVC_NET_LISTEN, HANDLE_INVALID, false);
+        publish(SVC_NET_LISTEN_LOW, HANDLE_INVALID, false);
         publish(SVC_NET_SYS, HANDLE_INVALID, false);
         tell_mounts();
     }
@@ -762,5 +763,6 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     publish(SVC_SERVE, serve_cli, true);
     publish(SVC_NET, net_svc_channel(), true);
     publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
+    publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
     publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
 }

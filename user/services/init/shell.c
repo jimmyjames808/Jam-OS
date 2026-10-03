@@ -16,7 +16,7 @@
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
  * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns-sys, the
- * splash the mixer, the file server /svc/net and /svc/net-listen. init
+ * splash the mixer, the file server /svc/net and /svc/net-low. init
  * keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
@@ -69,9 +69,9 @@ static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
 static const char *const netlog_grants[] = { "/svc/" SVC_NET_SYS, NULL };
 static const char *const dns_grants[] = { "/svc/" SVC_NET_SYS, NULL };
 static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS_SYS, NULL };
-/* The file server: what its list says (`svc net listen`; it is given its
- * files by the shell, no mount). */
-static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN, NULL };
+/* The file server: what its list says (`svc net listen low`: it may serve
+ * on port 80; it is given its files by the shell, no mount). */
+static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW, NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
     [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },

@@ -323,6 +323,7 @@ bool t_netsock_bench(void);
 /* netlisten.c: the listen permission (netstack's listen.h, <wants.h>'s
  * `svc net listen`); sntp.c: bin/sntp's request and checks (ntp.c). */
 bool t_netlisten_udp(void);
+bool t_netlisten_low(void);
 bool t_netlisten_wants(void);
 bool t_sntp_request_and_reply(void);
 bool t_sntp_checks(void);

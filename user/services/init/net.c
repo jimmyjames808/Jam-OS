@@ -19,8 +19,12 @@
  *             openers may also take the ports other programs can't (the
  *             listen permission, docs/M9.5-PLAN.md); init publishes it, and
  *             the shell gives it only to a program whose list says `svc net
- *             listen`. And /svc/net-sys's (SR_USER + 3): the same protocol
- *             for the network's own services (dns, netlog, sntp, and
+ *             listen`; and /svc/net-low's (SR_USER + 4), whose
+ *             openers may also listen on ports below 1024, which the shell
+ *             gives only to a program whose list says `svc net listen low`
+ *             (bin/serve; never one on /data). And /svc/net-sys's
+ *             (SR_USER + 3): the same protocol for the network's own
+ *             services (dns, netlog, sntp, and
  *             bin/update through the shell), whose openers may use a
  *             reserve of netstack's openers, sockets and ring bytes that
  *             programs can't take (the fair shares, <net.h>); no program
@@ -92,6 +96,7 @@ static bool     boot_id_known;
 static handle_t dns_srv, dns_cli;   /* /svc/dns's two ends, the same */
 static handle_t dsys_srv, dsys_cli; /* /svc/dns-sys's two ends, the same */
 static handle_t listen_srv, listen_cli;   /* /svc/net-listen's two ends, the same */
+static handle_t low_srv, low_cli;         /* /svc/net-low's two ends, the same */
 static handle_t sys_srv, sys_cli;         /* /svc/net-sys's two ends, the same */
 static handle_t loop_port;                /* init's loop's port: netctl's answers */
 
@@ -118,6 +123,8 @@ void net_init(handle_t port)
         net_cli = net_srv = HANDLE_INVALID;
     if (jam_channel_create(&listen_cli, &listen_srv) != OK)
         listen_cli = listen_srv = HANDLE_INVALID;   /* no program may listen */
+    if (jam_channel_create(&low_cli, &low_srv) != OK)
+        low_cli = low_srv = HANDLE_INVALID;   /* no program may listen below 1024 */
     if (jam_channel_create(&sys_cli, &sys_srv) != OK)
         sys_cli = sys_srv = HANDLE_INVALID;   /* the services share /svc/net with programs */
     handle_t d;
@@ -143,6 +150,11 @@ handle_t net_listen_channel(void)
     return listen_cli;
 }
 
+handle_t net_listen_low_channel(void)
+{
+    return low_cli;
+}
+
 handle_t net_sys_channel(void)
 {
     return sys_cli;
@@ -159,7 +171,7 @@ status_t net_start(void)
         svcs[NETSTACK].given_up = true;
         return OK;
     }
-    struct spawn_handle x[3 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[5 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     unsigned n = 1;
@@ -172,6 +184,9 @@ status_t net_start(void)
     x[n] = (struct spawn_handle){ SR_USER + 3, HANDLE_INVALID };
     if (sys_srv && jam_handle_duplicate(sys_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it the services have no reserve: said in netstack's log */
+    x[n] = (struct spawn_handle){ SR_USER + 4, HANDLE_INVALID };
+    if (low_srv && jam_handle_duplicate(low_srv, RIGHT_SAME, &x[n].h) == OK)
+        n++;   /* without it no program may listen below 1024 */
     handle_t cards[INIT_MAX_CLAIMED];
     unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
     for (unsigned k = 0; k < nc; k++)

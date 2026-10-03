@@ -815,6 +815,7 @@ static const struct {
     { "netwait_udp", t_netwait_udp },
     { "netsock_bench", t_netsock_bench },
     { "netlisten_udp", t_netlisten_udp },
+    { "netlisten_low", t_netlisten_low },
     { "netlisten_wants", t_netlisten_wants },
     { "sntp_request_and_reply", t_sntp_request_and_reply },
     { "sntp_checks", t_sntp_checks },

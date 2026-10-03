@@ -871,14 +871,15 @@ restarts:
   (24 openers, 24 sockets, 48 requests, 16 MiB), and the rest is the
   network's own services' (`/svc/net-sys`, below). A program can't send to
   a broadcast, multicast or loopback address, can't bind a port below 1024
-  (nor one below 49152 without the listen permission, below), and sends no
-  raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+  without the low-port permission (`/svc/net-low`, below) nor one
+  below 49152 without the listen permission, and sends no raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
 - **TCP** on the same channels (`user/services/netstack/tcpsock.c` for the
   calls, `tcp.c` for the connections, `stack.c`'s TCP edge for lwIP;
   [M9.5-PLAN](docs/M9.5-PLAN.md#track-c-part-1-built-tcp-inside-netstack)):
   `tcp(address, port, tx, rx)` opens a connection (CONNECTING at once; the
   status line says OPEN, or CLOSED and why), `tcp_listener(port, backlog,
-  tx, rx)` listens (only an opener of `/svc/net-listen`, ports from 1024),
+  tx, rx)` listens (only an opener of `/svc/net-listen`, ports from 1024,
+  or of `/svc/net-low`, any port but DHCP's 67 and 68),
   and `accept` on the listener's channel is answered when a connection
   comes (a wait set watches that channel). A connection is a socket like
   a UDP one, but its rings carry a byte stream: SOCKRING_END on the tx ring
@@ -941,8 +942,23 @@ restarts:
   from 49152) or a port of its own picking from 49152 (the resolver's
   random source ports) and still gets every reply on them: UDP can't tell
   a reply from a datagram nobody asked for, so what the permission guards
-  is a port someone else could know in advance. Nothing in the boot image
-  listens but `bin/wantlisten`, the allow test's program.
+  is a port someone else could know in advance. In the boot image `speed
+  -l`, bin/tcptest and bin/wantlisten (the tests') have it, and bin/serve
+  the narrower one below.
+- **`/svc/net-low`**, the permission to listen on ports below 1024
+  too, where the well-known services live (a fourth shared channel,
+  netstack's SR_USER + 4, the same mechanism): its openers may also take
+  ports 1 to 1023 for UDP and TCP, all but the DHCP ports 67 and 68
+  (netctl's socket's). The shell gives it only to a program whose list
+  says `svc net listen low` (it grants `/svc/net` and this channel; the
+  bare name is no want); `tools/checkwants.py` allows that line only
+  under `user/services/`, and `allow` refuses it for every program on
+  `/data`, approval or not: a program there could pose as one of the
+  system's services on the network (a web or a time server, the ssh M13
+  brings) or take its port before the service starts, and nothing the
+  owner reads at the prompt would make that plain. bin/serve alone has
+  it, so `serve <file> 80` works; a program with `svc net listen` is
+  still refused port 80.
 
 **The address.** `net.address = <address>/<prefix> [<gateway> [<dns>
 [<dns>]]]` in `/data/etc/settings` is a static address, given to netstack
@@ -1068,14 +1084,14 @@ a `make flash`.
 | Process | Holds | Parses network data |
 |---|---|---|
 | drv/rtl8125, drv/e1000e | its PCI function, registers, interrupt and `dma_cap`; the netdev server end | no: a frame's length and bytes 12-17 only |
-| netstack | the network cards' devmgr device channels; the server ends of netctl, `/svc/net`, `/svc/net-listen` and `/svc/net-sys` | yes: Ethernet, ARP, IPv4, ICMP, UDP, TCP |
+| netstack | the network cards' devmgr device channels; the server ends of netctl, `/svc/net`, `/svc/net-listen`, `/svc/net-low` and `/svc/net-sys` | yes: Ethernet, ARP, IPv4, ICMP, UDP, TCP |
 | dhcp | netctl | yes: DHCP replies |
 | dns | `/svc/net-sys`; the server ends of `/svc/dns` and `/svc/dns-sys` | yes: DNS replies |
 | netlog | a klog reader, `/svc/net-sys`, the panicked boot's log (read-only) | the Mac's acks |
 | bin/update | `/svc/net-sys`, its offer channel to init | yes: the fetch's replies and the manifest |
 | sntp | `/svc/net-sys`, `/svc/dns-sys`, the root with `RIGHT_ROOT_CLOCK` | yes: SNTP replies (48 bytes) |
 | bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
-| bin/serve | `/svc/net` and `/svc/net-listen`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
+| bin/serve | `/svc/net` and `/svc/net-low`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
 | bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
 | init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
@@ -1191,14 +1207,15 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   channel per opener, and `devmgr-ctl`, each devmgr's;
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
-  listen permission, `net-sys`, the same for the network's services
+  listen permission, `net-low`, the same on ports below 1024 too,
+  `net-sys`, the same for the network's services
   ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
   for the network's services, and `serve`, the file server, each a
   channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
-  mixer, the file server `/svc/net` and `/svc/net-listen` (no mount: the
+  mixer, the file server `/svc/net` and `/svc/net-low` (no mount: the
   shell hands it each file); they are sent every later change (a mount gone, or back with a
   new service, a new devmgr's channels), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves

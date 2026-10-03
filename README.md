@@ -209,7 +209,8 @@ the clock was ([ARCHITECTURE.md](ARCHITECTURE.md#time-and-settings)).
   pipe (at most 4 MiB, the pipe's size). Into a file, the speed is the
   stick's writing speed.
 - **A file to the Mac.** On the PC `serve /data/big.bin` (port 8080;
-  `serve /data/big.bin 9000` for another, 1024 and up). It serves in the
+  `serve /data/big.bin 9000` for another, or `serve /data/big.bin 80` for
+  the web's own, so `curl http://10.2.21.241/` needs no port). It serves in the
   background (bin/serve, a service init runs), so the shell is free at
   once. On the Mac:
 
@@ -224,8 +225,10 @@ the clock was ([ARCHITECTURE.md](ARCHITECTURE.md#time-and-settings)).
   progress; each request is a line in the log. `serve` alone lists what is
   served (file, port, clients, requests, bytes sent); `serve stop` stops
   everything, `serve stop 9000` one. bin/serve holds the listen
-  permission (`svc net listen` in its list) and no mount: the shell
-  opens the file and hands it over.
+  permission for every port, those below 1024 too (`svc net listen low`
+  in its list: no other program has it, and no program on `/data` can
+  be allowed it), and no mount: the shell opens the file and hands it
+  over. When the network has no address yet, `serve` says so after 5 s.
 - **Throughput.** On the Mac, from the repository:
 
   ```sh
