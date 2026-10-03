@@ -4,6 +4,10 @@
  * closing its end closes the file. The table's size (FAT_MAX_FILES) bounds
  * what clients can make fat hold: 64 KiB and two handles per slot.
  *
+ * The tables (files[], opens[]) are in fat's state (kept, fat.h), so that
+ * they can outlive fat; each slot's channel and buffer, handles, are here
+ * in fh[], by the same index.
+ *
  * fat never maps a transfer buffer: data goes between the VMO and one
  * buffer of fat's own (bounce) with vmo_read / vmo_write, which answer a
  * buffer that is not what it was with an error, so nothing a client does
@@ -40,14 +44,29 @@
 
 #define CLIENT_BUF_RIGHTS (RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER)
 
-static struct fat_file files[FAT_MAX_FILES];
-static struct fat_open opens[FAT_MAX_FILES];   /* at most one per slot of files[] */
+/* Each slot's handles: by files[]'s index. */
+static struct {
+    handle_t ch;      /* our end of its `file` channel */
+    handle_t vmo;     /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
+    bool     armed;   /* ch is bound to the port (ONCE) */
+} fh[FAT_MAX_FILES];
+
 static uint8_t bounce[FAT_FILE_BUF];   /* between FatFs and a file's buffer VMO */
+
+static unsigned slot_of(const struct fat_file *f)
+{
+    return (unsigned)(f - kept->files);
+}
+
+static struct fat_open *open_of(const struct fat_file *f)
+{
+    return &kept->opens[f->open];
+}
 
 bool files_unsynced(void)
 {
     for (unsigned i = 0; i < FAT_MAX_FILES; i++)
-        if (opens[i].refs && opens[i].unsynced)
+        if (kept->opens[i].refs && kept->opens[i].unsynced)
             return true;
     return false;
 }
@@ -67,7 +86,7 @@ status_t files_sync_all(void)
 {
     status_t st = OK;
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
-        struct fat_open *o = &opens[i];
+        struct fat_open *o = &kept->opens[i];
         if (!o->refs || !o->unsynced)
             continue;
         status_t s = fr_status(f_sync(&o->fil));
@@ -105,7 +124,7 @@ static status_t grow_to(struct fat_open *f, uint64_t size)
 static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
     struct fat_file *h = ctx;
-    struct fat_open *f = h->o;
+    struct fat_open *f = open_of(h);
     if (!(h->flags & FS_READ))
         return ERR_ACCESS_DENIED;
     if (length > FAT_FILE_BUF)
@@ -123,7 +142,7 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
         if (fr != FR_OK)
             return fr_status(fr);
     }
-    status_t st = got ? jam_vmo_write(h->vmo, 0, bounce, got) : OK;
+    status_t st = got ? jam_vmo_write(fh[slot_of(h)].vmo, 0, bounce, got) : OK;
     if (st != OK)
         return st;
     *out_actual = got;
@@ -133,7 +152,7 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
 static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
     struct fat_file *h = ctx;
-    struct fat_open *f = h->o;
+    struct fat_open *f = open_of(h);
     if (!(h->flags & FS_WRITE) || vol.read_only)
         return ERR_ACCESS_DENIED;
     if (length > FAT_FILE_BUF)
@@ -142,7 +161,7 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         offset = f_size(&f->fil);
     if (offset > FAT_FILE_MAX || length > FAT_FILE_MAX - offset)
         return ERR_OUT_OF_RANGE;
-    status_t st = length ? jam_vmo_read(h->vmo, 0, bounce, length) : OK;
+    status_t st = length ? jam_vmo_read(fh[slot_of(h)].vmo, 0, bounce, length) : OK;
     if (st == OK)
         st = grow_to(f, offset);
     if (st != OK)
@@ -166,7 +185,7 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
 static status_t op_truncate(void *ctx, uint64_t size)
 {
     struct fat_file *h = ctx;
-    struct fat_open *f = h->o;
+    struct fat_open *f = open_of(h);
     if (!(h->flags & FS_WRITE) || vol.read_only)
         return ERR_ACCESS_DENIED;
     if (size > FAT_FILE_MAX)
@@ -182,7 +201,7 @@ static status_t op_truncate(void *ctx, uint64_t size)
 
 static status_t op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
 {
-    struct fat_open *f = ((struct fat_file *)ctx)->o;
+    struct fat_open *f = open_of(ctx);
     FILINFO fi;
     *out_size = f_size(&f->fil);
     /* The directory entry's time: that of the last sync or close that
@@ -198,12 +217,12 @@ static status_t op_sync(void *ctx)
     struct fat_file *h = ctx;
     if (h->flags & FS_GATHER) {
         status_t st = disk_release();
-        if (st == OK && vol.hold_failed)
+        if (st == OK && kept->disk.hold_failed)
             st = ERR_IO;
         if (st != OK)
             return st;
     }
-    return sync_open(h->o);
+    return sync_open(open_of(h));
 }
 
 static const struct file_ops file_ops = {
@@ -216,13 +235,16 @@ static const struct file_ops file_ops = {
 /* Give the slot back: the buffer, the channel, the binding. */
 static void release(struct fat_file *f)
 {
-    if (f->vmo != HANDLE_INVALID)
-        jam_handle_close(f->vmo);
-    if (f->ch != HANDLE_INVALID) {
-        if (f->armed)
-            (void)jam_port_unbind(vol.port, f->ch, FAT_KEY_FILE(f - files, f->gen));
-        jam_handle_close(f->ch);
+    unsigned i = slot_of(f);
+    if (fh[i].vmo != HANDLE_INVALID)
+        jam_handle_close(fh[i].vmo);
+    if (fh[i].ch != HANDLE_INVALID) {
+        if (fh[i].armed)
+            (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen));
+        jam_handle_close(fh[i].ch);
     }
+    fh[i].vmo = fh[i].ch = HANDLE_INVALID;
+    fh[i].armed = false;
     f->used = false;
 }
 
@@ -230,7 +252,7 @@ static void release(struct fat_file *f)
  * leaves readers behind has its changes flushed as a close would. */
 static void close_file(struct fat_file *f)
 {
-    struct fat_open *o = f->o;
+    struct fat_open *o = open_of(f);
     bool was = o->unsynced, last = --o->refs == 0;
     FRESULT fr = last ? f_close(&o->fil) : was ? f_sync(&o->fil) : FR_OK;
     if (fr != FR_OK && !vol.disk_gone)
@@ -244,28 +266,30 @@ static void close_file(struct fat_file *f)
 void files_close_all(void)
 {
     for (unsigned i = 0; i < FAT_MAX_FILES; i++)
-        if (files[i].used)
-            close_file(&files[i]);
+        if (kept->files[i].used)
+            close_file(&kept->files[i]);
 }
 
 /* Wait (ONCE) for the next request or the client's close. */
 static status_t arm(struct fat_file *f)
 {
-    status_t st = jam_port_bind(vol.port, f->ch, FAT_KEY_FILE(f - files, f->gen),
+    unsigned i = slot_of(f);
+    status_t st = jam_port_bind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen),
                                 SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE);
-    f->armed = st == OK;
+    fh[i].armed = st == OK;
     return st;
 }
 
 /* The slot's buffer and channel; the client's ends into *out_ch, *out_vmo. */
 static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
 {
+    unsigned i = slot_of(f);
     handle_t client = HANDLE_INVALID, buf = HANDLE_INVALID;
-    status_t st = jam_vmo_create(FAT_FILE_BUF, 0, HANDLE_INVALID, &f->vmo);
+    status_t st = jam_vmo_create(FAT_FILE_BUF, 0, HANDLE_INVALID, &fh[i].vmo);
     if (st == OK)
-        st = jam_handle_duplicate(f->vmo, CLIENT_BUF_RIGHTS, &buf);
+        st = jam_handle_duplicate(fh[i].vmo, CLIENT_BUF_RIGHTS, &buf);
     if (st == OK)
-        st = jam_channel_create(&f->ch, &client);
+        st = jam_channel_create(&fh[i].ch, &client);
     if (st == OK)
         st = arm(f);
     if (st != OK) {
@@ -305,6 +329,21 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
     return fr_status(fr);
 }
 
+/* A free slot of files[] into *f, and the open of `path` into *o (or, if
+ * it isn't open, a free one into *spare). */
+static void find_slots(const char *path, struct fat_file **f, struct fat_open **o,
+                       struct fat_open **spare)
+{
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+        if (!kept->files[i].used && !*f)
+            *f = &kept->files[i];
+        if (kept->opens[i].refs && path_same(kept->opens[i].path, path))
+            *o = &kept->opens[i];
+        else if (!kept->opens[i].refs && !*spare)
+            *spare = &kept->opens[i];
+    }
+}
+
 status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t *out_vmo,
                     uint64_t *out_size)
 {
@@ -319,14 +358,7 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
         return ERR_NOT_FOUND;
     struct fat_file *f = NULL;
     struct fat_open *o = NULL, *spare = NULL;
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
-        if (!files[i].used && !f)
-            f = &files[i];
-        if (opens[i].refs && path_same(opens[i].path, path))
-            o = &opens[i];
-        else if (!opens[i].refs && !spare)
-            spare = &opens[i];
-    }
+    find_slots(path, &f, &o, &spare);
     if (o && (flags & FS_WRITE))
         return ERR_BAD_STATE;   /* open already: a writer has its file to itself */
     if (!f || (!o && !spare))
@@ -342,9 +374,10 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
     o->refs++;
     uint32_t gen = f->gen + 1;
     memset(f, 0, sizeof(*f));
+    memset(&fh[slot_of(f)], 0, sizeof(fh[0]));
     f->gen = gen;
     f->flags = flags;
-    f->o = o;
+    f->open = (uint32_t)(o - kept->opens);
     f->used = true;
     status_t st = attach(f, out_ch, out_vmo);
     if (st != OK) {
@@ -363,11 +396,11 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
 void files_reap(void)
 {
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
-        struct fat_file *f = &files[i];
-        if (!f->used || jam_object_wait_one(f->ch, SIG_PEER_CLOSED, 0, NULL) != OK)
+        struct fat_file *f = &kept->files[i];
+        if (!f->used || jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) != OK)
             continue;
         /* At most a channel's queue (the kernel caps it) of requests. */
-        while (!vol.disk_gone && file_serve_one(f->ch, &file_ops, f) == OK)
+        while (!vol.disk_gone && file_serve_one(fh[i].ch, &file_ops, f) == OK)
             ;
         close_file(f);
     }
@@ -378,13 +411,13 @@ void files_event(uint64_t key)
     unsigned slot = FAT_KEY_SLOT(key);
     if (slot >= FAT_MAX_FILES)
         return;
-    struct fat_file *f = &files[slot];
+    struct fat_file *f = &kept->files[slot];
     if (!f->used || f->gen != FAT_KEY_GEN(key))
         return;   /* a packet of a file closed since */
-    f->armed = false;
+    fh[slot].armed = false;
     status_t st = OK;
     for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++)
-        st = file_serve_one(f->ch, &file_ops, f);
+        st = file_serve_one(fh[slot].ch, &file_ops, f);
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(f);   /* fires at once if more is queued */
     if (st != OK)

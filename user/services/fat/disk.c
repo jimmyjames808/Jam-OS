@@ -27,7 +27,7 @@
  *
  * What a flush costs. block.sync is SCSI SYNCHRONIZE CACHE, the dear part
  * of a sync, so it is sent only when a sector was written since the last
- * one (`flushed`). A file.sync is then one flush: FatFs's own, after which
+ * one (`unflushed`). A file.sync is then one flush: FatFs's own, after which
  * the clean bit is written and left for the next flush to carry. If the
  * power goes first the volume is found dirty with everything on it: a
  * false alarm, never a lie. fs.sync and fat's own end do flush the bit
@@ -43,7 +43,12 @@
  * boot sector that mounts over FATs full of whatever was there. Between
  * disk_hold_boot and disk_commit_boot the write of sector 0 is kept back
  * in memory and goes out last, after a flush: until then the partition is
- * still blank, and the next start formats it again. */
+ * still blank, and the next start formats it again.
+ *
+ * What this file knows of the medium (the dirty flag, where the FATs are,
+ * whether a flush is owed, a lost hold) is in the state, kept->disk
+ * (fat.h); the kept-back boot sector is not: a format is redone from the
+ * start by the next fat. */
 #include <ff.h>
 
 #include <diskio.h>
@@ -53,15 +58,10 @@
 
 #define BLOCK_WAIT (30 * NS_PER_S)   /* one block call; usb-storage gives up after 10 s */
 
-/* Where the clean-shutdown bit is in FAT sector 0 (byte offset, mask). */
-static unsigned clean_off;
-static uint8_t  clean_mask;
-
 /* A format's boot sector, kept back until disk_commit_boot. */
 static uint8_t boot[FAT_SECTOR];
 static bool    boot_holding;   /* writes of sector 0 go into boot[] */
 static bool    boot_held;      /* boot[] holds one */
-static bool    flushed = true; /* no sector written since the last block.sync */
 
 static uint64_t deadline(void)
 {
@@ -82,7 +82,7 @@ static status_t failed(const char *what, uint64_t lba, uint32_t count, status_t 
 
 status_t disk_block_write(uint64_t sector, uint32_t count)
 {
-    flushed = false;
+    kept->disk.unflushed = true;
     status_t st = block_write_until(vol.block, deadline(), sector, count, 0);
     if (st != OK)
         return failed("write", sector, count, st);
@@ -126,12 +126,12 @@ status_t disk_open(handle_t block)
 static status_t flush(void)
 {
     status_t st = disk_release();
-    if (st != OK || flushed)
+    if (st != OK || !kept->disk.unflushed)
         return st;
     st = block_sync_until(vol.block, deadline());
     if (st != OK)
         return failed("sync", 0, 0, st);
-    flushed = true;
+    kept->disk.unflushed = false;
     return OK;
 }
 
@@ -185,7 +185,7 @@ status_t disk_commit_boot(const char *label)
         if (i == 0 && (!backup || backup >= vol.blocks))
             continue;
         memcpy(vol.bbuf, boot, FAT_SECTOR);
-        flushed = false;
+        kept->disk.unflushed = true;
         st = block_write_until(vol.block, deadline(), sector, 1, 0);
         if (st != OK)
             return failed("write", sector, 1, st);
@@ -198,16 +198,18 @@ status_t disk_commit_boot(const char *label)
 
 static void patch(uint8_t *sector, bool clean)
 {
+    const struct fat_disk *d = &kept->disk;
     if (clean)
-        sector[clean_off] |= clean_mask;
+        sector[d->clean_off] |= d->clean_mask;
     else
-        sector[clean_off] &= (uint8_t)~clean_mask;
+        sector[d->clean_off] &= (uint8_t)~d->clean_mask;
 }
 
 void disk_patch_dirty(uint8_t *data, uint64_t sector)
 {
-    for (unsigned i = 0; vol.track_dirty && i < vol.nfats; i++)
-        if (vol.fat0[i] == sector)
+    const struct fat_disk *d = &kept->disk;
+    for (unsigned i = 0; d->track_dirty && i < d->nfats; i++)
+        if (d->fat0[i] == sector)
             patch(data, false);
 }
 
@@ -215,57 +217,60 @@ void disk_patch_dirty(uint8_t *data, uint64_t sector)
  * (after what is held: the block buffer is used, and the order kept). */
 static status_t mark(bool clean)
 {
-    status_t held = vol.hold_failed ? ERR_IO : disk_release();   /* never clean after a lost hold */
+    struct fat_disk *d = &kept->disk;
+    status_t held = d->hold_failed ? ERR_IO : disk_release();   /* never clean after a lost hold */
     if (held != OK)
         return held;
-    for (unsigned i = 0; i < vol.nfats; i++) {
-        status_t st = block_read_until(vol.block, deadline(), vol.fat0[i], 1, 0);
+    for (unsigned i = 0; i < d->nfats; i++) {
+        status_t st = block_read_until(vol.block, deadline(), d->fat0[i], 1, 0);
         if (st != OK)
-            return failed("read", vol.fat0[i], 1, st);
+            return failed("read", d->fat0[i], 1, st);
         patch(vol.bbuf, clean);
-        flushed = false;
-        st = block_write_until(vol.block, deadline(), vol.fat0[i], 1, 0);
+        d->unflushed = true;
+        st = block_write_until(vol.block, deadline(), d->fat0[i], 1, 0);
         if (st != OK)
-            return failed("write", vol.fat0[i], 1, st);
-        cache_wrote(vol.fat0[i], 1, vol.bbuf);
+            return failed("write", d->fat0[i], 1, st);
+        cache_wrote(d->fat0[i], 1, vol.bbuf);
     }
-    vol.clean_on_disk = clean;
+    d->clean_on_disk = clean;
     return OK;
 }
 
 void disk_watch(void)
 {
-    vol.track_dirty = false;
-    if (vol.fs.fs_type == FS_FAT32) {
-        clean_off = 7;        /* entry 1 is bytes 4..7; bit 27 */
-        clean_mask = 0x08;
-    } else if (vol.fs.fs_type == FS_FAT16) {
-        clean_off = 3;        /* entry 1 is bytes 2..3; bit 15 */
-        clean_mask = 0x80;
+    struct fat_disk *d = &kept->disk;
+    d->track_dirty = false;
+    if (kept->fs.fs_type == FS_FAT32) {
+        d->clean_off = 7;        /* entry 1 is bytes 4..7; bit 27 */
+        d->clean_mask = 0x08;
+    } else if (kept->fs.fs_type == FS_FAT16) {
+        d->clean_off = 3;        /* entry 1 is bytes 2..3; bit 15 */
+        d->clean_mask = 0x80;
     } else {
         return;
     }
-    vol.nfats = vol.fs.n_fats == 2 ? 2 : 1;
-    vol.fat0[0] = vol.fs.fatbase;
-    vol.fat0[1] = vol.fs.fatbase + vol.fs.fsize;
-    status_t st = block_read_until(vol.block, deadline(), vol.fat0[0], 1, 0);
+    d->nfats = kept->fs.n_fats == 2 ? 2 : 1;
+    d->fat0[0] = kept->fs.fatbase;
+    d->fat0[1] = kept->fs.fatbase + kept->fs.fsize;
+    status_t st = block_read_until(vol.block, deadline(), d->fat0[0], 1, 0);
     if (st != OK) {
-        (void)failed("read", vol.fat0[0], 1, st);   /* logged; the flag stays unknown */
+        (void)failed("read", d->fat0[0], 1, st);   /* logged; the flag stays unknown */
         return;
     }
-    vol.clean_on_disk = (vol.bbuf[clean_off] & clean_mask) != 0;
-    if (!vol.clean_on_disk)
+    d->clean_on_disk = (vol.bbuf[d->clean_off] & d->clean_mask) != 0;
+    if (!d->clean_on_disk)
         printf("fat %s: the volume is dirty (not shut down cleanly): mounted anyway, there is "
                "no fsck\n", vol.name);
-    vol.track_dirty = !vol.read_only;
+    d->track_dirty = !vol.read_only;
 }
+
 
 status_t disk_settle(bool durable)
 {
     if (vol.read_only)
         return OK;
     status_t st = OK;
-    if (vol.track_dirty && !vol.clean_on_disk) {
+    if (kept->disk.track_dirty && !kept->disk.clean_on_disk) {
         st = flush();   /* what the bit vouches for is on the medium first */
         if (st == OK)
             st = mark(true);
@@ -331,9 +336,10 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         return RES_PARERR;
     if (vol.read_only)
         return RES_WRPRT;
-    if (vol.hold_failed)
+    const struct fat_disk *d = &kept->disk;
+    if (d->hold_failed)
         return RES_ERROR;   /* FatFs is ahead of the disk: nothing more goes out */
-    if (vol.track_dirty && vol.clean_on_disk && mark(false) != OK)
+    if (d->track_dirty && d->clean_on_disk && mark(false) != OK)
         return RES_ERROR;
     if (boot_holding && sector == 0) {
         memcpy(boot, buff, FAT_SECTOR);
@@ -350,9 +356,9 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
     while (count) {
         uint32_t n = count < per ? count : per;
         memcpy(vol.bbuf, buff, (size_t)n * FAT_SECTOR);
-        for (unsigned i = 0; vol.track_dirty && i < vol.nfats; i++)
-            if (vol.fat0[i] >= sector && vol.fat0[i] - sector < n)
-                patch(vol.bbuf + (size_t)(vol.fat0[i] - sector) * FAT_SECTOR, false);
+        for (unsigned i = 0; d->track_dirty && i < d->nfats; i++)
+            if (d->fat0[i] >= sector && d->fat0[i] - sector < n)
+                patch(vol.bbuf + (size_t)(d->fat0[i] - sector) * FAT_SECTOR, false);
         if (disk_block_write(sector, n) != OK)
             return RES_ERROR;   /* logged */
         buff += (size_t)n * FAT_SECTOR;

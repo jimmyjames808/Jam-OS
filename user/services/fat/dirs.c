@@ -19,7 +19,11 @@
  * directory (FF_FS_LOCK), which would refuse to remove or rename one a
  * cursor holds open; FF_FS_LOCK counts the cursors in. A file's size and
  * date change its entry in place, not the order: writes leave cursors
- * alone. */
+ * alone.
+ *
+ * The cursors are fat's own memory, not its state (fat.h): a fat that
+ * takes over from another starts with none, and a listing in progress goes
+ * on from a fresh walk (fs.readdir takes an index). */
 #include "fat.h"
 
 #define READDIR_MAX 65536u   /* a FAT directory holds at most this many entries */

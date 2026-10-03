@@ -36,7 +36,8 @@ struct fat_vol vol;
 
 static const char *type_name(void)
 {
-    return vol.fs.fs_type == FS_FAT32 ? "FAT32" : vol.fs.fs_type == FS_FAT16 ? "FAT16" : "FAT12";
+    BYTE t = kept->fs.fs_type;
+    return t == FS_FAT32 ? "FAT32" : t == FS_FAT16 ? "FAT16" : "FAT12";
 }
 
 /* A new volume over the whole partition (no partition table inside it).
@@ -62,7 +63,7 @@ static FRESULT format(void)
     else if (disk_commit_boot(LABEL) != OK)
         fr = FR_DISK_ERR;
     if (fr == FR_OK)
-        fr = f_mount(&vol.fs, "", 1);
+        fr = f_mount(&kept->fs, "", 1);
     if (fr == FR_OK)
         fr = f_setlabel(LABEL);
     return fr;
@@ -99,7 +100,7 @@ static status_t mount_blank(void)
  * (the exit code FAT_EXIT_NO_VOLUME). */
 static status_t mount(bool *no_volume)
 {
-    FRESULT fr = f_mount(&vol.fs, "", 1);
+    FRESULT fr = f_mount(&kept->fs, "", 1);
     status_t st = fr == FR_NO_FILESYSTEM ? mount_blank() : fr_status(fr);
     if (st != OK) {
         if (fr != FR_NO_FILESYSTEM)
@@ -107,15 +108,15 @@ static status_t mount(bool *no_volume)
         *no_volume = fr == FR_NO_FILESYSTEM && st == ERR_NOT_FOUND;
         return st;
     }
-    if (vol.fs.fsize >= FAT_SECTORS_MAX) {
+    if (kept->fs.fsize >= FAT_SECTORS_MAX) {
         printf("fat %s: a FAT of %u sectors: not a volume to trust, not mounted\n", vol.name,
-               (unsigned)vol.fs.fsize);
+               (unsigned)kept->fs.fsize);
         *no_volume = true;
         return ERR_IO;
     }
     disk_watch();
     printf("fat %s: mounted %s, %lu MiB%s\n", vol.name, type_name(),
-           (unsigned long)((uint64_t)(vol.fs.n_fatent - 2) * vol.fs.csize / 2048),
+           (unsigned long)((uint64_t)(kept->fs.n_fatent - 2) * kept->fs.csize / 2048),
            vol.read_only ? ", read-only" : "");
     return OK;
 }
@@ -207,7 +208,9 @@ int main(int argc, char **argv)
         return 1;
     }
     vol.rtc_root = startup_handle(SR_RESOURCE);
-    status_t st = jam_port_create(&vol.port);
+    status_t st = state_open();   /* first: everything fat knows lives there */
+    if (st == OK)
+        st = jam_port_create(&vol.port);
     if (st == OK)
         st = disk_open(block);
     if (st == OK)

@@ -8,7 +8,8 @@
  * block channel's peer-closed signal all arrive on it (main.c). FatFs is
  * not re-entrant and needs no locks here: nothing else runs in fat.
  *
- * Files: main.c the startup, mount and event loop; disk.c FatFs's disk
+ * Files: main.c the startup, mount and event loop; state.c the state
+ * VMO that holds struct fat_state (what fat knows); disk.c FatFs's disk
  * callbacks over `block`, the volume's dirty flag and get_fattime;
  * hold.c the writes of an FS_GATHER file, held back and sent together;
  * cache.c the write-through block cache under them;
@@ -49,7 +50,11 @@
 #define FAT_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define FAT_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
 
-/* The volume: fat serves exactly one. */
+
+/* The volume: fat serves exactly one. What this instance has of it: its
+ * handles, its mapping of the block buffer, what block.info and argv
+ * said. What fat knows of it that must outlive the process is in the
+ * state (struct fat_state, below). */
 struct fat_vol {
     const char *name;         /* for log lines: argv[1] or "fat" */
     handle_t    port;         /* every channel's events */
@@ -61,41 +66,112 @@ struct fat_vol {
     bool        may_format;   /* started with FAT_ARG_FORMAT: a blank partition is formatted */
     bool        disk_gone;    /* a block call saw ERR_PEER_CLOSED */
     handle_t    rtc_root;     /* SR_RESOURCE or HANDLE_INVALID */
-    FATFS       fs;           /* FatFs's volume */
-
-    /* The dirty flag (FAT[1]'s clean-shutdown bit, disk.c). */
-    bool        track_dirty;  /* a writable FAT16/FAT32 volume */
-    bool        clean_on_disk;/* what the bit on the medium says now */
-    uint32_t    fat0[2];      /* first sector of each FAT copy */
-    unsigned    nfats;        /* copies (1 or 2) */
-
-    /* A held write (disk.c, FS_GATHER) failed to reach the disk: nothing
-     * more is written (FatFs's state is ahead of the disk) until fat starts
-     * again, and an FS_GATHER file's sync fails (ERR_IO). */
-    bool        hold_failed;
 };
 
 extern struct fat_vol vol;
 
+/* ---- the state (state.c) --------------------------------------------------------- */
+
+/* What fat knows of the volume and its clients that a successor must find
+ * again (docs/M11.6-PLAN.md, "Where each service's state lives"): FatFs's
+ * volume and every open file's FIL, fat's tables of open files and views,
+ * the dirty flag, and the held writes. It is one struct, the service's
+ * own area of a state VMO (<svcstate.h>), mapped at a fixed address so
+ * that the pointers FatFs keeps inside it (each FIL's volume, its
+ * directory entry in the volume's window) stay valid from one instance to
+ * the next. Nothing in it points outside it but FATFS's lfnbuf (FatFs's
+ * static name buffer, in fat's own image).
+ *
+ * Handles can't live in a VMO: each table's handles are kept apart, in
+ * fat's own memory, by the same index (fileops.c, views.c). What fat
+ * rebuilds instead (the block cache, the directory cursors, the block
+ * buffer's mapping) is in fat's own memory too.
+ *
+ * Today fat makes this VMO itself at every start (state.c), so it always
+ * starts fresh and nothing outlives the process yet: stages F2 and F3 of
+ * the plan, and devmgr's S3a, which hands it in, make use of it. */
+
+#define FAT_STATE_KIND 0x20746166u   /* "fat ": svcstate's kind */
+#define FAT_STATE_LAYOUT 1u          /* bump on any change to struct fat_state */
+#define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
+                               * that chain it (on one-sector clusters, 16 per copy) */
+#define FAT_HOLD_RUNS 32u     /* runs of consecutive sectors held at most */
+
+/* The dirty flag (FAT[1]'s clean-shutdown bit) and what is on the medium:
+ * disk.c's. */
+struct fat_disk {
+    bool     track_dirty;     /* a writable FAT16/FAT32 volume */
+    bool     clean_on_disk;   /* what the bit on the medium says now */
+    bool     unflushed;       /* a sector was written since the last block.sync */
+    /* A held write (FS_GATHER) failed to reach the disk: nothing more is
+     * written (FatFs's state is ahead of the disk) until fat starts
+     * afresh, and an FS_GATHER file's sync fails (ERR_IO). */
+    bool     hold_failed;
+    uint8_t  clean_mask;      /* the bit in FAT sector 0 ... */
+    uint32_t clean_off;       /* ... in this byte */
+    uint32_t fat0[2];         /* first sector of each FAT copy */
+    uint32_t nfats;           /* copies (1 or 2) */
+};
+
 /* A file that is open, once however many fs.open calls share it. */
 struct fat_open {
-    unsigned refs;            /* slots of files[] that use it; 0: free */
+    uint32_t refs;            /* slots of files[] that use it; 0: free */
     bool     unsynced;        /* written since its last f_sync */
     char     path[FS_PATH_MAX];/* its resolved path: what makes two opens one file */
     FIL      fil;             /* FatFs's file, opened to read (and to write, if its first
                                * open asked) */
 };
 
-/* One fs.open: a slot of the table in fileops.c. */
+/* One fs.open: a slot of the table in fileops.c (its channel and buffer
+ * are there, by the same index). */
 struct fat_file {
     bool     used;            /* the slot holds an open file */
-    bool     armed;           /* ch is bound to the port (ONCE) */
     uint32_t gen;             /* bumped on every open of this slot */
     uint32_t flags;           /* FS_* it was opened with */
-    handle_t ch;              /* our end of its `file` channel */
-    handle_t vmo;             /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
-    struct fat_open *o;       /* the file */
+    uint32_t open;            /* its file: an index into opens[] */
 };
+
+/* One view (fs.view; its channel is in views.c, by the same index). */
+struct fat_view {
+    bool     used;            /* the slot holds a view */
+    uint32_t flags;           /* FS_VIEW_* */
+    uint32_t gen;             /* bumped on every use of the slot: its port key */
+};
+
+/* The held writes (hold.c's header says what they are and when they go). */
+struct fat_hold {
+    bool     holding;         /* disk_write holds instead of writing */
+    bool     ready;           /* data's pages are committed (at the first hold) */
+    uint32_t held;            /* sectors held */
+    uint32_t runs;            /* runs begun, in order */
+    uint64_t out_sectors;     /* sectors that went out held (fat's last line) */
+    uint64_t out_writes;      /* ... in this many block writes */
+    uint64_t run_first[FAT_HOLD_RUNS];   /* run r holds run_first[r] .. + run_len[r] - 1 */
+    uint32_t run_len[FAT_HOLD_RUNS];
+    uint64_t lba[FAT_HOLD_MAX];          /* data's sector i is for this sector */
+    uint8_t  run_of[FAT_HOLD_MAX];       /* ... and belongs to this run */
+    _Alignas(PAGE_SIZE) uint8_t data[FAT_HOLD_MAX * FAT_SECTOR];   /* committed when used */
+};
+
+struct fat_state {
+    FATFS           fs;                    /* FatFs's volume */
+    struct fat_disk disk;
+    struct fat_open opens[FAT_MAX_FILES];  /* at most one per slot of files[] */
+    struct fat_file files[FAT_MAX_FILES];
+    struct fat_view views[FAT_VIEWS];
+    struct fat_hold hold;                  /* last: most of the state, untouched until used */
+};
+
+/* The state, mapped (state_open); NULL before. */
+extern struct fat_state *kept;
+
+/* Make the state VMO, map it at SVCSTATE_ADDR and set it up empty: before
+ * anything else. Errors as svcstate_create's and svcstate_open's. */
+status_t state_open(void);
+/* Commit the state's pages under [p, p + len), inside *kept: so that
+ * running out of memory fails now instead of faulting later. vmo_commit's
+ * errors (ERR_NO_MEMORY). */
+status_t state_commit(const void *p, size_t len);
 
 /* ---- disk.c ---------------------------------------------------------------------- */
 
@@ -153,7 +229,7 @@ status_t hold_put(const uint8_t *buff, uint64_t sector, uint32_t count);
 /* buf holds count sectors at `sector` just read from the disk: the held
  * ones among them, newer than the disk's, copied over them. */
 void     hold_overlay(uint64_t sector, uint32_t count, uint8_t *buf);
-/* Everything held, out on the disk now; its failure sets vol.hold_failed. */
+/* Everything held, out on the disk now; its failure sets kept->disk.hold_failed. */
 status_t disk_release(void);
 /* Sectors that went out held so far, and in how many block writes. */
 void     disk_hold_stats(uint64_t *sectors, uint64_t *writes);
