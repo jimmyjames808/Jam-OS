@@ -128,3 +128,7 @@ void vtd_describe_caps(char *buf, size_t n, uint64_t cap, uint64_t ecap);
 /* One line describing GSTS and the pointers the firmware left: what is on.
  * Pure. */
 void vtd_describe_status(char *buf, size_t n, uint32_t gsts, uint32_t pmen, uint32_t fsts);
+
+/* One fault recording register (lo: bits 63:0, hi: bits 127:64), described
+ * for the log: the requester, what it did and the reason. Pure. */
+void vtd_describe_fault(char *buf, size_t n, uint64_t lo, uint64_t hi);

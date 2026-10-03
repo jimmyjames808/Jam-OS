@@ -110,6 +110,16 @@ void vtd_describe_status(char *buf, size_t n, uint32_t gsts, uint32_t pmen, uint
         add(&l, ", invalidation errors %x", fsts & (VTD_FSTS_IQE | VTD_FSTS_ICE | VTD_FSTS_ITE));
 }
 
+void vtd_describe_fault(char *buf, size_t n, uint64_t lo, uint64_t hi)
+{
+    struct line l = { buf, n, 0 };
+    if (n)
+        buf[0] = '\0';
+    uint32_t sid = (uint32_t)VTD_FRCD_SID(hi);
+    add(&l, "%02x:%02x.%x %s at %lx, reason %lx", sid >> 8, (sid >> 3) & 0x1f, sid & 7,
+        VTD_FRCD_TYPE1(hi) ? "read" : "write", lo & ~(uint64_t)0xfff, VTD_FRCD_REASON(hi));
+}
+
 /* ---- the table ------------------------------------------------------------------- */
 
 /* The enumerated function at seg:bus:dev.fn, or NULL. */
@@ -305,11 +315,9 @@ static void log_faults(uint32_t idx, volatile uint8_t *r, uint64_t cap, uint64_t
         uint64_t hi = rd64(r, (uint32_t)off + 8);
         if (!(hi & VTD_FRCD_F))
             continue;
-        uint64_t lo = rd64(r, (uint32_t)off);
-        uint32_t sid = (uint32_t)VTD_FRCD_SID(hi);
-        kprintf("vtd:         unit %u fault record %u: %02x:%02x.%x %s at %lx, reason %lx\n",
-                idx, i, sid >> 8, (sid >> 3) & 0x1f, sid & 7,
-                VTD_FRCD_TYPE1(hi) ? "read" : "write", lo & ~(uint64_t)0xfff, VTD_FRCD_REASON(hi));
+        char buf[96];
+        vtd_describe_fault(buf, sizeof(buf), rd64(r, (uint32_t)off), hi);
+        kprintf("vtd:         unit %u fault record %u: %s\n", idx, i, buf);
     }
 }
 
