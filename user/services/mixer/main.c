@@ -18,7 +18,8 @@
  * which answers audioctl.device, the one call that waits on others). Channels are bound
  * PERSISTENT and served a budget at a time, with a flag saying more may be
  * queued (a binding fires on edges only); each stream's event is bound
- * ONCE and watched again after each wake. */
+ * ONCE and watched again after each wake. The numbers are committed
+ * before the loop waits (internal.h). */
 #include <devmgr.h>
 #include <mixmath.h>
 #include "internal.h"
@@ -29,7 +30,7 @@ static struct stream *keyed(struct mixer *m, uint64_t key, uint32_t base)
     uint32_t slot = (uint32_t)(key & 0xff) - base;
     if (slot >= MIXER_MAX_STREAMS)
         return NULL;
-    struct stream *s = &m->s[slot];
+    struct stream *s = &m->nums->s[slot];
     return s->used && (uint32_t)(key >> 8) == s->gen ? s : NULL;
 }
 
@@ -37,7 +38,7 @@ static void packet(struct mixer *m, const struct port_packet *p)
 {
     uint32_t low = (uint32_t)(p->key & 0xff);
     struct stream *s;
-    struct client *c;
+    struct client_own *c;
     if (p->key == KEY_SVC) {
         m->svc_pending = true;
     } else if (p->key == KEY_CTL) {
@@ -47,23 +48,23 @@ static void packet(struct mixer *m, const struct port_packet *p)
                "me again with the new devmgr\n");
         jam_process_exit(3);
     } else if (low == KEY_OUT) {
-        if (m->out.ch && (uint32_t)(p->key >> 8) == m->out.gen)
-            m->out.pending = true;
+        if (m->own_out.ch && (uint32_t)(p->key >> 8) == m->nums->out.gen)
+            m->own_out.pending = true;
     } else if (low >= KEY_CLIENT && (c = clients_keyed(m, p->key)) != NULL) {
         c->pending = true;
     } else if (low >= KEY_EVENT && (s = keyed(m, p->key, KEY_EVENT)) != NULL) {
         stream_event(m, s);
     } else if (low >= KEY_STREAM && (s = keyed(m, p->key, KEY_STREAM)) != NULL) {
-        s->pending = true;
+        stream_own(m, s)->pending = true;
     }
 }
 
 static bool anything_pending(const struct mixer *m)
 {
-    if (m->svc_pending || m->ctl_pending || m->out.pending || clients_pending(m))
+    if (m->svc_pending || m->ctl_pending || m->own_out.pending || clients_pending(m))
         return true;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
-        if (m->s[i].used && m->s[i].pending)
+        if (m->nums->s[i].used && m->own_s[i].pending)
             return true;
     return false;
 }
@@ -76,14 +77,19 @@ static void serve_all(struct mixer *m)
         serve_ctl(m);
     clients_serve(m);
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
-        if (m->s[i].used && m->s[i].pending)
-            serve_stream(m, &m->s[i]);
-    if (m->out.pending)
+        if (m->nums->s[i].used && m->own_s[i].pending)
+            serve_stream(m, &m->nums->s[i]);
+    if (m->own_out.pending)
         out_serve(m);
 }
 
 static status_t setup(struct mixer *m)
 {
+    status_t st = state_init(m);
+    if (st != OK) {
+        printf("mixer: can't make its state (%s)\n", status_str(st));
+        return st;
+    }
     for (unsigned i = 0; i < startup_handle_count(); i++) {
         uint32_t role;
         handle_t h = startup_handle_at(i, &role);
@@ -96,7 +102,7 @@ static status_t setup(struct mixer *m)
         printf("mixer: started without SR_AUDIO and SR_AUDIO_CTL: nothing to serve\n");
         return ERR_BAD_HANDLE;
     }
-    status_t st = jam_port_create(&m->port);
+    st = jam_port_create(&m->port);
     if (st == OK)
         st = jam_port_bind(m->port, m->svc, KEY_SVC, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
@@ -109,8 +115,9 @@ static status_t setup(struct mixer *m)
         printf("mixer: can't set up its port (%s)\n", status_str(st));
         return st;
     }
-    m->master_gain = MIX_UNITY;
-    m->next_id = 1;
+    m->nums->master_gain = MIX_UNITY;
+    m->nums->next_id = 1;
+    state_commit(m);
     m->svc_pending = m->ctl_pending = true;   /* calls may be queued from before a restart */
     device_init(m);
     return OK;
@@ -132,6 +139,7 @@ int main(int argc, char **argv)
         uint64_t deadline = out_tick(m);
         if (anything_pending(m))
             continue;
+        state_commit(m);
         struct port_packet p;
         status_t st = jam_port_wait(m->port, deadline, &p);
         if (st == OK)

@@ -13,12 +13,31 @@
  * the play position again, so between OUT_LEAD - 1 and OUT_LEAD periods
  * are always ahead (128-171 ms): the mixer may be scheduled up to 128 ms
  * late before anything is lost. The loop's state is its own: device.c's
- * thread reads only m->cards and m->ctl, which never change. */
+ * thread reads only m->cards and m->ctl, which never change.
+ *
+ * **What the mixer knows lives in its state VMO** (<svcstate.h>; state.c):
+ * every number (each stream's, each opener's, the output's, the master
+ * volume) is in struct mixer_state, apart from the handles and the
+ * mapping, which are the process's own (struct stream_own, client_own,
+ * out_own: the same index as the numbers they go with). The loop changes
+ * the working copy (m->nums) freely; a commit (state_commit) copies it to
+ * whichever of the two saved copies isn't current and then moves the
+ * commit word, one store, so a saved copy is always whole. The order:
+ * a period is mixed and written into the driver's ring, then committed,
+ * then each stream's new `read` is published in its ring header; every
+ * answer (a request's, a drain's, a wait_period sent to the driver) goes
+ * out after a commit; and the loop commits before it waits. Requests are
+ * read into the state's two request slots (svcstate_take) and answered
+ * from the slot's reply area. Nothing reads a saved copy back yet: a
+ * restarted mixer starts from a new state. */
 #pragma once
 
+#include <idl/audio.h>
+#include <idl/audioctl.h>
 #include <mixer.h>
 #include <mixmath.h>
 #include <os.h>
+#include <svcstate.h>
 
 #define OUT_LEAD       4u      /* periods written ahead of the play position */
 #define IDLE_PERIODS   24u     /* every playing stream empty this long (1 s): close the output */
@@ -46,6 +65,11 @@
 
 #define MIXER_CLIENTS 24u       /* openers' channels at once (clients.c) */
 
+#define STATE_KIND     0x6d697872u   /* "mixr": the state's svcstate kind */
+#define STATE_LAYOUT   1u            /* struct mixer_saved's layout version */
+#define REQ_CAP_AUDIO  (AUDIO_REQ_MAX + 8)   /* bytes read from an `audio` channel at most */
+#define REQ_CAP_CTL    AUDIOCTL_REQ_MAX      /* ... and from an `audioctl` channel */
+
 /* One period a stream gave frames to: its frames [from, from + n) went to
  * the driver's frames [at, at + n). */
 struct hist {
@@ -53,6 +77,7 @@ struct hist {
     uint32_t n;
 };
 
+/* A stream's numbers (in the state). */
 struct stream {
     bool        used;
     uint32_t    id;                /* for `vol`, never reused while the mixer runs */
@@ -61,8 +86,6 @@ struct stream {
     uint32_t    owner_gen;         /* that slot's generation then (0 for the shared one) */
     uint32_t    gen;               /* the slot's generation (its port keys) */
     char        name[16];
-    handle_t    ch, vmo, event;    /* our ends */
-    bool        pending;           /* the channel may have messages */
     bool        playing;           /* started */
     int32_t     volume;            /* centibels */
     uint32_t    gain;              /* Q15, from volume */
@@ -81,18 +104,21 @@ struct stream {
     uint64_t    drain_to;          /* frames that must be heard */
 };
 
-/* The driver's output stream (output.c). */
+/* A stream's handles and the loop's flags about it: the process's own. */
+struct stream_own {
+    handle_t    ch, vmo, event;    /* our ends (0: a free slot) */
+    bool        pending;           /* the channel may have messages */
+    bool        took;              /* frames taken since its `read` was last published */
+    bool        wake;              /* its client waited for room when they were taken */
+};
+
+/* The driver's output stream's numbers (in the state; output.c). */
 struct out {
-    handle_t svc;          /* the hda driver's channel from devmgr, or 0 */
-    handle_t ch;           /* its stream channel while open, or 0 */
-    handle_t vmo;
-    void    *ring;         /* mapped */
     uint32_t bits;         /* the samples' size: 16, or 20/24/32 in 32-bit containers */
     uint32_t frame_bytes;  /* 4 or 8 */
     uint32_t frames;       /* ring size in frames */
     uint32_t period;       /* frames per period */
     uint32_t gen;          /* port key generation */
-    bool     pending;      /* its channel may have messages */
     bool     waiting;      /* a wait_period is out */
     uint32_t wait_txid;
     uint64_t wait_sent;    /* when (ns) */
@@ -104,19 +130,33 @@ struct out {
     uint32_t seed;         /* the 16-bit output's dither */
 };
 
-/* An opener's own `audio` or `audioctl` channel (clients.c). */
+/* The output's handles and mapping: the process's own. */
+struct out_own {
+    handle_t svc;          /* the hda driver's channel from devmgr, or 0 */
+    handle_t ch;           /* its stream channel while open, or 0 */
+    handle_t vmo;
+    void    *ring;         /* mapped */
+    bool     pending;      /* its channel may have messages */
+};
+
+/* An opener's own `audio` or `audioctl` channel (clients.c): its numbers
+ * (in the state). */
 struct client {
-    handle_t ch;        /* our end, bound PERSISTENT (0: a free slot) */
+    bool     used;      /* a channel is open in this slot */
     bool     ctl;       /* an `audioctl` channel (else `audio`) */
-    bool     pending;   /* its channel may have messages */
     uint32_t gen;       /* the slot's generation (its port key) */
 };
 
-struct mixer {
-    handle_t      port, svc, ctl;
-    handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
-    unsigned      ncards;
-    bool          svc_pending, ctl_pending;
+/* An opener's channel: the process's own. */
+struct client_own {
+    handle_t ch;        /* our end, bound PERSISTENT (0: a free slot) */
+    bool     pending;   /* its channel may have messages */
+};
+
+/* Everything the mixer knows: the numbers a successor would carry on
+ * from. No handles and no pointers. */
+struct mixer_state {
+    uint64_t      req_done;        /* the svcstate number of the last request answered */
     struct client c[MIXER_CLIENTS];
     struct stream s[MIXER_MAX_STREAMS];
     struct out    out;
@@ -124,9 +164,59 @@ struct mixer {
     uint32_t      master_gain;     /* Q15 */
     uint32_t      next_id;
     uint32_t      next_txid;
+};
+
+/* The service's own area of the state VMO (svcstate_user). */
+struct mixer_saved {
+    uint64_t           commits;    /* the commit word: copy[commits & 1] is the committed state */
+    struct mixer_state copy[2];    /* the last two commits */
+    struct mixer_state work;       /* the loop's working copy (m->nums) */
+};
+
+struct mixer {
+    struct mixer_state *nums;      /* the working numbers: &saved->work */
+    struct mixer_saved *saved;     /* in the state VMO */
+    struct svcstate     state;     /* the state VMO, mapped */
+    handle_t      port, svc, ctl;
+    handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
+    unsigned      ncards;
+    bool          svc_pending, ctl_pending;
+    struct client_own own_c[MIXER_CLIENTS];      /* by the index of nums->c */
+    struct stream_own own_s[MIXER_MAX_STREAMS];  /* by the index of nums->s */
+    struct out_own    own_out;
     int32_t       acc[2 * (MIX_LOOKAHEAD + PERIOD_MAX)];
     int16_t       buf[2 * PERIOD_MAX];
 };
+
+/* The handles that go with stream s. */
+static inline struct stream_own *stream_own(struct mixer *m, const struct stream *s)
+{
+    return &m->own_s[s - m->nums->s];
+}
+
+/* ---- state.c ------------------------------------------------------------------ */
+
+/* Make the state VMO, map it, set up the numbers (m->nums, m->saved,
+ * m->state). Errors as svcstate_create's and svcstate_open's. */
+status_t state_init(struct mixer *m);
+/* Commit the working numbers (above). */
+void     state_commit(struct mixer *m);
+/* Read the next request from ch (whose port key is `key`, and which
+ * takes requests of `cap` bytes at most) into a request slot. OK with
+ * *slot set: a request to run (svcstate_request); OK with *slot
+ * REQ_NONE: a message was taken and answered or dropped as today's
+ * generated server does (handles, too long, under 4 bytes); else the
+ * read's status (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED). */
+#define REQ_NONE (~0u)
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, uint32_t cap, unsigned *slot);
+/* Answer the request in slot on ch: the numbers committed (the request
+ * counted), the slot committed, then the reply in the slot's reply area
+ * (rn bytes with hs[0..nh), moved; nothing if rn is 0: answered later or
+ * never). A reply that can't be written has its handles closed. */
+void     req_answer(struct mixer *m, unsigned slot, handle_t ch, uint32_t rn, handle_t *hs,
+                    uint32_t nh);
+/* Answer the request in slot on ch with a bare status. */
+void     req_status(struct mixer *m, unsigned slot, handle_t ch, status_t st);
 
 /* ---- streams.c ---------------------------------------------------------------- */
 
@@ -139,7 +229,8 @@ void serve_ctl(struct mixer *m);
  * budget was spent (more may be queued), else the read's status
  * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED: its clients are gone). */
 status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner);
-status_t serve_control(struct mixer *m, handle_t ch);
+/* The same for an `audioctl` channel ch whose port key is `key`. */
+status_t serve_control(struct mixer *m, handle_t ch, uint32_t key);
 void serve_stream(struct mixer *m, struct stream *s);
 /* A stream's event fired (MIXER_SIG_DATA): take the bit down, watch again. */
 void stream_event(struct mixer *m, struct stream *s);
@@ -153,7 +244,7 @@ uint64_t stream_played(const struct stream *s, uint64_t pos);
  * (or with st, unless st is OK). */
 void drain_check(struct mixer *m, struct stream *s, uint64_t pos, status_t st);
 /* Set or clear the `idle` flag in s's header. */
-void stream_set_idle(struct stream *s, bool idle);
+void stream_set_idle(struct mixer *m, struct stream *s, bool idle);
 
 /* ---- output.c ----------------------------------------------------------------- */
 
@@ -191,10 +282,10 @@ status_t out_query(struct mixer *m, uint32_t index, handle_t *out);
 /* svc.connect: a new opener's channel (`audioctl` if ctl), watched on the
  * port; *out: the client end. ERR_NO_RESOURCES: MIXER_CLIENTS already. */
 status_t clients_connect(struct mixer *m, bool ctl, handle_t *out);
-/* The same, answered on ch to the request with txid. */
-void clients_connect_reply(struct mixer *m, handle_t ch, uint32_t txid, bool ctl);
+/* The same, answered on ch to the request in the request slot `slot`. */
+void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl);
 /* The opener a port key names, if it still holds that slot's generation. */
-struct client *clients_keyed(struct mixer *m, uint64_t key);
+struct client_own *clients_keyed(struct mixer *m, uint64_t key);
 /* Some opener's channel may have messages. */
 bool clients_pending(const struct mixer *m);
 /* A budget of messages from each opener's channel that may have some; a
@@ -208,5 +299,7 @@ struct audioctl_device_req;
  * answers in the loop, as slow as that is). */
 void device_init(struct mixer *m);
 /* An audioctl.device request read from the control channel ch (the
- * shared one or an opener's): answered on ch by the thread. */
-void device_ask(struct mixer *m, handle_t ch, const struct audioctl_device_req *q);
+ * shared one or an opener's): OK, it is answered on ch by the thread (or
+ * already was, without one); else the status to answer it with now
+ * (ERR_NO_RESOURCES: DEVICE_QUEUE requests wait already). */
+status_t device_ask(struct mixer *m, handle_t ch, const struct audioctl_device_req *q);
