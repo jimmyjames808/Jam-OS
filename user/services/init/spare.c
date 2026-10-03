@@ -217,6 +217,20 @@ void spare_event(void)
     spare_ended(now());
 }
 
+/* The instance's arguments into argv (2 entries): its path, and after an
+ * end how the last instance ended, "killed" (a deliberate kill) or
+ * "crashed": a service that adopts its state counts only crashes against
+ * the request in progress (docs/M11.6-PLAN.md, Q1's bad-request rule).
+ * Returns argc. */
+static int start_argv(const struct svc *s, const char *argv[2])
+{
+    argv[0] = s->path;
+    if (!s->ended_at)
+        return 1;
+    argv[1] = s->kill_at ? "killed" : "crashed";
+    return 2;
+}
+
 /* Promote the spare to be svc i, with x[0..nx) (each sent with r[k]).
  * ERR_NOT_FOUND: no spare waits (x untouched). Else x is consumed; OK:
  * svc i runs as the spare's process now. */
@@ -230,9 +244,10 @@ static status_t promote(unsigned i, struct spawn_handle *x, const rights_t *r, u
         return ERR_NOT_FOUND;
     }
     struct svc *s = &svcs[i];
-    const char *argv[] = { s->path };
-    struct standby_args a = { .hs = x, .rights = r, .n = nx, .argc = 1, .argv = argv,
-                              .envp = NULL, .kill_ns = s->kill_at ? s->kill_at : s->ended_at };
+    const char *argv[2];
+    struct standby_args a = { .hs = x, .rights = r, .n = nx, .argc = start_argv(s, argv),
+                              .argv = argv, .envp = NULL,
+                              .kill_ns = s->kill_at ? s->kill_at : s->ended_at };
     handle_t proc = spare.proc, job = spare.job;
     (void)jam_port_unbind(port, proc, KEY_SPARE);   /* its end is svc i's from now on */
     status_t st = standby_promote(spare.standby, &a);
@@ -409,8 +424,9 @@ status_t kept_start(unsigned i, struct spawn_handle *x, unsigned nx)
     status_t st = promote(i, x, r, nx);
     bool promoted = st == OK;
     if (st == ERR_NOT_FOUND) {
-        const char *argv[] = { s->path };
-        struct svc_args a = { .argc = 1, .argv = argv, .x = x, .rights = r, .nx = nx };
+        const char *argv[2];
+        struct svc_args a = { .argc = start_argv(s, argv), .argv = argv, .x = x, .rights = r,
+                              .nx = nx };
         st = svc_start_args(i, &a);
     }
     if (st != OK)
