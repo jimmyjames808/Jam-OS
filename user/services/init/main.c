@@ -192,10 +192,12 @@ static bool start_devmgr(handle_t console)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[4] = { "bin/devmgr" };
+        const char *argv[5] = { "bin/devmgr" };
         int argc = 1;
         if (init_hidboot)
             argv[argc++] = "hidboot";
+        if (init_nospare)
+            argv[argc++] = "nospare";   /* no warm spare fat either */
         if (init_vlan)
             argv[argc++] = init_vlan;
         if (init_bootdisk)
@@ -424,7 +426,7 @@ int main(int argc, char **argv)
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
      * plays first), "hidboot", "netprobe", "netsend", "net", "vlan=<id>"
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
-     * spare mixer: spare.c). */
+     * spare mixer: spare.c; passed on to devmgr: no warm spare fat). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");

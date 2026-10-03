@@ -14,6 +14,17 @@
  *   SR_RESOURCE    optional: the root resource, used only to read the
  *                  real-time clock for file timestamps. Without it every
  *                  timestamp is 2026-01-01 00:00:00.
+ *   SR_STATE       optional: its state VMO (<svcstate.h>), FAT_STATE_SIZE
+ *                  bytes, made and kept by devmgr across its restarts, with
+ *                  SVCSTATE_SERVICE_RIGHTS.
+ *   SR_KEEP        optional: its end of the keep channel (<keep.h>); devmgr
+ *                  is the keeper, and hands a successor what was kept.
+ *                  Not used by fat yet: it makes its own state VMO and
+ *                  starts fresh (docs/M11.6-PLAN.md, stage F3).
+ *
+ * devmgr also starts one fat with nothing but SR_STANDBY, the warm spare
+ * (<svcstate.h>), and promotes it with the handles above when a mount's
+ * fat dies.
  *
  * argv[1], if given, names the instance in its log lines ("/data").
  *
@@ -36,6 +47,11 @@
 #define FAT_SR_BLOCK (SR_USER + 0)
 #define FAT_SR_SERVE (SR_USER + 2)   /* SR_DRIVER(DR_SERVE) */
 #define FAT_SR_CTL   (SR_USER + 3)
+
+/* SR_STATE's size: room for fat's layout (svcstate_size of it, about
+ * 1.3 MiB) and its growth. Pages are committed only as fat uses them, so
+ * room to spare costs nothing; svcstate_open refuses a smaller VMO. */
+#define FAT_STATE_SIZE (4ull << 20)
 
 #define FAT_ARG_FORMAT     "format-if-blank"
 #define FAT_EXIT_NO_VOLUME 2
