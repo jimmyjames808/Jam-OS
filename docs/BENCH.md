@@ -10,6 +10,76 @@ The PC is described in [HARDWARE.md](HARDWARE.md) (28 CPUs: 8 P-cores with
 Hyper-Threading + 12 E-cores). CPUs used: P = cpu2, P2 = cpu4 (another
 P-core), HT = cpu3 (P's sibling), E = cpu16.
 
+## Method
+
+**`bench`** (the header of `kernel/test/bench.c` has the details): the
+TSC read with `lfence; rdtsc; lfence`, the cost of a timestamp pair
+measured first and subtracted, operations shorter than a few hundred ns
+timed in batches of 64, 20 ms of untimed warm-up, then the median and the
+99th percentile of 4000 samples (nothing trimmed, never a mean). Threads
+are pinned to the CPUs above at priority 24; CPU 0 is left out. The
+`user:` lines are timed in ring 3 by bin/utest, which the kernel starts
+pinned. A line an optimisation should move is measured with its switch
+off and then on in the same run. The `path:` lines are counts
+([below](#path-breakdown-m115-stage-0-qemu-2026-10-02)).
+
+**Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
+explains each line): what one file operation costs a program, with the
+same TSC method in ring 3: a `stat`, an open and close, a 4 KiB and a
+64 KiB read that fat has cached, a 4 KiB block read through usb-storage
+(a 512-byte read where fat's cache has nothing, so it reads the 4 KiB
+around it from the stick), and a 64 KiB write through to the stick. It
+writes a scratch file on the mount it is given (`/data` by default;
+another stick after `mount -w /usb0`: `perop /usb0`). Unlike bench's user
+lines it is not pinned (no system call pins a thread from user space), it
+runs on the live system, it measures the TSC's rate against the clock,
+and the two lines that reach the stick take 400 samples. The QEMU check
+is `tools/shell-tests/perop.txt` (QEMU's numbers mean nothing).
+
+**The Linux column** (`tools/linuxbench`, whose
+[README](../tools/linuxbench/README.md) has the owner's steps): a static
+Linux program that measures the equivalent of each line on the same PC,
+from an Ubuntu 24.04 live stick in text mode, twice: Linux as it comes,
+and with `mitigations=off`. Same method: the same TSC pair (its rate
+measured against `CLOCK_MONOTONIC_RAW`), the same sample counts, batches
+and warm-up, the same choice of P, P2, HT and E, every thread pinned at
+SCHED_FIFO 50 (as Jam OS's run above everything else), the `performance`
+cpufreq governor and energy preference (Jam OS leaves the firmware's
+P-state choice as it is). Each output line carries the Jam OS line's name,
+then `=` and what Linux does; the file starts with the kernel's version
+and command line, the microcode, and every file in
+`/sys/devices/system/cpu/vulnerabilities`.
+
+| Jam OS line | Linux, in linuxbench |
+|---|---|
+| timestamp cost | the same `lfence; rdtsc; lfence` pair |
+| spin_lock + spin_unlock | a ticket lock in user space, without a lock checker |
+| kmalloc(64) + kfree | malloc(64) + free (libc) |
+| context switch (yield, 2 threads, P) | `sched_yield` between two SCHED_FIFO threads on P |
+| block+wake round trip (same CPU, P->P2/HT/E, unpinned partner) | a futex ping-pong between two threads |
+| cache-line round trip | the same code (a check that the same CPUs were chosen) |
+| IPI function call round trip | `membarrier` (private, expedited) to a thread of ours spinning on the target |
+| sleep 100 / 1000 us | `clock_nanosleep` |
+| TLB shootdown, 1 page | `mprotect` read-write to read-only of a touched page, a thread of ours on every other CPU |
+| user: syscall round trip | the `syscall` instruction with an unused number (and `getppid`) |
+| user: clock_get | `clock_gettime` as a system call (and through the vDSO, no kernel entry) |
+| user: page fault, fresh zero page | the first write to a page of an anonymous mapping, no huge pages |
+| user: process->process channel_call (same CPU, P->P2/HT/E) | 16 bytes each way three ways: a futex and shared memory, a `socketpair` (SEQPACKET), two pipes |
+| user: the same with a 5 s deadline | the futex way with a 5 s timeout on every wait |
+| user: thread->thread channel_call | a `socketpair`, and a futex, between two threads |
+| per-operation lines | `stat`, open + close, `pread` from the page cache, a 4 KiB `pread` with `O_DIRECT`, a 64 KiB `pwrite` with `O_DIRECT`, on the SanDisk |
+
+The kernel-only lines (page allocation, the all-CPU lines, the kernel
+channel_call, the interrupt, placement, the serial port, the
+address-space switch, XSAVE) have no Linux line. When reading the
+columns side by side: Jam OS has no Spectre or Meltdown mitigations
+(Raptor Lake needs no KPTI), which is what the `mitigations=off` column
+is for; a Linux CPU waiting for a wake idles through its cpuidle driver
+where Jam OS's polls for 10 us first (spinidle); and the IPI's target is
+busy in user space on Linux, idle on Jam OS.
+
+## M4.5 and M5, PC 2026-09-29
+
 | Benchmark | M4.5, 2026-09-29 | M5 (0.0.8-m5), 2026-09-29 |
 |---|---|---|
 | timestamp cost (subtracted) | 8.9 / 9.9 ns | 8.5 / 9.9 ns |
